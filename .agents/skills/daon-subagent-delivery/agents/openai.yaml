@@ -1,0 +1,4 @@
+interface:
+  display_name: "Daon Subagent Handoff"
+  short_description: "Run Daon developer handoffs and failure escalation"
+  default_prompt: "Use $daon-subagent-delivery to execute an approved Daon work plan through the developer Subagent."
