@@ -6,7 +6,7 @@
 | --- | --- |
 | 문서 구분 | Release 1 구현 작업계획 정본 |
 | 계획 ID | `DAON-USER-R1-PLAN` |
-| 계획 버전 | `0.8` |
+| 계획 버전 | `0.9` |
 | 작성일 | 2026-07-20 |
 | 최종 수정일 | 2026-07-20 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
@@ -15,8 +15,8 @@
 | 대상 Release | Release 1 — 핵심 업무형 |
 | 상세 설계 정본 | `docs/superpowers/specs/2026-07-20-daon-user-program-design.md` |
 | 상세 설계 배포본 | `docs/Daon 사용자형 지식 업무지원 프로그램 상세 설계서.docx` |
-| 상세 설계 정본 SHA-256 | `7FC4BCE7B517E915520F587D812A241E59F6C8B492671B6C8A4BC53140393C31` |
-| 상세 설계 배포본 SHA-256 | `C98137EC3EE007DC124F373A46F24463FCFBC4A6603F1C657E8019675D1BE53F` |
+| 상세 설계 정본 SHA-256 | `3317B404F9FD4A2AFFE3A15EBBF456DE0B88AE56249666872C09629059C82038` |
+| 상세 설계 배포본 SHA-256 | `DAB1F8A936D69B18355EB986579A0CA5535169E829AB80D30DAC067606FEA0DF` |
 | 계획 정본 경로 | `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` |
 | 승인 기준 Manifest | `docs/02_work_orders/release_1_baseline_manifest.json` · M0 생성 예정 |
 | 적용 Git 기준선 | 최초 문서 기준 Commit · 본 계획을 포함한 Initial Commit 생성 후 Baseline Manifest에 Commit Hash 고정 |
@@ -52,6 +52,7 @@
 | 0.6 | 2026-07-20 | TP-0 승인 기록, 화면·same-origin API·3단계 배포 표준, 단계별 진행 복구 기록, 작업지시서/프롬프트 분리, 3회 미완료·실패 사용자 결정 Gate 반영 | C2 사용자 결정 + C1 운영 정합화 | 신산님 승인 |
 | 0.7 | 2026-07-20 | G0-BASELINE 승인, R1-D001·D003·D009·D010 확정, 외부 차단 조건 유지, 구현 상태 `READY` 전환 | C0 승인 기록 | 신산님 승인 |
 | 0.8 | 2026-07-20 | R1-M1-03 레지스트리 사전검증에 따라 Python 3.14.3·Tauri CLI 2.11.4·React Native 0.86.0을 정확 Pin하고 진행 복구 경로를 운영 규칙과 정합화 | C1 기술 정정 | 어울1 확정 |
+| 0.9 | 2026-07-20 | WSL 필수 통합을 ysna-server 격리 개발·통합 흐름으로 대체하고 Git Push·전용 PostgreSQL 18.4 Migration·서버 Test·PR Merge Gate와 ARM64·공유 자원 금지 계약 반영 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-DEVENV-YSNA-20260720-01` |
 
 ---
 
@@ -217,7 +218,9 @@ Milestone 이동, G0/G2/G9 Gate 우회, M2 승인 전 개별 기능 구현 또�
 - 기준 Desktop 화면은 1920×1080이고 기본 본문·Form 12px, 작은 설명 10px, 아주 작은 보조 9px, Sidebar 제목 14px, 화면 제목 16px를 적용한다.
 - 상시 설명 박스를 금지하고 `i` 아이콘·Tooltip·Popover를 사용하되 필수 오류·경고·진행 상태는 별도 상태 영역과 복구 동작으로 노출한다.
 - Browser 코드는 same-origin 상대 경로만 사용하며 API 절대주소, `localhost`, `127.0.0.1`, Docker 내부 Host·Port와 `NEXT_PUBLIC_API_BASE_URL` Client Fetch를 금지한다.
-- 개발은 로컬 Process+WSL DB → GitHub 기준 WSL 배포 → 지정 테스트 통과 후 GitHub 기준 Oracle Cloud 배포 순서를 따른다.
+- 개발은 로컬 수정·기본 검증 → Git Push → ysna-server 격리 배포 → 전용 PostgreSQL 18.4 DB Migration → 서버 통합 테스트 → PR Merge 순서를 따른다. WSL은 선택적 격리 대체 환경이며 필수 Gate가 아니다. 지정 테스트 통과 후 Oracle Cloud 운영 배포는 별도 G9-DEPLOY 승인을 유지한다.
+- ysna-server 배포는 `/home/ubuntu/deploy/daon-user` 아래의 Branch/Release별 Compose Project·Network·Volume을 사용한다. 기존 `shared-db`, `common`, `netdata`, `proxy`를 사용하거나 변경하지 않으며 ARM64 또는 Multi-arch Image만 허용한다.
+- Migration은 사전점검·Backup·적용·Rollback 검증을 한 작업 단위로 기록하고, 배포 Commit SHA·Service Health·서버 테스트 결과가 모두 있어야 PR Merge로 진행한다.
 
 ## 7. 구현 시작 Gate와 M0 필수 결정
 
@@ -372,7 +375,7 @@ Daon 계열 내부 구현과 분리된 정상 Git·Monorepo·Client/API 경계·
 | R1-M1-02 | R1-M1-01 | Monorepo와 소유 경계 | Web, Tauri, Mobile, API, Local Service, 공용 Contract/Token Package 구조 | 각 App 독립 Build 경계, 순환 의존 0건 |
 | R1-M1-03 | R1-M1-02 | Toolchain·Dependency Pin | Node·Python·Rust·RN·DB 버전 파일과 Lockfile | 개발·CI 동일 버전, 새 환경 재현 Build |
 | R1-M1-04 | R1-M1-02, R1-M1-03 | 독립성 검사 계약 | Dependency Graph, 금지 URL·Import·Package·Image·Path 검사 | Daon 직접 의존·Connector 우회 0건 |
-| R1-M1-05 | R1-M1-03, R1-M1-04 | CI와 품질 Gate | Lint·Type·Unit·Contract·Build·보안·독립성 Job | 실패 시 Merge 차단, 결과 Artifact와 로그 |
+| R1-M1-05 | R1-M1-03, R1-M1-04 | CI와 품질·개발 통합 Gate | Lint·Type·Unit·Contract·Build·보안·독립성 Job, Git SHA 기반 ysna-server 격리 검증 계약 | Job 또는 필수 서버 검증 실패 시 Merge 차단, 결과 Artifact·로그·배포 SHA |
 
 ### M1 Exit Gate
 

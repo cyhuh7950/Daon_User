@@ -80,7 +80,9 @@
 
 ## 개발·화면·API 표준
 
-- 개발은 1단계 로컬 Process와 WSL DB, 2단계 WSL 배포·기능 테스트, 3단계 테스트 완료 후 Oracle Cloud 운영 배포 순서로 진행한다. 2·3단계 배포는 GitHub 기준선을 사용한다.
+- 개발은 `로컬 수정·기본 검증 → Git Push → ysna-server 격리 배포 → 전용 DB Migration → 서버 통합 테스트 → PR Merge` 순서로 진행한다. WSL은 선택적 대체 환경이며 필수 Gate가 아니다. 운영 배포는 지정 테스트 완료 후 Oracle Cloud에 GitHub 기준선으로 수행한다.
+- ysna-server 배포 루트는 `/home/ubuntu/deploy/daon-user`로 제한한다. 전용 Compose Project·Network·Volume과 PostgreSQL `18.4` 개발 DB를 사용하고 기존 `shared-db`, `common`, `netdata`, `proxy`를 사용하거나 변경하지 않는다.
+- 서버 배포는 Git Commit SHA, Migration 사전점검·Backup·적용·Rollback, Service Health와 실제 서버 테스트 증거를 남긴다. Browser 코드는 환경별 내부 주소를 직접 사용하지 않고 same-origin BFF·Reverse Proxy를 유지한다.
 - 기준 화면은 1920×1080, 기본 본문·폼 12px, 작은 설명 10px, 아주 작은 보조 9px, 사이드바 제목 14px, 제목 16px다.
 - 설명 박스를 상시 노출하지 않고 `i` 아이콘·Tooltip·Popover를 사용한다.
 - 브라우저 코드는 same-origin 상대 경로만 사용한다. API 절대주소, `localhost`, `127.0.0.1`, Docker 내부 Host/Port와 `NEXT_PUBLIC_API_BASE_URL` 직접 호출을 금지한다.

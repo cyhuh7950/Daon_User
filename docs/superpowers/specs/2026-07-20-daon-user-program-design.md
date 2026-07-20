@@ -5,8 +5,9 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 구분 | 독립 제품 상세 설계 정본 |
+| 문서 버전 | 0.7 |
 | 작성일 | 2026-07-20 |
-| 개정 | 2026-07-20 · TP-0 승인·운영/화면/API 실행 표준 보강 |
+| 개정 | 2026-07-20 · ysna-server 격리 개발·통합 배포 기준 반영 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 승인 기록 | `APR-G0-DESIGN-20260720-01` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
@@ -1198,9 +1199,10 @@ iOS Archive·설치 Build는 승인된 macOS Build Host 또는 macOS CI Runner�
 
 ### 22.4 개발·배포 단계
 
-1. 로컬 개발 단계: 개발 PC에서 Product Process를 실행하고 DB는 WSL에 구성한다. 전체 화면·운영 흐름과 기본 기능이 실제 Browser·설치 App에서 성립할 때까지 이 단계에서 개발한다.
-2. WSL 통합 단계: 승인된 GitHub 기준 Commit을 WSL에 배포하고 Client의 공개 Domain·Gateway 대상을 `WSL-server` 환경으로 전환해 기능·Network·Process를 검증한다.
-3. 운영 단계: WSL 통합 테스트와 지정 테스트 웨이브를 통과한 뒤 승인된 GitHub 기준 Commit을 Oracle Cloud에 배포한다. 외부 운영 배포는 G9-DEPLOY 승인 기록과 Rollback·복구 절차가 있어야 한다.
+1. 로컬 개발 단계: 개발 PC에서 소스 수정과 정적 검사·Unit·Contract 등 기본 검증을 수행한다. 필요한 Product Process는 로컬에서 실행할 수 있으나 WSL DB는 필수 선행조건이 아니다.
+2. 개발·통합 서버 단계: 승인 대상 Git Commit을 Push한 뒤 `ssh ysna-server`를 통해 `/home/ubuntu/deploy/daon-user` 아래의 격리된 배포 단위에 반영한다. Branch 또는 Release별 Compose Project·Network·Volume과 PostgreSQL `18.4` 전용 개발 DB를 사용하고, Migration 사전점검·Backup·적용·Rollback 증거를 남긴 뒤 서버 기능·Process·Network·same-origin을 검증한다. 기존 `shared-db`와 `/home/ubuntu/deploy/common`, `netdata`, `proxy`는 Daon 사용자 프로그램의 개발 자원으로 사용하거나 변경하지 않는다.
+3. 통합 완료 단계: ysna-server의 지정 서버 테스트를 통과한 Commit만 PR Merge 대상으로 한다. 서버가 ARM64이므로 Container와 Native Dependency는 ARM64 또는 Multi-arch 호환성을 검증한다. WSL은 장애 시 선택 가능한 격리 대체 환경일 뿐 필수 Gate나 합격 증거가 아니다.
+4. 운영 단계: 지정 테스트 웨이브를 통과한 승인 GitHub 기준 Commit을 Oracle Cloud에 배포한다. ysna-server 개발·통합 승인은 운영 배포 승인이 아니며 외부 운영 배포는 별도 G9-DEPLOY 승인 기록과 Rollback·복구 절차가 있어야 한다.
 
 환경 전환은 Browser 코드의 API 주소를 바꾸는 방식이 아니라 same-origin BFF·Reverse Proxy와 Server-side 환경 설정으로 수행한다. 사용자와 운영자는 Python·DB CLI를 직접 실행하지 않으며 화면과 API에서 상태·적재·점검·복구 결과를 확인한다.
 
@@ -1402,7 +1404,7 @@ M4~M6의 모든 수평 구현이 끝날 때까지 통합 검증을 미루지 않
 | 과거 OutputVersion은 불변 보존하되 모든 접근·전달·등록·재실행은 현재 권한으로 재검증하고 필요 시 마스킹·차단 | 확정 · 신산님 승인 2026-07-20 |
 | 기준 화면 1920×1080·12px 본문과 Tooltip/Popover 설명 인터페이스 | 확정 · 신산님 승인 2026-07-20 |
 | Browser API는 same-origin BFF/Proxy만 사용하고 Client 절대주소·localhost·Docker 내부주소를 금지 | 확정 · 신산님 승인 2026-07-20 |
-| 로컬 개발→WSL 통합→Oracle Cloud 운영의 3단계 배포와 GitHub 기준선 사용 | 확정 · 신산님 승인 2026-07-20 |
+| 로컬 수정·검증→Git Push→ysna-server 격리 배포·전용 DB Migration·서버 테스트→PR Merge→Oracle Cloud 운영의 단계별 기준선 사용 | 확정 · 신산님 승인 2026-07-20 · `APR-DEVENV-YSNA-20260720-01` |
 | 동일 작업지시서 미완료·실패 합계 3회에는 어울2를 중지하고 신산님 결정 후에만 어울1이 직접 구현 | 확정 · 신산님 승인 2026-07-20 |
 | Output 승인 요청 기본 7일·조직 1~30일, 만료·회수 시 자동 승인 금지 | 확정 |
 | iOS Build는 승인된 macOS·Xcode·Apple Signing 환경에서 수행 | 확정 |
