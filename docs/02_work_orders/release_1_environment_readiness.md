@@ -9,7 +9,7 @@
 
 | 영역 | 필요한 환경·자격 | 현재 상태 | 필수 증거 | 관련 결정/WO |
 | --- | --- | --- | --- | --- |
-| Git 기준선 | 독립 Repo, 원격, 문서 기준 Commit, 보호 Branch | PARTIAL | `git status`, remote, 기준 Commit·Manifest | D002, M0-A01, M1-01 |
+| Git 기준선 | 독립 Repo, 원격, 문서 기준 Commit, 보호 Branch | READY | `git status`, remote, 기준 Commit·Manifest | D002, M0-A01, M1-01 |
 | Web | Windows 11, Chrome·Edge, 실제 Network/Console | PARTIAL | 실제 클릭, same-origin URL, Process 재기동 | D001, M3-01 |
 | Windows App | Windows 11 PC, Tauri/Rust, 설치·서명 환경 | PARTIAL | EXE 설치·클릭·Process·외부 Listen 0 | D001·D011·D012, M3-02~03 |
 | WSL 통합 | WSL 서버, PostgreSQL/Object/Worker/BFF, `WSL-server` Domain | PARTIAL | Git 배포 Commit, Service Health, Browser Network | D003·D005, M5~M7 |
@@ -26,7 +26,7 @@
 
 ## Toolchain Pin 기준
 
-R1-D002의 버전은 M1에서 버전 파일과 Lockfile에 기록하고 CI가 다르면 실패하게 한다. React Native는 `0.86.x` 계열 중 최초 재현 Build에서 정확한 Patch를 고정한다. Xcode·CocoaPods는 승인된 macOS Host에서만 검증하며 Windows 대체 증거를 허용하지 않는다.
+R1-D002의 정확 버전은 M1에서 버전 파일과 Lockfile에 기록하고 CI가 다르면 실패하게 한다. R1-M1-03 사전검증 결과 Python `3.14.3`, Tauri CLI `2.11.4`, React Native `0.86.0`으로 C1 정정했다. 현재 Windows 장비의 Node.js `24.18.0`·npm `11.12.1`·Corepack `0.35.0`은 승인 Pin과 일치한다. Python `3.14.3`과 Rust `1.97.1`은 격리된 임시 Toolchain 경로에서 재현 검증하고, 기존 사용자 전역 Toolchain을 변경하지 않는다. Xcode·CocoaPods는 승인된 macOS Host에서만 검증하며 Windows 대체 증거를 허용하지 않는다.
 
 ## G0 준비 판정
 
