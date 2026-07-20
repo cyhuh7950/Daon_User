@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M1-02",
+  "issue_id": "R1-M1-02-I001",
+  "attempt_no": 1,
+  "baseline_commit": "ce5974ae10b7bbbdd0042b009b8484c8b631a6c7",
+  "result_head": "5bb25be34d08aa857c5888400e63c9770a034b60",
+  "result_branch": "codex/r1-m1-02",
+  "files": [
+    {"path":"repo-boundaries.json","sha256":"43DDA8237098EA6469407B165C2AE0258FB84E9A7C5E094E6E4618127EF5C075"},
+    {"path":"apps/web/README.md","sha256":"B694793E64655437789D807351495079E3F11D80B5A6E1400386775AEB0367B9"},
+    {"path":"apps/desktop/README.md","sha256":"BDB1B1086A24D30D980668E985A09C7A3A3850BA455C3CDC147C500B6739153D"},
+    {"path":"apps/mobile/README.md","sha256":"80D9FBB20EC60432E0385DB6F223D381B76AB19BA33895B49B52E63B6A895A35"},
+    {"path":"services/api/README.md","sha256":"01E48B4BC11EB582116074BBF05334F9C63FF5F0E11FFB08FC645965F27B360A"},
+    {"path":"services/local-service/README.md","sha256":"27CE2DCF4C777F2EEA04788B70474B90C747448AD8875FCEC08ECAE9A00E45BF"},
+    {"path":"packages/ui/README.md","sha256":"89D7BEB32BE60DF40077E497C555E957A8DBC1F554ABC5C8AFBBB377EB1E1FAF"},
+    {"path":"packages/contracts/README.md","sha256":"84D0A9A599766627AC06B05819FC02AA42D6DF9C0CFF8AD245220AD4D119353C"},
+    {"path":"packages/design-tokens/README.md","sha256":"AC9BF25F3D0BE40EE01B93EB1A8ADCB1A67E4DAE1A6A02BCB52A08BCCD5B1037"},
+    {"path":"docs/01_architecture/monorepo_ownership_boundaries.md","sha256":"3041A85F082A4F8DE5B7F336414AD496C777E819DDFFD8FF830FFB9F60B1B6FD"}
+  ],
+  "source_hashes": {
+    "design":"7FC4BCE7B517E915520F587D812A241E59F6C8B492671B6C8A4BC53140393C31",
+    "plan":"1C628D741D69FD1A977B3A751C36D284A156778428DA0855353EACFAEE6EE82F",
+    "baseline_manifest":"CBA9B3DF83883FEF34301B46BF8C3E9E13A3432B0DA0CA0F11D660E60493B4B8",
+    "predecessor_evidence":"07C8183EA4686F92B4EE03F1A2FD1C770112B2B5870C652799244AD50D3E5780",
+    "work_order":"FF87143C204F5E280F0072B8FEE51726CA9377B882230F345D197E03E7C18924"
+  },
+  "checks": [
+    {"name":"baseline_ancestor","exit_code":0,"result":"PASS"},
+    {"name":"json_dependency_graph","exit_code":0,"result":"8 components; missing 0; unregistered 0; self 0; cycles 0; app/service internal source edges 0"},
+    {"name":"readme_presence","exit_code":0,"result":"8 of 8"},
+    {"name":"git_diff_check","exit_code":0,"result":"PASS"},
+    {"name":"tracked_deletions","exit_code":0,"result":"0"},
+    {"name":"allowed_path_diff","exit_code":0,"result":"Only work-order allowed paths"}
+  ],
+  "runtime_evidence": [
+    {"type":"dependency_install","status":"NOT_APPLICABLE"},
+    {"type":"build","status":"NOT_APPLICABLE"},
+    {"type":"application_browser_network","status":"NOT_APPLICABLE"}
+  ],
+  "known_limits": [
+    "Framework scaffolds, package manifests, lockfiles, toolchain pins, executable checks and CI are later work orders.",
+    "git status with all untracked files timed out once; tracked state and untracked paths were verified with separate Git commands."
+  ],
+  "result": "COMPLETED"
+}
