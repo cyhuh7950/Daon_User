@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "boundary_manifest": "repo-boundaries.json",
+  "root_package_manifest": "package.json",
+  "lockfile": "package-lock.json",
+  "scan_roots": ["apps", "services", "packages", "scripts", ".github"],
+  "root_runtime_files": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"],
+  "source_extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".rs", ".json", ".toml", ".yaml", ".yml"],
+  "excluded_directories": [".git", "node_modules", ".next", "dist", "build", "coverage", ".cache", "docs"],
+  "general_scan_exclusions": [
+    "independence-policy.json",
+    "repo-boundaries.json",
+    "package-lock.json",
+    "scripts/lib/independence-check.mjs",
+    "scripts/verify-repository-independence.mjs",
+    "scripts/tests/independence-check.test.mjs"
+  ],
+  "package_manifest_names": ["package.json", "pyproject.toml"],
+  "approved_connector_prefix": "services/api/src/connectors/daon",
+  "browser_path_segments": ["/client/", "/browser/", "/components/", "/hooks/", "/ui/"],
+  "server_path_segments": ["/api/", "/bff/", "/proxy/", "/server/"],
+  "rules": {
+    "dependency_graph": "DEP_GRAPH_BOUNDARY",
+    "package": "PACKAGE_DAON_INTERNAL",
+    "source_import": "SOURCE_IMPORT_BOUNDARY",
+    "path": "PATH_EXTERNAL_ABSOLUTE",
+    "runtime_image": "RUNTIME_IMAGE_DAON",
+    "browser_url": "BROWSER_DIRECT_API",
+    "connector_bypass": "CONNECTOR_BYPASS"
+  },
+  "exceptions": []
+}
