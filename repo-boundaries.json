@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "components": [
+    {
+      "id": "apps/web",
+      "path": "apps/web",
+      "kind": "application",
+      "owner": "web-client",
+      "runtime": "browser-and-server-bff",
+      "allowed_dependencies": ["packages/ui", "packages/contracts", "packages/design-tokens"],
+      "forbidden_dependencies": ["apps/desktop", "apps/mobile", "services/api", "services/local-service"],
+      "build_owner_work_order": "R1-M3-01"
+    },
+    {
+      "id": "apps/desktop",
+      "path": "apps/desktop",
+      "kind": "application",
+      "owner": "windows-client",
+      "runtime": "tauri-desktop-shell",
+      "allowed_dependencies": ["packages/ui", "packages/contracts", "packages/design-tokens"],
+      "forbidden_dependencies": ["apps/web", "apps/mobile", "services/api", "services/local-service"],
+      "build_owner_work_order": "R1-M3-02"
+    },
+    {
+      "id": "apps/mobile",
+      "path": "apps/mobile",
+      "kind": "application",
+      "owner": "mobile-client",
+      "runtime": "react-native-ios-android",
+      "allowed_dependencies": ["packages/contracts", "packages/design-tokens"],
+      "forbidden_dependencies": ["apps/web", "apps/desktop", "services/api", "services/local-service", "packages/ui"],
+      "build_owner_work_order": "R1-M3-04"
+    },
+    {
+      "id": "services/api",
+      "path": "services/api",
+      "kind": "service",
+      "owner": "public-api-and-orchestrator",
+      "runtime": "fastapi-cloud-service",
+      "allowed_dependencies": ["packages/contracts"],
+      "forbidden_dependencies": ["apps/web", "apps/desktop", "apps/mobile", "services/local-service", "packages/ui", "packages/design-tokens"],
+      "build_owner_work_order": "R1-M4-05"
+    },
+    {
+      "id": "services/local-service",
+      "path": "services/local-service",
+      "kind": "service",
+      "owner": "windows-local-runtime",
+      "runtime": "packaged-loopback-local-service",
+      "allowed_dependencies": ["packages/contracts"],
+      "forbidden_dependencies": ["apps/web", "apps/desktop", "apps/mobile", "services/api", "packages/ui", "packages/design-tokens"],
+      "build_owner_work_order": "R1-M3-03"
+    },
+    {
+      "id": "packages/ui",
+      "path": "packages/ui",
+      "kind": "shared-package",
+      "owner": "web-desktop-ui",
+      "runtime": "react-dom-compatible-library",
+      "allowed_dependencies": ["packages/contracts", "packages/design-tokens"],
+      "forbidden_dependencies": ["apps/web", "apps/desktop", "apps/mobile", "services/api", "services/local-service"],
+      "build_owner_work_order": "R1-M2-01"
+    },
+    {
+      "id": "packages/contracts",
+      "path": "packages/contracts",
+      "kind": "shared-package",
+      "owner": "public-contracts",
+      "runtime": "platform-neutral-schema-source",
+      "allowed_dependencies": [],
+      "forbidden_dependencies": ["apps/web", "apps/desktop", "apps/mobile", "services/api", "services/local-service", "packages/ui", "packages/design-tokens"],
+      "build_owner_work_order": "R1-M4-01"
+    },
+    {
+      "id": "packages/design-tokens",
+      "path": "packages/design-tokens",
+      "kind": "shared-package",
+      "owner": "design-system-tokens",
+      "runtime": "platform-neutral-token-source",
+      "allowed_dependencies": [],
+      "forbidden_dependencies": ["apps/web", "apps/desktop", "apps/mobile", "services/api", "services/local-service", "packages/ui", "packages/contracts"],
+      "build_owner_work_order": "R1-M2-01"
+    }
+  ]
+}
