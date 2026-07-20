@@ -1,0 +1,25 @@
+version = 1
+revision = 3
+requires-python = "==3.14.3"
+
+[manifest]
+members = [
+    "daon-user-api",
+    "daon-user-local-service",
+    "daon-user-workspace",
+]
+
+[[package]]
+name = "daon-user-api"
+version = "0.0.0"
+source = { virtual = "services/api" }
+
+[[package]]
+name = "daon-user-local-service"
+version = "0.0.0"
+source = { virtual = "services/local-service" }
+
+[[package]]
+name = "daon-user-workspace"
+version = "0.0.0"
+source = { virtual = "." }
