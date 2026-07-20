@@ -30,5 +30,4 @@ R1-D002의 버전은 M1에서 버전 파일과 Lockfile에 기록하고 CI가 �
 
 ## G0 준비 판정
 
-현재 문서·Web/Windows 로컬 환경은 기준선 준비가 가능하지만 외부 Provider·모바일·서명·macOS·OCI 자격은 준비되지 않았다. G0 승인 시 외부 차단을 조건으로 명시하고, 각 관련 Work Order는 실제 증거 환경이 확보될 때까지 `BLOCKED`로 유지한다.
-
+G0-BASELINE은 `APR-G0-BASELINE-20260720-01`로 승인되었다. 문서·Git·Web/Windows 로컬 기준선으로 M1을 시작할 수 있다. 외부 Provider·모바일·서명·macOS·OCI 자격은 준비되지 않았으므로 각 관련 Work Order는 실제 증거 환경이 확보될 때까지 `BLOCKED`로 유지한다.

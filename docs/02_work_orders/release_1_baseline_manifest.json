@@ -1,12 +1,13 @@
 {
   "schema_version": "1.0",
   "release": "R1",
-  "status": "G0_BASELINE_APPROVAL_PENDING",
+  "status": "APPROVED",
   "prepared_at": "2026-07-20T00:00:00+09:00",
   "prepared_by": "어울1",
   "approval_owner": "신산님",
-  "approval_record_id": null,
+  "approval_record_id": "APR-G0-BASELINE-20260720-01",
   "document_baseline_commit": "c94e553f3a6aa7d062645391e838e7a555706914",
+  "g0_approval_commit": "PENDING_G0_APPROVAL_COMMIT",
   "documents": [
     {
       "id": "DESIGN_MD",
@@ -21,7 +22,7 @@
     {
       "id": "IMPLEMENTATION_PLAN",
       "path": "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
-      "sha256": "80AC2EFE531895C0DA5FC777EB586A52E389E5C1A69F9CE08C931FC4F6943682"
+      "sha256": "1C628D741D69FD1A977B3A751C36D284A156778428DA0855353EACFAEE6EE82F"
     },
     {
       "id": "TEST_PLAN",
@@ -31,7 +32,7 @@
     {
       "id": "DECISIONS",
       "path": "docs/01_architecture/DECISIONS.md",
-      "sha256": "6D1BF1DAE1AE54401A80B61AFBCBCB2AF18AA8DE0977702E657D6E61B563F9E4"
+      "sha256": "73F9F1FC98C00E1244990C09A7BDDBC288A55D5AEC41888D459BF11E31347B94"
     },
     {
       "id": "RISK_REGISTER",
@@ -46,29 +47,40 @@
     {
       "id": "ENVIRONMENT_READINESS",
       "path": "docs/02_work_orders/release_1_environment_readiness.md",
-      "sha256": "ED1CBFCF33CBA669D3FDFD38E58257801D36B73F36C052CE0C8A82B405F009D0"
+      "sha256": "20F1E74853937350E710B990EBC9F7B48E2B45408CA42ECD8982BA27B41CA4A2"
     },
     {
       "id": "TP0_REPORT",
       "path": "docs/04_test_reports/release_1/wave_TP-0.md",
       "sha256": "6C730ED6325ABA39E375E321895B80C0CB59B21729EBA8994E00231C8D1FD2A6"
+    },
+    {
+      "id": "G0_APPROVAL_RECORD",
+      "path": "docs/02_work_orders/approvals/2026-07-20_g0_baseline_approval.md",
+      "sha256": "A2593567BD0349E425234588100D7890CDE5635E2279A20B1705F6097727B042"
+    },
+    {
+      "id": "G0_FINAL_REPORT",
+      "path": "docs/04_test_reports/release_1/approval_G0-BASELINE.md",
+      "sha256": "65433A8B9E8711E9B419C6D6138C93243A2C464D3D7A026DD390D98176AA5C24"
     }
   ],
   "approval_records": [
     "APR-G0-DESIGN-20260720-01",
     "APR-G0-PLAN-20260720-01",
-    "APR-TP0-20260720-01"
+    "APR-TP0-20260720-01",
+    "APR-G0-BASELINE-20260720-01"
   ],
   "decision_status": {
-    "confirmed": ["R1-D002", "R1-D005", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020"],
-    "g0_approval_requested": ["R1-D001", "R1-D003", "R1-D009", "R1-D010"],
+    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020"],
+    "g0_approval_requested": [],
     "external_blocked": ["R1-D004", "R1-D006", "R1-D007", "R1-D008", "R1-D011", "R1-D012"]
   },
-  "implementation_state": "BLOCKED",
-  "next_gate": "G0-BASELINE",
+  "implementation_state": "READY",
+  "next_gate": "CP1",
   "notes": [
     "The exact initial document baseline commit is recorded above; this manifest finalization is a follow-up metadata commit.",
     "External-blocked decisions remain blocked and are not treated as completed by G0 approval.",
-    "No implementation work order may be dispatched before G0-BASELINE approval."
+    "R1-M1-01 is the first implementation work order after G0-BASELINE approval."
   ]
 }
