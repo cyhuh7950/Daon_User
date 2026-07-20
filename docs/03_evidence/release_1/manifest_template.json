@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "{work_order_id}",
+  "issue_id": "{issue_id}",
+  "attempt_no": 1,
+  "baseline_commit": "{git_commit}",
+  "started_at": "{ISO-8601}",
+  "finished_at": "{ISO-8601}",
+  "files": [],
+  "checks": [],
+  "runtime_evidence": [],
+  "known_limits": [],
+  "result": "{COMPLETED|FAILURE_REPORT|INCOMPLETE}"
+}

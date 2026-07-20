@@ -1,0 +1,43 @@
+# Local agent scratch and review work
+.superpowers/
+.tmp_moaworks_review/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies and generated build output
+node_modules/
+dist/
+build/
+.next/
+target/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Local runtime data
+*.log
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+Thumbs.db
+
+# Generated document QA output; keep source builder and final DOCX
+docs/03_assets/design-renders*/
+docs/.build/*-a11y*.json
+docs/.build/*audit*.json
+docs/.build/*lint*.json
+docs/.build/*-pages*.png
+docs/.build/*-montage*.png
+docs/.build/page-*.png
+docs/.build/*.pdf
+
+# Office lock files
+~$*.docx
+~$*.xlsx
+~$*.pptx
