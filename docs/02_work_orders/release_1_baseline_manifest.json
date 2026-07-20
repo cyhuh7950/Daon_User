@@ -7,7 +7,7 @@
   "approval_owner": "신산님",
   "approval_record_id": "APR-G0-BASELINE-20260720-01",
   "document_baseline_commit": "c94e553f3a6aa7d062645391e838e7a555706914",
-  "g0_approval_commit": "PENDING_G0_APPROVAL_COMMIT",
+  "g0_approval_commit": "3397b57882d0e9580bc2561403d07bee65396d92",
   "documents": [
     {
       "id": "DESIGN_MD",
