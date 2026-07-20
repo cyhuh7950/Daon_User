@@ -1,0 +1,105 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M1-04",
+  "issue_id": "R1-M1-04-I001",
+  "attempt_no": 2,
+  "baseline_commit": "02cce4bb46eaa7ea36fab7c131cd9c328df8114d",
+  "result_head": "2502e3bc60cecb79a0f92b41e2c0061e58ea1f1c",
+  "result_branch": "codex/r1-m1-04",
+  "source_hashes": {
+    "design_git_blob": "7FC4BCE7B517E915520F587D812A241E59F6C8B492671B6C8A4BC53140393C31",
+    "plan_git_blob": "790BD4C2AC708328FB4790CBA2842DFEB62B8B1E1093BAA4D6FA652F6B4F70EF",
+    "baseline_manifest_git_blob": "1F263770969EF3D392E051C29DFBDEA51F73C2B0CAFE00E016EC273B85E894DB",
+    "predecessor_evidence_checkout": "D23C2394297AD7B6BD992C6D02BC6D03FB087B7C9B6A40DCDDC786C538A14321",
+    "work_order_checkout": "97AF2B28E1F68F416B872A5A56FD4A75039B7B6C674CAC990069F778BB26A2FE",
+    "attempt_1_report_checkout": "BB0D72FB6FBF960674726EF22272A8F5EA99D1241BA18A29457387EFD542F94C",
+    "correction_work_order_checkout": "4520AABDE48F58DE92775302F6A5C84A96D51ACF8BD2A68639B282BB2AB09422",
+    "correction_prompt_checkout": "EFD75AB5043A569D8F34F315A5FC3383F01D95D4B7BD5A991DB8BCD21D6058D0"
+  },
+  "artifact_hashes": {
+    "package.json": "D856B9A527A8684AD2672999DE5593B16D44D3AF6656B319B7EAF12507AB8B6B",
+    "independence-policy.json": "33CD8E7E4C263B3DB6E6E1D2744271BA853266F39B071DA45C67DDEDE5428868",
+    "scripts/lib/independence-check.mjs": "EBA7BD8F2DADE763E013A6D318CF07532D027FB692045B225DB6754DA2092126",
+    "scripts/verify-repository-independence.mjs": "47B1E651F0421867923F9F439EB551C4033C64B9E579E7CDB79A2FD1F433DEAB",
+    "scripts/tests/independence-check.test.mjs": "F8E29C379D7764C05B2CFF8D21549C12F996A43AF53381F510BAC65F2B431017",
+    "docs/01_architecture/repository_independence_contract.md": "08575C2AD4DDBB4008FFE170EA548BBE045AE4EF18B77544A959F63752F54070",
+    "docs/03_evidence/release_1/R1-M1-04/dependency-graph.json": "FE53DC546BB1B69BFA4A4ED02F53EEFACBBD8AEA93E80976C3373A073FFD97FD",
+    "docs/03_evidence/release_1/R1-M1-04/violations.json": "A49045E332520EEAA52C1D763761D085D7695D00CF333EDEAC0F5E026E3F8765"
+  },
+  "dependency_graph": {
+    "component_count": 8,
+    "edge_count": 10,
+    "cycle_count": 0,
+    "package_structure_file_count": 10,
+    "scanned_runtime_file_count": 1,
+    "violation_count": 0
+  },
+  "attempt_2_additional_fixtures": [
+    { "id": "ROOT_LOCK_NORMAL", "input": "normal root package.json plus lockfile registry/workspace link metadata", "expected_rule_id": null, "expected_exit": 0, "actual_exit": 0 },
+    { "id": "ROOT_DAON_PACKAGE", "input": "root dependencies @daon2/internal:1.0.0", "expected_rule_id": "PACKAGE_DAON_INTERNAL", "expected_exit": 1, "actual_exit": 1 },
+    { "id": "LOCK_DAON_IDENTITY", "input": "packages[node_modules/@daon3/internal]", "expected_rule_id": "PACKAGE_DAON_INTERNAL", "expected_exit": 1, "actual_exit": 1 },
+    { "id": "LOCK_LOCAL_PATH", "input": "dependency legacy:file:../Daon2/internal", "expected_rule_id": "PACKAGE_DAON_INTERNAL", "expected_exit": 1, "actual_exit": 1 },
+    { "id": "PYTHON_DAON_IMPORT", "input": "from daon2.internal import Client", "expected_rule_id": "SOURCE_IMPORT_BOUNDARY", "expected_exit": 1, "actual_exit": 1 },
+    { "id": "JS_REEXPORT", "input": "export { value } from '../../../services/api/src/internal.js'", "expected_rule_id": "SOURCE_IMPORT_BOUNDARY", "expected_exit": 1, "actual_exit": 1 },
+    { "id": "PYTHON_NON_IMPORT_TEXT", "input": "Daon import text in comment/string plus import requests", "expected_rule_id": null, "expected_exit": 0, "actual_exit": 0 },
+    { "id": "LOCK_INVALID_JSON", "input": "malformed package-lock.json", "expected_rule_id": "POLICY_OR_SCAN_ERROR", "expected_exit": 2, "actual_exit": 2 },
+    { "id": "LOCK_MISSING", "input": "package-lock.json absent", "expected_rule_id": "POLICY_OR_SCAN_ERROR", "expected_exit": 2, "actual_exit": 2 }
+  ],
+  "checks": [
+    {
+      "name": "approved_hashes_branch_ancestor",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "name": "node_syntax",
+      "command": "node --check on library, CLI, and test",
+      "exit_code": 0,
+      "result": "3 files PASS"
+    },
+    {
+      "name": "independence_unit_negative_tests",
+      "command": "node --test scripts/tests/independence-check.test.mjs",
+      "exit_code": 0,
+      "result": "18 pass, 0 fail; original 9 regressions plus 9 correction fixtures"
+    },
+    {
+      "name": "repository_cli",
+      "command": "node scripts/verify-repository-independence.mjs",
+      "exit_code": 0,
+      "result": "8 components, 10 edges, 10 package structure files, 1 scanned runtime file, 0 violations"
+    },
+    {
+      "name": "npm_script",
+      "command": "npm run verify:independence",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "name": "graph_json_assertion",
+      "exit_code": 0,
+      "result": "JSON parse; components 8, edges 10, cycles 0, package structure files 10, violations 0"
+    },
+    {
+      "name": "tracked_diff_deleted_whitespace_allowed_paths",
+      "exit_code": 0,
+      "result": "diff-check errors 0, tracked deletions 0, allowed paths only"
+    }
+  ],
+  "lockfile_invariance": {
+    "path": "package-lock.json",
+    "expected_git_blob_sha256": "8B8EE4FCE6750FFA03827C972890A4C7E1D4FF334AAB82D085FD0119BA2C689D",
+    "actual_git_blob_sha256": "8B8EE4FCE6750FFA03827C972890A4C7E1D4FF334AAB82D085FD0119BA2C689D",
+    "tracked_diff": false,
+    "checkout_sha256": "6AA2F0A62FB5CC58D6A4D829DAB3A8507CCB3F22B6340097CECF09C789174160",
+    "checkout_note": "Windows CRLF checkout bytes differ from the immutable Git blob; no tracked lockfile change exists."
+  },
+  "exceptions": [],
+  "known_limits": [
+    "This work order is a static repository contract; browser Network and runtime Docker verification remain assigned to later application work orders.",
+    "The current repository skeleton contains one non-checker runtime script eligible for general string scanning; root/component manifests, package-lock.json, and repo-boundaries.json are covered by separate structural checks."
+  ],
+  "commit_push_pr_performed": false,
+  "server_wsl_performed": false,
+  "result": "COMPLETED"
+}
