@@ -11,6 +11,7 @@
 
 # Dependencies and generated build output
 node_modules/
+.venv/
 dist/
 build/
 .next/
