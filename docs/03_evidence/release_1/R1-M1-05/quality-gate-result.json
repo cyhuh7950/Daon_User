@@ -1,0 +1,546 @@
+{
+  "schema_version": "1.0",
+  "policy_path": "quality-gate-policy.json",
+  "policy_sha256": "D29A4E1D1723A06954978BCA179EA4E0E922A563E8BCA701E74D878749FDF471",
+  "git_sha": "7808f9121f38233295eb5f84885c1ed3edd71cbd",
+  "started_at": "2026-07-20T15:00:33.142Z",
+  "ended_at": "2026-07-20T15:00:38.796Z",
+  "overall_status": "PASS",
+  "exit_code": 0,
+  "categories": {
+    "lint": {
+      "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+      "checks": [],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/README.md",
+            "packages/design-tokens/package.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "type": {
+      "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+      "checks": [],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/README.md",
+            "packages/design-tokens/package.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "unit": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "quality-gate-runner-tests",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "--test",
+            "scripts/tests/quality-gate.test.mjs"
+          ],
+          "started_at": "2026-07-20T15:00:33.297Z",
+          "ended_at": "2026-07-20T15:00:34.659Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/quality-gate.test.mjs",
+              "sha256": "B9F6832A8A1A1B2C2DFE38BD1FA09A08CEC7C057F018EF9AAE423522382B62B6"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/README.md",
+            "packages/design-tokens/package.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "contract": {
+      "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+      "checks": [],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/README.md",
+            "packages/design-tokens/package.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "build": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "toolchain-baseline",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:toolchain"
+          ],
+          "started_at": "2026-07-20T15:00:34.660Z",
+          "ended_at": "2026-07-20T15:00:35.975Z",
+          "evidence_files": [
+            {
+              "path": "toolchain-versions.json",
+              "sha256": "0B6A0175F7CB58E553A2C10C6178C5F4D54DA7608DAEE462FF043467760CFF60"
+            },
+            {
+              "path": "package-lock.json",
+              "sha256": "6AA2F0A62FB5CC58D6A4D829DAB3A8507CCB3F22B6340097CECF09C789174160"
+            },
+            {
+              "path": "uv.lock",
+              "sha256": "172770DE8DA800233E7D243A282B8044462C02731596D09878D35F5CAAC18AC8"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/README.md",
+            "packages/design-tokens/package.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "security": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "security-static-scan",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": null,
+          "started_at": "2026-07-20T15:00:33.272Z",
+          "ended_at": "2026-07-20T15:00:33.297Z",
+          "evidence_files": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/README.md",
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            ".github/workflows/release-1-quality-gate.yml"
+          ],
+          "violation_count": 0,
+          "violations": []
+        },
+        {
+          "id": "production-dependency-audit",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "audit",
+            "--omit=dev",
+            "--audit-level=high",
+            "--json"
+          ],
+          "started_at": "2026-07-20T15:00:35.976Z",
+          "ended_at": "2026-07-20T15:00:38.075Z",
+          "evidence_files": [
+            {
+              "path": "package.json",
+              "sha256": "12E3A156239B2C6C020EB3401504F2FD51C7D0E0C52581E707CF0FDEF429424C"
+            },
+            {
+              "path": "package-lock.json",
+              "sha256": "6AA2F0A62FB5CC58D6A4D829DAB3A8507CCB3F22B6340097CECF09C789174160"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": []
+    },
+    "independence": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "repository-independence",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:independence",
+            "--",
+            "--no-write"
+          ],
+          "started_at": "2026-07-20T15:00:38.078Z",
+          "ended_at": "2026-07-20T15:00:38.793Z",
+          "evidence_files": [
+            {
+              "path": "independence-policy.json",
+              "sha256": "B6A0946CD551F9DB5E22FEC52659BD5E209BBC33BA59DD5A5B453A0F4DB8CA14"
+            },
+            {
+              "path": "repo-boundaries.json",
+              "sha256": "0262DA3B13F353CED3731FE4A0733926516722635995624A18FEF20B588318DF"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": []
+    }
+  },
+  "failures": [],
+  "limitations": [
+    "Source-specific checks are N/A only while exact component signals are absent.",
+    "Raw stdout, stderr, secrets, tokens, personal data, and credential values are not stored in artifacts."
+  ]
+}

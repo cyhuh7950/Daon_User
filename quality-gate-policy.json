@@ -1,0 +1,134 @@
+{
+  "schema_version": "1.0",
+  "report_schema_version": "1.0",
+  "foundation_status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+  "categories": ["lint", "type", "unit", "contract", "build", "security", "independence"],
+  "components": [
+    {
+      "id": "apps/web",
+      "root": "apps/web",
+      "manifest": "apps/web/package.json",
+      "foundation_allowed_files": ["README.md", "package.json"],
+      "capabilities": {
+        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["eslint.config.js", ".eslintrc.json"] }, "command": null },
+        "type": { "signals": { "extensions": [".ts", ".tsx"], "files": ["tsconfig.json"] }, "command": null },
+        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "contract": { "signals": { "extensions": [], "files": ["openapi.json", "openapi.yaml", "openapi.yml"] }, "command": null },
+        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["next.config.js", "next.config.mjs", "tsconfig.json"], "directories": ["src", "app", "pages"] }, "command": null }
+      }
+    },
+    {
+      "id": "apps/desktop",
+      "root": "apps/desktop",
+      "manifest": "apps/desktop/package.json",
+      "foundation_allowed_files": ["README.md", "package.json"],
+      "capabilities": {
+        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs"], "files": ["eslint.config.js"] }, "command": null },
+        "type": { "signals": { "extensions": [".ts", ".tsx", ".rs"], "files": ["tsconfig.json", "Cargo.toml"] }, "command": null },
+        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "contract": { "signals": { "extensions": [], "files": [] }, "command": null },
+        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs"], "files": ["tsconfig.json", "Cargo.toml", "tauri.conf.json"], "directories": ["src", "src-tauri"] }, "command": null }
+      }
+    },
+    {
+      "id": "apps/mobile",
+      "root": "apps/mobile",
+      "manifest": "apps/mobile/package.json",
+      "foundation_allowed_files": ["README.md", "package.json"],
+      "capabilities": {
+        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["eslint.config.js"] }, "command": null },
+        "type": { "signals": { "extensions": [".ts", ".tsx"], "files": ["tsconfig.json"] }, "command": null },
+        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "contract": { "signals": { "extensions": [], "files": [] }, "command": null },
+        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["tsconfig.json", "app.json", "metro.config.js"], "directories": ["src", "android", "ios"] }, "command": null }
+      }
+    },
+    {
+      "id": "packages/ui",
+      "root": "packages/ui",
+      "manifest": "packages/ui/package.json",
+      "foundation_allowed_files": ["README.md", "package.json"],
+      "capabilities": {
+        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["eslint.config.js"] }, "command": null },
+        "type": { "signals": { "extensions": [".ts", ".tsx"], "files": ["tsconfig.json"] }, "command": null },
+        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "contract": { "signals": { "extensions": [], "files": [] }, "command": null },
+        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["tsconfig.json"], "directories": ["src"] }, "command": null }
+      }
+    },
+    {
+      "id": "packages/contracts",
+      "root": "packages/contracts",
+      "manifest": "packages/contracts/package.json",
+      "foundation_allowed_files": ["README.md", "package.json"],
+      "capabilities": {
+        "lint": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py", ".json", ".yaml", ".yml"], "files": [] }, "command": null },
+        "type": { "signals": { "extensions": [".ts", ".py"], "files": ["tsconfig.json", "pyrightconfig.json"] }, "command": null },
+        "unit": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "contract": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py", ".json", ".yaml", ".yml"], "directories": ["schemas", "openapi", "src"] }, "command": null },
+        "build": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py"], "files": ["tsconfig.json", "pyproject.toml"], "directories": ["src"] }, "command": null }
+      }
+    },
+    {
+      "id": "packages/design-tokens",
+      "root": "packages/design-tokens",
+      "manifest": "packages/design-tokens/package.json",
+      "foundation_allowed_files": ["README.md", "package.json"],
+      "capabilities": {
+        "lint": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".json"], "files": [] }, "command": null },
+        "type": { "signals": { "extensions": [".ts"], "files": ["tsconfig.json"] }, "command": null },
+        "unit": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "contract": { "signals": { "extensions": [], "files": [] }, "command": null },
+        "build": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".json"], "files": ["tsconfig.json"], "directories": ["src", "tokens"] }, "command": null }
+      }
+    },
+    {
+      "id": "services/api",
+      "root": "services/api",
+      "manifest": "services/api/pyproject.toml",
+      "foundation_allowed_files": ["README.md", "pyproject.toml"],
+      "capabilities": {
+        "lint": { "signals": { "extensions": [".py"], "files": ["ruff.toml"] }, "command": null },
+        "type": { "signals": { "extensions": [".py"], "files": ["pyrightconfig.json", "mypy.ini"] }, "command": null },
+        "unit": { "signals": { "extensions": [".py"], "directories": ["test", "tests"] }, "command": null },
+        "contract": { "signals": { "extensions": [".json", ".yaml", ".yml"], "files": ["openapi.json", "openapi.yaml", "openapi.yml"] }, "command": null },
+        "build": { "signals": { "extensions": [".py"], "directories": ["src", "app"] }, "command": null }
+      }
+    },
+    {
+      "id": "services/local-service",
+      "root": "services/local-service",
+      "manifest": "services/local-service/pyproject.toml",
+      "foundation_allowed_files": ["README.md", "pyproject.toml"],
+      "capabilities": {
+        "lint": { "signals": { "extensions": [".py"], "files": ["ruff.toml"] }, "command": null },
+        "type": { "signals": { "extensions": [".py"], "files": ["pyrightconfig.json", "mypy.ini"] }, "command": null },
+        "unit": { "signals": { "extensions": [".py"], "directories": ["test", "tests"] }, "command": null },
+        "contract": { "signals": { "extensions": [".json", ".yaml", ".yml"], "files": [] }, "command": null },
+        "build": { "signals": { "extensions": [".py"], "directories": ["src", "app"] }, "command": null }
+      }
+    }
+  ],
+  "mandatory_checks": [
+    { "id": "quality-gate-runner-tests", "category": "unit", "command": ["node", "--test", "scripts/tests/quality-gate.test.mjs"], "failure_kind": "quality", "evidence_files": ["scripts/tests/quality-gate.test.mjs"] },
+    { "id": "toolchain-baseline", "category": "build", "command": ["npm", "run", "verify:toolchain"], "failure_kind": "quality", "evidence_files": ["toolchain-versions.json", "package-lock.json", "uv.lock"] },
+    { "id": "production-dependency-audit", "category": "security", "command": ["npm", "audit", "--omit=dev", "--audit-level=high", "--json"], "kind": "npm_audit", "failure_kind": "execution", "evidence_files": ["package.json", "package-lock.json"] },
+    { "id": "repository-independence", "category": "independence", "command": ["npm", "run", "verify:independence", "--", "--no-write"], "failure_kind": "quality", "evidence_files": ["independence-policy.json", "repo-boundaries.json"] }
+  ],
+  "security": {
+    "scan_roots": ["apps", "services", "packages", ".github"],
+    "excluded_files": [],
+    "secret_patterns": [
+      { "id": "SECRET_ASSIGNMENT", "pattern": "(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|private[_-]?key)\\s*[:=]\\s*['\\\"][^'\\\"]{6,}['\\\"]" },
+      { "id": "PRIVATE_KEY_BLOCK", "pattern": "-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----" }
+    ],
+    "forbidden_runtime_patterns": [
+      { "id": "BROWSER_INTERNAL_ADDRESS", "pattern": "https?://(?:localhost|127\\.0\\.0\\.1|[a-z0-9-]+(?::\\d+)?)(?:/|['\\\"])" },
+      { "id": "CLIENT_PUBLIC_INTERNAL_API", "pattern": "NEXT_PUBLIC_API_BASE_URL" }
+    ]
+  },
+  "artifacts": {
+    "result": "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json",
+    "summary": "docs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md"
+  }
+}
