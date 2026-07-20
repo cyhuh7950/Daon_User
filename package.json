@@ -1,0 +1,8 @@
+{
+  "name":"@daon-user/root","version":"0.0.0","private":true,
+  "packageManager":"npm@11.12.1",
+  "engines":{"node":"24.18.0","npm":"11.12.1"},
+  "workspaces":["apps/*","packages/*"],
+  "scripts":{"verify:toolchain":"node scripts/verify-toolchain-baseline.mjs"},
+  "devDependencies":{"typescript":"7.0.2"}
+}
