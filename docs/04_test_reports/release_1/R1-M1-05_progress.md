@@ -6,10 +6,10 @@
 | --- | --- |
 | issue_id / attempt | `R1-M1-05-I001` / `1` |
 | 작업지시서 Version / Hash | `1.0` / `AFABF08893CB8ECC7C4F896285F0264E854AABDB4FA88EA1582AA2749010400C` |
-| 기준 Commit | 작업지시 기준 `707871b8779ee5b1959fa85f9b76897cf2d5b39e`; 전달·Push 기준 `7808f9121f38233295eb5f84885c1ed3edd71cbd` |
+| 기준 Commit | 작업지시 기준 `707871b8779ee5b1959fa85f9b76897cf2d5b39e`; S6 전달·Push 기준 `3b0f03fec28fd545b34130c1a0c6fae68efeda15` |
 | Writer | 어울2 · `daon-developer` |
 | 시작 시각 | `2026-07-20T18:11:27.8536049+09:00` |
-| 현재 상태 | `HANDOFF_READY` · Correction 2 review 완료 |
+| 현재 상태 | `S7_COMPLETED_LIMITED` · 서버 검증 PASS, GitHub 실제 CI/Branch Protection 증거 미확보로 전체 판정 대기 |
 
 ## Correction 2 review 재작업
 
@@ -302,3 +302,88 @@
 - 작업지시서 밖 물질적 변경 0건 확인: PASS. Correction 문서 4건과 내용 Diff 0인 `R1-M1-04` 상태 항목은 보존.
 - Commit·Push·PR·서버·동일 `npm ci`: 수행하지 않음.
 - 재개 시 첫 `next_action`: 어울1이 전달한 불변 Push 전체 Git SHA 확인 후 S6 ysna-server 격리 검증.
+
+## S6·S7 재개 기록
+
+### `2026-07-21T00:04:17.7095908+09:00` · `S6` · `STARTED`
+
+- 수행 내용: 어울1이 검토·Commit·Push한 불변 전체 Git SHA `3b0f03fec28fd545b34130c1a0c6fae68efeda15`를 전달받아 S6를 재개했다. 로컬 HEAD와 Git Object가 전달 SHA와 정확히 일치하며 Branch는 `codex/r1-m1-05`다.
+- 변경 파일: 본 진행 기록만 갱신. 구현 코드·Lockfile·Toolchain Pin·제품 Source는 수정하지 않는다.
+- 실행 명령·Exit Code: `git rev-parse HEAD` 0; `git cat-file -t <SHA>` 0; 작업지시 §4~§7·진행 기록·결과보고 Template 재확인 0.
+- 검사/테스트 결과: 로컬 HEAD=`3b0f03fec28fd545b34130c1a0c6fae68efeda15`, Object Type=`commit`. 기존 상태 항목은 선행 R1-M1-04 Evidence 2건의 내용 Diff 없는 줄바꿈/stat 표시만 존재한다.
+- 오류·원인: 없음.
+- 복구·대안: 해당 없음.
+- 증거 경로: 본 진행 기록; 이후 `docs/03_evidence/release_1/R1-M1-05/server-validation-*`에 서버 증거를 추가한다.
+- 현재 남은 위험: ysna-server 사전 자원 Snapshot, 격리 Checkout, ARM64·Toolchain·Lockfile·Gate·독립성·Schema 부재·사후 자원 불변 검증이 미실행이다.
+- `next_action`: `ssh ysna-server`로 읽기 전용 사전 Snapshot을 확보한 뒤 승인 Root 아래 정확 SHA 경로만 생성한다.
+
+### `2026-07-21T01:15:39.0062693+09:00` · `S6-INTERRUPTION-RECOVERY` · `RECOVERED`
+
+- 수행 내용: 예기치 않은 Client 대기 중단 지점에서 인수했다. 서버 검증을 반복하지 않고 기존 회수 Artifact·Manifest·Timestamp·정확 SHA와 사후 상태를 대조해 완료 여부를 복구 판정했다.
+- 변경 파일: 서버 Evidence 정본 3건은 내용 변경 없이 검증했고, 본 진행 기록을 갱신했다.
+- 실행 명령·Exit Code: 서버 Result·Summary 실제 SHA-256 계산 0; Manifest JSON Parse와 내부 계약 검증 0; Git Blob 근거 8건·경로 근거 17건 검증 0.
+- 검사/테스트 결과: Result `D12955B6CD8B39B30FE32AAC4C600CD48759AB6F0C1A1697EE6480A4743891FE`, Summary `45139F6343BBCCA5BBCC826964F8ACFB77B6EDD799BE50ACFBA7B289135C5DDA`가 Manifest와 일치했다. 정확 SHA·7범주 PASS·Failures 0·Artifact 8/17·Lock/Pin·Migration N/A·자원 3종 불변·임시 Container 0·최종 Clean Detached 계약이 모두 PASS했다.
+- 오류·원인: 이전 Agent의 Client-side 대기가 검증 Container 완료 전에 중단되어 S6 완료 기록과 S7 문서가 남지 않았다. 서버 검증 자체의 실패 증거는 없다.
+- 복구·대안: 같은 서버 명령을 근거 없이 반복하지 않았다. 회수된 최종 Artifact의 새 Timestamp, 정확 SHA, PASS/Exit 0과 독립 검증 결과를 사용해 중단 이후 완료를 확정했다.
+- 증거 경로: `docs/03_evidence/release_1/R1-M1-05/server-validation-manifest.json`; 서버 품질 Gate Result·Summary.
+- 현재 남은 위험: GitHub Actions 실제 Run과 Branch Protection/Required Check 증거는 미확보다.
+- `next_action`: S6 완료 사실을 정본화하고 S7 Summary·Attempt 보고를 작성한다.
+
+### `2026-07-21T01:15:39.0062693+09:00` · `S6` · `COMPLETED`
+
+- 수행 내용: 불변 SHA `3b0f03fec28fd545b34130c1a0c6fae68efeda15`의 ysna-server 격리 검증과 사후 정리를 완료했다.
+- 변경 파일: `docs/03_evidence/release_1/R1-M1-05/server-validation-manifest.json`; 서버 품질 Gate Result·Summary; 본 진행 기록.
+- 실행 명령·Exit Code: Manifest에 기록된 서버 Check 14건 모두 Exit 0. 공통 Gate Exit 0, Artifact 독립 검증 Exit 0, 최종 Clean·자원 불변 검사 Exit 0.
+- 검사/테스트 결과: ARM64, 정확 SHA, 승인 Toolchain/Lock/Pin, `npm ci`, 25/25 Runner Test, 7범주 Gate PASS/Failures 0, 독립성 위반 0, `NOT_APPLICABLE_NO_SCHEMA`, Container·Network·Volume 3/3 불변, 임시 Container 0.
+- 오류·원인: 최초 Artifact는 Container에 Git이 없어 `git_sha=UNAVAILABLE`이었고 최종 증거로 거부했다. 후속 Client 대기 중단은 위 복구 기록으로 확인했다.
+- 복구·대안: Git 포함 일회성 ARM64 Container와 명령 범위 `safe.directory`만 사용해 정확 SHA Artifact를 재생성했다. 일회성 Validator는 `.server-tools`에서 제거했고 Checkout Clean을 확인했다.
+- 증거 경로: `docs/03_evidence/release_1/R1-M1-05/server-validation-manifest.json`; 서버 품질 Gate Result·Summary.
+- 현재 남은 위험: 서버 검증과 별개인 GitHub 실제 CI Run·Branch Protection 증거 미확보.
+- `next_action`: S7 최종 Evidence Summary와 Attempt 1 보고를 작성하고 제한을 분리 기록한다.
+
+### `2026-07-21T01:15:39.0062693+09:00` · `S7-EVIDENCE` · `COMPLETED`
+
+- 수행 내용: 기존 Manifest를 실제 회수 파일·Hash·계약과 대조하고 오류가 없음을 확인한 뒤 서버 검증 요약을 생성했다.
+- 변경 파일: `docs/03_evidence/release_1/R1-M1-05/server-validation-summary.md`; 본 진행 기록.
+- 실행 명령·Exit Code: 승인 정본·Correction Git Blob SHA-256 9건 0; Manifest/Result JSON Parse 0; 실제 Artifact Hash·내부 경로·근거 Hash·범주·자원·Migration 계약 검증 0.
+- 검사/테스트 결과: Manifest 수정 불필요. Result/Summary 실제 Hash, 내부 Hash 8건, 경로 17건, 7개 범주, Failures 0, 자원 3종 불변이 모두 정합했다.
+- 오류·원인: 없음.
+- 복구·대안: 해당 없음.
+- 증거 경로: 서버 Evidence 4건과 본 진행 기록.
+- 현재 남은 위험: GitHub 실제 CI Run과 Branch Protection/Required Check 미확보 때문에 Work Order 전체 `COMPLETED` 판정은 할 수 없다.
+- `next_action`: Attempt 1 보고를 `BLOCKED`로 작성하고 전체 Diff·허용 경로·보호 파일·삭제를 최종 검증한다.
+
+### `2026-07-21T01:21:29.0977433+09:00` · `S7-REPORT` · `COMPLETED_LIMITED`
+
+- 수행 내용: 원 작업지시 결과 계약에 맞춰 Attempt 1 보고를 작성했다. 서버 PASS와 GitHub 실제 CI/Branch Protection 미확보를 분리하고 전체 상태를 `BLOCKED`로 판정했다.
+- 변경 파일: `docs/02_work_orders/reports/R1-M1-05_attempt-1.md`; 본 진행 기록.
+- 실행 명령·Exit Code: 보고서 필수 7개 필드·판정/이유/조치·변경/증거·실패 계약 대조 0.
+- 검사/테스트 결과: `issue_id=R1-M1-05-I001` 유지. `BLOCKED`가 정식 `FAILURE_REPORT`가 아니며, GitHub 증거를 서버 검증으로 대체하지 않았음을 명시했다.
+- 오류·원인: 없음.
+- 복구·대안: 해당 없음.
+- 증거 경로: `docs/02_work_orders/reports/R1-M1-05_attempt-1.md` SHA-256 `1AF1D6B25E82545147E61B9853C44BCCCBAD9DF94A05F96D8C8995D1CB66295C`.
+- 현재 남은 위험: 어울1이 GitHub 실제 CI Run과 Branch Protection/Required Check 상태를 확보해야 전체 수락 판단이 가능하다.
+- `next_action`: 최종 JSON·Artifact·Diff·허용 경로·보호 파일·추적 삭제 검증을 수행한다.
+
+### `2026-07-21T01:21:29.0977433+09:00` · `S7-FINAL-VERIFICATION` · `TESTED`
+
+- 수행 내용: 종료 직전 서버 Evidence와 현재 Worktree를 읽기 전용으로 전수 검증했다.
+- 변경 파일: 본 진행 기록만 추가 갱신.
+- 실행 명령·Exit Code: R1-M1-05 JSON 3건 Parse 0; 서버 Artifact Hash·내부 근거 검증 0; 보호 구현/Workflow/Lock/Pin Diff 검사 0; 제품 Source Diff 검사 0; `git diff --check` 0; 추적 삭제 검사 0; Git 상태·변경 경로 조회 0.
+- 검사/테스트 결과: Result/Summary Hash 일치; 정확 SHA; 7범주; Failures 0; Hash 근거 8·경로 근거 17; Lock/Pin; Migration N/A; 자원 3종 불변; 임시 Container 0; 최종 Clean Detached가 전부 PASS했다. S7에서 구현 코드·Workflow·`package.json`·Policy·Runner·Test·Lock/Pin·제품 Source 변경 0, 추적 삭제 0, `git diff --check` PASS다. 신규/물질적 변경은 R1-M1-05 허용 Evidence·진행·보고 경로에만 존재한다. 상태에 남은 R1-M1-04 Evidence 2건은 착수 전부터 존재한 줄바꿈/stat 표시이며 Content Diff 0으로 보존했다.
+- 오류·원인: 없음.
+- 복구·대안: 관련 없는 R1-M1-04 상태 항목을 수정·복구하지 않았다.
+- 증거 경로: 서버 Evidence 4건; Attempt 보고; 본 진행 기록. 서버 검증 Summary SHA-256 `FB7B80D91DB0FB129D5705B542F0088993FE2DB9F718CE70E0C661EC160FF7FD`.
+- 현재 남은 위험: GitHub Actions 실제 Run 및 Repository Branch Protection/Required Check 증거 미확보 1건.
+- `next_action`: 어울1이 GitHub 증거를 확보·대조한 뒤 `ACCEPT` 또는 후속 조치를 판단한다.
+
+## S7 종료 Snapshot
+
+- 종료 상태: `BLOCKED` (S6 서버 검증과 S7 Evidence 정본화 완료, GitHub 실제 CI/Branch Protection 증거 미확보; 정식 `FAILURE_REPORT` 아님)
+- 최종 변경 파일: 기존 서버 Evidence 3건; 신규 `server-validation-summary.md`; 본 진행 기록; `docs/02_work_orders/reports/R1-M1-05_attempt-1.md`.
+- 통과 검증: 승인 정본·Correction Hash; 서버 exact SHA·ARM64·Toolchain/Lock/Pin·설치·25/25 Test·7범주 Gate·독립성·Artifact 8/17·Migration N/A·자원 3/3 불변·임시 Container 0·Clean Detached; JSON Parse·내부 Hash/경로·Diff·허용 범위·보호 파일·추적 삭제.
+- 실패 검증: 확인된 구현·서버 검증 실패 0.
+- 미실행/미확보 검증: GitHub Actions 실제 Run과 Repository Branch Protection/Required Check 설정 증거.
+- 작업지시서 밖 물질적 변경 0건 확인: PASS. 착수 전 R1-M1-04 줄바꿈/stat 상태 2건은 Content Diff 0이며 보존.
+- 결과보고서 경로: `docs/02_work_orders/reports/R1-M1-05_attempt-1.md`.
+- 재개 시 첫 `next_action`: 어울1이 GitHub 실제 CI Run과 Branch Protection/Required Check 증거를 확보해 정적 Workflow·서버 Evidence와 분리 대조하고 최종 수락 여부를 판단한다.
