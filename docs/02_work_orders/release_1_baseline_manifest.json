@@ -22,7 +22,7 @@
     {
       "id": "IMPLEMENTATION_PLAN",
       "path": "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
-      "sha256": "251BE4D864C4F81D039FFD7AF260293FA0B29A348AFC299FF1CF16A75DCD1344"
+      "sha256": "30BE3B078804A73F5DBF83B1780DB93665199DA9AB12473E306F2E5F054996A3"
     },
     {
       "id": "TEST_PLAN",
@@ -32,7 +32,7 @@
     {
       "id": "DECISIONS",
       "path": "docs/01_architecture/DECISIONS.md",
-      "sha256": "C28EA0FE9DBE35C2A0BF7A326AA27A1B1564DA21315577A96C10EA6A93ECFD52"
+      "sha256": "4CDC3D77BCCBE560C12DD6B43CB56C47214C3E5EBD05ED327CF2C9BA410B6505"
     },
     {
       "id": "RISK_REGISTER",
@@ -47,7 +47,7 @@
     {
       "id": "ENVIRONMENT_READINESS",
       "path": "docs/02_work_orders/release_1_environment_readiness.md",
-      "sha256": "57B76027998C43015654F6B54FC8E3E6AC3FA35EDA1E87E6C8080A3949BAFD7D"
+      "sha256": "4F62C04365312145D9E45971AC474015AC19DEA823F751EFCF922D135B8BF9F5"
     },
     {
       "id": "YSNA_DEVELOPMENT_INTEGRATION_APPROVAL",
@@ -115,6 +115,16 @@
       "approval_record_id": "APR-DEVENV-YSNA-20260720-01",
       "product_contract_changed": false,
       "deployment_contract_changed": true
+    },
+    {
+      "id": "CHG-R1-MANIFEST-001",
+      "classification": "C1",
+      "owner": "어울1",
+      "summary": "Windows 줄바꿈 변환과 무관한 Git Blob SHA-256 기준으로 Manifest Hash 정정",
+      "affected_documents": [
+        "docs/02_work_orders/release_1_baseline_manifest.json"
+      ],
+      "product_contract_changed": false
     }
   ],
   "notes": [
@@ -122,6 +132,7 @@
     "External-blocked decisions remain blocked and are not treated as completed by G0 approval.",
     "R1-M1-01 is the first implementation work order after G0-BASELINE approval.",
     "Current document hashes include C1 technical corrections and the approved ysna-server development-integration change recorded after G0; original G0 commits and approval remain preserved.",
-    "ysna-server approval applies only to the development-integration environment; Oracle Cloud production deployment still requires G9-DEPLOY approval."
+    "ysna-server approval applies only to the development-integration environment; Oracle Cloud production deployment still requires G9-DEPLOY approval.",
+    "Document SHA-256 values are canonical Git Blob hashes so Windows checkout line-ending conversion does not change the approved baseline identity."
   ]
 }
