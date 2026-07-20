@@ -19,9 +19,9 @@
 | --- | --- | --- | --- |
 | R1-D001 | 확정 | Windows 11 23H2 이상, Chrome·Edge 최신 2개 주 버전, Android 12 이상, iOS 17 이상을 R1 최소 지원선으로 한다. | `APR-G0-BASELINE-20260720-01` |
 | R1-D002 | 확정 | Node.js `24.18.0` LTS, npm `11.12.1`, Corepack `0.35.0`, Python `3.14.3`, uv `0.11.2`, Rust `1.97.1`, Tauri CLI `2.11.4`, React Native `0.86.0`, PostgreSQL `18.4`, Xcode `26.6`, CocoaPods `1.16.2`. Web 공통 기준은 Next.js `16.2.10`, React `19.2.7`, TypeScript `7.0.2`로 하며 Lockfile·CI·버전 파일로 정확히 Pin한다. | `CHG-R1-M1-03-001` · 레지스트리·배포 채널 사전검증에 따른 C1 기술 정정 |
-| R1-D003 | 확정 | R1 Pilot은 Hybrid로 한다. 로컬 개발과 Windows Local-private, WSL 통합 환경, OCI Seoul Managed Cloud 운영 경로를 포함한다. On-prem 정식 배포는 R1 Pilot 범위에서 제외한다. | `APR-G0-BASELINE-20260720-01` |
+| R1-D003 | 확정 | R1 Pilot은 Hybrid로 한다. 로컬 개발과 Windows Local-private, ysna-server 격리 개발·통합 환경, OCI Seoul Managed Cloud 운영 경로를 포함한다. WSL은 선택적 대체 환경이고 On-prem 정식 배포는 R1 Pilot 범위에서 제외한다. | `APR-G0-BASELINE-20260720-01` + `APR-DEVENV-YSNA-20260720-01` |
 | R1-D004 | 외부 차단 | OIDC Authorization Code+PKCE와 조직 Provisioning Adapter를 계약으로 고정한다. 실제 Identity Provider·Tenant·Client 등록값은 아직 미제공이다. | IdP 종류와 테스트 Tenant/Client 제공 필요 |
-| R1-D005 | 확정 | Cloud DB·Vector는 PostgreSQL+pgvector, Object는 S3 호환 Adapter(MinIO 개발/WSL, OCI Object Storage 운영), Durable Job은 PostgreSQL Outbox+Worker, 일시 Lease/Cache는 Valkey, Cloud Secret은 OCI Vault, Windows Local Secret은 OS Credential Manager, Local Vector는 SQLite+sqlite-vec Adapter를 사용한다. | 어울1 기술 결정. M1/M5에서 라이선스·복구·Windows 패키징 검증 |
+| R1-D005 | 확정 | Cloud DB·Vector는 PostgreSQL+pgvector, Object는 S3 호환 Adapter(MinIO 개발/ysna-server 통합, OCI Object Storage 운영), Durable Job은 PostgreSQL Outbox+Worker, 일시 Lease/Cache는 Valkey, Cloud Secret은 OCI Vault, Windows Local Secret은 OS Credential Manager, Local Vector는 SQLite+sqlite-vec Adapter를 사용한다. | 어울1 기술 결정. M1/M5에서 라이선스·복구·Windows 패키징 검증 |
 | R1-D006 | 외부 차단 | Local/Internal/External LLM·ASR·Embedding·Reranker는 Allowlist와 Deployment Health 계약을 사용한다. 실제 모델명·라이선스·GPU/CPU 기준은 하드웨어와 Provider 계정 미확보로 미고정이다. | 장비 사양·허용 Provider·예산 제공 후 신산님 중요 위험 승인 |
 | R1-D007 | 외부 차단 | Daon Connector는 표준 API 선택 연동, Read-only 승인 지식과 Versioned RuleSet 실행 계약을 유지한다. Sandbox URL·자격·호환 버전은 미제공이다. | Daon Sandbox 계약·Credential 제공 필요 |
 | R1-D008 | 외부 차단 | 검색 Provider Adapter, Domain/URL Allowlist, DNS/IP 재검증, Redirect 제한, 다운로드 크기·형식 제한, Safe Fetch를 의무화한다. 실제 Provider·License·Credential은 미선정이다. | Provider·비용·허용 도메인 신산님 승인 필요 |
@@ -37,6 +37,7 @@
 | R1-D018 | 확정 | Audio-capable LLM 또는 ASR+LLM 의미 이해와 시간 근거 검증, ASR-only ready 금지 | `APR-G0-DESIGN-20260720-01` |
 | R1-D019 | 확정 | `waiting_model`은 제한 자동 재큐와 권한 사용자 수동 재처리, 새 ProcessingRun과 중복 억제 | `APR-G0-DESIGN-20260720-01` |
 | R1-D020 | 확정 | 과거 OutputVersion 불변 보존, 모든 접근·전달·등록·재실행은 현재 권한으로 재검증 | `APR-G0-DESIGN-20260720-01` |
+| R1-D021 | 확정 | 개발·통합은 로컬 수정·검증→Git Push→`/home/ubuntu/deploy/daon-user` 격리 배포→전용 PostgreSQL 18.4 Migration→서버 Test→PR Merge로 한다. 기존 `shared-db`와 `common/netdata/proxy` 사용·변경을 금지하고 ARM64/Multi-arch 호환성을 검증한다. WSL은 선택적 대체 환경이며 OCI 운영 G9 승인은 유지한다. | `APR-DEVENV-YSNA-20260720-01` |
 
 ## G0 판정
 
@@ -50,3 +51,4 @@
 | 변경 ID | 일자 | 등급 | 변경 | 근거와 영향 |
 | --- | --- | --- | --- | --- |
 | `CHG-R1-M1-03-001` | 2026-07-20 | C1 | Python `3.14.6→3.14.3`, Tauri CLI `2.11.5→2.11.4`, React Native `0.86.x→0.86.0`; npm·Corepack·uv·Next.js·React·TypeScript 정확 버전 추가 | Python 배포 목록과 npm Registry에서 승인안 일부가 존재하지 않음을 R1-M1-03 사전검증으로 확인했다. 제품 범위·요구사항·공개 API·데이터·보안 경계는 바뀌지 않으며 재현 가능한 Toolchain 계약만 정정한다. |
+| `CHG-R1-DEVENV-001` | 2026-07-20 | C2 | WSL 필수 통합을 ysna-server 격리 개발·통합 흐름으로 대체 | 신산님이 서버 접근·배포 루트와 새 실행 순서를 승인했다. 제품 기능·공개 API·데이터 계약·보안 경계는 유지하며 개발 배포 대상·격리·Migration·Merge Gate와 ARM64 위험을 명시한다. |

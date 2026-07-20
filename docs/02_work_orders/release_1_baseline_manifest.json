@@ -12,17 +12,17 @@
     {
       "id": "DESIGN_MD",
       "path": "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
-      "sha256": "7FC4BCE7B517E915520F587D812A241E59F6C8B492671B6C8A4BC53140393C31"
+      "sha256": "3317B404F9FD4A2AFFE3A15EBBF456DE0B88AE56249666872C09629059C82038"
     },
     {
       "id": "DESIGN_DOCX",
       "path": "docs/Daon 사용자형 지식 업무지원 프로그램 상세 설계서.docx",
-      "sha256": "C98137EC3EE007DC124F373A46F24463FCFBC4A6603F1C657E8019675D1BE53F"
+      "sha256": "DAB1F8A936D69B18355EB986579A0CA5535169E829AB80D30DAC067606FEA0DF"
     },
     {
       "id": "IMPLEMENTATION_PLAN",
       "path": "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
-      "sha256": "790BD4C2AC708328FB4790CBA2842DFEB62B8B1E1093BAA4D6FA652F6B4F70EF"
+      "sha256": "251BE4D864C4F81D039FFD7AF260293FA0B29A348AFC299FF1CF16A75DCD1344"
     },
     {
       "id": "TEST_PLAN",
@@ -32,22 +32,27 @@
     {
       "id": "DECISIONS",
       "path": "docs/01_architecture/DECISIONS.md",
-      "sha256": "E3B73FF2233D560BF42EDD151BEE975D800F2D9D1CAB7BBE3FF0BFD759117F2A"
+      "sha256": "C28EA0FE9DBE35C2A0BF7A326AA27A1B1564DA21315577A96C10EA6A93ECFD52"
     },
     {
       "id": "RISK_REGISTER",
       "path": "docs/01_architecture/release_1_risk_register.md",
-      "sha256": "F9F926B5D2E644707F01C8B4065E4ABC0E6CE5C493E6BEDF8F1B69FF81F50A3D"
+      "sha256": "602411121183D0F6DDF7577073E62FEECD78A9588091EA51F8BBF40EEE796E42"
     },
     {
       "id": "TRACEABILITY",
       "path": "docs/02_work_orders/release_1_traceability.md",
-      "sha256": "2440BCF6618C1B19A56C63389CD376B758668BB7A7678EE46106B8CE1C8AE45E"
+      "sha256": "EB35D0BAE7853612FE51CE91095A0F5AF18D87B54EE8FC561397C6A1DBB5FDB8"
     },
     {
       "id": "ENVIRONMENT_READINESS",
       "path": "docs/02_work_orders/release_1_environment_readiness.md",
-      "sha256": "A6B794D9D88F0DD6992ACE7760CECCAB2D2B3DA1CAE38358A437050323889DDC"
+      "sha256": "57B76027998C43015654F6B54FC8E3E6AC3FA35EDA1E87E6C8080A3949BAFD7D"
+    },
+    {
+      "id": "YSNA_DEVELOPMENT_INTEGRATION_APPROVAL",
+      "path": "docs/02_work_orders/approvals/2026-07-20_ysna_development_integration_approval.md",
+      "sha256": "480F69E636569FC0158C5527DB2FAD5EA6B81EAECBBF47252C36F998A4DF3A3A"
     },
     {
       "id": "TP0_REPORT",
@@ -69,10 +74,11 @@
     "APR-G0-DESIGN-20260720-01",
     "APR-G0-PLAN-20260720-01",
     "APR-TP0-20260720-01",
-    "APR-G0-BASELINE-20260720-01"
+    "APR-G0-BASELINE-20260720-01",
+    "APR-DEVENV-YSNA-20260720-01"
   ],
   "decision_status": {
-    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020"],
+    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020", "R1-D021"],
     "g0_approval_requested": [],
     "external_blocked": ["R1-D004", "R1-D006", "R1-D007", "R1-D008", "R1-D011", "R1-D012"]
   },
@@ -90,12 +96,32 @@
         "docs/02_work_orders/release_1_environment_readiness.md"
       ],
       "product_contract_changed": false
+    },
+    {
+      "id": "CHG-R1-DEVENV-001",
+      "classification": "C2",
+      "owner": "신산님",
+      "summary": "WSL 필수 통합을 ysna-server 격리 개발·통합 흐름으로 대체",
+      "affected_documents": [
+        "AGENTS.md",
+        "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
+        "docs/Daon 사용자형 지식 업무지원 프로그램 상세 설계서.docx",
+        "docs/01_architecture/DECISIONS.md",
+        "docs/01_architecture/release_1_risk_register.md",
+        "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
+        "docs/02_work_orders/release_1_traceability.md",
+        "docs/02_work_orders/release_1_environment_readiness.md"
+      ],
+      "approval_record_id": "APR-DEVENV-YSNA-20260720-01",
+      "product_contract_changed": false,
+      "deployment_contract_changed": true
     }
   ],
   "notes": [
     "The exact initial document baseline commit is recorded above; this manifest finalization is a follow-up metadata commit.",
     "External-blocked decisions remain blocked and are not treated as completed by G0 approval.",
     "R1-M1-01 is the first implementation work order after G0-BASELINE approval.",
-    "Current document hashes include C1 technical corrections recorded after G0; original G0 commits and approval remain preserved."
+    "Current document hashes include C1 technical corrections and the approved ysna-server development-integration change recorded after G0; original G0 commits and approval remain preserved.",
+    "ysna-server approval applies only to the development-integration environment; Oracle Cloud production deployment still requires G9-DEPLOY approval."
   ]
 }
