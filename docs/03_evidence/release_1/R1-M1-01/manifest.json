@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M1-01",
+  "issue_id": "R1-M1-01-I001",
+  "attempt_no": 1,
+  "baseline_commit": "dbb9aa2ff5c40dec9c9a711cc39643580c67f08f",
+  "start_head": "9a2c9716871576b67799e093fb87be63531c68be",
+  "result_branch": "codex/release-1",
+  "started_at": "2026-07-20T09:51:20+09:00",
+  "finished_at": "2026-07-20T09:59:00+09:00",
+  "files": [
+    {
+      "path": "docs/01_architecture/git_development_baseline.md",
+      "sha256": "3D82DB10875F0BE1A314B3E45D58819F6360DC15209F442F776BE9F2F7228ADA",
+      "purpose": "Release 1 Branch, Commit, PR and protection policy"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
+      "sha256": "7FC4BCE7B517E915520F587D812A241E59F6C8B492671B6C8A4BC53140393C31",
+      "purpose": "Approved design source verification"
+    },
+    {
+      "path": "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
+      "sha256": "1C628D741D69FD1A977B3A751C36D284A156778428DA0855353EACFAEE6EE82F",
+      "purpose": "Approved Release 1 plan source verification"
+    },
+    {
+      "path": "docs/02_work_orders/release_1_baseline_manifest.json",
+      "sha256": "CBA9B3DF83883FEF34301B46BF8C3E9E13A3432B0DA0CA0F11D660E60493B4B8",
+      "purpose": "Approved baseline verification"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M1-01_work_order.md",
+      "sha256": "4951E3195E966C5BE8C99AD782F0AC8D7C42012DB2F2DFD3F5A5CB685607CDBD",
+      "purpose": "Work order contract verification"
+    }
+  ],
+  "checks": [
+    {"name": "git_status_start", "command": "git status --short --untracked-files=all", "exit_code": 0, "result": "clean"},
+    {"name": "repository_root", "command": "git rev-parse --show-toplevel", "exit_code": 0, "result": "D:/Project/Daon_User"},
+    {"name": "result_head", "command": "git rev-parse HEAD", "exit_code": 0, "result": "9a2c9716871576b67799e093fb87be63531c68be"},
+    {"name": "result_branch", "command": "git branch --show-current", "exit_code": 0, "result": "codex/release-1"},
+    {"name": "packet_baseline_ancestor", "command": "git merge-base --is-ancestor dbb9aa2ff5c40dec9c9a711cc39643580c67f08f HEAD", "exit_code": 0, "result": "PASS"},
+    {"name": "document_baseline_ancestor", "command": "git merge-base --is-ancestor c94e553f3a6aa7d062645391e838e7a555706914 HEAD", "exit_code": 0, "result": "PASS"},
+    {"name": "g0_approval_ancestor", "command": "git merge-base --is-ancestor 3397b57882d0e9580bc2561403d07bee65396d92 HEAD", "exit_code": 0, "result": "PASS"},
+    {"name": "remote_heads", "command": "git ls-remote --heads origin", "exit_code": 0, "result": "master=9a2c9716871576b67799e093fb87be63531c68be; codex/release-1 absent"},
+    {"name": "diff_check", "command": "git diff --check", "exit_code": 0, "result": "PASS"},
+    {"name": "tracked_deletions", "command": "git ls-files --deleted", "exit_code": 0, "result": "0"},
+    {"name": "allowed_path_diff", "command": "git status --porcelain=v1 --untracked-files=all path classification", "exit_code": 0, "result": "Only four allowed artifact paths"}
+  ],
+  "runtime_evidence": [
+    {"type": "git_local_branch", "status": "VERIFIED", "detail": "codex/release-1 at 9a2c9716871576b67799e093fb87be63531c68be"},
+    {"type": "git_remote_master", "status": "VERIFIED", "detail": "origin/master at 9a2c9716871576b67799e093fb87be63531c68be"},
+    {"type": "application_process_browser_network", "status": "NOT_APPLICABLE", "detail": "No application or browser code in R1-M1-01"}
+  ],
+  "known_limits": [
+    "GitHub branch protection for master is NOT_VERIFIED; Git remote heads do not expose protection settings.",
+    "Remote codex/release-1 is not present because commit and push are explicitly excluded.",
+    "Protection settings were not changed."
+  ],
+  "result": "COMPLETED"
+}
