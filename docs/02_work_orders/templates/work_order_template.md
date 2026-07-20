@@ -13,7 +13,7 @@
 | 기준 Commit | `{baseline_commit}` |
 | 상세 설계 정본 | `docs/superpowers/specs/2026-07-20-daon-user-program-design.md` · `{hash}` |
 | Release 1 계획 | `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` · `{hash}` |
-| 진행 복구 기록 | `docs/02_work_orders/progress/{work_order_id}.md` |
+| 진행 복구 기록 | `docs/04_test_reports/release_1/{work_order_id}_progress.md` |
 | 결과보고서 | `docs/02_work_orders/reports/{work_order_id}_attempt-{attempt_no}.md` |
 
 작업자는 기준 문서와 이 작업지시서를 EOF까지 읽고 시작한다. 요약본은 정본을 대체하지 않는다. 실제 코드가 계획과 다르면 증거를 남기고 승인 경계를 넘지 않은 상태에서 어울1에게 보고한다.
@@ -74,4 +74,3 @@ Browser 코드는 same-origin 상대 경로만 호출한다. `localhost`, `127.0
 - 중대한 미진: 핵심 완료조건 실패, 보안/데이터/공개계약 위반, 관련 회귀, 실행 증거 부재 → 별도 수정 작업지시서 후보
 - 경미 보완: 핵심 완료조건과 회귀가 통과하고 외부 동작을 바꾸지 않는 문구·증거 정리 등 → 다음 작업지시서에 흡수 가능
 - 사소한 보완만으로 합격 작업 전체를 다시 열지 않는다.
-

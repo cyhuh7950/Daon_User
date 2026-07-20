@@ -1,0 +1,1 @@
+{"name":"@daon-user/desktop","version":"0.0.0","private":true,"dependencies":{"@daon-user/contracts":"0.0.0","@daon-user/design-tokens":"0.0.0","@daon-user/ui":"0.0.0","react":"19.2.7","react-dom":"19.2.7"},"devDependencies":{"@tauri-apps/cli":"2.11.4"}}

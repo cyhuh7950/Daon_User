@@ -18,7 +18,7 @@
 | ID | 상태 | 결정 또는 권고 기준선 | 후속 조치·승인 |
 | --- | --- | --- | --- |
 | R1-D001 | 확정 | Windows 11 23H2 이상, Chrome·Edge 최신 2개 주 버전, Android 12 이상, iOS 17 이상을 R1 최소 지원선으로 한다. | `APR-G0-BASELINE-20260720-01` |
-| R1-D002 | 확정 | Node.js `24.18.0` LTS, Python `3.14.6`, Rust `1.97.1`, Tauri `2.11.5`, React Native `0.86.x`, PostgreSQL `18.4`, Xcode `26.6`, CocoaPods `1.16.2`. Lockfile·CI·버전 파일로 정확히 Pin한다. | 어울1 기술 결정. M1에서 호환성 사전검증 실패 시 C1 변경 기록 |
+| R1-D002 | 확정 | Node.js `24.18.0` LTS, npm `11.12.1`, Corepack `0.35.0`, Python `3.14.3`, uv `0.11.2`, Rust `1.97.1`, Tauri CLI `2.11.4`, React Native `0.86.0`, PostgreSQL `18.4`, Xcode `26.6`, CocoaPods `1.16.2`. Web 공통 기준은 Next.js `16.2.10`, React `19.2.7`, TypeScript `7.0.2`로 하며 Lockfile·CI·버전 파일로 정확히 Pin한다. | `CHG-R1-M1-03-001` · 레지스트리·배포 채널 사전검증에 따른 C1 기술 정정 |
 | R1-D003 | 확정 | R1 Pilot은 Hybrid로 한다. 로컬 개발과 Windows Local-private, WSL 통합 환경, OCI Seoul Managed Cloud 운영 경로를 포함한다. On-prem 정식 배포는 R1 Pilot 범위에서 제외한다. | `APR-G0-BASELINE-20260720-01` |
 | R1-D004 | 외부 차단 | OIDC Authorization Code+PKCE와 조직 Provisioning Adapter를 계약으로 고정한다. 실제 Identity Provider·Tenant·Client 등록값은 아직 미제공이다. | IdP 종류와 테스트 Tenant/Client 제공 필요 |
 | R1-D005 | 확정 | Cloud DB·Vector는 PostgreSQL+pgvector, Object는 S3 호환 Adapter(MinIO 개발/WSL, OCI Object Storage 운영), Durable Job은 PostgreSQL Outbox+Worker, 일시 Lease/Cache는 Valkey, Cloud Secret은 OCI Vault, Windows Local Secret은 OS Credential Manager, Local Vector는 SQLite+sqlite-vec Adapter를 사용한다. | 어울1 기술 결정. M1/M5에서 라이선스·복구·Windows 패키징 검증 |
@@ -44,3 +44,9 @@
 - R1-D001·D003·D009·D010은 신산님의 `APR-G0-BASELINE-20260720-01`로 확정되었다.
 - R1-D004·D006~D008·D011·D012는 외부 차단으로 분류되어 미정 상태를 숨기지 않는다. 관련 Work Order는 자격·장치·계약 확보 전 `BLOCKED`다.
 - G0-BASELINE은 2026-07-20 승인되었다. 외부 차단 항목은 완료로 간주하지 않으며 관련 Work Order만 조건부 `BLOCKED`로 유지한다.
+
+## M1 기술 정정 기록
+
+| 변경 ID | 일자 | 등급 | 변경 | 근거와 영향 |
+| --- | --- | --- | --- | --- |
+| `CHG-R1-M1-03-001` | 2026-07-20 | C1 | Python `3.14.6→3.14.3`, Tauri CLI `2.11.5→2.11.4`, React Native `0.86.x→0.86.0`; npm·Corepack·uv·Next.js·React·TypeScript 정확 버전 추가 | Python 배포 목록과 npm Registry에서 승인안 일부가 존재하지 않음을 R1-M1-03 사전검증으로 확인했다. 제품 범위·요구사항·공개 API·데이터·보안 경계는 바뀌지 않으며 재현 가능한 Toolchain 계약만 정정한다. |
