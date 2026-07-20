@@ -1,0 +1,108 @@
+{
+  "name": "Release 1 Quality Gate",
+  "on": {
+    "pull_request": {
+      "branches": ["codex/release-1"]
+    },
+    "workflow_dispatch": {}
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "release-1-quality-gate": {
+      "name": "Release 1 Quality Gate",
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 30,
+      "steps": [
+        {
+          "name": "Checkout immutable candidate",
+          "id": "checkout",
+          "uses": "actions/checkout@v4"
+        },
+        {
+          "name": "Clear checkout quality gate evidence",
+          "id": "clear-evidence",
+          "shell": "bash",
+          "run": "rm -f docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json docs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md"
+        },
+        {
+          "name": "Use approved Node",
+          "id": "setup-node",
+          "uses": "actions/setup-node@v4",
+          "with": {
+            "node-version-file": ".node-version",
+            "cache": "npm"
+          }
+        },
+        {
+          "name": "Load approved toolchain pins",
+          "id": "toolchain-pins",
+          "shell": "bash",
+          "run": "node -e 'const fs=require(\"node:fs\");const t=require(\"./toolchain-versions.json\").toolchains;for(const name of [\"npm\",\"corepack\",\"uv\"])fs.appendFileSync(process.env.GITHUB_OUTPUT,name+\"=\"+t[name]+\"\\n\");'"
+        },
+        {
+          "name": "Install approved npm and Corepack",
+          "id": "npm-corepack",
+          "run": "npm install --global \"npm@${{ steps.toolchain-pins.outputs.npm }}\" \"corepack@${{ steps.toolchain-pins.outputs.corepack }}\""
+        },
+        {
+          "name": "Install approved uv",
+          "id": "setup-uv",
+          "uses": "astral-sh/setup-uv@v7",
+          "with": {
+            "version": "${{ steps.toolchain-pins.outputs.uv }}"
+          }
+        },
+        {
+          "name": "Print approved toolchain versions",
+          "id": "toolchain-versions",
+          "run": "npm --version\ncorepack --version\nuv --version"
+        },
+        {
+          "name": "Verify approved toolchain",
+          "id": "verify-toolchain",
+          "run": "npm run verify:toolchain"
+        },
+        {
+          "name": "Install approved lockfile",
+          "id": "npm-ci",
+          "run": "npm ci"
+        },
+        {
+          "name": "Run common quality gate",
+          "id": "quality-gate",
+          "run": "npm run verify:quality-gate"
+        },
+        {
+          "name": "Ensure current-run quality gate evidence",
+          "id": "fallback-evidence",
+          "if": "${{ always() }}",
+          "env": {
+            "CI_GIT_SHA": "${{ github.sha }}",
+            "CI_STEP_TOOLCHAIN_PINS": "${{ steps.toolchain-pins.outcome }}",
+            "CI_STEP_NPM_COREPACK": "${{ steps.npm-corepack.outcome }}",
+            "CI_STEP_SETUP_UV": "${{ steps.setup-uv.outcome }}",
+            "CI_STEP_TOOLCHAIN_VERSIONS": "${{ steps.toolchain-versions.outcome }}",
+            "CI_STEP_VERIFY_TOOLCHAIN": "${{ steps.verify-toolchain.outcome }}",
+            "CI_STEP_NPM_CI": "${{ steps.npm-ci.outcome }}",
+            "CI_STEP_QUALITY_GATE": "${{ steps.quality-gate.outcome }}"
+          },
+          "run": "node scripts/verify-quality-gate.mjs --ci-fallback"
+        },
+        {
+          "name": "Upload quality gate evidence",
+          "id": "upload-evidence",
+          "if": "${{ always() }}",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "release-1-quality-gate-${{ github.sha }}",
+            "path": "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json\ndocs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        }
+      ]
+    }
+  }
+}
