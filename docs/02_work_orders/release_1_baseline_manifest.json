@@ -6,7 +6,7 @@
   "prepared_by": "어울1",
   "approval_owner": "신산님",
   "approval_record_id": null,
-  "document_baseline_commit": "PENDING_INITIAL_DOCUMENT_COMMIT",
+  "document_baseline_commit": "c94e553f3a6aa7d062645391e838e7a555706914",
   "documents": [
     {
       "id": "DESIGN_MD",
@@ -67,7 +67,7 @@
   "implementation_state": "BLOCKED",
   "next_gate": "G0-BASELINE",
   "notes": [
-    "This manifest is finalized with the exact Git commit after the initial document baseline commit.",
+    "The exact initial document baseline commit is recorded above; this manifest finalization is a follow-up metadata commit.",
     "External-blocked decisions remain blocked and are not treated as completed by G0 approval.",
     "No implementation work order may be dispatched before G0-BASELINE approval."
   ]
