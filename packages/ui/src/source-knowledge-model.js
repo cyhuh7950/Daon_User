@@ -101,13 +101,17 @@ export function raiseConflictSeverity(conflict, severity, reviewer = "reviewer-p
   const currentIndex = SEVERITY_ORDER.indexOf(conflict.severity);
   const nextIndex = SEVERITY_ORDER.indexOf(severity);
   if (nextIndex <= currentIndex) return conflict;
+  const reviewReopened = conflict.resolution?.status === "resolved";
   return {
     ...conflict,
     severity,
     reviewRequired: nextIndex >= 1,
+    resolution: reviewReopened
+      ? { status: "unresolved", previousStatus: "resolved", reopenedBy: reviewer }
+      : conflict.resolution,
     audit: [
       ...(conflict.audit ?? []),
-      { action: "severity_raised", reviewer, from: conflict.severity, to: severity, policyVersion: conflict.policyVersion }
+      { action: "severity_raised", reviewer, from: conflict.severity, to: severity, result: reviewReopened ? "review_reopened" : "severity_changed", policyVersion: conflict.policyVersion }
     ]
   };
 }
@@ -336,7 +340,7 @@ export function transitionSourceKnowledgeState(state, action) {
     case "disable-source": {
       const current = next.sourceStateById[action.sourceId];
       if (!current) return state;
-      next.sourceStateById[action.sourceId] = { ...current, active: false, audit: [...current.audit, { action: "source_disabled", result: "excluded_from_search_and_generation" }] };
+      next.sourceStateById[action.sourceId] = { ...current, status: "disabled", active: false, audit: [...current.audit, { action: "source_disabled", result: "excluded_from_search_and_generation" }] };
       return next;
     }
     default:
