@@ -2,7 +2,7 @@
 
 ## 판정
 
-`HANDOFF_READY` · S0~S7 구현·로컬 검증 완료. Commit·Push·PR·서버 작업 없이 어울1 검토와 불변 SHA 전달을 대기한다.
+`HANDOFF_READY` · 구현 SHA `c471fad58f124e3ad28e33d98486f139306c0d91`의 S0~S9 구현·로컬·GitHub Hosted Runner·ysna-server 격리 검증을 완료했다. S9 Evidence-only Diff의 Commit·Push와 새 Head Required Check를 대기한다.
 
 ## 필수 결과 필드
 
@@ -10,11 +10,11 @@
 | --- | --- |
 | status | `HANDOFF_READY` |
 | issue_id | `R1-M2-01-I001` |
-| 수행한 작업 | 승인 정본과 기준선을 확인하고 TDD Red부터 전역 IA·Route·화면 목록, Design Token JSON·CSS·TypeScript Adapter, 접근성 계약, Sitemap·M3 승계 문서를 구현했다. M1 경미 위험인 세 GitHub Action Major만 승인 버전으로 올리고 새 계약 Source를 기존 7범주 품질 Gate에 연결했다. |
+| 수행한 작업 | 승인 정본과 기준선을 확인하고 TDD Red부터 전역 IA·Route·화면 목록, Design Token JSON·CSS·TypeScript Adapter, 접근성 계약, Sitemap·M3 승계 문서를 구현했다. M1 경미 위험인 세 GitHub Action Major만 승인 버전으로 올리고 새 계약 Source를 기존 7범주 품질 Gate에 연결했다. 어울1이 전달한 불변 SHA로 PR #7 Hosted Runner·Required Check·Branch Protection·Annotation·Artifact 원문을 검증하고 ysna-server 사전 Snapshot과 exact-SHA Bundle을 준비했다. |
 | 생성·변경한 결과 | `packages/contracts`에 8개 영역의 10개 Route와 10개 화면 계약, `packages/design-tokens`에 플랫폼 중립 Token과 CSS·TS Adapter, `packages/ui`에 WCAG 2.2 AA 계약을 생성했다. `package.json` Script와 `quality-gate-policy.json` 변경은 새 Source 등장 시 `MISSING_REQUIRED_CAPABILITY`로 Fail-close되는 기존 Gate에 신규 Test·TSC를 연결하기 위한 최소 변경이다. 새 외부 Runtime Dependency·Lockfile 변경은 없다. |
-| 테스트 결과 | 신규 계약 Test 8/8 PASS, 기존 품질 Gate Test 25/25 PASS, TypeScript `--noEmit` PASS, Toolchain PASS, 독립성 검사 violations 0, 공통 Gate 7범주 전부 PASS·Failures 0·Exit 0. JSON 4종 Parse PASS, `git diff --check` PASS, 추적 삭제 0, 허용 범위 밖 변경 0, R1-M1-04 내용 Diff 0. |
-| 미해결 사항 | S8의 GitHub Hosted Runner 실제 PR Run, Node.js 20 Deprecated Annotation 고유 건수 0, ysna-server ARM64·정확 SHA·서버 자원 불변 검증은 Commit·Push된 불변 SHA가 없어 미실행이다. Browser 화면·Network·DB Schema는 이번 Source-only 계약 범위에 없고 Migration은 후속 S8에서 `NOT_APPLICABLE_NO_SCHEMA` 근거 확인 대상이다. |
-| 다음으로 필요한 판단 | 어울1이 Diff와 허용 범위를 검토하고 Commit·Push한 불변 SHA를 전달할지 판단한다. 전달 전까지 어울2는 구현 코드 쓰기를 중지한다. |
+| 테스트 결과 | 신규 계약 Test 8/8 PASS, 기존 품질 Gate Test 25/25 PASS, TypeScript `--noEmit` PASS, Toolchain PASS, 독립성 검사 violations 0, 공통 Gate 7범주 전부 PASS·Failures 0·Exit 0. GitHub Run `29799417719`/Job `88537344839` success, Required Check 유지, Annotation 고유 0, Artifact Merge Ref·부모·PASS·Exit 0·7범주·Failures 0과 ZIP Digest 일치. ysna-server ARM64 exact SHA detached clean Checkout에서 고정 Pin·`npm ci`·동일 공통 Gate 7범주 PASS, Migration `NOT_APPLICABLE_NO_SCHEMA`, Docker 사전·사후 Hash 3종 일치, 임시 자원 0. |
+| 미해결 사항 | S9 Evidence 6건과 진행·결과보고가 아직 Commit되지 않아 Evidence SHA가 없다. Evidence-only Commit·Push 뒤 바뀐 PR Head의 Required Check를 다시 확인해야 최종 `COMPLETED` 판정이 가능하다. Browser 화면·Network·DB 실행은 Source-only Foundation 계약상 해당 없음. 운영 배포·PR Merge는 어울2 권한 밖이다. |
+| 다음으로 필요한 판단 | 어울1이 Evidence-only Diff를 검토해 Commit·Push하고 불변 Evidence SHA를 전달할지 판단한다. 전달 후 어울2가 새 PR Required Check·Annotation·Artifact를 확인한다. |
 
 ## 판단 이유
 
@@ -30,9 +30,11 @@
 ## 조치
 
 - 현재 상태: `HANDOFF_READY`.
-- Commit·Push·PR·Branch Protection·서버 작업: 수행하지 않음.
-- 코드 쓰기: 본 보고와 진행 기록 종료 갱신 후 중지.
-- 재개 조건: 어울1이 검토·Commit·Push한 불변 SHA와 S8 재개 지시를 전달한다.
+- Commit·Push·PR: 어울1 수행. 검증 기준 구현 SHA `c471fad58f124e3ad28e33d98486f139306c0d91`, PR #7.
+- GitHub 검증: Required Check·Branch Protection·Annotation 0·Artifact 계약 완료.
+- 서버 작업: 승인 Root의 exact SHA 격리 Checkout에서 ARM64·Toolchain·Lockfile·공통 Gate·Migration N/A·자원 불변 검증 완료. 임시 자원 정리 완료.
+- 코드 쓰기: S7 이후 구현 파일 수정 없음. Evidence·진행·결과보고만 갱신.
+- 다음 단계: 어울1 Evidence-only Diff 검토·Commit·Push·불변 Evidence SHA 전달 후 새 Head CI 검증.
 
 ## 변경 파일
 
@@ -41,7 +43,7 @@
 - Token: `packages/design-tokens/package.json`, `tokens.json`, `tokens.css`, `tokens.ts`, `tsconfig.json`.
 - 접근성: `packages/ui/accessibility-contract.json`.
 - 문서: `docs/01_architecture/product_sitemap.md`, `docs/01_architecture/design_tokens_accessibility.md`.
-- Test·기록: `scripts/tests/product-foundation.test.mjs`, `docs/04_test_reports/release_1/R1-M2-01_progress.md`, 본 보고서.
+- Test·기록: `scripts/tests/product-foundation.test.mjs`, `docs/03_evidence/release_1/R1-M2-01/` 6건, `docs/04_test_reports/release_1/R1-M2-01_progress.md`, 본 보고서.
 
 ## 검증 명령
 
