@@ -1,0 +1,104 @@
+{
+  "work_order_id": "R1-M2-04-I001",
+  "attempt": 2,
+  "validated_at": "2026-07-22T02:17:52+09:00",
+  "environment": {
+    "command": "npm --workspace @daon-user/web run start -- -p 3000",
+    "url": "http://127.0.0.1:3000/workspaces/workspace-release-one",
+    "build_mode": "production",
+    "fresh_browser_tab": true,
+    "prototype_contract_passed": true,
+    "runtime_not_executed": true
+  },
+  "viewports": [
+    {
+      "viewport": "1920x1080",
+      "layout": "three-pane",
+      "checks": [
+        "pinned mode selected dep-org-text",
+        "six deterministic stages reached completed",
+        "complete Frozen RoutingContext Preview remained visible for the current Run",
+        "Citation opened source-daon-guidance/source-daon-guidance-v2/evidence-daon-v2-page-12",
+        "Escape restored focus to the Citation trigger"
+      ],
+      "screenshot": "run-completed-1920x1080.jpg",
+      "captured_image": "1905x1727",
+      "visual_qa": "PASS"
+    },
+    {
+      "viewport": "1200x900",
+      "layout": "two-pane",
+      "checks": [
+        "Fallback fixture was active and pressed",
+        "attempt-001 dep-device-text TIMEOUT was followed by attempt-002 dep-external-text selected",
+        "selected deployment, provider profile, artifact, digest, final role model, understanding model and attempts all resolved to the fallback lineage",
+        "selection reason recorded Fallback selected after TIMEOUT"
+      ],
+      "screenshot": "run-fallback-1200x900.jpg",
+      "captured_image": "1185x1932",
+      "visual_qa": "PASS"
+    },
+    {
+      "viewport": "800x900",
+      "layout": "single-pane",
+      "checks": [
+        "COST_LIMIT_EXCEEDED blocked at pre_attempt_cost_check",
+        "current spend 0.17 USD plus estimated next attempt 0.03 USD exceeded the 0.18 USD limit",
+        "attempt count, same-context automatic retry count and incomplete result count remained zero",
+        "blocked status, code, calculation, checkpoint and zero-count invariants were simultaneously visible"
+      ],
+      "screenshot": "run-cost-blocked-800x900.jpg",
+      "captured_image": "785x883",
+      "visual_qa": "PASS"
+    },
+    {
+      "viewport": "500x900",
+      "layout": "bottom-tabs",
+      "checks": [
+        "pinned capacity failure entered waiting_user",
+        "retry new Run and choose allowed model actions were exposed",
+        "choose allowed model changed the next Run setting to auto without mutating the current pinned Snapshot",
+        "IMPORTANT_KNOWLEDGE_CONFLICT exposed partial evidence and blocked final result confirmation"
+      ],
+      "screenshots": [
+        "run-waiting-user-500x900.jpg",
+        "run-conflict-500x900.jpg"
+      ],
+      "captured_images": [
+        "500x2388",
+        "485x2401"
+      ],
+      "visual_qa": "PASS"
+    }
+  ],
+  "citation_viewer": {
+    "source_id": "source-daon-guidance",
+    "source_version_id": "source-daon-guidance-v2",
+    "evidence_id": "evidence-daon-v2-page-12",
+    "position": "12쪽 · 4문단",
+    "quote": "승인된 기준선과 검증 증거를 함께 보존합니다."
+  },
+  "console": {
+    "warning_count": 0,
+    "error_count": 0
+  },
+  "network": {
+    "resource_timing_entries": "unavailable",
+    "actual_api_like_requests": "unavailable",
+    "non_same_origin_requests": "unavailable",
+    "forbidden_internal_address_requests": "unavailable",
+    "reason": "Performance API is unavailable in the Browser evaluation context",
+    "interpretation": "Runtime request counts are not asserted as zero. The Prototype declares that Retrieval, Provider, LLM and DB Runtime were not executed."
+  },
+  "static_contract": {
+    "browser_source_forbidden_absolute_or_internal_urls": 0,
+    "browser_source_direct_fetch_calls": 0,
+    "browser_source_next_public_api_base_url_uses": 0,
+    "verification": "run-model-evidence tests, workspace verification and production-source lint"
+  },
+  "browser_session_cleanup": {
+    "viewport_reset": true,
+    "tabs_finalized": true
+  },
+  "result": "PASS"
+}

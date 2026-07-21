@@ -1,0 +1,42 @@
+{
+  "work_order_id": "R1-M2-04-I001",
+  "attempt": 2,
+  "algorithm": "SHA-256",
+  "generated_at": "2026-07-22T02:17:52+09:00",
+  "prototype_contract_passed": true,
+  "runtime_not_executed": true,
+  "files": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-04/browser-validation.json",
+      "sha256": "931982893BA9BFB4A86EE7458355F1F2B4A484044B33190EA63C493920C111B4"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-04/run-completed-1920x1080.jpg",
+      "sha256": "71CA29BEC17E883C19E5DF663E3FE2AD4165A5A41CD0A648C11D620F30469944"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-04/run-fallback-1200x900.jpg",
+      "sha256": "6D3BAA824A25C4F3490743FF62368D6F7A5D58A3CFE5A9717B5FB6363FFBA4C8"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-04/run-cost-blocked-800x900.jpg",
+      "sha256": "2EED5F14E31FD18CAF45915A16FA9D3B0723CC32CA3F2929A2AB08C0657CCCB5"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-04/run-waiting-user-500x900.jpg",
+      "sha256": "A616030E180BC6EA975795976579F9FAF076347517FCC63C19940493BF53AE2E"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-04/run-conflict-500x900.jpg",
+      "sha256": "1675E8D999E48223C0110273A7E2A22C61D8E50DB9640C9AFF63A4439755C21E"
+    },
+    {
+      "path": "docs/01_architecture/run_model_evidence_prototype_adapter_contract.md",
+      "sha256": "6D9D94C6B1734D93C4D50340C63216133C976C8661C12187637CF0F2AF492712"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M2-04_attempt-2.md",
+      "sha256": "D0EAE019A751CAF96B083C7CFD3E5562C08EEAC957BFB92242B03C23D5A6DB98"
+    }
+  ]
+}
