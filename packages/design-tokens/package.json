@@ -1,1 +1,1 @@
-{"name":"@daon-user/design-tokens","version":"0.0.0","private":true,"type":"module"}
+{"name":"@daon-user/design-tokens","version":"0.0.0","private":true,"type":"module","exports":{".":"./tokens.ts","./tokens.css":"./tokens.css","./tokens.json":"./tokens.json"}}
