@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "recorded_at": "2026-07-22T02:44:52.5870266+09:00",
+  "status": "COMPLETED",
+  "target_host": "ysna-server",
+  "approved_root": "/home/ubuntu/deploy/daon-user",
+  "target_path": "/home/ubuntu/deploy/daon-user/R1-M2-04/f5f76867fbcc9d07699afc7d03beadeab56dae4c",
+  "git_sha": "f5f76867fbcc9d07699afc7d03beadeab56dae4c",
+  "preflight": {
+    "approved_root_realpath": "/home/ubuntu/deploy/daon-user",
+    "target_existed": false,
+    "containers_sha256": "6e6f0bb855d1bbac057747ac9cfbcb14be195f00e3a16de7c6c93f20962a9f6f",
+    "networks_sha256": "6dc77bc9583cddc0ca637e72219f471c7a065b00d3ae12e3762e20e4f21962a0",
+    "volumes_sha256": "232abe52630c219245daeb21f0b156bc33b90ea2f63941d934418bf2d6f39c19"
+  },
+  "transport": {
+    "kind": "public_github_https_clone",
+    "repository": "https://github.com/cyhuh7950/Daon_User.git",
+    "branch": "codex/r1-m2-04",
+    "pushed_head_sha": "f5f76867fbcc9d07699afc7d03beadeab56dae4c",
+    "detached_checkout": true
+  },
+  "architecture": {
+    "host": "aarch64",
+    "docker": "aarch64",
+    "node_image": "node:24.18.0-bookworm-slim",
+    "node_image_architecture": "arm64",
+    "uv_image": "ghcr.io/astral-sh/uv:0.11.2",
+    "uv_image_architecture": "arm64"
+  },
+  "checkout": {
+    "head": "f5f76867fbcc9d07699afc7d03beadeab56dae4c",
+    "detached": true,
+    "clean_before": true,
+    "clean_after": true
+  },
+  "migration": {
+    "status": "NOT_APPLICABLE_NO_SCHEMA",
+    "migration_directories": 0,
+    "schema_files": 0,
+    "database_commands_executed": 0
+  },
+  "toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "corepack": "0.35.0",
+    "uv": "0.11.2",
+    "uv_target": "aarch64-unknown-linux-musl",
+    "npm_ci_exit_code": 0
+  },
+  "validation": {
+    "product_foundation_passed": 8,
+    "run_model_evidence_passed": 18,
+    "workspace_tests_passed": 34,
+    "workspace_tests_failed": 0,
+    "workspace_lint_files": 11,
+    "workspace_lint_exit_code": 0,
+    "production_build_exit_code": 0
+  },
+  "quality_gate": {
+    "git_sha": "f5f76867fbcc9d07699afc7d03beadeab56dae4c",
+    "overall_status": "PASS",
+    "exit_code": 0,
+    "categories": ["lint", "type", "unit", "contract", "build", "security", "independence"],
+    "failures": 0,
+    "result_path": "docs/03_evidence/release_1/R1-M2-04/R1-M2-04-server-quality-gate-result.json",
+    "result_sha256": "625015A2B2291F63696933DF08F7BF588353F88EFC807BB8074883229D6364BD",
+    "summary_path": "docs/03_evidence/release_1/R1-M2-04/R1-M2-04-server-quality-gate-summary.md",
+    "summary_sha256": "DE2C031AF4606F765530CC103AF34D310F9F3934CFE26A7B8DC4AA20269EA64C"
+  },
+  "recovery": [
+    {
+      "stage": "first ARM64 quality gate evidence",
+      "cause": "The minimal Node image had no Git binary, so the report recorded git_sha as UNAVAILABLE",
+      "action": "Installed Git inside a disposable ARM64 container, verified exact HEAD, and reran the gate"
+    },
+    {
+      "stage": "remote cleanup",
+      "cause": "Container-created build files were root-owned",
+      "action": "Removed only the three generated directories and two collected copies with a disposable cleanup container bound to the validated target"
+    }
+  ],
+  "cleanup": {
+    "temporary_containers": 0,
+    "temporary_networks": 0,
+    "temporary_volumes": 0,
+    "generated_directories": 0
+  },
+  "postflight": {
+    "containers_sha256": "6e6f0bb855d1bbac057747ac9cfbcb14be195f00e3a16de7c6c93f20962a9f6f",
+    "networks_sha256": "6dc77bc9583cddc0ca637e72219f471c7a065b00d3ae12e3762e20e4f21962a0",
+    "volumes_sha256": "232abe52630c219245daeb21f0b156bc33b90ea2f63941d934418bf2d6f39c19",
+    "existing_resources_unchanged": true
+  }
+}
