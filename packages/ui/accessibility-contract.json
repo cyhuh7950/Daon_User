@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "standard": "WCAG 2.2 Level AA",
+  "keyboard_components": ["global_navigation","menu","tooltip","popover","dialog"],
+  "focus_indicator": {"token":"color.focus","must_not_be_obscured":true},
+  "tooltip": {"triggers":["hover","focus","touch"],"hover_only_forbidden":true,"dismissible":true},
+  "icon_only_control": {"accessible_name_required":true,"tooltip_or_popover_required":true},
+  "mandatory_visible_states": ["error","warning","progress","forbidden"],
+  "mandatory_visible_states_tooltip_only_forbidden": true,
+  "os_text_scaling": {"supported":true,"baseline_is_not_a_maximum":true},
+  "screen_reader": {"label_key_required":true,"state_announcement_required":true},
+  "target_size": {"minimum":"24px","desktop_control":"32px","touch_control":"44px"}
+}
