@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0",
+  "recorded_at": "2026-07-21T13:19:42+09:00",
+  "status": "COMPLETED",
+  "target_host": "ysna-server",
+  "approved_root": "/home/ubuntu/deploy/daon-user",
+  "target_path": "/home/ubuntu/deploy/daon-user/R1-M2-01/c471fad58f124e3ad28e33d98486f139306c0d91",
+  "git_sha": "c471fad58f124e3ad28e33d98486f139306c0d91",
+  "connection_recovery": {
+    "sandbox_failed_attempts": 6,
+    "cause": "The default sandbox could not use the user SSH configuration and resolved ysna-server literally.",
+    "recovery": "All subsequent ssh and scp commands used the approved escalated execution context.",
+    "external_dns_outage": false,
+    "valid_failure_count": 0,
+    "alternate_host_or_ip_used": false
+  },
+  "preflight": {
+    "approved_root_realpath": "/home/ubuntu/deploy/daon-user",
+    "target_existed": false,
+    "containers_sha256": "575b3f919cd84dbaffaafb81a8e9c59433bd74b846e0ca060707063c42a19585",
+    "networks_sha256": "34a32d796f184048bdf8d82beb49278d94e858e59a52fd35486d2933e0c3ee2e",
+    "volumes_sha256": "232abe52630c219245daeb21f0b156bc33b90ea2f63941d934418bf2d6f39c19"
+  },
+  "transport_bundle": {
+    "sha256": "C5010FC33F9DBAE3C3186E93942821E90070E51423B7984EE8004179CCC33B30",
+    "server_sha256": "c5010fc33f9dbae3c3186e93942821e90070e51423b7984ee8004179ccc33b30",
+    "verified_ref": "c471fad58f124e3ad28e33d98486f139306c0d91 HEAD",
+    "complete_history": true,
+    "transferred": true,
+    "removed_after_checkout": true
+  },
+  "architecture": {
+    "host": "aarch64",
+    "docker": "aarch64",
+    "node_image": "node:24.18.0-bookworm-slim",
+    "node_image_architecture": "arm64",
+    "uv_image": "ghcr.io/astral-sh/uv:0.11.2",
+    "uv_image_architecture": "arm64"
+  },
+  "checkout": {
+    "head": "c471fad58f124e3ad28e33d98486f139306c0d91",
+    "detached": true,
+    "clean_before": true,
+    "clean_after": true
+  },
+  "migration": {
+    "status": "NOT_APPLICABLE_NO_SCHEMA",
+    "migration_directories": 0,
+    "schema_files": 0,
+    "source_migration_signals": 0,
+    "database_commands_executed": 0
+  },
+  "toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "corepack": "0.35.0",
+    "uv": "0.11.2",
+    "uv_target": "aarch64-unknown-linux-musl",
+    "verify_toolchain_exit_code": 0,
+    "npm_ci_exit_code": 0
+  },
+  "quality_gate": {
+    "git_sha": "c471fad58f124e3ad28e33d98486f139306c0d91",
+    "overall_status": "PASS",
+    "exit_code": 0,
+    "categories": [
+      "lint",
+      "type",
+      "unit",
+      "contract",
+      "build",
+      "security",
+      "independence"
+    ],
+    "failures": 0,
+    "result_path": "docs/03_evidence/release_1/R1-M2-01/R1-M2-01-server-quality-gate-result.json",
+    "result_sha256": "1292BE1E6744DCCADEDFE3B7F1C8E05447DFC99F9C1CC75CB4B3E14106716715",
+    "summary_path": "docs/03_evidence/release_1/R1-M2-01/R1-M2-01-server-quality-gate-summary.md",
+    "summary_sha256": "1D1FC6A9FCFB1A3318109B4CDA2499A1C84844E47361A0C4EB72DEC1C9C027C5"
+  },
+  "cleanup": {
+    "temporary_containers": 0,
+    "temporary_networks": 0,
+    "temporary_volumes": 0,
+    "temporary_files": 0,
+    "node_modules_directories": 0
+  },
+  "postflight": {
+    "containers_sha256": "575b3f919cd84dbaffaafb81a8e9c59433bd74b846e0ca060707063c42a19585",
+    "networks_sha256": "34a32d796f184048bdf8d82beb49278d94e858e59a52fd35486d2933e0c3ee2e",
+    "volumes_sha256": "232abe52630c219245daeb21f0b156bc33b90ea2f63941d934418bf2d6f39c19",
+    "existing_resources_unchanged": true
+  }
+}

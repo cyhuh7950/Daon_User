@@ -1,0 +1,60 @@
+:root {
+  --daon-font-body: 12px;
+  --daon-font-form: 12px;
+  --daon-font-description: 10px;
+  --daon-font-auxiliary: 9px;
+  --daon-font-sidebar-title: 14px;
+  --daon-font-screen-title: 16px;
+  --daon-color-canvas: #F4F7FB;
+  --daon-color-surface: #FFFFFF;
+  --daon-color-muted-surface: #EAF0F6;
+  --daon-color-text-primary: #172033;
+  --daon-color-text-secondary: #4B5B73;
+  --daon-color-border: #C7D2E0;
+  --daon-color-accent: #2563EB;
+  --daon-color-accent-hover: #1D4ED8;
+  --daon-color-focus: #0369A1;
+  --daon-color-success: #0F766E;
+  --daon-color-warning: #B45309;
+  --daon-color-danger: #B91C1C;
+  --daon-color-ruleset-authority: #6D28D9;
+  --daon-breakpoint-wide-min: 1440px;
+  --daon-breakpoint-desktop-min: 1024px;
+  --daon-breakpoint-desktop-max: 1439px;
+  --daon-breakpoint-tablet-min: 600px;
+  --daon-breakpoint-tablet-max: 1023px;
+  --daon-breakpoint-mobile-max: 599px;
+  --daon-spacing-0: 0px;
+  --daon-spacing-1: 4px;
+  --daon-spacing-2: 8px;
+  --daon-spacing-3: 12px;
+  --daon-spacing-4: 16px;
+  --daon-spacing-5: 24px;
+  --daon-spacing-6: 32px;
+  --daon-spacing-7: 40px;
+  --daon-spacing-8: 48px;
+  --daon-radius-0: 4px;
+  --daon-radius-1: 8px;
+  --daon-radius-2: 12px;
+  --daon-radius-3: 999px;
+  --daon-target-minimum: 24px;
+  --daon-target-desktop-control: 32px;
+  --daon-target-touch-control: 44px;
+  --daon-motion-0: 120ms;
+  --daon-motion-1: 180ms;
+  --daon-motion-2: 240ms;
+  --daon-motion-fast: 120ms;
+  --daon-motion-standard: 180ms;
+  --daon-motion-slow: 240ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --daon-motion-fast: 0ms;
+    --daon-motion-standard: 0ms;
+    --daon-motion-slow: 0ms;
+    --daon-motion-0: 0ms;
+    --daon-motion-1: 0ms;
+    --daon-motion-2: 0ms;
+  }
+}

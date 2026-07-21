@@ -1,0 +1,693 @@
+{
+  "schema_version": "1.0",
+  "policy_path": "quality-gate-policy.json",
+  "policy_sha256": "EC861688A51EC886FDD41D6094ED6E3487D31F5897925431AFABC3EBCB28508E",
+  "git_sha": "c471fad58f124e3ad28e33d98486f139306c0d91",
+  "started_at": "2026-07-21T04:16:50.146Z",
+  "ended_at": "2026-07-21T04:16:55.272Z",
+  "overall_status": "PASS",
+  "exit_code": 0,
+  "categories": {
+    "lint": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "contracts-lint",
+          "component": "packages/contracts",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-21T04:16:50.165Z",
+          "ended_at": "2026-07-21T04:16:50.422Z",
+          "evidence_files": [
+            {
+              "path": "packages/contracts/navigation.json",
+              "sha256": "A328A3882BEDDA9261407673BBFDD1F4671E7DAE357E44A26A379A064D7B2845"
+            },
+            {
+              "path": "packages/contracts/screens.json",
+              "sha256": "4A3FC57A73C29E3657E09AB8C32C609F2529CA6D01E9AC5333ED9F9E05BFB1E1"
+            }
+          ]
+        },
+        {
+          "id": "design-tokens-lint",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-21T04:16:50.688Z",
+          "ended_at": "2026-07-21T04:16:50.940Z",
+          "evidence_files": [
+            {
+              "path": "packages/design-tokens/tokens.json",
+              "sha256": "260C42E9EA85B66705A09FB162D7207DAA674820B2A7F4DC6696FF350DD5B1DF"
+            },
+            {
+              "path": "packages/design-tokens/tokens.css",
+              "sha256": "5AC29A2FCDF1F881180E2E71EBA3018C2540E6DDA36C8D8A8CC3A6007A89B309"
+            },
+            {
+              "path": "packages/design-tokens/tokens.ts",
+              "sha256": "C2565394A67A7E91366147F7001691FA2D77384E583A4156C9E9EEC1416A5CBC"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/contracts/navigation.json",
+            "packages/contracts/screens.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/design-tokens/tokens.json",
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "type": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "design-tokens-type",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npx",
+            "tsc",
+            "--project",
+            "packages/design-tokens/tsconfig.json",
+            "--noEmit"
+          ],
+          "started_at": "2026-07-21T04:16:50.941Z",
+          "ended_at": "2026-07-21T04:16:51.717Z",
+          "evidence_files": [
+            {
+              "path": "packages/design-tokens/tokens.ts",
+              "sha256": "C2565394A67A7E91366147F7001691FA2D77384E583A4156C9E9EEC1416A5CBC"
+            },
+            {
+              "path": "packages/design-tokens/tsconfig.json",
+              "sha256": "DBFA115B1FD5BAA0D267609E9A06D5D35126D7F0B6B37E86F6547952FF271CF5"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "unit": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "design-tokens-unit",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-21T04:16:51.718Z",
+          "ended_at": "2026-07-21T04:16:51.972Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/product-foundation.test.mjs",
+              "sha256": "B98C0FB6B2E5F1DA7852C35B2BBCD32A62764C8C55E814881F2A1D7E421A9145"
+            }
+          ]
+        },
+        {
+          "id": "quality-gate-runner-tests",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "--test",
+            "scripts/tests/quality-gate.test.mjs"
+          ],
+          "started_at": "2026-07-21T04:16:52.722Z",
+          "ended_at": "2026-07-21T04:16:53.015Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/quality-gate.test.mjs",
+              "sha256": "BF0E1EE4DA2E279692C08E15FD12CAD3277E0ACAD942F74F9889C25CDD1D67FD"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/design-tokens/tokens.ts"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "contract": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "contracts-contract",
+          "component": "packages/contracts",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-21T04:16:50.423Z",
+          "ended_at": "2026-07-21T04:16:50.687Z",
+          "evidence_files": [
+            {
+              "path": "packages/contracts/navigation.json",
+              "sha256": "A328A3882BEDDA9261407673BBFDD1F4671E7DAE357E44A26A379A064D7B2845"
+            },
+            {
+              "path": "packages/contracts/screens.json",
+              "sha256": "4A3FC57A73C29E3657E09AB8C32C609F2529CA6D01E9AC5333ED9F9E05BFB1E1"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/contracts/navigation.json",
+            "packages/contracts/screens.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/README.md",
+            "packages/design-tokens/package.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "build": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "design-tokens-build",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npx",
+            "tsc",
+            "--project",
+            "packages/design-tokens/tsconfig.json",
+            "--noEmit"
+          ],
+          "started_at": "2026-07-21T04:16:51.972Z",
+          "ended_at": "2026-07-21T04:16:52.722Z",
+          "evidence_files": [
+            {
+              "path": "packages/design-tokens/tokens.ts",
+              "sha256": "C2565394A67A7E91366147F7001691FA2D77384E583A4156C9E9EEC1416A5CBC"
+            },
+            {
+              "path": "packages/design-tokens/tokens.json",
+              "sha256": "260C42E9EA85B66705A09FB162D7207DAA674820B2A7F4DC6696FF350DD5B1DF"
+            }
+          ]
+        },
+        {
+          "id": "toolchain-baseline",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:toolchain"
+          ],
+          "started_at": "2026-07-21T04:16:53.015Z",
+          "ended_at": "2026-07-21T04:16:53.374Z",
+          "evidence_files": [
+            {
+              "path": "toolchain-versions.json",
+              "sha256": "017DC0FF4D0C232CED1ED0756EED25E3B16C6610ABB6579FEB263DDE8298052A"
+            },
+            {
+              "path": "package-lock.json",
+              "sha256": "8B8EE4FCE6750FFA03827C972890A4C7E1D4FF334AAB82D085FD0119BA2C689D"
+            },
+            {
+              "path": "uv.lock",
+              "sha256": "3B79CE7E690EC498970F90D89FA6E0C3B4EAFE40964AD93FC8481DC229A06E90"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/design-tokens/tokens.json",
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "security": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "security-static-scan",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": null,
+          "started_at": "2026-07-21T04:16:50.156Z",
+          "ended_at": "2026-07-21T04:16:50.165Z",
+          "evidence_files": [
+            "apps/desktop/README.md",
+            "apps/desktop/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json",
+            "services/api/README.md",
+            "services/api/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml",
+            "packages/contracts/README.md",
+            "packages/contracts/navigation.json",
+            "packages/contracts/package.json",
+            "packages/contracts/screens.json",
+            "packages/design-tokens/README.md",
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/tokens.css",
+            "packages/design-tokens/tokens.json",
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json",
+            "packages/ui/README.md",
+            "packages/ui/accessibility-contract.json",
+            "packages/ui/package.json",
+            ".github/workflows/release-1-quality-gate.yml"
+          ],
+          "violation_count": 0,
+          "violations": []
+        },
+        {
+          "id": "production-dependency-audit",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "audit",
+            "--omit=dev",
+            "--audit-level=high",
+            "--json"
+          ],
+          "started_at": "2026-07-21T04:16:53.375Z",
+          "ended_at": "2026-07-21T04:16:55.065Z",
+          "evidence_files": [
+            {
+              "path": "package.json",
+              "sha256": "CED6DBDBD41CF49639B658F8CC5C9EBF6DC3CEB5936CD1563AF7048E06533B03"
+            },
+            {
+              "path": "package-lock.json",
+              "sha256": "8B8EE4FCE6750FFA03827C972890A4C7E1D4FF334AAB82D085FD0119BA2C689D"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": []
+    },
+    "independence": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "repository-independence",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:independence",
+            "--",
+            "--no-write"
+          ],
+          "started_at": "2026-07-21T04:16:55.066Z",
+          "ended_at": "2026-07-21T04:16:55.271Z",
+          "evidence_files": [
+            {
+              "path": "independence-policy.json",
+              "sha256": "33CD8E7E4C263B3DB6E6E1D2744271BA853266F39B071DA45C67DDEDE5428868"
+            },
+            {
+              "path": "repo-boundaries.json",
+              "sha256": "43DDA8237098EA6469407B165C2AE0258FB84E9A7C5E094E6E4618127EF5C075"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": []
+    }
+  },
+  "failures": [],
+  "limitations": [
+    "Source-specific checks are N/A only while exact component signals are absent.",
+    "Raw stdout, stderr, secrets, tokens, personal data, and credential values are not stored in artifacts."
+  ]
+}

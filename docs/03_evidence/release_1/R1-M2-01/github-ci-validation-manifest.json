@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "recorded_at": "2026-07-21T12:58:55+09:00",
+  "repository": "cyhuh7950/Daon_User",
+  "pull_request": {
+    "number": 7,
+    "state": "open",
+    "draft": true,
+    "base_ref": "codex/release-1",
+    "base_sha": "36a0b5b6e0a2f2b1c3125ffa76089be00eb790b0",
+    "head_ref": "codex/r1-m2-01",
+    "head_sha": "c471fad58f124e3ad28e33d98486f139306c0d91",
+    "merge_sha": "10886238c8869abc8948a805233a8b41a9b4f12f",
+    "merge_parents": [
+      "36a0b5b6e0a2f2b1c3125ffa76089be00eb790b0",
+      "c471fad58f124e3ad28e33d98486f139306c0d91"
+    ],
+    "mergeable": true,
+    "mergeable_state": "clean"
+  },
+  "required_check": {
+    "branch_protected": true,
+    "context": "Release 1 Quality Gate",
+    "app_id": 15368,
+    "run_id": 29799417719,
+    "job_id": 88537344839,
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "success",
+    "run_attempt": 1,
+    "head_sha": "c471fad58f124e3ad28e33d98486f139306c0d91",
+    "checkout_sha": "10886238c8869abc8948a805233a8b41a9b4f12f"
+  },
+  "node_20_deprecated_annotations": {
+    "unique_count": 0,
+    "check_run_output_annotations_count": 0,
+    "annotations_endpoint_count": 0,
+    "note": "Job raw logs contain Node 24 runtime deprecation text, but the requested GitHub Node.js 20 deprecated annotations are absent."
+  },
+  "artifact": {
+    "id": 8483191783,
+    "name": "release-1-quality-gate-10886238c8869abc8948a805233a8b41a9b4f12f",
+    "size_in_bytes": 2943,
+    "expired": false,
+    "zip_sha256": "4151ECDE194BEF9B554AC1B15EC33E7EFC6C58AACA62D02BBBBBE7AAB5EF91D1",
+    "files": [
+      "quality-gate-result.json",
+      "quality-gate-summary.md"
+    ],
+    "git_sha": "10886238c8869abc8948a805233a8b41a9b4f12f",
+    "overall_status": "PASS",
+    "exit_code": 0,
+    "categories": [
+      "lint",
+      "type",
+      "unit",
+      "contract",
+      "build",
+      "security",
+      "independence"
+    ],
+    "failures": 0
+  },
+  "sources": [
+    "GitHub REST public PR, branch, run, jobs, check-runs, annotations, artifacts and merge-commit endpoints",
+    "Authenticated GitHub connector artifact ZIP and decoded job log"
+  ]
+}
