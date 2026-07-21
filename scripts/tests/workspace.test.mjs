@@ -8,6 +8,8 @@ import { pathToFileURL } from "node:url";
 const root = path.resolve(".");
 const modelPath = path.join(root, "packages/ui/src/workspace-model.js");
 const componentPath = path.join(root, "packages/ui/src/adaptive-workspace.jsx");
+const sourcePanePath = path.join(root, "packages/ui/src/source-knowledge-pane.jsx");
+const sourceModelPath = path.join(root, "packages/ui/src/source-knowledge-model.js");
 const stylePath = path.join(root, "packages/ui/src/workspace.css");
 const interactionPath = path.join(root, "packages/ui/src/workspace-interaction.js");
 const webFiles = [
@@ -159,7 +161,7 @@ test("Help 상태는 Hover·Focus·Touch/Click으로 열리고 Escape·Blur로 �
 test("세 Pane·Drawer·Bottom Tab·Evidence Viewer와 접근성 동작 계약이 존재한다", async () => {
   assert.ok(existsSync(componentPath), "adaptive-workspace.jsx가 아직 없다");
   assert.ok(existsSync(stylePath), "workspace.css가 아직 없다");
-  const source = `${await read("packages/ui/src/adaptive-workspace.jsx")}\n${await read("packages/ui/src/workspace.css")}`;
+  const source = `${await read("packages/ui/src/adaptive-workspace.jsx")}\n${await read("packages/ui/src/source-knowledge-pane.jsx")}\n${await read("packages/ui/src/workspace.css")}`;
   for (const id of ["pane-knowledge", "pane-conversation", "pane-studio", "workspace-drawer", "bottom-tabs", "evidence-viewer"])
     assert.match(source, new RegExp(id), `missing ${id}`);
   assert.match(source, /role="separator"/);
@@ -184,6 +186,8 @@ test("Next Prototype Harness는 실제 Route를 제공하고 내부 API 주소�
   for (const relative of webFiles) assert.ok(existsSync(path.join(root, relative)), `missing ${relative}`);
   const browserSource = [
     await read("packages/ui/src/adaptive-workspace.jsx"),
+    await read("packages/ui/src/source-knowledge-pane.jsx"),
+    await read("packages/ui/src/source-knowledge-model.js"),
     await read("packages/ui/src/workspace-model.js"),
     ...(await Promise.all(webFiles.map(read)))
   ].join("\n");
