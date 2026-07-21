@@ -9,7 +9,7 @@
 | 기준 Commit | 작업지시 기준 `707871b8779ee5b1959fa85f9b76897cf2d5b39e`; S6 전달·Push 기준 `3b0f03fec28fd545b34130c1a0c6fae68efeda15` |
 | Writer | 어울2 · `daon-developer` |
 | 시작 시각 | `2026-07-20T18:11:27.8536049+09:00` |
-| 현재 상태 | `S7_COMPLETED_LIMITED` · 서버 검증 PASS, GitHub 실제 CI/Branch Protection 증거 미확보로 전체 판정 대기 |
+| 현재 상태 | `GITHUB_EVIDENCE_HANDOFF_READY` · 외부 BLOCKED 해소 증거 작성 완료, 새 Evidence Commit의 Required Check 재실행·어울1 최종 수락 대기 |
 
 ## Correction 2 review 재작업
 
@@ -387,3 +387,58 @@
 - 작업지시서 밖 물질적 변경 0건 확인: PASS. 착수 전 R1-M1-04 줄바꿈/stat 상태 2건은 Content Diff 0이며 보존.
 - 결과보고서 경로: `docs/02_work_orders/reports/R1-M1-05_attempt-1.md`.
 - 재개 시 첫 `next_action`: 어울1이 GitHub 실제 CI Run과 Branch Protection/Required Check 증거를 확보해 정적 Workflow·서버 Evidence와 분리 대조하고 최종 수락 여부를 판단한다.
+
+## GitHub 외부 BLOCKED 해소 기록
+
+### `2026-07-21T10:26:27+09:00` · `GH-E0` · `STARTED`
+
+- 수행 내용: 어울1이 전달한 GitHub 증거 정본화 범위로 재개했다. `AGENTS.md`, 원·Correction 작업지시서, 승인 설계 v0.7, Release 1 계획 v0.9, Baseline Manifest, ysna 승인, 기존 진행·Attempt·서버 Evidence를 EOF까지 확인했다.
+- 변경 파일: 없음.
+- 실행 명령·Exit Code: 문서 구간별 `Get-Content` 0; JSON Parse 0; `git status --porcelain=v1 --untracked-files=all` 0.
+- 검사/테스트 결과: 승인 설계·계획·Baseline은 `APPROVED/READY`; 현재 Branch `codex/r1-m1-05`, HEAD `471020f68b71db913c236df25a0f72041daac0c3`; 단일 Writer와 Evidence 전용 허용 경계를 확인했다.
+- 오류·원인: `gh` CLI가 PATH에 없어 실행할 수 없었다.
+- 복구·대안: 같은 시도를 반복하지 않고 GitHub REST API 읽기로 전환했다. 구현 코드·Workflow·Lockfile·Pin·제품 Source는 수정하지 않는다.
+- 현재 남은 위험: Artifact 본문과 Branch Protection 전체 세부값은 인증 API Snapshot과 공개 API를 교차 대조해야 한다.
+- `next_action`: Repo·PR·Run·Job·Artifact·merge ref·Check·Protection을 재검증한다.
+
+### `2026-07-21T10:26:27+09:00` · `GH-E1` · `VERIFIED`
+
+- 수행 내용: GitHub REST API와 전달된 인증 Snapshot을 대조해 Repository, Draft PR #6, Actions Run/Job, Artifact, PR merge ref 부모, Check Run, Branch Protection과 Annotation을 검증했다.
+- 변경 파일: 없음.
+- 실행 명령·Exit Code: 공개 GitHub API Repo·PR·Run·Jobs·Artifacts·Commit·Check Runs·Annotations·Branch 조회 0; 인증 필요 Artifact ZIP은 HTTP 401, Job Log는 HTTP 403, 전체 Protection Endpoint는 HTTP 401.
+- 검사/테스트 결과: Repository `PUBLIC`; PR Head `471020f...0c3`, Base `707871b...b39e`, merge state `CLEAN`; Run `29762258282`와 Job `88419490913`은 `success`, Job 39초, 주요 단계와 Upload 전부 성공. Artifact ID `8469274296`; merge ref `7835a4ef...99a9` 부모 2건 일치. Head Check `Release 1 Quality Gate` SUCCESS/App `15368`; Branch는 protected이고 Required Context/App 일치. 전달된 인증 Snapshot의 `strict=true`, `enforce_admins=true`, Force Push/Delete false를 교차 기록했다.
+- 오류·원인: 무인증 공개 API는 Artifact ZIP과 전체 Branch Protection 세부 응답을 허용하지 않는다.
+- 복구·대안: Token·자격정보를 요청·저장하지 않고, 공개 API로 검증 가능한 메타데이터와 어울1의 인증 Snapshot에 포함된 Hash·보호 플래그를 출처 분리해 정본화한다.
+- 현재 남은 위험: Node.js 20 Deprecated/Runner Node.js 24 강제 경고는 API상 동일 Annotation 2개이나 고유 경고 1건이다.
+- `next_action`: 기계 판독 Manifest와 사람이 읽을 Summary를 작성한다.
+
+### `2026-07-21T10:28:36+09:00` · `GH-E2` · `EVIDENCE_WRITTEN`
+
+- 수행 내용: GitHub CI·PR·Artifact·Branch Protection 증거 Manifest와 Summary를 신규 작성했다. Public 전환이 신산님의 옵션 2 승인 결정임을 명시하고 서버 검증과 GitHub CI를 분리했다.
+- 변경 파일: `docs/03_evidence/release_1/R1-M1-05/github-ci-validation-manifest.json`; `docs/03_evidence/release_1/R1-M1-05/github-ci-validation-summary.md`; 본 진행 기록.
+- 실행 명령·Exit Code: Manifest JSON Parse 0; 핵심 URL·ID·SHA·Hash·부모·보호 규칙 필드 조회 0.
+- 검사/테스트 결과: Artifact Result `F572A9...F1BB`, Summary `92A1FA...17CD`, `git_sha=7835a4ef...99a9`, PASS/Exit 0/7범주/Failures 0을 기록했다. Token·원문 Log·개인정보 0건을 확인했다.
+- 오류·원인: 첫 대형 파일 패치가 Manifest 생성 후 지연되어 중단됐다.
+- 복구·대안: 생성된 Manifest를 Parse·내용 검증하고 Summary를 별도 최소 패치로 추가했다. 같은 대형 패치를 반복하지 않았다.
+- 현재 남은 위험: Evidence 문서 Commit 뒤 PR Head가 바뀌므로 새 Head Required Check 재실행이 필요하다.
+- `next_action`: Attempt-1을 현재 사실에 맞춰 갱신하고 최종 범위·Diff 검증을 수행한다.
+
+### `2026-07-21T10:35:00+09:00` · `GH-E3` · `HANDOFF_READY`
+
+- 수행 내용: Attempt-1을 `COMPLETED`·현재 `HANDOFF_READY`로 갱신하고 신규 GitHub Evidence 및 Worktree를 종료 직전 검증했다.
+- 변경 파일: `docs/03_evidence/release_1/R1-M1-05/github-ci-validation-manifest.json`; `docs/03_evidence/release_1/R1-M1-05/github-ci-validation-summary.md`; 본 진행 기록; `docs/02_work_orders/reports/R1-M1-05_attempt-1.md`.
+- 실행 명령·Exit Code: 승인 설계·계획·Baseline·ysna 승인·원/Correction 작업지시 Git Blob SHA-256 7건 0; R1-M1-05 JSON 4건 Parse 0; Manifest 핵심 필드 Assertion 0; `git diff --check` 0; 추적 삭제 검사 0; 허용 경로·보호 구현/Workflow/Lock/Pin/제품 Source Diff 검사 0; Git 상태·R1-M1-04 내용 Diff 검사 0.
+- 검사/테스트 결과: URL·PR/Run/Job/Artifact ID, Head/Base/merge ref SHA와 부모, Artifact Hash·PASS/Exit 0/7범주/Failures 0, Required Check/App, Branch Protection 4개 플래그가 모두 계약값과 일치했다. Manifest Hash `E07A041B...0F9393`, Summary Hash `BCF5F840...0A02C7`, Attempt Hash `9A74B7C7...63776B`. 추적 삭제 0, 보호 구현 파일 변경 0, 허용 경로 밖 내용 Diff 0, `git diff --check` PASS. 상태에 남은 R1-M1-04 2건은 Content Diff·numstat 0으로 보존했다.
+- 오류·원인: Git은 R1-M1-04 2건과 수정 문서에 LF→CRLF 경고를 표시했으나, R1-M1-04의 실제 Content Diff는 0이다.
+- 복구·대안: 줄바꿈 상태를 수정·복구하지 않고 내용 Diff와 허용 경로를 별도로 검사했다. 관련 없는 파일을 건드리지 않았다.
+- 현재 남은 위험: 신규 Evidence Commit 뒤 PR Head가 변경되므로 동일 Required Check의 새 Head 성공 확인이 필요하다. Node.js Deprecated 고유 경고 1건은 경미 비차단 위험이다.
+- `next_action`: 쓰기를 중지한다. 어울1이 Evidence Commit·새 Head CI 재검증 후 R1-M1-05 최종 `COMPLETED` 수락과 경고의 다음 Work Order 흡수 여부를 판단한다.
+
+## GitHub Evidence 종료 Snapshot
+
+- 종료 상태: `HANDOFF_READY`; 외부 `BLOCKED` 해소; 정식 `FAILURE_REPORT` 0건.
+- GitHub 통과 증거: PUBLIC Repository, Draft PR #6, clean merge state, Run/Job success, merge ref Artifact PASS, Required Check SUCCESS, Branch Protection 적용.
+- 서버 통과 증거: 기존 `SERVER_VALIDATION_PASS`를 별도 유지.
+- 변경 범위: 신규 GitHub Evidence 2건, progress, Attempt-1만 내용 변경.
+- 금지 변경: 구현 코드·Workflow·Lockfile·Toolchain Pin·제품 Source·R1-M1-04 내용 변경 0건.
+- Commit·Push·PR Merge·Repository 설정 변경: 수행하지 않음.

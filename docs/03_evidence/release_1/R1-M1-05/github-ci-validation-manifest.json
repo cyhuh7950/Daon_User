@@ -1,0 +1,184 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M1-05",
+  "issue_id": "R1-M1-05-I001",
+  "attempt_no": 1,
+  "evidence_type": "github_ci_pr_artifact_branch_protection",
+  "repository": {
+    "full_name": "cyhuh7950/Daon_User",
+    "html_url": "https://github.com/cyhuh7950/Daon_User",
+    "visibility": "PUBLIC",
+    "private": false,
+    "visibility_change_approval": {
+      "decision": "OPTION_2_PUBLIC",
+      "approved_by": "신산님",
+      "status": "APPROVED_AND_APPLIED"
+    }
+  },
+  "pull_request": {
+    "number": 6,
+    "html_url": "https://github.com/cyhuh7950/Daon_User/pull/6",
+    "state": "OPEN",
+    "draft": true,
+    "base_ref": "codex/release-1",
+    "base_sha": "707871b8779ee5b1959fa85f9b76897cf2d5b39e",
+    "head_ref": "codex/r1-m1-05",
+    "head_sha": "471020f68b71db913c236df25a0f72041daac0c3",
+    "merge_state_status": "CLEAN",
+    "mergeable": true,
+    "required_check": {
+      "context": "Release 1 Quality Gate",
+      "status": "SUCCESS",
+      "check_run_id": 88419490913,
+      "app_id": 15368
+    }
+  },
+  "pull_request_merge_ref": {
+    "sha": "7835a4ef679080766657249016ffcedab23499a9",
+    "commit_url": "https://github.com/cyhuh7950/Daon_User/commit/7835a4ef679080766657249016ffcedab23499a9",
+    "parents": [
+      {
+        "role": "base",
+        "sha": "707871b8779ee5b1959fa85f9b76897cf2d5b39e"
+      },
+      {
+        "role": "head",
+        "sha": "471020f68b71db913c236df25a0f72041daac0c3"
+      }
+    ],
+    "provenance": "GITHUB_PULL_REQUEST_MERGE_REF"
+  },
+  "actions_run": {
+    "id": 29762258282,
+    "html_url": "https://github.com/cyhuh7950/Daon_User/actions/runs/29762258282",
+    "workflow_name": "Release 1 Quality Gate",
+    "event": "pull_request",
+    "status": "COMPLETED",
+    "conclusion": "SUCCESS",
+    "run_number": 1,
+    "run_attempt": 1,
+    "head_sha": "471020f68b71db913c236df25a0f72041daac0c3",
+    "created_at": "2026-07-20T17:04:26Z",
+    "run_started_at": "2026-07-20T17:04:26Z",
+    "updated_at": "2026-07-20T17:05:09Z"
+  },
+  "job": {
+    "id": 88419490913,
+    "html_url": "https://github.com/cyhuh7950/Daon_User/actions/runs/29762258282/job/88419490913",
+    "name": "Release 1 Quality Gate",
+    "status": "COMPLETED",
+    "conclusion": "SUCCESS",
+    "started_at": "2026-07-20T17:04:29Z",
+    "completed_at": "2026-07-20T17:05:08Z",
+    "duration_seconds": 39,
+    "successful_major_steps": [
+      "Checkout immutable candidate",
+      "Clear checkout quality gate evidence",
+      "Use approved Node",
+      "Load approved toolchain pins",
+      "Install approved npm and Corepack",
+      "Install approved uv",
+      "Print approved toolchain versions",
+      "Verify approved toolchain",
+      "Install approved lockfile",
+      "Run common quality gate",
+      "Ensure current-run quality gate evidence",
+      "Upload quality gate evidence"
+    ]
+  },
+  "artifact": {
+    "id": 8469274296,
+    "name": "release-1-quality-gate-7835a4ef679080766657249016ffcedab23499a9",
+    "archive_download_api_url": "https://api.github.com/repos/cyhuh7950/Daon_User/actions/artifacts/8469274296/zip",
+    "expired": false,
+    "created_at": "2026-07-20T17:04:58Z",
+    "expires_at": "2026-08-19T17:04:57Z",
+    "size_in_bytes": 2337,
+    "result": {
+      "file": "quality-gate-result.json",
+      "sha256": "F572A9ED8BD6145AC9A16F8343B56309E1580362D1FB61E8737BDE32E0E8F1BB",
+      "git_sha": "7835a4ef679080766657249016ffcedab23499a9",
+      "overall_status": "PASS",
+      "exit_code": 0,
+      "category_count": 7,
+      "failure_count": 0
+    },
+    "summary": {
+      "file": "quality-gate-summary.md",
+      "sha256": "92A1FAE96ECC84E290EBDC5C27F39093EF9F35CAFE20C203C70AAFA7215817CD"
+    },
+    "candidate_relationship": "The artifact git_sha equals the pull-request merge-ref SHA, whose two parents are the validated base and head SHAs."
+  },
+  "branch_protection": {
+    "branch": "codex/release-1",
+    "protected": true,
+    "required_status_checks": {
+      "strict": true,
+      "contexts": [
+        "Release 1 Quality Gate"
+      ],
+      "checks": [
+        {
+          "context": "Release 1 Quality Gate",
+          "app_id": 15368
+        }
+      ]
+    },
+    "enforce_admins": true,
+    "allow_force_pushes": false,
+    "allow_deletions": false
+  },
+  "annotations": {
+    "api_annotation_count": 2,
+    "unique_warning_count": 1,
+    "warnings": [
+      {
+        "level": "warning",
+        "scope": "actions/checkout@v4, actions/setup-node@v4, actions/upload-artifact@v4",
+        "summary": "The actions target deprecated Node.js 20 and the runner forced Node.js 24.",
+        "impact": "MINOR_NON_BLOCKING_CURRENT_RUN_SUCCESS",
+        "follow_up": "Candidate for absorption into a later Work Order; no implementation change in this evidence-only task."
+      }
+    ],
+    "deduplication_note": "The API returned the same warning twice; it is recorded as one unique warning."
+  },
+  "server_validation_reference": {
+    "manifest": "docs/03_evidence/release_1/R1-M1-05/server-validation-manifest.json",
+    "validated_commit": "3b0f03fec28fd545b34130c1a0c6fae68efeda15",
+    "result": "SERVER_VALIDATION_PASS",
+    "separation": "Server validation and GitHub CI validation are independent evidence sets."
+  },
+  "verification_sources": {
+    "public_github_api": [
+      "https://api.github.com/repos/cyhuh7950/Daon_User",
+      "https://api.github.com/repos/cyhuh7950/Daon_User/pulls/6",
+      "https://api.github.com/repos/cyhuh7950/Daon_User/actions/runs/29762258282",
+      "https://api.github.com/repos/cyhuh7950/Daon_User/actions/runs/29762258282/jobs",
+      "https://api.github.com/repos/cyhuh7950/Daon_User/actions/runs/29762258282/artifacts",
+      "https://api.github.com/repos/cyhuh7950/Daon_User/commits/7835a4ef679080766657249016ffcedab23499a9",
+      "https://api.github.com/repos/cyhuh7950/Daon_User/commits/471020f68b71db913c236df25a0f72041daac0c3/check-runs",
+      "https://api.github.com/repos/cyhuh7950/Daon_User/check-runs/88419490913/annotations",
+      "https://api.github.com/repos/cyhuh7950/Daon_User/branches/codex%2Frelease-1"
+    ],
+    "authenticated_snapshot_handoff": [
+      "artifact file hashes and parsed result contract",
+      "branch protection strict, admin enforcement, force-push and deletion flags"
+    ],
+    "unauthenticated_api_limitations": [
+      "Artifact archive download returned HTTP 401 without an authenticated token.",
+      "The full branch-protection endpoint returned HTTP 401 without an authenticated token."
+    ]
+  },
+  "security": {
+    "tokens_stored": false,
+    "raw_logs_stored": false,
+    "personal_data_stored": false
+  },
+  "blocker_resolution": {
+    "previous_blocker": "GitHub Actions actual run and Branch Protection/Required Check evidence unavailable",
+    "status": "RESOLVED",
+    "result": "HANDOFF_READY",
+    "acceptance_condition": "After these new evidence documents are committed, rerun the required check on the new evidence head before the main designer accepts R1-M1-05 as final COMPLETED."
+  },
+  "recorded_at": "2026-07-21T10:26:27+09:00"
+}
