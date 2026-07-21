@@ -6,7 +6,7 @@
 
 ## 판단 이유
 
-- C01에서 지적된 6개 계약 누락을 독립 Test로 먼저 재현한 뒤 구현과 화면을 보정했다.
+- C01에서 지적된 8개 검토 항목(C2-1~7·C3-1)을 독립 Test와 새 화면 증거로 재현한 뒤 구현과 화면을 보정했다.
 - 정렬 Comparator, Hard/Runtime 제외, Exhaustion Terminal, 비용 사전 차단, Fallback 최종 계보, Frozen Preview를 Test와 Browser 증거로 확인했다.
 - 신규·회귀 Test 18/18, Workspace 34/34, Lint, Foundation, Toolchain, Independence, Next Production Build, 공통 7범주 Quality Gate가 통과했다.
 - 새 Browser 세션과 5개 Screenshot에서 1920×1080, 1200×900, 800×900, 500×900 상태를 다시 검증했다.
