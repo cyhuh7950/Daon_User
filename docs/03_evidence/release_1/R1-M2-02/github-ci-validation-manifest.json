@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "recorded_at": "2026-07-21T16:33:50.0424967+09:00",
+  "repository": "cyhuh7950/Daon_User",
+  "pull_request": {
+    "number": 8,
+    "state": "open",
+    "draft": true,
+    "base_ref": "codex/release-1",
+    "base_sha": "863261a0ecb506816e57c0922ec2f7d5c1eb142a",
+    "head_ref": "codex/r1-m2-02",
+    "head_sha": "883c36a186b9627f90d5534e66854e5167a7b43b",
+    "merge_sha": "2f668135f31d6b6297354bc99c528b4c5451a598",
+    "merge_parents": [
+      "863261a0ecb506816e57c0922ec2f7d5c1eb142a",
+      "883c36a186b9627f90d5534e66854e5167a7b43b"
+    ],
+    "mergeable": true
+  },
+  "required_check": {
+    "context": "Release 1 Quality Gate",
+    "app_id": 15368,
+    "run_id": 29810022794,
+    "job_id": 88568750457,
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "success",
+    "head_sha": "883c36a186b9627f90d5534e66854e5167a7b43b",
+    "checkout_sha": "2f668135f31d6b6297354bc99c528b4c5451a598",
+    "branch_protection": {
+      "protected_baseline": true,
+      "strict": true,
+      "enforce_admins": true,
+      "allow_force_pushes": false,
+      "allow_deletions": false,
+      "baseline_source": "docs/03_evidence/release_1/R1-M1-05/github-ci-validation-manifest.json",
+      "current_check_context_and_app_match_baseline": true,
+      "live_authenticated_refresh": "PENDING_DESIGNER_FINAL_REVIEW",
+      "note": "Current subagent connector has pull-only repository permission and unauthenticated protection REST returned 401; 어울1이 authenticated gh api로 최종 보강한다."
+    }
+  },
+  "annotations": {
+    "check_run_output_annotations_count": 0,
+    "annotations_endpoint_count": 0,
+    "node_20_deprecated_unique_count": 0
+  },
+  "artifact": {
+    "id": 8487038910,
+    "name": "release-1-quality-gate-2f668135f31d6b6297354bc99c528b4c5451a598",
+    "size_in_bytes": 3597,
+    "expired": false,
+    "zip_sha256": "BC6B8B14ADBAD25B2C936BA0BE357C416F0F38CB644947D38068EB4A854E2E54",
+    "files": ["quality-gate-result.json", "quality-gate-summary.md"],
+    "git_sha": "2f668135f31d6b6297354bc99c528b4c5451a598",
+    "overall_status": "PASS",
+    "exit_code": 0,
+    "categories": ["lint", "type", "unit", "contract", "build", "security", "independence"],
+    "failures": 0
+  },
+  "sources": [
+    "GitHub connector PR, workflow run, jobs, artifact and decoded artifact endpoints",
+    "GitHub public check-runs and annotations endpoints",
+    "Fetched refs/pull/8/merge and local git parent verification"
+  ]
+}
