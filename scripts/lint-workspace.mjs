@@ -11,6 +11,9 @@ const DEFAULT_FILES = [
   "apps/web/next.config.mjs",
   "packages/ui/src/adaptive-workspace.jsx",
   "packages/ui/src/index.js",
+  "packages/ui/src/source-knowledge-model.js",
+  "packages/ui/src/source-knowledge-controls.js",
+  "packages/ui/src/source-knowledge-pane.jsx",
   "packages/ui/src/workspace-interaction.js",
   "packages/ui/src/workspace-model.js"
 ];
