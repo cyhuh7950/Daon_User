@@ -1,3 +1,5 @@
+import { createSourceKnowledgeViewState, transitionSourceKnowledgeState } from "./source-knowledge-model.js";
+
 export const PANE_IDS = Object.freeze(["knowledge", "conversation", "studio"]);
 export const LAYOUT_MODES = Object.freeze(["three-pane", "two-pane", "single-pane", "bottom-tabs"]);
 
@@ -7,7 +9,7 @@ const DEFAULT_STATE = Object.freeze({
   secondary_pane: "conversation",
   open_drawer: null,
   return_drawer: null,
-  selected_source_id: "source-quarterly-guidance",
+  selected_source_id: "source-daon-guidance",
   conversation_id: "conversation-release-planning",
   run_id: "run-prototype-unavailable",
   run_status: "unavailable",
@@ -15,6 +17,12 @@ const DEFAULT_STATE = Object.freeze({
   artifact_cursor: "section-2:paragraph-3",
   evidence_id: "evidence-source-page-12",
   evidence_position: "page-12:paragraph-4",
+  evidence_source_id: "source-daon-guidance",
+  evidence_source_version_id: "source-daon-guidance-v2",
+  evidence_name: "승인 운영 지침.pdf",
+  evidence_excerpt: "승인된 기준선과 검증 증거를 함께 보존합니다.",
+  evidence_kind: "document-region",
+  source_knowledge: createSourceKnowledgeViewState(),
   pane_sizes: Object.freeze({ knowledge: 30, conversation: 38, studio: 32 }),
   last_transition: "prototype-seed"
 });
@@ -31,7 +39,8 @@ export function createWorkspaceViewState(overrides = {}) {
   return {
     ...DEFAULT_STATE,
     ...overrides,
-    pane_sizes: { ...DEFAULT_STATE.pane_sizes, ...(overrides.pane_sizes ?? {}) }
+    pane_sizes: { ...DEFAULT_STATE.pane_sizes, ...(overrides.pane_sizes ?? {}) },
+    source_knowledge: createSourceKnowledgeViewState(overrides.source_knowledge ?? DEFAULT_STATE.source_knowledge)
   };
 }
 
@@ -78,7 +87,7 @@ export function resizePaneSizes(sizes, pane, delta) {
 }
 
 export function transitionWorkspace(state, action, transition = new Date().toISOString()) {
-  const next = { ...state, pane_sizes: { ...state.pane_sizes }, last_transition: transition };
+  const next = { ...state, pane_sizes: { ...state.pane_sizes }, source_knowledge: createSourceKnowledgeViewState(state.source_knowledge), last_transition: transition };
   switch (action.type) {
     case "activate-pane":
       if (!PANE_IDS.includes(action.pane)) return state;
@@ -98,9 +107,25 @@ export function transitionWorkspace(state, action, transition = new Date().toISO
     case "open-evidence":
       next.return_drawer = PANE_IDS.includes(next.open_drawer) ? next.open_drawer : null;
       next.open_drawer = "evidence";
+      if (action.evidence) {
+        next.evidence_id = action.evidence.id;
+        next.evidence_position = action.evidence.position;
+        next.evidence_source_id = action.evidence.sourceId;
+        next.evidence_source_version_id = action.evidence.sourceVersionId;
+        next.evidence_name = action.evidence.name;
+        next.evidence_excerpt = action.evidence.excerpt;
+        next.evidence_kind = action.evidence.kind;
+      }
       return next;
     case "set-evidence-position":
       next.evidence_position = action.position;
+      return next;
+    case "select-source":
+      if (typeof action.sourceId !== "string" || action.sourceId.length === 0) return state;
+      next.selected_source_id = action.sourceId;
+      return next;
+    case "source-knowledge":
+      next.source_knowledge = transitionSourceKnowledgeState(next.source_knowledge, action.domainAction);
       return next;
     case "set-artifact-cursor":
       next.artifact_cursor = action.cursor;

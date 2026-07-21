@@ -3,6 +3,6 @@
   "packageManager":"npm@11.12.1",
   "engines":{"node":"24.18.0","npm":"11.12.1"},
   "workspaces":["apps/*","packages/*"],
-  "scripts":{"verify:toolchain":"node scripts/verify-toolchain-baseline.mjs","verify:independence":"node scripts/verify-repository-independence.mjs","verify:product-foundation":"node --test scripts/tests/product-foundation.test.mjs","lint:workspace":"node scripts/lint-workspace.mjs","verify:workspace":"node --test scripts/tests/workspace.test.mjs scripts/tests/workspace-lint.test.mjs","verify:quality-gate":"node scripts/verify-quality-gate.mjs"},
+  "scripts":{"verify:toolchain":"node scripts/verify-toolchain-baseline.mjs","verify:independence":"node scripts/verify-repository-independence.mjs","verify:product-foundation":"node --test scripts/tests/product-foundation.test.mjs","lint:workspace":"node scripts/lint-workspace.mjs","verify:workspace":"node --test scripts/tests/workspace.test.mjs scripts/tests/workspace-lint.test.mjs scripts/tests/source-knowledge.test.mjs","verify:quality-gate":"node scripts/verify-quality-gate.mjs"},
   "devDependencies":{"typescript":"7.0.2"}
 }
