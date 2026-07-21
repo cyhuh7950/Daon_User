@@ -1,4 +1,5 @@
 import { createSourceKnowledgeViewState, transitionSourceKnowledgeState } from "./source-knowledge-model.js";
+import { createRunViewState, transitionRunViewState } from "./run-model-evidence-model.js";
 
 export const PANE_IDS = Object.freeze(["knowledge", "conversation", "studio"]);
 export const LAYOUT_MODES = Object.freeze(["three-pane", "two-pane", "single-pane", "bottom-tabs"]);
@@ -23,6 +24,7 @@ const DEFAULT_STATE = Object.freeze({
   evidence_excerpt: "승인된 기준선과 검증 증거를 함께 보존합니다.",
   evidence_kind: "document-region",
   source_knowledge: createSourceKnowledgeViewState(),
+  run_model: createRunViewState(),
   pane_sizes: Object.freeze({ knowledge: 30, conversation: 38, studio: 32 }),
   last_transition: "prototype-seed"
 });
@@ -40,7 +42,8 @@ export function createWorkspaceViewState(overrides = {}) {
     ...DEFAULT_STATE,
     ...overrides,
     pane_sizes: { ...DEFAULT_STATE.pane_sizes, ...(overrides.pane_sizes ?? {}) },
-    source_knowledge: createSourceKnowledgeViewState(overrides.source_knowledge ?? DEFAULT_STATE.source_knowledge)
+    source_knowledge: createSourceKnowledgeViewState(overrides.source_knowledge ?? DEFAULT_STATE.source_knowledge),
+    run_model: createRunViewState(overrides.run_model ?? DEFAULT_STATE.run_model)
   };
 }
 
@@ -87,7 +90,7 @@ export function resizePaneSizes(sizes, pane, delta) {
 }
 
 export function transitionWorkspace(state, action, transition = new Date().toISOString()) {
-  const next = { ...state, pane_sizes: { ...state.pane_sizes }, source_knowledge: createSourceKnowledgeViewState(state.source_knowledge), last_transition: transition };
+  const next = { ...state, pane_sizes: { ...state.pane_sizes }, source_knowledge: createSourceKnowledgeViewState(state.source_knowledge), run_model: createRunViewState(state.run_model), last_transition: transition };
   switch (action.type) {
     case "activate-pane":
       if (!PANE_IDS.includes(action.pane)) return state;
@@ -108,7 +111,7 @@ export function transitionWorkspace(state, action, transition = new Date().toISO
       next.return_drawer = PANE_IDS.includes(next.open_drawer) ? next.open_drawer : null;
       next.open_drawer = "evidence";
       if (action.evidence) {
-        next.evidence_id = action.evidence.id;
+        next.evidence_id = action.evidence.evidenceId ?? action.evidence.id;
         next.evidence_position = action.evidence.position;
         next.evidence_source_id = action.evidence.sourceId;
         next.evidence_source_version_id = action.evidence.sourceVersionId;
@@ -126,6 +129,11 @@ export function transitionWorkspace(state, action, transition = new Date().toISO
       return next;
     case "source-knowledge":
       next.source_knowledge = transitionSourceKnowledgeState(next.source_knowledge, action.domainAction);
+      return next;
+    case "run-model":
+      next.run_model = transitionRunViewState(next.run_model, action.domainAction);
+      next.run_id = next.run_model.run.id;
+      next.run_status = next.run_model.run.status;
       return next;
     case "set-artifact-cursor":
       next.artifact_cursor = action.cursor;
