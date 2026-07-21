@@ -18,7 +18,7 @@
         {
           "name": "Checkout immutable candidate",
           "id": "checkout",
-          "uses": "actions/checkout@v4"
+          "uses": "actions/checkout@v5"
         },
         {
           "name": "Clear checkout quality gate evidence",
@@ -29,7 +29,7 @@
         {
           "name": "Use approved Node",
           "id": "setup-node",
-          "uses": "actions/setup-node@v4",
+          "uses": "actions/setup-node@v5",
           "with": {
             "node-version-file": ".node-version",
             "cache": "npm"
@@ -94,7 +94,7 @@
           "name": "Upload quality gate evidence",
           "id": "upload-evidence",
           "if": "${{ always() }}",
-          "uses": "actions/upload-artifact@v4",
+          "uses": "actions/upload-artifact@v6",
           "with": {
             "name": "release-1-quality-gate-${{ github.sha }}",
             "path": "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json\ndocs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md",

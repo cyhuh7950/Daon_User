@@ -62,10 +62,10 @@
       "manifest": "packages/contracts/package.json",
       "foundation_allowed_files": ["README.md", "package.json"],
       "capabilities": {
-        "lint": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py", ".json", ".yaml", ".yml"], "files": [] }, "command": null },
+        "lint": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py", ".json", ".yaml", ".yml"], "files": [] }, "command": { "id": "contracts-lint", "command": ["npm", "run", "verify:product-foundation"], "failure_kind": "quality", "evidence_files": ["packages/contracts/navigation.json", "packages/contracts/screens.json"] } },
         "type": { "signals": { "extensions": [".ts", ".py"], "files": ["tsconfig.json", "pyrightconfig.json"] }, "command": null },
         "unit": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py"], "directories": ["test", "tests", "__tests__"] }, "command": null },
-        "contract": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py", ".json", ".yaml", ".yml"], "directories": ["schemas", "openapi", "src"] }, "command": null },
+        "contract": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py", ".json", ".yaml", ".yml"], "directories": ["schemas", "openapi", "src"] }, "command": { "id": "contracts-contract", "command": ["npm", "run", "verify:product-foundation"], "failure_kind": "quality", "evidence_files": ["packages/contracts/navigation.json", "packages/contracts/screens.json"] } },
         "build": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".py"], "files": ["tsconfig.json", "pyproject.toml"], "directories": ["src"] }, "command": null }
       }
     },
@@ -75,11 +75,11 @@
       "manifest": "packages/design-tokens/package.json",
       "foundation_allowed_files": ["README.md", "package.json"],
       "capabilities": {
-        "lint": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".json"], "files": [] }, "command": null },
-        "type": { "signals": { "extensions": [".ts"], "files": ["tsconfig.json"] }, "command": null },
-        "unit": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "lint": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".json"], "files": [] }, "command": { "id": "design-tokens-lint", "command": ["npm", "run", "verify:product-foundation"], "failure_kind": "quality", "evidence_files": ["packages/design-tokens/tokens.json", "packages/design-tokens/tokens.css", "packages/design-tokens/tokens.ts"] } },
+        "type": { "signals": { "extensions": [".ts"], "files": ["tsconfig.json"] }, "command": { "id": "design-tokens-type", "command": ["npx", "tsc", "--project", "packages/design-tokens/tsconfig.json", "--noEmit"], "failure_kind": "quality", "evidence_files": ["packages/design-tokens/tokens.ts", "packages/design-tokens/tsconfig.json"] } },
+        "unit": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts"], "directories": ["test", "tests", "__tests__"] }, "command": { "id": "design-tokens-unit", "command": ["npm", "run", "verify:product-foundation"], "failure_kind": "quality", "evidence_files": ["scripts/tests/product-foundation.test.mjs"] } },
         "contract": { "signals": { "extensions": [], "files": [] }, "command": null },
-        "build": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".json"], "files": ["tsconfig.json"], "directories": ["src", "tokens"] }, "command": null }
+        "build": { "signals": { "extensions": [".js", ".mjs", ".cjs", ".ts", ".json"], "files": ["tsconfig.json"], "directories": ["src", "tokens"] }, "command": { "id": "design-tokens-build", "command": ["npx", "tsc", "--project", "packages/design-tokens/tsconfig.json", "--noEmit"], "failure_kind": "quality", "evidence_files": ["packages/design-tokens/tokens.ts", "packages/design-tokens/tokens.json"] } }
       }
     },
     {

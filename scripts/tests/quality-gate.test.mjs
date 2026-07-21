@@ -246,8 +246,8 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
     assert.notEqual(job.steps[index]["continue-on-error"], true);
   assert.ok(runs.includes("npm ci"));
   assert.ok(runs.some((command) => command.includes("npm run verify:quality-gate")));
-  assert.ok(uses.includes("actions/upload-artifact@v4"));
-  const upload = job.steps.find((step) => step.uses === "actions/upload-artifact@v4");
+  assert.ok(uses.includes("actions/upload-artifact@v6"));
+  const upload = job.steps.find((step) => step.uses === "actions/upload-artifact@v6");
   assert.equal(upload.if, "${{ always() }}");
   const fallbackIndex = job.steps.findIndex((step) => step.id === "fallback-evidence");
   const uploadIndex = job.steps.findIndex((step) => step.id === "upload-evidence");
