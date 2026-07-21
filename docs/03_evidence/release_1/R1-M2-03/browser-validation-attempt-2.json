@@ -1,0 +1,107 @@
+{
+  "work_order_id": "R1-M2-03",
+  "correction_order_id": "R1-M2-03-C02",
+  "attempt": 2,
+  "captured_at": "2026-07-21T20:15:00+09:00",
+  "head_sha": "18afe750d14b0f0c180873b86a0f2c6af54dd408",
+  "browser": "Chrome via Browser Plugin",
+  "production_process": {
+    "command": "npm run start --workspace @daon-user/web",
+    "route": "http://127.0.0.1:3000/workspaces/release-one",
+    "http_status": 200,
+    "hydration_and_clicks": "PASS",
+    "listener_after_validation": 0
+  },
+  "automated_contracts": {
+    "source_knowledge": "16/16 PASS",
+    "workspace_total": "30/30 PASS",
+    "workspace_lint": "11 files PASS",
+    "production_build": "PASS",
+    "common_quality_gate": "7 categories PASS, 0 failures"
+  },
+  "viewports": [
+    {
+      "width": 1920,
+      "height": 1080,
+      "layout_mode": "three-pane",
+      "active_detail_tab": "권위",
+      "weight_layer": "group",
+      "verified": [
+        "group, type, default 실제 계층",
+        "Source Override 추가·변경·해제",
+        "Override 해제 후 최근접 계층 복원"
+      ],
+      "screenshot": "source-authority-1920x1080.png"
+    },
+    {
+      "width": 1200,
+      "height": 900,
+      "layout_mode": "two-pane",
+      "active_detail_tab": "처리",
+      "verified": ["ASR 음성 인식", "LLM 의미 이해", "전사·시간 구간 검증", "근거 위치 조정", "색인", "ready gate passed"],
+      "screenshot": "source-processing-1200x900.png"
+    },
+    {
+      "width": 800,
+      "height": 900,
+      "inner_width": 800,
+      "inner_height": 900,
+      "png_width": 800,
+      "png_height": 900,
+      "layout_mode": "single-pane",
+      "active_detail_tab": "충돌",
+      "conflict_severities": ["informational", "material", "critical"],
+      "blocked_finalization_actions": 3,
+      "paint_wait_ms": 1500,
+      "screenshot": "source-conflict-800x900.png"
+    },
+    {
+      "width": 500,
+      "height": 900,
+      "layout_mode": "bottom-tabs",
+      "active_detail_tab": "처리",
+      "source_status": "waiting_model",
+      "processing_code": "NO_AVAILABLE_UNDERSTANDING_MODEL",
+      "screenshot": "source-status-500x900.png"
+    }
+  ],
+  "domain_state": {
+    "unmount_remount_preserved": true,
+    "fields": ["activeTab", "registrationOpen", "versionBySource", "rulesets", "conflicts", "weightOverrides"]
+  },
+  "evidence_lineage": {
+    "document_past_version": "source-user-report-v1 · evidence-user-report-v1-table · 2쪽 · 표 1 · Cell B4",
+    "audio_direct": "source-audio-direct-v1 · audio-direct-timecode · 00:05~00:21",
+    "audio_asr_llm": "source-audio-asr-v3 · audio-transcript-timecode · Transcript 8~12행 · 01:04~01:31",
+    "close_reopen_preserved": true,
+    "trigger_focus_restored": true
+  },
+  "controls": {
+    "review_request_audit": "review_requested · needs_review",
+    "disable_source_audit": "source_disabled · excluded_from_search_and_generation",
+    "retry": "disabled · unavailable",
+    "finalization_after_conflict_resolution": "disabled · Prototype unavailable"
+  },
+  "accessibility": {
+    "tooltip_click_open": true,
+    "tooltip_aria_describedby": "source-help-knowledge-domain",
+    "tooltip_escape_close": true,
+    "tooltip_closed_reference_removed": true,
+    "evidence_trigger_focus_restored": true,
+    "touch_target_contract_px": 44,
+    "body_font_contract_px": 12,
+    "title_font_contract_px": 16
+  },
+  "console": {
+    "warning_count": 0,
+    "error_count": 0
+  },
+  "network": {
+    "api_request_count": 0,
+    "forbidden_browser_target_count": 0,
+    "non_same_origin_api_count": 0,
+    "source_scan": "Browser 실행 Source에서 fetch, 절대 API URL, localhost, 127.0.0.1, NEXT_PUBLIC_API_BASE_URL 0건. 테스트 자기검사 정규식 문자열은 제외.",
+    "limitation": "Browser Sandbox가 performance resource timing 객체를 노출하지 않아 정적 자산 URL 목록은 추출하지 못했다. R1-M2-03은 API/DB/LLM 실행을 unavailable로 유지하는 Prototype이다."
+  },
+  "result": "PASS_WITH_NETWORK_OBSERVATION_LIMITATION"
+}

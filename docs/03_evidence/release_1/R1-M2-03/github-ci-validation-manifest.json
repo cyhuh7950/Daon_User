@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "recorded_at": "2026-07-21T22:39:17.0665668+09:00",
+  "status": "COMPLETED",
+  "repository": "cyhuh7950/Daon_User",
+  "pull_request": 9,
+  "base_branch": "codex/release-1",
+  "head_branch": "codex/r1-m2-03",
+  "head_sha": "461ea6c0f82441e5b4e4910bd9a55e4cfbf2ab7e",
+  "run": {
+    "id": 29834065544,
+    "url": "https://github.com/cyhuh7950/Daon_User/actions/runs/29834065544",
+    "status": "completed",
+    "conclusion": "success"
+  },
+  "job": {
+    "id": 88645773670,
+    "name": "Release 1 Quality Gate",
+    "status": "completed",
+    "conclusion": "success"
+  },
+  "branch_protection": {
+    "strict": true,
+    "required_context": "Release 1 Quality Gate",
+    "required_app_id": 15368,
+    "matched": true
+  },
+  "artifact": {
+    "id": 8496536990,
+    "name": "release-1-quality-gate-4ccf6054971d0defcc8a09e9676a22ee2a106486",
+    "expired": false,
+    "size_in_bytes": 3641,
+    "archive_digest": "sha256:1f0ce23a3babf2b4a58998a0e2566f1e3e04093bc0f87ae7512b34d9a93d51b2",
+    "workflow_merge_sha": "4ccf6054971d0defcc8a09e9676a22ee2a106486",
+    "linked_head_sha": "461ea6c0f82441e5b4e4910bd9a55e4cfbf2ab7e",
+    "quality_gate_status": "PASS",
+    "quality_gate_exit_code": 0,
+    "quality_gate_failures": 0,
+    "result_sha256": "6BC7AA5040A64587FF3FE20955AFF5440D25C52E186CBD3805526684B27CF319",
+    "summary_sha256": "8A8F881E9FA5C183E3CAF43A2E97D8232AC35786BDB3FF6879B76A490C6C9F56"
+  }
+}

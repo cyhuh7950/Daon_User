@@ -1,0 +1,51 @@
+{
+  "work_order_id": "R1-M2-03",
+  "execution_mode": "DIRECT_IMPLEMENTATION",
+  "attempt": 3,
+  "captured_at": "2026-07-21T22:45:00+09:00",
+  "implementation_sha": "682cd3c",
+  "browser": "Codex In-app Browser",
+  "production_process": {
+    "command": "npm run start --workspace @daon-user/web",
+    "route": "http://127.0.0.1:3000/workspaces/release-one",
+    "http_status": 200,
+    "hydration_and_clicks": "PASS",
+    "listener_after_validation": 0
+  },
+  "automated_contracts": {
+    "source_knowledge": "20/20 PASS",
+    "workspace_total": "34/34 PASS",
+    "workspace_lint": "11 files PASS",
+    "product_foundation": "8/8 PASS",
+    "toolchain": "PASS",
+    "independence": "8 components, 10 edges, 0 violations",
+    "production_build": "PASS",
+    "common_quality_gate": "7 categories PASS, 0 failures, exit 0"
+  },
+  "direct_implementation_flows": {
+    "source_state_projection": {"action": "부분 이해 Source에서 검토 요청", "list_status": "needs_review", "detail_status": "needs_review", "audit": "review_requested · needs_review", "result": "PASS"},
+    "disabled_transition": {"action": "부분 이해 Source에서 사용 중지", "list_status": "disabled", "detail_status": "disabled", "active": false, "recovery_button_count": 0, "audit": "source_disabled · excluded_from_search_and_generation", "result": "PASS"},
+    "parser_ocr_mismatch": {"source_status": "needs_review", "processing_run_status": "needs_review", "code": "EVIDENCE_RECONCILIATION_FAILED", "evidence": "양쪽 결과 위치 보존", "result": "PASS"},
+    "failed_and_expired_recovery": {"failed": "재처리 진입 · unavailable", "expired": "재등록 진입 · unavailable", "implicit_ready_transition_count": 0, "result": "PASS"},
+    "resolved_then_raised_conflict": {"sequence": ["material", "resolved", "critical"], "final_resolution_status": "unresolved", "audit": "severity_raised · reviewer-prototype", "review_reopened": true, "review_required": true, "blocked_finalization_actions": 3, "result": "PASS"}
+  },
+  "final_viewport": {
+    "width": 1200,
+    "height": 900,
+    "layout_mode": "two-pane",
+    "screenshot": "source-direct-review-reopened-1200x900.png",
+    "png_width": 1185,
+    "png_height": 889,
+    "png_note": "Browser viewport에서 스크롤바 영역을 제외한 일반 캡처",
+    "visual_review": "PASS"
+  },
+  "console": {"warning_count": 0, "error_count": 0},
+  "network": {
+    "api_request_count": 0,
+    "forbidden_browser_target_count": 0,
+    "non_same_origin_api_count": 0,
+    "source_scan": "Browser 실행 Source에서 fetch, 절대 API URL, localhost, 127.0.0.1, NEXT_PUBLIC_API_BASE_URL 0건. 테스트 자기검사 문자열은 제외.",
+    "limitation": "Browser Resource Timing 목록은 현재 Sandbox 제한으로 수집하지 않았다. R1-M2-03은 API/DB/LLM 실행을 unavailable로 유지하는 Prototype이다."
+  },
+  "result": "PASS_WITH_NETWORK_OBSERVATION_LIMITATION"
+}

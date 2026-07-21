@@ -1,0 +1,14 @@
+{
+  "work_order_id": "R1-M2-03",
+  "correction_order_id": "R1-M2-03-C02",
+  "attempt": 2,
+  "head_sha": "18afe750d14b0f0c180873b86a0f2c6af54dd408",
+  "files": [
+    {"path": "browser-validation.json", "sha256": "29B617DD0DA96FFD988E96A51D5FFC1628418356B8D3C6C0DEBE7205DE79263E"},
+    {"path": "source-authority-1920x1080.png", "sha256": "82B14C3D289B8D5C8D1A0BF504DDE59F4925291EEEE1B4C8144F839546F220EC"},
+    {"path": "source-processing-1200x900.png", "sha256": "DAEAC814DF553A1F701B984F876729878BEED64BFD01D49BC9060DDD77A02FED"},
+    {"path": "source-conflict-800x900.png", "sha256": "EBD30C28428282854C8061284ACAF5DC2D751B51E4DB71618B0D956329255721"},
+    {"path": "source-status-500x900.png", "sha256": "B2361B758DD463D30B4B6872F73BD206735D230DE33302919D5851B0C92A3AD0"},
+    {"path": "../../../01_architecture/source_authority_prototype_adapter_contract.md", "sha256": "F74E7E07DB9D93804C03DC3C887F5C570F3ACFAD6E1CCAFA3F7D44C29B59DA79"}
+  ]
+}
