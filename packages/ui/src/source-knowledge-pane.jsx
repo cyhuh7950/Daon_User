@@ -13,7 +13,7 @@ import { Help, WeightControl } from "./source-knowledge-controls.js";
 
 const TAB_LABELS = Object.freeze({ overview: "Source", processing: "처리", authority: "권위", conflicts: "충돌" });
 const TYPE_LABELS = Object.freeze({ user_material: "파일·직접 입력", internet: "인터넷", llm_knowledge: "LLM 일반지식", daon_approved: "Daon 승인 지식", produced_knowledge: "생산 지식" });
-const STATUS_LABELS = Object.freeze({ ready: "사용 가능", waiting_model: "모델 대기", partial_understanding: "부분 이해", needs_review: "검토 필요", failed: "실패", expired: "만료" });
+const STATUS_LABELS = Object.freeze({ ready: "사용 가능", waiting_model: "모델 대기", partial_understanding: "부분 이해", needs_review: "검토 필요", failed: "실패", expired: "만료", disabled: "사용 중지" });
 const STEP_LABELS = Object.freeze({ vision_llm_understanding: "Vision/LLM 의미 이해", parser_ocr_validation: "Parser/OCR 검증·보완", evidence_reconciliation: "근거 위치 조정", indexing: "색인", audio_llm_understanding: "Audio LLM 직접 의미 이해", transcript_timecode_validation: "전사·시간 구간 검증", speech_to_text: "ASR 음성 인식", llm_semantic_understanding: "LLM 의미 이해" });
 
 function SourceStatus({ status }) {
@@ -63,7 +63,8 @@ function ProcessingFlow({ source, onDomainAction }) {
       <dl className="run-snapshot"><div><dt>ProcessingRun</dt><dd>{source.processingRun.status}</dd></div><div><dt>종료 Code</dt><dd>{source.processingRun.code ?? "없음"}</dd></div><div><dt>Evidence</dt><dd>{source.processingRun.evidence}</dd></div><div><dt>Ready Gate</dt><dd>{source.processingRun.readyGate}</dd></div></dl>
       {source.status === "partial_understanding" && <div className="visible-state warning-state"><strong>부분 이해 범위</strong><span>{source.processingRun.evidence}</span><span>Source 전체 기본 검색·생성 제외</span></div>}
       {source.retryAction && <button type="button" disabled title={source.retryAction.reason}>{source.retryAction.label} · unavailable</button>}
-      {source.recoveryOptions && <div className="recovery-options">
+      {source.status === "disabled" && <div className="visible-state"><strong>사용 중지</strong><span>검색·생성에서 제외되며 새 실행으로 성공 상태를 만들지 않습니다.</span></div>}
+      {source.recoveryOptions && source.status !== "disabled" && <div className="recovery-options">
         <button type="button" disabled title="M2-07에서 실제 Run 연결">재처리 요청 · unavailable</button>
         <button type="button" onClick={() => onDomainAction({ type: "request-review", sourceId: source.id })}>검토 요청</button>
         <button type="button" onClick={() => onDomainAction({ type: "disable-source", sourceId: source.id })}>사용 중지</button>
