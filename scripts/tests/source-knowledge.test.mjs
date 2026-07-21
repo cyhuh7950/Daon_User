@@ -219,6 +219,7 @@ test("활성 Recovery Control은 Audit·상태를 바꾸고 실행 범위 밖 �
   assert.match(domain.sourceStateById["source-partial"].audit.at(-1).action, /review/);
   domain = model.transitionSourceKnowledgeState(domain, { type: "disable-source", sourceId: "source-partial" });
   assert.equal(domain.sourceStateById["source-partial"].active, false);
+  assert.equal(domain.sourceStateById["source-partial"].status, "disabled");
   assert.match(domain.sourceStateById["source-partial"].audit.at(-1).action, /disable/);
   const paneSource = await read("packages/ui/src/source-knowledge-pane.jsx");
   assert.match(paneSource, /Prototype · unavailable/);
@@ -327,4 +328,16 @@ test("충돌 검토자는 심각도를 상향하고 해결·상향 행동을 Aud
   assert.match(paneSource, /critical로 상향/);
   assert.match(paneSource, /conflict\.audit/);
   assert.match(paneSource, /resolution\.action/);
+});
+
+test("해결된 중요 충돌을 상향하면 해결이 무효화되고 최종화 차단이 다시 열린다", async () => {
+  const model = await loadModel();
+  const material = model.createSourcePrototypeSeed().conflicts.find((conflict) => conflict.id === "conflict-material-001");
+  const resolved = model.resolveConflict(material, "reviewer-prototype");
+  assert.deepEqual(model.getFinalizationLocks([resolved]), []);
+  const raised = model.raiseConflictSeverity(resolved, "critical", "reviewer-prototype");
+  assert.equal(raised.severity, "critical");
+  assert.equal(raised.resolution.status, "unresolved");
+  assert.equal(raised.audit.at(-1).result, "review_reopened");
+  assert.deepEqual(model.getFinalizationLocks([raised]), ["approval", "external_delivery", "knowledge_registration"]);
 });
