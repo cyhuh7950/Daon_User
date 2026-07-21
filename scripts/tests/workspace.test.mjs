@@ -161,7 +161,7 @@ test("Help 상태는 Hover·Focus·Touch/Click으로 열리고 Escape·Blur로 �
 test("세 Pane·Drawer·Bottom Tab·Evidence Viewer와 접근성 동작 계약이 존재한다", async () => {
   assert.ok(existsSync(componentPath), "adaptive-workspace.jsx가 아직 없다");
   assert.ok(existsSync(stylePath), "workspace.css가 아직 없다");
-  const source = `${await read("packages/ui/src/adaptive-workspace.jsx")}\n${await read("packages/ui/src/source-knowledge-pane.jsx")}\n${await read("packages/ui/src/run-model-evidence-pane.jsx")}\n${await read("packages/ui/src/workspace.css")}`;
+  const source = `${await read("packages/ui/src/adaptive-workspace.jsx")}\n${await read("packages/ui/src/source-knowledge-pane.jsx")}\n${await read("packages/ui/src/run-model-evidence-pane.jsx")}\n${await read("packages/ui/src/studio-workflow-pane.jsx")}\n${await read("packages/ui/src/workspace.css")}`;
   for (const id of ["pane-knowledge", "pane-conversation", "pane-studio", "workspace-drawer", "bottom-tabs", "evidence-viewer"])
     assert.match(source, new RegExp(id), `missing ${id}`);
   assert.match(source, /role="separator"/);

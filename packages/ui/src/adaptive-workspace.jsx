@@ -8,6 +8,7 @@ import { createWorkspaceViewState, PANE_IDS, projectWorkspace, transitionWorkspa
 import { focusInitialModalControl, setBackgroundInert, transitionHelp, trapModalTab } from "./workspace-interaction.js";
 import { SourceKnowledgePane } from "./source-knowledge-pane.jsx";
 import { RunModelEvidencePane } from "./run-model-evidence-pane.jsx";
+import { StudioWorkflowPane } from "./studio-workflow-pane.jsx";
 
 const PANE_LABELS = { knowledge: "자료·지식", conversation: "대화·실행", studio: "업무 Studio" };
 
@@ -28,16 +29,10 @@ function InfoButton({ id, label }) {
   );
 }
 
-function Pane({ pane, state, onOpenEvidence, onSetCursor, onSelectSource, onSourceKnowledgeAction, onRunModelAction }) {
+function Pane({ pane, state, onOpenEvidence, onSetCursor, onSelectSource, onSourceKnowledgeAction, onRunModelAction, onStudioAction }) {
   if (pane === "knowledge") return <SourceKnowledgePane selectedSourceId={state.selected_source_id} domainState={state.source_knowledge} onDomainAction={onSourceKnowledgeAction} onSelectSource={onSelectSource} onOpenEvidence={onOpenEvidence} />;
   if (pane === "conversation") return <RunModelEvidencePane domainState={state.run_model} onDomainAction={onRunModelAction} onOpenEvidence={onOpenEvidence} />;
-  return (
-    <section className="workspace-pane" id="pane-studio" aria-labelledby="pane-studio-title">
-      <div className="pane-heading"><div><p className="eyebrow">열린 산출물</p><h2 id="pane-studio-title">업무 Studio</h2></div><InfoButton id="studio" label="업무 Studio 면 설명" /></div>
-      <article className="artifact-card"><div className="card-row"><strong>근거 기반 보고서 초안</strong><Status tone="ready">ready</Status></div><p className="secondary">{state.artifact_id}</p><label htmlFor="artifact-cursor">편집 위치</label><select id="artifact-cursor" value={state.artifact_cursor} onChange={(event) => onSetCursor(event.target.value)}><option value="section-2:paragraph-3">2절 · 3문단</option><option value="section-3:table-1">3절 · 표 1</option></select></article>
-      <button className="secondary-action" type="button" disabled title="M2-05에서 연결">생성 설정 · unavailable</button>
-    </section>
-  );
+  return <StudioWorkflowPane domainState={state.studio_workflow} onStudioAction={onStudioAction} onOpenEvidence={onOpenEvidence} onSetCursor={onSetCursor} />;
 }
 
 export function AdaptiveWorkspace({ routeId = "workspace_detail", screenId = "workspace_detail" }) {
@@ -129,7 +124,7 @@ export function AdaptiveWorkspace({ routeId = "workspace_detail", screenId = "wo
       {projection.layoutMode !== "three-pane" && <nav className="pane-switcher" aria-label="작업 면 전환">{PANE_IDS.map((pane) => <button type="button" key={pane} aria-pressed={viewState.active_pane === pane} onClick={() => activatePane(pane)}>{PANE_LABELS[pane]}</button>)}</nav>}
 
       <div className="workspace-panes">
-        {projection.visiblePanes.map((pane, index) => <div className="pane-slot" key={pane} style={projection.layoutMode === "three-pane" ? { flexBasis: `${viewState.pane_sizes[pane]}%` } : undefined}><Pane pane={pane} state={viewState} onOpenEvidence={openEvidence} onRunModelAction={(domainAction) => updateState({ type: "run-model", domainAction })} onSourceKnowledgeAction={(domainAction) => updateState({ type: "source-knowledge", domainAction })} onSelectSource={(sourceId) => updateState({ type: "select-source", sourceId })} onSetCursor={(cursor) => updateState({ type: "set-artifact-cursor", cursor })} />{projection.layoutMode === "three-pane" && index < projection.visiblePanes.length - 1 && <div className="resize-handle" id={`resize-handle-${pane}`} role="separator" aria-label={`${PANE_LABELS[pane]} 너비 조절`} aria-orientation="vertical" aria-valuenow={Math.round(viewState.pane_sizes[pane])} tabIndex={0} onKeyDown={(event) => onResizeKeyDown(pane, event)} onPointerDown={(event) => onResizePointerDown(pane, event)} />}</div>)}
+        {projection.visiblePanes.map((pane, index) => <div className="pane-slot" key={pane} style={projection.layoutMode === "three-pane" ? { flexBasis: `${viewState.pane_sizes[pane]}%` } : undefined}><Pane pane={pane} state={viewState} onOpenEvidence={openEvidence} onStudioAction={(domainAction) => updateState({ type: "studio-workflow", domainAction })} onRunModelAction={(domainAction) => updateState({ type: "run-model", domainAction })} onSourceKnowledgeAction={(domainAction) => updateState({ type: "source-knowledge", domainAction })} onSelectSource={(sourceId) => updateState({ type: "select-source", sourceId })} onSetCursor={(cursor) => updateState({ type: "set-artifact-cursor", cursor })} />{projection.layoutMode === "three-pane" && index < projection.visiblePanes.length - 1 && <div className="resize-handle" id={`resize-handle-${pane}`} role="separator" aria-label={`${PANE_LABELS[pane]} 너비 조절`} aria-orientation="vertical" aria-valuenow={Math.round(viewState.pane_sizes[pane])} tabIndex={0} onKeyDown={(event) => onResizeKeyDown(pane, event)} onPointerDown={(event) => onResizePointerDown(pane, event)} />}</div>)}
       </div>
 
       {projection.layoutMode === "two-pane" && projection.hiddenPanes.map((pane) => <button id={`drawer-trigger-${pane}`} className="drawer-launcher" type="button" key={pane} onClick={(event) => openPaneDrawer(pane, event)}>{PANE_LABELS[pane]} Drawer 열기</button>)}
@@ -138,7 +133,7 @@ export function AdaptiveWorkspace({ routeId = "workspace_detail", screenId = "wo
       {projection.layoutMode === "bottom-tabs" && <nav id="bottom-tabs" className="bottom-tabs" aria-label="모바일 작업 면">{PANE_IDS.map((pane) => <button type="button" key={pane} aria-current={viewState.active_pane === pane ? "page" : undefined} onClick={() => activatePane(pane)}>{PANE_LABELS[pane]}</button>)}</nav>}
       </div>
 
-      {viewState.open_drawer && viewState.open_drawer !== "evidence" && <div className="overlay-backdrop"><aside ref={modalRef} id="workspace-drawer" className="workspace-drawer" role="dialog" aria-modal="true" aria-label={`${PANE_LABELS[viewState.open_drawer]} Drawer`}><button autoFocus data-modal-initial-focus className="close-button" type="button" aria-label="Drawer 닫기" title="Drawer 닫기" onClick={closeOverlay}>×</button><Pane pane={viewState.open_drawer} state={viewState} onOpenEvidence={openEvidence} onRunModelAction={(domainAction) => updateState({ type: "run-model", domainAction })} onSourceKnowledgeAction={(domainAction) => updateState({ type: "source-knowledge", domainAction })} onSelectSource={(sourceId) => updateState({ type: "select-source", sourceId })} onSetCursor={(cursor) => updateState({ type: "set-artifact-cursor", cursor })} /></aside></div>}
+      {viewState.open_drawer && viewState.open_drawer !== "evidence" && <div className="overlay-backdrop"><aside ref={modalRef} id="workspace-drawer" className="workspace-drawer" role="dialog" aria-modal="true" aria-label={`${PANE_LABELS[viewState.open_drawer]} Drawer`}><button autoFocus data-modal-initial-focus className="close-button" type="button" aria-label="Drawer 닫기" title="Drawer 닫기" onClick={closeOverlay}>×</button><Pane pane={viewState.open_drawer} state={viewState} onOpenEvidence={openEvidence} onStudioAction={(domainAction) => updateState({ type: "studio-workflow", domainAction })} onRunModelAction={(domainAction) => updateState({ type: "run-model", domainAction })} onSourceKnowledgeAction={(domainAction) => updateState({ type: "source-knowledge", domainAction })} onSelectSource={(sourceId) => updateState({ type: "select-source", sourceId })} onSetCursor={(cursor) => updateState({ type: "set-artifact-cursor", cursor })} /></aside></div>}
 
       {viewState.open_drawer === "evidence" && <div className="overlay-backdrop"><aside ref={modalRef} id="evidence-viewer" className={`evidence-viewer ${projection.evidencePresentation}`} role="dialog" aria-modal="true" aria-labelledby="evidence-title"><div className="viewer-header"><div><p className="eyebrow">Source 원문</p><h2 id="evidence-title">근거 Viewer</h2></div><button autoFocus data-modal-initial-focus className="close-button" type="button" aria-label="근거 Viewer 닫기" title="근거 Viewer 닫기" onClick={closeOverlay}>×</button></div><p><strong>{viewState.evidence_name}</strong></p><dl className="version-snapshot"><div><dt>Source</dt><dd>{viewState.evidence_source_id}</dd></div><div><dt>Source Version</dt><dd>{viewState.evidence_source_version_id}</dd></div><div><dt>Evidence</dt><dd>{viewState.evidence_id}</dd></div><div><dt>종류</dt><dd>{viewState.evidence_kind}</dd></div></dl><p className="evidence-position">{viewState.evidence_position}</p><blockquote>{viewState.evidence_excerpt}</blockquote></aside></div>}
     </main>

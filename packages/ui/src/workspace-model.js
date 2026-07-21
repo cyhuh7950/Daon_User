@@ -1,5 +1,6 @@
 import { createSourceKnowledgeViewState, transitionSourceKnowledgeState } from "./source-knowledge-model.js";
 import { createRunViewState, transitionRunViewState } from "./run-model-evidence-model.js";
+import { createStudioViewState, transitionStudioViewState } from "./studio-workflow-model.js";
 
 export const PANE_IDS = Object.freeze(["knowledge", "conversation", "studio"]);
 export const LAYOUT_MODES = Object.freeze(["three-pane", "two-pane", "single-pane", "bottom-tabs"]);
@@ -25,6 +26,7 @@ const DEFAULT_STATE = Object.freeze({
   evidence_kind: "document-region",
   source_knowledge: createSourceKnowledgeViewState(),
   run_model: createRunViewState(),
+  studio_workflow: createStudioViewState(),
   pane_sizes: Object.freeze({ knowledge: 30, conversation: 38, studio: 32 }),
   last_transition: "prototype-seed"
 });
@@ -43,7 +45,8 @@ export function createWorkspaceViewState(overrides = {}) {
     ...overrides,
     pane_sizes: { ...DEFAULT_STATE.pane_sizes, ...(overrides.pane_sizes ?? {}) },
     source_knowledge: createSourceKnowledgeViewState(overrides.source_knowledge ?? DEFAULT_STATE.source_knowledge),
-    run_model: createRunViewState(overrides.run_model ?? DEFAULT_STATE.run_model)
+    run_model: createRunViewState(overrides.run_model ?? DEFAULT_STATE.run_model),
+    studio_workflow: createStudioViewState(overrides.studio_workflow ?? DEFAULT_STATE.studio_workflow)
   };
 }
 
@@ -90,7 +93,7 @@ export function resizePaneSizes(sizes, pane, delta) {
 }
 
 export function transitionWorkspace(state, action, transition = new Date().toISOString()) {
-  const next = { ...state, pane_sizes: { ...state.pane_sizes }, source_knowledge: createSourceKnowledgeViewState(state.source_knowledge), run_model: createRunViewState(state.run_model), last_transition: transition };
+  const next = { ...state, pane_sizes: { ...state.pane_sizes }, source_knowledge: createSourceKnowledgeViewState(state.source_knowledge), run_model: createRunViewState(state.run_model), studio_workflow: createStudioViewState(state.studio_workflow), last_transition: transition };
   switch (action.type) {
     case "activate-pane":
       if (!PANE_IDS.includes(action.pane)) return state;
@@ -134,6 +137,10 @@ export function transitionWorkspace(state, action, transition = new Date().toISO
       next.run_model = transitionRunViewState(next.run_model, action.domainAction);
       next.run_id = next.run_model.run.id;
       next.run_status = next.run_model.run.status;
+      return next;
+    case "studio-workflow":
+      next.studio_workflow = transitionStudioViewState(next.studio_workflow, action.domainAction);
+      next.artifact_id = next.studio_workflow.versions.at(-1)?.id ?? next.artifact_id;
       return next;
     case "set-artifact-cursor":
       next.artifact_cursor = action.cursor;

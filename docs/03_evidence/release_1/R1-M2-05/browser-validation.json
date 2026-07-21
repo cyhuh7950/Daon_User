@@ -1,0 +1,199 @@
+{
+  "work_order_id": "R1-M2-05-I001",
+  "attempt": 2,
+  "validated_at": "2026-07-22T18:42:00+09:00",
+  "source_commit": "6eeb5b71723bd3df27274bd6cf2faf29a4376374",
+  "worktree_changes": true,
+  "environment": {
+    "command": "npm run start --workspace @daon-user/web -- -p 4173",
+    "url": "http://localhost:4173/workspaces/workspace-release-one",
+    "build_mode": "production",
+    "fresh_browser_session": true,
+    "prototype_contract_passed": true,
+    "actual_runtime_not_executed": true
+  },
+  "viewports": [
+    {
+      "viewport": "1920x1080",
+      "actual_inner_viewport": "1920x1080",
+      "layout": "three-pane",
+      "checks": [
+        "five output tiles and seven setting categories were visible in the Studio pane",
+        "mandatory RuleSet, authority, weight clamp, data realm and organization review locks showed reasons",
+        "Source, Conversation and Studio remained visible without horizontal overlap"
+      ],
+      "screenshot": "studio-settings-1920x1080.png",
+      "visual_qa": "PASS"
+    },
+    {
+      "viewport": "1200x900",
+      "actual_inner_viewport": "1200x900",
+      "layout": "two-pane",
+      "checks": [
+        "approved OutputVersion fixture was loaded",
+        "current access was changed to partially_redacted",
+        "Delivery Preview retained actual delivery count zero and displayed partial masking",
+        "Studio state survived the layout projection"
+      ],
+      "screenshot": "studio-approved-delivery-1200x900.png",
+      "visual_qa": "PASS"
+    },
+    {
+      "viewport": "800x900",
+      "actual_inner_viewport": "800x900",
+      "layout": "single-pane",
+      "checks": [
+        "mobile edit_title allowlist action created a user_edit content revision in the interactive run",
+        "change_layout was blocked with MOBILE_STUDIO_ACTION_NOT_ALLOWED",
+        "role matrix, mobile allowlist and Web-Windows continuation guidance remained readable"
+      ],
+      "screenshot": "studio-mobile-matrix-800x900.png",
+      "visual_qa": "PASS"
+    },
+    {
+      "viewport": "500x900",
+      "actual_inner_viewport": "500x900",
+      "layout": "bottom-tabs",
+      "checks": [
+        "Studio remained the selected bottom tab after resize",
+        "selected output and mobile blocked safety state were preserved",
+        "no horizontal clipping or control overlap was observed"
+      ],
+      "screenshot": "studio-mobile-blocked-500x900.png",
+      "visual_qa": "PASS"
+    }
+  ],
+  "interactive_flows": [
+    {
+      "name": "settings_snapshot_submit",
+      "verification_kind": "prototype_fixture",
+      "result": "PASS",
+      "checks": [
+        "knowledge_map selected with JSON-SVG-PNG-PDF formats",
+        "confirm created an immutable GenerationSettingsSnapshot preview",
+        "pre-submit setting change invalidated confirmation",
+        "reconfirm and explicit submit reached submitted"
+      ]
+    },
+    {
+      "name": "version_review_approval",
+      "verification_kind": "prototype_fixture",
+      "result": "PASS",
+      "checks": [
+        "draft fixture, user edit, review request, review start and revision request were clicked",
+        "seven-day ApprovalRequest was requested and approved",
+        "approval duration, reminder, auto approval zero, lineage and audit were visible"
+      ]
+    },
+    {
+      "name": "current_access_export_delivery_registration",
+      "verification_kind": "prototype_fixture",
+      "result": "PASS",
+      "checks": [
+        "access_blocked denied Delivery with CURRENT_ACCESS_DENIED",
+        "partially_redacted displayed allowed and masked reference counts",
+        "Export, Delivery and explicit KnowledgeRegistration each created a current AccessDecision",
+        "actual file, actual delivery, automatic registration and Daon write counts remained zero"
+      ]
+    },
+    {
+      "name": "mobile_allowlist",
+      "verification_kind": "prototype_fixture",
+      "result": "PASS",
+      "checks": [
+        "edit_title was allowed as a content revision",
+        "change_layout was rejected by a pure allowlist with MOBILE_STUDIO_ACTION_NOT_ALLOWED",
+        "continuation guidance pointed to Web-Windows"
+      ]
+    },
+    {
+      "name": "actual_studio_api_db_llm_file_delivery_index",
+      "verification_kind": "deferred_actual",
+      "result": "DEFERRED",
+      "owner": "M4/M5/M6/M8",
+      "pass_counted": false
+    }
+  ],
+  "c01_correction_validation": {
+    "reused_1920_evidence": {
+      "screenshot": "studio-settings-1920x1080.png",
+      "reason": "C01은 승인 종료 전이, 등록 전이, 모바일 Matrix, Cursor에 한정되며 1920 다섯 Tile·설정·정책 잠금 UI는 변경되지 않았다.",
+      "hash_reverified": true
+    },
+    "viewports": [
+      {
+        "viewport": "1200x900",
+        "layout": "two-pane",
+        "screenshot": "studio-c01-approval-registration-1200x900.png",
+        "verification_kind": "prototype_fixture",
+        "checks": [
+          "approval-request-001 expired 뒤 approve가 APPROVAL_REQUEST_NOT_PENDING으로 차단되고 expired 상태가 유지됨",
+          "approval-request-002 새 요청만 approved로 전환됨",
+          "knowledge-registration-prototype-001 rejected 뒤 종료 상태가 유지됨",
+          "knowledge-registration-prototype-002 새 요청이 registered가 되고 output-version-001 고정·이력 2건·실제 Index 0건·Daon 쓰기 0건이 표시됨"
+        ],
+        "visual_qa": "PASS"
+      },
+      {
+        "viewport": "800x900",
+        "layout": "single-pane",
+        "screenshot": "studio-c01-mobile-15-800x900.png",
+        "verification_kind": "prototype_fixture",
+        "checks": [
+          "모바일 Matrix 15개 Action을 DOM에서 정확한 순서로 확인",
+          "허용 9개와 차단 6개 모두 상태 Domain·Content Revision·안전 Code·이어서 작업을 표시",
+          "edit_text_block 실제 클릭으로 user_edit 새 Version 생성"
+        ],
+        "visual_qa": "PASS"
+      },
+      {
+        "viewport": "500x900",
+        "layout": "bottom-tabs",
+        "screenshot": "studio-c01-cursor-500x900.png",
+        "verification_kind": "prototype_fixture",
+        "checks": [
+          "Cursor를 section-3:table-1로 변경",
+          "자료·지식 전환 뒤 업무 Studio 재마운트와 500px Projection 후 rendered select value 유지",
+          "선택된 표시 3절 · 표 1, Studio bottom tab, 등록 Version 계보가 함께 보존됨"
+        ],
+        "visual_qa": "PASS"
+      }
+    ],
+    "deferred_actual": {
+      "verification_kind": "deferred_actual",
+      "pass_counted": false,
+      "owner": "M4/M5/M6/M8"
+    }
+  },
+  "console": {
+    "warning_count": 0,
+    "error_count": 0
+  },
+  "network": {
+    "resource_timing_entries": "unavailable",
+    "actual_api_like_requests": "unavailable",
+    "non_same_origin_requests": "unavailable",
+    "forbidden_internal_address_requests": "unavailable",
+    "reason": "Performance API was undefined in the Browser evaluation context",
+    "interpretation": "Runtime request counts are not asserted as zero; source-level browser URL and direct fetch checks are reported separately."
+  },
+  "static_contract": {
+    "browser_source_forbidden_absolute_or_internal_urls": 0,
+    "browser_source_direct_fetch_calls": 0,
+    "browser_source_next_public_api_base_url_uses": 0,
+    "raw_provider_or_secret_display_paths": 0,
+    "verification": "studio-workflow static test, workspace lint and focused rg"
+  },
+  "honesty_contract": {
+    "displayed": "실제 API·DB·LLM·파일 Export·전달·지식 Index 0건 · Prototype · unavailable · M4/M5/M6/M8 후속 책임",
+    "actual_success_claimed": false
+  },
+  "browser_session_cleanup": {
+    "viewport_reset": true,
+    "tabs_finalized": true,
+    "production_process_stopped": true
+  },
+  "prototype_fixture_pass_count": 7,
+  "deferred_actual_pass_count": 0,
+  "result": "PASS"
+}
