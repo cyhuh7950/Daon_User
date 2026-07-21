@@ -1,0 +1,113 @@
+{
+  "work_order_id": "R1-M2-02-C02",
+  "attempt": 3,
+  "captured_at": "2026-07-21T16:05:49.5367337+09:00",
+  "head_sha": "a074aca92f9ef0b2ecb5a3630dd725a658cd2ec0",
+  "browser": "Chrome via Browser Plugin",
+  "route": "/workspaces/workspace-release-one",
+  "home_route": {
+    "path": "/",
+    "route_id": "home",
+    "screen_id": "home",
+    "workspace_rendered": false,
+    "workspace_link": "/workspaces/workspace-release-one",
+    "unavailable_visible": true
+  },
+  "dom_seed": {
+    "run_id": "run-prototype-unavailable",
+    "artifact_id": "artifact-evidence-report-draft",
+    "evidence_id": "evidence-source-page-12",
+    "evidence_position": "page-12:paragraph-4"
+  },
+  "viewports": [
+    {
+      "width": 1920,
+      "height": 1080,
+      "layout_mode": "three-pane",
+      "header_badge": "three-pane",
+      "visible_panes": ["pane-knowledge", "pane-conversation", "pane-studio"],
+      "visible_pane_count": 3,
+      "bottom_tabs_exists": false,
+      "bottom_tabs_hidden": true,
+      "captured_pixel_width": 1920,
+      "captured_pixel_height": 1080,
+      "image_format": "png",
+      "visual_verification": "세 Pane와 header three-pane badge가 동시에 보이고 bottom tabs는 보이지 않음을 원본 이미지로 확인",
+      "initial_pane_sizes": [30, 38, 32],
+      "keyboard_resize_max": [48, 20, 32],
+      "keyboard_resize_min": [20, 48, 32],
+      "pane_sum_before": 100,
+      "pane_sum_after": 100,
+      "resize_hit_area_px": 24,
+      "body_font_px": 12,
+      "title_font_px": 16,
+      "help": {
+        "pointer_hover_and_click_open": true,
+        "focus_open": true,
+        "aria_expanded": true,
+        "aria_describedby": "tooltip-knowledge",
+        "escape_close": true,
+        "blur_close": true
+      },
+      "screenshot": "workspace-1920x1080.png"
+    },
+    {
+      "width": 1200,
+      "height": 900,
+      "layout_mode": "two-pane",
+      "drawer_initial_focus": "Drawer 닫기",
+      "shift_tab_wrap_target": "evidence-trigger-knowledge",
+      "tab_wrap_target": "Drawer 닫기",
+      "background_inert_while_modal": true,
+      "viewer_initial_focus": "근거 Viewer 닫기",
+      "viewer_escape_return_focus": "evidence-trigger-knowledge",
+      "viewer_escape_return_dialog": "workspace-drawer",
+      "drawer_escape_return_focus": "drawer-trigger-knowledge",
+      "background_inert_after_close": false,
+      "screenshot": "workspace-1200x900.png"
+    },
+    {
+      "width": 800,
+      "height": 900,
+      "layout_mode": "single-pane",
+      "visible_pane": "pane-studio",
+      "drawer_initial_focus": "Drawer 닫기",
+      "drawer_escape_return_focus": "drawer-trigger-knowledge",
+      "background_inert_while_modal": true,
+      "background_inert_after_close": false,
+      "touch_target_px": 44,
+      "screenshot": "workspace-800x900.png"
+    },
+    {
+      "width": 500,
+      "height": 900,
+      "layout_mode": "bottom-tabs",
+      "active_tab": "자료·지식",
+      "touch_target_px": 44,
+      "help_touch_click_open": true,
+      "help_escape_close": true,
+      "viewer_initial_focus": "근거 Viewer 닫기",
+      "viewer_width_px": 500,
+      "viewport_width_px": 500,
+      "shift_tab_wrap_target": "18쪽",
+      "tab_wrap_target": "근거 Viewer 닫기",
+      "evidence_position_before": "page-12:paragraph-4",
+      "evidence_position_after": "page-18:paragraph-2",
+      "visible_evidence_position_after": "page-18:paragraph-2",
+      "viewer_escape_return_focus": "evidence-trigger-knowledge",
+      "background_inert_after_close": false,
+      "screenshot": "workspace-500x900.png",
+      "viewer_screenshot": "workspace-500x900-evidence.png"
+    }
+  ],
+  "console_error_count": 0,
+  "network": {
+    "observed_resource_count": 11,
+    "api_resource_count": 0,
+    "non_same_origin_resource_count": 0,
+    "prohibited_api_target_count": 0,
+    "page_origin": "http://127.0.0.1:4173",
+    "note": "검증용 local page origin의 same-origin _next 자원만 관찰했으며 Browser Source Lint에서도 직접 fetch와 금지 주소는 0건이다."
+  },
+  "result": "PASS"
+}
