@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0",
+  "recorded_at": "2026-07-22T05:08:27.4904787+09:00",
+  "status": "COMPLETED",
+  "target_host": "ysna-server",
+  "approved_root": "/home/ubuntu/deploy/daon-user",
+  "target_path": "/home/ubuntu/deploy/daon-user/R1-M2-05/ac80b670c1606a22cac27c39f311ed3bd8980a42",
+  "git_sha": "ac80b670c1606a22cac27c39f311ed3bd8980a42",
+  "preflight": {
+    "approved_root_realpath": "/home/ubuntu/deploy/daon-user",
+    "target_existed": false,
+    "containers_sha256": "1fca58980570623cebc5a91fd0b8cd170fd441586c3f7d75c15505e0148a00cc",
+    "networks_sha256": "259ff121f713ee4bdebe1d8e423b36a07882c11c9cb3c38b44923d37c3dbadf8",
+    "volumes_sha256": "232abe52630c219245daeb21f0b156bc33b90ea2f63941d934418bf2d6f39c19"
+  },
+  "transport": {
+    "kind": "public_github_https_clone",
+    "repository": "https://github.com/cyhuh7950/Daon_User.git",
+    "branch": "codex/r1-m2-05",
+    "pushed_head_sha": "ac80b670c1606a22cac27c39f311ed3bd8980a42",
+    "detached_checkout": true
+  },
+  "architecture": {
+    "host": "aarch64",
+    "docker": "aarch64",
+    "node_image": "node:24.18.0-bookworm-slim",
+    "node_image_architecture": "arm64",
+    "uv_image": "ghcr.io/astral-sh/uv:0.11.2",
+    "uv_image_architecture": "arm64"
+  },
+  "checkout": {
+    "head": "ac80b670c1606a22cac27c39f311ed3bd8980a42",
+    "detached": true,
+    "clean_before": true,
+    "clean_after": true
+  },
+  "migration": {
+    "status": "NOT_APPLICABLE_NO_SCHEMA",
+    "migration_directories": 0,
+    "schema_files": 0,
+    "database_commands_executed": 0
+  },
+  "toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "corepack": "0.35.0",
+    "uv": "0.11.2",
+    "uv_target": "aarch64-unknown-linux-musl",
+    "npm_ci_packages": 258,
+    "npm_ci_exit_code": 0
+  },
+  "validation": {
+    "product_foundation_passed": 8,
+    "combined_tests_passed": 77,
+    "combined_tests_failed": 0,
+    "studio_tests_passed": 17,
+    "workspace_lint_files": 11,
+    "workspace_lint_exit_code": 0,
+    "production_build_static_pages": 3,
+    "production_build_exit_code": 0
+  },
+  "quality_gate": {
+    "git_sha": "ac80b670c1606a22cac27c39f311ed3bd8980a42",
+    "overall_status": "PASS",
+    "exit_code": 0,
+    "categories": ["lint", "type", "unit", "contract", "build", "security", "independence"],
+    "failures": 0,
+    "result_path": "docs/03_evidence/release_1/R1-M2-05/R1-M2-05-server-quality-gate-result.json",
+    "result_sha256": "8B875AF952B1DE8167276A0FC57495CF4D1BA13A2A01E11C89B042C02AD8C546",
+    "summary_path": "docs/03_evidence/release_1/R1-M2-05/R1-M2-05-server-quality-gate-summary.md",
+    "summary_sha256": "92CDA311D43F45F63F51522FF629EE44126EE3FA22A6AD57FD9B4865D41F03FA"
+  },
+  "recovery": [
+    {
+      "stage": "remote shell preflight",
+      "cause": "PowerShell evaluated remote command substitutions before SSH",
+      "action": "Reissued the same exact-path command with PowerShell single quoting"
+    },
+    {
+      "stage": "immutable checkout",
+      "cause": "An incorrectly expanded abbreviated SHA was not present in Git",
+      "action": "Validated and removed only the incomplete clone, then checked out the full pushed SHA"
+    },
+    {
+      "stage": "ARM64 toolchain gate",
+      "cause": "The minimal Node image did not contain the pinned uv runtime",
+      "action": "Copied uv 0.11.2 from the approved official ARM64 image into an isolated temporary tooling directory and reran the full gate"
+    }
+  ],
+  "cleanup": {
+    "temporary_containers": 0,
+    "temporary_networks": 0,
+    "temporary_volumes": 0,
+    "generated_directories": 0
+  },
+  "postflight": {
+    "containers_sha256": "1fca58980570623cebc5a91fd0b8cd170fd441586c3f7d75c15505e0148a00cc",
+    "networks_sha256": "259ff121f713ee4bdebe1d8e423b36a07882c11c9cb3c38b44923d37c3dbadf8",
+    "volumes_sha256": "232abe52630c219245daeb21f0b156bc33b90ea2f63941d934418bf2d6f39c19",
+    "existing_resources_unchanged": true
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "work_order_id": "R1-M2-05-I001",
+  "attempt": 2,
+  "algorithm": "SHA-256",
+  "generated_at": "2026-07-22T19:04:00+09:00",
+  "source_commit": "6eeb5b71723bd3df27274bd6cf2faf29a4376374",
+  "prototype_contract_passed": true,
+  "actual_runtime_not_executed": true,
+  "files": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-05/browser-validation.json",
+      "sha256": "A5CDF912720B4A2BF8012FC9CA2C5ED685C7B87B41FA11C46DA290BAF5343DCE"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-05/studio-settings-1920x1080.png",
+      "sha256": "BFA6B7D8B4B357A2D1FA5E195F2DD33A0A5F9FFA17DEA32D93E3CA65C4CBC7C4"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-05/studio-approved-delivery-1200x900.png",
+      "sha256": "BC4BBC88022AC0FFADC7E66C6A28CC70A87CD69C1DD4292ED69955EE5027D7A4"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-05/studio-mobile-matrix-800x900.png",
+      "sha256": "5C112CFF91FCDBE2121FE722A8118ACBCA4714EC6B406AF12464796E818CC391"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-05/studio-mobile-blocked-500x900.png",
+      "sha256": "61895F6810FBDBEF0DEC5B5895A3EBC36EDA49D48FCD2AB6CD36FC1BBC8E149A"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-05/studio-c01-approval-registration-1200x900.png",
+      "sha256": "5B57DB22B71462BFCC4365E1E7AB6EFB7F66D0C0C38E30179ED66CDF9A8B6B9E"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-05/studio-c01-mobile-15-800x900.png",
+      "sha256": "8462E01373ED334ADED4F05FA1B01AEB049EC47209BC7E3D2519B26F93FB0F11"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-05/studio-c01-cursor-500x900.png",
+      "sha256": "F96D54620A1FC821673159AEC68422ECF60EFDA2CBFC8D16FF99C8FA2FD8E4F7"
+    },
+    {
+      "path": "docs/01_architecture/studio_workflow_prototype_adapter_contract.md",
+      "sha256": "F40C78C751E5CBF629533158A74A6231DE357A0A96BD33DA66AB40B84AF15292"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M2-05_attempt-1.md",
+      "sha256": "94DB1F0511B25D255A3565C54F0B44957D502C4FD39C98D6AB7F305D96CB17B5"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M2-05_attempt-2.md",
+      "sha256": "B13DD90EDD7C3625EBA60DF3D6281FB260586439255EDD91BC290CC676E20F8E"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M2-05_progress.md",
+      "sha256": "4DC521063598870CE1AA677ACCE7C64977A53F27F1BAD761A8482C861A328059"
+    }
+  ]
+}
