@@ -10,11 +10,11 @@
       "manifest": "apps/web/package.json",
       "foundation_allowed_files": ["README.md", "package.json"],
       "capabilities": {
-        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["eslint.config.js", ".eslintrc.json"] }, "command": null },
+        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["eslint.config.js", ".eslintrc.json"] }, "command": { "id": "web-workspace-lint", "command": ["npm", "run", "lint:workspace"], "failure_kind": "quality", "evidence_files": ["scripts/lint-workspace.mjs", "apps/web/app/page.jsx"] } },
         "type": { "signals": { "extensions": [".ts", ".tsx"], "files": ["tsconfig.json"] }, "command": null },
-        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "directories": ["test", "tests", "__tests__"] }, "command": { "id": "web-workspace-unit", "command": ["npm", "run", "verify:workspace"], "failure_kind": "quality", "evidence_files": ["scripts/tests/workspace.test.mjs"] } },
         "contract": { "signals": { "extensions": [], "files": ["openapi.json", "openapi.yaml", "openapi.yml"] }, "command": null },
-        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["next.config.js", "next.config.mjs", "tsconfig.json"], "directories": ["src", "app", "pages"] }, "command": null }
+        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["next.config.js", "next.config.mjs", "tsconfig.json"], "directories": ["src", "app", "pages"] }, "command": { "id": "web-production-build", "command": ["npm", "run", "build", "--workspace", "@daon-user/web"], "failure_kind": "quality", "evidence_files": ["apps/web/next.config.mjs", "apps/web/app/page.jsx"] } }
       }
     },
     {
@@ -49,11 +49,11 @@
       "manifest": "packages/ui/package.json",
       "foundation_allowed_files": ["README.md", "package.json"],
       "capabilities": {
-        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["eslint.config.js"] }, "command": null },
+        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["eslint.config.js"] }, "command": { "id": "ui-workspace-lint", "command": ["npm", "run", "lint:workspace"], "failure_kind": "quality", "evidence_files": ["scripts/lint-workspace.mjs", "packages/ui/src/adaptive-workspace.jsx"] } },
         "type": { "signals": { "extensions": [".ts", ".tsx"], "files": ["tsconfig.json"] }, "command": null },
-        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "directories": ["test", "tests", "__tests__"] }, "command": { "id": "ui-workspace-unit", "command": ["npm", "run", "verify:workspace"], "failure_kind": "quality", "evidence_files": ["scripts/tests/workspace.test.mjs"] } },
         "contract": { "signals": { "extensions": [], "files": [] }, "command": null },
-        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["tsconfig.json"], "directories": ["src"] }, "command": null }
+        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["tsconfig.json"], "directories": ["src"] }, "command": { "id": "ui-production-build", "command": ["npm", "run", "build", "--workspace", "@daon-user/web"], "failure_kind": "quality", "evidence_files": ["packages/ui/src/adaptive-workspace.jsx", "packages/ui/src/workspace.css"] } }
       }
     },
     {

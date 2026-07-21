@@ -1,0 +1,4 @@
+html { color-scheme: light; }
+body { min-width: 320px; margin: 0; background: var(--daon-color-canvas); color: var(--daon-color-text-primary); font: var(--daon-font-body)/1.5 system-ui, sans-serif; }
+.home-shell { max-width: 720px; margin: var(--daon-spacing-8) auto; padding: var(--daon-spacing-5); border: 1px solid var(--daon-color-border); border-radius: var(--daon-radius-1); background: var(--daon-color-surface); }
+.home-shell h1 { font-size: var(--daon-font-screen-title); }.home-eyebrow { color: var(--daon-color-text-secondary); font-size: var(--daon-font-auxiliary); }.home-workspace-link { display: inline-flex; align-items: center; min-height: var(--daon-target-desktop-control); padding-inline: var(--daon-spacing-3); border-radius: var(--daon-radius-0); background: var(--daon-color-accent); color: white; }
