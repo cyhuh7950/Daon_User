@@ -1,0 +1,131 @@
+{
+  "schema_version": "1.0",
+  "recorded_at": "2026-07-22T14:27:59.0693356+09:00",
+  "status": "COMPLETED",
+  "target_host": "ysna-server",
+  "approved_root": "/home/ubuntu/deploy/daon-user",
+  "target_path": "/home/ubuntu/deploy/daon-user/R1-M2-06/780ca50725233227076a40f5adb2b5f1e05b1070",
+  "git_sha": "780ca50725233227076a40f5adb2b5f1e05b1070",
+  "preflight": {
+    "approved_root_realpath": "/home/ubuntu/deploy/daon-user",
+    "target_existed": false,
+    "containers_sha256": "d8054249820a313089400ffbb26cd9953e9d2313e28e153416a2a62656259e54",
+    "networks_sha256": "9c4611127b643c1740da8bfc13e94899b8276082e1256aa3db47dbf63c0d89e2",
+    "volumes_sha256": "5bd2505dd668277c9fd5062fd0e3e78e0f2c91c0cf41ee83bae4fafa0cb728b7"
+  },
+  "transport": {
+    "kind": "public_github_https_clone",
+    "repository": "https://github.com/cyhuh7950/Daon_User.git",
+    "branch": "codex/r1-m2-06",
+    "pushed_head_sha": "780ca50725233227076a40f5adb2b5f1e05b1070",
+    "detached_checkout": true
+  },
+  "architecture": {
+    "host": "aarch64",
+    "docker": "aarch64",
+    "node_image": "node:24.18.0-bookworm-slim",
+    "node_image_architecture": "arm64",
+    "uv_image": "ghcr.io/astral-sh/uv:0.11.2",
+    "uv_image_architecture": "arm64"
+  },
+  "checkout": {
+    "head": "780ca50725233227076a40f5adb2b5f1e05b1070",
+    "detached": true,
+    "clean_before": true,
+    "clean_after": true
+  },
+  "migration": {
+    "status": "NOT_APPLICABLE_NO_SCHEMA",
+    "migration_directories": 0,
+    "schema_files": 0,
+    "database_commands_executed": 0
+  },
+  "toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "corepack": "0.35.0",
+    "uv": "0.11.2",
+    "uv_target": "aarch64-unknown-linux-musl",
+    "python": "3.14.3",
+    "rust": "1.97.1",
+    "npm_ci_packages": 260,
+    "npm_ci_exit_code": 0
+  },
+  "validation": {
+    "account_security_tests_passed": 21,
+    "selected_regression_tests_passed": 98,
+    "selected_regression_tests_failed": 0,
+    "workspace_lint_files": 11,
+    "workspace_lint_exit_code": 0,
+    "production_build_static_routes": 3,
+    "production_build_exit_code": 0,
+    "runtime_routes_http_200": 3,
+    "dependency_audit": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0
+    }
+  },
+  "quality_gate": {
+    "git_sha": "780ca50725233227076a40f5adb2b5f1e05b1070",
+    "overall_status": "PASS",
+    "exit_code": 0,
+    "categories": ["lint", "type", "unit", "contract", "build", "security", "independence"],
+    "failures": 0,
+    "result_path": "docs/03_evidence/release_1/R1-M2-06/R1-M2-06-server-quality-gate-result.json",
+    "result_sha256": "3677BEA1BDA96A564D44F0470594544609194E200A1BDB463BE44C66EE82BD21",
+    "summary_path": "docs/03_evidence/release_1/R1-M2-06/R1-M2-06-server-quality-gate-summary.md",
+    "summary_sha256": "9C44229EF56845182758CE3AAB5E46E72EDDCBAE9FCDD978603FE10545114B87"
+  },
+  "github_required_check": {
+    "run_id": 29893036228,
+    "job_id": 88837174463,
+    "head_sha": "780ca50725233227076a40f5adb2b5f1e05b1070",
+    "name": "Release 1 Quality Gate",
+    "conclusion": "success",
+    "url": "https://github.com/cyhuh7950/Daon_User/actions/runs/29893036228/job/88837174463"
+  },
+  "recovery": [
+    {
+      "stage": "first ARM64 toolchain attempt",
+      "cause": "The Node image bundled npm 11.16 instead of the approved npm 11.12.1",
+      "action": "Installed the exact approved npm and reran without changing the repository"
+    },
+    {
+      "stage": "second ARM64 toolchain attempt",
+      "cause": "The minimal Node image did not contain the pinned uv runtime",
+      "action": "Copied uv 0.11.2 from the approved official ARM64 image into an isolated temporary tooling directory"
+    },
+    {
+      "stage": "quality gate evidence SHA",
+      "cause": "The first passing container lacked Git, so its raw gate evidence recorded git_sha as UNAVAILABLE",
+      "action": "Installed Git in a disposable ARM64 container and reran the full gate at the same exact detached SHA"
+    },
+    {
+      "stage": "remote cleanup",
+      "cause": "Container-created generated directories were root-owned",
+      "action": "Removed only the validated checkout generated directories and temporary tooling with a disposable cleanup container"
+    }
+  ],
+  "cleanup": {
+    "temporary_containers": 0,
+    "temporary_networks": 0,
+    "temporary_volumes": 0,
+    "generated_directories": 0,
+    "temporary_tool_directories": 0,
+    "listen_port_4310": 0
+  },
+  "postflight": {
+    "containers_sha256": "d8054249820a313089400ffbb26cd9953e9d2313e28e153416a2a62656259e54",
+    "networks_sha256": "9c4611127b643c1740da8bfc13e94899b8276082e1256aa3db47dbf63c0d89e2",
+    "volumes_sha256": "5bd2505dd668277c9fd5062fd0e3e78e0f2c91c0cf41ee83bae4fafa0cb728b7",
+    "existing_resources_unchanged": true
+  },
+  "release_boundary": {
+    "temporary_security_bridge_decision": "R1-D022",
+    "operating_release_allowed": false,
+    "reason": "Next 16.3.0-canary.93 is approved only for development, GitHub Check, and isolated ysna validation until a safe stable replacement passes the same gates."
+  }
+}
