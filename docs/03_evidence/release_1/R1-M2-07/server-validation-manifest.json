@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M2-07",
+  "status": "PASS",
+  "validated_at": "2026-07-22T19:03:52+09:00",
+  "pull_request": 13,
+  "implementation_commit": "6fdcfa20c80f0d512e2b4d299446b8b6e917bd11",
+  "github": {
+    "required_check": "Release 1 Quality Gate",
+    "run_id": 29909966026,
+    "job_id": 88890280290,
+    "status": "PASS"
+  },
+  "server": {
+    "host_alias": "ysna-server",
+    "architecture": "aarch64",
+    "docker_server_architecture": "arm64",
+    "docker_server_version": "29.6.1",
+    "approved_root": "/home/ubuntu/deploy/daon-user",
+    "checkout": "/home/ubuntu/deploy/daon-user/R1-M2-07/6fdcfa20c80f0d512e2b4d299446b8b6e917bd11",
+    "checkout_mode": "detached exact SHA",
+    "checkout_clean_after_cleanup": true
+  },
+  "toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "corepack": "0.35.0",
+    "uv": "0.11.2",
+    "uv_architecture": "aarch64-unknown-linux-gnu"
+  },
+  "verification": {
+    "npm_ci_packages": 260,
+    "npm_ls_all": "PASS",
+    "npm_audit_high": "PASS",
+    "sequential_tests": "167/167 PASS",
+    "workspace_lint": "11 files PASS",
+    "production_build": "PASS; 7 routes",
+    "quality_gate": "PASS; 7 categories; failures 0; exit 0",
+    "schema_migration": "NOT_APPLICABLE_NO_SCHEMA",
+    "schema_migration_files": 0,
+    "database_commands": 0
+  },
+  "resource_invariance": {
+    "containers_sha256_before_after": "d8054249820a313089400ffbb26cd9953e9d2313e28e153416a2a62656259e54",
+    "networks_sha256_before_after": "9c4611127b643c1740da8bfc13e94899b8276082e1256aa3db47dbf63c0d89e2",
+    "volumes_sha256_before_after": "5bd2505dd668277c9fd5062fd0e3e78e0f2c91c0cf41ee83bae4fafa0cb728b7",
+    "temporary_containers_after": 0,
+    "listen_ports_created": 0
+  },
+  "cleanup": {
+    "removed_generated_only": ["node_modules", "apps/web/.next"],
+    "restored_gate_outputs": [
+      "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json",
+      "docs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md"
+    ],
+    "source_files_removed": 0
+  },
+  "observations": [
+    "The first ephemeral container stopped before dependency installation because remote shell quoting evaluated the Git expression outside the container.",
+    "The failed container was automatically removed and did not change the checkout or Docker resources; the corrected run used the same exact SHA and passed.",
+    "R1-D022 remains in force: the Next canary is allowed only for development, GitHub checks, and isolated ysna-server validation, not an operating release."
+  ]
+}

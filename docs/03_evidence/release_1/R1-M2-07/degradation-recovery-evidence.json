@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M2-07",
+  "issue_id": "R1-M2-07-I001",
+  "target_commit": "ab2a3b055581fcaea75cceafc3bb8bedb2a80066",
+  "environment": "isolated Windows worktree, deterministic domain fixture",
+  "degradations": [
+    {"failure": "daon", "invariant": "DAON_ONLY_DEGRADED"},
+    {"failure": "external_llm", "invariant": "FROZEN_POLICY_CANDIDATES_ONLY"},
+    {"failure": "local_llm", "invariant": "EXTERNAL_AUTO_SWITCH_FORBIDDEN"},
+    {"failure": "internet", "invariant": "INTERNET_DEPENDENT_ONLY"},
+    {"failure": "index", "invariant": "READY_SOURCES_ONLY"},
+    {"failure": "evidence_store", "invariant": "APPROVAL_DELIVERY_BLOCKED"}
+  ],
+  "degradation_invariants": {
+    "unauthorized_fallback_count": 0,
+    "actual_service_changes": 0,
+    "other_service_state_mutations": 0
+  },
+  "incident": {
+    "ordered_transitions": ["detected", "warning", "restricted", "recovering", "recovered"],
+    "skipped_transition_result": "INCIDENT_TRANSITION_REQUIRED",
+    "resolved_at_recorded": true,
+    "prior_run_alert_audit_deleted": false
+  },
+  "recovery_previews": [
+    {"action": "restore", "condition": "step-up missing", "result": "STEP_UP_REQUIRED", "actual_count": 0},
+    {"action": "restore", "condition": "approval missing", "result": "G9_DRILL_APPROVAL_REQUIRED", "actual_count": 0},
+    {"action": "update", "condition": "approval missing", "result": "G9_DEPLOY_APPROVAL_REQUIRED", "actual_count": 0}
+  ],
+  "security_signals": {
+    "cost": "COST_LIMIT_EXCEEDED",
+    "automatic_retry_in_frozen_context": false,
+    "step_up_states": ["failed", "expired"],
+    "access_decision_states": ["partially_redacted", "access_blocked"],
+    "original_output_mutations": 0
+  },
+  "actual_effects": {
+    "api_writes": 0,
+    "processing_runs": 0,
+    "backups": 0,
+    "restores": 0,
+    "updates": 0,
+    "rollbacks": 0
+  },
+  "correction_c01_recovery_authorization": {
+    "authorization_source": "current ViewState membership, tenant, workspace and action capability",
+    "payload_role_grants_stepup_status_trusted": false,
+    "negative_cases": [
+      {"case": "viewer, revoked membership, other tenant or workspace", "result": "RECOVERY_AUTHORIZATION_DENIED", "preview_success_audit_external_effects": 0},
+      {"case": "missing or forged StepUpAuthorization ID", "result": "STEP_UP_REQUIRED", "preview_success_audit_external_effects": 0},
+      {"case": "expired, used or scope-mismatched StepUpAuthorization", "result": "STEP_UP_AUTHORIZATION_INVALID", "preview_success_audit_external_effects": 0},
+      {"case": "missing, forged or scope-mismatched drill approval", "result": "G9_DRILL_APPROVAL_REQUIRED", "preview_success_audit_external_effects": 0},
+      {"case": "missing, forged or scope-mismatched deploy approval", "result": "G9_DEPLOY_APPROVAL_REQUIRED", "preview_success_audit_external_effects": 0}
+    ],
+    "positive_case": {"result": "RECOVERY_PREVIEW_ONLY", "actual_effects": 0, "step_up_use_count": 1, "audit_contains_step_up_and_approval_ids": true}
+  },
+  "correction_c02_recovery_role_allowlist": {
+    "allowed_roles": ["organization_admin"],
+    "validation_order": ["active membership", "tenant and workspace", "role allowlist", "action capability", "StepUpAuthorization", "G9 approval"],
+    "viewer_with_capability_and_valid_stepup_g9": {
+      "result": "RECOVERY_AUTHORIZATION_DENIED",
+      "preview_mutations": 0,
+      "success_audit_mutations": 0,
+      "step_up_consumption": 0,
+      "actual_effects": 0
+    },
+    "approved_role_normal_case": {"role": "organization_admin", "result": "RECOVERY_PREVIEW_ONLY", "actual_effects": 0}
+  }
+}
