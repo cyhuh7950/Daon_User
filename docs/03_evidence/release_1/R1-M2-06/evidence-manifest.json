@@ -2,9 +2,9 @@
   "schema_version": "1.0",
   "work_order": "R1-M2-06",
   "issue_id": "R1-M2-06-I001",
-  "status": "HANDOFF_READY_CANARY_BRIDGE",
+  "status": "COMPLETED",
   "base_commit": "cfb45a5bad2429d7fc0303ee7489f1b1789f27ad",
-  "validated_head": "d5e0a09afc2ed110fbd98cbf870a7a75b36af8ed",
+  "validated_head": "780ca50725233227076a40f5adb2b5f1e05b1070",
   "worktree_changes_included": true,
   "quality": {
     "dedicated_tests": "21/21 PASS",
@@ -13,7 +13,11 @@
     "production_build": "PASS",
     "common_quality_gate": "PASS, exit 0, failures 0; all categories passed",
     "browser": "four CSS viewport journeys PASS plus SEC02 standalone runtime smoke, console warning/error 0/0",
-    "resource_timing": "unavailable; reason recorded in browser-validation.json"
+    "resource_timing": "unavailable; reason recorded in browser-validation.json",
+    "github_required_check": "Run 29893036228, Job 88837174463, exact Head SHA, success",
+    "ysna_server_arm64": "exact detached SHA; 21/21 and 98/98 tests; lint, build, runtime smoke, audit and common quality gate PASS",
+    "migration": "NOT_APPLICABLE_NO_SCHEMA; database commands 0",
+    "server_cleanup": "clean checkout; generated directories, temporary resources and port 4310 all 0; pre/post resource hashes match"
   },
   "artifacts": [
     {"path":"apps/web/app/settings/account/page.jsx","sha256":"7311872C6ADF2A68F92BD035614DA3A9B2E3A10C4A5FA93876C11EC21B300DEC","bytes":527},
@@ -34,7 +38,11 @@
     {"path":"toolchain-versions.json","sha256":"0DCCFFCD264C46E6881A6CEA98BCBC48C918D03C583BC4F2046AD833AF1AB05F","bytes":470},
     {"path":"docs/01_architecture/DECISIONS.md","sha256":"0F0FC901FE91A897CFFD7E3192BCA32A4B4BD5B7026DBE12EA2E27D9D669C69D","bytes":8839},
     {"path":"docs/01_architecture/temporary_next_canary_security_bridge.md","sha256":"C3708D11E89E4B2BE0D7D839B41059184FF717A5820861C88AA71439CE8B3FA2","bytes":2193},
-    {"path":"docs/03_evidence/release_1/R1-M2-06/canary-runtime-smoke.json","sha256":"F0F8771BE8518BE23CA24C4EB96F85B497A2DDF2A614C7CC03748B3AF35D1805","bytes":2439}
+    {"path":"docs/03_evidence/release_1/R1-M2-06/canary-runtime-smoke.json","sha256":"F0F8771BE8518BE23CA24C4EB96F85B497A2DDF2A614C7CC03748B3AF35D1805","bytes":2439},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/R1-M2-06-server-quality-gate-result.json","sha256":"3677BEA1BDA96A564D44F0470594544609194E200A1BDB463BE44C66EE82BD21","bytes":29093},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/R1-M2-06-server-quality-gate-summary.md","sha256":"9C44229EF56845182758CE3AAB5E46E72EDDCBAE9FCDD978603FE10545114B87","bytes":516},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/server-validation-manifest.json","sha256":"A372074258EA1DCD07C2FC199B7749C764D89624C6CF6A8D8E75DD06E4804DA9","bytes":5084},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/server-validation-summary.md","sha256":"41013E1CDDFC3152F320D54C35ABD8A8EADACCFB3382D2B437325ACD7ED5A1E3","bytes":2028}
   ],
   "temporary_security_bridge": {
     "decision_id": "R1-D022",
