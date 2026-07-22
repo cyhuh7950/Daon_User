@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M2-08",
+  "issue_id": "R1-M2-08-I001",
+  "target_commit": "c7a144e74a058fcf879cf27393532f1867b054d8",
+  "worktree_changes_included": true,
+  "environment": {
+    "browser": "Chrome controlled browser",
+    "server": "Next production start from a fresh successful production build",
+    "origin": "http://localhost:4178",
+    "actual_external_adapter_execution": false
+  },
+  "hub": {
+    "path": "/",
+    "route_id": "home",
+    "screen_id": "home",
+    "heading": "Daon 사용자 프로그램 Evidence Hub",
+    "journey_count": 8,
+    "client_types": ["web", "windows", "android", "ios"],
+    "negative_states": ["loading", "empty", "warning", "error", "forbidden", "unavailable", "IMPORTANT_KNOWLEDGE_CONFLICT", "COST_LIMIT_EXCEEDED", "STEP_UP_REQUIRED", "G9_DRILL_APPROVAL_REQUIRED", "G9_DEPLOY_APPROVAL_REQUIRED", "APPROVAL_DELIVERY_BLOCKED"]
+  },
+  "interactions": [
+    {"action":"eight journey checks","result":"8/8 확인","passed":true},
+    {"action":"explicit platform selection","sequence":["web","windows","android","ios"],"final":"ios","passed":true},
+    {"action":"state selection","value":"error","passed":true},
+    {"action":"Operations route and browser back","route":"/operations","preserved":{"client_type":"ios","state":"error","journey_checks":"8/8"},"passed":true},
+    {"action":"tooltip click and Escape","tooltip_open_count":1,"tooltip_after_escape_count":0,"passed":true}
+  ],
+  "route_evidence": {
+    "rendered_same_origin_links": ["/workspaces/workspace-release-one", "/settings/account", "/settings/organization", "/operations", "/notifications"],
+    "clicked_round_trip": ["/operations", "/"],
+    "production_build_routes": ["/", "/notifications", "/operations", "/settings/account", "/settings/organization", "/workspaces/[workspace_id]"]
+  },
+  "viewports": [
+    {"width":1920,"height":1080,"scroll_width":1920,"horizontal_overflow":0,"body_font":"12px","heading_font":"16px","journey_count":8,"screenshot":"evidence-hub-1920x1080.png","png_pixels":"1920x1080"},
+    {"width":1200,"height":900,"scroll_width":1200,"horizontal_overflow":0,"body_font":"12px","heading_font":"16px","journey_count":8,"screenshot":"evidence-hub-1200x900.png","png_pixels":"1200x900"},
+    {"width":800,"height":900,"scroll_width":800,"horizontal_overflow":0,"body_font":"12px","heading_font":"16px","journey_count":8,"screenshot":"evidence-hub-800x900.png","png_pixels":"800x900"},
+    {"width":500,"height":900,"scroll_width":500,"horizontal_overflow":0,"body_font":"12px","heading_font":"16px","journey_count":8,"screenshot":"evidence-hub-500x900.png","png_pixels":"500x900"}
+  ],
+  "negative_state_screenshots": [
+    {"state":"error","screenshot":"evidence-error-1920x1080.png","png_pixels":"1920x1080"},
+    {"state":"forbidden","screenshot":"evidence-forbidden-1920x1080.png","png_pixels":"1920x1080"},
+    {"state":"unavailable","screenshot":"evidence-unavailable-1920x1080.png","png_pixels":"1920x1080"}
+  ],
+  "console": {"source":"browser dev logs","levels":["warn","error"],"entries":[],"count":0},
+  "network": {
+    "resource_timing": {"available":false,"unavailable_reason":"The controlled-browser surface did not expose Resource Timing; zero was not inferred.","non_same_origin_count":null,"api_like_count":null},
+    "observed_page_assets": {"available":true,"source":"browser pageAssets inventory","page_url":"http://localhost:4178/","total":9,"scripts":6,"stylesheets":3,"non_same_origin_count":0,"api_like_count":0},
+    "rendered_forbidden_absolute_or_internal_links": 0,
+    "static_source_scan_used_as_resource_timing_zero_substitute": false
+  },
+  "honesty": {
+    "predecessor_status":"verified_with_observations",
+    "prototype_fixture_displayed":true,
+    "deferred_actual_displayed":true,
+    "native_runtime_executed":false,
+    "actual_external_effects":0,
+    "session_state_claimed_as_server_saved":false
+  },
+  "screenshot_encoding": "Browser screenshot bytes were JPEG and were decoded then re-encoded as real PNG. PNG signature and exact pixel dimensions were verified.",
+  "server_cleanup": {"pid":1848,"pid_stopped":true,"port":4178,"port_closed":true,"logs_removed":true},
+  "browser_session_finalized": true
+}
