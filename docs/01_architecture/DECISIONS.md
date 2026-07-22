@@ -38,6 +38,7 @@
 | R1-D019 | 확정 | `waiting_model`은 제한 자동 재큐와 권한 사용자 수동 재처리, 새 ProcessingRun과 중복 억제 | `APR-G0-DESIGN-20260720-01` |
 | R1-D020 | 확정 | 과거 OutputVersion 불변 보존, 모든 접근·전달·등록·재실행은 현재 권한으로 재검증 | `APR-G0-DESIGN-20260720-01` |
 | R1-D021 | 확정 | 개발·통합은 로컬 수정·검증→Git Push→`/home/ubuntu/deploy/daon-user` 격리 배포→전용 PostgreSQL 18.4 Migration→서버 Test→PR Merge로 한다. 기존 `shared-db`와 `common/netdata/proxy` 사용·변경을 금지하고 ARM64/Multi-arch 호환성을 검증한다. WSL은 선택적 대체 환경이며 OCI 운영 G9 승인은 유지한다. | `APR-DEVENV-YSNA-20260720-01` |
+| R1-D022 | 확정 | Next `16.3.0-canary.93`을 Sharp·PostCSS 취약점 제거를 위한 Release 1 개발·검증 전용 임시 보안 브리지로 사용한다. 안정판 전환 전 운영 Release를 금지하며 안전 범위를 포함한 안정판 출시 시 동일 회귀·Quality Gate 후 즉시 교체한다. | `APR-R1-M2-06-SEC02-20260722-01` · 신산님 승인 |
 
 ## G0 판정
 
@@ -52,3 +53,9 @@
 | --- | --- | --- | --- | --- |
 | `CHG-R1-M1-03-001` | 2026-07-20 | C1 | Python `3.14.6→3.14.3`, Tauri CLI `2.11.5→2.11.4`, React Native `0.86.x→0.86.0`; npm·Corepack·uv·Next.js·React·TypeScript 정확 버전 추가 | Python 배포 목록과 npm Registry에서 승인안 일부가 존재하지 않음을 R1-M1-03 사전검증으로 확인했다. 제품 범위·요구사항·공개 API·데이터·보안 경계는 바뀌지 않으며 재현 가능한 Toolchain 계약만 정정한다. |
 | `CHG-R1-DEVENV-001` | 2026-07-20 | C2 | WSL 필수 통합을 ysna-server 격리 개발·통합 흐름으로 대체 | 신산님이 서버 접근·배포 루트와 새 실행 순서를 승인했다. 제품 기능·공개 API·데이터 계약·보안 경계는 유지하며 개발 배포 대상·격리·Migration·Merge Gate와 ARM64 위험을 명시한다. |
+
+## M2 임시 보안 브리지 기록
+
+| 변경 ID | 일자 | 등급 | 변경 | 근거와 종료 조건 |
+| --- | --- | --- | --- | --- |
+| `CHG-R1-M2-06-SEC02-001` | 2026-07-22 | C2 | R1-D002는 삭제·수정하지 않고 Next만 `16.3.0-canary.93` exact로 개발·검증 기준선에 임시 동기화 | 안정판 Next 16.2.11까지 취약 PostCSS·Sharp 범위를 유지해 정상 Tree와 Audit 0을 함께 만족하지 못했다. Canary는 개발·검증 및 ysna-server 격리 테스트에만 사용하고 운영 Release를 금지한다. 안전 범위를 선언한 안정판 출시 즉시 동일 21/98·Lint·Build·Runtime Smoke·공통 Gate를 통과한 뒤 교체한다. |

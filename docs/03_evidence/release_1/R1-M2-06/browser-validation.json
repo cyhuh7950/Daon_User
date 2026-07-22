@@ -1,0 +1,110 @@
+{
+  "work_order": "R1-M2-06",
+  "issue_id": "R1-M2-06-I001",
+  "validated_source_commit": "d5e0a09afc2ed110fbd98cbf870a7a75b36af8ed",
+  "worktree_changes_included": true,
+  "build": {
+    "kind": "next_production",
+    "command": "npm run build --workspace @daon-user/web",
+    "result": "PASS"
+  },
+  "browser": {
+    "session": "fresh Chrome tab against the C01 production rebuild",
+    "console_warning_count": 0,
+    "console_error_count": 0,
+    "resource_timing": {
+      "status": "unavailable",
+      "reason": "The browser evaluation context did not expose Resource Timing entries; no zero-count inference was made."
+    },
+    "static_request_boundary": {
+      "result": "PASS",
+      "evidence": "Dedicated source tests and focused source scan found no browser fetch, absolute API URL, localhost, Docker host or NEXT_PUBLIC_API_BASE_URL use."
+    }
+  },
+  "route_history_validation": [
+    {"action":"account to organization","path":"/settings/organization","route_id":"organization_settings","screen_id":"organization_settings","title":"조직 정책·권한"},
+    {"action":"organization to account","path":"/settings/account","route_id":"account_settings","screen_id":"account_settings","title":"계정·신뢰 장치"},
+    {"action":"browser back","path":"/settings/organization","route_id":"organization_settings","screen_id":"organization_settings","title":"조직 정책·권한"},
+    {"action":"browser forward","path":"/settings/account","route_id":"account_settings","screen_id":"account_settings","title":"계정·신뢰 장치"}
+  ],
+  "viewports": [
+    {
+      "css_viewport": "1920x1080",
+      "pixel_dimensions": "1920x1080",
+      "route": "/settings/account",
+      "click_sequence": ["추가 인증 없이 철회 시도", "장치 철회용 발급 Preview", "장치 철회 1회 사용", "장치 철회 1회 사용"],
+      "visible_strings": ["STEP_UP_ALREADY_USED", "step-up-authorization-001", "used", "device-windows-001", "revoked", "실제 Session/Sync Key 조작 0건"],
+      "checks": [
+        "account and membership metadata rendered",
+        "lost-device revoke preview reached revoked without actual session or sync-key revocation",
+        "step-up issued and used once; reuse returned STEP_UP_ALREADY_USED",
+        "tooltip opened by focus and closed with Escape",
+        "document horizontal overflow absent"
+      ],
+      "screenshot": "account-stepup-device-1920x1080.png"
+    },
+    {
+      "css_viewport": "1200x900",
+      "pixel_dimensions": "1185x889",
+      "route": "/settings/organization",
+      "click_sequence": ["검증 역할=viewer", "선택 역할 정책 변경 Preview"],
+      "visible_strings": ["AUTHORIZATION_DENIED", "HTTP 403 계약 Preview · 실제 API 미실행", "요청값", "유효값", "Policy Version", "organization-policy-2026.07", "실제 Write 0건"],
+      "checks": [
+        "seven MembershipRoles and eight independent permissions rendered",
+        "organization policy requested/effective value, lock reason and version rendered",
+        "unauthorized policy preview returned AUTHORIZATION_DENIED and an explicit HTTP 403 contract preview",
+        "provider projection contained opaque safe identifiers only",
+        "account-to-organization navigation preserved selected role and step-up state",
+        "document horizontal overflow absent"
+      ],
+      "screenshot": "organization-policy-403-1200x900.png"
+    },
+    {
+      "css_viewport": "800x900",
+      "pixel_dimensions": "785x883",
+      "route": "/settings/organization",
+      "click_sequence": ["partially_redacted", "read 재판정", "citation 재판정", "export 재판정", "delivery 재판정", "knowledge_registration 재판정", "rerun 재판정", "access_blocked"],
+      "visible_strings": ["AccessDecision 6건", "여섯 작업 판정 6건 완료", "partially_redacted", "evidence-reference-002", "CURRENT_ACCESS_DENIED", "새 Run Preview", "run-preview-current-policy-001", "현재 정책 organization-policy-2026.07", "실제 Run 0건"],
+      "checks": [
+        "historical output remained output-version-001",
+        "current access produced partially_redacted with evidence-reference-002 masking",
+        "all six operations produced current AccessDecisions",
+        "access_blocked selection projected CURRENT_ACCESS_DENIED while preserving the six-operation history",
+        "rerun created a new preview only and actual run count remained zero",
+        "document horizontal overflow absent"
+      ],
+      "screenshot": "access-partial-rerun-800x900.png"
+    },
+    {
+      "css_viewport": "500x900",
+      "pixel_dimensions": "485x873",
+      "route": "/settings/organization",
+      "click_sequence": ["검증 역할=organization_admin", "영역 이동 Step-up", "1 대상·범위", "2 권한·민감정보", "3 명시 승인", "4 전송 Preview", "5 버전·Audit"],
+      "visible_strings": ["5/5 완료", "Step-up", "step-up-authorization-002/used", "Approval Preview", "실제 전송 0건", "대상 SourceVersion 0건", "재색인 0건"],
+      "checks": [
+        "realm move completed five ordered preview steps with scoped step-up",
+        "actual transfer, source-version creation and reindex counts remained zero",
+        "organization-to-account-to-organization navigation preserved role, output, access and step-up state",
+        "document horizontal overflow absent; the wide permission matrix remains keyboard-scrollable within its own region"
+      ],
+      "screenshot": "realm-move-state-500x900.png"
+    }
+  ],
+  "prototype_honesty": {
+    "actual_api_calls_claimed": 0,
+    "actual_mfa_or_oidc_claimed": false,
+    "actual_device_or_key_revocation_claimed": false,
+    "actual_egress_or_reindex_claimed": false,
+    "http_403_is_contract_preview": true
+  },
+  "visual_review": {
+    "result": "PASS",
+    "reviewed_files": 4,
+    "observations": "No document-level horizontal clipping or overlapping controls were observed. At 500px the eight-column matrix uses an explicit internal horizontal scroll region."
+  },
+  "cleanup": {
+    "browser_tabs_kept": 0,
+    "production_server_stopped": true,
+    "viewport_reset": true
+  }
+}

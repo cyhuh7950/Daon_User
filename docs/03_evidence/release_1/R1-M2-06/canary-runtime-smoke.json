@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M2-06-SEC02",
+  "issue_id": "R1-M2-06-DEP-002",
+  "recorded_at": "2026-07-22T13:32:49.3880659+09:00",
+  "runtime": {
+    "next": "16.3.0-canary.93",
+    "mode": "standalone_production",
+    "origin": "http://127.0.0.1:4310",
+    "ready": true,
+    "stderr_bytes": 0,
+    "listener_after_cleanup": 0
+  },
+  "routes": [
+    {
+      "path": "/settings/account",
+      "http_status": 200,
+      "content_type": "text/html; charset=utf-8",
+      "response_bytes": 11338,
+      "title": "Daon 사용자 Workspace Prototype",
+      "h1": "계정·신뢰 장치",
+      "route_id": "account_settings",
+      "screen_id": "account_settings",
+      "resource_count": 11,
+      "non_same_origin_resources": 0,
+      "api_like_resources": 0,
+      "console_warning_error": 0
+    },
+    {
+      "path": "/settings/organization",
+      "http_status": 200,
+      "content_type": "text/html; charset=utf-8",
+      "response_bytes": 17734,
+      "title": "Daon 사용자 Workspace Prototype",
+      "h1": "조직 정책·권한",
+      "route_id": "organization_settings",
+      "screen_id": "organization_settings",
+      "resource_count": 11,
+      "non_same_origin_resources": 0,
+      "api_like_resources": 0,
+      "console_warning_error": 0
+    },
+    {
+      "path": "/workspaces/workspace-release-one",
+      "http_status": 200,
+      "content_type": "text/html; charset=utf-8",
+      "response_bytes": 31172,
+      "title": "Daon 사용자 Workspace Prototype",
+      "h1": "Release 1 운영 준비",
+      "route_id": "workspace_detail",
+      "screen_id": "workspace_detail",
+      "resource_count": 11,
+      "non_same_origin_resources": 0,
+      "api_like_resources": 0,
+      "console_warning_error": 0
+    }
+  ],
+  "existing_browser_evidence_unchanged": {
+    "account-stepup-device-1920x1080.png": "EE59197FAE30C638E04C75CEE8E29A7D5F4A075E1EEA70D30040EC453A64DC48",
+    "organization-policy-403-1200x900.png": "11B1F3D0DA0652FA4D25C7D7628B7B5230A870DA74EA8B9DE92DBFD359A314F4",
+    "access-partial-rerun-800x900.png": "CCB4F6A5189F5F49678AA5F2DEB453DD13CD18FF36E23FB89FD81726FEBCD4D0",
+    "realm-move-state-500x900.png": "EF3CE701B8BE8646967AB2F5F34884B747C6CAA0DB3595847FEDF05F71CF11F8"
+  },
+  "limitations": [
+    "This is a local production-runtime smoke test, not an operating release deployment.",
+    "The existing C01/C02 PNG and browser-validation.json were not regenerated."
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M2-06",
+  "issue_id": "R1-M2-06-I001",
+  "status": "HANDOFF_READY_CANARY_BRIDGE",
+  "base_commit": "cfb45a5bad2429d7fc0303ee7489f1b1789f27ad",
+  "validated_head": "d5e0a09afc2ed110fbd98cbf870a7a75b36af8ed",
+  "worktree_changes_included": true,
+  "quality": {
+    "dedicated_tests": "21/21 PASS",
+    "selected_regression": "98/98 PASS",
+    "workspace_lint": "11 files PASS",
+    "production_build": "PASS",
+    "common_quality_gate": "PASS, exit 0, failures 0; all categories passed",
+    "browser": "four CSS viewport journeys PASS plus SEC02 standalone runtime smoke, console warning/error 0/0",
+    "resource_timing": "unavailable; reason recorded in browser-validation.json"
+  },
+  "artifacts": [
+    {"path":"apps/web/app/settings/account/page.jsx","sha256":"7311872C6ADF2A68F92BD035614DA3A9B2E3A10C4A5FA93876C11EC21B300DEC","bytes":527},
+    {"path":"apps/web/app/settings/organization/page.jsx","sha256":"F888C8792C786A85A1A09EEBA90B37E3E9D8278955D59482341A148541F55F10","bytes":547},
+    {"path":"packages/ui/src/account-security-model.js","sha256":"34087194643209501ED58E61699AB5FC707E1E7A50D117367E6264066CEA6567","bytes":27578},
+    {"path":"packages/ui/src/account-security-pane.jsx","sha256":"56330FE04336B5DF0D7C3292447D813CDEDDF07A90826BB4D31A4F3C3FB91637","bytes":18494},
+    {"path":"packages/ui/src/index.js","sha256":"22ED3542D8473840C675494CDDF1E3DEFE1EB8B36DF071CD5D38F989B17F0AEC","bytes":1565},
+    {"path":"packages/ui/src/workspace.css","sha256":"C1D36397D2AF036271CC6D7D01D6AB59AC237489C82F56B3DD67B670DA7A9E26","bytes":27380},
+    {"path":"scripts/tests/account-security.test.mjs","sha256":"2D0C66EB734685FC07DB26EDD6F8882B451043C6511199A613AAB6A3BD07265F","bytes":25038},
+    {"path":"docs/01_architecture/account_security_prototype_adapter_contract.md","sha256":"429D7C33FF7CDC5E7340010F5E601B4EE62674FF3648B25E1705ECFA75980B66","bytes":7655},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/browser-validation.json","sha256":"0FF6DDAEE710DC7AF1DB0BD16E460D3A8B9FE5C87442CE4854FE1A4C21E201D5","bytes":6139},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/account-stepup-device-1920x1080.png","sha256":"EE59197FAE30C638E04C75CEE8E29A7D5F4A075E1EEA70D30040EC453A64DC48","bytes":130337},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/organization-policy-403-1200x900.png","sha256":"11B1F3D0DA0652FA4D25C7D7628B7B5230A870DA74EA8B9DE92DBFD359A314F4","bytes":98680},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/access-partial-rerun-800x900.png","sha256":"CCB4F6A5189F5F49678AA5F2DEB453DD13CD18FF36E23FB89FD81726FEBCD4D0","bytes":77530},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/realm-move-state-500x900.png","sha256":"EF3CE701B8BE8646967AB2F5F34884B747C6CAA0DB3595847FEDF05F71CF11F8","bytes":63929},
+    {"path":"apps/web/package.json","sha256":"FB25DE6FEBFD18B3F3D6943477C0AA7AC8965311D91D1954989AEB0D3F1E94C2","bytes":317},
+    {"path":"package-lock.json","sha256":"69E87A118E89CF8ADF8CE35E571EB2EB6B7D5277EB405609FEC83F04B75DC161","bytes":156787},
+    {"path":"toolchain-versions.json","sha256":"0DCCFFCD264C46E6881A6CEA98BCBC48C918D03C583BC4F2046AD833AF1AB05F","bytes":470},
+    {"path":"docs/01_architecture/DECISIONS.md","sha256":"0F0FC901FE91A897CFFD7E3192BCA32A4B4BD5B7026DBE12EA2E27D9D669C69D","bytes":8839},
+    {"path":"docs/01_architecture/temporary_next_canary_security_bridge.md","sha256":"C3708D11E89E4B2BE0D7D839B41059184FF717A5820861C88AA71439CE8B3FA2","bytes":2193},
+    {"path":"docs/03_evidence/release_1/R1-M2-06/canary-runtime-smoke.json","sha256":"F0F8771BE8518BE23CA24C4EB96F85B497A2DDF2A614C7CC03748B3AF35D1805","bytes":2439}
+  ],
+  "temporary_security_bridge": {
+    "decision_id": "R1-D022",
+    "versions": {"next":"16.3.0-canary.93","sharp":"0.35.3","postcss":"8.5.10"},
+    "audit": {"info":0,"low":0,"moderate":0,"high":0,"critical":0},
+    "operating_release_allowed": false,
+    "exit_condition": "Replace immediately with a safe stable Next release after the same regression and quality gates pass."
+  },
+  "mutable_handoff_records": [
+    "docs/04_test_reports/release_1/R1-M2-06_progress.md",
+    "docs/02_work_orders/reports/R1-M2-06_attempt-1.md",
+    "docs/02_work_orders/reports/R1-M2-06_attempt-2.md",
+    "docs/02_work_orders/reports/R1-M2-06_attempt-3.md",
+    "docs/02_work_orders/reports/R1-M2-06_dependency-remediation_attempt-1.md",
+    "docs/02_work_orders/reports/R1-M2-06_canary_bridge_attempt-1.md"
+  ],
+  "excluded_existing_dirty": [
+    "docs/03_evidence/release_1/R1-M1-04/dependency-graph.json",
+    "docs/03_evidence/release_1/R1-M1-04/violations.json"
+  ]
+}
