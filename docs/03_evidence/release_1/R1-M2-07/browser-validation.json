@@ -1,0 +1,114 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M2-07",
+  "issue_id": "R1-M2-07-I001",
+  "target_commit": "ab2a3b055581fcaea75cceafc3bb8bedb2a80066",
+  "environment": {
+    "browser": "Chrome controlled browser",
+    "server": "Next production start from a fresh successful production build",
+    "origin": "loopback production-test origin (masked by evidence policy)",
+    "actual_external_adapter_execution": false
+  },
+  "routes": [
+    {"path": "/operations", "route_id": "operations", "screen_id": "operations", "direct_heading": "운영 상태·복구"},
+    {"path": "/notifications", "route_id": "notifications", "screen_id": "notifications", "direct_heading": "알림"},
+    {"path": "/operations?incident=incident-runtime-001", "result": "incident recovered state and manual retry lineage preserved"}
+  ],
+  "click_sequence": [
+    {"step": 1, "action": "auto readiness event", "displayed": "RETRY_PREVIEW_QUEUED", "lineage": "retry_of_processing_run_id: processing-run-failed-001"},
+    {"step": 2, "action": "same event", "displayed": "DUPLICATE_TRIGGER_EVENT", "additional_preview_runs": 0},
+    {"step": 3, "action": "pinned readiness event", "displayed": "MANUAL_RETRY_REQUIRED", "additional_preview_runs": 0},
+    {"step": 4, "action": "authorized manual retry", "displayed": "trigger_type: manual"},
+    {"step": 5, "action": "six isolated failure fixtures", "displayed": ["DAON_ONLY_DEGRADED", "FROZEN_POLICY_CANDIDATES_ONLY", "EXTERNAL_AUTO_SWITCH_FORBIDDEN", "INTERNET_DEPENDENT_ONLY", "READY_SOURCES_ONLY", "APPROVAL_DELIVERY_BLOCKED"], "unauthorized_bypass": 0, "actual_service_changes": 0},
+    {"step": 6, "action": "incident recovery", "displayed": ["detected", "warning", "restricted", "recovering", "recovered"]},
+    {"step": 7, "action": "service explanation tooltip then Escape", "tooltip_open_count": 1, "tooltip_after_escape_count": 0},
+    {"step": 8, "action": "notification read then incident deep link", "read_state_after_route_round_trip": "읽음", "deep_link": "/operations?incident=incident-runtime-001"},
+    {"step": 9, "action": "recovery previews", "displayed": ["STEP_UP_REQUIRED", "G9_DRILL_APPROVAL_REQUIRED", "G9_DEPLOY_APPROVAL_REQUIRED"], "actual_writes": 0},
+    {"step": 10, "action": "repeat alert signal", "stable_alert_items": 1, "displayed_count": 2, "generation": 1},
+    {"step": 11, "action": "queue filter route round trip", "selected_before": "automatic_retry", "selected_after": "automatic_retry"}
+  ],
+  "direct_status_strings": [
+    "ready · Prototype Adapter 실제 외부 효과 0건",
+    "prototype_fixture",
+    "deferred_actual",
+    "실제 API 미실행",
+    "금지된 우회 0건 · 실제 Service 변경 0건"
+  ],
+  "viewports": [
+    {"width": 1920, "height": 1080, "scroll_width": 1905, "horizontal_overflow": 0, "body_font": "12px", "heading_font": "16px", "screenshot": "operations-1920x1080.png", "screenshot_content_pixels": "1905x1072"},
+    {"width": 1200, "height": 900, "scroll_width": 1185, "horizontal_overflow": 0, "body_font": "12px", "heading_font": "16px", "screenshot": "operations-1200x900.png", "screenshot_content_pixels": "1185x889"},
+    {"width": 800, "height": 900, "scroll_width": 785, "horizontal_overflow": 0, "body_font": "12px", "heading_font": "16px", "screenshot": "operations-800x900.png", "screenshot_content_pixels": "785x883"},
+    {"width": 500, "height": 900, "scroll_width": 485, "horizontal_overflow": 0, "body_font": "12px", "heading_font": "16px", "screenshot": "operations-500x900.png", "screenshot_content_pixels": "485x873"}
+  ],
+  "console": {
+    "source": "browser dev logs",
+    "levels": ["warn", "error"],
+    "entries": [],
+    "count": 0
+  },
+  "network": {
+    "source": "browser Resource Timing API",
+    "available": false,
+    "unavailable_reason": "The current C01 browser evaluation context did not expose performance.getEntriesByType.",
+    "non_same_origin_resources": null,
+    "non_same_origin_count": null,
+    "api_like_resources": null,
+    "api_like_count": null,
+    "static_source_scan_used_as_zero_substitute": false
+  },
+  "attempt_1_resource_timing": {"available": true, "non_same_origin_count": 0, "api_like_count": 0, "role": "retained baseline only; not substituted for C01 current browser context"},
+  "evidence_roles": {
+    "baseline_responsive_screenshots": {
+      "role": "Attempt 1 four-width responsive layout, typography and overflow baseline",
+      "files": ["operations-1920x1080.png", "operations-1200x900.png", "operations-800x900.png", "operations-500x900.png"],
+      "not_claimed": "These four PNGs do not prove the C01 state-specific lineage, degradation, recovery authorization or notification assertions."
+    },
+    "correction_state_screenshots": [
+      {"claim":"retry lineage and duplicate event suppression","file":"retry-detail-1920x1080.png","direct_strings":["DUPLICATE_TRIGGER_EVENT","retry_of_processing_run_id: processing-run-failed-001","trigger_type: readiness_event","현재 ACL·영역·RoutingPolicyVersion·비용·외부 전송 Snapshot"],"pixels":"1905x1072","bytes":482086,"sha256":"36F995CF2B7633D99D24DF8969F063FEE083362B1633DE2E0436984DD5472931"},
+      {"claim":"Daon degradation","file":"degradation-daon-1920x1080.png","direct_strings":["DAON_ONLY_DEGRADED","금지된 우회 0건","실제 Service 변경 0건"],"pixels":"1905x1072","bytes":482101,"sha256":"1D196DBC9FA160BEA73138709752C228B8821950B536B8C1FCEA86F758ADBDC0"},
+      {"claim":"External LLM degradation","file":"degradation-external-llm-1920x1080.png","direct_strings":["FROZEN_POLICY_CANDIDATES_ONLY","금지된 우회 0건","실제 Service 변경 0건"],"pixels":"1905x1072","bytes":548772,"sha256":"2034D927B467E7377A4A298D8FADE1C1DB451355578257EE61F6A4B559C871A4"},
+      {"claim":"Local LLM degradation","file":"degradation-local-llm-1920x1080.png","direct_strings":["EXTERNAL_AUTO_SWITCH_FORBIDDEN","금지된 우회 0건","실제 Service 변경 0건"],"pixels":"1905x1072","bytes":537350,"sha256":"1D9DD8925264FC8656EAB5A0B4D4AFE1A411ED6EB4A82C3AD94C76412870336E"},
+      {"claim":"Internet degradation","file":"degradation-internet-1920x1080.png","direct_strings":["INTERNET_DEPENDENT_ONLY","금지된 우회 0건","실제 Service 변경 0건"],"pixels":"1905x1072","bytes":531006,"sha256":"53D337FEA2AF6D8C8EDDA344D7B0F44230E63D5421B74A21C57DCF3254C6A2FE"},
+      {"claim":"Index degradation","file":"degradation-index-1920x1080.png","direct_strings":["READY_SOURCES_ONLY","금지된 우회 0건","실제 Service 변경 0건"],"pixels":"1905x1072","bytes":515183,"sha256":"F0C0A3E410F04D71BCBE3DA0267F3FD9C401252F2D3A2D6D13E4BFE18F0C396F"},
+      {"claim":"Evidence Store degradation","file":"degradation-evidence-store-1920x1080.png","direct_strings":["APPROVAL_DELIVERY_BLOCKED","금지된 우회 0건","실제 Service 변경 0건"],"pixels":"1905x1072","bytes":522263,"sha256":"0A29106145F5F8DA10D881838FF6CB59E1C933CA5688998CED62976ADD8C2DAB"},
+      {"claim":"missing Step-up denial","file":"security-step-up-required-1920x1080.png","direct_strings":["STEP_UP_REQUIRED","실제 Write 0건"],"pixels":"1905x1072","bytes":535914,"sha256":"D806415EBBF1EA3E6EBA062F4E56A1209D22BDF6C712BCFF204A7D2B33618147"},
+      {"claim":"missing G9 drill approval denial","file":"security-g9-drill-required-1920x1080.png","direct_strings":["G9_DRILL_APPROVAL_REQUIRED","실제 Write 0건"],"pixels":"1905x1072","bytes":533621,"sha256":"9169A7B93DD48C0302618C536C559581370E92E255D6A88456DCECA70DBF4412"},
+      {"claim":"missing G9 deploy approval denial","file":"security-g9-deploy-required-1920x1080.png","direct_strings":["G9_DEPLOY_APPROVAL_REQUIRED","실제 Write 0건"],"pixels":"1905x1072","bytes":534381,"sha256":"5234E1460BA0BBA24E77EAE7FC2E18376DFD49E61DFEC4FFC30DE73C600F5DD2"},
+      {"claim":"notification count, recovery and deep link","file":"notification-read-count-recovered-1920x1080.png","direct_strings":["Alert Count 2","Incident 상태 recovered","Deep Link /operations?incident=incident-alert-002"],"read_state_source":"Browser DOM after scoped click; compact PNG directly shows 읽음","pixels":"1905x1072","bytes":399572,"sha256":"4EA7D747A9FD6D7019E65953FDE563924AEA182826A37B157213C3F93325EC2F"},
+      {"claim":"500px compact read, count, recovered and no overflow","file":"notification-compact-500x900.png","direct_strings":["읽음","Alert Count 2","Incident 상태 recovered","Deep Link /operations?incident=incident-alert-002"],"viewport":"500x900","horizontal_overflow":0,"pixels":"485x873","bytes":248859,"sha256":"15A57F470F58D9988DBC5EA0613B832B93608A97D8BAEFA2418AF668D4D7C15C"}
+    ]
+  },
+  "correction_c01_browser": {
+    "actual_routes": ["/operations", "/notifications", "/operations?incident=incident-alert-002"],
+    "console_warn_error_count": 0,
+    "resource_timing_available": false,
+    "resource_timing_zero_inferred": false,
+    "deep_link_clicked": true,
+    "deep_link_recovered_state_preserved": true,
+    "server_pid": 90756,
+    "server_pid_stopped": true,
+    "port_4177_closed": true,
+    "server_logs_retained_in_evidence": false,
+    "browser_sessions_finalized": true
+  },
+  "correction_c02_browser": {
+    "actual_routes": ["/operations"],
+    "viewport": {"width": 1920, "height": 1080, "dom_width": 1920, "scroll_width": 1905, "horizontal_overflow": 0},
+    "normal_readiness_result": "RETRY_PREVIEW_QUEUED",
+    "normal_readiness_lineage": "retry_of_processing_run_id: processing-run-failed-001",
+    "missing_step_up_result": "STEP_UP_REQUIRED",
+    "console_warn_error_count": 0,
+    "resource_timing_available": false,
+    "resource_timing_zero_inferred": false,
+    "new_screenshots_created": 0,
+    "new_screenshot_rationale": "C02 changes domain authorization and missing-parent guards only; Pane, CSS and visual contract are unchanged. C01 state screenshots remain the visual baseline and are revalidated by the final manifest.",
+    "server_pid": 59908,
+    "server_pid_stopped": true,
+    "port_4177_closed": true,
+    "server_logs_retained_in_evidence": false,
+    "browser_sessions_finalized": true
+  },
+  "prototype_not_executed": ["API write", "processing run creation", "notification server write", "backup", "restore", "update", "rollback", "external deployment"],
+  "screenshot_encoding": "Browser screenshot bytes were JPEG; they were losslessly decoded and re-encoded as real PNG without changing visible content. PNG signature and IHDR dimensions were verified.",
+  "browser_session_finalized": true
+}
