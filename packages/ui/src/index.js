@@ -2,6 +2,8 @@ export { AdaptiveWorkspace } from "./adaptive-workspace.jsx";
 export { SourceKnowledgePane } from "./source-knowledge-pane.jsx";
 export { RunModelEvidencePane } from "./run-model-evidence-pane.jsx";
 export { StudioWorkflowPane } from "./studio-workflow-pane.jsx";
+export { AccountSecurityWorkspace } from "./account-security-pane.jsx";
+export { DETAILED_PERMISSIONS, MEMBERSHIP_ROLES, REALM_MOVE_STEPS, SENSITIVE_ACTIONS, authorizeAccountAction, createAccountSecurityViewState, evaluateRuleSetBindingChange, projectAccountSecurity, resolveMembershipRole, transitionAccountSecurityState } from "./account-security-model.js";
 export { OUTPUT_TYPES, OUTPUT_VERSION_FIELDS, createStudioViewState, evaluateMobileAction, evaluateRoleAction, transitionStudioViewState } from "./studio-workflow-model.js";
 export { RUN_STAGES, BRANCH_STATES, EVIDENCE_STATES, DECISION_LEDGER_FIELDS, allowedCandidates, applyAttemptFailure, buildRoutingDecision, createFixtureRun, createRunPrototypeSeed, createRunViewState, preflightCost, startPrototypeRun, transitionRun, transitionRunViewState } from "./run-model-evidence-model.js";
 export {
