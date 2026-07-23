@@ -39,7 +39,7 @@ export function normalizeManifestExpected(artifact, representations = []) {
   return { expected: { sha256: expectedSha, bytes: undefined }, bytes_source: "MISSING_UNVERIFIED" };
 }
 
-export function classifyPredecessorArtifact({ source_work_order: sourceWorkOrder, artifact_path: artifactPath, expected, raw, canonical, special_case: specialCase = null }) {
+export function classifyPredecessorArtifact({ source_work_order: sourceWorkOrder, artifact_path: artifactPath, expected, raw, canonical, canonical_crlf: canonicalCrlf, special_case: specialCase = null }) {
   if (!validExpected(expected)) return { status: "UNEXPLAINED_MISMATCH", verification_representation: null, code: "INVALID_MANIFEST_EXPECTATION" };
   const approvedSpecialCase = SPECIAL_CASES.get(`${sourceWorkOrder}|${artifactPath}`) ?? null;
   const legacyExpectationMatches = approvedSpecialCase?.status !== "LEGACY_MANIFEST_DRIFT" || (
@@ -48,6 +48,7 @@ export function classifyPredecessorArtifact({ source_work_order: sourceWorkOrder
   if (!legacyExpectationMatches) return { status: "UNEXPLAINED_MISMATCH", verification_representation: null, code: "LEGACY_EXPECTATION_MISMATCH" };
   if (representationMatches(raw, expected)) return { status: "DIRECT_MATCH", verification_representation: "RAW", code: "RAW_HASH_AND_BYTES_MATCH" };
   if (representationMatches(canonical, expected)) return { status: "DIRECT_MATCH", verification_representation: "GIT_CANONICAL", code: "GIT_CANONICAL_HASH_AND_BYTES_MATCH" };
+  if (representationMatches(canonicalCrlf, expected)) return { status: "DIRECT_MATCH", verification_representation: "GIT_CRLF", code: "GIT_CRLF_HASH_AND_BYTES_MATCH" };
   const currentRepresentationAvailable = raw?.available === true || canonical?.available === true;
   if (currentRepresentationAvailable && approvedSpecialCase && specialCase?.lineage_verified === true && legacyExpectationMatches) {
     return { status: approvedSpecialCase.status, verification_representation: null, code: approvedSpecialCase.status === "SUCCESSOR_SUPERSEDED" ? "VERIFIED_SUCCESSOR_LINEAGE" : "VERIFIED_LEGACY_DRIFT" };
@@ -108,6 +109,13 @@ function asRepresentation(buffer) {
   return buffer ? { available: true, sha256: sha256(buffer), bytes: buffer.length } : { available: false, sha256: null, bytes: null };
 }
 
+function asGitCrlfRepresentation(buffer) {
+  if (!buffer) return { available: false, sha256: null, bytes: null };
+  const text = buffer.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(buffer)) return { available: false, sha256: null, bytes: null };
+  return asRepresentation(Buffer.from(text.replace(/\r?\n/g, "\r\n"), "utf8"));
+}
+
 function verifySpecialCaseLineage(root, artifactPath, expected, specialCase, origin) {
   const originExists = gitCommitExists(root, specialCase.origin_commit);
   const originMatches = validExpected(expected) && representationMatches(origin, expected);
@@ -137,16 +145,17 @@ export function buildPredecessorReconciliation({ root = process.cwd() } = {}) {
       const raw = readRaw(root, artifactPath);
       const canonicalBuffer = artifactPath ? gitBuffer(root, "HEAD", artifactPath) : null;
       const canonical = asRepresentation(canonicalBuffer);
+      const canonicalCrlf = asGitCrlfRepresentation(canonicalBuffer);
       const specialDefinition = SPECIAL_CASES.get(`${sourceWorkOrder}|${artifactPath}`) ?? null;
       const originRepresentation = specialDefinition && gitCommitExists(root, specialDefinition.origin_commit) ? asRepresentation(gitBuffer(root, specialDefinition.origin_commit, artifactPath)) : { available: false, sha256: null, bytes: null };
-      let normalized = normalizeManifestExpected(artifact, [raw, canonical]);
+      let normalized = normalizeManifestExpected(artifact, [raw, canonical, canonicalCrlf]);
       if (normalized.bytes_source === "MISSING_UNVERIFIED" && specialDefinition?.status === "SUCCESSOR_SUPERSEDED" && originRepresentation.available === true && typeof artifact.sha256 === "string" && originRepresentation.sha256 === artifact.sha256.toUpperCase()) {
         normalized = { expected: { sha256: artifact.sha256, bytes: originRepresentation.bytes }, bytes_source: "VERIFIED_ORIGIN_BLOB" };
       }
       const expected = normalized.expected;
       const lineage = specialDefinition ? verifySpecialCaseLineage(root, artifactPath, expected, specialDefinition, originRepresentation) : null;
       const specialCase = specialDefinition ? { lineage_verified: lineage.lineage_verified } : null;
-      const classification = classifyPredecessorArtifact({ source_work_order: sourceWorkOrder, artifact_path: artifactPath, expected, raw, canonical, special_case: specialCase });
+      const classification = classifyPredecessorArtifact({ source_work_order: sourceWorkOrder, artifact_path: artifactPath, expected, raw, canonical, canonical_crlf: canonicalCrlf, special_case: specialCase });
       const originImplementationOrEvidenceCommit = specialDefinition?.origin_commit ?? manifestDeclaredOriginCommit;
       const originCommitExists = typeof originImplementationOrEvidenceCommit === "string" ? gitCommitExists(root, originImplementationOrEvidenceCommit) : null;
       if (!validateOriginCommit(originImplementationOrEvidenceCommit, originCommitExists)) {
@@ -169,7 +178,7 @@ export function buildPredecessorReconciliation({ root = process.cwd() } = {}) {
         status: classification.status,
         verification_representation: classification.verification_representation,
         verification_code: classification.code,
-        evidence: specialDefinition?.evidence ?? (classification.verification_representation === "RAW" ? "Raw Hash and Byte both match." : classification.verification_representation === "GIT_CANONICAL" ? "Git canonical Hash and Byte both match; raw differs by checkout representation." : classification.code),
+        evidence: specialDefinition?.evidence ?? (classification.verification_representation === "RAW" ? "Raw Hash and Byte both match." : classification.verification_representation === "GIT_CANONICAL" ? "Git canonical Hash and Byte both match; raw differs by checkout representation." : classification.verification_representation === "GIT_CRLF" ? "Git canonical UTF-8 LF-to-CRLF representation Hash and Byte both match." : classification.code),
         current_m2_08_impact: classification.status === "DIRECT_MATCH" ? "none" : classification.status === "SUCCESSOR_SUPERSEDED" ? "Historical attribution valid; current asset revalidation required." : classification.status === "LEGACY_MANIFEST_DRIFT" ? "TP-1 observation; no predecessor hash-completeness PASS; current asset revalidation required." : "M2-08 completion blocked."
       });
     }
