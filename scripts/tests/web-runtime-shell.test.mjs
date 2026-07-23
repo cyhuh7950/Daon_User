@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -8,8 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { createWebShellRuntimeDescriptor, runtimeMethodNotAllowed } from "../../apps/web/lib/web-shell-runtime.js";
 import { createWebShellRuntimeState, transitionWebShellRuntime } from "../../packages/ui/src/web-shell-runtime-model.js";
+import { digestFile } from "../lib/portable-evidence.mjs";
 
-const sha256 = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex").toUpperCase();
 const failureServerMode = process.argv.includes("--failure-server");
 const shellTest = failureServerMode ? () => {} : test;
 
@@ -65,17 +64,19 @@ shellTest("runtime 조회 실패는 마지막 성공을 보존하고 성공으�
 
 shellTest("navigation, screen, token과 M2 model/reducer 정본은 변경하지 않는다", () => {
   const expected = {
-    "packages/contracts/navigation.json": "4FB54727E381CA5D89BD310B2D8315E61153DF46AC1CC0E41070A3FE7D9C6377",
-    "packages/contracts/screens.json": "0167274173DBD4C7AB6A444279B7F90150858BB998DCC91608CBED54D667F720",
-    "packages/design-tokens/tokens.css": "E00782751AE12261E95AD1692A3DAA86F1DE1A1D12F1B91134EE3B370DEC4680",
-    "packages/ui/src/workspace-model.js": "9D7D525EA4D7E18F6CA571562037B165CFA9B61302BFDA7AE44724223BE9F8E4",
-    "packages/ui/src/source-knowledge-model.js": "55B7CCCBE69838E242A835579F743B1477680DC6C9003CE989E11FBBAE2AE28C",
-    "packages/ui/src/run-model-evidence-model.js": "692DCD5DFC1C2B1F8F661715A068E3FC14B14DE085D7C1C282C3CB776B7AA3C1",
-    "packages/ui/src/studio-workflow-model.js": "95D65D37ABA9A00014069CD99F59F7E71330B1E106A664E7939DB0E560947B12",
-    "packages/ui/src/account-security-model.js": "F1A0FDBD193E5384C07E77A3A6DFF23E2B61C0FB91DAB114A3154189AAEF08A3",
-    "packages/ui/src/operations-recovery-model.js": "CF11B1DE7A96F4712D63160AA1A11BEA23540623CB117342EBC32BC40D05055B"
+    "packages/contracts/navigation.json": "A328A3882BEDDA9261407673BBFDD1F4671E7DAE357E44A26A379A064D7B2845",
+    "packages/contracts/screens.json": "4A3FC57A73C29E3657E09AB8C32C609F2529CA6D01E9AC5333ED9F9E05BFB1E1",
+    "packages/design-tokens/tokens.css": "5AC29A2FCDF1F881180E2E71EBA3018C2540E6DDA36C8D8A8CC3A6007A89B309",
+    "packages/ui/src/workspace-model.js": "8106A200747F0BBCBBC65C7E78BB840670B345CBFC8EC9EFED92C419B0F57D0A",
+    "packages/ui/src/source-knowledge-model.js": "B88FE2EF4C76E4EBFF329946A5937A213301E18E2B6DC6521101038B7188771A",
+    "packages/ui/src/run-model-evidence-model.js": "E9215A565DF2CDBD3AD9B5F1360181C646D759F94772959C98DAC710E565B54B",
+    "packages/ui/src/studio-workflow-model.js": "3BE631BA653518CE76012E3FB8E69E505939F4684F7BA0966B00AC855472C8C0",
+    "packages/ui/src/account-security-model.js": "34087194643209501ED58E61699AB5FC707E1E7A50D117367E6264066CEA6567",
+    "packages/ui/src/operations-recovery-model.js": "EF11DB5178794004D548DE0C7772BFB91664A21A89AB1FDD3FB9CD219E41DC02"
   };
-  for (const [file, hash] of Object.entries(expected)) assert.equal(sha256(file), hash, file);
+  for (const [file, hash] of Object.entries(expected)) {
+    assert.equal(digestFile(file, "portable_utf8_lf").sha256, hash, file);
+  }
 });
 
 if (failureServerMode) {
