@@ -18,7 +18,7 @@ Release 1의 Client·Service·공용 패키지가 후속 Work Order에서 독립
 | 경계 | 소유 책임 | 후속 Build·구현 Work Order |
 | --- | --- | --- |
 | `apps/web` | Browser UI와 Server-side BFF | `R1-M3-01` |
-| `apps/desktop` | Tauri Shell과 Local Service 수명주기 | `R1-M3-02` |
+| `apps/desktop` | Tauri App Shell·Window 수명주기와 Local Service 연결 경계. Local Service 실행·감시·IPC·Loopback·App Instance 인증 수명주기는 `R1-M3-03`이 소유 | `R1-M3-02`, `R1-M3-03` |
 | `apps/mobile` | React Native 공용 Shell | `R1-M3-04` |
 | `services/api` | 공개 API·AI Orchestrator·Cloud Adapter | `R1-M4-05` |
 | `services/local-service` | Local-private Runtime·저장·Local Model Adapter | `R1-M3-03` |
