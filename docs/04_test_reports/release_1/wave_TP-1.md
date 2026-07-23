@@ -7,11 +7,11 @@
 | 웨이브 | TP-1 화면 적합성 · M2 Exit → G2-UX |
 | 보고일 | 2026-07-23 |
 | 검토 | 어울1 직접 검증 + 독립 Read-only 재검토 |
-| 승인 | 신산님 결정 대기 |
+| 승인 | 신산님 · `APR-G2-UX-20260723-01` |
 | 제품 검증 Commit | `a408cb903a4e756db11d966e055af9d44dc1189a` |
 | 서버 증거 Commit | `02f0252` |
 | PR | `#14` · `codex/r1-m2-08` → `codex/release-1` · Merge 대기 |
-| 판정 | `PASS WITH OBSERVATIONS` · G2-UX `GO` 권고 |
+| 판정 | `PASS WITH OBSERVATIONS` · G2-UX `GO` 승인 |
 
 ## 기준 문서와 Hash
 
@@ -51,4 +51,4 @@
 
 M2의 목적은 실제 Backend나 Native 실행을 미리 완성하는 것이 아니라 전체 사용자·운영 흐름, 부정 상태, 반응형 상태 정본과 M3 승계 경계를 고정하는 것이다. 이 목적은 충족됐다. C2/C3 잔여 결함은 없고 Observation은 다음 Milestone의 명시 계약 안에 있으므로 어울1은 `G2-UX GO`와 PR #14 병합을 권고한다.
 
-신산님 승인 전에는 PR을 병합하지 않고 M3 작업지시를 발행하지 않는다.
+신산님이 `2026-07-23` G2-UX GO와 PR #14 병합을 승인했다. PR 병합을 완료한 뒤에만 M3 작업지시를 발행한다.
