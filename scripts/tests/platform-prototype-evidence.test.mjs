@@ -94,6 +94,7 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
     const expected = { sha256: "A".repeat(64), bytes: 3 };
     assert.deepEqual(classifyPredecessorArtifact({ expected, raw: { available: true, sha256: expected.sha256, bytes: 3 }, canonical: { available: false } }), { status: "DIRECT_MATCH", verification_representation: "RAW", code: "RAW_HASH_AND_BYTES_MATCH" });
     assert.deepEqual(classifyPredecessorArtifact({ expected, raw: { available: true, sha256: "B".repeat(64), bytes: 3 }, canonical: { available: true, sha256: expected.sha256, bytes: 3 } }), { status: "DIRECT_MATCH", verification_representation: "GIT_CANONICAL", code: "GIT_CANONICAL_HASH_AND_BYTES_MATCH" });
+    assert.deepEqual(classifyPredecessorArtifact({ expected, raw: { available: false }, canonical: { available: true, sha256: "B".repeat(64), bytes: 2 }, canonical_crlf: { available: true, sha256: expected.sha256, bytes: 3 } }), { status: "DIRECT_MATCH", verification_representation: "GIT_CRLF", code: "GIT_CRLF_HASH_AND_BYTES_MATCH" });
   });
 
   test("C01 Manifest 기대값과 Special Case 계보가 유효하지 않으면 fail-close한다", () => {

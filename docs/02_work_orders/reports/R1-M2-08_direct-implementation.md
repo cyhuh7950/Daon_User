@@ -21,4 +21,11 @@ COMPLETED | R1-M2-08-I001 | 어울1 직접 구현으로 Legacy 특별 경로의 
 - 샌드박스 안 Web Build는 기존과 같은 `.next/trace` 쓰기 `EPERM`이었고, 동일 명령만 샌드박스 밖에서 실행해 Compile·TypeScript·정적 페이지 7/7을 확인했다.
 - Gate가 생성한 범위 밖 R1-M1-05 Evidence 2개는 HEAD로 복원했다.
 
+## ysna-server 이식성 보완
+
+- 첫 Push Commit `ad5c20d52ee681606a5b215ff5c35df307f77fbd`의 ARM64 Ubuntu 검증에서 전체 186개 중 Evidence 대조 2개가 실패했다.
+- 원인은 선행 Manifest 5건이 Windows CRLF Raw Hash·Byte를 승인값으로 보존했지만 Linux Checkout은 LF Raw/Git Canonical만 제공한 플랫폼 표현 차이였다.
+- Git Canonical Blob이 유효한 UTF-8일 때만 LF→CRLF Byte 표현을 결정적으로 파생하고, 승인 Hash와 Byte가 모두 일치할 때만 `GIT_CRLF` 직접 일치를 허용했다. 임의 Trim·Unicode·JSON 정규화는 추가하지 않았다.
+- 회귀 단언을 먼저 추가해 수정 전 `18/19 FAIL`을 확인한 뒤 최소 구현했으며, 수정 후 전용 `19/19`, 전체 `186/186`, Lint, Web Production Build와 공통 Quality Gate가 모두 통과했다.
+
 Commit·Push·PR·Merge·ysna-server 검증·TP-1 판정은 이 보고 시점에 수행하지 않았다.
