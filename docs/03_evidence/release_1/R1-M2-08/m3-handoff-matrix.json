@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M2-08",
+  "issue_id": "R1-M2-08-I001",
+  "contract": "docs/01_architecture/production_bound_prototype_handoff_contract.md",
+  "reuse": [
+    "navigation and screen canonical contracts",
+    "design tokens and responsive accessibility CSS",
+    "workspace state and interaction contract",
+    "source, run, studio, account and operations pure models and reducers",
+    "safe status codes and current-permission revalidation contracts"
+  ],
+  "replace": [
+    "fixture data",
+    "browser-local preview state",
+    "mock adapters",
+    "Evidence Hub session-only check state"
+  ],
+  "platforms": [
+    {"client_type":"web","owners":["R1-M3-01"],"boundary":"same-origin BFF or reverse proxy","not_executed":["actual API","DB","LLM","file","delivery"]},
+    {"client_type":"windows","owners":["R1-M3-02","R1-M3-03"],"boundary":"approved Tauri IPC or constrained loopback","not_executed":["EXE build","install","IPC","local service"]},
+    {"client_type":"android","owners":["R1-M3-04","R1-M3-05"],"boundary":"authenticated HTTPS public gateway","not_executed":["APK","device","native gateway"]},
+    {"client_type":"ios","owners":["R1-M3-04","R1-M3-06"],"boundary":"authenticated HTTPS public gateway","not_executed":["Archive","IPA","simulator","device","signing"]}
+  ],
+  "actual_adapter_owners": [
+    {"boundary":"workspace and sync","milestones":["M3","M4"]},
+    {"boundary":"source, understanding, ASR, parser/OCR and index","milestones":["M4","M5","M6"]},
+    {"boundary":"search, question, citation and authority","milestones":["M7"]},
+    {"boundary":"studio generation, version and approval","milestones":["M8"]},
+    {"boundary":"export, delivery and produced-knowledge registration","milestones":["M9"]},
+    {"boundary":"auth, policy, audit, operation and recovery","milestones":["M3","M9"]}
+  ],
+  "invariants": {
+    "client_type_is_explicit": true,
+    "viewport_does_not_infer_platform": true,
+    "persona_does_not_infer_membership_or_capability": true,
+    "mobile_imports_dom_ui": false,
+    "browser_exposes_internal_service_address": false,
+    "actual_external_effects": 0
+  }
+}

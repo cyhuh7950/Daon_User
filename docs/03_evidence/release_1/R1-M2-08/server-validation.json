@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M2-08",
+  "validated_at": "2026-07-23T09:16:26+09:00",
+  "environment": "ysna-server ARM64 Ubuntu; isolated ephemeral containers",
+  "checkout_path": "/home/ubuntu/deploy/daon-user/R1-M2-08/a408cb903a4e756db11d966e055af9d44dc1189a",
+  "validated_commit": "a408cb903a4e756db11d966e055af9d44dc1189a",
+  "toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "corepack": "0.35.0",
+    "uv": "0.11.2 (aarch64-unknown-linux-musl)"
+  },
+  "results": {
+    "npm_ci": "PASS; 260 packages installed",
+    "npm_ls_all": "PASS",
+    "npm_audit_critical": "PASS",
+    "full_sequential_tests": "PASS; 186/186",
+    "workspace_lint": "PASS; 11 files",
+    "web_production_build": "PASS; compile, TypeScript, static pages 7/7, routes 7",
+    "quality_gate": "PASS; 7 categories, failures 0",
+    "quality_gate_policy_sha256": "3223410FFB5B89D4B67EE946956AB75DA51C0587657337A964E81FDE6F359081",
+    "checkout_status_count_after_cleanup": 0,
+    "schema_or_migration_files": 0,
+    "database_migration": "NOT_APPLICABLE"
+  },
+  "environment_attempts": [
+    "Initial combined run passed audit, 186 tests, lint and Web build but Quality Gate correctly failed because the Node-only container did not expose uv.",
+    "The pinned uv binary was copied from the already-present ghcr.io/astral-sh/uv:0.11.2 image into a temporary directory and mounted read-only at /usr/local/bin/uv; the same Gate then passed.",
+    "The temporary uv binary and directory were removed after validation."
+  ],
+  "resource_invariance": {
+    "containers_before_sha256": "97515ca6255ec1cec0fcea87bfdeb9d065c3a32aebb69292e0e4f5d5b89726f4",
+    "containers_after_sha256": "97515ca6255ec1cec0fcea87bfdeb9d065c3a32aebb69292e0e4f5d5b89726f4",
+    "networks_before_sha256": "7d272fbc535d2f3a0adde090b167b6d35c3c23e32b34c68080da8a101dd541de",
+    "networks_after_sha256": "7d272fbc535d2f3a0adde090b167b6d35c3c23e32b34c68080da8a101dd541de",
+    "volumes_before_sha256": "5bd2505dd668277c9fd5062fd0e3e78e0f2c91c0cf41ee83bae4fafa0cb728b7",
+    "volumes_after_sha256": "5bd2505dd668277c9fd5062fd0e3e78e0f2c91c0cf41ee83bae4fafa0cb728b7"
+  },
+  "cleanup": {
+    "ephemeral_containers_removed": true,
+    "node_modules_removed": true,
+    "next_build_directory_removed": true,
+    "generated_m1_05_evidence_restored": true,
+    "temporary_uv_removed": true,
+    "unintended_empty_directory_removed": true
+  },
+  "github_required_check": {
+    "run_id": 29968140730,
+    "job_id": 89084008510,
+    "status": "PASS"
+  }
+}
