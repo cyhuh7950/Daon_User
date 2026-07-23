@@ -11,20 +11,6 @@ import "./workspace.css";
 
 const STORAGE_KEY = "daon-m2-production-bound-evidence-state";
 
-function restoreState(initial) {
-  if (typeof window === "undefined") return initial;
-  try {
-    const saved = JSON.parse(window.sessionStorage.getItem(STORAGE_KEY));
-    if (!saved) return initial;
-    let restored = transitionProductionBoundEvidence(initial, { type: "select-client", client_type: saved.selected_client_type });
-    restored = transitionProductionBoundEvidence(restored, { type: "select-status", status: saved.selected_status });
-    for (const journeyId of saved.checked_journey_ids ?? []) restored = transitionProductionBoundEvidence(restored, { type: "toggle-journey-check", journey_id: journeyId });
-    return restored;
-  } catch {
-    return initial;
-  }
-}
-
 function InfoTip({ id, open, onToggle, children }) {
   return (
     <span className="evidence-info">
@@ -35,18 +21,36 @@ function InfoTip({ id, open, onToggle, children }) {
 }
 
 export function ProductionBoundEvidenceHub({ route, screen }) {
-  const [state, dispatch] = useReducer(transitionProductionBoundEvidence, undefined, () => restoreState(createProductionBoundEvidenceState()));
+  const [state, dispatch] = useReducer(transitionProductionBoundEvidence, undefined, createProductionBoundEvidenceState);
+  const [sessionRestored, setSessionRestored] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const projection = useMemo(() => projectProductionBoundEvidence(state, { viewport_width: typeof window === "undefined" ? 1920 : window.innerWidth }), [state]);
   const selectedClient = projection.clients.find((item) => item.client_type === projection.selected_client_type);
 
   useEffect(() => {
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(STORAGE_KEY));
+      if (saved) {
+        dispatch({ type: "select-client", client_type: saved.selected_client_type });
+        dispatch({ type: "select-status", status: saved.selected_status });
+        const checkedJourneyIds = Array.isArray(saved.checked_journey_ids) ? [...new Set(saved.checked_journey_ids)] : [];
+        for (const journeyId of checkedJourneyIds) dispatch({ type: "toggle-journey-check", journey_id: journeyId });
+      }
+    } catch {
+      // 손상된 Browser Session은 기존 Model의 기본 상태로 닫는다.
+    } finally {
+      setSessionRestored(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!sessionRestored) return;
     window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
       selected_client_type: state.selected_client_type,
       selected_status: state.selected_status,
       checked_journey_ids: state.checked_journey_ids
     }));
-  }, [state]);
+  }, [sessionRestored, state]);
 
   useEffect(() => {
     const close = (event) => { if (event.key === "Escape") setHelpOpen(false); };
