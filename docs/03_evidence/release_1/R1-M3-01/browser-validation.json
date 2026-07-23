@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M3-01",
+  "browser": "Google Chrome controlled user session",
+  "production_origin": "http://127.0.0.1:4179",
+  "fresh_build": true,
+  "routes": [
+    { "name": "Home", "path": "/", "clicked": true, "shell_status": "ready" },
+    { "name": "Workspace", "path": "/workspaces/workspace-release-one", "clicked": true, "shell_status": "ready" },
+    { "name": "Account", "path": "/settings/account", "clicked": true, "shell_status": "ready" },
+    { "name": "Organization", "path": "/settings/organization", "clicked": true, "shell_status": "ready" },
+    { "name": "Operations", "path": "/operations", "clicked": true, "shell_status": "ready" },
+    { "name": "Notifications", "path": "/notifications", "clicked": true, "shell_status": "ready" }
+  ],
+  "history": { "back": "passed", "forward": "passed", "state_preserved": true },
+  "viewports": [
+    { "width": 1920, "height": 1080, "horizontal_overflow_px": 0, "state": "iOS/unavailable", "png": "web-shell-1920x1080.png" },
+    { "width": 1200, "height": 900, "horizontal_overflow_px": 0, "state": "iOS/unavailable", "png": "web-shell-1200x900.png" },
+    { "width": 800, "height": 900, "horizontal_overflow_px": 0, "state": "iOS/unavailable", "png": "web-shell-800x900.png" },
+    { "width": 500, "height": 900, "horizontal_overflow_px": 0, "state": "iOS/unavailable", "png": "web-shell-500x900.png" }
+  ],
+  "accessibility": {
+    "info_button_count": 1,
+    "enter_opens_popover": true,
+    "escape_closes_popover": true,
+    "aria_expanded_updates": true,
+    "aria_controls": "web-shell-runtime-details"
+  },
+  "failure_recovery": {
+    "actual_client_fetch_failure": true,
+    "status": "unavailable",
+    "ready": false,
+    "retry_visible": true,
+    "retry_clicked": true,
+    "success_not_inferred": true,
+    "png": "web-shell-runtime-unavailable-500x900.png"
+  },
+  "c01_saved_session_reentry": {
+    "work_order_id": "R1-M3-01-C01",
+    "selection_method": "actual Chrome UI controls",
+    "selected_client_type": "ios",
+    "selected_status": "unavailable",
+    "checked_journey_count": 1,
+    "checked_journey_button_text": "확인됨",
+    "workspace_route_clicked": true,
+    "browser_back_completed": true,
+    "reload_completed": true,
+    "state_preserved_after_back": true,
+    "state_preserved_after_reload": true,
+    "console_warning_count": 0,
+    "console_error_count": 0,
+    "shell_status": "ready",
+    "downstream_state": "deferred_actual",
+    "horizontal_overflow_px": 0,
+    "screenshot": "web-shell-c01-session-reentry.jpg",
+    "screenshot_width": 1894,
+    "screenshot_height": 863
+  },
+  "network": {
+    "resource_inventory_available": true,
+    "resource_count": 9,
+    "same_origin_count": 9,
+    "cross_origin_count": 0,
+    "resources": { "stylesheets": 2, "scripts": 6, "bff_fetch": 1 },
+    "bff_url": "http://127.0.0.1:4179/bff/shell/runtime",
+    "resource_timing": "unavailable",
+    "resource_timing_reason": "restricted Chrome evaluate context did not expose Performance API; Page Assets resource inventory was used and the result was not recorded as zero"
+  },
+  "console": {
+    "fresh_session_warning_count": 0,
+    "fresh_session_error_count": 0,
+    "saved_session_reentry_warning_count": 0,
+    "saved_session_reentry_error_count": 0,
+    "note": "C01 moved session restoration after hydration. Actual UI selection, route back, and reload preserved the saved state with zero Chrome warnings/errors."
+  },
+  "dom_source_safety": {
+    "localhost_literal": false,
+    "loopback_literal": false,
+    "docker_internal_host": false,
+    "absolute_http_url": false
+  }
+}

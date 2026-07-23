@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.1",
+  "work_order_id": "R1-M3-01-C01",
+  "issue_id": "R1-M3-01-I001",
+  "generated_at": "2026-07-23T12:21:32+09:00",
+  "base_commit": "8eeb12bf1f33299f7cadb06e7f9615ba3ccd941b",
+  "product_baseline_commit": "d1e86e5d5ece6ba41975c84d3bf4562d7c2f3de3",
+  "worktree_changes_included": true,
+  "target": {
+    "worktree": "C:\\tmp\\Daon_User-r1-m3-01",
+    "branch": "codex/r1-m3-01",
+    "environment": "Windows 11, Node.js 24.18.0, Next.js 16.3.0-canary.93 production standalone, Google Chrome",
+    "origin": "http://127.0.0.1:4179"
+  },
+  "boundary": {
+    "next_process_bff_browser_render": "actual",
+    "saved_session_ui_reentry": "actual",
+    "m2_ui_data": "prototype_fixture",
+    "backend_db_llm_source_delivery": "deferred_actual",
+    "external_effects": 0,
+    "db_migration": "N/A"
+  },
+  "quality": {
+    "hydration_platform_shell_tests": "29/29 PASS",
+    "full_sequential_regression": "196/196 PASS",
+    "workspace_lint": "11 files PASS",
+    "toolchain": "7 manifests exact PASS",
+    "independence": "53 files, 0 violations",
+    "fresh_production_build": "PASS, 8 routes",
+    "quality_gate": "7 categories PASS, failures 0",
+    "chrome_saved_session_console": "0 warnings, 0 errors",
+    "final_ports": "4179=0, 4180=0"
+  },
+  "mutable_handoff_records": [
+    "docs/03_evidence/release_1/R1-M3-01/evidence-manifest.json",
+    "docs/04_test_reports/release_1/R1-M3-01_progress.md"
+  ],
+  "artifact_count": 21,
+  "artifacts": [
+    { "path": "apps/web/app/layout.jsx", "bytes": 380, "sha256": "84BEC1FD60549B81C6B8538B9BB15445A02C3FFD52DCA2FCE580715C18BF0D8E" },
+    { "path": "apps/web/lib/web-shell-runtime.js", "bytes": 544, "sha256": "CC0420A3C3BE1D6199FA9BB1ACF9BEFC396D250105D19B62141916B03FA858A2" },
+    { "path": "apps/web/app/bff/shell/runtime/route.js", "bytes": 645, "sha256": "533698FDE8A8489C09C09E226A3546B18421F13FEF00F7DF2186A740F6E2D81F" },
+    { "path": "packages/ui/src/index.js", "bytes": 2475, "sha256": "F6E5880B76B657832850F6605279FD8EF71B942CB54B87A0C77F48344A838942" },
+    { "path": "packages/ui/src/web-shell-runtime-model.js", "bytes": 1361, "sha256": "FDCBBE23DF01018D07DB3B34ECD344838E58E8369ADCB69EE29E314327B68440" },
+    { "path": "packages/ui/src/web-shell-runtime-status.jsx", "bytes": 2754, "sha256": "9AE0C62EF2F6F4B350BD393CB3BE4785B124998947DF4509CC32C7D5E7328AB3" },
+    { "path": "packages/ui/src/web-shell-runtime.css", "bytes": 1423, "sha256": "6FEC86E730E53CCAF482BCC3F4B662B8B784F3743794E2D203E8316682FC6DE8" },
+    { "path": "packages/ui/src/production-bound-evidence-pane.jsx", "bytes": 8639, "sha256": "816211A50B59400EEB12B345BB91406E6F811643ED715F753D3F4EE596E42F5A" },
+    { "path": "scripts/tests/web-runtime-shell.test.mjs", "bytes": 6729, "sha256": "8ABD7D5389D7D451C9D5E9B31D7EAA314F2B9600863A4571611BDB1C903D6449" },
+    { "path": "scripts/tests/web-runtime-shell-hydration.test.mjs", "bytes": 2850, "sha256": "24180F666D4A10C34B0F00DCD1F6A1837F8B33253BA80F8600BC8ADB385FDF56" },
+    { "path": "docs/01_architecture/web_runtime_shell_contract.md", "bytes": 1811, "sha256": "2BE937E450E3896AA991120830E2A086EA69C85A26D5DF386B9C8A42D9C5E2D9" },
+    { "path": "docs/03_evidence/release_1/R1-M3-01/web-shell-runtime.json", "bytes": 1309, "sha256": "0A52B64AD8D464CB561F934E39F2D769F613CF00B3B1099646C3B50F1B0B6310" },
+    { "path": "docs/03_evidence/release_1/R1-M3-01/browser-validation.json", "bytes": 3624, "sha256": "2DCB89C249FC2C74EEA075945502B4809935711321867EB3ED1414970A74CF3B" },
+    { "path": "docs/03_evidence/release_1/R1-M3-01/process-lifecycle.json", "bytes": 2569, "sha256": "FE06A5861CB441DD35E670B324BBD7D843E357A7C3042F9CDBA8E45A072AE836" },
+    { "path": "docs/03_evidence/release_1/R1-M3-01/web-shell-1920x1080.png", "bytes": 201281, "sha256": "AF415F9BDACF52944E4B696BCBE3A0B3BC62849B33AA85A4EB1674199E63BD3C" },
+    { "path": "docs/03_evidence/release_1/R1-M3-01/web-shell-1200x900.png", "bytes": 128193, "sha256": "AACDFE18E05D625241CD81F399E785FD4E7D0024D49389CA13C1BBC4F2149F27" },
+    { "path": "docs/03_evidence/release_1/R1-M3-01/web-shell-800x900.png", "bytes": 90718, "sha256": "97D40ADFC9C7AABCA79903A428BCDE56BCAC2A9D79F12F00BCDF42CE1E5357A9" },
+    { "path": "docs/03_evidence/release_1/R1-M3-01/web-shell-500x900.png", "bytes": 57645, "sha256": "FD8CC2C2712CC21CEA09055467F7C98E742AC137A4CED731F5FE25383D0409A9" },
+    { "path": "docs/03_evidence/release_1/R1-M3-01/web-shell-runtime-unavailable-500x900.png", "bytes": 57284, "sha256": "199E873DDCFA2E21D1C0078015CBCCAE2ADED2A75F2113853E8C1DC0001ECA7C" },
+    { "path": "docs/03_evidence/release_1/R1-M3-01/web-shell-c01-session-reentry.jpg", "bytes": 162733, "sha256": "360825F0832EB837EB2A632ADCF364D918A1F122E911CD383088A6D7BEC449F2" },
+    { "path": "docs/02_work_orders/reports/R1-M3-01-C01_attempt-1.md", "bytes": 4120, "sha256": "89A6D92410AFBF061F2DA810337498D10FFE9560F805D9153FF52A3E09DF6BAE" }
+  ]
+}

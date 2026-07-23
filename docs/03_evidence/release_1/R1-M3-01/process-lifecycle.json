@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M3-01",
+  "build_identity": {
+    "baseline_commit": "8eeb12bf1f33299f7cadb06e7f9615ba3ccd941b",
+    "shell_build_id": "r1-m3-01",
+    "artifact": "apps/web/.next/standalone/apps/web/server.js"
+  },
+  "initial_process": {
+    "pid": 20184,
+    "started_at": "2026-07-23T11:02:47.2140574+09:00",
+    "ready": true,
+    "listen_address": "127.0.0.1",
+    "listen_port": 4179,
+    "child_processes_before_stop": [{ "pid": 56764, "name": "conhost.exe" }],
+    "stop_requested_at": "2026-07-23T11:21:31.3194430+09:00",
+    "termination_method": "PowerShell Stop-Process followed by Wait-Process",
+    "exit_code": "unavailable: process handle was not retained across controlled Windows stop",
+    "process_count_after_stop": 0,
+    "listen_port_count_after_stop": 0,
+    "known_child_count_after_stop": 0
+  },
+  "same_build_restart": {
+    "pid": 62996,
+    "started_at": "2026-07-23T11:21:58.0611893+09:00",
+    "ready": true,
+    "stdout_ready_marker": "Ready in 0ms",
+    "listen_address": "127.0.0.1",
+    "listen_port": 4179,
+    "workspace_route_clicked": true,
+    "workspace_route": "/workspaces/workspace-release-one",
+    "workspace_shell_status": "ready",
+    "bff_status": 200,
+    "bff_downstream_state": "deferred_actual",
+    "console_warning_error_count": 0,
+    "child_processes_before_stop": [{ "pid": 88116, "name": "conhost.exe" }],
+    "stop_requested_at": "2026-07-23T11:23:05.7835419+09:00",
+    "termination_method": "PowerShell Stop-Process followed by Wait-Process",
+    "exit_code": "unavailable: process handle was not retained across controlled Windows stop",
+    "process_count_after_stop": 0,
+    "listen_port_count_after_stop": 0,
+    "known_child_count_after_stop": 0
+  },
+  "failure_test_process_cleanup": {
+    "listen_port": 4180,
+    "process_count_after_stop": 0,
+    "listen_port_count_after_stop": 0
+  },
+  "c01_saved_session_validation": {
+    "production_pid": 83216,
+    "ready": true,
+    "stdout_ready_marker": "Ready in 0ms",
+    "listen_address": "127.0.0.1",
+    "listen_port": 4179,
+    "chrome_validation_completed": true,
+    "child_processes_before_stop": [{ "pid": 89436, "name": "conhost.exe" }],
+    "stop_requested_at": "2026-07-23T12:10:32.2926498+09:00",
+    "termination_method": "PowerShell Stop-Process followed by Wait-Process",
+    "process_count_after_stop": 0,
+    "listen_port_count_after_stop": 0,
+    "known_child_count_after_stop": 0
+  },
+  "final_cleanup": {
+    "listen_port_4179_count": 0,
+    "listen_port_4180_count": 0,
+    "verified": true
+  }
+}

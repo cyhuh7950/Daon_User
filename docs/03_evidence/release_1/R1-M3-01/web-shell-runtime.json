@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M3-01",
+  "issue_id": "R1-M3-01-I001",
+  "baseline_commit": "8eeb12bf1f33299f7cadb06e7f9615ba3ccd941b",
+  "product_baseline_commit": "d1e86e5d5ece6ba41975c84d3bf4562d7c2f3de3",
+  "build": {
+    "framework": "Next.js 16.3.0-canary.93",
+    "mode": "production standalone",
+    "command": "node server.js",
+    "fresh_build_passed": true,
+    "route_count": 8
+  },
+  "runtime_endpoint": {
+    "browser_request": "/bff/shell/runtime",
+    "request_subject": "browser client component",
+    "same_origin_relative_source": true,
+    "get_status": 200,
+    "cache_control": "no-store",
+    "method_rejection_status": 405,
+    "response": {
+      "code": "WEB_SHELL_READY",
+      "ready": true,
+      "shell_version": "r1-m3-01",
+      "build_id": "r1-m3-01",
+      "downstream_state": "deferred_actual"
+    }
+  },
+  "boundaries": {
+    "next_process_and_bff": "actual",
+    "approved_m2_ui_projection": "prototype_fixture",
+    "backend_db_llm_source_delivery": "deferred_actual",
+    "downstream_network_calls": 0,
+    "external_effects": 0,
+    "db_migration": "N/A"
+  },
+  "information_exposure": {
+    "browser_source_internal_address": false,
+    "dom_internal_address": false,
+    "secret_or_environment_value": false,
+    "raw_error_or_stack": false
+  }
+}
