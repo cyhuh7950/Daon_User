@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR",
+  "issue_id": "R1-M3-02-TAURI-CROSS-PLATFORM-ICON",
   "status": "COMPLETED",
   "base_commit": "74febf3bf7a8828d3bb426b74ce2cb510669fb6b",
   "environment": "isolated Windows worktree; installed Tauri Release app; no external deployment",
@@ -12,8 +12,8 @@
   },
   "source_artifact_manifest": {
     "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-    "bytes": 12931,
-    "sha256": "33778A715A4B8FBBCFC5F570F5DAAEB20746DB7352BCAB3359E5C5DA385B3986"
+    "bytes": 14289,
+    "sha256": "569017EB201962365D756C466E7EBA2BE43DA756F74BF102A9E5F3D8E35D5A93"
   },
   "external_build_artifacts": [
     {
@@ -46,13 +46,14 @@
     "db_migration": "N/A",
     "signature_update_rollback": "deferred",
     "console": "not_observable_in_release_build; PASS not inferred",
+    "server_arm64": "pre-fix missing icon.png failure recorded; post-fix server rerun not performed by developer subagent",
     "actual_external_effects": 0
   },
   "evidence_artifacts": [
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-      "bytes": 12931,
-      "sha256": "33778A715A4B8FBBCFC5F570F5DAAEB20746DB7352BCAB3359E5C5DA385B3986"
+      "bytes": 14289,
+      "sha256": "569017EB201962365D756C466E7EBA2BE43DA756F74BF102A9E5F3D8E35D5A93"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/desktop-shell-build.json",
@@ -86,13 +87,13 @@
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-result.json",
-      "bytes": 35790,
-      "sha256": "213DBA0A61169CD06D7262944B02DF8ADF146F064FD7CB16D8FF22395E287DC5"
+      "bytes": 35896,
+      "sha256": "B970BAC9259A75B2E7B4DA11C01BCD506A6762E989522596F51BBBE851398D44"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-summary.md",
       "bytes": 516,
-      "sha256": "2A24139571FDBC9AE9CEEC9D6F11335E31FB82E17A6B4B9DE27EE33C435CE05A"
+      "sha256": "76B104FE13D5C371C81D7B5BF9FD375140BF1C20E97A01A3DD9ED2C4CB9E96C7"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/npm-audit-fix04.json",
@@ -161,6 +162,7 @@
     "repository_cargo_targets": 0,
     "generated_schemas": 0,
     "non_windows_icons": 0,
+    "cross_platform_source_derived_png": 1,
     "fix_03_gen_preservation": "behavior_tested_exit_0_exit_23_spawn_error_preexisting_gen_other_worktree",
     "installation_and_external_installer_target": "removed_after_main_designer_review",
     "nsis_uninstaller": {

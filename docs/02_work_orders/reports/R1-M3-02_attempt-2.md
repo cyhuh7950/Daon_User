@@ -1,6 +1,18 @@
-COMPLETED | R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR | R1-M2-06·07 역사 Manifest를 보존한 PostCSS Lockfile 후속 대체 계보와 필드별 Fail-close 계약 구현 | predecessor reconciliation 코드·행동 Test, R1-M2-08 Result/Summary, R1-M3-02 Generator·Source/Evidence Manifest, FIX-05 문서·Progress·Attempt-2 정합화 | 전용 20/20, 전체 214/214, Lint, Web/Desktop Build, Desktop Type, 7범주 Gate, Audit High/Critical 0, Reconciliation 90·80/6/4/0, JSON 11/11, Hash·Byte 85/85, Generator 2회 결정성 PASS | 없음 | 어울1의 최종 Diff·증거 기술 검토
+COMPLETED | R1-M3-02-TAURI-CROSS-PLATFORM-ICON | 기존 ICO 시각을 Byte 그대로 보존한 256×256 RGBA PNG와 최소 Tauri Bundle 계약 구현 | icon.png, Tauri Config, Desktop 행동 Test, R1-M3-02 Generator·Source/Evidence Manifest, FIX-06 문서·Progress·Attempt-2 정합화 | 전용 RED 9/11→GREEN 11/11, 전체 215/215, Lint, Web/Desktop Build, Desktop Type, 7범주 Gate, Audit High/Critical 0, JSON 11/11, Hash·Byte 88/88, Generator 2회 결정성 PASS | ysna-server 사후 재검증은 어울1 소유 | 어울1의 exact-SHA ARM64 Gate 재검증
 
-# R1-M3-02 FIX-05 최종화 결과보고 — Attempt 2
+# R1-M3-02 FIX-06 최종화 결과보고 — Attempt 2
+
+## FIX-06 최종 판정
+
+`COMPLETED`
+
+- 정식 `FAILURE_REPORT`가 아니며 실패 횟수는 `0회`다.
+- 서버에서 CA 보정 뒤 Rust ARM64 Compile이 진행되어 `icons/icon.png` 부재만 차단 원인으로 확인된 근거를 승계했다.
+- 기존 `icon.ico`의 내장 256×256 8-bit RGBA PNG Frame을 재인코딩 없이 Byte 그대로 `icon.png`로 추출했다.
+- Desktop 행동 Test는 ICO·PNG Signature, 정사각 256×256, 8-bit RGBA, ICO 내장 Frame과 PNG Byte 동일성, Tauri Bundle의 ICO·PNG 명시를 검증한다.
+- Tauri Bundle Icon 배열 외 Product Name·Identifier·NSIS Target·CSP·Capability·화면·Runtime·Lockfile은 변경하지 않았다.
+- FIX-06 RED `9/11`에서 최소 구현 뒤 GREEN `11/11`, 전체 순차 `215/215`로 전환했다.
+- 로컬 Rust Type과 공통 Gate는 PASS다. ysna-server 사후 exact-SHA 검증은 어울1 소유이므로 수행 또는 PASS로 추론하지 않았다.
 
 ## FIX-05 최종 판정
 
@@ -92,17 +104,18 @@ COMPLETED | R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR | R1-M2-06·07 역사 Manifest�
 
 ### Evidence·최소화
 
-- Windows Bundle 입력은 `apps/desktop/src-tauri/icons/icon.ico` 1개만 유지했다.
-- Tauri가 Build 중 재생성한 `gen/schemas` 4개와 비Windows Icon은 보존하지 않았다.
-- `source-artifact-manifest.json`에 실제 Build 입력 전체와 검증 입력 `13개`를 구분해 Hash·Byte로 기록했다.
-- `build.rs`, `src/main.rs`, `app-icon.svg`, `icon.ico`, Tauri Config·Capability, Cargo Lock/Manifest, Desktop Entry/CSS, 공용 UI·Token·Contract, Wrapper·Test를 포함했다.
+- Windows NSIS 입력 `icon.ico`를 유지하고, 그 파일에 내장된 동일 256×256 RGBA Frame인 교차 플랫폼 `icon.png`만 추가했다.
+- Tauri가 Build 중 재생성한 `gen/schemas` 4개와 관련 없는 플랫폼 Icon은 보존하지 않았다.
+- `source-artifact-manifest.json`에 실제 Build 입력 전체와 검증 입력 `15개`를 구분해 Hash·Byte로 기록했다.
+- `build.rs`, `src/main.rs`, `app-icon.svg`, `icon.ico`, `icon.png`, Tauri Config·Capability, Cargo Lock/Manifest, Desktop Entry/CSS, 공용 UI·Token·Contract, Wrapper·Test를 포함했다.
 - Installer·설치 EXE는 어울1 독립 검토 완료 뒤 제거했으며, 과거 Path·Hash·Byte Metadata만 `historical_reproducibility_record`로 보존했다.
 
 ### 최종 자동 검증
 
 - FIX-04 PostCSS 계약 Test: RED `0/1` → 전용 전체 `10/10 PASS`
 - FIX-05 predecessor reconciliation Test: RED `17/20` → 전용 전체 `20/20 PASS`
-- 전체 순차 Test: `214/214 PASS`
+- FIX-06 Desktop icon 계약 Test: RED `9/11` → 전용 전체 `11/11 PASS`
+- 전체 순차 Test: `215/215 PASS`
 - Workspace Lint: `11 files PASS`
 - Web Production Build: Next `16.3.0-canary.93`, Compile·TypeScript·7개 Static Page PASS, Exit `0`
 - Desktop Production Build: Vite `8.1.5`, `42 modules`, Exit `0`
@@ -111,9 +124,9 @@ COMPLETED | R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR | R1-M2-06·07 역사 Manifest�
 - Production Audit: Exit `0`, High `0`, Critical `0`, 전체 취약점 `0`
 - `npm ls next vite postcss --all --json`: Exit `1`, 허용된 Next exact `8.5.10` 대비 PostCSS `8.5.23` 단일 invalid만 존재, missing·extraneous·다른 invalid `0`
 - 최종 Gate가 재생성한 R1-M1-05 Evidence 2개는 R1-M3-02에 보존 후 Git 기준선으로 원복했다.
-- 최종 검증 입력은 `13개`, R1-M3-02 JSON Parse는 `11/11 PASS`, Source/Evidence Hash·Byte 재검산은 `85/85 PASS`다.
-- Source Manifest는 `12931 bytes`, SHA-256 `33778A715A4B8FBBCFC5F570F5DAAEB20746DB7352BCAB3359E5C5DA385B3986`이고, Evidence Manifest는 `7115 bytes`, SHA-256 `D1512A255A8D9AF864C39F9A757ED71431DF328BF021874B30F226F42DED7A03`이다.
-- 승인된 정확 Worktree에서 Generator를 두 번 재실행했고 두 실행 모두 Source `52`, Validation `13`, Evidence `19`와 위 Manifest SHA-256이 동일해 결정성 PASS다.
+- 최종 검증 입력은 `15개`, R1-M3-02 JSON Parse는 `11/11 PASS`, Source/Evidence Hash·Byte 재검산은 `88/88 PASS`다.
+- Source Manifest는 `14289 bytes`, SHA-256 `569017EB201962365D756C466E7EBA2BE43DA756F74BF102A9E5F3D8E35D5A93`이고, Evidence Manifest는 `7282 bytes`, SHA-256 `4F53B49CB023EA6996449F891CE418CDA5CDABED5E47F186B45185C2B40A1D7F`이다.
+- 승인된 정확 Worktree에서 Generator를 두 번 재실행했고 두 실행 모두 Source `53`, Validation `15`, Evidence `19`와 위 Manifest SHA-256이 동일해 결정성 PASS다.
 - R1-M2-08 Reconciliation JSON은 `94950 bytes`, SHA-256 `778EB5B1CD397285320E3F37E2AB35CB6457EC7F7BC2077CBC8BE1E49E4FBC3A`이고, 갱신된 Library·Test·Reconciliation 3개 Artifact Hash·Byte 불일치가 `0`이다.
 - `git diff --check` 오류 `0`, R1-M1-05 Evidence Dirty `0`, `gen`·Desktop/Root Cargo Target·Temp Check Target·Daon App Process 잔존 `0`을 확인했다.
 

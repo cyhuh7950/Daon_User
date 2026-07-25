@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR",
+  "issue_id": "R1-M3-02-TAURI-CROSS-PLATFORM-ICON",
   "generated_at": "2026-07-23T22:10:00+09:00",
   "build_inputs": [
     {
@@ -50,6 +50,11 @@
       "sha256": "2AF19C4648114D53BE9FB3D532AC61711A966526975B224A1CFF4D8A2DBF588A"
     },
     {
+      "path": "apps/desktop/src-tauri/icons/icon.png",
+      "bytes": 4604,
+      "sha256": "9FB71FE3D0529692D8F21604E426074E919AB298415AE742D8C60B1A9C5DF92D"
+    },
+    {
       "path": "apps/desktop/src-tauri/src/lib.rs",
       "bytes": 213,
       "sha256": "57A979B0F5689226EC04FD416457A852944FC39BDE19DFD1629460D920533F2F"
@@ -61,8 +66,8 @@
     },
     {
       "path": "apps/desktop/src-tauri/tauri.conf.json",
-      "bytes": 1219,
-      "sha256": "8403DD064B236824A3E7D6F7102431C5E00F8B1AB86F8301BF8487096F8EF9BC"
+      "bytes": 1237,
+      "sha256": "D3539A0F3A74B80276753A973F554483DC43F8DE95263C5EFC17290F93254C13"
     },
     {
       "path": "apps/desktop/src/desktop-shell-model.js",
@@ -268,8 +273,8 @@
   "validation_inputs": [
     {
       "path": "scripts/tests/desktop-tauri-shell.test.mjs",
-      "bytes": 14637,
-      "sha256": "D118D64B1D256E6A281619CC6F099896D68B93E623C911BED443AEC02BC3AF95"
+      "bytes": 15954,
+      "sha256": "04E0704FFB29F45001342FEF7A0A6B640316DCD7FE74530769956FCDDB74E865"
     },
     {
       "path": "scripts/lib/predecessor-evidence-reconciliation.mjs",
@@ -283,8 +288,8 @@
     },
     {
       "path": "scripts/generate-r1-m3-02-evidence.mjs",
-      "bytes": 16321,
-      "sha256": "26CC8F5E845206F9488249B42525CE4C8E5978C5DC53EC0C19EE2C511C018A87"
+      "bytes": 18375,
+      "sha256": "DA28443DF84ABBB9150172699CFC45B11AA8731E5D158C26FF0491771E5AC941"
     },
     {
       "path": "docs/02_work_orders/release_1/R1-M2-08-C00_evidence_reconciliation_addendum.md",
@@ -330,6 +335,16 @@
       "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-05_prompt.md",
       "bytes": 609,
       "sha256": "41AB9A8964247DCE00CF01E2AA9A8209842CEEAB7B949CFDE92AD3C727601062"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-06_work_order.md",
+      "bytes": 4108,
+      "sha256": "6E9F438B5A84CE10404DCF1EB781F238E2BF46B3A673E24AA490BA1493204BB1"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-06_prompt.md",
+      "bytes": 609,
+      "sha256": "03DE4A2822AB06315F3ED1879B576183A851C9B968889FC921118BB4CC5FC767"
     }
   ],
   "fix_03_behavior_contract": {
@@ -357,11 +372,30 @@
     ],
     "fail_close_fields": "source_work_order,artifact_path,expected_sha256,expected_bytes,origin_commit,successor_commit,current_sha256,current_bytes"
   },
+  "fix_06_behavior_contract": {
+    "server_pre_fix_failure": "ARM64 tauri_generate_context failed because apps/desktop/src-tauri/icons/icon.png was absent",
+    "source": "exact_embedded_256x256_png_frame_from_existing_icon.ico",
+    "dimensions": {
+      "width": 256,
+      "height": 256
+    },
+    "png_color": "8_bit_rgba",
+    "png_sha256": "9FB71FE3D0529692D8F21604E426074E919AB298415AE742D8C60B1A9C5DF92D",
+    "tauri_bundle_icons": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "windows_nsis_target_preserved": true,
+    "post_fix_verification_boundary": "local desktop type and quality gate; ysna-server rerun is owned by main designer"
+  },
   "generated_artifacts": {
     "committed_tauri_schemas": [],
     "windows_bundle_icons": [
       "icon.ico"
     ],
-    "rule": "Windows NSIS actual source inputs only; generated schemas and non-Windows icons are excluded."
+    "cross_platform_context_icons": [
+      "icon.png"
+    ],
+    "rule": "Windows NSIS keeps icon.ico; exact source-derived icon.png supports cross-platform Tauri context generation; generated schemas and unrelated platform icons are excluded."
   }
 }

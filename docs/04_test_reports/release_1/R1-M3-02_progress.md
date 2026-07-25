@@ -1445,3 +1445,133 @@
   - 화면/App/Commit/Push/PR/배포 `0건`
 - 오류/원인/복구: 미해결 오류 없음
 - 다음 작업: 추가 쓰기 중지, 어울1에게 동일 Issue 계약 형식으로 결과보고
+
+## 2026-07-25 FIX-06 S0 착수·정본·영향 범위 확인
+
+- recorded_at: `2026-07-25T21:50:00+09:00`
+- 단계: FIX-06 승인 정본과 단일 Writer·기준 상태 확인
+- 상태: `COMPLETED`
+- 완료:
+  - Worktree `AGENTS.md`, 승인 상세 설계서 v0.7, 승인 구현계획 v0.9, 원 R1-M3-02 및 FIX-01~FIX-06 작업지시서·프롬프트를 EOF까지 확인
+  - 설계 SHA-256 `6539F274890F3FBE7C7286853A790B6C724D9525FB1F404ED853350470206C7A`, 계획 SHA-256 `E4C4D8151A24C207BBE2C97759FCC2975B0E35E2679DF1D4AF185B4CBD0D0162` 일치
+  - Branch `codex/r1-m3-02`, HEAD `b76aa30fbc493937fba0685910f9353dffbf359d`
+  - 착수 전 변경은 어울1이 전달한 미추적 FIX-06 작업지시서·프롬프트 2개뿐이며 보존
+  - 단독 코드 작성자 경계와 화면/App·Commit·Push·PR·배포 금지 확인
+- 변경 파일: Progress
+- 명령/테스트 결과:
+  - 현재 아이콘 입력은 `icon.ico` 1개
+  - ICO는 16·24·32·48·64·256 정사각 32-bit PNG Frame 6개를 포함하며 256 Frame을 손실 없이 추출 가능
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: ICO·PNG Signature/치수와 Tauri Bundle Icon 배열 계약 테스트를 선작성해 RED 확인
+
+## 2026-07-25 FIX-06 S1 교차 플랫폼 아이콘 계약 RED
+
+- recorded_at: `2026-07-25T21:53:00+09:00`
+- 단계: Desktop Shell 아이콘 행동 계약 선작성
+- 상태: `COMPLETED`
+- 변경 파일: Desktop Shell Test, Progress
+- 명령/테스트 결과:
+  - `node --test --test-concurrency=1 scripts/tests/desktop-tauri-shell.test.mjs`
+  - 예상 RED `9/11 PASS`, 신규·연결 계약 `2 FAIL`, Exit `1`
+  - 실패 1: Tauri Bundle Icon 배열에 `icons/icon.png` 부재
+  - 실패 2: `apps/desktop/src-tauri/icons/icon.png` 파일 부재
+- 오류/원인/복구: 승인된 서버 차단 원인과 동일하게 교차 플랫폼 기본 PNG가 없음
+- 다음 작업: 기존 ICO의 256×256 RGBA PNG Frame을 Byte 그대로 추출하고 Tauri Bundle Icon 배열만 최소 변경
+
+## 2026-07-25 FIX-06 S2 교차 플랫폼 아이콘 계약 GREEN
+
+- recorded_at: `2026-07-25T21:57:00+09:00`
+- 단계: 기존 ICO 시각 보존 PNG와 최소 Tauri 설정 구현
+- 상태: `COMPLETED`
+- 완료:
+  - 기존 `icon.ico`의 내장 256×256 8-bit RGBA PNG Frame을 재인코딩 없이 Byte 그대로 `icon.png`로 추출
+  - Tauri Bundle Icon 배열을 Windows `icon.ico`와 교차 플랫폼 `icon.png`로 최소 확장
+  - 기존 ICO·Windows NSIS Target·Product Name·Identifier·CSP·Capability 불변
+- 변경 파일: `apps/desktop/src-tauri/icons/icon.png`, `apps/desktop/src-tauri/tauri.conf.json`, Desktop Shell Test, Progress
+- 명령/테스트 결과:
+  - PNG `4604 bytes`, SHA-256 `9FB71FE3D0529692D8F21604E426074E919AB298415AE742D8C60B1A9C5DF92D`
+  - 전용 Test `11/11 PASS`, Exit `0`
+- 오류/원인/복구:
+  - Sandbox 내 Binary 생성이 `EPERM`으로 1회 차단
+  - 승인된 정확 파일 경로에 한해 동일 추출 명령을 허가 실행해 복구
+- 다음 작업: Generator에 FIX-06 문서·새 PNG·최신 Issue/행동 계약을 포함하고 증거 정합화
+
+## 2026-07-25 FIX-06 S3 Generator·Manifest 초도 정합화
+
+- recorded_at: `2026-07-25T22:01:00+09:00`
+- 단계: 최신 Issue·FIX-06 입력·교차 플랫폼 아이콘 출처를 R1-M3-02 Evidence에 포함
+- 상태: `COMPLETED`
+- 완료:
+  - Generator 최상위 Issue를 `R1-M3-02-TAURI-CROSS-PLATFORM-ICON`으로 갱신
+  - FIX-06 작업지시서·프롬프트를 Validation 입력에 추가
+  - 새 PNG를 Desktop Build 입력에 자동 포함
+  - Generator가 PNG와 기존 ICO의 내장 256×256 Frame Byte 동일성·RGBA·치수를 Fail-close 검증
+  - 서버 사전 실패와 로컬 사후 검증/서버 재검증 경계를 Evidence에 명시
+- 변경 파일: Generator, Source/Evidence Manifest, Progress
+- 명령/테스트 결과:
+  - 전용 Test `11/11 PASS`
+  - Generator Source `53`, Validation `15`, Evidence `19`, Exit `0`
+- 오류/원인/복구:
+  - Sandbox 내 Manifest 쓰기가 `EPERM`으로 1회 차단
+  - 승인된 Generator 명령을 정확 Worktree에서 허가 실행해 복구
+- 다음 작업: 전체 순차 Test·Lint·Web/Desktop Build·Desktop Type·Audit·Quality Gate 수행
+
+## 2026-07-25 FIX-06 S4 전체 회귀·빌드·Gate
+
+- recorded_at: `2026-07-25T22:08:00+09:00`
+- 단계: 교차 플랫폼 아이콘 변경의 전체 자동 회귀 검증
+- 상태: `COMPLETED`
+- 변경 파일: 최신 R1-M3-02 Quality Gate Result/Summary, Progress
+- 명령/테스트 결과:
+  - 전체 순차 Test `215/215 PASS`, fail·cancelled·skipped `0`
+  - Workspace Lint `11 files PASS`
+  - Web Production Build Next `16.3.0-canary.93`, 7개 Static/Dynamic Route PASS
+  - Desktop Production Build Vite `8.1.5`, `42 modules`, PASS
+  - 수동 `CARGO_TARGET_DIR` 없는 Desktop Rust Type Check PASS
+  - Production Audit High `0`, Critical `0`, 전체 취약점 `0`
+  - 공통 Quality Gate 7개 범주 전부 PASS, failures `0`, Exit `0`
+  - 최신 Gate Result/Summary를 R1-M3-02에 보존하고 R1-M1-05 두 파일은 Git 기준선으로 원복
+- 오류/원인/복구:
+  - Sandbox 실행 Desktop Type이 Rust Compile 완료 단계의 임시 Build Script에서 `os error 5`로 1회 실패
+  - 동일 정본 명령을 승인된 격리 Temp 경계에서 재실행해 PASS
+- 다음 작업: 최종 Generator 2회 결정성, JSON·Hash·Diff·보호 범위·잔존물 검증
+
+## 2026-07-25 FIX-06 S5 증거 결정성·보호 범위 최종화
+
+- recorded_at: `2026-07-25T22:14:00+09:00`
+- 단계: 최종 Evidence 결정성·정합성·회귀 보호 검증
+- 상태: `COMPLETED`
+- 완료:
+  - 기존 Evidence 필드 `windows_bundle_icons`, `non_windows_icons`를 유지하고 교차 플랫폼 PNG를 별도 필드로 추가해 소비자 호환성 보존
+  - Generator를 최종 동일 입력으로 2회 실행하고 두 결과 일치 확인
+  - Attempt-2를 FIX-06 Issue·최신 수치·서버 사후 검증 경계로 갱신
+- 변경 파일: Generator, Source/Evidence Manifest, Attempt-2, Progress
+- 명령/테스트 결과:
+  - 최종 전용 Test `11/11 PASS`
+  - Generator 2회 모두 Source `53`, Validation `15`, Evidence `19`
+  - Source Manifest `14289 bytes` / SHA-256 `569017EB201962365D756C466E7EBA2BE43DA756F74BF102A9E5F3D8E35D5A93`
+  - Evidence Manifest `7282 bytes` / SHA-256 `4F53B49CB023EA6996449F891CE418CDA5CDABED5E47F186B45185C2B40A1D7F`
+  - R1-M3-02 JSON Parse `11/11`, Source/Evidence Hash·Byte `88/88`
+  - 기존 ICO·Root Package Manifest/Lock·R1-M2 역사 증거 Diff `0`
+  - R1-M1-05 Evidence Dirty `0`
+  - `git diff --check` 오류 `0`
+  - `gen`·Desktop/Root Cargo Target·Temp Check Target·Daon App Process 잔존 `0`
+  - 화면/App/Commit/Push/PR/배포 `0건`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: 추가 쓰기 중지 전 전체 Test와 최종 JSON·Hash·Diff·잔존물 재확인
+
+## 2026-07-25 FIX-06 S6 종료 직전 인계
+
+- recorded_at: `2026-07-25T22:18:00+09:00`
+- 단계: 최종 전체 회귀 재확인과 결과보고 인계
+- 상태: `COMPLETED`
+- 변경 파일: FIX-06 허용 범위의 PNG·Tauri Config·Test·Generator·R1-M3-02 Evidence·Attempt-2·Progress
+- 명령/테스트 결과:
+  - 종료 직전 전체 순차 Test `215/215 PASS`, fail·cancelled·skipped `0`
+  - 전용 RED `9/11` → GREEN `11/11`
+  - Lint, Web/Desktop Build, Desktop Type, Audit, 7범주 Quality Gate PASS
+  - JSON `11/11`, Hash·Byte `88/88`, Generator 2회 결정성 PASS
+  - 보호 파일 Diff·R1-M1-05 Dirty·생성/Process 잔존 `0`
+  - 화면/App/Commit/Push/PR/배포 `0건`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: 추가 쓰기 중지, 어울1에게 계약 형식의 `COMPLETED` 결과보고 제출

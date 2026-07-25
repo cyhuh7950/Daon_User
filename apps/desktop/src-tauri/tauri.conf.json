@@ -29,7 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "nsis",
-    "icon": ["icons/icon.ico"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
     "category": "Productivity",
     "shortDescription": "Daon 사용자 프로그램",
     "longDescription": "공용 React UI를 포함한 Daon 사용자 프로그램 Windows App",

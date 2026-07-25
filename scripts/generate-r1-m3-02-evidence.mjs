@@ -4,7 +4,7 @@ import path from "node:path";
 
 const root = process.cwd();
 const evidenceDir = path.join(root, "docs/03_evidence/release_1/R1-M3-02");
-const issueId = "R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR";
+const issueId = "R1-M3-02-TAURI-CROSS-PLATFORM-ICON";
 const toPosix = (value) => value.split(path.sep).join("/");
 
 async function artifact(relativePath) {
@@ -78,13 +78,33 @@ const validationInputs = [
   "docs/02_work_orders/release_1/R1-M3-02-FIX-04_work_order.md",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-04_prompt.md",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-05_work_order.md",
-  "docs/02_work_orders/release_1/R1-M3-02-FIX-05_prompt.md"
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-05_prompt.md",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-06_work_order.md",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-06_prompt.md"
 ];
 const buildInputPaths = [...new Set([...desktopInputs, ...sharedInputs, ...rootInputs])].sort();
 
 const iconFiles = (await readdir(path.join(root, "apps/desktop/src-tauri/icons"))).sort();
-if (iconFiles.length !== 1 || iconFiles[0] !== "icon.ico") {
-  throw new Error(`unexpected Windows icon inputs: ${iconFiles.join(",")}`);
+if (iconFiles.length !== 2 || iconFiles[0] !== "icon.ico" || iconFiles[1] !== "icon.png") {
+  throw new Error(`unexpected Tauri icon inputs: ${iconFiles.join(",")}`);
+}
+const iconIco = await readFile(path.join(root, "apps/desktop/src-tauri/icons/icon.ico"));
+const iconPng = await readFile(path.join(root, "apps/desktop/src-tauri/icons/icon.png"));
+const iconPngDimensions = await pngDimensions("apps/desktop/src-tauri/icons/icon.png");
+const iconCount = iconIco.readUInt16LE(4);
+let sourcePngFrame = null;
+for (let index = 0; index < iconCount; index += 1) {
+  const offset = 6 + index * 16;
+  const width = iconIco[offset] || 256;
+  const height = iconIco[offset + 1] || 256;
+  if (width !== 256 || height !== 256) continue;
+  const bytes = iconIco.readUInt32LE(offset + 8);
+  const dataOffset = iconIco.readUInt32LE(offset + 12);
+  sourcePngFrame = iconIco.subarray(dataOffset, dataOffset + bytes);
+  break;
+}
+if (!sourcePngFrame?.equals(iconPng) || iconPngDimensions.width !== 256 || iconPngDimensions.height !== 256 || iconPng[24] !== 8 || iconPng[25] !== 6) {
+  throw new Error("cross-platform icon.png must be the exact embedded 256x256 8-bit RGBA frame from icon.ico");
 }
 const schemaDir = path.join(root, "apps/desktop/src-tauri/gen/schemas");
 let generatedSchemas = [];
@@ -129,10 +149,21 @@ const sourceManifest = {
     ],
     fail_close_fields: "source_work_order,artifact_path,expected_sha256,expected_bytes,origin_commit,successor_commit,current_sha256,current_bytes"
   },
+  fix_06_behavior_contract: {
+    server_pre_fix_failure: "ARM64 tauri_generate_context failed because apps/desktop/src-tauri/icons/icon.png was absent",
+    source: "exact_embedded_256x256_png_frame_from_existing_icon.ico",
+    dimensions: iconPngDimensions,
+    png_color: "8_bit_rgba",
+    png_sha256: createHash("sha256").update(iconPng).digest("hex").toUpperCase(),
+    tauri_bundle_icons: ["icons/icon.ico", "icons/icon.png"],
+    windows_nsis_target_preserved: true,
+    post_fix_verification_boundary: "local desktop type and quality gate; ysna-server rerun is owned by main designer"
+  },
   generated_artifacts: {
     committed_tauri_schemas: [],
-    windows_bundle_icons: iconFiles,
-    rule: "Windows NSIS actual source inputs only; generated schemas and non-Windows icons are excluded."
+    windows_bundle_icons: ["icon.ico"],
+    cross_platform_context_icons: ["icon.png"],
+    rule: "Windows NSIS keeps icon.ico; exact source-derived icon.png supports cross-platform Tauri context generation; generated schemas and unrelated platform icons are excluded."
   }
 };
 await writeJson("source-artifact-manifest.json", sourceManifest);
@@ -354,6 +385,7 @@ await writeJson("evidence-manifest.json", {
     db_migration: "N/A",
     signature_update_rollback: "deferred",
     console: "not_observable_in_release_build; PASS not inferred",
+    server_arm64: "pre-fix missing icon.png failure recorded; post-fix server rerun not performed by developer subagent",
     actual_external_effects: 0
   },
   evidence_artifacts: evidenceArtifacts,
@@ -366,6 +398,7 @@ await writeJson("evidence-manifest.json", {
     repository_cargo_targets: 0,
     generated_schemas: 0,
     non_windows_icons: 0,
+    cross_platform_source_derived_png: 1,
     fix_03_gen_preservation: "behavior_tested_exit_0_exit_23_spawn_error_preexisting_gen_other_worktree",
     installation_and_external_installer_target: "removed_after_main_designer_review",
     nsis_uninstaller: {
