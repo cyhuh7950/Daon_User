@@ -1,0 +1,509 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-DESKTOP-TYPE-FRONTEND-PREREQUISITE",
+  "generated_at": "2026-07-23T22:10:00+09:00",
+  "build_inputs": [
+    {
+      "path": ".node-version",
+      "bytes": 9,
+      "sha256": "E326B5CC77D5D52DB959FB26B64CA8A56C5D01C9AB11E9F7B3D3920CF8A0E72A"
+    },
+    {
+      "path": "apps/desktop/app-icon.svg",
+      "bytes": 316,
+      "sha256": "A2BC92161D57077E1EBBCF0F90772AA10791250C5B5D61CABB4DE47DE7AB561A"
+    },
+    {
+      "path": "apps/desktop/index.html",
+      "bytes": 363,
+      "sha256": "28A75D2E1905748870DDEC190FB7487BFD1C35004EF76F4E469D0E415EA813CD"
+    },
+    {
+      "path": "apps/desktop/package.json",
+      "bytes": 476,
+      "sha256": "A2B0A3E339111022E59998E462A2E9D8E7467B61F406820F147757D39E470BBB"
+    },
+    {
+      "path": "apps/desktop/src-tauri/Cargo.lock",
+      "bytes": 107204,
+      "sha256": "5887F5E10EFE3D0F9C47724D1EBED680EE0D86B17EFAA8E6891A5B982C737C7D"
+    },
+    {
+      "path": "apps/desktop/src-tauri/Cargo.toml",
+      "bytes": 468,
+      "sha256": "026FC9A5F63BEB1671DBEA370A6B9C33BF769EC411BC6B33730204C39FF56047"
+    },
+    {
+      "path": "apps/desktop/src-tauri/build.rs",
+      "bytes": 39,
+      "sha256": "487059EAF8A947B80F20A9AACAC038A5047B2AD69D2401B827376C67D6FE847F"
+    },
+    {
+      "path": "apps/desktop/src-tauri/capabilities/desktop-main.json",
+      "bytes": 234,
+      "sha256": "35A61B982AE030A7EDE8538F89E5B6E9EF16FE139C57E28116D797E517989E89"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/icon.ico",
+      "bytes": 9374,
+      "sha256": "2AF19C4648114D53BE9FB3D532AC61711A966526975B224A1CFF4D8A2DBF588A"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/icon.png",
+      "bytes": 4604,
+      "sha256": "9FB71FE3D0529692D8F21604E426074E919AB298415AE742D8C60B1A9C5DF92D"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/lib.rs",
+      "bytes": 213,
+      "sha256": "57A979B0F5689226EC04FD416457A852944FC39BDE19DFD1629460D920533F2F"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/main.rs",
+      "bytes": 48,
+      "sha256": "B3A78C9AD1F7DA88B17AB9A50E2C9483CA074163563A6F5F008334578996451E"
+    },
+    {
+      "path": "apps/desktop/src-tauri/tauri.conf.json",
+      "bytes": 1237,
+      "sha256": "D3539A0F3A74B80276753A973F554483DC43F8DE95263C5EFC17290F93254C13"
+    },
+    {
+      "path": "apps/desktop/src/desktop-shell-model.js",
+      "bytes": 562,
+      "sha256": "55FA1EC761E6B3A3DDE391D2D86469E50FD47E2E105F72B0FDC4113616C92A29"
+    },
+    {
+      "path": "apps/desktop/src/desktop-shell.css",
+      "bytes": 1566,
+      "sha256": "A74716E295243DCE5792F8686D02B25CD3311EEF1519441B5E83C5BEF1B6B9EC"
+    },
+    {
+      "path": "apps/desktop/src/desktop-shell.jsx",
+      "bytes": 3015,
+      "sha256": "F2A24B9BAB76C902165E954C357C2007E1D8B002038D58A22B1C01C5B5504852"
+    },
+    {
+      "path": "apps/desktop/src/main.jsx",
+      "bytes": 243,
+      "sha256": "984EE04E972CC389E39097EED36E416D95CEE68119533DC8ED7FB040A165B163"
+    },
+    {
+      "path": "docs/01_architecture/windows_tauri_shell_contract.md",
+      "bytes": 2820,
+      "sha256": "D6C04A585BE84D83E484F228A84BA912C5C7E87507BD86589809396A3A6937AB"
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 181571,
+      "sha256": "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5"
+    },
+    {
+      "path": "package.json",
+      "bytes": 1334,
+      "sha256": "B15CD8A78EF7D1ACB1350E6F1DF64764C1D15217278DFCCDBA4BF3BA6B061FFF"
+    },
+    {
+      "path": "packages/contracts/navigation.json",
+      "bytes": 5378,
+      "sha256": "4FB54727E381CA5D89BD310B2D8315E61153DF46AC1CC0E41070A3FE7D9C6377"
+    },
+    {
+      "path": "packages/contracts/package.json",
+      "bytes": 168,
+      "sha256": "0287F73D254A8A1241F1EE1E597FF15E202DC5E836B86F5F5763B51719E797F4"
+    },
+    {
+      "path": "packages/contracts/screens.json",
+      "bytes": 8359,
+      "sha256": "0167274173DBD4C7AB6A444279B7F90150858BB998DCC91608CBED54D667F720"
+    },
+    {
+      "path": "packages/design-tokens/package.json",
+      "bytes": 178,
+      "sha256": "A6AC86A519EDF48973605B6A98650F92ED1ED76F6BF9A506A9B1F378C5557503"
+    },
+    {
+      "path": "packages/design-tokens/tokens.css",
+      "bytes": 1782,
+      "sha256": "E00782751AE12261E95AD1692A3DAA86F1DE1A1D12F1B91134EE3B370DEC4680"
+    },
+    {
+      "path": "packages/design-tokens/tokens.json",
+      "bytes": 2549,
+      "sha256": "8DC301BD89C4A27BDC22BA17B769D554496D7EB709D92F4D0AACA63562AC8D3B"
+    },
+    {
+      "path": "packages/design-tokens/tokens.ts",
+      "bytes": 142,
+      "sha256": "83B5EEDAFDDBBE4B890ACD98AEAFFDF6E941F05763BCE60F99F0F84DED568689"
+    },
+    {
+      "path": "packages/ui/accessibility-contract.json",
+      "bytes": 804,
+      "sha256": "7EAF0C9FC71A7B2672B41842608108767F2586A830997190CB038888CFB83636"
+    },
+    {
+      "path": "packages/ui/package.json",
+      "bytes": 250,
+      "sha256": "EE0F092D74BF39C2B59948B60EB8672394383570D409DC3F84EF2CA3B786566E"
+    },
+    {
+      "path": "packages/ui/src/account-security-model.js",
+      "bytes": 28041,
+      "sha256": "F1A0FDBD193E5384C07E77A3A6DFF23E2B61C0FB91DAB114A3154189AAEF08A3"
+    },
+    {
+      "path": "packages/ui/src/account-security-pane.jsx",
+      "bytes": 18670,
+      "sha256": "4F99DFC11EEB96E78919F416B3194677A522A909F94F4C53996A8EB343866FDE"
+    },
+    {
+      "path": "packages/ui/src/adaptive-workspace.jsx",
+      "bytes": 11895,
+      "sha256": "DDE66C7A25F6DAC7575B437EDCA178C6834A24CD000AC134572E4967D6D72281"
+    },
+    {
+      "path": "packages/ui/src/index.js",
+      "bytes": 2478,
+      "sha256": "A1B0E78830C3695228D72B12B5A39300A8E962D23D457545F287C805721F21A5"
+    },
+    {
+      "path": "packages/ui/src/operations-recovery-model.js",
+      "bytes": 32381,
+      "sha256": "CF11B1DE7A96F4712D63160AA1A11BEA23540623CB117342EBC32BC40D05055B"
+    },
+    {
+      "path": "packages/ui/src/operations-recovery-pane.jsx",
+      "bytes": 16970,
+      "sha256": "ED4A4660D40A68053B2B44B66F144797ADEC88078F532728BAB5D60BFF6BA9BC"
+    },
+    {
+      "path": "packages/ui/src/production-bound-evidence-model.js",
+      "bytes": 10517,
+      "sha256": "AC84DEC434B7BD1EDAB758820E9D6C235122DF70449D65F790DA809B23A9807B"
+    },
+    {
+      "path": "packages/ui/src/production-bound-evidence-pane.jsx",
+      "bytes": 8668,
+      "sha256": "18A66A87D113C1A8858FAE993B936B2B7CA91C29395C7F42F0A5035D7D7920E4"
+    },
+    {
+      "path": "packages/ui/src/run-model-evidence-model.js",
+      "bytes": 20996,
+      "sha256": "692DCD5DFC1C2B1F8F661715A068E3FC14B14DE085D7C1C282C3CB776B7AA3C1"
+    },
+    {
+      "path": "packages/ui/src/run-model-evidence-pane.jsx",
+      "bytes": 11636,
+      "sha256": "DEF827250D39EBE54F538311EBCCE2FA9D02F578F183A5763CB19759F1A2A42F"
+    },
+    {
+      "path": "packages/ui/src/source-knowledge-controls.js",
+      "bytes": 3234,
+      "sha256": "3B38A77A5125EC6096DFE5F55CE64501B8EA01FE0177AD65CA2B81AE6D3B712E"
+    },
+    {
+      "path": "packages/ui/src/source-knowledge-model.js",
+      "bytes": 23590,
+      "sha256": "55B7CCCBE69838E242A835579F743B1477680DC6C9003CE989E11FBBAE2AE28C"
+    },
+    {
+      "path": "packages/ui/src/source-knowledge-pane.jsx",
+      "bytes": 15296,
+      "sha256": "5AB7FFED25CED0912F3253ED41A46A910B7284D1C89B29D68872B545DC731DA6"
+    },
+    {
+      "path": "packages/ui/src/studio-workflow-model.js",
+      "bytes": 26616,
+      "sha256": "95D65D37ABA9A00014069CD99F59F7E71330B1E106A664E7939DB0E560947B12"
+    },
+    {
+      "path": "packages/ui/src/studio-workflow-pane.jsx",
+      "bytes": 16031,
+      "sha256": "1391122DB6751F7754A0FBC76A533C3734DCBF8B7BB20E5F42688DEAC25071D3"
+    },
+    {
+      "path": "packages/ui/src/web-shell-runtime-model.js",
+      "bytes": 1386,
+      "sha256": "1C030C824ABEAB87FE1E4D6931417A7C0EE0FFFCF37AFB8B9C48C376BD149926"
+    },
+    {
+      "path": "packages/ui/src/web-shell-runtime-status.jsx",
+      "bytes": 2800,
+      "sha256": "DA66D5138C727315556C57EC6B277D2EA54D667CAB8FEA91B83A121380F9F784"
+    },
+    {
+      "path": "packages/ui/src/web-shell-runtime.css",
+      "bytes": 1434,
+      "sha256": "F5F481A83C140DAA75C0748955ABB4C2F83A6A31E1F6B9037768273F83160598"
+    },
+    {
+      "path": "packages/ui/src/workspace-interaction.js",
+      "bytes": 1599,
+      "sha256": "11178CD08035CECEE65AC0CE67D9249762FD7BB0D9588E0DDC69648FED6DDBDD"
+    },
+    {
+      "path": "packages/ui/src/workspace-model.js",
+      "bytes": 6892,
+      "sha256": "9D7D525EA4D7E18F6CA571562037B165CFA9B61302BFDA7AE44724223BE9F8E4"
+    },
+    {
+      "path": "packages/ui/src/workspace.css",
+      "bytes": 42485,
+      "sha256": "BCEAACE5A1189AD5DEFBEA73EB7CDFBA8BFBF4528A3406A66DBBE0BC5A7807A0"
+    },
+    {
+      "path": "quality-gate-policy.json",
+      "bytes": 12572,
+      "sha256": "C0962B3F83FD8204BF85D6EA910CF7E93B55EF9E83A2E411C0545DB81379621F"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "bytes": 54,
+      "sha256": "2B3B1A4AA1389846C5532010A2D324B1C374DD791D1CD04EF1866EE155783D80"
+    },
+    {
+      "path": "scripts/run-isolated-desktop-cargo.mjs",
+      "bytes": 4983,
+      "sha256": "9C49024828F1C39C63913A8A4911CDCEBB0BC9E994041228BF53B80ABC4C7405"
+    }
+  ],
+  "validation_inputs": [
+    {
+      "path": "scripts/tests/desktop-tauri-shell.test.mjs",
+      "bytes": 16146,
+      "sha256": "FA0D7387A02B3252E803E3791C5FD93C8DBB0BC0182BA3A4398406D69BA246E9"
+    },
+    {
+      "path": "scripts/lib/predecessor-evidence-reconciliation.mjs",
+      "bytes": 19197,
+      "sha256": "8370D22AA3517FEDF143346FF213700C8CCB90956BDDE37C61345B586BB10760"
+    },
+    {
+      "path": "scripts/tests/platform-prototype-evidence.test.mjs",
+      "bytes": 21320,
+      "sha256": "95D5E7C159474FADF0F765B72F7566631523C62E3177354F681B71676BF14A57"
+    },
+    {
+      "path": "scripts/generate-r1-m3-02-evidence.mjs",
+      "bytes": 21561,
+      "sha256": "CF2D9B5DAF97F86219DEC7F2696891C7DF2439FDDB1699FACAD9C62CC45D77F4"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M2-08-C00_evidence_reconciliation_addendum.md",
+      "bytes": 4195,
+      "sha256": "799353595992CBDF1EBF640BCBEA9EFA22CE34557733F3560A765F8EE5E543E5"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-08/predecessor-evidence-reconciliation.json",
+      "bytes": 94950,
+      "sha256": "778EB5B1CD397285320E3F37E2AB35CB6457EC7F7BC2077CBC8BE1E49E4FBC3A"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-08/evidence-manifest.json",
+      "bytes": 6025,
+      "sha256": "31528490623B242E033245D4883AACAA9913EB52DBF7A101EEAEFB1FC02FD080"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-03_work_order.md",
+      "bytes": 4176,
+      "sha256": "8F736C675C0C7221380C25BDB9E2BF75983D4AEA447EB174A14A81232834CCE9"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-03_prompt.md",
+      "bytes": 418,
+      "sha256": "91F1627933F0C03FE0FFAD614FA84B7926382625E76E26E22FBA927350966C52"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-04_work_order.md",
+      "bytes": 5899,
+      "sha256": "536408EDD8C79C70B94E0D54E27E801F8AEA7DE7B1B6F1090E0492E44EA56F3E"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-04_prompt.md",
+      "bytes": 420,
+      "sha256": "E22E117C35445F301C218B6DD352B8F419560AE22A44A828659CDB6063CA31DE"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-05_work_order.md",
+      "bytes": 4283,
+      "sha256": "F1B583A5CA084102B8367FF72C4D5EE6937EBD2B477A19953234780AE6ED8A46"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-05_prompt.md",
+      "bytes": 609,
+      "sha256": "41AB9A8964247DCE00CF01E2AA9A8209842CEEAB7B949CFDE92AD3C727601062"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-06_work_order.md",
+      "bytes": 4108,
+      "sha256": "6E9F438B5A84CE10404DCF1EB781F238E2BF46B3A673E24AA490BA1493204BB1"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-06_prompt.md",
+      "bytes": 609,
+      "sha256": "03DE4A2822AB06315F3ED1879B576183A851C9B968889FC921118BB4CC5FC767"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+      "bytes": 4260,
+      "sha256": "D50104D1D09C2DC46FAF09C38D2FE1D23189D6F1C6F1A5CA4265CD4A924BB1ED"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/server-validation-summary.md",
+      "bytes": 2362,
+      "sha256": "BE0B344B07206BBDA07682C8D3A08D70CCD4BD2439BB3BF8E867D77C5E372CEF"
+    },
+    {
+      "path": ".github/workflows/release-1-quality-gate.yml",
+      "bytes": 4529,
+      "sha256": "32A17AFF778DD5580059DB4BD3FA27E0F6407521304816BE6622E55F87807BA1"
+    },
+    {
+      "path": "scripts/tests/product-foundation.test.mjs",
+      "bytes": 14929,
+      "sha256": "5CA5AD1912A6E8A818E8766839405F11FC6007140F81936FAC164B8921454DAA"
+    },
+    {
+      "path": "scripts/tests/quality-gate.test.mjs",
+      "bytes": 20154,
+      "sha256": "CB1A63F72A8F700F433F5D8A98779C90F02562742DD507CAD72149EF140AF751"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-07_work_order.md",
+      "bytes": 4132,
+      "sha256": "6280E6401D10C07A9348BC9936963D249CAF0FCD72693CB1ACEBA5476F0589FE"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-07_prompt.md",
+      "bytes": 635,
+      "sha256": "B90CFD9B33FBE209A28A8823B78642FE5A29066901E6BE35DFE664CABB04DA8D"
+    },
+    {
+      "path": "scripts/lib/quality-gate.mjs",
+      "bytes": 23025,
+      "sha256": "8ACCF4CC5B6954B3BD8931DC681EDDC48D049B850EDA5A4E3944DB07CF145103"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-08_work_order.md",
+      "bytes": 2688,
+      "sha256": "2274FF611885881D23B8C3D7639B8FE020AE5222D22093B217DDC677AB4EC14F"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-08_prompt.md",
+      "bytes": 635,
+      "sha256": "67972FD0FFB273258175444FE212E054411A31165747BB556E2B9282BD271A33"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-09_work_order.md",
+      "bytes": 4348,
+      "sha256": "93A5A3C8234193AA74FDEBE3F3A494BC2EA4434E7BA49E9703075FBB4978F4DF"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-09_prompt.md",
+      "bytes": 635,
+      "sha256": "3C98E45F96095C391034D69CB7BCC5FD48BDF39C1D2A4382C08D73881A1DB5D9"
+    }
+  ],
+  "fix_03_behavior_contract": {
+    "generated_on_exit_0": "remove_run_generated_gen_only",
+    "generated_on_exit_23": "preserve_exit_23_and_remove_run_generated_gen_only",
+    "spawn_error": "stable_exit_2_without_generated_residue",
+    "preexisting_gen": "fail_close_exit_2_without_child_and_preserve_bytes_hash",
+    "outside_temp_target_and_other_worktree": "preserve"
+  },
+  "fix_04_behavior_contract": {
+    "inaccessible_gen_probe": "EACCES_or_EIO_fail_close_exit_2_without_child_or_temp_target",
+    "postcss_override": "root_postcss_exact_8.5.23",
+    "npm_ls_equivalent_acceptance": "exit_1_only_for_next_exact_8.5.10_override_invalid_without_other_problems",
+    "production_audit": "high_0_critical_0"
+  },
+  "fix_05_behavior_contract": {
+    "predecessor_artifacts": 90,
+    "direct_match": 80,
+    "successor_superseded": 6,
+    "legacy_manifest_drift": 4,
+    "unexplained_mismatch": 0,
+    "added_successor_cases": [
+      "R1-M2-06|package-lock.json",
+      "R1-M2-07|package-lock.json"
+    ],
+    "fail_close_fields": "source_work_order,artifact_path,expected_sha256,expected_bytes,origin_commit,successor_commit,current_sha256,current_bytes"
+  },
+  "fix_06_behavior_contract": {
+    "server_pre_fix_failure": "ARM64 tauri_generate_context failed because apps/desktop/src-tauri/icons/icon.png was absent",
+    "source": "exact_embedded_256x256_png_frame_from_existing_icon.ico",
+    "dimensions": {
+      "width": 256,
+      "height": 256
+    },
+    "png_color": "8_bit_rgba",
+    "png_sha256": "9FB71FE3D0529692D8F21604E426074E919AB298415AE742D8C60B1A9C5DF92D",
+    "tauri_bundle_icons": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "windows_nsis_target_preserved": true,
+    "post_fix_verification_boundary": "local desktop type and quality gate; ysna-server rerun is owned by main designer"
+  },
+  "server_validation_contract": {
+    "evidence_source": "main_designer_confirmed_server_observation",
+    "exact_git_sha": "0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5",
+    "evidence_manifest": "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+    "architecture": "aarch64",
+    "quality_gate": "PASS_exit_0_all_7_categories_failures_0",
+    "database_migration": "N/A",
+    "developer_subagent_server_rerun": false
+  },
+  "fix_07_behavior_contract": {
+    "workflow": ".github/workflows/release-1-quality-gate.yml",
+    "ubuntu_tauri_prerequisites_step": "before_npm_ci_and_quality_gate",
+    "packages": [
+      "libwebkit2gtk-4.1-dev",
+      "libayatana-appindicator3-dev",
+      "librsvg2-dev",
+      "patchelf",
+      "ca-certificates",
+      "pkg-config"
+    ],
+    "rust_pin_source": "rust-toolchain.toml",
+    "quality_gate_command": "npm run verify:quality-gate",
+    "server_location_source": "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+    "external_absolute_paths_in_generator": 0
+  },
+  "fix_08_behavior_contract": {
+    "workflow": ".github/workflows/release-1-quality-gate.yml",
+    "diagnostic_step_id": "desktop-rust-type-diagnostic",
+    "diagnostic_command": "npm run verify:desktop-type",
+    "order": "after_npm_ci_before_quality_gate",
+    "fail_fast": true,
+    "continue_on_error": false,
+    "fallback_outcome": "CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC",
+    "raw_cargo_output_artifact": false,
+    "quality_gate_command_unchanged": "npm run verify:quality-gate"
+  },
+  "fix_09_behavior_contract": {
+    "npm_ignore_scripts": true,
+    "desktop_type_command": "npm run verify:desktop-build && node scripts/run-isolated-desktop-cargo.mjs check",
+    "execution_order": "desktop_frontend_build_before_isolated_cargo_check",
+    "clean_checkout_frontend_dist": "generated_then_removed_not_tracked",
+    "cargo_wrapper_unchanged": "scripts/run-isolated-desktop-cargo.mjs",
+    "quality_gate_invocation_unchanged": "npm run verify:desktop-type"
+  },
+  "mutable_handoff_records": [
+    "docs/04_test_reports/release_1/R1-M3-02_progress.md",
+    "docs/02_work_orders/reports/R1-M3-02_attempt-2.md"
+  ],
+  "generated_artifacts": {
+    "committed_tauri_schemas": [],
+    "windows_bundle_icons": [
+      "icon.ico"
+    ],
+    "cross_platform_context_icons": [
+      "icon.png"
+    ],
+    "rule": "Windows NSIS keeps icon.ico; exact source-derived icon.png supports cross-platform Tauri context generation; generated schemas and unrelated platform icons are excluded."
+  }
+}

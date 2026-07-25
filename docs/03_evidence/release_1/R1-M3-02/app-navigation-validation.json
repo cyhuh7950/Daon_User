@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-REVIEW-REPRO-L4",
+  "status": "PASS",
+  "application": {
+    "id": "com.daon.user",
+    "build": "installed Release app",
+    "observation_owner": "어울1 independent L4 observation"
+  },
+  "window_states": [
+    {
+      "target_content": "1920x1080",
+      "captured_outer_pixels": "1922x1112",
+      "frame_delta": "2x32",
+      "state_preserved": true,
+      "horizontal_overflow_px": 0,
+      "screenshot": "docs/03_evidence/release_1/R1-M3-02/windows-home-1920x1080.png"
+    },
+    {
+      "target_content": "1200x900",
+      "captured_outer_pixels": "1202x932",
+      "frame_delta": "2x32",
+      "state_preserved": true,
+      "horizontal_overflow_px": 0,
+      "screenshot": "docs/03_evidence/release_1/R1-M3-02/windows-home-1200x900.png"
+    },
+    {
+      "target_content": "800x900",
+      "captured_outer_pixels": "802x932",
+      "frame_delta": "2x32",
+      "state_preserved": true,
+      "horizontal_overflow_px": 0,
+      "screenshot": "docs/03_evidence/release_1/R1-M3-02/windows-home-800x900.png"
+    },
+    {
+      "target_content": "500x900",
+      "captured_outer_pixels": "502x932",
+      "frame_delta": "2x32",
+      "state_preserved": true,
+      "horizontal_overflow_px": 0,
+      "screenshot": "docs/03_evidence/release_1/R1-M3-02/windows-home-500x900.png"
+    }
+  ],
+  "routes_at_500x900": [
+    {
+      "label": "Home",
+      "click": "PASS",
+      "accessibility_region": "Home"
+    },
+    {
+      "label": "Workspace",
+      "click": "PASS",
+      "accessibility_region": "Workspace"
+    },
+    {
+      "label": "Notifications",
+      "click": "PASS",
+      "accessibility_region": "Notifications"
+    },
+    {
+      "label": "Account",
+      "click": "PASS",
+      "accessibility_region": "Account"
+    },
+    {
+      "label": "Organization",
+      "click": "PASS",
+      "accessibility_region": "Organization"
+    },
+    {
+      "label": "Operations",
+      "click": "PASS",
+      "accessibility_region": "운영·알림·복구 / 운영 상태·복구"
+    }
+  ],
+  "accessibility": {
+    "keyboard_tab": "PASS",
+    "visible_focus": "double blue focus ring on operations status button",
+    "button": "45 단추 API·Worker·DB·Object Storage 안전 상태 설명",
+    "tooltip": "46 도구 설명 API·Worker·DB·Object Storage 안전 상태. 현재 화면은 Production-bound Prototype이며 실제 Adapter 연결은 후속 Work Order가 소유합니다.",
+    "escape": "tooltip node removed; trigger button retained",
+    "screenshots": [
+      "docs/03_evidence/release_1/R1-M3-02/windows-keyboard-tab-focus.png",
+      "docs/03_evidence/release_1/R1-M3-02/windows-tooltip-open.png"
+    ]
+  },
+  "negative_states": {
+    "unavailable": {
+      "selected": "Web · unavailable",
+      "represented_as_success_or_healthy": false,
+      "screenshot": "docs/03_evidence/release_1/R1-M3-02/windows-state-unavailable.png"
+    },
+    "error": {
+      "selected": "Web · error",
+      "represented_as_success_or_healthy": false,
+      "screenshot": "docs/03_evidence/release_1/R1-M3-02/windows-state-error.png"
+    }
+  },
+  "restart": {
+    "home": "Evidence Hub confirmed",
+    "workspace": [
+      "WORKSPACE",
+      "Release 1 운영 준비",
+      "실행 unavailable",
+      "two-pane",
+      "프로토타입 데이터"
+    ]
+  },
+  "console": {
+    "status": "not_observable_in_release_build",
+    "pass_inferred": false
+  },
+  "actual_external_effects": 0
+}

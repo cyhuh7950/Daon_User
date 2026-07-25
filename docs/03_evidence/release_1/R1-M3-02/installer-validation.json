@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-REVIEW-REPRO-L4",
+  "installer": {
+    "path": "C:\\Users\\cyhuh\\AppData\\Local\\Temp\\daon-user-desktop-installer-J8IhJv\\release\\bundle\\nsis\\Daon 사용자 프로그램_0.1.0_x64-setup.exe",
+    "bytes": 1366987,
+    "sha256": "F92AAD047033AC6AD6C06464E5C596F605D5ED94E075EEED807D010669DD2918",
+    "bundle_type": "NSIS x64",
+    "signature": "unsigned_development"
+  },
+  "installed_executable": {
+    "path": "C:\\Users\\cyhuh\\AppData\\Local\\Daon 사용자 프로그램\\daon-user-desktop.exe",
+    "bytes": 4066304,
+    "sha256": "0D77B7B1CA1A0724D8D364776384B98FE6AA1305123431CAAEEC141328165348",
+    "product_version": "0.1.0"
+  },
+  "install": {
+    "result": "PASS",
+    "registry_entries": 1
+  },
+  "retained_for_main_designer_review": false,
+  "cleanup_status": "removed_after_main_designer_review",
+  "cleanup": {
+    "performed_by": "어울1 independent main-designer review",
+    "uninstaller": "NSIS uninstall.exe /S",
+    "uninstaller_exit_code": 0,
+    "installed_directory": {
+      "path": "C:\\Users\\cyhuh\\AppData\\Local\\Daon 사용자 프로그램",
+      "exists_after_cleanup": false
+    },
+    "uninstall_registry": {
+      "path": "HKCU\\Uninstall\\Daon 사용자 프로그램",
+      "exists_after_cleanup": false
+    },
+    "daon_app_processes_after_cleanup": 0,
+    "external_installer_target": {
+      "path": "C:\\Users\\cyhuh\\AppData\\Local\\Temp\\daon-user-desktop-installer-J8IhJv",
+      "exists_after_cleanup": false
+    },
+    "user_existing_data_or_other_paths_changed": 0
+  }
+}

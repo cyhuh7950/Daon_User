@@ -1,0 +1,21 @@
+* { box-sizing: border-box; }
+html, body, #root { min-width: 0; min-height: 100%; margin: 0; }
+body { overflow-x: hidden; background: var(--color-surface-canvas, #f4f6f8); font: 12px/1.5 system-ui, sans-serif; }
+button, input, select, textarea { font: inherit; }
+.desktop-shell { min-width: 0; min-height: 100vh; color: var(--color-text-primary, #18212b); }
+.desktop-titlebar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; background: #132238; color: #fff; }
+.desktop-titlebar h1 { margin: 0; font-size: 16px; }
+.desktop-eyebrow { margin: 0; font-size: 9px; opacity: .74; }
+.desktop-runtime-badge { border: 1px solid #8ea6c2; border-radius: 999px; padding: 3px 8px; font-size: 10px; }
+.desktop-navigation { display: flex; gap: 4px; overflow-x: auto; padding: 8px 12px; border-bottom: 1px solid #ccd4dc; background: #fff; }
+.desktop-navigation button { min-height: 32px; border: 1px solid transparent; border-radius: 6px; background: transparent; padding: 5px 10px; }
+.desktop-navigation button[aria-current="page"] { border-color: #3b6fa5; background: #eaf2fb; }
+.desktop-navigation button:focus-visible { outline: 2px solid #0a67b5; outline-offset: 2px; }
+.desktop-content, .desktop-content > section { min-width: 0; }
+.desktop-content > section[hidden] { display: none; }
+@media (max-width: 600px) {
+  .desktop-titlebar { align-items: flex-start; }
+  .desktop-runtime-badge { max-width: 150px; }
+  .desktop-navigation { flex-wrap: wrap; overflow-x: hidden; }
+  .desktop-navigation button { flex: 1 1 auto; }
+}

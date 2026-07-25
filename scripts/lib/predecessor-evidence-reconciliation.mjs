@@ -8,6 +8,8 @@ export const APPROVED_PREDECESSOR_SPECIAL_CASES = Object.freeze([
   Object.freeze({ source_work_order: "R1-M2-05", artifact_path: "docs/04_test_reports/release_1/R1-M2-05_progress.md", status: "SUCCESSOR_SUPERSEDED", origin_commit: "ac80b670c1606a22cac27c39f311ed3bd8980a42", successor_commit: "c42e1d409fca9a32a750eeff62abf1ce8bb3f76c", evidence: "Expected blob exists at origin; later evidence commit appended progress." }),
   Object.freeze({ source_work_order: "R1-M2-06", artifact_path: "packages/ui/src/index.js", status: "SUCCESSOR_SUPERSEDED", origin_commit: "780ca50725233227076a40f5adb2b5f1e05b1070", successor_commit: "6fdcfa20c80f0d512e2b4d299446b8b6e917bd11", evidence: "M2-07 added the operations export." }),
   Object.freeze({ source_work_order: "R1-M2-06", artifact_path: "packages/ui/src/workspace.css", status: "SUCCESSOR_SUPERSEDED", origin_commit: "780ca50725233227076a40f5adb2b5f1e05b1070", successor_commit: "6fdcfa20c80f0d512e2b4d299446b8b6e917bd11", evidence: "M2-07 added operations CSS." }),
+  Object.freeze({ source_work_order: "R1-M2-06", artifact_path: "package-lock.json", status: "SUCCESSOR_SUPERSEDED", expected_sha256: "69E87A118E89CF8ADF8CE35E571EB2EB6B7D5277EB405609FEC83F04B75DC161", expected_bytes: 156787, origin_commit: "780ca50725233227076a40f5adb2b5f1e05b1070", successor_commit: "8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa", current_sha256: "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5", current_bytes: 181571, evidence: "R1-M3-02 PostCSS 8.5.23 security patch superseded the predecessor lockfile." }),
+  Object.freeze({ source_work_order: "R1-M2-07", artifact_path: "package-lock.json", status: "SUCCESSOR_SUPERSEDED", expected_sha256: "69E87A118E89CF8ADF8CE35E571EB2EB6B7D5277EB405609FEC83F04B75DC161", expected_bytes: 156787, origin_commit: "ab2a3b055581fcaea75cceafc3bb8bedb2a80066", successor_commit: "8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa", current_sha256: "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5", current_bytes: 181571, evidence: "R1-M3-02 PostCSS 8.5.23 security patch superseded the predecessor lockfile." }),
   Object.freeze({ source_work_order: "R1-M2-06", artifact_path: "toolchain-versions.json", status: "LEGACY_MANIFEST_DRIFT", expected_sha256: "0DCCFFCD264C46E6881A6CEA98BCBC48C918D03C583BC4F2046AD833AF1AB05F", expected_bytes: 470, origin_commit: "780ca50725233227076a40f5adb2b5f1e05b1070", successor_commit: null, evidence: "Expected blob is absent from history and the final recorded commit." }),
   Object.freeze({ source_work_order: "R1-M2-06", artifact_path: "docs/01_architecture/DECISIONS.md", status: "LEGACY_MANIFEST_DRIFT", expected_sha256: "0F0FC901FE91A897CFFD7E3192BCA32A4B4BD5B7026DBE12EA2E27D9D669C69D", expected_bytes: 8839, origin_commit: "780ca50725233227076a40f5adb2b5f1e05b1070", successor_commit: null, evidence: "Expected blob is absent from history and the final recorded commit." }),
   Object.freeze({ source_work_order: "R1-M2-07", artifact_path: "packages/ui/src/index.js", status: "LEGACY_MANIFEST_DRIFT", expected_sha256: "B72782F6FC89B70B1ED1292796C61B5653F3271EDEA10AC8C349EEB4F5AC6378", expected_bytes: 1914, origin_commit: "6fdcfa20c80f0d512e2b4d299446b8b6e917bd11", successor_commit: null, evidence: "Expected blob is absent from history and the final implementation blob." }),
@@ -42,6 +44,21 @@ export function normalizeManifestExpected(artifact, representations = []) {
 export function classifyPredecessorArtifact({ source_work_order: sourceWorkOrder, artifact_path: artifactPath, expected, raw, canonical, canonical_crlf: canonicalCrlf, special_case: specialCase = null }) {
   if (!validExpected(expected)) return { status: "UNEXPLAINED_MISMATCH", verification_representation: null, code: "INVALID_MANIFEST_EXPECTATION" };
   const approvedSpecialCase = SPECIAL_CASES.get(`${sourceWorkOrder}|${artifactPath}`) ?? null;
+  const hasPinnedSuccessorContract = approvedSpecialCase?.status === "SUCCESSOR_SUPERSEDED"
+    && typeof approvedSpecialCase.expected_sha256 === "string";
+  const pinnedCurrent = hasPinnedSuccessorContract
+    ? { sha256: approvedSpecialCase.current_sha256, bytes: approvedSpecialCase.current_bytes }
+    : null;
+  const pinnedSuccessorContractMatches = !hasPinnedSuccessorContract || (
+    expected.sha256.toUpperCase() === approvedSpecialCase.expected_sha256
+    && expected.bytes === approvedSpecialCase.expected_bytes
+    && specialCase?.origin_commit === approvedSpecialCase.origin_commit
+    && specialCase?.successor_commit === approvedSpecialCase.successor_commit
+    && specialCase?.current_sha256 === approvedSpecialCase.current_sha256
+    && specialCase?.current_bytes === approvedSpecialCase.current_bytes
+    && [raw, canonical, canonicalCrlf].some((representation) => representationMatches(representation, pinnedCurrent))
+  );
+  if (!pinnedSuccessorContractMatches) return { status: "UNEXPLAINED_MISMATCH", verification_representation: null, code: "SUCCESSOR_CONTRACT_MISMATCH" };
   const legacyExpectationMatches = approvedSpecialCase?.status !== "LEGACY_MANIFEST_DRIFT" || (
     expected.sha256.toUpperCase() === approvedSpecialCase.expected_sha256 && expected.bytes === approvedSpecialCase.expected_bytes
   );
@@ -116,13 +133,34 @@ function asGitCrlfRepresentation(buffer) {
   return asRepresentation(Buffer.from(text.replace(/\r?\n/g, "\r\n"), "utf8"));
 }
 
-function verifySpecialCaseLineage(root, artifactPath, expected, specialCase, origin) {
+function verifySpecialCaseLineage(root, artifactPath, expected, specialCase, origin, originCrlf, currentRepresentations) {
   const originExists = gitCommitExists(root, specialCase.origin_commit);
-  const originMatches = validExpected(expected) && representationMatches(origin, expected);
+  const originMatches = validExpected(expected) && [origin, originCrlf].some((representation) => representationMatches(representation, expected));
   if (specialCase.status === "SUCCESSOR_SUPERSEDED") {
     const successorExists = gitCommitExists(root, specialCase.successor_commit);
-    const successorBlobExists = successorExists && gitBuffer(root, specialCase.successor_commit, artifactPath) !== null;
-    return { lineage_verified: originMatches && successorExists && successorBlobExists && gitIsAncestor(root, specialCase.origin_commit, specialCase.successor_commit), origin };
+    const successorBuffer = successorExists ? gitBuffer(root, specialCase.successor_commit, artifactPath) : null;
+    const successorBlobExists = successorBuffer !== null;
+    const hasPinnedSuccessorContract = typeof specialCase.expected_sha256 === "string";
+    const pinnedCurrent = hasPinnedSuccessorContract ? { sha256: specialCase.current_sha256, bytes: specialCase.current_bytes } : null;
+    const successorMatchesPinnedCurrent = !hasPinnedSuccessorContract || [
+      asRepresentation(successorBuffer),
+      asGitCrlfRepresentation(successorBuffer)
+    ].some((representation) => representationMatches(representation, pinnedCurrent));
+    const currentMatchesPinned = !hasPinnedSuccessorContract || currentRepresentations.some((representation) => representationMatches(representation, pinnedCurrent));
+    const [raw, canonical, canonicalCrlf] = currentRepresentations;
+    const currentCheckoutIsCanonical = raw?.available === true
+      && (representationMatches(raw, canonical)
+        || representationMatches(raw, canonicalCrlf));
+    return {
+      lineage_verified: originMatches
+        && successorExists
+        && successorBlobExists
+        && successorMatchesPinnedCurrent
+        && currentMatchesPinned
+        && currentCheckoutIsCanonical
+        && gitIsAncestor(root, specialCase.origin_commit, specialCase.successor_commit),
+      origin
+    };
   }
   const legacyExpectationMatches = validExpected(expected)
     && expected.sha256.toUpperCase() === specialCase.expected_sha256
@@ -147,14 +185,22 @@ export function buildPredecessorReconciliation({ root = process.cwd() } = {}) {
       const canonical = asRepresentation(canonicalBuffer);
       const canonicalCrlf = asGitCrlfRepresentation(canonicalBuffer);
       const specialDefinition = SPECIAL_CASES.get(`${sourceWorkOrder}|${artifactPath}`) ?? null;
-      const originRepresentation = specialDefinition && gitCommitExists(root, specialDefinition.origin_commit) ? asRepresentation(gitBuffer(root, specialDefinition.origin_commit, artifactPath)) : { available: false, sha256: null, bytes: null };
+      const originBuffer = specialDefinition && gitCommitExists(root, specialDefinition.origin_commit) ? gitBuffer(root, specialDefinition.origin_commit, artifactPath) : null;
+      const originRepresentation = asRepresentation(originBuffer);
+      const originCrlfRepresentation = asGitCrlfRepresentation(originBuffer);
       let normalized = normalizeManifestExpected(artifact, [raw, canonical, canonicalCrlf]);
       if (normalized.bytes_source === "MISSING_UNVERIFIED" && specialDefinition?.status === "SUCCESSOR_SUPERSEDED" && originRepresentation.available === true && typeof artifact.sha256 === "string" && originRepresentation.sha256 === artifact.sha256.toUpperCase()) {
         normalized = { expected: { sha256: artifact.sha256, bytes: originRepresentation.bytes }, bytes_source: "VERIFIED_ORIGIN_BLOB" };
       }
       const expected = normalized.expected;
-      const lineage = specialDefinition ? verifySpecialCaseLineage(root, artifactPath, expected, specialDefinition, originRepresentation) : null;
-      const specialCase = specialDefinition ? { lineage_verified: lineage.lineage_verified } : null;
+      const lineage = specialDefinition ? verifySpecialCaseLineage(root, artifactPath, expected, specialDefinition, originRepresentation, originCrlfRepresentation, [raw, canonical, canonicalCrlf]) : null;
+      const specialCase = specialDefinition ? {
+        lineage_verified: lineage.lineage_verified,
+        origin_commit: specialDefinition.origin_commit,
+        successor_commit: specialDefinition.successor_commit,
+        current_sha256: specialDefinition.current_sha256,
+        current_bytes: specialDefinition.current_bytes
+      } : null;
       const classification = classifyPredecessorArtifact({ source_work_order: sourceWorkOrder, artifact_path: artifactPath, expected, raw, canonical, canonical_crlf: canonicalCrlf, special_case: specialCase });
       const originImplementationOrEvidenceCommit = specialDefinition?.origin_commit ?? manifestDeclaredOriginCommit;
       const originCommitExists = typeof originImplementationOrEvidenceCommit === "string" ? gitCommitExists(root, originImplementationOrEvidenceCommit) : null;
@@ -200,4 +246,4 @@ export function buildPredecessorReconciliation({ root = process.cwd() } = {}) {
   };
 }
 
-export const APPROVED_PREDECESSOR_SUMMARY = Object.freeze({ artifact_count: 90, DIRECT_MATCH: 82, SUCCESSOR_SUPERSEDED: 4, LEGACY_MANIFEST_DRIFT: 4, UNEXPLAINED_MISMATCH: 0, predecessor_status: "verified_with_observations" });
+export const APPROVED_PREDECESSOR_SUMMARY = Object.freeze({ artifact_count: 90, DIRECT_MATCH: 80, SUCCESSOR_SUPERSEDED: 6, LEGACY_MANIFEST_DRIFT: 4, UNEXPLAINED_MISMATCH: 0, predecessor_status: "verified_with_observations" });

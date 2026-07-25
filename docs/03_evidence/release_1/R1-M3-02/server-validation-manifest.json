@@ -1,0 +1,133 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-SERVER-VALIDATION-EVIDENCE",
+  "status": "PASS",
+  "evidence_source": {
+    "observation_owner": "어울1 main designer",
+    "documentation_owner": "어울2 developer subagent",
+    "developer_subagent_server_rerun": false,
+    "claim_boundary": "어울1이 확인해 전달한 서버 사실을 재실행 없이 정형화"
+  },
+  "target": {
+    "server": "ysna-server",
+    "deployment_root": "/home/ubuntu/deploy/daon-user/R1-M3-02",
+    "exact_git_sha": "0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5",
+    "checkout_retained": true,
+    "git_dirty_files_after_validation": 0
+  },
+  "host": {
+    "architecture": "aarch64",
+    "docker_engine": "29.6.1",
+    "docker_platform": "linux/arm64"
+  },
+  "temporary_toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "rust": "1.97.1",
+    "cargo": "1.97.1",
+    "uv": "0.11.2",
+    "git": "2.39.5",
+    "ca_bundle_correction": {
+      "action": "임시 Toolchain Dockerfile에 ca-certificates 설치",
+      "product_repository_changes": 0,
+      "persisted_product_configuration_changes": 0
+    },
+    "cleanup": {
+      "temporary_toolchain_image_removed": true,
+      "remote_temporary_dockerfile_removed": true,
+      "local_temporary_dockerfile_removed": true
+    }
+  },
+  "validation_history": [
+    {
+      "git_sha": "8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa",
+      "result": "REWORK_REQUIRED",
+      "finding": "R1-M2-06 및 R1-M2-07 predecessor package-lock 증거 2건 불일치",
+      "resolution": "R1-M3-02-FIX-05",
+      "formal_failure_report": false
+    },
+    {
+      "git_sha": "b76aa30fbc493937fba0685910f9353dffbf359d",
+      "result": "REWORK_REQUIRED",
+      "finding": "CA 번들 보정 뒤 ARM64 Rust 컴파일에서 apps/desktop/src-tauri/icons/icon.png 부재 확인",
+      "resolution": "R1-M3-02-FIX-06",
+      "formal_failure_report": false
+    },
+    {
+      "git_sha": "0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5",
+      "result": "PASS",
+      "finding": "최종 exact-SHA Quality Gate 전 범주 통과",
+      "formal_failure_report": false
+    }
+  ],
+  "failure_report_count": 0,
+  "final_quality_gate": {
+    "overall": "PASS",
+    "exit_code": 0,
+    "policy_sha256": "9D9249713AB1436BE2CF805C23D62926CAC6C9FE75962FBA10EDF4A67488D4C3",
+    "categories": {
+      "lint": "PASS",
+      "type": "PASS",
+      "unit": "PASS",
+      "contract": "PASS",
+      "build": "PASS",
+      "security": "PASS",
+      "independence": "PASS"
+    },
+    "failures": 0
+  },
+  "supporting_independent_server_validation": {
+    "scope": "최종 exact SHA 이전 검증과 최종 Gate의 중첩 근거",
+    "web_build_routes": "7/7",
+    "desktop_vite_modules": 42,
+    "production_audit": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "final_gate_revalidated_build_and_security": true
+  },
+  "database_and_shared_resources": {
+    "database_changes": 0,
+    "migration": "N/A",
+    "shared_db_used_or_changed": false,
+    "common_used_or_changed": false,
+    "netdata_used_or_changed": false,
+    "proxy_used_or_changed": false
+  },
+  "resource_integrity": {
+    "containers": {
+      "pre_sha256": "ded7efe2d467ceb904ac8d48babcb7b90797ce55bf126e1a3ef7d2aac526dd76",
+      "post_sha256": "ded7efe2d467ceb904ac8d48babcb7b90797ce55bf126e1a3ef7d2aac526dd76",
+      "unchanged": true
+    },
+    "networks": {
+      "pre_sha256": "ed49fdd14e2ed9ce757a4f7a710564283b001b0b86e6a3c07b468581856bd1d6",
+      "post_sha256": "ed49fdd14e2ed9ce757a4f7a710564283b001b0b86e6a3c07b468581856bd1d6",
+      "unchanged": true
+    },
+    "volumes": {
+      "pre_sha256": "f4f5c78edb7520598e3e700ee8892f49bd98a7e2ee95c4404ae9672373474220",
+      "post_sha256": "f4f5c78edb7520598e3e700ee8892f49bd98a7e2ee95c4404ae9672373474220",
+      "unchanged": true
+    }
+  },
+  "cleanup": {
+    "temporary_containers": 0,
+    "generated_directory_classes_checked": 6,
+    "generated_directory_classes_present": 0,
+    "temporary_toolchain_artifacts_remaining": 0
+  },
+  "current_documentation_run": {
+    "server_commands_executed": 0,
+    "screen_or_app_runs": 0,
+    "commit": false,
+    "push": false,
+    "pull_request": false,
+    "deployment": false
+  }
+}

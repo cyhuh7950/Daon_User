@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-POSTCSS-PROBE-EVIDENCE",
+  "command": "npm audit --omit=dev --audit-level=high --json",
+  "exit_code": 0,
+  "audit_report_version": 2,
+  "postcss_version": "8.5.23",
+  "resolved_advisories": [
+    "GHSA-6g55-p6wh-862q",
+    "GHSA-r28c-9q8g-f849"
+  ],
+  "vulnerabilities": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "dependencies": {
+    "prod": 256,
+    "dev": 71,
+    "optional": 100,
+    "peer": 0,
+    "peer_optional": 0,
+    "total": 363
+  },
+  "status": "PASS"
+}

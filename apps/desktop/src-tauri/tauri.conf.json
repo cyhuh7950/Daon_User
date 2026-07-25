@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Daon 사용자 프로그램",
+  "version": "0.1.0",
+  "identifier": "com.daon.user",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Daon 사용자 프로그램",
+        "width": 1200,
+        "height": 900,
+        "minWidth": 500,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' customprotocol: asset:; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'",
+      "capabilities": ["desktop-main"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "nsis",
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "category": "Productivity",
+    "shortDescription": "Daon 사용자 프로그램",
+    "longDescription": "공용 React UI를 포함한 Daon 사용자 프로그램 Windows App",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
