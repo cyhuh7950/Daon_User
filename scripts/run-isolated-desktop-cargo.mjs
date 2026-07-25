@@ -5,15 +5,34 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { generatedSidecarPath } from "./build-local-service-sidecar.mjs";
+
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SAFE_PREFIX = "daon-user-desktop-";
 const GENERATED_TAURI_DIR = path.join(repositoryRoot, "apps", "desktop", "src-tauri", "gen");
+const GENERATED_SIDECAR = path.join(
+  repositoryRoot,
+  "apps",
+  "desktop",
+  "src-tauri",
+  "binaries",
+  "daon-user-local-service-x86_64-pc-windows-msvc.exe"
+);
+
+export async function cleanupGeneratedSidecar(candidate = GENERATED_SIDECAR) {
+  const resolved = path.resolve(candidate);
+  if (resolved !== GENERATED_SIDECAR) {
+    throw new Error("refusing to remove a non-generated sidecar");
+  }
+  await rm(resolved, { force: true });
+}
 
 export async function runIsolatedCargo({
   prefix = path.join(os.tmpdir(), `${SAFE_PREFIX}cargo-`),
   keepOnSuccess,
   command,
   args,
+  envOverrides = {},
   spawnImpl = spawnSync
 }) {
   const targetDir = await mkdtemp(prefix);
@@ -21,7 +40,7 @@ export async function runIsolatedCargo({
   try {
     result = spawnImpl(command, args, {
       cwd: repositoryRoot,
-      env: { ...process.env, CARGO_TARGET_DIR: targetDir },
+      env: { ...process.env, ...envOverrides, CARGO_TARGET_DIR: targetDir },
       shell: false,
       stdio: "inherit"
     });
@@ -132,20 +151,50 @@ async function main() {
   }
 
   const isInstaller = mode === "installer";
-  if (!isInstaller && mode !== "check") throw new Error(`unsupported mode: ${mode ?? ""}`);
+  const isTest = mode === "test";
+  const isManagerRuntime = mode === "manager-runtime";
+  if (!isInstaller && !isTest && !isManagerRuntime && mode !== "check") {
+    throw new Error(`unsupported mode: ${mode ?? ""}`);
+  }
+  if (isInstaller && await pathExists(GENERATED_SIDECAR)) {
+    throw new Error("refusing to run while the generated sidecar already exists");
+  }
   const npmExecPath = process.env.npm_execpath;
   if (isInstaller && !npmExecPath) throw new Error("npm_execpath is required for installer mode");
   const command = isInstaller ? process.execPath : "cargo";
   const args = isInstaller
     ? [npmExecPath, "run", "tauri:build", "--workspace", "@daon-user/desktop"]
-    : ["check", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "--locked"];
-  const prefix = path.join(os.tmpdir(), `${SAFE_PREFIX}${isInstaller ? "installer" : "check"}-`);
+    : isManagerRuntime
+      ? [
+          "run",
+          "--manifest-path",
+          "apps/desktop/src-tauri/Cargo.toml",
+          "--locked",
+          "--bin",
+          "local-service-lifecycle-host"
+        ]
+    : isTest
+      ? ["test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "--locked", "--lib", "--test", "local_service_contract"]
+      : ["check", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "--locked"];
+  const prefix = path.join(
+    os.tmpdir(),
+    `${SAFE_PREFIX}${isInstaller ? "installer" : isTest ? "test" : isManagerRuntime ? "manager-runtime" : "check"}-`
+  );
   const result = await runDesktopCargoSafely({
     prefix,
     keepOnSuccess: isInstaller,
     command,
-    args
+    args,
+    envOverrides: isInstaller
+      ? {}
+      : {
+          TAURI_CONFIG: JSON.stringify({ bundle: { externalBin: [] } }),
+          ...(isManagerRuntime
+            ? { DAON_LOCAL_SERVICE_SIDECAR: generatedSidecarPath }
+            : {})
+        }
   });
+  if (isInstaller) await cleanupGeneratedSidecar();
   if (result.error) console.error(`DESKTOP_CARGO_CHILD_ERROR ${result.error.code ?? result.error.message}`);
   if (result.kept) {
     console.log(`DESKTOP_CARGO_TARGET=${result.targetDir}`);

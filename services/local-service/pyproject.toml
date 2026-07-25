@@ -1,8 +1,38 @@
 [project]
 name = "daon-user-local-service"
-version = "0.0.0"
+version = "0.1.0"
 requires-python = "==3.14.3"
-dependencies = []
+dependencies = [
+  "fastapi==0.139.2",
+  "uvicorn==0.51.0",
+]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+  "httpx==0.28.1",
+  "mypy==1.19.1",
+  "pip-audit==2.10.0",
+  "pyinstaller==6.21.0",
+  "pytest==9.0.3",
+  "pytest-cov==7.0.0",
+  "ruff==0.15.7",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src", "tests"]
