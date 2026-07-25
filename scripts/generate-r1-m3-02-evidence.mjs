@@ -4,8 +4,12 @@ import path from "node:path";
 
 const root = process.cwd();
 const evidenceDir = path.join(root, "docs/03_evidence/release_1/R1-M3-02");
-const issueId = "R1-M3-02-TAURI-CROSS-PLATFORM-ICON";
+const issueId = "R1-M3-02-SERVER-VALIDATION-EVIDENCE";
 const toPosix = (value) => value.split(path.sep).join("/");
+const mutableHandoffRecords = [
+  "docs/04_test_reports/release_1/R1-M3-02_progress.md",
+  "docs/02_work_orders/reports/R1-M3-02_attempt-2.md"
+];
 
 async function artifact(relativePath) {
   const absolutePath = path.join(root, relativePath);
@@ -80,7 +84,9 @@ const validationInputs = [
   "docs/02_work_orders/release_1/R1-M3-02-FIX-05_work_order.md",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-05_prompt.md",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-06_work_order.md",
-  "docs/02_work_orders/release_1/R1-M3-02-FIX-06_prompt.md"
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-06_prompt.md",
+  "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+  "docs/03_evidence/release_1/R1-M3-02/server-validation-summary.md"
 ];
 const buildInputPaths = [...new Set([...desktopInputs, ...sharedInputs, ...rootInputs])].sort();
 
@@ -159,6 +165,16 @@ const sourceManifest = {
     windows_nsis_target_preserved: true,
     post_fix_verification_boundary: "local desktop type and quality gate; ysna-server rerun is owned by main designer"
   },
+  server_validation_contract: {
+    evidence_source: "main_designer_confirmed_server_observation",
+    exact_git_sha: "0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5",
+    target: "ysna-server:/home/ubuntu/deploy/daon-user/R1-M3-02",
+    architecture: "aarch64",
+    quality_gate: "PASS_exit_0_all_7_categories_failures_0",
+    database_migration: "N/A",
+    developer_subagent_server_rerun: false
+  },
+  mutable_handoff_records: mutableHandoffRecords,
   generated_artifacts: {
     committed_tauri_schemas: [],
     windows_bundle_icons: ["icon.ico"],
@@ -341,6 +357,8 @@ const evidenceFiles = [
   "quality-gate-summary.md",
   "npm-audit-fix04.json",
   "npm-ls-fix04.json",
+  "server-validation-manifest.json",
+  "server-validation-summary.md",
   ...captures.map(([filename]) => filename)
 ];
 const evidenceArtifacts = await Promise.all(evidenceFiles.map((filename) => artifact(`docs/03_evidence/release_1/R1-M3-02/${filename}`)));
@@ -388,11 +406,16 @@ await writeJson("evidence-manifest.json", {
     server_arm64: "pre-fix missing icon.png failure recorded; post-fix server rerun not performed by developer subagent",
     actual_external_effects: 0
   },
+  server_validation: {
+    status: "PASS",
+    observation_owner: "어울1 main designer",
+    exact_git_sha: "0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5",
+    manifest: "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+    summary: "docs/03_evidence/release_1/R1-M3-02/server-validation-summary.md",
+    developer_subagent_server_rerun: false
+  },
   evidence_artifacts: evidenceArtifacts,
-  mutable_handoff_records: [
-    "docs/04_test_reports/release_1/R1-M3-02_progress.md",
-    "docs/02_work_orders/reports/R1-M3-02_attempt-2.md"
-  ],
+  mutable_handoff_records: mutableHandoffRecords,
   deployment: { commit: false, push: false, pull_request: false, merge: false, ysna_server: false, oracle_cloud: false },
   cleanup: {
     repository_cargo_targets: 0,
