@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import { APPROVED_PREDECESSOR_SPECIAL_CASES, buildPredecessorReconciliation, classifyPredecessorArtifact, normalizeManifestExpected, validateOriginCommit } from "../lib/predecessor-evidence-reconciliation.mjs";
+import { APPROVED_PREDECESSOR_SPECIAL_CASES, APPROVED_PREDECESSOR_SUMMARY, buildPredecessorReconciliation, classifyPredecessorArtifact, normalizeManifestExpected, validateOriginCommit } from "../lib/predecessor-evidence-reconciliation.mjs";
 
 export { buildPredecessorReconciliation };
 
@@ -69,9 +69,10 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
     }
   });
 
-  test("선행 Reconciliation은 82/4/4/0이며 legacy drift를 PASS로 세지 않는다", () => {
+  test("선행 Reconciliation은 80/6/4/0이며 legacy drift를 PASS로 세지 않는다", () => {
     const reconciliation = currentReconciliation;
-    assert.deepEqual(reconciliation.summary, { artifact_count: 90, DIRECT_MATCH: 82, SUCCESSOR_SUPERSEDED: 4, LEGACY_MANIFEST_DRIFT: 4, UNEXPLAINED_MISMATCH: 0, predecessor_status: "verified_with_observations" });
+    assert.deepEqual(reconciliation.summary, { artifact_count: 90, DIRECT_MATCH: 80, SUCCESSOR_SUPERSEDED: 6, LEGACY_MANIFEST_DRIFT: 4, UNEXPLAINED_MISMATCH: 0, predecessor_status: "verified_with_observations" });
+    assert.deepEqual(reconciliation.summary, APPROVED_PREDECESSOR_SUMMARY);
     assert.equal(reconciliation.entries.filter((item) => item.status === "LEGACY_MANIFEST_DRIFT").every((item) => item.current_m2_08_impact.includes("no predecessor hash-completeness PASS")), true);
     assert.equal(reconciliation.entries.filter((item) => item.expected_bytes_source === "LEGACY_SHA_MATCHED_REPRESENTATION").length, 24);
     assert.equal(reconciliation.entries.filter((item) => item.expected_bytes_source === "VERIFIED_ORIGIN_BLOB").length, 2);
@@ -116,7 +117,7 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
     assert.deepEqual(normalizeManifestExpected({ sha256: sha }, [{ available: true, sha256: "B".repeat(64), bytes: 7 }]), { expected: { sha256: sha, bytes: undefined }, bytes_source: "MISSING_UNVERIFIED" });
   });
 
-  test("C01 Summary는 완전한 승인 기준선 90·82/4/4/0만 완료한다", () => {
+  test("C01 Summary는 완전한 승인 기준선 90·80/6/4/0만 완료한다", () => {
     const approved = { artifact_count: 90, DIRECT_MATCH: 82, SUCCESSOR_SUPERSEDED: 4, LEGACY_MANIFEST_DRIFT: 4, UNEXPLAINED_MISMATCH: 0, predecessor_status: "verified_with_observations" };
     assert.deepEqual(model.evaluateEvidenceCompletion(approved), { completable: true, status: "verified_with_observations", code: "PREDECESSOR_EVIDENCE_RECONCILED" });
     for (const invalid of [
@@ -163,7 +164,76 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
     assert.equal(classifyPredecessorArtifact({ source_work_order: "R1-M2-99", artifact_path: "unknown", expected: { sha256: "A".repeat(64), bytes: 1 }, raw: { available: true, sha256: "B".repeat(64), bytes: 1 }, canonical: { available: false }, special_case: { lineage_verified: true } }).status, "UNEXPLAINED_MISMATCH");
   });
 
-  test("C02 90개 Origin 계보는 문자열/null이고 일반 82·Special 8의 선언 출처와 일치한다", () => {
+  test("FIX-05 Lockfile 2건은 경로·이전 Hash/Byte·Origin·Successor·현재 Hash/Byte가 모두 정확할 때만 승인된다", () => {
+    const lockfileCases = APPROVED_PREDECESSOR_SPECIAL_CASES.filter((item) => item.artifact_path === "package-lock.json");
+    assert.deepEqual(
+      lockfileCases.map((item) => ({
+        source_work_order: item.source_work_order,
+        artifact_path: item.artifact_path,
+        expected_sha256: item.expected_sha256,
+        expected_bytes: item.expected_bytes,
+        origin_commit: item.origin_commit,
+        successor_commit: item.successor_commit,
+        current_sha256: item.current_sha256,
+        current_bytes: item.current_bytes
+      })),
+      [
+        {
+          source_work_order: "R1-M2-06",
+          artifact_path: "package-lock.json",
+          expected_sha256: "69E87A118E89CF8ADF8CE35E571EB2EB6B7D5277EB405609FEC83F04B75DC161",
+          expected_bytes: 156787,
+          origin_commit: "780ca50725233227076a40f5adb2b5f1e05b1070",
+          successor_commit: "8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa",
+          current_sha256: "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5",
+          current_bytes: 181571
+        },
+        {
+          source_work_order: "R1-M2-07",
+          artifact_path: "package-lock.json",
+          expected_sha256: "69E87A118E89CF8ADF8CE35E571EB2EB6B7D5277EB405609FEC83F04B75DC161",
+          expected_bytes: 156787,
+          origin_commit: "ab2a3b055581fcaea75cceafc3bb8bedb2a80066",
+          successor_commit: "8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa",
+          current_sha256: "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5",
+          current_bytes: 181571
+        }
+      ]
+    );
+    for (const item of lockfileCases) {
+      const base = {
+        source_work_order: item.source_work_order,
+        artifact_path: item.artifact_path,
+        expected: { sha256: item.expected_sha256, bytes: item.expected_bytes },
+        raw: { available: true, sha256: item.current_sha256, bytes: item.current_bytes },
+        canonical: { available: false },
+        special_case: {
+          lineage_verified: true,
+          origin_commit: item.origin_commit,
+          successor_commit: item.successor_commit,
+          current_sha256: item.current_sha256,
+          current_bytes: item.current_bytes
+        }
+      };
+      assert.equal(classifyPredecessorArtifact(base).status, "SUCCESSOR_SUPERSEDED");
+      for (const invalid of [
+        { ...base, source_work_order: "R1-M2-99" },
+        { ...base, artifact_path: `${item.artifact_path}.swapped` },
+        { ...base, expected: { ...base.expected, sha256: "A".repeat(64) } },
+        { ...base, expected: { ...base.expected, bytes: base.expected.bytes + 1 } },
+        { ...base, special_case: { ...base.special_case, origin_commit: "a".repeat(40) } },
+        { ...base, special_case: { ...base.special_case, successor_commit: "b".repeat(40) } },
+        { ...base, special_case: { ...base.special_case, current_sha256: "C".repeat(64) } },
+        { ...base, special_case: { ...base.special_case, current_bytes: base.special_case.current_bytes + 1 } },
+        { ...base, special_case: { ...base.special_case, lineage_verified: false } },
+        { ...base, raw: { available: false } },
+        { ...base, raw: { ...base.raw, sha256: "D".repeat(64) } },
+        { ...base, raw: { ...base.raw, bytes: base.raw.bytes + 1 } }
+      ]) assert.equal(classifyPredecessorArtifact(invalid).status, "UNEXPLAINED_MISMATCH");
+    }
+  });
+
+  test("C02 90개 Origin 계보는 문자열/null이고 일반 80·Special 10의 선언 출처와 일치한다", () => {
     const manifestOrigins = new Map();
     for (let number = 2; number <= 7; number += 1) {
       const workOrder = `R1-M2-0${number}`;
@@ -178,8 +248,8 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
       const special = approvedSpecial.get(`${entry.source_work_order}|${entry.artifact_path}`);
       assert.equal(entry.origin_implementation_or_evidence_commit, special?.origin_commit ?? manifestOrigins.get(entry.source_work_order));
     }
-    assert.equal(currentReconciliation.entries.filter((item) => item.status === "DIRECT_MATCH").length, 82);
-    assert.equal(currentReconciliation.entries.filter((item) => approvedSpecial.has(`${item.source_work_order}|${item.artifact_path}`)).length, 8);
+    assert.equal(currentReconciliation.entries.filter((item) => item.status === "DIRECT_MATCH").length, 80);
+    assert.equal(currentReconciliation.entries.filter((item) => approvedSpecial.has(`${item.source_work_order}|${item.artifact_path}`)).length, 10);
   });
 
   test("C02 Origin은 null 또는 존재하는 7~40자 Git SHA만 허용한다", () => {
