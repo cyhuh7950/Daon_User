@@ -4,7 +4,7 @@ import path from "node:path";
 
 const root = process.cwd();
 const evidenceDir = path.join(root, "docs/03_evidence/release_1/R1-M3-02");
-const issueId = "R1-M3-02-SERVER-VALIDATION-EVIDENCE";
+const issueId = "R1-M3-02-CI-UBUNTU-GATE";
 const toPosix = (value) => value.split(path.sep).join("/");
 const mutableHandoffRecords = [
   "docs/04_test_reports/release_1/R1-M3-02_progress.md",
@@ -86,7 +86,12 @@ const validationInputs = [
   "docs/02_work_orders/release_1/R1-M3-02-FIX-06_work_order.md",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-06_prompt.md",
   "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
-  "docs/03_evidence/release_1/R1-M3-02/server-validation-summary.md"
+  "docs/03_evidence/release_1/R1-M3-02/server-validation-summary.md",
+  ".github/workflows/release-1-quality-gate.yml",
+  "scripts/tests/product-foundation.test.mjs",
+  "scripts/tests/quality-gate.test.mjs",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-07_work_order.md",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-07_prompt.md"
 ];
 const buildInputPaths = [...new Set([...desktopInputs, ...sharedInputs, ...rootInputs])].sort();
 
@@ -168,11 +173,27 @@ const sourceManifest = {
   server_validation_contract: {
     evidence_source: "main_designer_confirmed_server_observation",
     exact_git_sha: "0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5",
-    target: "ysna-server:/home/ubuntu/deploy/daon-user/R1-M3-02",
+    evidence_manifest: "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
     architecture: "aarch64",
     quality_gate: "PASS_exit_0_all_7_categories_failures_0",
     database_migration: "N/A",
     developer_subagent_server_rerun: false
+  },
+  fix_07_behavior_contract: {
+    workflow: ".github/workflows/release-1-quality-gate.yml",
+    ubuntu_tauri_prerequisites_step: "before_npm_ci_and_quality_gate",
+    packages: [
+      "libwebkit2gtk-4.1-dev",
+      "libayatana-appindicator3-dev",
+      "librsvg2-dev",
+      "patchelf",
+      "ca-certificates",
+      "pkg-config"
+    ],
+    rust_pin_source: "rust-toolchain.toml",
+    quality_gate_command: "npm run verify:quality-gate",
+    server_location_source: "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+    external_absolute_paths_in_generator: 0
   },
   mutable_handoff_records: mutableHandoffRecords,
   generated_artifacts: {

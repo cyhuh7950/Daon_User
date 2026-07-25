@@ -65,6 +65,12 @@
           "run": "npm run verify:toolchain"
         },
         {
+          "name": "Install Tauri Linux prerequisites",
+          "id": "tauri-linux-prerequisites",
+          "shell": "bash",
+          "run": "sudo apt-get update\nsudo apt-get install --yes --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf ca-certificates pkg-config"
+        },
+        {
           "name": "Install approved lockfile",
           "id": "npm-ci",
           "run": "npm ci"
