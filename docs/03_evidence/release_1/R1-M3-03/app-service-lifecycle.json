@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "status": "PASS",
+  "command": "node scripts/verify-local-service-runtime.mjs",
+  "exit_code": 0,
+  "packaged_executable": "apps/desktop/src-tauri/binaries/daon-user-local-service-x86_64-pc-windows-msvc.exe",
+  "runs": [
+    {
+      "port": 49895,
+      "listener_count": 1,
+      "statuses": {
+        "missing_auth": 401,
+        "wrong_token": 401,
+        "wrong_instance": 401,
+        "authorized": 200,
+        "unknown_path": 404,
+        "wrong_method": 405
+      },
+      "http_boundaries": {
+        "content_length_zero": 200,
+        "body_one_byte": 413,
+        "invalid_content_length": 400,
+        "transfer_encoding": 400,
+        "accepted_header_bytes": 7000,
+        "accepted_header_status": 200,
+        "rejected_header_bytes": 9000,
+        "rejected_header_status": 431
+      },
+      "output_attestation": {
+        "token_emitted": false,
+        "instance_ready_envelope_only": true,
+        "output_truncated": false
+      },
+      "clean_exit": true
+    },
+    {
+      "port": 49909,
+      "listener_count": 1,
+      "statuses": {
+        "missing_auth": 401,
+        "wrong_token": 401,
+        "wrong_instance": 401,
+        "authorized": 200,
+        "unknown_path": 404,
+        "wrong_method": 405
+      },
+      "http_boundaries": {
+        "content_length_zero": 200,
+        "body_one_byte": 413,
+        "invalid_content_length": 400,
+        "transfer_encoding": 400,
+        "accepted_header_bytes": 7000,
+        "accepted_header_status": 200,
+        "rejected_header_bytes": 9000,
+        "rejected_header_status": 431
+      },
+      "output_attestation": {
+        "token_emitted": false,
+        "instance_ready_envelope_only": true,
+        "output_truncated": false
+      },
+      "clean_exit": true
+    }
+  ],
+  "credentials_unique": true,
+  "token_emitted": false,
+  "instance_emission_scope": "ready_envelope_only",
+  "output_buffers_complete": true,
+  "orphan_processes_after_test": 0,
+  "scope": "Node-owned packaged-service runtime boundary evidence; Rust Manager ownership is recorded separately."
+}

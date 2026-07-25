@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "sidecar:build": "node ../../scripts/build-local-service-sidecar.mjs",
     "tauri": "tauri",
-    "tauri:build": "tauri build --bundles nsis"
+    "tauri:build": "npm run sidecar:build && tauri build --bundles nsis"
   },
   "dependencies": {
     "@daon-user/contracts": "0.0.0",

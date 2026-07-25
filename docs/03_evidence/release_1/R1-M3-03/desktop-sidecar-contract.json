@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "status": "PASS",
+  "frontend_node_tests": {
+    "passed": 22,
+    "failed": 0,
+    "scope": "desktop shell, local-service bridge, guarded wrapper, source manifest"
+  },
+  "runtime_verifier_unit_tests": {
+    "passed": 3,
+    "failed": 0
+  },
+  "stage_helper_tests": {
+    "passed": 1,
+    "failed": 0
+  },
+  "rust_tests": {
+    "command": "npm run verify:desktop-rust-unit",
+    "manager_and_job_unit_passed": 6,
+    "contract_passed": 3,
+    "failed": 0,
+    "exit_code": 0,
+    "protected_wrapper_only": true
+  },
+  "headless_manager_runtime": {
+    "runs": 2,
+    "start_ready_retry_ready_shutdown": true,
+    "post_run_processes": 0
+  },
+  "public_commands": [
+    "local_service_status",
+    "local_service_retry"
+  ],
+  "browser_loopback_details_exposed": false,
+  "browser_http_or_shell_permission_added": false,
+  "csp_connect_src": "none"
+}

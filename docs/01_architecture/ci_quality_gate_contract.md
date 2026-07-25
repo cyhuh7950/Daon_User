@@ -15,7 +15,9 @@
 
 단순 미구현, Script 누락, 명령 실패는 Foundation 예외로 바뀌지 않는다. Component에 Policy Signal 파일·확장자·Directory가 하나라도 생기면 연결된 명령이 필수이며, 명령이 없으면 `MISSING_REQUIRED_CAPABILITY`로 실패한다.
 
-Policy Schema는 `foundation_status`, 승인된 8개 Component ID·Root·Manifest, 4개 상시 필수 Check ID·범주·종류와 모든 실행 명령을 fail-close로 검증한다. Component 또는 필수 Check의 삭제·중복·변형, 빈 명령, 존재하지 않거나 Component Root 밖의 Manifest는 검사 실행 전에 `ERROR/Exit 2`로 종료한다.
+Policy Schema는 `foundation_status`, 승인된 8개 Component ID·Root·Manifest, 6개 상시 필수 Check ID·범주·종류와 모든 실행 명령을 fail-close로 검증한다. 기존 4개(`quality-gate-runner-tests`, `toolchain-baseline`, `production-dependency-audit`, `repository-independence`)에 Local Service의 `local-service-runtime-verifier-tests`와 `local-service-full-environment-audit`를 추가한다. Component 또는 필수 Check의 삭제·중복·변형, 빈 명령, 존재하지 않거나 Component Root 밖의 Manifest는 검사 실행 전에 `ERROR/Exit 2`로 종료한다.
+
+Local Service Runtime 필수검사는 모든 OS에서 Stage Helper의 경계·무덮어쓰기·무결성·정확 정리 계약을 정적으로 검사하고, Windows에서만 실제 PowerShell Stage를 추가 실행한다. 전체 Python 환경 감사는 exact 환경 Freeze 전체를 OSV로 검사하며 생산·개발 Dependency Group을 숨기지 않는다. 두 검사는 기존 7범주와 4개 필수검사를 대체하거나 완화하지 않는다.
 
 ## 7개 범주
 

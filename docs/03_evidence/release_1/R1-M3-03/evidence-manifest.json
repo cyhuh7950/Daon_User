@@ -1,0 +1,134 @@
+{
+  "schema_version": "1.0",
+  "status": "COMPLETED_DIRTY_SNAPSHOT",
+  "issue_id": "R1-M3-03-I001",
+  "attempt": 3,
+  "dirty_snapshot": true,
+  "base_head": "bd13f1694623ca1225415c0f157ef88f94df6f38",
+  "branch": "codex/r1-m3-03",
+  "source_binding": {
+    "file_count": 44,
+    "source_entries_sha256": "81E04EEF3E5DAA5E3202094F72AE61FDAB6E9B0205761A4ECCE113CB4E0D3EFF",
+    "tracked_binary_patch_sha256": "880E9902290D4D823183DC136C248D9BBC699AABB856F28BEEC3B1A8AFFBAB59",
+    "git_sha_role": "base head for dirty snapshot; not an exact implementation commit"
+  },
+  "evidence_files": [
+    {
+      "path": "app-service-lifecycle.json",
+      "bytes": 2088,
+      "sha256": "4773C10BDBAA9E82740BFE3D4993A1BCA9E842E166B69E58205656BA6700049B"
+    },
+    {
+      "path": "desktop-sidecar-contract.json",
+      "bytes": 882,
+      "sha256": "FAFB73D9E2690C1DA67DBF0CFD22209A90FE8592578BCC6E7FB639AC604CAC7A"
+    },
+    {
+      "path": "local-service-package.json",
+      "bytes": 1240,
+      "sha256": "F9F9D0206DC4C161BCA3F1DA24985A35CE6761686B9956622C775CF67462FBCF"
+    },
+    {
+      "path": "local-service-security.json",
+      "bytes": 1209,
+      "sha256": "3B48B12129361A90FB51FC7B94218BAFE697D0712A339BE011C8ABCD681A7C10"
+    },
+    {
+      "path": "local-service-unit.json",
+      "bytes": 1085,
+      "sha256": "D6DC99275BB95A7F4FF91B9E07EF6CC873BECF82BB126522A5564D2A8D2B8248"
+    },
+    {
+      "path": "quality-gate-result.json",
+      "bytes": 48312,
+      "sha256": "0CD09609627542A672077ECFA80A1D740006953F4C339947442639EA207ADED4"
+    },
+    {
+      "path": "quality-gate-summary.md",
+      "bytes": 516,
+      "sha256": "42414A0B287028FE7A36245D4F3A9F2E9821DE7E8A4C9BDD686325DB1C182BE3"
+    },
+    {
+      "path": "rust-manager-error-cleanup.json",
+      "bytes": 2472,
+      "sha256": "941337FCA87BD277B1B389B190CE831B63B75FA68D0C6A65F983C0466FDC71E5"
+    },
+    {
+      "path": "rust-manager-lifecycle.json",
+      "bytes": 1138,
+      "sha256": "BDA2BE657829F09C94FFACC907D66CE34C8FB4E0FE2F57AA062A69A45F6D17FD"
+    },
+    {
+      "path": "source-manifest.json",
+      "bytes": 8282,
+      "sha256": "9705B96D0D39F5884B2917176F613637A6C00B34069F6390622D6B77346549A5"
+    }
+  ],
+  "handoff_records": [
+    {
+      "path": "docs/04_test_reports/release_1/R1-M3-03-C01_progress.md",
+      "bytes": 17586,
+      "sha256": "F116CB0CA59A6992406F11A87A7B82ECB86E4ECF0E5BF6D20DCF9E4E5644E451"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M3-03-C02_progress.md",
+      "bytes": 26766,
+      "sha256": "316DECEF6FADDCF59A4022BEA86249D3B03DD29C71F71954F724F439A5D409F5"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M3-03_attempt-1.md",
+      "bytes": 4410,
+      "sha256": "59A648507273E3316FB989EB043F9C2A3FC3653AB4393D34E8DD5C6A84240833"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M3-03_attempt-2.md",
+      "bytes": 5072,
+      "sha256": "AB7C34AD5FF2171B34D6713852840E2556EEE5FA92520298D76791F7B0FC4215"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M3-03_attempt-3.md",
+      "bytes": 4979,
+      "sha256": "969BAB0A1EE58F04D78DE634545B2F1417B9EDD0AFE0250268475B2668D7A8DE"
+    }
+  ],
+  "quality_gate": {
+    "command": "node scripts/verify-r1-m3-03-quality-gate.mjs",
+    "overall_status": "PASS",
+    "exit_code": 0,
+    "failures": 0,
+    "category_checks": {
+      "lint": 6,
+      "type": 3,
+      "unit": 7,
+      "contract": 2,
+      "build": 6,
+      "security": 3,
+      "independence": 1
+    },
+    "policy_sha256": "767EEE2BB7142BCEECF94DF32674AE9EB2A789D71B83B699A0303C31EC8323D2"
+  },
+  "runtime_evidence_scope": {
+    "node_owned_packaged_runs": 2,
+    "rust_manager_owned_runs": 2,
+    "production_manager_error_fixture_cases": 5,
+    "retry_shutdown_race_repetitions": 3,
+    "job_fixture_process_after_stop": 0,
+    "job_fixture_listener_after_stop": 0,
+    "token_emitted": false,
+    "instance_emission_scope": "ready_envelope_only",
+    "public_host_evidence_contains_secret_fields": false,
+    "output_buffers_complete": true
+  },
+  "redaction": {
+    "user_absolute_paths_present": false,
+    "temporary_artifact_notation": "<TEMP>/..."
+  },
+  "generated_artifacts_cleaned": true,
+  "deferred": {
+    "exact_implementation_commit_gate": "main-designer follow-up after commit",
+    "database_migration": "N/A",
+    "ysna_server": "main-designer follow-up",
+    "windows_installed_gui_lifecycle": "main-designer follow-up",
+    "m4_06_security_hardening": "Deferred by approved plan"
+  }
+}

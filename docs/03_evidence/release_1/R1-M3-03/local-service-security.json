@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "status": "PASS",
+  "dependency_security": {
+    "pytest_exact_version": "9.0.3",
+    "python_version": "3.14.3",
+    "npm_production_audit": "PASS",
+    "python_full_environment_audit": "PASS",
+    "quality_gate_security_checks": 3,
+    "quality_gate_failures": 0
+  },
+  "runtime_security": {
+    "loopback_only": true,
+    "bearer_and_instance_required": true,
+    "constant_time_token_compare": true,
+    "constant_time_instance_compare": true,
+    "both_comparisons_always_execute": true,
+    "cors_enabled": false,
+    "docs_enabled": false,
+    "token_emitted": false,
+    "instance_emission_scope": "ready_envelope_only",
+    "stdout_stderr_buffer_bytes_each": 65536,
+    "stdout_stderr_truncated": false
+  },
+  "http_runtime_boundaries": {
+    "content_length_zero": 200,
+    "body_one_byte": 413,
+    "invalid_content_length": 400,
+    "transfer_encoding": 400,
+    "accepted_header_bytes": 7000,
+    "accepted_header_status": 200,
+    "rejected_header_bytes": 9000,
+    "rejected_header_status": 431
+  },
+  "common_quality_gate": {
+    "status": "PASS",
+    "exit_code": 0,
+    "policy_sha256": "767EEE2BB7142BCEECF94DF32674AE9EB2A789D71B83B699A0303C31EC8323D2"
+  }
+}

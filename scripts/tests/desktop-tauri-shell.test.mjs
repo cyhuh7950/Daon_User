@@ -42,7 +42,7 @@ test("500px desktop navigation wraps all routes without horizontal scrolling", a
   assert.match(compactRule, /\.desktop-navigation button\s*\{[^}]*flex:\s*1 1 auto/);
 });
 
-test("production Tauri configuration is bundled, fail-closed, and M3-03 isolated", async () => {
+test("production Tauri configuration is bundled and WebView remains fail-closed", async () => {
   const config = JSON.parse(await read("apps/desktop/src-tauri/tauri.conf.json"));
   assert.equal(config.build.frontendDist, "../dist");
   assert.equal("devUrl" in config.build, false);
@@ -57,7 +57,10 @@ test("production Tauri configuration is bundled, fail-closed, and M3-03 isolated
   assert.deepEqual(capability.permissions, []);
 
   const rust = await read("apps/desktop/src-tauri/src/lib.rs");
-  assert.doesNotMatch(rust, /Command::new|TcpListener|localhost|127\.0\.0\.1|sidecar|plugin/);
+  assert.match(rust, /local_service_status/);
+  assert.match(rust, /local_service_retry/);
+  assert.match(rust, /generate_handler!/);
+  assert.doesNotMatch(rust, /tauri_plugin_shell|plugin\(/);
   assert.deepEqual(await readdir(new URL("../../apps/desktop/src-tauri/icons/", import.meta.url)), ["icon.ico", "icon.png"]);
   await assert.rejects(access(new URL("../../apps/desktop/src-tauri/gen/", import.meta.url)));
 });
@@ -95,7 +98,8 @@ test("desktop package pins production build and Tauri commands", async () => {
   assert.equal(pkg.devDependencies["@tauri-apps/cli"], "2.11.4");
   assert.match(pkg.devDependencies.vite, /^\d+\.\d+\.\d+$/);
   assert.equal(pkg.scripts.build, "vite build");
-  assert.equal(pkg.scripts["tauri:build"], "tauri build --bundles nsis");
+  assert.equal(pkg.scripts["sidecar:build"], "node ../../scripts/build-local-service-sidecar.mjs");
+  assert.equal(pkg.scripts["tauri:build"], "npm run sidecar:build && tauri build --bundles nsis");
 });
 
 test("quality gate registers only reproducible desktop runtime capabilities", async () => {
@@ -136,6 +140,28 @@ test("isolated cargo wrapper propagates failure and removes only its exact targe
   assert.equal(result.exitCode, 23);
   await assert.rejects(access(observedTarget));
   assert.ok(path.dirname(observedTarget).startsWith(os.tmpdir()));
+});
+
+test("non-installer Cargo can override only the generated bundle input contract", async () => {
+  const wrapperSource = await read("scripts/run-isolated-desktop-cargo.mjs");
+  const { runIsolatedCargo } = await import("../run-isolated-desktop-cargo.mjs");
+  const tauriConfig = JSON.stringify({ bundle: { externalBin: [] } });
+  let observedEnvironment;
+  const result = await runIsolatedCargo({
+    prefix: path.join(os.tmpdir(), "daon-user-wrapper-env-test-"),
+    keepOnSuccess: false,
+    command: "cargo",
+    args: ["check"],
+    envOverrides: { TAURI_CONFIG: tauriConfig },
+    spawnImpl: (_command, _args, options) => {
+      observedEnvironment = options.env;
+      return { status: 0, signal: null };
+    }
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(observedEnvironment.TAURI_CONFIG, tauriConfig);
+  assert.match(wrapperSource, /isInstaller\s*\?\s*\{\}\s*:\s*\{\s*TAURI_CONFIG/u);
+  assert.match(wrapperSource, /externalBin:\s*\[\]/u);
 });
 
 test("isolated cargo wrapper removes only gen created by its child and preserves pre-existing sentinels", async () => {

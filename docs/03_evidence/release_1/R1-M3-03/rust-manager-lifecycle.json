@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0",
+  "status": "PASS",
+  "owner": "rust_manager_headless_host",
+  "command": "node scripts/run-isolated-desktop-cargo.mjs manager-runtime",
+  "exit_code": 0,
+  "packaged_executable": "apps/desktop/src-tauri/binaries/daon-user-local-service-x86_64-pc-windows-msvc.exe",
+  "packaged_bytes": 18353224,
+  "packaged_sha256": "C2217D74CC61E675987E13C27963EF87E74014590FC8D751B0A78F06FD6E867D",
+  "runs": [
+    {
+      "start": "starting",
+      "first_ready": "ready",
+      "retry": "retrying",
+      "second_ready": "ready",
+      "shutdown": "unavailable"
+    },
+    {
+      "start": "starting",
+      "first_ready": "ready",
+      "retry": "retrying",
+      "second_ready": "ready",
+      "shutdown": "unavailable"
+    }
+  ],
+  "post_run": {
+    "sidecar_processes": 0,
+    "host_processes": 0,
+    "isolated_cargo_targets": 0,
+    "tauri_gen_exists": false
+  },
+  "public_host_evidence_contains_secret_fields": false,
+  "secret_evidence_scope": "headless host public state source and captured evidence fields only; packaged sidecar stdout/stderr inspection is recorded separately in app-service-lifecycle.json"
+}

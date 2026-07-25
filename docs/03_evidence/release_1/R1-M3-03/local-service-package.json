@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "status": "PASS_DIRTY_SNAPSHOT",
+  "dirty_snapshot": true,
+  "base_head": "eba5e64bce235608a02c3a072312dfaab291a9e4",
+  "runtime_verified_sidecar": {
+    "artifact": "apps/desktop/src-tauri/binaries/daon-user-local-service-x86_64-pc-windows-msvc.exe",
+    "bytes": 18353224,
+    "sha256": "C2217D74CC61E675987E13C27963EF87E74014590FC8D751B0A78F06FD6E867D",
+    "build_command": "npm run build:local-service-sidecar",
+    "node_owned_runtime_exit_code": 0,
+    "rust_manager_owned_runtime_exit_code": 0
+  },
+  "historical_attempt_1_installer": {
+    "scope": "Historical packaging proof only; not an exact C01 implementation commit artifact.",
+    "artifact": "<TEMP>/daon-user-desktop-installer-*/release/bundle/nsis/Daon 사용자 프로그램_0.1.0_x64-setup.exe",
+    "bytes": 19297937,
+    "sha256": "1955B4F0ADB6394CEF4E4BBDEB0F981418BCDEA0185CEB5AE03CB73D43E0BA69",
+    "installer_extracted_sidecar_match": true
+  },
+  "final_workspace_state": {
+    "generated_sidecar_exists": false,
+    "tauri_gen_exists": false,
+    "binary_git_tracked": false
+  },
+  "final_commit_gate": "Main designer must rerun the exact-commit seven-category gate and package checks after creating the implementation commit."
+}

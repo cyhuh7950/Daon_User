@@ -44,7 +44,9 @@ function fixturePolicy({ commands = {} } = {}) {
       { id: "quality-gate-runner-tests", category: "unit", command: ["stub", "runner-tests"], failure_kind: "quality" },
       { id: "toolchain-baseline", category: "build", command: ["stub", "toolchain"], failure_kind: "quality" },
       { id: "production-dependency-audit", category: "security", command: ["stub", "audit"], kind: "npm_audit", failure_kind: "execution" },
-      { id: "repository-independence", category: "independence", command: ["stub", "independence"], failure_kind: "quality" }
+      { id: "repository-independence", category: "independence", command: ["stub", "independence"], failure_kind: "quality" },
+      { id: "local-service-runtime-verifier-tests", category: "unit", command: ["stub", "local-runtime"], failure_kind: "quality" },
+      { id: "local-service-full-environment-audit", category: "security", command: ["stub", "local-audit"], failure_kind: "execution" }
     ],
     security: {
       scan_roots: ["apps", ".github"],
@@ -110,6 +112,18 @@ test("foundation 저장소는 정확한 부재 조건만 N/A이고 상시 검사
   assert.equal(report.categories.security.status, "PASS");
   assert.equal(report.categories.independence.status, "PASS");
   assert.equal(report.failures.length, 0);
+});
+
+test("Local Service Runtime과 전체 Python 환경 감사는 명시적 필수검사다", async (t) => {
+  const root = await makeFixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const policy = fixturePolicy();
+  const { exitCode, report } = await runFixture(root, policy);
+  assert.equal(exitCode, 0);
+  assert.equal(report.overall_status, "PASS");
+  const serialized = JSON.stringify(report);
+  assert.match(serialized, /local-service-runtime-verifier-tests/);
+  assert.match(serialized, /local-service-full-environment-audit/);
 });
 
 test("Runtime Source가 등장했는데 필수 Capability 명령이 없으면 Exit 1이다", async (t) => {

@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "status": "PASS",
+  "targeted_python_correction": {
+    "bootstrap_and_http_auth_tests": 19,
+    "failed": 0,
+    "duration_seconds": 5.36
+  },
+  "covered_correction_contracts": [
+    "bootstrap no input and partial input deadline",
+    "missing newline, oversized and invalid JSON stable exit",
+    "Content-Length, Transfer-Encoding and header boundary",
+    "token and instance constant-time comparisons both execute"
+  ],
+  "current_exact_pytest_version": "9.0.3",
+  "current_lock_check_exit_code": 0,
+  "current_quality_gate": {
+    "local_service_unit": "PASS",
+    "local_service_contract": "PASS",
+    "local_service_lint": "PASS",
+    "local_service_type": "PASS",
+    "local_service_build": "PASS",
+    "exit_code": 0
+  },
+  "rust_current_green": {
+    "manager_and_job_unit_passed": 14,
+    "contract_passed": 3,
+    "failed": 0,
+    "exit_code": 0,
+    "production_manager_error_fixture_cases": 5,
+    "shutdown_retry_race_repetitions": 3,
+    "bounded_termination_injection_cases": 4,
+    "spawn_gate_released_before_process_io": true
+  }
+}

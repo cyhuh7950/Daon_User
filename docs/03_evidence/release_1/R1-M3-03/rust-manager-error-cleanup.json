@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "status": "PASS",
+  "owner": "production_local_service_manager_windows_fixture",
+  "command": "node scripts/run-isolated-desktop-cargo.mjs test",
+  "protected_wrapper": true,
+  "direct_cargo": false,
+  "manager_stop_path": "LocalServiceManager shutdown and ManagedService stop",
+  "direct_job_termination_used_by_error_fixture": false,
+  "fixture": "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs",
+  "timeouts": {
+    "startup_milliseconds": 250,
+    "shutdown_phase_milliseconds": 250,
+    "bounded_wait_phases": [
+      "stdin EOF or natural exit",
+      "job termination",
+      "direct child kill fallback"
+    ]
+  },
+  "cases": [
+    {
+      "id": "no_ready",
+      "expected_error": "LOCAL_SERVICE_START_TIMEOUT",
+      "bounded": true,
+      "parent_processes_after": 0,
+      "descendant_processes_after": 0,
+      "listeners_after": 0
+    },
+    {
+      "id": "invalid_ready_then_retry",
+      "expected_error": "LOCAL_SERVICE_READY_REJECTED",
+      "retry_state": "ready",
+      "retry_credentials_distinct": true,
+      "bounded": true,
+      "parent_processes_after": 0,
+      "descendant_processes_after": 0,
+      "listeners_after": 0
+    },
+    {
+      "id": "post_ready_health_failure_then_retry",
+      "expected_error": "LOCAL_HEALTH_REJECTED",
+      "retry_state": "ready",
+      "retry_credentials_distinct": true,
+      "bounded": true,
+      "parent_processes_after": 0,
+      "descendant_processes_after": 0,
+      "listeners_after": 0
+    },
+    {
+      "id": "eof_ignoring_descendant_listener",
+      "start_state": "ready",
+      "shutdown_state": "unavailable",
+      "bounded": true,
+      "parent_processes_after": 0,
+      "descendant_processes_after": 0,
+      "listeners_after": 0
+    },
+    {
+      "id": "retry_shutdown_race",
+      "repetitions": 3,
+      "bounded": true,
+      "parent_processes_after_each": 0,
+      "descendant_processes_after_each": 0,
+      "listeners_after_each": 0
+    }
+  ],
+  "injected_termination_cases": {
+    "terminate_job_false_fallback": "PASS",
+    "job_success_child_remains_fallback": "PASS",
+    "direct_child_kill_failure_stable_error": "PASS",
+    "final_wait_failure_stable_error": "PASS"
+  },
+  "rust_unit": {
+    "passed": 14,
+    "failed": 0,
+    "duration_seconds": 3.0
+  },
+  "rust_contract": {
+    "passed": 3,
+    "failed": 0
+  },
+  "post_run_marker_processes_alive": 0,
+  "post_run_fixture_listeners": 0,
+  "tauri_gen_exists": false
+}
