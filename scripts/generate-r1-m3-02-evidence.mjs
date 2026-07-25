@@ -4,7 +4,7 @@ import path from "node:path";
 
 const root = process.cwd();
 const evidenceDir = path.join(root, "docs/03_evidence/release_1/R1-M3-02");
-const issueId = "R1-M3-02-POSTCSS-PROBE-EVIDENCE";
+const issueId = "R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR";
 const toPosix = (value) => value.split(path.sep).join("/");
 
 async function artifact(relativePath) {
@@ -67,11 +67,18 @@ const rootInputs = [
 ];
 const validationInputs = [
   "scripts/tests/desktop-tauri-shell.test.mjs",
+  "scripts/lib/predecessor-evidence-reconciliation.mjs",
+  "scripts/tests/platform-prototype-evidence.test.mjs",
   "scripts/generate-r1-m3-02-evidence.mjs",
+  "docs/02_work_orders/release_1/R1-M2-08-C00_evidence_reconciliation_addendum.md",
+  "docs/03_evidence/release_1/R1-M2-08/predecessor-evidence-reconciliation.json",
+  "docs/03_evidence/release_1/R1-M2-08/evidence-manifest.json",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-03_work_order.md",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-03_prompt.md",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-04_work_order.md",
-  "docs/02_work_orders/release_1/R1-M3-02-FIX-04_prompt.md"
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-04_prompt.md",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-05_work_order.md",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-05_prompt.md"
 ];
 const buildInputPaths = [...new Set([...desktopInputs, ...sharedInputs, ...rootInputs])].sort();
 
@@ -109,6 +116,18 @@ const sourceManifest = {
     postcss_override: "root_postcss_exact_8.5.23",
     npm_ls_equivalent_acceptance: "exit_1_only_for_next_exact_8.5.10_override_invalid_without_other_problems",
     production_audit: "high_0_critical_0"
+  },
+  fix_05_behavior_contract: {
+    predecessor_artifacts: 90,
+    direct_match: 80,
+    successor_superseded: 6,
+    legacy_manifest_drift: 4,
+    unexplained_mismatch: 0,
+    added_successor_cases: [
+      "R1-M2-06|package-lock.json",
+      "R1-M2-07|package-lock.json"
+    ],
+    fail_close_fields: "source_work_order,artifact_path,expected_sha256,expected_bytes,origin_commit,successor_commit,current_sha256,current_bytes"
   },
   generated_artifacts: {
     committed_tauri_schemas: [],

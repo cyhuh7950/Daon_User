@@ -1179,3 +1179,269 @@
   - 최초 Generator `EPERM`은 어울1의 승인된 정확 Worktree 2회 실행으로 해소
   - 미해결 오류 없음
 - 다음 작업: 추가 쓰기 중지, 어울1에게 `COMPLETED` 정식 결과보고 제출
+
+## 2026-07-25 FIX-05 S0 착수·정본·영향 범위 확인
+
+- recorded_at: `2026-07-25T20:29:50+09:00`
+- 단계: FIX-05 승인 정본과 단일 Writer·기준 상태 확인
+- 상태: `COMPLETED`
+- 완료:
+  - Worktree `AGENTS.md`, 승인 상세 설계서 v0.7, 승인 구현계획 v0.9, 원 R1-M3-02 및 FIX-01~FIX-05 작업지시서·프롬프트를 EOF까지 확인
+  - 설계서 SHA-256 `6539F274890F3FBE7C7286853A790B6C724D9525FB1F404ED853350470206C7A`, 계획서 SHA-256 `E4C4D8151A24C207BBE2C97759FCC2975B0E35E2679DF1D4AF185B4CBD0D0162`로 원 작업지시 고정값과 일치
+  - Branch `codex/r1-m3-02`, HEAD `8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa`, 지정 단독 Writer와 작업 위치 `C:\tmp\Daon_User-r1-m3-02` 확인
+  - 착수 전 변경은 어울1이 전달한 미추적 FIX-05 작업지시서·프롬프트 2개뿐이며 보존
+- 변경 파일: Progress만 갱신
+- 명령/테스트 결과:
+  - `Get-FileHash` 정본 2개 일치
+  - `git status --short`: FIX-05 문서 2개만 `??`
+  - `git rev-parse HEAD`: 지정 후속 Commit과 일치
+- 오류/원인/복구:
+  - 정본 행수·Hash 확인용 첫 PowerShell 명령에 빈 Pipe ParserError가 있었고, 파이프 입력을 변수에 분리해 즉시 재실행하여 정상 확인
+- 회귀 영향:
+  - 허용 범위는 predecessor reconciliation 코드·행동 테스트, R1-M2-08 reconciliation 증거, R1-M3-02 Generator·Manifest·Progress·Attempt-2·FIX-05 문서 정합화
+  - R1-M2-06·07 역사 Manifest, 제품 기능·화면, PostCSS/Next/Vite/Lockfile, same-origin·보안 경계는 변경하지 않음
+- 다음 작업: 현재 전체 회귀의 선행 `package-lock.json` 2건 불일치를 재현하고 RED 증거 기록
+
+## 2026-07-25 FIX-05 S1 선행 Lockfile 계보 실패 RED 재현
+
+- recorded_at: `2026-07-25T20:34:40+09:00`
+- 단계: 현재 실패 2건 재현과 고정값 확인
+- 상태: `COMPLETED`
+- 완료:
+  - R1-M2-06·07 역사 Manifest의 `package-lock.json` 기대값을 수정하지 않고 현재 Reconciliation을 실행
+  - 두 실패가 Linux 이식성이나 제품 기능이 아니라 승인된 PostCSS 후속 Lockfile 변경을 설명하지 못한 동일 계보 미정합임을 확인
+- 변경 파일: Progress만 추가
+- 명령/테스트 결과:
+  - `node --test --test-concurrency=1 scripts/tests/platform-prototype-evidence.test.mjs`: `17/19 PASS`, 정확히 2 FAIL
+  - 실제 Summary: `90 / DIRECT_MATCH 80 / SUCCESSOR_SUPERSEDED 4 / LEGACY_MANIFEST_DRIFT 4 / UNEXPLAINED_MISMATCH 2`
+  - 두 불일치 모두 이전 기대 SHA-256 `69E87A118E89CF8ADF8CE35E571EB2EB6B7D5277EB405609FEC83F04B75DC161`, Byte `156787`
+  - 현재 checkout SHA-256 `96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5`, Byte `181571`
+  - 후속 Commit `8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa`의 Git canonical SHA-256 `3CDE46EB31AA7C2A3C8A231FF2607D6D0AE823FF1CA1E458BA4182CED7A67B4C`, Byte `176478`
+  - R1-M2-06 origin `780ca50725233227076a40f5adb2b5f1e05b1070`, R1-M2-07 origin `ab2a3b055581fcaea75cceafc3bb8bedb2a80066`에서 동일 이전 Lockfile 계보 확인
+- 오류/원인/복구: 예상된 TDD RED 외 오류 없음
+- 다음 작업: 승인 집계 80/6/4/0과 두 package-lock 전용 후속 대체·필드별 변조 fail-close 행동 테스트를 선작성
+
+## 2026-07-25 FIX-05 S2 후속 대체 계약 행동 테스트 RED
+
+- recorded_at: `2026-07-25T20:41:10+09:00`
+- 단계: FIX-05 전용 테스트 선작성
+- 상태: `COMPLETED`
+- 완료:
+  - 승인 집계 `90 / 80 / 6 / 4 / 0` 기대 테스트 추가
+  - R1-M2-06·07 `package-lock.json` 두 건의 Work Order·경로·이전 SHA/Byte·origin Commit·successor Commit·현재 SHA/Byte 정확 일치 테스트 추가
+  - 각 필드를 하나씩 바꿀 때 `UNEXPLAINED_MISMATCH`로 Fail-close하는 부정 행동 사례 추가
+- 변경 파일: `scripts/tests/platform-prototype-evidence.test.mjs`, Progress
+- 명령/테스트 결과:
+  - `node --test --test-concurrency=1 scripts/tests/platform-prototype-evidence.test.mjs`: `17/20 PASS`, `3 FAIL`
+  - 실패는 새 승인 집계, 새 Lockfile 특례 2건 부재, Special Case 총계 `8→10`의 예상 RED로 한정
+- 오류/원인/복구: 예상된 TDD RED 외 오류 없음
+- 다음 작업: Reconciliation에 두 고정 후속 대체 계약과 실제 Git/checkout 표현 검증을 최소 구현
+
+## 2026-07-25 FIX-05 S3 후속 대체 계약 GREEN
+
+- recorded_at: `2026-07-25T20:47:20+09:00`
+- 단계: 두 Lockfile Special Case 최소 구현과 전용 GREEN
+- 상태: `COMPLETED`
+- 완료:
+  - 기존 8개 Special Case에 R1-M2-06·07 `package-lock.json` 두 건만 `SUCCESSOR_SUPERSEDED`로 추가
+  - 이전 Manifest 기대 SHA/Byte, 각 origin Commit, 후속 Commit `8fafe2fd...`, 현재 CRLF SHA/Byte를 정확히 고정
+  - origin·successor Git Blob과 LF/CRLF 표현, 현재 checkout이 Git canonical 또는 그 CRLF 표현인지 실제 Byte/Hash로 검증
+  - 승인 집계를 `90 / DIRECT_MATCH 80 / SUCCESSOR_SUPERSEDED 6 / LEGACY_MANIFEST_DRIFT 4 / UNEXPLAINED_MISMATCH 0`으로 갱신
+- 변경 파일: `scripts/lib/predecessor-evidence-reconciliation.mjs`, `scripts/tests/platform-prototype-evidence.test.mjs`, Progress
+- 명령/테스트 결과:
+  - `node --test --test-concurrency=1 scripts/tests/platform-prototype-evidence.test.mjs`: `20/20 PASS`, fail·cancelled·skipped `0`
+  - 새 필드별 부정 사례 20건은 모두 `UNEXPLAINED_MISMATCH`
+- 오류/원인/복구: 없음
+- 다음 작업: R1-M2-08 Reconciliation JSON과 Evidence Manifest·Addendum Summary 재생성
+
+## 2026-07-25 FIX-05 S4 R1-M2-08 Reconciliation 증거 재생성
+
+- recorded_at: `2026-07-25T20:54:30+09:00`
+- 단계: R1-M2-08 Reconciliation Result·Summary 갱신
+- 상태: `COMPLETED`
+- 완료:
+  - `predecessor-evidence-reconciliation.json`을 승인된 정본 생성 경로로 재생성
+  - R1-M2-08 Addendum과 Evidence Manifest Summary를 `80/6/4/0` 및 두 Lockfile 고정 계보 계약으로 정합화
+  - R1-M2-06·07 역사적 `evidence-manifest.json`은 변경하지 않음
+- 변경 파일: R1-M2-08 Reconciliation JSON·Evidence Manifest·Addendum, predecessor library/test, Progress
+- 명령/테스트 결과:
+  - 첫 `node scripts/tests/platform-prototype-evidence.test.mjs --write-predecessor-reconciliation`: 기존 Evidence 파일 Open `EPERM`, Exit `1`
+  - 승인된 동일 명령 재실행: 정상 생성
+  - 생성 Reconciliation `94950 bytes`, SHA-256 `778EB5B1CD397285320E3F37E2AB35CB6457EC7F7BC2077CBC8BE1E49E4FBC3A`
+  - Library `19193 bytes` / `997A1018...39FFF`, Test `21187 bytes` / `30169D7B...A500F`
+- 오류/원인/복구:
+  - 제품·계보 오류가 아닌 기존 Evidence 파일에 대한 Sandbox Node Write `EPERM`
+  - 승인된 정확 Worktree·동일 생성 명령으로 재실행해 복구; 수동 JSON 생성이나 우회 변조 없음
+- 다음 작업: R1-M3-02 Generator에 FIX-05 입력·Issue·계보 증거를 포함하고 Manifest를 재생성
+
+## 2026-07-25 FIX-05 S5 R1-M3-02 Generator·Manifest 정합화
+
+- recorded_at: `2026-07-25T21:02:10+09:00`
+- 단계: 최신 Issue·FIX-05 입력·R1-M2-08 계보 증거를 R1-M3-02 Evidence에 포함
+- 상태: `COMPLETED`
+- 완료:
+  - Generator 최상위 Issue를 `R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR`로 갱신
+  - predecessor library/test, R1-M2-08 Addendum·Reconciliation·Evidence Manifest, FIX-05 작업지시서·프롬프트를 Validation 입력에 추가
+  - Progress·Attempt-2는 자기참조 Hash 없이 기존 `mutable_handoff_records`로 유지
+  - Source/Evidence Manifest 최상위 Issue와 FIX-05 `80/6/4/0` 행동 계약 일치 확인
+- 변경 파일: Generator, R1-M3-02 Source/Evidence Manifest, Progress
+- 명령/테스트 결과:
+  - 첫 Generator 실행: 기존 Source Manifest Open `EPERM`, Exit `1`
+  - 승인된 동일 Generator 2회 실행: 각 Source `52`, Validation `13`, Evidence `19`
+  - 두 실행 Evidence Manifest `7115 bytes`, SHA-256 `22B7D6B386BDC4A1D95BC88D5BBA2B552AE028292D086029C36B009D5863C86A` 동일
+  - Source Manifest `12931 bytes`, SHA-256 `86FB0715FE65F452AA2A0C13726F5D2C3B3FA79B2A6DA41EAEE9180DC473DF14`
+  - R1-M2-06·07 역사 Manifest, 제품 기능, `package.json`, `package-lock.json` Diff `0`
+- 오류/원인/복구:
+  - 기존 Evidence 파일 Sandbox Node Write `EPERM`; 승인된 정확 Worktree의 동일 생성기 재실행으로 복구
+- 다음 작업: 전체 순차 테스트·Lint·Web/Desktop Build·Desktop Type·Audit·Quality Gate 수행
+
+## 2026-07-25 FIX-05 S6 전체 순차 테스트
+
+- recorded_at: `2026-07-25T21:05:20+09:00`
+- 단계: 전체 JavaScript 회귀
+- 상태: `COMPLETED`
+- 변경 파일: 없음
+- 명령/테스트 결과:
+  - `node --test --test-concurrency=1 scripts/tests/*.test.mjs`: `214/214 PASS`
+  - fail·cancelled·skipped·todo `0`, Exit `0`
+- 오류/원인/복구: 없음
+- 다음 작업: Workspace Lint와 Web/Desktop Production Build
+
+## 2026-07-25 FIX-05 S7 Lint·Web/Desktop Production Build
+
+- recorded_at: `2026-07-25T21:08:20+09:00`
+- 단계: 정적 검사와 Production Build
+- 상태: `COMPLETED`
+- 변경 파일: Build 산출물은 Git 추적 변경 없음
+- 명령/테스트 결과:
+  - `npm run lint:workspace`: `11 files PASS`, Exit `0`
+  - `npm run build --workspace @daon-user/web`: Next `16.3.0-canary.93`, Compile·TypeScript·Static `7/7` PASS, Exit `0`
+  - `npm run build --workspace @daon-user/desktop`: Vite `8.1.5`, `42 modules`, Exit `0`
+- 오류/원인/복구:
+  - Web 첫 Build는 `.next/trace` Open `EPERM`, Desktop 첫 Build는 기존 `dist/assets` 정리 `EPERM`
+  - 제품·코드 오류가 아닌 기존 Build 디렉터리 Sandbox 쓰기 경계로 확인하고 승인된 동일 명령을 정확 Worktree에서 재실행해 모두 PASS
+- 다음 작업: 수동 환경변수 없는 Desktop Type, Production Audit, 공통 Quality Gate
+
+## 2026-07-25 FIX-05 S8 Desktop Type·Audit·공통 Quality Gate
+
+- recorded_at: `2026-07-25T21:14:40+09:00`
+- 단계: Rust Type·Production 보안 Audit·공통 Gate
+- 상태: `COMPLETED`
+- 변경 파일: R1-M3-02 최신 Quality Gate Result/Summary, Progress
+- 명령/테스트 결과:
+  - 수동 `CARGO_TARGET_DIR` 없는 `npm run verify:desktop-type`: Rust `1.97.1` locked Check PASS, Exit `0`
+  - `npm audit --omit=dev --audit-level=high --json`: High `0`, Critical `0`, 전체 취약점 `0`, Exit `0`
+  - 수동 환경변수 없는 `npm run verify:quality-gate`: lint·type·unit·contract·build·security·independence 7범주 전부 PASS, failures `0`, Exit `0`
+  - 최신 Gate Result/Summary를 R1-M3-02 Evidence에 보존하고 R1-M1-05 생성 파일 2개만 Git 기준선으로 복원
+  - 최신 Gate 반영 뒤 Generator 2회 결정성: Source Manifest `12931 bytes` / `86FB0715FE65F452AA2A0C13726F5D2C3B3FA79B2A6DA41EAEE9180DC473DF14`, Evidence Manifest `7115 bytes` / `1C0FBA8FA0B1AF7A1F087C26845AA1F5EAC731D96E9508CD128F99040214FE43`
+- 오류/원인/복구:
+  - Desktop Type 첫 실행은 Temp app-manifest 쓰기 `os error 5`, Quality Gate 첫 실행은 `QUALITY_GATE_EXECUTION_ERROR EPERM`
+  - 두 경우 모두 제품·Test 실패가 아닌 Sandbox Temp/Evidence 쓰기 경계이며 승인된 동일 명령 재실행으로 PASS
+  - 최신 Gate Copy와 R1-M1-05 복원의 첫 시도도 대상 Evidence·Git index 쓰기 권한으로 실패했으나 승인된 정확 대상 명령으로 재실행해 복구
+- 다음 작업: JSON Parse·Manifest Hash/Byte·보호 범위·Diff·잔존물 최종 검증
+
+## 2026-07-25 FIX-05 S9 증거·보호 범위·잔존물 검증
+
+- recorded_at: `2026-07-25T21:21:30+09:00`
+- 단계: JSON·Hash/Byte·보호 파일·Cleanup 최종 대조
+- 상태: `COMPLETED`
+- 변경 파일: Attempt-2, Progress
+- 명령/테스트 결과:
+  - R1-M3-02 JSON Parse `11/11 PASS`
+  - Source `52` + Validation `13` + Evidence `19` + Source Manifest Reference `1` = Hash·Byte `85/85 PASS`, 불일치 `0`
+  - R1-M2-08 갱신 Library·Test·Reconciliation `3/3` Hash·Byte PASS, 불일치 `0`
+  - Reconciliation `90 / 80 / 6 / 4 / 0`, 설명되지 않은 불일치 `0`
+  - R1-M2-06·07 역사 Manifest, `package.json`, `package-lock.json` Diff `0`
+  - `git diff --check` Exit `0`, Whitespace 오류 `0`; 기존 LF→CRLF 경고만 존재
+  - R1-M1-05 Evidence Dirty `0`
+  - `gen=false`, Desktop Target `false`, Root Target `false`, Temp Check Target `0`, Daon App Process `0`
+  - Root `package.json` SHA-256 `CCB5D1A8F8B765D40F0B4B4603C987FC53C72FC74D11283BFD0F2254E261A0AC`
+  - `package-lock.json` SHA-256 `96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: 최종 Diff 범위와 결과보고 형식을 재확인하고 종료 직전 기록
+
+## 2026-07-25 FIX-05 S10 종료 직전 최종화
+
+- recorded_at: `2026-07-25T21:29:40+09:00`
+- 단계: missing checkout·미검증 계보 추가 Fail-close와 최종 결과보고 정합화
+- 상태: `COMPLETED`
+- 변경 파일: predecessor library/test, R1-M2-08 Evidence Manifest, R1-M3-02 Source/Evidence Manifest, Attempt-2, Progress
+- 명령/테스트 결과:
+  - current checkout Artifact 부재와 `lineage_verified=false` 부정 사례를 추가하고 전용 `20/20 PASS`
+  - 전체 순차 `214/214 PASS`, fail·cancelled·skipped `0`
+  - 최종 R1-M2-08 Evidence Manifest `6025 bytes` / SHA-256 `040DA3AD448AD184C2CE923162B7FE05E67A254AE40FF3164F7B341D782B2FEB`
+  - 최종 R1-M2-08 Reconciliation `94950 bytes` / SHA-256 `778EB5B1CD397285320E3F37E2AB35CB6457EC7F7BC2077CBC8BE1E49E4FBC3A`
+  - 최종 R1-M3-02 Source Manifest `12931 bytes` / SHA-256 `F2031E68B58BC3E855DBBE5AC9AFE3C282FFB21AF0C19D2CA3974E55BBD88812`
+  - 최종 R1-M3-02 Evidence Manifest `7115 bytes` / SHA-256 `4D8EA429193D88FDDE62ADFAED4F7CFC19E47F8C9A1A6A548F941D1616EBF9BF`
+  - 최종 Generator 2회 Source/Evidence Hash 각각 동일해 결정성 PASS
+  - 화면/App/Commit/Push/PR/배포 `0건`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: 추가 쓰기 중지, 어울1에게 계약 형식의 `COMPLETED` 결과보고 제출
+
+## 2026-07-25 FIX-05 S11 경미 테스트명 정합 보완 착수
+
+- recorded_at: `2026-07-25T21:36:10+09:00`
+- 단계: 최신 승인 집계와 테스트 표시명 정합화
+- 상태: `IN_PROGRESS`
+- 완료:
+  - `scripts/tests/platform-prototype-evidence.test.mjs`의 과거 표시명 `90·82/4/4/0`을 최신 계약 `90·80/6/4/0`으로 한 줄 수정
+- 변경 파일: platform prototype evidence Test, Progress
+- 명령/테스트 결과: 아직 재검증 전
+- 오류/원인/복구: 없음
+- 다음 작업: 전용·전체 Test 재실행 후 참조 Manifest Hash·Byte 갱신
+
+## 2026-07-25 FIX-05 S12 경미 테스트명 보완 검증
+
+- recorded_at: `2026-07-25T21:39:40+09:00`
+- 단계: 표시명 한 줄 보완의 회귀·증거 정합화
+- 상태: `COMPLETED`
+- 완료:
+  - 테스트 표시명만 최신 `90·80/6/4/0`으로 정정
+  - R1-M2-08 Evidence Manifest의 해당 Test Hash·Byte 갱신
+  - Attempt-2에 동작 계약 불변인 경미 보완임을 기록
+- 변경 파일: platform prototype evidence Test, R1-M2-08 Evidence Manifest, Attempt-2, Progress
+- 명령/테스트 결과:
+  - 전용 `20/20 PASS`, 전체 순차 `214/214 PASS`
+  - Test `21320 bytes`, SHA-256 `95D5E7C159474FADF0F765B72F7566631523C62E3177354F681B71676BF14A57`
+- 오류/원인/복구: 없음
+- 다음 작업: R1-M3-02 Generator 2회 재실행과 JSON·Hash·Diff·잔존물 최종 재검증
+
+## 2026-07-25 FIX-05 S13 경미 보완 증거 재생성
+
+- recorded_at: `2026-07-25T21:45:00+09:00`
+- 단계: 테스트 표시명 보완 후 R1-M3-02 증거 결정성 확인
+- 상태: `COMPLETED`
+- 완료:
+  - R1-M3-02 Generator를 동일 입력으로 2회 재실행
+  - 두 실행 모두 Source `52`, Validation `13`, Evidence `19`로 동일
+  - 두 실행의 Source/Evidence Manifest Hash·Byte가 동일해 결정성 PASS
+- 변경 파일: R1-M3-02 Source/Evidence Manifest, Attempt-2, Progress
+- 명령/테스트 결과:
+  - Source Manifest `12931 bytes` / SHA-256 `33778A715A4B8FBBCFC5F570F5DAAEB20746DB7352BCAB3359E5C5DA385B3986`
+  - Evidence Manifest `7115 bytes` / SHA-256 `D1512A255A8D9AF864C39F9A757ED71431DF328BF021874B30F226F42DED7A03`
+  - R1-M2-08 Evidence Manifest `6025 bytes` / SHA-256 `31528490623B242E033245D4883AACAA9913EB52DBF7A101EEAEFB1FC02FD080`
+- 오류/원인/복구:
+  - 생성 후 확인 명령에서 Source Manifest를 존재하지 않는 `source-manifest.json`으로 잘못 지정해 해당 조회만 실패
+  - 실제 파일 `source-artifact-manifest.json`으로 즉시 재확인했으며 Generator 실행과 산출물에는 영향 없음
+- 다음 작업: JSON·Hash·보호 파일·Diff·잔존물 최종 재검증 후 종료 기록
+
+## 2026-07-25 FIX-05 S14 경미 보완 종료
+
+- recorded_at: `2026-07-25T21:46:00+09:00`
+- 단계: 표시명 정합 보완 최종 검증과 인계
+- 상태: `COMPLETED`
+- 변경 파일: 테스트 표시명 1줄, 해당 참조 Evidence, Attempt-2, Progress
+- 명령/테스트 결과:
+  - 표시명 `90·80/6/4/0` 정확 일치
+  - 전용 `20/20 PASS`, 전체 순차 `214/214 PASS`
+  - R1-M3-02 JSON Parse `11/11 PASS`
+  - R1-M3-02 Source/Evidence 참조 Hash·Byte `85/85 PASS`
+  - R1-M2-08 갱신 참조 Hash·Byte `3/3 PASS`
+  - 승인 집계 `90 / DIRECT 80 / SUCCESSOR 6 / LEGACY 4 / UNEXPLAINED 0`
+  - `git diff --check` 오류 `0`
+  - R1-M2-06/07 Historical Manifest와 Root Package Manifest/Lock Diff `0`
+  - R1-M1-05 Evidence Dirty `0`
+  - `gen`·Desktop/Root Cargo Target·Temp Check Target·Daon App Process 잔존 `0`
+  - 화면/App/Commit/Push/PR/배포 `0건`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: 추가 쓰기 중지, 어울1에게 동일 Issue 계약 형식으로 결과보고

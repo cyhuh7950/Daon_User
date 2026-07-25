@@ -8,11 +8,12 @@
 
 ## 2. 확인된 기준선
 
-- 선행 Manifest Artifact 90건 중 82건은 Raw 또는 Git Canonical Blob 기준으로 직접 일치한다.
-- 다음 4건은 원 Manifest 시점 Blob이 존재하고 후속 Commit이 공유 파일을 변경했다.
+- 선행 Manifest Artifact 90건 중 80건은 Raw 또는 Git Canonical Blob 기준으로 직접 일치한다.
+- 다음 6건은 원 Manifest 시점 Blob이 존재하고 후속 Commit이 공유 파일을 변경했다.
   - M2-04 결과보고 → 후속 Evidence Commit `da99baf`
   - M2-05 Progress → 후속 Evidence Commit `c42e1d`
   - M2-06 `packages/ui/src/index.js`, `workspace.css` → M2-07 구현 Commit `6fdcfa2`
+  - M2-06·07 `package-lock.json` → R1-M3-02 PostCSS `8.5.23` 보안 패치 Commit `8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa`
 - 다음 4건은 Manifest 기대 Blob이 Git History에 없어 `LEGACY_MANIFEST_DRIFT`다.
   - M2-06 `toolchain-versions.json`, `docs/01_architecture/DECISIONS.md`
   - M2-07 `packages/ui/src/index.js`, `packages/ui/src/workspace.css`
@@ -29,6 +30,15 @@
 | `UNEXPLAINED_MISMATCH` | 원인·시점·후속 계보를 증명하지 못함 | M2-08 `COMPLETED` 금지 |
 
 필수 필드: 원 Work Order, Manifest 경로, Artifact 경로, Expected Hash/Byte, Raw Hash/Byte, Git Blob Hash/Byte, 원 구현/증거 Commit, 후속 Commit, 상태, 근거, 현재 M2-08 영향.
+
+M2-06·07 `package-lock.json` 두 건은 일반 후속 승계보다 더 엄격하게 다음 값이 전부 일치할 때만 `SUCCESSOR_SUPERSEDED`로 분류한다.
+
+- 이전 기대 SHA-256 `69E87A118E89CF8ADF8CE35E571EB2EB6B7D5277EB405609FEC83F04B75DC161`, Byte `156787`
+- Origin Commit: M2-06 `780ca50725233227076a40f5adb2b5f1e05b1070`, M2-07 `ab2a3b055581fcaea75cceafc3bb8bedb2a80066`
+- Successor Commit `8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa`
+- 현재 CRLF 표현 SHA-256 `96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5`, Byte `181571`
+
+경로 또는 위 고정값 하나라도 다르거나 현재 checkout이 Successor Git canonical/LF·CRLF 표현과 일치하지 않으면 `UNEXPLAINED_MISMATCH`로 Fail-close한다.
 
 ## 4. 완료 조건 보정
 

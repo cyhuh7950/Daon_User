@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-POSTCSS-PROBE-EVIDENCE",
+  "issue_id": "R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR",
   "status": "COMPLETED",
   "base_commit": "74febf3bf7a8828d3bb426b74ce2cb510669fb6b",
   "environment": "isolated Windows worktree; installed Tauri Release app; no external deployment",
@@ -12,8 +12,8 @@
   },
   "source_artifact_manifest": {
     "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-    "bytes": 11106,
-    "sha256": "08999A905DCB56797EED3F35C02C60E84E45B8BD7FA88ED273FD30CAEA4D5FE6"
+    "bytes": 12931,
+    "sha256": "33778A715A4B8FBBCFC5F570F5DAAEB20746DB7352BCAB3359E5C5DA385B3986"
   },
   "external_build_artifacts": [
     {
@@ -51,8 +51,8 @@
   "evidence_artifacts": [
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-      "bytes": 11106,
-      "sha256": "08999A905DCB56797EED3F35C02C60E84E45B8BD7FA88ED273FD30CAEA4D5FE6"
+      "bytes": 12931,
+      "sha256": "33778A715A4B8FBBCFC5F570F5DAAEB20746DB7352BCAB3359E5C5DA385B3986"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/desktop-shell-build.json",
@@ -87,12 +87,12 @@
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-result.json",
       "bytes": 35790,
-      "sha256": "D24DB5759DDC6618D6FF0ABA6D30A0534FBA0F7F3DEC4BF90F37FCED5C75A042"
+      "sha256": "213DBA0A61169CD06D7262944B02DF8ADF146F064FD7CB16D8FF22395E287DC5"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-summary.md",
       "bytes": 516,
-      "sha256": "C12F9ED12C5940AECC87E149C33AA1458A44791C17B09E963F10DA8F776BB349"
+      "sha256": "2A24139571FDBC9AE9CEEC9D6F11335E31FB82E17A6B4B9DE27EE33C435CE05A"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/npm-audit-fix04.json",

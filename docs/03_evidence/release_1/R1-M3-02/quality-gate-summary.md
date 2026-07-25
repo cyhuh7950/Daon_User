@@ -1,6 +1,6 @@
 # Release 1 Quality Gate Summary
 
-- Git SHA: `74febf3bf7a8828d3bb426b74ce2cb510669fb6b`
+- Git SHA: `8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa`
 - Overall: `PASS`
 - Exit Code: `0`
 - Policy SHA-256: `C0962B3F83FD8204BF85D6EA910CF7E93B55EF9E83A2E411C0545DB81379621F`

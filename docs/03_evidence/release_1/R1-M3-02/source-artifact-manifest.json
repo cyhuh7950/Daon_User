@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-POSTCSS-PROBE-EVIDENCE",
+  "issue_id": "R1-M3-02-PREDECESSOR-LOCK-SUCCESSOR",
   "generated_at": "2026-07-23T22:10:00+09:00",
   "build_inputs": [
     {
@@ -272,14 +272,39 @@
       "sha256": "D118D64B1D256E6A281619CC6F099896D68B93E623C911BED443AEC02BC3AF95"
     },
     {
+      "path": "scripts/lib/predecessor-evidence-reconciliation.mjs",
+      "bytes": 19197,
+      "sha256": "8370D22AA3517FEDF143346FF213700C8CCB90956BDDE37C61345B586BB10760"
+    },
+    {
+      "path": "scripts/tests/platform-prototype-evidence.test.mjs",
+      "bytes": 21320,
+      "sha256": "95D5E7C159474FADF0F765B72F7566631523C62E3177354F681B71676BF14A57"
+    },
+    {
       "path": "scripts/generate-r1-m3-02-evidence.mjs",
-      "bytes": 15417,
-      "sha256": "BDFE4C45AA5658E8316737DFB45B6D8A91611521663AFD7A7BC853AFCC6A8C9F"
+      "bytes": 16321,
+      "sha256": "26CC8F5E845206F9488249B42525CE4C8E5978C5DC53EC0C19EE2C511C018A87"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M2-08-C00_evidence_reconciliation_addendum.md",
+      "bytes": 4195,
+      "sha256": "799353595992CBDF1EBF640BCBEA9EFA22CE34557733F3560A765F8EE5E543E5"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-08/predecessor-evidence-reconciliation.json",
+      "bytes": 94950,
+      "sha256": "778EB5B1CD397285320E3F37E2AB35CB6457EC7F7BC2077CBC8BE1E49E4FBC3A"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M2-08/evidence-manifest.json",
+      "bytes": 6025,
+      "sha256": "31528490623B242E033245D4883AACAA9913EB52DBF7A101EEAEFB1FC02FD080"
     },
     {
       "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-03_work_order.md",
-      "bytes": 4177,
-      "sha256": "E56C95F4096727F720EB22ABC1031A430B43A90BB105BDEAF7AEA3656D1013D2"
+      "bytes": 4176,
+      "sha256": "8F736C675C0C7221380C25BDB9E2BF75983D4AEA447EB174A14A81232834CCE9"
     },
     {
       "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-03_prompt.md",
@@ -295,6 +320,16 @@
       "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-04_prompt.md",
       "bytes": 420,
       "sha256": "E22E117C35445F301C218B6DD352B8F419560AE22A44A828659CDB6063CA31DE"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-05_work_order.md",
+      "bytes": 4283,
+      "sha256": "F1B583A5CA084102B8367FF72C4D5EE6937EBD2B477A19953234780AE6ED8A46"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-05_prompt.md",
+      "bytes": 609,
+      "sha256": "41AB9A8964247DCE00CF01E2AA9A8209842CEEAB7B949CFDE92AD3C727601062"
     }
   ],
   "fix_03_behavior_contract": {
@@ -309,6 +344,18 @@
     "postcss_override": "root_postcss_exact_8.5.23",
     "npm_ls_equivalent_acceptance": "exit_1_only_for_next_exact_8.5.10_override_invalid_without_other_problems",
     "production_audit": "high_0_critical_0"
+  },
+  "fix_05_behavior_contract": {
+    "predecessor_artifacts": 90,
+    "direct_match": 80,
+    "successor_superseded": 6,
+    "legacy_manifest_drift": 4,
+    "unexplained_mismatch": 0,
+    "added_successor_cases": [
+      "R1-M2-06|package-lock.json",
+      "R1-M2-07|package-lock.json"
+    ],
+    "fail_close_fields": "source_work_order,artifact_path,expected_sha256,expected_bytes,origin_commit,successor_commit,current_sha256,current_bytes"
   },
   "generated_artifacts": {
     "committed_tauri_schemas": [],
