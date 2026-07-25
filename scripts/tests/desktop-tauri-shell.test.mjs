@@ -100,6 +100,7 @@ test("desktop package pins production build and Tauri commands", async () => {
 
 test("quality gate registers only reproducible desktop runtime capabilities", async () => {
   const root = JSON.parse(await read("package.json"));
+  const npmConfig = await read(".npmrc");
   const policy = JSON.parse(await read("quality-gate-policy.json"));
   const desktop = policy.components.find((component) => component.id === "apps/desktop");
   assert.deepEqual(desktop.capabilities.lint.command.command, ["npm", "run", "verify:desktop-lint"]);
@@ -109,7 +110,9 @@ test("quality gate registers only reproducible desktop runtime capabilities", as
   for (const script of ["verify:desktop-lint", "verify:desktop-type", "verify:desktop-unit", "verify:desktop-build"]) {
     assert.equal(typeof root.scripts[script], "string");
   }
-  assert.equal(root.scripts["verify:desktop-type"], "node scripts/run-isolated-desktop-cargo.mjs check");
+  assert.equal("preverify:desktop-type" in root.scripts, false);
+  assert.equal(root.scripts["verify:desktop-type"], "npm run verify:desktop-build && node scripts/run-isolated-desktop-cargo.mjs check");
+  assert.match(npmConfig, /^ignore-scripts=true$/m);
   assert.equal(root.scripts["build:desktop-installer"], "node scripts/run-isolated-desktop-cargo.mjs installer");
 });
 

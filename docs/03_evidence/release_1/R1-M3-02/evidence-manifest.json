@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-CI-RUST-TYPE-DIAGNOSTIC",
+  "issue_id": "R1-M3-02-DESKTOP-TYPE-FRONTEND-PREREQUISITE",
   "status": "COMPLETED",
   "base_commit": "74febf3bf7a8828d3bb426b74ce2cb510669fb6b",
   "environment": "isolated Windows worktree; installed Tauri Release app; no external deployment",
@@ -12,8 +12,8 @@
   },
   "source_artifact_manifest": {
     "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-    "bytes": 17833,
-    "sha256": "D0DFFEC58FE3F10689FE9EFDD63D4EEB9F2B30970D7C475ECD6CAD7F9A86FF5C"
+    "bytes": 18704,
+    "sha256": "82943C39BB545803AC39632BCE8C4FA292733A2DF465D70E11CB4E9137B934BA"
   },
   "external_build_artifacts": [
     {
@@ -60,8 +60,8 @@
   "evidence_artifacts": [
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-      "bytes": 17833,
-      "sha256": "D0DFFEC58FE3F10689FE9EFDD63D4EEB9F2B30970D7C475ECD6CAD7F9A86FF5C"
+      "bytes": 18704,
+      "sha256": "82943C39BB545803AC39632BCE8C4FA292733A2DF465D70E11CB4E9137B934BA"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/desktop-shell-build.json",
@@ -96,12 +96,12 @@
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-result.json",
       "bytes": 35896,
-      "sha256": "1C38B72D1CC8A96F99127C835709E1064CA765B46951812C8BB900DFD663BD2E"
+      "sha256": "8335CDD4D85026E2748C94987FC9F2DEDA254419D5A7AE3EDDDDB8AFCFF32296"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-summary.md",
       "bytes": 516,
-      "sha256": "43D815B04C083CA1331C757373B5D5E1ACE8F5D3679B28F02465BE14FE238E4C"
+      "sha256": "6CB4AA8F1A457BDED46B2172161C79CB5E1CEA4AA156489CFA2434CB7C4C6AB5"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/npm-audit-fix04.json",

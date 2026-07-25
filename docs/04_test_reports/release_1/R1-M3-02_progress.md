@@ -1672,6 +1672,53 @@
 - 오류/원인/복구: 미해결 오류 없음
 - 다음 작업: 전체 회귀·Lint·Web/Desktop Build·Desktop Type·Audit·Quality Gate 수행
 
+## 2026-07-25 FIX-09 S2 GREEN 후 clean-checkout 계약 충돌 확인
+
+- recorded_at: `2026-07-25T22:42:07+09:00`
+- 단계: 최소 Script 구현 GREEN과 실제 npm lifecycle 실행 검증
+- 상태: `BLOCKED`
+- 변경 파일: `package.json`, `scripts/tests/desktop-tauri-shell.test.mjs`, Progress
+- 명령/테스트 결과:
+  - 동일 전용 Test `11/11 PASS`, Exit `0`
+  - 정확히 검증한 `apps/desktop/dist`를 제거해 `false` 확인 후 `npm run verify:desktop-type` 실행
+  - 출력에서 `preverify:desktop-type`과 Desktop Frontend Build가 실행되지 않았고 `dist`도 생성되지 않음
+  - `npm config get ignore-scripts` 결과 `true`; 저장소 `.npmrc`가 승인 Toolchain 기준으로 `ignore-scripts=true`를 고정하고 `scripts/verify-toolchain-baseline.mjs`도 이를 필수 검사함
+  - 이어진 Cargo는 외부 Temp Target에서 Access Denied로 Exit `1`; 이는 sandbox 환경 문제이며 lifecycle 미실행과 별도 원인
+- 오류/원인/복구:
+  - 확정 원인: npm `ignore-scripts=true`에서는 명시 호출한 Script만 실행되고 `preverify:desktop-type` lifecycle Hook은 실행되지 않음
+  - 승인된 FIX-09는 `.npmrc`·Toolchain 설정 변경, 기존 `verify:desktop-type` 명령 변경, Cargo Wrapper 변경을 모두 허용하지 않아 현재 구현만으로 사용자 관점 완료조건을 만족할 수 없음
+  - 검토한 대안은 `.npmrc` 완화, 기존 Script 명령에 Build 연결, Wrapper에 Build 연결, 호출 명령 변경이며 모두 승인 보호 경계를 변경함
+- 다음 작업: 추가 쓰기 중지; 어울1이 `ignore-scripts=true`와 FIX-09 lifecycle 계약 충돌을 해소한 갱신 작업지시를 판단해야 함
+
+## 2026-07-25 FIX-09 S1 Root lifecycle 계약 RED
+
+- recorded_at: `2026-07-25T22:39:32+09:00`
+- 단계: `preverify:desktop-type` 선행 Build 계약 테스트 선작성
+- 상태: `COMPLETED`
+- 변경 파일: `scripts/tests/desktop-tauri-shell.test.mjs`, Progress
+- 명령/테스트 결과:
+  - `node --test --test-concurrency=1 scripts/tests/desktop-tauri-shell.test.mjs`
+  - 전용 Test `10/11 PASS`, fail `1`, Exit `1`
+  - 실패는 `preverify:desktop-type` 실제값 `undefined`, 기대값 `npm run verify:desktop-build`의 정확한 누락 계약
+- 오류/원인/복구: 테스트 환경·기존 회귀 오류 없음; clean checkout Desktop Type 선행 Frontend Build Script 부재를 유효 RED로 확인
+- 다음 작업: Root `package.json`에 승인된 lifecycle Script 한 항목만 추가하고 동일 Test GREEN 확인
+
+## 2026-07-25 FIX-09 S0 착수·승인 경계 확인
+
+- recorded_at: `2026-07-25T22:38:46+09:00`
+- 단계: FIX-09 승인 정본·원인·단일 Writer·영향 범위 확인
+- 상태: `COMPLETED`
+- 완료:
+  - AGENTS.md, FIX-09 Prompt·작업지시서, 원 R1-M3-02와 FIX-01~FIX-08 작업지시서, 승인 설계 v0.7, 승인 계획 v0.9를 EOF까지 확인
+  - 승인 설계 SHA-256 `6539F274890F3FBE7C7286853A790B6C724D9525FB1F404ED853350470206C7A`, 계획 SHA-256 `E4C4D8151A24C207BBE2C97759FCC2975B0E35E2679DF1D4AF185B4CBD0D0162` 일치
+  - Branch `codex/r1-m3-02`, HEAD `d76ab393339bdd82e2de9f07428a493aa27b346b`, 착수 전 변경은 어울1 전달 미추적 FIX-09 작업지시서·Prompt 2개뿐
+  - PR #16 Run `30159805607`의 확정 원인은 clean checkout에서 `apps/desktop/dist` 부재로 Tauri `generate_context!()`가 `frontendDist` 검증에 실패한 것
+  - 단일 Writer 확인; 화면/App·Commit·Push·PR·서버·배포 금지, 제품 Source·설정·Dependency·Lockfile 보호 경계 확인
+- 변경 파일: Progress
+- 명령/테스트 결과: Root에 `preverify:desktop-type`이 없고 기존 `verify:desktop-type`은 격리 Cargo Wrapper를 그대로 사용함을 확인
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: Root Script 계약 테스트 선작성과 유효 RED 확인
+
 ## 2026-07-25 FIX-08 S3 전체 회귀·빌드·Gate
 
 - recorded_at: `2026-07-25T23:36:00+09:00`
@@ -1819,3 +1866,61 @@
   - Independence violations `0`, Exit `0`
 - 오류/원인/복구: 미해결 오류 없음
 - 다음 작업: 전체 회귀·Lint·Web/Desktop Build·Desktop Type·Audit·Quality Gate 수행
+
+## 2026-07-25 FIX-09 S5 정리·종료 직전 인계
+
+- recorded_at: `2026-07-25T22:55:32+09:00`
+- 단계: Build/Temp 정리와 최종 증거 정합성 확인
+- 상태: `COMPLETED`
+- 변경 파일: Root Script, Desktop 계약 Test, Generator, R1-M3-02 증거, Attempt-2, Progress, FIX-09 문서
+- 명령/테스트 결과:
+  - 생성 `apps/desktop/dist`와 작업 전용 `C:\tmp\daon-fix09-os-temp`를 검증된 정확 절대경로로 제거, 존재 `false`
+  - R1-M3-02 JSON `12/12`, Source/Evidence Hash·Byte `102/102`
+  - Source/Evidence 최상위 Issue ID 모두 `R1-M3-02-DESKTOP-TYPE-FRONTEND-PREREQUISITE`
+  - 화면/App·Commit·Push·PR·서버 명령·배포 `0건`
+- 오류/원인/복구:
+  - 첫 정리 보조식은 PowerShell 배열 형 변환으로 안전 검사에서 중단됐고 삭제는 실행되지 않음
+  - 두 대상을 각각 기대 절대경로와 대조한 뒤 정확 경로만 제거해 복구
+- 다음 작업: 추가 쓰기 중지; Diff·보호 파일·R1-M1-05·잔존 Process/Target 최종 무쓰기 검증 후 어울1 인계
+
+## 2026-07-25 FIX-09 S4 전체 회귀·Gate·증거 결정성
+
+- recorded_at: `2026-07-25T22:53:55+09:00`
+- 단계: 전체 자동 검증과 FIX-09 증거 정합화
+- 상태: `COMPLETED`
+- 변경 파일: Root Script, Desktop 계약 Test, Generator, R1-M3-02 Quality Gate/Source/Evidence Manifest, Attempt-2, Progress, FIX-09 문서
+- 명령/테스트 결과:
+  - Independence violations `0`
+  - 전체 순차 Test `218/218 PASS`, fail·cancelled·skipped `0`
+  - Workspace Lint `11 files PASS`
+  - Web Next `16.3.0-canary.93` Production Build·7 Route PASS
+  - Desktop Vite `8.1.5`·`42 modules` Build PASS
+  - 명시적 Desktop Build→격리 Cargo Type PASS
+  - Production Audit info/low/moderate/high/critical/total 모두 `0`
+  - 공통 Quality Gate lint/type/unit/contract/build/security/independence 7범주 전부 PASS, failures `0`, Exit `0`
+  - 최신 Gate Result/Summary를 R1-M3-02에 보존하고 R1-M1-05 두 파일은 기준선 복원, Dirty `0`
+  - Generator 2회 모두 Source `53`, Validation `27`, Evidence `21`
+  - Source Manifest `18704 bytes` / SHA-256 `82943C39BB545803AC39632BCE8C4FA292733A2DF465D70E11CB4E9137B934BA`
+  - Evidence Manifest `8074 bytes` / SHA-256 `42C5BFA9B04D8E77A323DE7B942DC06F89F9862486186A7C3A6B95388600BD5D`
+- 오류/원인/복구: 미해결 구현 오류 없음
+- 다음 작업: `dist`·작업 Temp 정리 후 JSON/Hash·Diff·보호 범위·잔존물 최종 확인
+
+## 2026-07-25 FIX-09 S3 갱신 계약 GREEN·clean-equivalent PASS
+
+- recorded_at: `2026-07-25T22:48:24+09:00`
+- 단계: 어울1 갱신 설계 적용과 clean checkout 선행조건 실제 검증
+- 상태: `COMPLETED`
+- 완료:
+  - 갱신 FIX-09 SHA-256 `93A5A3C8234193AA74FDEBE3F3A494BC2EA4434E7BA49E9703075FBB4978F4DF` EOF 재확인
+  - lifecycle 기대와 `preverify:desktop-type`을 제거하고 기존 `verify:desktop-type` 본문 한 항목만 정확한 명시 체인으로 변경
+  - `.npmrc ignore-scripts=true`, Cargo Wrapper, Workflow·Gate 호출 이름 불변
+- 변경 파일: `package.json`, `scripts/tests/desktop-tauri-shell.test.mjs`, Generator, Progress
+- 명령/테스트 결과:
+  - 갱신 계약 RED `10/11` → GREEN `11/11`, Exit `0`
+  - `apps/desktop/dist=false` 확인 뒤 단일 `npm run verify:desktop-type` 실행
+  - 원문 순서: `verify:desktop-build` → Vite `42 modules` PASS → 격리 Cargo Check `Finished dev profile`; 전체 Exit `0`
+  - 실행 뒤 `apps/desktop/dist=true`; 수동 `CARGO_TARGET_DIR` 주입 없음
+- 오류/원인/복구:
+  - 외부 System Temp 권한 요청은 실행 도구 사용 한도로 거부되어 제품 실패로 분류하지 않음
+  - 허용 쓰기 루트 `C:\tmp`를 해당 Process의 OS Temp로 지정해 저장소 밖 격리 Target 계약을 동일 명령으로 검증; Wrapper가 만든 Target은 정리됨
+- 다음 작업: 전체 회귀·Lint·Web/Desktop Build·Desktop Type·Audit·7범주 Gate 수행

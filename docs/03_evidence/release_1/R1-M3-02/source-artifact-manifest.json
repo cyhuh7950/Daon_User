@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-CI-RUST-TYPE-DIAGNOSTIC",
+  "issue_id": "R1-M3-02-DESKTOP-TYPE-FRONTEND-PREREQUISITE",
   "generated_at": "2026-07-23T22:10:00+09:00",
   "build_inputs": [
     {
@@ -101,8 +101,8 @@
     },
     {
       "path": "package.json",
-      "bytes": 1302,
-      "sha256": "CCB5D1A8F8B765D40F0B4B4603C987FC53C72FC74D11283BFD0F2254E261A0AC"
+      "bytes": 1334,
+      "sha256": "B15CD8A78EF7D1ACB1350E6F1DF64764C1D15217278DFCCDBA4BF3BA6B061FFF"
     },
     {
       "path": "packages/contracts/navigation.json",
@@ -273,8 +273,8 @@
   "validation_inputs": [
     {
       "path": "scripts/tests/desktop-tauri-shell.test.mjs",
-      "bytes": 15954,
-      "sha256": "04E0704FFB29F45001342FEF7A0A6B640316DCD7FE74530769956FCDDB74E865"
+      "bytes": 16146,
+      "sha256": "FA0D7387A02B3252E803E3791C5FD93C8DBB0BC0182BA3A4398406D69BA246E9"
     },
     {
       "path": "scripts/lib/predecessor-evidence-reconciliation.mjs",
@@ -288,8 +288,8 @@
     },
     {
       "path": "scripts/generate-r1-m3-02-evidence.mjs",
-      "bytes": 20961,
-      "sha256": "BBBC458AC1899BA1A0CC49A822A03ED8FE5F9DE8E28EFCC3B41CA06618588711"
+      "bytes": 21561,
+      "sha256": "CF2D9B5DAF97F86219DEC7F2696891C7DF2439FDDB1699FACAD9C62CC45D77F4"
     },
     {
       "path": "docs/02_work_orders/release_1/R1-M2-08-C00_evidence_reconciliation_addendum.md",
@@ -395,6 +395,16 @@
       "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-08_prompt.md",
       "bytes": 635,
       "sha256": "67972FD0FFB273258175444FE212E054411A31165747BB556E2B9282BD271A33"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-09_work_order.md",
+      "bytes": 4348,
+      "sha256": "93A5A3C8234193AA74FDEBE3F3A494BC2EA4434E7BA49E9703075FBB4978F4DF"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-09_prompt.md",
+      "bytes": 635,
+      "sha256": "3C98E45F96095C391034D69CB7BCC5FD48BDF39C1D2A4382C08D73881A1DB5D9"
     }
   ],
   "fix_03_behavior_contract": {
@@ -473,6 +483,14 @@
     "fallback_outcome": "CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC",
     "raw_cargo_output_artifact": false,
     "quality_gate_command_unchanged": "npm run verify:quality-gate"
+  },
+  "fix_09_behavior_contract": {
+    "npm_ignore_scripts": true,
+    "desktop_type_command": "npm run verify:desktop-build && node scripts/run-isolated-desktop-cargo.mjs check",
+    "execution_order": "desktop_frontend_build_before_isolated_cargo_check",
+    "clean_checkout_frontend_dist": "generated_then_removed_not_tracked",
+    "cargo_wrapper_unchanged": "scripts/run-isolated-desktop-cargo.mjs",
+    "quality_gate_invocation_unchanged": "npm run verify:desktop-type"
   },
   "mutable_handoff_records": [
     "docs/04_test_reports/release_1/R1-M3-02_progress.md",

@@ -1,6 +1,18 @@
-COMPLETED | R1-M3-02-CI-RUST-TYPE-DIAGNOSTIC | npm-ci 뒤·공통 Gate 앞 동일 Desktop Rust Type Fail-fast 진단과 Fallback 정규화 Outcome 구현 | Workflow, Quality Gate Library, Product Foundation/Quality Gate Test, Generator·Source/Evidence Manifest, FIX-08 문서·Progress·Attempt-2 정합화 | 전용 RED 28/36→GREEN 36/36, Independence 0, 전체 218/218, Lint·Web/Desktop Build·Desktop Type·Audit·7범주 Gate PASS, JSON 12/12, Hash·Byte 100/100, Generator 2회 결정성 PASS | GitHub PR 진단 Run은 어울1 소유 | 어울1의 exact-SHA PR 재검증과 Cargo 원문 판단
+COMPLETED | R1-M3-02-DESKTOP-TYPE-FRONTEND-PREREQUISITE | ignore-scripts 보안 기준을 유지한 명시적 Desktop Build→격리 Cargo Check 체인 구현 | Root Script·Desktop 계약 Test·Generator·Source/Evidence Manifest·FIX-09 문서·Progress·Attempt-2 정합화 | RED 10/11→GREEN 11/11, clean-equivalent 42 modules→Cargo Check PASS, Independence 0, 전체 218/218, Lint·Web/Desktop Build·Audit·7범주 Gate PASS, JSON 12/12, Hash·Byte 102/102, Generator 2회 결정성 PASS | GitHub PR exact-SHA 재실행 미수행 | 어울1의 exact-SHA PR 재검증
 
-# R1-M3-02 FIX-08 최종화 결과보고 — Attempt 2
+# R1-M3-02 FIX-09 최종화 결과보고 — Attempt 2
+
+## FIX-09 최종 판정
+
+`COMPLETED`
+
+- 정식 `FAILURE_REPORT`가 아니며 실패 횟수는 `0회`다.
+- PR #16 Run `30159805607`의 Desktop Rust Type 실패는 clean checkout에서 `apps/desktop/dist`가 없어 Tauri `generate_context!()`의 `frontendDist=../dist` 검증이 실패한 것으로 확정됐다.
+- 최초 lifecycle 계약은 승인된 `.npmrc ignore-scripts=true`에서 실행되지 않는 실제 충돌을 확인해 `BLOCKED` 기술 판단으로 회부했고, 어울1이 갱신한 FIX-09에 따라 lifecycle을 폐기했다.
+- `.npmrc ignore-scripts=true`를 유지하면서 기존 호출 이름 `verify:desktop-type`의 Script 본문 한 항목만 `npm run verify:desktop-build && node scripts/run-isolated-desktop-cargo.mjs check`로 변경했다.
+- Cargo Wrapper·Workflow 진단 Step·공통 Gate 호출 이름·Quality Gate 정책·Dependency·Lockfile·Tauri 설정·제품 Source는 변경하지 않았다.
+- 전용 계약 Test RED `10/11`에서 GREEN `11/11`로 전환했다. `dist` 부재에서 단일 명령을 실행해 Vite `42 modules` Build 뒤 Rust Cargo Check가 Exit `0`으로 통과하고 `dist`가 생성됨을 원문으로 확인했다.
+- GitHub PR exact-SHA 재실행은 어울1 소유이므로 수행하거나 CI PASS로 추론하지 않았다.
 
 ## FIX-08 최종 판정
 
@@ -142,7 +154,7 @@ COMPLETED | R1-M3-02-CI-RUST-TYPE-DIAGNOSTIC | npm-ci 뒤·공통 Gate 앞 동�
 
 - Windows NSIS 입력 `icon.ico`를 유지하고, 그 파일에 내장된 동일 256×256 RGBA Frame인 교차 플랫폼 `icon.png`만 추가했다.
 - Tauri가 Build 중 재생성한 `gen/schemas` 4개와 관련 없는 플랫폼 Icon은 보존하지 않았다.
-- `source-artifact-manifest.json`에 실제 Build 입력 전체와 검증 입력 `25개`를 구분해 Hash·Byte로 기록했다.
+- `source-artifact-manifest.json`에 실제 Build 입력 전체와 검증 입력 `27개`를 구분해 Hash·Byte로 기록했다.
 - `build.rs`, `src/main.rs`, `app-icon.svg`, `icon.ico`, `icon.png`, Tauri Config·Capability, Cargo Lock/Manifest, Desktop Entry/CSS, 공용 UI·Token·Contract, Wrapper·Test를 포함했다.
 - Installer·설치 EXE는 어울1 독립 검토 완료 뒤 제거했으며, 과거 Path·Hash·Byte Metadata만 `historical_reproducibility_record`로 보존했다.
 
@@ -153,19 +165,20 @@ COMPLETED | R1-M3-02-CI-RUST-TYPE-DIAGNOSTIC | npm-ci 뒤·공통 Gate 앞 동�
 - FIX-06 Desktop icon 계약 Test: RED `9/11` → 전용 전체 `11/11 PASS`
 - FIX-07 CI Ubuntu 계약 Test: RED `31/35` → 전용 전체 `35/35 PASS`, Independence `1→0`
 - FIX-08 CI Rust 진단 계약 Test: RED `28/36` → 전용 전체 `36/36 PASS`
+- FIX-09 Desktop Frontend 선행조건 계약 Test: RED `10/11` → 전용 전체 `11/11 PASS`
 - 전체 순차 Test: `218/218 PASS`
 - Workspace Lint: `11 files PASS`
 - Web Production Build: Next `16.3.0-canary.93`, Compile·TypeScript·7개 Static Page PASS, Exit `0`
 - Desktop Production Build: Vite `8.1.5`, `42 modules`, Exit `0`
-- 수동 `CARGO_TARGET_DIR` 없는 Desktop Type: Rust `1.97.1` locked Check, Exit `0`
+- 수동 `CARGO_TARGET_DIR` 없는 Desktop Type: Vite `42 modules` Build 뒤 Rust `1.97.1` locked Check, Exit `0`
 - 수동 `CARGO_TARGET_DIR` 없는 공통 Quality Gate: 7범주 전부 PASS, failures `0`, Exit `0`
 - Production Audit: Exit `0`, High `0`, Critical `0`, 전체 취약점 `0`
 - `npm ls next vite postcss --all --json`: Exit `1`, 허용된 Next exact `8.5.10` 대비 PostCSS `8.5.23` 단일 invalid만 존재, missing·extraneous·다른 invalid `0`
 - 최종 Gate가 재생성한 R1-M1-05 Evidence 2개는 R1-M3-02에 보존 후 Git 기준선으로 원복했다.
-- 최종 검증 입력은 `25개`, R1-M3-02 JSON Parse는 `12/12 PASS`, Source/Evidence Hash·Byte 재검산은 `100/100 PASS`다.
+- 최종 검증 입력은 `27개`, R1-M3-02 JSON Parse는 `12/12 PASS`, Source/Evidence Hash·Byte 재검산은 `102/102 PASS`다.
 - Server Validation Manifest는 `4260 bytes`, SHA-256 `D50104D1D09C2DC46FAF09C38D2FE1D23189D6F1C6F1A5CA4265CD4A924BB1ED`이고 Summary는 `2362 bytes`, SHA-256 `BE0B344B07206BBDA07682C8D3A08D70CCD4BD2439BB3BF8E867D77C5E372CEF`다.
-- Source Manifest는 `17833 bytes`, SHA-256 `D0DFFEC58FE3F10689FE9EFDD63D4EEB9F2B30970D7C475ECD6CAD7F9A86FF5C`이고, Evidence Manifest는 `8063 bytes`, SHA-256 `8CB05BEDD904279C44D73168D2C67C143C170F661F90317BE0C91A12C50B1F84`이다.
-- 승인된 정확 Worktree에서 Generator를 두 번 재실행했고 두 실행 모두 Source `53`, Validation `25`, Evidence `21`과 위 Manifest SHA-256이 동일해 결정성 PASS다.
+- Source Manifest는 `18704 bytes`, SHA-256 `82943C39BB545803AC39632BCE8C4FA292733A2DF465D70E11CB4E9137B934BA`이고, Evidence Manifest는 `8074 bytes`, SHA-256 `42C5BFA9B04D8E77A323DE7B942DC06F89F9862486186A7C3A6B95388600BD5D`이다.
+- 승인된 정확 Worktree에서 Generator를 두 번 재실행했고 두 실행 모두 Source `53`, Validation `27`, Evidence `21`과 위 Manifest SHA-256이 동일해 결정성 PASS다.
 - R1-M2-08 Reconciliation JSON은 `94950 bytes`, SHA-256 `778EB5B1CD397285320E3F37E2AB35CB6457EC7F7BC2077CBC8BE1E49E4FBC3A`이고, 갱신된 Library·Test·Reconciliation 3개 Artifact Hash·Byte 불일치가 `0`이다.
 - `git diff --check` 오류 `0`, R1-M1-05 Evidence Dirty `0`, `gen`·Desktop/Root Cargo Target·Temp Check Target·Daon App Process 잔존 `0`을 확인했다.
 
