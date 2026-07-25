@@ -4,7 +4,7 @@ import path from "node:path";
 
 const root = process.cwd();
 const evidenceDir = path.join(root, "docs/03_evidence/release_1/R1-M3-02");
-const issueId = "R1-M3-02-CI-RUST-TYPE-DIAGNOSTIC";
+const issueId = "R1-M3-02-DESKTOP-TYPE-FRONTEND-PREREQUISITE";
 const toPosix = (value) => value.split(path.sep).join("/");
 const mutableHandoffRecords = [
   "docs/04_test_reports/release_1/R1-M3-02_progress.md",
@@ -94,7 +94,9 @@ const validationInputs = [
   "docs/02_work_orders/release_1/R1-M3-02-FIX-07_prompt.md",
   "scripts/lib/quality-gate.mjs",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-08_work_order.md",
-  "docs/02_work_orders/release_1/R1-M3-02-FIX-08_prompt.md"
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-08_prompt.md",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-09_work_order.md",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-09_prompt.md"
 ];
 const buildInputPaths = [...new Set([...desktopInputs, ...sharedInputs, ...rootInputs])].sort();
 
@@ -208,6 +210,14 @@ const sourceManifest = {
     fallback_outcome: "CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC",
     raw_cargo_output_artifact: false,
     quality_gate_command_unchanged: "npm run verify:quality-gate"
+  },
+  fix_09_behavior_contract: {
+    npm_ignore_scripts: true,
+    desktop_type_command: "npm run verify:desktop-build && node scripts/run-isolated-desktop-cargo.mjs check",
+    execution_order: "desktop_frontend_build_before_isolated_cargo_check",
+    clean_checkout_frontend_dist: "generated_then_removed_not_tracked",
+    cargo_wrapper_unchanged: "scripts/run-isolated-desktop-cargo.mjs",
+    quality_gate_invocation_unchanged: "npm run verify:desktop-type"
   },
   mutable_handoff_records: mutableHandoffRecords,
   generated_artifacts: {
