@@ -217,7 +217,7 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   const job = workflow.jobs["release-1-quality-gate"];
   assert.ok(job);
   const stepsById = new Map(job.steps.filter((step) => step.id).map((step) => [step.id, step]));
-  const requiredStepIds = ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "quality-gate", "fallback-evidence", "upload-evidence"];
+  const requiredStepIds = ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate", "fallback-evidence", "upload-evidence"];
   for (const id of requiredStepIds) assert.ok(stepsById.has(id), `missing workflow step id ${id}`);
   const clearEvidenceIndex = job.steps.findIndex((step) => step.id === "clear-evidence");
   assert.ok(job.steps.findIndex((step) => step.id === "checkout") < clearEvidenceIndex);
@@ -234,6 +234,7 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   const verifyToolchainIndex = job.steps.findIndex((step) => step.run === "npm run verify:toolchain");
   const tauriPrerequisiteIndex = job.steps.findIndex((step) => step.id === "tauri-linux-prerequisites");
   const npmCiIndex = job.steps.findIndex((step) => step.run === "npm ci");
+  const desktopRustDiagnosticIndex = job.steps.findIndex((step) => step.id === "desktop-rust-type-diagnostic");
   const qualityGateIndex = job.steps.findIndex((step) => step.run === "npm run verify:quality-gate");
   assert.ok(pinStepIndex > 0);
   assert.match(job.steps[pinStepIndex].run, /toolchain-versions\.json/);
@@ -242,7 +243,7 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   assert.equal(job.steps[uvIndex].with.version, "${{ steps.toolchain-pins.outputs.uv }}");
   assert.equal(job.steps[versionOutputIndex].run, "npm --version\ncorepack --version\nuv --version");
   assert.ok(pinStepIndex < npmCorepackIndex && npmCorepackIndex < uvIndex && uvIndex < versionOutputIndex && versionOutputIndex < verifyToolchainIndex);
-  assert.ok(verifyToolchainIndex < tauriPrerequisiteIndex && tauriPrerequisiteIndex < npmCiIndex && npmCiIndex < qualityGateIndex);
+  assert.ok(verifyToolchainIndex < tauriPrerequisiteIndex && tauriPrerequisiteIndex < npmCiIndex && npmCiIndex < desktopRustDiagnosticIndex && desktopRustDiagnosticIndex < qualityGateIndex);
   for (const index of [pinStepIndex, npmCorepackIndex, uvIndex, verifyToolchainIndex])
     assert.notEqual(job.steps[index]["continue-on-error"], true);
   assert.ok(runs.includes("npm ci"));
@@ -256,7 +257,7 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   assert.equal(fallback.if, "${{ always() }}");
   assert.match(fallback.run, /--ci-fallback/);
   assert.equal(fallback.env.CI_GIT_SHA, "${{ github.sha }}");
-  for (const id of ["toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "npm-ci", "quality-gate"])
+  for (const id of ["toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate"])
     assert.equal(fallback.env[`CI_STEP_${id.replaceAll("-", "_").toUpperCase()}`], `\${{ steps.${id}.outcome }}`);
   assert.ok(job.steps.findIndex((step) => step.id === "quality-gate") < fallbackIndex && fallbackIndex < uploadIndex);
 });
@@ -291,7 +292,7 @@ test("CI Fallback Evidence는 현재 SHA의 유효한 결과만 보존하고 나
   const invoke = () => ensureCiFallbackEvidence({
     root,
     gitSha: "candidate-sha",
-    stepOutcomes: { "npm-ci": "failure", "quality-gate": "skipped token=do-not-record", unknown: "credential-raw-value" }
+    stepOutcomes: { "npm-ci": "success", "desktop-rust-type-diagnostic": "failure", "quality-gate": "skipped token=do-not-record", unknown: "credential-raw-value" }
   });
   const assertFallback = async (result) => {
     assert.equal(result.created, true);
@@ -300,7 +301,8 @@ test("CI Fallback Evidence는 현재 SHA의 유효한 결과만 보존하고 나
     assert.equal(report.git_sha, "candidate-sha");
     assert.equal(report.overall_status, "ERROR");
     assert.equal(report.exit_code, 2);
-    assert.equal(report.ci_fallback.step_outcomes["npm-ci"], "failure");
+    assert.equal(report.ci_fallback.step_outcomes["npm-ci"], "success");
+    assert.equal(report.ci_fallback.step_outcomes["desktop-rust-type-diagnostic"], "failure");
     assert.equal(report.ci_fallback.step_outcomes["quality-gate"], "unknown");
     assert.equal(report.ci_fallback.step_outcomes.unknown, undefined);
     assert.match(summary, /candidate-sha/);

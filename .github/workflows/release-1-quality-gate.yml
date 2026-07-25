@@ -76,6 +76,11 @@
           "run": "npm ci"
         },
         {
+          "name": "Verify desktop Rust type prerequisites",
+          "id": "desktop-rust-type-diagnostic",
+          "run": "npm run verify:desktop-type"
+        },
+        {
           "name": "Run common quality gate",
           "id": "quality-gate",
           "run": "npm run verify:quality-gate"
@@ -92,6 +97,7 @@
             "CI_STEP_TOOLCHAIN_VERSIONS": "${{ steps.toolchain-versions.outcome }}",
             "CI_STEP_VERIFY_TOOLCHAIN": "${{ steps.verify-toolchain.outcome }}",
             "CI_STEP_NPM_CI": "${{ steps.npm-ci.outcome }}",
+            "CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC": "${{ steps.desktop-rust-type-diagnostic.outcome }}",
             "CI_STEP_QUALITY_GATE": "${{ steps.quality-gate.outcome }}"
           },
           "run": "node scripts/verify-quality-gate.mjs --ci-fallback"

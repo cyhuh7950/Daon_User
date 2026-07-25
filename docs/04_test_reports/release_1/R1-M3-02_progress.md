@@ -1672,6 +1672,56 @@
 - 오류/원인/복구: 미해결 오류 없음
 - 다음 작업: 전체 회귀·Lint·Web/Desktop Build·Desktop Type·Audit·Quality Gate 수행
 
+## 2026-07-25 FIX-08 S3 전체 회귀·빌드·Gate
+
+- recorded_at: `2026-07-25T23:36:00+09:00`
+- 단계: 진단 Step·Fallback 변경의 전체 자동 회귀 검증
+- 상태: `COMPLETED`
+- 변경 파일: 최신 R1-M3-02 Quality Gate Result/Summary, Progress
+- 명령/테스트 결과:
+  - 전체 순차 Test `218/218 PASS`, fail·cancelled·skipped `0`
+  - Workspace Lint `11 files PASS`
+  - Web Production Build Next `16.3.0-canary.93`, 7개 Route PASS
+  - Desktop Production Build Vite `8.1.5`, `42 modules`, PASS
+  - 수동 `CARGO_TARGET_DIR` 없는 Desktop Rust Type Check PASS
+  - Production Audit info/low/moderate/high/critical/total 모두 `0`
+  - 공통 Quality Gate 7범주 전부 PASS, failures `0`, Exit `0`
+  - 최신 Gate Result/Summary를 R1-M3-02에 보존하고 R1-M1-05 두 파일은 Git 기준선으로 원복
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: Attempt-2·Manifest 최신화, Generator 2회 결정성과 최종 정합 검증
+
+## 2026-07-25 FIX-08 S4 증거 결정성·종료 직전 인계
+
+- recorded_at: `2026-07-25T23:42:00+09:00`
+- 단계: FIX-08 증거·결정성·최종 인계 정합화
+- 상태: `COMPLETED`
+- 변경 파일: Workflow, Quality Gate Library, Product Foundation/Quality Gate Test, Generator, R1-M3-02 Source/Evidence/Quality Gate 증거, Attempt-2, Progress, FIX-08 문서
+- 명령/테스트 결과:
+  - 전용 RED `28/36` → GREEN `36/36`, Independence violations `0`
+  - 전체 순차 Test `218/218 PASS`, Lint `11 files PASS`
+  - Web 7 Route·Desktop 42 Module Build, Desktop Type, Audit 0건, 7범주 Quality Gate PASS
+  - Generator 최종 2회 모두 Source `53`, Validation `25`, Evidence `21`
+  - Source Manifest `17833 bytes` / SHA-256 `D0DFFEC58FE3F10689FE9EFDD63D4EEB9F2B30970D7C475ECD6CAD7F9A86FF5C`
+  - Evidence Manifest `8063 bytes` / SHA-256 `8CB05BEDD904279C44D73168D2C67C143C170F661F90317BE0C91A12C50B1F84`
+  - 화면/App·Commit·Push·PR 조작·서버 명령·배포 `0건`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: JSON·Hash·Diff·보호 파일·잔존물 최종 재검증 후 추가 쓰기 중지
+
+## 2026-07-25 FIX-08 S5 최종 검증 명령 복구·종료
+
+- recorded_at: `2026-07-25T23:47:00+09:00`
+- 단계: Shell 인용 오류 복구와 종료 검증
+- 상태: `COMPLETED`
+- 변경 파일: Progress
+- 명령/테스트 결과:
+  - 복합 최종 보조 명령 1회는 GitHub 표현식 `${{ }}`의 PowerShell 변수 해석으로 ParserError
+  - 두 번째 복합 명령은 JavaScript 인용부호 손상으로 Node SyntaxError
+  - 같은 one-liner를 반복하지 않고 JSON/Hash·전용 Test·Independence·Diff/잔존물 검증을 분리해 모두 PASS
+  - 최종 JSON `12/12`, Hash·Byte `100/100`, 전용 `36/36`, Independence violations `0`
+  - 보호 파일 Diff·R1-M1-05 Dirty·잔존물·Daon Process `0`
+- 오류/원인/복구: 구현 오류 없음; PowerShell/JavaScript 인용 충돌을 검증 분리로 복구
+- 다음 작업: 추가 쓰기 중지, 어울1에게 계약 형식의 `COMPLETED` 결과보고 제출
+
 ## 2026-07-25 FIX-07 S3 전체 회귀·빌드·Gate
 
 - recorded_at: `2026-07-25T23:02:00+09:00`
@@ -1722,3 +1772,50 @@
   - `gen`·Desktop/Root Cargo Target·Temp Check Target·Daon App Process 잔존 `0`
 - 오류/원인/복구: 구현 오류 없음; 검증 Script 이스케이프만 직접 비교로 교정
 - 다음 작업: 추가 쓰기 중지, 어울1에게 계약 형식의 `COMPLETED` 결과보고 제출
+
+## 2026-07-25 FIX-08 S0 착수·진단 경계 확인
+
+- recorded_at: `2026-07-25T23:20:00+09:00`
+- 단계: FIX-08 승인 정본·단일 Writer·CI 진단 한계 확인
+- 상태: `COMPLETED`
+- 완료:
+  - AGENTS.md, 승인 설계 v0.7, 승인 계획 v0.9, 원 R1-M3-02 및 FIX-01~FIX-08 작업지시서·프롬프트 EOF 확인
+  - Branch `codex/r1-m3-02`, HEAD `09e40e7d0bbc217f5aea3e59c30a0823c7d9b976`
+  - 착수 전 변경은 어울1 전달 미추적 FIX-08 작업지시서·프롬프트 2개뿐이며 단독 Writer 확인
+  - PR #16 Run `30159199959`: Tauri prerequisite·Independence PASS, `type/desktop-rust-type`만 FAIL
+  - Gate Artifact가 원문 Cargo stderr를 보존하지 않아 세부 원인 불명이며 Package 추측·Gate 완화 금지 확인
+- 변경 파일: Product Foundation/Quality Gate Test, Progress
+- 명령/테스트 결과: Workflow에 별도 Desktop Rust Type 진단 Step과 Fallback Outcome 부재 확인
+- 오류/원인/복구: 확정된 관찰 한계이며 구현 오류 원인은 아직 미확정
+- 다음 작업: 진단 Step 순서·정확 명령·Fail-close·Fallback Outcome 계약 RED 확인
+
+## 2026-07-25 FIX-08 S1 진단·Fallback 계약 RED
+
+- recorded_at: `2026-07-25T23:23:00+09:00`
+- 단계: 별도 Desktop Rust Type 진단과 정규화 Outcome 계약 선작성
+- 상태: `COMPLETED`
+- 변경 파일: Product Foundation/Quality Gate Test, Progress
+- 명령/테스트 결과:
+  - 전용 Test `28/36 PASS`, fail `8`, Exit `1`
+  - 상위 실패: Workflow Step 목록·진단 계약·Workflow 공통 계약 3건
+  - Fallback 재생성 Subtest 4건이 진단 Step 고정 Allowlist 부재로 실패
+- 오류/원인/복구: `desktop-rust-type-diagnostic` Step과 고정 Fallback Outcome 경계가 아직 없음
+- 다음 작업: npm-ci 뒤·quality-gate 앞 동일 명령 Fail-fast Step과 CI_FALLBACK_STEP_IDS/환경 전달만 최소 구현
+
+## 2026-07-25 FIX-08 S2 진단·Fallback 계약 GREEN
+
+- recorded_at: `2026-07-25T23:27:00+09:00`
+- 단계: 동일 Desktop Type Fail-fast Step과 정규화 Outcome 구현
+- 상태: `COMPLETED`
+- 완료:
+  - Workflow npm-ci 뒤·quality-gate 앞에 `desktop-rust-type-diagnostic` 추가
+  - 정확 명령 `npm run verify:desktop-type`, `continue-on-error` 없음
+  - Fallback 환경 `CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC`와 고정 Allowlist ID 추가
+  - 원문 Cargo Output Artifact 저장 없이 정규화 GitHub Step Outcome만 기록
+  - Generator에 FIX-08 문서·Quality Gate Library와 진단 계약 추가
+- 변경 파일: Workflow, Quality Gate Library, Product Foundation/Quality Gate Test, Generator, Progress
+- 명령/테스트 결과:
+  - 전용 Test `36/36 PASS`, Exit `0`
+  - Independence violations `0`, Exit `0`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: 전체 회귀·Lint·Web/Desktop Build·Desktop Type·Audit·Quality Gate 수행

@@ -146,7 +146,7 @@ test("접근성 계약은 Keyboard·Focus·설명·필수 상태 노출을 고�
 test("Workflow는 승인된 세 Action Major만 올리고 기존 Gate 계약을 보존한다", async () => {
   const workflow = JSON.parse(await readFile(path.join(root, ".github/workflows/release-1-quality-gate.yml"), "utf8"));
   const job = workflow.jobs["release-1-quality-gate"];
-  assert.deepEqual(job.steps.map((step) => step.id), ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "quality-gate", "fallback-evidence", "upload-evidence"]);
+  assert.deepEqual(job.steps.map((step) => step.id), ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate", "fallback-evidence", "upload-evidence"]);
   assert.equal(job.steps.find((step) => step.id === "checkout").uses, "actions/checkout@v5");
   assert.equal(job.steps.find((step) => step.id === "setup-node").uses, "actions/setup-node@v5");
   assert.equal(job.steps.find((step) => step.id === "upload-evidence").uses, "actions/upload-artifact@v6");
@@ -177,6 +177,24 @@ test("R1-M3-02 Generator는 서버 위치 대신 저장소 상대 검증 Manifes
   const generator = await readFile(path.join(root, "scripts/generate-r1-m3-02-evidence.mjs"), "utf8");
   assert.match(generator, /docs\/03_evidence\/release_1\/R1-M3-02\/server-validation-manifest\.json/);
   assert.doesNotMatch(generator, /ysna-server:\/|\/home\/ubuntu\/deploy\/daon-user/);
+});
+
+test("CI Desktop Rust 진단은 npm ci 뒤 Gate 앞에서 같은 명령으로 Fail-fast하고 Fallback에 남는다", async () => {
+  const workflow = JSON.parse(await readFile(path.join(root, ".github/workflows/release-1-quality-gate.yml"), "utf8"));
+  const steps = workflow.jobs["release-1-quality-gate"].steps;
+  const npmCiIndex = steps.findIndex((step) => step.id === "npm-ci");
+  const diagnosticIndex = steps.findIndex((step) => step.id === "desktop-rust-type-diagnostic");
+  const qualityGateIndex = steps.findIndex((step) => step.id === "quality-gate");
+  const diagnostic = steps[diagnosticIndex];
+  const fallback = steps.find((step) => step.id === "fallback-evidence");
+  const { CI_FALLBACK_STEP_IDS } = await import("../lib/quality-gate.mjs");
+
+  assert.ok(npmCiIndex < diagnosticIndex && diagnosticIndex < qualityGateIndex);
+  assert.equal(diagnostic.name, "Verify desktop Rust type prerequisites");
+  assert.equal(diagnostic.run, "npm run verify:desktop-type");
+  assert.equal(diagnostic["continue-on-error"], undefined);
+  assert.equal(fallback.env.CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC, "${{ steps.desktop-rust-type-diagnostic.outcome }}");
+  assert.ok(CI_FALLBACK_STEP_IDS.includes("desktop-rust-type-diagnostic"));
 });
 
 test("새 Package capability는 공통 Gate 실행 객체 계약을 사용한다", async () => {

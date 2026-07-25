@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-CI-UBUNTU-GATE",
+  "issue_id": "R1-M3-02-CI-RUST-TYPE-DIAGNOSTIC",
   "status": "COMPLETED",
   "base_commit": "74febf3bf7a8828d3bb426b74ce2cb510669fb6b",
   "environment": "isolated Windows worktree; installed Tauri Release app; no external deployment",
@@ -12,8 +12,8 @@
   },
   "source_artifact_manifest": {
     "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-    "bytes": 16785,
-    "sha256": "AD1F2209743FC76CF29E3726D2BDA126E798567727C380EFB2C42583056E5B9A"
+    "bytes": 17833,
+    "sha256": "D0DFFEC58FE3F10689FE9EFDD63D4EEB9F2B30970D7C475ECD6CAD7F9A86FF5C"
   },
   "external_build_artifacts": [
     {
@@ -60,8 +60,8 @@
   "evidence_artifacts": [
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-      "bytes": 16785,
-      "sha256": "AD1F2209743FC76CF29E3726D2BDA126E798567727C380EFB2C42583056E5B9A"
+      "bytes": 17833,
+      "sha256": "D0DFFEC58FE3F10689FE9EFDD63D4EEB9F2B30970D7C475ECD6CAD7F9A86FF5C"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/desktop-shell-build.json",
@@ -96,12 +96,12 @@
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-result.json",
       "bytes": 35896,
-      "sha256": "054F6650B9A28465DC94FD6815517B1D8D6A835B7F6EE8CA35CAE083634A3593"
+      "sha256": "1C38B72D1CC8A96F99127C835709E1064CA765B46951812C8BB900DFD663BD2E"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-summary.md",
       "bytes": 516,
-      "sha256": "F69365CF38A98C6C393BBCB6CC715134955F4E9E605364B879802C1383FE97FC"
+      "sha256": "43D815B04C083CA1331C757373B5D5E1ACE8F5D3679B28F02465BE14FE238E4C"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/npm-audit-fix04.json",

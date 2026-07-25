@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-CI-UBUNTU-GATE",
+  "issue_id": "R1-M3-02-CI-RUST-TYPE-DIAGNOSTIC",
   "generated_at": "2026-07-23T22:10:00+09:00",
   "build_inputs": [
     {
@@ -288,8 +288,8 @@
     },
     {
       "path": "scripts/generate-r1-m3-02-evidence.mjs",
-      "bytes": 20320,
-      "sha256": "6B2982E09A4AEE1618F70EE58CC45475678DB418B225C1E47C9BF226E3D516AE"
+      "bytes": 20961,
+      "sha256": "BBBC458AC1899BA1A0CC49A822A03ED8FE5F9DE8E28EFCC3B41CA06618588711"
     },
     {
       "path": "docs/02_work_orders/release_1/R1-M2-08-C00_evidence_reconciliation_addendum.md",
@@ -358,18 +358,18 @@
     },
     {
       "path": ".github/workflows/release-1-quality-gate.yml",
-      "bytes": 4255,
-      "sha256": "F12657DF17AED956C33B9BBCA333BF9A88EF7B1087035BA0B5D7B745D37FE8DD"
+      "bytes": 4529,
+      "sha256": "32A17AFF778DD5580059DB4BD3FA27E0F6407521304816BE6622E55F87807BA1"
     },
     {
       "path": "scripts/tests/product-foundation.test.mjs",
-      "bytes": 13657,
-      "sha256": "91282CF48E1270088C4F799839D5CC51914B060BCB6A1143DD6205DF435F1E2D"
+      "bytes": 14929,
+      "sha256": "5CA5AD1912A6E8A818E8766839405F11FC6007140F81936FAC164B8921454DAA"
     },
     {
       "path": "scripts/tests/quality-gate.test.mjs",
-      "bytes": 19785,
-      "sha256": "BD6F26CB913A24777006FD4D35CEED406CBF3784475C28109D60F0159C3FF1B0"
+      "bytes": 20154,
+      "sha256": "CB1A63F72A8F700F433F5D8A98779C90F02562742DD507CAD72149EF140AF751"
     },
     {
       "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-07_work_order.md",
@@ -380,6 +380,21 @@
       "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-07_prompt.md",
       "bytes": 635,
       "sha256": "B90CFD9B33FBE209A28A8823B78642FE5A29066901E6BE35DFE664CABB04DA8D"
+    },
+    {
+      "path": "scripts/lib/quality-gate.mjs",
+      "bytes": 23025,
+      "sha256": "8ACCF4CC5B6954B3BD8931DC681EDDC48D049B850EDA5A4E3944DB07CF145103"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-08_work_order.md",
+      "bytes": 2688,
+      "sha256": "2274FF611885881D23B8C3D7639B8FE020AE5222D22093B217DDC677AB4EC14F"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-08_prompt.md",
+      "bytes": 635,
+      "sha256": "67972FD0FFB273258175444FE212E054411A31165747BB556E2B9282BD271A33"
     }
   ],
   "fix_03_behavior_contract": {
@@ -447,6 +462,17 @@
     "quality_gate_command": "npm run verify:quality-gate",
     "server_location_source": "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
     "external_absolute_paths_in_generator": 0
+  },
+  "fix_08_behavior_contract": {
+    "workflow": ".github/workflows/release-1-quality-gate.yml",
+    "diagnostic_step_id": "desktop-rust-type-diagnostic",
+    "diagnostic_command": "npm run verify:desktop-type",
+    "order": "after_npm_ci_before_quality_gate",
+    "fail_fast": true,
+    "continue_on_error": false,
+    "fallback_outcome": "CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC",
+    "raw_cargo_output_artifact": false,
+    "quality_gate_command_unchanged": "npm run verify:quality-gate"
   },
   "mutable_handoff_records": [
     "docs/04_test_reports/release_1/R1-M3-02_progress.md",
