@@ -1,0 +1,1047 @@
+{
+  "schema_version": "1.0",
+  "policy_path": "quality-gate-policy.json",
+  "policy_sha256": "C0962B3F83FD8204BF85D6EA910CF7E93B55EF9E83A2E411C0545DB81379621F",
+  "git_sha": "74febf3bf7a8828d3bb426b74ce2cb510669fb6b",
+  "started_at": "2026-07-25T10:38:50.300Z",
+  "ended_at": "2026-07-25T10:40:30.407Z",
+  "overall_status": "PASS",
+  "exit_code": 0,
+  "categories": {
+    "lint": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "web-workspace-lint",
+          "component": "apps/web",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "lint:workspace"
+          ],
+          "started_at": "2026-07-25T10:38:50.426Z",
+          "ended_at": "2026-07-25T10:38:51.084Z",
+          "evidence_files": [
+            {
+              "path": "scripts/lint-workspace.mjs",
+              "sha256": "6DB9810F13D6E8B9BD5019D34892EDDA4DAFB5470D3404A69B4620ED92A0FE79"
+            },
+            {
+              "path": "apps/web/app/page.jsx",
+              "sha256": "EC7BD56C99FBE6E84918D69932CE8F2E9D159627BD8CED0FA2034CFCF5C606A2"
+            }
+          ]
+        },
+        {
+          "id": "desktop-shell-lint",
+          "component": "apps/desktop",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:desktop-lint"
+          ],
+          "started_at": "2026-07-25T10:38:59.832Z",
+          "ended_at": "2026-07-25T10:39:00.538Z",
+          "evidence_files": [
+            {
+              "path": "scripts/lint-workspace.mjs",
+              "sha256": "6DB9810F13D6E8B9BD5019D34892EDDA4DAFB5470D3404A69B4620ED92A0FE79"
+            },
+            {
+              "path": "apps/desktop/src/desktop-shell.jsx",
+              "sha256": "F2A24B9BAB76C902165E954C357C2007E1D8B002038D58A22B1C01C5B5504852"
+            }
+          ]
+        },
+        {
+          "id": "ui-workspace-lint",
+          "component": "packages/ui",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "lint:workspace"
+          ],
+          "started_at": "2026-07-25T10:40:09.226Z",
+          "ended_at": "2026-07-25T10:40:10.008Z",
+          "evidence_files": [
+            {
+              "path": "scripts/lint-workspace.mjs",
+              "sha256": "6DB9810F13D6E8B9BD5019D34892EDDA4DAFB5470D3404A69B4620ED92A0FE79"
+            },
+            {
+              "path": "packages/ui/src/adaptive-workspace.jsx",
+              "sha256": "DDE66C7A25F6DAC7575B437EDCA178C6834A24CD000AC134572E4967D6D72281"
+            }
+          ]
+        },
+        {
+          "id": "contracts-lint",
+          "component": "packages/contracts",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-25T10:40:21.163Z",
+          "ended_at": "2026-07-25T10:40:21.884Z",
+          "evidence_files": [
+            {
+              "path": "packages/contracts/navigation.json",
+              "sha256": "4FB54727E381CA5D89BD310B2D8315E61153DF46AC1CC0E41070A3FE7D9C6377"
+            },
+            {
+              "path": "packages/contracts/screens.json",
+              "sha256": "0167274173DBD4C7AB6A444279B7F90150858BB998DCC91608CBED54D667F720"
+            }
+          ]
+        },
+        {
+          "id": "design-tokens-lint",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-25T10:40:22.445Z",
+          "ended_at": "2026-07-25T10:40:23.041Z",
+          "evidence_files": [
+            {
+              "path": "packages/design-tokens/tokens.json",
+              "sha256": "8DC301BD89C4A27BDC22BA17B769D554496D7EB709D92F4D0AACA63562AC8D3B"
+            },
+            {
+              "path": "packages/design-tokens/tokens.css",
+              "sha256": "E00782751AE12261E95AD1692A3DAA86F1DE1A1D12F1B91134EE3B370DEC4680"
+            },
+            {
+              "path": "packages/design-tokens/tokens.ts",
+              "sha256": "83B5EEDAFDDBBE4B890ACD98AEAFFDF6E941F05763BCE60F99F0F84DED568689"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "REQUIRED",
+          "evidence": [
+            "apps/web/app/bff/shell/runtime/route.js",
+            "apps/web/app/layout.jsx",
+            "apps/web/app/notifications/page.jsx",
+            "apps/web/app/operations/page.jsx",
+            "apps/web/app/page.jsx",
+            "apps/web/app/settings/account/page.jsx",
+            "apps/web/app/settings/organization/page.jsx",
+            "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/web-shell-runtime.js",
+            "apps/web/next.config.mjs"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "REQUIRED",
+          "evidence": [
+            "apps/desktop/src/desktop-shell-model.js",
+            "apps/desktop/src/desktop-shell.jsx",
+            "apps/desktop/src/main.jsx",
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/main.rs"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/ui/src/account-security-model.js",
+            "packages/ui/src/account-security-pane.jsx",
+            "packages/ui/src/adaptive-workspace.jsx",
+            "packages/ui/src/index.js",
+            "packages/ui/src/operations-recovery-model.js",
+            "packages/ui/src/operations-recovery-pane.jsx",
+            "packages/ui/src/production-bound-evidence-model.js",
+            "packages/ui/src/production-bound-evidence-pane.jsx",
+            "packages/ui/src/run-model-evidence-model.js",
+            "packages/ui/src/run-model-evidence-pane.jsx",
+            "packages/ui/src/source-knowledge-controls.js",
+            "packages/ui/src/source-knowledge-model.js",
+            "packages/ui/src/source-knowledge-pane.jsx",
+            "packages/ui/src/studio-workflow-model.js",
+            "packages/ui/src/studio-workflow-pane.jsx",
+            "packages/ui/src/web-shell-runtime-model.js",
+            "packages/ui/src/web-shell-runtime-status.jsx",
+            "packages/ui/src/workspace-interaction.js",
+            "packages/ui/src/workspace-model.js"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/contracts/navigation.json",
+            "packages/contracts/screens.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/design-tokens/tokens.json",
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "type": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "desktop-rust-type",
+          "component": "apps/desktop",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:desktop-type"
+          ],
+          "started_at": "2026-07-25T10:39:00.542Z",
+          "ended_at": "2026-07-25T10:40:06.049Z",
+          "evidence_files": [
+            {
+              "path": "apps/desktop/src-tauri/Cargo.toml",
+              "sha256": "026FC9A5F63BEB1671DBEA370A6B9C33BF769EC411BC6B33730204C39FF56047"
+            },
+            {
+              "path": "apps/desktop/src-tauri/Cargo.lock",
+              "sha256": "5887F5E10EFE3D0F9C47724D1EBED680EE0D86B17EFAA8E6891A5B982C737C7D"
+            }
+          ]
+        },
+        {
+          "id": "design-tokens-type",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npx",
+            "tsc",
+            "--project",
+            "packages/design-tokens/tsconfig.json",
+            "--noEmit"
+          ],
+          "started_at": "2026-07-25T10:40:23.045Z",
+          "ended_at": "2026-07-25T10:40:24.206Z",
+          "evidence_files": [
+            {
+              "path": "packages/design-tokens/tokens.ts",
+              "sha256": "83B5EEDAFDDBBE4B890ACD98AEAFFDF6E941F05763BCE60F99F0F84DED568689"
+            },
+            {
+              "path": "packages/design-tokens/tsconfig.json",
+              "sha256": "383F64998C76898F424946F9DE0B04F052413A3AC16E0E431B6A7A807BBE86CE"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "REQUIRED",
+          "evidence": [
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/main.rs"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "unit": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "web-workspace-unit",
+          "component": "apps/web",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:workspace"
+          ],
+          "started_at": "2026-07-25T10:38:51.085Z",
+          "ended_at": "2026-07-25T10:38:52.078Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/workspace.test.mjs",
+              "sha256": "C42B634BA1AA2C96D7BF97F4F4A048BEDB39B73BFC6CEC3A3CA71FE85F761147"
+            }
+          ]
+        },
+        {
+          "id": "desktop-shell-unit",
+          "component": "apps/desktop",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:desktop-unit"
+          ],
+          "started_at": "2026-07-25T10:40:06.051Z",
+          "ended_at": "2026-07-25T10:40:07.826Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/desktop-tauri-shell.test.mjs",
+              "sha256": "D118D64B1D256E6A281619CC6F099896D68B93E623C911BED443AEC02BC3AF95"
+            }
+          ]
+        },
+        {
+          "id": "ui-workspace-unit",
+          "component": "packages/ui",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:workspace"
+          ],
+          "started_at": "2026-07-25T10:40:10.010Z",
+          "ended_at": "2026-07-25T10:40:11.360Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/workspace.test.mjs",
+              "sha256": "C42B634BA1AA2C96D7BF97F4F4A048BEDB39B73BFC6CEC3A3CA71FE85F761147"
+            }
+          ]
+        },
+        {
+          "id": "design-tokens-unit",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-25T10:40:24.208Z",
+          "ended_at": "2026-07-25T10:40:24.791Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/product-foundation.test.mjs",
+              "sha256": "3BB05CCAB3CD9627339E23B9B05D924DBCB1D2193971DBF4AF37D7AB06C3A993"
+            }
+          ]
+        },
+        {
+          "id": "quality-gate-runner-tests",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "--test",
+            "scripts/tests/quality-gate.test.mjs"
+          ],
+          "started_at": "2026-07-25T10:40:26.040Z",
+          "ended_at": "2026-07-25T10:40:26.985Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/quality-gate.test.mjs",
+              "sha256": "0116C75F657968F7255080BA4EACFF426427C43E0A06734C586CAB66C0716CDE"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "REQUIRED",
+          "evidence": [
+            "apps/web/app/bff/shell/runtime/route.js",
+            "apps/web/app/layout.jsx",
+            "apps/web/app/notifications/page.jsx",
+            "apps/web/app/operations/page.jsx",
+            "apps/web/app/page.jsx",
+            "apps/web/app/settings/account/page.jsx",
+            "apps/web/app/settings/organization/page.jsx",
+            "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/web-shell-runtime.js",
+            "apps/web/next.config.mjs"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "REQUIRED",
+          "evidence": [
+            "apps/desktop/src/desktop-shell-model.js",
+            "apps/desktop/src/desktop-shell.jsx",
+            "apps/desktop/src/main.jsx",
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/main.rs"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/ui/src/account-security-model.js",
+            "packages/ui/src/account-security-pane.jsx",
+            "packages/ui/src/adaptive-workspace.jsx",
+            "packages/ui/src/index.js",
+            "packages/ui/src/operations-recovery-model.js",
+            "packages/ui/src/operations-recovery-pane.jsx",
+            "packages/ui/src/production-bound-evidence-model.js",
+            "packages/ui/src/production-bound-evidence-pane.jsx",
+            "packages/ui/src/run-model-evidence-model.js",
+            "packages/ui/src/run-model-evidence-pane.jsx",
+            "packages/ui/src/source-knowledge-controls.js",
+            "packages/ui/src/source-knowledge-model.js",
+            "packages/ui/src/source-knowledge-pane.jsx",
+            "packages/ui/src/studio-workflow-model.js",
+            "packages/ui/src/studio-workflow-pane.jsx",
+            "packages/ui/src/web-shell-runtime-model.js",
+            "packages/ui/src/web-shell-runtime-status.jsx",
+            "packages/ui/src/workspace-interaction.js",
+            "packages/ui/src/workspace-model.js"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/design-tokens/tokens.ts"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "contract": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "contracts-contract",
+          "component": "packages/contracts",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-25T10:40:21.885Z",
+          "ended_at": "2026-07-25T10:40:22.444Z",
+          "evidence_files": [
+            {
+              "path": "packages/contracts/navigation.json",
+              "sha256": "4FB54727E381CA5D89BD310B2D8315E61153DF46AC1CC0E41070A3FE7D9C6377"
+            },
+            {
+              "path": "packages/contracts/screens.json",
+              "sha256": "0167274173DBD4C7AB6A444279B7F90150858BB998DCC91608CBED54D667F720"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "apps/web/package.json"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/package.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/package.json"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/contracts/navigation.json",
+            "packages/contracts/screens.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/README.md",
+            "packages/design-tokens/package.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "build": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "web-production-build",
+          "component": "apps/web",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "build",
+            "--workspace",
+            "@daon-user/web"
+          ],
+          "started_at": "2026-07-25T10:38:52.079Z",
+          "ended_at": "2026-07-25T10:38:59.828Z",
+          "evidence_files": [
+            {
+              "path": "apps/web/next.config.mjs",
+              "sha256": "E5A969719D276CD1E484DB8FA8C379581DD3C021D0C53416DD49920AA3E43FFE"
+            },
+            {
+              "path": "apps/web/app/page.jsx",
+              "sha256": "EC7BD56C99FBE6E84918D69932CE8F2E9D159627BD8CED0FA2034CFCF5C606A2"
+            }
+          ]
+        },
+        {
+          "id": "desktop-production-assets",
+          "component": "apps/desktop",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:desktop-build"
+          ],
+          "started_at": "2026-07-25T10:40:07.827Z",
+          "ended_at": "2026-07-25T10:40:09.225Z",
+          "evidence_files": [
+            {
+              "path": "apps/desktop/index.html",
+              "sha256": "28A75D2E1905748870DDEC190FB7487BFD1C35004EF76F4E469D0E415EA813CD"
+            },
+            {
+              "path": "apps/desktop/src-tauri/tauri.conf.json",
+              "sha256": "8403DD064B236824A3E7D6F7102431C5E00F8B1AB86F8301BF8487096F8EF9BC"
+            }
+          ]
+        },
+        {
+          "id": "ui-production-build",
+          "component": "packages/ui",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "build",
+            "--workspace",
+            "@daon-user/web"
+          ],
+          "started_at": "2026-07-25T10:40:11.361Z",
+          "ended_at": "2026-07-25T10:40:21.160Z",
+          "evidence_files": [
+            {
+              "path": "packages/ui/src/adaptive-workspace.jsx",
+              "sha256": "DDE66C7A25F6DAC7575B437EDCA178C6834A24CD000AC134572E4967D6D72281"
+            },
+            {
+              "path": "packages/ui/src/workspace.css",
+              "sha256": "BCEAACE5A1189AD5DEFBEA73EB7CDFBA8BFBF4528A3406A66DBBE0BC5A7807A0"
+            }
+          ]
+        },
+        {
+          "id": "design-tokens-build",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npx",
+            "tsc",
+            "--project",
+            "packages/design-tokens/tsconfig.json",
+            "--noEmit"
+          ],
+          "started_at": "2026-07-25T10:40:24.792Z",
+          "ended_at": "2026-07-25T10:40:26.038Z",
+          "evidence_files": [
+            {
+              "path": "packages/design-tokens/tokens.ts",
+              "sha256": "83B5EEDAFDDBBE4B890ACD98AEAFFDF6E941F05763BCE60F99F0F84DED568689"
+            },
+            {
+              "path": "packages/design-tokens/tokens.json",
+              "sha256": "8DC301BD89C4A27BDC22BA17B769D554496D7EB709D92F4D0AACA63562AC8D3B"
+            }
+          ]
+        },
+        {
+          "id": "toolchain-baseline",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:toolchain"
+          ],
+          "started_at": "2026-07-25T10:40:26.986Z",
+          "ended_at": "2026-07-25T10:40:28.359Z",
+          "evidence_files": [
+            {
+              "path": "toolchain-versions.json",
+              "sha256": "836CFB7B4F6DC943B1B61E94284779C0F00A3A772E668803E4FCBF88B217D732"
+            },
+            {
+              "path": "package-lock.json",
+              "sha256": "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5"
+            },
+            {
+              "path": "uv.lock",
+              "sha256": "172770DE8DA800233E7D243A282B8044462C02731596D09878D35F5CAAC18AC8"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "REQUIRED",
+          "evidence": [
+            "apps/web/app/bff/shell/runtime/route.js",
+            "apps/web/app/globals.css",
+            "apps/web/app/layout.jsx",
+            "apps/web/app/notifications/page.jsx",
+            "apps/web/app/operations/page.jsx",
+            "apps/web/app/page.jsx",
+            "apps/web/app/settings/account/page.jsx",
+            "apps/web/app/settings/organization/page.jsx",
+            "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/web-shell-runtime.js",
+            "apps/web/next.config.mjs"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "REQUIRED",
+          "evidence": [
+            "apps/desktop/src/desktop-shell-model.js",
+            "apps/desktop/src/desktop-shell.css",
+            "apps/desktop/src/desktop-shell.jsx",
+            "apps/desktop/src/main.jsx",
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/capabilities/desktop-main.json",
+            "apps/desktop/src-tauri/Cargo.lock",
+            "apps/desktop/src-tauri/Cargo.toml",
+            "apps/desktop/src-tauri/icons/icon.ico",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/main.rs",
+            "apps/desktop/src-tauri/tauri.conf.json"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/ui/src/account-security-model.js",
+            "packages/ui/src/account-security-pane.jsx",
+            "packages/ui/src/adaptive-workspace.jsx",
+            "packages/ui/src/index.js",
+            "packages/ui/src/operations-recovery-model.js",
+            "packages/ui/src/operations-recovery-pane.jsx",
+            "packages/ui/src/production-bound-evidence-model.js",
+            "packages/ui/src/production-bound-evidence-pane.jsx",
+            "packages/ui/src/run-model-evidence-model.js",
+            "packages/ui/src/run-model-evidence-pane.jsx",
+            "packages/ui/src/source-knowledge-controls.js",
+            "packages/ui/src/source-knowledge-model.js",
+            "packages/ui/src/source-knowledge-pane.jsx",
+            "packages/ui/src/studio-workflow-model.js",
+            "packages/ui/src/studio-workflow-pane.jsx",
+            "packages/ui/src/web-shell-runtime-model.js",
+            "packages/ui/src/web-shell-runtime-status.jsx",
+            "packages/ui/src/web-shell-runtime.css",
+            "packages/ui/src/workspace-interaction.js",
+            "packages/ui/src/workspace-model.js"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/design-tokens/tokens.json",
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "services/local-service/pyproject.toml"
+          ]
+        }
+      ]
+    },
+    "security": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "security-static-scan",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": null,
+          "started_at": "2026-07-25T10:38:50.390Z",
+          "ended_at": "2026-07-25T10:38:50.426Z",
+          "evidence_files": [
+            "apps/desktop/app-icon.svg",
+            "apps/desktop/index.html",
+            "apps/desktop/package.json",
+            "apps/desktop/README.md",
+            "apps/desktop/src/desktop-shell-model.js",
+            "apps/desktop/src/desktop-shell.css",
+            "apps/desktop/src/desktop-shell.jsx",
+            "apps/desktop/src/main.jsx",
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/capabilities/desktop-main.json",
+            "apps/desktop/src-tauri/Cargo.lock",
+            "apps/desktop/src-tauri/Cargo.toml",
+            "apps/desktop/src-tauri/icons/icon.ico",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/main.rs",
+            "apps/desktop/src-tauri/tauri.conf.json",
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/web/app/bff/shell/runtime/route.js",
+            "apps/web/app/globals.css",
+            "apps/web/app/layout.jsx",
+            "apps/web/app/notifications/page.jsx",
+            "apps/web/app/operations/page.jsx",
+            "apps/web/app/page.jsx",
+            "apps/web/app/settings/account/page.jsx",
+            "apps/web/app/settings/organization/page.jsx",
+            "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/web-shell-runtime.js",
+            "apps/web/next.config.mjs",
+            "apps/web/package.json",
+            "apps/web/README.md",
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/local-service/pyproject.toml",
+            "services/local-service/README.md",
+            "packages/contracts/navigation.json",
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/screens.json",
+            "packages/design-tokens/package.json",
+            "packages/design-tokens/README.md",
+            "packages/design-tokens/tokens.css",
+            "packages/design-tokens/tokens.json",
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json",
+            "packages/ui/accessibility-contract.json",
+            "packages/ui/package.json",
+            "packages/ui/README.md",
+            "packages/ui/src/account-security-model.js",
+            "packages/ui/src/account-security-pane.jsx",
+            "packages/ui/src/adaptive-workspace.jsx",
+            "packages/ui/src/index.js",
+            "packages/ui/src/operations-recovery-model.js",
+            "packages/ui/src/operations-recovery-pane.jsx",
+            "packages/ui/src/production-bound-evidence-model.js",
+            "packages/ui/src/production-bound-evidence-pane.jsx",
+            "packages/ui/src/run-model-evidence-model.js",
+            "packages/ui/src/run-model-evidence-pane.jsx",
+            "packages/ui/src/source-knowledge-controls.js",
+            "packages/ui/src/source-knowledge-model.js",
+            "packages/ui/src/source-knowledge-pane.jsx",
+            "packages/ui/src/studio-workflow-model.js",
+            "packages/ui/src/studio-workflow-pane.jsx",
+            "packages/ui/src/web-shell-runtime-model.js",
+            "packages/ui/src/web-shell-runtime-status.jsx",
+            "packages/ui/src/web-shell-runtime.css",
+            "packages/ui/src/workspace-interaction.js",
+            "packages/ui/src/workspace-model.js",
+            "packages/ui/src/workspace.css",
+            ".github/workflows/release-1-quality-gate.yml"
+          ],
+          "violation_count": 0,
+          "violations": []
+        },
+        {
+          "id": "production-dependency-audit",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "audit",
+            "--omit=dev",
+            "--audit-level=high",
+            "--json"
+          ],
+          "started_at": "2026-07-25T10:40:28.360Z",
+          "ended_at": "2026-07-25T10:40:29.726Z",
+          "evidence_files": [
+            {
+              "path": "package.json",
+              "sha256": "CCB5D1A8F8B765D40F0B4B4603C987FC53C72FC74D11283BFD0F2254E261A0AC"
+            },
+            {
+              "path": "package-lock.json",
+              "sha256": "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": []
+    },
+    "independence": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "repository-independence",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:independence",
+            "--",
+            "--no-write"
+          ],
+          "started_at": "2026-07-25T10:40:29.728Z",
+          "ended_at": "2026-07-25T10:40:30.405Z",
+          "evidence_files": [
+            {
+              "path": "independence-policy.json",
+              "sha256": "B6A0946CD551F9DB5E22FEC52659BD5E209BBC33BA59DD5A5B453A0F4DB8CA14"
+            },
+            {
+              "path": "repo-boundaries.json",
+              "sha256": "0262DA3B13F353CED3731FE4A0733926516722635995624A18FEF20B588318DF"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": []
+    }
+  },
+  "failures": [],
+  "limitations": [
+    "Source-specific checks are N/A only while exact component signals are absent.",
+    "Raw stdout, stderr, secrets, tokens, personal data, and credential values are not stored in artifacts."
+  ]
+}

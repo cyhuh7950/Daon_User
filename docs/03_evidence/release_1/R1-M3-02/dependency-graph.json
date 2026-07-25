@@ -1,0 +1,206 @@
+{
+  "schema_version": "1.0",
+  "component_count": 8,
+  "edge_count": 10,
+  "cycle_count": 0,
+  "package_structure_file_count": 10,
+  "components": [
+    {
+      "id": "apps/web",
+      "path": "apps/web",
+      "kind": "application",
+      "runtime": "browser-and-server-bff",
+      "allowed_dependencies": [
+        "packages/ui",
+        "packages/contracts",
+        "packages/design-tokens"
+      ],
+      "forbidden_dependencies": [
+        "apps/desktop",
+        "apps/mobile",
+        "services/api",
+        "services/local-service"
+      ]
+    },
+    {
+      "id": "apps/desktop",
+      "path": "apps/desktop",
+      "kind": "application",
+      "runtime": "tauri-desktop-shell",
+      "allowed_dependencies": [
+        "packages/ui",
+        "packages/contracts",
+        "packages/design-tokens"
+      ],
+      "forbidden_dependencies": [
+        "apps/web",
+        "apps/mobile",
+        "services/api",
+        "services/local-service"
+      ]
+    },
+    {
+      "id": "apps/mobile",
+      "path": "apps/mobile",
+      "kind": "application",
+      "runtime": "react-native-ios-android",
+      "allowed_dependencies": [
+        "packages/contracts",
+        "packages/design-tokens"
+      ],
+      "forbidden_dependencies": [
+        "apps/web",
+        "apps/desktop",
+        "services/api",
+        "services/local-service",
+        "packages/ui"
+      ]
+    },
+    {
+      "id": "services/api",
+      "path": "services/api",
+      "kind": "service",
+      "runtime": "fastapi-cloud-service",
+      "allowed_dependencies": [
+        "packages/contracts"
+      ],
+      "forbidden_dependencies": [
+        "apps/web",
+        "apps/desktop",
+        "apps/mobile",
+        "services/local-service",
+        "packages/ui",
+        "packages/design-tokens"
+      ]
+    },
+    {
+      "id": "services/local-service",
+      "path": "services/local-service",
+      "kind": "service",
+      "runtime": "packaged-loopback-local-service",
+      "allowed_dependencies": [
+        "packages/contracts"
+      ],
+      "forbidden_dependencies": [
+        "apps/web",
+        "apps/desktop",
+        "apps/mobile",
+        "services/api",
+        "packages/ui",
+        "packages/design-tokens"
+      ]
+    },
+    {
+      "id": "packages/ui",
+      "path": "packages/ui",
+      "kind": "shared-package",
+      "runtime": "react-dom-compatible-library",
+      "allowed_dependencies": [
+        "packages/contracts",
+        "packages/design-tokens"
+      ],
+      "forbidden_dependencies": [
+        "apps/web",
+        "apps/desktop",
+        "apps/mobile",
+        "services/api",
+        "services/local-service"
+      ]
+    },
+    {
+      "id": "packages/contracts",
+      "path": "packages/contracts",
+      "kind": "shared-package",
+      "runtime": "platform-neutral-schema-source",
+      "allowed_dependencies": [],
+      "forbidden_dependencies": [
+        "apps/web",
+        "apps/desktop",
+        "apps/mobile",
+        "services/api",
+        "services/local-service",
+        "packages/ui",
+        "packages/design-tokens"
+      ]
+    },
+    {
+      "id": "packages/design-tokens",
+      "path": "packages/design-tokens",
+      "kind": "shared-package",
+      "runtime": "platform-neutral-token-source",
+      "allowed_dependencies": [],
+      "forbidden_dependencies": [
+        "apps/web",
+        "apps/desktop",
+        "apps/mobile",
+        "services/api",
+        "services/local-service",
+        "packages/ui",
+        "packages/contracts"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "apps/web",
+      "to": "packages/contracts",
+      "package": "@daon-user/contracts",
+      "dependency_type": "dependencies"
+    },
+    {
+      "from": "apps/web",
+      "to": "packages/design-tokens",
+      "package": "@daon-user/design-tokens",
+      "dependency_type": "dependencies"
+    },
+    {
+      "from": "apps/web",
+      "to": "packages/ui",
+      "package": "@daon-user/ui",
+      "dependency_type": "dependencies"
+    },
+    {
+      "from": "apps/desktop",
+      "to": "packages/contracts",
+      "package": "@daon-user/contracts",
+      "dependency_type": "dependencies"
+    },
+    {
+      "from": "apps/desktop",
+      "to": "packages/design-tokens",
+      "package": "@daon-user/design-tokens",
+      "dependency_type": "dependencies"
+    },
+    {
+      "from": "apps/desktop",
+      "to": "packages/ui",
+      "package": "@daon-user/ui",
+      "dependency_type": "dependencies"
+    },
+    {
+      "from": "apps/mobile",
+      "to": "packages/contracts",
+      "package": "@daon-user/contracts",
+      "dependency_type": "dependencies"
+    },
+    {
+      "from": "apps/mobile",
+      "to": "packages/design-tokens",
+      "package": "@daon-user/design-tokens",
+      "dependency_type": "dependencies"
+    },
+    {
+      "from": "packages/ui",
+      "to": "packages/contracts",
+      "package": "@daon-user/contracts",
+      "dependency_type": "dependencies"
+    },
+    {
+      "from": "packages/ui",
+      "to": "packages/design-tokens",
+      "package": "@daon-user/design-tokens",
+      "dependency_type": "dependencies"
+    }
+  ],
+  "cycles": []
+}

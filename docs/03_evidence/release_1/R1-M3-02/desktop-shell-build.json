@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-REVIEW-REPRO-L4",
+  "status": "PASS",
+  "commands": {
+    "desktop_type": "npm run verify:desktop-type",
+    "installer": "npm run build:desktop-installer",
+    "cleanup": "npm run cleanup:desktop-cargo -- <exact target>"
+  },
+  "self_contained_cargo_target": true,
+  "manual_cargo_target_dir_required": false,
+  "repository_targets_after_commands": 0,
+  "installer_target": "C:\\Users\\cyhuh\\AppData\\Local\\Temp\\daon-user-desktop-installer-J8IhJv",
+  "frontend": {
+    "bundler": "Vite 8.1.5",
+    "modules": 42,
+    "production_assets": true
+  },
+  "rust": {
+    "version": "1.97.1",
+    "tauri_cli": "2.11.4",
+    "profile": "release",
+    "locked": true
+  },
+  "network_boundary": {
+    "frontend_dist": "../dist",
+    "dev_url": null,
+    "before_dev_command": null,
+    "csp_connect_src": "none",
+    "local_service_or_loopback": "N/A; R1-M3-03"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-POSTCSS-PROBE-EVIDENCE",
+  "command": "npm ls next vite postcss --all --json",
+  "exit_code": 1,
+  "npm_version": "11.12.1",
+  "root_problems": [
+    "invalid: postcss@8.5.23 C:\\tmp\\Daon_User-r1-m3-02\\node_modules\\postcss"
+  ],
+  "allowed_invalid_reason": "\"8.5.10\" from node_modules/next",
+  "invalid_reasons": [
+    "\"8.5.10\" from node_modules/next"
+  ],
+  "missing_count": 0,
+  "extraneous_count": 0,
+  "other_invalid_count": 0,
+  "resolved_versions": {
+    "next": "16.3.0-canary.93",
+    "vite": "8.1.5",
+    "next_postcss": "8.5.23",
+    "vite_postcss": "8.5.23"
+  },
+  "lock_postcss": "8.5.23",
+  "installed_postcss": "8.5.23",
+  "non_postcss_graph_sha256": "49a32ff6e416651358ef5638da18aa2be4de4e04d7f47268cc2ad5f5d1cfd0ca",
+  "equivalent_acceptance": true,
+  "status": "PASS"
+}

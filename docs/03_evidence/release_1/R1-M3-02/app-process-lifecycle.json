@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-REVIEW-REPRO-L4",
+  "runtime": {
+    "root_pid": 97560,
+    "client_rect": "1920x1080",
+    "child_processes": {
+      "conhost": 1,
+      "microsoft_webview2_runtime": 6,
+      "app_defined_local_service_backend_dev_server": 0
+    },
+    "tcp_endpoints": 0,
+    "tcp_listeners": 0,
+    "remote_connections": 0,
+    "udp_endpoints": 0,
+    "remote_content_or_dev_server": 0
+  },
+  "normal_exit": {
+    "app_is_running": false,
+    "windows": 0,
+    "daon_user_desktop_processes": 0,
+    "related_webview2_processes": 0,
+    "tcp_endpoints": 0,
+    "udp_endpoints": 0
+  },
+  "restart": "PASS; installed app Home and Workspace rechecked",
+  "final_exit": "PASS; process/window/port counts remained zero",
+  "install_and_build_target_cleanup": "removed_after_main_designer_review",
+  "cleanup": {
+    "uninstaller": "NSIS uninstall.exe /S",
+    "uninstaller_exit_code": 0,
+    "installed_directory_exists_after_cleanup": false,
+    "uninstall_registry_exists_after_cleanup": false,
+    "daon_app_processes_after_cleanup": 0,
+    "external_installer_target_exists_after_cleanup": false,
+    "user_existing_data_or_other_paths_changed": 0
+  }
+}

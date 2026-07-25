@@ -1,0 +1,185 @@
+{
+  "schema_version": "2.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-POSTCSS-PROBE-EVIDENCE",
+  "status": "COMPLETED",
+  "base_commit": "74febf3bf7a8828d3bb426b74ce2cb510669fb6b",
+  "environment": "isolated Windows worktree; installed Tauri Release app; no external deployment",
+  "approval": {
+    "gate": "G2-UX",
+    "approval_id": "APR-G2-UX-20260723-01",
+    "decision": "GO"
+  },
+  "source_artifact_manifest": {
+    "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
+    "bytes": 11106,
+    "sha256": "08999A905DCB56797EED3F35C02C60E84E45B8BD7FA88ED273FD30CAEA4D5FE6"
+  },
+  "external_build_artifacts": [
+    {
+      "path": "C:\\Users\\cyhuh\\AppData\\Local\\Temp\\daon-user-desktop-installer-J8IhJv\\release\\bundle\\nsis\\Daon 사용자 프로그램_0.1.0_x64-setup.exe",
+      "bytes": 1366987,
+      "sha256": "F92AAD047033AC6AD6C06464E5C596F605D5ED94E075EEED807D010669DD2918",
+      "bundle_type": "NSIS x64",
+      "signature": "unsigned_development",
+      "metadata_role": "historical_reproducibility_record",
+      "retained_for_main_designer_review": false,
+      "disposition": "removed_after_main_designer_review",
+      "exists_after_cleanup": false
+    },
+    {
+      "path": "C:\\Users\\cyhuh\\AppData\\Local\\Daon 사용자 프로그램\\daon-user-desktop.exe",
+      "bytes": 4066304,
+      "sha256": "0D77B7B1CA1A0724D8D364776384B98FE6AA1305123431CAAEEC141328165348",
+      "metadata_role": "historical_reproducibility_record",
+      "retained_for_main_designer_review": false,
+      "disposition": "removed_after_main_designer_review",
+      "exists_after_cleanup": false
+    }
+  ],
+  "quality_boundaries": {
+    "production_assets": "actual",
+    "tauri_window_and_nsis_install": "actual",
+    "shared_react_ui": "actual",
+    "backend_db_llm_file_delivery": "deferred_actual or unavailable",
+    "local_service_ipc_loopback": "N/A; R1-M3-03",
+    "db_migration": "N/A",
+    "signature_update_rollback": "deferred",
+    "console": "not_observable_in_release_build; PASS not inferred",
+    "actual_external_effects": 0
+  },
+  "evidence_artifacts": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
+      "bytes": 11106,
+      "sha256": "08999A905DCB56797EED3F35C02C60E84E45B8BD7FA88ED273FD30CAEA4D5FE6"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/desktop-shell-build.json",
+      "bytes": 942,
+      "sha256": "A97D47D5151713219941FBF845FECA1C7EAB30FBEB9C3A5D6B3CEB00C6694031"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/installer-validation.json",
+      "bytes": 1607,
+      "sha256": "FFEE239F557639B5E8DE8F1254D8E960814004BE14DBC766ECE69BE7D27B6C76"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/app-navigation-validation.json",
+      "bytes": 3483,
+      "sha256": "4DEDAE77C804352C246350D1EC386F8CC14AD5013E5F606126288A7E0FAB7E45"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/app-process-lifecycle.json",
+      "bytes": 1221,
+      "sha256": "098B42DD7A6DD286BA49C67A303F50A8553863EA248940308277B2D06046D605"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/dependency-graph.json",
+      "bytes": 5088,
+      "sha256": "FE53DC546BB1B69BFA4A4ED02F53EEFACBBD8AEA93E80976C3373A073FFD97FD"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/independence-violations.json",
+      "bytes": 74,
+      "sha256": "A49045E332520EEAA52C1D763761D085D7695D00CF333EDEAC0F5E026E3F8765"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-result.json",
+      "bytes": 35790,
+      "sha256": "D24DB5759DDC6618D6FF0ABA6D30A0534FBA0F7F3DEC4BF90F37FCED5C75A042"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/quality-gate-summary.md",
+      "bytes": 516,
+      "sha256": "C12F9ED12C5940AECC87E149C33AA1458A44791C17B09E963F10DA8F776BB349"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/npm-audit-fix04.json",
+      "bytes": 612,
+      "sha256": "3C5EC7E24A542D524E8301F713A554792126B09B766EF19311181FE9EA6DF8A3"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/npm-ls-fix04.json",
+      "bytes": 876,
+      "sha256": "07580CB0AACACA7F89CA319B168002425AA79A433B3EBA1BD21E2D24E267DF40"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/windows-home-1920x1080.png",
+      "bytes": 684443,
+      "sha256": "BC55470A2AA52910D3A43529D006D3C100D707D0E78275BEF6D5AD2FB90CACDC"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/windows-home-1200x900.png",
+      "bytes": 484487,
+      "sha256": "A8BD18698DB79BCD023AF2FEC5BC8D57EDCA3F38708F0A3BF43AAD6E6BAEDD7C"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/windows-home-800x900.png",
+      "bytes": 323782,
+      "sha256": "5F5F8FE517CB6CC0A75875A1C6961955B64256C2ED0D213CD524EFB91B19C2B5"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/windows-home-500x900.png",
+      "bytes": 237673,
+      "sha256": "7DCE15E56C1110997F1AC484F8C720348DB6A87BCE212E8CA89BB9EDD906B336"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/windows-keyboard-tab-focus.png",
+      "bytes": 163898,
+      "sha256": "631F94888B77CC232920B646E7AB40B661A26A4266576E372B4431EA5F5674C3"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/windows-tooltip-open.png",
+      "bytes": 194644,
+      "sha256": "B0267BD6321AE234BB4ABCB23E551211FB26F0574E5AE29F07EA9F80BE64BF66"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/windows-state-error.png",
+      "bytes": 249040,
+      "sha256": "5B076466AFF24EA7C05A9FCBF3B0809969602620994B653C5217A93681BD7725"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/windows-state-unavailable.png",
+      "bytes": 252250,
+      "sha256": "CA8546573A64883766A4AB12449EE6115D359300C03650C6D4E8AA0F57EC881B"
+    }
+  ],
+  "mutable_handoff_records": [
+    "docs/04_test_reports/release_1/R1-M3-02_progress.md",
+    "docs/02_work_orders/reports/R1-M3-02_attempt-2.md"
+  ],
+  "deployment": {
+    "commit": false,
+    "push": false,
+    "pull_request": false,
+    "merge": false,
+    "ysna_server": false,
+    "oracle_cloud": false
+  },
+  "cleanup": {
+    "repository_cargo_targets": 0,
+    "generated_schemas": 0,
+    "non_windows_icons": 0,
+    "fix_03_gen_preservation": "behavior_tested_exit_0_exit_23_spawn_error_preexisting_gen_other_worktree",
+    "installation_and_external_installer_target": "removed_after_main_designer_review",
+    "nsis_uninstaller": {
+      "command": "uninstall.exe /S",
+      "exit_code": 0
+    },
+    "installed_directory": {
+      "path": "C:\\Users\\cyhuh\\AppData\\Local\\Daon 사용자 프로그램",
+      "exists_after_cleanup": false
+    },
+    "uninstall_registry": {
+      "path": "HKCU\\Uninstall\\Daon 사용자 프로그램",
+      "exists_after_cleanup": false
+    },
+    "daon_app_processes_after_cleanup": 0,
+    "external_installer_target": {
+      "path": "C:\\Users\\cyhuh\\AppData\\Local\\Temp\\daon-user-desktop-installer-J8IhJv",
+      "exists_after_cleanup": false
+    },
+    "user_existing_data_or_other_paths_changed": 0
+  }
+}

@@ -1,0 +1,23 @@
+[package]
+name = "daon-user-desktop"
+version = "0.1.0"
+description = "Daon 사용자 프로그램 Windows App"
+authors = ["Daon"]
+edition = "2024"
+rust-version = "1.97.1"
+
+[lib]
+name = "daon_user_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.4", features = [] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+strip = true

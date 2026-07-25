@@ -1,0 +1,320 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-02",
+  "issue_id": "R1-M3-02-POSTCSS-PROBE-EVIDENCE",
+  "generated_at": "2026-07-23T22:10:00+09:00",
+  "build_inputs": [
+    {
+      "path": ".node-version",
+      "bytes": 9,
+      "sha256": "E326B5CC77D5D52DB959FB26B64CA8A56C5D01C9AB11E9F7B3D3920CF8A0E72A"
+    },
+    {
+      "path": "apps/desktop/app-icon.svg",
+      "bytes": 316,
+      "sha256": "A2BC92161D57077E1EBBCF0F90772AA10791250C5B5D61CABB4DE47DE7AB561A"
+    },
+    {
+      "path": "apps/desktop/index.html",
+      "bytes": 363,
+      "sha256": "28A75D2E1905748870DDEC190FB7487BFD1C35004EF76F4E469D0E415EA813CD"
+    },
+    {
+      "path": "apps/desktop/package.json",
+      "bytes": 476,
+      "sha256": "A2B0A3E339111022E59998E462A2E9D8E7467B61F406820F147757D39E470BBB"
+    },
+    {
+      "path": "apps/desktop/src-tauri/Cargo.lock",
+      "bytes": 107204,
+      "sha256": "5887F5E10EFE3D0F9C47724D1EBED680EE0D86B17EFAA8E6891A5B982C737C7D"
+    },
+    {
+      "path": "apps/desktop/src-tauri/Cargo.toml",
+      "bytes": 468,
+      "sha256": "026FC9A5F63BEB1671DBEA370A6B9C33BF769EC411BC6B33730204C39FF56047"
+    },
+    {
+      "path": "apps/desktop/src-tauri/build.rs",
+      "bytes": 39,
+      "sha256": "487059EAF8A947B80F20A9AACAC038A5047B2AD69D2401B827376C67D6FE847F"
+    },
+    {
+      "path": "apps/desktop/src-tauri/capabilities/desktop-main.json",
+      "bytes": 234,
+      "sha256": "35A61B982AE030A7EDE8538F89E5B6E9EF16FE139C57E28116D797E517989E89"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/icon.ico",
+      "bytes": 9374,
+      "sha256": "2AF19C4648114D53BE9FB3D532AC61711A966526975B224A1CFF4D8A2DBF588A"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/lib.rs",
+      "bytes": 213,
+      "sha256": "57A979B0F5689226EC04FD416457A852944FC39BDE19DFD1629460D920533F2F"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/main.rs",
+      "bytes": 48,
+      "sha256": "B3A78C9AD1F7DA88B17AB9A50E2C9483CA074163563A6F5F008334578996451E"
+    },
+    {
+      "path": "apps/desktop/src-tauri/tauri.conf.json",
+      "bytes": 1219,
+      "sha256": "8403DD064B236824A3E7D6F7102431C5E00F8B1AB86F8301BF8487096F8EF9BC"
+    },
+    {
+      "path": "apps/desktop/src/desktop-shell-model.js",
+      "bytes": 562,
+      "sha256": "55FA1EC761E6B3A3DDE391D2D86469E50FD47E2E105F72B0FDC4113616C92A29"
+    },
+    {
+      "path": "apps/desktop/src/desktop-shell.css",
+      "bytes": 1566,
+      "sha256": "A74716E295243DCE5792F8686D02B25CD3311EEF1519441B5E83C5BEF1B6B9EC"
+    },
+    {
+      "path": "apps/desktop/src/desktop-shell.jsx",
+      "bytes": 3015,
+      "sha256": "F2A24B9BAB76C902165E954C357C2007E1D8B002038D58A22B1C01C5B5504852"
+    },
+    {
+      "path": "apps/desktop/src/main.jsx",
+      "bytes": 243,
+      "sha256": "984EE04E972CC389E39097EED36E416D95CEE68119533DC8ED7FB040A165B163"
+    },
+    {
+      "path": "docs/01_architecture/windows_tauri_shell_contract.md",
+      "bytes": 2820,
+      "sha256": "D6C04A585BE84D83E484F228A84BA912C5C7E87507BD86589809396A3A6937AB"
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 181571,
+      "sha256": "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5"
+    },
+    {
+      "path": "package.json",
+      "bytes": 1302,
+      "sha256": "CCB5D1A8F8B765D40F0B4B4603C987FC53C72FC74D11283BFD0F2254E261A0AC"
+    },
+    {
+      "path": "packages/contracts/navigation.json",
+      "bytes": 5378,
+      "sha256": "4FB54727E381CA5D89BD310B2D8315E61153DF46AC1CC0E41070A3FE7D9C6377"
+    },
+    {
+      "path": "packages/contracts/package.json",
+      "bytes": 168,
+      "sha256": "0287F73D254A8A1241F1EE1E597FF15E202DC5E836B86F5F5763B51719E797F4"
+    },
+    {
+      "path": "packages/contracts/screens.json",
+      "bytes": 8359,
+      "sha256": "0167274173DBD4C7AB6A444279B7F90150858BB998DCC91608CBED54D667F720"
+    },
+    {
+      "path": "packages/design-tokens/package.json",
+      "bytes": 178,
+      "sha256": "A6AC86A519EDF48973605B6A98650F92ED1ED76F6BF9A506A9B1F378C5557503"
+    },
+    {
+      "path": "packages/design-tokens/tokens.css",
+      "bytes": 1782,
+      "sha256": "E00782751AE12261E95AD1692A3DAA86F1DE1A1D12F1B91134EE3B370DEC4680"
+    },
+    {
+      "path": "packages/design-tokens/tokens.json",
+      "bytes": 2549,
+      "sha256": "8DC301BD89C4A27BDC22BA17B769D554496D7EB709D92F4D0AACA63562AC8D3B"
+    },
+    {
+      "path": "packages/design-tokens/tokens.ts",
+      "bytes": 142,
+      "sha256": "83B5EEDAFDDBBE4B890ACD98AEAFFDF6E941F05763BCE60F99F0F84DED568689"
+    },
+    {
+      "path": "packages/ui/accessibility-contract.json",
+      "bytes": 804,
+      "sha256": "7EAF0C9FC71A7B2672B41842608108767F2586A830997190CB038888CFB83636"
+    },
+    {
+      "path": "packages/ui/package.json",
+      "bytes": 250,
+      "sha256": "EE0F092D74BF39C2B59948B60EB8672394383570D409DC3F84EF2CA3B786566E"
+    },
+    {
+      "path": "packages/ui/src/account-security-model.js",
+      "bytes": 28041,
+      "sha256": "F1A0FDBD193E5384C07E77A3A6DFF23E2B61C0FB91DAB114A3154189AAEF08A3"
+    },
+    {
+      "path": "packages/ui/src/account-security-pane.jsx",
+      "bytes": 18670,
+      "sha256": "4F99DFC11EEB96E78919F416B3194677A522A909F94F4C53996A8EB343866FDE"
+    },
+    {
+      "path": "packages/ui/src/adaptive-workspace.jsx",
+      "bytes": 11895,
+      "sha256": "DDE66C7A25F6DAC7575B437EDCA178C6834A24CD000AC134572E4967D6D72281"
+    },
+    {
+      "path": "packages/ui/src/index.js",
+      "bytes": 2478,
+      "sha256": "A1B0E78830C3695228D72B12B5A39300A8E962D23D457545F287C805721F21A5"
+    },
+    {
+      "path": "packages/ui/src/operations-recovery-model.js",
+      "bytes": 32381,
+      "sha256": "CF11B1DE7A96F4712D63160AA1A11BEA23540623CB117342EBC32BC40D05055B"
+    },
+    {
+      "path": "packages/ui/src/operations-recovery-pane.jsx",
+      "bytes": 16970,
+      "sha256": "ED4A4660D40A68053B2B44B66F144797ADEC88078F532728BAB5D60BFF6BA9BC"
+    },
+    {
+      "path": "packages/ui/src/production-bound-evidence-model.js",
+      "bytes": 10517,
+      "sha256": "AC84DEC434B7BD1EDAB758820E9D6C235122DF70449D65F790DA809B23A9807B"
+    },
+    {
+      "path": "packages/ui/src/production-bound-evidence-pane.jsx",
+      "bytes": 8668,
+      "sha256": "18A66A87D113C1A8858FAE993B936B2B7CA91C29395C7F42F0A5035D7D7920E4"
+    },
+    {
+      "path": "packages/ui/src/run-model-evidence-model.js",
+      "bytes": 20996,
+      "sha256": "692DCD5DFC1C2B1F8F661715A068E3FC14B14DE085D7C1C282C3CB776B7AA3C1"
+    },
+    {
+      "path": "packages/ui/src/run-model-evidence-pane.jsx",
+      "bytes": 11636,
+      "sha256": "DEF827250D39EBE54F538311EBCCE2FA9D02F578F183A5763CB19759F1A2A42F"
+    },
+    {
+      "path": "packages/ui/src/source-knowledge-controls.js",
+      "bytes": 3234,
+      "sha256": "3B38A77A5125EC6096DFE5F55CE64501B8EA01FE0177AD65CA2B81AE6D3B712E"
+    },
+    {
+      "path": "packages/ui/src/source-knowledge-model.js",
+      "bytes": 23590,
+      "sha256": "55B7CCCBE69838E242A835579F743B1477680DC6C9003CE989E11FBBAE2AE28C"
+    },
+    {
+      "path": "packages/ui/src/source-knowledge-pane.jsx",
+      "bytes": 15296,
+      "sha256": "5AB7FFED25CED0912F3253ED41A46A910B7284D1C89B29D68872B545DC731DA6"
+    },
+    {
+      "path": "packages/ui/src/studio-workflow-model.js",
+      "bytes": 26616,
+      "sha256": "95D65D37ABA9A00014069CD99F59F7E71330B1E106A664E7939DB0E560947B12"
+    },
+    {
+      "path": "packages/ui/src/studio-workflow-pane.jsx",
+      "bytes": 16031,
+      "sha256": "1391122DB6751F7754A0FBC76A533C3734DCBF8B7BB20E5F42688DEAC25071D3"
+    },
+    {
+      "path": "packages/ui/src/web-shell-runtime-model.js",
+      "bytes": 1386,
+      "sha256": "1C030C824ABEAB87FE1E4D6931417A7C0EE0FFFCF37AFB8B9C48C376BD149926"
+    },
+    {
+      "path": "packages/ui/src/web-shell-runtime-status.jsx",
+      "bytes": 2800,
+      "sha256": "DA66D5138C727315556C57EC6B277D2EA54D667CAB8FEA91B83A121380F9F784"
+    },
+    {
+      "path": "packages/ui/src/web-shell-runtime.css",
+      "bytes": 1434,
+      "sha256": "F5F481A83C140DAA75C0748955ABB4C2F83A6A31E1F6B9037768273F83160598"
+    },
+    {
+      "path": "packages/ui/src/workspace-interaction.js",
+      "bytes": 1599,
+      "sha256": "11178CD08035CECEE65AC0CE67D9249762FD7BB0D9588E0DDC69648FED6DDBDD"
+    },
+    {
+      "path": "packages/ui/src/workspace-model.js",
+      "bytes": 6892,
+      "sha256": "9D7D525EA4D7E18F6CA571562037B165CFA9B61302BFDA7AE44724223BE9F8E4"
+    },
+    {
+      "path": "packages/ui/src/workspace.css",
+      "bytes": 42485,
+      "sha256": "BCEAACE5A1189AD5DEFBEA73EB7CDFBA8BFBF4528A3406A66DBBE0BC5A7807A0"
+    },
+    {
+      "path": "quality-gate-policy.json",
+      "bytes": 12572,
+      "sha256": "C0962B3F83FD8204BF85D6EA910CF7E93B55EF9E83A2E411C0545DB81379621F"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "bytes": 54,
+      "sha256": "2B3B1A4AA1389846C5532010A2D324B1C374DD791D1CD04EF1866EE155783D80"
+    },
+    {
+      "path": "scripts/run-isolated-desktop-cargo.mjs",
+      "bytes": 4983,
+      "sha256": "9C49024828F1C39C63913A8A4911CDCEBB0BC9E994041228BF53B80ABC4C7405"
+    }
+  ],
+  "validation_inputs": [
+    {
+      "path": "scripts/tests/desktop-tauri-shell.test.mjs",
+      "bytes": 14637,
+      "sha256": "D118D64B1D256E6A281619CC6F099896D68B93E623C911BED443AEC02BC3AF95"
+    },
+    {
+      "path": "scripts/generate-r1-m3-02-evidence.mjs",
+      "bytes": 15417,
+      "sha256": "BDFE4C45AA5658E8316737DFB45B6D8A91611521663AFD7A7BC853AFCC6A8C9F"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-03_work_order.md",
+      "bytes": 4177,
+      "sha256": "E56C95F4096727F720EB22ABC1031A430B43A90BB105BDEAF7AEA3656D1013D2"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-03_prompt.md",
+      "bytes": 418,
+      "sha256": "91F1627933F0C03FE0FFAD614FA84B7926382625E76E26E22FBA927350966C52"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-04_work_order.md",
+      "bytes": 5899,
+      "sha256": "536408EDD8C79C70B94E0D54E27E801F8AEA7DE7B1B6F1090E0492E44EA56F3E"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-04_prompt.md",
+      "bytes": 420,
+      "sha256": "E22E117C35445F301C218B6DD352B8F419560AE22A44A828659CDB6063CA31DE"
+    }
+  ],
+  "fix_03_behavior_contract": {
+    "generated_on_exit_0": "remove_run_generated_gen_only",
+    "generated_on_exit_23": "preserve_exit_23_and_remove_run_generated_gen_only",
+    "spawn_error": "stable_exit_2_without_generated_residue",
+    "preexisting_gen": "fail_close_exit_2_without_child_and_preserve_bytes_hash",
+    "outside_temp_target_and_other_worktree": "preserve"
+  },
+  "fix_04_behavior_contract": {
+    "inaccessible_gen_probe": "EACCES_or_EIO_fail_close_exit_2_without_child_or_temp_target",
+    "postcss_override": "root_postcss_exact_8.5.23",
+    "npm_ls_equivalent_acceptance": "exit_1_only_for_next_exact_8.5.10_override_invalid_without_other_problems",
+    "production_audit": "high_0_critical_0"
+  },
+  "generated_artifacts": {
+    "committed_tauri_schemas": [],
+    "windows_bundle_icons": [
+      "icon.ico"
+    ],
+    "rule": "Windows NSIS actual source inputs only; generated schemas and non-Windows icons are excluded."
+  }
+}
