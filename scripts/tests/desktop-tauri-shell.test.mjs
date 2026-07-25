@@ -9,6 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
+const readBinary = (path) => readFile(new URL(`../../${path}`, import.meta.url));
 
 test("desktop shell directly consumes shared UI, tokens, and contracts", async () => {
   const source = await read("apps/desktop/src/desktop-shell.jsx");
@@ -46,7 +47,7 @@ test("production Tauri configuration is bundled, fail-closed, and M3-03 isolated
   assert.equal(config.build.frontendDist, "../dist");
   assert.equal("devUrl" in config.build, false);
   assert.equal(config.bundle.targets, "nsis");
-  assert.deepEqual(config.bundle.icon, ["icons/icon.ico"]);
+  assert.deepEqual(config.bundle.icon, ["icons/icon.ico", "icons/icon.png"]);
   assert.equal(config.app.security.capabilities[0], "desktop-main");
   assert.match(config.app.security.csp, /connect-src 'none'/);
   assert.doesNotMatch(config.app.security.csp, /unsafe-eval|\*/);
@@ -57,8 +58,36 @@ test("production Tauri configuration is bundled, fail-closed, and M3-03 isolated
 
   const rust = await read("apps/desktop/src-tauri/src/lib.rs");
   assert.doesNotMatch(rust, /Command::new|TcpListener|localhost|127\.0\.0\.1|sidecar|plugin/);
-  assert.deepEqual(await readdir(new URL("../../apps/desktop/src-tauri/icons/", import.meta.url)), ["icon.ico"]);
+  assert.deepEqual(await readdir(new URL("../../apps/desktop/src-tauri/icons/", import.meta.url)), ["icon.ico", "icon.png"]);
   await assert.rejects(access(new URL("../../apps/desktop/src-tauri/gen/", import.meta.url)));
+});
+
+test("desktop bundle includes valid Windows ICO and cross-platform square RGBA PNG", async () => {
+  const ico = await readBinary("apps/desktop/src-tauri/icons/icon.ico");
+  const png = await readBinary("apps/desktop/src-tauri/icons/icon.png");
+
+  assert.deepEqual([...ico.subarray(0, 4)], [0x00, 0x00, 0x01, 0x00]);
+  assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.equal(png.subarray(12, 16).toString("ascii"), "IHDR");
+
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  assert.equal(width, height);
+  assert.equal(width, 256);
+  assert.equal(png[24], 8);
+  assert.equal(png[25], 6);
+
+  const iconCount = ico.readUInt16LE(4);
+  const sourceFrame = Array.from({ length: iconCount }, (_, index) => 6 + index * 16)
+    .map((offset) => ({
+      width: ico[offset] || 256,
+      height: ico[offset + 1] || 256,
+      bytes: ico.readUInt32LE(offset + 8),
+      dataOffset: ico.readUInt32LE(offset + 12)
+    }))
+    .find((entry) => entry.width === 256 && entry.height === 256);
+  assert.ok(sourceFrame);
+  assert.equal(ico.subarray(sourceFrame.dataOffset, sourceFrame.dataOffset + sourceFrame.bytes).equals(png), true);
 });
 
 test("desktop package pins production build and Tauri commands", async () => {
