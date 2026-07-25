@@ -1,6 +1,18 @@
-COMPLETED | R1-M3-02-TAURI-CROSS-PLATFORM-ICON | 기존 ICO 시각을 Byte 그대로 보존한 256×256 RGBA PNG와 최소 Tauri Bundle 계약 구현 | icon.png, Tauri Config, Desktop 행동 Test, R1-M3-02 Generator·Source/Evidence Manifest, FIX-06 문서·Progress·Attempt-2 정합화 | 전용 RED 9/11→GREEN 11/11, 전체 215/215, Lint, Web/Desktop Build, Desktop Type, 7범주 Gate, Audit High/Critical 0, JSON 11/11, Hash·Byte 88/88, Generator 2회 결정성 PASS | ysna-server 사후 재검증은 어울1 소유 | 어울1의 exact-SHA ARM64 Gate 재검증
+COMPLETED | R1-M3-02-SERVER-VALIDATION-EVIDENCE | 어울1이 확인한 ysna-server 최종 exact-SHA ARM64 Gate PASS와 격리·정리 사실을 재실행 없이 정형 증거로 연결 | Server Validation Manifest/Summary, R1-M3-02 Generator·Source/Evidence Manifest, Progress·Attempt-2 정합화 | 전체 215/215, Lint PASS, 서버 Gate 7범주 PASS·failures 0, JSON 12/12, Hash·Byte 92/92, Generator 2회 결정성 PASS | 없음 | 어울1의 최종 Diff·증거 기술 검토
 
-# R1-M3-02 FIX-06 최종화 결과보고 — Attempt 2
+# R1-M3-02 서버 검증 증거 최종화 결과보고 — Attempt 2
+
+## 서버 검증 증거 최종 판정
+
+`COMPLETED`
+
+- 정식 `FAILURE_REPORT`가 아니며 실패 횟수는 `0회`다.
+- 어울1이 확인한 최종 exact SHA `0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5`의 ysna-server ARM64 Quality Gate PASS를 `server-validation-manifest.json`과 Summary로 정형화했다.
+- 최종 Gate는 Exit `0`, Policy SHA-256 `9D9249713AB1436BE2CF805C23D62926CAC6C9FE75962FBA10EDF4A67488D4C3`, lint/type/unit/contract/build/security/independence 7범주 전부 PASS, failures `0`이다.
+- `8fafe2f` predecessor 증거 실패→FIX-05, `b76aa30` CA 보정 뒤 PNG 부재→FIX-06, `0a4c76b` 최종 PASS 계보를 보존했으며 두 중간 재작업은 정식 실패보고가 아니다.
+- DB/Migration은 변경 없음·`N/A`이고 `shared-db`, `common`, `netdata`, `proxy`는 미사용·미변경이다.
+- Container·Network·Volume 사전/사후 Hash가 각각 동일하고 임시 Container·생성 Directory·Toolchain Artifact 잔존이 `0`이다.
+- 이번 어울2 작업에서는 서버 명령을 재실행하지 않았으며 어울1 관찰 사실의 문서화만 수행했다.
 
 ## FIX-06 최종 판정
 
@@ -124,9 +136,10 @@ COMPLETED | R1-M3-02-TAURI-CROSS-PLATFORM-ICON | 기존 ICO 시각을 Byte 그�
 - Production Audit: Exit `0`, High `0`, Critical `0`, 전체 취약점 `0`
 - `npm ls next vite postcss --all --json`: Exit `1`, 허용된 Next exact `8.5.10` 대비 PostCSS `8.5.23` 단일 invalid만 존재, missing·extraneous·다른 invalid `0`
 - 최종 Gate가 재생성한 R1-M1-05 Evidence 2개는 R1-M3-02에 보존 후 Git 기준선으로 원복했다.
-- 최종 검증 입력은 `15개`, R1-M3-02 JSON Parse는 `11/11 PASS`, Source/Evidence Hash·Byte 재검산은 `88/88 PASS`다.
-- Source Manifest는 `14289 bytes`, SHA-256 `569017EB201962365D756C466E7EBA2BE43DA756F74BF102A9E5F3D8E35D5A93`이고, Evidence Manifest는 `7282 bytes`, SHA-256 `4F53B49CB023EA6996449F891CE418CDA5CDABED5E47F186B45185C2B40A1D7F`이다.
-- 승인된 정확 Worktree에서 Generator를 두 번 재실행했고 두 실행 모두 Source `53`, Validation `15`, Evidence `19`와 위 Manifest SHA-256이 동일해 결정성 PASS다.
+- 최종 검증 입력은 `17개`, R1-M3-02 JSON Parse는 `12/12 PASS`, Source/Evidence Hash·Byte 재검산은 `92/92 PASS`다.
+- Server Validation Manifest는 `4260 bytes`, SHA-256 `D50104D1D09C2DC46FAF09C38D2FE1D23189D6F1C6F1A5CA4265CD4A924BB1ED`이고 Summary는 `2362 bytes`, SHA-256 `BE0B344B07206BBDA07682C8D3A08D70CCD4BD2439BB3BF8E867D77C5E372CEF`다.
+- Source Manifest는 `15255 bytes`, SHA-256 `2C2ECB81609B35FB15770247A91F1452C463D59C6CBDC8260E99E37DDDCC4FBA`이고, Evidence Manifest는 `8066 bytes`, SHA-256 `00CF0CCC772425A53CCF57D3A60A14702A44582D3B84800E467BE81079EF9075`이다.
+- 승인된 정확 Worktree에서 Generator를 두 번 재실행했고 두 실행 모두 Source `53`, Validation `17`, Evidence `21`과 위 Manifest SHA-256이 동일해 결정성 PASS다.
 - R1-M2-08 Reconciliation JSON은 `94950 bytes`, SHA-256 `778EB5B1CD397285320E3F37E2AB35CB6457EC7F7BC2077CBC8BE1E49E4FBC3A`이고, 갱신된 Library·Test·Reconciliation 3개 Artifact Hash·Byte 불일치가 `0`이다.
 - `git diff --check` 오류 `0`, R1-M1-05 Evidence Dirty `0`, `gen`·Desktop/Root Cargo Target·Temp Check Target·Daon App Process 잔존 `0`을 확인했다.
 

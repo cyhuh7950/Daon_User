@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-TAURI-CROSS-PLATFORM-ICON",
+  "issue_id": "R1-M3-02-SERVER-VALIDATION-EVIDENCE",
   "generated_at": "2026-07-23T22:10:00+09:00",
   "build_inputs": [
     {
@@ -288,8 +288,8 @@
     },
     {
       "path": "scripts/generate-r1-m3-02-evidence.mjs",
-      "bytes": 18375,
-      "sha256": "DA28443DF84ABBB9150172699CFC45B11AA8731E5D158C26FF0491771E5AC941"
+      "bytes": 19452,
+      "sha256": "D440A18EFA07082876953B624F896583C7660C169C9282FD4160DAC2D6392602"
     },
     {
       "path": "docs/02_work_orders/release_1/R1-M2-08-C00_evidence_reconciliation_addendum.md",
@@ -345,6 +345,16 @@
       "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-06_prompt.md",
       "bytes": 609,
       "sha256": "03DE4A2822AB06315F3ED1879B576183A851C9B968889FC921118BB4CC5FC767"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+      "bytes": 4260,
+      "sha256": "D50104D1D09C2DC46FAF09C38D2FE1D23189D6F1C6F1A5CA4265CD4A924BB1ED"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/server-validation-summary.md",
+      "bytes": 2362,
+      "sha256": "BE0B344B07206BBDA07682C8D3A08D70CCD4BD2439BB3BF8E867D77C5E372CEF"
     }
   ],
   "fix_03_behavior_contract": {
@@ -388,6 +398,19 @@
     "windows_nsis_target_preserved": true,
     "post_fix_verification_boundary": "local desktop type and quality gate; ysna-server rerun is owned by main designer"
   },
+  "server_validation_contract": {
+    "evidence_source": "main_designer_confirmed_server_observation",
+    "exact_git_sha": "0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5",
+    "target": "ysna-server:/home/ubuntu/deploy/daon-user/R1-M3-02",
+    "architecture": "aarch64",
+    "quality_gate": "PASS_exit_0_all_7_categories_failures_0",
+    "database_migration": "N/A",
+    "developer_subagent_server_rerun": false
+  },
+  "mutable_handoff_records": [
+    "docs/04_test_reports/release_1/R1-M3-02_progress.md",
+    "docs/02_work_orders/reports/R1-M3-02_attempt-2.md"
+  ],
   "generated_artifacts": {
     "committed_tauri_schemas": [],
     "windows_bundle_icons": [

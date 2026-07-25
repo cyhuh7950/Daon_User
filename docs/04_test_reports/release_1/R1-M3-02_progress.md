@@ -1575,3 +1575,51 @@
   - 화면/App/Commit/Push/PR/배포 `0건`
 - 오류/원인/복구: 미해결 오류 없음
 - 다음 작업: 추가 쓰기 중지, 어울1에게 계약 형식의 `COMPLETED` 결과보고 제출
+
+## 2026-07-25 서버 검증 증거 S0 착수·문서화
+
+- recorded_at: `2026-07-25T22:25:00+09:00`
+- 단계: 어울1 확인 서버 사실의 정형 증거 작성
+- 상태: `COMPLETED`
+- 완료:
+  - 승인 정본과 원 R1-M3-02·FIX-01~FIX-06의 승인 Hash 불변 확인
+  - Branch `codex/r1-m3-02`, HEAD·서버 최종 exact SHA `0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5`, 착수 Dirty `0`
+  - 서버 검증 Manifest와 Summary에 최종 Gate·Toolchain·CA 보정·수정 계보·자원 불변·Cleanup 사실 기록
+  - 어울1 관찰과 어울2 문서화 책임을 분리하고 이번 서버 재실행 `0건` 명시
+- 변경 파일: Server Validation Manifest/Summary, Progress
+- 명령/테스트 결과: 서버 명령 실행 `0`; 로컬 JSON Parse와 증거 연결 검증 예정
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: Attempt-2와 Generator·Source/Evidence Manifest에 서버 증거 연결
+
+## 2026-07-25 서버 검증 증거 S1 Manifest 초도 연결
+
+- recorded_at: `2026-07-25T22:29:00+09:00`
+- 단계: 서버 증거와 최신 인계 기록을 R1-M3-02 Generator·Manifest에 연결
+- 상태: `COMPLETED`
+- 완료:
+  - Generator 최상위 Issue를 `R1-M3-02-SERVER-VALIDATION-EVIDENCE`로 갱신
+  - Server Validation Manifest/Summary를 Validation 입력과 Evidence Artifact에 추가
+  - Progress·Attempt-2 경로를 Source/Evidence Manifest의 mutable handoff 기록에 명시
+  - 최종 exact SHA·ARM64·Gate·DB N/A·서버 재실행 없음 경계를 Source/Evidence 계약에 반영
+- 변경 파일: Generator, Source/Evidence Manifest, Attempt-2, Progress
+- 명령/테스트 결과: Generator Source `53`, Validation `17`, Evidence `21`, Exit `0`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: 전체 순차 Test와 Workspace Lint 수행 후 Generator 2회 결정성·JSON·Hash 최종 검증
+
+## 2026-07-25 서버 검증 증거 S2 종료 직전 검증
+
+- recorded_at: `2026-07-25T22:34:00+09:00`
+- 단계: 서버 증거 문서화 전체 회귀·결정성·인계 정합화
+- 상태: `COMPLETED`
+- 변경 파일: Server Validation Manifest/Summary, Generator, Source/Evidence Manifest, Attempt-2, Progress
+- 명령/테스트 결과:
+  - 전체 순차 Test `215/215 PASS`, fail·cancelled·skipped `0`
+  - Workspace Lint `11 files PASS`
+  - Generator 최종 2회 모두 Source `53`, Validation `17`, Evidence `21`
+  - Server Manifest `4260 bytes` / SHA-256 `D50104D1D09C2DC46FAF09C38D2FE1D23189D6F1C6F1A5CA4265CD4A924BB1ED`
+  - Server Summary `2362 bytes` / SHA-256 `BE0B344B07206BBDA07682C8D3A08D70CCD4BD2439BB3BF8E867D77C5E372CEF`
+  - Source Manifest `15255 bytes` / SHA-256 `2C2ECB81609B35FB15770247A91F1452C463D59C6CBDC8260E99E37DDDCC4FBA`
+  - Evidence Manifest `8066 bytes` / SHA-256 `00CF0CCC772425A53CCF57D3A60A14702A44582D3B84800E467BE81079EF9075`
+  - 서버 재실행·화면/App·Commit·Push·PR·배포 `0건`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: JSON·Hash·보호 파일·잔존물 최종 재검증 후 추가 쓰기 중지

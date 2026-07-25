@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-TAURI-CROSS-PLATFORM-ICON",
+  "issue_id": "R1-M3-02-SERVER-VALIDATION-EVIDENCE",
   "status": "COMPLETED",
   "base_commit": "74febf3bf7a8828d3bb426b74ce2cb510669fb6b",
   "environment": "isolated Windows worktree; installed Tauri Release app; no external deployment",
@@ -12,8 +12,8 @@
   },
   "source_artifact_manifest": {
     "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-    "bytes": 14289,
-    "sha256": "569017EB201962365D756C466E7EBA2BE43DA756F74BF102A9E5F3D8E35D5A93"
+    "bytes": 15255,
+    "sha256": "2C2ECB81609B35FB15770247A91F1452C463D59C6CBDC8260E99E37DDDCC4FBA"
   },
   "external_build_artifacts": [
     {
@@ -49,11 +49,19 @@
     "server_arm64": "pre-fix missing icon.png failure recorded; post-fix server rerun not performed by developer subagent",
     "actual_external_effects": 0
   },
+  "server_validation": {
+    "status": "PASS",
+    "observation_owner": "어울1 main designer",
+    "exact_git_sha": "0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5",
+    "manifest": "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+    "summary": "docs/03_evidence/release_1/R1-M3-02/server-validation-summary.md",
+    "developer_subagent_server_rerun": false
+  },
   "evidence_artifacts": [
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/source-artifact-manifest.json",
-      "bytes": 14289,
-      "sha256": "569017EB201962365D756C466E7EBA2BE43DA756F74BF102A9E5F3D8E35D5A93"
+      "bytes": 15255,
+      "sha256": "2C2ECB81609B35FB15770247A91F1452C463D59C6CBDC8260E99E37DDDCC4FBA"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/desktop-shell-build.json",
@@ -104,6 +112,16 @@
       "path": "docs/03_evidence/release_1/R1-M3-02/npm-ls-fix04.json",
       "bytes": 876,
       "sha256": "07580CB0AACACA7F89CA319B168002425AA79A433B3EBA1BD21E2D24E267DF40"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+      "bytes": 4260,
+      "sha256": "D50104D1D09C2DC46FAF09C38D2FE1D23189D6F1C6F1A5CA4265CD4A924BB1ED"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M3-02/server-validation-summary.md",
+      "bytes": 2362,
+      "sha256": "BE0B344B07206BBDA07682C8D3A08D70CCD4BD2439BB3BF8E867D77C5E372CEF"
     },
     {
       "path": "docs/03_evidence/release_1/R1-M3-02/windows-home-1920x1080.png",
