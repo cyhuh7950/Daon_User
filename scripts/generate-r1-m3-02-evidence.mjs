@@ -4,7 +4,7 @@ import path from "node:path";
 
 const root = process.cwd();
 const evidenceDir = path.join(root, "docs/03_evidence/release_1/R1-M3-02");
-const issueId = "R1-M3-02-CI-UBUNTU-GATE";
+const issueId = "R1-M3-02-CI-RUST-TYPE-DIAGNOSTIC";
 const toPosix = (value) => value.split(path.sep).join("/");
 const mutableHandoffRecords = [
   "docs/04_test_reports/release_1/R1-M3-02_progress.md",
@@ -91,7 +91,10 @@ const validationInputs = [
   "scripts/tests/product-foundation.test.mjs",
   "scripts/tests/quality-gate.test.mjs",
   "docs/02_work_orders/release_1/R1-M3-02-FIX-07_work_order.md",
-  "docs/02_work_orders/release_1/R1-M3-02-FIX-07_prompt.md"
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-07_prompt.md",
+  "scripts/lib/quality-gate.mjs",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-08_work_order.md",
+  "docs/02_work_orders/release_1/R1-M3-02-FIX-08_prompt.md"
 ];
 const buildInputPaths = [...new Set([...desktopInputs, ...sharedInputs, ...rootInputs])].sort();
 
@@ -194,6 +197,17 @@ const sourceManifest = {
     quality_gate_command: "npm run verify:quality-gate",
     server_location_source: "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
     external_absolute_paths_in_generator: 0
+  },
+  fix_08_behavior_contract: {
+    workflow: ".github/workflows/release-1-quality-gate.yml",
+    diagnostic_step_id: "desktop-rust-type-diagnostic",
+    diagnostic_command: "npm run verify:desktop-type",
+    order: "after_npm_ci_before_quality_gate",
+    fail_fast: true,
+    continue_on_error: false,
+    fallback_outcome: "CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC",
+    raw_cargo_output_artifact: false,
+    quality_gate_command_unchanged: "npm run verify:quality-gate"
   },
   mutable_handoff_records: mutableHandoffRecords,
   generated_artifacts: {
