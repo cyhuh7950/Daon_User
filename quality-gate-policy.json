@@ -23,11 +23,11 @@
       "manifest": "apps/desktop/package.json",
       "foundation_allowed_files": ["README.md", "package.json"],
       "capabilities": {
-        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs"], "files": ["eslint.config.js"] }, "command": null },
-        "type": { "signals": { "extensions": [".ts", ".tsx", ".rs"], "files": ["tsconfig.json", "Cargo.toml"] }, "command": null },
-        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs"], "directories": ["test", "tests", "__tests__"] }, "command": null },
+        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs"], "files": ["eslint.config.js"] }, "command": { "id": "desktop-shell-lint", "command": ["npm", "run", "verify:desktop-lint"], "failure_kind": "quality", "evidence_files": ["scripts/lint-workspace.mjs", "apps/desktop/src/desktop-shell.jsx"] } },
+        "type": { "signals": { "extensions": [".ts", ".tsx", ".rs"], "files": ["tsconfig.json", "Cargo.toml"] }, "command": { "id": "desktop-rust-type", "command": ["npm", "run", "verify:desktop-type"], "failure_kind": "quality", "evidence_files": ["apps/desktop/src-tauri/Cargo.toml", "apps/desktop/src-tauri/Cargo.lock"] } },
+        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs"], "directories": ["test", "tests", "__tests__"] }, "command": { "id": "desktop-shell-unit", "command": ["npm", "run", "verify:desktop-unit"], "failure_kind": "quality", "evidence_files": ["scripts/tests/desktop-tauri-shell.test.mjs"] } },
         "contract": { "signals": { "extensions": [], "files": [] }, "command": null },
-        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs"], "files": ["tsconfig.json", "Cargo.toml", "tauri.conf.json"], "directories": ["src", "src-tauri"] }, "command": null }
+        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rs"], "files": ["tsconfig.json", "Cargo.toml", "tauri.conf.json"], "directories": ["src", "src-tauri"] }, "command": { "id": "desktop-production-assets", "command": ["npm", "run", "verify:desktop-build"], "failure_kind": "quality", "evidence_files": ["apps/desktop/index.html", "apps/desktop/src-tauri/tauri.conf.json"] } }
       }
     },
     {
