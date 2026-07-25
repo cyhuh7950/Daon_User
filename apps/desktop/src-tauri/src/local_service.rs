@@ -1702,13 +1702,32 @@ mod manager_tests {
     }
 
     #[cfg(windows)]
-    fn new_fixture_marker(port: u16) -> PathBuf {
+    struct FixtureMarker(PathBuf);
+
+    #[cfg(windows)]
+    impl std::ops::Deref for FixtureMarker {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for FixtureMarker {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[cfg(windows)]
+    fn new_fixture_marker(port: u16) -> FixtureMarker {
         let marker = std::env::temp_dir().join(format!(
             "daon-manager-fixture-{}-{port}.txt",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&marker);
-        marker
+        FixtureMarker(marker)
     }
 
     #[cfg(windows)]
@@ -1744,7 +1763,11 @@ mod manager_tests {
                 })
                 .collect();
             if process_ids.iter().all(|process_id| !process_is_running(*process_id)) {
-                return;
+                match std::fs::remove_file(marker) {
+                    Ok(()) => return,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                    Err(error) => panic!("failed to remove fixture marker: {error}"),
+                }
             }
             assert!(
                 Instant::now() < deadline,
