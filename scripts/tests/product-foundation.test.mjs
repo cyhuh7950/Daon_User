@@ -146,13 +146,37 @@ test("접근성 계약은 Keyboard·Focus·설명·필수 상태 노출을 고�
 test("Workflow는 승인된 세 Action Major만 올리고 기존 Gate 계약을 보존한다", async () => {
   const workflow = JSON.parse(await readFile(path.join(root, ".github/workflows/release-1-quality-gate.yml"), "utf8"));
   const job = workflow.jobs["release-1-quality-gate"];
-  assert.deepEqual(job.steps.map((step) => step.id), ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "npm-ci", "quality-gate", "fallback-evidence", "upload-evidence"]);
+  assert.deepEqual(job.steps.map((step) => step.id), ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "quality-gate", "fallback-evidence", "upload-evidence"]);
   assert.equal(job.steps.find((step) => step.id === "checkout").uses, "actions/checkout@v5");
   assert.equal(job.steps.find((step) => step.id === "setup-node").uses, "actions/setup-node@v5");
   assert.equal(job.steps.find((step) => step.id === "upload-evidence").uses, "actions/upload-artifact@v6");
   assert.deepEqual(job.steps.find((step) => step.id === "setup-node").with, { "node-version-file": ".node-version", cache: "npm" });
   assert.equal(job.steps.find((step) => step.id === "fallback-evidence").if, "${{ always() }}");
   assert.equal(job.steps.find((step) => step.id === "upload-evidence").with.name, "release-1-quality-gate-${{ github.sha }}");
+});
+
+test("Ubuntu Workflow는 Tauri 필수 패키지를 npm ci와 공통 Gate 전에 최소 설치한다", async () => {
+  const workflow = JSON.parse(await readFile(path.join(root, ".github/workflows/release-1-quality-gate.yml"), "utf8"));
+  const job = workflow.jobs["release-1-quality-gate"];
+  const prerequisiteIndex = job.steps.findIndex((step) => step.id === "tauri-linux-prerequisites");
+  const npmCiIndex = job.steps.findIndex((step) => step.id === "npm-ci");
+  const qualityGateIndex = job.steps.findIndex((step) => step.id === "quality-gate");
+  const prerequisite = job.steps[prerequisiteIndex];
+
+  assert.ok(prerequisiteIndex >= 0 && prerequisiteIndex < npmCiIndex && npmCiIndex < qualityGateIndex);
+  assert.equal(prerequisite.shell, "bash");
+  assert.equal(prerequisite["continue-on-error"], undefined);
+  assert.match(prerequisite.run, /^sudo apt-get update\nsudo apt-get install --yes --no-install-recommends /);
+  for (const packageName of ["libwebkit2gtk-4.1-dev", "libayatana-appindicator3-dev", "librsvg2-dev", "patchelf", "ca-certificates", "pkg-config"])
+    assert.match(prerequisite.run, new RegExp(`(?:^|\\s)${packageName.replaceAll(".", "\\.")}(?:\\s|$)`));
+  assert.equal(job.steps[qualityGateIndex].run, "npm run verify:quality-gate");
+  assert.match(await readFile(path.join(root, "rust-toolchain.toml"), "utf8"), /channel\s*=\s*"1\.97\.1"/);
+});
+
+test("R1-M3-02 Generator는 서버 위치 대신 저장소 상대 검증 Manifest만 참조한다", async () => {
+  const generator = await readFile(path.join(root, "scripts/generate-r1-m3-02-evidence.mjs"), "utf8");
+  assert.match(generator, /docs\/03_evidence\/release_1\/R1-M3-02\/server-validation-manifest\.json/);
+  assert.doesNotMatch(generator, /ysna-server:\/|\/home\/ubuntu\/deploy\/daon-user/);
 });
 
 test("새 Package capability는 공통 Gate 실행 객체 계약을 사용한다", async () => {

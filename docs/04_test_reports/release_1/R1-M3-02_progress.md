@@ -1623,3 +1623,102 @@
   - 서버 재실행·화면/App·Commit·Push·PR·배포 `0건`
 - 오류/원인/복구: 미해결 오류 없음
 - 다음 작업: JSON·Hash·보호 파일·잔존물 최종 재검증 후 추가 쓰기 중지
+
+## 2026-07-25 FIX-07 S0 착수·CI 실패 재현
+
+- recorded_at: `2026-07-25T22:45:00+09:00`
+- 단계: FIX-07 승인 정본·단일 Writer·CI/Independence RED 확인
+- 상태: `COMPLETED`
+- 완료:
+  - AGENTS.md, 승인 설계 v0.7, 승인 계획 v0.9, 원 R1-M3-02 및 FIX-01~FIX-07 작업지시서·프롬프트 EOF 확인
+  - Branch `codex/r1-m3-02`, HEAD `fea6a5ef165c3a830962b97bf8704e94e523f1d6`
+  - 착수 전 변경은 어울1 전달 미추적 FIX-07 작업지시서·프롬프트 2개뿐이며 단독 Writer 확인
+  - PR #16 Run `30158657253`의 Desktop Rust Type·Independence 실패와 나머지 범주 PASS 근거 승계
+- 변경 파일: Product Foundation/Quality Gate Test, Progress
+- 명령/테스트 결과:
+  - `npm run verify:independence -- --no-write`: Exit `1`, violations `1`
+  - 정확 위반: `PATH_EXTERNAL_ABSOLUTE scripts/generate-r1-m3-02-evidence.mjs:171`
+  - Workflow에 Tauri Linux 시스템 의존성 설치 Step 없음 확인
+- 오류/원인/복구: 승인된 두 CI 차단 원인을 로컬에서 동일하게 확인
+- 다음 작업: Workflow 선행 Package·Gate 불변·Rust Pin과 Generator 상대 Manifest 참조 테스트 RED 확인
+
+## 2026-07-25 FIX-07 S1 Workflow·Generator 계약 RED
+
+- recorded_at: `2026-07-25T22:49:00+09:00`
+- 단계: CI Ubuntu 선행 의존성과 Generator 상대 경로 계약 선작성
+- 상태: `COMPLETED`
+- 변경 파일: Product Foundation/Quality Gate Test, Progress
+- 명령/테스트 결과:
+  - 전용 Test `31/35 PASS`, 신규·연결 계약 `4 FAIL`, Exit `1`
+  - 실패 원인: Workflow Step ID/Package Step 부재 3건, Generator 외부 절대 서버 경로 잔존 1건
+- 오류/원인/복구: 작업지시서가 지정한 두 차단 원인을 행동 계약으로 직접 재현
+- 다음 작업: 허용 Package 최소 Step과 Generator 저장소 상대 Server Manifest 참조만 구현
+
+## 2026-07-25 FIX-07 S2 Workflow·Generator 계약 GREEN
+
+- recorded_at: `2026-07-25T22:52:00+09:00`
+- 단계: Ubuntu Tauri 선행 Package Step과 저장소 상대 서버 증거 참조 구현
+- 상태: `COMPLETED`
+- 완료:
+  - Workflow에 `tauri-linux-prerequisites` Step을 Toolchain 확인 뒤·npm ci와 공통 Gate 전에 추가
+  - `apt-get update`와 `--yes --no-install-recommends`로 승인된 Package 6개만 명시
+  - 기존 Rust Pin 정본과 `npm run verify:quality-gate` 명령 불변
+  - Generator의 외부 절대 서버 경로를 제거하고 저장소 상대 Server Validation Manifest만 참조
+  - FIX-07 작업지시서·Prompt·Workflow·관련 Test를 Generator Validation 입력에 추가
+- 변경 파일: Workflow, Generator, Product Foundation/Quality Gate Test, Progress
+- 명령/테스트 결과:
+  - 전용 Test `35/35 PASS`, Exit `0`
+  - `npm run verify:independence -- --no-write`: violations `0`, Exit `0`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: 전체 회귀·Lint·Web/Desktop Build·Desktop Type·Audit·Quality Gate 수행
+
+## 2026-07-25 FIX-07 S3 전체 회귀·빌드·Gate
+
+- recorded_at: `2026-07-25T23:02:00+09:00`
+- 단계: CI 계약 변경의 전체 자동 회귀 검증
+- 상태: `COMPLETED`
+- 변경 파일: 최신 R1-M3-02 Quality Gate Result/Summary, Progress
+- 명령/테스트 결과:
+  - 전체 순차 Test `217/217 PASS`, fail·cancelled·skipped `0`
+  - Workspace Lint `11 files PASS`
+  - Web Production Build Next `16.3.0-canary.93`, 7개 Route PASS
+  - Desktop Production Build Vite `8.1.5`, `42 modules`, PASS
+  - 수동 `CARGO_TARGET_DIR` 없는 Desktop Rust Type Check PASS
+  - Production Audit info/low/moderate/high/critical/total 모두 `0`
+  - 공통 Quality Gate 7범주 전부 PASS, failures `0`, Exit `0`
+  - 최신 Gate Result/Summary를 R1-M3-02에 보존하고 R1-M1-05 두 파일은 Git 기준선으로 원복
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: Attempt-2·Manifest 최신화, Generator 2회 결정성·JSON·Hash·보호 범위 최종 검증
+
+## 2026-07-25 FIX-07 S4 증거 결정성·종료 직전 인계
+
+- recorded_at: `2026-07-25T23:08:00+09:00`
+- 단계: FIX-07 증거·결정성·최종 인계 정합화
+- 상태: `COMPLETED`
+- 변경 파일: Workflow, Generator, Product Foundation/Quality Gate Test, R1-M3-02 Source/Evidence/Quality Gate 증거, Attempt-2, Progress, FIX-07 문서
+- 명령/테스트 결과:
+  - 전용 RED `31/35` → GREEN `35/35`
+  - Independence violations `1→0`
+  - 전체 순차 Test `217/217 PASS`, Lint `11 files PASS`
+  - Web 7 Route·Desktop 42 Module Build, Desktop Type, Audit 0건, 7범주 Quality Gate PASS
+  - Generator 최종 2회 모두 Source `53`, Validation `22`, Evidence `21`
+  - Source Manifest `16785 bytes` / SHA-256 `AD1F2209743FC76CF29E3726D2BDA126E798567727C380EFB2C42583056E5B9A`
+  - Evidence Manifest `8054 bytes` / SHA-256 `7CC7FC416EA1650A057A0D52A59D226A35A4C6EED1B7569BCF6024D415E9EAB9`
+  - 화면/App·Commit·Push·PR 조작·서버 명령·배포 `0건`
+- 오류/원인/복구: 미해결 오류 없음
+- 다음 작업: JSON·Hash·Diff·보호 파일·잔존물 최종 재검증 후 추가 쓰기 중지
+
+## 2026-07-25 FIX-07 S5 최종 검증 명령 복구·종료
+
+- recorded_at: `2026-07-25T23:12:00+09:00`
+- 단계: Workflow 보조 판정 명령 복구와 종료 검증
+- 상태: `COMPLETED`
+- 변경 파일: Progress
+- 명령/테스트 결과:
+  - 첫 최종 보조 Script에서 Package Token 분리 정규식 이스케이프 오류로 `workflow_ok=false` 출력
+  - Package 6개 직접 포함·Step 순서·Gate 명령 비교로 재실행해 `workflow_ok=true`
+  - JSON Parse `12/12`, Source/Evidence Hash·Byte `97/97`
+  - Independence violations `0`, 보호 파일 Diff `0`, R1-M1-05 Dirty `0`
+  - `gen`·Desktop/Root Cargo Target·Temp Check Target·Daon App Process 잔존 `0`
+- 오류/원인/복구: 구현 오류 없음; 검증 Script 이스케이프만 직접 비교로 교정
+- 다음 작업: 추가 쓰기 중지, 어울1에게 계약 형식의 `COMPLETED` 결과보고 제출

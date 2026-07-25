@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "work_order": "R1-M3-02",
-  "issue_id": "R1-M3-02-SERVER-VALIDATION-EVIDENCE",
+  "issue_id": "R1-M3-02-CI-UBUNTU-GATE",
   "generated_at": "2026-07-23T22:10:00+09:00",
   "build_inputs": [
     {
@@ -288,8 +288,8 @@
     },
     {
       "path": "scripts/generate-r1-m3-02-evidence.mjs",
-      "bytes": 19452,
-      "sha256": "D440A18EFA07082876953B624F896583C7660C169C9282FD4160DAC2D6392602"
+      "bytes": 20320,
+      "sha256": "6B2982E09A4AEE1618F70EE58CC45475678DB418B225C1E47C9BF226E3D516AE"
     },
     {
       "path": "docs/02_work_orders/release_1/R1-M2-08-C00_evidence_reconciliation_addendum.md",
@@ -355,6 +355,31 @@
       "path": "docs/03_evidence/release_1/R1-M3-02/server-validation-summary.md",
       "bytes": 2362,
       "sha256": "BE0B344B07206BBDA07682C8D3A08D70CCD4BD2439BB3BF8E867D77C5E372CEF"
+    },
+    {
+      "path": ".github/workflows/release-1-quality-gate.yml",
+      "bytes": 4255,
+      "sha256": "F12657DF17AED956C33B9BBCA333BF9A88EF7B1087035BA0B5D7B745D37FE8DD"
+    },
+    {
+      "path": "scripts/tests/product-foundation.test.mjs",
+      "bytes": 13657,
+      "sha256": "91282CF48E1270088C4F799839D5CC51914B060BCB6A1143DD6205DF435F1E2D"
+    },
+    {
+      "path": "scripts/tests/quality-gate.test.mjs",
+      "bytes": 19785,
+      "sha256": "BD6F26CB913A24777006FD4D35CEED406CBF3784475C28109D60F0159C3FF1B0"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-07_work_order.md",
+      "bytes": 4132,
+      "sha256": "6280E6401D10C07A9348BC9936963D249CAF0FCD72693CB1ACEBA5476F0589FE"
+    },
+    {
+      "path": "docs/02_work_orders/release_1/R1-M3-02-FIX-07_prompt.md",
+      "bytes": 635,
+      "sha256": "B90CFD9B33FBE209A28A8823B78642FE5A29066901E6BE35DFE664CABB04DA8D"
     }
   ],
   "fix_03_behavior_contract": {
@@ -401,11 +426,27 @@
   "server_validation_contract": {
     "evidence_source": "main_designer_confirmed_server_observation",
     "exact_git_sha": "0a4c76b1ba9c165bd0adfbcd62dccdabc8f716d5",
-    "target": "ysna-server:/home/ubuntu/deploy/daon-user/R1-M3-02",
+    "evidence_manifest": "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
     "architecture": "aarch64",
     "quality_gate": "PASS_exit_0_all_7_categories_failures_0",
     "database_migration": "N/A",
     "developer_subagent_server_rerun": false
+  },
+  "fix_07_behavior_contract": {
+    "workflow": ".github/workflows/release-1-quality-gate.yml",
+    "ubuntu_tauri_prerequisites_step": "before_npm_ci_and_quality_gate",
+    "packages": [
+      "libwebkit2gtk-4.1-dev",
+      "libayatana-appindicator3-dev",
+      "librsvg2-dev",
+      "patchelf",
+      "ca-certificates",
+      "pkg-config"
+    ],
+    "rust_pin_source": "rust-toolchain.toml",
+    "quality_gate_command": "npm run verify:quality-gate",
+    "server_location_source": "docs/03_evidence/release_1/R1-M3-02/server-validation-manifest.json",
+    "external_absolute_paths_in_generator": 0
   },
   "mutable_handoff_records": [
     "docs/04_test_reports/release_1/R1-M3-02_progress.md",

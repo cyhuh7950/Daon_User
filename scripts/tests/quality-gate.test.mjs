@@ -217,7 +217,7 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   const job = workflow.jobs["release-1-quality-gate"];
   assert.ok(job);
   const stepsById = new Map(job.steps.filter((step) => step.id).map((step) => [step.id, step]));
-  const requiredStepIds = ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "npm-ci", "quality-gate", "fallback-evidence", "upload-evidence"];
+  const requiredStepIds = ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "quality-gate", "fallback-evidence", "upload-evidence"];
   for (const id of requiredStepIds) assert.ok(stepsById.has(id), `missing workflow step id ${id}`);
   const clearEvidenceIndex = job.steps.findIndex((step) => step.id === "clear-evidence");
   assert.ok(job.steps.findIndex((step) => step.id === "checkout") < clearEvidenceIndex);
@@ -232,6 +232,7 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   const uvIndex = job.steps.findIndex((step) => step.uses === "astral-sh/setup-uv@v7");
   const versionOutputIndex = job.steps.findIndex((step) => step.name === "Print approved toolchain versions");
   const verifyToolchainIndex = job.steps.findIndex((step) => step.run === "npm run verify:toolchain");
+  const tauriPrerequisiteIndex = job.steps.findIndex((step) => step.id === "tauri-linux-prerequisites");
   const npmCiIndex = job.steps.findIndex((step) => step.run === "npm ci");
   const qualityGateIndex = job.steps.findIndex((step) => step.run === "npm run verify:quality-gate");
   assert.ok(pinStepIndex > 0);
@@ -241,7 +242,7 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   assert.equal(job.steps[uvIndex].with.version, "${{ steps.toolchain-pins.outputs.uv }}");
   assert.equal(job.steps[versionOutputIndex].run, "npm --version\ncorepack --version\nuv --version");
   assert.ok(pinStepIndex < npmCorepackIndex && npmCorepackIndex < uvIndex && uvIndex < versionOutputIndex && versionOutputIndex < verifyToolchainIndex);
-  assert.ok(verifyToolchainIndex < npmCiIndex && npmCiIndex < qualityGateIndex);
+  assert.ok(verifyToolchainIndex < tauriPrerequisiteIndex && tauriPrerequisiteIndex < npmCiIndex && npmCiIndex < qualityGateIndex);
   for (const index of [pinStepIndex, npmCorepackIndex, uvIndex, verifyToolchainIndex])
     assert.notEqual(job.steps[index]["continue-on-error"], true);
   assert.ok(runs.includes("npm ci"));
