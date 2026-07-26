@@ -35,6 +35,12 @@ def test_parse_bootstrap_accepts_exact_contract() -> None:
         json.dumps(
             {"protocol_version": "unsupported", "app_instance_id": "i", "token": "x" * 32}
         ).encode(),
+        json.dumps(
+            {"protocol_version": PROTOCOL_VERSION, "app_instance_id": "", "token": "x" * 32}
+        ).encode(),
+        json.dumps(
+            {"protocol_version": PROTOCOL_VERSION, "app_instance_id": "i", "token": "short"}
+        ).encode(),
         b"x" * (MAX_BOOTSTRAP_BYTES + 1),
     ],
 )
