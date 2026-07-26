@@ -159,7 +159,12 @@ async function inspectPackages(root, components, violations, policy) {
       });
     } else {
       manifest.text.split(/\r?\n/).forEach((line, index) => {
-        if (DAON_PRODUCT_PATTERN.test(line) || /(?:path|url)\s*=/.test(line)) violations.push(violation("PACKAGE_DAON_INTERNAL", manifest.file, index + 1, "Python Package의 다른 저장소 직접 의존을 제거하십시오.", line));
+        if (
+          DAON_PRODUCT_PATTERN.test(line)
+          || /(?:^\s*|[,{]\s*)(?:path|url)\s*=/i.test(line)
+        ) {
+          violations.push(violation("PACKAGE_DAON_INTERNAL", manifest.file, index + 1, "Python Package의 다른 저장소 직접 의존을 제거하십시오.", line));
+        }
       });
     }
   }

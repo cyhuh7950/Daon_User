@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AccountSecurityWorkspace,
   AdaptiveWorkspace,
@@ -10,6 +10,11 @@ import screens from "@daon-user/contracts/screens.json";
 import "@daon-user/design-tokens/tokens.css";
 import "./desktop-shell.css";
 import { createWindowsNavigation, selectNativeRoute } from "./desktop-shell-model.js";
+import {
+  describeLocalServiceState,
+  retryLocalService,
+  watchLocalServiceStatus
+} from "./local-service-bridge.js";
 
 const LABELS = {
   Home: "Home",
@@ -32,15 +37,36 @@ function RouteSurface({ routeKey, route, screen }) {
 export function DesktopShell() {
   const routes = useMemo(() => createWindowsNavigation(navigation.routes), []);
   const [activeKey, setActiveKey] = useState("Home");
+  const [localService, setLocalService] = useState({
+    state: "starting",
+    retryable: false,
+    error_code: null
+  });
+
+  useEffect(() => {
+    return watchLocalServiceStatus(setLocalService);
+  }, []);
+
+  const retry = async () => {
+    setLocalService({ state: "retrying", retryable: false, error_code: null });
+    setLocalService(await retryLocalService());
+  };
 
   return (
-    <div className="desktop-shell" data-client-type="windows" data-runtime-state="deferred_actual">
+    <div className="desktop-shell" data-client-type="windows" data-runtime-state={localService.state}>
       <header className="desktop-titlebar">
         <div>
           <p className="desktop-eyebrow">Windows App</p>
           <h1>Daon 사용자 프로그램</h1>
         </div>
-        <span className="desktop-runtime-badge" role="status">연결 기능 deferred_actual</span>
+        <div>
+          <span className="desktop-runtime-badge" role="status">
+            {describeLocalServiceState(localService)}
+          </span>
+          {localService.retryable ? (
+            <button type="button" onClick={retry}>다시 시도</button>
+          ) : null}
+        </div>
       </header>
       <nav className="desktop-navigation" aria-label="Windows 주 탐색">
         {routes.map((route) => (

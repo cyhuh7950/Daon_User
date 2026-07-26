@@ -58,6 +58,58 @@ test("정상 Fixture는 Exit 0과 위반 0건이다", async () => {
   assert.match(result.stdout, /components=2 .*violations=0/);
 });
 
+test("Python 테스트 Cache는 Source 독립성 검사 대상이 아니다", async () => {
+  const root = await fixture();
+  await put(
+    root,
+    "services/api/.pytest_cache/forbidden.py",
+    "from daon2.internal import CacheArtifact\n"
+  );
+  const result = run(root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /violations=0/);
+});
+
+test("pytest pythonpath 도구 설정을 Package 경로 의존으로 오인하지 않는다", async () => {
+  const root = await fixture();
+  await rm(path.join(root, "services", "api", "package.json"));
+  await put(
+    root,
+    "services/api/pyproject.toml",
+    [
+      "[project]",
+      'name = "fixture"',
+      'version = "0.0.0"',
+      "",
+      "[tool.pytest.ini_options]",
+      'pythonpath = ["src"]',
+      ""
+    ].join("\n")
+  );
+  const result = run(root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /violations=0/);
+});
+
+test("Python Package의 실제 path 직접 의존은 계속 차단한다", async () => {
+  await expectViolation("PACKAGE_DAON_INTERNAL", async (root) => {
+    await rm(path.join(root, "services", "api", "package.json"));
+    await put(
+      root,
+      "services/api/pyproject.toml",
+      [
+        "[project]",
+        'name = "fixture"',
+        'version = "0.0.0"',
+        "",
+        "[tool.uv.sources]",
+        'legacy = { path = "../legacy" }',
+        ""
+      ].join("\n")
+    );
+  });
+});
+
 test("Dependency Graph 금지 간선을 차단한다", async () => {
   await expectViolation("DEP_GRAPH_BOUNDARY", async (root) => put(root, "apps/web/package.json", JSON.stringify({ name: "@fixture/web", version: "0.0.0", dependencies: { "@fixture/api": "0.0.0" } })));
 });
