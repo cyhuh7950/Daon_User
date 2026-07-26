@@ -36,11 +36,11 @@
       "manifest": "apps/mobile/package.json",
       "foundation_allowed_files": ["README.md", "package.json"],
       "capabilities": {
-        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["eslint.config.js"] }, "command": null },
-        "type": { "signals": { "extensions": [".ts", ".tsx"], "files": ["tsconfig.json"] }, "command": null },
-        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "directories": ["test", "tests", "__tests__"] }, "command": null },
-        "contract": { "signals": { "extensions": [], "files": [] }, "command": null },
-        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["tsconfig.json", "app.json", "metro.config.js"], "directories": ["src", "android", "ios"] }, "command": null }
+        "lint": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["eslint.config.js"] }, "command": { "id": "mobile-shell-lint", "command": ["npm", "run", "lint", "--workspace", "@daon-user/mobile"], "failure_kind": "quality", "evidence_files": ["scripts/lint-workspace.mjs", "apps/mobile/src/MobileShell.tsx"] } },
+        "type": { "signals": { "extensions": [".ts", ".tsx"], "files": ["tsconfig.json"] }, "command": { "id": "mobile-shell-type", "command": ["npm", "run", "type", "--workspace", "@daon-user/mobile"], "failure_kind": "quality", "evidence_files": ["apps/mobile/tsconfig.json", "apps/mobile/src/domain/navigation.ts"] } },
+        "unit": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "directories": ["test", "tests", "__tests__"] }, "command": { "id": "mobile-shell-unit", "command": ["npm", "run", "unit", "--workspace", "@daon-user/mobile"], "failure_kind": "quality", "evidence_files": ["scripts/tests/mobile-shared-shell.test.mjs"] } },
+        "contract": { "signals": { "extensions": [".json"], "files": [] }, "command": { "id": "mobile-shell-contract", "command": ["npm", "run", "contract", "--workspace", "@daon-user/mobile"], "failure_kind": "quality", "evidence_files": ["packages/contracts/mobile-studio-actions.json", "scripts/verify-mobile-studio-contract.mjs"] } },
+        "build": { "signals": { "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"], "files": ["tsconfig.json", "app.json", "metro.config.cjs"], "directories": ["src", "android", "ios"] }, "command": { "id": "mobile-shell-production-bundle", "command": ["npm", "run", "build", "--workspace", "@daon-user/mobile"], "failure_kind": "quality", "evidence_files": ["apps/mobile/index.js", "apps/mobile/metro.config.cjs", "apps/mobile/babel.config.cjs"] } }
       }
     },
     {
