@@ -147,7 +147,9 @@ test("Workflow는 승인된 세 Action Major만 올리고 기존 Gate 계약을 
   const workflow = JSON.parse(await readFile(path.join(root, ".github/workflows/release-1-quality-gate.yml"), "utf8"));
   const job = workflow.jobs["release-1-quality-gate"];
   assert.deepEqual(job.steps.map((step) => step.id), ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate", "fallback-evidence", "upload-evidence"]);
-  assert.equal(job.steps.find((step) => step.id === "checkout").uses, "actions/checkout@v5");
+  const checkout = job.steps.find((step) => step.id === "checkout");
+  assert.equal(checkout.uses, "actions/checkout@v5");
+  assert.deepEqual(checkout.with, { "fetch-depth": 0 });
   assert.equal(job.steps.find((step) => step.id === "setup-node").uses, "actions/setup-node@v5");
   assert.equal(job.steps.find((step) => step.id === "upload-evidence").uses, "actions/upload-artifact@v6");
   assert.deepEqual(job.steps.find((step) => step.id === "setup-node").with, { "node-version-file": ".node-version", cache: "npm" });
