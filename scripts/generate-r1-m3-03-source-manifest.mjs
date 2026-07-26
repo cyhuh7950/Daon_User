@@ -110,6 +110,18 @@ function sourcePaths(exactBase) {
     .sort((left, right) => left.localeCompare(right, "en"));
 }
 
+export async function readSourceBytes({
+  exactBase,
+  head,
+  relativePath,
+  readWorkingFile = (candidate) => readFile(path.join(repositoryRoot, candidate)),
+  readCommitBlob = (commit, candidate) => git(["show", `${commit}:${candidate}`], null)
+}) {
+  return exactBase
+    ? readCommitBlob(head, relativePath)
+    : readWorkingFile(relativePath);
+}
+
 export async function generateSourceManifest({ exactBase } = {}) {
   const head = git(["rev-parse", "HEAD"]).trim();
   if (exactBase) {
@@ -119,7 +131,7 @@ export async function generateSourceManifest({ exactBase } = {}) {
     await Promise.all(
       sourcePaths(exactBase).map(async (relativePath) => {
         assertRepositoryRelative(relativePath);
-        const bytes = await readFile(path.join(repositoryRoot, relativePath));
+        const bytes = await readSourceBytes({ exactBase, head, relativePath });
         return {
           path: relativePath,
           bytes: bytes.length,

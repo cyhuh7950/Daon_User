@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   canonicalSourceEntries,
+  readSourceBytes,
   snapshotMetadata,
   sourceEntriesHash
 } from "../generate-r1-m3-03-source-manifest.mjs";
@@ -39,4 +40,15 @@ test("source manifest records an exact implementation commit against its approve
       git_sha_role: "exact implementation commit"
     }
   );
+});
+
+test("exact source entries hash commit blobs rather than checkout-normalized bytes", async () => {
+  const bytes = await readSourceBytes({
+    exactBase: "A".repeat(40),
+    head: "B".repeat(40),
+    relativePath: "apps/desktop/source.rs",
+    readWorkingFile: async () => Buffer.from("working-crlf\r\n"),
+    readCommitBlob: () => Buffer.from("commit-lf\n")
+  });
+  assert.equal(bytes.toString("utf8"), "commit-lf\n");
 });
