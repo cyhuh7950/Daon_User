@@ -145,6 +145,27 @@ def test_bootstrap_reader_reads_complete_line_from_parent_pipe() -> None:
         stream.close()
 
 
+def test_bootstrap_reader_rejects_parent_pipe_eof_without_line_terminator() -> None:
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, "rb", buffering=0)
+    os.close(write_fd)
+    try:
+        with pytest.raises(main.BootstrapError):
+            main.read_bootstrap_line(stream, timeout_seconds=0.5)
+    finally:
+        stream.close()
+
+
+def test_run_returns_timeout_code_when_bootstrap_deadline_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def timeout(_stream: object) -> bytes:
+        raise main.BootstrapReadTimeout("fixture timeout")
+
+    monkeypatch.setattr(main, "read_bootstrap_line", timeout)
+    assert main.run() == main.EXIT_BOOTSTRAP_TIMEOUT
+
+
 def test_run_binds_only_loopback_emits_safe_ready_and_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
