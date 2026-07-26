@@ -34,7 +34,7 @@ Phase A 완료 상태는 `SIMULATOR_VERIFIED_PENDING_DEVICE`다. 어울2의 Phas
 - 기존 `apps/mobile/src/**`, 8개 Route, 7개 Screen State, 15개 Mobile Studio Action, Design Token과 Public API Fail-close 계약을 그대로 승계한다.
 - Android 12+만 지원하도록 최소 OS 계약을 고정하되 Compile/Target/Gradle/Kotlin/AGP Version은 Template·공식 호환 기준을 증거와 함께 확정한다.
 - 권한은 최소 권한으로 설계한다. Camera·Microphone·Notification은 사용 시점 요청, 거부·재요청·영구 거부 후 Settings 이동 상태를 명시한다. 광범위 Storage 권한을 사용하지 않고 System Picker/SAF 경계를 사용한다.
-- 승인 Scheme/Host와 Route Allowlist를 사용하는 Deep Link만 수락한다. 알 수 없는 Client·Route·Deep Link는 R1-M3-04 오류 코드로 Fail-close한다.
+- 신산님이 2026-07-27 승인한 공개 진입 계약 `sinsan-daon://app/<native_route_key>`과 기존 Route Allowlist만 수락한다. 다른 Scheme·Host·Route와 알 수 없는 Client·Deep Link는 R1-M3-04 오류 코드로 Fail-close한다.
 - Foreground→Background→Resume, Process 강제 종료→재기동에서 승인된 최소 Navigation 상태만 복원하고 Credential·Secret·민감 Source 내용은 평문 저장하지 않는다.
 - Network/Auth/Public API는 M4 Owner다. 임시 URL·localhost·내부 Host·API Key를 넣지 않고 현재 `unavailable` Adapter를 유지한다.
 - Android 15+ Edge-to-Edge에서도 1920×1080 화면 표준, 12/10/9/14/16px Token, 44px Touch Target, Status·Keyboard·Safe Area가 깨지지 않게 한다.
