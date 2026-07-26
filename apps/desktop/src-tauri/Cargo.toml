@@ -1,6 +1,7 @@
 [package]
 name = "daon-user-desktop"
 version = "0.1.0"
+default-run = "daon-user-desktop"
 description = "Daon 사용자 프로그램 Windows App"
 authors = ["Daon"]
 edition = "2024"
