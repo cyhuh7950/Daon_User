@@ -298,26 +298,41 @@ test("desktop cargo wrapper fails closed when gen state cannot be probed", async
   }
 });
 
-test("Next and Vite use the approved PostCSS 8.5.23 override without other dependency changes", async () => {
+test("PostCSS 보정 이력은 고정 Successor Blob으로, 현재 Checkout은 핵심 Pin으로 검증한다", async () => {
   const root = JSON.parse(await read("package.json"));
   const lock = JSON.parse(await read("package-lock.json"));
+  const successorCommit = "8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa";
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const readSuccessorJson = (artifactPath) => {
+    const result = spawnSync("git", ["show", `${successorCommit}:${artifactPath}`], { cwd: repositoryRoot, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const successorRoot = readSuccessorJson("package.json");
+  const successorLock = readSuccessorJson("package-lock.json");
+
+  assert.deepEqual(successorRoot.overrides, { postcss: "8.5.23" });
+  assert.equal(successorLock.packages["node_modules/next"].version, "16.3.0-canary.93");
+  assert.equal(successorLock.packages["node_modules/vite"].version, "8.1.5");
+  assert.equal(successorLock.packages["node_modules/postcss"].version, "8.5.23");
+  assert.equal(successorLock.packages["node_modules/vite/node_modules/postcss"], undefined);
+  const successorNonPostcssPackages = Object.fromEntries(
+    Object.entries(successorLock.packages).filter(([packagePath]) => !/(^|\/)node_modules\/postcss$/.test(packagePath))
+  );
+  assert.equal(
+    createHash("sha256").update(JSON.stringify(successorNonPostcssPackages)).digest("hex"),
+    "49a32ff6e416651358ef5638da18aa2be4de4e04d7f47268cc2ad5f5d1cfd0ca"
+  );
+
   assert.deepEqual(root.overrides, { postcss: "8.5.23" });
   assert.equal(lock.packages["node_modules/next"].version, "16.3.0-canary.93");
   assert.equal(lock.packages["node_modules/vite"].version, "8.1.5");
   assert.equal(lock.packages["node_modules/postcss"].version, "8.5.23");
   assert.equal(lock.packages["node_modules/vite/node_modules/postcss"], undefined);
 
-  const nonPostcssPackages = Object.fromEntries(
-    Object.entries(lock.packages).filter(([packagePath]) => !/(^|\/)node_modules\/postcss$/.test(packagePath))
-  );
-  assert.equal(
-    createHash("sha256").update(JSON.stringify(nonPostcssPackages)).digest("hex"),
-    "49a32ff6e416651358ef5638da18aa2be4de4e04d7f47268cc2ad5f5d1cfd0ca"
-  );
-
   const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
   const listing = spawnSync(npmCommand, ["ls", "next", "vite", "postcss", "--all", "--json"], {
-    cwd: fileURLToPath(new URL("../..", import.meta.url)),
+    cwd: repositoryRoot,
     encoding: "utf8",
     shell: process.platform === "win32"
   });

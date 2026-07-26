@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "generated_from": "packages/ui/src/studio-workflow-model.js",
+  "generated_export": "MOBILE_STUDIO_ACTIONS + evaluateMobileAction",
+  "replacement_owner": "R1-M4-01",
+  "security_enforcement": "Deferred M4 Native Gateway",
+  "actions": [
+    {"action":"edit_title","decision":{"allowed":true,"code":"MOBILE_CONTENT_EDIT_ALLOWED","createsContentRevision":true,"stateDomain":"content","continueOn":"모바일에서 계속"}},
+    {"action":"edit_text_block","decision":{"allowed":true,"code":"MOBILE_CONTENT_EDIT_ALLOWED","createsContentRevision":true,"stateDomain":"content","continueOn":"모바일에서 계속"}},
+    {"action":"edit_simple_table_cell","decision":{"allowed":true,"code":"MOBILE_CONTENT_EDIT_ALLOWED","createsContentRevision":true,"stateDomain":"content","continueOn":"모바일에서 계속"}},
+    {"action":"review_comment","decision":{"allowed":true,"code":"MOBILE_WORKFLOW_ACTION_ALLOWED","createsContentRevision":false,"stateDomain":"review","continueOn":"모바일에서 계속"}},
+    {"action":"request_revision","decision":{"allowed":true,"code":"MOBILE_WORKFLOW_ACTION_ALLOWED","createsContentRevision":false,"stateDomain":"review","continueOn":"모바일에서 계속"}},
+    {"action":"approve","decision":{"allowed":true,"code":"MOBILE_WORKFLOW_ACTION_ALLOWED","createsContentRevision":false,"stateDomain":"approval","continueOn":"모바일에서 계속"}},
+    {"action":"reject","decision":{"allowed":true,"code":"MOBILE_WORKFLOW_ACTION_ALLOWED","createsContentRevision":false,"stateDomain":"approval","continueOn":"모바일에서 계속"}},
+    {"action":"handle_notification","decision":{"allowed":true,"code":"MOBILE_WORKFLOW_ACTION_ALLOWED","createsContentRevision":false,"stateDomain":"notification","continueOn":"모바일에서 계속"}},
+    {"action":"open_citation","decision":{"allowed":true,"code":"MOBILE_WORKFLOW_ACTION_ALLOWED","createsContentRevision":false,"stateDomain":"read","continueOn":"모바일에서 계속"}},
+    {"action":"change_section","decision":{"allowed":false,"code":"MOBILE_STUDIO_ACTION_NOT_ALLOWED","createsContentRevision":false,"stateDomain":"none","continueOn":"Web·Windows에서 이어서 작업"}},
+    {"action":"change_layout","decision":{"allowed":false,"code":"MOBILE_STUDIO_ACTION_NOT_ALLOWED","createsContentRevision":false,"stateDomain":"none","continueOn":"Web·Windows에서 이어서 작업"}},
+    {"action":"change_table_structure","decision":{"allowed":false,"code":"MOBILE_STUDIO_ACTION_NOT_ALLOWED","createsContentRevision":false,"stateDomain":"none","continueOn":"Web·Windows에서 이어서 작업"}},
+    {"action":"change_evidence_link","decision":{"allowed":false,"code":"MOBILE_STUDIO_ACTION_NOT_ALLOWED","createsContentRevision":false,"stateDomain":"none","continueOn":"Web·Windows에서 이어서 작업"}},
+    {"action":"change_generation_settings","decision":{"allowed":false,"code":"MOBILE_STUDIO_ACTION_NOT_ALLOWED","createsContentRevision":false,"stateDomain":"none","continueOn":"Web·Windows에서 이어서 작업"}},
+    {"action":"regenerate_all","decision":{"allowed":false,"code":"MOBILE_STUDIO_ACTION_NOT_ALLOWED","createsContentRevision":false,"stateDomain":"none","continueOn":"Web·Windows에서 이어서 작업"}}
+  ]
+}
