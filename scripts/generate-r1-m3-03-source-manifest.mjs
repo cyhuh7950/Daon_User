@@ -54,6 +54,27 @@ export function sourceEntriesHash(entries) {
   return sha256(Buffer.from(JSON.stringify(canonicalSourceEntries(entries)), "utf8"));
 }
 
+export function snapshotMetadata({ exactBase, head }) {
+  if (exactBase) {
+    if (!/^[0-9a-f]{40}$/iu.test(exactBase) || !/^[0-9a-f]{40}$/iu.test(head)) {
+      throw new Error("exact source manifest requires full commit SHAs");
+    }
+    return {
+      status: "EXACT_IMPLEMENTATION_COMMIT",
+      dirty_snapshot: false,
+      base_head: head,
+      comparison_base: exactBase,
+      git_sha_role: "exact implementation commit"
+    };
+  }
+  return {
+    status: "SNAPSHOT",
+    dirty_snapshot: true,
+    base_head: head,
+    git_sha_role: "base head for dirty snapshot"
+  };
+}
+
 function git(args, encoding = "utf8") {
   const result = spawnSync("git", args, {
     cwd: repositoryRoot,
@@ -67,13 +88,19 @@ function git(args, encoding = "utf8") {
   return result.stdout;
 }
 
-function sourcePaths() {
-  const tracked = git(["diff", "--name-only", "HEAD", "--"])
+function sourcePaths(exactBase) {
+  const tracked = git(
+    exactBase
+      ? ["diff", "--name-only", exactBase, "HEAD", "--"]
+      : ["diff", "--name-only", "HEAD", "--"]
+  )
     .split(/\r?\n/u)
     .filter(Boolean);
-  const untracked = git(["ls-files", "--others", "--exclude-standard", "--"])
-    .split(/\r?\n/u)
-    .filter(Boolean);
+  const untracked = exactBase
+    ? []
+    : git(["ls-files", "--others", "--exclude-standard", "--"])
+        .split(/\r?\n/u)
+        .filter(Boolean);
   return [...new Set([...tracked, ...untracked])]
     .map((candidate) => candidate.replaceAll("\\", "/"))
     .filter(
@@ -83,10 +110,14 @@ function sourcePaths() {
     .sort((left, right) => left.localeCompare(right, "en"));
 }
 
-export async function generateSourceManifest() {
+export async function generateSourceManifest({ exactBase } = {}) {
+  const head = git(["rev-parse", "HEAD"]).trim();
+  if (exactBase) {
+    git(["rev-parse", "--verify", `${exactBase}^{commit}`]);
+  }
   const files = canonicalSourceEntries(
     await Promise.all(
-      sourcePaths().map(async (relativePath) => {
+      sourcePaths(exactBase).map(async (relativePath) => {
         assertRepositoryRelative(relativePath);
         const bytes = await readFile(path.join(repositoryRoot, relativePath));
         return {
@@ -97,12 +128,15 @@ export async function generateSourceManifest() {
       })
     )
   );
-  const patch = git(["diff", "--binary", "HEAD", "--"], null);
+  const patch = git(
+    exactBase
+      ? ["diff", "--binary", exactBase, "HEAD", "--"]
+      : ["diff", "--binary", "HEAD", "--"],
+    null
+  );
   const manifest = {
     schema_version: "1.0",
-    status: "SNAPSHOT",
-    dirty_snapshot: true,
-    base_head: git(["rev-parse", "HEAD"]).trim(),
+    ...snapshotMetadata({ exactBase, head }),
     tracked_binary_patch_sha256: sha256(patch),
     untracked_binding: "file entries include untracked source bytes individually",
     entry_canonicalization: "UTF-8 JSON.stringify(path,bytes,sha256), path ascending",
@@ -115,11 +149,18 @@ export async function generateSourceManifest() {
 }
 
 if (path.resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
-  generateSourceManifest()
+  const exactBaseFlag = process.argv.indexOf("--exact-base");
+  const exactBase = exactBaseFlag >= 0 ? process.argv[exactBaseFlag + 1] : undefined;
+  if (exactBaseFlag >= 0 && !exactBase) {
+    throw new Error("--exact-base requires a full commit SHA");
+  }
+  generateSourceManifest({ exactBase })
     .then((manifest) => {
       console.log(
         JSON.stringify({
           output: path.relative(repositoryRoot, outputPath).replaceAll("\\", "/"),
+          status: manifest.status,
+          base_head: manifest.base_head,
           file_count: manifest.file_count,
           source_entries_sha256: manifest.source_entries_sha256,
           tracked_binary_patch_sha256: manifest.tracked_binary_patch_sha256
