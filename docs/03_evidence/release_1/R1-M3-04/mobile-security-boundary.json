@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "work_order": "R1-M3-04",
   "status": "PASS_WITH_DEFERRED_ENFORCEMENT",
-  "validated_head": "32529c572bde1192bbb71c82f36ed2d07243cca1",
-  "source_state": "pending_commit",
+  "validated_head": "459032773097086ac89139ee307ad53394b62208",
+  "source_state": "exact_commit",
   "source_scan": {
     "roots": ["apps/mobile/src"],
     "dom_ui_imports": 0,
