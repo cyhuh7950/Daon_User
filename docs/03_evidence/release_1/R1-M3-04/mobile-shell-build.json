@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-04",
+  "status": "PASS",
+  "validated_head": "df6564851163254e40d29666fdf7fa1bd4481803",
+  "source_state": "exact_commit",
+  "toolchain": { "node": "24.18.0", "npm": "11.12.1", "react_native": "0.86.0", "react": "19.2.7", "typescript": "7.0.2", "metro": "0.84.4" },
+  "lockfile_install": { "command": "npm ci --ignore-scripts", "exit_code": 0, "installed_packages": 342 },
+  "mobile_verification": { "command": "npm run verify:mobile", "exit_code": 0, "lint_files": 10, "unit": "9/9 PASS", "contract": "15/15 PASS" },
+  "workspace_entrypoints": {
+    "command_pattern": "npm run <lint|type|unit|contract|build> --workspace @daon-user/mobile",
+    "lint_exit_code": 0,
+    "type_exit_code": 0,
+    "unit_exit_code": 0,
+    "contract_exit_code": 0,
+    "build_exit_code": 0
+  },
+  "bundles": [
+    { "platform": "android", "mode": "production", "entry": "apps/mobile/index.js", "bytes": 921664, "sha256": "07F68AD055B353EE7C15C5B0B09B15EDEA6D47276B16B465EE7FF07C8F4782CD", "native_build": "Deferred R1-M3-05" },
+    { "platform": "ios", "mode": "production", "entry": "apps/mobile/index.js", "bytes": 916298, "sha256": "D8A2CBB174B958AC85288F78B5AA6A2C1DF5FE93AE07DCA7A69387609BD6CB2B", "native_build": "Deferred R1-M3-06" }
+  ],
+  "generated_bundles_tracked": false,
+  "device_or_simulator_executed": false,
+  "limitations": ["Headless Metro Bundle is not a Native install build.", "Exact implementation Commit verification completed locally at df6564851163254e40d29666fdf7fa1bd4481803."]
+}
