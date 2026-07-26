@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "status": "COMPLETED_EXACT_COMMIT_PENDING_GITHUB_CI",
+  "status": "COMPLETED_EXACT_COMMIT_AND_GITHUB_CI",
   "issue_id": "R1-M3-04-C03-CI-HISTORY",
   "attempt": 4,
   "branch": "codex/r1-m3-04",
@@ -62,13 +62,14 @@
     "production_audit": { "command": "npm audit --omit=dev --audit-level=high --json", "exit_code": 0, "vulnerabilities": 0 },
     "independence": { "command": "npm run verify:independence", "exit_code": 0, "violations": 0 },
     "quality_gate": { "command": "node scripts/verify-r1-m3-04-quality-gate.mjs", "overall_status": "PASS", "exit_code": 0, "failures": 0, "checks": { "lint": 7, "type": 4, "unit": 8, "contract": 3, "build": 7, "security": 3, "independence": 1 }, "mobile_workspace_checks": 5, "policy_sha256": "24A027EE54431790E87756C7A2FF70308DB56DDD2EECE4335440518BBFBB79A1", "validated_head": "459032773097086ac89139ee307ad53394b62208", "source_state": "exact_commit", "duration_seconds": 285.3 },
+    "github_ci": { "pr": 18, "run_id": 30204964560, "job_id": 89801328532, "artifact_id": 8632834022, "head_commit": "dc4d09cd336f61ddf664e599a70199556ad46907", "merge_candidate_sha": "ee16aa3ad4b3da594ec683a707c48214436aa3bf", "overall_status": "PASS", "exit_code": 0, "failures": 0, "desktop_shell_unit": "PASS", "mobile_shell_unit": "PASS", "policy_sha256": "CF3C782DFACBC640D089C7F15E5A44CA74595E7F2519F45742D06763C517806E", "gate_duration_seconds": 239.9, "workflow_duration": "6m8s" },
     "predecessor_summary": { "artifact_count": 90, "DIRECT_MATCH": 80, "SUCCESSOR_SUPERSEDED": 6, "LEGACY_MANIFEST_DRIFT": 4, "UNEXPLAINED_MISMATCH": 0, "predecessor_status": "verified_with_observations" },
     "ysna_server": { "validated_git_sha": "53dd21d5d051e4e1a8b336475c81b34a34dc9d35", "architecture": "aarch64", "workspace_commands": 5, "mobile_unit": "9/9 PASS", "mobile_contract": "15/15 PASS", "c01_targeted": "42/42 PASS", "bundle_hashes_match_local": true, "toolchain_exit_code": 0, "production_audit_exit_code": 0, "production_vulnerabilities": 0, "independence_exit_code": 0, "independence_violations": 0, "checkout_clean": true, "validation_containers_after_cleanup": 0 }
   },
   "deferred": {
-    "github_ci_revalidation": "어울1 후속: Commit/Push/PR 후 shallow-history collision 해소 확인",
+    "github_ci_revalidation": "completed by PR 18 run 30204964560 at merge candidate ee16aa3ad4b3da594ec683a707c48214436aa3bf",
     "exact_commit_verification": "C03 completed locally at 459032773097086ac89139ee307ad53394b62208; mobile implementation completed at df6564851163254e40d29666fdf7fa1bd4481803",
-    "git_push": "completed through 53dd21d5d051e4e1a8b336475c81b34a34dc9d35",
+    "git_push": "completed through dc4d09cd336f61ddf664e599a70199556ad46907",
     "pr_merge": "어울1 후속",
     "ysna_server": "completed at 53dd21d5d051e4e1a8b336475c81b34a34dc9d35",
     "android_native_build_device": "Deferred R1-M3-05",

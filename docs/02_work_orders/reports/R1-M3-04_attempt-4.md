@@ -68,10 +68,11 @@ Mobile·Desktop·Web·Local Service Production Source, C01 검증기, 의존성,
 
 - C03 변경 Commit: `459032773097086ac89139ee307ad53394b62208`
 - 해당 정확 SHA에서 어울1이 공통 Gate를 재실행해 285.3초, Exit 0, Overall PASS, 33 Checks, Failures 0을 확인했다.
-- 최종 Evidence Manifest: 8,742 bytes, SHA-256 `0FB8BC0757FAD84E100DD0892F41FEB868CD570748AEDE956CDF1E03CDE82B67`
+- 최종 Evidence Manifest: 9,250 bytes, SHA-256 `CDF01524FBFAC9DFF43B6AEA2C1BD3691B67E5BB5D7F985AD920E1F17C8E44D4`
 - Policy SHA-256: `24A027EE54431790E87756C7A2FF70308DB56DDD2EECE4335440518BBFBB79A1`
-- GitHub Run `30203630301`은 수정 전 실패 증거다. 수정 후 GitHub Quality Gate 재실행은 Commit·Push·PR 권한을 가진 어울1 후속이다.
+- GitHub Run `30203630301`은 수정 전 실패 증거다.
+- 수정 후 PR #18 Run `30204964560`은 Head `dc4d09cd336f61ddf664e599a70199556ad46907`, Merge Candidate `ee16aa3ad4b3da594ec683a707c48214436aa3bf`에서 6분 8초 후 PASS했다. 업로드 Artifact 기준 Overall PASS, Exit 0, Failures 0이며 기존 실패 항목 `desktop-shell-unit`과 Mobile Unit이 모두 PASS했다.
 - Android/iOS Native 설치·Device는 R1-M3-05/06, Public API·Auth는 M4로 Deferred 상태를 유지한다.
 - DB Migration은 `N/A`다.
 
-어울2는 Commit·Push·PR·Merge·SSH·서버·GUI·Native Project 생성을 수행하지 않았다. 이후 어울1이 C03 Commit과 Exact-SHA Local Gate만 완료했으며 Push·GitHub 재검증·Merge는 아직 수행하지 않았다.
+어울2는 Commit·Push·PR·Merge·SSH·서버·GUI·Native Project 생성을 수행하지 않았다. 이후 어울1이 C03 Commit·Exact-SHA Local Gate·Push·GitHub 재검증을 완료했으며 Merge는 아직 수행하지 않았다.
