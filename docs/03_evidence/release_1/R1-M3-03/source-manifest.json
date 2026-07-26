@@ -2,13 +2,13 @@
   "schema_version": "1.0",
   "status": "EXACT_IMPLEMENTATION_COMMIT",
   "dirty_snapshot": false,
-  "base_head": "9c7aaefe78c6ab99b6c66607602f710925576232",
+  "base_head": "75e86835a238b706520e00b7d0e6ec908835fff6",
   "comparison_base": "bd13f1694623ca1225415c0f157ef88f94df6f38",
   "git_sha_role": "exact implementation commit",
-  "tracked_binary_patch_sha256": "2374F69884061E3DE73BA5AC4F586C7F7D253FA4A6858253A78500FFEE167ED5",
+  "tracked_binary_patch_sha256": "F7EE85501293846080D8742744C12BA55F8D461ECC43BE950A9EA461CBB49562",
   "untracked_binding": "file entries include untracked source bytes individually",
   "entry_canonicalization": "UTF-8 JSON.stringify(path,bytes,sha256), path ascending",
-  "source_entries_sha256": "492EA1A6041C2335B0D2ED3F9ECE6F862A4C2F95A5476DC622AF33C6948F73FB",
+  "source_entries_sha256": "154192FAAED329A01AC696F15A8DD688A02645CFCD3A13A680F4A0A27A1E04D6",
   "file_count": 44,
   "files": [
     {
@@ -28,8 +28,8 @@
     },
     {
       "path": "apps/desktop/src-tauri/Cargo.toml",
-      "bytes": 809,
-      "sha256": "54DF91A5F9BDE7F7B75567C8B28AF44AB56C9A4936F1AB57D2BF8B533984609F"
+      "bytes": 843,
+      "sha256": "CEED12AD23A40659BC86C6D49BB5B9BF8ACD6800C266B11BC14905E9A664AA2E"
     },
     {
       "path": "apps/desktop/src-tauri/src/bin/local-service-lifecycle-host.rs",
@@ -78,8 +78,8 @@
     },
     {
       "path": "docs/02_work_orders/release_1_attempt_ledger.jsonl",
-      "bytes": 14947,
-      "sha256": "45FF25BC8910EC92D47AB480948454BDBAD13DE2633CBCC75B205E321F10CCE2"
+      "bytes": 15774,
+      "sha256": "7F6FC6E6CF3695E3FA007C9E2DC36AEB6E035C156DE6DD9B2F0A59C404939BE6"
     },
     {
       "path": "independence-policy.json",
@@ -138,8 +138,8 @@
     },
     {
       "path": "scripts/tests/desktop-tauri-shell.test.mjs",
-      "bytes": 17334,
-      "sha256": "4743168BF0B453742B1B5DDFEB6CFD4EE76F266387EAD523B6E27D2B6DD3B345"
+      "bytes": 17483,
+      "sha256": "77BF879DCD2481BCE48ADB7437C6C07DB11D474DB7A66DFCA04574C79CEB05B9"
     },
     {
       "path": "scripts/tests/independence-check.test.mjs",

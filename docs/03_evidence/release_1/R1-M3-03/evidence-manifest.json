@@ -4,12 +4,12 @@
   "issue_id": "R1-M3-03-I001",
   "attempt": 4,
   "dirty_snapshot": false,
-  "base_head": "9c7aaefe78c6ab99b6c66607602f710925576232",
+  "base_head": "75e86835a238b706520e00b7d0e6ec908835fff6",
   "branch": "codex/r1-m3-03",
   "source_binding": {
     "file_count": 44,
-    "source_entries_sha256": "492EA1A6041C2335B0D2ED3F9ECE6F862A4C2F95A5476DC622AF33C6948F73FB",
-    "tracked_binary_patch_sha256": "2374F69884061E3DE73BA5AC4F586C7F7D253FA4A6858253A78500FFEE167ED5",
+    "source_entries_sha256": "154192FAAED329A01AC696F15A8DD688A02645CFCD3A13A680F4A0A27A1E04D6",
+    "tracked_binary_patch_sha256": "F7EE85501293846080D8742744C12BA55F8D461ECC43BE950A9EA461CBB49562",
     "comparison_base": "bd13f1694623ca1225415c0f157ef88f94df6f38",
     "git_sha_role": "exact implementation commit"
   },
@@ -42,12 +42,12 @@
     {
       "path": "quality-gate-result.json",
       "bytes": 48312,
-      "sha256": "7EFFD7CE82880887A20D3C85E460A55DB62DDC191AB552A38056CFCBA41A67C1"
+      "sha256": "11D875B71506F0A7F3C9C30F258D738FF340F2BF090A6C29E1ECF76BA2F3304C"
     },
     {
       "path": "quality-gate-summary.md",
       "bytes": 516,
-      "sha256": "15A953345D2C8BE2C5BAE1BDB63B5CCC830EA39D933CABE01BAE397A17584A40"
+      "sha256": "A8ADA63125B30B0696DCEB02A4D1410A6BB14C2AFFA40500D0D11A9C1E66BA34"
     },
     {
       "path": "rust-manager-error-cleanup.json",
@@ -62,7 +62,12 @@
     {
       "path": "source-manifest.json",
       "bytes": 8417,
-      "sha256": "A71BD4EE99EE92F7384CEF4E58587A2DA3212C742568935347CBFDE9BB573E8A"
+      "sha256": "30DB90130FAB81835B6AB7DCA9F62F04E065F16C27ABD00109BB660EAE3B6BED"
+    },
+    {
+      "path": "windows-installed-gui-lifecycle.json",
+      "bytes": 1224,
+      "sha256": "0682751D83ABB1FE9481A861061EE3F0E7BB141E143074DEEBC96DF576E8BCC9"
     }
   ],
   "handoff_records": [
@@ -78,8 +83,8 @@
     },
     {
       "path": "docs/04_test_reports/release_1/R1-M3-03-DIRECT_progress.md",
-      "bytes": 4607,
-      "sha256": "66854140BC0224D00D54F899CBB918C3DD2896521A86283B70C734BDC9B01EA7"
+      "bytes": 7066,
+      "sha256": "FAB3DD2D7AE9008556FAF91DC45C333857C8F27B855A080CBC48D390221E41F4"
     },
     {
       "path": "docs/02_work_orders/reports/R1-M3-03_attempt-1.md",
@@ -98,13 +103,13 @@
     },
     {
       "path": "docs/02_work_orders/reports/R1-M3-03_attempt-4.md",
-      "bytes": 2544,
-      "sha256": "89D25211D676AFB59DAD27EF3EBFFC08851D56942136A91E132D5484F3F01A70"
+      "bytes": 3505,
+      "sha256": "7090E6E5E87A3D1886F805D2EA34CB303E41839C0A3FCB339D92E6062E2B1B8C"
     }
   ],
   "quality_gate": {
     "command": "node scripts/verify-r1-m3-03-quality-gate.mjs",
-    "git_sha": "9c7aaefe78c6ab99b6c66607602f710925576232",
+    "git_sha": "75e86835a238b706520e00b7d0e6ec908835fff6",
     "process_temp_scope": "approved isolated temp root",
     "overall_status": "PASS",
     "exit_code": 0,
@@ -135,16 +140,24 @@
     "public_host_evidence_contains_secret_fields": false,
     "output_buffers_complete": true
   },
+  "windows_installed_gui": {
+    "installer_sha256": "19AF8411393149061F8B7CAFBDE25FE77F0FADE3CF18E5A32B85841D8195C97B",
+    "installer_bytes": 19380724,
+    "built_application": "daon-user-desktop.exe",
+    "window_title": "Daon 사용자 프로그램",
+    "local_service_ready": true,
+    "remaining_related_processes_after_close": 0
+  },
   "redaction": {
     "user_absolute_paths_present": false,
     "temporary_artifact_notation": "<TEMP>/..."
   },
   "generated_artifacts_cleaned": true,
   "deferred": {
-    "exact_implementation_commit_gate": "completed at 9c7aaefe78c6ab99b6c66607602f710925576232",
+    "exact_implementation_commit_gate": "completed at 75e86835a238b706520e00b7d0e6ec908835fff6",
     "database_migration": "N/A",
     "ysna_server": "main-designer follow-up",
-    "windows_installed_gui_lifecycle": "main-designer follow-up",
+    "windows_installed_gui_lifecycle": "completed",
     "m4_06_security_hardening": "Deferred by approved plan"
   }
 }

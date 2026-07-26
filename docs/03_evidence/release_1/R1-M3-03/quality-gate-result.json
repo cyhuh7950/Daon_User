@@ -2,9 +2,9 @@
   "schema_version": "1.0",
   "policy_path": "quality-gate-policy.json",
   "policy_sha256": "767EEE2BB7142BCEECF94DF32674AE9EB2A789D71B83B699A0303C31EC8323D2",
-  "git_sha": "9c7aaefe78c6ab99b6c66607602f710925576232",
-  "started_at": "2026-07-26T00:24:25.813Z",
-  "ended_at": "2026-07-26T00:28:28.834Z",
+  "git_sha": "75e86835a238b706520e00b7d0e6ec908835fff6",
+  "started_at": "2026-07-26T01:00:05.334Z",
+  "ended_at": "2026-07-26T01:04:18.528Z",
   "overall_status": "PASS",
   "exit_code": 0,
   "categories": {
@@ -21,8 +21,8 @@
             "run",
             "lint:workspace"
           ],
-          "started_at": "2026-07-26T00:24:25.999Z",
-          "ended_at": "2026-07-26T00:24:27.167Z",
+          "started_at": "2026-07-26T01:00:05.619Z",
+          "ended_at": "2026-07-26T01:00:06.626Z",
           "evidence_files": [
             {
               "path": "scripts/lint-workspace.mjs",
@@ -44,8 +44,8 @@
             "run",
             "verify:desktop-lint"
           ],
-          "started_at": "2026-07-26T00:24:40.175Z",
-          "ended_at": "2026-07-26T00:24:40.977Z",
+          "started_at": "2026-07-26T01:00:18.119Z",
+          "ended_at": "2026-07-26T01:00:18.917Z",
           "evidence_files": [
             {
               "path": "scripts/lint-workspace.mjs",
@@ -67,8 +67,8 @@
             "run",
             "lint:workspace"
           ],
-          "started_at": "2026-07-26T00:27:27.706Z",
-          "ended_at": "2026-07-26T00:27:28.377Z",
+          "started_at": "2026-07-26T01:03:16.828Z",
+          "ended_at": "2026-07-26T01:03:17.548Z",
           "evidence_files": [
             {
               "path": "scripts/lint-workspace.mjs",
@@ -90,8 +90,8 @@
             "run",
             "verify:product-foundation"
           ],
-          "started_at": "2026-07-26T00:27:39.847Z",
-          "ended_at": "2026-07-26T00:27:40.687Z",
+          "started_at": "2026-07-26T01:03:26.738Z",
+          "ended_at": "2026-07-26T01:03:27.479Z",
           "evidence_files": [
             {
               "path": "packages/contracts/navigation.json",
@@ -113,8 +113,8 @@
             "run",
             "verify:product-foundation"
           ],
-          "started_at": "2026-07-26T00:27:41.407Z",
-          "ended_at": "2026-07-26T00:27:42.070Z",
+          "started_at": "2026-07-26T01:03:28.159Z",
+          "ended_at": "2026-07-26T01:03:28.874Z",
           "evidence_files": [
             {
               "path": "packages/design-tokens/tokens.json",
@@ -140,8 +140,8 @@
             "scripts/run-local-service-tool.mjs",
             "lint"
           ],
-          "started_at": "2026-07-26T00:27:45.651Z",
-          "ended_at": "2026-07-26T00:27:46.572Z",
+          "started_at": "2026-07-26T01:03:33.105Z",
+          "ended_at": "2026-07-26T01:03:35.023Z",
           "evidence_files": [
             {
               "path": "services/local-service/pyproject.toml",
@@ -278,12 +278,12 @@
             "run",
             "verify:desktop-type"
           ],
-          "started_at": "2026-07-26T00:24:40.980Z",
-          "ended_at": "2026-07-26T00:25:56.104Z",
+          "started_at": "2026-07-26T01:00:18.920Z",
+          "ended_at": "2026-07-26T01:01:34.842Z",
           "evidence_files": [
             {
               "path": "apps/desktop/src-tauri/Cargo.toml",
-              "sha256": "54DF91A5F9BDE7F7B75567C8B28AF44AB56C9A4936F1AB57D2BF8B533984609F"
+              "sha256": "CEED12AD23A40659BC86C6D49BB5B9BF8ACD6800C266B11BC14905E9A664AA2E"
             },
             {
               "path": "apps/desktop/src-tauri/Cargo.lock",
@@ -303,8 +303,8 @@
             "packages/design-tokens/tsconfig.json",
             "--noEmit"
           ],
-          "started_at": "2026-07-26T00:27:42.073Z",
-          "ended_at": "2026-07-26T00:27:43.581Z",
+          "started_at": "2026-07-26T01:03:28.877Z",
+          "ended_at": "2026-07-26T01:03:30.353Z",
           "evidence_files": [
             {
               "path": "packages/design-tokens/tokens.ts",
@@ -326,8 +326,8 @@
             "scripts/run-local-service-tool.mjs",
             "type"
           ],
-          "started_at": "2026-07-26T00:27:46.575Z",
-          "ended_at": "2026-07-26T00:27:52.553Z",
+          "started_at": "2026-07-26T01:03:35.026Z",
+          "ended_at": "2026-07-26T01:03:42.362Z",
           "evidence_files": [
             {
               "path": "services/local-service/pyproject.toml",
@@ -436,8 +436,8 @@
             "run",
             "verify:workspace"
           ],
-          "started_at": "2026-07-26T00:24:27.170Z",
-          "ended_at": "2026-07-26T00:24:28.788Z",
+          "started_at": "2026-07-26T01:00:06.629Z",
+          "ended_at": "2026-07-26T01:00:07.854Z",
           "evidence_files": [
             {
               "path": "scripts/tests/workspace.test.mjs",
@@ -455,12 +455,12 @@
             "run",
             "verify:desktop-unit"
           ],
-          "started_at": "2026-07-26T00:25:56.106Z",
-          "ended_at": "2026-07-26T00:27:26.449Z",
+          "started_at": "2026-07-26T01:01:34.843Z",
+          "ended_at": "2026-07-26T01:03:15.432Z",
           "evidence_files": [
             {
               "path": "scripts/tests/desktop-tauri-shell.test.mjs",
-              "sha256": "E8F00BF1CE89F8D778D64A204CEC8401E34DC97A7938821F72982A9D7471608D"
+              "sha256": "A757F1A945F0F19191F05D82E979BC7F08D6C797D3AF4CE4F2FEB3583E8CDD25"
             }
           ]
         },
@@ -474,8 +474,8 @@
             "run",
             "verify:workspace"
           ],
-          "started_at": "2026-07-26T00:27:28.378Z",
-          "ended_at": "2026-07-26T00:27:29.427Z",
+          "started_at": "2026-07-26T01:03:17.549Z",
+          "ended_at": "2026-07-26T01:03:18.659Z",
           "evidence_files": [
             {
               "path": "scripts/tests/workspace.test.mjs",
@@ -493,8 +493,8 @@
             "run",
             "verify:product-foundation"
           ],
-          "started_at": "2026-07-26T00:27:43.583Z",
-          "ended_at": "2026-07-26T00:27:44.285Z",
+          "started_at": "2026-07-26T01:03:30.355Z",
+          "ended_at": "2026-07-26T01:03:31.055Z",
           "evidence_files": [
             {
               "path": "scripts/tests/product-foundation.test.mjs",
@@ -512,8 +512,8 @@
             "scripts/run-local-service-tool.mjs",
             "unit"
           ],
-          "started_at": "2026-07-26T00:27:52.555Z",
-          "ended_at": "2026-07-26T00:27:59.603Z",
+          "started_at": "2026-07-26T01:03:42.365Z",
+          "ended_at": "2026-07-26T01:03:49.211Z",
           "evidence_files": [
             {
               "path": "services/local-service/tests/test_protocol.py",
@@ -535,8 +535,8 @@
             "--test",
             "scripts/tests/quality-gate.test.mjs"
           ],
-          "started_at": "2026-07-26T00:28:01.090Z",
-          "ended_at": "2026-07-26T00:28:01.911Z",
+          "started_at": "2026-07-26T01:03:50.654Z",
+          "ended_at": "2026-07-26T01:03:51.420Z",
           "evidence_files": [
             {
               "path": "scripts/tests/quality-gate.test.mjs",
@@ -555,8 +555,8 @@
             "scripts/tests/local-service-runtime-verifier.test.mjs",
             "scripts/tests/local-service-stage-helper.test.mjs"
           ],
-          "started_at": "2026-07-26T00:28:01.912Z",
-          "ended_at": "2026-07-26T00:28:03.172Z",
+          "started_at": "2026-07-26T01:03:51.422Z",
+          "ended_at": "2026-07-26T01:03:52.755Z",
           "evidence_files": [
             {
               "path": "scripts/verify-local-service-runtime.mjs",
@@ -695,8 +695,8 @@
             "run",
             "verify:product-foundation"
           ],
-          "started_at": "2026-07-26T00:27:40.688Z",
-          "ended_at": "2026-07-26T00:27:41.406Z",
+          "started_at": "2026-07-26T01:03:27.481Z",
+          "ended_at": "2026-07-26T01:03:28.157Z",
           "evidence_files": [
             {
               "path": "packages/contracts/navigation.json",
@@ -718,8 +718,8 @@
             "scripts/run-local-service-tool.mjs",
             "contract"
           ],
-          "started_at": "2026-07-26T00:27:59.605Z",
-          "ended_at": "2026-07-26T00:28:00.786Z",
+          "started_at": "2026-07-26T01:03:49.215Z",
+          "ended_at": "2026-07-26T01:03:50.345Z",
           "evidence_files": [
             {
               "path": "services/local-service/tests/test_protocol.py",
@@ -827,8 +827,8 @@
             "--workspace",
             "@daon-user/web"
           ],
-          "started_at": "2026-07-26T00:24:28.789Z",
-          "ended_at": "2026-07-26T00:24:40.170Z",
+          "started_at": "2026-07-26T01:00:07.855Z",
+          "ended_at": "2026-07-26T01:00:18.116Z",
           "evidence_files": [
             {
               "path": "apps/web/next.config.mjs",
@@ -850,8 +850,8 @@
             "run",
             "verify:desktop-build"
           ],
-          "started_at": "2026-07-26T00:27:26.450Z",
-          "ended_at": "2026-07-26T00:27:27.705Z",
+          "started_at": "2026-07-26T01:03:15.433Z",
+          "ended_at": "2026-07-26T01:03:16.826Z",
           "evidence_files": [
             {
               "path": "apps/desktop/index.html",
@@ -875,8 +875,8 @@
             "--workspace",
             "@daon-user/web"
           ],
-          "started_at": "2026-07-26T00:27:29.428Z",
-          "ended_at": "2026-07-26T00:27:39.844Z",
+          "started_at": "2026-07-26T01:03:18.660Z",
+          "ended_at": "2026-07-26T01:03:26.736Z",
           "evidence_files": [
             {
               "path": "packages/ui/src/adaptive-workspace.jsx",
@@ -900,8 +900,8 @@
             "packages/design-tokens/tsconfig.json",
             "--noEmit"
           ],
-          "started_at": "2026-07-26T00:27:44.285Z",
-          "ended_at": "2026-07-26T00:27:45.649Z",
+          "started_at": "2026-07-26T01:03:31.057Z",
+          "ended_at": "2026-07-26T01:03:33.103Z",
           "evidence_files": [
             {
               "path": "packages/design-tokens/tokens.ts",
@@ -923,8 +923,8 @@
             "scripts/run-local-service-tool.mjs",
             "build"
           ],
-          "started_at": "2026-07-26T00:28:00.788Z",
-          "ended_at": "2026-07-26T00:28:01.088Z",
+          "started_at": "2026-07-26T01:03:50.349Z",
+          "ended_at": "2026-07-26T01:03:50.652Z",
           "evidence_files": [
             {
               "path": "services/local-service/entrypoint.py",
@@ -946,8 +946,8 @@
             "run",
             "verify:toolchain"
           ],
-          "started_at": "2026-07-26T00:28:03.173Z",
-          "ended_at": "2026-07-26T00:28:04.423Z",
+          "started_at": "2026-07-26T01:03:52.757Z",
+          "ended_at": "2026-07-26T01:03:53.884Z",
           "evidence_files": [
             {
               "path": "toolchain-versions.json",
@@ -1099,8 +1099,8 @@
           "status": "PASS",
           "exit_code": 0,
           "command": null,
-          "started_at": "2026-07-26T00:24:25.925Z",
-          "ended_at": "2026-07-26T00:24:25.999Z",
+          "started_at": "2026-07-26T01:00:05.467Z",
+          "ended_at": "2026-07-26T01:00:05.619Z",
           "evidence_files": [
             "apps/desktop/app-icon.svg",
             "apps/desktop/index.html",
@@ -1221,8 +1221,8 @@
             "--audit-level=high",
             "--json"
           ],
-          "started_at": "2026-07-26T00:28:04.426Z",
-          "ended_at": "2026-07-26T00:28:05.868Z",
+          "started_at": "2026-07-26T01:03:53.887Z",
+          "ended_at": "2026-07-26T01:03:56.164Z",
           "evidence_files": [
             {
               "path": "package.json",
@@ -1244,8 +1244,8 @@
             "scripts/run-local-service-tool.mjs",
             "security"
           ],
-          "started_at": "2026-07-26T00:28:05.870Z",
-          "ended_at": "2026-07-26T00:28:28.136Z",
+          "started_at": "2026-07-26T01:03:56.165Z",
+          "ended_at": "2026-07-26T01:04:17.901Z",
           "evidence_files": [
             {
               "path": "services/local-service/pyproject.toml",
@@ -1275,8 +1275,8 @@
             "--",
             "--no-write"
           ],
-          "started_at": "2026-07-26T00:28:28.138Z",
-          "ended_at": "2026-07-26T00:28:28.831Z",
+          "started_at": "2026-07-26T01:04:17.902Z",
+          "ended_at": "2026-07-26T01:04:18.525Z",
           "evidence_files": [
             {
               "path": "independence-policy.json",

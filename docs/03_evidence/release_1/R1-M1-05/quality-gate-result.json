@@ -1,33 +1,191 @@
 {
   "schema_version": "1.0",
   "policy_path": "quality-gate-policy.json",
-  "policy_sha256": "D29A4E1D1723A06954978BCA179EA4E0E922A563E8BCA701E74D878749FDF471",
-  "git_sha": "7808f9121f38233295eb5f84885c1ed3edd71cbd",
-  "started_at": "2026-07-20T15:00:33.142Z",
-  "ended_at": "2026-07-20T15:00:38.796Z",
+  "policy_sha256": "767EEE2BB7142BCEECF94DF32674AE9EB2A789D71B83B699A0303C31EC8323D2",
+  "git_sha": "75e86835a238b706520e00b7d0e6ec908835fff6",
+  "started_at": "2026-07-26T01:00:05.334Z",
+  "ended_at": "2026-07-26T01:04:18.528Z",
   "overall_status": "PASS",
   "exit_code": 0,
   "categories": {
     "lint": {
-      "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-      "checks": [],
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "web-workspace-lint",
+          "component": "apps/web",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "lint:workspace"
+          ],
+          "started_at": "2026-07-26T01:00:05.619Z",
+          "ended_at": "2026-07-26T01:00:06.626Z",
+          "evidence_files": [
+            {
+              "path": "scripts/lint-workspace.mjs",
+              "sha256": "6DB9810F13D6E8B9BD5019D34892EDDA4DAFB5470D3404A69B4620ED92A0FE79"
+            },
+            {
+              "path": "apps/web/app/page.jsx",
+              "sha256": "EC7BD56C99FBE6E84918D69932CE8F2E9D159627BD8CED0FA2034CFCF5C606A2"
+            }
+          ]
+        },
+        {
+          "id": "desktop-shell-lint",
+          "component": "apps/desktop",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:desktop-lint"
+          ],
+          "started_at": "2026-07-26T01:00:18.119Z",
+          "ended_at": "2026-07-26T01:00:18.917Z",
+          "evidence_files": [
+            {
+              "path": "scripts/lint-workspace.mjs",
+              "sha256": "6DB9810F13D6E8B9BD5019D34892EDDA4DAFB5470D3404A69B4620ED92A0FE79"
+            },
+            {
+              "path": "apps/desktop/src/desktop-shell.jsx",
+              "sha256": "99A479090A32623289A61A172B226805C3DBC48F5DD1ED54BBB2FACE5FD7172F"
+            }
+          ]
+        },
+        {
+          "id": "ui-workspace-lint",
+          "component": "packages/ui",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "lint:workspace"
+          ],
+          "started_at": "2026-07-26T01:03:16.828Z",
+          "ended_at": "2026-07-26T01:03:17.548Z",
+          "evidence_files": [
+            {
+              "path": "scripts/lint-workspace.mjs",
+              "sha256": "6DB9810F13D6E8B9BD5019D34892EDDA4DAFB5470D3404A69B4620ED92A0FE79"
+            },
+            {
+              "path": "packages/ui/src/adaptive-workspace.jsx",
+              "sha256": "DDE66C7A25F6DAC7575B437EDCA178C6834A24CD000AC134572E4967D6D72281"
+            }
+          ]
+        },
+        {
+          "id": "contracts-lint",
+          "component": "packages/contracts",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-26T01:03:26.738Z",
+          "ended_at": "2026-07-26T01:03:27.479Z",
+          "evidence_files": [
+            {
+              "path": "packages/contracts/navigation.json",
+              "sha256": "4FB54727E381CA5D89BD310B2D8315E61153DF46AC1CC0E41070A3FE7D9C6377"
+            },
+            {
+              "path": "packages/contracts/screens.json",
+              "sha256": "0167274173DBD4C7AB6A444279B7F90150858BB998DCC91608CBED54D667F720"
+            }
+          ]
+        },
+        {
+          "id": "design-tokens-lint",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-26T01:03:28.159Z",
+          "ended_at": "2026-07-26T01:03:28.874Z",
+          "evidence_files": [
+            {
+              "path": "packages/design-tokens/tokens.json",
+              "sha256": "8DC301BD89C4A27BDC22BA17B769D554496D7EB709D92F4D0AACA63562AC8D3B"
+            },
+            {
+              "path": "packages/design-tokens/tokens.css",
+              "sha256": "E00782751AE12261E95AD1692A3DAA86F1DE1A1D12F1B91134EE3B370DEC4680"
+            },
+            {
+              "path": "packages/design-tokens/tokens.ts",
+              "sha256": "83B5EEDAFDDBBE4B890ACD98AEAFFDF6E941F05763BCE60F99F0F84DED568689"
+            }
+          ]
+        },
+        {
+          "id": "local-service-lint",
+          "component": "services/local-service",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "scripts/run-local-service-tool.mjs",
+            "lint"
+          ],
+          "started_at": "2026-07-26T01:03:33.105Z",
+          "ended_at": "2026-07-26T01:03:35.023Z",
+          "evidence_files": [
+            {
+              "path": "services/local-service/pyproject.toml",
+              "sha256": "C16C4883DCA08E91FB7607918CD0CDE674141D8C7E088F4C9CE305FF6945A62E"
+            },
+            {
+              "path": "services/local-service/src/daon_user_local_service/app.py",
+              "sha256": "19D89FA1A2B14012023561EDB9BFB14854A86243061E8F288A00684B265580FC"
+            }
+          ]
+        }
+      ],
       "component_capabilities": [
         {
           "component": "apps/web",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/web/package.json",
-            "apps/web/README.md",
-            "apps/web/package.json"
+            "apps/web/app/bff/shell/runtime/route.js",
+            "apps/web/app/layout.jsx",
+            "apps/web/app/notifications/page.jsx",
+            "apps/web/app/operations/page.jsx",
+            "apps/web/app/page.jsx",
+            "apps/web/app/settings/account/page.jsx",
+            "apps/web/app/settings/organization/page.jsx",
+            "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/web-shell-runtime.js",
+            "apps/web/next.config.mjs"
           ]
         },
         {
           "component": "apps/desktop",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/desktop/package.json",
-            "apps/desktop/README.md",
-            "apps/desktop/package.json"
+            "apps/desktop/src/desktop-shell-model.js",
+            "apps/desktop/src/desktop-shell.jsx",
+            "apps/desktop/src/local-service-bridge.js",
+            "apps/desktop/src/main.jsx",
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/src/bin/local-service-lifecycle-host.rs",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/local_service.rs",
+            "apps/desktop/src-tauri/src/main.rs",
+            "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs",
+            "apps/desktop/src-tauri/tests/local_service_contract.rs"
           ]
         },
         {
@@ -41,29 +199,44 @@
         },
         {
           "component": "packages/ui",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "packages/ui/package.json",
-            "packages/ui/README.md",
-            "packages/ui/package.json"
+            "packages/ui/src/account-security-model.js",
+            "packages/ui/src/account-security-pane.jsx",
+            "packages/ui/src/adaptive-workspace.jsx",
+            "packages/ui/src/index.js",
+            "packages/ui/src/operations-recovery-model.js",
+            "packages/ui/src/operations-recovery-pane.jsx",
+            "packages/ui/src/production-bound-evidence-model.js",
+            "packages/ui/src/production-bound-evidence-pane.jsx",
+            "packages/ui/src/run-model-evidence-model.js",
+            "packages/ui/src/run-model-evidence-pane.jsx",
+            "packages/ui/src/source-knowledge-controls.js",
+            "packages/ui/src/source-knowledge-model.js",
+            "packages/ui/src/source-knowledge-pane.jsx",
+            "packages/ui/src/studio-workflow-model.js",
+            "packages/ui/src/studio-workflow-pane.jsx",
+            "packages/ui/src/web-shell-runtime-model.js",
+            "packages/ui/src/web-shell-runtime-status.jsx",
+            "packages/ui/src/workspace-interaction.js",
+            "packages/ui/src/workspace-model.js"
           ]
         },
         {
           "component": "packages/contracts",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "packages/contracts/package.json",
-            "packages/contracts/README.md",
-            "packages/contracts/package.json"
+            "packages/contracts/navigation.json",
+            "packages/contracts/screens.json"
           ]
         },
         {
           "component": "packages/design-tokens",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "packages/design-tokens/package.json",
-            "packages/design-tokens/README.md",
-            "packages/design-tokens/package.json"
+            "packages/design-tokens/tokens.json",
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json"
           ]
         },
         {
@@ -77,18 +250,96 @@
         },
         {
           "component": "services/local-service",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "services/local-service/pyproject.toml",
-            "services/local-service/README.md",
-            "services/local-service/pyproject.toml"
+            "services/local-service/entrypoint.py",
+            "services/local-service/src/daon_user_local_service/app.py",
+            "services/local-service/src/daon_user_local_service/main.py",
+            "services/local-service/src/daon_user_local_service/protocol.py",
+            "services/local-service/src/daon_user_local_service/__init__.py",
+            "services/local-service/src/daon_user_local_service/__main__.py",
+            "services/local-service/tests/test_app.py",
+            "services/local-service/tests/test_main.py",
+            "services/local-service/tests/test_protocol.py"
           ]
         }
       ]
     },
     "type": {
-      "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-      "checks": [],
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "desktop-rust-type",
+          "component": "apps/desktop",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:desktop-type"
+          ],
+          "started_at": "2026-07-26T01:00:18.920Z",
+          "ended_at": "2026-07-26T01:01:34.842Z",
+          "evidence_files": [
+            {
+              "path": "apps/desktop/src-tauri/Cargo.toml",
+              "sha256": "CEED12AD23A40659BC86C6D49BB5B9BF8ACD6800C266B11BC14905E9A664AA2E"
+            },
+            {
+              "path": "apps/desktop/src-tauri/Cargo.lock",
+              "sha256": "A3EB16FF206DC70011C2A6A88CD55B63159DCFB111E09C681237FFDCC71AE040"
+            }
+          ]
+        },
+        {
+          "id": "design-tokens-type",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npx",
+            "tsc",
+            "--project",
+            "packages/design-tokens/tsconfig.json",
+            "--noEmit"
+          ],
+          "started_at": "2026-07-26T01:03:28.877Z",
+          "ended_at": "2026-07-26T01:03:30.353Z",
+          "evidence_files": [
+            {
+              "path": "packages/design-tokens/tokens.ts",
+              "sha256": "83B5EEDAFDDBBE4B890ACD98AEAFFDF6E941F05763BCE60F99F0F84DED568689"
+            },
+            {
+              "path": "packages/design-tokens/tsconfig.json",
+              "sha256": "383F64998C76898F424946F9DE0B04F052413A3AC16E0E431B6A7A807BBE86CE"
+            }
+          ]
+        },
+        {
+          "id": "local-service-type",
+          "component": "services/local-service",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "scripts/run-local-service-tool.mjs",
+            "type"
+          ],
+          "started_at": "2026-07-26T01:03:35.026Z",
+          "ended_at": "2026-07-26T01:03:42.362Z",
+          "evidence_files": [
+            {
+              "path": "services/local-service/pyproject.toml",
+              "sha256": "C16C4883DCA08E91FB7607918CD0CDE674141D8C7E088F4C9CE305FF6945A62E"
+            },
+            {
+              "path": "services/local-service/src/daon_user_local_service/protocol.py",
+              "sha256": "6F494D542C0DDC99F02A9A060F39A520D76AD912B9F4D241DB9097E5D7A75EED"
+            }
+          ]
+        }
+      ],
       "component_capabilities": [
         {
           "component": "apps/web",
@@ -101,11 +352,14 @@
         },
         {
           "component": "apps/desktop",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/desktop/package.json",
-            "apps/desktop/README.md",
-            "apps/desktop/package.json"
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/src/bin/local-service-lifecycle-host.rs",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/local_service.rs",
+            "apps/desktop/src-tauri/src/main.rs",
+            "apps/desktop/src-tauri/tests/local_service_contract.rs"
           ]
         },
         {
@@ -137,11 +391,10 @@
         },
         {
           "component": "packages/design-tokens",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "packages/design-tokens/package.json",
-            "packages/design-tokens/README.md",
-            "packages/design-tokens/package.json"
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json"
           ]
         },
         {
@@ -155,11 +408,17 @@
         },
         {
           "component": "services/local-service",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "services/local-service/pyproject.toml",
-            "services/local-service/README.md",
-            "services/local-service/pyproject.toml"
+            "services/local-service/entrypoint.py",
+            "services/local-service/src/daon_user_local_service/app.py",
+            "services/local-service/src/daon_user_local_service/main.py",
+            "services/local-service/src/daon_user_local_service/protocol.py",
+            "services/local-service/src/daon_user_local_service/__init__.py",
+            "services/local-service/src/daon_user_local_service/__main__.py",
+            "services/local-service/tests/test_app.py",
+            "services/local-service/tests/test_main.py",
+            "services/local-service/tests/test_protocol.py"
           ]
         }
       ]
@@ -167,6 +426,105 @@
     "unit": {
       "status": "PASS",
       "checks": [
+        {
+          "id": "web-workspace-unit",
+          "component": "apps/web",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:workspace"
+          ],
+          "started_at": "2026-07-26T01:00:06.629Z",
+          "ended_at": "2026-07-26T01:00:07.854Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/workspace.test.mjs",
+              "sha256": "C42B634BA1AA2C96D7BF97F4F4A048BEDB39B73BFC6CEC3A3CA71FE85F761147"
+            }
+          ]
+        },
+        {
+          "id": "desktop-shell-unit",
+          "component": "apps/desktop",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:desktop-unit"
+          ],
+          "started_at": "2026-07-26T01:01:34.843Z",
+          "ended_at": "2026-07-26T01:03:15.432Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/desktop-tauri-shell.test.mjs",
+              "sha256": "A757F1A945F0F19191F05D82E979BC7F08D6C797D3AF4CE4F2FEB3583E8CDD25"
+            }
+          ]
+        },
+        {
+          "id": "ui-workspace-unit",
+          "component": "packages/ui",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:workspace"
+          ],
+          "started_at": "2026-07-26T01:03:17.549Z",
+          "ended_at": "2026-07-26T01:03:18.659Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/workspace.test.mjs",
+              "sha256": "C42B634BA1AA2C96D7BF97F4F4A048BEDB39B73BFC6CEC3A3CA71FE85F761147"
+            }
+          ]
+        },
+        {
+          "id": "design-tokens-unit",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-26T01:03:30.355Z",
+          "ended_at": "2026-07-26T01:03:31.055Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/product-foundation.test.mjs",
+              "sha256": "079854C89000AB4F822FFF1616A9826403D6035DAA65AD173A6D2C3A74D1D4ED"
+            }
+          ]
+        },
+        {
+          "id": "local-service-unit",
+          "component": "services/local-service",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "scripts/run-local-service-tool.mjs",
+            "unit"
+          ],
+          "started_at": "2026-07-26T01:03:42.365Z",
+          "ended_at": "2026-07-26T01:03:49.211Z",
+          "evidence_files": [
+            {
+              "path": "services/local-service/tests/test_protocol.py",
+              "sha256": "F59001F0796CF798416E6FA6F251ED37BDD0C7E08055394B1A9DE1076C765DA8"
+            },
+            {
+              "path": "services/local-service/tests/test_app.py",
+              "sha256": "CAE4EFA5D59EF499F409AFCB5FCD30B10F131366B559CCDB145016A83C8F33A1"
+            }
+          ]
+        },
         {
           "id": "quality-gate-runner-tests",
           "component": null,
@@ -177,12 +535,199 @@
             "--test",
             "scripts/tests/quality-gate.test.mjs"
           ],
-          "started_at": "2026-07-20T15:00:33.297Z",
-          "ended_at": "2026-07-20T15:00:34.659Z",
+          "started_at": "2026-07-26T01:03:50.654Z",
+          "ended_at": "2026-07-26T01:03:51.420Z",
           "evidence_files": [
             {
               "path": "scripts/tests/quality-gate.test.mjs",
-              "sha256": "B9F6832A8A1A1B2C2DFE38BD1FA09A08CEC7C057F018EF9AAE423522382B62B6"
+              "sha256": "AF15213C0C0B2176C9DDD81620F307698414BD19C711C5B412047C010644458F"
+            }
+          ]
+        },
+        {
+          "id": "local-service-runtime-verifier-tests",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "--test",
+            "scripts/tests/local-service-runtime-verifier.test.mjs",
+            "scripts/tests/local-service-stage-helper.test.mjs"
+          ],
+          "started_at": "2026-07-26T01:03:51.422Z",
+          "ended_at": "2026-07-26T01:03:52.755Z",
+          "evidence_files": [
+            {
+              "path": "scripts/verify-local-service-runtime.mjs",
+              "sha256": "89AC2ACEBA2F1C16C37EB741B614413B2F1CE6516EACE72598EF0F5BC2924573"
+            },
+            {
+              "path": "scripts/stage-local-service-sidecar.ps1",
+              "sha256": "9A49019476BB61E6B4E229D534ACE8B1DDA1FFC2A5423C7296549C519D52EFF7"
+            }
+          ]
+        }
+      ],
+      "component_capabilities": [
+        {
+          "component": "apps/web",
+          "status": "REQUIRED",
+          "evidence": [
+            "apps/web/app/bff/shell/runtime/route.js",
+            "apps/web/app/layout.jsx",
+            "apps/web/app/notifications/page.jsx",
+            "apps/web/app/operations/page.jsx",
+            "apps/web/app/page.jsx",
+            "apps/web/app/settings/account/page.jsx",
+            "apps/web/app/settings/organization/page.jsx",
+            "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/web-shell-runtime.js",
+            "apps/web/next.config.mjs"
+          ]
+        },
+        {
+          "component": "apps/desktop",
+          "status": "REQUIRED",
+          "evidence": [
+            "apps/desktop/src/desktop-shell-model.js",
+            "apps/desktop/src/desktop-shell.jsx",
+            "apps/desktop/src/local-service-bridge.js",
+            "apps/desktop/src/main.jsx",
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/src/bin/local-service-lifecycle-host.rs",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/local_service.rs",
+            "apps/desktop/src-tauri/src/main.rs",
+            "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs",
+            "apps/desktop/src-tauri/tests/local_service_contract.rs"
+          ]
+        },
+        {
+          "component": "apps/mobile",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "apps/mobile/package.json",
+            "apps/mobile/README.md",
+            "apps/mobile/package.json"
+          ]
+        },
+        {
+          "component": "packages/ui",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/ui/src/account-security-model.js",
+            "packages/ui/src/account-security-pane.jsx",
+            "packages/ui/src/adaptive-workspace.jsx",
+            "packages/ui/src/index.js",
+            "packages/ui/src/operations-recovery-model.js",
+            "packages/ui/src/operations-recovery-pane.jsx",
+            "packages/ui/src/production-bound-evidence-model.js",
+            "packages/ui/src/production-bound-evidence-pane.jsx",
+            "packages/ui/src/run-model-evidence-model.js",
+            "packages/ui/src/run-model-evidence-pane.jsx",
+            "packages/ui/src/source-knowledge-controls.js",
+            "packages/ui/src/source-knowledge-model.js",
+            "packages/ui/src/source-knowledge-pane.jsx",
+            "packages/ui/src/studio-workflow-model.js",
+            "packages/ui/src/studio-workflow-pane.jsx",
+            "packages/ui/src/web-shell-runtime-model.js",
+            "packages/ui/src/web-shell-runtime-status.jsx",
+            "packages/ui/src/workspace-interaction.js",
+            "packages/ui/src/workspace-model.js"
+          ]
+        },
+        {
+          "component": "packages/contracts",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "packages/contracts/package.json",
+            "packages/contracts/README.md",
+            "packages/contracts/package.json"
+          ]
+        },
+        {
+          "component": "packages/design-tokens",
+          "status": "REQUIRED",
+          "evidence": [
+            "packages/design-tokens/tokens.ts"
+          ]
+        },
+        {
+          "component": "services/api",
+          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "evidence": [
+            "services/api/pyproject.toml",
+            "services/api/README.md",
+            "services/api/pyproject.toml"
+          ]
+        },
+        {
+          "component": "services/local-service",
+          "status": "REQUIRED",
+          "evidence": [
+            "services/local-service/entrypoint.py",
+            "services/local-service/src/daon_user_local_service/app.py",
+            "services/local-service/src/daon_user_local_service/main.py",
+            "services/local-service/src/daon_user_local_service/protocol.py",
+            "services/local-service/src/daon_user_local_service/__init__.py",
+            "services/local-service/src/daon_user_local_service/__main__.py",
+            "services/local-service/tests/test_app.py",
+            "services/local-service/tests/test_main.py",
+            "services/local-service/tests/test_protocol.py",
+            "services/local-service/tests/__pycache__/test_app.cpython-314-pytest-9.0.3.pyc",
+            "services/local-service/tests/__pycache__/test_main.cpython-314-pytest-9.0.3.pyc",
+            "services/local-service/tests/__pycache__/test_protocol.cpython-314-pytest-9.0.3.pyc"
+          ]
+        }
+      ]
+    },
+    "contract": {
+      "status": "PASS",
+      "checks": [
+        {
+          "id": "contracts-contract",
+          "component": "packages/contracts",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:product-foundation"
+          ],
+          "started_at": "2026-07-26T01:03:27.481Z",
+          "ended_at": "2026-07-26T01:03:28.157Z",
+          "evidence_files": [
+            {
+              "path": "packages/contracts/navigation.json",
+              "sha256": "4FB54727E381CA5D89BD310B2D8315E61153DF46AC1CC0E41070A3FE7D9C6377"
+            },
+            {
+              "path": "packages/contracts/screens.json",
+              "sha256": "0167274173DBD4C7AB6A444279B7F90150858BB998DCC91608CBED54D667F720"
+            }
+          ]
+        },
+        {
+          "id": "local-service-contract",
+          "component": "services/local-service",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "scripts/run-local-service-tool.mjs",
+            "contract"
+          ],
+          "started_at": "2026-07-26T01:03:49.215Z",
+          "ended_at": "2026-07-26T01:03:50.345Z",
+          "evidence_files": [
+            {
+              "path": "services/local-service/tests/test_protocol.py",
+              "sha256": "F59001F0796CF798416E6FA6F251ED37BDD0C7E08055394B1A9DE1076C765DA8"
+            },
+            {
+              "path": "services/local-service/tests/test_app.py",
+              "sha256": "CAE4EFA5D59EF499F409AFCB5FCD30B10F131366B559CCDB145016A83C8F33A1"
             }
           ]
         }
@@ -226,11 +771,10 @@
         },
         {
           "component": "packages/contracts",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "packages/contracts/package.json",
-            "packages/contracts/README.md",
-            "packages/contracts/package.json"
+            "packages/contracts/navigation.json",
+            "packages/contracts/screens.json"
           ]
         },
         {
@@ -253,89 +797,17 @@
         },
         {
           "component": "services/local-service",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "services/local-service/pyproject.toml",
-            "services/local-service/README.md",
-            "services/local-service/pyproject.toml"
-          ]
-        }
-      ]
-    },
-    "contract": {
-      "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-      "checks": [],
-      "component_capabilities": [
-        {
-          "component": "apps/web",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-          "evidence": [
-            "apps/web/package.json",
-            "apps/web/README.md",
-            "apps/web/package.json"
-          ]
-        },
-        {
-          "component": "apps/desktop",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-          "evidence": [
-            "apps/desktop/package.json",
-            "apps/desktop/README.md",
-            "apps/desktop/package.json"
-          ]
-        },
-        {
-          "component": "apps/mobile",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-          "evidence": [
-            "apps/mobile/package.json",
-            "apps/mobile/README.md",
-            "apps/mobile/package.json"
-          ]
-        },
-        {
-          "component": "packages/ui",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-          "evidence": [
-            "packages/ui/package.json",
-            "packages/ui/README.md",
-            "packages/ui/package.json"
-          ]
-        },
-        {
-          "component": "packages/contracts",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-          "evidence": [
-            "packages/contracts/package.json",
-            "packages/contracts/README.md",
-            "packages/contracts/package.json"
-          ]
-        },
-        {
-          "component": "packages/design-tokens",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-          "evidence": [
-            "packages/design-tokens/package.json",
-            "packages/design-tokens/README.md",
-            "packages/design-tokens/package.json"
-          ]
-        },
-        {
-          "component": "services/api",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-          "evidence": [
-            "services/api/pyproject.toml",
-            "services/api/README.md",
-            "services/api/pyproject.toml"
-          ]
-        },
-        {
-          "component": "services/local-service",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
-          "evidence": [
-            "services/local-service/pyproject.toml",
-            "services/local-service/README.md",
-            "services/local-service/pyproject.toml"
+            "services/local-service/entrypoint.py",
+            "services/local-service/src/daon_user_local_service/app.py",
+            "services/local-service/src/daon_user_local_service/main.py",
+            "services/local-service/src/daon_user_local_service/protocol.py",
+            "services/local-service/src/daon_user_local_service/__init__.py",
+            "services/local-service/src/daon_user_local_service/__main__.py",
+            "services/local-service/tests/test_app.py",
+            "services/local-service/tests/test_main.py",
+            "services/local-service/tests/test_protocol.py"
           ]
         }
       ]
@@ -343,6 +815,127 @@
     "build": {
       "status": "PASS",
       "checks": [
+        {
+          "id": "web-production-build",
+          "component": "apps/web",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "build",
+            "--workspace",
+            "@daon-user/web"
+          ],
+          "started_at": "2026-07-26T01:00:07.855Z",
+          "ended_at": "2026-07-26T01:00:18.116Z",
+          "evidence_files": [
+            {
+              "path": "apps/web/next.config.mjs",
+              "sha256": "E5A969719D276CD1E484DB8FA8C379581DD3C021D0C53416DD49920AA3E43FFE"
+            },
+            {
+              "path": "apps/web/app/page.jsx",
+              "sha256": "EC7BD56C99FBE6E84918D69932CE8F2E9D159627BD8CED0FA2034CFCF5C606A2"
+            }
+          ]
+        },
+        {
+          "id": "desktop-production-assets",
+          "component": "apps/desktop",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:desktop-build"
+          ],
+          "started_at": "2026-07-26T01:03:15.433Z",
+          "ended_at": "2026-07-26T01:03:16.826Z",
+          "evidence_files": [
+            {
+              "path": "apps/desktop/index.html",
+              "sha256": "898307B3E7081082272894FE232298EBD795FA5BA0CE85C7CD637DFB9711C6DB"
+            },
+            {
+              "path": "apps/desktop/src-tauri/tauri.conf.json",
+              "sha256": "1739F44E951FCCCBE4F4F6235D1E7D603582270C50445252887601F42160C0A6"
+            }
+          ]
+        },
+        {
+          "id": "ui-production-build",
+          "component": "packages/ui",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "build",
+            "--workspace",
+            "@daon-user/web"
+          ],
+          "started_at": "2026-07-26T01:03:18.660Z",
+          "ended_at": "2026-07-26T01:03:26.736Z",
+          "evidence_files": [
+            {
+              "path": "packages/ui/src/adaptive-workspace.jsx",
+              "sha256": "DDE66C7A25F6DAC7575B437EDCA178C6834A24CD000AC134572E4967D6D72281"
+            },
+            {
+              "path": "packages/ui/src/workspace.css",
+              "sha256": "BCEAACE5A1189AD5DEFBEA73EB7CDFBA8BFBF4528A3406A66DBBE0BC5A7807A0"
+            }
+          ]
+        },
+        {
+          "id": "design-tokens-build",
+          "component": "packages/design-tokens",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npx",
+            "tsc",
+            "--project",
+            "packages/design-tokens/tsconfig.json",
+            "--noEmit"
+          ],
+          "started_at": "2026-07-26T01:03:31.057Z",
+          "ended_at": "2026-07-26T01:03:33.103Z",
+          "evidence_files": [
+            {
+              "path": "packages/design-tokens/tokens.ts",
+              "sha256": "83B5EEDAFDDBBE4B890ACD98AEAFFDF6E941F05763BCE60F99F0F84DED568689"
+            },
+            {
+              "path": "packages/design-tokens/tokens.json",
+              "sha256": "8DC301BD89C4A27BDC22BA17B769D554496D7EB709D92F4D0AACA63562AC8D3B"
+            }
+          ]
+        },
+        {
+          "id": "local-service-build",
+          "component": "services/local-service",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "scripts/run-local-service-tool.mjs",
+            "build"
+          ],
+          "started_at": "2026-07-26T01:03:50.349Z",
+          "ended_at": "2026-07-26T01:03:50.652Z",
+          "evidence_files": [
+            {
+              "path": "services/local-service/entrypoint.py",
+              "sha256": "528C2255DB70714F5C5960400179D4B47782993B6511FFBD6580F701A4292AB6"
+            },
+            {
+              "path": "services/local-service/src/daon_user_local_service/main.py",
+              "sha256": "24E99235F46260D8A3764D8331672AF5C1BF68799BFD6E9993B177A93CAD87C7"
+            }
+          ]
+        },
         {
           "id": "toolchain-baseline",
           "component": null,
@@ -353,20 +946,20 @@
             "run",
             "verify:toolchain"
           ],
-          "started_at": "2026-07-20T15:00:34.660Z",
-          "ended_at": "2026-07-20T15:00:35.975Z",
+          "started_at": "2026-07-26T01:03:52.757Z",
+          "ended_at": "2026-07-26T01:03:53.884Z",
           "evidence_files": [
             {
               "path": "toolchain-versions.json",
-              "sha256": "0B6A0175F7CB58E553A2C10C6178C5F4D54DA7608DAEE462FF043467760CFF60"
+              "sha256": "836CFB7B4F6DC943B1B61E94284779C0F00A3A772E668803E4FCBF88B217D732"
             },
             {
               "path": "package-lock.json",
-              "sha256": "6AA2F0A62FB5CC58D6A4D829DAB3A8507CCB3F22B6340097CECF09C789174160"
+              "sha256": "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5"
             },
             {
               "path": "uv.lock",
-              "sha256": "172770DE8DA800233E7D243A282B8044462C02731596D09878D35F5CAAC18AC8"
+              "sha256": "388200B101A8ECF93C29495312F5A542F34F2FEF6C4E163D9D3547E1D131143A"
             }
           ]
         }
@@ -374,20 +967,44 @@
       "component_capabilities": [
         {
           "component": "apps/web",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/web/package.json",
-            "apps/web/README.md",
-            "apps/web/package.json"
+            "apps/web/app/bff/shell/runtime/route.js",
+            "apps/web/app/globals.css",
+            "apps/web/app/layout.jsx",
+            "apps/web/app/notifications/page.jsx",
+            "apps/web/app/operations/page.jsx",
+            "apps/web/app/page.jsx",
+            "apps/web/app/settings/account/page.jsx",
+            "apps/web/app/settings/organization/page.jsx",
+            "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/web-shell-runtime.js",
+            "apps/web/next.config.mjs"
           ]
         },
         {
           "component": "apps/desktop",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/desktop/package.json",
-            "apps/desktop/README.md",
-            "apps/desktop/package.json"
+            "apps/desktop/src/desktop-shell-model.js",
+            "apps/desktop/src/desktop-shell.css",
+            "apps/desktop/src/desktop-shell.jsx",
+            "apps/desktop/src/local-service-bridge.js",
+            "apps/desktop/src/main.jsx",
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/capabilities/desktop-main.json",
+            "apps/desktop/src-tauri/Cargo.lock",
+            "apps/desktop/src-tauri/Cargo.toml",
+            "apps/desktop/src-tauri/icons/icon.ico",
+            "apps/desktop/src-tauri/icons/icon.png",
+            "apps/desktop/src-tauri/src/bin/local-service-lifecycle-host.rs",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/local_service.rs",
+            "apps/desktop/src-tauri/src/main.rs",
+            "apps/desktop/src-tauri/tauri.conf.json",
+            "apps/desktop/src-tauri/tauri.windows.conf.json",
+            "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs",
+            "apps/desktop/src-tauri/tests/local_service_contract.rs"
           ]
         },
         {
@@ -401,11 +1018,28 @@
         },
         {
           "component": "packages/ui",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "packages/ui/package.json",
-            "packages/ui/README.md",
-            "packages/ui/package.json"
+            "packages/ui/src/account-security-model.js",
+            "packages/ui/src/account-security-pane.jsx",
+            "packages/ui/src/adaptive-workspace.jsx",
+            "packages/ui/src/index.js",
+            "packages/ui/src/operations-recovery-model.js",
+            "packages/ui/src/operations-recovery-pane.jsx",
+            "packages/ui/src/production-bound-evidence-model.js",
+            "packages/ui/src/production-bound-evidence-pane.jsx",
+            "packages/ui/src/run-model-evidence-model.js",
+            "packages/ui/src/run-model-evidence-pane.jsx",
+            "packages/ui/src/source-knowledge-controls.js",
+            "packages/ui/src/source-knowledge-model.js",
+            "packages/ui/src/source-knowledge-pane.jsx",
+            "packages/ui/src/studio-workflow-model.js",
+            "packages/ui/src/studio-workflow-pane.jsx",
+            "packages/ui/src/web-shell-runtime-model.js",
+            "packages/ui/src/web-shell-runtime-status.jsx",
+            "packages/ui/src/web-shell-runtime.css",
+            "packages/ui/src/workspace-interaction.js",
+            "packages/ui/src/workspace-model.js"
           ]
         },
         {
@@ -419,11 +1053,11 @@
         },
         {
           "component": "packages/design-tokens",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "packages/design-tokens/package.json",
-            "packages/design-tokens/README.md",
-            "packages/design-tokens/package.json"
+            "packages/design-tokens/tokens.json",
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json"
           ]
         },
         {
@@ -437,11 +1071,22 @@
         },
         {
           "component": "services/local-service",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "services/local-service/pyproject.toml",
-            "services/local-service/README.md",
-            "services/local-service/pyproject.toml"
+            "services/local-service/entrypoint.py",
+            "services/local-service/src/daon_user_local_service/app.py",
+            "services/local-service/src/daon_user_local_service/main.py",
+            "services/local-service/src/daon_user_local_service/protocol.py",
+            "services/local-service/src/daon_user_local_service/__init__.py",
+            "services/local-service/src/daon_user_local_service/__main__.py",
+            "services/local-service/src/daon_user_local_service/__pycache__/app.cpython-314.pyc",
+            "services/local-service/src/daon_user_local_service/__pycache__/main.cpython-314.pyc",
+            "services/local-service/src/daon_user_local_service/__pycache__/protocol.cpython-314.pyc",
+            "services/local-service/src/daon_user_local_service/__pycache__/__init__.cpython-314.pyc",
+            "services/local-service/src/daon_user_local_service/__pycache__/__main__.cpython-314.pyc",
+            "services/local-service/tests/test_app.py",
+            "services/local-service/tests/test_main.py",
+            "services/local-service/tests/test_protocol.py"
           ]
         }
       ]
@@ -454,25 +1099,111 @@
           "status": "PASS",
           "exit_code": 0,
           "command": null,
-          "started_at": "2026-07-20T15:00:33.272Z",
-          "ended_at": "2026-07-20T15:00:33.297Z",
+          "started_at": "2026-07-26T01:00:05.467Z",
+          "ended_at": "2026-07-26T01:00:05.619Z",
           "evidence_files": [
+            "apps/desktop/app-icon.svg",
+            "apps/desktop/index.html",
             "apps/desktop/package.json",
             "apps/desktop/README.md",
+            "apps/desktop/src/desktop-shell-model.js",
+            "apps/desktop/src/desktop-shell.css",
+            "apps/desktop/src/desktop-shell.jsx",
+            "apps/desktop/src/local-service-bridge.js",
+            "apps/desktop/src/main.jsx",
+            "apps/desktop/src-tauri/build.rs",
+            "apps/desktop/src-tauri/capabilities/desktop-main.json",
+            "apps/desktop/src-tauri/Cargo.lock",
+            "apps/desktop/src-tauri/Cargo.toml",
+            "apps/desktop/src-tauri/icons/icon.ico",
+            "apps/desktop/src-tauri/icons/icon.png",
+            "apps/desktop/src-tauri/src/bin/local-service-lifecycle-host.rs",
+            "apps/desktop/src-tauri/src/lib.rs",
+            "apps/desktop/src-tauri/src/local_service.rs",
+            "apps/desktop/src-tauri/src/main.rs",
+            "apps/desktop/src-tauri/tauri.conf.json",
+            "apps/desktop/src-tauri/tauri.windows.conf.json",
+            "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs",
+            "apps/desktop/src-tauri/tests/local_service_contract.rs",
             "apps/mobile/package.json",
             "apps/mobile/README.md",
+            "apps/web/app/bff/shell/runtime/route.js",
+            "apps/web/app/globals.css",
+            "apps/web/app/layout.jsx",
+            "apps/web/app/notifications/page.jsx",
+            "apps/web/app/operations/page.jsx",
+            "apps/web/app/page.jsx",
+            "apps/web/app/settings/account/page.jsx",
+            "apps/web/app/settings/organization/page.jsx",
+            "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/web-shell-runtime.js",
+            "apps/web/next.config.mjs",
             "apps/web/package.json",
             "apps/web/README.md",
             "services/api/pyproject.toml",
             "services/api/README.md",
+            "services/local-service/.pytest_cache/.gitignore",
+            "services/local-service/.pytest_cache/CACHEDIR.TAG",
+            "services/local-service/.pytest_cache/README.md",
+            "services/local-service/.pytest_cache/v/cache/nodeids",
+            "services/local-service/.ruff_cache/.gitignore",
+            "services/local-service/.ruff_cache/0.15.7/5047121110146610089",
+            "services/local-service/.ruff_cache/0.15.7/5267663106405653611",
+            "services/local-service/.ruff_cache/0.15.7/7024935205264004218",
+            "services/local-service/.ruff_cache/CACHEDIR.TAG",
+            "services/local-service/entrypoint.py",
             "services/local-service/pyproject.toml",
             "services/local-service/README.md",
+            "services/local-service/src/daon_user_local_service/app.py",
+            "services/local-service/src/daon_user_local_service/main.py",
+            "services/local-service/src/daon_user_local_service/protocol.py",
+            "services/local-service/src/daon_user_local_service/__init__.py",
+            "services/local-service/src/daon_user_local_service/__main__.py",
+            "services/local-service/src/daon_user_local_service/__pycache__/app.cpython-314.pyc",
+            "services/local-service/src/daon_user_local_service/__pycache__/main.cpython-314.pyc",
+            "services/local-service/src/daon_user_local_service/__pycache__/protocol.cpython-314.pyc",
+            "services/local-service/src/daon_user_local_service/__pycache__/__init__.cpython-314.pyc",
+            "services/local-service/src/daon_user_local_service/__pycache__/__main__.cpython-314.pyc",
+            "services/local-service/tests/test_app.py",
+            "services/local-service/tests/test_main.py",
+            "services/local-service/tests/test_protocol.py",
+            "services/local-service/tests/__pycache__/test_app.cpython-314-pytest-9.0.3.pyc",
+            "services/local-service/tests/__pycache__/test_main.cpython-314-pytest-9.0.3.pyc",
+            "services/local-service/tests/__pycache__/test_protocol.cpython-314-pytest-9.0.3.pyc",
+            "packages/contracts/navigation.json",
             "packages/contracts/package.json",
             "packages/contracts/README.md",
+            "packages/contracts/screens.json",
             "packages/design-tokens/package.json",
             "packages/design-tokens/README.md",
+            "packages/design-tokens/tokens.css",
+            "packages/design-tokens/tokens.json",
+            "packages/design-tokens/tokens.ts",
+            "packages/design-tokens/tsconfig.json",
+            "packages/ui/accessibility-contract.json",
             "packages/ui/package.json",
             "packages/ui/README.md",
+            "packages/ui/src/account-security-model.js",
+            "packages/ui/src/account-security-pane.jsx",
+            "packages/ui/src/adaptive-workspace.jsx",
+            "packages/ui/src/index.js",
+            "packages/ui/src/operations-recovery-model.js",
+            "packages/ui/src/operations-recovery-pane.jsx",
+            "packages/ui/src/production-bound-evidence-model.js",
+            "packages/ui/src/production-bound-evidence-pane.jsx",
+            "packages/ui/src/run-model-evidence-model.js",
+            "packages/ui/src/run-model-evidence-pane.jsx",
+            "packages/ui/src/source-knowledge-controls.js",
+            "packages/ui/src/source-knowledge-model.js",
+            "packages/ui/src/source-knowledge-pane.jsx",
+            "packages/ui/src/studio-workflow-model.js",
+            "packages/ui/src/studio-workflow-pane.jsx",
+            "packages/ui/src/web-shell-runtime-model.js",
+            "packages/ui/src/web-shell-runtime-status.jsx",
+            "packages/ui/src/web-shell-runtime.css",
+            "packages/ui/src/workspace-interaction.js",
+            "packages/ui/src/workspace-model.js",
+            "packages/ui/src/workspace.css",
             ".github/workflows/release-1-quality-gate.yml"
           ],
           "violation_count": 0,
@@ -490,16 +1221,39 @@
             "--audit-level=high",
             "--json"
           ],
-          "started_at": "2026-07-20T15:00:35.976Z",
-          "ended_at": "2026-07-20T15:00:38.075Z",
+          "started_at": "2026-07-26T01:03:53.887Z",
+          "ended_at": "2026-07-26T01:03:56.164Z",
           "evidence_files": [
             {
               "path": "package.json",
-              "sha256": "12E3A156239B2C6C020EB3401504F2FD51C7D0E0C52581E707CF0FDEF429424C"
+              "sha256": "56045DC1A32B1E42A1F1033D65BBD5F89E668508C23AA270E242A3F651327528"
             },
             {
               "path": "package-lock.json",
-              "sha256": "6AA2F0A62FB5CC58D6A4D829DAB3A8507CCB3F22B6340097CECF09C789174160"
+              "sha256": "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5"
+            }
+          ]
+        },
+        {
+          "id": "local-service-full-environment-audit",
+          "component": null,
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "scripts/run-local-service-tool.mjs",
+            "security"
+          ],
+          "started_at": "2026-07-26T01:03:56.165Z",
+          "ended_at": "2026-07-26T01:04:17.901Z",
+          "evidence_files": [
+            {
+              "path": "services/local-service/pyproject.toml",
+              "sha256": "C16C4883DCA08E91FB7607918CD0CDE674141D8C7E088F4C9CE305FF6945A62E"
+            },
+            {
+              "path": "uv.lock",
+              "sha256": "388200B101A8ECF93C29495312F5A542F34F2FEF6C4E163D9D3547E1D131143A"
             }
           ]
         }
@@ -521,12 +1275,12 @@
             "--",
             "--no-write"
           ],
-          "started_at": "2026-07-20T15:00:38.078Z",
-          "ended_at": "2026-07-20T15:00:38.793Z",
+          "started_at": "2026-07-26T01:04:17.902Z",
+          "ended_at": "2026-07-26T01:04:18.525Z",
           "evidence_files": [
             {
               "path": "independence-policy.json",
-              "sha256": "B6A0946CD551F9DB5E22FEC52659BD5E209BBC33BA59DD5A5B453A0F4DB8CA14"
+              "sha256": "D9FF26F9FC745518524E8DECBA334B88428CD7FAD70E29AD3B96F798DEBB6A16"
             },
             {
               "path": "repo-boundaries.json",
