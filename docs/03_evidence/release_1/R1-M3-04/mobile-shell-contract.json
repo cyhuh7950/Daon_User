@@ -3,8 +3,8 @@
   "work_order": "R1-M3-04",
   "issue_id": "R1-M3-04-I001",
   "status": "PASS",
-  "validated_head": "df6564851163254e40d29666fdf7fa1bd4481803",
-  "source_state": "exact_commit",
+  "validated_head": "32529c572bde1192bbb71c82f36ed2d07243cca1",
+  "source_state": "pending_commit",
   "clients": {
     "android": { "route_count": 8, "excluded_routes": ["organization_settings", "operations"], "native_build": "Deferred R1-M3-05" },
     "ios": { "route_count": 8, "excluded_routes": ["organization_settings", "operations"], "native_build": "Deferred R1-M3-06" }
@@ -23,5 +23,6 @@
     "build": "npm --prefix ../.. run verify:mobile-build"
   },
   "test": { "command": "node --test scripts/tests/mobile-shared-shell.test.mjs", "exit_code": 0, "passed": 9, "failed": 0 },
+  "c03_ci_history": { "workflow_test": "37/37 PASS", "c01_targeted": "42/42 PASS", "node_regression": "251/251 PASS", "checkout_fetch_depth": 0, "github_run_revalidation": "Pending 어울1 follow-up" },
   "ysna_server": { "validated_git_sha": "53dd21d5d051e4e1a8b336475c81b34a34dc9d35", "architecture": "aarch64", "mobile_unit": "9/9 PASS", "mobile_contract": "15/15 PASS", "c01_targeted": "42/42 PASS" }
 }

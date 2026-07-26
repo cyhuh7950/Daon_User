@@ -1,13 +1,13 @@
 {
   "schema_version": "1.0",
-  "status": "COMPLETED_LOCAL_AND_YSNA_SERVER",
-  "issue_id": "R1-M3-04-I001",
-  "attempt": 3,
+  "status": "COMPLETED_LOCAL_PENDING_GITHUB_CI",
+  "issue_id": "R1-M3-04-C03-CI-HISTORY",
+  "attempt": 4,
   "branch": "codex/r1-m3-04",
-  "base_head": "df6564851163254e40d29666fdf7fa1bd4481803",
-  "implementation_sha": "df6564851163254e40d29666fdf7fa1bd4481803",
-  "source_state": "exact_commit",
-  "dirty_snapshot": false,
+  "base_head": "32529c572bde1192bbb71c82f36ed2d07243cca1",
+  "implementation_sha": null,
+  "source_state": "pending_commit",
+  "dirty_snapshot": true,
   "source_files": [
     { "path": "apps/mobile/package.json", "bytes": 625, "sha256": "6533B7AA99413ED00C439EC5100AA37B10794F79EAB9C3D11D98D4358D956071" },
     { "path": "apps/mobile/app.json", "bytes": 59, "sha256": "1767B237BCC3F83D41FE41F25C53203790B4CF3032AA6CA60F5590450774FC02" },
@@ -34,18 +34,21 @@
     { "path": "scripts/lib/predecessor-evidence-reconciliation.mjs", "bytes": 19424, "sha256": "E1603626D097135FDC8840D6DB70D7B0750C7C230D24AE9DD3D2839815E9A152" },
     { "path": "scripts/tests/platform-prototype-evidence.test.mjs", "bytes": 23310, "sha256": "63E372761A27A9D52967816257F6BF30F58F840463956A2464789502FF80528C" },
     { "path": "scripts/tests/desktop-tauri-shell.test.mjs", "bytes": 18778, "sha256": "8DE136D5C08AA19280B52E89FC9C966BB15D931C7E5CAF208E7D34F45D8281B7" },
-    { "path": "docs/01_architecture/react_native_shared_shell_contract.md", "bytes": 4060, "sha256": "9FDB5342B2F9524652298E2B6DD530D1BFB4AE18085700D1971D3D6149E42104" }
+    { "path": "docs/01_architecture/react_native_shared_shell_contract.md", "bytes": 4060, "sha256": "9FDB5342B2F9524652298E2B6DD530D1BFB4AE18085700D1971D3D6149E42104" },
+    { "path": ".github/workflows/release-1-quality-gate.yml", "bytes": 4612, "sha256": "CF3D913E2B8B5EF1DF24EFE050C02DD3E9E5FCCE37E0FD453B67651082AD4C5F" },
+    { "path": "scripts/tests/product-foundation.test.mjs", "bytes": 15061, "sha256": "46F882945148C82490EFABE33119636F569F9FCBD64B81B025CDBBCC89CAB825" }
   ],
   "evidence_files": [
-    { "path": "mobile-security-boundary.json", "bytes": 1793, "sha256": "C8973A8E66E114F5FBDA10D2DC92D03CC575341CB23017B7B20A63B1F6F62A43" },
-    { "path": "mobile-shell-build.json", "bytes": 2081, "sha256": "AFF557C2707D03FC860105FF7C2759A76CAB4ACA293E68F56E02F2ADD5AD79A5" },
-    { "path": "mobile-shell-contract.json", "bytes": 2108, "sha256": "6E1862785BE4DB0D31EEE996D53696E06FB80F346E35F503C46E789BD21ACC3D" },
-    { "path": "quality-gate-result.json", "bytes": 54468, "sha256": "BCC5B42CF0F79B9E4520A14EBD997635B784D783D9C9C34F561129F9758398E7" },
-    { "path": "quality-gate-summary.md", "bytes": 516, "sha256": "7B67C52408035C463B9B3E15E6B028CD453BACD454ADA60D43F314574570E5B8" }
+    { "path": "mobile-security-boundary.json", "bytes": 2036, "sha256": "4A93E644ABE866A1750628C26E9DD40F3F2AEBE2119D11D548FAC988BB6876EF" },
+    { "path": "mobile-shell-build.json", "bytes": 2271, "sha256": "97223F8AF466BC32B1DCB3A2F836EE2290689B6C0919FB2E36A4ADDE1A790F14" },
+    { "path": "mobile-shell-contract.json", "bytes": 2313, "sha256": "0ACC29168C46F0C25810F07E26E2D78469081A69143C6B00A3E49A09AB14CDF8" },
+    { "path": "quality-gate-result.json", "bytes": 54468, "sha256": "32B81E35D39AB9563C9C9E33F639CD1A8A7829410F526B9279EA4306886F9849" },
+    { "path": "quality-gate-summary.md", "bytes": 516, "sha256": "A330CC604F3C2082CB94A237C86650416B1F718BEFADE64995D5A3FEC50E5929" }
   ],
   "verification": {
     "c01_targeted_tests": { "command": "node --test scripts/tests/desktop-tauri-shell.test.mjs scripts/tests/platform-prototype-evidence.test.mjs scripts/tests/mobile-shared-shell.test.mjs", "exit_code": 0, "passed": 42, "failed": 0 },
     "node_regression": { "command": "node --test scripts/tests/*.test.mjs", "exit_code": 0, "passed": 251, "failed": 0 },
+    "c03_workflow_contract": { "command": "node --test scripts/tests/product-foundation.test.mjs scripts/tests/quality-gate.test.mjs", "exit_code": 0, "passed": 37, "failed": 0, "checkout_fetch_depth": 0 },
     "mobile": { "command": "npm run verify:mobile", "exit_code": 0 },
     "mobile_workspace_commands": {
       "lint": { "command": "npm run lint --workspace @daon-user/mobile", "exit_code": 0 },
@@ -58,11 +61,12 @@
     "toolchain": { "command": "npm run verify:toolchain", "exit_code": 0, "npm_manifests": 7 },
     "production_audit": { "command": "npm audit --omit=dev --audit-level=high --json", "exit_code": 0, "vulnerabilities": 0 },
     "independence": { "command": "npm run verify:independence", "exit_code": 0, "violations": 0 },
-    "quality_gate": { "command": "node scripts/verify-r1-m3-04-quality-gate.mjs", "overall_status": "PASS", "exit_code": 0, "failures": 0, "checks": { "lint": 7, "type": 4, "unit": 8, "contract": 3, "build": 7, "security": 3, "independence": 1 }, "mobile_workspace_checks": 5, "policy_sha256": "24A027EE54431790E87756C7A2FF70308DB56DDD2EECE4335440518BBFBB79A1" },
+    "quality_gate": { "command": "node scripts/verify-r1-m3-04-quality-gate.mjs", "overall_status": "PASS", "exit_code": 0, "failures": 0, "checks": { "lint": 7, "type": 4, "unit": 8, "contract": 3, "build": 7, "security": 3, "independence": 1 }, "mobile_workspace_checks": 5, "policy_sha256": "24A027EE54431790E87756C7A2FF70308DB56DDD2EECE4335440518BBFBB79A1", "validated_head": "32529c572bde1192bbb71c82f36ed2d07243cca1", "source_state": "pending_commit", "duration_seconds": 303.8 },
     "predecessor_summary": { "artifact_count": 90, "DIRECT_MATCH": 80, "SUCCESSOR_SUPERSEDED": 6, "LEGACY_MANIFEST_DRIFT": 4, "UNEXPLAINED_MISMATCH": 0, "predecessor_status": "verified_with_observations" },
     "ysna_server": { "validated_git_sha": "53dd21d5d051e4e1a8b336475c81b34a34dc9d35", "architecture": "aarch64", "workspace_commands": 5, "mobile_unit": "9/9 PASS", "mobile_contract": "15/15 PASS", "c01_targeted": "42/42 PASS", "bundle_hashes_match_local": true, "toolchain_exit_code": 0, "production_audit_exit_code": 0, "production_vulnerabilities": 0, "independence_exit_code": 0, "independence_violations": 0, "checkout_clean": true, "validation_containers_after_cleanup": 0 }
   },
   "deferred": {
+    "github_ci_revalidation": "어울1 후속: Commit/Push/PR 후 shallow-history collision 해소 확인",
     "exact_commit_verification": "completed locally at df6564851163254e40d29666fdf7fa1bd4481803",
     "git_push": "completed through 53dd21d5d051e4e1a8b336475c81b34a34dc9d35",
     "pr_merge": "어울1 후속",
