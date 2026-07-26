@@ -2,14 +2,14 @@
   "schema_version": "1.0",
   "status": "EXACT_IMPLEMENTATION_COMMIT",
   "dirty_snapshot": false,
-  "base_head": "75e86835a238b706520e00b7d0e6ec908835fff6",
+  "base_head": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
   "comparison_base": "bd13f1694623ca1225415c0f157ef88f94df6f38",
   "git_sha_role": "exact implementation commit",
-  "tracked_binary_patch_sha256": "F7EE85501293846080D8742744C12BA55F8D461ECC43BE950A9EA461CBB49562",
+  "tracked_binary_patch_sha256": "D507AF0099F38229957C74F1D7A7F787B0C8492B20B8F2777B7DA3FFE9268E74",
   "untracked_binding": "file entries include untracked source bytes individually",
   "entry_canonicalization": "UTF-8 JSON.stringify(path,bytes,sha256), path ascending",
-  "source_entries_sha256": "154192FAAED329A01AC696F15A8DD688A02645CFCD3A13A680F4A0A27A1E04D6",
-  "file_count": 44,
+  "source_entries_sha256": "927E7B416BBAD8672577E3A0DBF551AFC489C076FC7CA5EF4207ADE4BD28143C",
+  "file_count": 46,
   "files": [
     {
       "path": ".gitignore",
@@ -80,6 +80,16 @@
       "path": "docs/02_work_orders/release_1_attempt_ledger.jsonl",
       "bytes": 15774,
       "sha256": "7F6FC6E6CF3695E3FA007C9E2DC36AEB6E035C156DE6DD9B2F0A59C404939BE6"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json",
+      "bytes": 48312,
+      "sha256": "11D875B71506F0A7F3C9C30F258D738FF340F2BF090A6C29E1ECF76BA2F3304C"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md",
+      "bytes": 516,
+      "sha256": "A8ADA63125B30B0696DCEB02A4D1410A6BB14C2AFFA40500D0D11A9C1E66BA34"
     },
     {
       "path": "independence-policy.json",
@@ -218,13 +228,13 @@
     },
     {
       "path": "services/local-service/tests/test_main.py",
-      "bytes": 4360,
-      "sha256": "031E5132BC7C2F92E13BD7568588C0303E338091A383A828B241A953A25D4276"
+      "bytes": 5528,
+      "sha256": "6CBB42B287FAC256AE8D5E9CFCD69F6E59CAFEFCB94623D36BA87BEAA5D856CC"
     },
     {
       "path": "services/local-service/tests/test_protocol.py",
-      "bytes": 1577,
-      "sha256": "F59001F0796CF798416E6FA6F251ED37BDD0C7E08055394B1A9DE1076C765DA8"
+      "bytes": 1843,
+      "sha256": "4006F0C646055509B19F832C3C2AEDFCCDB902CECA54E05A3888A4EB3CA150E7"
     },
     {
       "path": "uv.lock",

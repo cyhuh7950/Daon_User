@@ -4,12 +4,12 @@
   "issue_id": "R1-M3-03-I001",
   "attempt": 4,
   "dirty_snapshot": false,
-  "base_head": "75e86835a238b706520e00b7d0e6ec908835fff6",
+  "base_head": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
   "branch": "codex/r1-m3-03",
   "source_binding": {
-    "file_count": 44,
-    "source_entries_sha256": "154192FAAED329A01AC696F15A8DD688A02645CFCD3A13A680F4A0A27A1E04D6",
-    "tracked_binary_patch_sha256": "F7EE85501293846080D8742744C12BA55F8D461ECC43BE950A9EA461CBB49562",
+    "file_count": 46,
+    "source_entries_sha256": "927E7B416BBAD8672577E3A0DBF551AFC489C076FC7CA5EF4207ADE4BD28143C",
+    "tracked_binary_patch_sha256": "D507AF0099F38229957C74F1D7A7F787B0C8492B20B8F2777B7DA3FFE9268E74",
     "comparison_base": "bd13f1694623ca1225415c0f157ef88f94df6f38",
     "git_sha_role": "exact implementation commit"
   },
@@ -42,12 +42,12 @@
     {
       "path": "quality-gate-result.json",
       "bytes": 48312,
-      "sha256": "11D875B71506F0A7F3C9C30F258D738FF340F2BF090A6C29E1ECF76BA2F3304C"
+      "sha256": "31062448C777D920D8538A1791E4E114DC01461E0B5B64666A7A5A736182717B"
     },
     {
       "path": "quality-gate-summary.md",
       "bytes": 516,
-      "sha256": "A8ADA63125B30B0696DCEB02A4D1410A6BB14C2AFFA40500D0D11A9C1E66BA34"
+      "sha256": "2329D33E3BFC927A76D49A8C1947038D01E8CD5BC9CB3B5CA0583CB28C3EC0AC"
     },
     {
       "path": "rust-manager-error-cleanup.json",
@@ -61,13 +61,18 @@
     },
     {
       "path": "source-manifest.json",
-      "bytes": 8417,
-      "sha256": "30DB90130FAB81835B6AB7DCA9F62F04E065F16C27ABD00109BB660EAE3B6BED"
+      "bytes": 8806,
+      "sha256": "A534DC6A7AF94928C84EC6F86B8D2789F822F50A32F11F1E20D3EAC48312983B"
     },
     {
       "path": "windows-installed-gui-lifecycle.json",
       "bytes": 1224,
       "sha256": "0682751D83ABB1FE9481A861061EE3F0E7BB141E143074DEEBC96DF576E8BCC9"
+    },
+    {
+      "path": "ysna-server-validation.json",
+      "bytes": 2259,
+      "sha256": "4C8A279A185AFD1A3EB823F824FCB14AD52952C53B46D1402FB09B5AD7260911"
     }
   ],
   "handoff_records": [
@@ -83,8 +88,8 @@
     },
     {
       "path": "docs/04_test_reports/release_1/R1-M3-03-DIRECT_progress.md",
-      "bytes": 7066,
-      "sha256": "FAB3DD2D7AE9008556FAF91DC45C333857C8F27B855A080CBC48D390221E41F4"
+      "bytes": 9127,
+      "sha256": "EE98C5F4C7EC6E40047A041F5E88EE2108AF1ADED50BF0F935DB0617C6F38199"
     },
     {
       "path": "docs/02_work_orders/reports/R1-M3-03_attempt-1.md",
@@ -103,13 +108,13 @@
     },
     {
       "path": "docs/02_work_orders/reports/R1-M3-03_attempt-4.md",
-      "bytes": 3505,
-      "sha256": "7090E6E5E87A3D1886F805D2EA34CB303E41839C0A3FCB339D92E6062E2B1B8C"
+      "bytes": 4292,
+      "sha256": "81DF139545F5A2FFC828CB0EDF54439324910356465A52823F3A11835250472B"
     }
   ],
   "quality_gate": {
     "command": "node scripts/verify-r1-m3-03-quality-gate.mjs",
-    "git_sha": "75e86835a238b706520e00b7d0e6ec908835fff6",
+    "git_sha": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
     "process_temp_scope": "approved isolated temp root",
     "overall_status": "PASS",
     "exit_code": 0,
@@ -148,15 +153,26 @@
     "local_service_ready": true,
     "remaining_related_processes_after_close": 0
   },
+  "ysna_server": {
+    "architecture": "aarch64",
+    "exact_git_sha": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
+    "python_unit": "32/32 PASS",
+    "python_coverage_percent": 85.95,
+    "rust_test_exit_code": 0,
+    "quality_gate": "PASS",
+    "quality_gate_failures": 0,
+    "checkout_cleaned": true,
+    "running_validation_containers": 0
+  },
   "redaction": {
     "user_absolute_paths_present": false,
     "temporary_artifact_notation": "<TEMP>/..."
   },
   "generated_artifacts_cleaned": true,
   "deferred": {
-    "exact_implementation_commit_gate": "completed at 75e86835a238b706520e00b7d0e6ec908835fff6",
+    "exact_implementation_commit_gate": "completed at 8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
     "database_migration": "N/A",
-    "ysna_server": "main-designer follow-up",
+    "ysna_server": "completed",
     "windows_installed_gui_lifecycle": "completed",
     "m4_06_security_hardening": "Deferred by approved plan"
   }
