@@ -43,6 +43,9 @@ test("500px desktop navigation wraps all routes without horizontal scrolling", a
 });
 
 test("production Tauri configuration is bundled and WebView remains fail-closed", async () => {
+  const cargoManifest = await read("apps/desktop/src-tauri/Cargo.toml");
+  assert.match(cargoManifest, /^default-run\s*=\s*"daon-user-desktop"$/m);
+
   const config = JSON.parse(await read("apps/desktop/src-tauri/tauri.conf.json"));
   assert.equal(config.build.frontendDist, "../dist");
   assert.equal("devUrl" in config.build, false);
