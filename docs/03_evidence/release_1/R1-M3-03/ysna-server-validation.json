@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "status": "PASS",
+  "server": "ysna-server",
+  "architecture": "aarch64",
+  "deployment_root": "/home/ubuntu/deploy/daon-user/R1-M3-03",
+  "exact_git_sha": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
+  "database_migration": "N/A",
+  "shared_services_used": [],
+  "toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "python": "3.14.3",
+    "uv": "0.11.2",
+    "rustc": "1.97.1",
+    "cargo": "1.97.1"
+  },
+  "container_inputs": {
+    "node_image_digest": "sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059",
+    "uv_image_digest": "sha256:c4f5de312ee66d46810635ffc5df34a1973ba753e7241ce3a08ef979ddd7bea5",
+    "python_uv_image_digest": "sha256:edb32ffc82d6dd7c6efa16e11a8ed5e1d2fd67600f5a966a08a3831f2a7ef9cc",
+    "rust_image_digest": "sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa",
+    "combined_validation_image_digest": "sha256:cc107b618a281477a599c5fa179b419b61407d09aa7b3c2c1631421a3beb4b7c"
+  },
+  "node_validation": {
+    "lint": "PASS",
+    "independence_violations": 0,
+    "unit": "25/25 PASS",
+    "desktop_build": "PASS"
+  },
+  "python_validation": {
+    "lint": "PASS",
+    "type": "PASS",
+    "unit": "32/32 PASS",
+    "coverage_percent": 85.95,
+    "coverage_threshold": 85,
+    "compile": "PASS"
+  },
+  "rust_validation": {
+    "cargo_test_exit_code": 0,
+    "tauri_linux_build_dependencies": "ephemeral validation container only"
+  },
+  "quality_gate": {
+    "overall": "PASS",
+    "exit_code": 0,
+    "failures": 0,
+    "policy_sha256": "3B8904E80337EE2DACE229DBFF0B4F1ACF4E75DC0BB0F1657D4B99800686A06E",
+    "categories": {
+      "lint": 6,
+      "type": 3,
+      "unit": 7,
+      "contract": 2,
+      "build": 6,
+      "security": 3,
+      "independence": 1
+    },
+    "result_bytes": 48313,
+    "result_sha256": "7E8BBF12C7646CFA7141A4D29070FDB59BB1AAA017406436A6E5229C01BA236B",
+    "summary_bytes": 516,
+    "summary_sha256": "AD13224454B1C82F9E1C43EFE04E9021C48E7B3766568CB326BBCF1CEEA28D9D"
+  },
+  "cleanup": {
+    "git_status_clean": true,
+    "running_validation_containers": 0,
+    "generated_artifacts_removed": true
+  },
+  "scope": "Linux ARM64 source and automated gate evidence; not a substitute for Windows Installer GUI evidence."
+}

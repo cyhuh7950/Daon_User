@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "status": "PASS",
+  "implementation_commit": "75e86835a238b706520e00b7d0e6ec908835fff6",
+  "installer": {
+    "artifact_name": "Daon 사용자 프로그램_0.1.0_x64-setup.exe",
+    "bytes": 19380724,
+    "sha256": "19AF8411393149061F8B7CAFBDE25FE77F0FADE3CF18E5A32B85841D8195C97B",
+    "external_artifact_preserved_under": "<TEMP>/daon-user-desktop-installer-zX2Jab/release/bundle/nsis"
+  },
+  "build_selection": {
+    "cargo_default_run": "daon-user-desktop",
+    "built_application": "<TEMP>/daon-user-desktop-installer-zX2Jab/release/daon-user-desktop.exe",
+    "test_lifecycle_host_selected": false
+  },
+  "installed_runtime": {
+    "window_title": "Daon 사용자 프로그램",
+    "local_service_status_text": "로컬 서비스가 준비되었습니다.",
+    "shared_ui_rendered": true,
+    "actual_gui_binary": "daon-user-desktop.exe",
+    "actual_sidecar_binary": "daon-user-local-service.exe"
+  },
+  "shutdown": {
+    "method": "normal window close",
+    "remaining_installer_windows": 0,
+    "remaining_application_windows": 0,
+    "remaining_related_processes": 0
+  },
+  "scope": "Windows installed GUI and managed Local Service lifecycle; no server or database verification."
+}

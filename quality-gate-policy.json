@@ -101,18 +101,20 @@
       "manifest": "services/local-service/pyproject.toml",
       "foundation_allowed_files": ["README.md", "pyproject.toml"],
       "capabilities": {
-        "lint": { "signals": { "extensions": [".py"], "files": ["ruff.toml"] }, "command": null },
-        "type": { "signals": { "extensions": [".py"], "files": ["pyrightconfig.json", "mypy.ini"] }, "command": null },
-        "unit": { "signals": { "extensions": [".py"], "directories": ["test", "tests"] }, "command": null },
-        "contract": { "signals": { "extensions": [".json", ".yaml", ".yml"], "files": [] }, "command": null },
-        "build": { "signals": { "extensions": [".py"], "directories": ["src", "app"] }, "command": null }
+        "lint": { "signals": { "extensions": [".py"], "files": ["ruff.toml"] }, "command": { "id": "local-service-lint", "command": ["node", "scripts/run-local-service-tool.mjs", "lint"], "failure_kind": "quality", "evidence_files": ["services/local-service/pyproject.toml", "services/local-service/src/daon_user_local_service/app.py"] } },
+        "type": { "signals": { "extensions": [".py"], "files": ["pyrightconfig.json", "mypy.ini"] }, "command": { "id": "local-service-type", "command": ["node", "scripts/run-local-service-tool.mjs", "type"], "failure_kind": "quality", "evidence_files": ["services/local-service/pyproject.toml", "services/local-service/src/daon_user_local_service/protocol.py"] } },
+        "unit": { "signals": { "extensions": [".py"], "directories": ["test", "tests"] }, "command": { "id": "local-service-unit", "command": ["node", "scripts/run-local-service-tool.mjs", "unit"], "failure_kind": "quality", "evidence_files": ["services/local-service/tests/test_protocol.py", "services/local-service/tests/test_app.py"] } },
+        "contract": { "signals": { "extensions": [".py", ".json", ".yaml", ".yml"], "files": [] }, "command": { "id": "local-service-contract", "command": ["node", "scripts/run-local-service-tool.mjs", "contract"], "failure_kind": "quality", "evidence_files": ["services/local-service/tests/test_protocol.py", "services/local-service/tests/test_app.py"] } },
+        "build": { "signals": { "extensions": [".py"], "directories": ["src", "app"] }, "command": { "id": "local-service-build", "command": ["node", "scripts/run-local-service-tool.mjs", "build"], "failure_kind": "quality", "evidence_files": ["services/local-service/entrypoint.py", "services/local-service/src/daon_user_local_service/main.py"] } }
       }
     }
   ],
   "mandatory_checks": [
     { "id": "quality-gate-runner-tests", "category": "unit", "command": ["node", "--test", "scripts/tests/quality-gate.test.mjs"], "failure_kind": "quality", "evidence_files": ["scripts/tests/quality-gate.test.mjs"] },
+    { "id": "local-service-runtime-verifier-tests", "category": "unit", "command": ["node", "--test", "scripts/tests/local-service-runtime-verifier.test.mjs", "scripts/tests/local-service-stage-helper.test.mjs"], "failure_kind": "quality", "evidence_files": ["scripts/verify-local-service-runtime.mjs", "scripts/stage-local-service-sidecar.ps1"] },
     { "id": "toolchain-baseline", "category": "build", "command": ["npm", "run", "verify:toolchain"], "failure_kind": "quality", "evidence_files": ["toolchain-versions.json", "package-lock.json", "uv.lock"] },
     { "id": "production-dependency-audit", "category": "security", "command": ["npm", "audit", "--omit=dev", "--audit-level=high", "--json"], "kind": "npm_audit", "failure_kind": "execution", "evidence_files": ["package.json", "package-lock.json"] },
+    { "id": "local-service-full-environment-audit", "category": "security", "command": ["node", "scripts/run-local-service-tool.mjs", "security"], "failure_kind": "execution", "evidence_files": ["services/local-service/pyproject.toml", "uv.lock"] },
     { "id": "repository-independence", "category": "independence", "command": ["npm", "run", "verify:independence", "--", "--no-write"], "failure_kind": "quality", "evidence_files": ["independence-policy.json", "repo-boundaries.json"] }
   ],
   "security": {

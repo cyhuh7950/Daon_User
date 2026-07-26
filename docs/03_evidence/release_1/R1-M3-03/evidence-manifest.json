@@ -1,0 +1,179 @@
+{
+  "schema_version": "1.0",
+  "status": "DIRECT_IMPLEMENTATION_COMPLETED_EXACT_COMMIT",
+  "issue_id": "R1-M3-03-I001",
+  "attempt": 4,
+  "dirty_snapshot": false,
+  "base_head": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
+  "branch": "codex/r1-m3-03",
+  "source_binding": {
+    "file_count": 46,
+    "source_entries_sha256": "927E7B416BBAD8672577E3A0DBF551AFC489C076FC7CA5EF4207ADE4BD28143C",
+    "tracked_binary_patch_sha256": "D507AF0099F38229957C74F1D7A7F787B0C8492B20B8F2777B7DA3FFE9268E74",
+    "comparison_base": "bd13f1694623ca1225415c0f157ef88f94df6f38",
+    "git_sha_role": "exact implementation commit"
+  },
+  "evidence_files": [
+    {
+      "path": "app-service-lifecycle.json",
+      "bytes": 2088,
+      "sha256": "4773C10BDBAA9E82740BFE3D4993A1BCA9E842E166B69E58205656BA6700049B"
+    },
+    {
+      "path": "desktop-sidecar-contract.json",
+      "bytes": 882,
+      "sha256": "FAFB73D9E2690C1DA67DBF0CFD22209A90FE8592578BCC6E7FB639AC604CAC7A"
+    },
+    {
+      "path": "local-service-package.json",
+      "bytes": 1240,
+      "sha256": "F9F9D0206DC4C161BCA3F1DA24985A35CE6761686B9956622C775CF67462FBCF"
+    },
+    {
+      "path": "local-service-security.json",
+      "bytes": 1209,
+      "sha256": "3B48B12129361A90FB51FC7B94218BAFE697D0712A339BE011C8ABCD681A7C10"
+    },
+    {
+      "path": "local-service-unit.json",
+      "bytes": 1209,
+      "sha256": "8E35149B2016EABBD1EEDD04DCA6A722E2E4F0F5E3AD2B61CFB7406FE16DD381"
+    },
+    {
+      "path": "quality-gate-result.json",
+      "bytes": 48312,
+      "sha256": "31062448C777D920D8538A1791E4E114DC01461E0B5B64666A7A5A736182717B"
+    },
+    {
+      "path": "quality-gate-summary.md",
+      "bytes": 516,
+      "sha256": "2329D33E3BFC927A76D49A8C1947038D01E8CD5BC9CB3B5CA0583CB28C3EC0AC"
+    },
+    {
+      "path": "rust-manager-error-cleanup.json",
+      "bytes": 2630,
+      "sha256": "E96A1968511412EF0305CF5705871D209B01DC5F76435C460832B28DC996F815"
+    },
+    {
+      "path": "rust-manager-lifecycle.json",
+      "bytes": 1138,
+      "sha256": "BDA2BE657829F09C94FFACC907D66CE34C8FB4E0FE2F57AA062A69A45F6D17FD"
+    },
+    {
+      "path": "source-manifest.json",
+      "bytes": 8806,
+      "sha256": "A534DC6A7AF94928C84EC6F86B8D2789F822F50A32F11F1E20D3EAC48312983B"
+    },
+    {
+      "path": "windows-installed-gui-lifecycle.json",
+      "bytes": 1224,
+      "sha256": "0682751D83ABB1FE9481A861061EE3F0E7BB141E143074DEEBC96DF576E8BCC9"
+    },
+    {
+      "path": "ysna-server-validation.json",
+      "bytes": 2259,
+      "sha256": "4C8A279A185AFD1A3EB823F824FCB14AD52952C53B46D1402FB09B5AD7260911"
+    }
+  ],
+  "handoff_records": [
+    {
+      "path": "docs/04_test_reports/release_1/R1-M3-03-C01_progress.md",
+      "bytes": 17586,
+      "sha256": "F116CB0CA59A6992406F11A87A7B82ECB86E4ECF0E5BF6D20DCF9E4E5644E451"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M3-03-C02_progress.md",
+      "bytes": 26766,
+      "sha256": "316DECEF6FADDCF59A4022BEA86249D3B03DD29C71F71954F724F439A5D409F5"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M3-03-DIRECT_progress.md",
+      "bytes": 9127,
+      "sha256": "EE98C5F4C7EC6E40047A041F5E88EE2108AF1ADED50BF0F935DB0617C6F38199"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M3-03_attempt-1.md",
+      "bytes": 4410,
+      "sha256": "59A648507273E3316FB989EB043F9C2A3FC3653AB4393D34E8DD5C6A84240833"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M3-03_attempt-2.md",
+      "bytes": 5072,
+      "sha256": "AB7C34AD5FF2171B34D6713852840E2556EEE5FA92520298D76791F7B0FC4215"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M3-03_attempt-3.md",
+      "bytes": 5135,
+      "sha256": "834A87A98D8ECDC01E02B0DCCA5CDF2F55C1843CFD2BB0AF51DFD4AD520A1F0F"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M3-03_attempt-4.md",
+      "bytes": 4292,
+      "sha256": "81DF139545F5A2FFC828CB0EDF54439324910356465A52823F3A11835250472B"
+    }
+  ],
+  "quality_gate": {
+    "command": "node scripts/verify-r1-m3-03-quality-gate.mjs",
+    "git_sha": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
+    "process_temp_scope": "approved isolated temp root",
+    "overall_status": "PASS",
+    "exit_code": 0,
+    "failures": 0,
+    "category_checks": {
+      "lint": 6,
+      "type": 3,
+      "unit": 7,
+      "contract": 2,
+      "build": 6,
+      "security": 3,
+      "independence": 1
+    },
+    "policy_sha256": "767EEE2BB7142BCEECF94DF32674AE9EB2A789D71B83B699A0303C31EC8323D2"
+  },
+  "runtime_evidence_scope": {
+    "node_owned_packaged_runs": 2,
+    "rust_manager_owned_runs": 2,
+    "production_manager_error_fixture_cases": 5,
+    "retry_shutdown_race_repetitions": 3,
+    "job_fixture_process_after_stop": 0,
+    "job_fixture_listener_after_stop": 0,
+    "fixture_marker_files_after_test": 0,
+    "historical_fixture_marker_files_removed": 16,
+    "fixture_marker_cleanup_guard": true,
+    "token_emitted": false,
+    "instance_emission_scope": "ready_envelope_only",
+    "public_host_evidence_contains_secret_fields": false,
+    "output_buffers_complete": true
+  },
+  "windows_installed_gui": {
+    "installer_sha256": "19AF8411393149061F8B7CAFBDE25FE77F0FADE3CF18E5A32B85841D8195C97B",
+    "installer_bytes": 19380724,
+    "built_application": "daon-user-desktop.exe",
+    "window_title": "Daon 사용자 프로그램",
+    "local_service_ready": true,
+    "remaining_related_processes_after_close": 0
+  },
+  "ysna_server": {
+    "architecture": "aarch64",
+    "exact_git_sha": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
+    "python_unit": "32/32 PASS",
+    "python_coverage_percent": 85.95,
+    "rust_test_exit_code": 0,
+    "quality_gate": "PASS",
+    "quality_gate_failures": 0,
+    "checkout_cleaned": true,
+    "running_validation_containers": 0
+  },
+  "redaction": {
+    "user_absolute_paths_present": false,
+    "temporary_artifact_notation": "<TEMP>/..."
+  },
+  "generated_artifacts_cleaned": true,
+  "deferred": {
+    "exact_implementation_commit_gate": "completed at 8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
+    "database_migration": "N/A",
+    "ysna_server": "completed",
+    "windows_installed_gui_lifecycle": "completed",
+    "m4_06_security_hardening": "Deferred by approved plan"
+  }
+}

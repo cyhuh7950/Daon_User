@@ -6,7 +6,7 @@
   "scan_roots": ["apps", "services", "packages", "scripts", ".github"],
   "root_runtime_files": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"],
   "source_extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".rs", ".json", ".toml", ".yaml", ".yml"],
-  "excluded_directories": [".git", "node_modules", ".next", "dist", "build", "coverage", ".cache", "docs"],
+  "excluded_directories": [".git", "node_modules", ".next", "dist", "build", "coverage", ".cache", ".pytest_cache", "docs"],
   "general_scan_exclusions": [
     "independence-policy.json",
     "repo-boundaries.json",

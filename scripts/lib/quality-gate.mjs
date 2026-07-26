@@ -20,7 +20,9 @@ const REQUIRED_MANDATORY_CHECKS = new Map([
   ["quality-gate-runner-tests", { category: "unit", kind: null }],
   ["toolchain-baseline", { category: "build", kind: null }],
   ["production-dependency-audit", { category: "security", kind: "npm_audit" }],
-  ["repository-independence", { category: "independence", kind: null }]
+  ["repository-independence", { category: "independence", kind: null }],
+  ["local-service-runtime-verifier-tests", { category: "unit", kind: null }],
+  ["local-service-full-environment-audit", { category: "security", kind: null }]
 ]);
 export const CI_FALLBACK_STEP_IDS = ["toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate"];
 const CI_STEP_OUTCOMES = new Set(["success", "failure", "cancelled", "skipped"]);

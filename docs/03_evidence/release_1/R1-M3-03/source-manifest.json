@@ -1,0 +1,245 @@
+{
+  "schema_version": "1.0",
+  "status": "EXACT_IMPLEMENTATION_COMMIT",
+  "dirty_snapshot": false,
+  "base_head": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
+  "comparison_base": "bd13f1694623ca1225415c0f157ef88f94df6f38",
+  "git_sha_role": "exact implementation commit",
+  "tracked_binary_patch_sha256": "D507AF0099F38229957C74F1D7A7F787B0C8492B20B8F2777B7DA3FFE9268E74",
+  "untracked_binding": "file entries include untracked source bytes individually",
+  "entry_canonicalization": "UTF-8 JSON.stringify(path,bytes,sha256), path ascending",
+  "source_entries_sha256": "927E7B416BBAD8672577E3A0DBF551AFC489C076FC7CA5EF4207ADE4BD28143C",
+  "file_count": 46,
+  "files": [
+    {
+      "path": ".gitignore",
+      "bytes": 697,
+      "sha256": "FDEF6DCD51ACD9B8AB1F9174C82077B43F14EE594A65960BDB737573EA70B839"
+    },
+    {
+      "path": "apps/desktop/package.json",
+      "bytes": 576,
+      "sha256": "0B99155004F2047A59878AA9F1F3366E131078F63738150462B99D9CC9DB750A"
+    },
+    {
+      "path": "apps/desktop/src-tauri/Cargo.lock",
+      "bytes": 107272,
+      "sha256": "A3EB16FF206DC70011C2A6A88CD55B63159DCFB111E09C681237FFDCC71AE040"
+    },
+    {
+      "path": "apps/desktop/src-tauri/Cargo.toml",
+      "bytes": 843,
+      "sha256": "CEED12AD23A40659BC86C6D49BB5B9BF8ACD6800C266B11BC14905E9A664AA2E"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/bin/local-service-lifecycle-host.rs",
+      "bytes": 2837,
+      "sha256": "3B0DB2DC9BF4F83399F12E6BCC72421181DE4855AC5FAB43F24A90DFDDD5D37A"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/lib.rs",
+      "bytes": 1085,
+      "sha256": "F7E2D72535BA16B26620C694C140D6C9768AE67B96525DB60856C59078D7127C"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/local_service.rs",
+      "bytes": 62370,
+      "sha256": "B6E1154631EF6137670B882C33A8086E34D21F372A694A2409C3BEC9692BE13E"
+    },
+    {
+      "path": "apps/desktop/src-tauri/tauri.windows.conf.json",
+      "bytes": 128,
+      "sha256": "C7524FB2BF3C1FD68B814D663C4A829D91F107D38919DDFCFCC59F8E632BF2EE"
+    },
+    {
+      "path": "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs",
+      "bytes": 2951,
+      "sha256": "976AEDD5C37F07FAEDBB323EF0ED14E5D9D0D6CF7CFE53CD2BE3A9CBC1EE4E29"
+    },
+    {
+      "path": "apps/desktop/src-tauri/tests/local_service_contract.rs",
+      "bytes": 1696,
+      "sha256": "DE90BB1F0E8BB2585612323E47E04862EA2F107C85CC262A13AEDD63F2A79AE3"
+    },
+    {
+      "path": "apps/desktop/src/desktop-shell.jsx",
+      "bytes": 3721,
+      "sha256": "FA5CE158DAB1D66279DBD7E849AE6A62336ED2BB6DA424E386FE0ACD5F3AE76B"
+    },
+    {
+      "path": "apps/desktop/src/local-service-bridge.js",
+      "bytes": 2250,
+      "sha256": "38C6A54B7234CA8F155DE69B5944F45E003D0C5EFE3D5396C8B3092FE649AE0B"
+    },
+    {
+      "path": "docs/01_architecture/ci_quality_gate_contract.md",
+      "bytes": 6200,
+      "sha256": "3DBF70E53DA91F467B0047F9C30CDF09CC30C2484ADAFF6986C4F9606B9B1F0C"
+    },
+    {
+      "path": "docs/02_work_orders/release_1_attempt_ledger.jsonl",
+      "bytes": 15774,
+      "sha256": "7F6FC6E6CF3695E3FA007C9E2DC36AEB6E035C156DE6DD9B2F0A59C404939BE6"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json",
+      "bytes": 48312,
+      "sha256": "11D875B71506F0A7F3C9C30F258D738FF340F2BF090A6C29E1ECF76BA2F3304C"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md",
+      "bytes": 516,
+      "sha256": "A8ADA63125B30B0696DCEB02A4D1410A6BB14C2AFFA40500D0D11A9C1E66BA34"
+    },
+    {
+      "path": "independence-policy.json",
+      "bytes": 1474,
+      "sha256": "8C1554305769BA8CDFA975BAD50D9FD632CB5B50271CD656E342DDC1965A88C2"
+    },
+    {
+      "path": "package.json",
+      "bytes": 1659,
+      "sha256": "2F54D6D40FF634FBBAB1FD0F50552EFAB71BDDC95CBFCC06F60F67E04807E76B"
+    },
+    {
+      "path": "quality-gate-policy.json",
+      "bytes": 14255,
+      "sha256": "3B8904E80337EE2DACE229DBFF0B4F1ACF4E75DC0BB0F1657D4B99800686A06E"
+    },
+    {
+      "path": "scripts/build-local-service-sidecar.mjs",
+      "bytes": 4383,
+      "sha256": "32A413FAB7A975D32451AAC18EC6DF333EC79745609FDA1BF78E2E418C270D4B"
+    },
+    {
+      "path": "scripts/generate-r1-m3-03-source-manifest.mjs",
+      "bytes": 5659,
+      "sha256": "217AB427CA297933DD98B50D9075B2519AF3DF128702C211AC57DD60C11B14C4"
+    },
+    {
+      "path": "scripts/lib/independence-check.mjs",
+      "bytes": 17972,
+      "sha256": "561F1BE1EEE2A6A2AEB9F3DC2AA5E38C2AE2CD050D9BFC14A50787DF026F5D8A"
+    },
+    {
+      "path": "scripts/lib/quality-gate.mjs",
+      "bytes": 22733,
+      "sha256": "81AF47AA10E65601D8F312F657F51128D3A98E21A22CB885F04A31B471C6CA1A"
+    },
+    {
+      "path": "scripts/run-isolated-desktop-cargo.mjs",
+      "bytes": 6550,
+      "sha256": "773F51ADE9B96CE74A04D7C40EA368F920E1E7E352ADF6392CCDF06F53EF7141"
+    },
+    {
+      "path": "scripts/run-local-service-tool.mjs",
+      "bytes": 4365,
+      "sha256": "27CEF455CE07559BBA95567015C77FFBAC1A5C16314903F76924EA57CAC65DAB"
+    },
+    {
+      "path": "scripts/stage-local-service-sidecar.ps1",
+      "bytes": 3702,
+      "sha256": "9A49019476BB61E6B4E229D534ACE8B1DDA1FFC2A5423C7296549C519D52EFF7"
+    },
+    {
+      "path": "scripts/tests/desktop-local-service.test.mjs",
+      "bytes": 7080,
+      "sha256": "1CC75019B3EFA462EE76974B27F01D139067D53D74E9DBF2D3226DD0AC07E9C7"
+    },
+    {
+      "path": "scripts/tests/desktop-tauri-shell.test.mjs",
+      "bytes": 17483,
+      "sha256": "77BF879DCD2481BCE48ADB7437C6C07DB11D474DB7A66DFCA04574C79CEB05B9"
+    },
+    {
+      "path": "scripts/tests/independence-check.test.mjs",
+      "bytes": 8904,
+      "sha256": "F369F765EB4119481A79C184BC1FB7585C5047A8D4F917F273C3DA711275B0B0"
+    },
+    {
+      "path": "scripts/tests/local-service-runtime-verifier.test.mjs",
+      "bytes": 1954,
+      "sha256": "2C9FA60B78BBB2A8B1186CC15F6FAE57C1818E2443AFA62D9DF3FF0EF4CABF53"
+    },
+    {
+      "path": "scripts/tests/local-service-source-manifest.test.mjs",
+      "bytes": 1762,
+      "sha256": "225443741860C1A463BC0497CE978833CA02F4C23093058DB76DF187EDF84EF1"
+    },
+    {
+      "path": "scripts/tests/local-service-stage-helper.test.mjs",
+      "bytes": 3271,
+      "sha256": "BFE41FC7A41A643CA1946E8D344316888401073A2264F2E951DAC3D8BDD16D1C"
+    },
+    {
+      "path": "scripts/tests/quality-gate.test.mjs",
+      "bytes": 20646,
+      "sha256": "95C15BEE58648A9D32D1EC8064C0FFADAE38B2A8EB69FFD8E363B5FF68675015"
+    },
+    {
+      "path": "scripts/verify-local-service-runtime.mjs",
+      "bytes": 14304,
+      "sha256": "89AC2ACEBA2F1C16C37EB741B614413B2F1CE6516EACE72598EF0F5BC2924573"
+    },
+    {
+      "path": "scripts/verify-r1-m3-03-quality-gate.mjs",
+      "bytes": 890,
+      "sha256": "8EAC85BF7DB597900A6606566C1425CC044C78EAF0A30BE0FE25E13510EDA794"
+    },
+    {
+      "path": "services/local-service/entrypoint.py",
+      "bytes": 70,
+      "sha256": "528C2255DB70714F5C5960400179D4B47782993B6511FFBD6580F701A4292AB6"
+    },
+    {
+      "path": "services/local-service/pyproject.toml",
+      "bytes": 695,
+      "sha256": "C16C4883DCA08E91FB7607918CD0CDE674141D8C7E088F4C9CE305FF6945A62E"
+    },
+    {
+      "path": "services/local-service/src/daon_user_local_service/__init__.py",
+      "bytes": 106,
+      "sha256": "B6FE9DE8D3025957387114BF278C9A41AD0467C208AC942E6932999788CF0C81"
+    },
+    {
+      "path": "services/local-service/src/daon_user_local_service/__main__.py",
+      "bytes": 47,
+      "sha256": "2C393C1CAA33E5BC0074F15107BA42A6D08774E1CBAA366FE5FFDC509FF97435"
+    },
+    {
+      "path": "services/local-service/src/daon_user_local_service/app.py",
+      "bytes": 3383,
+      "sha256": "19D89FA1A2B14012023561EDB9BFB14854A86243061E8F288A00684B265580FC"
+    },
+    {
+      "path": "services/local-service/src/daon_user_local_service/main.py",
+      "bytes": 4684,
+      "sha256": "24E99235F46260D8A3764D8331672AF5C1BF68799BFD6E9993B177A93CAD87C7"
+    },
+    {
+      "path": "services/local-service/src/daon_user_local_service/protocol.py",
+      "bytes": 1939,
+      "sha256": "6F494D542C0DDC99F02A9A060F39A520D76AD912B9F4D241DB9097E5D7A75EED"
+    },
+    {
+      "path": "services/local-service/tests/test_app.py",
+      "bytes": 4029,
+      "sha256": "CAE4EFA5D59EF499F409AFCB5FCD30B10F131366B559CCDB145016A83C8F33A1"
+    },
+    {
+      "path": "services/local-service/tests/test_main.py",
+      "bytes": 5528,
+      "sha256": "6CBB42B287FAC256AE8D5E9CFCD69F6E59CAFEFCB94623D36BA87BEAA5D856CC"
+    },
+    {
+      "path": "services/local-service/tests/test_protocol.py",
+      "bytes": 1843,
+      "sha256": "4006F0C646055509B19F832C3C2AEDFCCDB902CECA54E05A3888A4EB3CA150E7"
+    },
+    {
+      "path": "uv.lock",
+      "bytes": 105465,
+      "sha256": "388200B101A8ECF93C29495312F5A542F34F2FEF6C4E163D9D3547E1D131143A"
+    }
+  ]
+}
