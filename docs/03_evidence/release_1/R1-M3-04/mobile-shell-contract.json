@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0",
+  "work_order": "R1-M3-04",
+  "issue_id": "R1-M3-04-I001",
+  "status": "PASS",
+  "validated_head": "459032773097086ac89139ee307ad53394b62208",
+  "source_state": "exact_commit",
+  "clients": {
+    "android": { "route_count": 8, "excluded_routes": ["organization_settings", "operations"], "native_build": "Deferred R1-M3-05" },
+    "ios": { "route_count": 8, "excluded_routes": ["organization_settings", "operations"], "native_build": "Deferred R1-M3-06" }
+  },
+  "screen_states": ["loading", "empty", "ready", "warning", "error", "forbidden", "unavailable"],
+  "fail_close_codes": ["UNKNOWN_NATIVE_CLIENT", "NATIVE_ROUTE_NOT_ALLOWED", "NATIVE_DEEP_LINK_NOT_ALLOWED", "UNKNOWN_SCREEN_STATE", "NATIVE_SCREEN_NOT_AVAILABLE", "NATIVE_PUBLIC_API_UNAVAILABLE", "NATIVE_ADAPTER_RESULT_INVALID", "MOBILE_STUDIO_ACTION_UNKNOWN"],
+  "design_tokens": { "body": 12, "form": 12, "description": 10, "auxiliary": 9, "sidebar_title": 14, "screen_title": 16, "touch_target": 44 },
+  "accessibility": { "os_text_scaling": true, "screen_reader_labels": true, "selection_state": true, "status_icon_text_color": true, "persistent_help_box": false },
+  "mobile_studio_matrix": { "actions": 15, "allowed_content": 3, "allowed_workflow": 6, "blocked": 6, "security_enforcement": "Deferred M4 Native Gateway" },
+  "public_api": { "default_state": "unavailable", "replacement_owner": "R1-M4-01", "http_implemented": false, "auth_implemented": false },
+  "workspace_commands": {
+    "lint": "npm --prefix ../.. run verify:mobile-lint",
+    "type": "npm --prefix ../.. run verify:mobile-type",
+    "unit": "npm --prefix ../.. run verify:mobile-unit",
+    "contract": "npm --prefix ../.. run verify:mobile-contract",
+    "build": "npm --prefix ../.. run verify:mobile-build"
+  },
+  "test": { "command": "node --test scripts/tests/mobile-shared-shell.test.mjs", "exit_code": 0, "passed": 9, "failed": 0 },
+  "c03_ci_history": { "workflow_test": "37/37 PASS", "c01_targeted": "42/42 PASS", "node_regression": "251/251 PASS", "checkout_fetch_depth": 0, "github_run_revalidation": "Pending 어울1 follow-up" },
+  "ysna_server": { "validated_git_sha": "53dd21d5d051e4e1a8b336475c81b34a34dc9d35", "architecture": "aarch64", "mobile_unit": "9/9 PASS", "mobile_contract": "15/15 PASS", "c01_targeted": "42/42 PASS" }
+}

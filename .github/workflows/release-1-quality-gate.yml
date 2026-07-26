@@ -18,7 +18,10 @@
         {
           "name": "Checkout immutable candidate",
           "id": "checkout",
-          "uses": "actions/checkout@v5"
+          "uses": "actions/checkout@v5",
+          "with": {
+            "fetch-depth": 0
+          }
         },
         {
           "name": "Clear checkout quality gate evidence",

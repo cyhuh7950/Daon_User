@@ -46,9 +46,6 @@ export function classifyPredecessorArtifact({ source_work_order: sourceWorkOrder
   const approvedSpecialCase = SPECIAL_CASES.get(`${sourceWorkOrder}|${artifactPath}`) ?? null;
   const hasPinnedSuccessorContract = approvedSpecialCase?.status === "SUCCESSOR_SUPERSEDED"
     && typeof approvedSpecialCase.expected_sha256 === "string";
-  const pinnedCurrent = hasPinnedSuccessorContract
-    ? { sha256: approvedSpecialCase.current_sha256, bytes: approvedSpecialCase.current_bytes }
-    : null;
   const pinnedSuccessorContractMatches = !hasPinnedSuccessorContract || (
     expected.sha256.toUpperCase() === approvedSpecialCase.expected_sha256
     && expected.bytes === approvedSpecialCase.expected_bytes
@@ -56,7 +53,6 @@ export function classifyPredecessorArtifact({ source_work_order: sourceWorkOrder
     && specialCase?.successor_commit === approvedSpecialCase.successor_commit
     && specialCase?.current_sha256 === approvedSpecialCase.current_sha256
     && specialCase?.current_bytes === approvedSpecialCase.current_bytes
-    && [raw, canonical, canonicalCrlf].some((representation) => representationMatches(representation, pinnedCurrent))
   );
   if (!pinnedSuccessorContractMatches) return { status: "UNEXPLAINED_MISMATCH", verification_representation: null, code: "SUCCESSOR_CONTRACT_MISMATCH" };
   const legacyExpectationMatches = approvedSpecialCase?.status !== "LEGACY_MANIFEST_DRIFT" || (
@@ -133,7 +129,17 @@ function asGitCrlfRepresentation(buffer) {
   return asRepresentation(Buffer.from(text.replace(/\r?\n/g, "\r\n"), "utf8"));
 }
 
-function verifySpecialCaseLineage(root, artifactPath, expected, specialCase, origin, originCrlf, currentRepresentations) {
+export function verifySuccessorLineageContract({ expected, origin, origin_crlf: originCrlf, successor, successor_crlf: successorCrlf, successor_expected: successorExpected, origin_commit_exists: originCommitExists, successor_commit_exists: successorCommitExists, origin_is_ancestor: originIsAncestor }) {
+  return originCommitExists === true
+    && successorCommitExists === true
+    && originIsAncestor === true
+    && validExpected(expected)
+    && validExpected(successorExpected)
+    && [origin, originCrlf].some((representation) => representationMatches(representation, expected))
+    && [successor, successorCrlf].some((representation) => representationMatches(representation, successorExpected));
+}
+
+function verifySpecialCaseLineage(root, artifactPath, expected, specialCase, origin, originCrlf) {
   const originExists = gitCommitExists(root, specialCase.origin_commit);
   const originMatches = validExpected(expected) && [origin, originCrlf].some((representation) => representationMatches(representation, expected));
   if (specialCase.status === "SUCCESSOR_SUPERSEDED") {
@@ -142,23 +148,23 @@ function verifySpecialCaseLineage(root, artifactPath, expected, specialCase, ori
     const successorBlobExists = successorBuffer !== null;
     const hasPinnedSuccessorContract = typeof specialCase.expected_sha256 === "string";
     const pinnedCurrent = hasPinnedSuccessorContract ? { sha256: specialCase.current_sha256, bytes: specialCase.current_bytes } : null;
-    const successorMatchesPinnedCurrent = !hasPinnedSuccessorContract || [
-      asRepresentation(successorBuffer),
-      asGitCrlfRepresentation(successorBuffer)
-    ].some((representation) => representationMatches(representation, pinnedCurrent));
-    const currentMatchesPinned = !hasPinnedSuccessorContract || currentRepresentations.some((representation) => representationMatches(representation, pinnedCurrent));
-    const [raw, canonical, canonicalCrlf] = currentRepresentations;
-    const currentCheckoutIsCanonical = raw?.available === true
-      && (representationMatches(raw, canonical)
-        || representationMatches(raw, canonicalCrlf));
+    const successor = asRepresentation(successorBuffer);
+    const successorCrlf = asGitCrlfRepresentation(successorBuffer);
+    const originIsAncestor = gitIsAncestor(root, specialCase.origin_commit, specialCase.successor_commit);
     return {
-      lineage_verified: originMatches
-        && successorExists
-        && successorBlobExists
-        && successorMatchesPinnedCurrent
-        && currentMatchesPinned
-        && currentCheckoutIsCanonical
-        && gitIsAncestor(root, specialCase.origin_commit, specialCase.successor_commit),
+      lineage_verified: hasPinnedSuccessorContract
+        ? verifySuccessorLineageContract({
+          expected,
+          origin,
+          origin_crlf: originCrlf,
+          successor,
+          successor_crlf: successorCrlf,
+          successor_expected: pinnedCurrent,
+          origin_commit_exists: originExists,
+          successor_commit_exists: successorExists && successorBlobExists,
+          origin_is_ancestor: originIsAncestor
+        })
+        : originMatches && successorExists && successorBlobExists && originIsAncestor,
       origin
     };
   }
@@ -193,7 +199,7 @@ export function buildPredecessorReconciliation({ root = process.cwd() } = {}) {
         normalized = { expected: { sha256: artifact.sha256, bytes: originRepresentation.bytes }, bytes_source: "VERIFIED_ORIGIN_BLOB" };
       }
       const expected = normalized.expected;
-      const lineage = specialDefinition ? verifySpecialCaseLineage(root, artifactPath, expected, specialDefinition, originRepresentation, originCrlfRepresentation, [raw, canonical, canonicalCrlf]) : null;
+      const lineage = specialDefinition ? verifySpecialCaseLineage(root, artifactPath, expected, specialDefinition, originRepresentation, originCrlfRepresentation) : null;
       const specialCase = specialDefinition ? {
         lineage_verified: lineage.lineage_verified,
         origin_commit: specialDefinition.origin_commit,

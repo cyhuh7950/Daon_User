@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import { APPROVED_PREDECESSOR_SPECIAL_CASES, APPROVED_PREDECESSOR_SUMMARY, buildPredecessorReconciliation, classifyPredecessorArtifact, normalizeManifestExpected, validateOriginCommit } from "../lib/predecessor-evidence-reconciliation.mjs";
+import { APPROVED_PREDECESSOR_SPECIAL_CASES, APPROVED_PREDECESSOR_SUMMARY, buildPredecessorReconciliation, classifyPredecessorArtifact, normalizeManifestExpected, validateOriginCommit, verifySuccessorLineageContract } from "../lib/predecessor-evidence-reconciliation.mjs";
 
 export { buildPredecessorReconciliation };
 
@@ -164,7 +164,7 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
     assert.equal(classifyPredecessorArtifact({ source_work_order: "R1-M2-99", artifact_path: "unknown", expected: { sha256: "A".repeat(64), bytes: 1 }, raw: { available: true, sha256: "B".repeat(64), bytes: 1 }, canonical: { available: false }, special_case: { lineage_verified: true } }).status, "UNEXPLAINED_MISMATCH");
   });
 
-  test("FIX-05 Lockfile 2건은 경로·이전 Hash/Byte·Origin·Successor·현재 Hash/Byte가 모두 정확할 때만 승인된다", () => {
+  test("C01 Lockfile 2건은 현재 Worktree와 무관하게 고정 Origin·Successor Blob 계보로 승인된다", () => {
     const lockfileCases = APPROVED_PREDECESSOR_SPECIAL_CASES.filter((item) => item.artifact_path === "package-lock.json");
     assert.deepEqual(
       lockfileCases.map((item) => ({
@@ -205,7 +205,7 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
         source_work_order: item.source_work_order,
         artifact_path: item.artifact_path,
         expected: { sha256: item.expected_sha256, bytes: item.expected_bytes },
-        raw: { available: true, sha256: item.current_sha256, bytes: item.current_bytes },
+        raw: { available: true, sha256: "E".repeat(64), bytes: item.current_bytes + 99 },
         canonical: { available: false },
         special_case: {
           lineage_verified: true,
@@ -226,10 +226,44 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
         { ...base, special_case: { ...base.special_case, current_sha256: "C".repeat(64) } },
         { ...base, special_case: { ...base.special_case, current_bytes: base.special_case.current_bytes + 1 } },
         { ...base, special_case: { ...base.special_case, lineage_verified: false } },
-        { ...base, raw: { available: false } },
-        { ...base, raw: { ...base.raw, sha256: "D".repeat(64) } },
-        { ...base, raw: { ...base.raw, bytes: base.raw.bytes + 1 } }
+        { ...base, raw: { available: false } }
       ]) assert.equal(classifyPredecessorArtifact(invalid).status, "UNEXPLAINED_MISMATCH");
+    }
+  });
+
+  test("C01 Successor 부재·Blob 변조·잘못된 Ancestor 관계는 각각 fail-close한다", () => {
+    const expected = { sha256: "A".repeat(64), bytes: 3 };
+    const successorExpected = { sha256: "B".repeat(64), bytes: 5 };
+    const valid = {
+      expected,
+      origin: { available: true, ...expected },
+      origin_crlf: { available: false },
+      successor: { available: true, ...successorExpected },
+      successor_crlf: { available: false },
+      successor_expected: successorExpected,
+      origin_commit_exists: true,
+      successor_commit_exists: true,
+      origin_is_ancestor: true
+    };
+    assert.equal(verifySuccessorLineageContract(valid), true);
+    const approved = APPROVED_PREDECESSOR_SPECIAL_CASES.find((item) => item.source_work_order === "R1-M2-06" && item.artifact_path === "package-lock.json");
+    const classificationBase = {
+      source_work_order: approved.source_work_order,
+      artifact_path: approved.artifact_path,
+      expected: { sha256: approved.expected_sha256, bytes: approved.expected_bytes },
+      raw: { available: true, sha256: "E".repeat(64), bytes: approved.current_bytes + 99 },
+      canonical: { available: false },
+      special_case: { origin_commit: approved.origin_commit, successor_commit: approved.successor_commit, current_sha256: approved.current_sha256, current_bytes: approved.current_bytes }
+    };
+    for (const invalid of [
+      { ...valid, successor_commit_exists: false, successor: { available: false } },
+      { ...valid, successor: { ...valid.successor, sha256: "C".repeat(64) } },
+      { ...valid, successor: { ...valid.successor, bytes: valid.successor.bytes + 1 } },
+      { ...valid, origin_is_ancestor: false }
+    ]) {
+      const lineageVerified = verifySuccessorLineageContract(invalid);
+      assert.equal(lineageVerified, false);
+      assert.equal(classifyPredecessorArtifact({ ...classificationBase, special_case: { ...classificationBase.special_case, lineage_verified: lineageVerified } }).status, "UNEXPLAINED_MISMATCH");
     }
   });
 
