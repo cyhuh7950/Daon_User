@@ -1404,7 +1404,8 @@ M4~M6의 모든 수평 구현이 끝날 때까지 통합 검증을 미루지 않
 | 과거 OutputVersion은 불변 보존하되 모든 접근·전달·등록·재실행은 현재 권한으로 재검증하고 필요 시 마스킹·차단 | 확정 · 신산님 승인 2026-07-20 |
 | 기준 화면 1920×1080·12px 본문과 Tooltip/Popover 설명 인터페이스 | 확정 · 신산님 승인 2026-07-20 |
 | Browser API는 same-origin BFF/Proxy만 사용하고 Client 절대주소·localhost·Docker 내부주소를 금지 | 확정 · 신산님 승인 2026-07-20 |
-| Android Deep Link 공개 진입 계약은 `sinsan-daon://app/<native_route_key>`이며 기존 승인 Route Allowlist만 허용하고 다른 Scheme·Host·Route는 Fail-close | 확정 · 신산님 승인 2026-07-27 |
+| Android·iOS 공용 Deep Link 공개 진입 계약은 `sinsan-daon://app/<native_route_key>`이며 기존 승인 Route Allowlist만 허용하고 다른 Scheme·Host·Route는 Fail-close | 확정 · 신산님 승인 2026-07-27 |
+| R1-M3-06 iOS는 GitHub-hosted macOS·고정 Xcode/CocoaPods의 Simulator Phase A를 먼저 검증하고 Apple Team·Provisioning·서명 Archive·실기기는 Phase B로 유지 | 확정 · 신산님 승인 2026-07-27 |
 | 로컬 수정·검증→Git Push→ysna-server 격리 배포·전용 DB Migration·서버 테스트→PR Merge→Oracle Cloud 운영의 단계별 기준선 사용 | 확정 · 신산님 승인 2026-07-20 · `APR-DEVENV-YSNA-20260720-01` |
 | 동일 작업지시서 미완료·실패 합계 3회에는 어울2를 중지하고 신산님 결정 후에만 어울1이 직접 구현 | 확정 · 신산님 승인 2026-07-20 |
 | Output 승인 요청 기본 7일·조직 1~30일, 만료·회수 시 자동 승인 금지 | 확정 |
