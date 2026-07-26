@@ -129,6 +129,22 @@ def test_bootstrap_reader_timeout_does_not_keep_process_alive() -> None:
     assert time.monotonic() - started < 0.5
 
 
+def test_bootstrap_reader_reads_complete_line_from_parent_pipe() -> None:
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, "rb", buffering=0)
+    try:
+        os.write(write_fd, bootstrap())
+        os.close(write_fd)
+        write_fd = -1
+        assert main.read_bootstrap_line(stream, timeout_seconds=0.5) == bootstrap().removesuffix(
+            b"\n"
+        )
+    finally:
+        if write_fd >= 0:
+            os.close(write_fd)
+        stream.close()
+
+
 def test_run_binds_only_loopback_emits_safe_ready_and_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
