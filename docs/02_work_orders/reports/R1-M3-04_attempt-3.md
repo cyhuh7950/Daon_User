@@ -59,9 +59,20 @@ GREEN:
 
 첫 C02 Gate는 Mobile Workspace 5개 Check가 모두 PASS했지만 범위 외 `desktop-shell-unit` Rust 단계가 Exit 101로 한 번 실패했다. Desktop Source를 변경하지 않고 독립 `npm run verify:desktop-unit`을 실행해 Node 25/25와 Rust 14/14+3/3 PASS를 확인했다. 이후 전체 Gate 1회 재실행은 238.2초, Overall PASS, Failures 0이었다. 최초 Result가 Raw 오류를 저장하지 않아 Exit 101의 세부 원문은 unavailable이며, 검사 완화나 조건부 PASS는 적용하지 않았다.
 
+## 어울1 ysna-server 검증 부기
+
+- GitHub에 Push된 Evidence Commit `53dd21d5d051e4e1a8b336475c81b34a34dc9d35`를 `/home/ubuntu/deploy/daon-user/R1-M3-04`에 Checkout해 `aarch64` 서버에서 검증했다.
+- 임시 Node 24.18.0 Container와 고정 npm 11.12.1·Corepack 0.35.0을 사용했고, 기존 uv 0.11.2 Image의 실행 파일만 읽기 전용으로 주입했다. 저장소 Source는 읽기 전용 Mount 후 Container 내부 작업층으로 복사했다.
+- Mobile Workspace `lint`, `type`, `unit`, `contract`, `build`가 모두 Exit 0이었고 Unit `9/9`, Contract `15/15`, C01 지정 Test `42/42`가 PASS했다.
+- Android/iOS Bundle의 Byte·SHA-256이 Local Exact-SHA 결과와 일치했다.
+- Toolchain, Production Audit, Independence가 모두 Exit 0이었고 Production 취약점과 독립성 위반은 각각 0건이었다.
+- DB Migration은 `N/A`이며 `shared-db`, `common`, `netdata`, `proxy`는 사용하거나 변경하지 않았다.
+- 검증 종료 후 임시 Container·Network·uv 파일 0건, Server Checkout Clean을 확인했다.
+- 초기 읽기 전용 중첩 Mount, Git Ownership, npm/Corepack, uv 가용성 문제는 서버 검증 환경 구성 문제로 분류했다. 검사를 완화하지 않고 동일 Push SHA에서 환경만 바로잡아 최종 PASS했다.
+
 ## Evidence
 
-- Evidence Manifest: 7,301 bytes, SHA-256 `6E0F5317A1DBB1614DADDF69C16C4076D189FBB91ADF690937DE9E8CDB3A8FC8`
+- Evidence Manifest: 7,894 bytes, SHA-256 `1FE7653B6F2D3B6EBCD8F0D25DC9E20E8AA862471310702EEFE15ED0EE1374CB`
 - Quality Gate Result: 54,468 bytes, SHA-256 `BCC5B42CF0F79B9E4520A14EBD997635B784D783D9C9C34F561129F9758398E7`
 - Quality Gate Summary: 516 bytes, SHA-256 `7B67C52408035C463B9B3E15E6B028CD453BACD454ADA60D43F314574570E5B8`
 - Gate Git SHA: `df6564851163254e40d29666fdf7fa1bd4481803`; 어울1이 구현 Commit에서 294.3초 Exact-SHA Gate를 재실행해 `exact_commit`으로 결속
@@ -69,7 +80,9 @@ GREEN:
 ## 미해결·후속 경계
 
 - Exact implementation Commit·Local Gate: 완료 · `df6564851163254e40d29666fdf7fa1bd4481803`
-- Push·PR·Merge·ysna-server: 어울1 후속
+- Push: 완료 · `53dd21d5d051e4e1a8b336475c81b34a34dc9d35`
+- ysna-server: 완료 · 동일 SHA, Mobile 5개·42개 회귀·Toolchain·Audit·Independence PASS
+- PR·Merge: 어울1 후속
 - Android Native Project·설치·Device: Deferred R1-M3-05
 - iOS Native Project·설치·Device: Deferred R1-M3-06
 - Public API·Auth·Server 보안 재강제: Deferred M4
