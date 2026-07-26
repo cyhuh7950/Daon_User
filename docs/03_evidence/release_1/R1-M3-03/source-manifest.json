@@ -1,23 +1,25 @@
 {
   "schema_version": "1.0",
-  "status": "SNAPSHOT",
-  "dirty_snapshot": true,
-  "base_head": "bd13f1694623ca1225415c0f157ef88f94df6f38",
-  "tracked_binary_patch_sha256": "880E9902290D4D823183DC136C248D9BBC699AABB856F28BEEC3B1A8AFFBAB59",
+  "status": "EXACT_IMPLEMENTATION_COMMIT",
+  "dirty_snapshot": false,
+  "base_head": "9c7aaefe78c6ab99b6c66607602f710925576232",
+  "comparison_base": "bd13f1694623ca1225415c0f157ef88f94df6f38",
+  "git_sha_role": "exact implementation commit",
+  "tracked_binary_patch_sha256": "2374F69884061E3DE73BA5AC4F586C7F7D253FA4A6858253A78500FFEE167ED5",
   "untracked_binding": "file entries include untracked source bytes individually",
   "entry_canonicalization": "UTF-8 JSON.stringify(path,bytes,sha256), path ascending",
-  "source_entries_sha256": "81E04EEF3E5DAA5E3202094F72AE61FDAB6E9B0205761A4ECCE113CB4E0D3EFF",
+  "source_entries_sha256": "492EA1A6041C2335B0D2ED3F9ECE6F862A4C2F95A5476DC622AF33C6948F73FB",
   "file_count": 44,
   "files": [
     {
       "path": ".gitignore",
-      "bytes": 739,
-      "sha256": "B1CB811A148B3E40B22DDE14CBC8EDC07626AE50785C16255091ADDAE767861C"
+      "bytes": 697,
+      "sha256": "FDEF6DCD51ACD9B8AB1F9174C82077B43F14EE594A65960BDB737573EA70B839"
     },
     {
       "path": "apps/desktop/package.json",
-      "bytes": 593,
-      "sha256": "A4641C0381B9DF8DCAC0D2041A9B59CEF295329CAC432BC11598FEBDC840A80C"
+      "bytes": 576,
+      "sha256": "0B99155004F2047A59878AA9F1F3366E131078F63738150462B99D9CC9DB750A"
     },
     {
       "path": "apps/desktop/src-tauri/Cargo.lock",
@@ -41,8 +43,8 @@
     },
     {
       "path": "apps/desktop/src-tauri/src/local_service.rs",
-      "bytes": 60960,
-      "sha256": "6A20D447F97F60834A0BC3FC4C6F979B4FD5A59F0FA94306C12041947F31A491"
+      "bytes": 62370,
+      "sha256": "B6E1154631EF6137670B882C33A8086E34D21F372A694A2409C3BEC9692BE13E"
     },
     {
       "path": "apps/desktop/src-tauri/tauri.windows.conf.json",
@@ -61,8 +63,8 @@
     },
     {
       "path": "apps/desktop/src/desktop-shell.jsx",
-      "bytes": 3780,
-      "sha256": "99A479090A32623289A61A172B226805C3DBC48F5DD1ED54BBB2FACE5FD7172F"
+      "bytes": 3721,
+      "sha256": "FA5CE158DAB1D66279DBD7E849AE6A62336ED2BB6DA424E386FE0ACD5F3AE76B"
     },
     {
       "path": "apps/desktop/src/local-service-bridge.js",
@@ -71,28 +73,28 @@
     },
     {
       "path": "docs/01_architecture/ci_quality_gate_contract.md",
-      "bytes": 6254,
-      "sha256": "10DBE857DC96363D971C7788AAB75B0CE1BEF681A8F8E44DE86CED6F280D43EA"
+      "bytes": 6200,
+      "sha256": "3DBF70E53DA91F467B0047F9C30CDF09CC30C2484ADAFF6986C4F9606B9B1F0C"
     },
     {
       "path": "docs/02_work_orders/release_1_attempt_ledger.jsonl",
-      "bytes": 13944,
-      "sha256": "8CD58C597F0DB2B03230C6F69B48A19EF03236A2A9DB7EAFB534E2467F4A9FCC"
+      "bytes": 14947,
+      "sha256": "45FF25BC8910EC92D47AB480948454BDBAD13DE2633CBCC75B205E321F10CCE2"
     },
     {
       "path": "independence-policy.json",
-      "bytes": 1505,
-      "sha256": "D9FF26F9FC745518524E8DECBA334B88428CD7FAD70E29AD3B96F798DEBB6A16"
+      "bytes": 1474,
+      "sha256": "8C1554305769BA8CDFA975BAD50D9FD632CB5B50271CD656E342DDC1965A88C2"
     },
     {
       "path": "package.json",
-      "bytes": 1667,
-      "sha256": "56045DC1A32B1E42A1F1033D65BBD5F89E668508C23AA270E242A3F651327528"
+      "bytes": 1659,
+      "sha256": "2F54D6D40FF634FBBAB1FD0F50552EFAB71BDDC95CBFCC06F60F67E04807E76B"
     },
     {
       "path": "quality-gate-policy.json",
-      "bytes": 14374,
-      "sha256": "767EEE2BB7142BCEECF94DF32674AE9EB2A789D71B83B699A0303C31EC8323D2"
+      "bytes": 14255,
+      "sha256": "3B8904E80337EE2DACE229DBFF0B4F1ACF4E75DC0BB0F1657D4B99800686A06E"
     },
     {
       "path": "scripts/build-local-service-sidecar.mjs",
@@ -101,23 +103,23 @@
     },
     {
       "path": "scripts/generate-r1-m3-03-source-manifest.mjs",
-      "bytes": 4062,
-      "sha256": "C2B65C214414D518C5F30A3D3D173E45839581F814E990E3976D033D563950B0"
+      "bytes": 5659,
+      "sha256": "217AB427CA297933DD98B50D9075B2519AF3DF128702C211AC57DD60C11B14C4"
     },
     {
       "path": "scripts/lib/independence-check.mjs",
-      "bytes": 18281,
-      "sha256": "6E6D51DE988154C4063DFB22DDD60D3963C9607CBFB494339AC3CCE75CBAC598"
+      "bytes": 17972,
+      "sha256": "561F1BE1EEE2A6A2AEB9F3DC2AA5E38C2AE2CD050D9BFC14A50787DF026F5D8A"
     },
     {
       "path": "scripts/lib/quality-gate.mjs",
-      "bytes": 23180,
-      "sha256": "5159E5340B24DA19C5DC83308E31C5FCA7FDBD23FDC0D637AE92867F472B21A9"
+      "bytes": 22733,
+      "sha256": "81AF47AA10E65601D8F312F657F51128D3A98E21A22CB885F04A31B471C6CA1A"
     },
     {
       "path": "scripts/run-isolated-desktop-cargo.mjs",
-      "bytes": 6692,
-      "sha256": "C343DD67ADB37632AC6CB219E1F324BE4F9B05ADAA2F55956B9E81CBB15701AA"
+      "bytes": 6550,
+      "sha256": "773F51ADE9B96CE74A04D7C40EA368F920E1E7E352ADF6392CCDF06F53EF7141"
     },
     {
       "path": "scripts/run-local-service-tool.mjs",
@@ -136,13 +138,13 @@
     },
     {
       "path": "scripts/tests/desktop-tauri-shell.test.mjs",
-      "bytes": 17646,
-      "sha256": "E8F00BF1CE89F8D778D64A204CEC8401E34DC97A7938821F72982A9D7471608D"
+      "bytes": 17334,
+      "sha256": "4743168BF0B453742B1B5DDFEB6CFD4EE76F266387EAD523B6E27D2B6DD3B345"
     },
     {
       "path": "scripts/tests/independence-check.test.mjs",
-      "bytes": 9042,
-      "sha256": "D0CBEB3BA9B0211B347348819567C6349923446AD231BE10C2464CA205579C0D"
+      "bytes": 8904,
+      "sha256": "F369F765EB4119481A79C184BC1FB7585C5047A8D4F917F273C3DA711275B0B0"
     },
     {
       "path": "scripts/tests/local-service-runtime-verifier.test.mjs",
@@ -151,8 +153,8 @@
     },
     {
       "path": "scripts/tests/local-service-source-manifest.test.mjs",
-      "bytes": 888,
-      "sha256": "57E5B0694A29DACB84E88166B75CBC3F20E397BD5C3FBB0BD0EF649CC7767679"
+      "bytes": 1762,
+      "sha256": "225443741860C1A463BC0497CE978833CA02F4C23093058DB76DF187EDF84EF1"
     },
     {
       "path": "scripts/tests/local-service-stage-helper.test.mjs",
@@ -161,8 +163,8 @@
     },
     {
       "path": "scripts/tests/quality-gate.test.mjs",
-      "bytes": 20987,
-      "sha256": "AF15213C0C0B2176C9DDD81620F307698414BD19C711C5B412047C010644458F"
+      "bytes": 20646,
+      "sha256": "95C15BEE58648A9D32D1EC8064C0FFADAE38B2A8EB69FFD8E363B5FF68675015"
     },
     {
       "path": "scripts/verify-local-service-runtime.mjs",

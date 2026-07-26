@@ -30,6 +30,9 @@
     "production_manager_error_fixture_cases": 5,
     "shutdown_retry_race_repetitions": 3,
     "bounded_termination_injection_cases": 4,
-    "spawn_gate_released_before_process_io": true
+    "spawn_gate_released_before_process_io": true,
+    "fixture_marker_cleanup_assertions": 5,
+    "fixture_marker_files_after_run": 0,
+    "fixture_marker_drop_guard": true
   }
 }

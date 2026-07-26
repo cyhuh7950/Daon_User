@@ -1,16 +1,17 @@
 {
   "schema_version": "1.0",
-  "status": "COMPLETED_DIRTY_SNAPSHOT",
+  "status": "DIRECT_IMPLEMENTATION_COMPLETED_EXACT_COMMIT",
   "issue_id": "R1-M3-03-I001",
-  "attempt": 3,
-  "dirty_snapshot": true,
-  "base_head": "bd13f1694623ca1225415c0f157ef88f94df6f38",
+  "attempt": 4,
+  "dirty_snapshot": false,
+  "base_head": "9c7aaefe78c6ab99b6c66607602f710925576232",
   "branch": "codex/r1-m3-03",
   "source_binding": {
     "file_count": 44,
-    "source_entries_sha256": "81E04EEF3E5DAA5E3202094F72AE61FDAB6E9B0205761A4ECCE113CB4E0D3EFF",
-    "tracked_binary_patch_sha256": "880E9902290D4D823183DC136C248D9BBC699AABB856F28BEEC3B1A8AFFBAB59",
-    "git_sha_role": "base head for dirty snapshot; not an exact implementation commit"
+    "source_entries_sha256": "492EA1A6041C2335B0D2ED3F9ECE6F862A4C2F95A5476DC622AF33C6948F73FB",
+    "tracked_binary_patch_sha256": "2374F69884061E3DE73BA5AC4F586C7F7D253FA4A6858253A78500FFEE167ED5",
+    "comparison_base": "bd13f1694623ca1225415c0f157ef88f94df6f38",
+    "git_sha_role": "exact implementation commit"
   },
   "evidence_files": [
     {
@@ -35,23 +36,23 @@
     },
     {
       "path": "local-service-unit.json",
-      "bytes": 1085,
-      "sha256": "D6DC99275BB95A7F4FF91B9E07EF6CC873BECF82BB126522A5564D2A8D2B8248"
+      "bytes": 1209,
+      "sha256": "8E35149B2016EABBD1EEDD04DCA6A722E2E4F0F5E3AD2B61CFB7406FE16DD381"
     },
     {
       "path": "quality-gate-result.json",
       "bytes": 48312,
-      "sha256": "0CD09609627542A672077ECFA80A1D740006953F4C339947442639EA207ADED4"
+      "sha256": "7EFFD7CE82880887A20D3C85E460A55DB62DDC191AB552A38056CFCBA41A67C1"
     },
     {
       "path": "quality-gate-summary.md",
       "bytes": 516,
-      "sha256": "42414A0B287028FE7A36245D4F3A9F2E9821DE7E8A4C9BDD686325DB1C182BE3"
+      "sha256": "15A953345D2C8BE2C5BAE1BDB63B5CCC830EA39D933CABE01BAE397A17584A40"
     },
     {
       "path": "rust-manager-error-cleanup.json",
-      "bytes": 2472,
-      "sha256": "941337FCA87BD277B1B389B190CE831B63B75FA68D0C6A65F983C0466FDC71E5"
+      "bytes": 2630,
+      "sha256": "E96A1968511412EF0305CF5705871D209B01DC5F76435C460832B28DC996F815"
     },
     {
       "path": "rust-manager-lifecycle.json",
@@ -60,8 +61,8 @@
     },
     {
       "path": "source-manifest.json",
-      "bytes": 8282,
-      "sha256": "9705B96D0D39F5884B2917176F613637A6C00B34069F6390622D6B77346549A5"
+      "bytes": 8417,
+      "sha256": "A71BD4EE99EE92F7384CEF4E58587A2DA3212C742568935347CBFDE9BB573E8A"
     }
   ],
   "handoff_records": [
@@ -76,6 +77,11 @@
       "sha256": "316DECEF6FADDCF59A4022BEA86249D3B03DD29C71F71954F724F439A5D409F5"
     },
     {
+      "path": "docs/04_test_reports/release_1/R1-M3-03-DIRECT_progress.md",
+      "bytes": 4607,
+      "sha256": "66854140BC0224D00D54F899CBB918C3DD2896521A86283B70C734BDC9B01EA7"
+    },
+    {
       "path": "docs/02_work_orders/reports/R1-M3-03_attempt-1.md",
       "bytes": 4410,
       "sha256": "59A648507273E3316FB989EB043F9C2A3FC3653AB4393D34E8DD5C6A84240833"
@@ -87,12 +93,19 @@
     },
     {
       "path": "docs/02_work_orders/reports/R1-M3-03_attempt-3.md",
-      "bytes": 4979,
-      "sha256": "969BAB0A1EE58F04D78DE634545B2F1417B9EDD0AFE0250268475B2668D7A8DE"
+      "bytes": 5135,
+      "sha256": "834A87A98D8ECDC01E02B0DCCA5CDF2F55C1843CFD2BB0AF51DFD4AD520A1F0F"
+    },
+    {
+      "path": "docs/02_work_orders/reports/R1-M3-03_attempt-4.md",
+      "bytes": 2544,
+      "sha256": "89D25211D676AFB59DAD27EF3EBFFC08851D56942136A91E132D5484F3F01A70"
     }
   ],
   "quality_gate": {
     "command": "node scripts/verify-r1-m3-03-quality-gate.mjs",
+    "git_sha": "9c7aaefe78c6ab99b6c66607602f710925576232",
+    "process_temp_scope": "approved isolated temp root",
     "overall_status": "PASS",
     "exit_code": 0,
     "failures": 0,
@@ -114,6 +127,9 @@
     "retry_shutdown_race_repetitions": 3,
     "job_fixture_process_after_stop": 0,
     "job_fixture_listener_after_stop": 0,
+    "fixture_marker_files_after_test": 0,
+    "historical_fixture_marker_files_removed": 16,
+    "fixture_marker_cleanup_guard": true,
     "token_emitted": false,
     "instance_emission_scope": "ready_envelope_only",
     "public_host_evidence_contains_secret_fields": false,
@@ -125,7 +141,7 @@
   },
   "generated_artifacts_cleaned": true,
   "deferred": {
-    "exact_implementation_commit_gate": "main-designer follow-up after commit",
+    "exact_implementation_commit_gate": "completed at 9c7aaefe78c6ab99b6c66607602f710925576232",
     "database_migration": "N/A",
     "ysna_server": "main-designer follow-up",
     "windows_installed_gui_lifecycle": "main-designer follow-up",

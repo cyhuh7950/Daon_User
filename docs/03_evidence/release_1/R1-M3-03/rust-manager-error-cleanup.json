@@ -81,5 +81,9 @@
   },
   "post_run_marker_processes_alive": 0,
   "post_run_fixture_listeners": 0,
+  "post_run_fixture_marker_files": 0,
+  "fixture_marker_cleanup_assertions": 5,
+  "fixture_marker_drop_guard": true,
+  "historical_marker_files_removed": 16,
   "tauri_gen_exists": false
 }

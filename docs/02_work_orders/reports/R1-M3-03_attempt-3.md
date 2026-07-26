@@ -1,3 +1,5 @@
+> 어울1 재분류: `INCOMPLETE` — 반복 재현되는 Fixture Marker 14개와 Cleanup 완료 증거 불일치로 Attempt 4 직접 구현에 대체됨.
+
 COMPLETED | R1-M3-03-I001 | Shutdown Spawn Race·Bounded Job 종료·실제 Manager 오류 경로 보정 | Rust Manager·Windows Fixture·Test·Evidence | 전용 RED→GREEN·오류 Fixture 5종·공통 7범주 Gate PASS | Dirty Snapshot이므로 exact implementation commit Gate는 어울1 후속 | Diff·Evidence 재검토 요청
 
 # R1-M3-03 Attempt 3 작업보고
