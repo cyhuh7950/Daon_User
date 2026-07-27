@@ -6,7 +6,7 @@ export type IOSPermissionState = "GRANTED" | "REQUESTED" | "NOT_REQUESTED" | "DE
 
 type DaonIOSHostNativeModule = {
   saveNavigationRoute(route: string): Promise<boolean>;
-  restoreNavigationRoute(): Promise<string | null>;
+  restoreNavigationRoute(): Promise<string | null | undefined>;
   getLifecycleState(): Promise<string>;
   consumePendingDeepLink(): Promise<string | null>;
   requestPermission(kind: IOSPermissionKind): Promise<IOSPermissionState>;
@@ -21,7 +21,9 @@ export async function saveIOSNavigationRoute(route: string): Promise<void> {
 }
 
 export async function restoreIOSNavigationRoute(): Promise<string | null> {
-  return nativeHost ? nativeHost.restoreNavigationRoute() : null;
+  if (!nativeHost) return null;
+  const restoredRoute: unknown = await nativeHost.restoreNavigationRoute();
+  return typeof restoredRoute === "string" ? restoredRoute : null;
 }
 
 export async function requestIOSPermission(kind: IOSPermissionKind): Promise<IOSPermissionState> {
