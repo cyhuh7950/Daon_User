@@ -224,30 +224,43 @@ final class DaonUITests: XCTestCase {
   }
 
   private func requireExactNotificationSettingsRow(in settings: XCUIApplication) throws -> XCUIElement {
-    let query = settings.descendants(matching: .any).matching(
-      NSPredicate(format: "label == %@ OR label == %@", "Notifications", "알림")
-    )
+    let exactLabelPredicate = NSPredicate(format: "label == %@ OR label == %@", "Notifications", "알림")
+    let directQuery = settings.descendants(matching: .any).matching(exactLabelPredicate)
+    let semanticCellQuery = settings.cells.containing(.staticText, predicate: exactLabelPredicate)
     permissionXCTestStage(.settingsNotificationQueryCreated)
     let appeared = XCTNSPredicateExpectation(
       predicate: NSPredicate { object, _ in
-        guard let query = object as? XCUIElementQuery else { return false }
-        return !query.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
+        guard let directQuery = object as? XCUIElementQuery else { return false }
+        let directElements = directQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+        if !directElements.isEmpty { return true }
+        return !semanticCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
       },
-      object: query
+      object: directQuery
     )
     _ = XCTWaiter.wait(for: [appeared], timeout: 10)
     permissionXCTestStage(.settingsNotificationQueryWaitCompleted)
-    var hittableElements = query.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
-    if hittableElements.isEmpty {
-      XCTFail("missing or ambiguous exact system element: Notification settings row [ZERO]")
-      throw PermissionUIContractError.missingExactElement("Notification settings row")
-    }
-    guard hittableElements.count == 1 else {
+    let directElements = directQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    if directElements.count > 1 {
       XCTFail("missing or ambiguous exact system element: Notification settings row [AMBIGUOUS]")
       throw PermissionUIContractError.missingExactElement("Notification settings row")
     }
+    var selectedElements: [XCUIElement]
+    if directElements.count == 1 {
+      selectedElements = directElements
+    } else {
+      let semanticCells = semanticCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+      if semanticCells.isEmpty {
+        XCTFail("missing or ambiguous exact system element: Notification settings row [SEMANTIC_ZERO]")
+        throw PermissionUIContractError.missingExactElement("Notification settings row")
+      }
+      guard semanticCells.count == 1 else {
+        XCTFail("missing or ambiguous exact system element: Notification settings row [SEMANTIC_AMBIGUOUS]")
+        throw PermissionUIContractError.missingExactElement("Notification settings row")
+      }
+      selectedElements = semanticCells
+    }
     permissionXCTestStage(.settingsNotificationCountSingle)
-    guard let element = hittableElements.popLast() else {
+    guard let element = selectedElements.popLast() else {
       XCTFail("missing or ambiguous exact system element: Notification settings row")
       throw PermissionUIContractError.missingExactElement("Notification settings row")
     }
