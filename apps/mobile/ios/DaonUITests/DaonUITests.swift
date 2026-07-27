@@ -219,24 +219,22 @@ final class DaonUITests: XCTestCase {
   }
 
   private func requireExactNotificationSettingsRow(in settings: XCUIApplication) throws -> XCUIElement {
-    let exactLabels = ["Notifications", "알림"]
-    var matches: [XCUIElement] = []
-    var usedLongWait = false
-    for label in exactLabels {
-      let staticText = settings.staticTexts[label]
-      let cell = settings.cells[label]
-      let staticTextExists = staticText.waitForExistence(timeout: usedLongWait ? 0.25 : 10)
-      usedLongWait = true
-      let cellExists = cell.waitForExistence(timeout: 0.25)
-      if staticTextExists || cellExists {
-        matches.append(cellExists ? cell : staticText)
-      }
-    }
-    guard matches.count == 1, let match = matches.popLast() else {
+    let query = settings.descendants(matching: .any).matching(
+      NSPredicate(format: "(label == %@ OR label == %@) AND isHittable == true", "Notifications", "알림")
+    )
+    let appeared = XCTNSPredicateExpectation(
+      predicate: NSPredicate { object, _ in
+        guard let query = object as? XCUIElementQuery else { return false }
+        return query.count > 0
+      },
+      object: query
+    )
+    _ = XCTWaiter.wait(for: [appeared], timeout: 10)
+    guard query.count == 1 else {
       XCTFail("missing or ambiguous exact system element: Notification settings row")
       throw PermissionUIContractError.missingExactElement("Notification settings row")
     }
-    return match
+    return query.element
   }
 
   private func approveExpectedNotificationAlert() throws {
