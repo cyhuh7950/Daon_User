@@ -119,7 +119,7 @@ function ValidatedMobileShell({ clientType, publicApiClient = createUnavailableP
         <Text allowFontScaling style={styles.title}>Daon Mobile</Text>
         <Text allowFontScaling style={styles.auxiliary}>{clientType} · React Native 공용 Shell</Text>
       </View>
-      <ScrollView horizontal accessibilityLabel="공용 Navigation" contentContainerStyle={styles.navigation}>
+      <ScrollView horizontal accessibilityLabel="공용 Navigation" testID="공용 Navigation" contentContainerStyle={styles.navigation}>
         {navigation.routes.map((route) => {
           const selected = route.nativeRouteKey === navigation.currentNativeRouteKey;
           return (
@@ -136,7 +136,7 @@ function ValidatedMobileShell({ clientType, publicApiClient = createUnavailableP
           );
         })}
       </ScrollView>
-      <ScrollView accessibilityLabel="화면 내용" contentContainerStyle={styles.content}>
+      <ScrollView accessibilityLabel="화면 내용" testID="화면 내용" contentContainerStyle={styles.content}>
         <View style={styles.screenHeader}>
           <View style={styles.screenHeadingText}>
             <Text allowFontScaling accessibilityRole="header" style={styles.screenTitle}>{currentRoute.nativeRouteKey}</Text>
