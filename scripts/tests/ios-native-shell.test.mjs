@@ -50,6 +50,27 @@ test("iOS Project는 승인 Community Template Commit과 RN Pin을 기록한다"
   assert.match(podfile, /use_react_native!/);
 });
 
+test("LaunchScreen은 승인 Template의 Interface Builder 문서 계약과 ID 참조 무결성을 가진다", async () => {
+  const storyboard = await read("apps/mobile/ios/Daon/LaunchScreen.storyboard");
+  const provenance = await readJson("apps/mobile/ios/template-provenance.json");
+  assert.equal(provenance.commit, "4d7c716d7afddc03ed73ca49c1102a92a0a9ff71");
+  const { XMLValidator } = await import("fast-xml-parser");
+  assert.equal(XMLValidator.validate(storyboard), true);
+  assert.match(storyboard, /<document [^>]*version="3\.0"[^>]*toolsVersion="15702"[^>]*targetRuntime="iOS\.CocoaTouch"[^>]*propertyAccessControl="none"[^>]*useAutolayout="YES"[^>]*launchScreen="YES"[^>]*useTraitCollections="YES"[^>]*useSafeAreas="YES"[^>]*colorMatched="YES"[^>]*initialViewController="01J-lp-oVM">/);
+  assert.match(storyboard, /<dependencies>\s*<deployment identifier="iOS"\/>\s*<plugIn identifier="com\.apple\.InterfaceBuilder\.IBCocoaTouchPlugin" version="15704"\/>\s*<capability name="Safe area layout guides" minToolsVersion="9\.0"\/>\s*<capability name="documents saved in the Xcode 8 format" minToolsVersion="8\.0"\/>\s*<\/dependencies>/);
+  assert.doesNotMatch(storyboard, /systemVersion=|sourceToolsVersion=/);
+
+  const ids = [...storyboard.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(new Set(ids).size, ids.length);
+  const references = [...storyboard.matchAll(/\s(?:initialViewController|firstItem|secondItem)="([^"]+)"/g)].map((match) => match[1]);
+  for (const reference of references) assert.ok(ids.includes(reference), `missing storyboard reference: ${reference}`);
+  assert.match(storyboard, /<label [^>]*text="Daon"[^>]*textAlignment="center"[^>]*id="GJd-Yh-RWb">/);
+  assert.match(storyboard, /<fontDescription [^>]*type="boldSystem" pointSize="16"\/>/);
+  assert.match(storyboard, /<color key="backgroundColor" systemColor="systemBackgroundColor"\/>/);
+  assert.match(storyboard, /<constraint firstItem="GJd-Yh-RWb" firstAttribute="centerX" secondItem="Bcu-3y-fUS" secondAttribute="centerX"\/>/);
+  assert.match(storyboard, /<constraint firstItem="GJd-Yh-RWb" firstAttribute="centerY" secondItem="Bcu-3y-fUS" secondAttribute="centerY"\/>/);
+});
+
 test("Swift Native Module의 React Bridge Type은 App Target Debug·Release에만 노출된다", async () => {
   const project = await read("apps/mobile/ios/Daon.xcodeproj/project.pbxproj");
   const bridge = await read("apps/mobile/ios/Daon/Daon-Bridging-Header.h");
