@@ -13,6 +13,7 @@ const requiredFiles = [
   "apps/mobile/ios/Daon/Info.plist",
   "apps/mobile/ios/Daon/AppDelegate.swift",
   "apps/mobile/ios/Daon/DaonIOSHost.swift",
+  "apps/mobile/ios/Daon/DaonIOSHostBridge.m",
   "apps/mobile/ios/DaonUITests/DaonUITests.swift",
   "apps/mobile/ios/ci/build-simulator.sh",
   "apps/mobile/ios/ci/run-ui-tests-with-diagnostics.sh",
