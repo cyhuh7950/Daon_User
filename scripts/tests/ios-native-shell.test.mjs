@@ -666,15 +666,17 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     : "";
   assert.ok(contract);
   for (const [stage] of stages) assert.match(contract, new RegExp(`STAGE_${stage}`));
-  for (const code of ["SETTINGS_NOTIFICATION_ROW_ZERO", "SETTINGS_NOTIFICATION_ROW_AMBIGUOUS", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_ZERO", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS"]) assert.match(contract, new RegExp(code));
+  for (const code of ["SETTINGS_NOTIFICATION_LABEL_ZERO", "SETTINGS_NOTIFICATION_LABEL_NONHITTABLE", "SETTINGS_NOTIFICATION_ROW_ZERO", "SETTINGS_NOTIFICATION_ROW_AMBIGUOUS", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_ZERO", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS"]) assert.match(contract, new RegExp(code));
   const parserStart = contract.indexOf("permission_failure_code_from_log() {");
   const parser = parserStart >= 0 ? contract.slice(parserStart) : "";
+  const labelZeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_LABEL_ZERO"');
+  const labelNonhittableParser = parser.indexOf('code="SETTINGS_NOTIFICATION_LABEL_NONHITTABLE"');
   const zeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_ZERO"');
   const ambiguousParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_AMBIGUOUS"');
   const semanticZeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_SEMANTIC_ROW_ZERO"');
   const semanticAmbiguousParser = parser.indexOf('code="SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS"');
   const genericRowParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_MISSING"');
-  assert.ok([zeroParser, ambiguousParser, semanticZeroParser, semanticAmbiguousParser].every((index) => index >= 0 && index < genericRowParser), "direct and semantic assertion codes must be classified before the generic row code");
+  assert.ok([labelZeroParser, labelNonhittableParser, zeroParser, ambiguousParser, semanticZeroParser, semanticAmbiguousParser].every((index) => index >= 0 && index < genericRowParser), "label, direct and semantic assertion codes must be classified before the generic row code");
 
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-permission-stage-"));
   const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -723,6 +725,14 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     const semanticAmbiguous = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [SEMANTIC_AMBIGUOUS]");
     assert.equal(semanticAmbiguous.status, 65, semanticAmbiguous.stderr);
     assert.deepEqual(annotation(semanticAmbiguous.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS PHASE=grant-initial EXIT=65"]);
+
+    const labelZero = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [LABEL_ZERO]");
+    assert.equal(labelZero.status, 65, labelZero.stderr);
+    assert.deepEqual(annotation(labelZero.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_LABEL_ZERO PHASE=grant-initial EXIT=65"]);
+
+    const labelNonhittable = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [LABEL_NONHITTABLE]");
+    assert.equal(labelNonhittable.status, 65, labelNonhittable.stderr);
+    assert.deepEqual(annotation(labelNonhittable.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_LABEL_NONHITTABLE PHASE=grant-initial EXIT=65"]);
 
     const unknown = run("DAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW_PRIVATE");
     assert.equal(unknown.status, 65, unknown.stderr);
@@ -927,9 +937,9 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   assert.equal((helper.match(/settings\.cells\.containing\(exactLabelPredicate\)/g) ?? []).length, 1);
   assert.doesNotMatch(helper, /\.containing\(\.staticText, predicate:/);
   assert.doesNotMatch(helper, /NSPredicate\(format:[^\n]*isHittable/);
-  assert.match(helper, /directQuery\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
+  assert.match(helper, /let exactLabelElements = directQuery\.allElementsBoundByAccessibilityElement\s*let directElements = exactLabelElements\.filter\s*\{\s*\$0\.isHittable\s*\}/);
   assert.match(helper, /semanticCellQuery\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
-  const directCollection = helper.lastIndexOf("directQuery.allElementsBoundByAccessibilityElement.filter");
+  const directCollection = helper.lastIndexOf("let exactLabelElements = directQuery.allElementsBoundByAccessibilityElement");
   const directAmbiguous = helper.indexOf("if directElements.count > 1");
   const directSingle = helper.indexOf("if directElements.count == 1");
   const semanticCollection = helper.lastIndexOf("semanticCellQuery.allElementsBoundByAccessibilityElement.filter");
@@ -940,7 +950,7 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   assert.ok(directCollection >= 0 && directCollection < directAmbiguous && directAmbiguous < directSingle && directSingle < semanticCollection && semanticCollection < semanticZero && semanticZero < semanticAmbiguous && semanticAmbiguous < elementAccess && elementAccess < elementReturn, "direct candidates must be resolved before zero-only semantic fallback and single extraction");
   assert.match(helper, /if directElements\.count > 1\s*\{[\s\S]*?Notification settings row \[AMBIGUOUS\]/);
   assert.match(helper, /if directElements\.count == 1\s*\{\s*selectedElements = directElements\s*\} else \{/);
-  assert.match(helper, /if semanticCells\.isEmpty\s*\{[\s\S]*?Notification settings row \[SEMANTIC_ZERO\]/);
+  assert.match(helper, /if semanticCells\.isEmpty\s*\{\s*if exactLabelElements\.isEmpty\s*\{[\s\S]*?Notification settings row \[LABEL_ZERO\][\s\S]*?\} else \{[\s\S]*?Notification settings row \[LABEL_NONHITTABLE\][\s\S]*?\}\s*throw PermissionUIContractError\.missingExactElement\("Notification settings row"\)\s*\}/);
   assert.match(helper, /guard semanticCells\.count == 1 else \{[\s\S]*?Notification settings row \[SEMANTIC_AMBIGUOUS\]/);
   const queryCreated = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryCreated)");
   const waitCompleted = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryWaitCompleted)");
@@ -948,6 +958,7 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   const elementReady = helper.indexOf("permissionXCTestStage(.settingsNotificationElementReady)");
   assert.ok(queryCreated > helper.indexOf("let semanticCellQuery =") && queryCreated < helper.indexOf("let appeared ="));
   assert.ok(helper.indexOf("directQuery.allElementsBoundByAccessibilityElement.filter") < helper.indexOf("semanticCellQuery.allElementsBoundByAccessibilityElement.filter"), "wait must prefer direct candidates before semantic cells");
+  assert.ok(directCollection > waitCompleted && directCollection < directAmbiguous, "exact Label elements must be collected after wait without changing selection order");
   assert.ok(waitCompleted > helper.indexOf("XCTWaiter.wait") && waitCompleted < directCollection);
   assert.ok(countSingle > semanticAmbiguous && countSingle < elementAccess);
   assert.ok(elementReady > elementAccess && elementReady < elementReturn);
