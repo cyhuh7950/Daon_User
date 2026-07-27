@@ -190,6 +190,7 @@ final class DaonUITests: XCTestCase {
     case settingsNotificationRow = "SETTINGS_NOTIFICATION_ROW"
     case settingsNotificationQueryCreated = "SETTINGS_NOTIFICATION_QUERY_CREATED"
     case settingsNotificationQueryWaitCompleted = "SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED"
+    case settingsNotificationScrollSearch = "SETTINGS_NOTIFICATION_SCROLL_SEARCH"
     case settingsNotificationCountSingle = "SETTINGS_NOTIFICATION_COUNT_SINGLE"
     case settingsNotificationElementReady = "SETTINGS_NOTIFICATION_ELEMENT_READY"
     case settingsNotificationRowTapPending = "SETTINGS_NOTIFICATION_ROW_TAP_PENDING"
@@ -227,6 +228,8 @@ final class DaonUITests: XCTestCase {
     let exactLabelPredicate = NSPredicate(format: "label == %@ OR label == %@", "Notifications", "알림")
     let directQuery = settings.descendants(matching: .any).matching(exactLabelPredicate)
     let semanticCellQuery = settings.cells.containing(exactLabelPredicate)
+    let compositeLabelPredicate = NSPredicate(format: "label == %@ OR label BEGINSWITH %@ OR label == %@ OR label BEGINSWITH %@", "Notifications", "Notifications,", "알림", "알림,")
+    let compositeCellQuery = settings.cells.matching(compositeLabelPredicate)
     permissionXCTestStage(.settingsNotificationQueryCreated)
     let appeared = XCTNSPredicateExpectation(
       predicate: NSPredicate { object, _ in
@@ -239,41 +242,55 @@ final class DaonUITests: XCTestCase {
     )
     _ = XCTWaiter.wait(for: [appeared], timeout: 10)
     permissionXCTestStage(.settingsNotificationQueryWaitCompleted)
-    let exactLabelElements = directQuery.allElementsBoundByAccessibilityElement
-    let directElements = exactLabelElements.filter { $0.isHittable }
-    if directElements.count > 1 {
+
+    func collectNotificationCandidates() -> (exactLabels: [XCUIElement], direct: [XCUIElement], semantic: [XCUIElement], composite: [XCUIElement]) {
+      let exactLabelElements = directQuery.allElementsBoundByAccessibilityElement
+      let directElements = exactLabelElements.filter { $0.isHittable }
+      let semanticCells = semanticCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+      let compositeCells = exactLabelElements.isEmpty && semanticCells.isEmpty
+        ? compositeCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+        : []
+      return (exactLabelElements, directElements, semanticCells, compositeCells)
+    }
+
+    var candidates = collectNotificationCandidates()
+    if candidates.exactLabels.isEmpty && candidates.direct.isEmpty && candidates.semantic.isEmpty && candidates.composite.isEmpty {
+      permissionXCTestStage(.settingsNotificationScrollSearch)
+      for _ in 0..<4 {
+        settings.swipeUp()
+        candidates = collectNotificationCandidates()
+        if !candidates.exactLabels.isEmpty || !candidates.direct.isEmpty || !candidates.semantic.isEmpty || !candidates.composite.isEmpty {
+          break
+        }
+      }
+    }
+
+    if candidates.direct.count > 1 {
       XCTFail("missing or ambiguous exact system element: Notification settings row [AMBIGUOUS]")
       throw PermissionUIContractError.missingExactElement("Notification settings row")
     }
     var selectedElements: [XCUIElement]
-    if directElements.count == 1 {
-      selectedElements = directElements
-    } else {
-      let semanticCells = semanticCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
-      if semanticCells.isEmpty {
-        if exactLabelElements.isEmpty {
-          let compositeLabelPredicate = NSPredicate(format: "label == %@ OR label BEGINSWITH %@ OR label == %@ OR label BEGINSWITH %@", "Notifications", "Notifications,", "알림", "알림,")
-          let compositeCells = settings.cells.matching(compositeLabelPredicate).allElementsBoundByAccessibilityElement.filter { $0.isHittable }
-          if compositeCells.isEmpty {
-            XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]")
-            throw PermissionUIContractError.missingExactElement("Notification settings row")
-          }
-          guard compositeCells.count == 1 else {
-            XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_AMBIGUOUS]")
-            throw PermissionUIContractError.missingExactElement("Notification settings row")
-          }
-          selectedElements = compositeCells
-        } else {
-          XCTFail("missing or ambiguous exact system element: Notification settings row [LABEL_NONHITTABLE]")
-          throw PermissionUIContractError.missingExactElement("Notification settings row")
-        }
-      } else {
-        guard semanticCells.count == 1 else {
-          XCTFail("missing or ambiguous exact system element: Notification settings row [SEMANTIC_AMBIGUOUS]")
-          throw PermissionUIContractError.missingExactElement("Notification settings row")
-        }
-        selectedElements = semanticCells
+    if candidates.direct.count == 1 {
+      selectedElements = candidates.direct
+    } else if !candidates.semantic.isEmpty {
+      guard candidates.semantic.count == 1 else {
+        XCTFail("missing or ambiguous exact system element: Notification settings row [SEMANTIC_AMBIGUOUS]")
+        throw PermissionUIContractError.missingExactElement("Notification settings row")
       }
+      selectedElements = candidates.semantic
+    } else if !candidates.exactLabels.isEmpty {
+      XCTFail("missing or ambiguous exact system element: Notification settings row [LABEL_NONHITTABLE]")
+      throw PermissionUIContractError.missingExactElement("Notification settings row")
+    } else {
+      if candidates.composite.isEmpty {
+        XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]")
+        throw PermissionUIContractError.missingExactElement("Notification settings row")
+      }
+      guard candidates.composite.count == 1 else {
+        XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_AMBIGUOUS]")
+        throw PermissionUIContractError.missingExactElement("Notification settings row")
+      }
+      selectedElements = candidates.composite
     }
     permissionXCTestStage(.settingsNotificationCountSingle)
     guard let element = selectedElements.popLast() else {

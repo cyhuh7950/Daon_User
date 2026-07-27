@@ -647,6 +647,7 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     ["SETTINGS_NOTIFICATION_ROW", "settingsNotificationRow"],
     ["SETTINGS_NOTIFICATION_QUERY_CREATED", "settingsNotificationQueryCreated"],
     ["SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED", "settingsNotificationQueryWaitCompleted"],
+    ["SETTINGS_NOTIFICATION_SCROLL_SEARCH", "settingsNotificationScrollSearch"],
     ["SETTINGS_NOTIFICATION_COUNT_SINGLE", "settingsNotificationCountSingle"],
     ["SETTINGS_NOTIFICATION_ELEMENT_READY", "settingsNotificationElementReady"],
     ["SETTINGS_NOTIFICATION_ROW_TAP_PENDING", "settingsNotificationRowTapPending"],
@@ -955,28 +956,33 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   assert.match(helper, /semanticCellQuery\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
   const approvedCompositePredicate = /let compositeLabelPredicate = NSPredicate\(format: "label == %@ OR label BEGINSWITH %@ OR label == %@ OR label BEGINSWITH %@", "Notifications", "Notifications,", "알림", "알림,"\)/;
   assert.match(helper, approvedCompositePredicate);
-  assert.match(helper, /let compositeCells = settings\.cells\.matching\(compositeLabelPredicate\)\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
+  assert.match(helper, /let compositeCellQuery = settings\.cells\.matching\(compositeLabelPredicate\)/);
+  assert.match(helper, /let compositeCells = exactLabelElements\.isEmpty && semanticCells\.isEmpty\s*\? compositeCellQuery\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}\s*: \[\]/);
+  assert.match(helper, /if candidates\.exactLabels\.isEmpty && candidates\.direct\.isEmpty && candidates\.semantic\.isEmpty && candidates\.composite\.isEmpty\s*\{\s*permissionXCTestStage\(\.settingsNotificationScrollSearch\)\s*for _ in 0\.\.<4\s*\{\s*settings\.swipeUp\(\)\s*candidates = collectNotificationCandidates\(\)/);
+  assert.match(helper, /if !candidates\.exactLabels\.isEmpty \|\| !candidates\.direct\.isEmpty \|\| !candidates\.semantic\.isEmpty \|\| !candidates\.composite\.isEmpty\s*\{\s*break\s*\}/);
+  assert.equal((helper.match(/settings\.swipeUp\(\)/g) ?? []).length, 1, "bounded loop must contain the only Settings swipe source call");
+  assert.doesNotMatch(helper, /sleep|usleep|Thread\.sleep|while\s|repeat\s*\{/i);
   const directCollection = helper.lastIndexOf("let exactLabelElements = directQuery.allElementsBoundByAccessibilityElement");
-  const directAmbiguous = helper.indexOf("if directElements.count > 1");
-  const directSingle = helper.indexOf("if directElements.count == 1");
+  const collector = helper.indexOf("func collectNotificationCandidates()");
+  const initialCandidates = helper.indexOf("var candidates = collectNotificationCandidates()");
+  const scrollStage = helper.indexOf("permissionXCTestStage(.settingsNotificationScrollSearch)");
+  const directAmbiguous = helper.indexOf("if candidates.direct.count > 1");
+  const directSingle = helper.indexOf("if candidates.direct.count == 1");
   const semanticCollection = helper.lastIndexOf("semanticCellQuery.allElementsBoundByAccessibilityElement.filter");
-  const semanticZero = helper.indexOf("if semanticCells.isEmpty");
-  const exactZero = helper.indexOf("if exactLabelElements.isEmpty");
-  const compositePredicate = helper.indexOf("let compositeLabelPredicate =");
-  const compositeCollection = helper.indexOf("let compositeCells = settings.cells.matching(compositeLabelPredicate)");
-  const compositeZero = helper.indexOf("if compositeCells.isEmpty");
-  const compositeAmbiguous = helper.indexOf("guard compositeCells.count == 1");
-  const semanticAmbiguous = helper.indexOf("guard semanticCells.count == 1");
+  const semanticAmbiguous = helper.indexOf("guard candidates.semantic.count == 1");
+  const exactNonhittable = helper.indexOf("else if !candidates.exactLabels.isEmpty");
+  const compositeZero = helper.indexOf("if candidates.composite.isEmpty");
+  const compositeAmbiguous = helper.indexOf("guard candidates.composite.count == 1");
   const elementAccess = helper.indexOf("let element = selectedElements.popLast()");
   const elementReturn = helper.indexOf("return element");
-  assert.ok(directCollection >= 0 && directCollection < directAmbiguous && directAmbiguous < directSingle && directSingle < semanticCollection && semanticCollection < semanticZero && semanticZero < exactZero && exactZero < compositePredicate && compositePredicate < compositeCollection && compositeCollection < compositeZero && compositeZero < compositeAmbiguous && compositeAmbiguous < semanticAmbiguous && semanticAmbiguous < elementAccess && elementAccess < elementReturn, "exact and semantic candidates must be exhausted before the composite Cell fallback and single extraction");
-  assert.match(helper, /if directElements\.count > 1\s*\{[\s\S]*?Notification settings row \[AMBIGUOUS\]/);
-  assert.match(helper, /if directElements\.count == 1\s*\{\s*selectedElements = directElements\s*\} else \{/);
-  assert.match(helper, /if compositeCells\.isEmpty\s*\{[\s\S]*?Notification settings row \[COMPOSITE_ZERO\]/);
-  assert.match(helper, /guard compositeCells\.count == 1 else \{[\s\S]*?Notification settings row \[COMPOSITE_AMBIGUOUS\]/);
-  assert.match(helper, /selectedElements = compositeCells/);
-  assert.match(helper, /\} else \{\s*XCTFail\("missing or ambiguous exact system element: Notification settings row \[LABEL_NONHITTABLE\]"\)\s*throw PermissionUIContractError\.missingExactElement\("Notification settings row"\)\s*\}/);
-  assert.match(helper, /guard semanticCells\.count == 1 else \{[\s\S]*?Notification settings row \[SEMANTIC_AMBIGUOUS\]/);
+  assert.ok(collector >= 0 && directCollection > collector && semanticCollection > directCollection && initialCandidates > semanticCollection && scrollStage > initialCandidates && directAmbiguous > scrollStage && directSingle > directAmbiguous && semanticAmbiguous > directSingle && exactNonhittable > semanticAmbiguous && compositeZero > exactNonhittable && compositeAmbiguous > compositeZero && elementAccess > compositeAmbiguous && elementReturn > elementAccess, "same-query collection and bounded scroll must finish before priority-preserving resolution");
+  assert.match(helper, /if candidates\.direct\.count > 1\s*\{[\s\S]*?Notification settings row \[AMBIGUOUS\]/);
+  assert.match(helper, /if candidates\.direct\.count == 1\s*\{\s*selectedElements = candidates\.direct/);
+  assert.match(helper, /guard candidates\.semantic\.count == 1 else \{[\s\S]*?Notification settings row \[SEMANTIC_AMBIGUOUS\]/);
+  assert.match(helper, /else if !candidates\.exactLabels\.isEmpty\s*\{[\s\S]*?Notification settings row \[LABEL_NONHITTABLE\]/);
+  assert.match(helper, /if candidates\.composite\.isEmpty\s*\{[\s\S]*?Notification settings row \[COMPOSITE_ZERO\]/);
+  assert.match(helper, /guard candidates\.composite\.count == 1 else \{[\s\S]*?Notification settings row \[COMPOSITE_AMBIGUOUS\]/);
+  assert.match(helper, /selectedElements = candidates\.composite/);
   const queryCreated = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryCreated)");
   const waitCompleted = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryWaitCompleted)");
   const countSingle = helper.indexOf("permissionXCTestStage(.settingsNotificationCountSingle)");
@@ -985,7 +991,7 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   assert.ok(helper.indexOf("directQuery.allElementsBoundByAccessibilityElement.filter") < helper.indexOf("semanticCellQuery.allElementsBoundByAccessibilityElement.filter"), "wait must prefer direct candidates before semantic cells");
   assert.ok(directCollection > waitCompleted && directCollection < directAmbiguous, "exact Label elements must be collected after wait without changing selection order");
   assert.ok(waitCompleted > helper.indexOf("XCTWaiter.wait") && waitCompleted < directCollection);
-  assert.ok(countSingle > semanticAmbiguous && countSingle < elementAccess);
+  assert.ok(countSingle > compositeAmbiguous && countSingle < elementAccess);
   assert.ok(elementReady > elementAccess && elementReady < elementReturn);
   const helperWithoutApprovedCompositePredicate = helper.replace(approvedCompositePredicate, "");
   assert.doesNotMatch(helperWithoutApprovedCompositePredicate, /settings\.cells\[|\.buttons|\.links|identifier|CONTAINS|BEGINSWITH|ENDSWITH|MATCHES|firstMatch|element\(boundBy:|coordinate\(/i);
