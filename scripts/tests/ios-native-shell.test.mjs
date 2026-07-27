@@ -625,6 +625,67 @@ test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase�
   }
 });
 
+test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 차선·Unknown 최종으로 분류한다", async () => {
+  const swift = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const permissionStart = swift.indexOf("func testPermissionRequestReflectsOSDecision() throws {");
+  const permissionEnd = swift.indexOf("\n  private func notificationSwitchIsEnabled", permissionStart);
+  const permissionContract = permissionStart >= 0 && permissionEnd > permissionStart
+    ? swift.slice(permissionStart, permissionEnd)
+    : "";
+  assert.ok(permissionContract);
+  const stages = [
+    ["PHASE_EXPECTED_BINDING", "phaseExpectedBinding"], ["APP_LAUNCH_ROOT", "appLaunchRoot"],
+    ["CAMERA_REQUEST", "cameraRequest"], ["CAMERA_RESULT", "cameraResult"],
+    ["MICROPHONE_REQUEST", "microphoneRequest"], ["MICROPHONE_RESULT", "microphoneResult"],
+    ["NOTIFICATION_REQUEST", "notificationRequest"], ["ALERT_TITLE", "alertTitle"],
+    ["ALERT_COUNT", "alertCount"], ["ALERT_ALLOW", "alertAllow"],
+    ["ALERT_DISMISSAL", "alertDismissal"], ["SETTINGS_FOREGROUND", "settingsForeground"],
+    ["SETTINGS_NOTIFICATION_ROW", "settingsNotificationRow"], ["SETTINGS_SWITCH_READ", "settingsSwitchRead"],
+    ["SETTINGS_SWITCH_TOGGLE", "settingsSwitchToggle"], ["SETTINGS_SWITCH_VERIFY", "settingsSwitchVerify"],
+    ["APP_RETURN_ROOT", "appReturnRoot"], ["NOTIFICATION_RESULT", "notificationResult"]
+  ];
+  for (const [, swiftCase] of stages) assert.match(permissionContract, new RegExp(`permissionXCTestStage\\(\\.${swiftCase}\\)`));
+  const markerOutputLines = permissionContract.split(/\r?\n/).filter((line) => line.includes("DAON_PERMISSION_XCTEST_STAGE="));
+  assert.deepEqual(markerOutputLines.map((line) => line.trim()), ['print("DAON_PERMISSION_XCTEST_STAGE=\\(stage.rawValue)")']);
+
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const helperStart = script.indexOf("is_allowed_permission_failure_code() {");
+  const permissionStartShell = script.indexOf("run_permission_phase() {", helperStart);
+  const permissionEndShell = script.indexOf('\n}\n\nDAON_SIM_STAGE="APP_ARTIFACT"', permissionStartShell);
+  const contract = helperStart >= 0 && permissionStartShell > helperStart && permissionEndShell > permissionStartShell
+    ? script.slice(helperStart, permissionEndShell + 2)
+    : "";
+  assert.ok(contract);
+  for (const [stage] of stages) assert.match(contract, new RegExp(`STAGE_${stage}`));
+
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-permission-stage-"));
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const fixture = `set -Eeuo pipefail\nSIMULATOR_UDID=11111111-2222-3333-4444-555555555555\nBUNDLE_ID=com.sinsan.daon\nREPOSITORY_ROOT=/repo\nDERIVED_DATA=/derived\nDAON_SIM_PERMISSION_SERVICE=""\nxcrun(){ return 0; }\nxcodebuild(){ printf '%s\\n' "\${XCODE_RAW}"; return 65; }\n${contract}\nrun_permission_phase grant-initial grant GRANTED`;
+  const run = (raw) => spawnSync(bash, ["-c", fixture], {
+    cwd: fixtureRoot,
+    env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), XCODE_RAW: raw },
+    encoding: "utf8"
+  });
+  const annotation = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::error::"));
+
+  try {
+    const assertionFirst = run("DAON_PERMISSION_XCTEST_STAGE=ALERT_TITLE\nexpected one Notification system alert");
+    assert.equal(assertionFirst.status, 65, assertionFirst.stderr);
+    assert.deepEqual(annotation(assertionFirst.stdout), ["::error::CODE=ALERT_COUNT_MISMATCH PHASE=grant-initial EXIT=65"]);
+
+    const lastAllowed = run("DAON_PERMISSION_XCTEST_STAGE=CAMERA_REQUEST\nDAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW\nPRIVATE_USER=/Users/private https://internal.invalid");
+    assert.equal(lastAllowed.status, 65, lastAllowed.stderr);
+    assert.deepEqual(annotation(lastAllowed.stdout), ["::error::CODE=STAGE_ALERT_ALLOW PHASE=grant-initial EXIT=65"]);
+    assert.doesNotMatch(annotation(lastAllowed.stdout)[0], /PRIVATE|Users|https|internal/);
+
+    const unknown = run("DAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW_PRIVATE");
+    assert.equal(unknown.status, 65, unknown.stderr);
+    assert.deepEqual(annotation(unknown.stdout), ["::error::CODE=UNKNOWN_XCTEST_FAILURE PHASE=grant-initial EXIT=65"]);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("Binary 금지 Pattern은 Source 자기탐지 없이 Runtime에서 기존 Client 내부 API 토큰을 탐지한다", async () => {
   const scriptPath = path.join(iosRoot, "ci/verify-simulator.sh");
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
