@@ -247,9 +247,9 @@ test("macOS Workflow는 승인 CocoaPods를 Runner 전역과 분리해 현재·�
   assert.match(install, /export PATH="\$\{POD_GEM_BIN\}:\$\{PATH\}"/);
   assert.match(install, /GITHUB_PATH/);
   assert.match(install, /GITHUB_ENV/);
-  assert.match(pods, /test "\$\(pod --version\)" = "1\.16\.2"/);
+  assert.match(pods, /test "\$\("\$\{DAON_POD_BIN\}" --version\)" = "1\.16\.2"/);
   assert.doesNotMatch(install, /gem uninstall|sudo|rm\s+-[rf]/);
-  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\(pod --version 2>\/dev\/null \|\| true\)"/);
+  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\("\$\{DAON_POD_BIN\}" --version 2>\/dev\/null \|\| true\)"/);
 
   const fixture = await mkdtemp(path.join(os.tmpdir(), "daon-cocoapods-path-"));
   t.after(() => rm(fixture, { recursive: true, force: true }));
@@ -286,6 +286,31 @@ test "$(pod --version)" = "1.16.2"`, "bash", homeShell, isolatedShell, runnerShe
 export GEM_HOME="$1" GEM_PATH="$2" PATH="$3:$4:$PATH"
 test "$(pod --version)" = "1.16.2"`, "bash", persistedEnv.GEM_HOME, persistedEnv.GEM_PATH, persistedPath, runnerShell], { encoding: "utf8" });
   assert.equal(next.status, 0, next.stderr);
+});
+
+test("macOS Workflow는 승인 pod 절대경로를 현재·후속 Pods·Manifest에 동일 결속하고 일반 pod로 Fallback하지 않는다", async () => {
+  const workflow = await readJson(".github/workflows/release-1-ios-phase-a.yml");
+  const steps = workflow.jobs["ios-phase-a"].steps;
+  const install = steps.find((step) => step.id === "cocoapods")?.run ?? "";
+  const pods = steps.find((step) => step.id === "pods")?.run ?? "";
+  const manifest = steps.find((step) => step.id === "manifest")?.run ?? "";
+
+  assert.match(install, /export DAON_POD_BIN="\$\{POD_GEM_BIN\}\/pod"/);
+  assert.match(install, /test -x "\$\{DAON_POD_BIN\}"/);
+  assert.match(install, /test "\$\("\$\{DAON_POD_BIN\}" --version\)" = "1\.16\.2"/);
+  assert.match(install, /DAON_POD_BIN=%s[^\n]*GITHUB_ENV/);
+
+  assert.match(pods, /DAON_POD_BIN:\?/);
+  assert.match(pods, /test -x "\$\{DAON_POD_BIN\}"/);
+  assert.match(pods, /test "\$\("\$\{DAON_POD_BIN\}" --version\)" = "1\.16\.2"/);
+  assert.equal((pods.match(/"\$\{DAON_POD_BIN\}" install/g) ?? []).length, 2);
+
+  assert.match(manifest, /IOS_COCOAPODS_VERSION=""/);
+  assert.match(manifest, /\[ -n "\$\{DAON_POD_BIN:-\}" \] && \[ -x "\$\{DAON_POD_BIN\}" \]/);
+  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\("\$\{DAON_POD_BIN\}" --version 2>\/dev\/null \|\| true\)"/);
+  for (const source of [install, pods, manifest]) {
+    assert.doesNotMatch(source, /(^|\n)pod(?:\s|$)|\$\(pod\s/);
+  }
 });
 
 test("권한 Phase A는 Production 요청 버튼의 GRANTED·DENIED·재GRANTED를 XCTest Artifact로 검증한다", async () => {
