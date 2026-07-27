@@ -74,6 +74,7 @@ run_permission_phase() {
 [[ -d "${APP_PATH}" ]]
 xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
 xcrun simctl install "${SIMULATOR_UDID}" "${APP_PATH}"
+xcrun simctl terminate "${SIMULATOR_UDID}" "${BUNDLE_ID}" >/dev/null 2>&1 || true
 clear_navigation_route
 xcrun simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}" | tee "${EVIDENCE_DIR}/launch.log"
 wait_for_route Home
