@@ -20,7 +20,8 @@ final class DaonUITests: XCTestCase {
 
   private func openRoute(_ route: String, in app: XCUIApplication) {
     let button = app.buttons["\(route) 화면 열기"]
-    let navigation = app.scrollViews["공용 Navigation"]
+    let navigation = app.otherElements["공용 Navigation"]
+    XCTAssertTrue(navigation.waitForExistence(timeout: 10), "shared navigation is unavailable")
     for _ in 0..<8 where !button.isHittable { navigation.swipeLeft() }
     XCTAssertTrue(button.waitForExistence(timeout: 10), "missing route button: \(route)")
     XCTAssertTrue(button.isHittable, "route button is not hittable: \(route)")
@@ -56,7 +57,8 @@ final class DaonUITests: XCTestCase {
       XCTAssertTrue(app.buttons["\(kind) 권한 요청"].waitForExistence(timeout: 10))
     }
     let settingsButton = app.buttons["앱 권한 설정 열기"]
-    let content = app.scrollViews["화면 내용"]
+    let content = app.otherElements["화면 내용"]
+    XCTAssertTrue(content.waitForExistence(timeout: 10), "screen content is unavailable")
     for _ in 0..<8 where !settingsButton.isHittable { content.swipeUp() }
     XCTAssertTrue(settingsButton.waitForExistence(timeout: 10))
     XCTAssertTrue(settingsButton.isHittable)
@@ -73,7 +75,7 @@ final class DaonUITests: XCTestCase {
     XCTAssertTrue(["GRANTED", "DENIED"].contains(expected), "DAON_PERMISSION_EXPECTED must be GRANTED or DENIED")
     let app = XCUIApplication()
     launchAndRequireRootReady(app)
-    let content = app.scrollViews["화면 내용"]
+    let content = app.otherElements["화면 내용"]
     XCTAssertTrue(content.waitForExistence(timeout: 10), "screen content is unavailable")
     for kind in ["camera", "microphone", "notification"] {
       let button = app.buttons["\(kind) 권한 요청"]
