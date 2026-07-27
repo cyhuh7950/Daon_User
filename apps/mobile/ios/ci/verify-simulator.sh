@@ -47,8 +47,36 @@ wait_for_route() {
     [[ "${actual}" == "${expected}" ]] && return 0
     sleep 1
   done
-  echo "Expected persisted route ${expected}, got ${actual}" >&2
   return 1
+}
+
+is_approved_route() {
+  case "$1" in
+    Home|WorkspaceList|WorkspaceDetail|Inbox|RunHistory|Notifications|ModelConnections|AccountSettings) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+wait_for_route_with_evidence() {
+  local expected="$1"
+  local actual=""
+  local wait_exit=0
+  local evidence_file
+
+  is_approved_route "${expected}" || return 64
+  wait_for_route "${expected}" || wait_exit=$?
+  [[ "${wait_exit}" -eq 0 ]] && return 0
+
+  actual="$(read_preference native_route_key 2>/dev/null || true)"
+  evidence_file="${EVIDENCE_DIR}/route-wait-failure-${expected}.log"
+  xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 10m --style compact --predicate 'process == "Daon"' > "${evidence_file}" 2>&1 || true
+
+  printf 'DAON_ROUTE_WAIT_EXPECTED=%s\n' "${expected}" >&2
+  if is_approved_route "${actual}"; then
+    printf 'DAON_ROUTE_WAIT_ACTUAL=%s\n' "${actual}" >&2
+  fi
+  grep -Eo 'DAON_PENDING_DEEP_LINK_RECEIVED|DAON_ROUTE_SAVED=(Home|WorkspaceList|WorkspaceDetail|Inbox|RunHistory|Notifications|ModelConnections|AccountSettings)|DAON_LIFECYCLE_STATE=(created|background|foreground|active)' "${evidence_file}" >&2 || true
+  return "${wait_exit}"
 }
 
 run_permission_phase() {
@@ -77,17 +105,12 @@ xcrun simctl install "${SIMULATOR_UDID}" "${APP_PATH}"
 xcrun simctl terminate "${SIMULATOR_UDID}" "${BUNDLE_ID}" >/dev/null 2>&1 || true
 clear_navigation_route
 xcrun simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}" | tee "${EVIDENCE_DIR}/launch.log"
-HOME_WAIT_EXIT=0
-wait_for_route Home || HOME_WAIT_EXIT=$?
-if [[ "${HOME_WAIT_EXIT}" -ne 0 ]]; then
-  xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 10m --style compact --predicate 'process == "Daon"' > "${EVIDENCE_DIR}/initial-home-failure.log" 2>&1 || true
-  exit "${HOME_WAIT_EXIT}"
-fi
+wait_for_route_with_evidence Home
 
 warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)
 for route in "${warm_routes[@]}"; do
   xcrun simctl openurl "${SIMULATOR_UDID}" "sinsan-daon://app/${route}"
-  wait_for_route "${route}"
+  wait_for_route_with_evidence "${route}"
 done
 
 rejected_links=(
@@ -112,7 +135,7 @@ run_permission_phase grant-again grant GRANTED
 xcrun simctl ui "${SIMULATOR_UDID}" appearance light
 xcrun simctl terminate "${SIMULATOR_UDID}" "${BUNDLE_ID}"
 xcrun simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}"
-wait_for_route AccountSettings
+wait_for_route_with_evidence AccountSettings
 [[ "$(read_preference lifecycle_state)" =~ ^(created|foreground|active)$ ]]
 
 xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 10m --style compact --predicate 'process == "Daon"' > "${EVIDENCE_DIR}/simulator.log"
