@@ -50,6 +50,51 @@ final class DaonUITests: XCTestCase {
     XCTAssertTrue(app.staticTexts["Notifications"].waitForExistence(timeout: 10))
   }
 
+  func testSystemOpenDeepLinksPreserveForegroundAndRoute() {
+    let app = XCUIApplication()
+    launchAndRequireRootReady(app)
+    guard #available(iOS 26.0, *) else {
+      XCTFail("XCUIDevice.shared.system.open requires iOS 26.0 or later")
+      return
+    }
+
+    let warmLinks = [
+      ("WorkspaceList", "sinsan-daon://app/WorkspaceList"),
+      ("WorkspaceDetail", "sinsan-daon://app/WorkspaceDetail"),
+      ("Inbox", "sinsan-daon://app/Inbox"),
+      ("RunHistory", "sinsan-daon://app/RunHistory"),
+      ("Notifications", "sinsan-daon://app/Notifications"),
+      ("ModelConnections", "sinsan-daon://app/ModelConnections"),
+      ("AccountSettings", "sinsan-daon://app/AccountSettings")
+    ]
+    for (route, rawURL) in warmLinks {
+      guard let url = URL(string: rawURL) else {
+        XCTFail("invalid approved deep link fixture: \(rawURL)")
+        return
+      }
+      XCUIDevice.shared.system.open(url)
+      requireRootReady(app)
+      XCTAssertTrue(app.staticTexts[route].waitForExistence(timeout: 10), "route title not visible after system open: \(route)")
+    }
+
+    let rejectedLinks = [
+      "sinsan-daon://app/UnknownRoute",
+      "sinsan-daon://app/%48ome",
+      "sinsan-daon://app/Home%2Fextra",
+      "sinsan-daon://app/Home?route=Inbox",
+      "sinsan-daon://app/Home#Inbox"
+    ]
+    for rawURL in rejectedLinks {
+      guard let url = URL(string: rawURL) else {
+        XCTFail("invalid rejected deep link fixture: \(rawURL)")
+        return
+      }
+      XCUIDevice.shared.system.open(url)
+      requireRootReady(app)
+      XCTAssertTrue(app.staticTexts["AccountSettings"].waitForExistence(timeout: 10), "rejected deep link changed the approved route: \(rawURL)")
+    }
+  }
+
   func testPermissionControlsAndSettingsBoundary() {
     let app = XCUIApplication()
     launchAndRequireRootReady(app)

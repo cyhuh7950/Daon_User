@@ -107,25 +107,6 @@ clear_navigation_route
 xcrun simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}" | tee "${EVIDENCE_DIR}/launch.log"
 wait_for_route_with_evidence Home
 
-warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)
-for route in "${warm_routes[@]}"; do
-  xcrun simctl openurl "${SIMULATOR_UDID}" "sinsan-daon://app/${route}"
-  wait_for_route_with_evidence "${route}"
-done
-
-rejected_links=(
-  "sinsan-daon://app/UnknownRoute"
-  "sinsan-daon://app/%48ome"
-  "sinsan-daon://app/Home%2Fextra"
-  "sinsan-daon://app/Home?route=Inbox"
-  "sinsan-daon://app/Home#Inbox"
-)
-for link in "${rejected_links[@]}"; do
-  xcrun simctl openurl "${SIMULATOR_UDID}" "${link}" || true
-  sleep 1
-  [[ "$(read_preference native_route_key)" == "AccountSettings" ]]
-done
-
 # Each phase launches XCTest, taps the Production requestPermission buttons, and asserts the UI result.
 run_permission_phase grant-initial grant GRANTED
 run_permission_phase revoke revoke DENIED
@@ -135,7 +116,7 @@ run_permission_phase grant-again grant GRANTED
 xcrun simctl ui "${SIMULATOR_UDID}" appearance light
 xcrun simctl terminate "${SIMULATOR_UDID}" "${BUNDLE_ID}"
 xcrun simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}"
-wait_for_route_with_evidence AccountSettings
+wait_for_route_with_evidence Home
 [[ "$(read_preference lifecycle_state)" =~ ^(created|foreground|active)$ ]]
 
 xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 10m --style compact --predicate 'process == "Daon"' > "${EVIDENCE_DIR}/simulator.log"

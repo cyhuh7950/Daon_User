@@ -46,6 +46,7 @@ xcodebuild test \
   -derivedDataPath "${DERIVED_DATA}" \
   -only-testing:DaonUITests/DaonUITests/testApprovedNavigationRoutesAreClickable \
   -only-testing:DaonUITests/DaonUITests/testForegroundBackgroundAndRelaunchPreserveApprovedRoute \
+  -only-testing:DaonUITests/DaonUITests/testSystemOpenDeepLinksPreserveForegroundAndRoute \
   -only-testing:DaonUITests/DaonUITests/testPermissionControlsAndSettingsBoundary \
   -resultBundlePath "${RESULT_BUNDLE}" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
