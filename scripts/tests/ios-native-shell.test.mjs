@@ -666,6 +666,13 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     : "";
   assert.ok(contract);
   for (const [stage] of stages) assert.match(contract, new RegExp(`STAGE_${stage}`));
+  for (const code of ["SETTINGS_NOTIFICATION_ROW_ZERO", "SETTINGS_NOTIFICATION_ROW_AMBIGUOUS"]) assert.match(contract, new RegExp(code));
+  const parserStart = contract.indexOf("permission_failure_code_from_log() {");
+  const parser = parserStart >= 0 ? contract.slice(parserStart) : "";
+  const zeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_ZERO"');
+  const ambiguousParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_AMBIGUOUS"');
+  const genericRowParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_MISSING"');
+  assert.ok(zeroParser >= 0 && ambiguousParser >= 0 && genericRowParser >= 0 && zeroParser < genericRowParser && ambiguousParser < genericRowParser, "zero and ambiguous assertion codes must be classified before the generic row code");
 
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-permission-stage-"));
   const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -698,6 +705,14 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     const notificationAssertionFirst = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_ROW_TAP_PENDING\nmissing or ambiguous exact system element: Notification settings row");
     assert.equal(notificationAssertionFirst.status, 65, notificationAssertionFirst.stderr);
     assert.deepEqual(annotation(notificationAssertionFirst.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_ROW_MISSING PHASE=grant-initial EXIT=65"]);
+
+    const notificationZero = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [ZERO]");
+    assert.equal(notificationZero.status, 65, notificationZero.stderr);
+    assert.deepEqual(annotation(notificationZero.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_ROW_ZERO PHASE=grant-initial EXIT=65"]);
+
+    const notificationAmbiguous = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [AMBIGUOUS]");
+    assert.equal(notificationAmbiguous.status, 65, notificationAmbiguous.stderr);
+    assert.deepEqual(annotation(notificationAmbiguous.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_ROW_AMBIGUOUS PHASE=grant-initial EXIT=65"]);
 
     const unknown = run("DAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW_PRIVATE");
     assert.equal(unknown.status, 65, unknown.stderr);
@@ -901,10 +916,13 @@ test("Settings Notifications 행은 exact Label Query와 Element Hittable 평가
   assert.doesNotMatch(helper, /NSPredicate\(format:[^\n]*isHittable/);
   assert.match(helper, /query\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
   const matchesCollection = helper.lastIndexOf("query.allElementsBoundByAccessibilityElement.filter");
+  const zeroBranch = helper.indexOf("if hittableElements.isEmpty");
   const countGuard = helper.indexOf("guard hittableElements.count == 1");
   const elementAccess = helper.indexOf("let element = hittableElements.popLast()");
   const elementReturn = helper.indexOf("return element");
-  assert.ok(matchesCollection >= 0 && matchesCollection < countGuard && countGuard < elementAccess && elementAccess < elementReturn, "all hittable matches must be collected and count 1 verified before non-selective extraction");
+  assert.ok(matchesCollection >= 0 && matchesCollection < zeroBranch && zeroBranch < countGuard && countGuard < elementAccess && elementAccess < elementReturn, "zero and ambiguous branches must run before count 1 success extraction");
+  assert.match(helper, /if hittableElements\.isEmpty\s*\{[\s\S]*?XCTFail\("missing or ambiguous exact system element: Notification settings row \[ZERO\]"\)/);
+  assert.match(helper, /guard hittableElements\.count == 1 else \{[\s\S]*?XCTFail\("missing or ambiguous exact system element: Notification settings row \[AMBIGUOUS\]"\)/);
   const queryCreated = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryCreated)");
   const waitCompleted = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryWaitCompleted)");
   const countSingle = helper.indexOf("permissionXCTestStage(.settingsNotificationCountSingle)");
