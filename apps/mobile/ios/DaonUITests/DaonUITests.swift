@@ -118,17 +118,25 @@ final class DaonUITests: XCTestCase {
       XCTFail("DAON_PERMISSION_PHASE is required by the deterministic permission phase")
       return
     }
+    permissionXCTestStage(.phaseEnvironmentPresent)
     guard let phase = PermissionPhase(rawValue: rawPhase) else {
       XCTFail("DAON_PERMISSION_PHASE must be grant-initial, revoke or grant-again")
       return
     }
+    permissionXCTestStage(.phaseAllowed)
     guard let expected = ProcessInfo.processInfo.environment["DAON_PERMISSION_EXPECTED"] else {
       XCTFail("DAON_PERMISSION_EXPECTED is required by the deterministic permission phase")
       return
     }
-    XCTAssertTrue(["GRANTED", "DENIED"].contains(expected), "DAON_PERMISSION_EXPECTED must be GRANTED or DENIED")
+    permissionXCTestStage(.expectedEnvironmentPresent)
+    let expectedIsAllowed = ["GRANTED", "DENIED"].contains(expected)
+    XCTAssertTrue(expectedIsAllowed, "DAON_PERMISSION_EXPECTED must be GRANTED or DENIED")
+    guard expectedIsAllowed else { return }
+    permissionXCTestStage(.expectedAllowed)
     let phaseExpected = phase == .revoke ? "DENIED" : "GRANTED"
     XCTAssertEqual(expected, phaseExpected, "permission phase and expected result must remain coupled")
+    guard expected == phaseExpected else { return }
+    permissionXCTestStage(.phaseExpectedMatched)
     let app = XCUIApplication()
     permissionXCTestStage(.appLaunchRoot)
     launchAndRequireRootReady(app)
@@ -174,6 +182,11 @@ final class DaonUITests: XCTestCase {
 
   private enum PermissionXCTestStage: String {
     case phaseExpectedBinding = "PHASE_EXPECTED_BINDING"
+    case phaseEnvironmentPresent = "PHASE_ENV_PRESENT"
+    case phaseAllowed = "PHASE_ALLOWED"
+    case expectedEnvironmentPresent = "EXPECTED_ENV_PRESENT"
+    case expectedAllowed = "EXPECTED_ALLOWED"
+    case phaseExpectedMatched = "PHASE_EXPECTED_MATCHED"
     case appLaunchRoot = "APP_LAUNCH_ROOT"
     case cameraRequest = "CAMERA_REQUEST"
     case cameraResult = "CAMERA_RESULT"
