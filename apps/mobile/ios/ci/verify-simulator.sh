@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 build_binary_forbidden_pattern() {
   local client_public_internal_api="NEXT_PUBLIC"
@@ -13,10 +13,18 @@ if [[ "${1:-}" == "--print-binary-scan-pattern" ]]; then
 fi
 
 DAON_SIM_STAGE="INITIALIZE"
+DAON_SIM_PERMISSION_SERVICE=""
 
 is_allowed_sim_stage() {
   case "$1" in
     INITIALIZE|APP_ARTIFACT|BOOT_STATUS|INSTALL|INITIAL_TERMINATE|ROUTE_CLEAR|LAUNCH|HOME_READY|PERMISSION_GRANT_INITIAL|PERMISSION_REVOKE|PERMISSION_GRANT_AGAIN|LIFECYCLE_APPEARANCE|LIFECYCLE_TERMINATE|LIFECYCLE_RELAUNCH|LIFECYCLE_READY|LIFECYCLE_STATE|FINAL_LOG_CAPTURE|FINAL_LOG_SCAN|FINAL_BINARY_SCAN|FINAL_TERMINATE|FINAL_PROCESS_CHECK|STATUS_WRITE|UNCLASSIFIED) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_allowed_permission_service() {
+  case "$1" in
+    camera|microphone|notifications) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -28,6 +36,9 @@ report_simulator_failure() {
     failed_stage="${DAON_SIM_STAGE}"
   fi
   printf 'DAON_SIM_FAILED_STAGE=%s\n' "${failed_stage}" >&2
+  if is_allowed_permission_service "${DAON_SIM_PERMISSION_SERVICE}"; then
+    printf 'DAON_SIM_FAILED_PERMISSION_SERVICE=%s\n' "${DAON_SIM_PERMISSION_SERVICE}" >&2
+  fi
   printf 'DAON_SIM_FAILED_EXIT=%d\n' "${failed_exit}" >&2
   exit "${failed_exit}"
 }
@@ -106,9 +117,13 @@ run_permission_phase() {
   local privacy_action="$2"
   local expected="$3"
   xcrun simctl terminate "${SIMULATOR_UDID}" "${BUNDLE_ID}" >/dev/null 2>&1 || true
+  DAON_SIM_PERMISSION_SERVICE="camera"
   xcrun simctl privacy "${SIMULATOR_UDID}" "${privacy_action}" camera "${BUNDLE_ID}"
+  DAON_SIM_PERMISSION_SERVICE="microphone"
   xcrun simctl privacy "${SIMULATOR_UDID}" "${privacy_action}" microphone "${BUNDLE_ID}"
+  DAON_SIM_PERMISSION_SERVICE="notifications"
   xcrun simctl privacy "${SIMULATOR_UDID}" "${privacy_action}" notifications "${BUNDLE_ID}"
+  DAON_SIM_PERMISSION_SERVICE=""
   DAON_PERMISSION_EXPECTED="${expected}" xcodebuild test-without-building \
     -workspace "${REPOSITORY_ROOT}/apps/mobile/ios/Daon.xcworkspace" \
     -scheme Daon \
