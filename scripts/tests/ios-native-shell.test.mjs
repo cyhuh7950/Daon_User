@@ -369,7 +369,7 @@ test("Simulator 검증은 Route Key만 초기화하고 Home 준비 뒤 Warm Deep
   const installIndex = script.indexOf('simctl install "${SIMULATOR_UDID}" "${APP_PATH}"');
   const clearIndex = script.indexOf("clear_navigation_route", installIndex);
   const launchIndex = script.indexOf('simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}"', clearIndex);
-  const homeReadyIndex = script.indexOf("wait_for_route Home", launchIndex);
+  const homeReadyIndex = script.indexOf("wait_for_route_with_evidence Home", launchIndex);
   const warmRoutesIndex = script.indexOf("warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)", homeReadyIndex);
   const warmOpenURLIndex = script.indexOf('simctl openurl "${SIMULATOR_UDID}" "sinsan-daon://app/${route}"', warmRoutesIndex);
   assert.ok(installIndex >= 0 && installIndex < clearIndex && clearIndex < launchIndex && launchIndex < homeReadyIndex && homeReadyIndex < warmRoutesIndex && warmRoutesIndex < warmOpenURLIndex);
@@ -385,7 +385,7 @@ test("Simulator 검증은 설치 뒤 exact Daon Process를 종료하고 새 Proc
   const initialTerminateIndex = script.indexOf(allowedInitialTerminate, installIndex);
   const clearIndex = script.indexOf("clear_navigation_route", installIndex);
   const launchIndex = script.indexOf('xcrun simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}"', clearIndex);
-  const homeReadyIndex = script.indexOf("wait_for_route Home", launchIndex);
+  const homeReadyIndex = script.indexOf("wait_for_route_with_evidence Home", launchIndex);
   const simulatorLogIndex = script.indexOf('log show --last 10m', homeReadyIndex);
   const finalTerminateIndex = script.indexOf(exactTerminate, simulatorLogIndex);
   assert.ok(installIndex >= 0 && installIndex < initialTerminateIndex && initialTerminateIndex < clearIndex && clearIndex < launchIndex && launchIndex < homeReadyIndex);
@@ -393,28 +393,61 @@ test("Simulator 검증은 설치 뒤 exact Daon Process를 종료하고 새 Proc
   assert.doesNotMatch(script, /simctl (?:shutdown|erase|uninstall)|\b(?:kill|killall|pkill)\b/);
 });
 
-test("최초 Home 준비 실패는 Daon Unified Log를 보존하고 원래 Exit로 종료한다", async () => {
+test("모든 Route Wait 실패는 승인 Route 기반 Daon Log를 보존하고 허용 Marker만 출력하며 원 Exit를 유지한다", async () => {
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
-  const contract = script.match(/HOME_WAIT_EXIT=0\nwait_for_route Home \|\| HOME_WAIT_EXIT=\$\?\nif \[\[ "\$\{HOME_WAIT_EXIT\}" -ne 0 \]\]; then\n  xcrun simctl spawn "\$\{SIMULATOR_UDID\}" log show --last 10m --style compact --predicate 'process == "Daon"' > "\$\{EVIDENCE_DIR\}\/initial-home-failure\.log" 2>&1 \|\| true\n  exit "\$\{HOME_WAIT_EXIT\}"\nfi/)?.[0];
+  const helperStart = script.indexOf("is_approved_route() {");
+  const helperEnd = script.indexOf("run_permission_phase() {", helperStart);
+  const contract = helperStart >= 0 && helperEnd > helperStart ? script.slice(helperStart, helperEnd) : "";
   assert.ok(contract);
-  const failureLogIndex = script.indexOf('initial-home-failure.log');
+  assert.match(contract, /Home\|WorkspaceList\|WorkspaceDetail\|Inbox\|RunHistory\|Notifications\|ModelConnections\|AccountSettings/);
+  assert.match(contract, /route-wait-failure-\$\{expected\}\.log/);
+  assert.match(contract, /--predicate 'process == "Daon"'/);
+  assert.match(contract, /DAON_ROUTE_WAIT_EXPECTED=%s/);
+  assert.match(contract, /DAON_ROUTE_WAIT_ACTUAL=%s/);
+  assert.match(contract, /DAON_PENDING_DEEP_LINK_RECEIVED\|DAON_ROUTE_SAVED=/);
+  assert.match(contract, /DAON_LIFECYCLE_STATE=/);
+  assert.doesNotMatch(contract, /cat "\$\{evidence_file\}"|grep -Ev|echo[^\n]*\$\{actual\}/);
+  assert.equal((script.match(/wait_for_route_with_evidence Home/g) ?? []).length, 1);
+  assert.equal((script.match(/wait_for_route_with_evidence "\$\{route\}"/g) ?? []).length, 1);
+  assert.equal((script.match(/wait_for_route_with_evidence AccountSettings/g) ?? []).length, 1);
+  assert.equal((script.match(/^[ \t]*wait_for_route(?: |$)/gm) ?? []).length, 1);
+
+  const failureLogIndex = script.indexOf('route-wait-failure-${expected}.log');
   const warmRoutesIndex = script.indexOf("warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)");
   assert.ok(failureLogIndex >= 0 && failureLogIndex < warmRoutesIndex);
   assert.equal((script.match(/--predicate 'process == "Daon"'/g) ?? []).length, 2);
 
-  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-ios-home-failure-"));
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-ios-route-failure-"));
   const evidenceDir = path.join(fixtureRoot, "evidence");
   const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
   await mkdir(evidenceDir, { recursive: true });
   try {
-    const fixture = spawnSync(bash, ["-c", `set -euo pipefail\nwait_for_route(){ return 23; }\nxcrun(){ printf '%s\\n' 'Daon startup evidence'; }\n${contract}\nprintf '%s\\n' 'unexpected continuation'`], {
+    for (const expected of ["Home", "WorkspaceList"]) {
+      const fixture = spawnSync(bash, ["-c", `set -euo pipefail\nread_preference(){ printf '%s' Home; }\nwait_for_route(){ return 23; }\nxcrun(){ printf '%s\\n' '2026 marker DAON_PENDING_DEEP_LINK_RECEIVED' 'DAON_ROUTE_SAVED=Home' 'DAON_LIFECYCLE_STATE=active' 'PRIVATE_DIAGNOSTIC'; }\n${contract}\nwait_for_route_with_evidence "${expected}"`], {
+        cwd: fixtureRoot,
+        env: { ...process.env, EVIDENCE_DIR: "evidence", SIMULATOR_UDID: "11111111-2222-3333-4444-555555555555" },
+        encoding: "utf8"
+      });
+      assert.equal(fixture.status, 23, fixture.stderr);
+      assert.match(fixture.stderr, new RegExp(`DAON_ROUTE_WAIT_EXPECTED=${expected}`));
+      assert.match(fixture.stderr, /DAON_ROUTE_WAIT_ACTUAL=Home/);
+      assert.match(fixture.stderr, /DAON_PENDING_DEEP_LINK_RECEIVED/);
+      assert.match(fixture.stderr, /DAON_ROUTE_SAVED=Home/);
+      assert.match(fixture.stderr, /DAON_LIFECYCLE_STATE=active/);
+      assert.doesNotMatch(fixture.stderr, /PRIVATE_DIAGNOSTIC|2026 marker/);
+      const saved = await readFile(path.join(evidenceDir, `route-wait-failure-${expected}.log`), "utf8");
+      assert.match(saved, /2026 marker DAON_PENDING_DEEP_LINK_RECEIVED/);
+      assert.match(saved, /PRIVATE_DIAGNOSTIC/);
+    }
+
+    const success = spawnSync(bash, ["-c", `set -euo pipefail\nwait_for_route(){ return 0; }\nxcrun(){ return 91; }\n${contract}\nwait_for_route_with_evidence Inbox\nprintf '%s\\n' continued`], {
       cwd: fixtureRoot,
       env: { ...process.env, EVIDENCE_DIR: "evidence", SIMULATOR_UDID: "11111111-2222-3333-4444-555555555555" },
       encoding: "utf8"
     });
-    assert.equal(fixture.status, 23, fixture.stderr);
-    assert.doesNotMatch(fixture.stdout, /unexpected continuation/);
-    assert.match(await readFile(path.join(evidenceDir, "initial-home-failure.log"), "utf8"), /Daon startup evidence/);
+    assert.equal(success.status, 0, success.stderr);
+    assert.match(success.stdout, /continued/);
+    await assert.rejects(readFile(path.join(evidenceDir, "route-wait-failure-Inbox.log"), "utf8"), { code: "ENOENT" });
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
