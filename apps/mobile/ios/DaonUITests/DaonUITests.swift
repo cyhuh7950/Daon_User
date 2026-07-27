@@ -373,8 +373,27 @@ final class DaonUITests: XCTestCase {
     XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed, "Notification alert did not close after Allow")
   }
 
+  private func findExactNotificationSwitch(in settings: XCUIApplication) throws -> XCUIElement? {
+    let exactSwitchPredicate = NSPredicate(format: "label == %@ OR label == %@", "Allow Notifications", "알림 허용")
+    let exactSwitchQuery = settings.switches.matching(exactSwitchPredicate)
+    let appeared = XCTNSPredicateExpectation(
+      predicate: NSPredicate { object, _ in
+        guard let exactSwitchQuery = object as? XCUIElementQuery else { return false }
+        return !exactSwitchQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
+      },
+      object: exactSwitchQuery
+    )
+    _ = XCTWaiter.wait(for: [appeared], timeout: 10)
+    var exactSwitches = exactSwitchQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    guard exactSwitches.count <= 1 else {
+      XCTFail("missing or ambiguous exact system element: Allow Notifications switch")
+      throw PermissionUIContractError.missingExactElement("Allow Notifications switch")
+    }
+    return exactSwitches.popLast()
+  }
+
   private func setNotificationAuthorization(enabled target: Bool, in app: XCUIApplication, content: XCUIElement) throws {
-    let settingsButton = app.buttons["앱 권한 설정 열기"]
+    let settingsButton = app.buttons["알림 설정 열기"]
     for _ in 0..<8 where !settingsButton.isHittable { content.swipeUp() }
     XCTAssertTrue(settingsButton.waitForExistence(timeout: 10), "Production application settings button is unavailable")
     XCTAssertTrue(settingsButton.isHittable, "Production application settings button is not hittable")
@@ -383,17 +402,21 @@ final class DaonUITests: XCTestCase {
     let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
     permissionXCTestStage(.settingsForeground)
     XCTAssertTrue(settings.wait(for: .runningForeground, timeout: 10), "Settings app is not runningForeground")
-    permissionXCTestStage(.settingsNotificationRow)
-    let notificationsRow = try requireExactNotificationSettingsRow(in: settings)
-    XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
-    permissionXCTestStage(.settingsNotificationRowTapPending)
-    notificationsRow.tap()
-
     permissionXCTestStage(.settingsSwitchRead)
-    let allowNotifications = try requireExactElement([
-      settings.switches["Allow Notifications"],
-      settings.switches["알림 허용"]
-    ], description: "Allow Notifications switch")
+    let allowNotifications: XCUIElement
+    if let directSwitch = try findExactNotificationSwitch(in: settings) {
+      allowNotifications = directSwitch
+    } else {
+      permissionXCTestStage(.settingsNotificationRow)
+      let notificationsRow = try requireExactNotificationSettingsRow(in: settings)
+      XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
+      permissionXCTestStage(.settingsNotificationRowTapPending)
+      notificationsRow.tap()
+      allowNotifications = try requireExactElement([
+        settings.switches["Allow Notifications"],
+        settings.switches["알림 허용"]
+      ], description: "Allow Notifications switch")
+    }
     XCTAssertTrue(allowNotifications.isHittable, "Allow Notifications switch is not hittable")
     let before = try notificationSwitchIsEnabled(allowNotifications)
     if before != target {

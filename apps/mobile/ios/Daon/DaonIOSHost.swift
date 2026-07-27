@@ -110,6 +110,26 @@ final class DaonIOSHost: NSObject {
     }
   }
 
+  @objc(openNotificationSettings:rejecter:)
+  func openNotificationSettings(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    DispatchQueue.main.async {
+      let settingsURLString: String
+      if #available(iOS 16.0, *) {
+        settingsURLString = UIApplication.openNotificationSettingsURLString
+      } else {
+        settingsURLString = UIApplication.openSettingsURLString
+      }
+      guard let url = URL(string: settingsURLString) else {
+        reject("IOS_NOTIFICATION_SETTINGS_URL_UNAVAILABLE", "Notification settings URL is unavailable", nil)
+        return
+      }
+      UIApplication.shared.open(url, options: [:]) { resolve($0) }
+    }
+  }
+
   static func recordLifecycleState(_ state: String) {
     guard ["created", "background", "foreground", "active"].contains(state) else { return }
     UserDefaults.standard.set(state, forKey: lifecycleKey)

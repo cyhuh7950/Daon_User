@@ -1406,6 +1406,7 @@ M4~M6의 모든 수평 구현이 끝날 때까지 통합 검증을 미루지 않
 | Browser API는 same-origin BFF/Proxy만 사용하고 Client 절대주소·localhost·Docker 내부주소를 금지 | 확정 · 신산님 승인 2026-07-20 |
 | Android·iOS 공용 Deep Link 공개 진입 계약은 `sinsan-daon://app/<native_route_key>`이며 기존 승인 Route Allowlist만 허용하고 다른 Scheme·Host·Route는 Fail-close | 확정 · 신산님 승인 2026-07-27 |
 | R1-M3-06 iOS는 GitHub-hosted macOS·고정 Xcode/CocoaPods의 Simulator Phase A를 먼저 검증하고 Apple Team·Provisioning·서명 Archive·실기기는 Phase B로 유지 | 확정 · 신산님 승인 2026-07-27 |
+| iOS 권한 설정은 기존 범용 앱 설정 진입을 보존하고 알림 전용 설정 진입을 별도 제공한다. iOS 16 이상은 Apple 공개 `UIApplication.openNotificationSettingsURLString`, iOS 15.1은 기존 `openSettingsURLString` Fallback을 사용하며 비공개 URL·Settings/TCC 직접 조작은 금지한다. | 확정 · 신산님 승인 2026-07-28 |
 | 로컬 수정·검증→Git Push→ysna-server 격리 배포·전용 DB Migration·서버 테스트→PR Merge→Oracle Cloud 운영의 단계별 기준선 사용 | 확정 · 신산님 승인 2026-07-20 · `APR-DEVENV-YSNA-20260720-01` |
 | 동일 작업지시서 미완료·실패 합계 3회에는 어울2를 중지하고 신산님 결정 후에만 어울1이 직접 구현 | 확정 · 신산님 승인 2026-07-20 |
 | Output 승인 요청 기본 7일·조직 1~30일, 만료·회수 시 자동 승인 금지 | 확정 |

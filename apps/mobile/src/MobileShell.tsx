@@ -18,6 +18,7 @@ export interface NativePermissionAdapter {
   requestPermission(kind: "camera" | "microphone" | "notification"): Promise<string>;
   checkPermission(kind: "camera" | "microphone" | "notification"): Promise<string>;
   openApplicationSettings(): Promise<void>;
+  openNotificationSettings?(): Promise<void>;
 }
 
 type MobileShellProps = {
@@ -155,6 +156,7 @@ function ValidatedMobileShell({ clientType, publicApiClient = createUnavailableP
         {permissionAdapter ? <View accessibilityLabel={`${clientType} 권한 제어`} style={styles.permissionControls}>
           {(["camera", "microphone", "notification"] as const).map((kind) => <Pressable key={kind} accessibilityLabel={`${kind} 권한 요청`} accessibilityRole="button" onPress={() => { void permissionAdapter.requestPermission(kind).then((state) => setPermissionState(`${kind}:${state}`)); }} style={styles.backButton}><Text allowFontScaling style={styles.bodyText}>{kind} 권한 요청</Text></Pressable>)}
           <Pressable accessibilityLabel="앱 권한 설정 열기" accessibilityRole="button" onPress={() => { void permissionAdapter.openApplicationSettings(); }} style={styles.backButton}><Text allowFontScaling style={styles.bodyText}>앱 권한 설정</Text></Pressable>
+          {permissionAdapter.openNotificationSettings ? <Pressable accessibilityLabel="알림 설정 열기" accessibilityRole="button" onPress={() => { void permissionAdapter.openNotificationSettings?.(); }} style={styles.backButton}><Text allowFontScaling style={styles.bodyText}>알림 설정</Text></Pressable> : null}
           {permissionState ? <Text allowFontScaling accessibilityLabel={`${permissionState.replace(":", " 권한 결과 ")}`} accessibilityRole="text" accessibilityLiveRegion="polite" style={styles.warningText}>{permissionState}</Text> : null}
         </View> : null}
         <Pressable accessibilityLabel="이전 화면으로 돌아가기" accessibilityRole="button" disabled={navigation.history.length <= 1} onPress={() => setNavigation((current) => goBack(current))} style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}>
