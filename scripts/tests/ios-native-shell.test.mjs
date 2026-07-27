@@ -167,10 +167,10 @@ test("GitHub macOS Workflow와 Manifest는 모든 필수 Step Outcome을 Fail-cl
   const workflow = await readJson(".github/workflows/release-1-ios-phase-a.yml");
   const writer = await read("apps/mobile/ios/ci/write-evidence.mjs");
   const steps = workflow.jobs["ios-phase-a"].steps;
-  const requiredIds = ["checkout", "setup-node", "xcode", "node-npm", "cocoapods", "npm-ci", "portable-contracts", "pods", "simulator", "build", "ui-tests", "simulator-verification"];
+  const requiredIds = ["checkout", "setup-node", "xcode", "setup-uv", "node-npm", "cocoapods", "npm-ci", "portable-contracts", "pods", "simulator", "build", "ui-tests", "simulator-verification"];
   for (const id of requiredIds) assert.ok(steps.some((step) => step.id === id), `missing required workflow step id: ${id}`);
   const serialized = JSON.stringify(workflow);
-  for (const token of ["IOS_STEP_CHECKOUT", "IOS_STEP_SETUP_NODE", "IOS_STEP_NPM_CI", "verification_completed", "workflow-outcomes.json", "phase-a-status.txt"]) {
+  for (const token of ["IOS_STEP_CHECKOUT", "IOS_STEP_SETUP_NODE", "IOS_STEP_SETUP_UV", "IOS_STEP_NPM_CI", "verification_completed", "workflow-outcomes.json", "phase-a-status.txt"]) {
     assert.match(`${serialized}\n${writer}`, new RegExp(token.replaceAll(".", "\\.")));
   }
   assert.match(writer, /FAILED/);
@@ -178,6 +178,30 @@ test("GitHub macOS Workflow와 Manifest는 모든 필수 Step Outcome을 Fail-cl
   const embeddedNodePrograms = steps.flatMap((step) => [...(step.run ?? "").matchAll(/node -e '([^']+)'/g)].map((match) => match[1]));
   assert.ok(embeddedNodePrograms.length >= 2);
   for (const source of embeddedNodePrograms) assert.doesNotThrow(() => new Function(source));
+});
+
+test("macOS Workflow는 승인 uv Pin을 Toolchain 검증 전에 설치·검증하고 Manifest에 결속한다", async () => {
+  const workflow = await readJson(".github/workflows/release-1-ios-phase-a.yml");
+  const writer = await read("apps/mobile/ios/ci/write-evidence.mjs");
+  const toolchains = await readJson("toolchain-versions.json");
+  const steps = workflow.jobs["ios-phase-a"].steps;
+  const setupUvIndex = steps.findIndex((step) => step.id === "setup-uv");
+  const toolchainIndex = steps.findIndex((step) => step.id === "node-npm");
+  assert.ok(setupUvIndex >= 0 && setupUvIndex < toolchainIndex);
+  const setupUv = steps[setupUvIndex];
+  assert.equal(setupUv.uses, "astral-sh/setup-uv@v7");
+  assert.equal(setupUv.with.version, "${{ steps.toolchain-pins.outputs.uv }}");
+  const pinLoader = workflow.jobs["ios-phase-a"].steps.find((step) => step.id === "toolchain-pins");
+  assert.match(pinLoader?.run ?? "", /toolchain-versions\.json/);
+  assert.match(pinLoader?.run ?? "", /toolchains\.uv/);
+  assert.equal(toolchains.toolchains.uv, "0.11.2");
+  const verification = steps[toolchainIndex].run;
+  assert.match(verification, /toolchain-versions\.json/);
+  assert.match(verification, /uv --version/);
+  assert.match(verification, /npm run verify:toolchain/);
+  assert.match(JSON.stringify(workflow), /IOS_UV_VERSION/);
+  assert.match(writer, /setup_uv/);
+  assert.match(writer, /IOS_UV_VERSION/);
 });
 
 test("권한 Phase A는 Production 요청 버튼의 GRANTED·DENIED·재GRANTED를 XCTest Artifact로 검증한다", async () => {

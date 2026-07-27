@@ -5,7 +5,7 @@ import path from "node:path";
 const successStatus = "SIMULATOR_VERIFIED_PENDING_SIGNING_DEVICE";
 const root = path.resolve(process.env.IOS_REPOSITORY_ROOT ?? path.resolve(import.meta.dirname, "../../../.."));
 const evidenceDir = path.resolve(process.env.IOS_EVIDENCE_DIR ?? path.join(root, "artifacts/ios-phase-a/evidence"));
-const requiredSteps = ["checkout", "setup_node", "xcode", "node_npm", "cocoapods", "npm_ci", "portable_contracts", "pods", "simulator", "build", "ui_tests", "simulator_verification"];
+const requiredSteps = ["checkout", "setup_node", "xcode", "setup_uv", "node_npm", "cocoapods", "npm_ci", "portable_contracts", "pods", "simulator", "build", "ui_tests", "simulator_verification"];
 const requiredFiles = [
   "apps/mobile/ios/Podfile",
   "apps/mobile/ios/Podfile.lock",
@@ -57,6 +57,7 @@ const runner = { name: process.env.RUNNER_NAME ?? "unknown", image: process.env.
 const toolchain = {
   node: process.version,
   npm: process.env.IOS_NPM_VERSION ?? "unknown",
+  uv: process.env.IOS_UV_VERSION ?? "unknown",
   xcode: process.env.IOS_XCODE_VERSION ?? "unknown",
   xcode_build: process.env.IOS_XCODE_BUILD_VERSION ?? "unknown",
   sdk: process.env.IOS_SDK_VERSION ?? "unknown",
