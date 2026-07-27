@@ -306,10 +306,13 @@ test("UI Test는 각 Scenario 전에 접근성 Root와 runningForeground를 Fail
   assert.doesNotMatch(uiTests, /XCTSkip|continueAfterFailure\s*=\s*true/);
 });
 
-test("UI Test는 두 ScrollView의 고정 Identifier Query와 기존 Swipe 의미를 유지한다", async () => {
+test("UI Test는 두 Scroll Host의 고정 Identifier Query와 기존 Swipe 의미를 유지한다", async () => {
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
-  assert.match(uiTests, /app\.scrollViews\["공용 Navigation"\]/);
-  assert.equal((uiTests.match(/app\.scrollViews\["화면 내용"\]/g) ?? []).length, 2);
+  assert.equal((uiTests.match(/app\.otherElements\["공용 Navigation"\]/g) ?? []).length, 1);
+  assert.equal((uiTests.match(/app\.otherElements\["화면 내용"\]/g) ?? []).length, 2);
+  assert.doesNotMatch(uiTests, /app\.scrollViews\["(?:공용 Navigation|화면 내용)"\]/);
+  assert.match(uiTests, /let navigation = app\.otherElements\["공용 Navigation"\][\s\S]*?XCTAssertTrue\(navigation\.waitForExistence\(timeout: 10\)[\s\S]*?for _ in 0\.\.<8 where !button\.isHittable \{ navigation\.swipeLeft\(\) \}/);
+  assert.equal((uiTests.match(/XCTAssertTrue\(content\.waitForExistence\(timeout: 10\)/g) ?? []).length, 2);
   assert.equal((uiTests.match(/0\.\.<8 where !/g) ?? []).length, 3);
   assert.match(uiTests, /navigation\.swipeLeft\(\)/);
   assert.equal((uiTests.match(/content\.swipeUp\(\)/g) ?? []).length, 2);
