@@ -50,6 +50,26 @@ test("iOS Project는 승인 Community Template Commit과 RN Pin을 기록한다"
   assert.match(podfile, /use_react_native!/);
 });
 
+test("Swift Native Module의 React Bridge Type은 App Target Debug·Release에만 노출된다", async () => {
+  const project = await read("apps/mobile/ios/Daon.xcodeproj/project.pbxproj");
+  const bridge = await read("apps/mobile/ios/Daon/Daon-Bridging-Header.h");
+  const host = await read("apps/mobile/ios/Daon/DaonIOSHost.swift");
+  assert.equal(bridge.trim(), "#import <React/RCTBridgeModule.h>");
+  for (const type of ["RCTBridgeModule", "RCTPromiseResolveBlock", "RCTPromiseRejectBlock"]) {
+    assert.match(host, new RegExp(type));
+  }
+  for (const id of ["AC0000000000000000000001", "AC0000000000000000000002"]) {
+    assert.match(project, new RegExp(`${id}[^\\n]*SWIFT_OBJC_BRIDGING_HEADER = Daon/Daon-Bridging-Header\\.h;`));
+  }
+  assert.equal((project.match(/SWIFT_OBJC_BRIDGING_HEADER = Daon\/Daon-Bridging-Header\.h;/g) ?? []).length, 2);
+  for (const id of ["AC0000000000000000000003", "AC0000000000000000000004", "AC0000000000000000000005", "AC0000000000000000000006"]) {
+    assert.doesNotMatch(project, new RegExp(`${id}[^\\n]*SWIFT_OBJC_BRIDGING_HEADER`));
+  }
+  assert.doesNotMatch(project, /HEADER_SEARCH_PATHS|LIBRARY_SEARCH_PATHS/);
+  assert.match(host, /@objc\(DaonIOSHost\)/);
+  assert.match(host, /static func moduleName\(\) -> String! \{ "DaonIOSHost" \}/);
+});
+
 test("Podfile Autolinking은 호출 CWD와 무관하게 Monorepo Mobile App Root를 사용한다", async () => {
   const podfile = await read("apps/mobile/ios/Podfile");
   assert.match(podfile, /app_root = File\.expand_path\('\.\.', __dir__\)/);
