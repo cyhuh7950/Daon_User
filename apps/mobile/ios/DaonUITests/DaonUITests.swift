@@ -224,6 +224,55 @@ final class DaonUITests: XCTestCase {
     return match
   }
 
+  private func settingsDiagnosticToken(_ rawValue: String, maximumLength: Int) -> String {
+    var token = ""
+    for scalar in rawValue.unicodeScalars {
+      let value = scalar.value
+      let isASCIILetterOrDigit = (48...57).contains(value) || (65...90).contains(value) || (97...122).contains(value)
+      let isSafePunctuation = [43, 45, 46, 47, 95, 123, 125].contains(value)
+      let component: String
+      if isASCIILetterOrDigit || isSafePunctuation {
+        component = String(scalar)
+      } else if value > 127 {
+        component = "u{\(String(value, radix: 16, uppercase: true))}"
+      } else {
+        component = "_"
+      }
+      guard token.count + component.count <= maximumLength else { break }
+      token.append(component)
+    }
+    return token.isEmpty ? "_empty_" : token
+  }
+
+  private func emitSettingsAccessibilitySummary(in settings: XCUIApplication) {
+    let maximumElementCount = 16
+    let maximumTokenLength = 80
+    let maximumSummaryLength = 4096
+    let elementGroups: [(type: String, elements: [XCUIElement])] = [
+      ("cell", settings.cells.allElementsBoundByAccessibilityElement),
+      ("button", settings.buttons.allElementsBoundByAccessibilityElement),
+      ("staticText", settings.staticTexts.allElementsBoundByAccessibilityElement),
+      ("switch", settings.switches.allElementsBoundByAccessibilityElement)
+    ]
+    var items: [String] = []
+    elementLoop: for group in elementGroups {
+      for element in group.elements {
+        guard items.count < maximumElementCount else { break elementLoop }
+        let label = settingsDiagnosticToken(element.label, maximumLength: maximumTokenLength)
+        let identifier = settingsDiagnosticToken(element.identifier, maximumLength: maximumTokenLength)
+        let hittable = element.isHittable ? "1" : "0"
+        items.append("elementType=\(group.type),label=\(label),identifier=\(identifier),isHittable=\(hittable)")
+      }
+    }
+    let itemPayload = items.isEmpty ? "_none_" : items.joined(separator: ";")
+    let summary = "DAON_SETTINGS_ACCESSIBILITY_SUMMARY=v1|count=\(items.count)|items=\(itemPayload)"
+    guard summary.count <= maximumSummaryLength else {
+      print("DAON_SETTINGS_ACCESSIBILITY_SUMMARY=v1|count=0|items=_none_")
+      return
+    }
+    print(summary)
+  }
+
   private func requireExactNotificationSettingsRow(in settings: XCUIApplication) throws -> XCUIElement {
     let exactLabelPredicate = NSPredicate(format: "label == %@ OR label == %@", "Notifications", "알림")
     let directQuery = settings.descendants(matching: .any).matching(exactLabelPredicate)
@@ -283,6 +332,7 @@ final class DaonUITests: XCTestCase {
       throw PermissionUIContractError.missingExactElement("Notification settings row")
     } else {
       if candidates.composite.isEmpty {
+        emitSettingsAccessibilitySummary(in: settings)
         XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]")
         throw PermissionUIContractError.missingExactElement("Notification settings row")
       }
