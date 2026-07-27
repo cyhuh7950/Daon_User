@@ -487,6 +487,37 @@ test("모든 Route Wait 실패는 승인 Route 기반 Daon Log를 보존하고 �
   }
 });
 
+test("Simulator ERR 진단은 allowlist 현재 단계와 숫자 원 Exit만 출력하고 성공에는 표식을 만들지 않는다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const allowedStages = [
+    "APP_ARTIFACT", "BOOT_STATUS", "INSTALL", "INITIAL_TERMINATE", "ROUTE_CLEAR", "LAUNCH", "HOME_READY",
+    "PERMISSION_GRANT_INITIAL", "PERMISSION_REVOKE", "PERMISSION_GRANT_AGAIN",
+    "LIFECYCLE_APPEARANCE", "LIFECYCLE_TERMINATE", "LIFECYCLE_RELAUNCH", "LIFECYCLE_READY", "LIFECYCLE_STATE",
+    "FINAL_LOG_CAPTURE", "FINAL_LOG_SCAN", "FINAL_BINARY_SCAN", "FINAL_TERMINATE", "FINAL_PROCESS_CHECK", "STATUS_WRITE"
+  ];
+  const contractStart = script.indexOf('DAON_SIM_STAGE="INITIALIZE"');
+  const trapLine = "trap report_simulator_failure ERR";
+  const contractEnd = script.indexOf(trapLine, contractStart);
+  const contract = contractStart >= 0 && contractEnd > contractStart ? script.slice(contractStart, contractEnd + trapLine.length) : "";
+  assert.ok(contract);
+  assert.match(contract, /DAON_SIM_FAILED_STAGE=%s\\n/);
+  assert.match(contract, /DAON_SIM_FAILED_EXIT=%d\\n/);
+  assert.match(contract, /UNCLASSIFIED/);
+  assert.doesNotMatch(contract, /SIMULATOR_UDID|EVIDENCE_DIR|APP_PATH|BUNDLE_ID|rawURL|secret|https?:\/\//i);
+  for (const stage of allowedStages) assert.match(script, new RegExp(`DAON_SIM_STAGE="${stage}"`));
+
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const failure = spawnSync(bash, ["-c", `set -euo pipefail\n${contract}\nDAON_SIM_STAGE="INSTALL"\nfail_stage(){ return 23; }\nfail_stage\nprintf '%s\\n' unexpected`], { encoding: "utf8" });
+  assert.equal(failure.status, 23, failure.stderr);
+  assert.equal(failure.stderr, "DAON_SIM_FAILED_STAGE=INSTALL\nDAON_SIM_FAILED_EXIT=23\n");
+  assert.doesNotMatch(failure.stdout, /unexpected/);
+
+  const success = spawnSync(bash, ["-c", `set -euo pipefail\n${contract}\nDAON_SIM_STAGE="INSTALL"\ntrue\nprintf '%s\\n' continued`], { encoding: "utf8" });
+  assert.equal(success.status, 0, success.stderr);
+  assert.equal(success.stderr, "");
+  assert.match(success.stdout, /continued/);
+});
+
 test("Binary 금지 Pattern은 Source 자기탐지 없이 Runtime에서 기존 Client 내부 API 토큰을 탐지한다", async () => {
   const scriptPath = path.join(iosRoot, "ci/verify-simulator.sh");
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
