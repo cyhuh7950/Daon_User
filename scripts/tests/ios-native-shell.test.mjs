@@ -365,6 +365,22 @@ test("Simulator 검증은 Route Key만 초기화하고 Home 준비 뒤 Warm Deep
   assert.equal((script.match(/for _ in \{1\.\.20\}/g) ?? []).length, 1);
 });
 
+test("Simulator 검증은 설치 뒤 exact Daon Process를 종료하고 새 Process에서 Home 준비를 확인한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const exactTerminate = 'xcrun simctl terminate "${SIMULATOR_UDID}" "${BUNDLE_ID}"';
+  const allowedInitialTerminate = `${exactTerminate} >/dev/null 2>&1 || true`;
+  const installIndex = script.indexOf('xcrun simctl install "${SIMULATOR_UDID}" "${APP_PATH}"');
+  const initialTerminateIndex = script.indexOf(allowedInitialTerminate, installIndex);
+  const clearIndex = script.indexOf("clear_navigation_route", installIndex);
+  const launchIndex = script.indexOf('xcrun simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}"', clearIndex);
+  const homeReadyIndex = script.indexOf("wait_for_route Home", launchIndex);
+  const simulatorLogIndex = script.indexOf('log show --last 10m', homeReadyIndex);
+  const finalTerminateIndex = script.indexOf(exactTerminate, simulatorLogIndex);
+  assert.ok(installIndex >= 0 && installIndex < initialTerminateIndex && initialTerminateIndex < clearIndex && clearIndex < launchIndex && launchIndex < homeReadyIndex);
+  assert.ok(simulatorLogIndex >= 0 && simulatorLogIndex < finalTerminateIndex);
+  assert.doesNotMatch(script, /simctl (?:shutdown|erase|uninstall)|\b(?:kill|killall|pkill)\b/);
+});
+
 test("Binary 금지 Pattern은 Source 자기탐지 없이 Runtime에서 기존 Client 내부 API 토큰을 탐지한다", async () => {
   const scriptPath = path.join(iosRoot, "ci/verify-simulator.sh");
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
