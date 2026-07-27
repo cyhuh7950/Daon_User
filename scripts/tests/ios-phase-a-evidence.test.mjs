@@ -13,7 +13,7 @@ const requiredFiles = [
   "apps/mobile/ios/DaonUITests/DaonUITests.swift", "apps/mobile/ios/ci/build-simulator.sh",
   "apps/mobile/ios/ci/verify-simulator.sh", ".github/workflows/release-1-ios-phase-a.yml"
 ];
-const requiredSteps = ["checkout", "setup_node", "xcode", "node_npm", "cocoapods", "npm_ci", "portable_contracts", "pods", "simulator", "build", "ui_tests", "simulator_verification"];
+const requiredSteps = ["checkout", "setup_node", "xcode", "setup_uv", "node_npm", "cocoapods", "npm_ci", "portable_contracts", "pods", "simulator", "build", "ui_tests", "simulator_verification"];
 
 async function runFixture({ stepOverrides = {}, envOverrides = {}, phaseStatus = "SIMULATOR_VERIFIED_PENDING_SIGNING_DEVICE" } = {}) {
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-ios-evidence-"));
@@ -35,7 +35,7 @@ async function runFixture({ stepOverrides = {}, envOverrides = {}, phaseStatus =
     execFileSync(process.execPath, [writer], { cwd: root, env: {
       ...process.env, IOS_REPOSITORY_ROOT: fixtureRoot, IOS_EVIDENCE_DIR: evidenceDir,
       GITHUB_SHA: "a".repeat(40), RUNNER_NAME: "GitHub Actions 1", ImageOS: "macos26", ImageVersion: "20260720.1",
-      IOS_NPM_VERSION: "11.12.1", IOS_XCODE_VERSION: "26.6", IOS_XCODE_BUILD_VERSION: "17G86", IOS_SDK_VERSION: "26.0",
+      IOS_NPM_VERSION: "11.12.1", IOS_UV_VERSION: "uv 0.11.2", IOS_XCODE_VERSION: "26.6", IOS_XCODE_BUILD_VERSION: "17G86", IOS_SDK_VERSION: "26.0",
       IOS_COCOAPODS_VERSION: "1.16.2", IOS_RUBY_VERSION: "ruby 3.3.0", IOS_BUNDLER_VERSION: "Bundler version 2.6.0",
       IOS_SIMULATOR_RUNTIME: "iOS 26.0", IOS_SIMULATOR_DEVICE: "iPhone 17 Pro",
       SIMULATOR_UDID: "11111111-2222-3333-4444-555555555555", ...envOverrides
@@ -52,6 +52,24 @@ test("iOS Evidence Manifest는 모든 필수 Outcome·식별자·상태 파일�
   assert.equal(manifest.verification_completed, true);
   assert.deepEqual(manifest.failed_steps, []);
   assert.deepEqual(manifest.incomplete_reasons, []);
+  assert.equal(manifest.toolchain.uv, "uv 0.11.2");
+});
+
+test("iOS Evidence Manifest는 setup_uv 실패·Skip과 uv unknown을 성공으로 기록하지 않는다", async () => {
+  const failed = await runFixture({ stepOverrides: { setup_uv: "failure" } });
+  assert.equal(failed.status, "FAILED");
+  assert.equal(failed.verification_completed, false);
+  assert.deepEqual(failed.failed_steps, ["setup_uv"]);
+
+  const skipped = await runFixture({ stepOverrides: { setup_uv: "skipped" } });
+  assert.equal(skipped.status, "INCOMPLETE");
+  assert.equal(skipped.verification_completed, false);
+  assert.ok(skipped.incomplete_reasons.includes("step:setup_uv:skipped"));
+
+  const unknown = await runFixture({ envOverrides: { IOS_UV_VERSION: "unknown" } });
+  assert.equal(unknown.status, "INCOMPLETE");
+  assert.equal(unknown.verification_completed, false);
+  assert.ok(unknown.incomplete_reasons.includes("toolchain:uv:unknown"));
 });
 
 test("iOS Evidence Manifest는 필수 Step 실패를 FAILED로 기록하고 성공 상태를 금지한다", async () => {
