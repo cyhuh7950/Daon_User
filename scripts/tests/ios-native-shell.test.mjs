@@ -876,19 +876,18 @@ test("macOS Workflow는 CocoaPods Gem 이름과 pod 실행 파일을 RubyGems �
   }
 });
 
-test("Settings Notifications 행은 exact Label의 staticText·cell 표현을 단일 행으로 취급한다", async () => {
+test("Settings Notifications 행은 타입 비의존 exact Label·Hittable Query의 단일 element만 사용한다", async () => {
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
   const helperStart = uiTests.indexOf("private func requireExactNotificationSettingsRow");
   const helperEnd = uiTests.indexOf("private func approveExpectedNotificationAlert", helperStart);
   const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
   assert.ok(helper, "Notifications exact Label row helper is required");
-  assert.match(helper, /let exactLabels = \["Notifications", "알림"\]/);
-  assert.match(helper, /settings\.staticTexts\[label\]/);
-  assert.match(helper, /settings\.cells\[label\]/);
-  assert.match(helper, /if staticTextExists \|\| cellExists/);
-  assert.match(helper, /matches\.append\(cellExists \? cell : staticText\)/);
-  assert.match(helper, /matches\.count == 1/);
-  assert.doesNotMatch(helper, /descendants|containing|matching\(|firstMatch|element\(boundBy:|coordinate\(|CONTAINS|BEGINSWITH|ENDSWITH/i);
+  assert.match(helper, /let query = settings\.descendants\(matching: \.any\)\.matching\(/);
+  assert.match(helper, /NSPredicate\(format: "\(label == %@ OR label == %@\) AND isHittable == true", "Notifications", "알림"\)/);
+  const countGuard = helper.indexOf("guard query.count == 1");
+  const elementReturn = helper.indexOf("return query.element");
+  assert.ok(countGuard >= 0 && countGuard < elementReturn, "count 1 must be verified before returning the query element");
+  assert.doesNotMatch(helper, /\.staticTexts|\.cells|\.buttons|\.links|identifier|CONTAINS|BEGINSWITH|ENDSWITH|MATCHES|firstMatch|element\(boundBy:|coordinate\(/i);
 
   const settingsStart = uiTests.indexOf("private func setNotificationAuthorization");
   const settingsEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", settingsStart);
