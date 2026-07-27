@@ -50,6 +50,27 @@ test("iOS Project는 승인 Community Template Commit과 RN Pin을 기록한다"
   assert.match(podfile, /use_react_native!/);
 });
 
+test("Podfile Autolinking은 호출 CWD와 무관하게 Monorepo Mobile App Root를 사용한다", async () => {
+  const podfile = await read("apps/mobile/ios/Podfile");
+  assert.match(podfile, /app_root = File\.expand_path\('\.\.', __dir__\)/);
+  assert.match(podfile, /require\.resolve\(\s*"@react-native-community\/cli",\s*\{paths: \[process\.argv\[1\]\]\},?\s*\)/);
+  assert.match(podfile, /process\.chdir\(process\.argv\[1\]\)/);
+  assert.match(podfile, /use_native_modules!\(autolinking_command\)/);
+  assert.match(podfile, /:path => config\[:reactNativePath\]/);
+  assert.match(podfile, /react_native_post_install\(\s*installer,\s*config\[:reactNativePath\]/);
+  assert.doesNotMatch(podfile, /[A-Za-z]:[\\/]|\/Users\/|\/home\//);
+
+  const cli = path.join(root, "node_modules/@react-native-community/cli/build/bin.js");
+  const config = JSON.parse(execFileSync(process.execPath, [cli, "config"], {
+    cwd: path.join(root, "apps/mobile"),
+    encoding: "utf8"
+  }));
+  assert.equal(path.resolve(config.root), path.join(root, "apps/mobile"));
+  assert.equal(path.resolve(config.project.ios.sourceDir), iosRoot);
+  assert.equal(path.resolve(config.reactNativePath), path.join(root, "node_modules/react-native"));
+  assert.deepEqual(config.dependencies, {});
+});
+
 test("Info.plist는 최소 권한 설명과 URL Scheme만 선언하고 내부 Network 예외를 금지한다", async () => {
   const info = await read("apps/mobile/ios/Daon/Info.plist");
   for (const key of ["NSCameraUsageDescription", "NSMicrophoneUsageDescription", "CFBundleURLTypes", "sinsan-daon"]) {
