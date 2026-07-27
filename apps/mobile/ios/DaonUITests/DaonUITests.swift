@@ -188,6 +188,11 @@ final class DaonUITests: XCTestCase {
     case alertDismissal = "ALERT_DISMISSAL"
     case settingsForeground = "SETTINGS_FOREGROUND"
     case settingsNotificationRow = "SETTINGS_NOTIFICATION_ROW"
+    case settingsNotificationQueryCreated = "SETTINGS_NOTIFICATION_QUERY_CREATED"
+    case settingsNotificationQueryWaitCompleted = "SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED"
+    case settingsNotificationCountSingle = "SETTINGS_NOTIFICATION_COUNT_SINGLE"
+    case settingsNotificationElementReady = "SETTINGS_NOTIFICATION_ELEMENT_READY"
+    case settingsNotificationRowTapPending = "SETTINGS_NOTIFICATION_ROW_TAP_PENDING"
     case settingsSwitchRead = "SETTINGS_SWITCH_READ"
     case settingsSwitchToggle = "SETTINGS_SWITCH_TOGGLE"
     case settingsSwitchVerify = "SETTINGS_SWITCH_VERIFY"
@@ -222,6 +227,7 @@ final class DaonUITests: XCTestCase {
     let query = settings.descendants(matching: .any).matching(
       NSPredicate(format: "(label == %@ OR label == %@) AND isHittable == true", "Notifications", "알림")
     )
+    permissionXCTestStage(.settingsNotificationQueryCreated)
     let appeared = XCTNSPredicateExpectation(
       predicate: NSPredicate { object, _ in
         guard let query = object as? XCUIElementQuery else { return false }
@@ -230,11 +236,15 @@ final class DaonUITests: XCTestCase {
       object: query
     )
     _ = XCTWaiter.wait(for: [appeared], timeout: 10)
+    permissionXCTestStage(.settingsNotificationQueryWaitCompleted)
     guard query.count == 1 else {
       XCTFail("missing or ambiguous exact system element: Notification settings row")
       throw PermissionUIContractError.missingExactElement("Notification settings row")
     }
-    return query.element
+    permissionXCTestStage(.settingsNotificationCountSingle)
+    let element = query.element
+    permissionXCTestStage(.settingsNotificationElementReady)
+    return element
   }
 
   private func approveExpectedNotificationAlert() throws {
@@ -272,6 +282,7 @@ final class DaonUITests: XCTestCase {
     permissionXCTestStage(.settingsNotificationRow)
     let notificationsRow = try requireExactNotificationSettingsRow(in: settings)
     XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
+    permissionXCTestStage(.settingsNotificationRowTapPending)
     notificationsRow.tap()
 
     permissionXCTestStage(.settingsSwitchRead)
