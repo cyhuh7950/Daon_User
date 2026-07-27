@@ -518,6 +518,49 @@ test("Simulator ERR 진단은 allowlist 현재 단계와 숫자 원 Exit만 출�
   assert.match(success.stdout, /continued/);
 });
 
+test("Permission Phase ERR 진단은 함수 내부 실패 서비스만 allowlist 표식으로 추가하고 원 Exit를 보존한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  assert.match(script, /^#!\/usr\/bin\/env bash\r?\nset -Eeuo pipefail\r?\n/);
+
+  const contractStart = script.indexOf('DAON_SIM_STAGE="INITIALIZE"');
+  const trapLine = "trap report_simulator_failure ERR";
+  const contractEnd = script.indexOf(trapLine, contractStart);
+  const contract = contractStart >= 0 && contractEnd > contractStart ? script.slice(contractStart, contractEnd + trapLine.length) : "";
+  assert.ok(contract);
+  assert.match(contract, /DAON_SIM_PERMISSION_SERVICE=""/);
+  assert.match(contract, /camera\|microphone\|notifications\) return 0/);
+  assert.match(contract, /DAON_SIM_FAILED_PERMISSION_SERVICE=%s\\n/);
+  assert.doesNotMatch(contract, /permission_service=.*\$1|eval|printf[^\n]*DAON_SIM_PERMISSION_SERVICE[^\n]*%q/);
+
+  const permissionStart = script.indexOf("run_permission_phase() {");
+  const permissionEnd = script.indexOf('\n}\n\nDAON_SIM_STAGE="APP_ARTIFACT"', permissionStart);
+  const permissionContract = permissionStart >= 0 && permissionEnd > permissionStart ? script.slice(permissionStart, permissionEnd + 2) : "";
+  assert.ok(permissionContract);
+  const orderedServices = [...permissionContract.matchAll(/DAON_SIM_PERMISSION_SERVICE="(camera|microphone|notifications)"/g)].map((match) => match[1]);
+  assert.deepEqual(orderedServices, ["camera", "microphone", "notifications"]);
+  for (const service of orderedServices) {
+    assert.match(permissionContract, new RegExp(`DAON_SIM_PERMISSION_SERVICE="${service}"\\r?\\n\\s*xcrun simctl privacy "\\$\\{SIMULATOR_UDID\\}" "\\$\\{privacy_action\\}" ${service} "\\$\\{BUNDLE_ID\\}"`));
+  }
+  assert.match(permissionContract, /DAON_SIM_PERMISSION_SERVICE=""\r?\n\s*DAON_PERMISSION_EXPECTED=/);
+  assert.doesNotMatch(permissionContract, /simctl privacy[^\n]*(?:\|\| true|retry)|for\s+[^\n]*camera|sleep/);
+
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const permissionFailure = spawnSync(bash, ["-c", `set -Eeuo pipefail\n${contract}\nDAON_SIM_STAGE="PERMISSION_GRANT_INITIAL"\npermission_failure(){\n  DAON_SIM_PERMISSION_SERVICE="microphone"\n  return 23\n}\npermission_failure\nprintf '%s\\n' unexpected`], { encoding: "utf8" });
+  assert.equal(permissionFailure.status, 23, permissionFailure.stderr);
+  assert.equal(permissionFailure.stderr, "DAON_SIM_FAILED_STAGE=PERMISSION_GRANT_INITIAL\nDAON_SIM_FAILED_PERMISSION_SERVICE=microphone\nDAON_SIM_FAILED_EXIT=23\n");
+  assert.doesNotMatch(permissionFailure.stdout, /unexpected/);
+
+  const outsideFailure = spawnSync(bash, ["-c", `set -Eeuo pipefail\n${contract}\nDAON_SIM_STAGE="INSTALL"\nDAON_SIM_PERMISSION_SERVICE=""\nreturn_failure(){ return 23; }\nreturn_failure`], { encoding: "utf8" });
+  assert.equal(outsideFailure.status, 23, outsideFailure.stderr);
+  assert.equal(outsideFailure.stderr, "DAON_SIM_FAILED_STAGE=INSTALL\nDAON_SIM_FAILED_EXIT=23\n");
+  assert.doesNotMatch(outsideFailure.stderr, /DAON_SIM_FAILED_PERMISSION_SERVICE/);
+
+  const unlistedFailure = spawnSync(bash, ["-c", `set -Eeuo pipefail\n${contract}\nDAON_SIM_STAGE="PERMISSION_REVOKE"\nDAON_SIM_PERMISSION_SERVICE="PRIVATE_DIAGNOSTIC"\nreturn_failure(){ return 23; }\nreturn_failure`], { encoding: "utf8" });
+  assert.equal(unlistedFailure.status, 23, unlistedFailure.stderr);
+  assert.equal(unlistedFailure.stderr, "DAON_SIM_FAILED_STAGE=PERMISSION_REVOKE\nDAON_SIM_FAILED_EXIT=23\n");
+  assert.doesNotMatch(unlistedFailure.stderr, /PRIVATE_DIAGNOSTIC|DAON_SIM_FAILED_PERMISSION_SERVICE/);
+});
+
 test("Binary 금지 Pattern은 Source 자기탐지 없이 Runtime에서 기존 Client 내부 API 토큰을 탐지한다", async () => {
   const scriptPath = path.join(iosRoot, "ci/verify-simulator.sh");
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
