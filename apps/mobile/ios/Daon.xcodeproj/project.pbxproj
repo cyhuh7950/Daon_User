@@ -14,6 +14,7 @@
 		A10000000000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* PrivacyInfo.xcprivacy */; };
 		A10000000000000000000007 /* DaonUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* DaonUITests.swift */; };
 		A10000000000000000000008 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* XCTest.framework */; };
+		A10000000000000000000009 /* DaonIOSHostBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* DaonIOSHostBridge.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -34,6 +35,7 @@
 		A2000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Daon/Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000000C /* Pods-Daon.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Daon.debug.xcconfig"; path = "Target Support Files/Pods-Daon/Pods-Daon.debug.xcconfig"; sourceTree = "<group>"; };
 		A2000000000000000000000D /* Pods-Daon.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Daon.release.xcconfig"; path = "Target Support Files/Pods-Daon/Pods-Daon.release.xcconfig"; sourceTree = "<group>"; };
+		A2000000000000000000000E /* DaonIOSHostBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Daon/DaonIOSHostBridge.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -43,7 +45,7 @@
 
 /* Begin PBXGroup section */
 		A50000000000000000000001 = {isa = PBXGroup; children = (A50000000000000000000002 /* Daon */, A50000000000000000000003 /* DaonUITests */, A50000000000000000000004 /* Products */, A50000000000000000000005 /* Frameworks */, A50000000000000000000006 /* Pods */,); sourceTree = "<group>"; };
-		A50000000000000000000002 /* Daon */ = {isa = PBXGroup; children = (A20000000000000000000002, A20000000000000000000003, A2000000000000000000000B, A20000000000000000000005, A20000000000000000000004, A20000000000000000000006,); name = Daon; sourceTree = "<group>"; };
+		A50000000000000000000002 /* Daon */ = {isa = PBXGroup; children = (A20000000000000000000002, A20000000000000000000003, A2000000000000000000000E, A2000000000000000000000B, A20000000000000000000005, A20000000000000000000004, A20000000000000000000006,); name = Daon; sourceTree = "<group>"; };
 		A50000000000000000000003 /* DaonUITests */ = {isa = PBXGroup; children = (A20000000000000000000007,); name = DaonUITests; sourceTree = "<group>"; };
 		A50000000000000000000004 /* Products */ = {isa = PBXGroup; children = (A20000000000000000000009, A2000000000000000000000A,); name = Products; sourceTree = "<group>"; };
 		A50000000000000000000005 /* Frameworks */ = {isa = PBXGroup; children = (A20000000000000000000008, A20000000000000000000001,); name = Frameworks; sourceTree = "<group>"; };
@@ -72,7 +74,7 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A60000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000002, A10000000000000000000003,); runOnlyForDeploymentPostprocessing = 0; };
+		A60000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000002, A10000000000000000000003, A10000000000000000000009 /* DaonIOSHostBridge.m in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
 		A60000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000007,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 

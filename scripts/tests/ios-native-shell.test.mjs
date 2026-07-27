@@ -77,7 +77,8 @@ test("Swift Native Module의 React Bridge Type은 App Target Debug·Release에�
   const bridge = await read("apps/mobile/ios/Daon/Daon-Bridging-Header.h");
   const host = await read("apps/mobile/ios/Daon/DaonIOSHost.swift");
   assert.equal(bridge.trim(), "#import <React/RCTBridgeModule.h>");
-  for (const type of ["RCTBridgeModule", "RCTPromiseResolveBlock", "RCTPromiseRejectBlock"]) {
+  assert.match(bridge, /RCTBridgeModule/);
+  for (const type of ["RCTPromiseResolveBlock", "RCTPromiseRejectBlock"]) {
     assert.match(host, new RegExp(type));
   }
   for (const id of ["AC0000000000000000000001", "AC0000000000000000000002"]) {
@@ -89,7 +90,48 @@ test("Swift Native Module의 React Bridge Type은 App Target Debug·Release에�
   }
   assert.doesNotMatch(project, /HEADER_SEARCH_PATHS|LIBRARY_SEARCH_PATHS/);
   assert.match(host, /@objc\(DaonIOSHost\)/);
-  assert.match(host, /static func moduleName\(\) -> String! \{ "DaonIOSHost" \}/);
+  assert.doesNotMatch(host, /NSObject,\s*RCTBridgeModule|static func moduleName/);
+  assert.match(host, /@objc\s+static func requiresMainQueueSetup\(\) -> Bool/);
+});
+
+test("Swift Native Module 외부 Bridge는 승인 7개 Selector만 App Target에 1:1 Export한다", async () => {
+  const bridge = await read("apps/mobile/ios/Daon/DaonIOSHostBridge.m");
+  const host = await read("apps/mobile/ios/Daon/DaonIOSHost.swift");
+  const project = await read("apps/mobile/ios/Daon.xcodeproj/project.pbxproj");
+  const expectedMethods = [
+    "saveNavigationRoute:(NSString *)route resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+    "restoreNavigationRoute:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+    "getLifecycleState:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+    "consumePendingDeepLink:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+    "checkPermission:(NSString *)kind resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+    "requestPermission:(NSString *)kind resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+    "openApplicationSettings:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject"
+  ];
+  const selector = (signature) => [...signature.matchAll(/([A-Za-z][A-Za-z0-9]*):/g)].map((match) => match[1]).join(":") + ":";
+  const isValid = (bridgeSource, swiftSource, projectSource) => {
+    const externMethods = bridgeSource.split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("RCT_EXTERN_METHOD("))
+      .map((line) => line.slice("RCT_EXTERN_METHOD(".length, -1));
+    const swiftSelectors = [...swiftSource.matchAll(/@objc\(([^)]+:[^)]*)\)/g)].map((match) => match[1]).sort();
+    const appSources = projectSource.match(/A60000000000000000000001 \/\* Sources \*\/ = \{[^\n]*files = \(([^)]*)\)/)?.[1] ?? "";
+    const uiTestSources = projectSource.match(/A60000000000000000000002 \/\* Sources \*\/ = \{[^\n]*files = \(([^)]*)\)/)?.[1] ?? "";
+    return (bridgeSource.match(/RCT_EXTERN_MODULE\(DaonIOSHost, NSObject\)/g) ?? []).length === 1
+      && (bridgeSource.match(/RCT_EXTERN_METHOD\(/g) ?? []).length === 7
+      && expectedMethods.every((method) => externMethods.includes(method))
+      && JSON.stringify(externMethods.map(selector).sort()) === JSON.stringify(swiftSelectors)
+      && (projectSource.match(/DaonIOSHostBridge\.m in Sources \*\/ = \{isa = PBXBuildFile;/g) ?? []).length === 1
+      && (projectSource.match(/DaonIOSHostBridge\.m \*\/ = \{isa = PBXFileReference;/g) ?? []).length === 1
+      && /DaonIOSHostBridge\.m in Sources/.test(appSources)
+      && !/DaonIOSHostBridge\.m in Sources/.test(uiTestSources)
+      && !/Pods[^\n]*DaonIOSHostBridge|DaonIOSHostBridge[^\n]*Pods/.test(projectSource);
+  };
+
+  assert.equal(isValid(bridge, host, project), true);
+  assert.equal(isValid(bridge.replace("consumePendingDeepLink", "consumeDeepLink"), host, project), false);
+  assert.equal(isValid(bridge.replace(" resolver:(RCTPromiseResolveBlock)resolve", ""), host, project), false);
+  assert.equal(isValid(`${bridge}\nRCT_EXTERN_MODULE(DaonIOSHost, NSObject)`, host, project), false);
+  assert.equal(isValid(bridge, host, project.replace(/A1[0-9A-F]+ \/\* DaonIOSHostBridge\.m in Sources \*\//, "")), false);
 });
 
 test("Podfile Autolinking은 호출 CWD와 무관하게 Monorepo Mobile App Root를 사용한다", async () => {

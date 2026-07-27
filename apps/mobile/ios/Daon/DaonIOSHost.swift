@@ -4,7 +4,7 @@ import UIKit
 import UserNotifications
 
 @objc(DaonIOSHost)
-final class DaonIOSHost: NSObject, RCTBridgeModule {
+final class DaonIOSHost: NSObject {
   private static let allowedNativeRoutes: Set<String> = [
     "Home", "WorkspaceList", "WorkspaceDetail", "Inbox", "RunHistory",
     "Notifications", "ModelConnections", "AccountSettings"
@@ -14,7 +14,7 @@ final class DaonIOSHost: NSObject, RCTBridgeModule {
   private static let pendingLock = NSLock()
   private static var pendingDeepLink: String?
 
-  static func moduleName() -> String! { "DaonIOSHost" }
+  @objc
   static func requiresMainQueueSetup() -> Bool { true }
 
   @objc(saveNavigationRoute:resolver:rejecter:)
