@@ -11,7 +11,7 @@ const requiredFiles = [
   "apps/mobile/ios/Podfile", "apps/mobile/ios/Podfile.lock", "apps/mobile/ios/Daon.xcodeproj/project.pbxproj",
   "apps/mobile/ios/Daon/Info.plist", "apps/mobile/ios/Daon/AppDelegate.swift", "apps/mobile/ios/Daon/DaonIOSHost.swift",
   "apps/mobile/ios/DaonUITests/DaonUITests.swift", "apps/mobile/ios/ci/build-simulator.sh",
-  "apps/mobile/ios/ci/verify-simulator.sh", ".github/workflows/release-1-ios-phase-a.yml"
+  "apps/mobile/ios/ci/run-ui-tests-with-diagnostics.sh", "apps/mobile/ios/ci/verify-simulator.sh", ".github/workflows/release-1-ios-phase-a.yml"
 ];
 const requiredSteps = ["checkout", "setup_node", "xcode", "setup_uv", "node_npm", "cocoapods", "npm_ci", "portable_contracts", "pods", "simulator", "build", "ui_tests", "simulator_verification"];
 
