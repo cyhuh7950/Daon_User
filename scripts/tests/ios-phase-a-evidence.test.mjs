@@ -72,7 +72,7 @@ test("iOS Evidence Manifest는 setup_uv 실패·Skip과 uv unknown을 성공으�
   assert.ok(unknown.incomplete_reasons.includes("toolchain:uv:unknown"));
 });
 
-test("iOS Evidence Manifest는 승인 pod 절대경로가 없어 CocoaPods 버전 증거가 비면 성공하지 않는다", async () => {
+test("iOS Evidence Manifest는 CocoaPods 버전 증거가 비면 성공하지 않는다", async () => {
   const manifest = await runFixture({ envOverrides: { IOS_COCOAPODS_VERSION: "" } });
   assert.equal(manifest.status, "INCOMPLETE");
   assert.equal(manifest.verification_completed, false);
