@@ -563,6 +563,68 @@ test("Permission Phase ERR 진단은 함수 내부 실패 서비스만 allowlist
   assert.doesNotMatch(unlistedFailure.stderr, /PRIVATE_DIAGNOSTIC|DAON_SIM_FAILED_PERMISSION_SERVICE/);
 });
 
+test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase·원 Exit만 단일 Annotation한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const helperStart = script.indexOf("is_allowed_permission_failure_code() {");
+  const permissionStart = script.indexOf("run_permission_phase() {", helperStart);
+  const permissionEnd = script.indexOf('\n}\n\nDAON_SIM_STAGE="APP_ARTIFACT"', permissionStart);
+  const contract = helperStart >= 0 && permissionStart > helperStart && permissionEnd > permissionStart
+    ? script.slice(helperStart, permissionEnd + 2)
+    : "";
+  assert.ok(contract);
+  assert.match(contract, /permission-\$\{phase\}\.log/);
+  assert.match(contract, /2>&1\s*\|\s*tee/);
+  assert.match(contract, /PIPESTATUS\[@\]/);
+  assert.match(contract, /::error::CODE=%s PHASE=%s EXIT=%d\\n/);
+  assert.match(contract, /UNKNOWN_XCTEST_FAILURE/);
+  assert.match(contract, /ALERT_TITLE_MISSING/);
+  assert.match(contract, /ALERT_COUNT_MISMATCH/);
+  assert.match(contract, /ALERT_ALLOW_MISSING/);
+  assert.match(contract, /ALERT_DISMISSAL_FAILED/);
+  assert.match(contract, /SETTINGS_FOREGROUND_FAILED/);
+  assert.match(contract, /SETTINGS_NOTIFICATION_ROW_MISSING/);
+  assert.match(contract, /SETTINGS_SWITCH_MISSING/);
+  assert.match(contract, /SETTINGS_SWITCH_VALUE_FAILED/);
+  assert.match(contract, /APP_RETURN_ROOT_FAILED/);
+  assert.match(contract, /PRODUCTION_RESULT_MISSING/);
+  assert.doesNotMatch(contract, /printf[^\n]*(?:raw|log_file|SIMULATOR_UDID|REPOSITORY_ROOT|https?:\/\/)/i);
+
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-permission-annotation-"));
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const fixture = `set -Eeuo pipefail\nSIMULATOR_UDID=11111111-2222-3333-4444-555555555555\nBUNDLE_ID=com.sinsan.daon\nREPOSITORY_ROOT=/repo\nDERIVED_DATA=/derived\nDAON_SIM_PERMISSION_SERVICE=""\nxcrun(){ return 0; }\nxcodebuild(){ printf '%s\\n' "\${XCODE_RAW}"; return "\${XCODE_EXIT}"; }\n${contract}\nrun_permission_phase "\${FIXTURE_PHASE}" grant GRANTED`;
+  const run = (phase, exit, raw) => spawnSync(bash, ["-c", fixture], {
+    cwd: fixtureRoot,
+    env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), FIXTURE_PHASE: phase, XCODE_EXIT: String(exit), XCODE_RAW: raw },
+    encoding: "utf8"
+  });
+  const annotations = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::error::"));
+
+  try {
+    const knownRaw = "XCTAssertEqual failed - expected one Notification system alert /Users/private/result.xcresult";
+    const known = run("grant-initial", 65, knownRaw);
+    assert.equal(known.status, 65, known.stderr);
+    assert.deepEqual(annotations(known.stdout), ["::error::CODE=ALERT_COUNT_MISMATCH PHASE=grant-initial EXIT=65"]);
+    assert.match(known.stdout, /expected one Notification system alert/);
+    assert.equal(await readFile(path.join(fixtureRoot, "permission-grant-initial.log"), "utf8"), `${knownRaw}\n`);
+
+    const unknownRaw = "PRIVATE_USER=/Users/private UDID=SECRET https://internal.invalid/raw failure";
+    const unknown = run("revoke", 65, unknownRaw);
+    assert.equal(unknown.status, 65, unknown.stderr);
+    assert.deepEqual(annotations(unknown.stdout), ["::error::CODE=UNKNOWN_XCTEST_FAILURE PHASE=revoke EXIT=65"]);
+    assert.doesNotMatch(annotations(unknown.stdout)[0], /PRIVATE_USER|Users|UDID|SECRET|https|internal|raw failure/);
+    assert.equal(await readFile(path.join(fixtureRoot, "permission-revoke.log"), "utf8"), `${unknownRaw}\n`);
+
+    const successRaw = "Test Suite 'DaonUITests' passed";
+    const success = run("grant-again", 0, successRaw);
+    assert.equal(success.status, 0, success.stderr);
+    assert.deepEqual(annotations(success.stdout), []);
+    assert.match(success.stdout, /DaonUITests.*passed/);
+    assert.equal(await readFile(path.join(fixtureRoot, "permission-grant-again.log"), "utf8"), `${successRaw}\n`);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("Binary 금지 Pattern은 Source 자기탐지 없이 Runtime에서 기존 Client 내부 API 토큰을 탐지한다", async () => {
   const scriptPath = path.join(iosRoot, "ci/verify-simulator.sh");
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");

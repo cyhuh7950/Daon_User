@@ -112,10 +112,64 @@ wait_for_route_with_evidence() {
   return "${wait_exit}"
 }
 
+is_allowed_permission_failure_code() {
+  case "$1" in
+    ALERT_TITLE_MISSING|ALERT_COUNT_MISMATCH|ALERT_ALLOW_MISSING|ALERT_DISMISSAL_FAILED|SETTINGS_FOREGROUND_FAILED|SETTINGS_NOTIFICATION_ROW_MISSING|SETTINGS_SWITCH_MISSING|SETTINGS_SWITCH_VALUE_FAILED|APP_RETURN_ROOT_FAILED|PRODUCTION_RESULT_MISSING|UNKNOWN_XCTEST_FAILURE) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+permission_failure_code_from_log() {
+  local log_file="$1"
+  local code="UNKNOWN_XCTEST_FAILURE"
+  if grep -Fq 'missing or ambiguous exact system element: Daon Notification alert title' "${log_file}"; then
+    code="ALERT_TITLE_MISSING"
+  elif grep -Fq 'expected one Notification system alert' "${log_file}"; then
+    code="ALERT_COUNT_MISMATCH"
+  elif grep -Fq 'missing or ambiguous exact system element: Notification Allow button' "${log_file}" || grep -Fq 'Notification Allow button is not hittable' "${log_file}"; then
+    code="ALERT_ALLOW_MISSING"
+  elif grep -Fq 'Notification alert did not close after Allow' "${log_file}"; then
+    code="ALERT_DISMISSAL_FAILED"
+  elif grep -Fq 'Settings app is not runningForeground' "${log_file}"; then
+    code="SETTINGS_FOREGROUND_FAILED"
+  elif grep -Fq 'missing or ambiguous exact system element: Notification settings row' "${log_file}" || grep -Fq 'Notification settings row is not hittable' "${log_file}"; then
+    code="SETTINGS_NOTIFICATION_ROW_MISSING"
+  elif grep -Fq 'missing or ambiguous exact system element: Allow Notifications switch' "${log_file}" || grep -Fq 'Allow Notifications switch is not hittable' "${log_file}"; then
+    code="SETTINGS_SWITCH_MISSING"
+  elif grep -Fq 'Allow Notifications switch has no supported value' "${log_file}" || grep -Fq 'Allow Notifications switch returned an unsupported value' "${log_file}" || grep -Fq 'Allow Notifications switch value did not update' "${log_file}" || grep -Fq 'Allow Notifications switch did not reach the required phase state' "${log_file}"; then
+    code="SETTINGS_SWITCH_VALUE_FAILED"
+  elif grep -Fq 'Daon process is not runningForeground' "${log_file}" || grep -Fq 'Daon iOS root shell is unavailable' "${log_file}" || grep -Fq 'Daon process left runningForeground before scenario interaction' "${log_file}"; then
+    code="APP_RETURN_ROOT_FAILED"
+  elif grep -Fq 'Production requestPermission result missing:' "${log_file}"; then
+    code="PRODUCTION_RESULT_MISSING"
+  fi
+  printf '%s' "${code}"
+}
+
+report_permission_xctest_failure() {
+  local log_file="$1"
+  local phase="$2"
+  local original_exit="$3"
+  local code
+  case "${phase}" in
+    grant-initial|revoke|grant-again) ;;
+    *) return 64 ;;
+  esac
+  code="$(permission_failure_code_from_log "${log_file}")"
+  if ! is_allowed_permission_failure_code "${code}"; then
+    code="UNKNOWN_XCTEST_FAILURE"
+  fi
+  printf '::error::CODE=%s PHASE=%s EXIT=%d\n' "${code}" "${phase}" "${original_exit}"
+}
+
 run_permission_phase() {
   local phase="$1"
   local privacy_action="$2"
   local expected="$3"
+  local permission_log="${EVIDENCE_DIR}/permission-${phase}.log"
+  local -a permission_pipeline_status
+  local xcode_exit
+  local tee_exit
   case "${phase}" in
     grant-initial|revoke|grant-again) ;;
     *) return 64 ;;
@@ -135,7 +189,18 @@ run_permission_phase() {
     -derivedDataPath "${DERIVED_DATA}" \
     -only-testing:DaonUITests/DaonUITests/testPermissionRequestReflectsOSDecision \
     -resultBundlePath "${EVIDENCE_DIR}/permission-${phase}.xcresult" \
-    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee "${permission_log}" \
+    && permission_pipeline_status=("${PIPESTATUS[@]}") \
+    || permission_pipeline_status=("${PIPESTATUS[@]}")
+  xcode_exit="${permission_pipeline_status[0]}"
+  tee_exit="${permission_pipeline_status[1]}"
+  if [[ "${xcode_exit}" -ne 0 ]]; then
+    report_permission_xctest_failure "${permission_log}" "${phase}" "${xcode_exit}" || true
+    return "${xcode_exit}"
+  fi
+  if [[ "${tee_exit}" -ne 0 ]]; then
+    return "${tee_exit}"
+  fi
 }
 
 DAON_SIM_STAGE="APP_ARTIFACT"
