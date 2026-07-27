@@ -12,6 +12,7 @@ type DaonIOSHostNativeModule = {
   requestPermission(kind: IOSPermissionKind): Promise<IOSPermissionState>;
   checkPermission(kind: IOSPermissionKind): Promise<IOSPermissionState>;
   openApplicationSettings(): Promise<boolean>;
+  openNotificationSettings(): Promise<boolean>;
 };
 
 const nativeHost = NativeModules.DaonIOSHost as DaonIOSHostNativeModule | undefined;
@@ -38,6 +39,10 @@ export async function openIOSApplicationSettings(): Promise<void> {
   await nativeHost?.openApplicationSettings();
 }
 
+export async function openIOSNotificationSettings(): Promise<void> {
+  await nativeHost?.openNotificationSettings();
+}
+
 export function subscribeIOSDeepLinks(onRoute: (route: string) => void): () => void {
   const accept = (value: string | null) => {
     const route = parseApprovedNativeDeepLink(value);
@@ -57,5 +62,6 @@ export function subscribeIOSLifecycle(onState: (state: AppStateStatus) => void):
 export const iosPermissionAdapter = {
   requestPermission: requestIOSPermission,
   checkPermission: checkIOSPermission,
-  openApplicationSettings: openIOSApplicationSettings
+  openApplicationSettings: openIOSApplicationSettings,
+  openNotificationSettings: openIOSNotificationSettings
 };

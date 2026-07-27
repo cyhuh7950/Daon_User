@@ -94,7 +94,7 @@ test("Swift Native Module의 React Bridge Type은 App Target Debug·Release에�
   assert.match(host, /@objc\s+static func requiresMainQueueSetup\(\) -> Bool/);
 });
 
-test("Swift Native Module 외부 Bridge는 승인 7개 Selector만 App Target에 1:1 Export한다", async () => {
+test("Swift Native Module 외부 Bridge는 승인 8개 Selector만 App Target에 1:1 Export한다", async () => {
   const bridge = await read("apps/mobile/ios/Daon/DaonIOSHostBridge.m");
   const host = await read("apps/mobile/ios/Daon/DaonIOSHost.swift");
   const project = await read("apps/mobile/ios/Daon.xcodeproj/project.pbxproj");
@@ -105,7 +105,8 @@ test("Swift Native Module 외부 Bridge는 승인 7개 Selector만 App Target에
     "consumePendingDeepLink:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
     "checkPermission:(NSString *)kind resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
     "requestPermission:(NSString *)kind resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
-    "openApplicationSettings:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject"
+    "openApplicationSettings:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject",
+    "openNotificationSettings:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject"
   ];
   const selector = (signature) => [...signature.matchAll(/([A-Za-z][A-Za-z0-9]*):/g)].map((match) => match[1]).join(":") + ":";
   const isValid = (bridgeSource, swiftSource, projectSource) => {
@@ -117,7 +118,7 @@ test("Swift Native Module 외부 Bridge는 승인 7개 Selector만 App Target에
     const appSources = projectSource.match(/A60000000000000000000001 \/\* Sources \*\/ = \{[^\n]*files = \(([^)]*)\)/)?.[1] ?? "";
     const uiTestSources = projectSource.match(/A60000000000000000000002 \/\* Sources \*\/ = \{[^\n]*files = \(([^)]*)\)/)?.[1] ?? "";
     return (bridgeSource.match(/RCT_EXTERN_MODULE\(DaonIOSHost, NSObject\)/g) ?? []).length === 1
-      && (bridgeSource.match(/RCT_EXTERN_METHOD\(/g) ?? []).length === 7
+      && (bridgeSource.match(/RCT_EXTERN_METHOD\(/g) ?? []).length === 8
       && expectedMethods.every((method) => externMethods.includes(method))
       && JSON.stringify(externMethods.map(selector).sort()) === JSON.stringify(swiftSelectors)
       && (projectSource.match(/DaonIOSHostBridge\.m in Sources \*\/ = \{isa = PBXBuildFile;/g) ?? []).length === 1
@@ -177,6 +178,38 @@ test("iOS Host Adapter는 Route·Lifecycle·Deep Link·권한·Settings 경계�
     assert.match(host, new RegExp(token));
   }
   assert.doesNotMatch(`${nativeHost}\n${appDelegate}\n${host}`, /fetch\s*\(|https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
+});
+
+test("iOS 알림 설정 진입은 공개 URL과 iOS 15.1 generic fallback을 사용한다", async () => {
+  const nativeHost = await read("apps/mobile/ios/Daon/DaonIOSHost.swift");
+  const bridge = await read("apps/mobile/ios/Daon/DaonIOSHostBridge.m");
+  const host = await read("apps/mobile/src/platform/ios-host.ts");
+  assert.match(bridge, /RCT_EXTERN_METHOD\(openNotificationSettings:\(RCTPromiseResolveBlock\)resolve rejecter:\(RCTPromiseRejectBlock\)reject\)/);
+  assert.match(nativeHost, /@objc\(openNotificationSettings:rejecter:\)/);
+  const methodStart = nativeHost.indexOf("@objc(openNotificationSettings:rejecter:)");
+  const methodEnd = nativeHost.indexOf("static func recordLifecycleState", methodStart);
+  const method = methodStart >= 0 && methodEnd > methodStart ? nativeHost.slice(methodStart, methodEnd) : "";
+  assert.ok(method);
+  assert.match(method, /if #available\(iOS 16\.0, \*\)/);
+  assert.match(method, /UIApplication\.openNotificationSettingsURLString/);
+  assert.match(method, /UIApplication\.openSettingsURLString/);
+  assert.match(method, /IOS_NOTIFICATION_SETTINGS_URL_UNAVAILABLE/);
+  assert.match(method, /UIApplication\.shared\.open\(url, options: \[:\]\) \{ resolve\(\$0\) \}/);
+  assert.doesNotMatch(method, /App-Prefs|prefs:|TCC|simctl|defaults\s+(?:write|delete)/i);
+  assert.match(host, /openNotificationSettings\(\): Promise<boolean>/);
+  assert.match(host, /export async function openIOSNotificationSettings\(\): Promise<void>/);
+  assert.match(host, /await nativeHost\?\.openNotificationSettings\(\)/);
+  assert.match(host, /openNotificationSettings: openIOSNotificationSettings/);
+});
+
+test("Mobile Shell은 선택적 알림 설정 버튼과 기존 generic 설정 버튼을 함께 보존한다", async () => {
+  const shell = await read("apps/mobile/src/MobileShell.tsx");
+  assert.match(shell, /openNotificationSettings\?\(\): Promise<void>/);
+  assert.match(shell, /permissionAdapter\.openNotificationSettings \? <Pressable accessibilityLabel="알림 설정 열기"/);
+  assert.match(shell, /void permissionAdapter\.openNotificationSettings\?\.\(\)/);
+  assert.match(shell, />알림 설정<\/Text>/);
+  assert.match(shell, /accessibilityLabel="앱 권한 설정 열기"[\s\S]*?permissionAdapter\.openApplicationSettings\(\)[\s\S]*?>앱 권한 설정<\/Text>/);
+  assert.equal((shell.match(/\["camera", "microphone", "notification"\]/g) ?? []).length, 1);
 });
 
 test("iOS Restore Adapter는 Native 문자열을 보존하고 null·undefined를 null로 정규화한다", async () => {
@@ -1131,10 +1164,19 @@ test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Se
   const alertCountIndex = alertHelper.indexOf("XCTAssertEqual(springboard.alerts.count, 1");
   const allowButtonIndex = alertHelper.indexOf("let allowButton = try requireExactElement([");
   assert.ok(titleWaitIndex >= 0 && titleWaitIndex < alertCountIndex && alertCountIndex < allowButtonIndex, "expected title wait must complete before alert count and Allow lookup");
-  assert.match(permissionBody, /app\.buttons\["앱 권한 설정 열기"\]/);
+  assert.match(permissionBody, /app\.buttons\["알림 설정 열기"\]/);
   assert.match(permissionBody, /XCUIApplication\(bundleIdentifier: "com\.apple\.Preferences"\)/);
   assert.match(permissionBody, /"Allow Notifications"/);
   assert.match(permissionBody, /"알림 허용"/);
+  const settingsHelperStart = permissionBody.indexOf("private func setNotificationAuthorization");
+  const settingsHelperEnd = permissionBody.indexOf("private func notificationSwitchIsEnabled", settingsHelperStart);
+  const settingsHelper = settingsHelperStart >= 0 && settingsHelperEnd > settingsHelperStart ? permissionBody.slice(settingsHelperStart, settingsHelperEnd) : "";
+  assert.ok(settingsHelper);
+  const directSwitch = settingsHelper.indexOf("findExactNotificationSwitch(in: settings)");
+  const fallbackRow = settingsHelper.indexOf("requireExactNotificationSettingsRow(in: settings)");
+  assert.ok(directSwitch >= 0 && fallbackRow > directSwitch, "notification switch must be queried before the iOS 15.1 row fallback");
+  assert.match(settingsHelper, /if let directSwitch = try findExactNotificationSwitch\(in: settings\)[\s\S]*?allowNotifications = directSwitch[\s\S]*?else[\s\S]*?requireExactNotificationSettingsRow/);
+  assert.doesNotMatch(settingsHelper, /settings\.wait\(for: \.runningForeground[^\n]*\)\s*permissionXCTestStage\(\.appReturnRoot\)/);
   assert.match(permissionBody, /notificationSwitchIsEnabled/);
   assert.match(permissionBody, /app\.activate\(\)[\s\S]*requireRootReady\(app\)/);
   assert.match(permissionBody, /권한 결과/);
