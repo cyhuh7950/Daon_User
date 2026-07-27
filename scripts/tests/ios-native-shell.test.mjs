@@ -876,6 +876,28 @@ test("macOS Workflow는 CocoaPods Gem 이름과 pod 실행 파일을 RubyGems �
   }
 });
 
+test("Settings Notifications 행은 exact Label의 staticText·cell 표현을 단일 행으로 취급한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const helperStart = uiTests.indexOf("private func requireExactNotificationSettingsRow");
+  const helperEnd = uiTests.indexOf("private func approveExpectedNotificationAlert", helperStart);
+  const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
+  assert.ok(helper, "Notifications exact Label row helper is required");
+  assert.match(helper, /let exactLabels = \["Notifications", "알림"\]/);
+  assert.match(helper, /settings\.staticTexts\[label\]/);
+  assert.match(helper, /settings\.cells\[label\]/);
+  assert.match(helper, /if staticTextExists \|\| cellExists/);
+  assert.match(helper, /matches\.append\(cellExists \? cell : staticText\)/);
+  assert.match(helper, /matches\.count == 1/);
+  assert.doesNotMatch(helper, /descendants|containing|matching\(|firstMatch|element\(boundBy:|coordinate\(|CONTAINS|BEGINSWITH|ENDSWITH/i);
+
+  const settingsStart = uiTests.indexOf("private func setNotificationAuthorization");
+  const settingsEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", settingsStart);
+  const settingsHelper = settingsStart >= 0 && settingsEnd > settingsStart ? uiTests.slice(settingsStart, settingsEnd) : "";
+  assert.ok(settingsHelper);
+  assert.match(settingsHelper, /let notificationsRow = try requireExactNotificationSettingsRow\(in: settings\)/);
+  assert.doesNotMatch(settingsHelper, /settings\.cells\["(?:Notifications|알림)"\]/);
+});
+
 test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Settings OFF·ON을 직접 검증한다", async () => {
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
