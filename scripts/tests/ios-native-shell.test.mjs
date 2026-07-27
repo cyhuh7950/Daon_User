@@ -263,7 +263,8 @@ test("GitHub macOS Workflow는 exact Pin·Simulator 검증·실패 Artifact 계�
   assert.match(simulatorPreparation, /simctl[\s\S]*create/);
   assert.match(simulatorPreparation, /simctl[\s\S]*boot/);
   const simulatorVerification = await read("apps/mobile/ios/ci/verify-simulator.sh");
-  for (const action of ["install", "launch", "openurl", "terminate"]) assert.match(simulatorVerification, new RegExp(`simctl ${action}`));
+  for (const action of ["install", "launch", "terminate"]) assert.match(simulatorVerification, new RegExp(`simctl ${action}`));
+  assert.doesNotMatch(simulatorVerification, /simctl openurl/);
   assert.doesNotMatch(serialized, /macos-latest|xcode-select.*latest|continue-on-error/);
 });
 
@@ -328,7 +329,7 @@ test("UI Test는 각 Scenario 전에 접근성 Root와 runningForeground를 Fail
   assert.match(uiTests, /private func launchAndRequireRootReady/);
   assert.match(uiTests, /Daon ios 공용 Shell/);
   assert.match(uiTests, /wait\(for: \.runningForeground/);
-  assert.equal((uiTests.match(/launchAndRequireRootReady\(app\)/g) ?? []).length, 5);
+  assert.equal((uiTests.match(/launchAndRequireRootReady\(app\)/g) ?? []).length, 6);
   assert.match(uiTests, /continueAfterFailure\s*=\s*false/);
   assert.doesNotMatch(uiTests, /XCTSkip|continueAfterFailure\s*=\s*true/);
 });
@@ -346,13 +347,47 @@ test("UI Test는 두 Scroll Host의 고정 Identifier Query와 기존 Swipe 의�
   assert.doesNotMatch(uiTests, /coordinate\(|firstMatch|sleep\(|Thread\.sleep/);
 });
 
+test("UI Test는 Apple System Open으로 Warm 7종과 비정상 5종을 단일 Session의 foreground·화면에서 검증한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const runner = await read("apps/mobile/ios/ci/run-ui-tests-with-diagnostics.sh");
+  const warmRoutes = ["WorkspaceList", "WorkspaceDetail", "Inbox", "RunHistory", "Notifications", "ModelConnections", "AccountSettings"];
+  const rejectedLinks = [
+    "sinsan-daon://app/UnknownRoute",
+    "sinsan-daon://app/%48ome",
+    "sinsan-daon://app/Home%2Fextra",
+    "sinsan-daon://app/Home?route=Inbox",
+    "sinsan-daon://app/Home#Inbox"
+  ];
+  const testStart = uiTests.indexOf("func testSystemOpenDeepLinksPreserveForegroundAndRoute() {");
+  const testEnd = uiTests.indexOf("func testPermissionControlsAndSettingsBoundary() {", testStart);
+  const testBody = testStart >= 0 && testEnd > testStart ? uiTests.slice(testStart, testEnd) : "";
+  assert.ok(testBody);
+  assert.match(testBody, /guard #available\(iOS 26\.0, \*\) else[\s\S]*?XCTFail/);
+  assert.equal((testBody.match(/launchAndRequireRootReady\(app\)/g) ?? []).length, 1);
+  assert.equal((testBody.match(/XCUIDevice\.shared\.system\.open\(url\)/g) ?? []).length, 2);
+  assert.equal((testBody.match(/requireRootReady\(app\)/g) ?? []).length, 2);
+  assert.equal((testBody.match(/"sinsan-daon:\/\/app\//g) ?? []).length, 12);
+  assert.match(testBody, /app\.staticTexts\[route\]\.waitForExistence/);
+  assert.match(testBody, /app\.staticTexts\["AccountSettings"\]\.waitForExistence/);
+  assert.doesNotMatch(testBody, /app\.launch\(\)[\s\S]*app\.launch\(\)|XCTSkip|launchArguments|launchEnvironment/);
+  assert.match(testBody, /URL\(string: rawURL\)/);
+  for (const route of warmRoutes) {
+    assert.equal((testBody.match(new RegExp(`"${route}"`, "g")) ?? []).length >= 1, true, `missing warm route ${route}`);
+    assert.ok(testBody.includes(`"sinsan-daon://app/${route}"`), `missing exact warm URL ${route}`);
+  }
+  for (const link of rejectedLinks) assert.match(testBody, new RegExp(link.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(runner, /only-testing:DaonUITests\/DaonUITests\/testSystemOpenDeepLinksPreserveForegroundAndRoute/);
+});
+
 test("CI Script는 8 Route·비정상 Deep Link·Lifecycle·권한·Crash/Secret·종료를 Fail-close 검증한다", async () => {
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const combined = `${script}\n${uiTests}`;
   for (const route of ["Home", "WorkspaceList", "WorkspaceDetail", "Inbox", "RunHistory", "Notifications", "ModelConnections", "AccountSettings"]) {
-    assert.match(script, new RegExp(route));
+    assert.match(combined, new RegExp(route));
   }
   for (const token of ["UnknownRoute", "%48ome", "Home%2Fextra", "Home?route=Inbox", "Home#Inbox", "terminate", "launch", "Crash", "secret", "SIMULATOR_VERIFIED_PENDING_SIGNING_DEVICE"]) {
-    assert.match(script, new RegExp(token.replaceAll("?", "\\?").replaceAll(".", "\\."), "i"));
+    assert.match(combined, new RegExp(token.replaceAll("?", "\\?").replaceAll(".", "\\."), "i"));
   }
   for (const permission of ["camera", "microphone", "notifications"]) {
     assert.match(script, new RegExp(`privacy[^\\n]*${permission}`, "i"));
@@ -362,7 +397,7 @@ test("CI Script는 8 Route·비정상 Deep Link·Lifecycle·권한·Crash/Secret
   assert.match(script, /run_permission_phase grant-again grant GRANTED/);
 });
 
-test("Simulator 검증은 Route Key만 초기화하고 Home 준비 뒤 Warm Deep Link 7종을 검증한다", async () => {
+test("Simulator 검증은 Route Key만 초기화하고 Home 준비·복원을 검증하며 URL 발송을 XCUITest에 위임한다", async () => {
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
   assert.match(script, /clear_navigation_route\(\)[\s\S]*?get_app_container[\s\S]*?plutil -remove native_route_key "\$\{container\}\/Library\/Preferences\/\$\{BUNDLE_ID\}\.plist"/);
   assert.doesNotMatch(script, /plutil -remove (?!native_route_key)|defaults delete|erase|uninstall|rm\s/);
@@ -370,10 +405,9 @@ test("Simulator 검증은 Route Key만 초기화하고 Home 준비 뒤 Warm Deep
   const clearIndex = script.indexOf("clear_navigation_route", installIndex);
   const launchIndex = script.indexOf('simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}"', clearIndex);
   const homeReadyIndex = script.indexOf("wait_for_route_with_evidence Home", launchIndex);
-  const warmRoutesIndex = script.indexOf("warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)", homeReadyIndex);
-  const warmOpenURLIndex = script.indexOf('simctl openurl "${SIMULATOR_UDID}" "sinsan-daon://app/${route}"', warmRoutesIndex);
-  assert.ok(installIndex >= 0 && installIndex < clearIndex && clearIndex < launchIndex && launchIndex < homeReadyIndex && homeReadyIndex < warmRoutesIndex && warmRoutesIndex < warmOpenURLIndex);
-  assert.doesNotMatch(script, /simctl openurl[^\n]*sinsan-daon:\/\/app\/Home(?:"|\s|$)/);
+  assert.ok(installIndex >= 0 && installIndex < clearIndex && clearIndex < launchIndex && launchIndex < homeReadyIndex);
+  assert.doesNotMatch(script, /simctl openurl|warm_routes=|rejected_links=/);
+  assert.equal((script.match(/wait_for_route_with_evidence Home/g) ?? []).length, 2);
   assert.equal((script.match(/for _ in \{1\.\.20\}/g) ?? []).length, 1);
 });
 
@@ -407,14 +441,14 @@ test("모든 Route Wait 실패는 승인 Route 기반 Daon Log를 보존하고 �
   assert.match(contract, /DAON_PENDING_DEEP_LINK_RECEIVED\|DAON_ROUTE_SAVED=/);
   assert.match(contract, /DAON_LIFECYCLE_STATE=/);
   assert.doesNotMatch(contract, /cat "\$\{evidence_file\}"|grep -Ev|echo[^\n]*\$\{actual\}/);
-  assert.equal((script.match(/wait_for_route_with_evidence Home/g) ?? []).length, 1);
-  assert.equal((script.match(/wait_for_route_with_evidence "\$\{route\}"/g) ?? []).length, 1);
-  assert.equal((script.match(/wait_for_route_with_evidence AccountSettings/g) ?? []).length, 1);
+  assert.equal((script.match(/wait_for_route_with_evidence Home/g) ?? []).length, 2);
+  assert.equal((script.match(/wait_for_route_with_evidence "\$\{route\}"/g) ?? []).length, 0);
+  assert.equal((script.match(/wait_for_route_with_evidence AccountSettings/g) ?? []).length, 0);
   assert.equal((script.match(/^[ \t]*wait_for_route(?: |$)/gm) ?? []).length, 1);
 
   const failureLogIndex = script.indexOf('route-wait-failure-${expected}.log');
-  const warmRoutesIndex = script.indexOf("warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)");
-  assert.ok(failureLogIndex >= 0 && failureLogIndex < warmRoutesIndex);
+  const firstHomeIndex = script.indexOf("wait_for_route_with_evidence Home");
+  assert.ok(failureLogIndex >= 0 && failureLogIndex < firstHomeIndex);
   assert.equal((script.match(/--predicate 'process == "Daon"'/g) ?? []).length, 2);
 
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-ios-route-failure-"));
