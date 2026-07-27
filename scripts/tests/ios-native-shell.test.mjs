@@ -244,42 +244,37 @@ test("macOS Workflow는 승인 CocoaPods를 Runner 전역과 분리한 Gem Home�
   assert.match(install, /export GEM_HOME="\$\{POD_GEM_HOME\}"/);
   assert.match(install, /export GEM_PATH="\$\{POD_GEM_HOME\}:\$\{DEFAULT_GEM_PATH\}"/);
   assert.match(install, /GITHUB_ENV/);
-  assert.match(pods, /test "\$\(ruby "\$\{DAON_POD_SCRIPT\}" --version\)" = "1\.16\.2"/);
+  assert.match(pods, /test "\$\(gem exec -v 1\.16\.2 -- pod --version\)" = "1\.16\.2"/);
   assert.doesNotMatch(install, /gem uninstall|sudo|rm\s+-[rf]/);
-  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\(ruby "\$\{DAON_POD_SCRIPT\}" --version 2>\/dev\/null \|\| true\)"/);
+  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\(gem exec -v 1\.16\.2 -- pod --version 2>\/dev\/null \|\| true\)"/);
 });
 
-test("macOS Workflow는 승인 CocoaPods Gem 본체 Script를 ruby로 직접 호출하고 다른 버전을 거부한다", async () => {
+test("macOS Workflow는 승인 CocoaPods를 RubyGems 버전 지정 실행으로 결속하고 다른 버전을 거부한다", async () => {
   const workflow = await readJson(".github/workflows/release-1-ios-phase-a.yml");
   const steps = workflow.jobs["ios-phase-a"].steps;
   const install = steps.find((step) => step.id === "cocoapods")?.run ?? "";
   const pods = steps.find((step) => step.id === "pods")?.run ?? "";
   const manifest = steps.find((step) => step.id === "manifest")?.run ?? "";
 
-  assert.match(install, /export DAON_POD_SCRIPT="\$\{POD_GEM_HOME\}\/gems\/cocoapods-1\.16\.2\/bin\/pod"/);
-  assert.match(install, /test -f "\$\{DAON_POD_SCRIPT\}"/);
-  assert.match(install, /DAON_POD_SCRIPT=%s[^\n]*GITHUB_ENV/);
   const versionContract = install.split("\n").filter((line) => /^DAON_POD_VERSION=/.test(line) || /^printf 'CocoaPods version:/.test(line) || /^test "\$\{DAON_POD_VERSION\}"/.test(line));
   assert.equal(versionContract.length, 3);
-  assert.match(versionContract[0], /ruby "\$\{DAON_POD_SCRIPT\}" --version/);
+  assert.match(versionContract[0], /gem exec -v 1\.16\.2 -- pod --version/);
   const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
-  const contract = `set -euo pipefail\nDAON_POD_SCRIPT=/fixture/pod\nruby() { printf '%s\\n' "\${POD_VERSION_OUTPUT}"; }\n${versionContract.join("\n")}`;
+  const contract = `set -euo pipefail\ngem() {\n  test "\$1" = exec\n  test "\$2" = -v\n  test "\$3" = 1.16.2\n  test "\$4" = --\n  test "\$5" = pod\n  test "\$6" = --version\n  printf '%s\\n' "\${POD_VERSION_OUTPUT}"\n}\n${versionContract.join("\n")}`;
   const run = (version) => spawnSync(bash, ["-c", contract], { env: { ...process.env, POD_VERSION_OUTPUT: version }, encoding: "utf8" });
   const approved = run("1.16.2");
   assert.equal(approved.status, 0, approved.stderr);
   assert.match(approved.stdout, /CocoaPods version: 1\.16\.2/);
   assert.notEqual(run("1.17.0").status, 0);
 
-  assert.match(pods, /DAON_POD_SCRIPT:\?/);
-  assert.match(pods, /test -f "\$\{DAON_POD_SCRIPT\}"/);
-  assert.match(pods, /test "\$\(ruby "\$\{DAON_POD_SCRIPT\}" --version\)" = "1\.16\.2"/);
-  assert.equal((pods.match(/ruby "\$\{DAON_POD_SCRIPT\}" install/g) ?? []).length, 2);
+  assert.match(pods, /test "\$\(gem exec -v 1\.16\.2 -- pod --version\)" = "1\.16\.2"/);
+  assert.equal((pods.match(/gem exec -v 1\.16\.2 -- pod install/g) ?? []).length, 2);
 
-  assert.match(manifest, /IOS_COCOAPODS_VERSION=""/);
-  assert.match(manifest, /\[ -n "\$\{DAON_POD_SCRIPT:-\}" \] && \[ -f "\$\{DAON_POD_SCRIPT\}" \]/);
-  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\(ruby "\$\{DAON_POD_SCRIPT\}" --version 2>\/dev\/null \|\| true\)"/);
+  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\(gem exec -v 1\.16\.2 -- pod --version 2>\/dev\/null \|\| true\)"/);
+  assert.equal((install.match(/gem exec -v 1\.16\.2 -- pod --version/g) ?? []).length, 1);
+  assert.equal((manifest.match(/gem exec -v 1\.16\.2 -- pod --version/g) ?? []).length, 1);
   for (const source of [install, pods, manifest]) {
-    assert.doesNotMatch(source, /(^|\n)pod(?:\s|$)|\$\(pod\s|DAON_POD_BIN|"\$\{POD_GEM_BIN\}\/pod"/);
+    assert.doesNotMatch(source, /(^|\n)pod(?:\s|$)|\$\(pod\s|DAON_POD_(?:BIN|SCRIPT)|"\$\{POD_GEM_BIN\}\/pod"|ruby[^\n]*cocoapods[^\n]*\/bin\/pod/);
   }
 });
 
