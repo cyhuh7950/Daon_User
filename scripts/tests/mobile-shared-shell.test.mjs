@@ -119,6 +119,14 @@ test("공용 Shell Source는 RN 기본 Component·접근성·44px·선택·비�
   assert.doesNotMatch(source, /from\s+["'](?:@daon-user\/ui|react-dom|next\/)/);
 });
 
+test("공용 Shell의 두 ScrollView는 의미 Label과 같은 iOS 자동화 testID를 고정한다", async () => {
+  const source = await readFile(path.join(mobileRoot, "src/MobileShell.tsx"), "utf8");
+  assert.match(source, /<ScrollView horizontal accessibilityLabel="공용 Navigation" testID="공용 Navigation" contentContainerStyle=\{styles\.navigation\}>/);
+  assert.match(source, /<ScrollView accessibilityLabel="화면 내용" testID="화면 내용" contentContainerStyle=\{styles\.content\}>/);
+  assert.equal((source.match(/testID="공용 Navigation"/g) ?? []).length, 1);
+  assert.equal((source.match(/testID="화면 내용"/g) ?? []).length, 1);
+});
+
 test("Mobile Workspace 표준 다섯 명령은 Root 검증을 Shell 비종속으로 호출하고 Gate가 직접 실행한다", async () => {
   const mobilePackage = await readJson("apps/mobile/package.json");
   const policy = await readJson("quality-gate-policy.json");

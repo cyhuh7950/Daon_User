@@ -306,6 +306,16 @@ test("UI Test는 각 Scenario 전에 접근성 Root와 runningForeground를 Fail
   assert.doesNotMatch(uiTests, /XCTSkip|continueAfterFailure\s*=\s*true/);
 });
 
+test("UI Test는 두 ScrollView의 고정 Identifier Query와 기존 Swipe 의미를 유지한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  assert.match(uiTests, /app\.scrollViews\["공용 Navigation"\]/);
+  assert.equal((uiTests.match(/app\.scrollViews\["화면 내용"\]/g) ?? []).length, 2);
+  assert.equal((uiTests.match(/0\.\.<8 where !/g) ?? []).length, 3);
+  assert.match(uiTests, /navigation\.swipeLeft\(\)/);
+  assert.equal((uiTests.match(/content\.swipeUp\(\)/g) ?? []).length, 2);
+  assert.doesNotMatch(uiTests, /coordinate\(|firstMatch|sleep\(|Thread\.sleep/);
+});
+
 test("CI Script는 8 Route·비정상 Deep Link·Lifecycle·권한·Crash/Secret·종료를 Fail-close 검증한다", async () => {
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
   for (const route of ["Home", "WorkspaceList", "WorkspaceDetail", "Inbox", "RunHistory", "Notifications", "ModelConnections", "AccountSettings"]) {
