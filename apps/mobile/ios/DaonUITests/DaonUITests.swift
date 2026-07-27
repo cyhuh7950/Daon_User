@@ -218,6 +218,27 @@ final class DaonUITests: XCTestCase {
     return match
   }
 
+  private func requireExactNotificationSettingsRow(in settings: XCUIApplication) throws -> XCUIElement {
+    let exactLabels = ["Notifications", "알림"]
+    var matches: [XCUIElement] = []
+    var usedLongWait = false
+    for label in exactLabels {
+      let staticText = settings.staticTexts[label]
+      let cell = settings.cells[label]
+      let staticTextExists = staticText.waitForExistence(timeout: usedLongWait ? 0.25 : 10)
+      usedLongWait = true
+      let cellExists = cell.waitForExistence(timeout: 0.25)
+      if staticTextExists || cellExists {
+        matches.append(cellExists ? cell : staticText)
+      }
+    }
+    guard matches.count == 1, let match = matches.popLast() else {
+      XCTFail("missing or ambiguous exact system element: Notification settings row")
+      throw PermissionUIContractError.missingExactElement("Notification settings row")
+    }
+    return match
+  }
+
   private func approveExpectedNotificationAlert() throws {
     let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
     permissionXCTestStage(.alertTitle)
@@ -251,10 +272,7 @@ final class DaonUITests: XCTestCase {
     permissionXCTestStage(.settingsForeground)
     XCTAssertTrue(settings.wait(for: .runningForeground, timeout: 10), "Settings app is not runningForeground")
     permissionXCTestStage(.settingsNotificationRow)
-    let notificationsRow = try requireExactElement([
-      settings.cells["Notifications"],
-      settings.cells["알림"]
-    ], description: "Notification settings row")
+    let notificationsRow = try requireExactNotificationSettingsRow(in: settings)
     XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
     notificationsRow.tap()
 
