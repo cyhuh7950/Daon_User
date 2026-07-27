@@ -238,8 +238,12 @@ final class DaonUITests: XCTestCase {
     _ = XCTWaiter.wait(for: [appeared], timeout: 10)
     permissionXCTestStage(.settingsNotificationQueryWaitCompleted)
     var hittableElements = query.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    if hittableElements.isEmpty {
+      XCTFail("missing or ambiguous exact system element: Notification settings row [ZERO]")
+      throw PermissionUIContractError.missingExactElement("Notification settings row")
+    }
     guard hittableElements.count == 1 else {
-      XCTFail("missing or ambiguous exact system element: Notification settings row")
+      XCTFail("missing or ambiguous exact system element: Notification settings row [AMBIGUOUS]")
       throw PermissionUIContractError.missingExactElement("Notification settings row")
     }
     permissionXCTestStage(.settingsNotificationCountSingle)
