@@ -114,7 +114,7 @@ wait_for_route_with_evidence() {
 
 is_allowed_permission_failure_code() {
   case "$1" in
-    ALERT_TITLE_MISSING|ALERT_COUNT_MISMATCH|ALERT_ALLOW_MISSING|ALERT_DISMISSAL_FAILED|SETTINGS_FOREGROUND_FAILED|SETTINGS_NOTIFICATION_ROW_MISSING|SETTINGS_SWITCH_MISSING|SETTINGS_SWITCH_VALUE_FAILED|APP_RETURN_ROOT_FAILED|PRODUCTION_RESULT_MISSING|STAGE_PHASE_EXPECTED_BINDING|STAGE_PHASE_ENV_PRESENT|STAGE_PHASE_ALLOWED|STAGE_EXPECTED_ENV_PRESENT|STAGE_EXPECTED_ALLOWED|STAGE_PHASE_EXPECTED_MATCHED|STAGE_APP_LAUNCH_ROOT|STAGE_CAMERA_REQUEST|STAGE_CAMERA_RESULT|STAGE_MICROPHONE_REQUEST|STAGE_MICROPHONE_RESULT|STAGE_NOTIFICATION_REQUEST|STAGE_ALERT_TITLE|STAGE_ALERT_COUNT|STAGE_ALERT_ALLOW|STAGE_ALERT_DISMISSAL|STAGE_SETTINGS_FOREGROUND|STAGE_SETTINGS_NOTIFICATION_ROW|STAGE_SETTINGS_SWITCH_READ|STAGE_SETTINGS_SWITCH_TOGGLE|STAGE_SETTINGS_SWITCH_VERIFY|STAGE_APP_RETURN_ROOT|STAGE_NOTIFICATION_RESULT|UNKNOWN_XCTEST_FAILURE) return 0 ;;
+    ALERT_TITLE_MISSING|ALERT_COUNT_MISMATCH|ALERT_ALLOW_MISSING|ALERT_DISMISSAL_FAILED|SETTINGS_FOREGROUND_FAILED|SETTINGS_NOTIFICATION_ROW_MISSING|SETTINGS_SWITCH_MISSING|SETTINGS_SWITCH_VALUE_FAILED|APP_RETURN_ROOT_FAILED|PRODUCTION_RESULT_MISSING|STAGE_PHASE_EXPECTED_BINDING|STAGE_PHASE_EXPECTED_MATCHED|STAGE_APP_LAUNCH_ROOT|STAGE_CAMERA_REQUEST|STAGE_CAMERA_RESULT|STAGE_MICROPHONE_REQUEST|STAGE_MICROPHONE_RESULT|STAGE_NOTIFICATION_REQUEST|STAGE_ALERT_TITLE|STAGE_ALERT_COUNT|STAGE_ALERT_ALLOW|STAGE_ALERT_DISMISSAL|STAGE_SETTINGS_FOREGROUND|STAGE_SETTINGS_NOTIFICATION_ROW|STAGE_SETTINGS_SWITCH_READ|STAGE_SETTINGS_SWITCH_TOGGLE|STAGE_SETTINGS_SWITCH_VERIFY|STAGE_APP_RETURN_ROOT|STAGE_NOTIFICATION_RESULT|UNKNOWN_XCTEST_FAILURE) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -122,7 +122,7 @@ is_allowed_permission_failure_code() {
 permission_stage_failure_code_from_log() {
   local log_file="$1"
   local marker=""
-  marker="$(grep -Eo 'DAON_PERMISSION_XCTEST_STAGE=(PHASE_EXPECTED_BINDING|PHASE_ENV_PRESENT|PHASE_ALLOWED|EXPECTED_ENV_PRESENT|EXPECTED_ALLOWED|PHASE_EXPECTED_MATCHED|APP_LAUNCH_ROOT|CAMERA_REQUEST|CAMERA_RESULT|MICROPHONE_REQUEST|MICROPHONE_RESULT|NOTIFICATION_REQUEST|ALERT_TITLE|ALERT_COUNT|ALERT_ALLOW|ALERT_DISMISSAL|SETTINGS_FOREGROUND|SETTINGS_NOTIFICATION_ROW|SETTINGS_SWITCH_READ|SETTINGS_SWITCH_TOGGLE|SETTINGS_SWITCH_VERIFY|APP_RETURN_ROOT|NOTIFICATION_RESULT)$' "${log_file}" | tail -n 1 || true)"
+  marker="$(grep -Eo 'DAON_PERMISSION_XCTEST_STAGE=(PHASE_EXPECTED_BINDING|PHASE_EXPECTED_MATCHED|APP_LAUNCH_ROOT|CAMERA_REQUEST|CAMERA_RESULT|MICROPHONE_REQUEST|MICROPHONE_RESULT|NOTIFICATION_REQUEST|ALERT_TITLE|ALERT_COUNT|ALERT_ALLOW|ALERT_DISMISSAL|SETTINGS_FOREGROUND|SETTINGS_NOTIFICATION_ROW|SETTINGS_SWITCH_READ|SETTINGS_SWITCH_TOGGLE|SETTINGS_SWITCH_VERIFY|APP_RETURN_ROOT|NOTIFICATION_RESULT)$' "${log_file}" | tail -n 1 || true)"
   if [[ -n "${marker}" ]]; then
     printf 'STAGE_%s' "${marker#DAON_PERMISSION_XCTEST_STAGE=}"
   else
@@ -179,13 +179,15 @@ report_permission_xctest_failure() {
 run_permission_phase() {
   local phase="$1"
   local privacy_action="$2"
-  local expected="$3"
+  local permission_test_method
   local permission_log="${EVIDENCE_DIR}/permission-${phase}.log"
   local -a permission_pipeline_status
   local xcode_exit
   local tee_exit
   case "${phase}" in
-    grant-initial|revoke|grant-again) ;;
+    grant-initial) permission_test_method="testPermissionGrantInitial" ;;
+    revoke) permission_test_method="testPermissionRevoke" ;;
+    grant-again) permission_test_method="testPermissionGrantAgain" ;;
     *) return 64 ;;
   esac
   xcrun simctl terminate "${SIMULATOR_UDID}" "${BUNDLE_ID}" >/dev/null 2>&1 || true
@@ -194,14 +196,14 @@ run_permission_phase() {
   DAON_SIM_PERMISSION_SERVICE="microphone"
   xcrun simctl privacy "${SIMULATOR_UDID}" "${privacy_action}" microphone "${BUNDLE_ID}"
   DAON_SIM_PERMISSION_SERVICE=""
-  DAON_PERMISSION_PHASE="${phase}" DAON_PERMISSION_EXPECTED="${expected}" xcodebuild test-without-building \
+  xcodebuild test-without-building \
     -workspace "${REPOSITORY_ROOT}/apps/mobile/ios/Daon.xcworkspace" \
     -scheme Daon \
     -configuration Release \
     -sdk iphonesimulator \
     -destination "platform=iOS Simulator,id=${SIMULATOR_UDID}" \
     -derivedDataPath "${DERIVED_DATA}" \
-    -only-testing:DaonUITests/DaonUITests/testPermissionRequestReflectsOSDecision \
+    -only-testing:DaonUITests/DaonUITests/${permission_test_method} \
     -resultBundlePath "${EVIDENCE_DIR}/permission-${phase}.xcresult" \
     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee "${permission_log}" \
     && permission_pipeline_status=("${PIPESTATUS[@]}") \
@@ -234,11 +236,11 @@ wait_for_route_with_evidence Home
 
 # Each phase launches XCTest, taps the Production requestPermission buttons, and asserts the UI result.
 DAON_SIM_STAGE="PERMISSION_GRANT_INITIAL"
-run_permission_phase grant-initial grant GRANTED
+run_permission_phase grant-initial grant
 DAON_SIM_STAGE="PERMISSION_REVOKE"
-run_permission_phase revoke revoke DENIED
+run_permission_phase revoke revoke
 DAON_SIM_STAGE="PERMISSION_GRANT_AGAIN"
-run_permission_phase grant-again grant GRANTED
+run_permission_phase grant-again grant
 
 # Background/foreground and terminate/relaunch must preserve only the approved route.
 DAON_SIM_STAGE="LIFECYCLE_APPEARANCE"
