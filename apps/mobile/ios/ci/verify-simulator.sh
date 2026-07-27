@@ -212,6 +212,29 @@ report_settings_accessibility_notice() {
   printf '::notice::%s\n' "${summary}"
 }
 
+report_notification_settings_open_notice() {
+  local prefix="DAON_NOTIFICATION_SETTINGS_OPEN_RESULT="
+  local unified_log_file=""
+  local source_line=""
+  local payload=""
+  local marker=""
+  unified_log_file="$(mktemp "${EVIDENCE_DIR}/notification-settings-open.XXXXXX.log")" || return 0
+  if ! xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 5m --style compact --predicate 'process == "Daon" AND eventMessage BEGINSWITH "DAON_NOTIFICATION_SETTINGS_OPEN_RESULT="' > "${unified_log_file}" 2>/dev/null; then
+    unlink "${unified_log_file}" 2>/dev/null || true
+    return 0
+  fi
+  source_line="$(grep -F "${prefix}" "${unified_log_file}" | tail -n 1 || true)"
+  unlink "${unified_log_file}" 2>/dev/null || true
+  [[ -n "${source_line}" ]] || return 0
+  payload="${source_line#*${prefix}}"
+  if [[ ! "${payload}" =~ ^(OPENED|FAILED)\ AUTH=(GRANTED|DENIED|NOT_REQUESTED|RESTRICTED)$ ]]; then
+    return 0
+  fi
+  marker="${prefix}${payload}"
+  [[ "${#marker}" -le 96 ]] || return 0
+  printf '::notice::%s\n' "${marker}"
+}
+
 report_permission_xctest_failure() {
   local log_file="$1"
   local phase="$2"
@@ -225,6 +248,7 @@ report_permission_xctest_failure() {
   if ! is_allowed_permission_failure_code "${code}"; then
     code="UNKNOWN_XCTEST_FAILURE"
   fi
+  report_notification_settings_open_notice
   if [[ "${phase}" == "revoke" || "${phase}" == "grant-again" ]]; then
     report_settings_accessibility_notice "${log_file}"
   fi
