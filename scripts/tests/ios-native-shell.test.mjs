@@ -634,7 +634,10 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     : "";
   assert.ok(permissionContract);
   const stages = [
-    ["PHASE_EXPECTED_BINDING", "phaseExpectedBinding"], ["APP_LAUNCH_ROOT", "appLaunchRoot"],
+    ["PHASE_EXPECTED_BINDING", "phaseExpectedBinding"], ["PHASE_ENV_PRESENT", "phaseEnvironmentPresent"],
+    ["PHASE_ALLOWED", "phaseAllowed"], ["EXPECTED_ENV_PRESENT", "expectedEnvironmentPresent"],
+    ["EXPECTED_ALLOWED", "expectedAllowed"], ["PHASE_EXPECTED_MATCHED", "phaseExpectedMatched"],
+    ["APP_LAUNCH_ROOT", "appLaunchRoot"],
     ["CAMERA_REQUEST", "cameraRequest"], ["CAMERA_RESULT", "cameraResult"],
     ["MICROPHONE_REQUEST", "microphoneRequest"], ["MICROPHONE_RESULT", "microphoneResult"],
     ["NOTIFICATION_REQUEST", "notificationRequest"], ["ALERT_TITLE", "alertTitle"],
@@ -645,6 +648,11 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     ["APP_RETURN_ROOT", "appReturnRoot"], ["NOTIFICATION_RESULT", "notificationResult"]
   ];
   for (const [, swiftCase] of stages) assert.match(permissionContract, new RegExp(`permissionXCTestStage\\(\\.${swiftCase}\\)`));
+  assert.match(permissionContract, /guard let rawPhase[\s\S]*?return\s*\}\s*permissionXCTestStage\(\.phaseEnvironmentPresent\)\s*guard let phase/);
+  assert.match(permissionContract, /guard let phase[\s\S]*?return\s*\}\s*permissionXCTestStage\(\.phaseAllowed\)\s*guard let expected/);
+  assert.match(permissionContract, /guard let expected[\s\S]*?return\s*\}\s*permissionXCTestStage\(\.expectedEnvironmentPresent\)/);
+  assert.match(permissionContract, /XCTAssertTrue\(expectedIsAllowed[\s\S]*?guard expectedIsAllowed else \{ return \}\s*permissionXCTestStage\(\.expectedAllowed\)/);
+  assert.match(permissionContract, /XCTAssertEqual\(expected, phaseExpected[\s\S]*?guard expected == phaseExpected else \{ return \}\s*permissionXCTestStage\(\.phaseExpectedMatched\)\s*let app/);
   const markerOutputLines = permissionContract.split(/\r?\n/).filter((line) => line.includes("DAON_PERMISSION_XCTEST_STAGE="));
   assert.deepEqual(markerOutputLines.map((line) => line.trim()), ['print("DAON_PERMISSION_XCTEST_STAGE=\\(stage.rawValue)")']);
 
@@ -677,6 +685,10 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     assert.equal(lastAllowed.status, 65, lastAllowed.stderr);
     assert.deepEqual(annotation(lastAllowed.stdout), ["::error::CODE=STAGE_ALERT_ALLOW PHASE=grant-initial EXIT=65"]);
     assert.doesNotMatch(annotation(lastAllowed.stdout)[0], /PRIVATE|Users|https|internal/);
+
+    const bindingLast = run("DAON_PERMISSION_XCTEST_STAGE=PHASE_ENV_PRESENT\nDAON_PERMISSION_XCTEST_STAGE=EXPECTED_ENV_PRESENT\nDAON_PERMISSION_XCTEST_STAGE=EXPECTED_ALLOWED");
+    assert.equal(bindingLast.status, 65, bindingLast.stderr);
+    assert.deepEqual(annotation(bindingLast.stdout), ["::error::CODE=STAGE_EXPECTED_ALLOWED PHASE=grant-initial EXIT=65"]);
 
     const unknown = run("DAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW_PRIVATE");
     assert.equal(unknown.status, 65, unknown.stderr);
