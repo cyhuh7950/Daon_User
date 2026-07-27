@@ -890,26 +890,30 @@ test("macOS Workflow는 CocoaPods Gem 이름과 pod 실행 파일을 RubyGems �
   }
 });
 
-test("Settings Notifications 행은 타입 비의존 exact Label·Hittable Query의 단일 element만 사용한다", async () => {
+test("Settings Notifications 행은 exact Label Query와 Element Hittable 평가를 분리한다", async () => {
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
   const helperStart = uiTests.indexOf("private func requireExactNotificationSettingsRow");
   const helperEnd = uiTests.indexOf("private func approveExpectedNotificationAlert", helperStart);
   const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
   assert.ok(helper, "Notifications exact Label row helper is required");
   assert.match(helper, /let query = settings\.descendants\(matching: \.any\)\.matching\(/);
-  assert.match(helper, /NSPredicate\(format: "\(label == %@ OR label == %@\) AND isHittable == true", "Notifications", "알림"\)/);
-  const countGuard = helper.indexOf("guard query.count == 1");
-  const elementAccess = helper.indexOf("let element = query.element");
+  assert.match(helper, /NSPredicate\(format: "label == %@ OR label == %@", "Notifications", "알림"\)/);
+  assert.doesNotMatch(helper, /NSPredicate\(format:[^\n]*isHittable/);
+  assert.match(helper, /query\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
+  const matchesCollection = helper.lastIndexOf("query.allElementsBoundByAccessibilityElement.filter");
+  const countGuard = helper.indexOf("guard hittableElements.count == 1");
+  const elementAccess = helper.indexOf("let element = hittableElements.popLast()");
   const elementReturn = helper.indexOf("return element");
-  assert.ok(countGuard >= 0 && countGuard < elementAccess && elementAccess < elementReturn, "count 1 must be verified before returning the query element");
+  assert.ok(matchesCollection >= 0 && matchesCollection < countGuard && countGuard < elementAccess && elementAccess < elementReturn, "all hittable matches must be collected and count 1 verified before non-selective extraction");
   const queryCreated = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryCreated)");
   const waitCompleted = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryWaitCompleted)");
   const countSingle = helper.indexOf("permissionXCTestStage(.settingsNotificationCountSingle)");
   const elementReady = helper.indexOf("permissionXCTestStage(.settingsNotificationElementReady)");
   assert.ok(queryCreated > helper.indexOf("let query =") && queryCreated < helper.indexOf("let appeared ="));
-  assert.ok(waitCompleted > helper.indexOf("XCTWaiter.wait") && waitCompleted < countGuard);
-  assert.ok(countSingle > countGuard && countSingle < helper.indexOf("let element = query.element"));
-  assert.ok(elementReady > helper.indexOf("let element = query.element") && elementReady < helper.indexOf("return element"));
+  assert.ok(waitCompleted > helper.indexOf("XCTWaiter.wait") && waitCompleted < matchesCollection);
+  assert.ok(countSingle > countGuard && countSingle < elementAccess);
+  assert.ok(elementReady > elementAccess && elementReady < elementReturn);
+  assert.doesNotMatch(helper, /query\.count|query\.element/);
   assert.doesNotMatch(helper, /\.staticTexts|\.cells|\.buttons|\.links|identifier|CONTAINS|BEGINSWITH|ENDSWITH|MATCHES|firstMatch|element\(boundBy:|coordinate\(/i);
 
   const settingsStart = uiTests.indexOf("private func setNotificationAuthorization");

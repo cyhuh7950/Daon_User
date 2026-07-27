@@ -225,24 +225,28 @@ final class DaonUITests: XCTestCase {
 
   private func requireExactNotificationSettingsRow(in settings: XCUIApplication) throws -> XCUIElement {
     let query = settings.descendants(matching: .any).matching(
-      NSPredicate(format: "(label == %@ OR label == %@) AND isHittable == true", "Notifications", "알림")
+      NSPredicate(format: "label == %@ OR label == %@", "Notifications", "알림")
     )
     permissionXCTestStage(.settingsNotificationQueryCreated)
     let appeared = XCTNSPredicateExpectation(
       predicate: NSPredicate { object, _ in
         guard let query = object as? XCUIElementQuery else { return false }
-        return query.count > 0
+        return !query.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
       },
       object: query
     )
     _ = XCTWaiter.wait(for: [appeared], timeout: 10)
     permissionXCTestStage(.settingsNotificationQueryWaitCompleted)
-    guard query.count == 1 else {
+    var hittableElements = query.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    guard hittableElements.count == 1 else {
       XCTFail("missing or ambiguous exact system element: Notification settings row")
       throw PermissionUIContractError.missingExactElement("Notification settings row")
     }
     permissionXCTestStage(.settingsNotificationCountSingle)
-    let element = query.element
+    guard let element = hittableElements.popLast() else {
+      XCTFail("missing or ambiguous exact system element: Notification settings row")
+      throw PermissionUIContractError.missingExactElement("Notification settings row")
+    }
     permissionXCTestStage(.settingsNotificationElementReady)
     return element
   }
