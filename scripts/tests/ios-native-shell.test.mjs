@@ -642,7 +642,13 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     ["NOTIFICATION_REQUEST", "notificationRequest"], ["ALERT_TITLE", "alertTitle"],
     ["ALERT_COUNT", "alertCount"], ["ALERT_ALLOW", "alertAllow"],
     ["ALERT_DISMISSAL", "alertDismissal"], ["SETTINGS_FOREGROUND", "settingsForeground"],
-    ["SETTINGS_NOTIFICATION_ROW", "settingsNotificationRow"], ["SETTINGS_SWITCH_READ", "settingsSwitchRead"],
+    ["SETTINGS_NOTIFICATION_ROW", "settingsNotificationRow"],
+    ["SETTINGS_NOTIFICATION_QUERY_CREATED", "settingsNotificationQueryCreated"],
+    ["SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED", "settingsNotificationQueryWaitCompleted"],
+    ["SETTINGS_NOTIFICATION_COUNT_SINGLE", "settingsNotificationCountSingle"],
+    ["SETTINGS_NOTIFICATION_ELEMENT_READY", "settingsNotificationElementReady"],
+    ["SETTINGS_NOTIFICATION_ROW_TAP_PENDING", "settingsNotificationRowTapPending"],
+    ["SETTINGS_SWITCH_READ", "settingsSwitchRead"],
     ["SETTINGS_SWITCH_TOGGLE", "settingsSwitchToggle"], ["SETTINGS_SWITCH_VERIFY", "settingsSwitchVerify"],
     ["APP_RETURN_ROOT", "appReturnRoot"], ["NOTIFICATION_RESULT", "notificationResult"]
   ];
@@ -684,6 +690,14 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     const bindingLast = run("DAON_PERMISSION_XCTEST_STAGE=PHASE_EXPECTED_BINDING\nDAON_PERMISSION_XCTEST_STAGE=PHASE_EXPECTED_MATCHED");
     assert.equal(bindingLast.status, 65, bindingLast.stderr);
     assert.deepEqual(annotation(bindingLast.stdout), ["::error::CODE=STAGE_PHASE_EXPECTED_MATCHED PHASE=grant-initial EXIT=65"]);
+
+    const notificationBoundary = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_ROW\nDAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_CREATED\nDAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nDAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_COUNT_SINGLE\nDAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_ELEMENT_READY\nDAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_ROW_TAP_PENDING");
+    assert.equal(notificationBoundary.status, 65, notificationBoundary.stderr);
+    assert.deepEqual(annotation(notificationBoundary.stdout), ["::error::CODE=STAGE_SETTINGS_NOTIFICATION_ROW_TAP_PENDING PHASE=grant-initial EXIT=65"]);
+
+    const notificationAssertionFirst = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_ROW_TAP_PENDING\nmissing or ambiguous exact system element: Notification settings row");
+    assert.equal(notificationAssertionFirst.status, 65, notificationAssertionFirst.stderr);
+    assert.deepEqual(annotation(notificationAssertionFirst.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_ROW_MISSING PHASE=grant-initial EXIT=65"]);
 
     const unknown = run("DAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW_PRIVATE");
     assert.equal(unknown.status, 65, unknown.stderr);
@@ -885,8 +899,17 @@ test("Settings Notifications 행은 타입 비의존 exact Label·Hittable Query
   assert.match(helper, /let query = settings\.descendants\(matching: \.any\)\.matching\(/);
   assert.match(helper, /NSPredicate\(format: "\(label == %@ OR label == %@\) AND isHittable == true", "Notifications", "알림"\)/);
   const countGuard = helper.indexOf("guard query.count == 1");
-  const elementReturn = helper.indexOf("return query.element");
-  assert.ok(countGuard >= 0 && countGuard < elementReturn, "count 1 must be verified before returning the query element");
+  const elementAccess = helper.indexOf("let element = query.element");
+  const elementReturn = helper.indexOf("return element");
+  assert.ok(countGuard >= 0 && countGuard < elementAccess && elementAccess < elementReturn, "count 1 must be verified before returning the query element");
+  const queryCreated = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryCreated)");
+  const waitCompleted = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryWaitCompleted)");
+  const countSingle = helper.indexOf("permissionXCTestStage(.settingsNotificationCountSingle)");
+  const elementReady = helper.indexOf("permissionXCTestStage(.settingsNotificationElementReady)");
+  assert.ok(queryCreated > helper.indexOf("let query =") && queryCreated < helper.indexOf("let appeared ="));
+  assert.ok(waitCompleted > helper.indexOf("XCTWaiter.wait") && waitCompleted < countGuard);
+  assert.ok(countSingle > countGuard && countSingle < helper.indexOf("let element = query.element"));
+  assert.ok(elementReady > helper.indexOf("let element = query.element") && elementReady < helper.indexOf("return element"));
   assert.doesNotMatch(helper, /\.staticTexts|\.cells|\.buttons|\.links|identifier|CONTAINS|BEGINSWITH|ENDSWITH|MATCHES|firstMatch|element\(boundBy:|coordinate\(/i);
 
   const settingsStart = uiTests.indexOf("private func setNotificationAuthorization");
@@ -894,6 +917,7 @@ test("Settings Notifications 행은 타입 비의존 exact Label·Hittable Query
   const settingsHelper = settingsStart >= 0 && settingsEnd > settingsStart ? uiTests.slice(settingsStart, settingsEnd) : "";
   assert.ok(settingsHelper);
   assert.match(settingsHelper, /let notificationsRow = try requireExactNotificationSettingsRow\(in: settings\)/);
+  assert.match(settingsHelper, /XCTAssertTrue\(notificationsRow\.isHittable,[^\n]+\)\s*permissionXCTestStage\(\.settingsNotificationRowTapPending\)\s*notificationsRow\.tap\(\)/);
   assert.doesNotMatch(settingsHelper, /settings\.cells\["(?:Notifications|알림)"\]/);
 });
 
