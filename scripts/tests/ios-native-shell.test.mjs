@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -202,6 +202,33 @@ test("macOS Workflow는 승인 uv Pin을 Toolchain 검증 전에 설치·검증�
   assert.match(JSON.stringify(workflow), /IOS_UV_VERSION/);
   assert.match(writer, /setup_uv/);
   assert.match(writer, /IOS_UV_VERSION/);
+});
+
+test("macOS Workflow는 uv Metadata를 보존하면서 두 번째 버전 토큰만 승인 Pin과 엄격 비교한다", async () => {
+  const workflow = await readJson(".github/workflows/release-1-ios-phase-a.yml");
+  const steps = workflow.jobs["ios-phase-a"].steps;
+  const verification = steps.find((step) => step.id === "node-npm")?.run ?? "";
+  const contractLines = verification.split("\n").filter((line) =>
+    /^UV_PIN=/.test(line)
+    || /^test "\$\{UV_PIN\}" = "0\.11\.2"$/.test(line)
+    || /^UV_VERSION=/.test(line)
+    || /^test "\$\{UV_VERSION\}" = "\$\{UV_PIN\}"$/.test(line)
+  );
+  assert.equal(contractLines.length, 4);
+  assert.match(contractLines[2], /uv --version[^\n]*awk '\{print \$2\}'/);
+
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const contract = `set -euo pipefail\nuv() { printf '%s\\n' "\${UV_OUTPUT}"; }\n${contractLines.join("\n")}`;
+  const run = (output) => spawnSync(bash, ["-c", contract], {
+    cwd: root,
+    env: { ...process.env, UV_OUTPUT: output },
+    encoding: "utf8"
+  });
+  assert.equal(run("uv 0.11.2 (02036a8ba 2026-03-26 aarch64-apple-darwin)").status, 0);
+  assert.notEqual(run("uv 0.11.3 (different-build-metadata)").status, 0);
+
+  const manifest = steps.find((step) => step.id === "manifest")?.run ?? "";
+  assert.match(manifest, /IOS_UV_VERSION="\$\(uv --version 2>\/dev\/null \|\| true\)"/);
 });
 
 test("권한 Phase A는 Production 요청 버튼의 GRANTED·DENIED·재GRANTED를 XCTest Artifact로 검증한다", async () => {
