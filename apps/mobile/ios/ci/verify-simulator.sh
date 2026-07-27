@@ -116,15 +116,17 @@ run_permission_phase() {
   local phase="$1"
   local privacy_action="$2"
   local expected="$3"
+  case "${phase}" in
+    grant-initial|revoke|grant-again) ;;
+    *) return 64 ;;
+  esac
   xcrun simctl terminate "${SIMULATOR_UDID}" "${BUNDLE_ID}" >/dev/null 2>&1 || true
   DAON_SIM_PERMISSION_SERVICE="camera"
   xcrun simctl privacy "${SIMULATOR_UDID}" "${privacy_action}" camera "${BUNDLE_ID}"
   DAON_SIM_PERMISSION_SERVICE="microphone"
   xcrun simctl privacy "${SIMULATOR_UDID}" "${privacy_action}" microphone "${BUNDLE_ID}"
-  DAON_SIM_PERMISSION_SERVICE="notifications"
-  xcrun simctl privacy "${SIMULATOR_UDID}" "${privacy_action}" notifications "${BUNDLE_ID}"
   DAON_SIM_PERMISSION_SERVICE=""
-  DAON_PERMISSION_EXPECTED="${expected}" xcodebuild test-without-building \
+  DAON_PERMISSION_PHASE="${phase}" DAON_PERMISSION_EXPECTED="${expected}" xcodebuild test-without-building \
     -workspace "${REPOSITORY_ROOT}/apps/mobile/ios/Daon.xcworkspace" \
     -scheme Daon \
     -configuration Release \

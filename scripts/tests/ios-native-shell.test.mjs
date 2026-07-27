@@ -341,9 +341,9 @@ test("UI Test는 두 Scroll Host의 고정 Identifier Query와 기존 Swipe 의�
   assert.doesNotMatch(uiTests, /app\.scrollViews\["(?:공용 Navigation|화면 내용)"\]/);
   assert.match(uiTests, /let navigation = app\.otherElements\["공용 Navigation"\][\s\S]*?XCTAssertTrue\(navigation\.waitForExistence\(timeout: 10\)[\s\S]*?for _ in 0\.\.<8 where !button\.isHittable \{ navigation\.swipeLeft\(\) \}/);
   assert.equal((uiTests.match(/XCTAssertTrue\(content\.waitForExistence\(timeout: 10\)/g) ?? []).length, 2);
-  assert.equal((uiTests.match(/0\.\.<8 where !/g) ?? []).length, 3);
+  assert.equal((uiTests.match(/0\.\.<8 where !/g) ?? []).length, 4);
   assert.match(uiTests, /navigation\.swipeLeft\(\)/);
-  assert.equal((uiTests.match(/content\.swipeUp\(\)/g) ?? []).length, 2);
+  assert.equal((uiTests.match(/content\.swipeUp\(\)/g) ?? []).length, 3);
   assert.doesNotMatch(uiTests, /coordinate\(|firstMatch|sleep\(|Thread\.sleep/);
 });
 
@@ -389,9 +389,10 @@ test("CI Script는 8 Route·비정상 Deep Link·Lifecycle·권한·Crash/Secret
   for (const token of ["UnknownRoute", "%48ome", "Home%2Fextra", "Home?route=Inbox", "Home#Inbox", "terminate", "launch", "Crash", "secret", "SIMULATOR_VERIFIED_PENDING_SIGNING_DEVICE"]) {
     assert.match(combined, new RegExp(token.replaceAll("?", "\\?").replaceAll(".", "\\."), "i"));
   }
-  for (const permission of ["camera", "microphone", "notifications"]) {
+  for (const permission of ["camera", "microphone"]) {
     assert.match(script, new RegExp(`privacy[^\\n]*${permission}`, "i"));
   }
+  assert.doesNotMatch(script, /simctl privacy[^\n]*notifications/i);
   assert.match(script, /run_permission_phase grant-initial grant GRANTED/);
   assert.match(script, /run_permission_phase revoke revoke DENIED/);
   assert.match(script, /run_permission_phase grant-again grant GRANTED/);
@@ -537,11 +538,12 @@ test("Permission Phase ERR 진단은 함수 내부 실패 서비스만 allowlist
   const permissionContract = permissionStart >= 0 && permissionEnd > permissionStart ? script.slice(permissionStart, permissionEnd + 2) : "";
   assert.ok(permissionContract);
   const orderedServices = [...permissionContract.matchAll(/DAON_SIM_PERMISSION_SERVICE="(camera|microphone|notifications)"/g)].map((match) => match[1]);
-  assert.deepEqual(orderedServices, ["camera", "microphone", "notifications"]);
+  assert.deepEqual(orderedServices, ["camera", "microphone"]);
   for (const service of orderedServices) {
     assert.match(permissionContract, new RegExp(`DAON_SIM_PERMISSION_SERVICE="${service}"\\r?\\n\\s*xcrun simctl privacy "\\$\\{SIMULATOR_UDID\\}" "\\$\\{privacy_action\\}" ${service} "\\$\\{BUNDLE_ID\\}"`));
   }
-  assert.match(permissionContract, /DAON_SIM_PERMISSION_SERVICE=""\r?\n\s*DAON_PERMISSION_EXPECTED=/);
+  assert.match(permissionContract, /DAON_SIM_PERMISSION_SERVICE=""\r?\n\s*DAON_PERMISSION_PHASE="\$\{phase\}" DAON_PERMISSION_EXPECTED=/);
+  assert.doesNotMatch(permissionContract, /simctl privacy[^\n]*notifications/i);
   assert.doesNotMatch(permissionContract, /simctl privacy[^\n]*(?:\|\| true|retry)|for\s+[^\n]*camera|sleep/);
 
   const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -691,17 +693,51 @@ test("macOS Workflow는 CocoaPods Gem 이름과 pod 실행 파일을 RubyGems �
   }
 });
 
-test("권한 Phase A는 Production 요청 버튼의 GRANTED·DENIED·재GRANTED를 XCTest Artifact로 검증한다", async () => {
+test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Settings OFF·ON을 직접 검증한다", async () => {
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
   const shell = await read("apps/mobile/src/MobileShell.tsx");
+  const permissionStart = uiTests.indexOf("func testPermissionRequestReflectsOSDecision()");
+  const permissionBody = permissionStart >= 0 ? uiTests.slice(permissionStart) : "";
+  assert.ok(permissionBody);
+
   for (const kind of ["camera", "microphone", "notification"]) assert.match(uiTests, new RegExp(`"${kind}"`));
   assert.match(uiTests, /\\\(kind\) 권한 요청/);
   for (const state of ["GRANTED", "DENIED"]) assert.match(uiTests, new RegExp(state));
-  assert.match(uiTests, /권한 결과|DAON_PERMISSION_EXPECTED/);
+  assert.match(permissionBody, /DAON_PERMISSION_PHASE/);
+  assert.match(permissionBody, /grant-initial/);
+  assert.match(permissionBody, /revoke/);
+  assert.match(permissionBody, /grant-again/);
+  assert.match(permissionBody, /XCUIApplication\(bundleIdentifier: "com\.apple\.springboard"\)/);
+  assert.match(permissionBody, /alerts\.count/);
+  assert.match(permissionBody, /Would Like to Send You Notifications|알림을 보내고자 합니다/);
+  assert.match(permissionBody, /"Allow"/);
+  assert.match(permissionBody, /"허용"/);
+  const alertHelperStart = permissionBody.indexOf("private func approveExpectedNotificationAlert()");
+  const alertHelperEnd = permissionBody.indexOf("private func setNotificationAuthorization", alertHelperStart);
+  const alertHelper = alertHelperStart >= 0 && alertHelperEnd > alertHelperStart ? permissionBody.slice(alertHelperStart, alertHelperEnd) : "";
+  assert.ok(alertHelper);
+  const titleWaitIndex = alertHelper.indexOf("_ = try requireExactElement([");
+  const alertCountIndex = alertHelper.indexOf("XCTAssertEqual(springboard.alerts.count, 1");
+  const allowButtonIndex = alertHelper.indexOf("let allowButton = try requireExactElement([");
+  assert.ok(titleWaitIndex >= 0 && titleWaitIndex < alertCountIndex && alertCountIndex < allowButtonIndex, "expected title wait must complete before alert count and Allow lookup");
+  assert.match(permissionBody, /app\.buttons\["앱 권한 설정 열기"\]/);
+  assert.match(permissionBody, /XCUIApplication\(bundleIdentifier: "com\.apple\.Preferences"\)/);
+  assert.match(permissionBody, /"Allow Notifications"/);
+  assert.match(permissionBody, /"알림 허용"/);
+  assert.match(permissionBody, /notificationSwitchIsEnabled/);
+  assert.match(permissionBody, /app\.activate\(\)[\s\S]*requireRootReady\(app\)/);
+  assert.match(permissionBody, /권한 결과|DAON_PERMISSION_EXPECTED/);
   assert.match(shell, /requestPermission\(kind\)/);
   assert.match(shell, /권한 결과/);
   for (const phase of ["grant-initial", "revoke", "grant-again"]) assert.match(script, new RegExp(phase));
+  assert.match(script, /grant-initial\|revoke\|grant-again/);
+  assert.match(script, /DAON_PERMISSION_PHASE="\$\{phase\}" DAON_PERMISSION_EXPECTED="\$\{expected\}" xcodebuild/);
+  assert.equal((script.match(/simctl privacy[^\n]*camera/g) ?? []).length, 1);
+  assert.equal((script.match(/simctl privacy[^\n]*microphone/g) ?? []).length, 1);
+  assert.doesNotMatch(script, /simctl privacy[^\n]*notifications/i);
+  assert.equal((script.match(/xcrun simctl install "\$\{SIMULATOR_UDID\}" "\$\{APP_PATH\}"/g) ?? []).length, 1);
   assert.match(script, /test-without-building/);
   assert.match(script, /\.xcresult/);
+  assert.doesNotMatch(`${script}\n${uiTests}`, /coordinate\(|firstMatch|element\(boundBy:|App-Prefs|prefs:|TCC\.db|defaults\s+(?:write|delete)|simctl\s+(?:uninstall|erase)/i);
 });
