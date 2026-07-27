@@ -393,9 +393,9 @@ test("CI Script는 8 Route·비정상 Deep Link·Lifecycle·권한·Crash/Secret
     assert.match(script, new RegExp(`privacy[^\\n]*${permission}`, "i"));
   }
   assert.doesNotMatch(script, /simctl privacy[^\n]*notifications/i);
-  assert.match(script, /run_permission_phase grant-initial grant GRANTED/);
-  assert.match(script, /run_permission_phase revoke revoke DENIED/);
-  assert.match(script, /run_permission_phase grant-again grant GRANTED/);
+  assert.match(script, /run_permission_phase grant-initial grant/);
+  assert.match(script, /run_permission_phase revoke revoke/);
+  assert.match(script, /run_permission_phase grant-again grant/);
 });
 
 test("Simulator 검증은 Route Key만 초기화하고 Home 준비·복원을 검증하며 URL 발송을 XCUITest에 위임한다", async () => {
@@ -542,7 +542,8 @@ test("Permission Phase ERR 진단은 함수 내부 실패 서비스만 allowlist
   for (const service of orderedServices) {
     assert.match(permissionContract, new RegExp(`DAON_SIM_PERMISSION_SERVICE="${service}"\\r?\\n\\s*xcrun simctl privacy "\\$\\{SIMULATOR_UDID\\}" "\\$\\{privacy_action\\}" ${service} "\\$\\{BUNDLE_ID\\}"`));
   }
-  assert.match(permissionContract, /DAON_SIM_PERMISSION_SERVICE=""\r?\n\s*DAON_PERMISSION_PHASE="\$\{phase\}" DAON_PERMISSION_EXPECTED=/);
+  assert.match(permissionContract, /case "\$\{phase\}" in[\s\S]*permission_test_method="testPermissionGrantInitial"[\s\S]*permission_test_method="testPermissionRevoke"[\s\S]*permission_test_method="testPermissionGrantAgain"[\s\S]*esac/);
+  assert.doesNotMatch(permissionContract, /DAON_PERMISSION_(?:PHASE|EXPECTED)=/);
   assert.doesNotMatch(permissionContract, /simctl privacy[^\n]*notifications/i);
   assert.doesNotMatch(permissionContract, /simctl privacy[^\n]*(?:\|\| true|retry)|for\s+[^\n]*camera|sleep/);
 
@@ -627,16 +628,14 @@ test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase�
 
 test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 차선·Unknown 최종으로 분류한다", async () => {
   const swift = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
-  const permissionStart = swift.indexOf("func testPermissionRequestReflectsOSDecision() throws {");
+  const permissionStart = swift.indexOf("func testPermissionGrantInitial() throws {");
   const permissionEnd = swift.indexOf("\n  private func notificationSwitchIsEnabled", permissionStart);
   const permissionContract = permissionStart >= 0 && permissionEnd > permissionStart
     ? swift.slice(permissionStart, permissionEnd)
     : "";
   assert.ok(permissionContract);
   const stages = [
-    ["PHASE_EXPECTED_BINDING", "phaseExpectedBinding"], ["PHASE_ENV_PRESENT", "phaseEnvironmentPresent"],
-    ["PHASE_ALLOWED", "phaseAllowed"], ["EXPECTED_ENV_PRESENT", "expectedEnvironmentPresent"],
-    ["EXPECTED_ALLOWED", "expectedAllowed"], ["PHASE_EXPECTED_MATCHED", "phaseExpectedMatched"],
+    ["PHASE_EXPECTED_BINDING", "phaseExpectedBinding"], ["PHASE_EXPECTED_MATCHED", "phaseExpectedMatched"],
     ["APP_LAUNCH_ROOT", "appLaunchRoot"],
     ["CAMERA_REQUEST", "cameraRequest"], ["CAMERA_RESULT", "cameraResult"],
     ["MICROPHONE_REQUEST", "microphoneRequest"], ["MICROPHONE_RESULT", "microphoneResult"],
@@ -648,11 +647,7 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     ["APP_RETURN_ROOT", "appReturnRoot"], ["NOTIFICATION_RESULT", "notificationResult"]
   ];
   for (const [, swiftCase] of stages) assert.match(permissionContract, new RegExp(`permissionXCTestStage\\(\\.${swiftCase}\\)`));
-  assert.match(permissionContract, /guard let rawPhase[\s\S]*?return\s*\}\s*permissionXCTestStage\(\.phaseEnvironmentPresent\)\s*guard let phase/);
-  assert.match(permissionContract, /guard let phase[\s\S]*?return\s*\}\s*permissionXCTestStage\(\.phaseAllowed\)\s*guard let expected/);
-  assert.match(permissionContract, /guard let expected[\s\S]*?return\s*\}\s*permissionXCTestStage\(\.expectedEnvironmentPresent\)/);
-  assert.match(permissionContract, /XCTAssertTrue\(expectedIsAllowed[\s\S]*?guard expectedIsAllowed else \{ return \}\s*permissionXCTestStage\(\.expectedAllowed\)/);
-  assert.match(permissionContract, /XCTAssertEqual\(expected, phaseExpected[\s\S]*?guard expected == phaseExpected else \{ return \}\s*permissionXCTestStage\(\.phaseExpectedMatched\)\s*let app/);
+  assert.match(permissionContract, /permissionXCTestStage\(\.phaseExpectedBinding\)[\s\S]*?XCTAssertEqual\(expected, phaseExpected[\s\S]*?guard expected == phaseExpected else \{ return \}\s*permissionXCTestStage\(\.phaseExpectedMatched\)\s*let app/);
   const markerOutputLines = permissionContract.split(/\r?\n/).filter((line) => line.includes("DAON_PERMISSION_XCTEST_STAGE="));
   assert.deepEqual(markerOutputLines.map((line) => line.trim()), ['print("DAON_PERMISSION_XCTEST_STAGE=\\(stage.rawValue)")']);
 
@@ -686,13 +681,66 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     assert.deepEqual(annotation(lastAllowed.stdout), ["::error::CODE=STAGE_ALERT_ALLOW PHASE=grant-initial EXIT=65"]);
     assert.doesNotMatch(annotation(lastAllowed.stdout)[0], /PRIVATE|Users|https|internal/);
 
-    const bindingLast = run("DAON_PERMISSION_XCTEST_STAGE=PHASE_ENV_PRESENT\nDAON_PERMISSION_XCTEST_STAGE=EXPECTED_ENV_PRESENT\nDAON_PERMISSION_XCTEST_STAGE=EXPECTED_ALLOWED");
+    const bindingLast = run("DAON_PERMISSION_XCTEST_STAGE=PHASE_EXPECTED_BINDING\nDAON_PERMISSION_XCTEST_STAGE=PHASE_EXPECTED_MATCHED");
     assert.equal(bindingLast.status, 65, bindingLast.stderr);
-    assert.deepEqual(annotation(bindingLast.stdout), ["::error::CODE=STAGE_EXPECTED_ALLOWED PHASE=grant-initial EXIT=65"]);
+    assert.deepEqual(annotation(bindingLast.stdout), ["::error::CODE=STAGE_PHASE_EXPECTED_MATCHED PHASE=grant-initial EXIT=65"]);
 
     const unknown = run("DAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW_PRIVATE");
     assert.equal(unknown.status, 65, unknown.stderr);
     assert.deepEqual(annotation(unknown.stdout), ["::error::CODE=UNKNOWN_XCTEST_FAILURE PHASE=grant-initial EXIT=65"]);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Permission Phase는 환경 상속 없이 세 고정 XCTest Method를 exact 매핑한다", async () => {
+  const swift = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const entries = [
+    ["testPermissionGrantInitial", "grantInitial", "GRANTED"],
+    ["testPermissionRevoke", "revoke", "DENIED"],
+    ["testPermissionGrantAgain", "grantAgain", "GRANTED"]
+  ];
+  for (const [method, phase, expected] of entries) {
+    assert.match(swift, new RegExp(`func ${method}\\(\\) throws \\{\\s*try runPermissionPhase\\(\\.${phase}, expected: "${expected}"\\)\\s*\\}`));
+  }
+  assert.equal((swift.match(/func testPermission(?:GrantInitial|Revoke|GrantAgain)\(\) throws/g) ?? []).length, 3);
+  assert.match(swift, /private func runPermissionPhase\(_ phase: PermissionPhase, expected: String\) throws/);
+  assert.doesNotMatch(swift, /ProcessInfo\.processInfo\.environment\["DAON_PERMISSION_(?:PHASE|EXPECTED)"\]/);
+  assert.doesNotMatch(script, /DAON_PERMISSION_(?:PHASE|EXPECTED)=/);
+  assert.doesNotMatch(script, /testPermissionRequestReflectsOSDecision|testPermission\$\{|testPermission\$\(phase\)/);
+
+  const permissionStart = script.indexOf("run_permission_phase() {");
+  const permissionEnd = script.indexOf('\n}\n\nDAON_SIM_STAGE="APP_ARTIFACT"', permissionStart);
+  const permissionContract = permissionStart >= 0 && permissionEnd > permissionStart
+    ? script.slice(permissionStart, permissionEnd + 2)
+    : "";
+  assert.ok(permissionContract);
+  for (const [method] of entries) assert.match(permissionContract, new RegExp(`permission_test_method="${method}"`));
+  assert.match(permissionContract, /-only-testing:DaonUITests\/DaonUITests\/\$\{permission_test_method\}/);
+
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-permission-method-"));
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const fixture = `set -Eeuo pipefail\nSIMULATOR_UDID=11111111-2222-3333-4444-555555555555\nBUNDLE_ID=com.sinsan.daon\nREPOSITORY_ROOT=/repo\nDERIVED_DATA=/derived\nDAON_SIM_PERMISSION_SERVICE=""\nxcrun(){ return 0; }\nxcodebuild(){ printf '%s\\n' "$*"; return 0; }\n${permissionContract}\nrun_permission_phase "\${FIXTURE_PHASE}" grant`;
+  try {
+    for (const [method, phase] of entries) {
+      const shellPhase = phase === "grantInitial" ? "grant-initial" : phase === "grantAgain" ? "grant-again" : phase;
+      const result = spawnSync(bash, ["-c", fixture], {
+        cwd: fixtureRoot,
+        env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), FIXTURE_PHASE: shellPhase },
+        encoding: "utf8"
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal((result.stdout.match(/-only-testing:/g) ?? []).length, 1);
+      assert.match(result.stdout, new RegExp(`-only-testing:DaonUITests/DaonUITests/${method}(?:\\s|$)`));
+    }
+    const invalid = spawnSync(bash, ["-c", fixture], {
+      cwd: fixtureRoot,
+      env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), FIXTURE_PHASE: "grant-initial/private" },
+      encoding: "utf8"
+    });
+    assert.equal(invalid.status, 64, invalid.stderr);
+    assert.doesNotMatch(invalid.stdout, /-only-testing:/);
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
@@ -832,14 +880,13 @@ test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Se
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
   const shell = await read("apps/mobile/src/MobileShell.tsx");
-  const permissionStart = uiTests.indexOf("func testPermissionRequestReflectsOSDecision()");
+  const permissionStart = uiTests.indexOf("func testPermissionGrantInitial()");
   const permissionBody = permissionStart >= 0 ? uiTests.slice(permissionStart) : "";
   assert.ok(permissionBody);
 
   for (const kind of ["camera", "microphone", "notification"]) assert.match(uiTests, new RegExp(`"${kind}"`));
   assert.match(uiTests, /\\\(kind\) 권한 요청/);
   for (const state of ["GRANTED", "DENIED"]) assert.match(uiTests, new RegExp(state));
-  assert.match(permissionBody, /DAON_PERMISSION_PHASE/);
   assert.match(permissionBody, /grant-initial/);
   assert.match(permissionBody, /revoke/);
   assert.match(permissionBody, /grant-again/);
@@ -862,12 +909,16 @@ test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Se
   assert.match(permissionBody, /"알림 허용"/);
   assert.match(permissionBody, /notificationSwitchIsEnabled/);
   assert.match(permissionBody, /app\.activate\(\)[\s\S]*requireRootReady\(app\)/);
-  assert.match(permissionBody, /권한 결과|DAON_PERMISSION_EXPECTED/);
+  assert.match(permissionBody, /권한 결과/);
   assert.match(shell, /requestPermission\(kind\)/);
   assert.match(shell, /권한 결과/);
   for (const phase of ["grant-initial", "revoke", "grant-again"]) assert.match(script, new RegExp(phase));
   assert.match(script, /grant-initial\|revoke\|grant-again/);
-  assert.match(script, /DAON_PERMISSION_PHASE="\$\{phase\}" DAON_PERMISSION_EXPECTED="\$\{expected\}" xcodebuild/);
+  assert.match(script, /permission_test_method="testPermissionGrantInitial"/);
+  assert.match(script, /permission_test_method="testPermissionRevoke"/);
+  assert.match(script, /permission_test_method="testPermissionGrantAgain"/);
+  assert.match(script, /-only-testing:DaonUITests\/DaonUITests\/\$\{permission_test_method\}/);
+  assert.doesNotMatch(`${script}\n${uiTests}`, /DAON_PERMISSION_(?:PHASE|EXPECTED)/);
   assert.equal((script.match(/simctl privacy[^\n]*camera/g) ?? []).length, 1);
   assert.equal((script.match(/simctl privacy[^\n]*microphone/g) ?? []).length, 1);
   assert.doesNotMatch(script, /simctl privacy[^\n]*notifications/i);
