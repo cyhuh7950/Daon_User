@@ -194,12 +194,31 @@ test("iOS 알림 설정 진입은 공개 URL과 iOS 15.1 generic fallback을 사
   assert.match(method, /UIApplication\.openNotificationSettingsURLString/);
   assert.match(method, /UIApplication\.openSettingsURLString/);
   assert.match(method, /IOS_NOTIFICATION_SETTINGS_URL_UNAVAILABLE/);
-  assert.match(method, /UIApplication\.shared\.open\(url, options: \[:\]\) \{ resolve\(\$0\) \}/);
+  assert.match(method, /UIApplication\.shared\.open\(url, options: \[:\]\) \{ opened in[\s\S]*?resolve\(opened\)/);
   assert.doesNotMatch(method, /App-Prefs|prefs:|TCC|simctl|defaults\s+(?:write|delete)/i);
   assert.match(host, /openNotificationSettings\(\): Promise<boolean>/);
   assert.match(host, /export async function openIOSNotificationSettings\(\): Promise<void>/);
   assert.match(host, /await nativeHost\?\.openNotificationSettings\(\)/);
   assert.match(host, /openNotificationSettings: openIOSNotificationSettings/);
+});
+
+test("iOS 알림 설정 Open은 직전 권한 상태와 Bool 결과만 고정 Marker로 기록한다", async () => {
+  const nativeHost = await read("apps/mobile/ios/Daon/DaonIOSHost.swift");
+  const methodStart = nativeHost.indexOf("@objc(openNotificationSettings:rejecter:)");
+  const methodEnd = nativeHost.indexOf("static func recordLifecycleState", methodStart);
+  const method = methodStart >= 0 && methodEnd > methodStart ? nativeHost.slice(methodStart, methodEnd) : "";
+  assert.ok(method);
+  const settingsRead = method.indexOf("UNUserNotificationCenter.current().getNotificationSettings");
+  const normalizedAuth = method.indexOf("Self.notificationPermissionState(settings.authorizationStatus)");
+  const urlSelection = method.indexOf("if #available(iOS 16.0, *)");
+  const openCall = method.indexOf("UIApplication.shared.open(url, options: [:])");
+  const marker = method.indexOf("DAON_NOTIFICATION_SETTINGS_OPEN_RESULT=%@ AUTH=%@");
+  const resolve = method.indexOf("resolve(opened)");
+  assert.ok(settingsRead >= 0 && normalizedAuth > settingsRead && urlSelection > normalizedAuth && openCall > urlSelection && marker > openCall && resolve > marker);
+  assert.match(method, /let openResult = opened \? "OPENED" : "FAILED"/);
+  assert.match(method, /NSLog\("DAON_NOTIFICATION_SETTINGS_OPEN_RESULT=%@ AUTH=%@", openResult, authorizationState\)/);
+  assert.equal((method.match(/DAON_NOTIFICATION_SETTINGS_OPEN_RESULT=/g) ?? []).length, 1);
+  assert.doesNotMatch(method, /registerForRemoteNotifications|APNs|authorizationStatus\.rawValue|App-Prefs|prefs:|TCC/i);
 });
 
 test("Mobile Shell은 선택적 알림 설정 버튼과 기존 generic 설정 버튼을 함께 보존한다", async () => {
@@ -727,6 +746,87 @@ test("Permission XCTest 최종 Settings 진단은 검증된 마지막 한 줄만
     assert.deepEqual(notices(mismatchedCount.stdout), []);
 
     const success = run(0, validOne);
+    assert.equal(success.status, 0, success.stderr);
+    assert.deepEqual(notices(success.stdout), []);
+    assert.deepEqual(errors(success.stdout), []);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Permission 실패는 마지막 알림 설정 Open Marker만 안전 검증해 Notice로 공개한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const helperStart = script.indexOf("is_allowed_permission_failure_code() {");
+  const permissionStart = script.indexOf("run_permission_phase() {", helperStart);
+  const permissionEnd = script.indexOf('\n}\n\nDAON_SIM_STAGE="APP_ARTIFACT"', permissionStart);
+  const contract = helperStart >= 0 && permissionStart > helperStart && permissionEnd > permissionStart
+    ? script.slice(helperStart, permissionEnd + 2)
+    : "";
+  assert.ok(contract);
+  assert.match(contract, /report_notification_settings_open_notice\(\)/);
+  assert.match(contract, /log show --last 5m --style compact/);
+  assert.match(contract, /process == "Daon"/);
+  assert.match(contract, /DAON_NOTIFICATION_SETTINGS_OPEN_RESULT=/);
+  assert.match(contract, /\(OPENED\|FAILED\).*\(GRANTED\|DENIED\|NOT_REQUESTED\|RESTRICTED\)/);
+  assert.match(contract, /tail -n 1/);
+  assert.match(contract, /mktemp/);
+  assert.match(contract, /unlink/);
+  assert.doesNotMatch(contract, /::notice::[^\n]*(?:log_file|SIMULATOR_UDID|REPOSITORY_ROOT|DERIVED_DATA)|printenv|eval/i);
+
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-open-result-notice-"));
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const fixture = `set -Eeuo pipefail\nSIMULATOR_UDID=11111111-2222-3333-4444-555555555555\nBUNDLE_ID=com.sinsan.daon\nREPOSITORY_ROOT=/repo\nDERIVED_DATA=/derived\nDAON_SIM_PERMISSION_SERVICE=""\nxcrun(){\n  if [[ "\$*" == *"log show"* ]]; then\n    printf '%s\\n' "\${UNIFIED_LOG}"\n    return "\${LOG_EXIT}"\n  fi\n  return 0\n}\nxcodebuild(){ printf '%s\\n' "\${XCODE_RAW}"; return "\${XCODE_EXIT}"; }\n${contract}\nrun_permission_phase revoke revoke DENIED`;
+  const fixturePath = path.join(fixtureRoot, "open-result-notice-fixture.sh");
+  await writeFile(fixturePath, fixture, "utf8");
+  const run = ({ xcodeExit = 65, raw = "missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]", unified = "", logExit = 0 } = {}) => spawnSync(bash, [fixturePath], {
+    cwd: fixtureRoot,
+    env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), XCODE_EXIT: String(xcodeExit), XCODE_RAW: raw, UNIFIED_LOG: unified, LOG_EXIT: String(logExit) },
+    encoding: "utf8"
+  });
+  const notices = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::notice::DAON_NOTIFICATION_SETTINGS_OPEN_RESULT="));
+  const errors = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::error::"));
+
+  try {
+    for (const auth of ["GRANTED", "DENIED", "NOT_REQUESTED", "RESTRICTED"]) {
+      const marker = `DAON_NOTIFICATION_SETTINGS_OPEN_RESULT=OPENED AUTH=${auth}`;
+      const result = run({ unified: `timestamp Daon[1] ${marker}` });
+      assert.equal(result.status, 65, result.stderr);
+      assert.deepEqual(notices(result.stdout), [`::notice::${marker}`]);
+      assert.deepEqual(errors(result.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_COMPOSITE_ROW_ZERO PHASE=revoke EXIT=65"]);
+    }
+
+    const failedMarker = "DAON_NOTIFICATION_SETTINGS_OPEN_RESULT=FAILED AUTH=DENIED";
+    const failed = run({ unified: `prefix ${failedMarker}` });
+    assert.equal(failed.status, 65, failed.stderr);
+    assert.deepEqual(notices(failed.stdout), [`::notice::${failedMarker}`]);
+
+    const absent = run();
+    assert.equal(absent.status, 65, absent.stderr);
+    assert.deepEqual(notices(absent.stdout), []);
+
+    const validFirst = "DAON_NOTIFICATION_SETTINGS_OPEN_RESULT=OPENED AUTH=DENIED";
+    const validLast = "DAON_NOTIFICATION_SETTINGS_OPEN_RESULT=FAILED AUTH=RESTRICTED";
+    const multiple = run({ unified: `${validFirst}\n${validLast}` });
+    assert.equal(multiple.status, 65, multiple.stderr);
+    assert.deepEqual(notices(multiple.stdout), [`::notice::${validLast}`]);
+
+    for (const invalidLast of [
+      `${validFirst}\nDAON_NOTIFICATION_SETTINGS_OPEN_RESULT=OPENED AUTH=PRIVATE`,
+      `${validFirst}\nDAON_NOTIFICATION_SETTINGS_OPEN_RESULT=OPENED AUTH=DENIED::error::SECRET`,
+      `${validFirst}\nDAON_NOTIFICATION_SETTINGS_OPEN_RESULT=OPENED AUTH=DENIED %0A PRIVATE`
+    ]) {
+      const invalid = run({ unified: invalidLast });
+      assert.equal(invalid.status, 65, invalid.stderr);
+      assert.deepEqual(notices(invalid.stdout), []);
+      assert.doesNotMatch(invalid.stdout, /SECRET|PRIVATE/);
+    }
+
+    const collectionFailure = run({ unified: validFirst, logExit: 23 });
+    assert.equal(collectionFailure.status, 65, collectionFailure.stderr);
+    assert.deepEqual(notices(collectionFailure.stdout), []);
+    assert.deepEqual(errors(collectionFailure.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_COMPOSITE_ROW_ZERO PHASE=revoke EXIT=65"]);
+
+    const success = run({ xcodeExit: 0, unified: validFirst });
     assert.equal(success.status, 0, success.stderr);
     assert.deepEqual(notices(success.stdout), []);
     assert.deepEqual(errors(success.stdout), []);
