@@ -226,7 +226,7 @@ final class DaonUITests: XCTestCase {
   private func requireExactNotificationSettingsRow(in settings: XCUIApplication) throws -> XCUIElement {
     let exactLabelPredicate = NSPredicate(format: "label == %@ OR label == %@", "Notifications", "알림")
     let directQuery = settings.descendants(matching: .any).matching(exactLabelPredicate)
-    let semanticCellQuery = settings.cells.containing(.staticText, predicate: exactLabelPredicate)
+    let semanticCellQuery = settings.cells.containing(exactLabelPredicate)
     permissionXCTestStage(.settingsNotificationQueryCreated)
     let appeared = XCTNSPredicateExpectation(
       predicate: NSPredicate { object, _ in

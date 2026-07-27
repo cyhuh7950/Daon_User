@@ -923,8 +923,9 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   assert.ok(helper, "Notifications exact Label row helper is required");
   assert.match(helper, /let exactLabelPredicate = NSPredicate\(format: "label == %@ OR label == %@", "Notifications", "알림"\)/);
   assert.match(helper, /let directQuery = settings\.descendants\(matching: \.any\)\.matching\(exactLabelPredicate\)/);
-  assert.match(helper, /let semanticCellQuery = settings\.cells\.containing\(\.staticText, predicate: exactLabelPredicate\)/);
-  assert.equal((helper.match(/settings\.cells\.containing\(\.staticText, predicate: exactLabelPredicate\)/g) ?? []).length, 1);
+  assert.match(helper, /let semanticCellQuery = settings\.cells\.containing\(exactLabelPredicate\)/);
+  assert.equal((helper.match(/settings\.cells\.containing\(exactLabelPredicate\)/g) ?? []).length, 1);
+  assert.doesNotMatch(helper, /\.containing\(\.staticText, predicate:/);
   assert.doesNotMatch(helper, /NSPredicate\(format:[^\n]*isHittable/);
   assert.match(helper, /directQuery\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
   assert.match(helper, /semanticCellQuery\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
