@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -232,7 +231,7 @@ test("macOS Workflow는 uv Metadata를 보존하면서 두 번째 버전 토큰�
   assert.match(manifest, /IOS_UV_VERSION="\$\(uv --version 2>\/dev\/null \|\| true\)"/);
 });
 
-test("macOS Workflow는 승인 CocoaPods를 Runner 전역과 분리해 현재·후속 Step에서 우선 선택한다", async (t) => {
+test("macOS Workflow는 승인 CocoaPods를 Runner 전역과 분리한 Gem Home에서 실행한다", async () => {
   const workflow = await readJson(".github/workflows/release-1-ios-phase-a.yml");
   const steps = workflow.jobs["ios-phase-a"].steps;
   const install = steps.find((step) => step.id === "cocoapods")?.run ?? "";
@@ -244,72 +243,43 @@ test("macOS Workflow는 승인 CocoaPods를 Runner 전역과 분리해 현재·�
   assert.match(install, /--install-dir "\$\{POD_GEM_HOME\}" --bindir "\$\{POD_GEM_BIN\}"/);
   assert.match(install, /export GEM_HOME="\$\{POD_GEM_HOME\}"/);
   assert.match(install, /export GEM_PATH="\$\{POD_GEM_HOME\}:\$\{DEFAULT_GEM_PATH\}"/);
-  assert.match(install, /export PATH="\$\{POD_GEM_BIN\}:\$\{PATH\}"/);
-  assert.match(install, /GITHUB_PATH/);
   assert.match(install, /GITHUB_ENV/);
-  assert.match(pods, /test "\$\("\$\{DAON_POD_BIN\}" --version\)" = "1\.16\.2"/);
+  assert.match(pods, /test "\$\(ruby "\$\{DAON_POD_SCRIPT\}" --version\)" = "1\.16\.2"/);
   assert.doesNotMatch(install, /gem uninstall|sudo|rm\s+-[rf]/);
-  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\("\$\{DAON_POD_BIN\}" --version 2>\/dev\/null \|\| true\)"/);
-
-  const fixture = await mkdtemp(path.join(os.tmpdir(), "daon-cocoapods-path-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
-  const runnerBin = path.join(fixture, "runner-bin");
-  const isolatedHome = path.join(fixture, "isolated-gems");
-  const isolatedBin = path.join(fixture, "isolated-bin");
-  await Promise.all([mkdir(runnerBin), mkdir(isolatedHome), mkdir(isolatedBin)]);
-  const makePod = async (directory, version) => {
-    const file = path.join(directory, "pod");
-    await writeFile(file, `#!/usr/bin/env bash\nprintf '%s\\n' '${version}'\n`, "utf8");
-    await chmod(file, 0o755);
-  };
-  await makePod(runnerBin, "1.17.0");
-  await makePod(isolatedBin, "1.16.2");
-  const githubPath = path.join(fixture, "github-path.txt");
-  const githubEnv = path.join(fixture, "github-env.txt");
-  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
-  const toShellPath = (value) => process.platform === "win32"
-    ? execFileSync(bash, ["-lc", "cygpath -u \"$FIXTURE_PATH\""], { env: { ...process.env, FIXTURE_PATH: value }, encoding: "utf8" }).trim()
-    : value;
-  const [runnerShell, homeShell, isolatedShell, githubPathShell, githubEnvShell] = [runnerBin, isolatedHome, isolatedBin, githubPath, githubEnv].map(toShellPath);
-  const current = spawnSync(bash, ["-c", `set -euo pipefail
-export GEM_HOME="$1"
-export GEM_PATH="$1:$4"
-export PATH="$2:$3:$PATH"
-printf '%s\\n' "$2" >> "$5"
-printf 'GEM_HOME=%s\\nGEM_PATH=%s\\n' "$GEM_HOME" "$GEM_PATH" >> "$6"
-test "$(pod --version)" = "1.16.2"`, "bash", homeShell, isolatedShell, runnerShell, "/existing/default/gems", githubPathShell, githubEnvShell], { encoding: "utf8" });
-  assert.equal(current.status, 0, current.stderr);
-
-  const persistedPath = (await readFile(githubPath, "utf8")).trim();
-  const persistedEnv = Object.fromEntries((await readFile(githubEnv, "utf8")).trim().split("\n").map((line) => line.split(/=(.*)/s).slice(0, 2)));
-  const next = spawnSync(bash, ["-c", `set -euo pipefail
-export GEM_HOME="$1" GEM_PATH="$2" PATH="$3:$4:$PATH"
-test "$(pod --version)" = "1.16.2"`, "bash", persistedEnv.GEM_HOME, persistedEnv.GEM_PATH, persistedPath, runnerShell], { encoding: "utf8" });
-  assert.equal(next.status, 0, next.stderr);
+  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\(ruby "\$\{DAON_POD_SCRIPT\}" --version 2>\/dev\/null \|\| true\)"/);
 });
 
-test("macOS Workflow는 승인 pod 절대경로를 현재·후속 Pods·Manifest에 동일 결속하고 일반 pod로 Fallback하지 않는다", async () => {
+test("macOS Workflow는 승인 CocoaPods Gem 본체 Script를 ruby로 직접 호출하고 다른 버전을 거부한다", async () => {
   const workflow = await readJson(".github/workflows/release-1-ios-phase-a.yml");
   const steps = workflow.jobs["ios-phase-a"].steps;
   const install = steps.find((step) => step.id === "cocoapods")?.run ?? "";
   const pods = steps.find((step) => step.id === "pods")?.run ?? "";
   const manifest = steps.find((step) => step.id === "manifest")?.run ?? "";
 
-  assert.match(install, /export DAON_POD_BIN="\$\{POD_GEM_BIN\}\/pod"/);
-  assert.match(install, /test -x "\$\{DAON_POD_BIN\}"/);
-  assert.match(install, /test "\$\("\$\{DAON_POD_BIN\}" --version\)" = "1\.16\.2"/);
-  assert.match(install, /DAON_POD_BIN=%s[^\n]*GITHUB_ENV/);
+  assert.match(install, /export DAON_POD_SCRIPT="\$\{POD_GEM_HOME\}\/gems\/cocoapods-1\.16\.2\/bin\/pod"/);
+  assert.match(install, /test -f "\$\{DAON_POD_SCRIPT\}"/);
+  assert.match(install, /DAON_POD_SCRIPT=%s[^\n]*GITHUB_ENV/);
+  const versionContract = install.split("\n").filter((line) => /^DAON_POD_VERSION=/.test(line) || /^printf 'CocoaPods version:/.test(line) || /^test "\$\{DAON_POD_VERSION\}"/.test(line));
+  assert.equal(versionContract.length, 3);
+  assert.match(versionContract[0], /ruby "\$\{DAON_POD_SCRIPT\}" --version/);
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const contract = `set -euo pipefail\nDAON_POD_SCRIPT=/fixture/pod\nruby() { printf '%s\\n' "\${POD_VERSION_OUTPUT}"; }\n${versionContract.join("\n")}`;
+  const run = (version) => spawnSync(bash, ["-c", contract], { env: { ...process.env, POD_VERSION_OUTPUT: version }, encoding: "utf8" });
+  const approved = run("1.16.2");
+  assert.equal(approved.status, 0, approved.stderr);
+  assert.match(approved.stdout, /CocoaPods version: 1\.16\.2/);
+  assert.notEqual(run("1.17.0").status, 0);
 
-  assert.match(pods, /DAON_POD_BIN:\?/);
-  assert.match(pods, /test -x "\$\{DAON_POD_BIN\}"/);
-  assert.match(pods, /test "\$\("\$\{DAON_POD_BIN\}" --version\)" = "1\.16\.2"/);
-  assert.equal((pods.match(/"\$\{DAON_POD_BIN\}" install/g) ?? []).length, 2);
+  assert.match(pods, /DAON_POD_SCRIPT:\?/);
+  assert.match(pods, /test -f "\$\{DAON_POD_SCRIPT\}"/);
+  assert.match(pods, /test "\$\(ruby "\$\{DAON_POD_SCRIPT\}" --version\)" = "1\.16\.2"/);
+  assert.equal((pods.match(/ruby "\$\{DAON_POD_SCRIPT\}" install/g) ?? []).length, 2);
 
   assert.match(manifest, /IOS_COCOAPODS_VERSION=""/);
-  assert.match(manifest, /\[ -n "\$\{DAON_POD_BIN:-\}" \] && \[ -x "\$\{DAON_POD_BIN\}" \]/);
-  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\("\$\{DAON_POD_BIN\}" --version 2>\/dev\/null \|\| true\)"/);
+  assert.match(manifest, /\[ -n "\$\{DAON_POD_SCRIPT:-\}" \] && \[ -f "\$\{DAON_POD_SCRIPT\}" \]/);
+  assert.match(manifest, /IOS_COCOAPODS_VERSION="\$\(ruby "\$\{DAON_POD_SCRIPT\}" --version 2>\/dev\/null \|\| true\)"/);
   for (const source of [install, pods, manifest]) {
-    assert.doesNotMatch(source, /(^|\n)pod(?:\s|$)|\$\(pod\s/);
+    assert.doesNotMatch(source, /(^|\n)pod(?:\s|$)|\$\(pod\s|DAON_POD_BIN|"\$\{POD_GEM_BIN\}\/pod"/);
   }
 });
 
