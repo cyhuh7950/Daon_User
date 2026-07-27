@@ -198,6 +198,21 @@ test("iOS App 진입점은 공용 Shell에 iOS Adapter를 주입하고 Android A
   assert.doesNotMatch(mobileShell, /ios\/|android\//);
 });
 
+test("iOS App은 Listener 설치 뒤 Null Restore의 기본 Home만 기존 Route 계약으로 저장한다", async () => {
+  const app = await read("apps/mobile/src/App.tsx");
+  const iosBranch = app.slice(app.indexOf('if (Platform.OS === "ios")'), app.indexOf("  }, []);"));
+  const subscribeDeepLinksIndex = iosBranch.indexOf("subscribeIOSDeepLinks(setRequestedNativeRouteKey)");
+  const subscribeLifecycleIndex = iosBranch.indexOf("subscribeIOSLifecycle(() => undefined)");
+  const restoreIndex = iosBranch.indexOf("restoreIOSNavigationRoute().then");
+  const defaultSaveIndex = iosBranch.indexOf('saveIOSNavigationRoute("Home")');
+  assert.ok(subscribeDeepLinksIndex >= 0 && subscribeDeepLinksIndex < restoreIndex);
+  assert.ok(subscribeLifecycleIndex >= 0 && subscribeLifecycleIndex < restoreIndex);
+  assert.ok(restoreIndex < defaultSaveIndex);
+  assert.match(iosBranch, /restoreIOSNavigationRoute\(\)\.then\(\(restoredRoute\) => \{[\s\S]*?setInitialNativeRouteKey\(restoredRoute\);[\s\S]*?if \(restoredRoute === null\) \{[\s\S]*?void saveIOSNavigationRoute\("Home"\);[\s\S]*?\}/);
+  assert.equal((app.match(/saveIOSNavigationRoute\("Home"\)/g) ?? []).length, 1);
+  assert.doesNotMatch(app, /saveAndroidNavigationRoute\("Home"\)/);
+});
+
 test("iOS Simulator Build 계약은 Signing 자산을 요구하거나 저장하지 않는다", async () => {
   const project = await read("apps/mobile/ios/Daon.xcodeproj/project.pbxproj");
   const workflow = await read(".github/workflows/release-1-ios-phase-a.yml");
@@ -333,6 +348,21 @@ test("CI Script는 8 Route·비정상 Deep Link·Lifecycle·권한·Crash/Secret
   assert.match(script, /run_permission_phase grant-initial grant GRANTED/);
   assert.match(script, /run_permission_phase revoke revoke DENIED/);
   assert.match(script, /run_permission_phase grant-again grant GRANTED/);
+});
+
+test("Simulator 검증은 Route Key만 초기화하고 Home 준비 뒤 Warm Deep Link 7종을 검증한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  assert.match(script, /clear_navigation_route\(\)[\s\S]*?get_app_container[\s\S]*?plutil -remove native_route_key "\$\{container\}\/Library\/Preferences\/\$\{BUNDLE_ID\}\.plist"/);
+  assert.doesNotMatch(script, /plutil -remove (?!native_route_key)|defaults delete|erase|uninstall|rm\s/);
+  const installIndex = script.indexOf('simctl install "${SIMULATOR_UDID}" "${APP_PATH}"');
+  const clearIndex = script.indexOf("clear_navigation_route", installIndex);
+  const launchIndex = script.indexOf('simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}"', clearIndex);
+  const homeReadyIndex = script.indexOf("wait_for_route Home", launchIndex);
+  const warmRoutesIndex = script.indexOf("warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)", homeReadyIndex);
+  const warmOpenURLIndex = script.indexOf('simctl openurl "${SIMULATOR_UDID}" "sinsan-daon://app/${route}"', warmRoutesIndex);
+  assert.ok(installIndex >= 0 && installIndex < clearIndex && clearIndex < launchIndex && launchIndex < homeReadyIndex && homeReadyIndex < warmRoutesIndex && warmRoutesIndex < warmOpenURLIndex);
+  assert.doesNotMatch(script, /simctl openurl[^\n]*sinsan-daon:\/\/app\/Home(?:"|\s|$)/);
+  assert.equal((script.match(/for _ in \{1\.\.20\}/g) ?? []).length, 1);
 });
 
 test("Binary 금지 Pattern은 Source 자기탐지 없이 Runtime에서 기존 Client 내부 API 토큰을 탐지한다", async () => {

@@ -33,6 +33,12 @@ read_preference() {
   plutil -extract "${key}" raw "${container}/Library/Preferences/${BUNDLE_ID}.plist"
 }
 
+clear_navigation_route() {
+  local container
+  container="$(xcrun simctl get_app_container "${SIMULATOR_UDID}" "${BUNDLE_ID}" data)"
+  plutil -remove native_route_key "${container}/Library/Preferences/${BUNDLE_ID}.plist"
+}
+
 wait_for_route() {
   local expected="$1"
   local actual=""
@@ -68,10 +74,12 @@ run_permission_phase() {
 [[ -d "${APP_PATH}" ]]
 xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
 xcrun simctl install "${SIMULATOR_UDID}" "${APP_PATH}"
+clear_navigation_route
 xcrun simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}" | tee "${EVIDENCE_DIR}/launch.log"
+wait_for_route Home
 
-approved_routes=(Home WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)
-for route in "${approved_routes[@]}"; do
+warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)
+for route in "${warm_routes[@]}"; do
   xcrun simctl openurl "${SIMULATOR_UDID}" "sinsan-daon://app/${route}"
   wait_for_route "${route}"
 done

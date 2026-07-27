@@ -24,9 +24,14 @@ export default function App({ clientType }: MobileHostProps) {
       return () => { removeDeepLinks(); removeLifecycle(); };
     }
     if (Platform.OS === "ios") {
-      void restoreIOSNavigationRoute().then(setInitialNativeRouteKey);
       const removeDeepLinks = subscribeIOSDeepLinks(setRequestedNativeRouteKey);
       const removeLifecycle = subscribeIOSLifecycle(() => undefined);
+      void restoreIOSNavigationRoute().then((restoredRoute) => {
+        setInitialNativeRouteKey(restoredRoute);
+        if (restoredRoute === null) {
+          void saveIOSNavigationRoute("Home");
+        }
+      });
       return () => { removeDeepLinks(); removeLifecycle(); };
     }
   }, []);
