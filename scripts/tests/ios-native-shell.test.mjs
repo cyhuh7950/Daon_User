@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -158,10 +159,11 @@ test("iOS App 진입점은 공용 Shell에 iOS Adapter를 주입하고 Android A
 test("iOS Simulator Build 계약은 Signing 자산을 요구하거나 저장하지 않는다", async () => {
   const project = await read("apps/mobile/ios/Daon.xcodeproj/project.pbxproj");
   const workflow = await read(".github/workflows/release-1-ios-phase-a.yml");
+  const uiTestRunner = await read("apps/mobile/ios/ci/run-ui-tests-with-diagnostics.sh");
   const files = await listFiles(iosRoot);
   const relative = files.map((file) => path.relative(iosRoot, file).replaceAll("\\", "/"));
   assert.doesNotMatch(project, /DEVELOPMENT_TEAM|PROVISIONING_PROFILE|CODE_SIGN_IDENTITY/);
-  assert.match(workflow, /CODE_SIGNING_ALLOWED=NO/);
+  assert.match(`${workflow}\n${uiTestRunner}`, /CODE_SIGNING_ALLOWED=NO/);
   assert.equal(relative.some((file) => /\.p12$|\.mobileprovision$|\.cer$|private[_-]?key/i.test(file)), false);
   assert.doesNotMatch(workflow, /secrets\.|DEVELOPMENT_TEAM|PROVISIONING_PROFILE|CODE_SIGN_IDENTITY/);
 });
@@ -178,13 +180,14 @@ test("iOS 전용 Gate와 macOS Build 진입점은 기존 Mobile 표준 명령을
 
 test("GitHub macOS Workflow는 exact Pin·Simulator 검증·실패 Artifact 계약을 고정한다", async () => {
   const workflow = await readJson(".github/workflows/release-1-ios-phase-a.yml");
+  const uiTestRunner = await read("apps/mobile/ios/ci/run-ui-tests-with-diagnostics.sh");
   const simulatorPreparation = await read("apps/mobile/ios/ci/prepare-simulator.mjs");
   assert.deepEqual(workflow.on.pull_request.branches, ["codex/release-1"]);
   assert.deepEqual(workflow.permissions, { contents: "read" });
   const job = workflow.jobs["ios-phase-a"];
   assert.equal(job["runs-on"], "macos-26");
   assert.ok(job["timeout-minutes"] > 0);
-  const serialized = JSON.stringify(workflow);
+  const serialized = `${JSON.stringify(workflow)}\n${uiTestRunner}`;
   for (const token of ["fetch-depth", "Xcode_26.6.app", "1.16.2", "24.18.0", "11.12.1", "CODE_SIGNING_ALLOWED=NO", "upload-artifact@v6", "if-no-files-found", "always()", "github.sha"]) {
     assert.match(serialized, new RegExp(token.replaceAll(".", "\\.")));
   }
@@ -193,6 +196,72 @@ test("GitHub macOS Workflow는 exact Pin·Simulator 검증·실패 Artifact 계�
   const simulatorVerification = await read("apps/mobile/ios/ci/verify-simulator.sh");
   for (const action of ["install", "launch", "openurl", "terminate"]) assert.match(simulatorVerification, new RegExp(`simctl ${action}`));
   assert.doesNotMatch(serialized, /macos-latest|xcode-select.*latest|continue-on-error/);
+});
+
+test("UI Test Runner는 원래 Exit를 보존하고 Cleanup 전에 현대 xcresult·정확 구간 Log·Crash 진단을 수집한다", async () => {
+  const workflow = await readJson(".github/workflows/release-1-ios-phase-a.yml");
+  const runner = await read("apps/mobile/ios/ci/run-ui-tests-with-diagnostics.sh");
+  const steps = workflow.jobs["ios-phase-a"].steps;
+  const uiTestsIndex = steps.findIndex((step) => step.id === "ui-tests");
+  const cleanupIndex = steps.findIndex((step) => step.name === "Shutdown simulator");
+  const uploadIndex = steps.findIndex((step) => step.name === "Upload exact-SHA Phase A evidence");
+  assert.ok(uiTestsIndex >= 0 && uiTestsIndex < cleanupIndex && cleanupIndex < uploadIndex);
+  assert.equal(steps[cleanupIndex].if, "${{ always() }}");
+  assert.equal(steps[uploadIndex].if, "${{ always() }}");
+  assert.match(steps[uiTestsIndex].run, /run-ui-tests-with-diagnostics\.sh/);
+  assert.match(runner, /TEST_EXIT_CODE=\$\?/);
+  assert.match(runner, /exit "\$\{TEST_EXIT_CODE\}"/);
+  assert.match(runner, /xcresulttool get test-results summary/);
+  assert.match(runner, /xcresulttool get test-results tests/);
+  assert.match(runner, /xcresulttool export attachments/);
+  assert.doesNotMatch(runner, /xcresulttool get object|--legacy/);
+  assert.match(runner, /simctl spawn "\$\{SIMULATOR_UDID\}" log show/);
+  assert.match(runner, /--start "\$\{TEST_START_UTC\}" --end "\$\{TEST_END_UTC\}"/);
+  assert.match(runner, /process == "Daon"/);
+  assert.match(runner, /DiagnosticReports/);
+  assert.match(runner, /diagnostic-status\.txt/);
+  assert.match(JSON.stringify(steps[uploadIndex]), /artifacts\/ios-phase-a/);
+});
+
+test("UI Test 진단 오류 Fixture는 원래 XCTest Exit 65를 성공으로 바꾸지 않는다", async () => {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-ios-ui-diagnostics-"));
+  const evidenceDir = path.join(fixtureRoot, "evidence");
+  const resultBundle = path.join(evidenceDir, "DaonUITests.xcresult");
+  const runner = path.join(iosRoot, "ci/run-ui-tests-with-diagnostics.sh");
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  await mkdir(resultBundle, { recursive: true });
+  try {
+    const fixture = spawnSync(bash, ["-c", 'xcodebuild(){ return 65; }; xcrun(){ return 44; }; export -f xcodebuild xcrun; bash "$1"', "fixture", runner], {
+      cwd: fixtureRoot,
+      env: {
+        ...process.env,
+        SIMULATOR_UDID: "11111111-2222-3333-4444-555555555555",
+        IOS_EVIDENCE_DIR: "evidence",
+        IOS_DERIVED_DATA: "DerivedData",
+        IOS_RESULT_BUNDLE: "evidence/DaonUITests.xcresult",
+        IOS_DIAGNOSTIC_REPORTS_DIR: "DiagnosticReports",
+        RUNNER_TEMP: "."
+      },
+      encoding: "utf8"
+    });
+    assert.equal(fixture.status, 65, fixture.stderr);
+    const status = await readFile(path.join(evidenceDir, "diagnostics/diagnostic-status.txt"), "utf8");
+    assert.match(status, /^test_exit_code=65$/m);
+    assert.match(status, /^xcresult_summary=failure:44$/m);
+    assert.match(status, /^simulator_unified_log=failure:44$/m);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("UI Test는 각 Scenario 전에 접근성 Root와 runningForeground를 Fail-close 확인한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  assert.match(uiTests, /private func launchAndRequireRootReady/);
+  assert.match(uiTests, /Daon ios 공용 Shell/);
+  assert.match(uiTests, /wait\(for: \.runningForeground/);
+  assert.equal((uiTests.match(/launchAndRequireRootReady\(app\)/g) ?? []).length, 5);
+  assert.match(uiTests, /continueAfterFailure\s*=\s*false/);
+  assert.doesNotMatch(uiTests, /XCTSkip|continueAfterFailure\s*=\s*true/);
 });
 
 test("CI Script는 8 Route·비정상 Deep Link·Lifecycle·권한·Crash/Secret·종료를 Fail-close 검증한다", async () => {
@@ -237,6 +306,7 @@ test("GitHub macOS Workflow와 Manifest는 모든 필수 Step Outcome을 Fail-cl
   }
   assert.match(writer, /FAILED/);
   assert.match(writer, /INCOMPLETE/);
+  assert.match(writer, /run-ui-tests-with-diagnostics\.sh/);
   const embeddedNodePrograms = steps.flatMap((step) => [...(step.run ?? "").matchAll(/node -e '([^']+)'/g)].map((match) => match[1]));
   assert.ok(embeddedNodePrograms.length >= 2);
   for (const source of embeddedNodePrograms) assert.doesNotThrow(() => new Function(source));

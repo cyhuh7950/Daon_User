@@ -1,6 +1,23 @@
 import XCTest
 
 final class DaonUITests: XCTestCase {
+  override func setUp() {
+    super.setUp()
+    continueAfterFailure = false
+  }
+
+  private func requireRootReady(_ app: XCUIApplication) {
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "Daon process is not runningForeground")
+    let root = app.otherElements["Daon ios 공용 Shell"]
+    XCTAssertTrue(root.waitForExistence(timeout: 10), "Daon iOS root shell is unavailable")
+    XCTAssertEqual(app.state, .runningForeground, "Daon process left runningForeground before scenario interaction")
+  }
+
+  private func launchAndRequireRootReady(_ app: XCUIApplication) {
+    app.launch()
+    requireRootReady(app)
+  }
+
   private func openRoute(_ route: String, in app: XCUIApplication) {
     let button = app.buttons["\(route) 화면 열기"]
     let navigation = app.scrollViews["공용 Navigation"]
@@ -13,7 +30,7 @@ final class DaonUITests: XCTestCase {
 
   func testApprovedNavigationRoutesAreClickable() {
     let app = XCUIApplication()
-    app.launch()
+    launchAndRequireRootReady(app)
     for route in ["Home", "WorkspaceList", "WorkspaceDetail", "Inbox", "RunHistory", "Notifications", "ModelConnections", "AccountSettings"] {
       openRoute(route, in: app)
     }
@@ -21,19 +38,20 @@ final class DaonUITests: XCTestCase {
 
   func testForegroundBackgroundAndRelaunchPreserveApprovedRoute() {
     let app = XCUIApplication()
-    app.launch()
+    launchAndRequireRootReady(app)
     openRoute("Notifications", in: app)
     XCUIDevice.shared.press(.home)
     app.activate()
+    requireRootReady(app)
     XCTAssertTrue(app.staticTexts["Notifications"].waitForExistence(timeout: 5))
     app.terminate()
-    app.launch()
+    launchAndRequireRootReady(app)
     XCTAssertTrue(app.staticTexts["Notifications"].waitForExistence(timeout: 10))
   }
 
   func testPermissionControlsAndSettingsBoundary() {
     let app = XCUIApplication()
-    app.launch()
+    launchAndRequireRootReady(app)
     for kind in ["camera", "microphone", "notification"] {
       XCTAssertTrue(app.buttons["\(kind) 권한 요청"].waitForExistence(timeout: 10))
     }
@@ -54,7 +72,7 @@ final class DaonUITests: XCTestCase {
     }
     XCTAssertTrue(["GRANTED", "DENIED"].contains(expected), "DAON_PERMISSION_EXPECTED must be GRANTED or DENIED")
     let app = XCUIApplication()
-    app.launch()
+    launchAndRequireRootReady(app)
     let content = app.scrollViews["화면 내용"]
     XCTAssertTrue(content.waitForExistence(timeout: 10), "screen content is unavailable")
     for kind in ["camera", "microphone", "notification"] {

@@ -15,6 +15,7 @@ const requiredFiles = [
   "apps/mobile/ios/Daon/DaonIOSHost.swift",
   "apps/mobile/ios/DaonUITests/DaonUITests.swift",
   "apps/mobile/ios/ci/build-simulator.sh",
+  "apps/mobile/ios/ci/run-ui-tests-with-diagnostics.sh",
   "apps/mobile/ios/ci/verify-simulator.sh",
   ".github/workflows/release-1-ios-phase-a.yml"
 ];
