@@ -113,6 +113,7 @@ final class DaonUITests: XCTestCase {
   }
 
   func testPermissionRequestReflectsOSDecision() throws {
+    permissionXCTestStage(.phaseExpectedBinding)
     guard let rawPhase = ProcessInfo.processInfo.environment["DAON_PERMISSION_PHASE"] else {
       XCTFail("DAON_PERMISSION_PHASE is required by the deterministic permission phase")
       return
@@ -129,6 +130,7 @@ final class DaonUITests: XCTestCase {
     let phaseExpected = phase == .revoke ? "DENIED" : "GRANTED"
     XCTAssertEqual(expected, phaseExpected, "permission phase and expected result must remain coupled")
     let app = XCUIApplication()
+    permissionXCTestStage(.appLaunchRoot)
     launchAndRequireRootReady(app)
     let content = app.otherElements["화면 내용"]
     XCTAssertTrue(content.waitForExistence(timeout: 10), "screen content is unavailable")
@@ -140,6 +142,11 @@ final class DaonUITests: XCTestCase {
     }
 
     for kind in ["camera", "microphone", "notification"] {
+      switch kind {
+      case "camera": permissionXCTestStage(.cameraRequest)
+      case "microphone": permissionXCTestStage(.microphoneRequest)
+      default: permissionXCTestStage(.notificationRequest)
+      }
       let button = app.buttons["\(kind) 권한 요청"]
       for _ in 0..<8 where !button.isHittable { content.swipeUp() }
       XCTAssertTrue(button.waitForExistence(timeout: 10), "missing Production permission button: \(kind)")
@@ -149,6 +156,11 @@ final class DaonUITests: XCTestCase {
         try approveExpectedNotificationAlert()
       }
       let result = app.staticTexts["\(kind) 권한 결과 \(expected)"]
+      switch kind {
+      case "camera": permissionXCTestStage(.cameraResult)
+      case "microphone": permissionXCTestStage(.microphoneResult)
+      default: permissionXCTestStage(.notificationResult)
+      }
       XCTAssertTrue(result.waitForExistence(timeout: 10), "Production requestPermission result missing: \(kind):\(expected)")
     }
     app.terminate()
@@ -158,6 +170,31 @@ final class DaonUITests: XCTestCase {
     case grantInitial = "grant-initial"
     case revoke
     case grantAgain = "grant-again"
+  }
+
+  private enum PermissionXCTestStage: String {
+    case phaseExpectedBinding = "PHASE_EXPECTED_BINDING"
+    case appLaunchRoot = "APP_LAUNCH_ROOT"
+    case cameraRequest = "CAMERA_REQUEST"
+    case cameraResult = "CAMERA_RESULT"
+    case microphoneRequest = "MICROPHONE_REQUEST"
+    case microphoneResult = "MICROPHONE_RESULT"
+    case notificationRequest = "NOTIFICATION_REQUEST"
+    case alertTitle = "ALERT_TITLE"
+    case alertCount = "ALERT_COUNT"
+    case alertAllow = "ALERT_ALLOW"
+    case alertDismissal = "ALERT_DISMISSAL"
+    case settingsForeground = "SETTINGS_FOREGROUND"
+    case settingsNotificationRow = "SETTINGS_NOTIFICATION_ROW"
+    case settingsSwitchRead = "SETTINGS_SWITCH_READ"
+    case settingsSwitchToggle = "SETTINGS_SWITCH_TOGGLE"
+    case settingsSwitchVerify = "SETTINGS_SWITCH_VERIFY"
+    case appReturnRoot = "APP_RETURN_ROOT"
+    case notificationResult = "NOTIFICATION_RESULT"
+  }
+
+  private func permissionXCTestStage(_ stage: PermissionXCTestStage) {
+    print("DAON_PERMISSION_XCTEST_STAGE=\(stage.rawValue)")
   }
 
   private enum PermissionUIContractError: Error {
@@ -181,18 +218,22 @@ final class DaonUITests: XCTestCase {
 
   private func approveExpectedNotificationAlert() throws {
     let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    permissionXCTestStage(.alertTitle)
     _ = try requireExactElement([
       springboard.alerts.staticTexts["“Daon” Would Like to Send You Notifications"],
       springboard.alerts.staticTexts["\"Daon\" Would Like to Send You Notifications"],
       springboard.alerts.staticTexts["“Daon”이(가) 알림을 보내고자 합니다"]
     ], description: "Daon Notification alert title")
+    permissionXCTestStage(.alertCount)
     XCTAssertEqual(springboard.alerts.count, 1, "expected one Notification system alert")
+    permissionXCTestStage(.alertAllow)
     let allowButton = try requireExactElement([
       springboard.alerts.buttons["Allow"],
       springboard.alerts.buttons["허용"]
     ], description: "Notification Allow button")
     XCTAssertTrue(allowButton.isHittable, "Notification Allow button is not hittable")
     allowButton.tap()
+    permissionXCTestStage(.alertDismissal)
     let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: allowButton)
     XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed, "Notification alert did not close after Allow")
   }
@@ -205,7 +246,9 @@ final class DaonUITests: XCTestCase {
     settingsButton.tap()
 
     let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+    permissionXCTestStage(.settingsForeground)
     XCTAssertTrue(settings.wait(for: .runningForeground, timeout: 10), "Settings app is not runningForeground")
+    permissionXCTestStage(.settingsNotificationRow)
     let notificationsRow = try requireExactElement([
       settings.cells["Notifications"],
       settings.cells["알림"]
@@ -213,6 +256,7 @@ final class DaonUITests: XCTestCase {
     XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
     notificationsRow.tap()
 
+    permissionXCTestStage(.settingsSwitchRead)
     let allowNotifications = try requireExactElement([
       settings.switches["Allow Notifications"],
       settings.switches["알림 허용"]
@@ -220,11 +264,14 @@ final class DaonUITests: XCTestCase {
     XCTAssertTrue(allowNotifications.isHittable, "Allow Notifications switch is not hittable")
     let before = try notificationSwitchIsEnabled(allowNotifications)
     if before != target {
+      permissionXCTestStage(.settingsSwitchToggle)
       allowNotifications.tap()
     }
+    permissionXCTestStage(.settingsSwitchVerify)
     waitForNotificationSwitch(allowNotifications, enabled: target)
     XCTAssertEqual(try notificationSwitchIsEnabled(allowNotifications), target, "Allow Notifications switch did not reach the required phase state")
 
+    permissionXCTestStage(.appReturnRoot)
     app.activate()
     requireRootReady(app)
   }
