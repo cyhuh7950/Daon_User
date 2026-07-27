@@ -1,0 +1,99 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 54;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* libPods-Daon.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* libPods-Daon.a */; };
+		A10000000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* AppDelegate.swift */; };
+		A10000000000000000000003 /* DaonIOSHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* DaonIOSHost.swift */; };
+		A10000000000000000000004 /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* Images.xcassets */; };
+		A10000000000000000000005 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* LaunchScreen.storyboard */; };
+		A10000000000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* PrivacyInfo.xcprivacy */; };
+		A10000000000000000000007 /* DaonUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* DaonUITests.swift */; };
+		A10000000000000000000008 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* XCTest.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A30000000000000000000001 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = A90000000000000000000001 /* Project object */; proxyType = 1; remoteGlobalIDString = A70000000000000000000001; remoteInfo = Daon; };
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* libPods-Daon.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Daon.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Daon/AppDelegate.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* DaonIOSHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Daon/DaonIOSHost.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Daon/Images.xcassets; sourceTree = "<group>"; };
+		A20000000000000000000005 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = Daon/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		A20000000000000000000006 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Daon/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A20000000000000000000007 /* DaonUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaonUITests/DaonUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
+		A20000000000000000000009 /* Daon.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Daon.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000000A /* DaonUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DaonUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Daon/Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000000C /* Pods-Daon.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Daon.debug.xcconfig"; path = "Target Support Files/Pods-Daon/Pods-Daon.debug.xcconfig"; sourceTree = "<group>"; };
+		A2000000000000000000000D /* Pods-Daon.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Daon.release.xcconfig"; path = "Target Support Files/Pods-Daon/Pods-Daon.release.xcconfig"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A40000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001 /* libPods-Daon.a in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+		A40000000000000000000002 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000008 /* XCTest.framework in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A50000000000000000000001 = {isa = PBXGroup; children = (A50000000000000000000002 /* Daon */, A50000000000000000000003 /* DaonUITests */, A50000000000000000000004 /* Products */, A50000000000000000000005 /* Frameworks */, A50000000000000000000006 /* Pods */,); sourceTree = "<group>"; };
+		A50000000000000000000002 /* Daon */ = {isa = PBXGroup; children = (A20000000000000000000002, A20000000000000000000003, A2000000000000000000000B, A20000000000000000000005, A20000000000000000000004, A20000000000000000000006,); name = Daon; sourceTree = "<group>"; };
+		A50000000000000000000003 /* DaonUITests */ = {isa = PBXGroup; children = (A20000000000000000000007,); name = DaonUITests; sourceTree = "<group>"; };
+		A50000000000000000000004 /* Products */ = {isa = PBXGroup; children = (A20000000000000000000009, A2000000000000000000000A,); name = Products; sourceTree = "<group>"; };
+		A50000000000000000000005 /* Frameworks */ = {isa = PBXGroup; children = (A20000000000000000000008, A20000000000000000000001,); name = Frameworks; sourceTree = "<group>"; };
+		A50000000000000000000006 /* Pods */ = {isa = PBXGroup; children = (A2000000000000000000000C, A2000000000000000000000D,); path = Pods; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A70000000000000000000001 /* Daon */ = {isa = PBXNativeTarget; buildConfigurationList = AB0000000000000000000001; buildPhases = (A80000000000000000000005 /* [CP] Check Pods Manifest.lock */, A60000000000000000000001 /* Sources */, A40000000000000000000001 /* Frameworks */, A80000000000000000000001 /* Resources */, A80000000000000000000003 /* Bundle React Native code and images */, A80000000000000000000006 /* [CP] Embed Pods Frameworks */, A80000000000000000000007 /* [CP] Copy Pods Resources */,); buildRules = (); dependencies = (); name = Daon; productName = Daon; productReference = A20000000000000000000009; productType = "com.apple.product-type.application"; };
+		A70000000000000000000002 /* DaonUITests */ = {isa = PBXNativeTarget; buildConfigurationList = AB0000000000000000000002; buildPhases = (A60000000000000000000002 /* Sources */, A40000000000000000000002 /* Frameworks */, A80000000000000000000002 /* Resources */,); buildRules = (); dependencies = (A30000000000000000000002 /* PBXTargetDependency */,); name = DaonUITests; productName = DaonUITests; productReference = A2000000000000000000000A; productType = "com.apple.product-type.bundle.ui-testing"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A90000000000000000000001 /* Project object */ = {isa = PBXProject; attributes = {LastUpgradeCheck = 2660; TargetAttributes = {A70000000000000000000001 = {LastSwiftMigration = 2660;}; A70000000000000000000002 = {CreatedOnToolsVersion = 26.6; TestTargetID = A70000000000000000000001;};};}; buildConfigurationList = AB0000000000000000000003; compatibilityVersion = "Xcode 12.0"; developmentRegion = ko; hasScannedForEncodings = 0; knownRegions = (ko, en, Base,); mainGroup = A50000000000000000000001; productRefGroup = A50000000000000000000004; projectDirPath = ""; projectRoot = ""; targets = (A70000000000000000000001, A70000000000000000000002,); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A80000000000000000000001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000004, A10000000000000000000005, A10000000000000000000006,); runOnlyForDeploymentPostprocessing = 0; };
+		A80000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A80000000000000000000003 /* Bundle React Native code and images */ = {isa = PBXShellScriptBuildPhase; buildActionMask = 2147483647; files = (); inputPaths = ("$(SRCROOT)/.xcode.env.local", "$(SRCROOT)/.xcode.env",); name = "Bundle React Native code and images"; outputPaths = (); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "set -e\nWITH_ENVIRONMENT=\"$REACT_NATIVE_PATH/scripts/xcode/with-environment.sh\"\nREACT_NATIVE_XCODE=\"$REACT_NATIVE_PATH/scripts/react-native-xcode.sh\"\n/bin/sh -c \"\\\"$WITH_ENVIRONMENT\\\" \\\"$REACT_NATIVE_XCODE\\\"\"\n"; };
+		A80000000000000000000005 /* [CP] Check Pods Manifest.lock */ = {isa = PBXShellScriptBuildPhase; buildActionMask = 2147483647; inputPaths = ("${PODS_PODFILE_DIR_PATH}/Podfile.lock", "${PODS_ROOT}/Manifest.lock",); name = "[CP] Check Pods Manifest.lock"; outputPaths = ("$(DERIVED_FILE_DIR)/Pods-Daon-checkManifestLockResult.txt",); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then echo \"error: Pod sandbox is not in sync with Podfile.lock.\" >&2; exit 1; fi\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n"; showEnvVarsInLog = 0; };
+		A80000000000000000000006 /* [CP] Embed Pods Frameworks */ = {isa = PBXShellScriptBuildPhase; buildActionMask = 2147483647; inputFileListPaths = ("${PODS_ROOT}/Target Support Files/Pods-Daon/Pods-Daon-frameworks-${CONFIGURATION}-input-files.xcfilelist",); name = "[CP] Embed Pods Frameworks"; outputFileListPaths = ("${PODS_ROOT}/Target Support Files/Pods-Daon/Pods-Daon-frameworks-${CONFIGURATION}-output-files.xcfilelist",); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Daon/Pods-Daon-frameworks.sh\"\n"; showEnvVarsInLog = 0; };
+		A80000000000000000000007 /* [CP] Copy Pods Resources */ = {isa = PBXShellScriptBuildPhase; buildActionMask = 2147483647; inputFileListPaths = ("${PODS_ROOT}/Target Support Files/Pods-Daon/Pods-Daon-resources-${CONFIGURATION}-input-files.xcfilelist",); name = "[CP] Copy Pods Resources"; outputFileListPaths = ("${PODS_ROOT}/Target Support Files/Pods-Daon/Pods-Daon-resources-${CONFIGURATION}-output-files.xcfilelist",); runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh; shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Daon/Pods-Daon-resources.sh\"\n"; showEnvVarsInLog = 0; };
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A60000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000002, A10000000000000000000003,); runOnlyForDeploymentPostprocessing = 0; };
+		A60000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000007,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A30000000000000000000002 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A70000000000000000000001 /* Daon */; targetProxy = A30000000000000000000001 /* PBXContainerItemProxy */; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AC0000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A2000000000000000000000C; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CLANG_ENABLE_MODULES = YES; CURRENT_PROJECT_VERSION = 1; ENABLE_BITCODE = NO; INFOPLIST_FILE = Daon/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.1; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 1.0; OTHER_LDFLAGS = ("$(inherited)", "-ObjC", "-lc++",); PRODUCT_BUNDLE_IDENTIFIER = com.sinsan.daon; PRODUCT_NAME = Daon; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; VERSIONING_SYSTEM = "apple-generic";}; name = Debug; };
+		AC0000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A2000000000000000000000D; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CLANG_ENABLE_MODULES = YES; CURRENT_PROJECT_VERSION = 1; INFOPLIST_FILE = Daon/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.1; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks",); MARKETING_VERSION = 1.0; OTHER_LDFLAGS = ("$(inherited)", "-ObjC", "-lc++",); PRODUCT_BUNDLE_IDENTIFIER = com.sinsan.daon; PRODUCT_NAME = Daon; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; VERSIONING_SYSTEM = "apple-generic";}; name = Release; };
+		AC0000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",); PRODUCT_BUNDLE_IDENTIFIER = com.sinsan.daon.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = Daon;}; name = Debug; };
+		AC0000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGNING_ALLOWED = NO; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 15.1; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",); PRODUCT_BUNDLE_IDENTIFIER = com.sinsan.daon.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = Daon;}; name = Release; };
+		AC0000000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_CXX_LANGUAGE_STANDARD = "c++20"; CLANG_CXX_LIBRARY = "libc++"; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; GCC_OPTIMIZATION_LEVEL = 0; GCC_PREPROCESSOR_DEFINITIONS = ("DEBUG=1", "$(inherited)",); IPHONEOS_DEPLOYMENT_TARGET = 15.1; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphoneos;}; name = Debug; };
+		AC0000000000000000000006 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_CXX_LANGUAGE_STANDARD = "c++20"; CLANG_CXX_LIBRARY = "libc++"; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = YES; ENABLE_NS_ASSERTIONS = NO; GCC_C_LANGUAGE_STANDARD = gnu17; IPHONEOS_DEPLOYMENT_TARGET = 15.1; SDKROOT = iphoneos; VALIDATE_PRODUCT = YES;}; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AB0000000000000000000001 /* Build configuration list for PBXNativeTarget Daon */ = {isa = XCConfigurationList; buildConfigurations = (AC0000000000000000000001, AC0000000000000000000002,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		AB0000000000000000000002 /* Build configuration list for PBXNativeTarget DaonUITests */ = {isa = XCConfigurationList; buildConfigurations = (AC0000000000000000000003, AC0000000000000000000004,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		AB0000000000000000000003 /* Build configuration list for PBXProject Daon */ = {isa = XCConfigurationList; buildConfigurations = (AC0000000000000000000005, AC0000000000000000000006,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = A90000000000000000000001 /* Project object */;
+}
