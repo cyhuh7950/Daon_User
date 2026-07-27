@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -593,7 +593,9 @@ test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase�
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-permission-annotation-"));
   const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
   const fixture = `set -Eeuo pipefail\nSIMULATOR_UDID=11111111-2222-3333-4444-555555555555\nBUNDLE_ID=com.sinsan.daon\nREPOSITORY_ROOT=/repo\nDERIVED_DATA=/derived\nDAON_SIM_PERMISSION_SERVICE=""\nxcrun(){ return 0; }\nxcodebuild(){ printf '%s\\n' "\${XCODE_RAW}"; return "\${XCODE_EXIT}"; }\n${contract}\nrun_permission_phase "\${FIXTURE_PHASE}" grant GRANTED`;
-  const run = (phase, exit, raw) => spawnSync(bash, ["-c", fixture], {
+  const fixturePath = path.join(fixtureRoot, "permission-annotation-fixture.sh");
+  await writeFile(fixturePath, fixture, "utf8");
+  const run = (phase, exit, raw) => spawnSync(bash, [fixturePath], {
     cwd: fixtureRoot,
     env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), FIXTURE_PHASE: phase, XCODE_EXIT: String(exit), XCODE_RAW: raw },
     encoding: "utf8"
@@ -666,9 +668,11 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     : "";
   assert.ok(contract);
   for (const [stage] of stages) assert.match(contract, new RegExp(`STAGE_${stage}`));
-  for (const code of ["SETTINGS_NOTIFICATION_LABEL_ZERO", "SETTINGS_NOTIFICATION_LABEL_NONHITTABLE", "SETTINGS_NOTIFICATION_ROW_ZERO", "SETTINGS_NOTIFICATION_ROW_AMBIGUOUS", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_ZERO", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS"]) assert.match(contract, new RegExp(code));
+  for (const code of ["SETTINGS_NOTIFICATION_COMPOSITE_ROW_ZERO", "SETTINGS_NOTIFICATION_COMPOSITE_ROW_AMBIGUOUS", "SETTINGS_NOTIFICATION_LABEL_ZERO", "SETTINGS_NOTIFICATION_LABEL_NONHITTABLE", "SETTINGS_NOTIFICATION_ROW_ZERO", "SETTINGS_NOTIFICATION_ROW_AMBIGUOUS", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_ZERO", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS"]) assert.match(contract, new RegExp(code));
   const parserStart = contract.indexOf("permission_failure_code_from_log() {");
   const parser = parserStart >= 0 ? contract.slice(parserStart) : "";
+  const compositeZeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_COMPOSITE_ROW_ZERO"');
+  const compositeAmbiguousParser = parser.indexOf('code="SETTINGS_NOTIFICATION_COMPOSITE_ROW_AMBIGUOUS"');
   const labelZeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_LABEL_ZERO"');
   const labelNonhittableParser = parser.indexOf('code="SETTINGS_NOTIFICATION_LABEL_NONHITTABLE"');
   const zeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_ZERO"');
@@ -676,12 +680,14 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
   const semanticZeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_SEMANTIC_ROW_ZERO"');
   const semanticAmbiguousParser = parser.indexOf('code="SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS"');
   const genericRowParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_MISSING"');
-  assert.ok([labelZeroParser, labelNonhittableParser, zeroParser, ambiguousParser, semanticZeroParser, semanticAmbiguousParser].every((index) => index >= 0 && index < genericRowParser), "label, direct and semantic assertion codes must be classified before the generic row code");
+  assert.ok([compositeZeroParser, compositeAmbiguousParser, labelZeroParser, labelNonhittableParser, zeroParser, ambiguousParser, semanticZeroParser, semanticAmbiguousParser].every((index) => index >= 0 && index < genericRowParser), "composite, label, direct and semantic assertion codes must be classified before the generic row code");
 
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-permission-stage-"));
   const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
   const fixture = `set -Eeuo pipefail\nSIMULATOR_UDID=11111111-2222-3333-4444-555555555555\nBUNDLE_ID=com.sinsan.daon\nREPOSITORY_ROOT=/repo\nDERIVED_DATA=/derived\nDAON_SIM_PERMISSION_SERVICE=""\nxcrun(){ return 0; }\nxcodebuild(){ printf '%s\\n' "\${XCODE_RAW}"; return 65; }\n${contract}\nrun_permission_phase grant-initial grant GRANTED`;
-  const run = (raw) => spawnSync(bash, ["-c", fixture], {
+  const fixturePath = path.join(fixtureRoot, "permission-stage-fixture.sh");
+  await writeFile(fixturePath, fixture, "utf8");
+  const run = (raw) => spawnSync(bash, [fixturePath], {
     cwd: fixtureRoot,
     env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), XCODE_RAW: raw },
     encoding: "utf8"
@@ -733,6 +739,14 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     const labelNonhittable = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [LABEL_NONHITTABLE]");
     assert.equal(labelNonhittable.status, 65, labelNonhittable.stderr);
     assert.deepEqual(annotation(labelNonhittable.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_LABEL_NONHITTABLE PHASE=grant-initial EXIT=65"]);
+
+    const compositeZero = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]");
+    assert.equal(compositeZero.status, 65, compositeZero.stderr);
+    assert.deepEqual(annotation(compositeZero.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_COMPOSITE_ROW_ZERO PHASE=grant-initial EXIT=65"]);
+
+    const compositeAmbiguous = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [COMPOSITE_AMBIGUOUS]");
+    assert.equal(compositeAmbiguous.status, 65, compositeAmbiguous.stderr);
+    assert.deepEqual(annotation(compositeAmbiguous.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_COMPOSITE_ROW_AMBIGUOUS PHASE=grant-initial EXIT=65"]);
 
     const unknown = run("DAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW_PRIVATE");
     assert.equal(unknown.status, 65, unknown.stderr);
@@ -939,18 +953,29 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   assert.doesNotMatch(helper, /NSPredicate\(format:[^\n]*isHittable/);
   assert.match(helper, /let exactLabelElements = directQuery\.allElementsBoundByAccessibilityElement\s*let directElements = exactLabelElements\.filter\s*\{\s*\$0\.isHittable\s*\}/);
   assert.match(helper, /semanticCellQuery\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
+  const approvedCompositePredicate = /let compositeLabelPredicate = NSPredicate\(format: "label == %@ OR label BEGINSWITH %@ OR label == %@ OR label BEGINSWITH %@", "Notifications", "Notifications,", "알림", "알림,"\)/;
+  assert.match(helper, approvedCompositePredicate);
+  assert.match(helper, /let compositeCells = settings\.cells\.matching\(compositeLabelPredicate\)\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
   const directCollection = helper.lastIndexOf("let exactLabelElements = directQuery.allElementsBoundByAccessibilityElement");
   const directAmbiguous = helper.indexOf("if directElements.count > 1");
   const directSingle = helper.indexOf("if directElements.count == 1");
   const semanticCollection = helper.lastIndexOf("semanticCellQuery.allElementsBoundByAccessibilityElement.filter");
   const semanticZero = helper.indexOf("if semanticCells.isEmpty");
+  const exactZero = helper.indexOf("if exactLabelElements.isEmpty");
+  const compositePredicate = helper.indexOf("let compositeLabelPredicate =");
+  const compositeCollection = helper.indexOf("let compositeCells = settings.cells.matching(compositeLabelPredicate)");
+  const compositeZero = helper.indexOf("if compositeCells.isEmpty");
+  const compositeAmbiguous = helper.indexOf("guard compositeCells.count == 1");
   const semanticAmbiguous = helper.indexOf("guard semanticCells.count == 1");
   const elementAccess = helper.indexOf("let element = selectedElements.popLast()");
   const elementReturn = helper.indexOf("return element");
-  assert.ok(directCollection >= 0 && directCollection < directAmbiguous && directAmbiguous < directSingle && directSingle < semanticCollection && semanticCollection < semanticZero && semanticZero < semanticAmbiguous && semanticAmbiguous < elementAccess && elementAccess < elementReturn, "direct candidates must be resolved before zero-only semantic fallback and single extraction");
+  assert.ok(directCollection >= 0 && directCollection < directAmbiguous && directAmbiguous < directSingle && directSingle < semanticCollection && semanticCollection < semanticZero && semanticZero < exactZero && exactZero < compositePredicate && compositePredicate < compositeCollection && compositeCollection < compositeZero && compositeZero < compositeAmbiguous && compositeAmbiguous < semanticAmbiguous && semanticAmbiguous < elementAccess && elementAccess < elementReturn, "exact and semantic candidates must be exhausted before the composite Cell fallback and single extraction");
   assert.match(helper, /if directElements\.count > 1\s*\{[\s\S]*?Notification settings row \[AMBIGUOUS\]/);
   assert.match(helper, /if directElements\.count == 1\s*\{\s*selectedElements = directElements\s*\} else \{/);
-  assert.match(helper, /if semanticCells\.isEmpty\s*\{\s*if exactLabelElements\.isEmpty\s*\{[\s\S]*?Notification settings row \[LABEL_ZERO\][\s\S]*?\} else \{[\s\S]*?Notification settings row \[LABEL_NONHITTABLE\][\s\S]*?\}\s*throw PermissionUIContractError\.missingExactElement\("Notification settings row"\)\s*\}/);
+  assert.match(helper, /if compositeCells\.isEmpty\s*\{[\s\S]*?Notification settings row \[COMPOSITE_ZERO\]/);
+  assert.match(helper, /guard compositeCells\.count == 1 else \{[\s\S]*?Notification settings row \[COMPOSITE_AMBIGUOUS\]/);
+  assert.match(helper, /selectedElements = compositeCells/);
+  assert.match(helper, /\} else \{\s*XCTFail\("missing or ambiguous exact system element: Notification settings row \[LABEL_NONHITTABLE\]"\)\s*throw PermissionUIContractError\.missingExactElement\("Notification settings row"\)\s*\}/);
   assert.match(helper, /guard semanticCells\.count == 1 else \{[\s\S]*?Notification settings row \[SEMANTIC_AMBIGUOUS\]/);
   const queryCreated = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryCreated)");
   const waitCompleted = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryWaitCompleted)");
@@ -962,7 +987,8 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   assert.ok(waitCompleted > helper.indexOf("XCTWaiter.wait") && waitCompleted < directCollection);
   assert.ok(countSingle > semanticAmbiguous && countSingle < elementAccess);
   assert.ok(elementReady > elementAccess && elementReady < elementReturn);
-  assert.doesNotMatch(helper, /settings\.cells\[|\.buttons|\.links|identifier|CONTAINS|BEGINSWITH|ENDSWITH|MATCHES|firstMatch|element\(boundBy:|coordinate\(/i);
+  const helperWithoutApprovedCompositePredicate = helper.replace(approvedCompositePredicate, "");
+  assert.doesNotMatch(helperWithoutApprovedCompositePredicate, /settings\.cells\[|\.buttons|\.links|identifier|CONTAINS|BEGINSWITH|ENDSWITH|MATCHES|firstMatch|element\(boundBy:|coordinate\(/i);
 
   const settingsStart = uiTests.indexOf("private func setNotificationAuthorization");
   const settingsEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", settingsStart);

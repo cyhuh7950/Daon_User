@@ -252,17 +252,28 @@ final class DaonUITests: XCTestCase {
       let semanticCells = semanticCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
       if semanticCells.isEmpty {
         if exactLabelElements.isEmpty {
-          XCTFail("missing or ambiguous exact system element: Notification settings row [LABEL_ZERO]")
+          let compositeLabelPredicate = NSPredicate(format: "label == %@ OR label BEGINSWITH %@ OR label == %@ OR label BEGINSWITH %@", "Notifications", "Notifications,", "알림", "알림,")
+          let compositeCells = settings.cells.matching(compositeLabelPredicate).allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+          if compositeCells.isEmpty {
+            XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]")
+            throw PermissionUIContractError.missingExactElement("Notification settings row")
+          }
+          guard compositeCells.count == 1 else {
+            XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_AMBIGUOUS]")
+            throw PermissionUIContractError.missingExactElement("Notification settings row")
+          }
+          selectedElements = compositeCells
         } else {
           XCTFail("missing or ambiguous exact system element: Notification settings row [LABEL_NONHITTABLE]")
+          throw PermissionUIContractError.missingExactElement("Notification settings row")
         }
-        throw PermissionUIContractError.missingExactElement("Notification settings row")
+      } else {
+        guard semanticCells.count == 1 else {
+          XCTFail("missing or ambiguous exact system element: Notification settings row [SEMANTIC_AMBIGUOUS]")
+          throw PermissionUIContractError.missingExactElement("Notification settings row")
+        }
+        selectedElements = semanticCells
       }
-      guard semanticCells.count == 1 else {
-        XCTFail("missing or ambiguous exact system element: Notification settings row [SEMANTIC_AMBIGUOUS]")
-        throw PermissionUIContractError.missingExactElement("Notification settings row")
-      }
-      selectedElements = semanticCells
     }
     permissionXCTestStage(.settingsNotificationCountSingle)
     guard let element = selectedElements.popLast() else {
