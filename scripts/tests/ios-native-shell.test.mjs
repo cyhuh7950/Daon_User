@@ -666,13 +666,15 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     : "";
   assert.ok(contract);
   for (const [stage] of stages) assert.match(contract, new RegExp(`STAGE_${stage}`));
-  for (const code of ["SETTINGS_NOTIFICATION_ROW_ZERO", "SETTINGS_NOTIFICATION_ROW_AMBIGUOUS"]) assert.match(contract, new RegExp(code));
+  for (const code of ["SETTINGS_NOTIFICATION_ROW_ZERO", "SETTINGS_NOTIFICATION_ROW_AMBIGUOUS", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_ZERO", "SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS"]) assert.match(contract, new RegExp(code));
   const parserStart = contract.indexOf("permission_failure_code_from_log() {");
   const parser = parserStart >= 0 ? contract.slice(parserStart) : "";
   const zeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_ZERO"');
   const ambiguousParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_AMBIGUOUS"');
+  const semanticZeroParser = parser.indexOf('code="SETTINGS_NOTIFICATION_SEMANTIC_ROW_ZERO"');
+  const semanticAmbiguousParser = parser.indexOf('code="SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS"');
   const genericRowParser = parser.indexOf('code="SETTINGS_NOTIFICATION_ROW_MISSING"');
-  assert.ok(zeroParser >= 0 && ambiguousParser >= 0 && genericRowParser >= 0 && zeroParser < genericRowParser && ambiguousParser < genericRowParser, "zero and ambiguous assertion codes must be classified before the generic row code");
+  assert.ok([zeroParser, ambiguousParser, semanticZeroParser, semanticAmbiguousParser].every((index) => index >= 0 && index < genericRowParser), "direct and semantic assertion codes must be classified before the generic row code");
 
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-permission-stage-"));
   const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -713,6 +715,14 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     const notificationAmbiguous = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [AMBIGUOUS]");
     assert.equal(notificationAmbiguous.status, 65, notificationAmbiguous.stderr);
     assert.deepEqual(annotation(notificationAmbiguous.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_ROW_AMBIGUOUS PHASE=grant-initial EXIT=65"]);
+
+    const semanticZero = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [SEMANTIC_ZERO]");
+    assert.equal(semanticZero.status, 65, semanticZero.stderr);
+    assert.deepEqual(annotation(semanticZero.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_SEMANTIC_ROW_ZERO PHASE=grant-initial EXIT=65"]);
+
+    const semanticAmbiguous = run("DAON_PERMISSION_XCTEST_STAGE=SETTINGS_NOTIFICATION_QUERY_WAIT_COMPLETED\nmissing or ambiguous exact system element: Notification settings row [SEMANTIC_AMBIGUOUS]");
+    assert.equal(semanticAmbiguous.status, 65, semanticAmbiguous.stderr);
+    assert.deepEqual(annotation(semanticAmbiguous.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_SEMANTIC_ROW_AMBIGUOUS PHASE=grant-initial EXIT=65"]);
 
     const unknown = run("DAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW_PRIVATE");
     assert.equal(unknown.status, 65, unknown.stderr);
@@ -905,34 +915,42 @@ test("macOS Workflow는 CocoaPods Gem 이름과 pod 실행 파일을 RubyGems �
   }
 });
 
-test("Settings Notifications 행은 exact Label Query와 Element Hittable 평가를 분리한다", async () => {
+test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell fallback을 사용한다", async () => {
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
   const helperStart = uiTests.indexOf("private func requireExactNotificationSettingsRow");
   const helperEnd = uiTests.indexOf("private func approveExpectedNotificationAlert", helperStart);
   const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
   assert.ok(helper, "Notifications exact Label row helper is required");
-  assert.match(helper, /let query = settings\.descendants\(matching: \.any\)\.matching\(/);
-  assert.match(helper, /NSPredicate\(format: "label == %@ OR label == %@", "Notifications", "알림"\)/);
+  assert.match(helper, /let exactLabelPredicate = NSPredicate\(format: "label == %@ OR label == %@", "Notifications", "알림"\)/);
+  assert.match(helper, /let directQuery = settings\.descendants\(matching: \.any\)\.matching\(exactLabelPredicate\)/);
+  assert.match(helper, /let semanticCellQuery = settings\.cells\.containing\(\.staticText, predicate: exactLabelPredicate\)/);
+  assert.equal((helper.match(/settings\.cells\.containing\(\.staticText, predicate: exactLabelPredicate\)/g) ?? []).length, 1);
   assert.doesNotMatch(helper, /NSPredicate\(format:[^\n]*isHittable/);
-  assert.match(helper, /query\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
-  const matchesCollection = helper.lastIndexOf("query.allElementsBoundByAccessibilityElement.filter");
-  const zeroBranch = helper.indexOf("if hittableElements.isEmpty");
-  const countGuard = helper.indexOf("guard hittableElements.count == 1");
-  const elementAccess = helper.indexOf("let element = hittableElements.popLast()");
+  assert.match(helper, /directQuery\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
+  assert.match(helper, /semanticCellQuery\.allElementsBoundByAccessibilityElement\.filter\s*\{\s*\$0\.isHittable\s*\}/);
+  const directCollection = helper.lastIndexOf("directQuery.allElementsBoundByAccessibilityElement.filter");
+  const directAmbiguous = helper.indexOf("if directElements.count > 1");
+  const directSingle = helper.indexOf("if directElements.count == 1");
+  const semanticCollection = helper.lastIndexOf("semanticCellQuery.allElementsBoundByAccessibilityElement.filter");
+  const semanticZero = helper.indexOf("if semanticCells.isEmpty");
+  const semanticAmbiguous = helper.indexOf("guard semanticCells.count == 1");
+  const elementAccess = helper.indexOf("let element = selectedElements.popLast()");
   const elementReturn = helper.indexOf("return element");
-  assert.ok(matchesCollection >= 0 && matchesCollection < zeroBranch && zeroBranch < countGuard && countGuard < elementAccess && elementAccess < elementReturn, "zero and ambiguous branches must run before count 1 success extraction");
-  assert.match(helper, /if hittableElements\.isEmpty\s*\{[\s\S]*?XCTFail\("missing or ambiguous exact system element: Notification settings row \[ZERO\]"\)/);
-  assert.match(helper, /guard hittableElements\.count == 1 else \{[\s\S]*?XCTFail\("missing or ambiguous exact system element: Notification settings row \[AMBIGUOUS\]"\)/);
+  assert.ok(directCollection >= 0 && directCollection < directAmbiguous && directAmbiguous < directSingle && directSingle < semanticCollection && semanticCollection < semanticZero && semanticZero < semanticAmbiguous && semanticAmbiguous < elementAccess && elementAccess < elementReturn, "direct candidates must be resolved before zero-only semantic fallback and single extraction");
+  assert.match(helper, /if directElements\.count > 1\s*\{[\s\S]*?Notification settings row \[AMBIGUOUS\]/);
+  assert.match(helper, /if directElements\.count == 1\s*\{\s*selectedElements = directElements\s*\} else \{/);
+  assert.match(helper, /if semanticCells\.isEmpty\s*\{[\s\S]*?Notification settings row \[SEMANTIC_ZERO\]/);
+  assert.match(helper, /guard semanticCells\.count == 1 else \{[\s\S]*?Notification settings row \[SEMANTIC_AMBIGUOUS\]/);
   const queryCreated = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryCreated)");
   const waitCompleted = helper.indexOf("permissionXCTestStage(.settingsNotificationQueryWaitCompleted)");
   const countSingle = helper.indexOf("permissionXCTestStage(.settingsNotificationCountSingle)");
   const elementReady = helper.indexOf("permissionXCTestStage(.settingsNotificationElementReady)");
-  assert.ok(queryCreated > helper.indexOf("let query =") && queryCreated < helper.indexOf("let appeared ="));
-  assert.ok(waitCompleted > helper.indexOf("XCTWaiter.wait") && waitCompleted < matchesCollection);
-  assert.ok(countSingle > countGuard && countSingle < elementAccess);
+  assert.ok(queryCreated > helper.indexOf("let semanticCellQuery =") && queryCreated < helper.indexOf("let appeared ="));
+  assert.ok(helper.indexOf("directQuery.allElementsBoundByAccessibilityElement.filter") < helper.indexOf("semanticCellQuery.allElementsBoundByAccessibilityElement.filter"), "wait must prefer direct candidates before semantic cells");
+  assert.ok(waitCompleted > helper.indexOf("XCTWaiter.wait") && waitCompleted < directCollection);
+  assert.ok(countSingle > semanticAmbiguous && countSingle < elementAccess);
   assert.ok(elementReady > elementAccess && elementReady < elementReturn);
-  assert.doesNotMatch(helper, /query\.count|query\.element/);
-  assert.doesNotMatch(helper, /\.staticTexts|\.cells|\.buttons|\.links|identifier|CONTAINS|BEGINSWITH|ENDSWITH|MATCHES|firstMatch|element\(boundBy:|coordinate\(/i);
+  assert.doesNotMatch(helper, /settings\.cells\[|\.buttons|\.links|identifier|CONTAINS|BEGINSWITH|ENDSWITH|MATCHES|firstMatch|element\(boundBy:|coordinate\(/i);
 
   const settingsStart = uiTests.indexOf("private func setNotificationAuthorization");
   const settingsEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", settingsStart);
