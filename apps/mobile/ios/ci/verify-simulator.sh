@@ -176,6 +176,42 @@ permission_failure_code_from_log() {
   printf '%s' "${code}"
 }
 
+report_settings_accessibility_notice() {
+  local log_file="$1"
+  local prefix="DAON_SETTINGS_ACCESSIBILITY_SUMMARY="
+  local source_line=""
+  local summary=""
+  local payload=""
+  local count=""
+  local items=""
+  local -a entries
+  local entry
+  source_line="$(grep -F "${prefix}" "${log_file}" | tail -n 1 || true)"
+  [[ -n "${source_line}" ]] || return 0
+  payload="${source_line#*${prefix}}"
+  summary="${prefix}${payload}"
+  [[ "${#summary}" -le 4096 ]] || return 0
+  [[ "${summary}" != *"::"* && "${summary}" != *"%"* ]] || return 0
+  if [[ ! "${payload}" =~ ^v1\|count=([0-9]|1[0-6])\|items=(.*)$ ]]; then
+    return 0
+  fi
+  count="${BASH_REMATCH[1]}"
+  items="${BASH_REMATCH[2]}"
+  if [[ "${count}" -eq 0 ]]; then
+    [[ "${items}" == "_none_" ]] || return 0
+  else
+    [[ "${items}" != "_none_" ]] || return 0
+    IFS=';' read -r -a entries <<< "${items}"
+    [[ "${#entries[@]}" -eq "${count}" && "${#entries[@]}" -le 16 ]] || return 0
+    for entry in "${entries[@]}"; do
+      if [[ ! "${entry}" =~ ^elementType=(cell|button|staticText|switch),label=([A-Za-z0-9_.+/{\}-]{1,80}),identifier=([A-Za-z0-9_.+/{\}-]{1,80}),isHittable=([01])$ ]]; then
+        return 0
+      fi
+    done
+  fi
+  printf '::notice::%s\n' "${summary}"
+}
+
 report_permission_xctest_failure() {
   local log_file="$1"
   local phase="$2"
@@ -188,6 +224,9 @@ report_permission_xctest_failure() {
   code="$(permission_failure_code_from_log "${log_file}")"
   if ! is_allowed_permission_failure_code "${code}"; then
     code="UNKNOWN_XCTEST_FAILURE"
+  fi
+  if [[ "${phase}" == "revoke" || "${phase}" == "grant-again" ]]; then
+    report_settings_accessibility_notice "${log_file}"
   fi
   printf '::error::CODE=%s PHASE=%s EXIT=%d\n' "${code}" "${phase}" "${original_exit}"
 }

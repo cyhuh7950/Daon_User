@@ -431,7 +431,7 @@ test("Simulator 검증은 설치 뒤 exact Daon Process를 종료하고 새 Proc
 test("모든 Route Wait 실패는 승인 Route 기반 Daon Log를 보존하고 허용 Marker만 출력하며 원 Exit를 유지한다", async () => {
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
   const helperStart = script.indexOf("is_approved_route() {");
-  const helperEnd = script.indexOf("run_permission_phase() {", helperStart);
+  const helperEnd = script.indexOf("is_allowed_permission_failure_code() {", helperStart);
   const contract = helperStart >= 0 && helperEnd > helperStart ? script.slice(helperStart, helperEnd) : "";
   assert.ok(contract);
   assert.match(contract, /Home\|WorkspaceList\|WorkspaceDetail\|Inbox\|RunHistory\|Notifications\|ModelConnections\|AccountSettings/);
@@ -577,6 +577,8 @@ test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase�
   assert.match(contract, /2>&1\s*\|\s*tee/);
   assert.match(contract, /PIPESTATUS\[@\]/);
   assert.match(contract, /::error::CODE=%s PHASE=%s EXIT=%d\\n/);
+  assert.match(contract, /DAON_SETTINGS_ACCESSIBILITY_SUMMARY=/);
+  assert.match(contract, /::notice::%s\\n/);
   assert.match(contract, /UNKNOWN_XCTEST_FAILURE/);
   assert.match(contract, /ALERT_TITLE_MISSING/);
   assert.match(contract, /ALERT_COUNT_MISMATCH/);
@@ -601,12 +603,14 @@ test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase�
     encoding: "utf8"
   });
   const annotations = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::error::"));
+  const notices = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::notice::"));
 
   try {
     const knownRaw = "XCTAssertEqual failed - expected one Notification system alert /Users/private/result.xcresult";
     const known = run("grant-initial", 65, knownRaw);
     assert.equal(known.status, 65, known.stderr);
     assert.deepEqual(annotations(known.stdout), ["::error::CODE=ALERT_COUNT_MISMATCH PHASE=grant-initial EXIT=65"]);
+    assert.deepEqual(notices(known.stdout), []);
     assert.match(known.stdout, /expected one Notification system alert/);
     assert.equal(await readFile(path.join(fixtureRoot, "permission-grant-initial.log"), "utf8"), `${knownRaw}\n`);
 
@@ -614,6 +618,7 @@ test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase�
     const unknown = run("revoke", 65, unknownRaw);
     assert.equal(unknown.status, 65, unknown.stderr);
     assert.deepEqual(annotations(unknown.stdout), ["::error::CODE=UNKNOWN_XCTEST_FAILURE PHASE=revoke EXIT=65"]);
+    assert.deepEqual(notices(unknown.stdout), []);
     assert.doesNotMatch(annotations(unknown.stdout)[0], /PRIVATE_USER|Users|UDID|SECRET|https|internal|raw failure/);
     assert.equal(await readFile(path.join(fixtureRoot, "permission-revoke.log"), "utf8"), `${unknownRaw}\n`);
 
@@ -621,8 +626,77 @@ test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase�
     const success = run("grant-again", 0, successRaw);
     assert.equal(success.status, 0, success.stderr);
     assert.deepEqual(annotations(success.stdout), []);
+    assert.deepEqual(notices(success.stdout), []);
     assert.match(success.stdout, /DaonUITests.*passed/);
     assert.equal(await readFile(path.join(fixtureRoot, "permission-grant-again.log"), "utf8"), `${successRaw}\n`);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Permission XCTest 최종 Settings 진단은 검증된 마지막 한 줄만 Notice로 공개한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const helperStart = script.indexOf("is_allowed_permission_failure_code() {");
+  const permissionStart = script.indexOf("run_permission_phase() {", helperStart);
+  const permissionEnd = script.indexOf('\n}\n\nDAON_SIM_STAGE="APP_ARTIFACT"', permissionStart);
+  const contract = helperStart >= 0 && permissionStart > helperStart && permissionEnd > permissionStart
+    ? script.slice(helperStart, permissionEnd + 2)
+    : "";
+  assert.ok(contract);
+  assert.match(contract, /report_settings_accessibility_notice\(\)/);
+  assert.match(contract, /tail -n 1/);
+  assert.match(contract, /4096/);
+  assert.match(contract, /16/);
+  assert.match(contract, /80/);
+  assert.match(contract, /elementType=\(cell\|button\|staticText\|switch\)/);
+  assert.doesNotMatch(contract, /eval|debugDescription|printenv|env\s|::notice::\$\{?[^\n]*raw/i);
+
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-settings-notice-"));
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const fixture = `set -Eeuo pipefail\nSIMULATOR_UDID=11111111-2222-3333-4444-555555555555\nBUNDLE_ID=com.sinsan.daon\nREPOSITORY_ROOT=/repo\nDERIVED_DATA=/derived\nDAON_SIM_PERMISSION_SERVICE=""\nxcrun(){ return 0; }\nxcodebuild(){ printf '%s\\n' "\${XCODE_RAW}"; return "\${XCODE_EXIT}"; }\n${contract}\nrun_permission_phase revoke revoke DENIED`;
+  const fixturePath = path.join(fixtureRoot, "settings-notice-fixture.sh");
+  await writeFile(fixturePath, fixture, "utf8");
+  const run = (exit, raw) => spawnSync(bash, [fixturePath], {
+    cwd: fixtureRoot,
+    env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), XCODE_EXIT: String(exit), XCODE_RAW: raw },
+    encoding: "utf8"
+  });
+  const notices = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::notice::"));
+  const errors = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::error::"));
+  const validOne = "DAON_SETTINGS_ACCESSIBILITY_SUMMARY=v1|count=1|items=elementType=cell,label=Notifications,identifier=_empty_,isHittable=1";
+  const validLast = "DAON_SETTINGS_ACCESSIBILITY_SUMMARY=v1|count=1|items=elementType=switch,label=Allow_Notifications,identifier=AllowNotifications,isHittable=1";
+
+  try {
+    const absent = run(65, "missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]");
+    assert.equal(absent.status, 65, absent.stderr);
+    assert.deepEqual(notices(absent.stdout), []);
+    assert.deepEqual(errors(absent.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_COMPOSITE_ROW_ZERO PHASE=revoke EXIT=65"]);
+
+    const multiple = run(65, `${validOne}\n${validLast}\nmissing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]`);
+    assert.equal(multiple.status, 65, multiple.stderr);
+    assert.deepEqual(notices(multiple.stdout), [`::notice::${validLast}`]);
+    assert.deepEqual(errors(multiple.stdout), ["::error::CODE=SETTINGS_NOTIFICATION_COMPOSITE_ROW_ZERO PHASE=revoke EXIT=65"]);
+
+    const injected = run(65, `${validOne}::error::SECRET\nmissing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]`);
+    assert.equal(injected.status, 65, injected.stderr);
+    assert.deepEqual(notices(injected.stdout), []);
+
+    const oversizedField = run(65, `DAON_SETTINGS_ACCESSIBILITY_SUMMARY=v1|count=1|items=elementType=cell,label=${"A".repeat(81)},identifier=_empty_,isHittable=1\nmissing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]`);
+    assert.equal(oversizedField.status, 65, oversizedField.stderr);
+    assert.deepEqual(notices(oversizedField.stdout), []);
+
+    const tooMany = run(65, "DAON_SETTINGS_ACCESSIBILITY_SUMMARY=v1|count=17|items=_none_\nmissing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]");
+    assert.equal(tooMany.status, 65, tooMany.stderr);
+    assert.deepEqual(notices(tooMany.stdout), []);
+
+    const mismatchedCount = run(65, `${validOne.replace("count=1", "count=2")}\nmissing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]`);
+    assert.equal(mismatchedCount.status, 65, mismatchedCount.stderr);
+    assert.deepEqual(notices(mismatchedCount.stdout), []);
+
+    const success = run(0, validOne);
+    assert.equal(success.status, 0, success.stderr);
+    assert.deepEqual(notices(success.stdout), []);
+    assert.deepEqual(errors(success.stdout), []);
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
@@ -1003,6 +1077,31 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   assert.match(settingsHelper, /let notificationsRow = try requireExactNotificationSettingsRow\(in: settings\)/);
   assert.match(settingsHelper, /XCTAssertTrue\(notificationsRow\.isHittable,[^\n]+\)\s*permissionXCTestStage\(\.settingsNotificationRowTapPending\)\s*notificationsRow\.tap\(\)/);
   assert.doesNotMatch(settingsHelper, /settings\.cells\["(?:Notifications|알림)"\]/);
+});
+
+test("Settings Notifications 최종 0건은 제한된 접근성 구조 요약을 정확히 한 번 출력한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const diagnosticStart = uiTests.indexOf("private func settingsDiagnosticToken");
+  const helperStart = uiTests.indexOf("private func requireExactNotificationSettingsRow");
+  const helperEnd = uiTests.indexOf("private func approveExpectedNotificationAlert", helperStart);
+  const diagnostic = diagnosticStart >= 0 && helperStart > diagnosticStart ? uiTests.slice(diagnosticStart, helperStart) : "";
+  const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
+  assert.ok(diagnostic);
+  assert.ok(helper);
+  assert.match(diagnostic, /private func emitSettingsAccessibilitySummary/);
+  assert.match(diagnostic, /DAON_SETTINGS_ACCESSIBILITY_SUMMARY=/);
+  assert.match(diagnostic, /maximumElementCount\s*=\s*16/);
+  assert.match(diagnostic, /maximumTokenLength\s*=\s*80/);
+  assert.match(diagnostic, /maximumSummaryLength\s*=\s*4096/);
+  for (const query of ["settings.cells", "settings.buttons", "settings.staticTexts", "settings.switches"]) assert.match(diagnostic, new RegExp(query.replace(".", "\\.")));
+  for (const field of ["element.label", "element.identifier", "element.isHittable"]) assert.match(diagnostic, new RegExp(field.replace(".", "\\.")));
+  for (const [type, query] of [["cell", "cells"], ["button", "buttons"], ["staticText", "staticTexts"], ["switch", "switches"]]) {
+    assert.match(diagnostic, new RegExp(`\\("${type}", settings\\.${query}\\.allElementsBoundByAccessibilityElement\\)`));
+  }
+  assert.match(diagnostic, /_empty_/);
+  assert.doesNotMatch(diagnostic, /debugDescription|ProcessInfo|environment|\/Users\/|dump\(|coordinate\(|element\(boundBy:|firstMatch/i);
+  assert.equal((helper.match(/emitSettingsAccessibilitySummary\(in: settings\)/g) ?? []).length, 1);
+  assert.match(helper, /if candidates\.composite\.isEmpty\s*\{\s*emitSettingsAccessibilitySummary\(in: settings\)\s*XCTFail\("missing or ambiguous exact system element: Notification settings row \[COMPOSITE_ZERO\]"\)/);
 });
 
 test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Settings OFF·ON을 직접 검증한다", async () => {
