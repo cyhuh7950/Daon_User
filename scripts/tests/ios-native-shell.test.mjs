@@ -179,6 +179,18 @@ test("iOS Host Adapter는 Route·Lifecycle·Deep Link·권한·Settings 경계�
   assert.doesNotMatch(`${nativeHost}\n${appDelegate}\n${host}`, /fetch\s*\(|https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
 });
 
+test("iOS Restore Adapter는 Native 문자열을 보존하고 null·undefined를 null로 정규화한다", async () => {
+  const host = await read("apps/mobile/src/platform/ios-host.ts");
+  assert.match(host, /if \(!nativeHost\) return null;[\s\S]*?const restoredRoute: unknown = await nativeHost\.restoreNavigationRoute\(\);[\s\S]*?return typeof restoredRoute === "string" \? restoredRoute : null;/);
+  const expression = host.match(/return (typeof restoredRoute === "string" \? restoredRoute : null);/)?.[1];
+  assert.ok(expression);
+  const normalize = new Function("restoredRoute", `return ${expression};`);
+  assert.equal(normalize("Notifications"), "Notifications");
+  assert.equal(normalize(null), null);
+  assert.equal(normalize(undefined), null);
+  assert.equal(normalize(0), null);
+});
+
 test("UserDefaults에는 승인 Route와 비민감 Lifecycle 상태만 저장한다", async () => {
   const nativeHost = await read("apps/mobile/ios/Daon/DaonIOSHost.swift");
   assert.match(nativeHost, /allowedNativeRoutes/);
@@ -379,6 +391,33 @@ test("Simulator 검증은 설치 뒤 exact Daon Process를 종료하고 새 Proc
   assert.ok(installIndex >= 0 && installIndex < initialTerminateIndex && initialTerminateIndex < clearIndex && clearIndex < launchIndex && launchIndex < homeReadyIndex);
   assert.ok(simulatorLogIndex >= 0 && simulatorLogIndex < finalTerminateIndex);
   assert.doesNotMatch(script, /simctl (?:shutdown|erase|uninstall)|\b(?:kill|killall|pkill)\b/);
+});
+
+test("최초 Home 준비 실패는 Daon Unified Log를 보존하고 원래 Exit로 종료한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const contract = script.match(/HOME_WAIT_EXIT=0\nwait_for_route Home \|\| HOME_WAIT_EXIT=\$\?\nif \[\[ "\$\{HOME_WAIT_EXIT\}" -ne 0 \]\]; then\n  xcrun simctl spawn "\$\{SIMULATOR_UDID\}" log show --last 10m --style compact --predicate 'process == "Daon"' > "\$\{EVIDENCE_DIR\}\/initial-home-failure\.log" 2>&1 \|\| true\n  exit "\$\{HOME_WAIT_EXIT\}"\nfi/)?.[0];
+  assert.ok(contract);
+  const failureLogIndex = script.indexOf('initial-home-failure.log');
+  const warmRoutesIndex = script.indexOf("warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)");
+  assert.ok(failureLogIndex >= 0 && failureLogIndex < warmRoutesIndex);
+  assert.equal((script.match(/--predicate 'process == "Daon"'/g) ?? []).length, 2);
+
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-ios-home-failure-"));
+  const evidenceDir = path.join(fixtureRoot, "evidence");
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  await mkdir(evidenceDir, { recursive: true });
+  try {
+    const fixture = spawnSync(bash, ["-c", `set -euo pipefail\nwait_for_route(){ return 23; }\nxcrun(){ printf '%s\\n' 'Daon startup evidence'; }\n${contract}\nprintf '%s\\n' 'unexpected continuation'`], {
+      cwd: fixtureRoot,
+      env: { ...process.env, EVIDENCE_DIR: "evidence", SIMULATOR_UDID: "11111111-2222-3333-4444-555555555555" },
+      encoding: "utf8"
+    });
+    assert.equal(fixture.status, 23, fixture.stderr);
+    assert.doesNotMatch(fixture.stdout, /unexpected continuation/);
+    assert.match(await readFile(path.join(evidenceDir, "initial-home-failure.log"), "utf8"), /Daon startup evidence/);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
 });
 
 test("Binary 금지 Pattern은 Source 자기탐지 없이 Runtime에서 기존 Client 내부 API 토큰을 탐지한다", async () => {

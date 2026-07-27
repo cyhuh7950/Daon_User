@@ -77,7 +77,12 @@ xcrun simctl install "${SIMULATOR_UDID}" "${APP_PATH}"
 xcrun simctl terminate "${SIMULATOR_UDID}" "${BUNDLE_ID}" >/dev/null 2>&1 || true
 clear_navigation_route
 xcrun simctl launch "${SIMULATOR_UDID}" "${BUNDLE_ID}" | tee "${EVIDENCE_DIR}/launch.log"
-wait_for_route Home
+HOME_WAIT_EXIT=0
+wait_for_route Home || HOME_WAIT_EXIT=$?
+if [[ "${HOME_WAIT_EXIT}" -ne 0 ]]; then
+  xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 10m --style compact --predicate 'process == "Daon"' > "${EVIDENCE_DIR}/initial-home-failure.log" 2>&1 || true
+  exit "${HOME_WAIT_EXIT}"
+fi
 
 warm_routes=(WorkspaceList WorkspaceDetail Inbox RunHistory Notifications ModelConnections AccountSettings)
 for route in "${warm_routes[@]}"; do
