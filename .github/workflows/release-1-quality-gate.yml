@@ -103,7 +103,7 @@
             "CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC": "${{ steps.desktop-rust-type-diagnostic.outcome }}",
             "CI_STEP_QUALITY_GATE": "${{ steps.quality-gate.outcome }}"
           },
-          "run": "node scripts/verify-quality-gate.mjs --ci-fallback"
+          "run": "node scripts/verify-quality-gate.mjs --ci-fallback\nnode scripts/verify-quality-gate.mjs --ci-diagnostic"
         },
         {
           "name": "Upload quality gate evidence",

@@ -270,6 +270,12 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   const fallback = stepsById.get("fallback-evidence");
   assert.equal(fallback.if, "${{ always() }}");
   assert.match(fallback.run, /--ci-fallback/);
+  assert.match(fallback.run, /--ci-diagnostic/);
+  assert.ok(fallback.run.indexOf("--ci-fallback") < fallback.run.indexOf("--ci-diagnostic"));
+  const qualityGateCli = await readFile(path.resolve("scripts/verify-quality-gate.mjs"), "utf8");
+  assert.match(qualityGateCli, /args\.includes\("--ci-diagnostic"\)/);
+  assert.match(qualityGateCli, /GITHUB_STEP_SUMMARY/);
+  assert.match(qualityGateCli, /appendFile\(process\.env\.GITHUB_STEP_SUMMARY/);
   assert.equal(fallback.env.CI_GIT_SHA, "${{ github.sha }}");
   for (const id of ["toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate"])
     assert.equal(fallback.env[`CI_STEP_${id.replaceAll("-", "_").toUpperCase()}`], `\${{ steps.${id}.outcome }}`);
@@ -361,4 +367,67 @@ test("CI Fallback Evidence는 현재 SHA의 유효한 결과만 보존하고 나
     await writeFile(summaryPath, "invalid-contract-summary\n");
     await assertFallback(await invoke());
   });
+});
+
+test("CI Quality 진단은 현재 SHA Allowlist만 결정적으로 출력하고 나머지는 Fail-close한다", async (t) => {
+  const { renderCurrentQualityGateDiagnostic } = await import("../lib/quality-gate.mjs");
+  assert.equal(typeof renderCurrentQualityGateDiagnostic, "function");
+  const root = await mkdtemp(path.join(os.tmpdir(), "daon-quality-gate-diagnostic-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const evidenceRoot = path.join(root, "docs", "03_evidence", "release_1", "R1-M1-05");
+  await mkdir(evidenceRoot, { recursive: true });
+  const resultPath = path.join(evidenceRoot, "quality-gate-result.json");
+  const validResult = (overallStatus, exitCode, failures = []) => ({
+    schema_version: "1.0",
+    policy_path: "quality-gate-policy.json",
+    policy_sha256: "A".repeat(64),
+    git_sha: "candidate-sha",
+    started_at: "2026-07-20T00:00:00.000Z",
+    ended_at: "2026-07-20T00:00:01.000Z",
+    overall_status: overallStatus,
+    exit_code: exitCode,
+    categories: Object.fromEntries(categories.map((category) => [category, {
+      status: overallStatus === "PASS" ? "PASS" : overallStatus,
+      checks: [],
+      component_capabilities: []
+    }])),
+    failures,
+    limitations: []
+  });
+  const writeResult = async (report) => writeFile(resultPath, `${JSON.stringify(report, null, 2)}\n`);
+  const render = () => renderCurrentQualityGateDiagnostic({ root, gitSha: "candidate-sha" });
+
+  for (const [status, exitCode] of [["PASS", 0], ["FAIL", 1], ["ERROR", 2]]) {
+    await writeResult(validResult(status, exitCode));
+    const payload = JSON.parse(await render());
+    assert.deepEqual(payload, { CODE: "QUALITY_GATE_CURRENT_RESULT", overall_status: status, exit_code: exitCode, failures: [] });
+  }
+
+  const failures = Array.from({ length: 24 }, (_, index) => ({
+    category: index % 2 ? "unit" : "build",
+    code: `CODE_${String(index).padStart(2, "0")}`,
+    check_id: `check-${String(index).padStart(2, "0")}`,
+    component: `component-${String(index).padStart(2, "0")}`,
+    evidence: ["token=must-not-leak"]
+  }));
+  failures.push(structuredClone(failures[0]));
+  failures.push({ category: "unit\nINJECT", code: "bad secret=value", check_id: "check\rmalicious", component: "component/unsafe", evidence: ["SUPER_SECRET"] });
+  await writeResult(validResult("FAIL", 1, failures));
+  const first = await render();
+  const second = await render();
+  assert.equal(first, second);
+  assert.equal(first.includes("\n"), false);
+  assert.doesNotMatch(first, /must-not-leak|SUPER_SECRET|secret=value|INJECT|malicious|component\/unsafe/);
+  const diagnostic = JSON.parse(first);
+  assert.equal(diagnostic.failures.length, 20);
+  assert.equal(new Set(diagnostic.failures.map((item) => JSON.stringify(item))).size, diagnostic.failures.length);
+  assert.deepEqual(Object.keys(diagnostic.failures[0]), ["category", "code", "check_id", "component"]);
+  assert.ok(diagnostic.failures.some((item) => Object.values(item).includes("UNAVAILABLE")));
+
+  await writeResult({ ...validResult("PASS", 0), git_sha: "stale-sha" });
+  assert.equal(await render(), "QUALITY_GATE_NO_CURRENT_RESULT");
+  await writeFile(resultPath, "{ malformed\n");
+  assert.equal(await render(), "QUALITY_GATE_NO_CURRENT_RESULT");
+  await rm(resultPath, { force: true });
+  assert.equal(await render(), "QUALITY_GATE_NO_CURRENT_RESULT");
 });
