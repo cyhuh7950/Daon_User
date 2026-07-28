@@ -12,6 +12,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/session/oidc/transactions",
   "/api/v1/session/oidc/callback",
   "/api/v1/session/refresh",
+  "/api/v1/session/revoke",
   "/api/v1/devices/{id}/trust",
   "/api/v1/devices/{id}/revoke",
   "/api/v1/tenants",
@@ -194,7 +195,8 @@ function validateIdentityContract(document) {
   for (const name of [
     "IdentitySession", "OidcLoginStartRequest", "OidcLoginStart",
     "OidcCallbackRequest", "NativeRefreshRequest", "StepUpAuthorizationRequest",
-    "StepUpAuthorization", "DeviceRevokeRequest", "DeviceRevocation"
+    "StepUpAuthorization", "DeviceRevokeRequest", "DeviceRevocation",
+    "SessionRevokeRequest", "SessionRevocation"
   ]) {
     if (!isObject(schemas[name])) fail(`missing identity schema ${name}`);
   }
@@ -210,12 +212,16 @@ function validateIdentityContract(document) {
   if (schemas.DeviceRevokeRequest?.properties?.step_up_authorization?.writeOnly !== true) {
     fail("Device revoke Step-up value must be writeOnly");
   }
+  if (schemas.SessionRevokeRequest?.properties?.step_up_authorization?.writeOnly !== true) {
+    fail("Session revoke Step-up value must be writeOnly");
+  }
   const requiredOperations = {
     "/api/v1/session": ["get", "IdentitySessionResponse"],
     "/api/v1/session/step-up": ["post", "StepUpAuthorizationResponse"],
     "/api/v1/session/oidc/transactions": ["post", "OidcLoginStartResponse"],
     "/api/v1/session/oidc/callback": ["post", "IdentitySessionResponse"],
     "/api/v1/session/refresh": ["post", "IdentitySessionResponse"],
+    "/api/v1/session/revoke": ["post", "SessionRevocationResponse"],
     "/api/v1/devices/{id}/trust": ["post", "SuccessResponse"],
     "/api/v1/devices/{id}/revoke": ["post", "DeviceRevocationResponse"]
   };

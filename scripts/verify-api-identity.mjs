@@ -13,7 +13,7 @@ const apiRoot = path.join(root, "services/api");
 const sourceRoot = path.join(apiRoot, "src");
 const testRoot = path.join(apiRoot, "tests");
 const sourcePath = path.join(sourceRoot, "daon_user_api/identity.py");
-const evidencePath = path.join(root, "docs/03_evidence/release_1/R1-M4-03/identity-core-summary.json");
+const evidencePath = path.join(root, "docs/03_evidence/release_1/R1-M4-03-C01/identity-core-summary.json");
 
 function fail(message) {
   throw new Error(`API_IDENTITY_VERIFICATION_FAILED ${message}`);
@@ -23,8 +23,10 @@ function runPython(arguments_, { capture = false } = {}) {
   const projectPython = path.join(
     root, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python"
   );
-  const executable = existsSync(projectPython) ? projectPython : "uv";
-  const launcherArguments = existsSync(projectPython)
+  const projectPythonAvailable = existsSync(projectPython)
+    && spawnSync(projectPython, ["--version"], { cwd: root, stdio: "ignore" }).status === 0;
+  const executable = projectPythonAvailable ? projectPython : "uv";
+  const launcherArguments = projectPythonAvailable
     ? arguments_
     : ["run", "--project", apiRoot, "python", ...arguments_];
   const result = spawnSync(executable, launcherArguments, {
