@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -12,11 +13,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiRoot = path.join(root, "services/api");
 const sourceRoot = path.join(apiRoot, "src");
 const testRoot = path.join(apiRoot, "tests");
-const sourcePath = path.join(sourceRoot, "daon_user_api/identity.py");
-const evidencePath = path.join(root, "docs/03_evidence/release_1/R1-M4-03-C01/identity-core-summary.json");
+const sourcePath = path.join(sourceRoot, "daon_user_api/authorization.py");
+const evidencePath = path.join(
+  root, "docs/03_evidence/release_1/R1-M4-04/authorization-core-summary.json"
+);
 
 function fail(message) {
-  throw new Error(`API_IDENTITY_VERIFICATION_FAILED ${message}`);
+  throw new Error(`API_AUTHORIZATION_VERIFICATION_FAILED ${message}`);
 }
 
 function runPython(arguments_, { capture = false } = {}) {
@@ -32,7 +35,11 @@ function runPython(arguments_, { capture = false } = {}) {
   const result = spawnSync(executable, launcherArguments, {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, PYTHONPATH: sourceRoot },
+    env: {
+      ...process.env,
+      PYTHONPATH: sourceRoot,
+      UV_CACHE_DIR: process.env.UV_CACHE_DIR ?? path.join(tmpdir(), "daon-user-uv-cache")
+    },
     stdio: capture ? "pipe" : "inherit"
   });
   if (result.error) fail(`python launch ${result.error.code ?? result.error.name}`);
@@ -51,8 +58,23 @@ async function main() {
   const write = args.includes("--write");
   if (write && args.includes("--no-write")) fail("--write and --no-write are mutually exclusive");
 
+  runPython(["-m", "compileall", "-q", sourceRoot]);
+  const identity = spawnSync(
+    process.execPath,
+    [path.join(root, "scripts/verify-api-identity.mjs"), "--no-write"],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        UV_CACHE_DIR: process.env.UV_CACHE_DIR ?? path.join(tmpdir(), "daon-user-uv-cache")
+      },
+      stdio: "inherit"
+    }
+  );
+  if (identity.error || identity.status !== 0) fail("identity regression verification failed");
   const tests = runPython(
-    ["-m", "unittest", "discover", "-s", testRoot, "-p", "test_identity*.py", "-v"],
+    ["-m", "unittest", "discover", "-s", testRoot, "-p", "test_authorization*.py", "-v"],
     { capture: true }
   );
   if (tests.stdout) process.stdout.write(tests.stdout);
@@ -61,7 +83,10 @@ async function main() {
   if (!countMatch) fail("test count missing");
 
   const contractResult = runPython(
-    ["-c", "import json; from daon_user_api.identity import identity_contract_summary; print(json.dumps(identity_contract_summary(), sort_keys=True))"],
+    [
+      "-c",
+      "import json; from daon_user_api.authorization import authorization_contract_summary; print(json.dumps(authorization_contract_summary(), sort_keys=True))"
+    ],
     { capture: true }
   );
   let contract;
@@ -84,7 +109,9 @@ async function main() {
     const actual = (await readFile(evidencePath, "utf8")).replaceAll("\r\n", "\n");
     if (actual !== expected) fail("deterministic evidence mismatch; run with --write");
   }
-  console.log(`api identity verified: tests=${summary.test_count} actions=${summary.minimum_step_up_actions.length} sha256=${summary.source_sha256}`);
+  console.log(
+    `api authorization verified: tests=${summary.test_count} roles=${summary.roles.length} permissions=${summary.permissions.length} sha256=${summary.source_sha256}`
+  );
 }
 
 main().catch((error) => {

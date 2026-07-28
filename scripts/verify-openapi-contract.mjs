@@ -22,6 +22,8 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/workspaces/{id}/knowledge-scope",
   "/api/v1/workspaces/{id}/weight-profile",
   "/api/v1/workspaces/{id}/model-policy",
+  "/api/v1/workspaces/{id}/authorization/evaluations",
+  "/api/v1/access-decisions",
   "/api/v1/rulesets",
   "/api/v1/workspaces/{id}/ruleset-bindings",
   "/api/v1/ruleset-bindings/{id}",
@@ -134,13 +136,65 @@ function validateTypedErrorDetails(document) {
   if (schemas.StepUpRequiredDetails.properties?.required_field?.const !== "step_up_authorization_id") {
     fail("STEP_UP_REQUIRED must name step_up_authorization_id");
   }
-  const accessStates = schemas.CurrentAccessDeniedDetails.properties?.access_state?.enum ?? [];
+  const accessStateSchema = schemas.CurrentAccessDeniedDetails.properties?.access_state;
+  const accessStates = accessStateSchema?.$ref
+    ? resolveRef(document, accessStateSchema.$ref)?.enum ?? []
+    : accessStateSchema?.enum ?? [];
   for (const state of ["available", "partially_redacted", "access_blocked"]) {
     if (!accessStates.includes(state)) fail(`CURRENT_ACCESS_DENIED missing access_state ${state}`);
   }
   const roles = schemas.NoAvailableDeploymentDetails.properties?.required_role?.enum ?? [];
   for (const role of ["text", "vision", "audio_understanding", "speech_to_text", "embedding", "reranker"]) {
     if (!roles.includes(role)) fail(`NO_AVAILABLE_DEPLOYMENT missing required_role ${role}`);
+  }
+}
+
+function validateAuthorizationContract(document) {
+  const schemas = document.components?.schemas ?? {};
+  const exactEnums = {
+    AuthorizationRole: [
+      "personal_owner", "organization_admin", "workspace_admin", "editor",
+      "reviewer", "approver", "viewer"
+    ],
+    AuthorizationPermission: [
+      "external_llm", "internet_search", "local_internal_llm", "daon_knowledge",
+      "file_download_share", "production_knowledge_registration", "data_area_move",
+      "final_approval_external_delivery"
+    ],
+    AccessState: ["available", "partially_redacted", "access_blocked"]
+  };
+  for (const [name, expected] of Object.entries(exactEnums)) {
+    if (JSON.stringify(schemas[name]?.enum) !== JSON.stringify(expected)) {
+      fail(`${name} enum must match the R1-M4-04 contract`);
+    }
+  }
+  const effective = schemas.EffectivePermission;
+  for (const field of ["permission", "requested", "effective", "locked_by", "reason", "policy_version"]) {
+    if (!(effective?.required ?? []).includes(field)) fail(`EffectivePermission missing ${field}`);
+  }
+  const decision = schemas.AccessDecision;
+  for (const field of [
+    "decision_id", "actor_id", "action", "resource_id", "workspace_id",
+    "membership_version", "acl_version", "policy_version", "evaluated_at", "state",
+    "reason_codes", "allowed_reference_ids", "masked_reference_ids",
+    "allowed_segment_ids", "masked_segment_ids"
+  ]) {
+    if (!(decision?.required ?? []).includes(field)) fail(`AccessDecision missing ${field}`);
+  }
+  if (decision?.properties?.state?.$ref !== "#/components/schemas/AccessState") {
+    fail("AccessDecision state must use AccessState");
+  }
+  const operations = {
+    "/api/v1/workspaces/{id}/authorization/evaluations": "AuthorizationEvaluationResponse",
+    "/api/v1/access-decisions": "AccessDecisionResponse"
+  };
+  for (const [apiPath, responseName] of Object.entries(operations)) {
+    const operation = document.paths?.[apiPath]?.post;
+    if (!isObject(operation)) fail(`missing authorization operation POST ${apiPath}`);
+    const success = operation.responses?.["200"] ?? operation.responses?.["201"];
+    if (success?.$ref !== `#/components/responses/${responseName}`) {
+      fail(`authorization operation response mismatch POST ${apiPath}`);
+    }
   }
 }
 
@@ -318,6 +372,7 @@ export function validateOpenApiDocument(document) {
   validateTypedErrorDetails(document);
   validateAuditContract(document);
   validateIdentityContract(document);
+  validateAuthorizationContract(document);
 
   const eventOperation = document.paths["/api/v1/runs/{id}/events"]?.get;
   if (!parameterRefs(eventOperation).has("#/components/parameters/LastEventId")) fail("SSE missing Last-Event-ID reconnect cursor");

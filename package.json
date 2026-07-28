@@ -1,9 +1,50 @@
 {
-  "name":"@daon-user/root","version":"0.0.0","private":true,
-  "packageManager":"npm@11.12.1",
-  "engines":{"node":"24.18.0","npm":"11.12.1"},
-  "workspaces":["apps/*","packages/*"],
-  "scripts":{"verify:toolchain":"node scripts/verify-toolchain-baseline.mjs","verify:independence":"node scripts/verify-repository-independence.mjs","verify:product-foundation":"node --test scripts/tests/product-foundation.test.mjs","verify:openapi-contract":"node scripts/verify-openapi-contract.mjs","verify:api-audit":"node scripts/verify-api-audit.mjs","verify:api-identity":"node scripts/verify-api-identity.mjs","lint:workspace":"node scripts/lint-workspace.mjs","verify:workspace":"node --test scripts/tests/workspace.test.mjs scripts/tests/workspace-lint.test.mjs scripts/tests/source-knowledge.test.mjs","verify:desktop-lint":"node scripts/lint-workspace.mjs apps/desktop/src/main.jsx apps/desktop/src/desktop-shell.jsx apps/desktop/src/desktop-shell-model.js apps/desktop/src/local-service-bridge.js","verify:desktop-type":"npm run verify:desktop-build && node scripts/run-isolated-desktop-cargo.mjs check","verify:desktop-rust-unit":"node scripts/run-isolated-desktop-cargo.mjs test","verify:desktop-unit":"node --test scripts/tests/desktop-tauri-shell.test.mjs scripts/tests/desktop-local-service.test.mjs scripts/tests/local-service-source-manifest.test.mjs && npm run verify:desktop-rust-unit","verify:desktop-build":"npm run build --workspace @daon-user/desktop","verify:mobile-lint":"node scripts/lint-workspace.mjs apps/mobile/index.js apps/mobile/metro.config.cjs apps/mobile/babel.config.cjs apps/mobile/src/App.tsx apps/mobile/src/MobileShell.tsx apps/mobile/src/domain/navigation.ts apps/mobile/src/domain/screens.ts apps/mobile/src/domain/public-api-client.ts apps/mobile/src/domain/mobile-studio-actions.ts apps/mobile/src/platform/design-token-adapter.ts apps/mobile/src/platform/native-deep-link.ts apps/mobile/src/platform/android-deep-link.ts apps/mobile/src/platform/android-host.ts apps/mobile/src/platform/ios-host.ts","verify:mobile-type":"npx tsc --project apps/mobile/tsconfig.json --noEmit","verify:mobile-unit":"node --test scripts/tests/mobile-shared-shell.test.mjs","verify:mobile-contract":"node scripts/verify-mobile-studio-contract.mjs","verify:android-native":"node --test scripts/tests/android-native-shell.test.mjs scripts/tests/android-deep-link.test.mjs","verify:ios-native":"node --test scripts/tests/ios-native-shell.test.mjs scripts/tests/native-deep-link.test.mjs scripts/tests/ios-phase-a-evidence.test.mjs","build:android-debug":"node scripts/run-android-gradle.mjs assembleDebug","build:ios-simulator":"bash apps/mobile/ios/ci/build-simulator.sh","verify:mobile-build":"node scripts/bundle-mobile-shell.mjs --platform android && node scripts/bundle-mobile-shell.mjs --platform ios","verify:mobile":"npm run verify:mobile-lint && npm run verify:mobile-type && npm run verify:mobile-unit && npm run verify:mobile-contract && npm run verify:android-native && npm run verify:ios-native && npm run verify:mobile-build","build:local-service-sidecar":"node scripts/build-local-service-sidecar.mjs","build:desktop-installer":"node scripts/run-isolated-desktop-cargo.mjs installer","cleanup:desktop-cargo":"node scripts/run-isolated-desktop-cargo.mjs cleanup","verify:quality-gate":"node scripts/verify-quality-gate.mjs"},
-  "devDependencies":{"typescript":"7.0.2"},
-  "overrides":{"postcss":"8.5.23"}
+  "name": "@daon-user/root",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "npm@11.12.1",
+  "engines": {
+    "node": "24.18.0",
+    "npm": "11.12.1"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "verify:toolchain": "node scripts/verify-toolchain-baseline.mjs",
+    "verify:independence": "node scripts/verify-repository-independence.mjs",
+    "verify:product-foundation": "node --test scripts/tests/product-foundation.test.mjs",
+    "verify:openapi-contract": "node scripts/verify-openapi-contract.mjs",
+    "verify:api-audit": "node scripts/verify-api-audit.mjs",
+    "verify:api-identity": "node scripts/verify-api-identity.mjs",
+    "verify:api-authorization": "node scripts/verify-api-authorization.mjs",
+    "lint:workspace": "node scripts/lint-workspace.mjs",
+    "verify:workspace": "node --test scripts/tests/workspace.test.mjs scripts/tests/workspace-lint.test.mjs scripts/tests/source-knowledge.test.mjs",
+    "verify:desktop-lint": "node scripts/lint-workspace.mjs apps/desktop/src/main.jsx apps/desktop/src/desktop-shell.jsx apps/desktop/src/desktop-shell-model.js apps/desktop/src/local-service-bridge.js",
+    "verify:desktop-type": "npm run verify:desktop-build && node scripts/run-isolated-desktop-cargo.mjs check",
+    "verify:desktop-rust-unit": "node scripts/run-isolated-desktop-cargo.mjs test",
+    "verify:desktop-unit": "node --test scripts/tests/desktop-tauri-shell.test.mjs scripts/tests/desktop-local-service.test.mjs scripts/tests/local-service-source-manifest.test.mjs && npm run verify:desktop-rust-unit",
+    "verify:desktop-build": "npm run build --workspace @daon-user/desktop",
+    "verify:mobile-lint": "node scripts/lint-workspace.mjs apps/mobile/index.js apps/mobile/metro.config.cjs apps/mobile/babel.config.cjs apps/mobile/src/App.tsx apps/mobile/src/MobileShell.tsx apps/mobile/src/domain/navigation.ts apps/mobile/src/domain/screens.ts apps/mobile/src/domain/public-api-client.ts apps/mobile/src/domain/mobile-studio-actions.ts apps/mobile/src/platform/design-token-adapter.ts apps/mobile/src/platform/native-deep-link.ts apps/mobile/src/platform/android-deep-link.ts apps/mobile/src/platform/android-host.ts apps/mobile/src/platform/ios-host.ts",
+    "verify:mobile-type": "npx tsc --project apps/mobile/tsconfig.json --noEmit",
+    "verify:mobile-unit": "node --test scripts/tests/mobile-shared-shell.test.mjs",
+    "verify:mobile-contract": "node scripts/verify-mobile-studio-contract.mjs",
+    "verify:android-native": "node --test scripts/tests/android-native-shell.test.mjs scripts/tests/android-deep-link.test.mjs",
+    "verify:ios-native": "node --test scripts/tests/ios-native-shell.test.mjs scripts/tests/native-deep-link.test.mjs scripts/tests/ios-phase-a-evidence.test.mjs",
+    "build:android-debug": "node scripts/run-android-gradle.mjs assembleDebug",
+    "build:ios-simulator": "bash apps/mobile/ios/ci/build-simulator.sh",
+    "verify:mobile-build": "node scripts/bundle-mobile-shell.mjs --platform android && node scripts/bundle-mobile-shell.mjs --platform ios",
+    "verify:mobile": "npm run verify:mobile-lint && npm run verify:mobile-type && npm run verify:mobile-unit && npm run verify:mobile-contract && npm run verify:android-native && npm run verify:ios-native && npm run verify:mobile-build",
+    "build:local-service-sidecar": "node scripts/build-local-service-sidecar.mjs",
+    "build:desktop-installer": "node scripts/run-isolated-desktop-cargo.mjs installer",
+    "cleanup:desktop-cargo": "node scripts/run-isolated-desktop-cargo.mjs cleanup",
+    "verify:quality-gate": "node scripts/verify-quality-gate.mjs"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  },
+  "overrides": {
+    "postcss": "8.5.23"
+  }
 }
