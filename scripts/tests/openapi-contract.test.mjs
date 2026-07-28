@@ -69,3 +69,23 @@ test("OpenAPI 검증기는 Run Event SSE Content 누락을 거부한다", async 
   };
   assert.throws(() => validateOpenApiDocument(document), /text\/event-stream/i);
 });
+
+test("Audit Event 목록은 generic Resource가 아닌 불변 Hash-chain 계약을 사용한다", async () => {
+  const document = await loadContract();
+  const operation = document.paths["/api/v1/audit-events"].get;
+  assert.equal(operation.responses["200"].$ref, "#/components/responses/AuditEventListResponse");
+  const required = document.components.schemas.AuditEvent.required;
+  for (const field of [
+    "sequence", "actor_id", "trace_id", "policy_version", "before", "after",
+    "previous_event_hash", "event_hash"
+  ]) assert.ok(required.includes(field), field);
+  assert.equal(document.components.schemas.AuditEvent.properties.event_hash.pattern, "^[0-9a-f]{64}$");
+  assert.equal(document.components.schemas.AuditEvent.properties.occurred_at.format, "date-time");
+  assert.equal(document.components.schemas.AuditEventPage.properties.items.items.$ref, "#/components/schemas/AuditEvent");
+});
+
+test("OpenAPI 검증기는 Audit Event generic 응답 회귀를 거부한다", async () => {
+  const document = clone(await loadContract());
+  document.paths["/api/v1/audit-events"].get.responses["200"].$ref = "#/components/responses/ListSuccessResponse";
+  assert.throws(() => validateOpenApiDocument(document), /AuditEventListResponse/i);
+});
