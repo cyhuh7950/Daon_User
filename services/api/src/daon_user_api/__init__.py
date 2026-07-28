@@ -16,6 +16,8 @@ from .authorization import (
     AUTHORIZATION_SCHEMA_VERSION,
     ROLE_ACTION_MATRIX,
     ROLE_PERMISSION_DEFAULTS,
+    TENANT_ROLES,
+    WORKSPACE_ROLES,
     AccessAction,
     AccessDecision,
     AccessState,
@@ -31,6 +33,7 @@ from .authorization import (
     RerunAuthorization,
     RerunSnapshot,
     Role,
+    RoleScope,
     SqliteAuthorizationRepository,
     authorization_contract_summary,
 )
@@ -81,6 +84,8 @@ __all__ = [
     "AUTHORIZATION_SCHEMA_VERSION",
     "ROLE_ACTION_MATRIX",
     "ROLE_PERMISSION_DEFAULTS",
+    "TENANT_ROLES",
+    "WORKSPACE_ROLES",
     "AccessAction",
     "AccessDecision",
     "AccessState",
@@ -96,6 +101,7 @@ __all__ = [
     "RerunAuthorization",
     "RerunSnapshot",
     "Role",
+    "RoleScope",
     "SqliteAuthorizationRepository",
     "authorization_contract_summary",
 ]

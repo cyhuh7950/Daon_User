@@ -26,7 +26,10 @@ class AuthorizationHistoricalAccessTests(unittest.TestCase):
         audit = audit_store or AuditEventStore()
         service = AuthorizationService(repository=repository, audit_store=audit, clock=FixedClock())
         viewer = principal("viewer")
-        service.set_membership(principal=owner, workspace_id="workspace-001", user_id=viewer.user_id, role=Role.ORGANIZATION_ADMIN, expected_version=0, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        service.set_tenant_role(
+            principal=owner, user_id=viewer.user_id, role=Role.ORGANIZATION_ADMIN,
+            expected_version=0, trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
         return service, repository, audit, owner, viewer
 
     def descriptor(self, result_id: str = "output-001", *, unsafe=False, decisive=False):
@@ -78,7 +81,15 @@ class AuthorizationHistoricalAccessTests(unittest.TestCase):
             for action in AccessAction:
                 decision = service.evaluate_historical_access(principal=viewer, result_id="output-001", action=action, trace_id=f"trace-{action.value}", policy_version=POLICY_VERSION)
                 self.assertIn(decision.state, {AccessState.AVAILABLE, AccessState.PARTIALLY_REDACTED})
-            service.set_membership(principal=owner, workspace_id="workspace-001", user_id=viewer.user_id, role=Role.VIEWER, expected_version=1, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            service.set_tenant_role(
+                principal=owner, user_id=viewer.user_id, role=None, expected_version=1,
+                trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+            )
+            service.set_membership(
+                principal=owner, workspace_id="workspace-001", user_id=viewer.user_id,
+                role=Role.VIEWER, expected_version=0, trace_id=TRACE_ID,
+                policy_version=POLICY_VERSION,
+            )
             for action in (AccessAction.EXPORT, AccessAction.DELIVERY, AccessAction.KNOWLEDGE_REGISTRATION, AccessAction.RERUN):
                 decision = service.evaluate_historical_access(principal=viewer, result_id="output-001", action=action, trace_id=f"trace-denied-{action.value}", policy_version=POLICY_VERSION)
                 self.assertEqual(decision.state, AccessState.ACCESS_BLOCKED)

@@ -59,23 +59,43 @@ class AuthorizationRolePolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             service, _, _, _, owner = self.make_service(Path(directory) / "auth.sqlite3")
             for index, role in enumerate(Role):
-                actor = owner if role is Role.ORGANIZATION_ADMIN else principal(f"actor-{index}")
-                if actor is not owner:
+                if role is Role.PERSONAL_OWNER:
+                    personal_owner = principal("personal-owner", "tenant-personal")
+                    personal_repository = SqliteAuthorizationRepository(
+                        Path(directory) / "personal.sqlite3"
+                    )
+                    personal_repository.bootstrap_workspace(
+                        tenant_id=personal_owner.tenant_id, workspace_id="personal-workspace",
+                        owner_user_id=personal_owner.user_id, owner_role=Role.PERSONAL_OWNER,
+                        workspace_kind="personal", data_area="local_private",
+                        cost_limit_cents=0, now=FixedClock()(),
+                    )
+                    role_service = AuthorizationService(
+                        repository=personal_repository, audit_store=AuditEventStore(),
+                        clock=FixedClock(),
+                    )
+                    actor = personal_owner
+                    workspace_id = "personal-workspace"
+                else:
+                    role_service = service
+                    workspace_id = "workspace-001"
+                    actor = owner if role is Role.ORGANIZATION_ADMIN else principal(f"actor-{index}")
+                if role in {Role.WORKSPACE_ADMIN, Role.EDITOR, Role.REVIEWER, Role.APPROVER, Role.VIEWER}:
                     service.set_membership(
                         principal=owner, workspace_id="workspace-001", user_id=actor.user_id,
                         role=role, expected_version=0, trace_id=TRACE_ID, policy_version=POLICY_VERSION,
                     )
                 for action in Action:
                     if action in EXPECTED_MATRIX[role]:
-                        grant = service.authorize_action(
-                            principal=actor, workspace_id="workspace-001", action=action,
+                        grant = role_service.authorize_action(
+                            principal=actor, workspace_id=workspace_id, action=action,
                             trace_id=TRACE_ID, policy_version=POLICY_VERSION,
                         )
                         self.assertTrue(grant.allowed)
                     else:
                         with self.assertRaises(AuthorizationError) as denied:
-                            service.authorize_action(
-                                principal=actor, workspace_id="workspace-001", action=action,
+                            role_service.authorize_action(
+                                principal=actor, workspace_id=workspace_id, action=action,
                                 trace_id=TRACE_ID, policy_version=POLICY_VERSION,
                             )
                         self.assertEqual(denied.exception.code, "ACTION_DENIED")
@@ -162,7 +182,7 @@ class AuthorizationRolePolicyTests(unittest.TestCase):
             service.set_membership(principal=owner, workspace_id="workspace-001", user_id=editor.user_id, role=Role.EDITOR, expected_version=0, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
             with self.assertRaises(AuthorizationError) as denied:
                 service.set_membership(principal=editor, workspace_id="workspace-001", user_id=editor.user_id, role=Role.ORGANIZATION_ADMIN, expected_version=1, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
-            self.assertEqual(denied.exception.code, "PRIVILEGE_ESCALATION_DENIED")
+            self.assertEqual(denied.exception.code, "INVALID_ROLE_SCOPE")
             actions = [event.action for event in audit.list(tenant_id=owner.tenant_id, limit=200).items]
             self.assertIn("authorization.membership.change_denied", actions)
 

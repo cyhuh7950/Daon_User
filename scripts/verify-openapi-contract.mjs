@@ -156,6 +156,9 @@ function validateAuthorizationContract(document) {
       "personal_owner", "organization_admin", "workspace_admin", "editor",
       "reviewer", "approver", "viewer"
     ],
+    TenantRole: ["personal_owner", "organization_admin"],
+    WorkspaceRole: ["workspace_admin", "editor", "reviewer", "approver", "viewer"],
+    RoleScope: ["tenant", "workspace"],
     AuthorizationPermission: [
       "external_llm", "internet_search", "local_internal_llm", "daon_knowledge",
       "file_download_share", "production_knowledge_registration", "data_area_move",
@@ -174,7 +177,7 @@ function validateAuthorizationContract(document) {
   }
   const decision = schemas.AccessDecision;
   for (const field of [
-    "decision_id", "actor_id", "action", "resource_id", "workspace_id",
+    "decision_id", "actor_id", "action", "resource_id", "workspace_id", "role_scope",
     "membership_version", "acl_version", "policy_version", "evaluated_at", "state",
     "reason_codes", "allowed_reference_ids", "masked_reference_ids",
     "allowed_segment_ids", "masked_segment_ids"
@@ -183,6 +186,10 @@ function validateAuthorizationContract(document) {
   }
   if (decision?.properties?.state?.$ref !== "#/components/schemas/AccessState") {
     fail("AccessDecision state must use AccessState");
+  }
+  if (!(schemas.AuthorizationEvaluation?.required ?? []).includes("role_scope")
+      || schemas.AuthorizationEvaluation?.properties?.role_scope?.$ref !== "#/components/schemas/RoleScope") {
+    fail("AuthorizationEvaluation must expose RoleScope");
   }
   const operations = {
     "/api/v1/workspaces/{id}/authorization/evaluations": "AuthorizationEvaluationResponse",

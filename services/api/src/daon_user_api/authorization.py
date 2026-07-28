@@ -23,7 +23,7 @@ from .audit import ActorType, AuditEventDraft, AuditOutcome
 from .identity import IdentityPrincipal
 
 
-AUTHORIZATION_SCHEMA_VERSION = 1
+AUTHORIZATION_SCHEMA_VERSION = 2
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
@@ -35,6 +35,17 @@ class Role(str, Enum):
     REVIEWER = "reviewer"
     APPROVER = "approver"
     VIEWER = "viewer"
+
+
+class RoleScope(str, Enum):
+    TENANT = "tenant"
+    WORKSPACE = "workspace"
+
+
+TENANT_ROLES = frozenset({Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN})
+WORKSPACE_ROLES = frozenset(
+    {Role.WORKSPACE_ADMIN, Role.EDITOR, Role.REVIEWER, Role.APPROVER, Role.VIEWER}
+)
 
 
 class Action(str, Enum):
@@ -202,6 +213,7 @@ class AuthorizationGrant:
     tenant_id: str
     workspace_id: str
     role: Role
+    role_scope: RoleScope
     action: Action
     effective_permissions: tuple[EffectivePermission, ...]
     required_step_up_action: str | None
@@ -240,6 +252,7 @@ class AccessDecision:
     resource_id: str
     tenant_id: str
     workspace_id: str
+    role_scope: RoleScope | None
     membership_version: int
     acl_version: int
     policy_version: str
@@ -257,6 +270,7 @@ class RerunSnapshot:
     tenant_id: str
     workspace_id: str
     actor_id: str
+    role_scope: RoleScope
     membership_version: int
     acl_version: int
     policy_version: str
@@ -270,6 +284,13 @@ class RerunAuthorization:
     run_request_id: str
     access_decision_id: str
     snapshot: RerunSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class RoleBinding:
+    role: Role
+    scope: RoleScope
+    version: int
 
 
 def _checked_id(value: object) -> str:
@@ -377,6 +398,11 @@ class SqliteAuthorizationRepository:
               acl_version INTEGER NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL,
               UNIQUE(tenant_id,workspace_id)
             );
+            CREATE TABLE IF NOT EXISTS auth_tenant_roles (
+              tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL,
+              state TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL,
+              PRIMARY KEY(tenant_id,user_id)
+            );
             CREATE TABLE IF NOT EXISTS auth_memberships (
               tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL,
               role TEXT NOT NULL, state TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL,
@@ -424,6 +450,7 @@ class SqliteAuthorizationRepository:
             CREATE TABLE IF NOT EXISTS auth_access_decisions (
               decision_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, action TEXT NOT NULL,
               resource_id TEXT NOT NULL, tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+              role_scope TEXT,
               membership_version INTEGER NOT NULL, acl_version INTEGER NOT NULL,
               policy_version TEXT NOT NULL, evaluated_at TEXT NOT NULL, state TEXT NOT NULL,
               reason_codes TEXT NOT NULL, allowed_reference_ids TEXT NOT NULL,
@@ -437,6 +464,15 @@ class SqliteAuthorizationRepository:
               snapshot TEXT NOT NULL, created_at TEXT NOT NULL
             );
             """
+        )
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(auth_access_decisions)")
+        }
+        if "role_scope" not in columns:
+            connection.execute("ALTER TABLE auth_access_decisions ADD COLUMN role_scope TEXT")
+        connection.execute(
+            "UPDATE auth_schema_metadata SET schema_version=? WHERE singleton=1",
+            (AUTHORIZATION_SCHEMA_VERSION,),
         )
 
     def _ensure_open(self) -> None:
@@ -489,16 +525,37 @@ class SqliteAuthorizationRepository:
         data_area = _checked_id(data_area)
         if not isinstance(owner_role, Role) or not isinstance(cost_limit_cents, int) or cost_limit_cents < 0:
             raise AuthorizationError("INVALID_INPUT")
+        expected_role = {
+            "personal": Role.PERSONAL_OWNER,
+            "organization": Role.ORGANIZATION_ADMIN,
+        }.get(workspace_kind)
+        if expected_role is None or owner_role is not expected_role:
+            raise AuthorizationError("INVALID_ROLE_SCOPE")
         timestamp = _iso(now)
         with self.transaction() as connection:
+            incompatible = connection.execute(
+                "SELECT 1 FROM auth_workspaces WHERE tenant_id=? AND workspace_kind<>? LIMIT 1",
+                (tenant_id, workspace_kind),
+            ).fetchone()
+            if incompatible is not None:
+                raise AuthorizationError("INVALID_ROLE_SCOPE")
+            existing_role = connection.execute(
+                "SELECT role,state FROM auth_tenant_roles WHERE tenant_id=? AND user_id=?",
+                (tenant_id, owner_user_id),
+            ).fetchone()
+            if existing_role is not None and (
+                str(existing_role["role"]) != owner_role.value or str(existing_role["state"]) != "active"
+            ):
+                raise AuthorizationError("INVALID_ROLE_SCOPE")
             connection.execute(
                 """INSERT INTO auth_workspaces(workspace_id,tenant_id,workspace_kind,data_area,
                 cost_limit_cents,acl_version,version,updated_at) VALUES (?,?,?,?,?,?,?,?)""",
                 (workspace_id, tenant_id, workspace_kind, data_area, cost_limit_cents, 1, 1, timestamp),
             )
             connection.execute(
-                "INSERT INTO auth_memberships(tenant_id,workspace_id,user_id,role,state,version,updated_at) VALUES (?,?,?,?,?,?,?)",
-                (tenant_id, workspace_id, owner_user_id, owner_role.value, "active", 1, timestamp),
+                """INSERT OR IGNORE INTO auth_tenant_roles(
+                tenant_id,user_id,role,state,version,updated_at) VALUES (?,?,?,?,?,?)""",
+                (tenant_id, owner_user_id, owner_role.value, "active", 1, timestamp),
             )
             connection.execute(
                 "INSERT OR IGNORE INTO auth_tenant_policies(tenant_id,version,updated_at) VALUES (?,?,?)",
@@ -532,6 +589,14 @@ class SqliteAuthorizationRepository:
             row = connection.execute(
                 "SELECT version FROM auth_memberships WHERE tenant_id=? AND workspace_id=? AND user_id=?",
                 (_checked_id(tenant_id), _checked_id(workspace_id), _checked_id(user_id)),
+            ).fetchone()
+            return None if row is None else int(row[0])
+
+    def tenant_role_version(self, tenant_id: str, user_id: str) -> int | None:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT version FROM auth_tenant_roles WHERE tenant_id=? AND user_id=?",
+                (_checked_id(tenant_id), _checked_id(user_id)),
             ).fetchone()
             return None if row is None else int(row[0])
 
@@ -690,6 +755,37 @@ class AuthorizationService:
             (principal.tenant_id, workspace_id, principal.user_id),
         ).fetchone()
 
+    def _tenant_role(
+        self, connection: sqlite3.Connection, principal: IdentityPrincipal
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            """SELECT * FROM auth_tenant_roles
+            WHERE tenant_id=? AND user_id=? AND state='active'""",
+            (principal.tenant_id, principal.user_id),
+        ).fetchone()
+
+    def _role_binding(
+        self, connection: sqlite3.Connection, principal: IdentityPrincipal,
+        workspace: sqlite3.Row,
+    ) -> RoleBinding | None:
+        tenant_role = self._tenant_role(connection, principal)
+        if tenant_role is not None:
+            role = Role(str(tenant_role["role"]))
+            expected_kind = (
+                "personal" if role is Role.PERSONAL_OWNER else "organization"
+                if role is Role.ORGANIZATION_ADMIN else None
+            )
+            if expected_kind == str(workspace["workspace_kind"]):
+                return RoleBinding(role, RoleScope.TENANT, int(tenant_role["version"]))
+            return None
+        membership = self._membership(connection, principal, str(workspace["workspace_id"]))
+        if membership is None:
+            return None
+        role = Role(str(membership["role"]))
+        if role not in WORKSPACE_ROLES:
+            return None
+        return RoleBinding(role, RoleScope.WORKSPACE, int(membership["version"]))
+
     def _policy_versions(
         self, connection: sqlite3.Connection, tenant_id: str, workspace_id: str
     ) -> tuple[int, int, str]:
@@ -752,16 +848,16 @@ class AuthorizationService:
             raise AuthorizationError("INVALID_INPUT")
         with self._repository.transaction() as connection:
             workspace = connection.execute(
-                "SELECT 1 FROM auth_workspaces WHERE tenant_id=? AND workspace_id=?",
+                "SELECT * FROM auth_workspaces WHERE tenant_id=? AND workspace_id=?",
                 (principal.tenant_id, _checked_id(workspace_id)),
             ).fetchone()
-            membership = self._membership(connection, principal, workspace_id)
+            binding = None if workspace is None else self._role_binding(connection, principal, workspace)
             if workspace is None:
                 raise AuthorizationError("RESOURCE_UNAVAILABLE", 404)
-            if membership is None:
+            if binding is None:
                 raise AuthorizationError("ACTION_DENIED", 403)
             return self._effective_permission(
-                connection, role=Role(str(membership["role"])), tenant_id=principal.tenant_id,
+                connection, role=binding.role, tenant_id=principal.tenant_id,
                 workspace_id=workspace_id, permission=permission, requested=requested,
             )
 
@@ -782,12 +878,12 @@ class AuthorizationService:
 
     def _action_grant(
         self, connection: sqlite3.Connection, *, principal: IdentityPrincipal,
-        workspace: sqlite3.Row, membership: sqlite3.Row | None, action: Action,
+        workspace: sqlite3.Row, binding: RoleBinding | None, action: Action,
         requested_permissions: tuple[Permission, ...],
     ) -> AuthorizationGrant | None:
-        if membership is None:
+        if binding is None:
             return None
-        role = Role(str(membership["role"]))
+        role = binding.role
         if action not in ROLE_ACTION_MATRIX[role]:
             return None
         permissions = tuple(dict.fromkeys((*_ACTION_PERMISSIONS.get(action, frozenset()), *requested_permissions)))
@@ -805,8 +901,8 @@ class AuthorizationService:
         )
         return AuthorizationGrant(
             True, principal.user_id, principal.tenant_id, str(workspace["workspace_id"]),
-            role, action, effective, self._required_step_up(action, permissions),
-            int(membership["version"]), int(workspace["acl_version"]), policy_version,
+            role, binding.scope, action, effective, self._required_step_up(action, permissions),
+            binding.version, int(workspace["acl_version"]), policy_version,
         )
 
     def authorize_action(
@@ -820,9 +916,9 @@ class AuthorizationService:
             raise AuthorizationError("INVALID_INPUT")
         with self._repository.transaction() as connection:
             workspace = self._workspace(connection, principal, workspace_id, trace_id, policy_version)
-            membership = self._membership(connection, principal, workspace_id)
+            binding = self._role_binding(connection, principal, workspace)
             grant = self._action_grant(
-                connection, principal=principal, workspace=workspace, membership=membership,
+                connection, principal=principal, workspace=workspace, binding=binding,
                 action=action, requested_permissions=requested_permissions,
             )
             if grant is None:
@@ -837,7 +933,11 @@ class AuthorizationService:
                 action="authorization.action.allowed", outcome=AuditOutcome.SUCCEEDED,
                 principal=principal, trace_id=trace_id, policy_version=policy_version,
                 workspace_id=workspace_id, target_type="workspace_action", target_id=workspace_id,
-                metadata={"requested_action": action.value, "role": grant.role.value},
+                metadata={
+                    "requested_action": action.value,
+                    "role": grant.role.value,
+                    "role_scope": grant.role_scope.value,
+                },
             )
             return grant
 
@@ -851,11 +951,21 @@ class AuthorizationService:
         now = self._now()
         with self._repository.transaction() as connection:
             workspace = self._workspace(connection, principal, workspace_id, trace_id, policy_version)
-            actor = self._membership(connection, principal, workspace_id)
-            actor_role = None if actor is None else Role(str(actor["role"]))
+            if role not in WORKSPACE_ROLES:
+                self._audit(
+                    action="authorization.membership.change_denied",
+                    outcome=AuditOutcome.DENIED, principal=principal,
+                    trace_id=trace_id, policy_version=policy_version,
+                    workspace_id=workspace_id, target_type="membership",
+                    target_id="protected-membership",
+                    metadata={"reason_code": "INVALID_ROLE_SCOPE"},
+                )
+                raise AuthorizationError("INVALID_ROLE_SCOPE")
+            binding = self._role_binding(connection, principal, workspace)
+            actor_role = None if binding is None else binding.role
             assignable = {
-                Role.PERSONAL_OWNER: frozenset(Role),
-                Role.ORGANIZATION_ADMIN: frozenset(Role),
+                Role.PERSONAL_OWNER: WORKSPACE_ROLES,
+                Role.ORGANIZATION_ADMIN: WORKSPACE_ROLES,
                 Role.WORKSPACE_ADMIN: frozenset(
                     {Role.EDITOR, Role.REVIEWER, Role.APPROVER, Role.VIEWER}
                 ),
@@ -905,6 +1015,80 @@ class AuthorizationService:
             )
             return next_version
 
+    def set_tenant_role(
+        self, *, principal: IdentityPrincipal, user_id: str, role: Role | None,
+        expected_version: int, trace_id: str, policy_version: str,
+    ) -> int:
+        if role is not None and (not isinstance(role, Role) or role not in TENANT_ROLES):
+            raise AuthorizationError("INVALID_ROLE_SCOPE")
+        if not isinstance(expected_version, int) or expected_version < 0:
+            raise AuthorizationError("INVALID_INPUT")
+        user_id = _checked_id(user_id)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            actor = self._tenant_role(connection, principal)
+            if actor is None or Role(str(actor["role"])) not in TENANT_ROLES:
+                self._audit(
+                    action="authorization.tenant_role.change_denied",
+                    outcome=AuditOutcome.DENIED, principal=principal,
+                    trace_id=trace_id, policy_version=policy_version,
+                    workspace_id=None, target_type="tenant_role",
+                    target_id="protected-tenant-role",
+                    metadata={"reason_code": "PRIVILEGE_ESCALATION_DENIED"},
+                )
+                raise AuthorizationError("PRIVILEGE_ESCALATION_DENIED", 403)
+            kinds = {
+                str(row[0]) for row in connection.execute(
+                    "SELECT DISTINCT workspace_kind FROM auth_workspaces WHERE tenant_id=?",
+                    (principal.tenant_id,),
+                )
+            }
+            expected_role = (
+                Role.PERSONAL_OWNER if kinds == {"personal"}
+                else Role.ORGANIZATION_ADMIN if kinds == {"organization"}
+                else None
+            )
+            if expected_role is None or (role is not None and role is not expected_role):
+                raise AuthorizationError("INVALID_ROLE_SCOPE")
+            current = connection.execute(
+                "SELECT role,state,version FROM auth_tenant_roles WHERE tenant_id=? AND user_id=?",
+                (principal.tenant_id, user_id),
+            ).fetchone()
+            current_version = 0 if current is None else int(current["version"])
+            if current_version != expected_version:
+                self._audit(
+                    action="authorization.tenant_role.change_denied",
+                    outcome=AuditOutcome.DENIED, principal=principal,
+                    trace_id=trace_id, policy_version=policy_version,
+                    workspace_id=None, target_type="tenant_role",
+                    target_id="protected-tenant-role",
+                    metadata={"reason_code": "VERSION_CONFLICT"},
+                )
+                raise AuthorizationError("VERSION_CONFLICT", 412)
+            if current is None and role is None:
+                raise AuthorizationError("INVALID_ROLE_SCOPE")
+            next_version = current_version + 1
+            next_role = role.value if role is not None else str(current["role"])
+            next_state = "active" if role is not None else "revoked"
+            connection.execute(
+                """INSERT INTO auth_tenant_roles(tenant_id,user_id,role,state,version,updated_at)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(tenant_id,user_id) DO UPDATE SET
+                role=excluded.role,state=excluded.state,version=excluded.version,
+                updated_at=excluded.updated_at""",
+                (principal.tenant_id, user_id, next_role, next_state, next_version, _iso(now)),
+            )
+            self._audit(
+                action="authorization.tenant_role.changed", outcome=AuditOutcome.SUCCEEDED,
+                principal=principal, trace_id=trace_id, policy_version=policy_version,
+                workspace_id=None, target_type="tenant_role", target_id=user_id,
+                before=None if current is None else {
+                    "role": str(current["role"]), "state": str(current["state"]),
+                    "version": current_version,
+                },
+                after={"role": next_role, "state": next_state, "version": next_version},
+            )
+            return next_version
+
     def set_source_access(
         self, *, principal: IdentityPrincipal, workspace_id: str, user_id: str,
         source_version_id: str, allowed: bool, expected_version: int,
@@ -916,9 +1100,9 @@ class AuthorizationService:
             raise AuthorizationError("INVALID_INPUT")
         now = self._now()
         with self._repository.transaction() as connection:
-            self._workspace(connection, principal, workspace_id, trace_id, policy_version)
-            actor = self._membership(connection, principal, workspace_id)
-            if actor is None or Role(str(actor["role"])) not in {
+            workspace = self._workspace(connection, principal, workspace_id, trace_id, policy_version)
+            binding = self._role_binding(connection, principal, workspace)
+            if binding is None or binding.role not in {
                 Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN, Role.WORKSPACE_ADMIN
             }:
                 raise AuthorizationError("ACTION_DENIED", 403)
@@ -968,15 +1152,18 @@ class AuthorizationService:
         )
         target_id = principal.tenant_id if scope == "tenant" else _checked_id(workspace_id)
         with self._repository.transaction() as connection:
-            self._workspace(connection, principal, workspace_id, trace_id, policy_version)
-            membership = self._membership(connection, principal, workspace_id)
-            role = None if membership is None else Role(str(membership["role"]))
-            allowed_roles = (
-                {Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN}
-                if scope == "tenant"
-                else {Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN, Role.WORKSPACE_ADMIN}
+            workspace = self._workspace(
+                connection, principal, workspace_id, trace_id, policy_version
             )
-            if role not in allowed_roles:
+            binding = self._role_binding(connection, principal, workspace)
+            allowed = (
+                binding is not None and binding.scope is RoleScope.TENANT
+                if scope == "tenant"
+                else binding is not None and binding.role in {
+                    Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN, Role.WORKSPACE_ADMIN
+                }
+            )
+            if not allowed:
                 self._audit(
                     action="authorization.policy.change_denied",
                     outcome=AuditOutcome.DENIED, principal=principal,
@@ -997,14 +1184,15 @@ class AuthorizationService:
         now = self._now()
         with self._lock, self._repository.transaction() as connection:
             workspace = self._workspace(connection, principal, workspace_id, trace_id, policy_version)
-            membership = self._membership(connection, principal, workspace_id)
-            role = None if membership is None else Role(str(membership["role"]))
-            allowed_roles = (
-                {Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN}
+            binding = self._role_binding(connection, principal, workspace)
+            allowed = (
+                binding is not None and binding.scope is RoleScope.TENANT
                 if scope == "tenant"
-                else {Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN, Role.WORKSPACE_ADMIN}
+                else binding is not None and binding.role in {
+                    Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN, Role.WORKSPACE_ADMIN
+                }
             )
-            if role not in allowed_roles:
+            if not allowed:
                 self._audit(
                     action="authorization.policy.change_denied",
                     outcome=AuditOutcome.DENIED, principal=principal,
@@ -1150,10 +1338,10 @@ class AuthorizationService:
             workspace = self._workspace(
                 connection, principal, descriptor.workspace_id, trace_id, policy_version
             )
-            membership = self._membership(connection, principal, descriptor.workspace_id)
+            binding = self._role_binding(connection, principal, workspace)
             base_action = _ACCESS_ACTIONS[action]
             grant = self._action_grant(
-                connection, principal=principal, workspace=workspace, membership=membership,
+                connection, principal=principal, workspace=workspace, binding=binding,
                 action=base_action, requested_permissions=(),
             )
             reasons: list[str] = []
@@ -1207,7 +1395,8 @@ class AuthorizationService:
                 resource_id=descriptor.result_id,
                 tenant_id=principal.tenant_id,
                 workspace_id=descriptor.workspace_id,
-                membership_version=0 if membership is None else int(membership["version"]),
+                role_scope=None if binding is None else binding.scope,
+                membership_version=0 if binding is None else binding.version,
                 acl_version=int(workspace["acl_version"]),
                 policy_version=current_policy,
                 evaluated_at=self._now(),
@@ -1220,9 +1409,9 @@ class AuthorizationService:
             )
             connection.execute(
                 """INSERT INTO auth_access_decisions(decision_id,actor_id,action,resource_id,tenant_id,
-                workspace_id,membership_version,acl_version,policy_version,evaluated_at,state,reason_codes,
+                workspace_id,role_scope,membership_version,acl_version,policy_version,evaluated_at,state,reason_codes,
                 allowed_reference_ids,masked_reference_ids,allowed_segment_ids,masked_segment_ids)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     decision.decision_id,
                     decision.actor_id,
@@ -1230,6 +1419,7 @@ class AuthorizationService:
                     decision.resource_id,
                     decision.tenant_id,
                     decision.workspace_id,
+                    None if decision.role_scope is None else decision.role_scope.value,
                     decision.membership_version,
                     decision.acl_version,
                     decision.policy_version,
@@ -1288,8 +1478,8 @@ class AuthorizationService:
             workspace = self._workspace(
                 connection, principal, descriptor.workspace_id, trace_id, policy_version
             )
-            membership = self._membership(connection, principal, descriptor.workspace_id)
-            if membership is None:
+            binding = self._role_binding(connection, principal, workspace)
+            if binding is None:
                 raise AuthorizationError("CURRENT_ACCESS_DENIED", 403, decision=decision)
             allowed_reference_set = set(decision.allowed_reference_ids)
             allowed_sources = tuple(
@@ -1305,7 +1495,8 @@ class AuthorizationService:
                 tenant_id=principal.tenant_id,
                 workspace_id=descriptor.workspace_id,
                 actor_id=principal.user_id,
-                membership_version=int(membership["version"]),
+                role_scope=binding.scope,
+                membership_version=binding.version,
                 acl_version=int(workspace["acl_version"]),
                 policy_version=decision.policy_version,
                 data_area=str(workspace["data_area"]),
@@ -1317,6 +1508,7 @@ class AuthorizationService:
                 "tenant_id": snapshot.tenant_id,
                 "workspace_id": snapshot.workspace_id,
                 "actor_id": snapshot.actor_id,
+                "role_scope": snapshot.role_scope.value,
                 "membership_version": snapshot.membership_version,
                 "acl_version": snapshot.acl_version,
                 "policy_version": snapshot.policy_version,
@@ -1356,12 +1548,15 @@ def authorization_contract_summary() -> dict[str, object]:
     return {
         "schema_version": str(AUTHORIZATION_SCHEMA_VERSION),
         "roles": [role.value for role in Role],
+        "role_scopes": [scope.value for scope in RoleScope],
+        "tenant_roles": [role.value for role in Role if role in TENANT_ROLES],
+        "workspace_roles": [role.value for role in Role if role in WORKSPACE_ROLES],
         "actions": [action.value for action in Action],
         "permissions": [permission.value for permission in Permission],
         "access_actions": [action.value for action in AccessAction],
         "access_states": [state.value for state in AccessState],
         "tenant_isolation": "service_auth_predicate_m4_04;postgres_rls_m5",
-        "historical_access": "current_membership_acl_source_policy",
+        "historical_access": "current_role_binding_acl_source_policy",
         "http_runtime_implemented": False,
         "postgresql_rls_implemented": False,
     }
