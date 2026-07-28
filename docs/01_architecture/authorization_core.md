@@ -4,17 +4,19 @@
 
 R1-M4-04는 공개 API Runtime 이전의 도메인 권한 경계다. 현재 인증 주체는 M4-03의 `IdentityPrincipal`에서만 받고, 역할·Membership·ACL·조직/Workspace 정책의 현재 저장 상태를 함께 평가한다. Browser·FastAPI Route, PostgreSQL Migration·RLS는 각각 M4-05·M5 소유이며 이 Core의 완료 증거로 주장하지 않는다.
 
-## 역할과 권한
+## 역할 범위와 권한
 
-- 역할은 `personal_owner`, `organization_admin`, `workspace_admin`, `editor`, `reviewer`, `approver`, `viewer` 7개로 고정한다.
+- 역할은 `personal_owner`, `organization_admin`, `workspace_admin`, `editor`, `reviewer`, `approver`, `viewer` 7개로 고정한다. 이름은 같아도 저장 범위는 섞지 않는다.
+- `personal_owner`는 `personal` 공간 전체, `organization_admin`은 `organization` Tenant 전체에 적용되는 Tenant 역할이다. 별도 `auth_tenant_roles` Binding과 Version을 가지며 특정 Workspace Membership으로 부여하지 않는다.
+- `workspace_admin`, `editor`, `reviewer`, `approver`, `viewer`만 `auth_memberships`에 저장한다. Tenant 역할이 현재 공간 kind와 일치하면 우선 적용하고, 없을 때만 해당 Workspace Membership을 평가한다.
 - 권한은 외부 LLM, 인터넷 검색, Local/Internal LLM, Daon 지식, 파일 다운로드·공유, 생산 지식 등록, 데이터 영역 이동, 최종 승인·외부 전달 8개를 독립 평가한다.
 - 조직 `deny` 또는 `lock`은 Workspace 정책으로 완화할 수 없다. 명시 Grant가 없으면 역할 기본값을 적용하고, 역할·Action Matrix 바깥은 기본 거부한다.
 - 조직 정책과 Connector 관련 정책 변경은 M4-03의 `organization_security_or_connector_policy_change` Step-up Authorization을 실제 소비해야 한다.
-- 역할·Membership·ACL·정책은 Version을 가지며 쓰기는 `expected_version`이 일치할 때만 성공한다.
+- Tenant 역할 Binding과 Workspace Membership·ACL·정책은 각각 Version을 가지며 쓰기는 `expected_version`이 일치할 때만 성공한다.
 
 ## 과거 결과의 현재 권한 재검증
 
-과거 결과 자체는 삭제하거나 다시 쓰지 않는다. 원래 사용한 Source Version·근거 Reference·Segment 의존 관계와 당시 정책 Version은 불변 Descriptor로 보존한다. 인용 보기, 원문 열기, Export, 전달, 생산 지식 등록, 재실행 시점마다 현재 Membership·ACL·Source 접근·정책을 다시 평가해 새 불변 `AccessDecision`을 만든다.
+과거 결과 자체는 삭제하거나 다시 쓰지 않는다. 원래 사용한 Source Version·근거 Reference·Segment 의존 관계와 당시 정책 Version은 불변 Descriptor로 보존한다. 인용 보기, 원문 열기, Export, 전달, 생산 지식 등록, 재실행 시점마다 현재 Tenant 역할 또는 Workspace Membership Binding·ACL·Source 접근·정책을 다시 평가해 새 불변 `AccessDecision`을 만든다. `role_scope`와 `membership_version`은 실제로 권한을 부여한 Binding 종류와 Version을 기록한다.
 
 - `available`: 현재 권한으로 모든 근거를 사용할 수 있다.
 - `partially_redacted`: 안전하게 분리 가능한 비허용 Reference와 그 Segment만 Mask한다.

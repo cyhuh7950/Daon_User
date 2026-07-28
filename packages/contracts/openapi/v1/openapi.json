@@ -3709,6 +3709,18 @@
           "reviewer", "approver", "viewer"
         ]
       },
+      "TenantRole": {
+        "type": "string",
+        "enum": ["personal_owner", "organization_admin"]
+      },
+      "WorkspaceRole": {
+        "type": "string",
+        "enum": ["workspace_admin", "editor", "reviewer", "approver", "viewer"]
+      },
+      "RoleScope": {
+        "type": "string",
+        "enum": ["tenant", "workspace"]
+      },
       "AuthorizationAction": {
         "type": "string",
         "enum": [
@@ -3773,7 +3785,7 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "allowed", "actor_id", "workspace_id", "role", "action",
+          "allowed", "actor_id", "workspace_id", "role", "role_scope", "action",
           "effective_permissions", "required_step_up_action", "membership_version",
           "acl_version", "policy_version"
         ],
@@ -3782,6 +3794,7 @@
           "actor_id": { "$ref": "#/components/schemas/OpaqueId" },
           "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
           "role": { "$ref": "#/components/schemas/AuthorizationRole" },
+          "role_scope": { "$ref": "#/components/schemas/RoleScope" },
           "action": { "$ref": "#/components/schemas/AuthorizationAction" },
           "effective_permissions": {
             "type": "array",
@@ -3793,7 +3806,11 @@
               { "type": "null" }
             ]
           },
-          "membership_version": { "type": "integer", "minimum": 1 },
+          "membership_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Version of the effective tenant-role or workspace-membership binding identified by role_scope."
+          },
           "acl_version": { "type": "integer", "minimum": 1 },
           "policy_version": { "type": "string", "minLength": 1, "maxLength": 128 }
         }
@@ -3820,7 +3837,7 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "decision_id", "actor_id", "action", "resource_id", "workspace_id",
+          "decision_id", "actor_id", "action", "resource_id", "workspace_id", "role_scope",
           "membership_version", "acl_version", "policy_version", "evaluated_at",
           "state", "reason_codes", "allowed_reference_ids", "masked_reference_ids",
           "allowed_segment_ids", "masked_segment_ids"
@@ -3831,7 +3848,17 @@
           "action": { "$ref": "#/components/schemas/AccessAction" },
           "resource_id": { "$ref": "#/components/schemas/OpaqueId" },
           "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "membership_version": { "type": "integer", "minimum": 0 },
+          "role_scope": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/RoleScope" },
+              { "type": "null" }
+            ]
+          },
+          "membership_version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Version of the effective tenant-role or workspace-membership binding; zero only when no role binding authorized access."
+          },
           "acl_version": { "type": "integer", "minimum": 1 },
           "policy_version": { "type": "string", "minLength": 1, "maxLength": 128 },
           "evaluated_at": { "type": "string", "format": "date-time" },

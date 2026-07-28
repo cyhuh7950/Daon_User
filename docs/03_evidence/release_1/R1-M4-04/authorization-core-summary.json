@@ -27,7 +27,7 @@
     "policy_manage",
     "member_manage"
   ],
-  "historical_access": "current_membership_acl_source_policy",
+  "historical_access": "current_role_binding_acl_source_policy",
   "http_runtime_implemented": false,
   "permissions": [
     "external_llm",
@@ -40,6 +40,10 @@
     "final_approval_external_delivery"
   ],
   "postgresql_rls_implemented": false,
+  "role_scopes": [
+    "tenant",
+    "workspace"
+  ],
   "roles": [
     "personal_owner",
     "organization_admin",
@@ -49,8 +53,19 @@
     "approver",
     "viewer"
   ],
-  "schema_version": "1",
+  "schema_version": "2",
   "tenant_isolation": "service_auth_predicate_m4_04;postgres_rls_m5",
-  "source_sha256": "CFC1CCB9633996C71DFA55EC64F5F5232B85CCDE765085A20C9E7DE9967E797F",
-  "test_count": 15
+  "tenant_roles": [
+    "personal_owner",
+    "organization_admin"
+  ],
+  "workspace_roles": [
+    "workspace_admin",
+    "editor",
+    "reviewer",
+    "approver",
+    "viewer"
+  ],
+  "source_sha256": "047E0B4F7383DE6088645002848BB62BEBA6A2B442631584F52E8D3BA53E4FEE",
+  "test_count": 22
 }
