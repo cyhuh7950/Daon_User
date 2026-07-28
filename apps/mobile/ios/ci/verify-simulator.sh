@@ -220,6 +220,43 @@ report_settings_accessibility_notice() {
   printf '::notice::%s\n' "${summary}"
 }
 
+report_settings_search_accessibility_notice() {
+  local log_file="$1"
+  local prefix="DAON_SETTINGS_SEARCH_ACCESSIBILITY_SUMMARY="
+  local source_line=""
+  local summary=""
+  local payload=""
+  local count=""
+  local items=""
+  local -a source_lines
+  local -a entries
+  local entry
+  mapfile -t source_lines < <(grep -F "${prefix}" "${log_file}" || true)
+  [[ "${#source_lines[@]}" -eq 1 ]] || return 0
+  source_line="${source_lines[0]}"
+  payload="${source_line#*${prefix}}"
+  summary="${prefix}${payload}"
+  [[ "${#summary}" -le 4096 ]] || return 0
+  [[ "${summary}" != *"::"* && "${summary}" != *"%"* ]] || return 0
+  if [[ ! "${payload}" =~ ^v1\|count=([0-9]|1[0-6])\|items=(.*)$ ]]; then
+    return 0
+  fi
+  count="${BASH_REMATCH[1]}"
+  items="${BASH_REMATCH[2]}"
+  if [[ "${count}" -eq 0 ]]; then
+    [[ "${items}" == "_none_" ]] || return 0
+  else
+    [[ "${items}" != "_none_" ]] || return 0
+    IFS=';' read -r -a entries <<< "${items}"
+    [[ "${#entries[@]}" -eq "${count}" && "${#entries[@]}" -le 16 ]] || return 0
+    for entry in "${entries[@]}"; do
+      if [[ ! "${entry}" =~ ^elementType=(searchField|textField),label=([A-Za-z0-9_.+/{\}-]{1,48}),identifier=([A-Za-z0-9_.+/{\}-]{1,48}),value=([A-Za-z0-9_.+/{\}-]{1,48}),isHittable=([01])$ ]]; then
+        return 0
+      fi
+    done
+  fi
+  printf '::notice::%s\n' "${summary}"
+}
 report_notification_settings_open_notice() {
   local prefix="DAON_NOTIFICATION_SETTINGS_OPEN_RESULT="
   local unified_log_file=""
@@ -259,6 +296,7 @@ report_permission_xctest_failure() {
   report_notification_settings_open_notice
   if [[ "${phase}" == "revoke" || "${phase}" == "grant-again" ]]; then
     report_settings_accessibility_notice "${log_file}"
+    report_settings_search_accessibility_notice "${log_file}"
   fi
   printf '::error::CODE=%s PHASE=%s EXIT=%d\n' "${code}" "${phase}" "${original_exit}"
 }
