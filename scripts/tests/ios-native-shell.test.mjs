@@ -838,7 +838,7 @@ test("Permission 실패는 마지막 알림 설정 Open Marker만 안전 검증�
 test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 차선·Unknown 최종으로 분류한다", async () => {
   const swift = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
   const permissionStart = swift.indexOf("func testPermissionGrantInitial() throws {");
-  const permissionEnd = swift.indexOf("\n  private func notificationSwitchIsEnabled", permissionStart);
+  const permissionEnd = swift.indexOf("\n  private enum NotificationSwitchPoint", permissionStart);
   const permissionContract = permissionStart >= 0 && permissionEnd > permissionStart
     ? swift.slice(permissionStart, permissionEnd)
     : "";
@@ -1204,7 +1204,7 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   assert.doesNotMatch(helperWithoutApprovedCompositePredicate, /settings\.cells\[|\.buttons|\.links|identifier|CONTAINS|BEGINSWITH|ENDSWITH|MATCHES|firstMatch|element\(boundBy:|coordinate\(/i);
 
   const settingsStart = uiTests.indexOf("private func setNotificationAuthorization");
-  const settingsEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", settingsStart);
+  const settingsEnd = uiTests.indexOf("private enum NotificationSwitchPoint", settingsStart);
   const settingsHelper = settingsStart >= 0 && settingsEnd > settingsStart ? uiTests.slice(settingsStart, settingsEnd) : "";
   assert.ok(settingsHelper);
   assert.match(settingsHelper, /let notificationsRow = try requireExactNotificationSettingsRow\(in: settings, allowAbsent: true\)/);
@@ -1269,15 +1269,15 @@ test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Se
   assert.match(permissionBody, /"Allow Notifications"/);
   assert.match(permissionBody, /"알림 허용"/);
   const settingsHelperStart = permissionBody.indexOf("private func setNotificationAuthorization");
-  const settingsHelperEnd = permissionBody.indexOf("private func notificationSwitchIsEnabled", settingsHelperStart);
+  const settingsHelperEnd = permissionBody.indexOf("private enum NotificationSwitchPoint", settingsHelperStart);
   const settingsHelper = settingsHelperStart >= 0 && settingsHelperEnd > settingsHelperStart ? permissionBody.slice(settingsHelperStart, settingsHelperEnd) : "";
   assert.ok(settingsHelper);
   const directSwitch = settingsHelper.indexOf("findExactNotificationSwitch(in: settings)");
   const fallbackRow = settingsHelper.indexOf("requireExactNotificationSettingsRow(in: settings");
   assert.ok(directSwitch >= 0 && fallbackRow > directSwitch, "notification switch must be queried before the iOS 15.1 row fallback");
-  assert.match(settingsHelper, /if let directSwitch = try findExactNotificationSwitch\(in: settings\)[\s\S]*?allowNotifications = directSwitch[\s\S]*?else[\s\S]*?requireExactNotificationSettingsRow/);
+  assert.match(settingsHelper, /if try findExactNotificationSwitch\(in: settings\) == nil[\s\S]*?requireExactNotificationSettingsRow/);
   assert.doesNotMatch(settingsHelper, /settings\.wait\(for: \.runningForeground[^\n]*\)\s*permissionXCTestStage\(\.appReturnRoot\)/);
-  assert.match(permissionBody, /notificationSwitchIsEnabled/);
+  assert.match(permissionBody, /readFreshNotificationSwitchState/);
   assert.match(permissionBody, /app\.activate\(\)[\s\S]*requireRootReady\(app\)/);
   assert.match(permissionBody, /권한 결과/);
   assert.match(shell, /requestPermission\(kind\)/);
@@ -1301,7 +1301,7 @@ test("iOS 26 Simulator Settings Search fallback은 direct·row 뒤 exact 단일 
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
   const helperStart = uiTests.indexOf("private func openDaonNotificationSettingsViaIOS26Search");
-  const helperEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", helperStart);
+  const helperEnd = uiTests.indexOf("private enum NotificationSwitchPoint", helperStart);
   const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
   assert.ok(helper);
   assert.match(helper, /#available\(iOS 26\.0, \*\)/);
@@ -1321,7 +1321,7 @@ test("iOS 26 Simulator Settings Search fallback은 direct·row 뒤 exact 단일 
     assert.match(helper, new RegExp(`permissionXCTestStage\\(\\.${stageCase}\\)`));
   }
   const authorizationStart = uiTests.indexOf("private func setNotificationAuthorization");
-  const authorizationEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", authorizationStart);
+  const authorizationEnd = uiTests.indexOf("private enum NotificationSwitchPoint", authorizationStart);
   const authorization = authorizationStart >= 0 && authorizationEnd > authorizationStart ? uiTests.slice(authorizationStart, authorizationEnd) : "";
   const direct = authorization.indexOf("findExactNotificationSwitch(in: settings)");
   const row = authorization.indexOf("requireExactNotificationSettingsRow(in: settings");
@@ -1388,7 +1388,7 @@ test("C45 recoverable COMPOSITE_ZERO는 선행 XCTest failure 없이 두 경로�
   const rowHelper = rowStart >= 0 && rowEnd > rowStart ? uiTests.slice(rowStart, rowEnd) : "";
   const searchStart = uiTests.indexOf("private func openDaonNotificationSettingsViaIOS26Search");
   const authorizationStart = uiTests.indexOf("private func setNotificationAuthorization", searchStart);
-  const helperEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", authorizationStart);
+  const helperEnd = uiTests.indexOf("private enum NotificationSwitchPoint", authorizationStart);
   const searchHelper = searchStart >= 0 && authorizationStart > searchStart ? uiTests.slice(searchStart, authorizationStart) : "";
   const authorization = authorizationStart >= 0 && helperEnd > authorizationStart ? uiTests.slice(authorizationStart, helperEnd) : "";
   assert.ok(rowHelper && searchHelper && authorization);
@@ -1704,4 +1704,65 @@ test("C55 Apps-local Daon 결과는 exact Bundle button을 최우선으로 선�
   assert.match(resultSelection, /else[\s\S]*?daonCellQuery[\s\S]*?exactDaonQuery/);
   assert.doesNotMatch(resultSelection, /com\.sinsan\.daon\.uitests\.xctrunner|firstMatch|coordinate\(|element\(boundBy:|CONTAINS|BEGINSWITH|MATCHES|NSRegularExpression/i);
   assert.match(resultSelection, /daonResult\.tap\(\)\s*$/);
+});
+test("C56 Notification switch는 fresh exact query와 bounded 상태 Marker 계약을 사용한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  assert.match(uiTests, /settings\.switches\.matching\(identifier: "ALLOW_NOTIFICATIONS_ID"\)/);
+  assert.match(uiTests, /NSPredicate\(format: "label == %@ OR label == %@", "Allow Notifications", "알림 허용"\)/);
+  assert.match(uiTests, /DAON_NOTIFICATION_SWITCH_STATE=v1\|phase=\\\(phase\.rawValue\)\|point=\\\(point\.rawValue\)\|count=\\\(countToken\)\|identifier=\\\(identifierToken\)\|label=\\\(labelToken\)\|rawType=\\\(valueState\.rawType\)\|state=\\\(valueState\.state\.rawValue\)/);
+  assert.match(uiTests, /case "1", "On", "켜짐":[^\n]*\.on[\s\S]*?case "0", "Off", "꺼짐":[^\n]*\.off/);
+  const setStart = uiTests.indexOf("private func setNotificationAuthorization");
+  const setEnd = uiTests.indexOf("private func notificationSwitch", setStart);
+  const setContract = setStart >= 0 && setEnd > setStart ? uiTests.slice(setStart, setEnd) : "";
+  assert.ok(setContract);
+  assert.match(setContract, /readFreshNotificationSwitchState\(in: settings, phase: phase, point: \.before\)/);
+  assert.match(setContract, /let tapTarget = try requireFreshNotificationSwitch\(in: settings\)[\s\S]*?tapTarget\.tap\(\)/);
+  assert.equal((setContract.match(/tapTarget\.tap\(\)/g) ?? []).length, 1);
+  assert.match(setContract, /readFreshNotificationSwitchState\(in: settings, phase: phase, point: \.after\)[\s\S]*?waitForNotificationSwitch\(in: settings, enabled: target\)[\s\S]*?readFreshNotificationSwitchState\(in: settings, phase: phase, point: \.final\)/);
+  assert.doesNotMatch(setContract, /waitForNotificationSwitch\([^\n]*XCUIElement|coordinate\(|settings\.terminate\(|simctl privacy|tapTarget\.tap\(\)[\s\S]*?tapTarget\.tap\(\)/);
+
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const parserStart = script.indexOf("report_notification_switch_state_notice() {");
+  const parserEnd = script.indexOf("report_permission_xctest_failure() {", parserStart);
+  const parser = parserStart >= 0 && parserEnd > parserStart ? script.slice(parserStart, parserEnd) : "";
+  assert.ok(parser);
+  assert.match(parser, /DAON_NOTIFICATION_SWITCH_STATE=/);
+  assert.match(parser, /phase=\(revoke\|grant-again\)/);
+  assert.match(parser, /point=\(before\|after\|final\)/);
+  assert.match(parser, /count=\(0\|1\|2plus\)/);
+  assert.match(parser, /identifier=\(ALLOW_NOTIFICATIONS_ID\|_empty_\|_other_\)/);
+  assert.match(parser, /rawType=\(NSNumber\|String\|Missing\|Other\)/);
+  assert.match(parser, /state=\(on\|off\|unsupported\)/);
+  assert.doesNotMatch(parser, /eval|debugDescription|printenv|env\s|4097|::error::/i);
+
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-switch-state-notice-"));
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const fixturePath = path.join(fixtureRoot, "switch-state-notice.sh");
+  const logPath = path.join(fixtureRoot, "permission.log");
+  await writeFile(fixturePath, `set -Eeuo pipefail\n${parser}\nreport_notification_switch_state_notice "$1"`, "utf8");
+  const run = async (raw) => {
+    await writeFile(logPath, raw, "utf8");
+    return spawnSync(bash, [fixturePath, logPath.replaceAll("\\", "/")], { encoding: "utf8" });
+  };
+  const valid = [
+    "DAON_NOTIFICATION_SWITCH_STATE=v1|phase=revoke|point=before|count=1|identifier=ALLOW_NOTIFICATIONS_ID|label=Allow_Notifications|rawType=NSNumber|state=on",
+    "DAON_NOTIFICATION_SWITCH_STATE=v1|phase=revoke|point=after|count=1|identifier=ALLOW_NOTIFICATIONS_ID|label=Allow_Notifications|rawType=String|state=off",
+    "DAON_NOTIFICATION_SWITCH_STATE=v1|phase=revoke|point=final|count=1|identifier=ALLOW_NOTIFICATIONS_ID|label=Allow_Notifications|rawType=String|state=off"
+  ];
+  try {
+    const accepted = await run(`${valid.join("\n")}\n`);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.deepEqual(accepted.stdout.trim().split(/\r?\n/), valid.map((line) => `::notice::${line}`));
+    for (const invalid of [
+      `${valid[0]}::error::SECRET\n`,
+      `${valid.join("\n")}\n${valid[2]}\n`,
+      "DAON_NOTIFICATION_SWITCH_STATE=v1|phase=grant-initial|point=before|count=1|identifier=ALLOW_NOTIFICATIONS_ID|label=Allow_Notifications|rawType=String|state=on\n"
+    ]) {
+      const rejected = await run(invalid);
+      assert.equal(rejected.status, 0, rejected.stderr);
+      assert.equal(rejected.stdout, "");
+    }
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
 });

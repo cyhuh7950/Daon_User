@@ -340,6 +340,7 @@ report_settings_search_result_notice() {
   fi
   printf '::notice::%s\n' "${summary}"
 }
+
 report_notification_settings_open_notice() {
   local prefix="DAON_NOTIFICATION_SETTINGS_OPEN_RESULT="
   local unified_log_file=""
@@ -363,6 +364,39 @@ report_notification_settings_open_notice() {
   printf '::notice::%s\n' "${marker}"
 }
 
+report_notification_switch_state_notice() {
+  local log_file="$1"
+  local prefix="DAON_NOTIFICATION_SWITCH_STATE="
+  local source_lines=""
+  local source_line=""
+  local payload=""
+  local marker=""
+  local validated=""
+  local count=0
+  source_lines="$(grep -F "${prefix}" "${log_file}" || true)"
+  [[ -n "${source_lines}" ]] || return 0
+  while IFS= read -r source_line; do
+    [[ -n "${source_line}" ]] || return 0
+    count=$((count + 1))
+    [[ "${count}" -le 3 ]] || return 0
+    payload="${source_line#*${prefix}}"
+    marker="${prefix}${payload}"
+    [[ "${#marker}" -le 320 && "${marker}" != *"::"* && "${marker}" != *"%"* ]] || return 0
+    if [[ ! "${payload}" =~ ^v1\|phase=(revoke|grant-again)\|point=(before|after|final)\|count=(0|1|2plus)\|identifier=(ALLOW_NOTIFICATIONS_ID|_empty_|_other_)\|label=(Allow_Notifications|Korean_Allow_Notifications|_empty_|_other_)\|rawType=(NSNumber|String|Missing|Other)\|state=(on|off|unsupported)$ ]]; then
+      return 0
+    fi
+    if [[ -n "${validated}" ]]; then
+      validated="${validated}"$'\n'"${marker}"
+    else
+      validated="${marker}"
+    fi
+  done <<< "${source_lines}"
+  [[ "${count}" -ge 1 ]] || return 0
+  while IFS= read -r marker; do
+    printf '::notice::%s\n' "${marker}"
+  done <<< "${validated}"
+}
+
 report_permission_xctest_failure() {
   local log_file="$1"
   local phase="$2"
@@ -378,6 +412,7 @@ report_permission_xctest_failure() {
   fi
   report_notification_settings_open_notice
   if [[ "${phase}" == "revoke" || "${phase}" == "grant-again" ]]; then
+    report_notification_switch_state_notice "${log_file}"
     report_settings_accessibility_notice "${log_file}"
     report_settings_search_accessibility_notice "${log_file}"
     report_settings_search_surface_notice "${log_file}"
