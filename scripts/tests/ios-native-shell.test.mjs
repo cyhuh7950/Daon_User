@@ -1305,8 +1305,8 @@ test("iOS 26 Simulator Settings Search fallback은 direct·row 뒤 exact 단일 
   const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
   assert.ok(helper);
   assert.match(helper, /#available\(iOS 26\.0, \*\)/);
-  assert.match(helper, /identifier == %@[^\n]*com\.apple\.settings\.search/);
-  assert.match(helper, /settings\.buttons\.matching\(searchButtonPredicate\)/);
+  assert.doesNotMatch(helper, /com\.apple\.settings\.search|searchButtonPredicate|settings\.buttons\.matching/);
+  assert.match(helper, /for _ in 0\.\.<6[\s\S]*?settings\.swipeDown\(\)[\s\S]*?searchFields = settings\.searchFields\.allElementsBoundByAccessibilityElement/);
   assert.match(helper, /settings\.searchFields\.allElementsBoundByAccessibilityElement\.filter \{ \$0\.isHittable \}/);
   assert.match(helper, /maximumExistingSearchTextLength\s*=\s*128/);
   assert.match(helper, /XCUIKeyboardKey\.delete\.rawValue/);
@@ -1620,4 +1620,23 @@ test("C49 Surface Summary Notice는 strict schema·Bash3.2·원 Exit 65를 보�
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
+});
+test("C50 iOS 26 SearchField는 잘못된 identifier tap 없이 bounded pull-down으로만 탐색한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const searchStart = uiTests.indexOf("private func openDaonNotificationSettingsViaIOS26Search");
+  const searchEnd = uiTests.indexOf("private func setNotificationAuthorization", searchStart);
+  const searchHelper = searchStart >= 0 && searchEnd > searchStart ? uiTests.slice(searchStart, searchEnd) : "";
+  assert.ok(searchHelper);
+  const buttonStage = searchHelper.indexOf("permissionXCTestStage(.settingsSearchButton)");
+  const fieldStage = searchHelper.indexOf("permissionXCTestStage(.settingsSearchField)", buttonStage);
+  const reveal = buttonStage >= 0 && fieldStage > buttonStage ? searchHelper.slice(buttonStage, fieldStage) : "";
+  assert.ok(reveal);
+  assert.doesNotMatch(reveal, /com\.apple\.settings\.search|searchButton|\.tap\(\)|XCTNSPredicateExpectation|XCTWaiter|waitForExistence/);
+  assert.match(reveal, /var searchFields: \[XCUIElement\] = \[\]/);
+  assert.match(reveal, /for _ in 0\.\.<6\s*\{\s*settings\.swipeDown\(\)\s*searchFields = settings\.searchFields\.allElementsBoundByAccessibilityElement\.filter \{ \$0\.isHittable \}/);
+  assert.match(reveal, /if searchFields\.count == 1\s*\{\s*break\s*\}/);
+  assert.match(reveal, /guard searchFields\.count <= 1 else\s*\{\s*XCTFail\("missing or ambiguous exact system element: Settings search field"\)\s*throw PermissionUIContractError\.missingExactElement\("Settings search field"\)\s*\}/);
+  assert.doesNotMatch(reveal, /sleep|coordinate\(|element\(boundBy:|firstMatch|textViews|otherElements|buttons\.matching|descendants\(matching:|NSPredicate/i);
+  assert.match(searchHelper, /permissionXCTestStage\(\.settingsSearchField\)\s*guard searchFields\.count == 1, let searchField = searchFields\.popLast\(\) else\s*\{\s*emitSettingsSearchAccessibilitySummary\(in: settings\)\s*emitSettingsSearchSurfaceSummary\(in: settings\)\s*XCTFail/);
+  assert.match(searchHelper, /searchField\.typeText\("Daon"\)[\s\S]*?label == %@", "Daon"[\s\S]*?daonResult\.tap\(\)[\s\S]*?permissionXCTestStage\(\.settingsSearchAppSurface\)/);
 });
