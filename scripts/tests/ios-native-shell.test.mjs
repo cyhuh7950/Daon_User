@@ -1621,23 +1621,15 @@ test("C49 Surface Summary Notice는 strict schema·Bash3.2·원 Exit 65를 보�
     await rm(fixtureRoot, { recursive: true, force: true });
   }
 });
-test("C50 iOS 26 SearchField는 잘못된 identifier tap 없이 bounded pull-down으로만 탐색한다", async () => {
+test("C50 iOS 26 SearchField는 Apps-local 화면에서 exact bounded 방식으로 탐색한다", async () => {
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
   const searchStart = uiTests.indexOf("private func openDaonNotificationSettingsViaIOS26Search");
   const searchEnd = uiTests.indexOf("private func setNotificationAuthorization", searchStart);
   const searchHelper = searchStart >= 0 && searchEnd > searchStart ? uiTests.slice(searchStart, searchEnd) : "";
   assert.ok(searchHelper);
-  const buttonStage = searchHelper.indexOf("permissionXCTestStage(.settingsSearchButton)");
-  const fieldStage = searchHelper.indexOf("permissionXCTestStage(.settingsSearchField)", buttonStage);
-  const reveal = buttonStage >= 0 && fieldStage > buttonStage ? searchHelper.slice(buttonStage, fieldStage) : "";
-  assert.ok(reveal);
-  assert.doesNotMatch(reveal, /com\.apple\.settings\.search|searchButton|\.tap\(\)|XCTNSPredicateExpectation|XCTWaiter|waitForExistence/);
-  assert.match(reveal, /var searchFields: \[XCUIElement\] = \[\]/);
-  assert.match(reveal, /for _ in 0\.\.<6\s*\{\s*settings\.swipeDown\(\)\s*searchFields = settings\.searchFields\.allElementsBoundByAccessibilityElement\.filter \{ \$0\.isHittable \}/);
-  assert.match(reveal, /if searchFields\.count == 1\s*\{\s*break\s*\}/);
-  assert.match(reveal, /guard searchFields\.count <= 1 else\s*\{\s*XCTFail\("missing or ambiguous exact system element: Settings search field"\)\s*throw PermissionUIContractError\.missingExactElement\("Settings search field"\)\s*\}/);
-  assert.doesNotMatch(reveal, /sleep|coordinate\(|element\(boundBy:|firstMatch|textViews|otherElements|buttons\.matching|descendants\(matching:|NSPredicate/i);
-  assert.match(searchHelper, /permissionXCTestStage\(\.settingsSearchField\)\s*guard searchFields\.count == 1, let searchField = searchFields\.popLast\(\) else\s*\{\s*emitSettingsSearchAccessibilitySummary\(in: settings\)\s*emitSettingsSearchSurfaceSummary\(in: settings\)\s*XCTFail/);
+  assert.doesNotMatch(searchHelper, /com\.apple\.settings\.search|searchButtonPredicate/);
+  assert.match(searchHelper, /permissionXCTestStage\(\.settingsSearchField\)[\s\S]*?settings\.searchFields\.allElementsBoundByAccessibilityElement\.filter \{ \$0\.isHittable \}/);
+  assert.match(searchHelper, /guard searchFields\.count == 1, let searchField = searchFields\.popLast\(\) else\s*\{\s*emitSettingsSearchAccessibilitySummary\(in: settings\)\s*emitSettingsSearchSurfaceSummary\(in: settings\)\s*XCTFail/);
   assert.match(searchHelper, /searchField\.typeText\("Daon"\)[\s\S]*?label == %@", "Daon"[\s\S]*?daonResult\.tap\(\)[\s\S]*?permissionXCTestStage\(\.settingsSearchAppSurface\)/);
 });
 test("C51 Search Result 진단은 bounded failure-only 단일 helper 계약을 사용한다", async () => {
@@ -1687,4 +1679,11 @@ test("C53 global Continue fallback은 exact 3중 evidence gate만 사용한다",
  assert.match(x,/settings\.buttons\.matching\(identifier: "dictation"\)/);assert.match(x,/settings\.buttons\.matching\(keyboardContinuePredicate\)/);
  assert.match(x,/dictationButtons\.count <= 1, globalContinueButtons\.count <= 1[\s\S]*?dictationButtons\.count == 1, globalContinueButtons\.count == 1[\s\S]*?globalContinueButton\.tap/);
  assert.doesNotMatch(x,/firstMatch|coordinate\(|element\(boundBy:|CONTAINS|BEGINSWITH|MATCHES|sleep/i);
+});
+test("C54 Apps-local search path는 exact bounded 계약이다",async()=>{
+ const s=await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");const a=s.indexOf("permissionXCTestStage(.settingsSearchButton)");const b=s.indexOf('searchField.typeText("Daon")',a);const x=s.slice(a,b);
+ assert.match(x,/settings\.buttons\.matching\(identifier: "com\.apple\.settings\.apps"\)/);assert.match(x,/for _ in 0\.\.<8[\s\S]*?settings\.swipeUp/);
+ assert.match(x,/appsButton\.tap\(\)[\s\S]*?permissionXCTestStage\(\.settingsSearchField\)/);assert.match(x,/if searchFields\.isEmpty[\s\S]*?for _ in 0\.\.<6[\s\S]*?settings\.swipeDown/);
+ assert.doesNotMatch(x,/com\.apple\.settings\.search|firstMatch|coordinate\(|element\(boundBy:|sleep/i);
+ assert.doesNotMatch(x,/(?:label|identifier)\s+(?:CONTAINS|BEGINSWITH|ENDSWITH|MATCHES)\s+%@/);
 });

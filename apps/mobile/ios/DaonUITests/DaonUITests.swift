@@ -521,20 +521,39 @@ final class DaonUITests: XCTestCase {
     }
 
     permissionXCTestStage(.settingsSearchButton)
-    var searchFields: [XCUIElement] = []
-    for _ in 0..<6 {
-      settings.swipeDown()
-      searchFields = settings.searchFields.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
-      if searchFields.count == 1 {
-        break
-      }
-      guard searchFields.count <= 1 else {
-        XCTFail("missing or ambiguous exact system element: Settings search field")
-        throw PermissionUIContractError.missingExactElement("Settings search field")
+    var appsButtons: [XCUIElement] = []
+    for _ in 0..<8 {
+      settings.swipeUp()
+      appsButtons = settings.buttons.matching(identifier: "com.apple.settings.apps").allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+      if appsButtons.count == 1 { break }
+      guard appsButtons.count <= 1 else {
+        XCTFail("missing or ambiguous exact system element: Settings Apps button")
+        throw PermissionUIContractError.missingExactElement("Settings Apps button")
       }
     }
+    guard appsButtons.count == 1, let appsButton = appsButtons.popLast() else {
+      XCTFail("missing or ambiguous exact system element: Settings Apps button")
+      throw PermissionUIContractError.missingExactElement("Settings Apps button")
+    }
+    appsButton.tap()
 
     permissionXCTestStage(.settingsSearchField)
+    var searchFields = settings.searchFields.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    guard searchFields.count <= 1 else {
+      XCTFail("missing or ambiguous exact system element: Settings search field")
+      throw PermissionUIContractError.missingExactElement("Settings search field")
+    }
+    if searchFields.isEmpty {
+      for _ in 0..<6 {
+        settings.swipeDown()
+        searchFields = settings.searchFields.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+        if searchFields.count == 1 { break }
+        guard searchFields.count <= 1 else {
+          XCTFail("missing or ambiguous exact system element: Settings search field")
+          throw PermissionUIContractError.missingExactElement("Settings search field")
+        }
+      }
+    }
     guard searchFields.count == 1, let searchField = searchFields.popLast() else {
       emitSettingsSearchAccessibilitySummary(in: settings)
       emitSettingsSearchSurfaceSummary(in: settings)
