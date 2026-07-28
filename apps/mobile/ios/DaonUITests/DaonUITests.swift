@@ -137,9 +137,9 @@ final class DaonUITests: XCTestCase {
     XCTAssertTrue(content.waitForExistence(timeout: 10), "screen content is unavailable")
 
     if phase == .revoke {
-      try setNotificationAuthorization(enabled: false, in: app, content: content)
+      try setNotificationAuthorization(enabled: false, phase: phase, in: app, content: content)
     } else if phase == .grantAgain {
-      try setNotificationAuthorization(enabled: true, in: app, content: content)
+      try setNotificationAuthorization(enabled: true, phase: phase, in: app, content: content)
     }
 
     for kind in ["camera", "microphone", "notification"] {
@@ -495,23 +495,35 @@ final class DaonUITests: XCTestCase {
     XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed, "Notification alert did not close after Allow")
   }
 
-  private func findExactNotificationSwitch(in settings: XCUIApplication) throws -> XCUIElement? {
+  private func notificationSwitchCandidates(in settings: XCUIApplication) -> [XCUIElement] {
+    let stableIdentifierQuery = settings.switches.matching(identifier: "ALLOW_NOTIFICATIONS_ID")
+    let stableIdentifierElements = stableIdentifierQuery.allElementsBoundByAccessibilityElement
+    if !stableIdentifierElements.isEmpty { return stableIdentifierElements }
     let exactSwitchPredicate = NSPredicate(format: "label == %@ OR label == %@", "Allow Notifications", "알림 허용")
-    let exactSwitchQuery = settings.switches.matching(exactSwitchPredicate)
+    return settings.switches.matching(exactSwitchPredicate).allElementsBoundByAccessibilityElement
+  }
+
+  private func findExactNotificationSwitch(in settings: XCUIApplication) throws -> XCUIElement? {
     let appeared = XCTNSPredicateExpectation(
       predicate: NSPredicate { object, _ in
-        guard let exactSwitchQuery = object as? XCUIElementQuery else { return false }
-        return !exactSwitchQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
+        guard let settings = object as? XCUIApplication else { return false }
+        var candidates = self.notificationSwitchCandidates(in: settings)
+        return candidates.count == 1 && candidates.popLast()?.isHittable == true
       },
-      object: exactSwitchQuery
+      object: settings
     )
     _ = XCTWaiter.wait(for: [appeared], timeout: 10)
-    var exactSwitches = exactSwitchQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
-    guard exactSwitches.count <= 1 else {
+    var candidates = notificationSwitchCandidates(in: settings)
+    guard candidates.count <= 1 else {
       XCTFail("missing or ambiguous exact system element: Allow Notifications switch")
       throw PermissionUIContractError.missingExactElement("Allow Notifications switch")
     }
-    return exactSwitches.popLast()
+    guard let candidate = candidates.popLast() else { return nil }
+    guard candidate.isHittable else {
+      XCTFail("Allow Notifications switch is not hittable")
+      throw PermissionUIContractError.missingExactElement("Allow Notifications switch")
+    }
+    return candidate
   }
 
   private func openDaonNotificationSettingsViaIOS26Search(in settings: XCUIApplication) throws -> XCUIElement {
@@ -650,7 +662,7 @@ final class DaonUITests: XCTestCase {
     }
   }
 
-  private func setNotificationAuthorization(enabled target: Bool, in app: XCUIApplication, content: XCUIElement) throws {
+  private func setNotificationAuthorization(enabled target: Bool, phase: PermissionPhase, in app: XCUIApplication, content: XCUIElement) throws {
     let settingsButton = app.buttons["알림 설정 열기"]
     for _ in 0..<8 where !settingsButton.isHittable { content.swipeUp() }
     XCTAssertTrue(settingsButton.waitForExistence(timeout: 10), "Production application settings button is unavailable")
@@ -661,70 +673,137 @@ final class DaonUITests: XCTestCase {
     permissionXCTestStage(.settingsForeground)
     XCTAssertTrue(settings.wait(for: .runningForeground, timeout: 10), "Settings app is not runningForeground")
     permissionXCTestStage(.settingsSwitchRead)
-    let allowNotifications: XCUIElement
-    if let directSwitch = try findExactNotificationSwitch(in: settings) {
-      allowNotifications = directSwitch
-    } else {
+    if try findExactNotificationSwitch(in: settings) == nil {
       do {
         permissionXCTestStage(.settingsNotificationRow)
         let notificationsRow = try requireExactNotificationSettingsRow(in: settings, allowAbsent: true)
         XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
         permissionXCTestStage(.settingsNotificationRowTapPending)
         notificationsRow.tap()
-        allowNotifications = try requireExactElement([
+        _ = try requireExactElement([
           settings.switches["Allow Notifications"],
           settings.switches["알림 허용"]
         ], description: "Allow Notifications switch")
       } catch PermissionUIContractError.notificationSettingsRowAbsent {
         if #available(iOS 26.0, *) {
-          allowNotifications = try openDaonNotificationSettingsViaIOS26Search(in: settings)
+          _ = try openDaonNotificationSettingsViaIOS26Search(in: settings)
         } else {
           XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]")
           throw PermissionUIContractError.notificationSettingsRowAbsent
         }
       }
     }
-    XCTAssertTrue(allowNotifications.isHittable, "Allow Notifications switch is not hittable")
-    let before = try notificationSwitchIsEnabled(allowNotifications)
+    let before = try readFreshNotificationSwitchState(in: settings, phase: phase, point: .before)
     if before != target {
       permissionXCTestStage(.settingsSwitchToggle)
-      allowNotifications.tap()
+      let tapTarget = try requireFreshNotificationSwitch(in: settings)
+      tapTarget.tap()
     }
+    _ = try readFreshNotificationSwitchState(in: settings, phase: phase, point: .after)
     permissionXCTestStage(.settingsSwitchVerify)
-    waitForNotificationSwitch(allowNotifications, enabled: target)
-    XCTAssertEqual(try notificationSwitchIsEnabled(allowNotifications), target, "Allow Notifications switch did not reach the required phase state")
+    waitForNotificationSwitch(in: settings, enabled: target)
+    let final = try readFreshNotificationSwitchState(in: settings, phase: phase, point: .final)
+    XCTAssertEqual(final, target, "Allow Notifications switch did not reach the required phase state")
 
     permissionXCTestStage(.appReturnRoot)
     app.activate()
     requireRootReady(app)
   }
 
-  private func notificationSwitchIsEnabled(_ element: XCUIElement) throws -> Bool {
-    if let number = element.value as? NSNumber {
-      return number.boolValue
+  private enum NotificationSwitchPoint: String {
+    case before
+    case after
+    case final
+  }
+
+  private enum NotificationSwitchState: String {
+    case on
+    case off
+    case unsupported
+  }
+
+  private struct NotificationSwitchValueState {
+    let rawType: String
+    let state: NotificationSwitchState
+  }
+
+  private func notificationSwitchValueState(_ element: XCUIElement?) -> NotificationSwitchValueState {
+    guard let value = element?.value else {
+      return NotificationSwitchValueState(rawType: "Missing", state: .unsupported)
     }
-    guard let value = element.value as? String else {
-      XCTFail("Allow Notifications switch has no supported value")
-      throw PermissionUIContractError.unsupportedSwitchValue("missing")
+    if let number = value as? NSNumber {
+      return NotificationSwitchValueState(rawType: "NSNumber", state: number.boolValue ? .on : .off)
     }
-    switch value {
-    case "1", "On", "켜짐": return true
-    case "0", "Off", "꺼짐": return false
-    default:
-      XCTFail("Allow Notifications switch returned an unsupported value")
-      throw PermissionUIContractError.unsupportedSwitchValue(value)
+    if let string = value as? String {
+      switch string {
+      case "1", "On", "켜짐": return NotificationSwitchValueState(rawType: "String", state: .on)
+      case "0", "Off", "꺼짐": return NotificationSwitchValueState(rawType: "String", state: .off)
+      default: return NotificationSwitchValueState(rawType: "String", state: .unsupported)
+      }
+    }
+    return NotificationSwitchValueState(rawType: "Other", state: .unsupported)
+  }
+
+  private func notificationSwitchIdentifierToken(_ element: XCUIElement?) -> String {
+    guard let identifier = element?.identifier, !identifier.isEmpty else { return "_empty_" }
+    return identifier == "ALLOW_NOTIFICATIONS_ID" ? "ALLOW_NOTIFICATIONS_ID" : "_other_"
+  }
+
+  private func notificationSwitchLabelToken(_ element: XCUIElement?) -> String {
+    switch element?.label {
+    case "Allow Notifications": return "Allow_Notifications"
+    case "알림 허용": return "Korean_Allow_Notifications"
+    case "": return "_empty_"
+    default: return "_other_"
     }
   }
 
-  private func waitForNotificationSwitch(_ element: XCUIElement, enabled: Bool) {
-    let acceptedValues = enabled ? ["1", "On", "켜짐"] : ["0", "Off", "꺼짐"]
-    let predicate = NSPredicate { object, _ in
-      guard let candidate = object as? XCUIElement else { return false }
-      if let number = candidate.value as? NSNumber { return number.boolValue == enabled }
-      guard let value = candidate.value as? String else { return false }
-      return acceptedValues.contains(value)
+  private func requireFreshNotificationSwitch(in settings: XCUIApplication) throws -> XCUIElement {
+    guard let element = try findExactNotificationSwitch(in: settings) else {
+      XCTFail("missing or ambiguous exact system element: Allow Notifications switch")
+      throw PermissionUIContractError.missingExactElement("Allow Notifications switch")
     }
-    let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+    return element
+  }
+
+  private func readFreshNotificationSwitchState(in settings: XCUIApplication, phase: PermissionPhase, point: NotificationSwitchPoint) throws -> Bool {
+    var candidates = notificationSwitchCandidates(in: settings)
+    let countToken = candidates.isEmpty ? "0" : (candidates.count == 1 ? "1" : "2plus")
+    let element = candidates.count == 1 ? candidates.popLast() : nil
+    let valueState = notificationSwitchValueState(element)
+    let identifierToken = notificationSwitchIdentifierToken(element)
+    let labelToken = notificationSwitchLabelToken(element)
+    print("DAON_NOTIFICATION_SWITCH_STATE=v1|phase=\(phase.rawValue)|point=\(point.rawValue)|count=\(countToken)|identifier=\(identifierToken)|label=\(labelToken)|rawType=\(valueState.rawType)|state=\(valueState.state.rawValue)")
+    guard candidates.isEmpty, let element else {
+      XCTFail("missing or ambiguous exact system element: Allow Notifications switch")
+      throw PermissionUIContractError.missingExactElement("Allow Notifications switch")
+    }
+    guard element.isHittable else {
+      XCTFail("Allow Notifications switch is not hittable")
+      throw PermissionUIContractError.missingExactElement("Allow Notifications switch")
+    }
+    switch valueState.state {
+    case .on: return true
+    case .off: return false
+    case .unsupported:
+      if valueState.rawType == "Missing" {
+        XCTFail("Allow Notifications switch has no supported value")
+      } else {
+        XCTFail("Allow Notifications switch returned an unsupported value")
+      }
+      throw PermissionUIContractError.unsupportedSwitchValue("unsupported")
+    }
+  }
+
+  private func waitForNotificationSwitch(in settings: XCUIApplication, enabled: Bool) {
+    let targetState: NotificationSwitchState = enabled ? .on : .off
+    let predicate = NSPredicate { object, _ in
+      guard let settings = object as? XCUIApplication else { return false }
+      var candidates = self.notificationSwitchCandidates(in: settings)
+      guard candidates.count == 1, let candidate = candidates.popLast(), candidate.isHittable else { return false }
+      return self.notificationSwitchValueState(candidate).state == targetState
+    }
+    let expectation = XCTNSPredicateExpectation(predicate: predicate, object: settings)
     XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 5), .completed, "Allow Notifications switch value did not update")
   }
 }
