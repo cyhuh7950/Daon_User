@@ -462,7 +462,7 @@ test("Simulator 검증은 Route Key만 초기화하고 Home 준비·복원을 �
   const homeReadyIndex = script.indexOf("wait_for_route_with_evidence Home", launchIndex);
   assert.ok(installIndex >= 0 && installIndex < clearIndex && clearIndex < launchIndex && launchIndex < homeReadyIndex);
   assert.doesNotMatch(script, /simctl openurl|warm_routes=|rejected_links=/);
-  assert.equal((script.match(/wait_for_route_with_evidence Home/g) ?? []).length, 2);
+  assert.equal((script.match(/wait_for_route_with_evidence Home/g) ?? []).length, 3);
   assert.equal((script.match(/for _ in \{1\.\.20\}/g) ?? []).length, 1);
 });
 
@@ -496,7 +496,7 @@ test("모든 Route Wait 실패는 승인 Route 기반 Daon Log를 보존하고 �
   assert.match(contract, /DAON_PENDING_DEEP_LINK_RECEIVED\|DAON_ROUTE_SAVED=/);
   assert.match(contract, /DAON_LIFECYCLE_STATE=/);
   assert.doesNotMatch(contract, /cat "\$\{evidence_file\}"|grep -Ev|echo[^\n]*\$\{actual\}/);
-  assert.equal((script.match(/wait_for_route_with_evidence Home/g) ?? []).length, 2);
+  assert.equal((script.match(/wait_for_route_with_evidence Home/g) ?? []).length, 3);
   assert.equal((script.match(/wait_for_route_with_evidence "\$\{route\}"/g) ?? []).length, 0);
   assert.equal((script.match(/wait_for_route_with_evidence AccountSettings/g) ?? []).length, 0);
   assert.equal((script.match(/^[ \t]*wait_for_route(?: |$)/gm) ?? []).length, 1);
@@ -547,7 +547,7 @@ test("Simulator ERR 진단은 allowlist 현재 단계와 숫자 원 Exit만 출�
   const allowedStages = [
     "APP_ARTIFACT", "BOOT_STATUS", "INSTALL", "INITIAL_TERMINATE", "ROUTE_CLEAR", "LAUNCH", "HOME_READY",
     "PERMISSION_GRANT_INITIAL", "PERMISSION_REVOKE", "PERMISSION_GRANT_AGAIN",
-    "LIFECYCLE_APPEARANCE", "LIFECYCLE_TERMINATE", "LIFECYCLE_RELAUNCH", "LIFECYCLE_READY", "LIFECYCLE_STATE",
+    "LIFECYCLE_PREPARE_LAUNCH", "LIFECYCLE_PREPARE_READY", "LIFECYCLE_APPEARANCE", "LIFECYCLE_TERMINATE", "LIFECYCLE_RELAUNCH", "LIFECYCLE_READY", "LIFECYCLE_STATE",
     "FINAL_LOG_CAPTURE", "FINAL_LOG_SCAN", "FINAL_BINARY_SCAN", "FINAL_TERMINATE", "FINAL_PROCESS_CHECK", "STATUS_WRITE"
   ];
   const contractStart = script.indexOf('DAON_SIM_STAGE="INITIALIZE"');
@@ -1797,4 +1797,19 @@ test("C57 Notification switch는 exact element 우측 중앙 normalized coordina
   assert.ok(toggleContract);
   assert.doesNotMatch(toggleContract, /tapTarget\.tap\(\)|tapTarget\.frame|XCUICoordinate\(|settings\.terminate\(|simctl privacy|for\s|while\s|repeat\s|retry/i);
   assert.match(setContract, /point: \.before[\s\S]*?point: \.after[\s\S]*?waitForNotificationSwitch\(in: settings, enabled: target\)[\s\S]*?point: \.final/);
+});
+test("C58 Lifecycle은 permission 종료와 독립된 명시 launch·Home ready 뒤 strict terminate한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const lifecycleStart = script.indexOf('DAON_SIM_STAGE="LIFECYCLE_PREPARE_LAUNCH"');
+  const lifecycleEnd = script.indexOf('DAON_SIM_STAGE="FINAL_LOG_CAPTURE"', lifecycleStart);
+  const lifecycle = lifecycleStart >= 0 && lifecycleEnd > lifecycleStart ? script.slice(lifecycleStart, lifecycleEnd) : "";
+  assert.ok(lifecycle);
+  assert.match(script, /INITIALIZE\|[\s\S]*?LIFECYCLE_PREPARE_LAUNCH\|LIFECYCLE_PREPARE_READY\|LIFECYCLE_APPEARANCE\|LIFECYCLE_TERMINATE/);
+  assert.match(lifecycle, /DAON_SIM_STAGE="LIFECYCLE_PREPARE_LAUNCH"\s*xcrun simctl launch "\$\{SIMULATOR_UDID\}" "\$\{BUNDLE_ID\}" \| tee "\$\{EVIDENCE_DIR\}\/lifecycle-prepare-launch\.log"\s*DAON_SIM_STAGE="LIFECYCLE_PREPARE_READY"\s*wait_for_route_with_evidence Home\s*DAON_SIM_STAGE="LIFECYCLE_APPEARANCE"[\s\S]*?DAON_SIM_STAGE="LIFECYCLE_TERMINATE"\s*xcrun simctl terminate "\$\{SIMULATOR_UDID\}" "\$\{BUNDLE_ID\}"\s*DAON_SIM_STAGE="LIFECYCLE_RELAUNCH"\s*xcrun simctl launch "\$\{SIMULATOR_UDID\}" "\$\{BUNDLE_ID\}"\s*DAON_SIM_STAGE="LIFECYCLE_READY"\s*wait_for_route_with_evidence Home\s*DAON_SIM_STAGE="LIFECYCLE_STATE"\s*\[\[ "\$\(read_preference lifecycle_state\)" =~ \^\(created\|foreground\|active\)\$ \]\]/);
+  assert.equal((lifecycle.match(/xcrun simctl launch "\$\{SIMULATOR_UDID\}" "\$\{BUNDLE_ID\}"/g) ?? []).length, 2);
+  assert.equal((lifecycle.match(/wait_for_route_with_evidence Home/g) ?? []).length, 2);
+  assert.equal((lifecycle.match(/xcrun simctl terminate "\$\{SIMULATOR_UDID\}" "\$\{BUNDLE_ID\}"/g) ?? []).length, 1);
+  assert.doesNotMatch(lifecycle, /\|\| true|\bsleep\b|\bretry\b|for\s|while\s/i);
+  assert.match(script, /DAON_SIM_STAGE="FINAL_TERMINATE"[\s\S]*?xcrun simctl terminate[\s\S]*?DAON_SIM_STAGE="FINAL_PROCESS_CHECK"[\s\S]*?pgrep -x Daon/);
+  assert.match(script, /SIMULATOR_VERIFIED_PENDING_SIGNING_DEVICE/);
 });
