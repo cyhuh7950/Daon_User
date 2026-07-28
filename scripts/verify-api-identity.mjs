@@ -12,10 +12,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiRoot = path.join(root, "services/api");
 const sourceRoot = path.join(apiRoot, "src");
 const testRoot = path.join(apiRoot, "tests");
-const evidencePath = path.join(root, "docs/03_evidence/release_1/R1-M4-02/audit-core-summary.json");
+const sourcePath = path.join(sourceRoot, "daon_user_api/identity.py");
+const evidencePath = path.join(root, "docs/03_evidence/release_1/R1-M4-03/identity-core-summary.json");
 
 function fail(message) {
-  throw new Error(`API_AUDIT_VERIFICATION_FAILED ${message}`);
+  throw new Error(`API_IDENTITY_VERIFICATION_FAILED ${message}`);
 }
 
 function runPython(arguments_, { capture = false } = {}) {
@@ -26,16 +27,12 @@ function runPython(arguments_, { capture = false } = {}) {
   const launcherArguments = existsSync(projectPython)
     ? arguments_
     : ["run", "--project", apiRoot, "python", ...arguments_];
-  const result = spawnSync(
-    executable,
-    launcherArguments,
-    {
-      cwd: root,
-      encoding: "utf8",
-      env: { ...process.env, PYTHONPATH: sourceRoot },
-      stdio: capture ? "pipe" : "inherit"
-    }
-  );
+  const result = spawnSync(executable, launcherArguments, {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, PYTHONPATH: sourceRoot },
+    stdio: capture ? "pipe" : "inherit"
+  });
   if (result.error) fail(`python launch ${result.error.code ?? result.error.name}`);
   if (result.status !== 0) {
     if (capture) {
@@ -47,39 +44,33 @@ function runPython(arguments_, { capture = false } = {}) {
   return result;
 }
 
-function canonicalJson(value) {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (value === null || typeof value !== "object") return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJson(value[key])]));
-}
-
 async function main() {
   const args = process.argv.slice(2).filter((argument) => argument !== "--");
   const write = args.includes("--write");
   if (write && args.includes("--no-write")) fail("--write and --no-write are mutually exclusive");
 
   const tests = runPython(
-    ["-m", "unittest", "discover", "-s", testRoot, "-p", "test_audit*.py", "-v"],
+    ["-m", "unittest", "discover", "-s", testRoot, "-p", "test_identity*.py", "-v"],
     { capture: true }
   );
   if (tests.stdout) process.stdout.write(tests.stdout);
   if (tests.stderr) process.stderr.write(tests.stderr);
-  const testOutput = `${tests.stdout ?? ""}\n${tests.stderr ?? ""}`;
-  const countMatch = testOutput.match(/Ran (\d+) tests?/);
+  const countMatch = `${tests.stdout ?? ""}\n${tests.stderr ?? ""}`.match(/Ran (\d+) tests?/);
   if (!countMatch) fail("test count missing");
 
-  const summaryResult = runPython(["-m", "daon_user_api.audit", "--summary-json"], { capture: true });
+  const contractResult = runPython(
+    ["-c", "import json; from daon_user_api.identity import identity_contract_summary; print(json.dumps(identity_contract_summary(), sort_keys=True))"],
+    { capture: true }
+  );
   let contract;
   try {
-    contract = JSON.parse(summaryResult.stdout.trim());
+    contract = JSON.parse(contractResult.stdout.trim());
   } catch {
-    fail("summary JSON invalid");
+    fail("contract summary JSON invalid");
   }
-  const canonicalContract = JSON.stringify(canonicalJson(contract));
-  const source = (await readFile(path.join(sourceRoot, "daon_user_api/audit.py"), "utf8")).replaceAll("\r\n", "\n");
+  const source = (await readFile(sourcePath, "utf8")).replaceAll("\r\n", "\n");
   const summary = {
     ...contract,
-    contract_sha256: createHash("sha256").update(canonicalContract).digest("hex").toUpperCase(),
     source_sha256: createHash("sha256").update(source).digest("hex").toUpperCase(),
     test_count: Number(countMatch[1])
   };
@@ -88,10 +79,10 @@ async function main() {
     await mkdir(path.dirname(evidencePath), { recursive: true });
     await writeFile(evidencePath, expected, "utf8");
   } else {
-    const actual = (await readFile(evidencePath, "utf8")).replaceAll("\r\n", "\n");
+    const actual = await readFile(evidencePath, "utf8");
     if (actual !== expected) fail("deterministic evidence mismatch; run with --write");
   }
-  console.log(`api audit verified: tests=${summary.test_count} fields=${summary.event_fields.length} integrity_codes=${summary.integrity_codes.length} sha256=${summary.contract_sha256}`);
+  console.log(`api identity verified: tests=${summary.test_count} actions=${summary.minimum_step_up_actions.length} sha256=${summary.source_sha256}`);
 }
 
 main().catch((error) => {
