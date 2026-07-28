@@ -278,7 +278,7 @@ final class DaonUITests: XCTestCase {
     print(summary)
   }
 
-  private func requireExactNotificationSettingsRow(in settings: XCUIApplication) throws -> XCUIElement {
+  private func requireExactNotificationSettingsRow(in settings: XCUIApplication, allowAbsent: Bool = false) throws -> XCUIElement {
     let exactLabelPredicate = NSPredicate(format: "label == %@ OR label == %@", "Notifications", "알림")
     let directQuery = settings.descendants(matching: .any).matching(exactLabelPredicate)
     let semanticCellQuery = settings.cells.containing(exactLabelPredicate)
@@ -338,6 +338,9 @@ final class DaonUITests: XCTestCase {
     } else {
       if candidates.composite.isEmpty {
         emitSettingsAccessibilitySummary(in: settings)
+        if allowAbsent {
+          throw PermissionUIContractError.notificationSettingsRowAbsent
+        }
         XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]")
         throw PermissionUIContractError.notificationSettingsRowAbsent
       }
@@ -482,7 +485,7 @@ final class DaonUITests: XCTestCase {
       return directSwitch
     }
     do {
-      let notificationsRow = try requireExactNotificationSettingsRow(in: settings)
+      let notificationsRow = try requireExactNotificationSettingsRow(in: settings, allowAbsent: true)
       XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
       notificationsRow.tap()
       return try requireExactElement([
@@ -512,7 +515,7 @@ final class DaonUITests: XCTestCase {
     } else {
       do {
         permissionXCTestStage(.settingsNotificationRow)
-        let notificationsRow = try requireExactNotificationSettingsRow(in: settings)
+        let notificationsRow = try requireExactNotificationSettingsRow(in: settings, allowAbsent: true)
         XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
         permissionXCTestStage(.settingsNotificationRowTapPending)
         notificationsRow.tap()
@@ -524,6 +527,7 @@ final class DaonUITests: XCTestCase {
         if #available(iOS 26.0, *) {
           allowNotifications = try openDaonNotificationSettingsViaIOS26Search(in: settings)
         } else {
+          XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]")
           throw PermissionUIContractError.notificationSettingsRowAbsent
         }
       }
