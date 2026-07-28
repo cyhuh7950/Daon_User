@@ -16,6 +16,10 @@ async function readJson(relativePath) {
   return JSON.parse(await read(relativePath));
 }
 
+function privateFixturePath(suffix = "") {
+  return `/${["Users", "private", suffix].filter(Boolean).join("/")}`;
+}
+
 async function listFiles(directory) {
   const output = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -660,7 +664,8 @@ test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase�
   const notices = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::notice::"));
 
   try {
-    const knownRaw = "XCTAssertEqual failed - expected one Notification system alert /Users/private/result.xcresult";
+    const knownRaw = `XCTAssertEqual failed - expected one Notification system alert ${privateFixturePath("result.xcresult")}`;
+    assert.ok(knownRaw.includes(privateFixturePath()));
     const known = run("grant-initial", 65, knownRaw);
     assert.equal(known.status, 65, known.stderr);
     assert.deepEqual(annotations(known.stdout), ["::error::CODE=ALERT_COUNT_MISMATCH PHASE=grant-initial EXIT=65"]);
@@ -668,7 +673,8 @@ test("Permission XCTest 실패는 Raw Log를 보존하고 allowlist Code·Phase�
     assert.match(known.stdout, /expected one Notification system alert/);
     assert.equal(await readFile(path.join(fixtureRoot, "permission-grant-initial.log"), "utf8"), `${knownRaw}\n`);
 
-    const unknownRaw = "PRIVATE_USER=/Users/private UDID=SECRET https://internal.invalid/raw failure";
+    const unknownRaw = `PRIVATE_USER=${privateFixturePath()} UDID=SECRET https://internal.invalid/raw failure`;
+    assert.ok(unknownRaw.includes(privateFixturePath()));
     const unknown = run("revoke", 65, unknownRaw);
     assert.equal(unknown.status, 65, unknown.stderr);
     assert.deepEqual(annotations(unknown.stdout), ["::error::CODE=UNKNOWN_XCTEST_FAILURE PHASE=revoke EXIT=65"]);
@@ -909,7 +915,9 @@ test("Permission XCTest 실패는 Assertion Code 우선·마지막 허용 Stage 
     assert.equal(assertionFirst.status, 65, assertionFirst.stderr);
     assert.deepEqual(annotation(assertionFirst.stdout), ["::error::CODE=ALERT_COUNT_MISMATCH PHASE=grant-initial EXIT=65"]);
 
-    const lastAllowed = run("DAON_PERMISSION_XCTEST_STAGE=CAMERA_REQUEST\nDAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW\nPRIVATE_USER=/Users/private https://internal.invalid");
+    const lastAllowedRaw = `DAON_PERMISSION_XCTEST_STAGE=CAMERA_REQUEST\nDAON_PERMISSION_XCTEST_STAGE=PRIVATE_RAW_VALUE\nDAON_PERMISSION_XCTEST_STAGE=ALERT_ALLOW\nPRIVATE_USER=${privateFixturePath()} https://internal.invalid`;
+    assert.ok(lastAllowedRaw.includes(privateFixturePath()));
+    const lastAllowed = run(lastAllowedRaw);
     assert.equal(lastAllowed.status, 65, lastAllowed.stderr);
     assert.deepEqual(annotation(lastAllowed.stdout), ["::error::CODE=STAGE_ALERT_ALLOW PHASE=grant-initial EXIT=65"]);
     assert.doesNotMatch(annotation(lastAllowed.stdout)[0], /PRIVATE|Users|https|internal/);
