@@ -12,6 +12,22 @@ from .audit import (
     IntegrityCode,
     IntegrityResult,
 )
+from .identity import (
+    ClientKind,
+    DevicePlatform,
+    DeviceRevocationEvent,
+    IdentityError,
+    IdentityPrincipal,
+    IdentityService,
+    MINIMUM_STEP_UP_ACTION_GROUPS,
+    OidcClientPolicy,
+    OidcLoginStart,
+    SessionCredentials,
+    SqliteIdentityRepository,
+    StepUpGrant,
+    VerifiedOidcClaims,
+    identity_contract_summary,
+)
 
 __all__ = [
     "ActorType",
@@ -24,4 +40,18 @@ __all__ = [
     "AuditValidationError",
     "IntegrityCode",
     "IntegrityResult",
+    "ClientKind",
+    "DevicePlatform",
+    "DeviceRevocationEvent",
+    "IdentityError",
+    "IdentityPrincipal",
+    "IdentityService",
+    "MINIMUM_STEP_UP_ACTION_GROUPS",
+    "OidcClientPolicy",
+    "OidcLoginStart",
+    "SessionCredentials",
+    "SqliteIdentityRepository",
+    "StepUpGrant",
+    "VerifiedOidcClaims",
+    "identity_contract_summary",
 ]

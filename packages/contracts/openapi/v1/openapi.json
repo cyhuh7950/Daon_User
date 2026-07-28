@@ -64,7 +64,7 @@
         "x-implementation-owner": "R1-M4-03",
         "responses": {
           "200": {
-            "$ref": "#/components/responses/SuccessResponse"
+            "$ref": "#/components/responses/IdentitySessionResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -100,7 +100,7 @@
         "x-implementation-owner": "R1-M4-03",
         "responses": {
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "$ref": "#/components/responses/StepUpAuthorizationResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -130,7 +130,14 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepUpAuthorizationRequest"
+              }
+            }
+          }
         }
       }
     },
@@ -2827,6 +2834,268 @@
         ],
         "x-list-operation": true
       }
+    },
+    "/api/v1/session/oidc/transactions": {
+      "post": {
+        "operationId": "beginOidcLogin",
+        "tags": [
+          "Identity"
+        ],
+        "summary": "OIDC Authorization Code와 PKCE 거래 시작",
+        "x-implementation-owner": "R1-M4-03",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OidcLoginStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/OidcLoginStartResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        }
+      }
+    },
+    "/api/v1/session/oidc/callback": {
+      "post": {
+        "operationId": "completeOidcLogin",
+        "tags": [
+          "Identity"
+        ],
+        "summary": "검증된 OIDC Callback으로 Session 생성",
+        "x-implementation-owner": "R1-M4-03",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OidcCallbackRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/IdentitySessionResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "description": "Web은 same-origin Cookie 경계, Native는 HTTPS opaque bearer 교환 의미를 사용한다."
+      }
+    },
+    "/api/v1/session/refresh": {
+      "post": {
+        "operationId": "rotateNativeRefresh",
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Native Refresh 회전",
+        "x-implementation-owner": "R1-M4-03",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeRefreshRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/IdentitySessionResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{id}/trust": {
+      "post": {
+        "operationId": "trustDevice",
+        "tags": [
+          "Device"
+        ],
+        "summary": "현재 사용자 Device 신뢰 등록",
+        "x-implementation-owner": "R1-M4-03",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceTrustRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{id}/revoke": {
+      "post": {
+        "operationId": "revokeDevice",
+        "tags": [
+          "Device"
+        ],
+        "summary": "Step-up에 결합된 Device와 Session 철회",
+        "x-implementation-owner": "R1-M4-03",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRevokeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/DeviceRevocationResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3217,6 +3486,62 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        }
+      },
+      "IdentitySessionResponse": {
+        "description": "Session 의미 응답. Runtime Credential 전달은 Web Cookie 또는 Native HTTPS Adapter가 소유한다.",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/IdentitySessionEnvelope"
+            }
+          }
+        }
+      },
+      "OidcLoginStartResponse": {
+        "description": "OIDC PKCE 거래 생성",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/OidcLoginStartEnvelope"
+            }
+          }
+        }
+      },
+      "StepUpAuthorizationResponse": {
+        "description": "1회용 Step-up 생성",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/StepUpAuthorizationEnvelope"
+            }
+          }
+        }
+      },
+      "DeviceRevocationResponse": {
+        "description": "Device 철회 및 Sync key 폐기 요구",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/DeviceRevocationEnvelope"
             }
           }
         }
@@ -3804,6 +4129,357 @@
           "payload": {
             "type": "object",
             "description": "승인된 공개 상태 필드만 포함하며 내부 실행 원문을 포함하지 않음",
+            "additionalProperties": true
+          }
+        }
+      },
+      "IdentitySession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "user_id",
+          "tenant_id",
+          "session_id",
+          "device_id",
+          "client_kind",
+          "delivery",
+          "expires_at"
+        ],
+        "properties": {
+          "user_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "tenant_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "device_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "client_kind": {
+            "type": "string",
+            "enum": [
+              "web",
+              "native"
+            ]
+          },
+          "delivery": {
+            "type": "string",
+            "enum": [
+              "same_origin_secure_cookie",
+              "native_https_opaque_bearer"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "IdentitySessionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/IdentitySession"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "OidcLoginStartRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issuer",
+          "client_id",
+          "audience",
+          "redirect_uri",
+          "client_kind",
+          "tenant_id"
+        ],
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "client_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "audience": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "redirect_uri": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "client_kind": {
+            "type": "string",
+            "enum": [
+              "web",
+              "native"
+            ]
+          },
+          "tenant_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      },
+      "OidcLoginStart": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transaction_id",
+          "state",
+          "nonce",
+          "code_verifier",
+          "code_challenge",
+          "code_challenge_method",
+          "expires_at"
+        ],
+        "properties": {
+          "transaction_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "state": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 512
+          },
+          "nonce": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 512
+          },
+          "code_verifier": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 128
+          },
+          "code_challenge": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 128
+          },
+          "code_challenge_method": {
+            "type": "string",
+            "const": "S256"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "OidcLoginStartEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/OidcLoginStart"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "OidcCallbackRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "authorization_code",
+          "code_verifier",
+          "client_id",
+          "redirect_uri",
+          "platform"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 512
+          },
+          "authorization_code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "code_verifier": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 128
+          },
+          "client_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "redirect_uri": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "web",
+              "windows",
+              "android",
+              "ios"
+            ]
+          }
+        }
+      },
+      "NativeRefreshRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "refresh_credential"
+        ],
+        "properties": {
+          "refresh_credential": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 512,
+            "writeOnly": true
+          }
+        }
+      },
+      "StepUpAuthorizationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action_group",
+          "target_id"
+        ],
+        "properties": {
+          "action_group": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "target_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 600,
+            "default": 300
+          }
+        }
+      },
+      "StepUpAuthorization": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step_up_authorization",
+          "issued_at",
+          "expires_at"
+        ],
+        "properties": {
+          "step_up_authorization": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 512,
+            "writeOnly": true
+          },
+          "issued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "StepUpAuthorizationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/StepUpAuthorization"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "DeviceTrustRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "DeviceRevokeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step_up_authorization"
+        ],
+        "properties": {
+          "step_up_authorization": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 512,
+            "writeOnly": true
+          }
+        }
+      },
+      "DeviceRevocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "device_id",
+          "state",
+          "sync_key_revoke_required"
+        ],
+        "properties": {
+          "device_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "state": {
+            "type": "string",
+            "const": "revoked"
+          },
+          "sync_key_revoke_required": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "DeviceRevocationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/DeviceRevocation"
+          },
+          "meta": {
+            "type": "object",
             "additionalProperties": true
           }
         }
