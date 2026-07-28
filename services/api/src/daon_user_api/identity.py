@@ -142,6 +142,11 @@ class DeviceRevocationEvent:
     sync_key_revoke_required: bool
 
 
+@dataclass(frozen=True, slots=True)
+class SessionRevocationEvent:
+    session_id: str
+
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -696,23 +701,58 @@ class IdentityService:
     def validate_access(self, access_token: str, *, trace_id: str, policy_version: str) -> IdentityPrincipal:
         _checked_text(trace_id); _checked_text(policy_version)
         with self._repository.transaction() as connection:
-            row = self._principal(connection, access_token, self._now())
+            now = self._now()
+            try:
+                row = self._principal(connection, access_token, now)
+            except IdentityError as error:
+                known = None
+                if isinstance(access_token, str):
+                    known = connection.execute(
+                        "SELECT * FROM sessions WHERE access_digest = ?", (_digest(access_token),)
+                    ).fetchone()
+                reason_code = error.code if error.code in {"ACCESS_EXPIRED", "SESSION_REVOKED"} else "ACCESS_INVALID"
+                action = "identity.access.expired" if reason_code == "ACCESS_EXPIRED" else "identity.access.denied"
+                self._audit(
+                    action=action,
+                    outcome=AuditOutcome.DENIED,
+                    trace_id=trace_id,
+                    policy_version=policy_version,
+                    tenant_id="identity-public" if known is None else str(known["tenant_id"]),
+                    actor_id="anonymous" if known is None else str(known["user_id"]),
+                    target_type="access_credential" if known is None else "session",
+                    target_id="unknown-access" if known is None else str(known["session_id"]),
+                    metadata={"reason_code": reason_code},
+                )
+                if reason_code != error.code:
+                    raise IdentityError(reason_code, 401) from error
+                raise
             return IdentityPrincipal(str(row["user_id"]), str(row["session_id"]), str(row["device_id"]), str(row["tenant_id"]))
 
     def rotate_refresh(self, refresh_token: str | None, *, trace_id: str, policy_version: str) -> SessionCredentials:
-        if refresh_token is None:
-            raise IdentityError("REFRESH_INVALID", 401)
-        _checked_text(refresh_token, opaque=True); _checked_text(trace_id); _checked_text(policy_version)
+        _checked_text(trace_id); _checked_text(policy_version)
         now = self._now()
         replay = False
         with self._lock, self._repository.transaction() as connection:
-            row = connection.execute(
-                """SELECT rt.*,rf.session_id,rf.state AS family_state,s.*
-                FROM refresh_tokens rt JOIN refresh_families rf ON rf.family_id=rt.family_id
-                JOIN sessions s ON s.session_id=rf.session_id WHERE rt.refresh_digest=?""",
-                (_digest(refresh_token),),
-            ).fetchone()
+            row = None
+            if refresh_token is not None:
+                try:
+                    _checked_text(refresh_token, opaque=True)
+                except IdentityError:
+                    refresh_token = None
+                else:
+                    row = connection.execute(
+                        """SELECT rt.*,rf.session_id,rf.state AS family_state,s.*
+                        FROM refresh_tokens rt JOIN refresh_families rf ON rf.family_id=rt.family_id
+                        JOIN sessions s ON s.session_id=rf.session_id WHERE rt.refresh_digest=?""",
+                        (_digest(refresh_token),),
+                    ).fetchone()
             if row is None:
+                self._audit(
+                    action="identity.refresh.denied", outcome=AuditOutcome.DENIED,
+                    trace_id=trace_id, policy_version=policy_version, tenant_id="identity-public",
+                    target_type="refresh_credential", target_id="unknown-refresh",
+                    metadata={"reason_code": "REFRESH_INVALID"},
+                )
                 raise IdentityError("REFRESH_INVALID", 401)
             family_id, session_id = str(row["family_id"]), str(row["session_id"])
             if row["used_at"] is not None:
@@ -732,8 +772,20 @@ class IdentityService:
                 )
                 replay = True
             elif row["family_state"] != "active" or row["state"] != "active":
+                self._audit(
+                    action="identity.refresh.denied", outcome=AuditOutcome.DENIED,
+                    trace_id=trace_id, policy_version=policy_version, tenant_id=str(row["tenant_id"]),
+                    actor_id=str(row["user_id"]), target_type="refresh_family", target_id=family_id,
+                    metadata={"reason_code": "SESSION_REVOKED", "session_id": session_id},
+                )
                 raise IdentityError("SESSION_REVOKED", 401)
             elif _dt(str(row["expires_at"])) <= now:
+                self._audit(
+                    action="identity.refresh.expired", outcome=AuditOutcome.DENIED,
+                    trace_id=trace_id, policy_version=policy_version, tenant_id=str(row["tenant_id"]),
+                    actor_id=str(row["user_id"]), target_type="refresh_family", target_id=family_id,
+                    metadata={"reason_code": "REFRESH_EXPIRED", "session_id": session_id},
+                )
                 raise IdentityError("REFRESH_EXPIRED", 401)
             else:
                 access, refresh = _opaque(), _opaque()
@@ -834,8 +886,64 @@ class IdentityService:
         with self._repository.transaction() as connection:
             principal = self._principal(connection, access_token, now)
             if str(principal["device_id"]) != device_id:
+                self._audit(
+                    action="identity.device.trust_denied", outcome=AuditOutcome.DENIED,
+                    trace_id=trace_id, policy_version=policy_version,
+                    tenant_id=str(principal["tenant_id"]), actor_id=str(principal["user_id"]),
+                    target_type="device", target_id=device_id,
+                    metadata={"reason_code": "DEVICE_BINDING_DENIED"},
+                )
                 raise IdentityError("DEVICE_BINDING_DENIED", 403)
             connection.execute("UPDATE devices SET state='trusted',updated_at=? WHERE device_id=?", (_iso(now), device_id))
+            self._audit(
+                action="identity.device.trusted", outcome=AuditOutcome.SUCCEEDED,
+                trace_id=trace_id, policy_version=policy_version,
+                tenant_id=str(principal["tenant_id"]), actor_id=str(principal["user_id"]),
+                target_type="device", target_id=device_id,
+            )
+
+    def revoke_session(self, *, access_token: str, session_id: str,
+                       step_up_authorization: str | None, policy_version: str,
+                       trace_id: str) -> SessionRevocationEvent:
+        session_id = _checked_text(session_id); _checked_text(policy_version); _checked_text(trace_id)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            principal = self._principal(connection, access_token, now)
+            target = connection.execute(
+                """SELECT session_id FROM sessions
+                WHERE session_id=? AND tenant_id=? AND user_id=? AND state='active'""",
+                (session_id, str(principal["tenant_id"]), str(principal["user_id"])),
+            ).fetchone()
+            if target is None:
+                self._audit(
+                    action="identity.session.revoke_denied", outcome=AuditOutcome.DENIED,
+                    trace_id=trace_id, policy_version=policy_version,
+                    tenant_id=str(principal["tenant_id"]), actor_id=str(principal["user_id"]),
+                    target_type="session", target_id="unavailable-session",
+                    metadata={"reason_code": "SESSION_TARGET_UNAVAILABLE"},
+                )
+                raise IdentityError("SESSION_TARGET_UNAVAILABLE", 404)
+            self._consume_step_up(
+                connection, raw=step_up_authorization, principal=principal,
+                action_group="device_session_or_sync_key_revoke", target_id=session_id,
+                policy_version=policy_version, trace_id=trace_id, now=now,
+            )
+            connection.execute(
+                "UPDATE sessions SET state='revoked',updated_at=? WHERE session_id=? AND state='active'",
+                (_iso(now), session_id),
+            )
+            connection.execute(
+                "UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id=?",
+                (_iso(now), session_id),
+            )
+            self._audit(
+                action="identity.session.revoked", outcome=AuditOutcome.SUCCEEDED,
+                trace_id=trace_id, policy_version=policy_version,
+                tenant_id=str(principal["tenant_id"]), actor_id=str(principal["user_id"]),
+                target_type="session", target_id=session_id,
+                metadata={"reason_code": "USER_REQUESTED"},
+            )
+        return SessionRevocationEvent(session_id)
 
     def revoke_device(self, *, access_token: str, device_id: str,
                       step_up_authorization: str | None, policy_version: str,
@@ -875,6 +983,8 @@ def identity_contract_summary() -> dict[str, object]:
         "step_up_default_ttl_seconds": DEFAULT_STEP_UP_TTL_SECONDS,
         "step_up_max_ttl_seconds": MAX_STEP_UP_TTL_SECONDS,
         "minimum_step_up_actions": sorted(MINIMUM_STEP_UP_ACTION_GROUPS),
+        "explicit_session_revoke": True,
+        "denied_credential_audit": True,
         "external_provider_verified": False,
         "http_runtime_implemented": False,
     }

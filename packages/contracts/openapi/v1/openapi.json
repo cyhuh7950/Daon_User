@@ -3043,6 +3043,57 @@
         }
       }
     },
+    "/api/v1/session/revoke": {
+      "post": {
+        "operationId": "revokeSession",
+        "tags": [
+          "Session"
+        ],
+        "summary": "Step-up에 결합된 명시적 Session 철회",
+        "x-implementation-owner": "R1-M4-03-C01",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRevokeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SessionRevocationResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        }
+      }
+    },
     "/api/v1/devices/{id}/revoke": {
       "post": {
         "operationId": "revokeDevice",
@@ -3542,6 +3593,20 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/DeviceRevocationEnvelope"
+            }
+          }
+        }
+      },
+      "SessionRevocationResponse": {
+        "description": "명시적 Session 및 Refresh family 철회",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SessionRevocationEnvelope"
             }
           }
         }
@@ -4442,6 +4507,59 @@
             "minLength": 40,
             "maxLength": 512,
             "writeOnly": true
+          }
+        }
+      },
+      "SessionRevokeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "session_id",
+          "step_up_authorization"
+        ],
+        "properties": {
+          "session_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "step_up_authorization": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 512,
+            "writeOnly": true
+          }
+        }
+      },
+      "SessionRevocation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "session_id",
+          "state"
+        ],
+        "properties": {
+          "session_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "state": {
+            "type": "string",
+            "const": "revoked"
+          }
+        }
+      },
+      "SessionRevocationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SessionRevocation"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
           }
         }
       },

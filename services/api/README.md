@@ -26,7 +26,7 @@ R1-M4-02는 불변 Event와 append-only·hash-chain·순수 조회 계약만 소
 - 검증: 저장소 루트의 `npm run verify:api-identity`
 - 결정적 증거 갱신: `npm run verify:api-identity -- --write`
 
-R1-M4-03은 OIDC Authorization Code+PKCE 검증 프로토콜, opaque Web/Native Session, Native Refresh 회전·재사용 Family 철회, Device 상태와 1회용 Step-up Authorization, SQLite 재시작 경계를 소유한다. DB에는 Credential·state·nonce·verifier 평문을 저장하지 않는다.
+R1-M4-03/C01은 OIDC Authorization Code+PKCE 검증 프로토콜, opaque Web/Native Session, Native Refresh 회전·재사용 Family 철회, Step-up 결합 명시적 Session·Device 철회, Device 상태와 1회용 Step-up Authorization, SQLite 재시작 경계를 소유한다. access·refresh 거부와 Device trust 결과는 안전한 Audit action으로 기록하고 DB·Audit에는 Credential 원문을 저장하지 않는다.
 
 실제 OIDC Provider 통신, Web Cookie의 HttpOnly·Secure·SameSite·CSRF 적용, HTTPS Route와 PostgreSQL/RLS는 후속 M4-05·M5 소유다. 따라서 Fake Provider 시험은 외부 IdP 로그인 성공 증거가 아니다.
 
