@@ -1438,7 +1438,7 @@ test("C46 Search input Summary Notice는 strict schema만 공개하고 원 Exit 
   assert.match(contract, /report_settings_search_accessibility_notice\(\)/);
   assert.match(contract, /DAON_SETTINGS_SEARCH_ACCESSIBILITY_SUMMARY=/);
   assert.match(contract, /elementType=\(searchField\|textField\)/);
-  assert.match(contract, /\{1,48\}/);
+  assert.match(contract, /(?:\{1,48\}|settings_search_token_is_valid)/);
   assert.doesNotMatch(contract, /eval|debugDescription|printenv|::notice::\$\{?[^\n]*raw/i);
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-search-accessibility-notice-"));
   const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
@@ -1461,13 +1461,16 @@ test("C46 Search input Summary Notice는 strict schema만 공개하고 원 Exit 
   const errors = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::error::"));
   const failure = "missing or ambiguous exact system element: Settings search field";
   const prefix = "DAON_SETTINGS_SEARCH_ACCESSIBILITY_SUMMARY=v1|count=";
-  const valid = prefix + "2|items=elementType=searchField,label=Search,identifier=_empty_,value=_empty_,isHittable=0;elementType=textField,label=_empty_,identifier=com.apple.settings.search,value=Search,isHittable=1";
+  const valid = prefix + "2|items=elementType=searchField,label=Searchu{AC00},identifier=_empty_,value=_empty_,isHittable=0;elementType=textField,label=_empty_,identifier=com.apple.settings.search,value=Search,isHittable=1";
   try {
     const rejected = [
       failure,
       valid + "\n" + valid + "\n" + failure,
       valid + "::error::SECRET\n" + failure,
       prefix + "1|items=elementType=button,label=Search,identifier=_empty_,value=_empty_,isHittable=1\n" + failure,
+      prefix + "1|items=elementType=searchField,label=Bad,Comma,identifier=_empty_,value=_empty_,isHittable=1\n" + failure,
+      prefix + "1|items=elementType=searchField,label=Bad Space,identifier=_empty_,value=_empty_,isHittable=1\n" + failure,
+      prefix + "1|items=elementType=searchField,label=Bad:Colon,identifier=_empty_,value=_empty_,isHittable=1\n" + failure,
       prefix + "1|items=elementType=searchField,label=" + "A".repeat(49) + ",identifier=_empty_,value=_empty_,isHittable=1\n" + failure,
       prefix + "17|items=_none_\n" + failure,
       valid.replace("count=2", "count=1") + "\n" + failure
@@ -1489,4 +1492,20 @@ test("C46 Search input Summary Notice는 strict schema만 공개하고 원 Exit 
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
+});
+test("C47 Search Summary token 검증은 macOS Bash 3.2 호환 구조·길이·ASCII allowlist를 사용한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const validatorStart = script.indexOf("settings_search_token_is_valid() {");
+  const noticeStart = script.indexOf("report_settings_search_accessibility_notice() {", validatorStart);
+  const noticeEnd = script.indexOf("report_notification_settings_open_notice() {", noticeStart);
+  const validator = validatorStart >= 0 && noticeStart > validatorStart ? script.slice(validatorStart, noticeStart) : "";
+  const notice = noticeStart >= 0 && noticeEnd > noticeStart ? script.slice(noticeStart, noticeEnd) : "";
+  assert.ok(validator && notice);
+  assert.match(validator, /local token="\$1"/);
+  assert.match(validator, /\[\[ "\$\{#token\}" -ge 1 && "\$\{#token\}" -le 48 \]\]/);
+  assert.match(validator, /case "\$\{token\}" in/);
+  assert.match(validator, /\*\[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_\.\+\/\{\}-\]\*\)/);
+  assert.ok(notice.includes("label=([^,]+),identifier=([^,]+),value=([^,]+),isHittable=([01])$"));
+  for (const [capture, token] of [[2, "label"], [3, "identifier"], [4, "value"]]) { assert.match(notice, new RegExp(`${token}="\\$\\{BASH_REMATCH\\[${capture}\\]\\}"[\\s\\S]*?settings_search_token_is_valid "\\$\\{${token}\\}"`)); }
+  assert.doesNotMatch(notice, /\{1,48\}|\[\[:|eval|\bsed\b|\bawk\b|python/i);
 });

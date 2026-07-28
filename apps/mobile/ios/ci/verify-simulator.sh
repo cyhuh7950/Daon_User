@@ -220,6 +220,14 @@ report_settings_accessibility_notice() {
   printf '::notice::%s\n' "${summary}"
 }
 
+settings_search_token_is_valid() {
+  local token="$1"
+  [[ "${#token}" -ge 1 && "${#token}" -le 48 ]] || return 1
+  case "${token}" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+/{}-]*) return 1 ;;
+  esac
+  return 0
+}
 report_settings_search_accessibility_notice() {
   local log_file="$1"
   local prefix="DAON_SETTINGS_SEARCH_ACCESSIBILITY_SUMMARY="
@@ -231,6 +239,9 @@ report_settings_search_accessibility_notice() {
   local -a source_lines
   local -a entries
   local entry
+  local label
+  local identifier
+  local value
   mapfile -t source_lines < <(grep -F "${prefix}" "${log_file}" || true)
   [[ "${#source_lines[@]}" -eq 1 ]] || return 0
   source_line="${source_lines[0]}"
@@ -250,9 +261,15 @@ report_settings_search_accessibility_notice() {
     IFS=';' read -r -a entries <<< "${items}"
     [[ "${#entries[@]}" -eq "${count}" && "${#entries[@]}" -le 16 ]] || return 0
     for entry in "${entries[@]}"; do
-      if [[ ! "${entry}" =~ ^elementType=(searchField|textField),label=([A-Za-z0-9_.+/{\}-]{1,48}),identifier=([A-Za-z0-9_.+/{\}-]{1,48}),value=([A-Za-z0-9_.+/{\}-]{1,48}),isHittable=([01])$ ]]; then
+      if [[ ! "${entry}" =~ ^elementType=(searchField|textField),label=([^,]+),identifier=([^,]+),value=([^,]+),isHittable=([01])$ ]]; then
         return 0
       fi
+      label="${BASH_REMATCH[2]}"
+      identifier="${BASH_REMATCH[3]}"
+      value="${BASH_REMATCH[4]}"
+      settings_search_token_is_valid "${label}" || return 0
+      settings_search_token_is_valid "${identifier}" || return 0
+      settings_search_token_is_valid "${value}" || return 0
     done
   fi
   printf '::notice::%s\n' "${summary}"
