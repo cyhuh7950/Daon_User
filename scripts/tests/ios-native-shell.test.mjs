@@ -1305,7 +1305,7 @@ test("iOS 26 Simulator Settings Search fallback은 direct·row 뒤 exact 단일 
   const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
   assert.ok(helper);
   assert.match(helper, /#available\(iOS 26\.0, \*\)/);
-  assert.doesNotMatch(helper, /com\.apple\.settings\.search|searchButtonPredicate|settings\.buttons\.matching/);
+  assert.doesNotMatch(helper, /com\.apple\.settings\.search|searchButtonPredicate/);
   assert.match(helper, /for _ in 0\.\.<6[\s\S]*?settings\.swipeDown\(\)[\s\S]*?searchFields = settings\.searchFields\.allElementsBoundByAccessibilityElement/);
   assert.match(helper, /settings\.searchFields\.allElementsBoundByAccessibilityElement\.filter \{ \$0\.isHittable \}/);
   assert.match(helper, /maximumExistingSearchTextLength\s*=\s*128/);
@@ -1679,5 +1679,12 @@ test("C52 keyboard Continue는 exact keyboard-scoped 0/1/2+ 계약을 사용한�
   assert.match(x,/NSPredicate\(format: "label == %@ OR label == %@", "Continue", "계속"\)/);
   assert.match(x,/settings\.keyboards\.buttons\.matching\(keyboardContinuePredicate\)/);
   assert.match(x,/keyboardContinueButtons\.count <= 1[\s\S]*?keyboardContinueButtons\.count == 1[\s\S]*?keyboardContinueButton\.tap\(\)/);
-  assert.doesNotMatch(x,/firstMatch|coordinate\(|element\(boundBy:|settings\.buttons|CONTAINS|BEGINSWITH|MATCHES|sleep/i);
+  const scoped=x.slice(0,x.indexOf(" else if searchField.isHittable")); assert.doesNotMatch(scoped,/firstMatch|coordinate\(|element\(boundBy:|settings\.buttons|CONTAINS|BEGINSWITH|MATCHES|sleep/i);
+});
+test("C53 global Continue fallback은 exact 3중 evidence gate만 사용한다", async()=>{
+ const s=await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");const a=s.indexOf('searchField.typeText("Daon")');const b=s.indexOf('permissionXCTestStage(.settingsSearchResult)',a);const x=s.slice(a,b);
+ assert.match(x,/if keyboardContinueButtons\.count == 1[\s\S]*?else if searchField\.isHittable/);
+ assert.match(x,/settings\.buttons\.matching\(identifier: "dictation"\)/);assert.match(x,/settings\.buttons\.matching\(keyboardContinuePredicate\)/);
+ assert.match(x,/dictationButtons\.count <= 1, globalContinueButtons\.count <= 1[\s\S]*?dictationButtons\.count == 1, globalContinueButtons\.count == 1[\s\S]*?globalContinueButton\.tap/);
+ assert.doesNotMatch(x,/firstMatch|coordinate\(|element\(boundBy:|CONTAINS|BEGINSWITH|MATCHES|sleep/i);
 });

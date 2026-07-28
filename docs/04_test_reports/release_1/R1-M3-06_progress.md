@@ -342,3 +342,9 @@
 | 2026-07-28T19:20:00+09:00 | DEV-C52-RESUME | IN_PROGRESS | 유효 INCOMPLETE 1회 후 구현·iOS63/63 상태에서 회귀만 재개 | Swift/Test/C52 docs | HEAD fcadb086; 변경 보존; iOS63/63 | 코드 재개방 금지 | Mobile·Node·기타 Gate | INCOMPLETE 누계1; failure0 |
 | 2026-07-28T19:31:00+09:00 | DEV-C52-VERIFY | COMPLETED | 남은 전체 회귀와 보호경계 검증 | Swift/Test/Bundle/Diff | iOS63/63; Mobile PASS; Node327/327; Toolchain7; YAML2/2; Bash3/3; Bundle 동일; diff-check·보호Diff0 | macOS E2E 미실행 | Attempt53 종료 | INCOMPLETE1; failure0 |
 | 2026-07-28T19:32:00+09:00 | DEV-C52-END | COMPLETED | C52 검증·보고 종료, 단일 Writer 쓰기 중지 | Attempt53; Progress | 근거 완비 | exact-SHA 미확인 | 어울1 Commit/Push·CI | TP 미도달 |
+| 2026-07-28T20:05:00+09:00 | MAIN-C53 | REWORK_REQUIRED | scoped Continue0, global Continue/dictation exact1 hittable 증거 | Run30356232905 Job90264970080 | Portable63/63; result missing65 | evidence-gated fallback | Attempt54 | failure0; INCOMPLETE1; TP 미도달 |
+| 2026-07-28T20:10:00+09:00 | DEV-C53-S0 | IN_PROGRESS | clean HEAD 착수 | C53 | 승인 명확 | 최소 Swift/Test | TDD | failure0 |
+| 2026-07-28T20:20:00+09:00 | DEV-C53-RESUME | IN_PROGRESS | 유효 INCOMPLETE1 후 구현·정적 계약에서 검증 재개 | Swift/Test | HEAD061e6b2; 변경 보존 | 코드 재작성 금지 | iOS→전체 회귀 | failure0 |
+| 2026-07-28T20:28:00+09:00 | DEV-C53-GREEN | COMPLETED | exact 3중 gate와 과거 정적계약 정합 | Swift/Test | iOS64/64 PASS; 앞선2회 legacy 표현 불일치 | 없음 | 전체 회귀 | INCOMPLETE1; failure0 |
+| 2026-07-28T20:31:00+09:00 | DEV-C53-VERIFY | COMPLETED | 전체 회귀 | Swift/Test/Bundle/Diff | iOS64/64; Mobile PASS; Node328/328; Toolchain7; YAML2/2; Bash3/3; 보호0 | macOS 미실행 | Attempt54 | INCOMPLETE1; failure0 |
+| 2026-07-28T20:32:00+09:00 | DEV-C53-END | COMPLETED | 종료·쓰기 중지 | Attempt54 | 근거 완비 | exact-SHA 미확인 | 어울1 CI | TP 미도달 |
