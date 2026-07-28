@@ -337,3 +337,8 @@
 | 2026-07-28T18:22:00+09:00 | DEV-C51-GREEN | COMPLETED | cell→button→staticText→other bounded Result Summary와 단일 failure guard·strict Bash Notice 구현 | Swift/Bash/Test; Progress | RED60/62→GREEN62/62 PASS | 막힘 없음 | 전체 회귀 | selector/predicate/input/tap/Exit65 불변; failure0 |
 | 2026-07-28T18:31:00+09:00 | DEV-C51-VERIFY | COMPLETED | Result 진단 전체 회귀·보호경계 검증 | Swift/Bash/Test/Bundle/Diff | iOS62/62; Mobile PASS; Node326/326; Toolchain7; YAML2/2; Bash3/3; Bundle 동일; diff-check·보호Diff0 | macOS E2E 미실행 | Attempt52 종료 | failure0 |
 | 2026-07-28T18:32:00+09:00 | DEV-C51-END | COMPLETED | C51 진단·검증·보고 종료, 단일 Writer 쓰기 중지 | Attempt52; Progress | 근거 완비 | exact-SHA Result Summary 미확인 | 어울1 Commit/Push·CI | TP 미도달 |
+| 2026-07-28T19:05:00+09:00 | MAIN-C52 | REWORK_REQUIRED | keyboard Continue가 결과 갱신 차단 | Run30353685805 Job90256827179 | Portable62/62 | exact keyboard 처리 | Attempt53 | failure0; TP 미도달 |
+| 2026-07-28T19:10:00+09:00 | DEV-C52-S0 | IN_PROGRESS | clean HEAD에서 재개; 앞선 변경0 도구/시간 중단 2건 비누계 | C52 | HEAD fcadb086; clean | 작은 편집 사용 | TDD | failure0 |
+| 2026-07-28T19:20:00+09:00 | DEV-C52-RESUME | IN_PROGRESS | 유효 INCOMPLETE 1회 후 구현·iOS63/63 상태에서 회귀만 재개 | Swift/Test/C52 docs | HEAD fcadb086; 변경 보존; iOS63/63 | 코드 재개방 금지 | Mobile·Node·기타 Gate | INCOMPLETE 누계1; failure0 |
+| 2026-07-28T19:31:00+09:00 | DEV-C52-VERIFY | COMPLETED | 남은 전체 회귀와 보호경계 검증 | Swift/Test/Bundle/Diff | iOS63/63; Mobile PASS; Node327/327; Toolchain7; YAML2/2; Bash3/3; Bundle 동일; diff-check·보호Diff0 | macOS E2E 미실행 | Attempt53 종료 | INCOMPLETE1; failure0 |
+| 2026-07-28T19:32:00+09:00 | DEV-C52-END | COMPLETED | C52 검증·보고 종료, 단일 Writer 쓰기 중지 | Attempt53; Progress | 근거 완비 | exact-SHA 미확인 | 어울1 Commit/Push·CI | TP 미도달 |
