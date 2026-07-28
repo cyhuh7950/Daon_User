@@ -359,6 +359,39 @@ final class DaonUITests: XCTestCase {
     }
     print(summary)
   }
+  private func emitSettingsSearchResultSummary(in settings: XCUIApplication) {
+    let maximumElementCount = 24
+    let maximumTokenLength = 48
+    let maximumSummaryLength = 4096
+    let elementGroups: [(type: String, elements: [XCUIElement])] = [
+      ("cell", settings.cells.allElementsBoundByAccessibilityElement),
+      ("button", settings.buttons.allElementsBoundByAccessibilityElement),
+      ("staticText", settings.staticTexts.allElementsBoundByAccessibilityElement),
+      ("other", settings.otherElements.allElementsBoundByAccessibilityElement)
+    ]
+    var items: [String] = []
+    elementLoop: for group in elementGroups {
+      for element in group.elements {
+        guard items.count < maximumElementCount else { break elementLoop }
+        let rawLabel = element.label
+        let rawIdentifier = element.identifier
+        let rawValue: String
+        if let stringValue = element.value as? String { rawValue = stringValue }
+        else if let numberValue = element.value as? NSNumber { rawValue = numberValue.stringValue }
+        else { rawValue = "" }
+        guard !rawLabel.isEmpty || !rawIdentifier.isEmpty || !rawValue.isEmpty || element.isHittable else { continue }
+        let label = settingsDiagnosticToken(rawLabel, maximumLength: maximumTokenLength)
+        let identifier = settingsDiagnosticToken(rawIdentifier, maximumLength: maximumTokenLength)
+        let value = settingsDiagnosticToken(rawValue, maximumLength: maximumTokenLength)
+        let hittable = element.isHittable ? "1" : "0"
+        items.append("elementType=\(group.type),label=\(label),identifier=\(identifier),value=\(value),isHittable=\(hittable)")
+      }
+    }
+    let payload = items.isEmpty ? "_none_" : items.joined(separator: ";")
+    let summary = "DAON_SETTINGS_SEARCH_RESULT_SUMMARY=v1|count=\(items.count)|items=\(payload)"
+    guard summary.count <= maximumSummaryLength else { print("DAON_SETTINGS_SEARCH_RESULT_SUMMARY=v1|count=0|items=_none_"); return }
+    print(summary)
+  }
   private func requireExactNotificationSettingsRow(in settings: XCUIApplication, allowAbsent: Bool = false) throws -> XCUIElement {
     let exactLabelPredicate = NSPredicate(format: "label == %@ OR label == %@", "Notifications", "알림")
     let directQuery = settings.descendants(matching: .any).matching(exactLabelPredicate)
@@ -534,17 +567,17 @@ final class DaonUITests: XCTestCase {
     )
     _ = XCTWaiter.wait(for: [daonResultAppeared], timeout: 10)
     var daonCells = daonCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
-    let daonResult: XCUIElement
-    if daonCells.count == 1, let cell = daonCells.popLast() {
-      daonResult = cell
+    var daonResult: XCUIElement?
+    if daonCells.count == 1 {
+      daonResult = daonCells.popLast()
     } else if daonCells.isEmpty {
       var exactDaonElements = exactDaonQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
-      guard exactDaonElements.count == 1, let element = exactDaonElements.popLast() else {
-        XCTFail("missing or ambiguous exact system element: Settings search result")
-        throw PermissionUIContractError.missingExactElement("Settings search result")
+      if exactDaonElements.count == 1 {
+        daonResult = exactDaonElements.popLast()
       }
-      daonResult = element
-    } else {
+    }
+    guard let daonResult else {
+      emitSettingsSearchResultSummary(in: settings)
       XCTFail("missing or ambiguous exact system element: Settings search result")
       throw PermissionUIContractError.missingExactElement("Settings search result")
     }

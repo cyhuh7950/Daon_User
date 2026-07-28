@@ -318,6 +318,28 @@ report_settings_search_surface_notice() {
   fi
   printf '::notice::%s\n' "${summary}"
 }
+report_settings_search_result_notice() {
+  local log_file="$1" prefix="DAON_SETTINGS_SEARCH_RESULT_SUMMARY=" source_line="" summary="" payload="" count="" items=""
+  local -a entries
+  local entry label identifier value
+  source_line="$(grep -F "${prefix}" "${log_file}" || true)"
+  [[ -n "${source_line}" && "${source_line}" != *$'\n'* ]] || return 0
+  payload="${source_line#*${prefix}}"; summary="${prefix}${payload}"
+  [[ "${#summary}" -le 4096 && "${summary}" != *"::"* && "${summary}" != *"%"* ]] || return 0
+  [[ "${payload}" =~ ^v1\|count=([0-9]|1[0-9]|2[0-4])\|items=(.*)$ ]] || return 0
+  count="${BASH_REMATCH[1]}"; items="${BASH_REMATCH[2]}"
+  if [[ "${count}" -eq 0 ]]; then [[ "${items}" == "_none_" ]] || return 0
+  else
+    [[ "${items}" != "_none_" ]] || return 0; IFS=';' read -r -a entries <<< "${items}"
+    [[ "${#entries[@]}" -eq "${count}" && "${#entries[@]}" -le 24 ]] || return 0
+    for entry in "${entries[@]}"; do
+      [[ "${entry}" =~ ^elementType=(cell|button|staticText|other),label=([^,]+),identifier=([^,]+),value=([^,]+),isHittable=([01])$ ]] || return 0
+      label="${BASH_REMATCH[2]}"; identifier="${BASH_REMATCH[3]}"; value="${BASH_REMATCH[4]}"
+      settings_search_token_is_valid "${label}" && settings_search_token_is_valid "${identifier}" && settings_search_token_is_valid "${value}" || return 0
+    done
+  fi
+  printf '::notice::%s\n' "${summary}"
+}
 report_notification_settings_open_notice() {
   local prefix="DAON_NOTIFICATION_SETTINGS_OPEN_RESULT="
   local unified_log_file=""
@@ -359,6 +381,7 @@ report_permission_xctest_failure() {
     report_settings_accessibility_notice "${log_file}"
     report_settings_search_accessibility_notice "${log_file}"
     report_settings_search_surface_notice "${log_file}"
+    report_settings_search_result_notice "${log_file}"
   fi
   printf '::error::CODE=%s PHASE=%s EXIT=%d\n' "${code}" "${phase}" "${original_exit}"
 }

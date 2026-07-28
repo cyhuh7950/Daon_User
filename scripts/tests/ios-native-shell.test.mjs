@@ -1640,3 +1640,37 @@ test("C50 iOS 26 SearchField는 잘못된 identifier tap 없이 bounded pull-dow
   assert.match(searchHelper, /permissionXCTestStage\(\.settingsSearchField\)\s*guard searchFields\.count == 1, let searchField = searchFields\.popLast\(\) else\s*\{\s*emitSettingsSearchAccessibilitySummary\(in: settings\)\s*emitSettingsSearchSurfaceSummary\(in: settings\)\s*XCTFail/);
   assert.match(searchHelper, /searchField\.typeText\("Daon"\)[\s\S]*?label == %@", "Daon"[\s\S]*?daonResult\.tap\(\)[\s\S]*?permissionXCTestStage\(\.settingsSearchAppSurface\)/);
 });
+test("C51 Search Result 진단은 bounded failure-only 단일 helper 계약을 사용한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const start = uiTests.indexOf("private func emitSettingsSearchResultSummary");
+  const end = uiTests.indexOf("private func requireExactNotificationSettingsRow", start);
+  const diagnostic = start >= 0 && end > start ? uiTests.slice(start, end) : "";
+  const searchStart = uiTests.indexOf("private func openDaonNotificationSettingsViaIOS26Search");
+  const searchEnd = uiTests.indexOf("private func setNotificationAuthorization", searchStart);
+  const search = searchStart >= 0 && searchEnd > searchStart ? uiTests.slice(searchStart, searchEnd) : "";
+  assert.ok(diagnostic && search);
+  assert.match(diagnostic, /DAON_SETTINGS_SEARCH_RESULT_SUMMARY=v1\|count=/);
+  assert.match(diagnostic, /maximumElementCount\s*=\s*24/);
+  assert.match(diagnostic, /maximumTokenLength\s*=\s*48/);
+  let pos = -1; for (const type of ["cell", "button", "staticText", "other"]) { const next = diagnostic.indexOf(`("${type}",`, pos + 1); assert.ok(next > pos); pos = next; }
+  assert.match(diagnostic, /rawLabel\.isEmpty[\s\S]*?rawIdentifier\.isEmpty[\s\S]*?rawValue\.isEmpty[\s\S]*?element\.isHittable/);
+  assert.doesNotMatch(diagnostic, /debugDescription|frame|pid|ProcessInfo|environment|path=|keyboard|coordinate\(|element\(boundBy:|firstMatch|dump\(/i);
+  assert.equal((search.match(/emitSettingsSearchResultSummary\(in: settings\)/g) ?? []).length, 1);
+  assert.match(search, /guard let daonResult else\s*\{\s*emitSettingsSearchResultSummary\(in: settings\)\s*XCTFail/);
+  assert.match(search, /settings\.cells\.matching\(exactDaonPredicate\)[\s\S]*?settings\.descendants\(matching: \.any\)\.matching\(exactDaonPredicate\)[\s\S]*?daonResult\.tap\(\)/);
+});
+
+test("C51 Result Summary Notice는 strict schema·Bash3.2·원 Exit65를 보존한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const hs = script.indexOf("is_allowed_permission_failure_code() {"); const ps = script.indexOf("run_permission_phase() {", hs); const pe = script.indexOf('\n}\n\nDAON_SIM_STAGE="APP_ARTIFACT"', ps);
+  const contract = hs >= 0 && ps > hs && pe > ps ? script.slice(hs, pe + 2) : "";
+  const rs = contract.indexOf("report_settings_search_result_notice() {"); const re = contract.indexOf("report_notification_settings_open_notice() {", rs); const helper = rs >= 0 && re > rs ? contract.slice(rs, re) : "";
+  assert.ok(helper); assert.match(helper, /DAON_SETTINGS_SEARCH_RESULT_SUMMARY=/); assert.ok(helper.includes("elementType=(cell|button|staticText|other)")); assert.doesNotMatch(helper, /\bmapfile\b|source_lines|eval|printenv/i);
+  assert.match(contract, /report_settings_search_surface_notice "\$\{log_file\}"\s*report_settings_search_result_notice "\$\{log_file\}"/);
+  const root = await mkdtemp(path.join(os.tmpdir(), "daon-result-summary-")); const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const fixture = ["set -Eeuo pipefail","SIMULATOR_UDID=x","BUNDLE_ID=com.sinsan.daon","REPOSITORY_ROOT=/repo","DERIVED_DATA=/derived","DAON_SIM_PERMISSION_SERVICE=\"\"","xcrun(){ return 0; }","xcodebuild(){ echo \"${XCODE_RAW}\"; return \"${XCODE_EXIT}\"; }",contract,"run_permission_phase revoke revoke DENIED"].join("\n");
+  const fp=path.join(root,"f.sh"); await writeFile(fp,fixture,"utf8"); const run=(exit,raw)=>spawnSync(bash,[fp],{cwd:root,env:{...process.env,EVIDENCE_DIR:root.replaceAll("\\","/"),XCODE_EXIT:String(exit),XCODE_RAW:raw},encoding:"utf8"});
+  const notices=o=>o.split(/\r?\n/).filter(l=>l.startsWith("::notice::DAON_SETTINGS_SEARCH_RESULT_SUMMARY=")); const errors=o=>o.split(/\r?\n/).filter(l=>l.startsWith("::error::"));
+  const failure="missing or ambiguous exact system element: Settings search result"; const prefix="DAON_SETTINGS_SEARCH_RESULT_SUMMARY=v1|count="; const valid=prefix+"2|items=elementType=cell,label=Daon,identifier=_empty_,value=_empty_,isHittable=1;elementType=staticText,label=Daon,identifier=Result,value=_empty_,isHittable=0"; const empty=prefix+"0|items=_none_";
+  try { for(const raw of [failure,valid+"\n"+valid+"\n"+failure,valid+"::error::SECRET\n"+failure,prefix+"1|items=elementType=textView,label=Daon,identifier=_empty_,value=_empty_,isHittable=1\n"+failure,prefix+"1|items=elementType=cell,label=Bad,Comma,identifier=_empty_,value=_empty_,isHittable=1\n"+failure,prefix+"1|items=elementType=cell,label="+"A".repeat(49)+",identifier=_empty_,value=_empty_,isHittable=1\n"+failure,prefix+"24|items="+"A".repeat(4097)+"\n"+failure,valid.replace("count=2","count=1")+"\n"+failure]){const r=run(65,raw);assert.equal(r.status,65);assert.deepEqual(notices(r.stdout),[]);assert.deepEqual(errors(r.stdout),["::error::CODE=SETTINGS_SEARCH_RESULT_MISSING PHASE=revoke EXIT=65"]);} for(const v of [valid,empty]){const r=run(65,v+"\n"+failure);assert.equal(r.status,65);assert.deepEqual(notices(r.stdout),["::notice::"+v]);} const ok=run(0,valid);assert.equal(ok.status,0);assert.deepEqual(notices(ok.stdout),[]);} finally { await rm(root,{recursive:true,force:true}); }
+});
