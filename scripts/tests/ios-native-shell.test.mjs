@@ -1509,3 +1509,16 @@ test("C47 Search Summary token 검증은 macOS Bash 3.2 호환 구조·길이·A
   for (const [capture, token] of [[2, "label"], [3, "identifier"], [4, "value"]]) { assert.match(notice, new RegExp(`${token}="\\$\\{BASH_REMATCH\\[${capture}\\]\\}"[\\s\\S]*?settings_search_token_is_valid "\\$\\{${token}\\}"`)); }
   assert.doesNotMatch(notice, /\{1,48\}|\[\[:|eval|\bsed\b|\bawk\b|python/i);
 });
+test("C48 Search Summary 수집은 macOS Bash 3.2 호환 단일 문자열 계약을 사용한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const noticeStart = script.indexOf("report_settings_search_accessibility_notice() {");
+  const noticeEnd = script.indexOf("report_notification_settings_open_notice() {", noticeStart);
+  const notice = noticeStart >= 0 && noticeEnd > noticeStart ? script.slice(noticeStart, noticeEnd) : "";
+  assert.ok(notice);
+  assert.doesNotMatch(notice, /\bmapfile\b|source_lines/);
+  assert.ok(notice.includes('source_line="$(grep -F "${prefix}" "${log_file}" || true)"'));
+  assert.ok(notice.includes('[[ -n "${source_line}" ]] || return 0'));
+  assert.ok(notice.includes('[[ "${source_line}" != *$\'\\n\'* ]] || return 0'));
+  assert.ok(notice.includes('payload="${source_line#*${prefix}}"'));
+  assert.match(script, /settings_search_token_is_valid\(\) \{/);
+});
