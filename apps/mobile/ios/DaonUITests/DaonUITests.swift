@@ -560,6 +560,16 @@ final class DaonUITests: XCTestCase {
     }
     if keyboardContinueButtons.count == 1, let keyboardContinueButton = keyboardContinueButtons.popLast() {
       keyboardContinueButton.tap()
+    } else if searchField.isHittable {
+      var dictationButtons = settings.buttons.matching(identifier: "dictation").allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+      var globalContinueButtons = settings.buttons.matching(keyboardContinuePredicate).allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+      guard dictationButtons.count <= 1, globalContinueButtons.count <= 1 else {
+        XCTFail("missing or ambiguous exact system element: Settings keyboard continue evidence")
+        throw PermissionUIContractError.missingExactElement("Settings keyboard continue evidence")
+      }
+      if dictationButtons.count == 1, globalContinueButtons.count == 1, let globalContinueButton = globalContinueButtons.popLast() {
+        globalContinueButton.tap()
+      }
     }
 
     permissionXCTestStage(.settingsSearchResult)
