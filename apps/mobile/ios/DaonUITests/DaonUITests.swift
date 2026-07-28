@@ -552,6 +552,15 @@ final class DaonUITests: XCTestCase {
       searchField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existingText.count))
     }
     searchField.typeText("Daon")
+    let keyboardContinuePredicate = NSPredicate(format: "label == %@ OR label == %@", "Continue", "계속")
+    var keyboardContinueButtons = settings.keyboards.buttons.matching(keyboardContinuePredicate).allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    guard keyboardContinueButtons.count <= 1 else {
+      XCTFail("missing or ambiguous exact system element: Settings keyboard continue button")
+      throw PermissionUIContractError.missingExactElement("Settings keyboard continue button")
+    }
+    if keyboardContinueButtons.count == 1, let keyboardContinueButton = keyboardContinueButtons.popLast() {
+      keyboardContinueButton.tap()
+    }
 
     permissionXCTestStage(.settingsSearchResult)
     let exactDaonPredicate = NSPredicate(format: "label == %@", "Daon")
