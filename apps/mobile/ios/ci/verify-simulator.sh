@@ -236,15 +236,14 @@ report_settings_search_accessibility_notice() {
   local payload=""
   local count=""
   local items=""
-  local -a source_lines
   local -a entries
   local entry
   local label
   local identifier
   local value
-  mapfile -t source_lines < <(grep -F "${prefix}" "${log_file}" || true)
-  [[ "${#source_lines[@]}" -eq 1 ]] || return 0
-  source_line="${source_lines[0]}"
+  source_line="$(grep -F "${prefix}" "${log_file}" || true)"
+  [[ -n "${source_line}" ]] || return 0
+  [[ "${source_line}" != *$'\n'* ]] || return 0
   payload="${source_line#*${prefix}}"
   summary="${prefix}${payload}"
   [[ "${#summary}" -le 4096 ]] || return 0
