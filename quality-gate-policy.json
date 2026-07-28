@@ -88,11 +88,11 @@
       "manifest": "services/api/pyproject.toml",
       "foundation_allowed_files": ["README.md", "pyproject.toml"],
       "capabilities": {
-        "lint": { "signals": { "extensions": [".py"], "files": ["ruff.toml"] }, "command": { "id": "api-identity-lint", "command": ["node", "scripts/verify-api-identity.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/src/daon_user_api/identity.py", "services/api/tests/test_identity_oidc.py"] } },
-        "type": { "signals": { "extensions": [".py"], "files": ["pyrightconfig.json", "mypy.ini"] }, "command": { "id": "api-identity-type", "command": ["node", "scripts/verify-api-identity.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/src/daon_user_api/identity.py", "services/api/tests/test_identity_persistence.py"] } },
-        "unit": { "signals": { "extensions": [".py"], "directories": ["test", "tests"] }, "command": { "id": "api-identity-unit", "command": ["node", "scripts/verify-api-identity.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/tests/test_identity_oidc.py", "services/api/tests/test_identity_sessions.py", "services/api/tests/test_identity_step_up.py"] } },
+        "lint": { "signals": { "extensions": [".py"], "files": ["ruff.toml"] }, "command": { "id": "api-authorization-lint", "command": ["node", "scripts/verify-api-authorization.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/src/daon_user_api/authorization.py", "services/api/src/daon_user_api/identity.py"] } },
+        "type": { "signals": { "extensions": [".py"], "files": ["pyrightconfig.json", "mypy.ini"] }, "command": { "id": "api-authorization-type", "command": ["node", "scripts/verify-api-authorization.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/src/daon_user_api/authorization.py", "services/api/tests/test_authorization_persistence.py"] } },
+        "unit": { "signals": { "extensions": [".py"], "directories": ["test", "tests"] }, "command": { "id": "api-authorization-unit", "command": ["node", "scripts/verify-api-authorization.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/tests/test_authorization_roles.py", "services/api/tests/test_authorization_access.py", "services/api/tests/test_identity_security_c01.py"] } },
         "contract": { "signals": { "extensions": [".json", ".yaml", ".yml"], "files": ["openapi.json", "openapi.yaml", "openapi.yml"] }, "command": null },
-        "build": { "signals": { "extensions": [".py"], "directories": ["src", "app"] }, "command": { "id": "api-identity-build", "command": ["node", "scripts/verify-api-identity.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/pyproject.toml", "services/api/src/daon_user_api/identity.py"] } }
+        "build": { "signals": { "extensions": [".py"], "directories": ["src", "app"] }, "command": { "id": "api-authorization-build", "command": ["node", "scripts/verify-api-authorization.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/pyproject.toml", "services/api/src/daon_user_api/authorization.py"] } }
       }
     },
     {

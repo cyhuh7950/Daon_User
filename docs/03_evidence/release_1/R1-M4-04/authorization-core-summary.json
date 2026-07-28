@@ -1,0 +1,56 @@
+{
+  "access_actions": [
+    "read",
+    "citation",
+    "open_source",
+    "export",
+    "delivery",
+    "knowledge_registration",
+    "rerun"
+  ],
+  "access_states": [
+    "available",
+    "partially_redacted",
+    "access_blocked"
+  ],
+  "actions": [
+    "view",
+    "query",
+    "analyze",
+    "generate",
+    "edit",
+    "review",
+    "revision_request",
+    "approve",
+    "deliver",
+    "knowledge_register",
+    "policy_manage",
+    "member_manage"
+  ],
+  "historical_access": "current_membership_acl_source_policy",
+  "http_runtime_implemented": false,
+  "permissions": [
+    "external_llm",
+    "internet_search",
+    "local_internal_llm",
+    "daon_knowledge",
+    "file_download_share",
+    "production_knowledge_registration",
+    "data_area_move",
+    "final_approval_external_delivery"
+  ],
+  "postgresql_rls_implemented": false,
+  "roles": [
+    "personal_owner",
+    "organization_admin",
+    "workspace_admin",
+    "editor",
+    "reviewer",
+    "approver",
+    "viewer"
+  ],
+  "schema_version": "1",
+  "tenant_isolation": "service_auth_predicate_m4_04;postgres_rls_m5",
+  "source_sha256": "CFC1CCB9633996C71DFA55EC64F5F5232B85CCDE765085A20C9E7DE9967E797F",
+  "test_count": 15
+}
