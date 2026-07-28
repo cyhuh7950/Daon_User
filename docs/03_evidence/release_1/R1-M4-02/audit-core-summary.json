@@ -1,0 +1,58 @@
+{
+  "actor_types": [
+    "user",
+    "service",
+    "system"
+  ],
+  "audit_contract_version": "1.0.0",
+  "canonical_json": "sort_keys=true,separators=comma-colon,utf8,allow_nan=false",
+  "event_fields": [
+    "sequence",
+    "event_id",
+    "occurred_at",
+    "actor_id",
+    "actor_type",
+    "tenant_id",
+    "workspace_id",
+    "action",
+    "target_type",
+    "target_id",
+    "outcome",
+    "trace_id",
+    "policy_version",
+    "before",
+    "after",
+    "metadata",
+    "previous_event_hash",
+    "event_hash"
+  ],
+  "genesis_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "hash_algorithm": "SHA-256",
+  "integrity_codes": [
+    "OK",
+    "INVALID_EVENT",
+    "DUPLICATE_EVENT_ID",
+    "SEQUENCE_MISMATCH",
+    "PREVIOUS_HASH_MISMATCH",
+    "EVENT_HASH_MISMATCH"
+  ],
+  "max_page_limit": 200,
+  "max_projection_bytes": 16384,
+  "outcomes": [
+    "succeeded",
+    "denied",
+    "failed"
+  ],
+  "public_store_api": [
+    "append",
+    "read",
+    "list",
+    "verify_integrity"
+  ],
+  "retention_days": 365,
+  "retention_owner": "R1-D009/M5",
+  "schema_version": "1.0",
+  "contract_sha256": "F859FE6645E312AB6E33F8C621EE54EFB262C480FA3F584469BAC83D812DE041",
+  "source_sha256": "1C3AF9C4E1734DA57BD4A37968FFA0D23113621906FCE5F773F1AE0F705C2B2F",
+  "test_count": 11
+}

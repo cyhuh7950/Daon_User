@@ -138,6 +138,52 @@ function validateTypedErrorDetails(document) {
   }
 }
 
+function validateAuditContract(document) {
+  const schemas = document.components?.schemas ?? {};
+  const auditChange = schemas.AuditChange;
+  if (!isObject(auditChange) || auditChange.type !== "object" || auditChange.additionalProperties !== true) {
+    fail("AuditChange safe projection schema is invalid");
+  }
+  const auditEvent = schemas.AuditEvent;
+  const required = [
+    "sequence", "event_id", "occurred_at", "actor_id", "actor_type", "tenant_id",
+    "workspace_id", "action", "target_type", "target_id", "outcome", "trace_id",
+    "policy_version", "before", "after", "metadata", "previous_event_hash", "event_hash"
+  ];
+  if (!isObject(auditEvent) || auditEvent.type !== "object" || auditEvent.additionalProperties !== false) {
+    fail("AuditEvent schema is invalid");
+  }
+  for (const field of required) if (!(auditEvent.required ?? []).includes(field)) fail(`AuditEvent missing ${field}`);
+  for (const field of ["event_id", "actor_id", "tenant_id", "workspace_id", "target_id", "trace_id"]) {
+    const property = auditEvent.properties?.[field];
+    const refs = property?.oneOf ?? [property];
+    if (!refs.some((item) => item?.$ref === "#/components/schemas/OpaqueId")) fail(`AuditEvent ${field} must use OpaqueId`);
+  }
+  if (auditEvent.properties?.occurred_at?.format !== "date-time") fail("AuditEvent occurred_at must be date-time");
+  for (const field of ["previous_event_hash", "event_hash"]) {
+    if (auditEvent.properties?.[field]?.pattern !== "^[0-9a-f]{64}$") fail(`AuditEvent ${field} must be SHA-256 hex`);
+  }
+  for (const field of ["before", "after"]) {
+    const options = auditEvent.properties?.[field]?.oneOf ?? [];
+    if (!options.some((item) => item?.$ref === "#/components/schemas/AuditChange") || !options.some((item) => item?.type === "null")) {
+      fail(`AuditEvent ${field} must be nullable AuditChange`);
+    }
+  }
+
+  const operation = document.paths?.["/api/v1/audit-events"]?.get;
+  if (operation?.responses?.["200"]?.$ref !== "#/components/responses/AuditEventListResponse") {
+    fail("listAuditEvents must use AuditEventListResponse");
+  }
+  const refs = parameterRefs(operation);
+  for (const name of ["AuditTenantId", "AuditWorkspaceId", "AuditAction", "AuditOutcome", "AuditTraceId", "AuditOccurredAfter", "AuditOccurredBefore"]) {
+    if (!refs.has(`#/components/parameters/${name}`)) fail(`listAuditEvents missing ${name}`);
+  }
+  const listSchema = schemas.AuditEventPage;
+  if (listSchema?.properties?.items?.items?.$ref !== "#/components/schemas/AuditEvent") {
+    fail("AuditEventPage must contain AuditEvent items");
+  }
+}
+
 export function validateOpenApiDocument(document) {
   if (!isObject(document)) fail("document must be an object");
   if (!/^3\.1\.\d+$/.test(document.openapi ?? "")) fail("OpenAPI version must be 3.1.x");
@@ -215,6 +261,7 @@ export function validateOpenApiDocument(document) {
   const codes = document.components?.schemas?.SafeErrorCode?.enum ?? [];
   for (const code of REQUIRED_ERROR_CODES) if (!codes.includes(code)) fail(`required error code missing ${code}`);
   validateTypedErrorDetails(document);
+  validateAuditContract(document);
 
   const eventOperation = document.paths["/api/v1/runs/{id}/events"]?.get;
   if (!parameterRefs(eventOperation).has("#/components/parameters/LastEventId")) fail("SSE missing Last-Event-ID reconnect cursor");

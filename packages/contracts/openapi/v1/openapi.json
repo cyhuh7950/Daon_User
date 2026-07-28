@@ -2766,7 +2766,7 @@
         "x-implementation-owner": "R1-M4-02",
         "responses": {
           "200": {
-            "$ref": "#/components/responses/ListSuccessResponse"
+            "$ref": "#/components/responses/AuditEventListResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2802,6 +2802,27 @@
           },
           {
             "$ref": "#/components/parameters/Search"
+          },
+          {
+            "$ref": "#/components/parameters/AuditTenantId"
+          },
+          {
+            "$ref": "#/components/parameters/AuditWorkspaceId"
+          },
+          {
+            "$ref": "#/components/parameters/AuditAction"
+          },
+          {
+            "$ref": "#/components/parameters/AuditOutcome"
+          },
+          {
+            "$ref": "#/components/parameters/AuditTraceId"
+          },
+          {
+            "$ref": "#/components/parameters/AuditOccurredAfter"
+          },
+          {
+            "$ref": "#/components/parameters/AuditOccurredBefore"
           }
         ],
         "x-list-operation": true
@@ -2897,6 +2918,72 @@
         "schema": {
           "$ref": "#/components/schemas/OpaqueId"
         }
+      },
+      "AuditTenantId": {
+        "name": "tenant_id",
+        "in": "query",
+        "required": true,
+        "description": "현재 권한으로 재검증할 Tenant 범위. 권한 강제는 R1-M4-04·05 소유",
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      },
+      "AuditWorkspaceId": {
+        "name": "workspace_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      },
+      "AuditAction": {
+        "name": "action",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "AuditOutcome": {
+        "name": "outcome",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "succeeded",
+            "denied",
+            "failed"
+          ]
+        }
+      },
+      "AuditTraceId": {
+        "name": "trace_id",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      },
+      "AuditOccurredAfter": {
+        "name": "occurred_after",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "AuditOccurredBefore": {
+        "name": "occurred_before",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "format": "date-time"
+        }
       }
     },
     "headers": {
@@ -2963,6 +3050,24 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/ListSuccessEnvelope"
+            }
+          }
+        }
+      },
+      "AuditEventListResponse": {
+        "description": "권한 범위 안의 불변 Audit Event Cursor Page",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          },
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AuditEventListEnvelope"
             }
           }
         }
@@ -3488,6 +3593,174 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 128
+          }
+        }
+      },
+      "AuditChange": {
+        "type": "object",
+        "description": "승인된 안전 JSON 변경 Projection. Secret·Credential·Token·내부 Host·Provider 원문을 포함하지 않음",
+        "additionalProperties": true
+      },
+      "AuditEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "event_id",
+          "occurred_at",
+          "actor_id",
+          "actor_type",
+          "tenant_id",
+          "workspace_id",
+          "action",
+          "target_type",
+          "target_id",
+          "outcome",
+          "trace_id",
+          "policy_version",
+          "before",
+          "after",
+          "metadata",
+          "previous_event_hash",
+          "event_hash"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "event_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actor_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "actor_type": {
+            "type": "string",
+            "enum": [
+              "user",
+              "service",
+              "system"
+            ]
+          },
+          "tenant_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "workspace_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OpaqueId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "target_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "target_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "denied",
+              "failed"
+            ]
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "policy_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "before": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AuditChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "after": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AuditChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata": {
+            "type": "object",
+            "description": "승인된 안전 JSON Metadata만 포함",
+            "additionalProperties": true
+          },
+          "previous_event_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "event_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "AuditEventPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      },
+      "AuditEventListEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "trace_id"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuditEventPage"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
           }
         }
       },
