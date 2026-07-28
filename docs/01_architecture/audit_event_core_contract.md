@@ -14,7 +14,7 @@ R1-M4-02는 Actor·Trace·Policy Version·안전한 변경 전후를 가진 불�
 
 ## 안전 Projection
 
-Before·After·Metadata는 명시적으로 전달한 JSON Projection만 저장한다. 중첩 Key를 포함해 Password·Secret·Token·Credential·API Key·Raw Provider Error·Internal URL/Host 계열을 fail-close로 거부한다. Loopback·Private·Docker·Internal Host를 가리키는 값, 비직렬화 값, 비유한 숫자와 크기·깊이 한도 초과도 거부한다. 오류에는 입력값을 되비추지 않는다.
+Before·After·Metadata는 명시적으로 전달한 JSON Projection만 저장한다. 중첩 Key를 포함해 Password·Secret·Token·Credential·API Key·Raw Provider Error·Internal URL/Host 계열을 fail-close로 거부한다. 값은 문자열 부분일치가 아니라 표준 `ipaddress`·`urlsplit`과 정확한 Host 문법으로 판정한다. Raw·Bracket·Host:Port IPv4/IPv6, 모든 Scheme의 Absolute Endpoint와 Scheme-relative Endpoint에서 Loopback·Private·Link-local·Unspecified·Reserved·Docker·`.internal`·`.local` Host를 거부한다. 공인 IP·공인 Domain과 일반 문장은 허용한다. 비직렬화 값, 비유한 숫자와 크기·깊이 한도 초과도 거부하며 오류에는 입력값을 되비추지 않는다.
 
 ## 조회와 권한 경계
 

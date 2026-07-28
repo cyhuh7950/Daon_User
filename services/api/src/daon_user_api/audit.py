@@ -43,6 +43,17 @@ _FORBIDDEN_KEY_PARTS = (
     "dockerhost",
 )
 _FORBIDDEN_VALUE_HOSTS = {"localhost", "host.docker.internal", "docker.internal"}
+_ABSOLUTE_ENDPOINT_PATTERN = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_RAW_HOST_PATTERN = re.compile(
+    r"(?=.{1,253}\.?$)"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?",
+    re.IGNORECASE,
+)
+_HOST_PORT_PATTERN = re.compile(
+    r"^(?:\[(?P<bracketed>[^\]]+)\]|(?P<plain>[a-z0-9.-]+)):(?P<port>[0-9]{1,5})$",
+    re.IGNORECASE,
+)
 
 
 class ActorType(str, Enum):
@@ -188,13 +199,37 @@ def _is_forbidden_host(hostname: str) -> bool:
 
 
 def _validate_string_value(value: str) -> None:
-    lowered = value.casefold()
-    if any(host in lowered for host in _FORBIDDEN_VALUE_HOSTS):
+    candidate = value.strip()
+    raw_address = (
+        candidate[1:-1]
+        if len(candidate) >= 2 and candidate.startswith("[") and candidate.endswith("]")
+        else candidate
+    )
+    try:
+        address = ipaddress.ip_address(raw_address)
+    except ValueError:
+        address = None
+    if address is not None and _is_forbidden_host(str(address)):
         _fail("UNSAFE_JSON_VALUE")
-    parsed = urlsplit(value)
-    if parsed.scheme.casefold() in {"http", "https"} and parsed.hostname:
-        if _is_forbidden_host(parsed.hostname):
+
+    if candidate.startswith("//") or _ABSOLUTE_ENDPOINT_PATTERN.match(candidate):
+        try:
+            endpoint_host = urlsplit(candidate).hostname
+        except ValueError:
             _fail("UNSAFE_JSON_VALUE")
+        if endpoint_host and _is_forbidden_host(endpoint_host):
+            _fail("UNSAFE_JSON_VALUE")
+        return
+
+    host_port = _HOST_PORT_PATTERN.fullmatch(candidate)
+    if host_port:
+        endpoint_host = host_port.group("bracketed") or host_port.group("plain")
+        if endpoint_host and _is_forbidden_host(endpoint_host):
+            _fail("UNSAFE_JSON_VALUE")
+        return
+
+    if _RAW_HOST_PATTERN.fullmatch(candidate) and _is_forbidden_host(candidate):
+        _fail("UNSAFE_JSON_VALUE")
 
 
 def _freeze_json(value: object, *, depth: int = 0) -> object:

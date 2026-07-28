@@ -9,6 +9,7 @@
 - 불변 `AuditEvent`와 `AuditEventDraft`, Lock 안에서 Sequence·Previous Hash·Event Hash·중복 ID를 확정하는 append-only `AuditEventStore`를 구현했다.
 - Actor·Tenant·Workspace·Target·Trace·Policy Version, 안전한 Before/After·Metadata를 검증하고 모든 의미 필드를 canonical JSON과 SHA-256 hash-chain에 결속했다.
 - 중첩 민감 Key, 내부·Private 주소, 비 JSON 값, 비 UTC 시각, 누락·빈값·Enum 오류를 저장 전 fail-close한다.
+- C01 독립검토 보완으로 raw/bracket/Host:Port IP와 non-http·scheme-relative Endpoint를 구조 판정하고, 공인 값·일반 문장의 부분 문자열 과잉 차단을 제거했다.
 - Public Store API는 append·read·list·verify_integrity만 노출하고, 반환 Projection은 깊은 불변 값이다.
 - Tenant 필수 목록과 Workspace·Action·Outcome·Trace·Time·opaque Cursor Filter를 순수 Read로 제공한다.
 - OpenAPI `/api/v1/audit-events`를 generic Resource 응답에서 전용 `AuditEventListResponse`로 교체하고 `AuditChange`·`AuditEvent`·Page/Envelope·Query 계약을 추가했다.
@@ -27,7 +28,7 @@
 
 | 검증 | 결과 |
 | --- | --- |
-| Audit Unit·Integration·Tamper·Concurrency·Package Export | 11/11 PASS |
+| Audit Unit·Integration·Tamper·Concurrency·Package Export·C01 Endpoint Matrix | 13/13 PASS |
 | `verify:api-audit -- --write` 후 no-write | PASS, Contract SHA `F859FE6645E312AB6E33F8C621EE54EFB262C480FA3F584469BAC83D812DE041` |
 | OpenAPI Test | 8/8 PASS |
 | OpenAPI write/no-write | PASS, 36 Paths·59 Operations·21 Schemas, SHA `AA1062932894A56D04B7CA3BE1923CBAB70E39385E086782544755A7FF0AE22C` |

@@ -164,6 +164,68 @@ class AuditCoreTests(unittest.TestCase):
                 self.assertNotIn("masked", str(context.exception))
                 self.assertEqual(store.list(tenant_id="tenant-001").items, ())
 
+    def test_raw_and_endpoint_internal_hosts_fail_close_without_value_reflection(self) -> None:
+        unsafe_endpoints = [
+            "127.0.0.1",
+            "10.0.0.5",
+            "169.254.1.1",
+            "0.0.0.0",
+            "240.0.0.1",
+            "::1",
+            "[::1]",
+            "fc00::1",
+            "fe80::1",
+            "::",
+            "100::1",
+            "postgresql://10.0.0.5/db",
+            "redis://[::1]:6379/0",
+            "10.0.0.5:5432",
+            "[::1]:5432",
+            "service.internal:5432",
+            "//10.0.0.5/path",
+            "//service.internal/path",
+            "service.internal",
+            "printer.local",
+            "localhost",
+            "host.docker.internal",
+        ]
+        for index, endpoint in enumerate(unsafe_endpoints):
+            with self.subTest(index=index, endpoint=endpoint):
+                store = AuditEventStore()
+                with self.assertRaises(AuditValidationError) as context:
+                    store.append(draft(metadata={"endpoint": endpoint}))
+                self.assertEqual(str(context.exception), "AUDIT_VALIDATION_FAILED:UNSAFE_JSON_VALUE")
+                self.assertNotIn(endpoint, str(context.exception))
+                self.assertEqual(store.list(tenant_id="tenant-001").items, ())
+
+    def test_public_endpoints_and_general_strings_are_not_overblocked(self) -> None:
+        safe_values = [
+            "8.8.8.8",
+            "2606:4700:4700::1111",
+            "[2606:4700:4700::1111]",
+            "https://example.com/audit",
+            "postgresql://db.example.com/data",
+            "8.8.8.8:53",
+            "[2606:4700:4700::1111]:443",
+            "//cdn.example.com/path",
+            "service.internal.example.com",
+            "notlocalhost.example",
+            "localhost is unavailable in this user guide",
+            "ordinary audit note",
+        ]
+        store = AuditEventStore()
+        for index, value in enumerate(safe_values):
+            with self.subTest(index=index, value=value):
+                event = store.append(
+                    draft(
+                        f"safe-event-{index}",
+                        occurred_at=UTC_1 + timedelta(seconds=index),
+                        metadata={"reference": value},
+                    )
+                )
+                self.assertEqual(event.metadata["reference"], value)
+        self.assertEqual(len(store.list(tenant_id="tenant-001").items), len(safe_values))
+
     def test_list_filters_trace_lineage_and_opaque_cursor(self) -> None:
         store = AuditEventStore()
         store.append(draft("event-1", occurred_at=UTC_1, action="source.created"))
