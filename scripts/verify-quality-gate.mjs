@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import path from "node:path";
 import process from "node:process";
+import { appendFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { CI_FALLBACK_STEP_IDS, ensureCiFallbackEvidence, loadQualityGatePolicy, runQualityGate } from "./lib/quality-gate.mjs";
+import { CI_FALLBACK_STEP_IDS, ensureCiFallbackEvidence, loadQualityGatePolicy, renderCurrentQualityGateDiagnostic, runQualityGate } from "./lib/quality-gate.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2).filter((item) => item !== "--");
@@ -10,7 +11,17 @@ const policyIndex = args.indexOf("--policy");
 const policyPath = policyIndex >= 0 ? path.resolve(args[policyIndex + 1]) : path.join(root, "quality-gate-policy.json");
 
 try {
-  if (args.includes("--ci-fallback")) {
+  if (args.includes("--ci-diagnostic")) {
+    const diagnostic = await renderCurrentQualityGateDiagnostic({ root, gitSha: process.env.CI_GIT_SHA });
+    console.log(diagnostic);
+    if (typeof process.env.GITHUB_STEP_SUMMARY === "string" && process.env.GITHUB_STEP_SUMMARY.length > 0) {
+      try {
+        await appendFile(process.env.GITHUB_STEP_SUMMARY, `### Quality Gate Diagnostic\n\n\`${diagnostic}\`\n`);
+      } catch {
+        // Diagnostic output must not replace the original quality gate judgment.
+      }
+    }
+  } else if (args.includes("--ci-fallback")) {
     const stepOutcomes = Object.fromEntries(CI_FALLBACK_STEP_IDS.map((id) => [
       id,
       process.env[`CI_STEP_${id.replaceAll("-", "_").toUpperCase()}`]
