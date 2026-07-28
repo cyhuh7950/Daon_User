@@ -14,10 +14,11 @@ export interface HostNavigationAdapter {
   onRouteChanged(input: { clientType: NativeClientType; nativeRouteKey: string }): void;
 }
 
-export interface AndroidPermissionAdapter {
+export interface NativePermissionAdapter {
   requestPermission(kind: "camera" | "microphone" | "notification"): Promise<string>;
   checkPermission(kind: "camera" | "microphone" | "notification"): Promise<string>;
   openApplicationSettings(): Promise<void>;
+  openNotificationSettings?(): Promise<void>;
 }
 
 type MobileShellProps = {
@@ -25,7 +26,8 @@ type MobileShellProps = {
   publicApiClient?: PublicApiClient;
   infoActionAdapter?: InfoActionAdapter;
   hostNavigationAdapter?: HostNavigationAdapter;
-  androidPermissionAdapter?: AndroidPermissionAdapter;
+  permissionAdapter?: NativePermissionAdapter;
+  androidPermissionAdapter?: NativePermissionAdapter;
   initialNativeRouteKey?: string | null;
   requestedNativeRouteKey?: string | null;
 };
@@ -55,13 +57,13 @@ function UnsupportedNativeClient() {
   );
 }
 
-export function MobileShell({ clientType, publicApiClient, infoActionAdapter, hostNavigationAdapter, androidPermissionAdapter, initialNativeRouteKey, requestedNativeRouteKey }: MobileShellProps) {
+export function MobileShell({ clientType, publicApiClient, infoActionAdapter, hostNavigationAdapter, permissionAdapter, androidPermissionAdapter, initialNativeRouteKey, requestedNativeRouteKey }: MobileShellProps) {
   const projection = projectNativeRoutes(clientType);
   if (!projection.ok) return <UnsupportedNativeClient />;
-  return <ValidatedMobileShell clientType={clientType as NativeClientType} publicApiClient={publicApiClient} infoActionAdapter={infoActionAdapter} hostNavigationAdapter={hostNavigationAdapter} androidPermissionAdapter={androidPermissionAdapter} initialNativeRouteKey={initialNativeRouteKey} requestedNativeRouteKey={requestedNativeRouteKey} />;
+  return <ValidatedMobileShell clientType={clientType as NativeClientType} publicApiClient={publicApiClient} infoActionAdapter={infoActionAdapter} hostNavigationAdapter={hostNavigationAdapter} permissionAdapter={permissionAdapter ?? androidPermissionAdapter} initialNativeRouteKey={initialNativeRouteKey} requestedNativeRouteKey={requestedNativeRouteKey} />;
 }
 
-function ValidatedMobileShell({ clientType, publicApiClient = createUnavailablePublicApiClient(), infoActionAdapter = unavailableInfoAction, hostNavigationAdapter, androidPermissionAdapter, initialNativeRouteKey, requestedNativeRouteKey }: MobileShellProps & { clientType: NativeClientType }) {
+function ValidatedMobileShell({ clientType, publicApiClient = createUnavailablePublicApiClient(), infoActionAdapter = unavailableInfoAction, hostNavigationAdapter, permissionAdapter, initialNativeRouteKey, requestedNativeRouteKey }: MobileShellProps & { clientType: NativeClientType }) {
   const [navigation, setNavigation] = useState<NavigationState>(() => {
     const initial = createNavigationState(clientType);
     return initialNativeRouteKey ? selectNativeRoute(initial, initialNativeRouteKey) : initial;
@@ -88,8 +90,12 @@ function ValidatedMobileShell({ clientType, publicApiClient = createUnavailableP
 
   useEffect(() => {
     if (!requestedNativeRouteKey) return;
-    setNavigation((current) => acceptNativeDeepLink(current, requestedNativeRouteKey));
-  }, [requestedNativeRouteKey]);
+    setNavigation((current) => {
+      const next = acceptNativeDeepLink(current, requestedNativeRouteKey);
+      if (!next.lastError) hostNavigationAdapter?.onRouteChanged({ clientType, nativeRouteKey: requestedNativeRouteKey });
+      return next;
+    });
+  }, [clientType, hostNavigationAdapter, requestedNativeRouteKey]);
 
   const screenState = screenResult.ok ? screenResult.data.state : screenResult.error.screenState;
   const signal = statusSignal[screenState];
@@ -114,7 +120,7 @@ function ValidatedMobileShell({ clientType, publicApiClient = createUnavailableP
         <Text allowFontScaling style={styles.title}>Daon Mobile</Text>
         <Text allowFontScaling style={styles.auxiliary}>{clientType} · React Native 공용 Shell</Text>
       </View>
-      <ScrollView horizontal accessibilityLabel="공용 Navigation" contentContainerStyle={styles.navigation}>
+      <ScrollView horizontal accessibilityLabel="공용 Navigation" testID="공용 Navigation" contentContainerStyle={styles.navigation}>
         {navigation.routes.map((route) => {
           const selected = route.nativeRouteKey === navigation.currentNativeRouteKey;
           return (
@@ -131,7 +137,7 @@ function ValidatedMobileShell({ clientType, publicApiClient = createUnavailableP
           );
         })}
       </ScrollView>
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView accessibilityLabel="화면 내용" testID="화면 내용" contentContainerStyle={styles.content}>
         <View style={styles.screenHeader}>
           <View style={styles.screenHeadingText}>
             <Text allowFontScaling accessibilityRole="header" style={styles.screenTitle}>{currentRoute.nativeRouteKey}</Text>
@@ -147,10 +153,11 @@ function ValidatedMobileShell({ clientType, publicApiClient = createUnavailableP
         </View>
         {navigation.lastError ? <Text allowFontScaling accessibilityRole="alert" style={styles.errorText}>× {navigation.lastError.code}</Text> : null}
         {infoState ? <Text allowFontScaling accessibilityRole="alert" style={styles.warningText}>! {infoState}</Text> : null}
-        {androidPermissionAdapter ? <View accessibilityLabel="Android 권한 제어" style={styles.permissionControls}>
-          {(["camera", "microphone", "notification"] as const).map((kind) => <Pressable key={kind} accessibilityLabel={`${kind} 권한 요청`} accessibilityRole="button" onPress={() => { void androidPermissionAdapter.requestPermission(kind).then((state) => setPermissionState(`${kind}:${state}`)); }} style={styles.backButton}><Text allowFontScaling style={styles.bodyText}>{kind} 권한 요청</Text></Pressable>)}
-          <Pressable accessibilityLabel="앱 권한 설정 열기" accessibilityRole="button" onPress={() => { void androidPermissionAdapter.openApplicationSettings(); }} style={styles.backButton}><Text allowFontScaling style={styles.bodyText}>앱 권한 설정</Text></Pressable>
-          {permissionState ? <Text allowFontScaling accessibilityRole="text" accessibilityLiveRegion="polite" style={styles.warningText}>{permissionState}</Text> : null}
+        {permissionAdapter ? <View accessibilityLabel={`${clientType} 권한 제어`} style={styles.permissionControls}>
+          {(["camera", "microphone", "notification"] as const).map((kind) => <Pressable key={kind} accessibilityLabel={`${kind} 권한 요청`} accessibilityRole="button" onPress={() => { void permissionAdapter.requestPermission(kind).then((state) => setPermissionState(`${kind}:${state}`)); }} style={styles.backButton}><Text allowFontScaling style={styles.bodyText}>{kind} 권한 요청</Text></Pressable>)}
+          <Pressable accessibilityLabel="앱 권한 설정 열기" accessibilityRole="button" onPress={() => { void permissionAdapter.openApplicationSettings(); }} style={styles.backButton}><Text allowFontScaling style={styles.bodyText}>앱 권한 설정</Text></Pressable>
+          {permissionAdapter.openNotificationSettings ? <Pressable accessibilityLabel="알림 설정 열기" accessibilityRole="button" onPress={() => { void permissionAdapter.openNotificationSettings?.(); }} style={styles.backButton}><Text allowFontScaling style={styles.bodyText}>알림 설정</Text></Pressable> : null}
+          {permissionState ? <Text allowFontScaling accessibilityLabel={`${permissionState.replace(":", " 권한 결과 ")}`} accessibilityRole="text" accessibilityLiveRegion="polite" style={styles.warningText}>{permissionState}</Text> : null}
         </View> : null}
         <Pressable accessibilityLabel="이전 화면으로 돌아가기" accessibilityRole="button" disabled={navigation.history.length <= 1} onPress={() => setNavigation((current) => goBack(current))} style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}>
           <Text allowFontScaling style={styles.bodyText}>← 이전 화면</Text>

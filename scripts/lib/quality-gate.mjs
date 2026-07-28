@@ -28,6 +28,7 @@ export const CI_FALLBACK_STEP_IDS = ["toolchain-pins", "npm-corepack", "setup-uv
 const CI_STEP_OUTCOMES = new Set(["success", "failure", "cancelled", "skipped"]);
 const DEFAULT_RESULT_PATH = "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json";
 const DEFAULT_SUMMARY_PATH = "docs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md";
+const MAX_DIAGNOSTIC_FAILURES = 20;
 const IGNORED_DIRECTORIES = new Set([".git", "node_modules", ".next", "dist", "build", "coverage", ".cache"]);
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex").toUpperCase();
@@ -234,6 +235,46 @@ function isMinimumQualityGateResult(report, expectedGitSha) {
       && Array.isArray(item.checks)
       && Array.isArray(item.component_capabilities);
   });
+}
+
+export async function renderCurrentQualityGateDiagnostic({ root, gitSha }) {
+  const noCurrentResult = "QUALITY_GATE_NO_CURRENT_RESULT";
+  const expectedGitSha = safeIdentifier(gitSha);
+  if (expectedGitSha === "UNAVAILABLE") return noCurrentResult;
+  try {
+    const resultPath = path.resolve(root, DEFAULT_RESULT_PATH);
+    if (!existsSync(resultPath)) return noCurrentResult;
+    const report = JSON.parse(await readFile(resultPath, "utf8"));
+    if (!isMinimumQualityGateResult(report, expectedGitSha)) return noCurrentResult;
+    const failures = [];
+    const seen = new Set();
+    for (const failure of report.failures) {
+      const safeFailure = {
+        category: safeIdentifier(failure?.category),
+        code: safeIdentifier(failure?.code),
+        check_id: safeIdentifier(failure?.check_id),
+        component: safeIdentifier(failure?.component)
+      };
+      const key = JSON.stringify(safeFailure);
+      if (!seen.has(key)) {
+        seen.add(key);
+        failures.push(safeFailure);
+      }
+    }
+    failures.sort((left, right) => {
+      const leftKey = JSON.stringify(left);
+      const rightKey = JSON.stringify(right);
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
+    return JSON.stringify({
+      CODE: "QUALITY_GATE_CURRENT_RESULT",
+      overall_status: report.overall_status,
+      exit_code: report.exit_code,
+      failures: failures.slice(0, MAX_DIAGNOSTIC_FAILURES)
+    });
+  } catch {
+    return noCurrentResult;
+  }
 }
 
 export async function ensureCiFallbackEvidence({ root, gitSha, stepOutcomes = {}, policyPath = "quality-gate-policy.json" }) {
