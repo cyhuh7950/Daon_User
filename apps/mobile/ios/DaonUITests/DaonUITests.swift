@@ -488,33 +488,20 @@ final class DaonUITests: XCTestCase {
     }
 
     permissionXCTestStage(.settingsSearchButton)
-    let searchButtonPredicate = NSPredicate(format: "identifier == %@", "com.apple.settings.search")
-    let searchButtonQuery = settings.buttons.matching(searchButtonPredicate)
-    let searchButtonAppeared = XCTNSPredicateExpectation(
-      predicate: NSPredicate { object, _ in
-        guard let query = object as? XCUIElementQuery else { return false }
-        return !query.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
-      },
-      object: searchButtonQuery
-    )
-    _ = XCTWaiter.wait(for: [searchButtonAppeared], timeout: 10)
-    var searchButtons = searchButtonQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
-    guard searchButtons.count == 1, let searchButton = searchButtons.popLast() else {
-      XCTFail("missing or ambiguous exact system element: Settings search button")
-      throw PermissionUIContractError.missingExactElement("Settings search button")
+    var searchFields: [XCUIElement] = []
+    for _ in 0..<6 {
+      settings.swipeDown()
+      searchFields = settings.searchFields.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+      if searchFields.count == 1 {
+        break
+      }
+      guard searchFields.count <= 1 else {
+        XCTFail("missing or ambiguous exact system element: Settings search field")
+        throw PermissionUIContractError.missingExactElement("Settings search field")
+      }
     }
-    searchButton.tap()
 
     permissionXCTestStage(.settingsSearchField)
-    let searchFieldAppeared = XCTNSPredicateExpectation(
-      predicate: NSPredicate { object, _ in
-        guard let application = object as? XCUIApplication else { return false }
-        return !application.searchFields.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
-      },
-      object: settings
-    )
-    _ = XCTWaiter.wait(for: [searchFieldAppeared], timeout: 10)
-    var searchFields = settings.searchFields.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
     guard searchFields.count == 1, let searchField = searchFields.popLast() else {
       emitSettingsSearchAccessibilitySummary(in: settings)
       emitSettingsSearchSurfaceSummary(in: settings)
