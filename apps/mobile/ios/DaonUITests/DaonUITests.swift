@@ -592,26 +592,37 @@ final class DaonUITests: XCTestCase {
     }
 
     permissionXCTestStage(.settingsSearchResult)
+    let daonAppButtonQuery = settings.buttons.matching(identifier: "com.sinsan.daon")
     let exactDaonPredicate = NSPredicate(format: "label == %@", "Daon")
     let daonCellQuery = settings.cells.matching(exactDaonPredicate)
     let exactDaonQuery = settings.descendants(matching: .any).matching(exactDaonPredicate)
     let daonResultAppeared = XCTNSPredicateExpectation(
       predicate: NSPredicate { object, _ in
-        guard let query = object as? XCUIElementQuery else { return false }
-        if !query.allElementsBoundByAccessibilityElement.filter({ $0.isHittable }).isEmpty { return true }
+        guard let daonAppButtonQuery = object as? XCUIElementQuery else { return false }
+        if !daonAppButtonQuery.allElementsBoundByAccessibilityElement.filter({ $0.isHittable }).isEmpty { return true }
+        if !daonCellQuery.allElementsBoundByAccessibilityElement.filter({ $0.isHittable }).isEmpty { return true }
         return !exactDaonQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
       },
-      object: daonCellQuery
+      object: daonAppButtonQuery
     )
     _ = XCTWaiter.wait(for: [daonResultAppeared], timeout: 10)
-    var daonCells = daonCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    var daonAppButtons = daonAppButtonQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    guard daonAppButtons.count <= 1 else {
+      XCTFail("missing or ambiguous exact system element: Settings Daon app result")
+      throw PermissionUIContractError.missingExactElement("Settings Daon app result")
+    }
     var daonResult: XCUIElement?
-    if daonCells.count == 1 {
-      daonResult = daonCells.popLast()
-    } else if daonCells.isEmpty {
-      var exactDaonElements = exactDaonQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
-      if exactDaonElements.count == 1 {
-        daonResult = exactDaonElements.popLast()
+    if daonAppButtons.count == 1 {
+      daonResult = daonAppButtons.popLast()
+    } else {
+      var daonCells = daonCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+      if daonCells.count == 1 {
+        daonResult = daonCells.popLast()
+      } else if daonCells.isEmpty {
+        var exactDaonElements = exactDaonQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+        if exactDaonElements.count == 1 {
+          daonResult = exactDaonElements.popLast()
+        }
       }
     }
     guard let daonResult else {
