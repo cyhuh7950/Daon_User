@@ -9,6 +9,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/session",
   "/api/v1/session/step-up",
+  "/api/v1/session/oidc/transactions",
+  "/api/v1/session/oidc/callback",
+  "/api/v1/session/refresh",
+  "/api/v1/session/revoke",
+  "/api/v1/devices/{id}/trust",
+  "/api/v1/devices/{id}/revoke",
   "/api/v1/tenants",
   "/api/v1/workspaces",
   "/api/v1/workspaces/{id}/members",
@@ -184,6 +190,55 @@ function validateAuditContract(document) {
   }
 }
 
+function validateIdentityContract(document) {
+  const schemas = document.components?.schemas ?? {};
+  for (const name of [
+    "IdentitySession", "OidcLoginStartRequest", "OidcLoginStart",
+    "OidcCallbackRequest", "NativeRefreshRequest", "StepUpAuthorizationRequest",
+    "StepUpAuthorization", "DeviceRevokeRequest", "DeviceRevocation",
+    "SessionRevokeRequest", "SessionRevocation"
+  ]) {
+    if (!isObject(schemas[name])) fail(`missing identity schema ${name}`);
+  }
+  if (schemas.OidcLoginStart?.properties?.code_challenge_method?.const !== "S256") {
+    fail("OIDC start must use PKCE S256");
+  }
+  if (schemas.StepUpAuthorizationRequest?.properties?.ttl_seconds?.maximum !== 600) {
+    fail("Step-up TTL maximum must be 600 seconds");
+  }
+  if (schemas.NativeRefreshRequest?.properties?.refresh_credential?.writeOnly !== true) {
+    fail("Native refresh credential must be writeOnly");
+  }
+  if (schemas.DeviceRevokeRequest?.properties?.step_up_authorization?.writeOnly !== true) {
+    fail("Device revoke Step-up value must be writeOnly");
+  }
+  if (schemas.SessionRevokeRequest?.properties?.step_up_authorization?.writeOnly !== true) {
+    fail("Session revoke Step-up value must be writeOnly");
+  }
+  const requiredOperations = {
+    "/api/v1/session": ["get", "IdentitySessionResponse"],
+    "/api/v1/session/step-up": ["post", "StepUpAuthorizationResponse"],
+    "/api/v1/session/oidc/transactions": ["post", "OidcLoginStartResponse"],
+    "/api/v1/session/oidc/callback": ["post", "IdentitySessionResponse"],
+    "/api/v1/session/refresh": ["post", "IdentitySessionResponse"],
+    "/api/v1/session/revoke": ["post", "SessionRevocationResponse"],
+    "/api/v1/devices/{id}/trust": ["post", "SuccessResponse"],
+    "/api/v1/devices/{id}/revoke": ["post", "DeviceRevocationResponse"]
+  };
+  for (const [apiPath, [method, responseName]] of Object.entries(requiredOperations)) {
+    const operation = document.paths?.[apiPath]?.[method];
+    if (!isObject(operation)) fail(`missing identity operation ${method.toUpperCase()} ${apiPath}`);
+    const success = operation.responses?.["201"] ?? operation.responses?.["200"];
+    if (success?.$ref !== `#/components/responses/${responseName}`) {
+      fail(`identity operation response mismatch ${method.toUpperCase()} ${apiPath}`);
+    }
+  }
+  const callbackDescription = document.paths?.["/api/v1/session/oidc/callback"]?.post?.description ?? "";
+  if (!callbackDescription.includes("same-origin") || !callbackDescription.includes("HTTPS")) {
+    fail("OIDC callback must distinguish Web same-origin and Native HTTPS delivery");
+  }
+}
+
 export function validateOpenApiDocument(document) {
   if (!isObject(document)) fail("document must be an object");
   if (!/^3\.1\.\d+$/.test(document.openapi ?? "")) fail("OpenAPI version must be 3.1.x");
@@ -262,6 +317,7 @@ export function validateOpenApiDocument(document) {
   for (const code of REQUIRED_ERROR_CODES) if (!codes.includes(code)) fail(`required error code missing ${code}`);
   validateTypedErrorDetails(document);
   validateAuditContract(document);
+  validateIdentityContract(document);
 
   const eventOperation = document.paths["/api/v1/runs/{id}/events"]?.get;
   if (!parameterRefs(eventOperation).has("#/components/parameters/LastEventId")) fail("SSE missing Last-Event-ID reconnect cursor");
@@ -308,7 +364,7 @@ export async function verifyOpenApiContract({ root, write = false } = {}) {
     await mkdir(path.dirname(evidencePath), { recursive: true });
     await writeFile(evidencePath, expected, "utf8");
   } else {
-    const actual = await readFile(evidencePath, "utf8");
+    const actual = (await readFile(evidencePath, "utf8")).replaceAll("\r\n", "\n");
     if (actual !== expected) fail("deterministic evidence does not match; run with --write");
   }
   return summary;

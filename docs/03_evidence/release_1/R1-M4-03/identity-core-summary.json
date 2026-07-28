@@ -1,0 +1,26 @@
+{
+  "credential_storage": "sha256_digest_only",
+  "external_provider_verified": false,
+  "http_runtime_implemented": false,
+  "minimum_step_up_actions": [
+    "data_area_move",
+    "device_session_or_sync_key_revoke",
+    "external_share_or_download",
+    "external_transfer",
+    "final_approval_or_knowledge_registration",
+    "organization_security_or_connector_policy_change",
+    "permanent_delete_or_restore_rollback"
+  ],
+  "native_delivery": "opaque_access_refresh_rotation",
+  "oidc_flow": "authorization_code_pkce_s256",
+  "schema_version": "1",
+  "sqlite": {
+    "foreign_keys": true,
+    "journal_mode": "WAL"
+  },
+  "step_up_default_ttl_seconds": 300,
+  "step_up_max_ttl_seconds": 600,
+  "web_delivery_boundary": "m4_05_same_origin_cookie",
+  "source_sha256": "77FE795A47CCC4196F8F8FBF2FFA1838B75DA363EC6A7DEEBF995CBB23B2B4C3",
+  "test_count": 11
+}
