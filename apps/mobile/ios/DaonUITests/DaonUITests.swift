@@ -697,7 +697,7 @@ final class DaonUITests: XCTestCase {
     if before != target {
       permissionXCTestStage(.settingsSwitchToggle)
       let tapTarget = try requireFreshNotificationSwitch(in: settings)
-      tapTarget.tap()
+      tapNotificationSwitchControl(tapTarget)
     }
     _ = try readFreshNotificationSwitchState(in: settings, phase: phase, point: .after)
     permissionXCTestStage(.settingsSwitchVerify)
@@ -764,6 +764,10 @@ final class DaonUITests: XCTestCase {
       throw PermissionUIContractError.missingExactElement("Allow Notifications switch")
     }
     return element
+  }
+
+  private func tapNotificationSwitchControl(_ element: XCUIElement) {
+    element.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
   }
 
   private func readFreshNotificationSwitchState(in settings: XCUIApplication, phase: PermissionPhase, point: NotificationSwitchPoint) throws -> Bool {

@@ -396,7 +396,9 @@ test("UI Test는 두 Scroll Host의 고정 Identifier Query와 기존 Swipe 의�
   assert.equal((uiTests.match(/0\.\.<8 where !/g) ?? []).length, 4);
   assert.match(uiTests, /navigation\.swipeLeft\(\)/);
   assert.equal((uiTests.match(/content\.swipeUp\(\)/g) ?? []).length, 3);
-  assert.doesNotMatch(uiTests, /coordinate\(|firstMatch|sleep\(|Thread\.sleep/);
+  const approvedNotificationSwitchCoordinate = "element.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()";
+  const uiTestsWithoutApprovedNotificationSwitchCoordinate = uiTests.replace(approvedNotificationSwitchCoordinate, "");
+  assert.doesNotMatch(uiTestsWithoutApprovedNotificationSwitchCoordinate, /coordinate\(|firstMatch|sleep\(|Thread\.sleep/);
 });
 
 test("UI Test는 Apple System Open으로 Warm 7종과 비정상 5종을 단일 Session의 foreground·화면에서 검증한다", async () => {
@@ -1295,7 +1297,9 @@ test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Se
   assert.equal((script.match(/xcrun simctl install "\$\{SIMULATOR_UDID\}" "\$\{APP_PATH\}"/g) ?? []).length, 1);
   assert.match(script, /test-without-building/);
   assert.match(script, /\.xcresult/);
-  assert.doesNotMatch(`${script}\n${uiTests}`, /coordinate\(|firstMatch|element\(boundBy:|App-Prefs|prefs:|TCC\.db|defaults\s+(?:write|delete)|simctl\s+(?:uninstall|erase)/i);
+  const approvedNotificationSwitchCoordinate = "element.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()";
+  const phaseAContract = `${script}\n${uiTests.replace(approvedNotificationSwitchCoordinate, "")}`;
+  assert.doesNotMatch(phaseAContract, /coordinate\(|firstMatch|element\(boundBy:|App-Prefs|prefs:|TCC\.db|defaults\s+(?:write|delete)|simctl\s+(?:uninstall|erase)/i);
 });
 test("iOS 26 Simulator Settings Search fallback은 direct·row 뒤 exact 단일 접근성 계약만 사용한다", async () => {
   const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
@@ -1716,10 +1720,10 @@ test("C56 Notification switch는 fresh exact query와 bounded 상태 Marker 계�
   const setContract = setStart >= 0 && setEnd > setStart ? uiTests.slice(setStart, setEnd) : "";
   assert.ok(setContract);
   assert.match(setContract, /readFreshNotificationSwitchState\(in: settings, phase: phase, point: \.before\)/);
-  assert.match(setContract, /let tapTarget = try requireFreshNotificationSwitch\(in: settings\)[\s\S]*?tapTarget\.tap\(\)/);
-  assert.equal((setContract.match(/tapTarget\.tap\(\)/g) ?? []).length, 1);
+  assert.match(setContract, /let tapTarget = try requireFreshNotificationSwitch\(in: settings\)[\s\S]*?tapNotificationSwitchControl\(tapTarget\)/);
+  assert.equal((setContract.match(/tapNotificationSwitchControl\(tapTarget\)/g) ?? []).length, 1);
   assert.match(setContract, /readFreshNotificationSwitchState\(in: settings, phase: phase, point: \.after\)[\s\S]*?waitForNotificationSwitch\(in: settings, enabled: target\)[\s\S]*?readFreshNotificationSwitchState\(in: settings, phase: phase, point: \.final\)/);
-  assert.doesNotMatch(setContract, /waitForNotificationSwitch\([^\n]*XCUIElement|coordinate\(|settings\.terminate\(|simctl privacy|tapTarget\.tap\(\)[\s\S]*?tapTarget\.tap\(\)/);
+  assert.doesNotMatch(setContract, /waitForNotificationSwitch\([^\n]*XCUIElement|settings\.terminate\(|simctl privacy|tapNotificationSwitchControl\(tapTarget\)[\s\S]*?tapNotificationSwitchControl\(tapTarget\)/);
 
   const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
   const parserStart = script.indexOf("report_notification_switch_state_notice() {");
@@ -1765,4 +1769,32 @@ test("C56 Notification switch는 fresh exact query와 bounded 상태 Marker 계�
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
+});
+test("C57 Notification switch는 exact element 우측 중앙 normalized coordinate를 조건부 1회 탭한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const helperStart = uiTests.indexOf("private func tapNotificationSwitchControl");
+  const helperEnd = uiTests.indexOf("\n  private func", helperStart + 1);
+  const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
+  assert.ok(helper);
+  const offset = helper.match(/coordinate\(withNormalizedOffset: CGVector\(dx: ([0-9.]+), dy: ([0-9.]+)\)\)\.tap\(\)/);
+  assert.ok(offset);
+  const dx = Number(offset[1]);
+  const dy = Number(offset[2]);
+  assert.ok(dx > 0 && dx <= 1 && dy >= 0 && dy <= 1);
+  assert.equal(dx, 0.9);
+  assert.equal(dy, 0.5);
+  assert.doesNotMatch(helper, /frame|screen|XCUIApplication|XCUICoordinate\(|for\s|while\s|repeat\s|retry/i);
+
+  const setStart = uiTests.indexOf("private func setNotificationAuthorization");
+  const setEnd = uiTests.indexOf("private enum NotificationSwitchPoint", setStart);
+  const setContract = setStart >= 0 && setEnd > setStart ? uiTests.slice(setStart, setEnd) : "";
+  assert.ok(setContract);
+  assert.match(setContract, /if before != target[\s\S]*?let tapTarget = try requireFreshNotificationSwitch\(in: settings\)[\s\S]*?tapNotificationSwitchControl\(tapTarget\)[\s\S]*?\}/);
+  assert.equal((setContract.match(/tapNotificationSwitchControl\(tapTarget\)/g) ?? []).length, 1);
+  const toggleStart = setContract.indexOf("if before != target");
+  const toggleEnd = setContract.indexOf("point: .after", toggleStart);
+  const toggleContract = toggleStart >= 0 && toggleEnd > toggleStart ? setContract.slice(toggleStart, toggleEnd) : "";
+  assert.ok(toggleContract);
+  assert.doesNotMatch(toggleContract, /tapTarget\.tap\(\)|tapTarget\.frame|XCUICoordinate\(|settings\.terminate\(|simctl privacy|for\s|while\s|repeat\s|retry/i);
+  assert.match(setContract, /point: \.before[\s\S]*?point: \.after[\s\S]*?waitForNotificationSwitch\(in: settings, enabled: target\)[\s\S]*?point: \.final/);
 });
