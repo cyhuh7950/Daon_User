@@ -1424,7 +1424,7 @@ test("C46 Search input 접근성 진단은 bounded sanitized 후보만 failure g
   assert.match(uiTests.slice(uiTests.indexOf("private func settingsDiagnosticToken"), rowStart), /return token\.isEmpty \? "_empty_"/);
   assert.doesNotMatch(diagnostic, /debugDescription|frame|pid|ProcessInfo|environment|\/Users\/|path=|keyboard|dump\(|coordinate\(|element\(boundBy:|firstMatch/i);
   assert.equal((searchHelper.match(/emitSettingsSearchAccessibilitySummary\(in: settings\)/g) ?? []).length, 1);
-  assert.match(searchHelper, /guard searchFields\.count == 1, let searchField = searchFields\.popLast\(\) else\s*\{\s*emitSettingsSearchAccessibilitySummary\(in: settings\)\s*XCTFail\("missing or ambiguous exact system element: Settings search field"\)\s*throw PermissionUIContractError\.missingExactElement\("Settings search field"\)/);
+  assert.match(searchHelper, /guard searchFields\.count == 1, let searchField = searchFields\.popLast\(\) else\s*\{\s*emitSettingsSearchAccessibilitySummary\(in: settings\)\s*(?:emitSettingsSearchSurfaceSummary\(in: settings\)\s*)?XCTFail\("missing or ambiguous exact system element: Settings search field"\)\s*throw PermissionUIContractError\.missingExactElement\("Settings search field"\)/);
   assert.match(searchHelper, /settings\.searchFields\.allElementsBoundByAccessibilityElement\.filter \{ \$0\.isHittable \}/);
   assert.match(searchHelper, /searchField\.typeText\("Daon"\)/);
 });
@@ -1521,4 +1521,103 @@ test("C48 Search Summary 수집은 macOS Bash 3.2 호환 단일 문자열 계약
   assert.ok(notice.includes('[[ "${source_line}" != *$\'\\n\'* ]] || return 0'));
   assert.ok(notice.includes('payload="${source_line#*${prefix}}"'));
   assert.match(script, /settings_search_token_is_valid\(\) \{/);
+});
+test("C49 Search post-tap Surface 진단은 bounded sanitized 별도 계약을 사용한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const surfaceStart = uiTests.indexOf("private func emitSettingsSearchSurfaceSummary");
+  const rowStart = uiTests.indexOf("private func requireExactNotificationSettingsRow", surfaceStart);
+  const surface = surfaceStart >= 0 && rowStart > surfaceStart ? uiTests.slice(surfaceStart, rowStart) : "";
+  const searchStart = uiTests.indexOf("private func openDaonNotificationSettingsViaIOS26Search");
+  const searchEnd = uiTests.indexOf("private func setNotificationAuthorization", searchStart);
+  const searchHelper = searchStart >= 0 && searchEnd > searchStart ? uiTests.slice(searchStart, searchEnd) : "";
+  assert.ok(surface && searchHelper);
+  assert.match(surface, /DAON_SETTINGS_SEARCH_SURFACE_SUMMARY=v1\|count=/);
+  assert.match(surface, /maximumElementCount\s*=\s*24/);
+  assert.match(surface, /maximumTokenLength\s*=\s*48/);
+  const orderedTypes = ["textView", "other", "button", "staticText"];
+  let position = -1;
+  for (const type of orderedTypes) {
+    const next = surface.indexOf(`("${type}",`, position + 1);
+    assert.ok(next > position, `${type} group order missing`);
+    position = next;
+  }
+  assert.match(surface, /settings\.buttons\.matching\(identifier: "com\.apple\.settings\.search"\)/);
+  assert.match(surface, /exactSearchButtons \+ remainingButtons/);
+  assert.match(surface, /rawLabel\.isEmpty[\s\S]*?rawIdentifier\.isEmpty[\s\S]*?rawValue\.isEmpty[\s\S]*?element\.isHittable/);
+  assert.match(surface, /elementType=\\\(group\.type\),label=\\\(label\),identifier=\\\(identifier\),value=\\\(value\),isHittable=\\\(hittable\)/);
+  assert.doesNotMatch(surface, /debugDescription|frame|pid|ProcessInfo|environment|\/Users\/|path=|keyboard|dump\(|coordinate\(|firstMatch/i);
+  assert.equal((searchHelper.match(/emitSettingsSearchSurfaceSummary\(in: settings\)/g) ?? []).length, 1);
+  assert.match(searchHelper, /emitSettingsSearchAccessibilitySummary\(in: settings\)\s*emitSettingsSearchSurfaceSummary\(in: settings\)\s*XCTFail/);
+});
+
+test("C49 Surface Summary Notice는 strict schema·Bash3.2·원 Exit 65를 보존한다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const helperStart = script.indexOf("is_allowed_permission_failure_code() {");
+  const permissionStart = script.indexOf("run_permission_phase() {", helperStart);
+  const permissionEnd = script.indexOf('\n}\n\nDAON_SIM_STAGE="APP_ARTIFACT"', permissionStart);
+  const contract = helperStart >= 0 && permissionStart > helperStart && permissionEnd > permissionStart ? script.slice(helperStart, permissionEnd + 2) : "";
+  assert.ok(contract);
+  const surfaceStart = contract.indexOf("report_settings_search_surface_notice() {");
+  const surfaceEnd = contract.indexOf("report_notification_settings_open_notice() {", surfaceStart);
+  const surface = surfaceStart >= 0 && surfaceEnd > surfaceStart ? contract.slice(surfaceStart, surfaceEnd) : "";
+  assert.ok(surface);
+  assert.match(surface, /DAON_SETTINGS_SEARCH_SURFACE_SUMMARY=/);
+  assert.ok(surface.includes("elementType=(textView|other|button|staticText)"));
+  assert.match(surface, /\[0-9\]\|1\[0-9\]\|2\[0-4\]/);
+  assert.doesNotMatch(surface, /\bmapfile\b|source_lines|eval|debugDescription|printenv/i);
+  assert.match(contract, /report_settings_search_accessibility_notice "\$\{log_file\}"\s*report_settings_search_surface_notice "\$\{log_file\}"/);
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-search-surface-notice-"));
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const fixture = [
+    "set -Eeuo pipefail",
+    "SIMULATOR_UDID=11111111-2222-3333-4444-555555555555",
+    "BUNDLE_ID=com.sinsan.daon",
+    "REPOSITORY_ROOT=/repo",
+    "DERIVED_DATA=/derived",
+    "DAON_SIM_PERMISSION_SERVICE=\"\"",
+    "xcrun(){ return 0; }",
+    "xcodebuild(){ echo \"${XCODE_RAW}\"; return \"${XCODE_EXIT}\"; }",
+    contract,
+    "run_permission_phase revoke revoke DENIED"
+  ].join("\n");
+  const fixturePath = path.join(fixtureRoot, "search-surface-notice-fixture.sh");
+  await writeFile(fixturePath, fixture, "utf8");
+  const run = (exit, raw) => spawnSync(bash, [fixturePath], { cwd: fixtureRoot, env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), XCODE_EXIT: String(exit), XCODE_RAW: raw }, encoding: "utf8" });
+  const notices = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::notice::DAON_SETTINGS_SEARCH_SURFACE_SUMMARY="));
+  const errors = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::error::"));
+  const failure = "missing or ambiguous exact system element: Settings search field";
+  const prefix = "DAON_SETTINGS_SEARCH_SURFACE_SUMMARY=v1|count=";
+  const valid = prefix + "4|items=elementType=textView,label=Search,identifier=_empty_,value=_empty_,isHittable=0;elementType=other,label=_empty_,identifier=Surface,value=_empty_,isHittable=1;elementType=button,label=Search,identifier=com.apple.settings.search,value=_empty_,isHittable=1;elementType=staticText,label=Settings,identifier=_empty_,value=_empty_,isHittable=0";
+  const empty = prefix + "0|items=_none_";
+  try {
+    const rejected = [
+      failure,
+      valid + "\n" + valid + "\n" + failure,
+      valid + "::error::SECRET\n" + failure,
+      prefix + "1|items=elementType=searchField,label=Search,identifier=_empty_,value=_empty_,isHittable=1\n" + failure,
+      prefix + "1|items=elementType=button,label=Bad,Comma,identifier=_empty_,value=_empty_,isHittable=1\n" + failure,
+      prefix + "1|items=elementType=button,label=" + "A".repeat(49) + ",identifier=_empty_,value=_empty_,isHittable=1\n" + failure,
+      prefix + "24|items=" + "A".repeat(4097) + "\n" + failure,
+      valid.replace("count=4", "count=3") + "\n" + failure,
+      prefix + "25|items=_none_\n" + failure
+    ];
+    for (const raw of rejected) {
+      const result = run(65, raw);
+      assert.equal(result.status, 65, result.stderr);
+      assert.deepEqual(notices(result.stdout), []);
+      assert.deepEqual(errors(result.stdout), ["::error::CODE=SETTINGS_SEARCH_FIELD_MISSING PHASE=revoke EXIT=65"]);
+    }
+    for (const acceptedSummary of [valid, empty]) {
+      const accepted = run(65, acceptedSummary + "\n" + failure);
+      assert.equal(accepted.status, 65, accepted.stderr);
+      assert.deepEqual(notices(accepted.stdout), ["::notice::" + acceptedSummary]);
+      assert.deepEqual(errors(accepted.stdout), ["::error::CODE=SETTINGS_SEARCH_FIELD_MISSING PHASE=revoke EXIT=65"]);
+    }
+    const success = run(0, valid);
+    assert.equal(success.status, 0, success.stderr);
+    assert.deepEqual(notices(success.stdout), []);
+    assert.deepEqual(errors(success.stdout), []);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
 });
