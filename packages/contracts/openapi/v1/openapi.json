@@ -1,0 +1,3540 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Daon User Program Public API",
+    "version": "1.0.0",
+    "summary": "Web BFF, Native Gateway와 FastAPI가 공유하는 공개 API 의미 계약",
+    "description": "R1-M4-01 계약 정본. 권한과 소유권 enforcement는 R1-M4-03·04, runtime transport 구현은 R1-M4-05가 소유한다."
+  },
+  "tags": [
+    {
+      "name": "Identity"
+    },
+    {
+      "name": "Workspace"
+    },
+    {
+      "name": "Source"
+    },
+    {
+      "name": "Knowledge"
+    },
+    {
+      "name": "RuleSet"
+    },
+    {
+      "name": "Conversation"
+    },
+    {
+      "name": "Run"
+    },
+    {
+      "name": "Model"
+    },
+    {
+      "name": "Studio"
+    },
+    {
+      "name": "Review"
+    },
+    {
+      "name": "Approval"
+    },
+    {
+      "name": "Delivery"
+    },
+    {
+      "name": "Device"
+    },
+    {
+      "name": "Connector"
+    },
+    {
+      "name": "Audit"
+    }
+  ],
+  "paths": {
+    "/api/v1/session": {
+      "get": {
+        "operationId": "getSession",
+        "tags": [
+          "Identity"
+        ],
+        "summary": "현재 Session 조회",
+        "x-implementation-owner": "R1-M4-03",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        }
+      }
+    },
+    "/api/v1/session/step-up": {
+      "post": {
+        "operationId": "createStepUpAuthorization",
+        "tags": [
+          "Identity"
+        ],
+        "summary": "민감 작업 추가 인증 요청",
+        "x-implementation-owner": "R1-M4-03",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/tenants": {
+      "get": {
+        "operationId": "listTenants",
+        "tags": [
+          "Identity"
+        ],
+        "summary": "접근 가능한 Tenant 목록 조회",
+        "x-implementation-owner": "R1-M4-03",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      }
+    },
+    "/api/v1/workspaces": {
+      "get": {
+        "operationId": "listWorkspaces",
+        "tags": [
+          "Workspace"
+        ],
+        "summary": "Workspace 목록 조회",
+        "x-implementation-owner": "R1-M4-04",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createWorkspace",
+        "tags": [
+          "Workspace"
+        ],
+        "summary": "Workspace 생성",
+        "x-implementation-owner": "R1-M4-04",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/members": {
+      "get": {
+        "operationId": "listWorkspaceMembers",
+        "tags": [
+          "Workspace"
+        ],
+        "summary": "Workspace 구성원 목록 조회",
+        "x-implementation-owner": "R1-M4-04",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "addWorkspaceMember",
+        "tags": [
+          "Workspace"
+        ],
+        "summary": "Workspace 구성원 추가",
+        "x-implementation-owner": "R1-M4-04",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/sources": {
+      "get": {
+        "operationId": "listWorkspaceSources",
+        "tags": [
+          "Source"
+        ],
+        "summary": "Workspace Source 목록 조회",
+        "x-implementation-owner": "R1-M6-05",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createWorkspaceSource",
+        "tags": [
+          "Source"
+        ],
+        "summary": "Workspace Source 등록",
+        "x-implementation-owner": "R1-M6-05",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/knowledge-scope": {
+      "get": {
+        "operationId": "getKnowledgeScope",
+        "tags": [
+          "Knowledge"
+        ],
+        "summary": "Workspace 지식 범위 조회",
+        "x-implementation-owner": "R1-M6-16",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateKnowledgeScope",
+        "tags": [
+          "Knowledge"
+        ],
+        "summary": "Workspace 지식 범위 변경",
+        "x-implementation-owner": "R1-M6-16",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/weight-profile": {
+      "get": {
+        "operationId": "getWeightProfile",
+        "tags": [
+          "Knowledge"
+        ],
+        "summary": "Workspace 가중치 정책 조회",
+        "x-implementation-owner": "R1-M6-16",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateWeightProfile",
+        "tags": [
+          "Knowledge"
+        ],
+        "summary": "Workspace 가중치 정책 변경",
+        "x-implementation-owner": "R1-M6-16",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/model-policy": {
+      "get": {
+        "operationId": "getWorkspaceModelPolicy",
+        "tags": [
+          "Model"
+        ],
+        "summary": "Workspace 모델 정책 조회",
+        "x-implementation-owner": "R1-M6-14",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateWorkspaceModelPolicy",
+        "tags": [
+          "Model"
+        ],
+        "summary": "Workspace 모델 정책 변경",
+        "x-implementation-owner": "R1-M6-14",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/rulesets": {
+      "get": {
+        "operationId": "listRuleSets",
+        "tags": [
+          "RuleSet"
+        ],
+        "summary": "접근 가능한 RuleSet 목록 조회",
+        "x-implementation-owner": "R1-M6-13",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      }
+    },
+    "/api/v1/workspaces/{id}/ruleset-bindings": {
+      "get": {
+        "operationId": "listWorkspaceRuleSetBindings",
+        "tags": [
+          "RuleSet"
+        ],
+        "summary": "Workspace RuleSet Binding 목록 조회",
+        "x-implementation-owner": "R1-M6-13",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createWorkspaceRuleSetBinding",
+        "tags": [
+          "RuleSet"
+        ],
+        "summary": "Workspace RuleSet Binding 생성",
+        "x-implementation-owner": "R1-M6-13",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/ruleset-bindings/{id}": {
+      "get": {
+        "operationId": "getRuleSetBinding",
+        "tags": [
+          "RuleSet"
+        ],
+        "summary": "RuleSet Binding 조회",
+        "x-implementation-owner": "R1-M6-13",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateRuleSetBinding",
+        "tags": [
+          "RuleSet"
+        ],
+        "summary": "RuleSet Binding 변경",
+        "x-implementation-owner": "R1-M6-13",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      },
+      "delete": {
+        "operationId": "deleteRuleSetBinding",
+        "tags": [
+          "RuleSet"
+        ],
+        "summary": "선택형 RuleSet Binding 삭제",
+        "x-implementation-owner": "R1-M6-13",
+        "responses": {
+          "204": {
+            "$ref": "#/components/responses/NoContentResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ]
+      }
+    },
+    "/api/v1/conversations": {
+      "get": {
+        "operationId": "listConversations",
+        "tags": [
+          "Conversation"
+        ],
+        "summary": "대화 목록 조회",
+        "x-implementation-owner": "R1-M6-10",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createConversation",
+        "tags": [
+          "Conversation"
+        ],
+        "summary": "대화 생성",
+        "x-implementation-owner": "R1-M6-10",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/conversations/{id}/messages": {
+      "get": {
+        "operationId": "listConversationMessages",
+        "tags": [
+          "Conversation"
+        ],
+        "summary": "대화 Message 목록 조회",
+        "x-implementation-owner": "R1-M6-10",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createConversationMessage",
+        "tags": [
+          "Conversation"
+        ],
+        "summary": "대화 Message와 Run 요청 생성",
+        "x-implementation-owner": "R1-M6-10",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/runs/{id}": {
+      "get": {
+        "operationId": "getRun",
+        "tags": [
+          "Run"
+        ],
+        "summary": "비동기 Run 상태 조회",
+        "x-implementation-owner": "R1-M6-10",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "cancelRun",
+        "tags": [
+          "Run"
+        ],
+        "summary": "진행 중 Run 취소",
+        "x-implementation-owner": "R1-M6-10",
+        "responses": {
+          "204": {
+            "$ref": "#/components/responses/NoContentResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ]
+      }
+    },
+    "/api/v1/runs/{id}/events": {
+      "get": {
+        "operationId": "streamRunEvents",
+        "tags": [
+          "Run"
+        ],
+        "summary": "Run 진행 Event Stream 수신",
+        "x-implementation-owner": "R1-M6-10",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/EventStreamResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/LastEventId"
+          }
+        ]
+      }
+    },
+    "/api/v1/runs/{id}/routing-decision": {
+      "get": {
+        "operationId": "getRunRoutingDecision",
+        "tags": [
+          "Model"
+        ],
+        "summary": "Run Routing Decision 조회",
+        "x-implementation-owner": "R1-M6-14",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ]
+      }
+    },
+    "/api/v1/runs/{id}/rule-evaluations": {
+      "get": {
+        "operationId": "listRunRuleEvaluations",
+        "tags": [
+          "RuleSet"
+        ],
+        "summary": "Run RuleSet 평가 목록 조회",
+        "x-implementation-owner": "R1-M6-13",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      }
+    },
+    "/api/v1/conflicts/{id}": {
+      "get": {
+        "operationId": "getConflict",
+        "tags": [
+          "Knowledge"
+        ],
+        "summary": "지식 충돌 조회",
+        "x-implementation-owner": "R1-M6-16",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "reviewConflict",
+        "tags": [
+          "Knowledge"
+        ],
+        "summary": "지식 충돌 검토 결과 기록",
+        "x-implementation-owner": "R1-M6-16",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/sources/{id}/processing-runs": {
+      "get": {
+        "operationId": "listSourceProcessingRuns",
+        "tags": [
+          "Source"
+        ],
+        "summary": "Source ProcessingRun 목록 조회",
+        "x-implementation-owner": "R1-M6-05",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createSourceProcessingRun",
+        "tags": [
+          "Source"
+        ],
+        "summary": "Source 재처리 Run 생성",
+        "x-implementation-owner": "R1-M6-05",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/sources/{id}/transcripts": {
+      "get": {
+        "operationId": "listSourceTranscripts",
+        "tags": [
+          "Source"
+        ],
+        "summary": "Source Transcript Version 목록 조회",
+        "x-implementation-owner": "R1-M6-07",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      }
+    },
+    "/api/v1/studio-generation-requests": {
+      "get": {
+        "operationId": "listStudioGenerationRequests",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "Studio 생성 요청 목록 조회",
+        "x-implementation-owner": "R1-M8-01",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createStudioGenerationRequest",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "Studio 생성 요청 제출",
+        "x-implementation-owner": "R1-M8-01",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/studio-outputs": {
+      "get": {
+        "operationId": "listStudioOutputs",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "Studio 산출물 목록 조회",
+        "x-implementation-owner": "R1-M8-01",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      }
+    },
+    "/api/v1/studio-outputs/{id}/versions": {
+      "get": {
+        "operationId": "listStudioOutputVersions",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "산출물 Version 목록 조회",
+        "x-implementation-owner": "R1-M8-01",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createStudioOutputVersion",
+        "tags": [
+          "Studio"
+        ],
+        "summary": "산출물 새 Version 생성",
+        "x-implementation-owner": "R1-M8-01",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResourceId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/reviews": {
+      "get": {
+        "operationId": "listReviews",
+        "tags": [
+          "Review"
+        ],
+        "summary": "검토 요청 목록 조회",
+        "x-implementation-owner": "R1-M8-07",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createReview",
+        "tags": [
+          "Review"
+        ],
+        "summary": "검토 요청 생성",
+        "x-implementation-owner": "R1-M8-07",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/approval-requests": {
+      "get": {
+        "operationId": "listApprovalRequests",
+        "tags": [
+          "Approval"
+        ],
+        "summary": "승인 요청 목록 조회",
+        "x-implementation-owner": "R1-M8-07",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createApprovalRequest",
+        "tags": [
+          "Approval"
+        ],
+        "summary": "승인 요청 생성",
+        "x-implementation-owner": "R1-M8-07",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/approvals": {
+      "get": {
+        "operationId": "listApprovals",
+        "tags": [
+          "Approval"
+        ],
+        "summary": "승인 판정 목록 조회",
+        "x-implementation-owner": "R1-M8-07",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createApproval",
+        "tags": [
+          "Approval"
+        ],
+        "summary": "승인 또는 반려 판정 기록",
+        "x-implementation-owner": "R1-M8-07",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/deliveries": {
+      "get": {
+        "operationId": "listDeliveries",
+        "tags": [
+          "Delivery"
+        ],
+        "summary": "전달 이력 목록 조회",
+        "x-implementation-owner": "R1-M8-07",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createDelivery",
+        "tags": [
+          "Delivery"
+        ],
+        "summary": "승인된 산출물 전달",
+        "x-implementation-owner": "R1-M8-07",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/knowledge-registrations": {
+      "get": {
+        "operationId": "listKnowledgeRegistrations",
+        "tags": [
+          "Knowledge"
+        ],
+        "summary": "생산 지식 등록 요청 목록 조회",
+        "x-implementation-owner": "R1-M8-08",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createKnowledgeRegistration",
+        "tags": [
+          "Knowledge"
+        ],
+        "summary": "생산 지식 등록 요청 생성",
+        "x-implementation-owner": "R1-M8-08",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/model-profiles": {
+      "get": {
+        "operationId": "listModelProfiles",
+        "tags": [
+          "Model"
+        ],
+        "summary": "Model Profile 목록 조회",
+        "x-implementation-owner": "R1-M6-14",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createModelProfile",
+        "tags": [
+          "Model"
+        ],
+        "summary": "Model Profile 등록",
+        "x-implementation-owner": "R1-M6-14",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/model-deployments": {
+      "get": {
+        "operationId": "listModelDeployments",
+        "tags": [
+          "Model"
+        ],
+        "summary": "사용 가능한 Model Deployment 목록 조회",
+        "x-implementation-owner": "R1-M6-14",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      }
+    },
+    "/api/v1/model-routing/preview": {
+      "post": {
+        "operationId": "previewModelRouting",
+        "tags": [
+          "Model"
+        ],
+        "summary": "Model Routing 후보와 정책 결과 미리보기",
+        "x-implementation-owner": "R1-M6-14",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/local-nodes": {
+      "get": {
+        "operationId": "listLocalNodes",
+        "tags": [
+          "Device"
+        ],
+        "summary": "Local Runtime Node 목록 조회",
+        "x-implementation-owner": "R1-M6-04",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      }
+    },
+    "/api/v1/model-installations": {
+      "get": {
+        "operationId": "listModelInstallations",
+        "tags": [
+          "Model"
+        ],
+        "summary": "Model Installation 목록 조회",
+        "x-implementation-owner": "R1-M6-03",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      },
+      "post": {
+        "operationId": "createModelInstallation",
+        "tags": [
+          "Model"
+        ],
+        "summary": "Model Installation 작업 생성",
+        "x-implementation-owner": "R1-M6-03",
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/CreatedResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/ResourceMutation"
+        }
+      }
+    },
+    "/api/v1/connectors": {
+      "get": {
+        "operationId": "listConnectors",
+        "tags": [
+          "Connector"
+        ],
+        "summary": "Connector 상태 목록 조회",
+        "x-implementation-owner": "R1-M6-11",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      }
+    },
+    "/api/v1/audit-events": {
+      "get": {
+        "operationId": "listAuditEvents",
+        "tags": [
+          "Audit"
+        ],
+        "summary": "권한 있는 Audit Event 목록 조회",
+        "x-implementation-owner": "R1-M4-02",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ListSuccessResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Filter"
+          },
+          {
+            "$ref": "#/components/parameters/Search"
+          }
+        ],
+        "x-list-operation": true
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "ResourceId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Client가 구조나 의미를 추론하지 않는 불투명 Resource ID",
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "description": "불투명 다음 Page Cursor",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "description": "Page 항목 상한",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50
+        }
+      },
+      "Filter": {
+        "name": "filter",
+        "in": "query",
+        "required": false,
+        "description": "Versioned Server Filter 표현",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "Search": {
+        "name": "search",
+        "in": "query",
+        "required": false,
+        "description": "권한 범위 안의 검색어",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "동일 Write 중복 실행을 방지하는 Client 생성 불투명 Key",
+        "schema": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        }
+      },
+      "IfMatch": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "description": "기존 Resource Version의 ETag 사전조건",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "LastEventId": {
+        "name": "Last-Event-ID",
+        "in": "header",
+        "required": false,
+        "description": "마지막으로 적용한 승인 Event ID",
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      }
+    },
+    "headers": {
+      "XTraceId": {
+        "description": "요청·실행·감사를 연결하는 안전한 Trace ID",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/OpaqueId"
+        }
+      },
+      "ETag": {
+        "description": "Versioned mutable Resource의 현재 불투명 Version Tag",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "requestBodies": {
+      "ResourceMutation": {
+        "required": true,
+        "description": "후속 소유 Work Order가 구체화하는 Versioned Resource 변경 입력",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ResourceMutation"
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "SuccessResponse": {
+        "description": "Versioned Resource 성공",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          },
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SuccessEnvelope"
+            }
+          }
+        }
+      },
+      "ListSuccessResponse": {
+        "description": "Cursor Page 성공",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          },
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ListSuccessEnvelope"
+            }
+          }
+        }
+      },
+      "CreatedResponse": {
+        "description": "Versioned Resource 생성 성공",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          },
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SuccessEnvelope"
+            }
+          }
+        }
+      },
+      "NoContentResponse": {
+        "description": "Versioned Resource 변경 성공",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          },
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        }
+      },
+      "EventStreamResponse": {
+        "description": "승인된 Run 상태 Event Stream",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        },
+        "content": {
+          "text/event-stream": {
+            "schema": {
+              "$ref": "#/components/schemas/RunEvent"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "안전한 요청 오류",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "인증 필요",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "현재 권한 거부",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource 비노출 또는 없음",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Idempotency 또는 현재 상태 충돌",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        }
+      },
+      "PreconditionFailed": {
+        "description": "ETag 사전조건 불일치",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        }
+      },
+      "SafeFailure": {
+        "description": "안전한 처리 실패",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "OpaqueId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "description": "의미·형식·순서를 Client가 추론하지 않는 불투명 식별자"
+      },
+      "Resource": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "version",
+          "attributes"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "attributes": {
+            "type": "object",
+            "description": "후속 도메인 Work Order가 Versioned Schema로 구체화할 공개 속성",
+            "additionalProperties": true
+          }
+        }
+      },
+      "ResourceMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "attributes"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "attributes": {
+            "type": "object",
+            "description": "후속 도메인 Work Order가 구체화할 공개 변경 속성",
+            "additionalProperties": true
+          },
+          "step_up_authorization_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      },
+      "SuccessEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "trace_id"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Resource"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      },
+      "CursorPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Resource"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      },
+      "ListSuccessEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "trace_id"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/CursorPage"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      },
+      "SafeErrorEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/SafeError"
+          }
+        }
+      },
+      "SafeError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "stage",
+          "impact",
+          "retryable",
+          "user_action",
+          "trace_id",
+          "details"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/SafeErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "사용자가 이해할 수 있는 안전한 설명"
+          },
+          "stage": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "impact": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "user_action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "details": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CostLimitExceededDetails"
+              },
+              {
+                "$ref": "#/components/schemas/StepUpRequiredDetails"
+              },
+              {
+                "$ref": "#/components/schemas/CurrentAccessDeniedDetails"
+              },
+              {
+                "$ref": "#/components/schemas/ImportantKnowledgeConflictDetails"
+              },
+              {
+                "$ref": "#/components/schemas/NoAvailableUnderstandingModelDetails"
+              },
+              {
+                "$ref": "#/components/schemas/NoAvailableDeploymentDetails"
+              },
+              {
+                "$ref": "#/components/schemas/GenericSafeDetails"
+              }
+            ]
+          }
+        }
+      },
+      "SafeErrorCode": {
+        "type": "string",
+        "enum": [
+          "COST_LIMIT_EXCEEDED",
+          "STEP_UP_REQUIRED",
+          "CURRENT_ACCESS_DENIED",
+          "IMPORTANT_KNOWLEDGE_CONFLICT",
+          "NO_AVAILABLE_UNDERSTANDING_MODEL",
+          "NO_AVAILABLE_DEPLOYMENT"
+        ]
+      },
+      "CostLimitExceededDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "limit",
+          "currency",
+          "accrued_cost",
+          "estimated_next_cost",
+          "retryable",
+          "user_action"
+        ],
+        "properties": {
+          "limit": {
+            "type": "number",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "accrued_cost": {
+            "type": "number",
+            "minimum": 0
+          },
+          "estimated_next_cost": {
+            "type": "number",
+            "minimum": 0
+          },
+          "retryable": {
+            "const": false
+          },
+          "user_action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "StepUpRequiredDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "required_field",
+          "action",
+          "target_id"
+        ],
+        "properties": {
+          "required_field": {
+            "const": "step_up_authorization_id"
+          },
+          "step_up_authorization_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "target_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      },
+      "CurrentAccessDeniedDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "access_state",
+          "resource_id"
+        ],
+        "properties": {
+          "access_state": {
+            "type": "string",
+            "enum": [
+              "available",
+              "partially_redacted",
+              "access_blocked"
+            ]
+          },
+          "resource_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      },
+      "ImportantKnowledgeConflictDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conflict_id",
+          "severity",
+          "review_required"
+        ],
+        "properties": {
+          "conflict_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "material",
+              "critical"
+            ]
+          },
+          "review_required": {
+            "const": true
+          }
+        }
+      },
+      "NoAvailableUnderstandingModelDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "required_role",
+          "retryable"
+        ],
+        "properties": {
+          "required_role": {
+            "type": "string",
+            "enum": [
+              "text",
+              "vision",
+              "audio_understanding"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "NoAvailableDeploymentDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "required_role",
+          "retryable"
+        ],
+        "properties": {
+          "required_role": {
+            "type": "string",
+            "enum": [
+              "text",
+              "vision",
+              "audio_understanding",
+              "speech_to_text",
+              "embedding",
+              "reranker"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "GenericSafeDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reason_code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "RunEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "type",
+          "occurred_at",
+          "trace_id",
+          "payload"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "run.accepted",
+              "run.planning",
+              "run.retrieving",
+              "run.generating",
+              "run.validating",
+              "run.completed",
+              "run.waiting_user",
+              "run.waiting_approval",
+              "run.policy_blocked",
+              "run.failed",
+              "run.cancelled"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "payload": {
+            "type": "object",
+            "description": "승인된 공개 상태 필드만 포함하며 내부 실행 원문을 포함하지 않음",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}
