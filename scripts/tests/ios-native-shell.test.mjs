@@ -1207,7 +1207,7 @@ test("Settings Notifications 행은 direct exact Hittable 우선·semantic Cell 
   const settingsEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", settingsStart);
   const settingsHelper = settingsStart >= 0 && settingsEnd > settingsStart ? uiTests.slice(settingsStart, settingsEnd) : "";
   assert.ok(settingsHelper);
-  assert.match(settingsHelper, /let notificationsRow = try requireExactNotificationSettingsRow\(in: settings\)/);
+  assert.match(settingsHelper, /let notificationsRow = try requireExactNotificationSettingsRow\(in: settings, allowAbsent: true\)/);
   assert.match(settingsHelper, /XCTAssertTrue\(notificationsRow\.isHittable,[^\n]+\)\s*permissionXCTestStage\(\.settingsNotificationRowTapPending\)\s*notificationsRow\.tap\(\)/);
   assert.doesNotMatch(settingsHelper, /settings\.cells\["(?:Notifications|알림)"\]/);
 });
@@ -1234,7 +1234,7 @@ test("Settings Notifications 최종 0건은 제한된 접근성 구조 요약을
   assert.match(diagnostic, /_empty_/);
   assert.doesNotMatch(diagnostic, /debugDescription|ProcessInfo|environment|\/Users\/|dump\(|coordinate\(|element\(boundBy:|firstMatch/i);
   assert.equal((helper.match(/emitSettingsAccessibilitySummary\(in: settings\)/g) ?? []).length, 1);
-  assert.match(helper, /if candidates\.composite\.isEmpty\s*\{\s*emitSettingsAccessibilitySummary\(in: settings\)\s*XCTFail\("missing or ambiguous exact system element: Notification settings row \[COMPOSITE_ZERO\]"\)/);
+  assert.match(helper, /if candidates\.composite\.isEmpty\s*\{\s*emitSettingsAccessibilitySummary\(in: settings\)\s*if allowAbsent\s*\{\s*throw PermissionUIContractError\.notificationSettingsRowAbsent\s*\}\s*XCTFail\("missing or ambiguous exact system element: Notification settings row \[COMPOSITE_ZERO\]"\)/);
 });
 
 test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Settings OFF·ON을 직접 검증한다", async () => {
@@ -1273,7 +1273,7 @@ test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Se
   const settingsHelper = settingsHelperStart >= 0 && settingsHelperEnd > settingsHelperStart ? permissionBody.slice(settingsHelperStart, settingsHelperEnd) : "";
   assert.ok(settingsHelper);
   const directSwitch = settingsHelper.indexOf("findExactNotificationSwitch(in: settings)");
-  const fallbackRow = settingsHelper.indexOf("requireExactNotificationSettingsRow(in: settings)");
+  const fallbackRow = settingsHelper.indexOf("requireExactNotificationSettingsRow(in: settings");
   assert.ok(directSwitch >= 0 && fallbackRow > directSwitch, "notification switch must be queried before the iOS 15.1 row fallback");
   assert.match(settingsHelper, /if let directSwitch = try findExactNotificationSwitch\(in: settings\)[\s\S]*?allowNotifications = directSwitch[\s\S]*?else[\s\S]*?requireExactNotificationSettingsRow/);
   assert.doesNotMatch(settingsHelper, /settings\.wait\(for: \.runningForeground[^\n]*\)\s*permissionXCTestStage\(\.appReturnRoot\)/);
@@ -1315,7 +1315,7 @@ test("iOS 26 Simulator Settings Search fallback은 direct·row 뒤 exact 단일 
   assert.match(helper, /settings\.cells\.matching\(exactDaonPredicate\)/);
   assert.match(helper, /settings\.descendants\(matching: \.any\)\.matching\(exactDaonPredicate\)/);
   assert.match(helper, /if daonCells\.count == 1[\s\S]*?else if daonCells\.isEmpty[\s\S]*?exactDaonElements\.count == 1/);
-  assert.match(helper, /findExactNotificationSwitch\(in: settings\)[\s\S]*?requireExactNotificationSettingsRow\(in: settings\)/);
+  assert.match(helper, /findExactNotificationSwitch\(in: settings\)[\s\S]*?requireExactNotificationSettingsRow\(in: settings(?:, allowAbsent: true)?\)/);
   for (const stageCase of ["settingsSearchButton", "settingsSearchField", "settingsSearchResult", "settingsSearchAppSurface"]) {
     assert.match(uiTests, new RegExp(`case ${stageCase} =`));
     assert.match(helper, new RegExp(`permissionXCTestStage\\(\\.${stageCase}\\)`));
@@ -1324,7 +1324,7 @@ test("iOS 26 Simulator Settings Search fallback은 direct·row 뒤 exact 단일 
   const authorizationEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", authorizationStart);
   const authorization = authorizationStart >= 0 && authorizationEnd > authorizationStart ? uiTests.slice(authorizationStart, authorizationEnd) : "";
   const direct = authorization.indexOf("findExactNotificationSwitch(in: settings)");
-  const row = authorization.indexOf("requireExactNotificationSettingsRow(in: settings)");
+  const row = authorization.indexOf("requireExactNotificationSettingsRow(in: settings");
   const search = authorization.indexOf("openDaonNotificationSettingsViaIOS26Search(in: settings)");
   assert.ok(direct >= 0 && row > direct && search > row, "Search fallback must follow direct switch and exact Notifications row");
   assert.match(authorization, /catch PermissionUIContractError\.notificationSettingsRowAbsent[\s\S]*?#available\(iOS 26\.0, \*\)[\s\S]*?openDaonNotificationSettingsViaIOS26Search/);
@@ -1379,5 +1379,29 @@ test("C44 Search assertion과 Stage는 Bash allowlist에서 원 Exit 65로 분�
     }
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+test("C45 recoverable COMPOSITE_ZERO는 선행 XCTest failure 없이 두 경로에만 전달된다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const rowStart = uiTests.indexOf("private func requireExactNotificationSettingsRow");
+  const rowEnd = uiTests.indexOf("private func approveExpectedNotificationAlert", rowStart);
+  const rowHelper = rowStart >= 0 && rowEnd > rowStart ? uiTests.slice(rowStart, rowEnd) : "";
+  const searchStart = uiTests.indexOf("private func openDaonNotificationSettingsViaIOS26Search");
+  const authorizationStart = uiTests.indexOf("private func setNotificationAuthorization", searchStart);
+  const helperEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", authorizationStart);
+  const searchHelper = searchStart >= 0 && authorizationStart > searchStart ? uiTests.slice(searchStart, authorizationStart) : "";
+  const authorization = authorizationStart >= 0 && helperEnd > authorizationStart ? uiTests.slice(authorizationStart, helperEnd) : "";
+  assert.ok(rowHelper && searchHelper && authorization);
+  assert.match(rowHelper, /private func requireExactNotificationSettingsRow\(in settings: XCUIApplication, allowAbsent: Bool = false\)/);
+  const zeroStart = rowHelper.indexOf("if candidates.composite.isEmpty");
+  const zeroEnd = rowHelper.indexOf("guard candidates.composite.count == 1", zeroStart);
+  const zeroBranch = zeroStart >= 0 && zeroEnd > zeroStart ? rowHelper.slice(zeroStart, zeroEnd) : "";
+  assert.match(zeroBranch, /emitSettingsAccessibilitySummary\(in: settings\)[\s\S]*?if allowAbsent\s*\{\s*throw PermissionUIContractError\.notificationSettingsRowAbsent\s*\}[\s\S]*?XCTFail\("missing or ambiguous exact system element: Notification settings row \[COMPOSITE_ZERO\]"\)/);
+  assert.equal((uiTests.match(/requireExactNotificationSettingsRow\(in: settings, allowAbsent: true\)/g) ?? []).length, 2);
+  assert.doesNotMatch(searchHelper, /Notification settings row \[COMPOSITE_ZERO\]/);
+  assert.match(searchHelper, /requireExactNotificationSettingsRow\(in: settings, allowAbsent: true\)[\s\S]*?catch PermissionUIContractError\.notificationSettingsRowAbsent[\s\S]*?XCTFail\("missing or ambiguous exact system element: Daon notification settings surface"\)/);
+  assert.match(authorization, /requireExactNotificationSettingsRow\(in: settings, allowAbsent: true\)[\s\S]*?catch PermissionUIContractError\.notificationSettingsRowAbsent[\s\S]*?if #available\(iOS 26\.0, \*\)[\s\S]*?openDaonNotificationSettingsViaIOS26Search[\s\S]*?else\s*\{[\s\S]*?XCTFail\("missing or ambiguous exact system element: Notification settings row \[COMPOSITE_ZERO\]"\)[\s\S]*?throw PermissionUIContractError\.notificationSettingsRowAbsent/);
+  for (const boundary of ["[AMBIGUOUS]", "[SEMANTIC_AMBIGUOUS]", "[LABEL_NONHITTABLE]", "[COMPOSITE_AMBIGUOUS]"]) {
+    assert.ok(rowHelper.includes(boundary), `existing fail-close boundary missing: ${boundary}`);
   }
 });
