@@ -1,1 +1,1 @@
-{"name":"@daon-user/contracts","version":"0.0.0","private":true,"type":"module","exports":{"./navigation.json":"./navigation.json","./screens.json":"./screens.json","./mobile-studio-actions.json":"./mobile-studio-actions.json"}}
+{"name":"@daon-user/contracts","version":"0.0.0","private":true,"type":"module","exports":{"./navigation.json":"./navigation.json","./screens.json":"./screens.json","./mobile-studio-actions.json":"./mobile-studio-actions.json","./openapi/v1/openapi.json":"./openapi/v1/openapi.json"}}

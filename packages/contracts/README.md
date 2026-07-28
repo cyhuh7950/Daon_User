@@ -12,6 +12,13 @@
 
 App·Service·UI·Token 내부 Source, Provider SDK, Runtime 구현과 Secret을 포함하지 않는다.
 
-## 후속 Build
+## OpenAPI v1 정본
 
-Versioned OpenAPI와 공통 Contract 검증은 `R1-M4-01`이 소유한다.
+- 정본: `openapi/v1/openapi.json`
+- Package export: `@daon-user/contracts/openapi/v1/openapi.json`
+- 검증: 저장소 루트에서 `npm run verify:openapi-contract`
+- 결정적 증거 갱신: `npm run verify:openapi-contract -- --write`
+
+기본 검증은 파일을 변경하지 않는다. `--write`를 명시한 경우에만 정규화된 Contract SHA와 Path·Operation 집계를 Release 1 증거 파일에 기록한다.
+
+Runtime 구현과 Service 강제 적용은 이 Package의 책임이 아니며 각각 후속 Work Order가 소유한다.
