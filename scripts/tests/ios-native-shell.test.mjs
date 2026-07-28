@@ -1687,3 +1687,21 @@ test("C54 Apps-local search path는 exact bounded 계약이다",async()=>{
  assert.doesNotMatch(x,/com\.apple\.settings\.search|firstMatch|coordinate\(|element\(boundBy:|sleep/i);
  assert.doesNotMatch(x,/(?:label|identifier)\s+(?:CONTAINS|BEGINSWITH|ENDSWITH|MATCHES)\s+%@/);
 });
+test("C55 Apps-local Daon 결과는 exact Bundle button을 최우선으로 선택한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const start = uiTests.indexOf("permissionXCTestStage(.settingsSearchResult)");
+  const end = uiTests.indexOf("permissionXCTestStage(.settingsSearchAppSurface)", start);
+  const resultSelection = start >= 0 && end > start ? uiTests.slice(start, end) : "";
+  assert.ok(resultSelection);
+  assert.match(resultSelection, /let daonAppButtonQuery = settings\.buttons\.matching\(identifier: "com\.sinsan\.daon"\)/);
+  const waitStart = resultSelection.indexOf("let daonResultAppeared");
+  const waitEnd = resultSelection.indexOf("XCTWaiter.wait", waitStart);
+  const waitContract = resultSelection.slice(waitStart, waitEnd);
+  assert.ok(waitContract.indexOf("daonAppButtonQuery") < waitContract.indexOf("daonCellQuery"));
+  assert.match(waitContract, /daonAppButtonQuery[\s\S]*?isHittable[\s\S]*?return true/);
+  assert.match(resultSelection, /var daonAppButtons = daonAppButtonQuery[\s\S]*?guard daonAppButtons\.count <= 1 else[\s\S]*?Settings Daon app result/);
+  assert.match(resultSelection, /if daonAppButtons\.count == 1[\s\S]*?daonResult = daonAppButtons\.popLast\(\)[\s\S]*?else[\s\S]*?var daonCells = daonCellQuery/);
+  assert.match(resultSelection, /else[\s\S]*?daonCellQuery[\s\S]*?exactDaonQuery/);
+  assert.doesNotMatch(resultSelection, /com\.sinsan\.daon\.uitests\.xctrunner|firstMatch|coordinate\(|element\(boundBy:|CONTAINS|BEGINSWITH|MATCHES|NSRegularExpression/i);
+  assert.match(resultSelection, /daonResult\.tap\(\)\s*$/);
+});
