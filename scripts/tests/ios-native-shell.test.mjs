@@ -1297,3 +1297,87 @@ test("권한 Phase A는 동일 설치에서 System Alert 승인과 Production Se
   assert.match(script, /\.xcresult/);
   assert.doesNotMatch(`${script}\n${uiTests}`, /coordinate\(|firstMatch|element\(boundBy:|App-Prefs|prefs:|TCC\.db|defaults\s+(?:write|delete)|simctl\s+(?:uninstall|erase)/i);
 });
+test("iOS 26 Simulator Settings Search fallback은 direct·row 뒤 exact 단일 접근성 계약만 사용한다", async () => {
+  const uiTests = await read("apps/mobile/ios/DaonUITests/DaonUITests.swift");
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const helperStart = uiTests.indexOf("private func openDaonNotificationSettingsViaIOS26Search");
+  const helperEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", helperStart);
+  const helper = helperStart >= 0 && helperEnd > helperStart ? uiTests.slice(helperStart, helperEnd) : "";
+  assert.ok(helper);
+  assert.match(helper, /#available\(iOS 26\.0, \*\)/);
+  assert.match(helper, /identifier == %@[^\n]*com\.apple\.settings\.search/);
+  assert.match(helper, /settings\.buttons\.matching\(searchButtonPredicate\)/);
+  assert.match(helper, /settings\.searchFields\.allElementsBoundByAccessibilityElement\.filter \{ \$0\.isHittable \}/);
+  assert.match(helper, /maximumExistingSearchTextLength\s*=\s*128/);
+  assert.match(helper, /XCUIKeyboardKey\.delete\.rawValue/);
+  assert.match(helper, /searchField\.typeText\("Daon"\)/);
+  assert.match(helper, /label == %@[^\n]*"Daon"/);
+  assert.match(helper, /settings\.cells\.matching\(exactDaonPredicate\)/);
+  assert.match(helper, /settings\.descendants\(matching: \.any\)\.matching\(exactDaonPredicate\)/);
+  assert.match(helper, /if daonCells\.count == 1[\s\S]*?else if daonCells\.isEmpty[\s\S]*?exactDaonElements\.count == 1/);
+  assert.match(helper, /findExactNotificationSwitch\(in: settings\)[\s\S]*?requireExactNotificationSettingsRow\(in: settings\)/);
+  for (const stageCase of ["settingsSearchButton", "settingsSearchField", "settingsSearchResult", "settingsSearchAppSurface"]) {
+    assert.match(uiTests, new RegExp(`case ${stageCase} =`));
+    assert.match(helper, new RegExp(`permissionXCTestStage\\(\\.${stageCase}\\)`));
+  }
+  const authorizationStart = uiTests.indexOf("private func setNotificationAuthorization");
+  const authorizationEnd = uiTests.indexOf("private func notificationSwitchIsEnabled", authorizationStart);
+  const authorization = authorizationStart >= 0 && authorizationEnd > authorizationStart ? uiTests.slice(authorizationStart, authorizationEnd) : "";
+  const direct = authorization.indexOf("findExactNotificationSwitch(in: settings)");
+  const row = authorization.indexOf("requireExactNotificationSettingsRow(in: settings)");
+  const search = authorization.indexOf("openDaonNotificationSettingsViaIOS26Search(in: settings)");
+  assert.ok(direct >= 0 && row > direct && search > row, "Search fallback must follow direct switch and exact Notifications row");
+  assert.match(authorization, /catch PermissionUIContractError\.notificationSettingsRowAbsent[\s\S]*?#available\(iOS 26\.0, \*\)[\s\S]*?openDaonNotificationSettingsViaIOS26Search/);
+  assert.doesNotMatch(`${helper}\n${authorization}`, /coordinate\(|firstMatch|element\(boundBy:|label (?:CONTAINS|BEGINSWITH|ENDSWITH|MATCHES)|sleep\(|App-Prefs|prefs:|TCC|defaults\s+(?:write|delete)|simctl\s+(?:uninstall|erase)/i);
+
+  for (const code of ["SETTINGS_SEARCH_BUTTON_MISSING", "SETTINGS_SEARCH_FIELD_MISSING", "SETTINGS_SEARCH_RESULT_MISSING", "SETTINGS_SEARCH_APP_SURFACE_MISSING"]) {
+    assert.match(script, new RegExp(code));
+  }
+  for (const stage of ["SETTINGS_SEARCH_BUTTON", "SETTINGS_SEARCH_FIELD", "SETTINGS_SEARCH_RESULT", "SETTINGS_SEARCH_APP_SURFACE"]) {
+    assert.match(script, new RegExp(`STAGE_${stage}`));
+    assert.match(script, new RegExp(`DAON_PERMISSION_XCTEST_STAGE=.*${stage}`));
+  }
+  assert.doesNotMatch(script, /simctl privacy[^\n]*notifications/i);
+});
+test("C44 Search assertion과 Stage는 Bash allowlist에서 원 Exit 65로 분류된다", async () => {
+  const script = await read("apps/mobile/ios/ci/verify-simulator.sh");
+  const helperStart = script.indexOf("is_allowed_permission_failure_code() {");
+  const permissionStart = script.indexOf("run_permission_phase() {", helperStart);
+  const permissionEnd = script.indexOf('\n}\n\nDAON_SIM_STAGE="APP_ARTIFACT"', permissionStart);
+  const contract = helperStart >= 0 && permissionStart > helperStart && permissionEnd > permissionStart
+    ? script.slice(helperStart, permissionEnd + 2)
+    : "";
+  assert.ok(contract);
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-ios26-search-parser-"));
+  const bash = process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "bash";
+  const fixture = `set -Eeuo pipefail\nSIMULATOR_UDID=11111111-2222-3333-4444-555555555555\nBUNDLE_ID=com.sinsan.daon\nREPOSITORY_ROOT=/repo\nDERIVED_DATA=/derived\nDAON_SIM_PERMISSION_SERVICE=""\nxcrun(){ return 0; }\nxcodebuild(){ printf '%s\\n' "\${XCODE_RAW}"; return 65; }\n${contract}\nrun_permission_phase grant-initial grant GRANTED`;
+  const fixturePath = path.join(fixtureRoot, "ios26-search-parser-fixture.sh");
+  await writeFile(fixturePath, fixture, "utf8");
+  const run = (raw) => spawnSync(bash, [fixturePath], {
+    cwd: fixtureRoot,
+    env: { ...process.env, EVIDENCE_DIR: fixtureRoot.replaceAll("\\", "/"), XCODE_RAW: raw },
+    encoding: "utf8"
+  });
+  const annotation = (output) => output.split(/\r?\n/).filter((line) => line.startsWith("::error::"));
+  const assertions = [
+    ["missing or ambiguous exact system element: Settings search button", "SETTINGS_SEARCH_BUTTON_MISSING"],
+    ["missing or ambiguous exact system element: Settings search field", "SETTINGS_SEARCH_FIELD_MISSING"],
+    ["missing or ambiguous exact system element: Settings search result", "SETTINGS_SEARCH_RESULT_MISSING"],
+    ["missing or ambiguous exact system element: Daon notification settings surface", "SETTINGS_SEARCH_APP_SURFACE_MISSING"]
+  ];
+  const stages = ["SETTINGS_SEARCH_BUTTON", "SETTINGS_SEARCH_FIELD", "SETTINGS_SEARCH_RESULT", "SETTINGS_SEARCH_APP_SURFACE"];
+  try {
+    for (const [raw, code] of assertions) {
+      const result = run(raw);
+      assert.equal(result.status, 65, result.stderr);
+      assert.deepEqual(annotation(result.stdout), [`::error::CODE=${code} PHASE=grant-initial EXIT=65`]);
+    }
+    for (const stage of stages) {
+      const result = run(`DAON_PERMISSION_XCTEST_STAGE=${stage}`);
+      assert.equal(result.status, 65, result.stderr);
+      assert.deepEqual(annotation(result.stdout), [`::error::CODE=STAGE_${stage} PHASE=grant-initial EXIT=65`]);
+    }
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});

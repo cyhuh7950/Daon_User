@@ -194,6 +194,10 @@ final class DaonUITests: XCTestCase {
     case settingsNotificationCountSingle = "SETTINGS_NOTIFICATION_COUNT_SINGLE"
     case settingsNotificationElementReady = "SETTINGS_NOTIFICATION_ELEMENT_READY"
     case settingsNotificationRowTapPending = "SETTINGS_NOTIFICATION_ROW_TAP_PENDING"
+    case settingsSearchButton = "SETTINGS_SEARCH_BUTTON"
+    case settingsSearchField = "SETTINGS_SEARCH_FIELD"
+    case settingsSearchResult = "SETTINGS_SEARCH_RESULT"
+    case settingsSearchAppSurface = "SETTINGS_SEARCH_APP_SURFACE"
     case settingsSwitchRead = "SETTINGS_SWITCH_READ"
     case settingsSwitchToggle = "SETTINGS_SWITCH_TOGGLE"
     case settingsSwitchVerify = "SETTINGS_SWITCH_VERIFY"
@@ -207,6 +211,7 @@ final class DaonUITests: XCTestCase {
 
   private enum PermissionUIContractError: Error {
     case missingExactElement(String)
+    case notificationSettingsRowAbsent
     case unsupportedSwitchValue(String)
   }
 
@@ -334,7 +339,7 @@ final class DaonUITests: XCTestCase {
       if candidates.composite.isEmpty {
         emitSettingsAccessibilitySummary(in: settings)
         XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_ZERO]")
-        throw PermissionUIContractError.missingExactElement("Notification settings row")
+        throw PermissionUIContractError.notificationSettingsRowAbsent
       }
       guard candidates.composite.count == 1 else {
         XCTFail("missing or ambiguous exact system element: Notification settings row [COMPOSITE_AMBIGUOUS]")
@@ -392,6 +397,104 @@ final class DaonUITests: XCTestCase {
     return exactSwitches.popLast()
   }
 
+  private func openDaonNotificationSettingsViaIOS26Search(in settings: XCUIApplication) throws -> XCUIElement {
+    guard #available(iOS 26.0, *) else {
+      XCTFail("missing or ambiguous exact system element: Settings search button")
+      throw PermissionUIContractError.missingExactElement("Settings search button")
+    }
+
+    permissionXCTestStage(.settingsSearchButton)
+    let searchButtonPredicate = NSPredicate(format: "identifier == %@", "com.apple.settings.search")
+    let searchButtonQuery = settings.buttons.matching(searchButtonPredicate)
+    let searchButtonAppeared = XCTNSPredicateExpectation(
+      predicate: NSPredicate { object, _ in
+        guard let query = object as? XCUIElementQuery else { return false }
+        return !query.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
+      },
+      object: searchButtonQuery
+    )
+    _ = XCTWaiter.wait(for: [searchButtonAppeared], timeout: 10)
+    var searchButtons = searchButtonQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    guard searchButtons.count == 1, let searchButton = searchButtons.popLast() else {
+      XCTFail("missing or ambiguous exact system element: Settings search button")
+      throw PermissionUIContractError.missingExactElement("Settings search button")
+    }
+    searchButton.tap()
+
+    permissionXCTestStage(.settingsSearchField)
+    let searchFieldAppeared = XCTNSPredicateExpectation(
+      predicate: NSPredicate { object, _ in
+        guard let application = object as? XCUIApplication else { return false }
+        return !application.searchFields.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
+      },
+      object: settings
+    )
+    _ = XCTWaiter.wait(for: [searchFieldAppeared], timeout: 10)
+    var searchFields = settings.searchFields.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    guard searchFields.count == 1, let searchField = searchFields.popLast() else {
+      XCTFail("missing or ambiguous exact system element: Settings search field")
+      throw PermissionUIContractError.missingExactElement("Settings search field")
+    }
+    searchField.tap()
+    let maximumExistingSearchTextLength = 128
+    let emptySearchValues = ["", "Search", "검색"]
+    if let existingText = searchField.value as? String, !emptySearchValues.contains(existingText) {
+      guard existingText.count <= maximumExistingSearchTextLength else {
+        XCTFail("missing or ambiguous exact system element: Settings search field")
+        throw PermissionUIContractError.missingExactElement("Settings search field")
+      }
+      searchField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existingText.count))
+    }
+    searchField.typeText("Daon")
+
+    permissionXCTestStage(.settingsSearchResult)
+    let exactDaonPredicate = NSPredicate(format: "label == %@", "Daon")
+    let daonCellQuery = settings.cells.matching(exactDaonPredicate)
+    let exactDaonQuery = settings.descendants(matching: .any).matching(exactDaonPredicate)
+    let daonResultAppeared = XCTNSPredicateExpectation(
+      predicate: NSPredicate { object, _ in
+        guard let query = object as? XCUIElementQuery else { return false }
+        if !query.allElementsBoundByAccessibilityElement.filter({ $0.isHittable }).isEmpty { return true }
+        return !exactDaonQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }.isEmpty
+      },
+      object: daonCellQuery
+    )
+    _ = XCTWaiter.wait(for: [daonResultAppeared], timeout: 10)
+    var daonCells = daonCellQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+    let daonResult: XCUIElement
+    if daonCells.count == 1, let cell = daonCells.popLast() {
+      daonResult = cell
+    } else if daonCells.isEmpty {
+      var exactDaonElements = exactDaonQuery.allElementsBoundByAccessibilityElement.filter { $0.isHittable }
+      guard exactDaonElements.count == 1, let element = exactDaonElements.popLast() else {
+        XCTFail("missing or ambiguous exact system element: Settings search result")
+        throw PermissionUIContractError.missingExactElement("Settings search result")
+      }
+      daonResult = element
+    } else {
+      XCTFail("missing or ambiguous exact system element: Settings search result")
+      throw PermissionUIContractError.missingExactElement("Settings search result")
+    }
+    daonResult.tap()
+
+    permissionXCTestStage(.settingsSearchAppSurface)
+    if let directSwitch = try findExactNotificationSwitch(in: settings) {
+      return directSwitch
+    }
+    do {
+      let notificationsRow = try requireExactNotificationSettingsRow(in: settings)
+      XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
+      notificationsRow.tap()
+      return try requireExactElement([
+        settings.switches["Allow Notifications"],
+        settings.switches["알림 허용"]
+      ], description: "Allow Notifications switch")
+    } catch PermissionUIContractError.notificationSettingsRowAbsent {
+      XCTFail("missing or ambiguous exact system element: Daon notification settings surface")
+      throw PermissionUIContractError.missingExactElement("Daon notification settings surface")
+    }
+  }
+
   private func setNotificationAuthorization(enabled target: Bool, in app: XCUIApplication, content: XCUIElement) throws {
     let settingsButton = app.buttons["알림 설정 열기"]
     for _ in 0..<8 where !settingsButton.isHittable { content.swipeUp() }
@@ -407,15 +510,23 @@ final class DaonUITests: XCTestCase {
     if let directSwitch = try findExactNotificationSwitch(in: settings) {
       allowNotifications = directSwitch
     } else {
-      permissionXCTestStage(.settingsNotificationRow)
-      let notificationsRow = try requireExactNotificationSettingsRow(in: settings)
-      XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
-      permissionXCTestStage(.settingsNotificationRowTapPending)
-      notificationsRow.tap()
-      allowNotifications = try requireExactElement([
-        settings.switches["Allow Notifications"],
-        settings.switches["알림 허용"]
-      ], description: "Allow Notifications switch")
+      do {
+        permissionXCTestStage(.settingsNotificationRow)
+        let notificationsRow = try requireExactNotificationSettingsRow(in: settings)
+        XCTAssertTrue(notificationsRow.isHittable, "Notification settings row is not hittable")
+        permissionXCTestStage(.settingsNotificationRowTapPending)
+        notificationsRow.tap()
+        allowNotifications = try requireExactElement([
+          settings.switches["Allow Notifications"],
+          settings.switches["알림 허용"]
+        ], description: "Allow Notifications switch")
+      } catch PermissionUIContractError.notificationSettingsRowAbsent {
+        if #available(iOS 26.0, *) {
+          allowNotifications = try openDaonNotificationSettingsViaIOS26Search(in: settings)
+        } else {
+          throw PermissionUIContractError.notificationSettingsRowAbsent
+        }
+      }
     }
     XCTAssertTrue(allowNotifications.isHittable, "Allow Notifications switch is not hittable")
     let before = try notificationSwitchIsEnabled(allowNotifications)
