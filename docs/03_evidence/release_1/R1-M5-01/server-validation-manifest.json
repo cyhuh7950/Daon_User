@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-01",
+  "validated_commit": "6d8d079e3b7c23c54f653a986f9d3dd03fa04607",
+  "architecture": "aarch64",
+  "postgresql_version": "18.4",
+  "pgvector_version": "0.8.2",
+  "image_digest": "sha256:b7337db8fe39d12fe8ecb0003c72680f24479813a744b43154eee6f2eab5a5f3",
+  "python_version": "3.14.3",
+  "uv_version": "0.11.2",
+  "migration": {
+    "preflight": "pass",
+    "backup": "pass",
+    "upgrade": "pass",
+    "reapply": "pass",
+    "downgrade": "pass",
+    "isolated_restore": "pass"
+  },
+  "database_tests": {"passed": 10, "failed": 0, "skipped": 0},
+  "actual_api": {
+    "live_status": 200,
+    "ready_status": 200,
+    "cloud_readiness_connected": true,
+    "graceful_exit_code": 0,
+    "restart": "pass"
+  },
+  "security": {
+    "application_role_least_privilege": true,
+    "audit_update_delete_blocked": true,
+    "secret_or_dsn_output_hits": 0
+  },
+  "cleanup": {
+    "checkout_remaining": 0,
+    "containers_remaining": 0,
+    "networks_remaining": 0,
+    "volumes_remaining": 0,
+    "processes_remaining": 0,
+    "listeners_remaining": 0,
+    "shared_resource_snapshot_unchanged": true
+  }
+}
