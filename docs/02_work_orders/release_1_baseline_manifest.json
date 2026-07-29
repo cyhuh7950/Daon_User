@@ -12,7 +12,7 @@
     {
       "id": "DESIGN_MD",
       "path": "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
-      "sha256": "44A5AA9CDA2381555FE4D4AB238838E404A8ACB6515236CE5C33CD0E0E60388E"
+      "sha256": "5559450E29E03BBAB9892DEF899A9888D20E387EBE734F77A9AA826759E9DFF6"
     },
     {
       "id": "DESIGN_DOCX",
@@ -32,7 +32,7 @@
     {
       "id": "DECISIONS",
       "path": "docs/01_architecture/DECISIONS.md",
-      "sha256": "AF15CE3B3C37A26524A61C2DB27C46DA27E6197949C710C6972D37CB3E904BAA"
+      "sha256": "D3BB98B0A181DE1332E23B5A3E7FA3BF946091CE64617A0DF3C272EFCCBD1423"
     },
     {
       "id": "RISK_REGISTER",
@@ -75,10 +75,11 @@
     "APR-G0-PLAN-20260720-01",
     "APR-TP0-20260720-01",
     "APR-G0-BASELINE-20260720-01",
-    "APR-DEVENV-YSNA-20260720-01"
+    "APR-DEVENV-YSNA-20260720-01",
+    "APR-R1-M4-07-NOTIFICATION-API-20260729-01"
   ],
   "decision_status": {
-    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020", "R1-D021", "R1-D022", "R1-D023"],
+    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020", "R1-D021", "R1-D022", "R1-D023", "R1-D024"],
     "g0_approval_requested": [],
     "external_blocked": ["R1-D004", "R1-D006", "R1-D007", "R1-D008", "R1-D011", "R1-D012"]
   },
@@ -138,6 +139,20 @@
         "docs/02_work_orders/release_1_baseline_manifest.json"
       ],
       "product_contract_changed": false
+    },
+    {
+      "id": "CHG-R1-M4-07-NOTIFICATION-API-001",
+      "classification": "C2",
+      "owner": "신산님",
+      "summary": "Notification 목록·단건·읽음 전이와 Inbox Projection 공개 API 승인",
+      "affected_documents": [
+        "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
+        "docs/01_architecture/DECISIONS.md",
+        "docs/02_work_orders/release_1_baseline_manifest.json"
+      ],
+      "approval_record_id": "APR-R1-M4-07-NOTIFICATION-API-20260729-01",
+      "product_contract_changed": true,
+      "public_api_contract_changed": true
     }
   ],
   "notes": [
@@ -147,6 +162,7 @@
     "Current document hashes include C1 technical corrections and the approved ysna-server development-integration change recorded after G0; original G0 commits and approval remain preserved.",
     "ysna-server approval applies only to the development-integration environment; Oracle Cloud production deployment still requires G9-DEPLOY approval.",
     "Document SHA-256 values are canonical Git Blob hashes so Windows checkout line-ending conversion does not change the approved baseline identity.",
-    "CHG-R1-MANIFEST-002 synchronizes already approved post-G0 decisions; it does not create or alter a product contract."
+    "CHG-R1-MANIFEST-002 synchronizes already approved post-G0 decisions; it does not create or alter a product contract.",
+    "R1-D024 and CHG-R1-M4-07-NOTIFICATION-API-001 record the explicitly approved Notification and Inbox public API contract."
   ]
 }

@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-07",
+  "api": {
+    "paths": 3,
+    "operations": 4,
+    "openapi_total_paths": 47,
+    "openapi_total_operations": 71,
+    "openapi_total_schemas": 61,
+    "reference_adapter": "process_local_non_durable",
+    "database_migration": "NOT_APPLICABLE"
+  },
+  "security": {
+    "current_access_rechecked": true,
+    "tenant_and_recipient_filtered": true,
+    "csrf_same_origin_enforced": true,
+    "etag_and_idempotency_enforced": true,
+    "cursor_integrity_protected": true,
+    "plain_text_only": true,
+    "deep_link_allowlisted": true,
+    "safe_error_secret_hits": 0,
+    "new_rate_limit_setting": false
+  },
+  "tests": {
+    "notification_python": 6,
+    "api_full_suite_passed": 75,
+    "api_full_suite_platform_skipped": 4,
+    "bff_openapi_ui_node": 21,
+    "quality_gate_categories_passed": 7,
+    "quality_gate_failures": 0
+  },
+  "secret_values_recorded": false
+}

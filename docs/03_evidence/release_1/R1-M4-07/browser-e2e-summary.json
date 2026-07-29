@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-07",
+  "evidence_kind": "actual_chrome_and_actual_process",
+  "notifications": {
+    "initial_state": "ready",
+    "initial_unread_count": 1,
+    "item_count": 1,
+    "mark_read_state": "read",
+    "unread_count_after_mark_read": 0,
+    "read_state_persisted_after_reload": true
+  },
+  "inbox": {
+    "state": "ready",
+    "item_count": 1,
+    "request_kind": "approval",
+    "request_status": "pending",
+    "allowed_deep_link_opened": true,
+    "deep_link_path": "/operations?request=approval-browser-001"
+  },
+  "same_origin": {
+    "browser_api_paths": [
+      "/api/v1/notifications",
+      "/api/v1/inbox"
+    ],
+    "absolute_or_internal_browser_api_hits": 0,
+    "credential_or_internal_url_response_hits": 0
+  },
+  "cleanup": {
+    "browser_tabs_remaining": 0,
+    "owned_processes_remaining": 0,
+    "listeners_remaining": 0
+  },
+  "secret_values_recorded": false
+}

@@ -50,7 +50,10 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/local-nodes",
   "/api/v1/model-installations",
   "/api/v1/connectors",
-  "/api/v1/audit-events"
+  "/api/v1/audit-events",
+  "/api/v1/notifications",
+  "/api/v1/notifications/{id}",
+  "/api/v1/inbox"
 ]);
 
 const HTTP_METHODS = new Set(["get", "post", "patch", "delete"]);

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-07",
+  "actual_api_process": true,
+  "actual_next_production_process": true,
+  "same_origin_paths": [
+    "/api/v1/notifications",
+    "/api/v1/inbox"
+  ],
+  "notification_status": 200,
+  "notification_unread_count_after_browser": 0,
+  "inbox_status": 200,
+  "inbox_item_count": 1,
+  "credential_or_internal_url_response_hits": 0,
+  "database_migration": "NOT_APPLICABLE",
+  "reference_adapter": "process_local_non_durable"
+}

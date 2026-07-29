@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-07",
+  "overall_status": "PASS",
+  "quality_gate": {
+    "duration_seconds": 303.4,
+    "categories": {
+      "lint": "PASS",
+      "type": "PASS",
+      "unit": "PASS",
+      "contract": "PASS",
+      "build": "PASS",
+      "security": "PASS",
+      "independence": "PASS"
+    },
+    "failures": 0
+  },
+  "targeted": {
+    "notification_python": "6 PASS",
+    "api_full_suite": "75 PASS, 4 POSIX-only SKIP on Windows",
+    "bff_openapi_ui_node": "21 PASS",
+    "workspace_lint": "16 files PASS",
+    "web_production_build": "PASS",
+    "openapi_deterministic_contract": "PASS",
+    "actual_browser_process_e2e": "PASS"
+  },
+  "cleanup": {
+    "owned_processes_remaining": 0,
+    "listeners_remaining": 0,
+    "browser_tabs_remaining": 0
+  },
+  "limitations": [
+    "Reference Adapter is process-local and non-durable; PostgreSQL, Outbox and Worker belong to M5.",
+    "Push, Email and OS remote notification delivery were not claimed.",
+    "No database migration was required or performed.",
+    "PR, CI and merge remain owned by the main designer."
+  ]
+}

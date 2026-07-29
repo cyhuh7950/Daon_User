@@ -892,6 +892,8 @@ Web·모바일과 Windows의 Cloud-sync 작업은 공개 Gateway 계약을 사�
 - `ProcessingRun`: `modality`, 처리 경로, `ready_gate_result`, `retry_of_processing_run_id`, `trigger_type`, `trigger_event_id`, 현재 권한·정책 Snapshot
 - `StepUpAuthorization`: Actor·Action·Target·Policy Version, 발급·만료·사용 시각, 성공·실패 상태와 AuditEvent
 - `AccessDecision`: Actor·Action·Resource, 현재 Membership·ACL·Policy Version, `available | partially_redacted | access_blocked`, 차단·마스킹 사유와 판정 시각
+- `Notification`: Tenant·Workspace·Recipient, Kind·Severity, 안전한 제목·요약, Source Event·AuditEvent·Trace, 대상 Resource·허용 Deep Link, `pending | delivered | failed | suppressed` 전달 상태, 생성·전달·읽음 시각, ETag
+- `InboxItem`: 별도 쓰기 정본이 아니라 권한 있는 Recipient의 Review·Approval·Delivery 등 실행 가능한 요청을 현재 AccessDecision으로 조합한 읽기 Projection이다. 원 요청 상태와 Deep Link만 제공하고 승인·전달 동작은 소유 Domain API에서 수행한다.
 
 ### 16.1 RunSnapshot
 
@@ -959,6 +961,9 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 /api/v1/model-installations
 /api/v1/connectors
 /api/v1/audit-events
+/api/v1/notifications
+/api/v1/notifications/{id}
+/api/v1/inbox
 ```
 
 ### 17.2 공통 원칙
@@ -980,6 +985,11 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 - 민감 Write는 유효한 `step_up_authorization_id`를 요구하고 미충족 시 `STEP_UP_REQUIRED`로 작업 시작 전에 거부한다.
 - 과거 결과 Read·Export·Delivery·KnowledgeRegistration·Rerun 응답은 현재 권한 `AccessDecision`을 생성하고 `access_state`와 마스킹된 Reference를 반환한다. 거부 시 `CURRENT_ACCESS_DENIED`를 사용한다.
 - 비용 한도 차단은 `COST_LIMIT_EXCEEDED`, 한도·누적 사용량·재시도 가능 여부·필요한 사용자 조치를 안전 오류 계약으로 반환한다.
+- `GET /api/v1/notifications`는 현재 Tenant·Workspace·Recipient 권한으로 필터링한 Cursor 목록과 미읽음 수를 반환하고, `GET /api/v1/notifications/{id}`는 현재 권한으로 단건과 허용 Deep Link를 다시 판정한다.
+- `PATCH /api/v1/notifications/{id}`는 `If-Match`·Idempotency Key를 요구하는 `unread → read` 단방향 전이만 허용한다. 재요청은 동일 결과를 반환하고 다른 Recipient·Tenant·Workspace의 알림, 이미 폐기된 대상과 권한 축소 후 Deep Link는 안전하게 차단한다.
+- `GET /api/v1/inbox`는 ReviewRequest·ApprovalRequest·Delivery 등 실행 가능한 요청의 읽기 Projection이다. Inbox 자체에 승인·반려·전달 Write를 만들지 않으며 각 소유 Domain API와 원 상태·Audit 계보를 연결한다.
+- Notification 대상은 Server가 Event와 현재 Membership·Capability·Resource ACL로 계산한다. Client Payload의 Recipient·Role·Grant·Deep Link를 권한 정본으로 신뢰하지 않고, 생성·전달·읽음 상태를 Source Event·AuditEvent·Trace ID와 연결한다.
+- R1-M4-07의 실제 전송 채널은 In-app으로 제한한다. Push·Email Adapter는 자격·계정과 후속 플랫폼 계약이 확보될 때까지 외부 차단으로 유지하며 성공으로 가장하지 않는다.
 
 ### 17.3 Local API
 

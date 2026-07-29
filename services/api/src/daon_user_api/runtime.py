@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import asyncio
 import os
@@ -42,6 +43,15 @@ from .identity import (
     IdentityPrincipal,
     IdentityService,
     SqliteIdentityRepository,
+)
+from .notification import (
+    NotificationError,
+    NotificationService,
+    ReferenceNotificationRepository,
+    inbox_json,
+    notification_json,
+    parse_inbox_filter,
+    parse_notification_filter,
 )
 
 
@@ -189,6 +199,7 @@ class RuntimeDependencies:
     audit_store: AuditEventStore
     identity_repository: SqliteIdentityRepository
     authorization_repository: SqliteAuthorizationRepository
+    notification_service: NotificationService | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -212,6 +223,11 @@ class AccessDecisionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     resource_id: str
     action: AccessAction
+
+
+class NotificationReadBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    state: str
 
 
 def _trace_id(request: Request) -> str:
@@ -262,6 +278,27 @@ def _domain_error(error: IdentityError | AuthorizationError) -> tuple[int, str, 
         return 403, "FORBIDDEN", False
     safe_special = {"CURRENT_ACCESS_DENIED", "STEP_UP_REQUIRED", "VERSION_CONFLICT"}
     return status, error.code if error.code in safe_special else "INVALID_REQUEST", status >= 500
+
+
+def _notification_domain_error(error: NotificationError) -> tuple[int, str, bool]:
+    safe_codes = {
+        "CURRENT_ACCESS_DENIED", "RESOURCE_UNAVAILABLE", "VERSION_CONFLICT",
+        "IDEMPOTENCY_CONFLICT", "INVALID_STATE_TRANSITION", "INVALID_CURSOR",
+        "INVALID_FILTER", "UNSAFE_DEEP_LINK",
+    }
+    return error.http_status, error.code if error.code in safe_codes else "INVALID_REQUEST", False
+
+
+def _require_query_keys(request: Request, allowed: frozenset[str]) -> None:
+    if any(key not in allowed for key in request.query_params):
+        raise HTTPException(status_code=400)
+
+
+def _json_with_etag(content: dict[str, object], etag_seed: str) -> JSONResponse:
+    response = JSONResponse(content=content)
+    digest = hashlib.sha256(etag_seed.encode("utf-8")).hexdigest()[:24]
+    response.headers["ETag"] = f'"projection-{digest}"'
+    return response
 
 
 def _enum_json(value: object) -> object:
@@ -334,6 +371,12 @@ def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityP
 
 
 def create_app(dependencies: RuntimeDependencies) -> FastAPI:
+    notification_service = dependencies.notification_service or NotificationService(
+        repository=ReferenceNotificationRepository(),
+        authorization_service=dependencies.authorization_service,
+        audit_store=dependencies.audit_store,
+        clock=lambda: datetime.now(timezone.utc),
+    )
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
@@ -415,6 +458,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     @app.exception_handler(AuthorizationError)
     async def domain_error(request: Request, error: IdentityError | AuthorizationError) -> JSONResponse:
         status, code, retryable = _domain_error(error)
+        return _error_response(status, code, request.state.trace_id, retryable=retryable)
+
+    @app.exception_handler(NotificationError)
+    async def notification_error(request: Request, error: NotificationError) -> JSONResponse:
+        status, code, retryable = _notification_domain_error(error)
         return _error_response(status, code, request.state.trace_id, retryable=retryable)
 
     @app.exception_handler(AuditValidationError)
@@ -539,6 +587,94 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "trace_id": request.state.trace_id,
         }
 
+    @app.get("/api/v1/notifications")
+    async def notifications(
+        request: Request,
+        cursor: str | None = Query(default=None, min_length=1, max_length=512),
+        limit: int = Query(default=50, ge=1, le=200),
+        filter: str | None = Query(default=None, min_length=1, max_length=128),
+        search: str | None = Query(default=None, min_length=1, max_length=128),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset({"cursor", "limit", "filter", "search"}))
+        principal = _principal(request, dependencies)
+        page = notification_service.list_notifications(
+            principal=principal, limit=limit, cursor=cursor,
+            filters=parse_notification_filter(filter), search=search,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        content = {
+            "data": {
+                "items": [notification_json(item) for item in page.items],
+                "next_cursor": page.next_cursor,
+                "unread_count": page.unread_count,
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        }
+        seed = "|".join(f"{item.notification_id}:{item.version}" for item in page.items) + f"|{page.unread_count}|{page.next_cursor}"
+        return _json_with_etag(content, seed)
+
+    @app.get("/api/v1/notifications/{notification_id}")
+    async def notification_detail(notification_id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        item = notification_service.get_notification(
+            principal=principal, notification_id=notification_id,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        response = JSONResponse(content={
+            "data": notification_json(item), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = item.etag
+        return response
+
+    @app.patch("/api/v1/notifications/{notification_id}")
+    async def notification_read(
+        notification_id: str,
+        body: NotificationReadBody,
+        request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        item = notification_service.mark_read(
+            principal=principal, notification_id=notification_id,
+            expected_etag=if_match, idempotency_key=idempotency_key,
+            requested_state=body.state, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        response = JSONResponse(content={
+            "data": notification_json(item), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = item.etag
+        return response
+
+    @app.get("/api/v1/inbox")
+    async def inbox(
+        request: Request,
+        cursor: str | None = Query(default=None, min_length=1, max_length=512),
+        limit: int = Query(default=50, ge=1, le=200),
+        filter: str | None = Query(default=None, min_length=1, max_length=128),
+        search: str | None = Query(default=None, min_length=1, max_length=128),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset({"cursor", "limit", "filter", "search"}))
+        principal = _principal(request, dependencies)
+        page = notification_service.list_inbox(
+            principal=principal, limit=limit, cursor=cursor,
+            filters=parse_inbox_filter(filter), search=search,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        content = {
+            "data": {"items": [inbox_json(item) for item in page.items], "next_cursor": page.next_cursor},
+            "meta": {"trace_id": request.state.trace_id},
+        }
+        seed = "|".join(f"{item.request_id}:{item.status}" for item in page.items) + f"|{page.next_cursor}"
+        return _json_with_etag(content, seed)
+
     return app
 
 
@@ -561,6 +697,12 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         clock=lambda: datetime.now(timezone.utc),
         identity_service=identity_service,
     )
+    notification_service = NotificationService(
+        repository=ReferenceNotificationRepository(),
+        authorization_service=authorization_service,
+        audit_store=audit_store,
+        clock=lambda: datetime.now(timezone.utc),
+    )
     return RuntimeDependencies(
         settings=settings,
         identity_service=identity_service,
@@ -568,4 +710,5 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         audit_store=audit_store,
         identity_repository=identity_repository,
         authorization_repository=authorization_repository,
+        notification_service=notification_service,
     )

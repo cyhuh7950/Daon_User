@@ -89,3 +89,23 @@ test("OpenAPI 검증기는 Audit Event generic 응답 회귀를 거부한다", a
   document.paths["/api/v1/audit-events"].get.responses["200"].$ref = "#/components/responses/ListSuccessResponse";
   assert.throws(() => validateOpenApiDocument(document), /AuditEventListResponse/i);
 });
+
+test("Notification·Inbox 공개 계약은 ACL·Cursor·ETag·멱등성 경계를 고정한다", async () => {
+  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const list = document.paths["/api/v1/notifications"].get;
+  const detail = document.paths["/api/v1/notifications/{id}"].get;
+  const read = document.paths["/api/v1/notifications/{id}"].patch;
+  const inbox = document.paths["/api/v1/inbox"].get;
+  assert.equal(list.responses["200"].$ref, "#/components/responses/NotificationListResponse");
+  assert.equal(detail.responses["200"].$ref, "#/components/responses/NotificationResponse");
+  assert.equal(inbox.responses["200"].$ref, "#/components/responses/InboxListResponse");
+  const readParameters = new Set(read.parameters.map((item) => item.$ref));
+  assert.ok(readParameters.has("#/components/parameters/IfMatch"));
+  assert.ok(readParameters.has("#/components/parameters/IdempotencyKey"));
+  assert.equal(read.requestBody.content["application/json"].schema.$ref, "#/components/schemas/NotificationReadRequest");
+  for (const field of ["recipient_id", "source_event_id", "resource_id", "deep_link", "audit_event_id", "trace_id", "delivery_state", "read_at", "version"]) {
+    assert.ok(document.components.schemas.Notification.required.includes(field), field);
+  }
+  assert.equal(document.components.schemas.Notification.properties.title.description.includes("Plain text"), true);
+  assert.equal(document.components.schemas.InboxItem.description.includes("read-only projection"), true);
+});
