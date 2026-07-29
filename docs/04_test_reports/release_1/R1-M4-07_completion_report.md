@@ -17,7 +17,7 @@
 
 ## 조치
 
-- Branch `codex/r1-m4-07`의 단일 구현 Commit을 Push하고 ysna-server 격리 배포에서 정확 SHA·전용 Compose 경계·Health·실제 HTTP/BFF를 검증한다.
+- Branch `codex/r1-m4-07`의 단일 구현 Commit `4fa59c7e4c43948442307205572fd181a6f19d54`을 Push하고 ysna-server 격리 배포에서 exact SHA·전용 Compose 경계·Health·실제 HTTP/BFF를 검증했다.
 - DB Migration은 M5 소유이므로 `NOT_APPLICABLE`로 기록하고 기존 DB·Volume을 변경하지 않는다.
 - PR·CI·Merge와 다음 Work Order 착수 판단은 어울1이 수행한다.
 
@@ -43,6 +43,9 @@
 | 실제 API·Next Process | Notification 200 · Inbox 200 · 내부주소/자격증명 반사 0 |
 | 실제 Chrome | 읽음·새로고침 유지·Inbox Deep Link PASS |
 | 최종 Quality Gate | 7 Category PASS · failure 0 |
+| ysna-server ARM64 | exact SHA · npm ci 508 · Python 6 · Node 21 · OpenAPI/Lint/Web Build PASS |
+| ysna-server 실제 HTTP/BFF | Notification·Inbox 200 · 읽음 후 unread 0 · Runtime exit 0 |
+| 서버 자원 보호 | Migration N/A · DB 명령 0 · 기존 Container/Network/Volume Hash 불변 · 임시 자원 0 |
 | 종료 정리 | Browser Tab·owned Process·Listener 0 |
 
 ## Evidence
@@ -52,6 +55,8 @@
 - `docs/03_evidence/release_1/R1-M4-07/runtime-process-summary.json`
 - `docs/03_evidence/release_1/R1-M4-07/browser-e2e-summary.json`
 - `docs/03_evidence/release_1/R1-M4-07/validation-summary.json`
+- `docs/03_evidence/release_1/R1-M4-07/server-validation-manifest.json`
+- `docs/03_evidence/release_1/R1-M4-07/server-validation-summary.md`
 - `docs/04_test_reports/release_1/R1-M4-07_progress.md`
 
 ## 제외 범위·남은 위험

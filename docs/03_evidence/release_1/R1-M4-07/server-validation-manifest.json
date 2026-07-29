@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-07",
+  "status": "PASS",
+  "target_host": "ysna-server",
+  "approved_root": "/home/ubuntu/deploy/daon-user",
+  "target_path": "/home/ubuntu/deploy/daon-user/R1-M4-07/4fa59c7e4c43948442307205572fd181a6f19d54",
+  "implementation_git_sha": "4fa59c7e4c43948442307205572fd181a6f19d54",
+  "checkout": {
+    "detached": true,
+    "clean_before": true,
+    "clean_after": true,
+    "architecture": "aarch64"
+  },
+  "compose": {
+    "project": "daon-user-r1-m4-07-4fa59c7",
+    "docker_architecture": "arm64",
+    "docker_version": "29.6.1",
+    "compose_version": "5.3.1",
+    "validation_image_architecture": "arm64",
+    "checkout_bind": "read_only",
+    "temporary_containers": 1,
+    "temporary_networks": 1,
+    "temporary_volumes": 10,
+    "resources_remaining_after_cleanup": 0
+  },
+  "toolchain": {
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "corepack": "0.35.0",
+    "uv": "0.11.2",
+    "python": "3.14.3",
+    "npm_ci_packages": 508
+  },
+  "validation": {
+    "notification_python_passed": 6,
+    "bff_openapi_ui_node_passed": 21,
+    "openapi_paths": 47,
+    "openapi_operations": 71,
+    "openapi_schemas": 61,
+    "workspace_lint_files": 16,
+    "web_production_build": "PASS",
+    "actual_api_process": true,
+    "actual_next_production_process": true,
+    "notification_http_status": 200,
+    "notification_unread_after_patch": 0,
+    "inbox_http_status": 200,
+    "credential_or_internal_url_response_hits": 0
+  },
+  "migration": {
+    "status": "NOT_APPLICABLE",
+    "database_commands_executed": 0,
+    "database_or_volume_changed": false
+  },
+  "resource_hashes": {
+    "containers_before": "d8054249820a313089400ffbb26cd9953e9d2313e28e153416a2a62656259e54",
+    "containers_after": "d8054249820a313089400ffbb26cd9953e9d2313e28e153416a2a62656259e54",
+    "networks_before": "9c4611127b643c1740da8bfc13e94899b8276082e1256aa3db47dbf63c0d89e2",
+    "networks_after": "9c4611127b643c1740da8bfc13e94899b8276082e1256aa3db47dbf63c0d89e2",
+    "volumes_before": "5bd2505dd668277c9fd5062fd0e3e78e0f2c91c0cf41ee83bae4fafa0cb728b7",
+    "volumes_after": "5bd2505dd668277c9fd5062fd0e3e78e0f2c91c0cf41ee83bae4fafa0cb728b7",
+    "existing_resources_unchanged": true
+  },
+  "recovery": [
+    {
+      "stage": "remote checkout",
+      "cause": "PowerShell expanded a remote shell variable before SSH",
+      "action": "Protected the complete remote command with PowerShell single quoting and retained the exact target"
+    },
+    {
+      "stage": "read-only compose mount",
+      "cause": "Named-volume mountpoints did not exist inside the read-only checkout bind",
+      "action": "Created only Git-ignored empty mountpoints and mounted every dependency/build directory as a project-owned volume"
+    },
+    {
+      "stage": "pinned npm",
+      "cause": "The pinned Node image bundled npm 11.16.0 and Corepack activation did not override it",
+      "action": "Used explicit corepack npm@11.12.1 commands without relaxing engine-strict or changing the lockfile"
+    }
+  ],
+  "secret_values_recorded": false
+}
