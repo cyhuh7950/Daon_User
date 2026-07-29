@@ -6,7 +6,7 @@ import socket
 import sys
 import threading
 import time
-from typing import BinaryIO
+from typing import Any, BinaryIO, Protocol
 
 import uvicorn
 
@@ -130,7 +130,31 @@ def _pid_is_ancestor(
     return False
 
 
-def _windows_process_parents() -> dict[int, int]:
+class ProcessSnapshotApi(Protocol):
+    def open(self) -> object: ...
+
+    def first(self, snapshot: object) -> tuple[int, int]: ...
+
+    def next(self, snapshot: object) -> tuple[int, int] | None: ...
+
+    def close(self, snapshot: object) -> None: ...
+
+
+def _collect_process_parents(api: ProcessSnapshotApi) -> dict[int, int]:
+    snapshot = api.open()
+    parents: dict[int, int] = {}
+    try:
+        current: tuple[int, int] | None = api.first(snapshot)
+        while current is not None:
+            process_id, parent_process_id = current
+            parents[process_id] = parent_process_id
+            current = api.next(snapshot)
+    finally:
+        api.close(snapshot)
+    return parents
+
+
+def _windows_process_api() -> ProcessSnapshotApi:  # pragma: no cover - Windows ctypes glue
     import ctypes
     from ctypes import wintypes
 
@@ -148,7 +172,12 @@ def _windows_process_parents() -> dict[int, int]:
             ("szExeFile", wintypes.WCHAR * 260),
         ]
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    loader: Any = getattr(ctypes, "WinDLL", None)
+    set_last_error: Any = getattr(ctypes, "set_last_error", None)
+    get_last_error: Any = getattr(ctypes, "get_last_error", None)
+    if not callable(loader) or not callable(set_last_error) or not callable(get_last_error):
+        raise BootstrapError("parent process inspection failed")
+    kernel32: Any = loader("kernel32", use_last_error=True)
     create_snapshot = kernel32.CreateToolhelp32Snapshot
     create_snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
     create_snapshot.restype = wintypes.HANDLE
@@ -162,22 +191,38 @@ def _windows_process_parents() -> dict[int, int]:
     close_handle.argtypes = [wintypes.HANDLE]
     close_handle.restype = wintypes.BOOL
 
-    snapshot = create_snapshot(0x00000002, 0)
-    if snapshot == wintypes.HANDLE(-1).value:
-        raise BootstrapError("parent process inspection failed")
-    parents: dict[int, int] = {}
-    entry = ProcessEntry32W()
-    entry.dwSize = ctypes.sizeof(ProcessEntry32W)
-    try:
-        if not process_first(snapshot, ctypes.byref(entry)):
+    class WindowsProcessSnapshotApi:
+        def __init__(self) -> None:
+            self._entry = ProcessEntry32W()
+            self._entry.dwSize = ctypes.sizeof(ProcessEntry32W)
+
+        def open(self) -> object:
+            snapshot = create_snapshot(0x00000002, 0)
+            if snapshot == wintypes.HANDLE(-1).value:
+                raise BootstrapError("parent process inspection failed")
+            return snapshot
+
+        def first(self, snapshot: object) -> tuple[int, int]:
+            if not process_first(snapshot, ctypes.byref(self._entry)):
+                raise BootstrapError("parent process inspection failed")
+            return int(self._entry.th32ProcessID), int(self._entry.th32ParentProcessID)
+
+        def next(self, snapshot: object) -> tuple[int, int] | None:
+            set_last_error(0)
+            if process_next(snapshot, ctypes.byref(self._entry)):
+                return int(self._entry.th32ProcessID), int(self._entry.th32ParentProcessID)
+            if get_last_error() == 18:
+                return None
             raise BootstrapError("parent process inspection failed")
-        while True:
-            parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
-            if not process_next(snapshot, ctypes.byref(entry)):
-                break
-    finally:
-        close_handle(snapshot)
-    return parents
+
+        def close(self, snapshot: object) -> None:
+            close_handle(snapshot)
+
+    return WindowsProcessSnapshotApi()
+
+
+def _windows_process_parents() -> dict[int, int]:  # pragma: no cover - Windows dispatch
+    return _collect_process_parents(_windows_process_api())
 
 
 def _parent_identity_matches(expected_parent_process_id: int) -> bool:

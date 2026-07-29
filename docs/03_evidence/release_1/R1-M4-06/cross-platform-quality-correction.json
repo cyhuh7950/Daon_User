@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-06-C01",
+  "issue": "Linux ctypes platform typing and coverage parity",
+  "contract_preserved": {
+    "windows_process_snapshot": true,
+    "fail_closed_parent_identity": true,
+    "token_capability_command_browser_contract": true,
+    "mypy_threshold_lowered": false,
+    "coverage_threshold_lowered": false,
+    "tests_skipped": false
+  },
+  "linux": {
+    "environment": "WSL Linux",
+    "python": "3.14.3",
+    "mypy_files": 10,
+    "mypy_errors": 0,
+    "unit_tests_passed": 56,
+    "coverage_percent": 89.17,
+    "coverage_required_percent": 85
+  },
+  "windows": {
+    "mypy_files": 10,
+    "mypy_errors": 0,
+    "unit_tests_passed": 56,
+    "coverage_percent": 93.61,
+    "known_environment_vulnerabilities": 0,
+    "packaged_sidecar_runs": 2,
+    "packaged_sidecar_sha256": "FA962ABDB1FB01169DFB357473ADAF176E9095C5447056DBFFF76FDFE41A600D",
+    "rust_owner_cross_language_runs": 2,
+    "remaining_processes": 0,
+    "remaining_listeners": 0
+  },
+  "platform_neutral_snapshot_tests": {
+    "open_failure": true,
+    "first_enumeration_failure": true,
+    "subsequent_enumeration_failure": true,
+    "handle_close_after_success": true,
+    "handle_close_after_enumeration_failure": true,
+    "ancestor_match_mismatch_cycle_depth": true
+  },
+  "quality_gate": {
+    "mode": "--no-write",
+    "duration_seconds": 308.8,
+    "overall": "PASS",
+    "failures": 0,
+    "categories": [
+      "lint",
+      "type",
+      "unit",
+      "contract",
+      "build",
+      "security",
+      "independence"
+    ]
+  },
+  "secret_values_recorded": false
+}

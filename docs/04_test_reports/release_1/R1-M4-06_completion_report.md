@@ -73,3 +73,10 @@
 - 외부 배포, ysna-server, PostgreSQL, Local 저장·Vector·Model·ASR·Sync 업무 기능은 제외했다.
 - Windows PID는 단독 인증수단이 아니다. root secret, App Instance, HMAC Token, stdin EOF 소유와 결합해 사용한다.
 - 최종 GitHub CI와 Merge 판정은 어울1 소유다.
+
+## C01 Linux 품질 Gate 정합 후속
+
+- PR #26에서 Linux `ctypes.WinDLL` type 오류와 Coverage 81.36% 미달이 확인되어 `R1-M4-06-C01`로 보완했다.
+- Windows-only ctypes adapter와 플랫폼 중립 Snapshot 수집기를 분리했으며 보안 계약·Coverage 85% 기준은 완화하지 않았다.
+- 최종 결과: WSL type 오류 0·56 PASS·89.17%, Windows type 오류 0·56 PASS·93.61%, 실제 Sidecar와 Rust owner 각 2회 PASS, 전체 Quality Gate failure 0.
+- 상세 보고: `docs/04_test_reports/release_1/R1-M4-06-C01_completion_report.md`.
