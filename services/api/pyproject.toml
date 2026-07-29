@@ -3,7 +3,9 @@ name = "daon-user-api"
 version = "0.0.0"
 requires-python = "==3.14.3"
 dependencies = [
+  "alembic==1.18.5",
   "fastapi==0.139.2",
+  "psycopg[binary,pool]==3.3.4",
   "uvicorn==0.51.0",
 ]
 

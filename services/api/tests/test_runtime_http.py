@@ -33,6 +33,14 @@ from daon_user_api.runtime import (
 )
 
 
+class UnreadyCloudStore:
+    def readiness(self):  # type: ignore[no-untyped-def]
+        return type("Status", (), {"ready": False})()
+
+    def close(self) -> None:
+        return None
+
+
 class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
@@ -131,6 +139,14 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(live.json()["status"], "live")
         self.assertEqual(ready.json()["status"], "ready")
         self.assertNotIn("access-control-allow-origin", live.headers)
+
+    async def test_cloud_migration_failure_only_drops_readiness(self) -> None:
+        self.dependencies.cloud_store = UnreadyCloudStore()  # type: ignore[assignment]
+        live = await self.client.get("/health/live")
+        ready = await self.client.get("/health/ready")
+        self.assertEqual(live.status_code, 200)
+        self.assertEqual(ready.status_code, 503)
+        self.assertEqual(ready.json(), {"status": "not_ready"})
 
     async def test_web_cookie_and_native_bearer_return_same_session_meaning(self) -> None:
         web = await self.client.get(
@@ -304,10 +320,17 @@ class RuntimeSettingsTests(unittest.TestCase):
                 public_gateway_url="http://api.example.com",
                 trusted_proxy_ips=("10.0.0.1",),
             )
+        with self.assertRaises(ValueError):
+            RuntimeSettings(
+                profile="production", bind_host="0.0.0.0", port=8000,
+                public_gateway_url="https://api.example.com",
+                trusted_proxy_ips=("10.0.0.1",),
+            )
         valid = RuntimeSettings(
             profile="production", bind_host="0.0.0.0", port=8000,
             public_gateway_url="https://api.example.com",
             trusted_proxy_ips=("10.0.0.1",),
+            cloud_database_dsn="postgresql://app@database/daon",
         )
         self.assertEqual(valid.public_gateway_url, "https://api.example.com")
 
