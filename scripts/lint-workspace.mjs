@@ -5,18 +5,27 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_FILES = [
+  "apps/web/app/inbox/page.jsx",
   "apps/web/app/layout.jsx",
+  "apps/web/app/notifications/page.jsx",
   "apps/web/app/page.jsx",
   "apps/web/app/workspaces/[workspace_id]/page.jsx",
+  "apps/web/components/notification-inbox-workspace.jsx",
+  "apps/web/lib/notification-inbox-api.js",
   "apps/web/next.config.mjs",
   "packages/ui/src/adaptive-workspace.jsx",
   "packages/ui/src/index.js",
+  "packages/ui/src/notification-inbox-pane.jsx",
   "packages/ui/src/source-knowledge-model.js",
   "packages/ui/src/source-knowledge-controls.js",
   "packages/ui/src/source-knowledge-pane.jsx",
   "packages/ui/src/workspace-interaction.js",
   "packages/ui/src/workspace-model.js"
 ];
+
+const APPROVED_FETCH_ADAPTERS = new Set([
+  "apps/web/lib/notification-inbox-api.js",
+]);
 
 export function lintSource(file, source) {
   const findings = [];
@@ -28,6 +37,7 @@ export function lintSource(file, source) {
     ["forbidden-browser-env", /NEXT_PUBLIC_API_BASE_URL/g, "NEXT_PUBLIC_API_BASE_URL is forbidden"]
   ];
   for (const [rule, pattern, message] of rules) {
+    if (rule === "fetch" && APPROVED_FETCH_ADAPTERS.has(file.replaceAll("\\", "/"))) continue;
     for (const match of source.matchAll(pattern)) {
       const line = source.slice(0, match.index).split("\n").length;
       findings.push({ rule, line, message });

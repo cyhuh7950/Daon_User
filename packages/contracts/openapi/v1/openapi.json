@@ -3173,6 +3173,73 @@
         }
       }
     },
+    "/api/v1/notifications": {
+      "get": {
+        "operationId": "listNotifications", "tags": ["Notification"],
+        "summary": "현재 Recipient 권한 범위 Notification 목록과 미읽음 수 조회",
+        "x-implementation-owner": "R1-M4-07", "x-list-operation": true,
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Filter" }, { "$ref": "#/components/parameters/Search" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/NotificationListResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
+    "/api/v1/notifications/{id}": {
+      "get": {
+        "operationId": "getNotification", "tags": ["Notification"],
+        "summary": "현재 AccessDecision으로 Notification 단건과 안전 Deep Link 조회",
+        "x-implementation-owner": "R1-M4-07", "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/NotificationResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      },
+      "patch": {
+        "operationId": "markNotificationRead", "tags": ["Notification"],
+        "summary": "Notification unread에서 read로 단방향 전이",
+        "x-implementation-owner": "R1-M4-07",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotificationReadRequest" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/NotificationResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
+    "/api/v1/inbox": {
+      "get": {
+        "operationId": "listInbox", "tags": ["Notification"],
+        "summary": "원 Review Approval Delivery 요청의 현재 읽기 Projection 조회",
+        "x-implementation-owner": "R1-M4-07", "x-list-operation": true,
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Filter" }, { "$ref": "#/components/parameters/Search" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/InboxListResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
     "/api/v1/devices/{id}/revoke": {
       "post": {
         "operationId": "revokeDevice",
@@ -3494,6 +3561,30 @@
             }
           }
         }
+      },
+      "NotificationListResponse": {
+        "description": "현재 Recipient와 ACL로 필터링한 Notification Cursor Page",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotificationListEnvelope" } } }
+      },
+      "NotificationResponse": {
+        "description": "현재 ACL로 재검증한 Notification",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotificationEnvelope" } } }
+      },
+      "InboxListResponse": {
+        "description": "원 요청의 현재 상태를 조합한 읽기 Projection Cursor Page",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InboxListEnvelope" } } }
       },
       "CreatedResponse": {
         "description": "Versioned Resource 생성 성공",
@@ -3944,6 +4035,92 @@
         "properties": {
           "data": { "$ref": "#/components/schemas/AccessDecision" },
           "trace_id": { "$ref": "#/components/schemas/OpaqueId" }
+        }
+      },
+      "NotificationReadRequest": {
+        "type": "object", "additionalProperties": false, "required": ["state"],
+        "properties": { "state": { "type": "string", "const": "read" } }
+      },
+      "Notification": {
+        "type": "object", "additionalProperties": false,
+        "required": [
+          "id", "workspace_id", "recipient_id", "kind", "severity", "title", "summary",
+          "source_event_id", "resource_type", "resource_id", "deep_link", "audit_event_id",
+          "trace_id", "delivery_state", "read_state", "created_at", "delivered_at", "read_at", "version"
+        ],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/OpaqueId" },
+          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "recipient_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "kind": { "type": "string", "enum": ["authentication", "device", "membership", "policy", "run_state", "run_failed", "review", "approval", "delivery", "warning", "recovery"] },
+          "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+          "title": { "type": "string", "minLength": 1, "maxLength": 160, "description": "Plain text only; HTML is never accepted or rendered." },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 500, "description": "Plain text only; sensitive source content is excluded." },
+          "source_event_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "resource_type": { "$ref": "#/components/schemas/OpaqueId" },
+          "resource_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "deep_link": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Allowlisted same-origin path or approved Native route only." },
+          "audit_event_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "trace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "delivery_state": { "type": "string", "enum": ["pending", "delivered", "failed", "suppressed"] },
+          "read_state": { "type": "string", "enum": ["unread", "read"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "delivered_at": { "type": ["string", "null"], "format": "date-time" },
+          "read_at": { "type": ["string", "null"], "format": "date-time" },
+          "version": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "NotificationPage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["items", "next_cursor", "unread_count"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/Notification" } },
+          "next_cursor": { "type": ["string", "null"], "minLength": 1, "maxLength": 512 },
+          "unread_count": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "NotificationEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/Notification" },
+          "meta": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "NotificationListEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/NotificationPage" },
+          "meta": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "InboxItem": {
+        "description": "Current read-only projection of a Review Approval or Delivery request; writes remain in the owning domain.",
+        "type": "object", "additionalProperties": false,
+        "required": ["request_id", "request_kind", "status", "workspace_id", "actor_id", "due_at", "resource_type", "resource_id", "deep_link"],
+        "properties": {
+          "request_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "request_kind": { "type": "string", "enum": ["review", "approval", "delivery"] },
+          "status": { "type": "string", "enum": ["pending", "in_review", "approved", "rejected", "expired", "withdrawn", "delivered", "failed", "cancelled"] },
+          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "actor_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "due_at": { "type": ["string", "null"], "format": "date-time" },
+          "resource_type": { "$ref": "#/components/schemas/OpaqueId" },
+          "resource_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "deep_link": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      },
+      "InboxPage": {
+        "type": "object", "additionalProperties": false, "required": ["items", "next_cursor"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/InboxItem" } },
+          "next_cursor": { "type": ["string", "null"], "minLength": 1, "maxLength": 512 }
+        }
+      },
+      "InboxListEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/InboxPage" },
+          "meta": { "type": "object", "additionalProperties": true }
         }
       },
       "Resource": {

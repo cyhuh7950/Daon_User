@@ -4,6 +4,7 @@ export { RunModelEvidencePane } from "./run-model-evidence-pane.jsx";
 export { StudioWorkflowPane } from "./studio-workflow-pane.jsx";
 export { AccountSecurityWorkspace } from "./account-security-pane.jsx";
 export { OperationsRecoveryWorkspace } from "./operations-recovery-pane.jsx";
+export { NotificationInboxWorkspace } from "./notification-inbox-pane.jsx";
 export { ProductionBoundEvidenceHub } from "./production-bound-evidence-pane.jsx";
 export { WebShellRuntimeStatus } from "./web-shell-runtime-status.jsx";
 export { createWebShellRuntimeState, transitionWebShellRuntime } from "./web-shell-runtime-model.js";

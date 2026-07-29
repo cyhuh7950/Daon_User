@@ -376,3 +376,59 @@ test("BFF removes client abort listeners and clears its timeout after success", 
   assert.equal(clientRemoves, 1);
   assert.equal(upstreamAbortEvents, 0);
 });
+
+test("BFF exposes only approved Notification and Inbox paths with same-origin CSRF", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: { items: [], unread_count: 0, next_cursor: null } }, {
+        headers: { ETag: '"notification-v1"' },
+      });
+    },
+  });
+  const list = await proxy(new Request(
+    "https://app.example.com/bff/api/notifications?limit=20&filter=state:unread&search=run",
+  ), ["notifications"]);
+  const detail = await proxy(new Request(
+    "https://app.example.com/bff/api/notifications/notification-001",
+  ), ["notifications", "notification-001"]);
+  const read = await proxy(new Request(
+    "https://app.example.com/bff/api/notifications/notification-001",
+    {
+      method: "PATCH",
+      headers: {
+        Origin: "https://app.example.com",
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+        "If-Match": '"notification-v1"',
+        "Idempotency-Key": "idem-notification-read-001",
+      },
+      body: JSON.stringify({ state: "read" }),
+    },
+  ), ["notifications", "notification-001"]);
+  const inbox = await proxy(new Request(
+    "https://app.example.com/bff/api/inbox?limit=20",
+  ), ["inbox"]);
+  assert.deepEqual([list.status, detail.status, read.status, inbox.status], [200, 200, 200, 200]);
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/notifications?limit=20&filter=state%3Aunread&search=run", method: "GET" },
+    { url: "https://api.example.com/api/v1/notifications/notification-001", method: "GET" },
+    { url: "https://api.example.com/api/v1/notifications/notification-001", method: "PATCH" },
+    { url: "https://api.example.com/api/v1/inbox?limit=20", method: "GET" },
+  ]);
+  assert.equal(read.headers.get("etag"), '"notification-v1"');
+
+  let crossOriginCalls = 0;
+  const rejected = await createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async () => { crossOriginCalls += 1; return new Response(); },
+  })(new Request("https://app.example.com/bff/api/notifications/notification-001", {
+    method: "PATCH",
+    headers: { Origin: "https://evil.example", "Content-Type": "application/json" },
+    body: JSON.stringify({ state: "read" }),
+  }), ["notifications", "notification-001"]);
+  assert.equal(rejected.status, 403);
+  assert.equal(crossOriginCalls, 0);
+});

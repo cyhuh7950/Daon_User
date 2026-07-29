@@ -30,6 +30,8 @@ const AUDIT_QUERY = new Set([
   "trace_id",
   "workspace_id",
 ]);
+const NOTIFICATION_QUERY = new Set(["cursor", "filter", "limit", "search"]);
+const INBOX_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 
 export class BffConfigurationError extends Error {
   constructor(code) {
@@ -65,13 +67,28 @@ export function parseInternalApiBase(rawValue, profile = "production") {
 
 function routeFor(method, segments) {
   if (segments.length === 1 && segments[0] === "session") {
-    return method === "GET" ? { path: "/api/v1/session", query: false } : { methodRejected: true };
+    return method === "GET" ? { path: "/api/v1/session", query: null } : { methodRejected: true };
   }
   if (segments.length === 1 && segments[0] === "access-decisions") {
-    return method === "POST" ? { path: "/api/v1/access-decisions", query: false } : { methodRejected: true };
+    return method === "POST" ? { path: "/api/v1/access-decisions", query: null } : { methodRejected: true };
   }
   if (segments.length === 1 && segments[0] === "audit-events") {
-    return method === "GET" ? { path: "/api/v1/audit-events", query: true } : { methodRejected: true };
+    return method === "GET" ? { path: "/api/v1/audit-events", query: AUDIT_QUERY } : { methodRejected: true };
+  }
+  if (segments.length === 1 && segments[0] === "notifications") {
+    return method === "GET"
+      ? { path: "/api/v1/notifications", query: NOTIFICATION_QUERY }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "notifications" && SAFE_SEGMENT.test(segments[1])) {
+    return new Set(["GET", "PATCH"]).has(method)
+      ? { path: `/api/v1/notifications/${encodeURIComponent(segments[1])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 1 && segments[0] === "inbox") {
+    return method === "GET"
+      ? { path: "/api/v1/inbox", query: INBOX_QUERY }
+      : { methodRejected: true };
   }
   if (
     segments.length === 4
@@ -81,7 +98,7 @@ function routeFor(method, segments) {
     && segments[3] === "evaluations"
   ) {
     return method === "POST"
-      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/authorization/evaluations`, query: false }
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/authorization/evaluations`, query: null }
       : { methodRejected: true };
   }
   return null;
@@ -225,7 +242,7 @@ export function createBffProxy({ baseUrl, fetchImpl = fetch, timeoutMs = 10_000 
     if (route.query) {
       const incoming = new URL(request.url);
       for (const [key, value] of incoming.searchParams) {
-        if (AUDIT_QUERY.has(key)) destination.searchParams.append(key, value);
+        if (route.query.has(key)) destination.searchParams.append(key, value);
       }
     }
     const headers = new Headers();
