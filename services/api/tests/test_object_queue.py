@@ -205,12 +205,28 @@ class PostgresObjectQueueIntegrationTests(unittest.TestCase):
             idempotency_key=key, trace_id="trace-object-1",
         )
 
+    def _request_audit_count(self, object_id: str) -> int:
+        with self.store._transaction(self.scope) as connection:
+            row = connection.execute(
+                "SELECT count(*) FROM audit_events "
+                "WHERE action='object.store.requested' AND target_type='object' AND target_id=%s",
+                (object_id,),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
     def test_domain_object_outbox_job_are_atomic_and_replay_safe(self) -> None:
         submission = self._submit()
         replay = self._submit()
-        self.assertEqual(submission, replay)
+        self.assertEqual(
+            (submission.object_id, submission.job_id, submission.event_id),
+            (replay.object_id, replay.job_id, replay.event_id),
+        )
+        self.assertFalse(submission.replayed)
+        self.assertTrue(replay.replayed)
         counts = self.store.entity_counts(self.scope, submission.object_id)
         self.assertEqual(counts, {"objects": 1, "outbox": 1, "jobs": 1, "attempts": 0})
+        self.assertEqual(self._request_audit_count(submission.object_id), 1)
         with self.assertRaises(ObjectQueueError):
             self.coordinator.submit(
                 self.scope, area="source", content=b"different", content_type="application/pdf",
@@ -239,7 +255,7 @@ class PostgresObjectQueueIntegrationTests(unittest.TestCase):
 
     def test_concurrent_workers_claim_only_once_and_complete_verified_object(self) -> None:
         submission = self._submit()
-        now = datetime(2026, 7, 29, 1, 0, tzinfo=UTC)
+        now = self.store.get_job(self.scope, submission.job_id).next_attempt_at
         with ThreadPoolExecutor(max_workers=2) as executor:
             claimed = list(executor.map(
                 lambda worker: self.store.claim(self.scope, worker, now=now, lease_seconds=30),
@@ -258,7 +274,7 @@ class PostgresObjectQueueIntegrationTests(unittest.TestCase):
 
     def test_crash_after_put_loses_lease_and_recovery_is_idempotent(self) -> None:
         submission = self._submit(key="idem-crash")
-        start = datetime(2026, 7, 29, 2, 0, tzinfo=UTC)
+        start = self.store.get_job(self.scope, submission.job_id).next_attempt_at
         self.storage.crash_after_promote = True
         worker = DurableObjectWorker(self.store, self.storage, "worker-crash", lease_seconds=5)
         with self.assertRaises(SimulatedWorkerCrash):
@@ -276,10 +292,12 @@ class PostgresObjectQueueIntegrationTests(unittest.TestCase):
         self.storage.fail_promote = ObjectStorageError("OBJECT_STORAGE_UNAVAILABLE", retryable=True)
         policy = RetryPolicy(max_attempts=2, base_seconds=1, max_seconds=2, jitter_ratio=0)
         worker = DurableObjectWorker(self.store, self.storage, "worker-retry", retry_policy=policy)
-        start = datetime(2026, 7, 29, 3, 0, tzinfo=UTC)
+        start = self.store.get_job(self.scope, submission.job_id).next_attempt_at
         first = worker.run_once(self.scope, now=start, jitter_unit=0.5)
         self.assertEqual(first.state, "retry_wait")
-        second = worker.run_once(self.scope, now=start + timedelta(seconds=2), jitter_unit=0.5)
+        retry_at = self.store.get_job(self.scope, submission.job_id).next_attempt_at
+        self.assertGreater(retry_at, start)
+        second = worker.run_once(self.scope, now=retry_at, jitter_unit=0.5)
         self.assertEqual(second.state, "dead_letter")
         with self.assertRaises(ObjectQueueError):
             self.store.reprocess(self.scope, submission.job_id, "reprocess-denied")
