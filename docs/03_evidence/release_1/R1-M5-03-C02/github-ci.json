@@ -1,0 +1,25 @@
+{
+  "work_order_id": "R1-M5-03-C02",
+  "issue_id": "R1-M5-03",
+  "git_sha": "11a121e8063f8d3fb7803da072dae2b19edf78a7",
+  "quality_gate": {
+    "run_id": 30491561166,
+    "job_id": 90710405083,
+    "status": "completed",
+    "conclusion": "success",
+    "quality_step": "success",
+    "prior_green_run_id": 30489907281,
+    "prior_green_job_id": 90704894968
+  },
+  "ios_phase_a": {
+    "run_id": 30491561232,
+    "job_id": 90710405427,
+    "status": "completed",
+    "conclusion": "success",
+    "last_observed_step": "Upload exact-SHA Phase A evidence",
+    "prior_green_run_id": 30489907291,
+    "prior_green_job_id": 90704895029
+  },
+  "prior_ios_run_30487672440_cancelled_or_restarted": false,
+  "secret_values_recorded": 0
+}

@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "installer": {
+    "version": "0.1.0",
+    "bytes": 26374818,
+    "sha256": "C0EF2528878EEF83707746F8B0A670AC585A51600594D36C6CD95298FE541FC3",
+    "scope": "currentUser",
+    "silent_install_exit": 0
+  },
+  "credential_manager": {
+    "target": "DaonUser/LocalStorage/v1",
+    "created_by_installed_app": true,
+    "reused_after_restart": true,
+    "revoked": true,
+    "recreated_with_existing_ciphertext": false
+  },
+  "encrypted_storage": {
+    "database_bytes": 36864,
+    "raw_header_hex": "D7BD31A06F50F84F51E6E683177604B6",
+    "plain_sqlite_header": false,
+    "sha256_before_revoke": "EF7E0BDA9BD3399B269868621B1209CBDA50F26FF19EA3CBA084B2C01E0E29BF",
+    "unchanged_after_restart": true,
+    "unchanged_after_revoke": true
+  },
+  "runtime": {
+    "hidden_restart_ready": true,
+    "external_connections": 0,
+    "credential_revoked_sidecar_started": false,
+    "remaining_app_processes": 0,
+    "remaining_sidecar_processes": 0
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "work_order_id": "R1-M5-03-C02",
+  "issue_id": "R1-M5-03",
+  "git_sha": "989090fcf5bf3a74ad900082f30f4aee021c26c1",
+  "environment": {
+    "host": "ysna-server",
+    "container_os": "Ubuntu 24.04",
+    "architecture": "aarch64",
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "uv": "0.11.2",
+    "python": "3.14.3"
+  },
+  "checks": [
+    {
+      "command": "node scripts/run-local-service-tool.mjs type",
+      "exit_code": 1,
+      "result": "FAIL",
+      "summary": "safe_file.py: ctypes.WinDLL and ctypes.get_last_error are unavailable to Linux mypy"
+    },
+    {
+      "command": "node scripts/run-local-service-tool.mjs unit",
+      "exit_code": 1,
+      "result": "FAIL",
+      "tests": "83 passed, 2 skipped",
+      "coverage_percent": 73.74,
+      "coverage_threshold_percent": 85,
+      "summary": "Win32-only safe_file statements were included in Linux coverage"
+    }
+  ],
+  "github_failure": {
+    "run_id": 30487672418,
+    "job_id": 90697321691,
+    "merge_sha": "46fda23f1f471b7e7d831fc7ccde5257546ce72e",
+    "quality_checks": 36,
+    "failures": 2
+  },
+  "secret_values_recorded": 0,
+  "resources": {
+    "container_removed": true,
+    "shared_compose_or_database_used": false
+  }
+}

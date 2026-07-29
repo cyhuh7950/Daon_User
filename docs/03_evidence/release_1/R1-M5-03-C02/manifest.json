@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-03-C02",
+  "issue_id": "R1-M5-03",
+  "status": "PASS",
+  "baseline_failed_sha": "989090fcf5bf3a74ad900082f30f4aee021c26c1",
+  "final_implementation_sha": "11a121e8063f8d3fb7803da072dae2b19edf78a7",
+  "branch": "codex/r1-m5-03",
+  "file_hash_basis": "SHA-256 of official Windows checkout bytes at final_implementation_sha",
+  "implementation_files": {
+    "scripts/run-local-service-tool.mjs": "2786FC2850F46AA90722853AD3832ABF0297B4B6A13C26B89D9F6FFDA0E6B794",
+    "services/local-service/src/daon_user_local_service/safe_file.py": "D003D842FFFE2A83AD44F62E6C47B2CB2B86CB8DC165D10C5FE0C66AC7824DE2",
+    "services/local-service/src/daon_user_local_service_safe_file_posix.py": "82517A9CE0AE1FFADCF112FE58A7A1C3D16015EA33C53962A64E42519606DE68",
+    "services/local-service/src/daon_user_local_service_safe_file_win32.py": "F1F3DCEC460A66D45B7A8DE86FA96EDBF0395CBDD4CB4ADC856E05DAE0C935B5",
+    "services/local-service/tests/test_local_storage_correction.py": "E2B36EA0474257A7003231F32E756DD8509A17092641B63423551EF6D0057B46"
+  },
+  "evidence_files": {
+    "github-ci.json": {"bytes": 730, "sha256": "C9361FC1E1E98D4BEF5FC8DF25B6C216F45D2762AFAC934149873CFFD85CA5B0"},
+    "ubuntu-green.json": {"bytes": 1315, "sha256": "4D6FD8CF9290886657BBD71EA221955D2A5FA0A33A9A5AD0D69BF50F855803E3"},
+    "ubuntu-red.json": {"bytes": 1206, "sha256": "3F6138B3920DFB389E1A5C40D313315D360DB587B291648B50A2F419441481E6"},
+    "windows-green.json": {"bytes": 1322, "sha256": "217A5140606E4FBDD113C37472CBAD4F1A6CF158E6D45659EC710B79F3B484FD"}
+  },
+  "checks": {
+    "ubuntu_exact_pin_type": "PASS",
+    "ubuntu_exact_pin_unit_and_coverage": "PASS",
+    "posix_descriptor_relative_boundary": "PASS",
+    "posix_symlink_swap_after_precheck": "PASS",
+    "windows_handle_boundary_regression": "PASS",
+    "windows_quality_gate": "PASS",
+    "github_quality_gate": "PASS",
+    "github_ios_phase_a": "PASS"
+  },
+  "github": {
+    "quality_run_id": 30491561166,
+    "quality_job_id": 90710405083,
+    "ios_run_id": 30491561232,
+    "ios_job_id": 90710405427,
+    "existing_ios_run_30487672440_cancelled_or_restarted": false
+  },
+  "cleanup": {
+    "local_product_processes_or_listeners": 0,
+    "local_coverage": 0,
+    "test_containers": 0,
+    "test_compose_projects": 0,
+    "shared_database_or_network_modified": false,
+    "server_isolated_checkout": 1,
+    "server_isolated_checkout_state": "clean; removal pending explicit destructive-action approval",
+    "server_isolated_checkout_path": "/home/ubuntu/deploy/daon-user/R1-M5-03/C02-989090fcf5bf3a74ad900082f30f4aee021c26c1"
+  },
+  "classification": {
+    "c01_incomplete_count": 1,
+    "formal_failure_report_count": 0
+  },
+  "secret_values_recorded": 0
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "sidecar_sha256": "60A6C781BF9470D50A06D768E2CBE0B0A5BDD3E7501981013F042AA1A2A4830A",
+  "sidecar_bytes": 25603473,
+  "python_version": "3.14.3",
+  "pyinstaller_version": "6.21.0",
+  "runs": 2,
+  "storage_restart_unlock": true,
+  "storage_api_contract_passed": true,
+  "storage_parallel_lock_contract_passed": true,
+  "listener_loopback_only": true,
+  "listener_closed_after_each_run": true,
+  "root_and_storage_key_emitted": false,
+  "request_token_emitted": false,
+  "previous_run_token_status": 401,
+  "unauthenticated_status": 401,
+  "browser_origin_status": 403,
+  "external_host_status": 400,
+  "unknown_command_status": 404
+}

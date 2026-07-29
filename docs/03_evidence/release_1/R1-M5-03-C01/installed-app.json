@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-03-C01",
+  "implementation_sha": "c21a6b64d9c1a920fb082a4de1b40fd12be63d55",
+  "installer": {"bytes": 26391366, "sha256": "43C149E74E4DEF55B1DEC1FD9B3DF86949BBA61ACBC69C8FB4A2004F6910733E", "install_exit_code": 0, "uninstall_exit_code": 0},
+  "bundled_sidecar": {"bytes": 25618201, "sha256": "778268E1E57A8D65CFF6229B67B694DD6B936B900304622A7D6530319EC5A48B"},
+  "first_run": {
+    "credential_created": true,
+    "database_bytes": 36864,
+    "database_header_hex": "567031DADC9299762596B2095D26B041",
+    "database_sha256": "C53DA2AD3FE11154150087C811A6655D7C1CFCDC1C090C66C0D0395830D15D50",
+    "sqlite_plaintext_header": false,
+    "sidecar_started": true,
+    "external_connection_count": 0
+  },
+  "restart": {"sidecar_started": true, "database_sha256_unchanged": true, "external_connection_count": 0},
+  "credential_revocation": {"credential_absent": true, "credential_recreated": false, "sidecar_started": false, "database_sha256_unchanged": true},
+  "cleanup": {
+    "install_present": false,
+    "test_storage_present": false,
+    "test_credential_present": false,
+    "app_or_sidecar_processes": 0,
+    "listeners": 0,
+    "installer_target_present": false,
+    "repo_generated_sidecar_present": false,
+    "repo_gen_present": false,
+    "protected_existing_profile_modified": false
+  }
+}

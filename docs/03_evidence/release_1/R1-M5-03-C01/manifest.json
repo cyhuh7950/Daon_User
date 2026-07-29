@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-03-C01",
+  "issue_id": "R1-M5-03",
+  "attempt": 1,
+  "status": "PASS",
+  "baseline_sha": "717b58df1031d2d95d0a9df96375e4df2091b226",
+  "final_sha": "c21a6b64d9c1a920fb082a4de1b40fd12be63d55",
+  "final_sha_role": "exact implementation commit",
+  "branch": "codex/r1-m5-03",
+  "file_hash_basis": "SHA-256 of Git blob bytes at final_sha",
+  "implementation_files": {
+    "apps/desktop/src-tauri/src/local_service.rs": "2B045FF93803B463BDAA7FC3A3DDF664E4C56AB47DF33B36613AE3ECEF60EAAB",
+    "apps/desktop/src-tauri/src/windows_credential.rs": "2D065B2042EF4311939B35360602A7249EACEB5E45188E18B16524639DD18E58",
+    "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs": "75E0E12648FCEA18CA4DE35EFE3FAB07BC6CAAB44D12BD2E69D393E427924CAD",
+    "apps/desktop/src-tauri/tests/local_service_contract.rs": "D0274312674B1C0694DCEC5B1B68ED5E7A5F53DBBBD88DF2AA2D05857D057587",
+    "scripts/tests/local-service-runtime-verifier.test.mjs": "88F50BDF16803D492590810ED1D2F89668A19C7211CA41A46D1863EF715608C2",
+    "scripts/verify-local-service-runtime.mjs": "3FC28BDE2B8541A1B427EA1D819440B626BF305D5AE169B96436A9C5CA84495B",
+    "services/local-service/src/daon_user_local_service/app.py": "955B3EABA09ABB68C66D000733D74B0BF76F8D07A6F57699A7B04FF56FC39258",
+    "services/local-service/src/daon_user_local_service/local_storage.py": "77C1122D3BB1ACE48AABCD9B313B72AB0451131A53380212B00EAF68EDD09940",
+    "services/local-service/src/daon_user_local_service/main.py": "62F55E8644BEBF7B3403B0180E1E53BCEFD1868D026225DBB541CE7258B1A7AA",
+    "services/local-service/src/daon_user_local_service/protocol.py": "22DDF62C56C46CE3E84FEFEC35DDE9A288924E60AC66875CB48FCC43F1E21ADF",
+    "services/local-service/src/daon_user_local_service/safe_file.py": "D4C45AAF28E4D34CAEF95E404E4BE80C393AAC861947A978E9FA2E962F6E2054",
+    "services/local-service/src/daon_user_local_service/security.py": "E3C16A237589B986E22D97F373311E43F38B26D542C5890E1473382F5A5F56FC",
+    "services/local-service/tests/test_app.py": "890B89F71B19180ECF01E1B0E04B0462D832879008F8A2C747E012A1A33E50AD",
+    "services/local-service/tests/test_local_storage.py": "252B7B77D593432162B4092857AE01DF35E9A17C44A53FF5CC5BF80778187F33",
+    "services/local-service/tests/test_local_storage_correction.py": "B37FDF9759F03619462DF00E95BD4C9DE7CC4D0909BB35098B79AA5234C7F097",
+    "services/local-service/tests/test_main.py": "A1BD3CAB552BBD7E7B15879FDD87D302E29E743D89E444F50B7ABF98B5D0C50F",
+    "services/local-service/tests/test_protocol.py": "1A10822E39CF70083308043141DCE12AF41698A91A7A6F73EB73A619E9ECA2B6"
+  },
+  "evidence_files": {
+    "installed-app.json": {"bytes": 1353, "sha256": "E5FF49628CD0516A39095228A58DFF522DCD458C4E45E2D041AD86B11A8FE03D"},
+    "packaged-runtime.json": {"bytes": 1008, "sha256": "2AC55AA2AF5EBA2DA314C6E18980D39D066CB78237C0F74AD357CBC1DC25E14C"},
+    "verification-results.json": {"bytes": 1658, "sha256": "D7A0FCCDDA197CFEC9D439BA0039D93D157EE5595A549336DE22262783601640"}
+  },
+  "checks": {
+    "schema_and_header": "PASS",
+    "legacy_upgrade_and_restart": "PASS",
+    "mime_and_payload_verification": "PASS",
+    "windows_handle_path_and_toctou": "PASS",
+    "atomic_write_and_orphan_recovery": "PASS",
+    "finite_float32_vector_boundary": "PASS",
+    "parent_sidecar_protocol_1_1": "PASS",
+    "best_effort_zeroize": "PASS",
+    "python_rust_js": "PASS",
+    "packaged_sidecar_two_run": "PASS",
+    "independence_and_quality_gate": "PASS",
+    "installed_nsis": "PASS"
+  },
+  "runtime_evidence": {
+    "packaged_sidecar_sha256": "D9DB6D563B472047BA388CFB9DB349A61F6905324F7826BD6E14987601F0C76A",
+    "installer_sha256": "43C149E74E4DEF55B1DEC1FD9B3DF86949BBA61ACBC69C8FB4A2004F6910733E",
+    "bundled_sidecar_sha256": "778268E1E57A8D65CFF6229B67B694DD6B936B900304622A7D6530319EC5A48B",
+    "installed_database_sha256": "C53DA2AD3FE11154150087C811A6655D7C1CFCDC1C090C66C0D0395830D15D50",
+    "external_connections": 0,
+    "secret_values_recorded": false
+  },
+  "known_limits": [
+    "Python str/bytes and Rust String/serde JSON may retain runtime-managed immutable copies; the implementation overwrites owned bytearray and fixed-size key, nonce, pad and signature buffers where lifetime control is available.",
+    "Python and cryptography/OpenSSL internals may copy keys during AES-GCM, HKDF and HMAC operations; those internal allocator-managed copies cannot be reliably zeroized by application code.",
+    "Legacy DAONENC1 objects remain read-only compatible after additive migration and do not gain an authenticated content-type header; all new writes use DAONENC2."
+  ],
+  "cleanup": {
+    "install": 0,
+    "test_storage": 0,
+    "test_credential": 0,
+    "app_or_sidecar_processes": 0,
+    "listeners": 0,
+    "installer_target": 0,
+    "repo_generated_sidecar": 0,
+    "repo_gen": 0,
+    "coverage": 0,
+    "protected_existing_profile_modified": false
+  },
+  "formal_failure_report_count": 0
+}
