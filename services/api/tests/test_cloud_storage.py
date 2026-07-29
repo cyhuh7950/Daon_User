@@ -57,6 +57,7 @@ class CloudStorageContractTests(unittest.TestCase):
             "CREATE TRIGGER audit_events_immutable",
             "vector(3)",
             "idempotency_records",
+            "PRIMARY KEY (tenant_id, workspace_id, actor_id, operation, idempotency_key)",
         ):
             self.assertIn(token, source)
 
@@ -146,6 +147,31 @@ class PostgresCloudIntegrationTests(unittest.TestCase):
         self.assertEqual(current.version, 1)
         self.assertIsNone(current.read_at)
         self.assertEqual(self.store.idempotency_count(self.tenant_a, "idem-cloud-read-0002"), 0)
+        self.assertTrue(self.store.context_is_clear())
+
+    def test_same_tenant_actor_key_isolated_by_workspace(self) -> None:
+        suffix = self._testMethodName
+        first = CloudAccessContext(
+            f"tenant-shared-{suffix}", f"workspace-one-{suffix}", f"user-shared-{suffix}",
+            "notification.read",
+        )
+        second = CloudAccessContext(
+            first.tenant_id, f"workspace-two-{suffix}", first.actor_id, "notification.read"
+        )
+        self.store.seed_scope(first)
+        self.store.seed_scope(second)
+        first_item = self.store.create_notification(first, "notification-ws-one", "event-ws-one")
+        second_item = self.store.create_notification(second, "notification-ws-two", "event-ws-two")
+        key = "idem-shared-workspace-0001"
+        self.store.mark_notification_read(first, first_item.notification_id, 1, key)
+        self.store.mark_notification_read(second, second_item.notification_id, 1, key)
+        self.assertEqual(self.store.idempotency_count(first, key), 1)
+        self.assertEqual(self.store.idempotency_count(second, key), 1)
+        self.assertEqual(self.store.audit_count(first, "notification.read"), 1)
+        self.assertEqual(self.store.audit_count(second, "notification.read"), 1)
+        with self.assertRaises(CloudDatabaseError):
+            self.store.get_notification(second, first_item.notification_id)
+        self.assertTrue(self.store.context_is_clear())
 
 
 if __name__ == "__main__":

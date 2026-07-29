@@ -489,7 +489,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def ready(request: Request) -> JSONResponse:
         cloud_ready = (
             dependencies.cloud_store is None
-            or dependencies.cloud_store.readiness().ready
+            or (await asyncio.to_thread(dependencies.cloud_store.readiness)).ready
         )
         status = 200 if dependencies.state.ready and cloud_ready else 503
         response = JSONResponse(
