@@ -6,12 +6,12 @@
 |---|---|
 | 작업 | R1-M5-01-C01 DB 장애 Liveness·Workspace Idempotency 보완 |
 | 담당 | 어울2 (단일 Writer) |
-| 상태 | IN_PROGRESS |
-| 현재 단계 | exact SHA 서버 검증 완료, Evidence·완료보고 작성 |
+| 상태 | COMPLETED |
+| 현재 단계 | 종료 직전 정합·인계 |
 | 작업 위치 | `C:\tmp\Daon_User-r1-m4-06` |
 | 브랜치 | `codex/r1-m5-01` |
 | 인계 HEAD | `282e002fa0cf1eed34b17449474a372fd2a443fa` |
-| 다음 작업 | Evidence Commit·Push 후 문서-only final SHA를 서버 exact checkout하여 SHA를 정합한다. |
+| 다음 작업 | 어울1 독립 Diff·Evidence 검토와 다음 Work Order 판단 |
 
 ## 진행 이력
 
@@ -31,6 +31,8 @@
 | 2026-07-29 | 서버 장애·회복 GREEN | 완료 | exact SHA `f872e89...`, 전용 PostgreSQL 18.4·pgvector 0.8.2 | 시작 DB down live 200/ready 503·동시 live 0.002초, DB up/Migration 후 동일 Process ready 200, Runtime DB down/up 후에도 동일 Process 회복 | 첫 실행은 존재하지 않는 uv 결합 Tag로 제품 시작 전 중단·전용 자원 정리. 고정 가용 Image로 재개 | Workspace 실DB·복구 검증 |
 | 2026-07-29 | Workspace·복구 GREEN | 완료 | Server Evidence | Cloud 실DB 11/11, 직접 다른 Workspace Read 0·Write 0·Context clear, Migration 재적용, Backup→Downgrade ready 503→Restore/Upgrade ready 200, 안전 Log Hit 0 | 기능 검증 종료 후 root 소유 `.venv` 때문에 Checkout 삭제만 권한 거부. exact path 정리 Container로 복구 후 재확인 | 종료 자원 확인·Evidence 작성 |
 | 2026-07-29 | 서버 종료 확인 | 완료 | 없음 | 전용 Checkout·Container·Network·Volume 0 | 공용 `shared-db`·`common`·`netdata`·`proxy` 미사용·미변경 | Evidence·완료보고 Commit |
+| 2026-07-29 | Evidence·완료보고 | 완료 | Commit `a7c489d79b0ffaaf18c6919f29035a335a9743ba` 및 최종 진행기록 | Evidence JSON 유효, 구현 SHA 대비 변경은 Evidence·완료보고·Progress 문서 4개뿐임을 서버 exact checkout으로 확인 | 제품 코드 변경 없음 | 종료 직전 최종 SHA 정합·Clean 확인 |
+| 2026-07-29 | 종료 직전 | 완료 | 이 기록 | Local·Origin·Server final SHA 정합 절차와 Worktree Clean 확인, 임시 로컬 Script 5개 제거 | 정식 FAILURE_REPORT 0회, 미해결 제품 결함 없음 | 어울1에게 표준 결과보고 |
 
 ## 검증 요약
 
