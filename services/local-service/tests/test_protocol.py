@@ -17,6 +17,8 @@ def valid_bootstrap() -> bytes:
             "protocol_version": PROTOCOL_VERSION,
             "app_instance_id": "instance-123",
             "root_secret": "ab" * 32,
+            "storage_root_key": "cd" * 32,
+            "storage_root": "C:\\Daon\\local-storage",
             "parent_process_id": 12345,
         }
     ).encode()
@@ -26,6 +28,8 @@ def test_parse_bootstrap_accepts_exact_contract() -> None:
     parsed = parse_bootstrap(valid_bootstrap())
     assert parsed.app_instance_id == "instance-123"
     assert parsed.root_secret == "ab" * 32
+    assert parsed.storage_root_key == "cd" * 32
+    assert parsed.storage_root == "C:\\Daon\\local-storage"
     assert parsed.parent_process_id == 12345
 
 

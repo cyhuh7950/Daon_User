@@ -57,6 +57,8 @@ def bootstrap() -> bytes:
                 "protocol_version": "1.0",
                 "app_instance_id": "instance-123",
                 "root_secret": "ab" * 32,
+                "storage_root_key": "cd" * 32,
+                "storage_root": str(Path(os.environ.get("TEMP", ".")) / "daon-main-test-storage"),
                 "parent_process_id": os.getppid(),
             }
         ).encode()

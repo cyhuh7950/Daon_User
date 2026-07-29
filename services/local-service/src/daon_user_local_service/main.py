@@ -6,17 +6,20 @@ import socket
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, BinaryIO, Protocol
 
 import uvicorn
 
 from .app import create_app
+from .local_storage import LocalEncryptedStore, LocalStorageError
 from .protocol import MAX_BOOTSTRAP_BYTES, BootstrapError, parse_bootstrap, ready_envelope
 
 BOOTSTRAP_TIMEOUT_SECONDS = 1.0
 EXIT_BOOTSTRAP_INVALID = 64
 EXIT_BOOTSTRAP_TIMEOUT = 65
 EXIT_PARENT_MISMATCH = 66
+EXIT_STORAGE_UNAVAILABLE = 67
 MAX_PARENT_CHAIN_DEPTH = 8
 
 
@@ -249,6 +252,13 @@ def run() -> int:
     if not _parent_identity_matches(bootstrap.parent_process_id):
         return EXIT_PARENT_MISMATCH
 
+    try:
+        storage = LocalEncryptedStore.open(
+            Path(bootstrap.storage_root), bytes.fromhex(bootstrap.storage_root_key)
+        )
+    except (OSError, LocalStorageError, ValueError):
+        return EXIT_STORAGE_UNAVAILABLE
+
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
     listener.bind(("127.0.0.1", 0))
@@ -260,6 +270,7 @@ def run() -> int:
             root_secret=bootstrap.root_secret,
             app_instance_id=bootstrap.app_instance_id,
             listener_port=port,
+            storage=storage,
         ),
         host="127.0.0.1",
         port=0,
@@ -282,6 +293,7 @@ def run() -> int:
     sys.stdout.flush()
     server.run(sockets=[listener])
     listener.close()
+    storage.close()
     return 0
 
 
