@@ -259,7 +259,7 @@ Milestone 이동, G0/G2/G9 Gate 우회, M2 승인 전 개별 기능 구현 또�
 | R1-D018 | 오디오 처리 상태와 Ready Gate | Audio-capable LLM 또는 ASR+LLM 의미 이해, 시간 근거 검증, ASR-only `ready` 금지 | 확정 · 신산님 승인 2026-07-20 |
 | R1-D019 | `waiting_model` 재처리 | Readiness Event 제한 자동 재큐 + 권한 사용자 수동 재처리, 현재 정책의 새 ProcessingRun과 중복 억제 | 확정 · 신산님 승인 2026-07-20 |
 | R1-D020 | 권한 변경 후 과거 결과 | OutputVersion 불변 보존, 현재 ACL 재검증, 무권한 근거·파생부 마스킹/차단, 현재 정책 새 Run | 확정 · 신산님 승인 2026-07-20 |
-| R1-D021 | iOS 알림 설정 진입 | 기존 범용 앱 설정 기능 보존 + 알림 전용 공개 API 진입, iOS 16+ `openNotificationSettingsURLString`, iOS 15.1 기존 앱 설정 Fallback, 비공개 URL·TCC 직접 조작 금지 | 확정 · 신산님 승인 2026-07-28 |
+| R1-D023 | iOS 알림 설정 진입 | 기존 범용 앱 설정 기능 보존 + 알림 전용 공개 API 진입, iOS 16+ `openNotificationSettingsURLString`, iOS 15.1 기존 앱 설정 Fallback, 비공개 URL·TCC 직접 조작 금지 | 확정 · 신산님 승인 2026-07-28 |
 
 R1-D013~020은 이번 승인으로 설계 계약이 확정되었으므로 M0에서 재결정하지 않고 결정 기록·추적표·Baseline Manifest에 고정한다. 나머지 미확정 항목은 추측으로 채우지 않는다. M1 진입 전에 각 항목을 `확정`, `범위 제외 승인`, `외부 차단` 중 하나로 분류하고 근거를 기록한다.
 

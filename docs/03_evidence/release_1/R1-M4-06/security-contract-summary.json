@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-06",
+  "evidence_kind": "verified_static_and_unit",
+  "token_contract": {
+    "version": "lt1",
+    "root_secret_bits": 256,
+    "signature": "HMAC-SHA256",
+    "default_ttl_seconds": 60,
+    "maximum_ttl_seconds": 300,
+    "bindings": [
+      "app_instance_id",
+      "capability",
+      "command",
+      "issued_at",
+      "expires_at",
+      "nonce"
+    ],
+    "nonce_replay_allowed": false,
+    "constant_time_signature_and_claim_comparison": true
+  },
+  "command_registry": {
+    "catalog_version": "1.0",
+    "capability": "runtime.read",
+    "commands": [
+      "runtime.capabilities.read",
+      "runtime.status.read"
+    ],
+    "write_commands": 0
+  },
+  "bootstrap": {
+    "private_parent_pipe": true,
+    "actual_owner_pid_bound": true,
+    "windows_packaged_ancestor_depth_limit": 8,
+    "root_secret_reused_as_http_token": false,
+    "secret_in_ready_or_public_state": false
+  },
+  "verification": {
+    "python_tests": 51,
+    "python_coverage_percent": 94.17,
+    "rust_lib_tests": 16,
+    "rust_integration_tests": 3,
+    "quality_gate_runner_tests": 28,
+    "known_python_environment_vulnerabilities": 0
+  },
+  "secret_values_recorded": false
+}

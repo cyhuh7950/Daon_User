@@ -12,7 +12,7 @@
     {
       "id": "DESIGN_MD",
       "path": "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
-      "sha256": "3317B404F9FD4A2AFFE3A15EBBF456DE0B88AE56249666872C09629059C82038"
+      "sha256": "44A5AA9CDA2381555FE4D4AB238838E404A8ACB6515236CE5C33CD0E0E60388E"
     },
     {
       "id": "DESIGN_DOCX",
@@ -22,7 +22,7 @@
     {
       "id": "IMPLEMENTATION_PLAN",
       "path": "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
-      "sha256": "30BE3B078804A73F5DBF83B1780DB93665199DA9AB12473E306F2E5F054996A3"
+      "sha256": "6693010D25B304A134AC414CB8F884D21DC6DF1365D98D855F2732BE4840F047"
     },
     {
       "id": "TEST_PLAN",
@@ -32,7 +32,7 @@
     {
       "id": "DECISIONS",
       "path": "docs/01_architecture/DECISIONS.md",
-      "sha256": "4CDC3D77BCCBE560C12DD6B43CB56C47214C3E5EBD05ED327CF2C9BA410B6505"
+      "sha256": "AF15CE3B3C37A26524A61C2DB27C46DA27E6197949C710C6972D37CB3E904BAA"
     },
     {
       "id": "RISK_REGISTER",
@@ -78,7 +78,7 @@
     "APR-DEVENV-YSNA-20260720-01"
   ],
   "decision_status": {
-    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020", "R1-D021"],
+    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020", "R1-D021", "R1-D022", "R1-D023"],
     "g0_approval_requested": [],
     "external_blocked": ["R1-D004", "R1-D006", "R1-D007", "R1-D008", "R1-D011", "R1-D012"]
   },
@@ -125,6 +125,19 @@
         "docs/02_work_orders/release_1_baseline_manifest.json"
       ],
       "product_contract_changed": false
+    },
+    {
+      "id": "CHG-R1-MANIFEST-002",
+      "classification": "C1",
+      "owner": "어울1",
+      "summary": "승인 후 반영된 Next 보안 브리지와 모바일/iOS 결정의 현재 문서 Hash 동기화 및 중복 결정 ID 정정",
+      "affected_documents": [
+        "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
+        "docs/01_architecture/DECISIONS.md",
+        "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
+        "docs/02_work_orders/release_1_baseline_manifest.json"
+      ],
+      "product_contract_changed": false
     }
   ],
   "notes": [
@@ -133,6 +146,7 @@
     "R1-M1-01 is the first implementation work order after G0-BASELINE approval.",
     "Current document hashes include C1 technical corrections and the approved ysna-server development-integration change recorded after G0; original G0 commits and approval remain preserved.",
     "ysna-server approval applies only to the development-integration environment; Oracle Cloud production deployment still requires G9-DEPLOY approval.",
-    "Document SHA-256 values are canonical Git Blob hashes so Windows checkout line-ending conversion does not change the approved baseline identity."
+    "Document SHA-256 values are canonical Git Blob hashes so Windows checkout line-ending conversion does not change the approved baseline identity.",
+    "CHG-R1-MANIFEST-002 synchronizes already approved post-G0 decisions; it does not create or alter a product contract."
   ]
 }

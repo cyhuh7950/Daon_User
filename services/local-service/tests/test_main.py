@@ -56,7 +56,8 @@ def bootstrap() -> bytes:
             {
                 "protocol_version": "1.0",
                 "app_instance_id": "instance-123",
-                "token": "x" * 48,
+                "root_secret": "ab" * 32,
+                "parent_process_id": os.getppid(),
             }
         ).encode()
         + b"\n"
@@ -164,6 +165,14 @@ def test_run_returns_timeout_code_when_bootstrap_deadline_expires(
 
     monkeypatch.setattr(main, "read_bootstrap_line", timeout)
     assert main.run() == main.EXIT_BOOTSTRAP_TIMEOUT
+
+
+def test_parent_identity_accepts_only_a_bounded_real_ancestor_chain() -> None:
+    parents = {900: 800, 800: 700, 700: 600}
+    assert main._pid_is_ancestor(700, 900, parents)
+    assert not main._pid_is_ancestor(500, 900, parents)
+    assert not main._pid_is_ancestor(900, 900, parents)
+    assert not main._pid_is_ancestor(700, 900, {900: 800, 800: 900})
 
 
 def test_run_binds_only_loopback_emits_safe_ready_and_closes(

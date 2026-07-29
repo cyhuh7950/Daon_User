@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-06",
+  "quality_gate": {
+    "overall_status": "PASS",
+    "failures": 0,
+    "categories": {
+      "lint": "PASS",
+      "type": "PASS",
+      "unit": "PASS",
+      "contract": "PASS",
+      "build": "PASS",
+      "security": "PASS",
+      "independence": "PASS"
+    }
+  },
+  "regressions": {
+    "identity_tests": 18,
+    "authorization_tests": 22,
+    "openapi_paths": 44,
+    "openapi_operations": 67,
+    "openapi_schemas": 53,
+    "repository_independence_violations": 0,
+    "desktop_javascript_tests": 28,
+    "desktop_lint_files": 4
+  },
+  "browser_source_and_bundle_forbidden_local_api_hits": 0,
+  "limitations": [
+    "No GUI browser was opened or claimed.",
+    "No external deployment, database migration, or public API change was performed.",
+    "PR, CI, and merge remain owned by the main designer."
+  ]
+}

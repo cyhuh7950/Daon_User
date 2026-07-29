@@ -16,6 +16,8 @@ from .protocol import MAX_BOOTSTRAP_BYTES, BootstrapError, parse_bootstrap, read
 BOOTSTRAP_TIMEOUT_SECONDS = 1.0
 EXIT_BOOTSTRAP_INVALID = 64
 EXIT_BOOTSTRAP_TIMEOUT = 65
+EXIT_PARENT_MISMATCH = 66
+MAX_PARENT_CHAIN_DEPTH = 8
 
 
 class BootstrapReadTimeout(TimeoutError):
@@ -110,6 +112,87 @@ def _watch_parent(server: uvicorn.Server) -> None:
     server.should_exit = True
 
 
+def _pid_is_ancestor(
+    expected_ancestor: int,
+    process_id: int,
+    parents: dict[int, int],
+) -> bool:
+    visited = {process_id}
+    current = process_id
+    for _ in range(MAX_PARENT_CHAIN_DEPTH):
+        parent = parents.get(current, 0)
+        if parent == expected_ancestor and parent not in visited:
+            return True
+        if parent <= 0 or parent in visited:
+            return False
+        visited.add(parent)
+        current = parent
+    return False
+
+
+def _windows_process_parents() -> dict[int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_snapshot = kernel32.CreateToolhelp32Snapshot
+    create_snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    create_snapshot.restype = wintypes.HANDLE
+    process_first = kernel32.Process32FirstW
+    process_first.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    process_first.restype = wintypes.BOOL
+    process_next = kernel32.Process32NextW
+    process_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    process_next.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    snapshot = create_snapshot(0x00000002, 0)
+    if snapshot == wintypes.HANDLE(-1).value:
+        raise BootstrapError("parent process inspection failed")
+    parents: dict[int, int] = {}
+    entry = ProcessEntry32W()
+    entry.dwSize = ctypes.sizeof(ProcessEntry32W)
+    try:
+        if not process_first(snapshot, ctypes.byref(entry)):
+            raise BootstrapError("parent process inspection failed")
+        while True:
+            parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+            if not process_next(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        close_handle(snapshot)
+    return parents
+
+
+def _parent_identity_matches(expected_parent_process_id: int) -> bool:
+    if sys.platform != "win32":
+        return expected_parent_process_id == os.getppid()
+    try:
+        return _pid_is_ancestor(
+            expected_parent_process_id,
+            os.getpid(),
+            _windows_process_parents(),
+        )
+    except (OSError, BootstrapError):
+        return False
+
+
 def run() -> int:
     try:
         payload = read_bootstrap_line(sys.stdin.buffer)
@@ -118,6 +201,8 @@ def run() -> int:
         return EXIT_BOOTSTRAP_TIMEOUT
     except BootstrapError:
         return EXIT_BOOTSTRAP_INVALID
+    if not _parent_identity_matches(bootstrap.parent_process_id):
+        return EXIT_PARENT_MISMATCH
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
@@ -126,7 +211,11 @@ def run() -> int:
     port = int(listener.getsockname()[1])
 
     config = uvicorn.Config(
-        create_app(token=bootstrap.token, app_instance_id=bootstrap.app_instance_id),
+        create_app(
+            root_secret=bootstrap.root_secret,
+            app_instance_id=bootstrap.app_instance_id,
+            listener_port=port,
+        ),
         host="127.0.0.1",
         port=0,
         log_level="warning",

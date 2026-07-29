@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-06",
+  "evidence_kind": "actual_packaged_process",
+  "artifact": {
+    "kind": "pyinstaller_windows_sidecar",
+    "bytes": 18364551,
+    "sha256": "47AD02CF7934186CB5D673E45F51B0DF7B26C389CE9DF831CAE8EB9E648684B0",
+    "persisted_in_git": false
+  },
+  "runs": 2,
+  "listeners_per_run": 1,
+  "listener_address": "127.0.0.1",
+  "external_or_wildcard_listeners": 0,
+  "dynamic_ports_distinct": true,
+  "status_matrix": {
+    "authorized_status": 200,
+    "authorized_capabilities": 200,
+    "missing_or_tampered_token": 401,
+    "wrong_command_token": 401,
+    "replayed_token": 401,
+    "previous_run_token": 401,
+    "browser_origin": 403,
+    "external_host": 400,
+    "forwarded_header": 400,
+    "absolute_target": 400,
+    "query_or_encoded_path": 400,
+    "one_byte_body": 413,
+    "oversized_header": 431
+  },
+  "each_run_clean_exit": true,
+  "each_run_listener_closed": true,
+  "remaining_owned_processes": 0,
+  "remaining_listeners": 0,
+  "credential_or_signature_output_hits": 0,
+  "rust_owner_cross_language_runs": 2,
+  "rust_owner_state_sequence": [
+    "starting",
+    "ready",
+    "retrying",
+    "ready",
+    "unavailable"
+  ],
+  "gui_browser_used": false
+}

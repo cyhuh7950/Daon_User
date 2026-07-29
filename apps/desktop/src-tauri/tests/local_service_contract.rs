@@ -7,9 +7,14 @@ fn each_app_launch_generates_distinct_credentials() {
     let first = AppCredentials::generate().expect("first credentials");
     let second = AppCredentials::generate().expect("second credentials");
     assert_ne!(first.app_instance_id(), second.app_instance_id());
-    assert_ne!(first.token(), second.token());
+    let first_bootstrap: serde_json::Value =
+        serde_json::from_str(&first.bootstrap_json()).expect("first bootstrap");
+    let second_bootstrap: serde_json::Value =
+        serde_json::from_str(&second.bootstrap_json()).expect("second bootstrap");
+    assert_ne!(first_bootstrap["root_secret"], second_bootstrap["root_secret"]);
+    assert_eq!(first_bootstrap["parent_process_id"], std::process::id());
     assert!(first.bootstrap_json().len() <= 4096);
-    assert!(!format!("{first:?}").contains(first.token()));
+    assert!(!format!("{first:?}").contains(first_bootstrap["root_secret"].as_str().unwrap()));
 }
 
 #[test]

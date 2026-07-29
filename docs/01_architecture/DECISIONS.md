@@ -39,6 +39,7 @@
 | R1-D020 | 확정 | 과거 OutputVersion 불변 보존, 모든 접근·전달·등록·재실행은 현재 권한으로 재검증 | `APR-G0-DESIGN-20260720-01` |
 | R1-D021 | 확정 | 개발·통합은 로컬 수정·검증→Git Push→`/home/ubuntu/deploy/daon-user` 격리 배포→전용 PostgreSQL 18.4 Migration→서버 Test→PR Merge로 한다. 기존 `shared-db`와 `common/netdata/proxy` 사용·변경을 금지하고 ARM64/Multi-arch 호환성을 검증한다. WSL은 선택적 대체 환경이며 OCI 운영 G9 승인은 유지한다. | `APR-DEVENV-YSNA-20260720-01` |
 | R1-D022 | 확정 | Next `16.3.0-canary.93`을 Sharp·PostCSS 취약점 제거를 위한 Release 1 개발·검증 전용 임시 보안 브리지로 사용한다. 안정판 전환 전 운영 Release를 금지하며 안전 범위를 포함한 안정판 출시 시 동일 회귀·Quality Gate 후 즉시 교체한다. | `APR-R1-M2-06-SEC02-20260722-01` · 신산님 승인 |
+| R1-D023 | 확정 | 기존 범용 앱 설정 진입을 보존하고 알림 전용 공개 API 진입을 별도로 제공한다. iOS 16 이상은 `UIApplication.openNotificationSettingsURLString`, iOS 15.1은 기존 `openSettingsURLString` Fallback을 사용하며 비공개 URL·Settings/TCC 직접 조작은 금지한다. | 신산님 승인 · 2026-07-28 |
 
 ## G0 판정
 
@@ -59,3 +60,9 @@
 | 변경 ID | 일자 | 등급 | 변경 | 근거와 종료 조건 |
 | --- | --- | --- | --- | --- |
 | `CHG-R1-M2-06-SEC02-001` | 2026-07-22 | C2 | R1-D002는 삭제·수정하지 않고 Next만 `16.3.0-canary.93` exact로 개발·검증 기준선에 임시 동기화 | 안정판 Next 16.2.11까지 취약 PostCSS·Sharp 범위를 유지해 정상 Tree와 Audit 0을 함께 만족하지 못했다. Canary는 개발·검증 및 ysna-server 격리 테스트에만 사용하고 운영 Release를 금지한다. 안전 범위를 선언한 안정판 출시 즉시 동일 21/98·Lint·Build·Runtime Smoke·공통 Gate를 통과한 뒤 교체한다. |
+
+## M3 승인 결정 기록
+
+| 변경 ID | 일자 | 등급 | 변경 | 근거와 영향 |
+| --- | --- | --- | --- | --- |
+| `CHG-R1-M3-06-IOS-SETTINGS-001` | 2026-07-28 | C2 | iOS 알림 설정 전용 공개 API와 iOS 15.1 범용 설정 Fallback을 R1-D023으로 고정 | 신산님 명시 승인에 따라 Phase A Simulator 접근성을 보강했다. 기존 범용 설정 기능은 보존하고 비공개 URL·TCC 조작은 허용하지 않는다. |
