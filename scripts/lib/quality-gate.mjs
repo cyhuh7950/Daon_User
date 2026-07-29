@@ -29,7 +29,19 @@ const CI_STEP_OUTCOMES = new Set(["success", "failure", "cancelled", "skipped"])
 const DEFAULT_RESULT_PATH = "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json";
 const DEFAULT_SUMMARY_PATH = "docs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md";
 const MAX_DIAGNOSTIC_FAILURES = 20;
-const IGNORED_DIRECTORIES = new Set([".git", "node_modules", ".next", "dist", "build", "coverage", ".cache"]);
+const IGNORED_DIRECTORIES = new Set([
+  ".git",
+  "node_modules",
+  ".next",
+  "dist",
+  "build",
+  "coverage",
+  ".cache",
+  "__pycache__",
+  ".pytest_cache",
+  ".ruff_cache",
+  "target"
+]);
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex").toUpperCase();
 const posix = (value) => value.split(path.sep).join("/");

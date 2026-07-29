@@ -1,79 +1,164 @@
-from fastapi.testclient import TestClient
+from __future__ import annotations
+
+from collections.abc import Callable
+import re
+
 import pytest
+from fastapi.testclient import TestClient
 
-from daon_user_local_service import app as app_module
 from daon_user_local_service.app import create_app
+from daon_user_local_service.security import issue_request_token
 
 
-TOKEN = "token-" + ("x" * 43)
-INSTANCE = "instance-123"
+ROOT_SECRET = "ab" * 32
+INSTANCE = "12" * 16
+PORT = 48123
+NOW = 2_000_000_000
 EXPECTED_MAX_HEADER_BYTES = 8192
-EXPECTED_MAX_REQUEST_BODY_BYTES = 0
+OPAQUE_TRACE = re.compile(r"^[0-9a-f]{16}$")
 
 
-def client() -> TestClient:
-    return TestClient(create_app(token=TOKEN, app_instance_id=INSTANCE))
-
-
-def auth_headers(token: str = TOKEN, instance: str = INSTANCE) -> dict[str, str]:
-    return {
-        "authorization": f"Bearer {token}",
-        "x-daon-app-instance": instance,
-        "host": "127.0.0.1:48123",
-    }
-
-
-def test_status_requires_matching_token_and_instance() -> None:
-    test_client = client()
-    assert test_client.get("/v1/status", headers={"host": "127.0.0.1:48123"}).status_code == 401
-    assert test_client.get("/v1/status", headers=auth_headers(token="wrong")).status_code == 401
-    assert test_client.get("/v1/status", headers=auth_headers(instance="other")).status_code == 401
-
-
-def test_status_returns_only_safe_operational_metadata() -> None:
-    response = client().get("/v1/status", headers=auth_headers())
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": "ready",
-        "protocol_version": "1.0",
-        "app_instance_id": INSTANCE,
-    }
-    assert TOKEN not in response.text
-
-
-def test_unapproved_method_path_host_and_command_fail_closed() -> None:
-    test_client = client()
-    assert test_client.post("/v1/status", headers=auth_headers()).status_code == 405
-    assert test_client.get("/v1/unknown", headers=auth_headers()).status_code == 404
-    assert (
-        test_client.post("/v1/commands/arbitrary", headers=auth_headers()).status_code == 404
+def client(clock: Callable[[], int] = lambda: NOW) -> TestClient:
+    return TestClient(
+        create_app(
+            root_secret=ROOT_SECRET,
+            app_instance_id=INSTANCE,
+            listener_port=PORT,
+            clock=clock,
+        ),
+        base_url=f"http://127.0.0.1:{PORT}",
     )
-    bad_host = auth_headers()
-    bad_host["host"] = "192.168.1.10:48123"
-    assert test_client.get("/v1/status", headers=bad_host).status_code == 400
 
 
-def test_error_responses_do_not_echo_secrets() -> None:
-    response = client().get("/v1/status", headers=auth_headers(token="attacker-secret"))
-    assert response.status_code == 401
-    assert "attacker-secret" not in response.text
-    assert TOKEN not in response.text
+def token(command: str, *, nonce: str, issued_at: int = NOW, ttl_seconds: int = 60) -> str:
+    return issue_request_token(
+        root_secret=ROOT_SECRET,
+        app_instance_id=INSTANCE,
+        capability="runtime.read",
+        command=command,
+        issued_at=issued_at,
+        ttl_seconds=ttl_seconds,
+        nonce=nonce,
+    )
 
 
-def test_authentication_always_compares_token_and_instance(
-    monkeypatch,
-) -> None:
-    calls: list[tuple[str, str]] = []
-    real_compare = app_module.hmac.compare_digest
+def auth_headers(command: str, *, nonce: str = "34" * 32) -> dict[str, str]:
+    return {"authorization": f"Bearer {token(command, nonce=nonce)}"}
 
-    def observe(left: str, right: str) -> bool:
-        calls.append((left, right))
-        return real_compare(left, right)
 
-    monkeypatch.setattr(app_module.hmac, "compare_digest", observe)
-    response = client().get("/v1/status", headers=auth_headers(token="wrong"))
-    assert response.status_code == 401
-    assert calls == [("wrong", TOKEN), (INSTANCE, INSTANCE)]
+def assert_safe_error(response: object, expected_code: str) -> None:
+    payload = response.json()  # type: ignore[attr-defined]
+    assert payload["error_code"] == expected_code
+    assert OPAQUE_TRACE.fullmatch(payload["trace_id"])
+    serialized = response.text  # type: ignore[attr-defined]
+    assert ROOT_SECRET not in serialized
+    assert INSTANCE not in serialized
+    assert str(PORT) not in serialized
+
+
+def test_fixed_read_only_commands_require_command_bound_single_use_tokens() -> None:
+    test_client = client()
+    status_headers = auth_headers("runtime.status.read")
+    response = test_client.get("/v1/status", headers=status_headers)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready", "protocol_version": "1.0"}
+    assert test_client.get("/v1/status", headers=status_headers).status_code == 401
+
+    capabilities = test_client.get(
+        "/v1/capabilities",
+        headers=auth_headers("runtime.capabilities.read", nonce="56" * 32),
+    )
+    assert capabilities.status_code == 200
+    assert capabilities.json() == {
+        "catalog_version": "1.0",
+        "capabilities": [
+            {
+                "capability": "runtime.read",
+                "commands": ["runtime.capabilities.read", "runtime.status.read"],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"origin": "https://example.test"},
+        {"sec-fetch-site": "same-origin"},
+        {"sec-fetch-mode": "cors"},
+        {"forwarded": "host=127.0.0.1"},
+        {"x-forwarded-host": f"127.0.0.1:{PORT}"},
+        {"x-forwarded-for": "127.0.0.1"},
+        {"x-forwarded-proto": "http"},
+    ],
+)
+def test_browser_and_proxy_headers_are_rejected_before_dispatch(headers: dict[str, str]) -> None:
+    response = client().get(
+        "/v1/status",
+        headers=auth_headers("runtime.status.read") | headers,
+    )
+    assert response.status_code in {400, 403}
+    assert response.json()["error_code"] in {
+        "BROWSER_REQUEST_NOT_ALLOWED",
+        "PROXY_HEADERS_NOT_ALLOWED",
+    }
+    assert OPAQUE_TRACE.fullmatch(response.json()["trace_id"])
+    assert "access-control-allow-origin" not in response.headers
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["127.0.0.1", "localhost:48123", "127.0.0.1:48124", "192.168.1.10:48123"],
+)
+def test_host_must_match_exact_bound_loopback_port(host: str) -> None:
+    response = client().get(
+        "/v1/status",
+        headers=auth_headers("runtime.status.read") | {"host": host},
+    )
+    assert response.status_code == 400
+    assert_safe_error(response, "INVALID_LOOPBACK_HOST")
+
+
+def test_wrong_command_token_unknown_path_query_encoding_and_method_fail_closed() -> None:
+    test_client = client()
+    unauthenticated_unknown = test_client.get("/v1/unknown")
+    assert unauthenticated_unknown.status_code == 401
+    assert_safe_error(unauthenticated_unknown, "LOCAL_AUTH_REQUIRED")
+    assert (
+        test_client.get(
+            "/v1/status",
+            headers=auth_headers("runtime.capabilities.read", nonce="01" * 32),
+        ).status_code
+        == 401
+    )
+    assert (
+        test_client.get(
+            "/v1/unknown",
+            headers=auth_headers("runtime.status.read", nonce="02" * 32),
+        ).status_code
+        == 404
+    )
+    assert (
+        test_client.get(
+            "/v1/status?command=runtime.status.read",
+            headers=auth_headers("runtime.status.read", nonce="03" * 32),
+        ).status_code
+        == 400
+    )
+    assert (
+        test_client.get(
+            "/v1/%73tatus",
+            headers=auth_headers("runtime.status.read", nonce="04" * 32),
+        ).status_code
+        == 400
+    )
+    assert (
+        test_client.post(
+            "/v1/status",
+            headers=auth_headers("runtime.status.read", nonce="05" * 32),
+        ).status_code
+        == 405
+    )
 
 
 @pytest.mark.parametrize(
@@ -85,29 +170,29 @@ def test_authentication_always_compares_token_and_instance(
         ({"transfer-encoding": "chunked"}, 400, "TRANSFER_ENCODING_NOT_ALLOWED"),
     ],
 )
-def test_status_rejects_body_headers_before_reading_body(
+def test_body_framing_is_rejected_before_dispatch(
     headers: dict[str, str],
     expected_status: int,
     expected_code: str,
 ) -> None:
-    response = client().get("/v1/status", headers=auth_headers() | headers)
+    response = client().get(
+        "/v1/status",
+        headers=auth_headers("runtime.status.read") | headers,
+    )
     assert response.status_code == expected_status
-    assert response.json() == {"error_code": expected_code}
+    assert_safe_error(response, expected_code)
 
 
-def test_status_allows_exact_zero_body_contract() -> None:
-    response = client().get(
+def test_oversized_headers_and_auth_failures_are_safe() -> None:
+    test_client = client()
+    oversized = test_client.get(
         "/v1/status",
-        headers=auth_headers() | {"content-length": str(EXPECTED_MAX_REQUEST_BODY_BYTES)},
+        headers=auth_headers("runtime.status.read") | {"x-oversized": "x" * EXPECTED_MAX_HEADER_BYTES},
     )
-    assert response.status_code == 200
+    assert oversized.status_code == 431
+    assert_safe_error(oversized, "REQUEST_HEADERS_TOO_LARGE")
 
-
-def test_status_rejects_headers_over_declared_limit() -> None:
-    oversized = "x" * EXPECTED_MAX_HEADER_BYTES
-    response = client().get(
-        "/v1/status",
-        headers=auth_headers() | {"x-oversized": oversized},
-    )
-    assert response.status_code == 431
-    assert response.json() == {"error_code": "REQUEST_HEADERS_TOO_LARGE"}
+    for authorization in ("", "Bearer invalid", f"Bearer {token('runtime.status.read', nonce='78' * 32)[:-1]}0"):
+        response = test_client.get("/v1/status", headers={"authorization": authorization})
+        assert response.status_code == 401
+        assert_safe_error(response, "LOCAL_AUTH_REQUIRED")

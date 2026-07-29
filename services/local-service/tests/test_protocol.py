@@ -16,7 +16,8 @@ def valid_bootstrap() -> bytes:
         {
             "protocol_version": PROTOCOL_VERSION,
             "app_instance_id": "instance-123",
-            "token": "token-" + ("x" * 43),
+            "root_secret": "ab" * 32,
+            "parent_process_id": 12345,
         }
     ).encode()
 
@@ -24,7 +25,8 @@ def valid_bootstrap() -> bytes:
 def test_parse_bootstrap_accepts_exact_contract() -> None:
     parsed = parse_bootstrap(valid_bootstrap())
     assert parsed.app_instance_id == "instance-123"
-    assert parsed.token.startswith("token-")
+    assert parsed.root_secret == "ab" * 32
+    assert parsed.parent_process_id == 12345
 
 
 @pytest.mark.parametrize(
@@ -33,14 +35,16 @@ def test_parse_bootstrap_accepts_exact_contract() -> None:
         b"{}",
         b"not-json",
         json.dumps(
-            {"protocol_version": "unsupported", "app_instance_id": "i", "token": "x" * 32}
+            {"protocol_version": "unsupported", "app_instance_id": "i", "root_secret": "ab" * 32, "parent_process_id": 1}
         ).encode(),
         json.dumps(
-            {"protocol_version": PROTOCOL_VERSION, "app_instance_id": "", "token": "x" * 32}
+            {"protocol_version": PROTOCOL_VERSION, "app_instance_id": "", "root_secret": "ab" * 32, "parent_process_id": 1}
         ).encode(),
         json.dumps(
-            {"protocol_version": PROTOCOL_VERSION, "app_instance_id": "i", "token": "short"}
+            {"protocol_version": PROTOCOL_VERSION, "app_instance_id": "i", "root_secret": "short", "parent_process_id": 1}
         ).encode(),
+        json.dumps({"protocol_version": PROTOCOL_VERSION, "app_instance_id": "i", "root_secret": "ab" * 32, "parent_process_id": 0}).encode(),
+        b'{"protocol_version":"1.0","protocol_version":"1.0","app_instance_id":"i","root_secret":"' + (b"ab" * 32) + b'","parent_process_id":1}',
         b"x" * (MAX_BOOTSTRAP_BYTES + 1),
     ],
 )

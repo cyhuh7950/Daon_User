@@ -126,6 +126,19 @@ test("Local Service Runtime과 전체 Python 환경 감사는 명시적 필수�
   assert.match(serialized, /local-service-full-environment-audit/);
 });
 
+test("생성 Cache와 compiler target은 보안 Source scan에서 제외한다", async (t) => {
+  const root = await makeFixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const directory of ["__pycache__", ".pytest_cache", ".ruff_cache", "target"]) {
+    const generated = path.join(root, ".github", directory);
+    await mkdir(generated, { recursive: true });
+    await writeFile(path.join(generated, "generated.bin"), "http://127.0.0.1:9999");
+  }
+  const { exitCode, report } = await runFixture(root, fixturePolicy());
+  assert.equal(exitCode, 0);
+  assert.equal(report.categories.security.status, "PASS");
+});
+
 test("Runtime Source가 등장했는데 필수 Capability 명령이 없으면 Exit 1이다", async (t) => {
   const root = await makeFixture();
   t.after(() => rm(root, { recursive: true, force: true }));

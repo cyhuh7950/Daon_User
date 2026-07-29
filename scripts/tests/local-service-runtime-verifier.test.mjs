@@ -24,7 +24,8 @@ test("packaged lifecycle verifier is an exported callable contract", () => {
 
 test("runtime output inspection permits the protocol instance only in ready and rejects secrets", () => {
   const instance = "instance-expected";
-  const token = "token-secret";
+  const rootSecret = "root-secret";
+  const requestToken = "request-token";
   const ready = `${JSON.stringify({
     event: "ready",
     protocol_version: "1.0",
@@ -34,7 +35,7 @@ test("runtime output inspection permits the protocol instance only in ready and 
   assert.deepEqual(
     assertRuntimeOutputBoundary(
       { stdout: ready, stderr: "", stdoutTruncated: false, stderrTruncated: false },
-      { token, appInstanceId: instance }
+      { rootSecret, requestTokens: [requestToken], appInstanceId: instance }
     ),
     {
       token_emitted: false,
@@ -47,11 +48,24 @@ test("runtime output inspection permits the protocol instance only in ready and 
       assertRuntimeOutputBoundary(
         {
           stdout: ready,
-          stderr: `debug ${token}`,
+          stderr: `debug ${rootSecret}`,
           stdoutTruncated: false,
           stderrTruncated: false
         },
-        { token, appInstanceId: instance }
+        { rootSecret, requestTokens: [requestToken], appInstanceId: instance }
+      ),
+    /credential appeared in runtime output/u
+  );
+  assert.throws(
+    () =>
+      assertRuntimeOutputBoundary(
+        {
+          stdout: ready,
+          stderr: `debug ${requestToken}`,
+          stdoutTruncated: false,
+          stderrTruncated: false
+        },
+        { rootSecret, requestTokens: [requestToken], appInstanceId: instance }
       ),
     /credential appeared in runtime output/u
   );
@@ -64,7 +78,7 @@ test("runtime output inspection permits the protocol instance only in ready and 
           stdoutTruncated: false,
           stderrTruncated: false
         },
-        { token, appInstanceId: instance }
+        { rootSecret, requestTokens: [requestToken], appInstanceId: instance }
       ),
     /instance appeared outside ready envelope/u
   );

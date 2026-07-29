@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
@@ -6,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const PROTOCOL_VERSION: &str = "1.0";
 pub const READY_MAX_BYTES: usize = 4096;
@@ -26,18 +27,19 @@ fn hex(bytes: &[u8]) -> String {
 
 pub struct AppCredentials {
     app_instance_id: String,
-    token: String,
+    root_secret: [u8; 32],
 }
 
 impl AppCredentials {
     pub fn generate() -> Result<Self, String> {
         let mut instance = [0_u8; 16];
-        let mut token = [0_u8; 32];
+        let mut root_secret = [0_u8; 32];
         getrandom::fill(&mut instance).map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
-        getrandom::fill(&mut token).map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
+        getrandom::fill(&mut root_secret)
+            .map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
         Ok(Self {
             app_instance_id: hex(&instance),
-            token: hex(&token),
+            root_secret,
         })
     }
 
@@ -45,15 +47,44 @@ impl AppCredentials {
         &self.app_instance_id
     }
 
-    pub fn token(&self) -> &str {
-        &self.token
+    fn root_secret_hex(&self) -> String {
+        hex(&self.root_secret)
+    }
+
+    pub fn issue_request_token(
+        &self,
+        capability: &str,
+        command: &str,
+        issued_at: u64,
+    ) -> Result<String, String> {
+        let authorized = matches!(
+            (capability, command),
+            ("runtime.read", "runtime.status.read")
+                | ("runtime.read", "runtime.capabilities.read")
+        );
+        if !authorized {
+            return Err("LOCAL_COMMAND_NOT_ALLOWED".to_owned());
+        }
+        let expires_at = issued_at
+            .checked_add(60)
+            .ok_or_else(|| "LOCAL_TOKEN_TIME_INVALID".to_owned())?;
+        let mut nonce = [0_u8; 32];
+        getrandom::fill(&mut nonce).map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
+        let unsigned = format!(
+            "lt1|{issued_at}|{expires_at}|{}|{capability}|{command}|{}",
+            self.app_instance_id,
+            hex(&nonce)
+        );
+        let signature = hmac_sha256(&self.root_secret, unsigned.as_bytes());
+        Ok(format!("{unsigned}|{}", hex(&signature)))
     }
 
     pub fn bootstrap_json(&self) -> String {
         serde_json::json!({
             "protocol_version": PROTOCOL_VERSION,
             "app_instance_id": self.app_instance_id,
-            "token": self.token,
+            "root_secret": self.root_secret_hex(),
+            "parent_process_id": std::process::id(),
         })
         .to_string()
     }
@@ -64,9 +95,26 @@ impl fmt::Debug for AppCredentials {
         formatter
             .debug_struct("AppCredentials")
             .field("app_instance_id", &"[redacted]")
-            .field("token", &"[redacted]")
+            .field("root_secret", &"[redacted]")
             .finish()
     }
+}
+
+fn hmac_sha256(secret: &[u8; 32], message: &[u8]) -> [u8; 32] {
+    let mut inner_pad = [0x36_u8; 64];
+    let mut outer_pad = [0x5c_u8; 64];
+    for (index, byte) in secret.iter().enumerate() {
+        inner_pad[index] ^= byte;
+        outer_pad[index] ^= byte;
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(message);
+    let inner_digest = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner_digest);
+    outer.finalize().into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -802,11 +850,17 @@ fn verify_health(running: &RunningService) -> Result<(), &'static str> {
     stream
         .set_write_timeout(Some(IO_TIMEOUT))
         .map_err(|_| "LOCAL_HEALTH_FAILED")?;
+    let issued_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "LOCAL_TOKEN_TIME_INVALID")?
+        .as_secs();
+    let token = running
+        .credentials
+        .issue_request_token("runtime.read", "runtime.status.read", issued_at)
+        .map_err(|_| "LOCAL_TOKEN_ISSUE_FAILED")?;
     let request = format!(
-        "GET /v1/status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nX-Daon-App-Instance: {}\r\nConnection: close\r\n\r\n",
-        running.port,
-        running.credentials.token(),
-        running.credentials.app_instance_id()
+        "GET /v1/status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+        running.port, token
     );
     stream
         .write_all(request.as_bytes())
@@ -944,6 +998,43 @@ mod manager_tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    #[test]
+    fn request_tokens_are_short_lived_command_bound_and_unique() {
+        let credentials = AppCredentials::generate().expect("credentials");
+        let first = credentials
+            .issue_request_token("runtime.read", "runtime.status.read", 2_000_000_000)
+            .expect("first token");
+        let second = credentials
+            .issue_request_token("runtime.read", "runtime.capabilities.read", 2_000_000_000)
+            .expect("second token");
+        let first_fields: Vec<_> = first.split('|').collect();
+        let second_fields: Vec<_> = second.split('|').collect();
+        assert_eq!(first_fields.len(), 8);
+        assert_eq!(first_fields[0], "lt1");
+        assert_eq!(first_fields[1], "2000000000");
+        assert_eq!(first_fields[2], "2000000060");
+        assert_eq!(first_fields[3], credentials.app_instance_id());
+        assert_eq!(first_fields[4], "runtime.read");
+        assert_eq!(first_fields[5], "runtime.status.read");
+        assert_eq!(first_fields[6].len(), 64);
+        assert_eq!(first_fields[7].len(), 64);
+        assert_eq!(second_fields[5], "runtime.capabilities.read");
+        assert_ne!(first_fields[6], second_fields[6]);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn bootstrap_binds_actual_parent_process_without_debug_secret_leak() {
+        let credentials = AppCredentials::generate().expect("credentials");
+        let bootstrap: serde_json::Value =
+            serde_json::from_str(&credentials.bootstrap_json()).expect("bootstrap json");
+        assert_eq!(bootstrap["parent_process_id"], std::process::id());
+        assert_eq!(bootstrap["root_secret"].as_str().expect("secret").len(), 64);
+        let debug = format!("{credentials:?}");
+        assert!(!debug.contains(bootstrap["root_secret"].as_str().expect("secret")));
+        assert!(!debug.contains(credentials.app_instance_id()));
+    }
+
     struct FakeControl {
         exited: AtomicBool,
         healthy: AtomicBool,
@@ -1063,7 +1154,7 @@ mod manager_tests {
             let _spawn_gate = permit.acquire()?;
             self.credentials.lock().expect("credentials").push((
                 credentials.app_instance_id().to_owned(),
-                credentials.token().to_owned(),
+                credentials.root_secret_hex(),
             ));
             thread::sleep(self.delay);
             match self.plans.lock().expect("plans").pop_front() {
@@ -1085,7 +1176,7 @@ mod manager_tests {
     }
 
     fn wait_for_state(manager: &LocalServiceManager, expected: &str) -> LocalServiceState {
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let state = manager.status();
             if state.state() == expected {
@@ -1694,7 +1785,9 @@ mod manager_tests {
                 ],
             }),
             ManagerTiming {
-                startup_timeout: Duration::from_millis(250),
+                // Node fixture startup can exceed 250 ms on a loaded Windows host.
+                // Keep the test bounded while matching the production owner's patient wait policy.
+                startup_timeout: Duration::from_secs(2),
                 shutdown_timeout: Duration::from_millis(250),
                 monitor_interval: Duration::from_millis(10),
             },

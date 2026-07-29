@@ -1,5 +1,6 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
@@ -89,12 +90,13 @@ function assertReadyEnvelope(value, expectedInstance) {
 
 export function assertRuntimeOutputBoundary(
   { stdout, stderr, stdoutTruncated, stderrTruncated },
-  { token, appInstanceId }
+  { rootSecret, requestTokens, appInstanceId }
 ) {
   if (stdoutTruncated || stderrTruncated) {
     throw new Error("runtime output exceeded bounded inspection buffer");
   }
-  if (stdout.includes(token) || stderr.includes(token)) {
+  const secrets = [rootSecret, ...requestTokens];
+  if (secrets.some((secret) => stdout.includes(secret) || stderr.includes(secret))) {
     throw new Error("credential appeared in runtime output");
   }
   const newline = stdout.indexOf("\n");
@@ -118,6 +120,30 @@ export function assertRuntimeOutputBoundary(
     instance_ready_envelope_only: true,
     output_truncated: false
   };
+}
+
+export function issueRequestToken({
+  rootSecret,
+  appInstanceId,
+  capability,
+  command,
+  issuedAt = Math.floor(Date.now() / 1000)
+}) {
+  const expiresAt = issuedAt + 60;
+  const nonce = randomBytes(32).toString("hex");
+  const unsigned = [
+    "lt1",
+    issuedAt,
+    expiresAt,
+    appInstanceId,
+    capability,
+    command,
+    nonce
+  ].join("|");
+  const signature = createHmac("sha256", Buffer.from(rootSecret, "hex"))
+    .update(unsigned, "utf8")
+    .digest("hex");
+  return `${unsigned}|${signature}`;
 }
 
 export function assertLoopbackListener(rows, expectedPort) {
@@ -165,17 +191,25 @@ function attestListeners(processId, expectedPort) {
   return rows;
 }
 
-async function request(port, { token, appInstanceId, method = "GET", pathName = "/v1/status" }) {
-  const headers = {};
-  if (token !== undefined) headers.authorization = `Bearer ${token}`;
-  if (appInstanceId !== undefined) headers["x-daon-app-instance"] = appInstanceId;
-  const response = await fetch(`http://127.0.0.1:${port}${pathName}`, {
-    method,
-    headers,
-    signal: AbortSignal.timeout(3_000)
+async function request(port, { token, method = "GET", pathName = "/v1/status", extraHeaders = {} }) {
+  return new Promise((resolve, reject) => {
+    const headers = { ...extraHeaders };
+    if (token !== undefined) headers.authorization = `Bearer ${token}`;
+    const clientRequest = http.request(
+      { hostname: "127.0.0.1", port, path: pathName, method, headers, timeout: 3_000 },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.once("end", () => resolve({
+          status: response.statusCode,
+          body: Buffer.concat(chunks).toString("utf8")
+        }));
+      }
+    );
+    clientRequest.once("timeout", () => clientRequest.destroy(new Error("HTTP timeout")));
+    clientRequest.once("error", reject);
+    clientRequest.end();
   });
-  const body = await response.text();
-  return { status: response.status, body };
 }
 
 function rawRequest(port, payload, label) {
@@ -219,12 +253,11 @@ function rawRequest(port, payload, label) {
   });
 }
 
-function authenticatedRawHeaders({ token, appInstanceId, extra = [] }) {
+function authenticatedRawHeaders({ port, token, target = "/v1/status", extra = [] }) {
   return [
-    "GET /v1/status HTTP/1.1",
-    "Host: 127.0.0.1",
+    `GET ${target} HTTP/1.1`,
+    `Host: 127.0.0.1:${port}`,
     `Authorization: Bearer ${token}`,
-    `X-Daon-App-Instance: ${appInstanceId}`,
     ...extra,
     "Connection: close",
     "",
@@ -249,9 +282,26 @@ function waitForExit(child, timeoutMs = 5_000) {
   });
 }
 
-async function runSingleLifecycle(executablePath) {
+async function assertPortClosed(port) {
+  try {
+    await fetch(`http://127.0.0.1:${port}/v1/status`, {
+      signal: AbortSignal.timeout(1_000)
+    });
+  } catch {
+    return true;
+  }
+  throw new Error("listener remained reachable after parent stdin EOF");
+}
+
+async function runSingleLifecycle(executablePath, previousRunToken) {
   const appInstanceId = randomBytes(16).toString("hex");
-  const token = randomBytes(32).toString("hex");
+  const rootSecret = randomBytes(32).toString("hex");
+  const requestTokens = [];
+  const tokenFor = (command = "runtime.status.read", capability = "runtime.read") => {
+    const token = issueRequestToken({ rootSecret, appInstanceId, capability, command });
+    requestTokens.push(token);
+    return token;
+  };
   const child = spawn(executablePath, [], {
     cwd: repositoryRoot,
     stdio: ["pipe", "pipe", "pipe"],
@@ -264,36 +314,46 @@ async function runSingleLifecycle(executablePath) {
       `${JSON.stringify({
         protocol_version: "1.0",
         app_instance_id: appInstanceId,
-        token
+        root_secret: rootSecret,
+        parent_process_id: process.pid
       })}\n`
     );
     const ready = await waitForReady(child, appInstanceId);
     const listeners = attestListeners(child.pid, ready.port);
     const missingAuth = await request(ready.port, {});
+    const validStatusToken = tokenFor();
     const wrongToken = await request(ready.port, {
-      token: `${token.slice(0, -1)}${token.endsWith("0") ? "1" : "0"}`,
-      appInstanceId
+      token: `${validStatusToken.slice(0, -1)}${validStatusToken.endsWith("0") ? "1" : "0"}`
     });
-    const wrongInstance = await request(ready.port, {
-      token,
-      appInstanceId: `${appInstanceId}-wrong`
+    const wrongCommand = await request(ready.port, {
+      token: tokenFor("runtime.capabilities.read")
     });
-    const authorized = await request(ready.port, { token, appInstanceId });
+    const authorized = await request(ready.port, { token: validStatusToken });
+    const replayed = await request(ready.port, { token: validStatusToken });
+    const capabilities = await request(ready.port, {
+      token: tokenFor("runtime.capabilities.read"),
+      pathName: "/v1/capabilities"
+    });
+    const previousRun = previousRunToken === undefined
+      ? { status: 401 }
+      : await request(ready.port, { token: previousRunToken });
     const unknown = await request(ready.port, {
-      token,
-      appInstanceId,
+      token: tokenFor(),
       pathName: "/v1/unknown"
     });
     const wrongMethod = await request(ready.port, {
-      token,
-      appInstanceId,
+      token: tokenFor(),
       method: "POST"
+    });
+    const browserOrigin = await request(ready.port, {
+      token: tokenFor(),
+      extraHeaders: { origin: "https://attacker.invalid" }
     });
     const zeroBody = await rawRequest(
       ready.port,
       authenticatedRawHeaders({
-        token,
-        appInstanceId,
+        port: ready.port,
+        token: tokenFor(),
         extra: ["Content-Length: 0"]
       }),
       "content-length-zero"
@@ -301,8 +361,8 @@ async function runSingleLifecycle(executablePath) {
     const bodyRejected = await rawRequest(
       ready.port,
       authenticatedRawHeaders({
-        token,
-        appInstanceId,
+        port: ready.port,
+        token: tokenFor(),
         extra: ["Content-Length: 1"]
       }).replace(/\r\n\r\n$/u, "\r\n\r\nx"),
       "one-byte-body"
@@ -310,8 +370,8 @@ async function runSingleLifecycle(executablePath) {
     const invalidLength = await rawRequest(
       ready.port,
       authenticatedRawHeaders({
-        token,
-        appInstanceId,
+        port: ready.port,
+        token: tokenFor(),
         extra: ["Content-Length: invalid"]
       }),
       "invalid-content-length"
@@ -319,8 +379,8 @@ async function runSingleLifecycle(executablePath) {
     const transferEncoding = await rawRequest(
       ready.port,
       authenticatedRawHeaders({
-        token,
-        appInstanceId,
+        port: ready.port,
+        token: tokenFor(),
         extra: ["Transfer-Encoding: chunked"]
       }),
       "transfer-encoding"
@@ -328,8 +388,8 @@ async function runSingleLifecycle(executablePath) {
     const acceptedHeaderBoundary = await rawRequest(
       ready.port,
       authenticatedRawHeaders({
-        token,
-        appInstanceId,
+        port: ready.port,
+        token: tokenFor(),
         extra: [`X-Boundary: ${"a".repeat(7000)}`]
       }),
       "accepted-header"
@@ -337,33 +397,104 @@ async function runSingleLifecycle(executablePath) {
     const rejectedHeaderBoundary = await rawRequest(
       ready.port,
       authenticatedRawHeaders({
-        token,
-        appInstanceId,
+        port: ready.port,
+        token: tokenFor(),
         extra: [`X-Boundary: ${"a".repeat(9000)}`]
       }),
       "rejected-header"
     );
+    const externalHost = await rawRequest(
+      ready.port,
+      authenticatedRawHeaders({ port: ready.port, token: tokenFor() })
+        .replace(`Host: 127.0.0.1:${ready.port}`, "Host: attacker.invalid"),
+      "external-host"
+    );
+    const forwarded = await rawRequest(
+      ready.port,
+      authenticatedRawHeaders({
+        port: ready.port,
+        token: tokenFor(),
+        extra: ["Forwarded: host=attacker.invalid"]
+      }),
+      "forwarded"
+    );
+    const absoluteTarget = await rawRequest(
+      ready.port,
+      authenticatedRawHeaders({
+        port: ready.port,
+        token: tokenFor(),
+        target: `http://127.0.0.1:${ready.port}/v1/status`
+      }),
+      "absolute-target"
+    );
+    const queryBypass = await rawRequest(
+      ready.port,
+      authenticatedRawHeaders({ port: ready.port, token: tokenFor(), target: "/v1/status?x=1" }),
+      "query-bypass"
+    );
+    const encodedPath = await rawRequest(
+      ready.port,
+      authenticatedRawHeaders({ port: ready.port, token: tokenFor(), target: "/%76%31/status" }),
+      "encoded-path"
+    );
     const responseBody = JSON.parse(authorized.body);
+    const observedStatuses = {
+      missing_auth: missingAuth.status,
+      wrong_token: wrongToken.status,
+      wrong_command: wrongCommand.status,
+      authorized: authorized.status,
+      replayed: replayed.status,
+      capabilities: capabilities.status,
+      previous_run_token: previousRun.status,
+      unknown_path: unknown.status,
+      wrong_method: wrongMethod.status,
+      browser_origin: browserOrigin.status,
+      content_length_zero: zeroBody.status,
+      body_one_byte: bodyRejected.status,
+      invalid_content_length: invalidLength.status,
+      transfer_encoding: transferEncoding.status,
+      accepted_header: acceptedHeaderBoundary.status,
+      rejected_header: rejectedHeaderBoundary.status,
+      external_host: externalHost.status,
+      forwarded: forwarded.status,
+      absolute_target: absoluteTarget.status,
+      query_bypass: queryBypass.status,
+      encoded_path: encodedPath.status
+    };
     if (
       missingAuth.status !== 401 ||
       wrongToken.status !== 401 ||
-      wrongInstance.status !== 401 ||
+      wrongCommand.status !== 401 ||
       authorized.status !== 200 ||
+      replayed.status !== 401 ||
+      capabilities.status !== 200 ||
+      previousRun.status !== 401 ||
       unknown.status !== 404 ||
       wrongMethod.status !== 405 ||
+      browserOrigin.status !== 403 ||
       zeroBody.status !== 200 ||
       bodyRejected.status !== 413 ||
       invalidLength.status !== 400 ||
       transferEncoding.status !== 400 ||
       acceptedHeaderBoundary.status !== 200 ||
       ![400, 431].includes(rejectedHeaderBoundary.status) ||
+      externalHost.status !== 400 ||
+      forwarded.status !== 400 ||
+      absoluteTarget.status !== 400 ||
+      queryBypass.status !== 400 ||
+      encodedPath.status !== 400 ||
       Object.hasOwn(responseBody, "token") ||
-      Object.hasOwn(responseBody, "port")
+      Object.hasOwn(responseBody, "port") ||
+      Object.hasOwn(responseBody, "app_instance_id") ||
+      Object.hasOwn(responseBody, "process_id")
     ) {
-      throw new Error("runtime authentication or allowlist contract failed");
+      throw new Error(
+        `runtime authentication or allowlist contract failed: ${JSON.stringify(observedStatuses)}`
+      );
     }
     child.stdin.end();
     const exitCode = await waitForExit(child);
+    await assertPortClosed(ready.port);
     const stdout = capturedStdout();
     const stderr = capturedStderr();
     if (exitCode !== 0) throw new Error(`sidecar exit code ${exitCode}: ${stderr.text}`);
@@ -374,20 +505,30 @@ async function runSingleLifecycle(executablePath) {
         stdoutTruncated: stdout.truncated,
         stderrTruncated: stderr.truncated
       },
-      { token, appInstanceId }
+      { rootSecret, requestTokens, appInstanceId }
     );
     return {
       appInstanceId,
-      token,
+      rootSecret,
+      replayProbeToken: validStatusToken,
       port: ready.port,
       listener_count: listeners.length,
       statuses: {
         missing_auth: missingAuth.status,
         wrong_token: wrongToken.status,
-        wrong_instance: wrongInstance.status,
+        wrong_command: wrongCommand.status,
         authorized: authorized.status,
+        replayed: replayed.status,
+        previous_run_token: previousRun.status,
+        capabilities: capabilities.status,
         unknown_path: unknown.status,
-        wrong_method: wrongMethod.status
+        wrong_method: wrongMethod.status,
+        browser_origin: browserOrigin.status,
+        external_host: externalHost.status,
+        forwarded: forwarded.status,
+        absolute_target: absoluteTarget.status,
+        query_bypass: queryBypass.status,
+        encoded_path: encodedPath.status
       },
       http_boundaries: {
         content_length_zero: zeroBody.status,
@@ -400,7 +541,8 @@ async function runSingleLifecycle(executablePath) {
         rejected_header_status: rejectedHeaderBoundary.status
       },
       output_attestation: outputAttestation,
-      clean_exit: true
+      clean_exit: true,
+      listener_closed: true
     };
   } catch (error) {
     child.stdin.destroy();
@@ -413,8 +555,8 @@ export async function runPackagedLocalServiceLifecycle(
   executablePath = generatedSidecarPath
 ) {
   const first = await runSingleLifecycle(executablePath);
-  const second = await runSingleLifecycle(executablePath);
-  if (first.appInstanceId === second.appInstanceId || first.token === second.token) {
+  const second = await runSingleLifecycle(executablePath, first.replayProbeToken);
+  if (first.appInstanceId === second.appInstanceId || first.rootSecret === second.rootSecret) {
     throw new Error("per-instance credentials were reused");
   }
   return {
@@ -427,7 +569,8 @@ export async function runPackagedLocalServiceLifecycle(
         statuses: first.statuses,
         http_boundaries: first.http_boundaries,
         output_attestation: first.output_attestation,
-        clean_exit: first.clean_exit
+        clean_exit: first.clean_exit,
+        listener_closed: first.listener_closed
       },
       {
         port: second.port,
@@ -435,7 +578,8 @@ export async function runPackagedLocalServiceLifecycle(
         statuses: second.statuses,
         http_boundaries: second.http_boundaries,
         output_attestation: second.output_attestation,
-        clean_exit: second.clean_exit
+        clean_exit: second.clean_exit,
+        listener_closed: second.listener_closed
       }
     ],
     credentials_unique: true,
