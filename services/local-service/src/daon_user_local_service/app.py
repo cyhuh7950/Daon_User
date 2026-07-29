@@ -84,6 +84,7 @@ class FilePutRequest(StrictModel):
     workspace_id: str = Field(max_length=64)
     area: str = Field(max_length=32)
     content_base64: str = Field(max_length=1_400_000)
+    content_type: str = Field(max_length=128)
 
 
 class FileGetRequest(StrictModel):
@@ -273,7 +274,10 @@ def create_app(
             plaintext = b64decode(request.content_base64, validate=True)
             return {
                 "object_id": active_storage().put_file(
-                    request.workspace_id, request.area, plaintext
+                    request.workspace_id,
+                    request.area,
+                    plaintext,
+                    content_type=request.content_type,
                 )
             }
         except (Base64Error, ValueError):

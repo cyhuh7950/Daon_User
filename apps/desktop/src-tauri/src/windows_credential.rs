@@ -82,7 +82,9 @@ impl WindowsCredentialStore {
             key.copy_from_slice(unsafe {
                 std::slice::from_raw_parts(credential.CredentialBlob, ROOT_KEY_BYTES)
             });
-            Ok(Some(CredentialSecret(key)))
+            let secret = CredentialSecret(key);
+            key.fill(0);
+            Ok(Some(secret))
         } else {
             Err("LOCAL_CREDENTIAL_INVALID")
         };
@@ -104,6 +106,7 @@ impl WindowsCredentialStore {
         let mut key = [0_u8; ROOT_KEY_BYTES];
         getrandom::fill(&mut key).map_err(|_| "LOCAL_RANDOM_UNAVAILABLE")?;
         let secret = CredentialSecret(key);
+        key.fill(0);
         self.write(&secret)?;
         Ok(secret)
     }

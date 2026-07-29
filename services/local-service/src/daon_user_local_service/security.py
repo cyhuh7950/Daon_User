@@ -50,10 +50,15 @@ class NonceReplayCache:
             return True
 
 
-def _secret_bytes(root_secret: str) -> bytes:
+def _secret_bytes(root_secret: str) -> bytearray:
     if not isinstance(root_secret, str) or not _HEX_256.fullmatch(root_secret):
         raise TokenError()
-    return bytes.fromhex(root_secret)
+    return bytearray.fromhex(root_secret)
+
+
+def _wipe(value: bytearray) -> None:
+    value[:] = b"\x00" * len(value)
+    value.clear()
 
 
 def _valid_identifier(value: str) -> bool:
@@ -95,11 +100,11 @@ def issue_request_token(
         actual_nonce,
     )
     unsigned = "|".join(fields)
-    signature = hmac.new(
-        _secret_bytes(root_secret),
-        unsigned.encode("ascii"),
-        hashlib.sha256,
-    ).hexdigest()
+    secret = _secret_bytes(root_secret)
+    try:
+        signature = hmac.new(secret, unsigned.encode("ascii"), hashlib.sha256).hexdigest()
+    finally:
+        _wipe(secret)
     return f"{unsigned}|{signature}"
 
 
@@ -124,11 +129,13 @@ def verify_request_token(
         if version != TOKEN_VERSION or not _HEX_256.fullmatch(supplied):
             raise TokenError()
         unsigned = "|".join(parts[:-1])
-        expected_signature = hmac.new(
-            _secret_bytes(root_secret),
-            unsigned.encode("ascii"),
-            hashlib.sha256,
-        ).hexdigest()
+        secret = _secret_bytes(root_secret)
+        try:
+            expected_signature = hmac.new(
+                secret, unsigned.encode("ascii"), hashlib.sha256
+            ).hexdigest()
+        finally:
+            _wipe(secret)
         if not hmac.compare_digest(supplied, expected_signature):
             raise TokenError()
         issued_at = int(issued_text)

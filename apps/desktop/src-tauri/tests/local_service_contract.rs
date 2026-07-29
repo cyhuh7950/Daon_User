@@ -31,7 +31,7 @@ fn each_app_launch_generates_distinct_credentials() {
 fn ready_envelope_requires_exact_protocol_instance_and_loopback_port() {
     let credentials = AppCredentials::generate().expect("credentials");
     let valid = format!(
-        r#"{{"event":"ready","protocol_version":"1.0","app_instance_id":"{}","port":48123}}"#,
+        r#"{{"event":"ready","protocol_version":"1.1","app_instance_id":"{}","port":48123}}"#,
         credentials.app_instance_id()
     );
     let ready = parse_ready_envelope(valid.as_bytes(), &credentials).expect("valid ready");
@@ -39,6 +39,11 @@ fn ready_envelope_requires_exact_protocol_instance_and_loopback_port() {
 
     let wrong_instance = valid.replace(credentials.app_instance_id(), "other-instance");
     assert!(parse_ready_envelope(wrong_instance.as_bytes(), &credentials).is_err());
+    let legacy_sidecar =
+        valid.replace(r#""protocol_version":"1.1""#, r#""protocol_version":"1.0""#);
+    assert!(parse_ready_envelope(legacy_sidecar.as_bytes(), &credentials).is_err());
+    let missing_protocol = valid.replace(r#""protocol_version":"1.1","#, "");
+    assert!(parse_ready_envelope(missing_protocol.as_bytes(), &credentials).is_err());
     assert!(parse_ready_envelope(&vec![b'x'; READY_MAX_BYTES + 1], &credentials).is_err());
     assert!(parse_ready_envelope(b"unexpected stdout", &credentials).is_err());
 }
