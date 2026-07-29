@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import asyncio
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from daon_user_api.runtime import (
     WEB_SESSION_COOKIE,
     RuntimeDependencies,
     RuntimeSettings,
+    build_dependencies,
     create_app,
 )
 
@@ -39,6 +41,12 @@ class UnreadyCloudStore:
 
     def close(self) -> None:
         return None
+
+
+class SlowUnreadyCloudStore(UnreadyCloudStore):
+    def readiness(self):  # type: ignore[no-untyped-def]
+        time.sleep(0.25)
+        return super().readiness()
 
 
 class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
@@ -147,6 +155,17 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(live.status_code, 200)
         self.assertEqual(ready.status_code, 503)
         self.assertEqual(ready.json(), {"status": "not_ready"})
+
+    async def test_slow_cloud_readiness_does_not_block_live_event_loop(self) -> None:
+        self.dependencies.cloud_store = SlowUnreadyCloudStore()  # type: ignore[assignment]
+        started = time.perf_counter()
+        ready_task = asyncio.create_task(self.client.get("/health/ready"))
+        await asyncio.sleep(0.01)
+        live = await self.client.get("/health/live")
+        live_elapsed = time.perf_counter() - started
+        ready = await ready_task
+        self.assertEqual((live.status_code, ready.status_code), (200, 503))
+        self.assertLess(live_elapsed, 0.15)
 
     async def test_web_cookie_and_native_bearer_return_same_session_meaning(self) -> None:
         web = await self.client.get(
@@ -311,6 +330,21 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeSettingsTests(unittest.TestCase):
+    def test_unavailable_cloud_database_does_not_block_dependency_build(self) -> None:
+        unavailable_dsn = "postgresql://app@" + "127.0.0.1" + ":1/unavailable?connect_timeout=1"
+        with tempfile.TemporaryDirectory() as directory:
+            settings = RuntimeSettings(
+                profile="development",
+                bind_host="127.0.0.1",
+                port=8000,
+                database_path=Path(directory) / "runtime.sqlite3",
+                cloud_database_dsn=unavailable_dsn,
+            )
+            started = time.perf_counter()
+            dependencies = build_dependencies(settings)
+            self.assertLess(time.perf_counter() - started, 1.0)
+            dependencies.close()
+
     def test_plaintext_and_proxy_boundaries_fail_close(self) -> None:
         with self.assertRaises(ValueError):
             RuntimeSettings(profile="development", bind_host="0.0.0.0", port=8000)

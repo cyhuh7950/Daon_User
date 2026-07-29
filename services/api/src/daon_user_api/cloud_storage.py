@@ -4,17 +4,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator, Mapping, Sequence, cast
 
-from psycopg import Connection, Error
-from psycopg_pool import ConnectionPool
+from psycopg import Connection, Error, connect
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 
 _SAFE_SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+class _PoolAvailabilityLogFilter(logging.Filter):
+    """Keep connection targets and driver failures out of operational logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.msg if isinstance(record.msg, str) else ""
+        return not message.startswith(("error connecting", "reconnection attempt"))
+
+
+_pool_logger = logging.getLogger("psycopg.pool")
+if not any(isinstance(item, _PoolAvailabilityLogFilter) for item in _pool_logger.filters):
+    _pool_logger.addFilter(_PoolAvailabilityLogFilter())
 
 
 class CloudDatabaseError(RuntimeError):
@@ -69,14 +84,24 @@ class PostgresCloudStore:
     def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 4) -> None:
         if not isinstance(dsn, str) or not dsn:
             raise ValueError("CLOUD_DATABASE_DSN_REQUIRED")
+        self._dsn = dsn
+        self._open_lock = threading.Lock()
         self._pool = ConnectionPool[tuple[Any, ...]](
             conninfo=dsn,
             min_size=min_size,
             max_size=max_size,
             kwargs={"autocommit": False},
-            open=True,
+            timeout=2.0,
+            reconnect_timeout=5.0,
+            open=False,
         )
-        self._pool.wait(timeout=10.0)
+
+    def _ensure_pool_open(self) -> None:
+        if not self._pool.closed:
+            return
+        with self._open_lock:
+            if self._pool.closed:
+                self._pool.open(wait=False)
 
     def close(self) -> None:
         self._pool.close()
@@ -84,7 +109,8 @@ class PostgresCloudStore:
     @contextmanager
     def _transaction(self, context: CloudAccessContext) -> Iterator[Connection[tuple[Any, ...]]]:
         try:
-            with self._pool.connection(timeout=10.0) as connection:
+            self._ensure_pool_open()
+            with self._pool.connection(timeout=2.0) as connection:
                 with connection.transaction():
                     connection.execute("SELECT set_config('app.tenant_id', %s, true)", (context.tenant_id,))
                     connection.execute("SELECT set_config('app.workspace_id', %s, true)", (context.workspace_id,))
@@ -93,12 +119,26 @@ class PostgresCloudStore:
                     yield connection
         except CloudDatabaseError:
             raise
+        except PoolTimeout:
+            raise CloudDatabaseError("DATABASE_UNAVAILABLE", retryable=True) from None
         except Error as error:
             raise classify_database_error(error.sqlstate) from None
 
     def readiness(self) -> CloudReadiness:
         try:
-            with self._pool.connection(timeout=5.0) as connection:
+            if self._pool.closed:
+                with connect(self._dsn, connect_timeout=1) as connection:
+                    revision_row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+                    vector_row = connection.execute(
+                        "SELECT extversion FROM pg_extension WHERE extname = %s", ("vector",)
+                    ).fetchone()
+                revision = None if revision_row is None else str(revision_row[0])
+                vector_version = None if vector_row is None else str(vector_row[0])
+                ready = revision == "0001" and vector_version is not None
+                if ready:
+                    self._ensure_pool_open()
+                return CloudReadiness(ready, revision, vector_version)
+            with self._pool.connection(timeout=2.0) as connection:
                 revision_row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
                 vector_row = connection.execute(
                     "SELECT extversion FROM pg_extension WHERE extname = %s", ("vector",)
@@ -106,17 +146,20 @@ class PostgresCloudStore:
             revision = None if revision_row is None else str(revision_row[0])
             vector_version = None if vector_row is None else str(vector_row[0])
             return CloudReadiness(revision == "0001" and vector_version is not None, revision, vector_version)
-        except Error:
+        except (Error, PoolTimeout, OSError):
             return CloudReadiness(False, None, None)
 
     def context_is_clear(self) -> bool:
         try:
+            self._ensure_pool_open()
             with self._pool.connection(timeout=5.0) as connection:
                 row = connection.execute(
                     "SELECT nullif(current_setting('app.tenant_id', true), '') AS tenant_id, "
                     "nullif(current_setting('app.workspace_id', true), '') AS workspace_id"
                 ).fetchone()
             return row is not None and row[0] is None and row[1] is None
+        except PoolTimeout:
+            raise CloudDatabaseError("DATABASE_UNAVAILABLE", retryable=True) from None
         except Error as error:
             raise classify_database_error(error.sqlstate) from None
 
@@ -201,12 +244,12 @@ class PostgresCloudStore:
         with self._transaction(context) as connection:
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                (f"{context.tenant_id}|{context.actor_id}|{operation}|{idempotency_key}",),
+                (f"{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{operation}|{idempotency_key}",),
             )
             replay = connection.execute(
                 "SELECT request_fingerprint, result FROM idempotency_records "
-                "WHERE actor_id = %s AND operation = %s AND idempotency_key = %s",
-                (context.actor_id, operation, idempotency_key),
+                "WHERE workspace_id = %s AND actor_id = %s AND operation = %s AND idempotency_key = %s",
+                (context.workspace_id, context.actor_id, operation, idempotency_key),
             ).fetchone()
             if replay is not None:
                 if replay[0] != fingerprint:
@@ -233,7 +276,7 @@ class PostgresCloudStore:
                      "notification", notification_id, "succeeded", "forced-failure", "test", "{}"),
                 )
             event_id = "audit-" + hashlib.sha256(
-                f"{context.tenant_id}|{context.actor_id}|{idempotency_key}".encode("utf-8")
+                f"{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{idempotency_key}".encode("utf-8")
             ).hexdigest()[:24]
             connection.execute(
                 "INSERT INTO audit_events (event_id, tenant_id, workspace_id, actor_id, action, "
@@ -267,7 +310,8 @@ class PostgresCloudStore:
     def idempotency_count(self, context: CloudAccessContext, idempotency_key: str) -> int:
         with self._transaction(context) as connection:
             row = connection.execute(
-                "SELECT count(*) AS count FROM idempotency_records WHERE actor_id = %s AND idempotency_key = %s",
-                (context.actor_id, idempotency_key),
+                "SELECT count(*) AS count FROM idempotency_records "
+                "WHERE workspace_id = %s AND actor_id = %s AND idempotency_key = %s",
+                (context.workspace_id, context.actor_id, idempotency_key),
             ).fetchone()
         return int(row[0]) if row is not None else 0

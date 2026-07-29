@@ -136,7 +136,7 @@ def upgrade() -> None:
           status text NOT NULL CHECK (status IN ('completed','failed')),
           expires_at timestamptz NOT NULL,
           created_at timestamptz NOT NULL DEFAULT now(),
-          PRIMARY KEY (tenant_id, actor_id, operation, idempotency_key),
+          PRIMARY KEY (tenant_id, workspace_id, actor_id, operation, idempotency_key),
           FOREIGN KEY (tenant_id, workspace_id) REFERENCES workspaces(tenant_id, workspace_id)
         );
         CREATE TABLE notifications (
