@@ -6,13 +6,13 @@
 |---|---|
 | 작업 | R1-M5-02 Object·Queue·Worker 저장 기반 |
 | 담당 | 어울2 (단일 Writer) |
-| 상태 | IN_PROGRESS |
-| 현재 단계 | 로컬 전체 검증·의존성 감사 완료, Commit·Push 준비 |
-| 작업 위치 | `C:\tmp\Daon_User-r1-m4-06` |
+| 상태 | COMPLETED (R1-M5-02-C01 보정 검증 완료) |
+| 현재 단계 | exact SHA 서버 통합·장애/복구·정리 완료, 어울1 검토 대기 |
+| 작업 위치 | `C:\Users\cyhuh\OneDrive\바탕 화면\D Driver\Project\Daon_User` |
 | 브랜치 | `codex/r1-m5-02` |
 | 인계 HEAD | `ee5e8d4438d7d9a81f19ae59ee2f1b434abfe57d` |
 | 정식 FAILURE_REPORT | 0회 |
-| 다음 작업 | Diff·Secret·Clean 범위를 점검하고 Commit·Push한 exact SHA를 ysna-server에 격리 배포한다. |
+| 다음 작업 | 어울1이 C01 Evidence·완료보고·최종 Diff를 검토한다. |
 
 ## 진행 이력
 
@@ -31,6 +31,7 @@
 | 2026-07-29 | 전체 Quality Gate 최종 | 완료 | 공식 Gate Evidence(검증 후 기존 R1-M1-05 산출물은 Task 범위에서 제외) | 충분한 대기 후에도 Node `r+`가 즉시 EPERM이라 Sandbox 쓰기 경계임을 확정. 동일 `npm run verify:quality-gate`를 Sandbox 밖에서 299.6초 추적해 전체 37개 Check, 7개 Category, Security 포함 PASS·Failure 0 | 검증 명령·정책·환경은 변경하지 않았고 Artifact/공유 Build 쓰기 권한만 승인 경계로 실행 | 의존성 감사 |
 | 2026-07-29 | 의존성 감사 | 완료 | `services/api/pyproject.toml`, `uv.lock`, Architecture 문서 | MinIO Client `7.2.20`, Python `>=3.9`, Apache-2.0 확인. 전체 `.venv` `pip-audit` 결과 알려진 취약점 0. MinIO Server는 AGPL-3.0·ARM64 고정 Digest이며 승인된 개발/격리 외부 Service 용도로만 사용 | CacheControl 경고는 취약점 DB Cache 역직렬화 재생성 경고이며 감사 Exit 0 | Diff·Secret·Commit 준비 |
 | 2026-07-29 | Compose 로컬 사전검사 | 서버 이관 | `deploy/r1-m5-02/compose.yaml` | 환경변수·Secret 참조를 주입해 `docker compose config -q`를 시도 | 로컬 Windows PATH에 Docker CLI가 없어 명령을 시작하지 못함. 제품 실패가 아니며 Docker가 있는 ysna-server의 exact SHA에서 동일 구문·실행 검증 예정 | Commit·Push |
+| 2026-07-30 | C01 Fixture·서버 보정 완료 | 완료 | `test_object_queue.py`, C01 Evidence·진행·완료보고 | 공식 OneDrive 정본에서 Fixture Commit `a7c0fd9`·`f3da3c7` Push. exact SHA `f3da3c7...` Object 16/16·Cloud 11/11·Runtime 15/15·Rollback/Restore·장애/복구·SIGTERM PASS, 작업 자원 잔여 0 | 상세 오류·복구는 `R1-M5-02-C01_progress.md`에 보존. 제품 결함·정식 실패보고 0 | 어울1 검토 |
 
 ## 검증 요약
 
