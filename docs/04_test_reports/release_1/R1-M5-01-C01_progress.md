@@ -7,11 +7,11 @@
 | 작업 | R1-M5-01-C01 DB 장애 Liveness·Workspace Idempotency 보완 |
 | 담당 | 어울2 (단일 Writer) |
 | 상태 | IN_PROGRESS |
-| 현재 단계 | 공통 Quality Gate PASS, Diff·작업 생성물 정리 |
+| 현재 단계 | exact SHA 서버 검증 완료, Evidence·완료보고 작성 |
 | 작업 위치 | `C:\tmp\Daon_User-r1-m4-06` |
 | 브랜치 | `codex/r1-m5-01` |
 | 인계 HEAD | `282e002fa0cf1eed34b17449474a372fd2a443fa` |
-| 다음 작업 | Diff 검토 후 Commit·Push하고 exact SHA 서버 검증을 수행한다. |
+| 다음 작업 | Evidence Commit·Push 후 문서-only final SHA를 서버 exact checkout하여 SHA를 정합한다. |
 
 ## 진행 이력
 
@@ -27,6 +27,10 @@
 | 2026-07-29 | 공통 Quality Gate | 완료 | Quality 생성 Evidence는 기준선으로 복구 예정 | 최초 Sandbox 실행은 213.4초 후 `EPERM` 환경 중단. 동일 실행을 재시작하지 않고 권한 경계 밖에서 재개하여 352.5초, 37개 Check 전체 PASS·Exit 0 | 최초 결과는 제품 실패나 정식 FAILURE_REPORT가 아님. `gen/`은 Quality 종료 시 자체 정리되어 부재, `.coverage`와 기준선 Evidence만 작업 생성물로 식별 | 생성물 정리·Diff 보안 검토 |
 | 2026-07-29 | 최종 코드 재검증 | 완료 | Cloud Store 안전 Log Filter 포함 | uv 공유 환경을 병렬 사용해 Lock 충돌 1회 발생 후 순차 실행으로 교정. Cloud 11개(실DB 7 서버 대기), Runtime 13개, 실제 API/BFF, Web Build, Ruff·strict mypy PASS. 최종 Quality Gate 352초·37개 전체 PASS | 병렬 uv 오류는 검증 실행 방식의 환경 중단이며 제품 오류·정식 FAILURE_REPORT가 아님 | Quality 생성 Evidence·Coverage 정리 후 Commit·Push |
 | 2026-07-29 | Diff·생성물 정리 | 완료 | C01 코드·Test·Architecture·Progress만 유지 | `git diff --check` PASS, 비밀·내부주소 신규 노출 0. Quality 기준선 Evidence 복구, `.coverage` 제거, Tauri `gen/` 부재 확인 | 다른 사람 변경·추적 파일 삭제 없음 | 구현 Commit·Push 후 exact SHA 서버 검증 |
+| 2026-07-29 | 구현 Commit·Push | 완료 | Commit `f872e89f57c5771601eafc9e0a8e637e323d6f4d` | Local HEAD와 Origin `codex/r1-m5-01` SHA 일치 | Worktree Clean | exact SHA ysna-server 검증 |
+| 2026-07-29 | 서버 장애·회복 GREEN | 완료 | exact SHA `f872e89...`, 전용 PostgreSQL 18.4·pgvector 0.8.2 | 시작 DB down live 200/ready 503·동시 live 0.002초, DB up/Migration 후 동일 Process ready 200, Runtime DB down/up 후에도 동일 Process 회복 | 첫 실행은 존재하지 않는 uv 결합 Tag로 제품 시작 전 중단·전용 자원 정리. 고정 가용 Image로 재개 | Workspace 실DB·복구 검증 |
+| 2026-07-29 | Workspace·복구 GREEN | 완료 | Server Evidence | Cloud 실DB 11/11, 직접 다른 Workspace Read 0·Write 0·Context clear, Migration 재적용, Backup→Downgrade ready 503→Restore/Upgrade ready 200, 안전 Log Hit 0 | 기능 검증 종료 후 root 소유 `.venv` 때문에 Checkout 삭제만 권한 거부. exact path 정리 Container로 복구 후 재확인 | 종료 자원 확인·Evidence 작성 |
+| 2026-07-29 | 서버 종료 확인 | 완료 | 없음 | 전용 Checkout·Container·Network·Volume 0 | 공용 `shared-db`·`common`·`netdata`·`proxy` 미사용·미변경 | Evidence·완료보고 Commit |
 
 ## 검증 요약
 

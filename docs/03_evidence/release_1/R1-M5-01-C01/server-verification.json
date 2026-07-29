@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-01-C01",
+  "verified_code_sha": "f872e89f57c5771601eafc9e0a8e637e323d6f4d",
+  "server": "ysna-server",
+  "isolated_root": "/home/ubuntu/deploy/daon-user/R1-M5-01-C01",
+  "runtime": {
+    "python": "3.14.3",
+    "uv": "0.11.2",
+    "postgresql": "18.4",
+    "pgvector_image_digest": "b7337db8fe39d12fe8ecb0003c72680f24479813a744b43154eee6f2eab5a5f3"
+  },
+  "checks": {
+    "db_down_at_start_live_status": 200,
+    "db_down_at_start_ready_status": 503,
+    "concurrent_live_seconds": 0.002,
+    "same_process_ready_after_migration": 200,
+    "cloud_integration_tests_passed": 11,
+    "workspace_direct_read_rows": 0,
+    "workspace_direct_write_rows": 0,
+    "pool_context_clear": true,
+    "downgrade_ready_status": 503,
+    "restore_ready_status": 200,
+    "runtime_db_down_live_status": 200,
+    "runtime_db_down_ready_status": 503,
+    "runtime_db_recovery_same_process": true,
+    "sensitive_response_or_log_hits": 0,
+    "owned_checkouts_remaining": 0,
+    "owned_containers_remaining": 0,
+    "owned_networks_remaining": 0,
+    "owned_volumes_remaining": 0
+  },
+  "result": "PASS",
+  "notes": [
+    "The first server attempt stopped before product startup because a composed uv image tag did not exist; its isolated resources were removed.",
+    "The successful run completed every functional check. Root-owned virtual-environment files required an exact-path cleanup container; the subsequent read-only check confirmed zero owned resources."
+  ]
+}
