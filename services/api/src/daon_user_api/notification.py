@@ -37,6 +37,11 @@ _ALLOWED_REQUEST_STATES = frozenset({
     "pending", "in_review", "approved", "rejected", "expired", "withdrawn",
     "delivered", "failed", "cancelled",
 })
+_REQUEST_ACTIONS = {
+    "review": Action.REVIEW,
+    "approval": Action.APPROVE,
+    "delivery": Action.DELIVER,
+}
 _INBOX_FILTERS = re.compile(
     r"^(kind:(review|approval|delivery)|state:(pending|in_review|approved|rejected|expired|withdrawn|delivered|failed|cancelled))$"
 )
@@ -122,6 +127,7 @@ class InboxRequest:
     status: str
     tenant_id: str
     workspace_id: str
+    recipient_id: str
     actor_id: str
     due_at: datetime | None
     resource_type: str
@@ -135,6 +141,12 @@ class InboxPage:
     next_cursor: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ReadTransition:
+    notification: Notification
+    first_transition: bool
+
+
 class NotificationRepository(Protocol):
     def insert_if_absent(self, dedupe_key: str, item: Notification) -> bool: ...
     def all_notifications(self) -> tuple[Notification, ...]: ...
@@ -142,6 +154,11 @@ class NotificationRepository(Protocol):
     def notification_by_id(self, notification_id: str) -> Notification | None: ...
     def idempotency_result(self, key: str) -> tuple[str, Notification] | None: ...
     def save_idempotency_result(self, key: str, fingerprint: str, item: Notification) -> None: ...
+    def transition_read(
+        self, *, notification_id: str, tenant_id: str, recipient_id: str,
+        expected_etag: str, idempotency_key: str, fingerprint: str, read_at: datetime,
+        on_first_transition: Callable[[Notification, Notification], None],
+    ) -> ReadTransition: ...
     def upsert_inbox_request(self, item: InboxRequest) -> None: ...
     def all_inbox_requests(self) -> tuple[InboxRequest, ...]: ...
     def encode_cursor(self, item_id: str) -> str: ...
@@ -149,7 +166,12 @@ class NotificationRepository(Protocol):
 
 
 class ReferenceNotificationRepository:
-    """Isolated executable adapter; no durable DB success is claimed."""
+    """Isolated executable adapter; no durable DB success is claimed.
+
+    ``transition_read`` is the reference atomicity boundary. The M5 PostgreSQL
+    adapter must implement the same state/idempotency decision in one database
+    transaction and persist the audit through its transactional Outbox.
+    """
 
     def __init__(self) -> None:
         self._lock = RLock()
@@ -188,6 +210,40 @@ class ReferenceNotificationRepository:
     def save_idempotency_result(self, key: str, fingerprint: str, item: Notification) -> None:
         with self._lock:
             self._idempotency[key] = (fingerprint, item)
+
+    def transition_read(
+        self, *, notification_id: str, tenant_id: str, recipient_id: str,
+        expected_etag: str, idempotency_key: str, fingerprint: str, read_at: datetime,
+        on_first_transition: Callable[[Notification, Notification], None],
+    ) -> ReadTransition:
+        """Atomically decide replay/conflict, append first audit, and commit read state.
+
+        The callback executes before the in-memory state changes. Therefore an
+        invalid or rejected audit draft cannot leave a read state without its
+        success audit in this reference adapter.
+        """
+        with self._lock:
+            replay = self._idempotency.get(idempotency_key)
+            if replay is not None:
+                if replay[0] != fingerprint:
+                    raise NotificationError("IDEMPOTENCY_CONFLICT", 409)
+                return ReadTransition(replay[1], False)
+            item = self._notifications.get(notification_id)
+            if (
+                item is None
+                or item.tenant_id != tenant_id
+                or item.recipient_id != recipient_id
+            ):
+                raise NotificationError("RESOURCE_UNAVAILABLE", 404)
+            if expected_etag != item.etag:
+                raise NotificationError("VERSION_CONFLICT", 412)
+            if item.read_at is not None:
+                raise NotificationError("INVALID_STATE_TRANSITION", 409)
+            updated = replace(item, read_at=read_at, version=item.version + 1)
+            on_first_transition(item, updated)
+            self._notifications[notification_id] = updated
+            self._idempotency[idempotency_key] = (fingerprint, updated)
+            return ReadTransition(updated, True)
 
     def upsert_inbox_request(self, item: InboxRequest) -> None:
         with self._lock:
@@ -273,10 +329,13 @@ class NotificationService:
         self._clock = clock
         self._native_routes = native_route_allowlist
 
-    def _authorize(self, principal: IdentityPrincipal, workspace_id: str, trace_id: str, policy_version: str) -> None:
+    def _authorize(
+        self, principal: IdentityPrincipal, workspace_id: str, trace_id: str,
+        policy_version: str, action: Action = Action.VIEW,
+    ) -> None:
         try:
             self._authorization.authorize_action(
-                principal=principal, workspace_id=workspace_id, action=Action.VIEW,
+                principal=principal, workspace_id=workspace_id, action=action,
                 trace_id=trace_id, policy_version=policy_version,
             )
         except AuthorizationError as error:
@@ -415,44 +474,47 @@ class NotificationService:
         fingerprint = hashlib.sha256(
             f"{principal.user_id}|{notification_id}|{requested_state}|{expected_etag}".encode("utf-8")
         ).hexdigest()
-        replay = self._repository.idempotency_result(idempotency_key)
-        if replay is not None:
-            if replay[0] != fingerprint:
-                raise NotificationError("IDEMPOTENCY_CONFLICT", 409)
-            return replay[1]
         item = self.get_notification(
             principal=principal, notification_id=notification_id,
             trace_id=trace_id, policy_version=policy_version,
         )
-        if not isinstance(expected_etag, str) or expected_etag != item.etag:
+        if not isinstance(expected_etag, str):
             raise NotificationError("VERSION_CONFLICT", 412)
-        if item.read_at is not None:
-            raise NotificationError("INVALID_STATE_TRANSITION", 409)
         now = _checked_time(self._clock())
         if now is None:  # pragma: no cover
             raise NotificationError("INVALID_TIME")
-        updated = replace(item, read_at=now, version=item.version + 1)
-        self._repository.replace_notification(updated)
-        self._repository.save_idempotency_result(idempotency_key, fingerprint, updated)
         digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
-        self._audit.append(AuditEventDraft(
-            event_id=f"audit-notification-read-{digest}", occurred_at=now,
-            actor_id=principal.user_id, actor_type=ActorType.USER,
-            tenant_id=principal.tenant_id, workspace_id=item.workspace_id,
-            action="notification.read", target_type="notification",
-            target_id=item.notification_id, outcome=AuditOutcome.SUCCEEDED,
-            trace_id=trace_id, policy_version=policy_version,
-            before={"state": "unread", "version": item.version},
-            after={"state": "read", "version": updated.version},
-            metadata={"source_event_id": item.source_event_id},
-        ))
-        return updated
+
+        def append_audit(before: Notification, after: Notification) -> None:
+            self._audit.append(AuditEventDraft(
+                event_id=f"audit-notification-read-{digest}", occurred_at=now,
+                actor_id=principal.user_id, actor_type=ActorType.USER,
+                tenant_id=principal.tenant_id, workspace_id=before.workspace_id,
+                action="notification.read", target_type="notification",
+                target_id=before.notification_id, outcome=AuditOutcome.SUCCEEDED,
+                trace_id=trace_id, policy_version=policy_version,
+                before={"state": "unread", "version": before.version},
+                after={"state": "read", "version": after.version},
+                metadata={"source_event_id": before.source_event_id},
+            ))
+
+        transition = self._repository.transition_read(
+            notification_id=item.notification_id,
+            tenant_id=principal.tenant_id,
+            recipient_id=principal.user_id,
+            expected_etag=expected_etag,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            read_at=now,
+            on_first_transition=append_audit,
+        )
+        return transition.notification
 
     def project_request(self, item: InboxRequest) -> None:
         if not isinstance(item, InboxRequest):
             raise NotificationError("INVALID_INPUT")
         for value in (
-            item.request_id, item.tenant_id, item.workspace_id, item.actor_id,
+            item.request_id, item.tenant_id, item.workspace_id, item.recipient_id, item.actor_id,
             item.resource_type, item.resource_id,
         ):
             _checked_id(value)
@@ -470,9 +532,15 @@ class NotificationService:
             raise NotificationError("INVALID_INPUT")
         items = []
         for item in self._repository.all_inbox_requests():
-            if item.tenant_id != principal.tenant_id:
+            if item.tenant_id != principal.tenant_id or item.recipient_id != principal.user_id:
                 continue
-            self._authorize(principal, item.workspace_id, trace_id, policy_version)
+            try:
+                self._authorize(
+                    principal, item.workspace_id, trace_id, policy_version,
+                    action=_REQUEST_ACTIONS[item.request_kind],
+                )
+            except NotificationError:
+                continue
             _safe_deep_link(item.deep_link, self._native_routes)
             items.append(item)
         if filters:
