@@ -230,6 +230,7 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   assert.deepEqual(workflow.permissions, { contents: "read" });
   const job = workflow.jobs["release-1-quality-gate"];
   assert.ok(job);
+  assert.equal(job["timeout-minutes"], 60);
   const stepsById = new Map(job.steps.filter((step) => step.id).map((step) => [step.id, step]));
   const requiredStepIds = ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate", "fallback-evidence", "upload-evidence"];
   for (const id of requiredStepIds) assert.ok(stepsById.has(id), `missing workflow step id ${id}`);
