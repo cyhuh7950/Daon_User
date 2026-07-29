@@ -84,6 +84,12 @@
           "412": {
             "$ref": "#/components/responses/PreconditionFailed"
           },
+          "431": {
+            "$ref": "#/components/responses/RequestHeaderFieldsTooLarge"
+          },
+          "504": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           }
@@ -2793,6 +2799,12 @@
           "412": {
             "$ref": "#/components/responses/PreconditionFailed"
           },
+          "431": {
+            "$ref": "#/components/responses/RequestHeaderFieldsTooLarge"
+          },
+          "504": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           }
@@ -3120,6 +3132,10 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "431": { "$ref": "#/components/responses/RequestHeaderFieldsTooLarge" },
+          "504": { "$ref": "#/components/responses/RequestTimeout" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
       }
@@ -3149,6 +3165,10 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "431": { "$ref": "#/components/responses/RequestHeaderFieldsTooLarge" },
+          "504": { "$ref": "#/components/responses/RequestTimeout" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
       }
@@ -3606,6 +3626,50 @@
             "schema": {
               "$ref": "#/components/schemas/SafeErrorEnvelope"
             }
+          }
+        }
+      },
+      "PayloadTooLarge": {
+        "description": "요청 Body 크기 한도 초과",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SafeErrorEnvelope" }
+          }
+        }
+      },
+      "UnsupportedMediaType": {
+        "description": "지원하지 않는 요청 Content-Type",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SafeErrorEnvelope" }
+          }
+        }
+      },
+      "RequestHeaderFieldsTooLarge": {
+        "description": "요청 Header 크기 한도 초과",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SafeErrorEnvelope" }
+          }
+        }
+      },
+      "RequestTimeout": {
+        "description": "요청 제한 시간 초과 및 작업 취소",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SafeErrorEnvelope" }
           }
         }
       },
@@ -4077,6 +4141,22 @@
       "SafeErrorCode": {
         "type": "string",
         "enum": [
+          "AUTHENTICATION_REQUIRED",
+          "FORBIDDEN",
+          "RESOURCE_UNAVAILABLE",
+          "INVALID_REQUEST",
+          "METHOD_NOT_ALLOWED",
+          "REQUEST_TOO_LARGE",
+          "REQUEST_HEADERS_TOO_LARGE",
+          "REQUEST_TIMEOUT",
+          "UNSUPPORTED_MEDIA_TYPE",
+          "SHUTTING_DOWN",
+          "INTERNAL_ERROR",
+          "HTTPS_REQUIRED",
+          "GATEWAY_CONFIGURATION_INVALID",
+          "GATEWAY_TIMEOUT",
+          "GATEWAY_UNAVAILABLE",
+          "UPSTREAM_REDIRECT_REJECTED",
           "COST_LIMIT_EXCEEDED",
           "STEP_UP_REQUIRED",
           "CURRENT_ACCESS_DENIED",

@@ -1,0 +1,316 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+import asyncio
+from dataclasses import replace
+from pathlib import Path
+
+import httpx
+
+from test_identity_support import (
+    FakeVerifiedOidcProvider,
+    POLICY_VERSION,
+    TRACE_ID,
+    create_service,
+)
+from daon_user_api.audit import AuditEventStore
+from daon_user_api.authorization import (
+    AccessAction,
+    Action,
+    EvidenceDependency,
+    HistoricalResultDescriptor,
+    Role,
+    SqliteAuthorizationRepository,
+    AuthorizationService,
+)
+from daon_user_api.identity import ClientKind, DevicePlatform
+from daon_user_api.runtime import (
+    WEB_SESSION_COOKIE,
+    RuntimeDependencies,
+    RuntimeSettings,
+    create_app,
+)
+
+
+class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.directory.name) / "runtime.sqlite3"
+        self.audit = AuditEventStore()
+        self.identity, self.identity_repository, _, self.clock = create_service(
+            self.db_path, audit_store=self.audit
+        )
+        web_start = self.identity.begin_oidc_login(
+            issuer="https://login.example.com", client_id="daon-web",
+            audience="daon-user-api", redirect_uri="https://app.example.com/auth/callback",
+            client_kind=ClientKind.WEB, tenant_id="tenant-001",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+        web_provider = FakeVerifiedOidcProvider()
+        web_provider.expected_nonce = web_start.nonce
+        self.web = self.identity.complete_oidc_login(
+            state=web_start.state, authorization_code=web_provider.authorization_code,
+            code_verifier=web_start.code_verifier, client_id="daon-web",
+            redirect_uri="https://app.example.com/auth/callback", provider=web_provider,
+            platform=DevicePlatform.WEB, trace_id=TRACE_ID,
+            policy_version=POLICY_VERSION,
+        )
+        native_start = self.identity.begin_oidc_login(
+            issuer="https://login.example.com", client_id="daon-native",
+            audience="daon-user-api", redirect_uri="com.sinsan.daon:/oidc/callback",
+            client_kind=ClientKind.NATIVE, tenant_id="tenant-001",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+        native_provider = FakeVerifiedOidcProvider()
+        native_provider.expected_nonce = native_start.nonce
+        self.native = self.identity.complete_oidc_login(
+            state=native_start.state, authorization_code=native_provider.authorization_code,
+            code_verifier=native_start.code_verifier, client_id="daon-native",
+            redirect_uri="com.sinsan.daon:/oidc/callback", provider=native_provider,
+            platform=DevicePlatform.ANDROID, trace_id=TRACE_ID,
+            policy_version=POLICY_VERSION,
+        )
+        self.authorization_repository = SqliteAuthorizationRepository(self.db_path)
+        self.authorization_repository.bootstrap_workspace(
+            tenant_id=self.web.tenant_id, workspace_id="workspace-001",
+            owner_user_id=self.web.user_id, owner_role=Role.ORGANIZATION_ADMIN,
+            workspace_kind="organization", data_area="cloud_sync",
+            cost_limit_cents=1000, now=self.clock(),
+        )
+        self.authorization_repository.bootstrap_workspace(
+            tenant_id="tenant-foreign", workspace_id="workspace-foreign",
+            owner_user_id="foreign-owner", owner_role=Role.ORGANIZATION_ADMIN,
+            workspace_kind="organization", data_area="cloud_sync",
+            cost_limit_cents=1000, now=self.clock(),
+        )
+        self.authorization_repository.insert_historical_result(
+            HistoricalResultDescriptor(
+                result_id="result-001", result_kind="output",
+                tenant_id=self.web.tenant_id, workspace_id="workspace-001",
+                source_version_ids=("source-version-001",),
+                evidence_reference_ids=("reference-001",),
+                dependencies=(
+                    EvidenceDependency(
+                        "reference-001", "source-version-001", ("segment-001",), True, False
+                    ),
+                ),
+                original_policy_version="historical-policy-v1",
+                original_membership_version=1,
+            ),
+            self.clock(),
+        )
+        self.authorization = AuthorizationService(
+            repository=self.authorization_repository, audit_store=self.audit,
+            clock=self.clock, identity_service=self.identity,
+        )
+        self.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION
+        )
+        self.dependencies = RuntimeDependencies(
+            settings=self.settings, identity_service=self.identity,
+            authorization_service=self.authorization, audit_store=self.audit,
+            identity_repository=self.identity_repository,
+            authorization_repository=self.authorization_repository,
+        )
+        self.app = create_app(self.dependencies)
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=self.app),
+            base_url="http://" + "127.0.0.1",
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.client.aclose()
+        self.dependencies.close()
+        self.directory.cleanup()
+
+    async def test_live_ready_and_import_have_no_listener_side_effect(self) -> None:
+        live = await self.client.get("/health/live")
+        ready = await self.client.get("/health/ready")
+        self.assertEqual((live.status_code, ready.status_code), (200, 200))
+        self.assertEqual(live.json()["status"], "live")
+        self.assertEqual(ready.json()["status"], "ready")
+        self.assertNotIn("access-control-allow-origin", live.headers)
+
+    async def test_web_cookie_and_native_bearer_return_same_session_meaning(self) -> None:
+        web = await self.client.get(
+            "/api/v1/session", cookies={WEB_SESSION_COOKIE: self.web.access_token}
+        )
+        native = await self.client.get(
+            "/api/v1/session", headers={"Authorization": f"Bearer {self.native.access_token}"}
+        )
+        self.assertEqual((web.status_code, native.status_code), (200, 200))
+        self.assertEqual(web.json()["data"]["delivery"], "same_origin_secure_cookie")
+        self.assertEqual(native.json()["data"]["delivery"], "native_https_opaque_bearer")
+        self.assertEqual(web.json()["data"]["user_id"], native.json()["data"]["user_id"])
+        joined = f"{web.text}{native.text}"
+        self.assertNotIn(self.web.access_token, joined)
+        self.assertNotIn(self.native.access_token, joined)
+
+    async def test_authorization_uses_repository_identity_and_rejects_spoofed_claims(self) -> None:
+        trace_id = "trace-runtime-authorize-001"
+        response = await self.client.post(
+            "/api/v1/workspaces/workspace-001/authorization/evaluations",
+            cookies={WEB_SESSION_COOKIE: self.web.access_token},
+            headers={
+                "X-Trace-Id": trace_id,
+                "X-Tenant-Id": "tenant-foreign",
+                "X-Role": "viewer",
+                "Content-Type": "application/json",
+                "Idempotency-Key": "idem-runtime-001",
+            },
+            json={"action": Action.POLICY_MANAGE.value, "requested_permissions": []},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["role"], Role.ORGANIZATION_ADMIN.value)
+        self.assertEqual(
+            response.json()["data"]["required_step_up_action"],
+            "organization_security_or_connector_policy_change",
+        )
+        self.assertEqual(response.json()["trace_id"], trace_id)
+        self.assertEqual(response.headers["x-trace-id"], trace_id)
+        events = self.audit.list(tenant_id=self.web.tenant_id, trace_id=trace_id).items
+        self.assertTrue(any(event.action == "authorization.action.allowed" for event in events))
+
+    async def test_access_decision_and_audit_routes_call_current_domain_cores(self) -> None:
+        decision = await self.client.post(
+            "/api/v1/access-decisions",
+            cookies={WEB_SESSION_COOKIE: self.web.access_token},
+            headers={"Content-Type": "application/json", "Idempotency-Key": "idem-access-001"},
+            json={"resource_id": "result-001", "action": AccessAction.READ.value},
+        )
+        self.assertEqual(decision.status_code, 201)
+        self.assertEqual(decision.json()["data"]["state"], "available")
+        audit = await self.client.get(
+            "/api/v1/audit-events?tenant_id=tenant-001&workspace_id=workspace-001&limit=50",
+            cookies={WEB_SESSION_COOKIE: self.web.access_token},
+        )
+        self.assertEqual(audit.status_code, 200)
+        self.assertGreaterEqual(len(audit.json()["data"]["items"]), 1)
+        self.assertNotIn("access_digest", audit.text)
+        tenant_audit = await self.client.get(
+            "/api/v1/audit-events?tenant_id=tenant-001&limit=50",
+            cookies={WEB_SESSION_COOKIE: self.web.access_token},
+        )
+        self.assertEqual(tenant_audit.status_code, 200)
+
+    async def test_foreign_and_missing_workspace_are_indistinguishable(self) -> None:
+        results = []
+        for workspace_id in ("workspace-foreign", "workspace-missing"):
+            response = await self.client.post(
+                f"/api/v1/workspaces/{workspace_id}/authorization/evaluations",
+                cookies={WEB_SESSION_COOKIE: self.web.access_token},
+                headers={"Content-Type": "application/json", "Idempotency-Key": "idem-safe-404"},
+                json={"action": Action.VIEW.value, "requested_permissions": []},
+            )
+            results.append((response.status_code, response.json()["error"]["code"]))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(results[0], (404, "RESOURCE_UNAVAILABLE"))
+
+    async def test_traceparent_is_inherited_and_invalid_trace_is_replaced(self) -> None:
+        inherited = await self.client.get(
+            "/api/v1/session",
+            cookies={WEB_SESSION_COOKIE: self.web.access_token},
+            headers={"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+        )
+        self.assertEqual(inherited.headers["x-trace-id"], "4bf92f3577b34da6a3ce929d0e0e4736")
+        replaced = await self.client.get(
+            "/api/v1/session",
+            cookies={WEB_SESSION_COOKIE: self.web.access_token},
+            headers={"X-Trace-Id": "bad trace with spaces"},
+        )
+        self.assertEqual(replaced.status_code, 200)
+        self.assertRegex(replaced.headers["x-trace-id"], r"^trace-[A-Za-z0-9_-]{20,}$")
+
+    async def test_request_boundaries_and_safe_errors(self) -> None:
+        cases = [
+            await self.client.post(
+                "/api/v1/access-decisions", content=b"{",
+                cookies={WEB_SESSION_COOKIE: self.web.access_token},
+                headers={"Content-Type": "application/json", "Idempotency-Key": "idem-json"},
+            ),
+            await self.client.post(
+                "/api/v1/access-decisions", content=b"{}",
+                cookies={WEB_SESSION_COOKIE: self.web.access_token},
+                headers={"Content-Type": "text/plain", "Idempotency-Key": "idem-type"},
+            ),
+            await self.client.post(
+                "/api/v1/access-decisions", content=b"x" * (self.settings.max_body_bytes + 1),
+                cookies={WEB_SESSION_COOKIE: self.web.access_token},
+                headers={"Content-Type": "application/json", "Idempotency-Key": "idem-large"},
+            ),
+            await self.client.delete("/api/v1/session"),
+            await self.client.get(
+                "/api/v1/session",
+                headers={"X-Oversized": "x" * self.settings.max_header_bytes},
+            ),
+        ]
+        self.assertEqual([item.status_code for item in cases], [400, 415, 413, 405, 431])
+        for response in cases:
+            error = response.json()["error"]
+            self.assertEqual(error["trace_id"], response.headers["x-trace-id"])
+            self.assertNotIn("traceback", response.text.lower())
+            self.assertNotIn(str(self.db_path), response.text)
+
+    async def test_request_timeout_cancels_work_and_returns_safe_error(self) -> None:
+        timed_dependencies = RuntimeDependencies(
+            settings=replace(self.settings, request_timeout_seconds=0.01),
+            identity_service=self.identity,
+            authorization_service=self.authorization,
+            audit_store=self.audit,
+            identity_repository=self.identity_repository,
+            authorization_repository=self.authorization_repository,
+        )
+        timed_app = create_app(timed_dependencies)
+        cancelled = False
+
+        @timed_app.get("/test-only-slow")
+        async def slow() -> dict[str, bool]:
+            nonlocal cancelled
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            return {"completed": True}
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=timed_app),
+            base_url="http://" + "127.0.0.1",
+        ) as client:
+            response = await client.get("/test-only-slow")
+        self.assertEqual(response.status_code, 504)
+        self.assertEqual(response.json()["error"]["code"], "REQUEST_TIMEOUT")
+        self.assertTrue(cancelled)
+
+    async def test_shutdown_drops_ready_and_rejects_new_business_requests(self) -> None:
+        self.dependencies.state.begin_shutdown()
+        ready = await self.client.get("/health/ready")
+        business = await self.client.get(
+            "/api/v1/session", cookies={WEB_SESSION_COOKIE: self.web.access_token}
+        )
+        self.assertEqual(ready.status_code, 503)
+        self.assertEqual(business.status_code, 503)
+        self.assertEqual(business.json()["error"]["code"], "SHUTTING_DOWN")
+
+
+class RuntimeSettingsTests(unittest.TestCase):
+    def test_plaintext_and_proxy_boundaries_fail_close(self) -> None:
+        with self.assertRaises(ValueError):
+            RuntimeSettings(profile="development", bind_host="0.0.0.0", port=8000)
+        with self.assertRaises(ValueError):
+            RuntimeSettings(
+                profile="production", bind_host="0.0.0.0", port=8000,
+                public_gateway_url="http://api.example.com",
+                trusted_proxy_ips=("10.0.0.1",),
+            )
+        valid = RuntimeSettings(
+            profile="production", bind_host="0.0.0.0", port=8000,
+            public_gateway_url="https://api.example.com",
+            trusted_proxy_ips=("10.0.0.1",),
+        )
+        self.assertEqual(valid.public_gateway_url, "https://api.example.com")
+
+
+if __name__ == "__main__":
+    unittest.main()
