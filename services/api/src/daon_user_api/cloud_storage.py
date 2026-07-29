@@ -17,6 +17,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 
 _SAFE_SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_EXPECTED_SCHEMA_REVISION = "0002"
 
 
 class _PoolAvailabilityLogFilter(logging.Filter):
@@ -134,7 +135,7 @@ class PostgresCloudStore:
                     ).fetchone()
                 revision = None if revision_row is None else str(revision_row[0])
                 vector_version = None if vector_row is None else str(vector_row[0])
-                ready = revision == "0001" and vector_version is not None
+                ready = revision == _EXPECTED_SCHEMA_REVISION and vector_version is not None
                 if ready:
                     self._ensure_pool_open()
                 return CloudReadiness(ready, revision, vector_version)
@@ -145,7 +146,11 @@ class PostgresCloudStore:
                 ).fetchone()
             revision = None if revision_row is None else str(revision_row[0])
             vector_version = None if vector_row is None else str(vector_row[0])
-            return CloudReadiness(revision == "0001" and vector_version is not None, revision, vector_version)
+            return CloudReadiness(
+                revision == _EXPECTED_SCHEMA_REVISION and vector_version is not None,
+                revision,
+                vector_version,
+            )
         except (Error, PoolTimeout, OSError):
             return CloudReadiness(False, None, None)
 

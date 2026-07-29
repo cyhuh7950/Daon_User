@@ -2,6 +2,14 @@
 
 이 파일은 항상 적용할 역할, 권한, 승인 경계와 안전 규칙을 정의한다. 반복 실행하는 작업 전달·결과 분류·재작업·인수 절차는 `$daon-subagent-delivery` Skill을 따른다.
 
+## 정본 작업공간
+
+- 공식 로컬 작업공간은 `C:\Users\cyhuh\OneDrive\바탕 화면\D Driver\Project\Daon_User` 하나로 고정한다.
+- 모든 작업 착수 전에 `git rev-parse --show-toplevel`, 현재 Branch, `origin` URL, HEAD SHA와 Working Tree 상태를 확인하고 공식 경로와 일치함을 진행 기록에 남긴다.
+- 승인된 통합 기준선은 원격 `codex/release-1`이며, 개별 작업은 해당 기준선에서 분기한 원격 작업 Branch를 OneDrive 정본에서 추적한다.
+- `D:\Project\Daon_User`와 `C:\tmp` 아래의 Clone·Worktree는 보존 또는 임시 자료로만 취급한다. 신산님의 별도 승인 없이 작업 정본으로 전환하거나 파일을 수정·삭제·병합하지 않는다.
+- 작업 도중 다른 Checkout 또는 Worktree가 발견되더라도 편의상 작업 위치를 바꾸지 않는다. 경로 변경이 필요하면 현재 상태를 먼저 기록하고 신산님의 승인을 받는다.
+
 ## 역할과 책임
 
 - 신산님은 기획, 기능 범위, 우선순위, 중요 위험의 수용, 최종 승인과 진행 여부를 결정한다.

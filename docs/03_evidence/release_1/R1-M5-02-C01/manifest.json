@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-02-C01",
+  "issue_id": "R1-M5-02",
+  "validated_commit": "f3da3c78a3fce3abecf94dff932df3cdb66d53d3",
+  "environment": {
+    "host": "ysna-server",
+    "architecture": "aarch64",
+    "postgresql": "18.4",
+    "pgvector": "0.8.2",
+    "object_storage_image": "RELEASE.2025-09-07T16-13-09Z"
+  },
+  "results": {
+    "object_suite": "16/16 pass",
+    "cloud_suite": "11/11 pass",
+    "runtime_suite": "15/15 pass",
+    "restore_object_suite": "16/16 pass",
+    "migration_apply_reapply_rollback_restore": "pass",
+    "api_dependency_outage_recovery": "pass",
+    "worker_api_sigterm": "pass",
+    "owned_resources_remaining": 0,
+    "shared_resources_unchanged": true
+  },
+  "files": [
+    {"path": "server-validation.sh", "sha256": "8C387212A7A4A79C3105AE9A5E9FE9202A70EC026E9C0BB3602A3F3C2DDE0C20"},
+    {"path": "server-runtime-validation.sh", "sha256": "728DA316364F13CE2CB8F0A7C79995DF89A621C0E4621B753F30BAB5BFE16409"},
+    {"path": "server-validation-summary.md", "sha256": "D9A5E591673EBE6F20C482E18A724CF13DF39912CC3B238D770F7A61D6180D00"}
+  ],
+  "secret_or_credential_values_recorded": 0
+}

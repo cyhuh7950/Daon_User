@@ -1,0 +1,47 @@
+# R1-M5-02-C01 진행 복구 기록
+
+## 현재 상태
+
+| 항목 | 값 |
+|---|---|
+| 작업 | R1-M5-02-C01 Object 통합시험 Fixture·완료 증거 보완 |
+| 담당 | 어울2 (단일 Writer) |
+| 상태 | COMPLETED |
+| 현재 단계 | 모든 검증·정리·Evidence 완료, Evidence-only Commit·Push 직전 |
+| 작업 위치 | `C:\Users\cyhuh\OneDrive\바탕 화면\D Driver\Project\Daon_User` |
+| 브랜치 | `codex/r1-m5-02` |
+| 인계 HEAD | `b5ac5ee808ee17bb973a14aac849eeb074be51a5` |
+| 정식 FAILURE_REPORT | 0회 |
+| 다음 작업 | 이 진행 기록을 포함한 Evidence-only Commit·Push 후 Local/Origin exact SHA와 Clean을 확인하고 어울1에게 반환한다. |
+
+## 진행 이력
+
+| 시각(KST) | 단계 | 상태 | 변경 파일 | 명령·테스트 결과 | 오류·원인·복구 | 다음 작업 |
+|---|---|---|---|---|---|---|
+| 2026-07-30 01:06 | 착수·공식 기준선 | 완료 | 이 파일 | 공식 Top-level `C:/Users/cyhuh/OneDrive/바탕 화면/D Driver/Project/Daon_User`, Branch `codex/r1-m5-02`, origin `git@github-cyhuh7950:cyhuh7950/Daon_User.git`, HEAD·origin Branch `b5ac5ee...`, 시작 추적 변경 0건 확인 | 사용자 Git ignore 접근 경고만 있었고 저장소 상태 판정에는 영향 없음 | 승인 정본 EOF와 실패 의미 확인 |
+| 2026-07-30 01:06 | 승인 정본 EOF | 완료 | 없음 | `AGENTS.md`, C01 Prompt·보정 작업지시서, 원 작업지시서, 상세 설계 0.7, 구현계획 0.9, 테스트계획 0.7, 기존 진행 기록을 EOF까지 확인. 설계·계획·테스트계획 승인 상태 확인 | 보정 문서의 인계 HEAD `2d4245d...`는 문서 추가 직전 Commit이고 최신 전달·실제 원격 HEAD `b5ac5ee...`는 C01 문서-only Commit임을 `git log/show/diff`로 확인 | 실패 재해석 |
+| 2026-07-30 01:06 | 서버 실패 재해석 | 완료 | 없음 | Replay는 불변 Object/Job/Event ID를 재사용하면서 `replayed false→true`가 계약이므로 dataclass 전체 동일 비교가 Fixture 결함. Claim SQL은 `next_attempt_at <= now`이므로 고정 2026-07-29 시각이 서버 생성 시각보다 과거여서 Claim 0건인 Fixture 결함 확인 | 제품 코드·공개 API·Schema·Migration·Retry 계약 변경 필요 없음 | Fixture 두 범위 최소 수정 |
+| 2026-07-30 01:08 | Replay Fixture 수정 | 완료 | `services/api/tests/test_object_queue.py` | Object·Job·Event 불변 ID를 Tuple로 비교하고 최초 `replayed=false`, Replay `true`, Object/Outbox/Job/Attempt Count와 요청 Audit 1건을 분리 검증 | 제품 Dataclass 전체 동일 비교만 제거. 제품 코드 변경 없음 | 시간 Fixture 수정 |
+| 2026-07-30 01:08 | Claim·Crash·Retry 시간 Fixture 수정 | 완료 | `services/api/tests/test_object_queue.py` | 3개 실DB 테스트의 고정 과거 시각을 제출 Job의 DB `next_attempt_at`으로 교체. Retry 2차 Claim도 1차 실패 후 DB가 반환한 새 `next_attempt_at` 경계를 사용 | Backoff·Lease·Claim 제품 계약과 경계 검증을 유지 | Object Queue 직접 Test |
+| 2026-07-30 01:09 | 로컬 Object Queue 직접 Test | 완료 | `.venv` 생성(비추적), 위 Fixture | 최초 Sandbox 실행은 사용자 `uv` Python Lock 접근 거부로 Exit 2. 동일 `npm run verify:api-object-queue`를 권한 경계만 승인받아 재실행하여 16건 중 7 PASS·9 환경 SKIP, 실패 0 | 실행 경로·설정 변경 없이 권한 경계만 복구. PostgreSQL·S3 실환경 9건은 서버 단계에서 실행 예정 | Ruff·strict Mypy·Runtime·Cloud·Quality Gate |
+| 2026-07-30 01:13 | 로컬 정적·Cloud 회귀 | 완료 | 없음 | Ruff 대상 Test PASS. `npm run verify:api-cloud`: 11건 중 4 PASS·7 환경 SKIP, 실패 0 | 실DB 7건은 서버 단계에서 실행 예정 | Runtime 회귀 복구 |
+| 2026-07-30 01:15 | Runtime 회귀 오류·복구 | 완료 | `node_modules` Lockfile 기준 복원(비추적) | 1차 Runtime은 API 15 PASS와 Process 계약 후 Web Build에서 `next` 실행 파일 부재로 실패. `npm ci`가 Lockfile 변경 없이 507 Package를 복원. 동일 `npm run verify:api-runtime` 재실행: BFF 10 PASS, API 15 PASS, Lifecycle 2 PASS·4 POSIX SKIP, Web Production Build PASS, 실제 API·Next Process/재기동·종료·Listener 잔여 0 PASS | 제품 결함 아님. 공식 Checkout 의존성 설치가 불완전했던 환경 원인 | strict Mypy 국소 범위·Quality Gate |
+| 2026-07-30 01:15 | strict Mypy 범위 진단 | 복구 중 | 없음 | Test 단일 파일 strict 실행이 Imports를 전체 API로 추적해 기존 Audit 등 67건을 포함했고, 제품 모듈 `--follow-imports=skip`은 Anaconda 환경의 MinIO/Psycopg Stub 미탐지와 기존 Signal typing을 포함 | 신규 Fixture 자체 Ruff PASS이며 제품 코드는 변경하지 않음. 원 작업에서 사용한 Project Python·대상 범위를 재구성해 동일 검증 예정 | 정확한 strict Mypy 재실행 |
+| 2026-07-30 01:17 | strict Mypy 국소 검증 | 완료 | 없음 | Project Python 3.14.3 환경의 Mypy 1.19.1로 `--strict --follow-imports=skip` 대상 `object_queue.py`, `object_worker.py` 실행, 2개 Source 무오류 PASS | 첫 진단은 전역 Anaconda Mypy 1.17.1과 Project Dependency 미연결이 원인. Project `uv run --project services/api --with mypy`로 정확 환경 복구 | 공식 Quality Gate |
+| 2026-07-30 01:24 | 공식 Quality Gate | 완료 | Gate 산출물은 기존 정책 경로에 생성되어 Task Diff 제외 | `npm run verify:quality-gate` 382.6초 단일 실행 추적 완료. Overall PASS, Exit 0, 7 Category·37 Check 전부 PASS, Failure 0, Security 3·Independence 1 포함. Gate가 보고한 기준 SHA `b5ac5ee...`에 현재 Fixture Diff를 함께 검증 | 장기 실행을 재시작하지 않고 동일 Cell 종료까지 추적 | Diff·Secret·구현 Commit·Push |
+| 2026-07-30 01:25 | Quality 산출물 정리 | 완료 | 범위 밖 `R1-M1-05` Gate 산출물 2개 원복, `.coverage` 삭제 | 1차 Sandbox 정리는 `.git/index.lock`·`.coverage` 권한 거부. 정확한 세 파일만 승인 경계에서 원복·삭제 후 Task Diff가 Test와 C01 진행 기록만 남음을 확인 | 구현 Commit |
+| 2026-07-30 01:26 | 구현 Commit·Push | 완료 | `services/api/tests/test_object_queue.py` | Fixture 한 파일만 Commit `a7c0fd9` (`test(api): correct object queue integration fixtures`), `origin/codex/r1-m5-02` Push 성공 (`b5ac5ee..a7c0fd9`) | 문서·Evidence는 서버 검증 후 Evidence-only Commit으로 분리 | ysna-server exact SHA 검증 |
+| 2026-07-30 01:29 | 서버 사전점검·이전 자원 정리 | 완료 | 서버 전용 자원 | ysna-server/ubuntu·지정 루트 확인, 원격 Branch SHA `a7c0fd9...` 확인, 공용 Snapshot 수집. 이전 종료 API/Worker 2개가 삭제된 R1-M5-02 Mount와 전용 Network를 사용함을 inspect한 뒤 정확한 두 Container만 제거, R1-M5-02 Prefix Container/Network/Volume 잔여 0 | Windows SSH config ACL 오류는 동일 Config의 Host/IP/Key를 명시해 복구. 공용 자원 조회 외 변경 없음 | 새 exact SHA 격리 기동 |
+| 2026-07-30 01:31 | 서버 exact SHA·격리 자원 | 완료 | `/home/ubuntu/deploy/daon-user/R1-M5-02-C01/a7c0fd9...`, 전용 Runtime/Secret·Compose 자원 | Checkout detached clean SHA 일치, ARM64. 전용 Project `daon_r1_m5_02_c01_a7c0fd9f`, PostgreSQL 18.4 healthy, 고정 MinIO 기동 | 공용 `shared-db/netdata/proxy` 미사용 | Migration·통합 Test |
+| 2026-07-30 01:34 | 서버 Migration·Object 1차 | 보완 중 | `test_object_queue.py` | Preflight PostgreSQL 18.4 PASS, Migration `0002` 적용·head 재적용, Application Role 최소권한, Bucket 준비 PASS. Object 실환경: Replay·Claim·Crash 포함 15 PASS, Retry 1 FAIL | 별도 Fixture 불일치 확인: Worker RetryPolicy는 2회이나 제출 Coordinator가 DB Job을 기본 5회로 생성해 2회째 계약대로 `retry_wait`. 제품 결함 아님. 승인된 Retry Fixture 범위에서 Coordinator에도 동일 Policy를 주입 | 로컬 재검증·새 Commit/Push |
+| 2026-07-30 01:36 | 추가 Retry Fixture 교정·로컬 재검증 | 완료 | `services/api/tests/test_object_queue.py` | Retry Test 안에서 하나의 `RetryPolicy(max_attempts=2)`를 Coordinator Job 생성과 Worker 처리에 함께 주입해 DB Job·Worker 계약값을 일치시킴. 제품 기본값·Worker 코드·Schema 변경 0. 로컬 Object 7 PASS·9 환경 SKIP, Ruff PASS | 2회째 저장된 `next_attempt_at` 경계 Claim 후 `attempt == max_attempts`라 Dead-letter가 되는 의미를 보존 | 별도 Commit·Push |
+| 2026-07-30 01:37 | 추가 Fixture Commit·Push | 완료 | `services/api/tests/test_object_queue.py` | 추가 5행 Delta만 Commit `f3da3c7` (`test(api): align retry fixture attempt limit`), 원격 Branch Push 성공, exact SHA `f3da3c78a3fce3abecf94dff932df3cdb66d53d3` | 제품 코드·Schema·Migration·Dependency 변경 0 | 이전 실패 자원 정리·새 SHA 서버 전체 재검증 |
+| 2026-07-30 01:39 | 서버 새 exact SHA 전체 Suite | 완료 | 전용 SHA Checkout·Compose·Backup | 이전 `a7c0fd9` Project/Volume/Checkout/Runtime 경로 검증 후 정리 0건. 새 detached clean `f3da3c7...`·ARM64에서 Migration 적용·head 재적용, Object 16/16, Cloud 11/11, Runtime 15/15 PASS. Downgrade base→DB 재생성·격리 Backup Restore→upgrade head 후 Object 16/16 재통과 | 제품 실패 0 | actual API/Worker 장애·복구 |
+| 2026-07-30 01:42 | actual API 실행 오류·원인 | 복구 중 | `server-runtime-validation.sh` | API 준비 Poll 종료 Exit 1. Container는 `/tmp/venv/bin/python: No module named daon_user_api`로 기동 전 종료 | Read-only `src` Layout에서 운영 검증 스크립트가 PYTHONPATH를 누락한 원인. DSN 마스킹 로그로 확인, 제품 결함 아님. API·Worker 명령에 `/workspace/services/api/src`만 추가 | 종료 Container 제거·동일 검증 재실행 |
+| 2026-07-30 01:45 | actual API 2차 실행 오류·원인 | 복구 중 | `server-runtime-validation.sh` | PYTHONPATH 보완 후 다음 기동 Gate에서 `DAON_API_DATABASE_PATH_REQUIRED`로 종료 Exit 1 | Runtime은 Cloud DB 외 Local Identity SQLite Path도 요구하는 기존 계약. 검증 Container에 휘발성 `/tmp/runtime.sqlite3` 환경만 추가. Project Label·exact SHA Mount 확인, 로그 DSN 마스킹. 제품 코드·Compose 불변 | 전용 exited API 제거·재실행 |
+| 2026-07-30 01:46 | API·Worker 필수 환경 전체 대조 | 완료 | 없음 | `runtime.py`, `main.py`, `object_worker.py`, 정상 `runtime_process_probe.py`를 읽기 전용 대조. API 필수: profile/bind/port, Local Identity DB Path, Production Cloud DSN·HTTPS Gateway·Trusted Proxy; Object 4종 Endpoint/Bucket/Secret File Reference/Secure는 전부 존재. Worker 필수: Cloud DSN, Object 4종, Tenant/Workspace/Actor Scope가 전부 존재. Secret은 파일 존재·용도만 확인 | 누락은 API 휘발성 Local DB Path 하나였으며 스크립트에 `/tmp/runtime.sqlite3`만 보완. 제품 코드·Compose·설정 정본 불변 | Label 확인·전용 exited API 제거·재실행 |
+| 2026-07-30 01:49 | actual API 3차 Probe 오류·원인 | 복구 중 | `server-runtime-validation.sh` | API Process 자체는 running·startup complete였으나 Health Probe가 Production HTTPS Boundary에서 400 `HTTPS_REQUIRED`로 거부되어 Poll Exit 1 | Trusted Proxy `127.0.0.1`에서 `X-Forwarded-Proto: https`를 보내야 하는 기존 운영 계약. Probe Header만 보완, 제품 불변 | API 정상 종료·Label 확인 제거·재실행 |
+| 2026-07-30 01:51 | actual API 장애 Probe Timeout | 복구 중 | `server-runtime-validation.sh` | Initial live/ready 200 PASS 후 Object down Readiness Probe가 Client timeout 3초를 먼저 소진 | MinIO Adapter 장애 판정의 bounded timeout보다 Probe가 짧은 검증 오류. Probe만 15초로 확대, 제품 Timeout/코드 불변 | Object 복구·API 정리 후 재실행 |
+| 2026-07-30 01:53 | actual API·Worker 장애/복구 | 완료 | 서버 전용 Process/Container | Initial API live/ready 200. Object down live 200·ready 503→복구 ready 200. DB down live 200·ready 503→복구 ready 200. Worker SIGTERM Exit 0, API SIGTERM Exit 0 | Production HTTPS Proxy Header와 15초 관찰 창은 검증 Fixture에만 적용, 제품 불변 | 서버 자원 정리 |
+| 2026-07-30 01:54 | 서버 자원 정리 | 완료 | C01 전용 Checkout·Runtime·Compose Project | API/Worker Project Label·exited 확인 후 제거, Compose down -v. Container·Network·Volume·Bucket/Test Object·Checkout·Secret·Backup·Process·Listener C01 잔여 0. `shared-db`, `netdata`, `nginx-proxy-manager` Up 상태 불변 | 다른 Project·공용 자원 변경 없음 | Evidence·완료보고 |
+| 2026-07-30 01:56 | Evidence·완료보고·종료 직전 | 완료 | C01 Evidence 4개, C01/원 진행 기록, 완료보고 | Server Script·Summary SHA-256 Manifest 생성, Secret 값 0 확인, 제품 결함·미해결 0, 정식 FAILURE_REPORT 0회 | Evidence-only Commit은 본 기록을 포함해 분리 수행 | Commit·Push·최종 Clean 확인 |

@@ -49,6 +49,11 @@ class SlowUnreadyCloudStore(UnreadyCloudStore):
         return super().readiness()
 
 
+class UnreadyObjectStorage:
+    def health(self) -> bool:
+        return False
+
+
 class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
@@ -166,6 +171,14 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         ready = await ready_task
         self.assertEqual((live.status_code, ready.status_code), (200, 503))
         self.assertLess(live_elapsed, 0.15)
+
+    async def test_object_outage_drops_ready_but_keeps_live(self) -> None:
+        self.dependencies.object_storage = UnreadyObjectStorage()  # type: ignore[assignment]
+        live, ready = await asyncio.gather(
+            self.client.get("/health/live"), self.client.get("/health/ready")
+        )
+        self.assertEqual((live.status_code, ready.status_code), (200, 503))
+        self.assertEqual(ready.json(), {"status": "not_ready"})
 
     async def test_web_cookie_and_native_bearer_return_same_session_meaning(self) -> None:
         web = await self.client.get(
@@ -330,6 +343,28 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeSettingsTests(unittest.TestCase):
+    def test_object_storage_requires_complete_secret_references_and_build_is_lazy(self) -> None:
+        with self.assertRaises(ValueError):
+            RuntimeSettings(
+                profile="development", bind_host="127.0.0.1", port=8000,
+                object_storage_endpoint="object.internal:9000",
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            access = root / "access-key"
+            secret = root / "secret-key"
+            access.write_text("access-reference-value", encoding="utf-8")
+            secret.write_text("secret-reference-value", encoding="utf-8")
+            settings = RuntimeSettings(
+                profile="development", bind_host="127.0.0.1", port=8000,
+                database_path=root / "runtime.sqlite3",
+                object_storage_endpoint="object.internal:9000", object_storage_bucket="daon-r1-test",
+                object_access_key_file=access, object_secret_key_file=secret, object_storage_secure=False,
+            )
+            dependencies = build_dependencies(settings)
+            self.assertIsNotNone(dependencies.object_storage)
+            dependencies.close()
+
     def test_unavailable_cloud_database_does_not_block_dependency_build(self) -> None:
         unavailable_dsn = "postgresql://app@" + "127.0.0.1" + ":1/unavailable?connect_timeout=1"
         with tempfile.TemporaryDirectory() as directory:
