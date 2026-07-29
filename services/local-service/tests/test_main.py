@@ -175,6 +175,63 @@ def test_parent_identity_accepts_only_a_bounded_real_ancestor_chain() -> None:
     assert not main._pid_is_ancestor(700, 900, {900: 800, 800: 900})
 
 
+class FakeProcessSnapshotApi:
+    def __init__(
+        self,
+        *,
+        first: tuple[int, int] | Exception,
+        remaining: list[tuple[int, int] | None | Exception],
+        open_error: Exception | None = None,
+    ) -> None:
+        self.first_result = first
+        self.remaining = iter(remaining)
+        self.open_error = open_error
+        self.snapshot = object()
+        self.closed: list[object] = []
+
+    def open(self) -> object:
+        if self.open_error is not None:
+            raise self.open_error
+        return self.snapshot
+
+    def first(self, snapshot: object) -> tuple[int, int]:
+        assert snapshot is self.snapshot
+        if isinstance(self.first_result, Exception):
+            raise self.first_result
+        return self.first_result
+
+    def next(self, snapshot: object) -> tuple[int, int] | None:
+        assert snapshot is self.snapshot
+        result = next(self.remaining)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def close(self, snapshot: object) -> None:
+        self.closed.append(snapshot)
+
+
+def test_process_snapshot_collection_closes_handle_after_complete_enumeration() -> None:
+    api = FakeProcessSnapshotApi(first=(900, 800), remaining=[(800, 700), None])
+    assert main._collect_process_parents(api) == {900: 800, 800: 700}
+    assert api.closed == [api.snapshot]
+
+
+@pytest.mark.parametrize("failure_stage", ["open", "first", "next"])
+def test_process_snapshot_collection_fails_closed_and_closes_handle(
+    failure_stage: str,
+) -> None:
+    error = main.BootstrapError("parent process inspection failed")
+    api = FakeProcessSnapshotApi(
+        first=error if failure_stage == "first" else (900, 800),
+        remaining=[error] if failure_stage == "next" else [],
+        open_error=error if failure_stage == "open" else None,
+    )
+    with pytest.raises(main.BootstrapError, match="parent process inspection failed"):
+        main._collect_process_parents(api)
+    assert api.closed == ([] if failure_stage == "open" else [api.snapshot])
+
+
 def test_run_binds_only_loopback_emits_safe_ready_and_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
