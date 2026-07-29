@@ -156,6 +156,41 @@ def test_hardlink_is_rejected_without_reading_other_link(tmp_path: Path) -> None
     store.close()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor boundary contract")
+def test_posix_symlink_swap_after_precheck_cannot_escape_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import daon_user_local_service_safe_file_posix as safe_file_posix
+
+    root = tmp_path / "storage"
+    outside = tmp_path / "outside"
+    store = LocalEncryptedStore.open(root, os.urandom(32))
+    object_id = store.put_file(WORKSPACE, "source", b"posix-race", content_type="text/plain")
+    directory = store.blob_path_for_test(WORKSPACE, "source", object_id).parent
+    original_validate = safe_file_posix.validate_directory_chain
+    swapped = False
+
+    def swap_after_check(validated_root: Path, validated_directory: Path) -> None:
+        nonlocal swapped
+        original_validate(validated_root, validated_directory)
+        if not swapped and validated_directory == directory:
+            swapped = True
+            directory.rename(outside)
+            directory.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(safe_file_posix, "validate_directory_chain", swap_after_check)
+    try:
+        with pytest.raises(LocalStorageError, match="LOCAL_PATH_UNSAFE"):
+            store.get_file(WORKSPACE, "source", object_id)
+        assert swapped
+        assert (outside / f"{object_id}.bin").exists()
+    finally:
+        monkeypatch.setattr(safe_file_posix, "validate_directory_chain", original_validate)
+        if directory.is_symlink():
+            directory.unlink()
+        store.close()
+
+
 def test_existing_v1_ciphertext_remains_readable_after_additive_upgrade(tmp_path: Path) -> None:
     key = os.urandom(32)
     _create_v1_schema(tmp_path, key)

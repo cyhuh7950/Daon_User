@@ -6,6 +6,10 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const safeFileCoverage =
+  process.platform === "win32"
+    ? "daon_user_local_service_safe_file_win32"
+    : "daon_user_local_service_safe_file_posix";
 const commands = Object.freeze({
   lint: ["-m", "ruff", "check", "services/local-service"],
   type: ["-m", "mypy", "services/local-service/src", "services/local-service/tests"],
@@ -15,6 +19,7 @@ const commands = Object.freeze({
     "-q",
     "services/local-service/tests",
     "--cov=daon_user_local_service",
+    `--cov=${safeFileCoverage}`,
     "--cov-report=term-missing",
     "--cov-fail-under=85"
   ],
