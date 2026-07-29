@@ -288,9 +288,12 @@ class PostgresObjectQueueIntegrationTests(unittest.TestCase):
         self.assertEqual(self.store.entity_counts(self.scope, submission.object_id)["attempts"], 1)
 
     def test_retry_dead_letter_and_authorized_reprocess_preserve_history(self) -> None:
+        policy = RetryPolicy(max_attempts=2, base_seconds=1, max_seconds=2, jitter_ratio=0)
+        self.coordinator = ObjectQueueCoordinator(
+            self.store, self.storage, id_factory=lambda: next(self.ids), retry_policy=policy
+        )
         submission = self._submit(key="idem-retry")
         self.storage.fail_promote = ObjectStorageError("OBJECT_STORAGE_UNAVAILABLE", retryable=True)
-        policy = RetryPolicy(max_attempts=2, base_seconds=1, max_seconds=2, jitter_ratio=0)
         worker = DurableObjectWorker(self.store, self.storage, "worker-retry", retry_policy=policy)
         start = self.store.get_job(self.scope, submission.job_id).next_attempt_at
         first = worker.run_once(self.scope, now=start, jitter_unit=0.5)
