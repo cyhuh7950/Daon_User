@@ -146,6 +146,7 @@ test("접근성 계약은 Keyboard·Focus·설명·필수 상태 노출을 고�
 test("Workflow는 승인된 세 Action Major만 올리고 기존 Gate 계약을 보존한다", async () => {
   const workflow = JSON.parse(await readFile(path.join(root, ".github/workflows/release-1-quality-gate.yml"), "utf8"));
   const job = workflow.jobs["release-1-quality-gate"];
+  assert.equal(job["timeout-minutes"], 60);
   assert.deepEqual(job.steps.map((step) => step.id), ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate", "fallback-evidence", "upload-evidence"]);
   const checkout = job.steps.find((step) => step.id === "checkout");
   assert.equal(checkout.uses, "actions/checkout@v5");

@@ -41,6 +41,12 @@ R1-M4-04/C01은 7개 역할, 8개 독립 권한, 조직/Workspace 정책 상속�
 
 SQLite Adapter는 주입된 동일 DB 파일을 사용할 수 있으나 `auth_*` Schema Namespace로 격리된다. HTTP Runtime과 PostgreSQL Migration·RLS는 각각 M4-05·M5 범위다.
 
-## 후속 Build
+## FastAPI Runtime·Gateway
 
-공개 Gateway·FastAPI 실행 경계는 `R1-M4-05`가 소유한다.
+- Entrypoint: `uv run --project services/api python -m daon_user_api`
+- 필수 설정: `DAON_RUNTIME_PROFILE`, `DAON_API_BIND_HOST`, `DAON_API_PORT`, `DAON_API_DATABASE_PATH`, `DAON_POLICY_VERSION`
+- Production 추가 설정: HTTPS `DAON_PUBLIC_GATEWAY_URL`, IP allowlist `DAON_TRUSTED_PROXY_IPS`
+- 검증: 저장소 루트의 `npm run verify:api-runtime`
+- 상세 경계: `docs/01_architecture/api_runtime_bff_gateway.md`
+
+Web browser는 API를 직접 호출하지 않고 same-origin BFF를 사용한다. Test·development profile의 평문 HTTP는 loopback bind만 허용한다. PostgreSQL·RLS·Migration과 외부 OIDC provider 연결은 후속 M5 범위다.

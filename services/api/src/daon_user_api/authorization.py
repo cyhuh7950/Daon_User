@@ -941,6 +941,49 @@ class AuthorizationService:
             )
             return grant
 
+    def authorize_audit_read(
+        self,
+        *,
+        principal: IdentityPrincipal,
+        workspace_id: str | None,
+        trace_id: str,
+        policy_version: str,
+    ) -> None:
+        """Authorize workspace or tenant-wide Audit reads from current bindings."""
+        if workspace_id is not None:
+            self.authorize_action(
+                principal=principal,
+                workspace_id=workspace_id,
+                action=Action.VIEW,
+                trace_id=trace_id,
+                policy_version=policy_version,
+            )
+            return
+        with self._repository.transaction() as connection:
+            tenant_role = self._tenant_role(connection, principal)
+            role = None if tenant_role is None else Role(str(tenant_role["role"]))
+            allowed = role in TENANT_ROLES
+            self._audit(
+                action=(
+                    "authorization.audit_read.allowed"
+                    if allowed
+                    else "authorization.audit_read.denied"
+                ),
+                outcome=AuditOutcome.SUCCEEDED if allowed else AuditOutcome.DENIED,
+                principal=principal,
+                trace_id=trace_id,
+                policy_version=policy_version,
+                workspace_id=None,
+                target_type="audit_scope",
+                target_id="tenant-audit",
+                metadata={
+                    "scope": "tenant",
+                    "reason_code": "TENANT_ROLE_ALLOWED" if allowed else "ACTION_DENIED",
+                },
+            )
+            if not allowed:
+                raise AuthorizationError("ACTION_DENIED", 403)
+
     def set_membership(
         self, *, principal: IdentityPrincipal, workspace_id: str, user_id: str,
         role: Role, expected_version: int, trace_id: str, policy_version: str,

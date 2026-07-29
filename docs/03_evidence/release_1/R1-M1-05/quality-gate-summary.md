@@ -1,20 +1,20 @@
 # Release 1 Quality Gate Summary
 
-- Git SHA: `8a9a934b4ae8e69a51ad3f630ba3eeae46458d12`
-- Overall: `PASS`
-- Exit Code: `0`
-- Policy SHA-256: `767EEE2BB7142BCEECF94DF32674AE9EB2A789D71B83B699A0303C31EC8323D2`
+- Git SHA: `7bc082d652e38d40d1dc88e41b628b10b1f3b311`
+- Overall: `FAIL`
+- Exit Code: `1`
+- Policy SHA-256: `327E031BED78C6AC735BA3A7DC9FBF838A505ABD1D19459557DDCEBC4E8177D9`
 
 | Category | Status | Checks |
 | --- | --- | ---: |
-| lint | PASS | 6 |
-| type | PASS | 3 |
-| unit | PASS | 7 |
-| contract | PASS | 2 |
-| build | PASS | 6 |
+| lint | PASS | 8 |
+| type | PASS | 5 |
+| unit | FAIL | 9 |
+| contract | PASS | 3 |
+| build | PASS | 8 |
 | security | PASS | 3 |
 | independence | PASS | 1 |
 
-Failures: 0
+Failures: 1
 
 Secret values and raw credential-bearing command output are intentionally excluded.

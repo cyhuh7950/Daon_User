@@ -130,6 +130,13 @@ class IdentityPrincipal:
 
 
 @dataclass(frozen=True, slots=True)
+class IdentitySessionView:
+    principal: IdentityPrincipal
+    client_kind: ClientKind
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class StepUpGrant:
     authorization: str
     issued_at: datetime
@@ -727,6 +734,26 @@ class IdentityService:
                     raise IdentityError(reason_code, 401) from error
                 raise
             return IdentityPrincipal(str(row["user_id"]), str(row["session_id"]), str(row["device_id"]), str(row["tenant_id"]))
+
+    def describe_access(
+        self, access_token: str, *, trace_id: str, policy_version: str
+    ) -> IdentitySessionView:
+        """Return the safe public session projection after normal credential validation."""
+        principal = self.validate_access(
+            access_token, trace_id=trace_id, policy_version=policy_version
+        )
+        with self._repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT client_kind, access_expires_at FROM sessions WHERE session_id = ?",
+                (principal.session_id,),
+            ).fetchone()
+            if row is None:
+                raise IdentityError("ACCESS_INVALID", 401)
+            return IdentitySessionView(
+                principal=principal,
+                client_kind=ClientKind(str(row["client_kind"])),
+                expires_at=_dt(str(row["access_expires_at"])),
+            )
 
     def rotate_refresh(self, refresh_token: str | None, *, trace_id: str, policy_version: str) -> SessionCredentials:
         _checked_text(trace_id); _checked_text(policy_version)

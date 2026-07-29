@@ -19,6 +19,7 @@
     "verify:api-audit": "node scripts/verify-api-audit.mjs",
     "verify:api-identity": "node scripts/verify-api-identity.mjs",
     "verify:api-authorization": "node scripts/verify-api-authorization.mjs",
+    "verify:api-runtime": "node scripts/verify-api-runtime.mjs",
     "lint:workspace": "node scripts/lint-workspace.mjs",
     "verify:workspace": "node --test scripts/tests/workspace.test.mjs scripts/tests/workspace-lint.test.mjs scripts/tests/source-knowledge.test.mjs",
     "verify:desktop-lint": "node scripts/lint-workspace.mjs apps/desktop/src/main.jsx apps/desktop/src/desktop-shell.jsx apps/desktop/src/desktop-shell-model.js apps/desktop/src/local-service-bridge.js",

@@ -17,3 +17,7 @@ Production Web UI와 Server-side BFF 경계를 소유한다. Browser 코드는 s
 ## 후속 Build
 
 독립 실행·Build 소유 Work Order는 `R1-M3-01`이다.
+
+## same-origin API BFF
+
+`app/bff/api/[...path]/route.js`는 R1-M4-05의 고정 allowlist server route다. Browser는 `/bff/api/...` 상대 경로만 사용하며 내부 API origin을 알지 못한다. `DAON_API_INTERNAL_URL`은 server process에만 설정하고 `NEXT_PUBLIC_*` 설정으로 전달하지 않는다. 검증은 저장소 루트의 `npm run verify:api-runtime`에서 실제 Next production process로 수행한다.
