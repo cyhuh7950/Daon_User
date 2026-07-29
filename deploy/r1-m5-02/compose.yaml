@@ -1,0 +1,49 @@
+name: ${COMPOSE_PROJECT_NAME:?isolated project name required}
+
+services:
+  database:
+    image: pgvector/pgvector:0.8.2-pg18-trixie
+    environment:
+      POSTGRES_DB: ${DAON_DB_NAME:?database name required}
+      POSTGRES_USER: ${DAON_DB_OWNER:?owner required}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_owner_password
+    secrets: [db_owner_password]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [daon_m5_02]
+    volumes:
+      - daon_m5_02_db:/var/lib/postgresql
+    restart: "no"
+
+  object-storage:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/object_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/object_secret_key
+    secrets: [object_access_key, object_secret_key]
+    networks: [daon_m5_02]
+    volumes:
+      - daon_m5_02_object:/data
+    restart: "no"
+
+networks:
+  daon_m5_02:
+    name: ${COMPOSE_PROJECT_NAME}_network
+
+volumes:
+  daon_m5_02_db:
+    name: ${COMPOSE_PROJECT_NAME}_db
+  daon_m5_02_object:
+    name: ${COMPOSE_PROJECT_NAME}_object
+
+secrets:
+  db_owner_password:
+    file: ${DAON_DB_OWNER_PASSWORD_FILE:?db owner password file required}
+  object_access_key:
+    file: ${DAON_OBJECT_ACCESS_KEY_FILE:?object access key file required}
+  object_secret_key:
+    file: ${DAON_OBJECT_SECRET_KEY_FILE:?object secret key file required}
