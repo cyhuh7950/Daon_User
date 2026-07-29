@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-07-C01",
+  "overall_status": "PASS",
+  "quality_gate": {
+    "duration_seconds": 302.9,
+    "categories": {
+      "lint": "PASS",
+      "type": "PASS",
+      "unit": "PASS",
+      "contract": "PASS",
+      "build": "PASS",
+      "security": "PASS",
+      "independence": "PASS"
+    },
+    "failures": 0
+  },
+  "targeted": {
+    "notification_python": "10 PASS",
+    "api_full_suite": "79 PASS, 4 POSIX-only SKIP on Windows",
+    "bff_openapi_ui_node": "21 PASS",
+    "actual_http_concurrency": "8 PATCH PASS",
+    "public_path_schema_ui_changes": 0
+  },
+  "concurrency": {
+    "same_key": "4 HTTP 200, version 2, unique read_at 1, audit decision 1",
+    "different_keys_same_etag": "1 HTTP 200, 3 HTTP 412, audit decision 1",
+    "audit_failure_state_commit": 0
+  },
+  "cleanup": {
+    "generated_unrelated_gate_files_restored": 2,
+    "coverage_artifacts_remaining": 0,
+    "owned_processes_remaining": 0
+  },
+  "limitations": [
+    "Reference Adapter is process-local; M5 owns PostgreSQL transaction, unique idempotency key and transactional Outbox.",
+    "No database migration was required or performed.",
+    "Chrome and ysna-server redeployment were not repeated because public API, OpenAPI schema and UI were unchanged.",
+    "PR, CI and merge remain owned by the main designer."
+  ]
+}

@@ -1,5 +1,7 @@
 # R1-M4-07 완료보고
 
+> 후속 독립검토 보완: Inbox 개인 Recipient·요청별 Action 격리와 읽음 원자성은 `R1-M4-07-C01`에서 보완했다. 최종 후속 판정과 증거는 `R1-M4-07-C01_completion_report.md` 및 `docs/03_evidence/release_1/R1-M4-07-C01/`을 따른다.
+
 ## 판정
 
 **COMPLETED — Notification·Inbox 실제 API·same-origin BFF·Web UI와 현재 권한·중복 억제·읽음 ETag/멱등성·안전 Deep Link 계약을 구현하고 실제 Process·Browser 및 전체 Quality Gate를 통과했다.**
@@ -58,6 +60,7 @@
 - `docs/03_evidence/release_1/R1-M4-07/server-validation-manifest.json`
 - `docs/03_evidence/release_1/R1-M4-07/server-validation-summary.md`
 - `docs/04_test_reports/release_1/R1-M4-07_progress.md`
+- `docs/04_test_reports/release_1/R1-M4-07-C01_completion_report.md`
 
 ## 제외 범위·남은 위험
 

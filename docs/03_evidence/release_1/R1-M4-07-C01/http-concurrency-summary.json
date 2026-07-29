@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-07-C01",
+  "actual_api_process": true,
+  "actual_http_requests": 8,
+  "same_key": {
+    "request_count": 4,
+    "statuses": [
+      200,
+      200,
+      200,
+      200
+    ],
+    "response_versions": [
+      2,
+      2,
+      2,
+      2
+    ],
+    "unique_read_at_count": 1
+  },
+  "different_keys_same_etag": {
+    "request_count": 4,
+    "statuses": [
+      200,
+      412,
+      412,
+      412
+    ],
+    "success_count": 1,
+    "version_conflict_count": 3
+  },
+  "notification_read_audit_count": 2,
+  "credential_or_internal_url_response_hits": 0,
+  "database_migration": "NOT_APPLICABLE",
+  "reference_adapter": "process_local_atomic_lock"
+}

@@ -20,3 +20,8 @@
 - 공용 UI의 직접 `fetch`를 RED로 확인한 뒤 Web 전용 same-origin Adapter로 분리하고 정확한 Adapter 한 파일만 Lint 허용 경계에 등록했다.
 - 1차 전체 Gate의 유일한 실패는 ASGI 단위 테스트의 loopback `base_url` 문자열이 전역 Browser 주소 Rule에 걸린 것이었다. Rule을 완화하지 않고 예약 `.invalid` Origin으로 교정했다.
 - 최종 Quality Gate: lint·type·unit·contract·build·security·independence 전부 PASS, failure 0.
+
+## 후속 C01
+
+- 어울1 독립검토에서 Inbox 개인 Recipient·요청별 Action 미격리와 읽음 분리 Lock 경쟁을 발견했다.
+- 후속 RED/GREEN·실제 HTTP 동시성·전체 회귀 증거는 `../R1-M4-07-C01/`과 `R1-M4-07-C01_completion_report.md`를 따른다.

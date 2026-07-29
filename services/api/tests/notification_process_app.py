@@ -98,12 +98,31 @@ notification.publish(
     ),
     candidates=(principal,),
 )
+if os.environ.get("DAON_NOTIFICATION_CONCURRENT_FIXTURE") == "1":
+    notification.publish(
+        NotificationEvent(
+            event_id="event-concurrent-policy-001",
+            tenant_id=session.tenant_id,
+            workspace_id="workspace-001",
+            kind="policy",
+            severity="info",
+            title="동시성 검증 알림",
+            summary="원자적 읽음 전이의 실제 HTTP 경쟁을 검증합니다.",
+            resource_type="policy",
+            resource_id="policy-concurrent-001",
+            deep_link="/notifications?notification=concurrent",
+            trace_id="trace-concurrent-notification-001",
+            policy_version=POLICY_VERSION,
+        ),
+        candidates=(principal,),
+    )
 notification.project_request(InboxRequest(
     request_id="approval-browser-001",
     request_kind="approval",
     status="pending",
     tenant_id=session.tenant_id,
     workspace_id="workspace-001",
+    recipient_id=session.user_id,
     actor_id="actor-browser-001",
     due_at=datetime.now(timezone.utc),
     resource_type="output_version",

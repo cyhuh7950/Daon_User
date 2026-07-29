@@ -35,7 +35,7 @@ try {
     "scripts/tests/openapi-contract.test.mjs",
     "scripts/tests/notification-inbox-ui.test.mjs",
   ]);
-  console.log("notification api verified: python=6 node=21");
+  console.log("notification api verified: python=10 node=21");
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
