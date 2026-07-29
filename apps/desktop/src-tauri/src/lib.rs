@@ -1,4 +1,6 @@
 pub mod local_service;
+#[cfg(windows)]
+pub mod windows_credential;
 
 use local_service::{LocalServiceManager, LocalServiceState};
 use tauri::Manager;

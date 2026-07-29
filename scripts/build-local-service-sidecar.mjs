@@ -47,6 +47,8 @@ export async function buildLocalServiceSidecar({ spawnImpl = spawnSync } = {}) {
         "--noconfirm",
         "--clean",
         "--onefile",
+        "--collect-all",
+        "sqlite_vec",
         "--name",
         "daon-user-local-service",
         "--distpath",

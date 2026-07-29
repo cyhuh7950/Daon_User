@@ -22,6 +22,8 @@ class Bootstrap:
     protocol_version: str
     app_instance_id: str
     root_secret: str
+    storage_root_key: str
+    storage_root: str
     parent_process_id: int
 
 
@@ -45,12 +47,16 @@ def parse_bootstrap(payload: bytes) -> Bootstrap:
         "protocol_version",
         "app_instance_id",
         "root_secret",
+        "storage_root_key",
+        "storage_root",
         "parent_process_id",
     }:
         raise BootstrapError("invalid bootstrap fields")
     protocol_version = value["protocol_version"]
     app_instance_id = value["app_instance_id"]
     root_secret = value["root_secret"]
+    storage_root_key = value["storage_root_key"]
+    storage_root = value["storage_root"]
     parent_process_id = value["parent_process_id"]
     if protocol_version != PROTOCOL_VERSION:
         raise BootstrapError("unsupported protocol")
@@ -58,13 +64,24 @@ def parse_bootstrap(payload: bytes) -> Bootstrap:
         raise BootstrapError("invalid app instance")
     if not isinstance(root_secret, str) or not _ROOT_SECRET.fullmatch(root_secret):
         raise BootstrapError("invalid root secret")
+    if not isinstance(storage_root_key, str) or not _ROOT_SECRET.fullmatch(storage_root_key):
+        raise BootstrapError("invalid storage root key")
+    if not isinstance(storage_root, str) or not 1 <= len(storage_root) <= 1024:
+        raise BootstrapError("invalid storage root")
     if (
         not isinstance(parent_process_id, int)
         or isinstance(parent_process_id, bool)
         or not 1 <= parent_process_id <= 0xFFFF_FFFF
     ):
         raise BootstrapError("invalid parent process")
-    return Bootstrap(protocol_version, app_instance_id, root_secret, parent_process_id)
+    return Bootstrap(
+        protocol_version,
+        app_instance_id,
+        root_secret,
+        storage_root_key,
+        storage_root,
+        parent_process_id,
+    )
 
 
 def ready_envelope(*, port: int, app_instance_id: str) -> dict[str, str | int]:
