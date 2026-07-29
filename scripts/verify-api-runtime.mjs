@@ -76,6 +76,7 @@ async function main() {
   const write = process.argv.includes("--write");
   runPython(["-m", "compileall", "-q", apiSource]);
   runPython(["-m", "unittest", "discover", "-s", apiTests, "-p", "test_runtime_http.py", "-v"]);
+  runPython(["-m", "unittest", "discover", "-s", apiTests, "-p", "test_runtime_process_lifecycle.py", "-v"]);
   run(process.execPath, ["--test", "scripts/tests/api-bff-runtime.test.mjs"]);
   if (process.platform === "win32") {
     run(process.env.ComSpec ?? "cmd.exe", [
@@ -90,7 +91,7 @@ async function main() {
     write ? "--write" : "--no-write",
     "--with-next",
   ].filter((argument) => argument !== "--no-write"));
-  console.log("api runtime verified: unit=10 bff_unit=9 actual_api=true actual_next=true same_port_restart=true");
+  console.log("api runtime verified: unit=10 lifecycle_unit=6 bff_unit=9 actual_api=true actual_next=true same_port_restart=true");
 }
 
 main().catch((error) => {

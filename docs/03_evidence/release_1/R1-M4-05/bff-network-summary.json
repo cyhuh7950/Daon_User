@@ -7,6 +7,8 @@
   "status": 200,
   "trace_id": "trace-process-001",
   "direct_and_bff_session_meaning_equal": true,
+  "graceful_shutdown_observed": true,
+  "graceful_exit_code": 0,
   "same_origin_write_status": 200,
   "cross_origin_write_status": 403,
   "cross_origin_write_upstream_audit_events": 0,
