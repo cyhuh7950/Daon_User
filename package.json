@@ -22,6 +22,7 @@
     "verify:api-runtime": "node scripts/verify-api-runtime.mjs",
     "verify:api-notification": "node scripts/verify-api-notification.mjs",
     "verify:api-cloud": "node scripts/verify-api-cloud.mjs",
+    "verify:api-object-queue": "node scripts/verify-api-object-queue.mjs",
     "lint:workspace": "node scripts/lint-workspace.mjs",
     "verify:workspace": "node --test scripts/tests/workspace.test.mjs scripts/tests/workspace-lint.test.mjs scripts/tests/source-knowledge.test.mjs",
     "verify:desktop-lint": "node scripts/lint-workspace.mjs apps/desktop/src/main.jsx apps/desktop/src/desktop-shell.jsx apps/desktop/src/desktop-shell-model.js apps/desktop/src/local-service-bridge.js",

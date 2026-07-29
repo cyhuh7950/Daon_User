@@ -54,6 +54,7 @@ from .notification import (
     parse_inbox_filter,
     parse_notification_filter,
 )
+from .object_queue import MinioObjectStorageAdapter, ObjectStoragePort
 
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
@@ -71,6 +72,11 @@ class RuntimeSettings:
     port: int
     database_path: Path | None = None
     cloud_database_dsn: str | None = None
+    object_storage_endpoint: str | None = None
+    object_storage_bucket: str | None = None
+    object_access_key_file: Path | None = None
+    object_secret_key_file: Path | None = None
+    object_storage_secure: bool = True
     policy_version: str = "runtime-policy-v1"
     public_gateway_url: str | None = None
     trusted_proxy_ips: tuple[str, ...] = ()
@@ -91,6 +97,16 @@ class RuntimeSettings:
             or self.drain_timeout_seconds <= 0
         ):
             raise ValueError("RUNTIME_LIMIT_INVALID")
+        object_fields = (
+            self.object_storage_endpoint,
+            self.object_storage_bucket,
+            self.object_access_key_file,
+            self.object_secret_key_file,
+        )
+        if any(value is not None for value in object_fields) and not all(
+            value is not None for value in object_fields
+        ):
+            raise ValueError("OBJECT_STORAGE_CONFIGURATION_INCOMPLETE")
         if self.profile in {"test", "development"}:
             try:
                 loopback = ipaddress.ip_address(self.bind_host).is_loopback
@@ -144,6 +160,19 @@ class RuntimeSettings:
             port=int(os.environ.get("DAON_API_PORT", "8000")),
             database_path=None if database is None else Path(database),
             cloud_database_dsn=os.environ.get("DAON_CLOUD_DATABASE_DSN"),
+            object_storage_endpoint=os.environ.get("DAON_OBJECT_STORAGE_ENDPOINT"),
+            object_storage_bucket=os.environ.get("DAON_OBJECT_STORAGE_BUCKET"),
+            object_access_key_file=(
+                None
+                if os.environ.get("DAON_OBJECT_ACCESS_KEY_FILE") is None
+                else Path(os.environ["DAON_OBJECT_ACCESS_KEY_FILE"])
+            ),
+            object_secret_key_file=(
+                None
+                if os.environ.get("DAON_OBJECT_SECRET_KEY_FILE") is None
+                else Path(os.environ["DAON_OBJECT_SECRET_KEY_FILE"])
+            ),
+            object_storage_secure=os.environ.get("DAON_OBJECT_STORAGE_SECURE", "true").lower() == "true",
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
             trusted_proxy_ips=proxies,
@@ -206,6 +235,7 @@ class RuntimeDependencies:
     authorization_repository: SqliteAuthorizationRepository
     notification_service: NotificationService | None = None
     cloud_store: PostgresCloudStore | None = None
+    object_storage: ObjectStoragePort | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -491,7 +521,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             dependencies.cloud_store is None
             or (await asyncio.to_thread(dependencies.cloud_store.readiness)).ready
         )
-        status = 200 if dependencies.state.ready and cloud_ready else 503
+        object_ready = (
+            dependencies.object_storage is None
+            or await asyncio.to_thread(dependencies.object_storage.health)
+        )
+        status = 200 if dependencies.state.ready and cloud_ready and object_ready else 503
         response = JSONResponse(
             status_code=status,
             content={"status": "ready" if status == 200 else "not_ready"},
@@ -720,6 +754,23 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         if settings.cloud_database_dsn is None
         else PostgresCloudStore(settings.cloud_database_dsn)
     )
+    object_storage: ObjectStoragePort | None = None
+    if settings.object_storage_endpoint is not None:
+        assert settings.object_storage_bucket is not None
+        assert settings.object_access_key_file is not None
+        assert settings.object_secret_key_file is not None
+        try:
+            access_key = settings.object_access_key_file.read_text(encoding="utf-8").strip()
+            secret_key = settings.object_secret_key_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            raise ValueError("OBJECT_SECRET_REFERENCE_UNAVAILABLE") from None
+        object_storage = MinioObjectStorageAdapter(
+            endpoint=settings.object_storage_endpoint,
+            bucket=settings.object_storage_bucket,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=settings.object_storage_secure,
+        )
     return RuntimeDependencies(
         settings=settings,
         identity_service=identity_service,
@@ -729,4 +780,5 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         authorization_repository=authorization_repository,
         notification_service=notification_service,
         cloud_store=cloud_store,
+        object_storage=object_storage,
     )
