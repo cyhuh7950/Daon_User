@@ -129,6 +129,7 @@ if sys.platform != "win32":
         validate_directory_chain(root, directory)
         directory_descriptor = _open_directory(root, directory)
         descriptor: int | None = None
+        published = False
         try:
             descriptor = _open_file(
                 directory_descriptor,
@@ -144,16 +145,21 @@ if sys.platform != "win32":
                 written += chunk_size
             os.fsync(descriptor)
             _validate_name_matches_descriptor(directory_descriptor, temporary.name, descriptor)
-            os.link(
+            os.replace(
                 temporary.name,
                 destination.name,
                 src_dir_fd=directory_descriptor,
                 dst_dir_fd=directory_descriptor,
-                follow_symlinks=False,
             )
-            os.unlink(temporary.name, dir_fd=directory_descriptor)
+            published = True
+            _validate_name_matches_descriptor(directory_descriptor, destination.name, descriptor)
             os.fsync(directory_descriptor)
         except BaseException:
+            if published:
+                try:
+                    os.unlink(destination.name, dir_fd=directory_descriptor)
+                except FileNotFoundError:
+                    pass
             try:
                 os.unlink(temporary.name, dir_fd=directory_descriptor)
             except FileNotFoundError:
