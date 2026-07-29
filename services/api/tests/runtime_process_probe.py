@@ -226,20 +226,88 @@ def main() -> None:
             bff_status = None
             bff_trace = None
             same_meaning = None
+            bff_write_status = None
+            bff_csrf_rejected_status = None
+            bff_csrf_rejected_upstream_events = None
             client_bundle_forbidden_hits = None
             if arguments.with_next:
                 web_port = free_port()
                 next_process = start_next(web_port, api_port)
-                web_origin = f"http://127.0.0.1:{web_port}"
+                web_origin = f"http://localhost:{web_port}"
                 wait_json(f"{web_origin}/")
                 direct = httpx.get(f"{api_origin}/api/v1/session", headers=cookie, timeout=5)
-                bff = httpx.get(f"{web_origin}/bff/api/session", headers=cookie, timeout=10)
+                decoy_cookie = "private-other-cookie"
+                browser_cookie = {
+                    **cookie,
+                    "Cookie": f"analytics={decoy_cookie}; __Host-daon_session={token}",
+                }
+                bff = httpx.get(f"{web_origin}/bff/api/session", headers=browser_cookie, timeout=10)
                 bff_status = bff.status_code
                 bff_trace = bff.headers.get("x-trace-id")
                 same_meaning = direct.json()["data"] == bff.json()["data"]
                 response_text = bff.text
-                if bff.status_code != 200 or not same_meaning or api_origin in response_text or token in response_text:
+                if (
+                    bff.status_code != 200
+                    or not same_meaning
+                    or api_origin in response_text
+                    or token in response_text
+                    or decoy_cookie in response_text
+                ):
                     raise RuntimeError("NEXT_BFF_PROCESS_CONTRACT_FAILED")
+                write = httpx.post(
+                    f"{web_origin}/bff/api/workspaces/workspace-001/authorization/evaluations",
+                    headers={
+                        **browser_cookie,
+                        "Origin": web_origin,
+                        "Sec-Fetch-Site": "same-origin",
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": "idem-bff-process-001",
+                        "X-Trace-Id": "trace-bff-write-001",
+                    },
+                    json={"action": "view", "requested_permissions": []},
+                    timeout=10,
+                )
+                bff_write_status = write.status_code
+                cross_trace = "trace-bff-cross-origin-001"
+                csrf_rejected = httpx.post(
+                    f"{web_origin}/bff/api/workspaces/workspace-001/authorization/evaluations",
+                    headers={
+                        **browser_cookie,
+                        "Origin": "https://cross-origin.invalid",
+                        "Sec-Fetch-Site": "cross-site",
+                        "Content-Type": "application/json",
+                        "X-Trace-Id": cross_trace,
+                    },
+                    json={"action": "view", "requested_permissions": []},
+                    timeout=10,
+                )
+                bff_csrf_rejected_status = csrf_rejected.status_code
+                rejected_audit = httpx.get(
+                    f"{web_origin}/bff/api/audit-events",
+                    headers={**browser_cookie, "X-Trace-Id": "trace-bff-audit-check-001"},
+                    params={"tenant_id": "tenant-001", "trace_id": cross_trace, "limit": 50},
+                    timeout=10,
+                )
+                if rejected_audit.status_code != 200:
+                    raise RuntimeError("NEXT_BFF_CSRF_AUDIT_CHECK_FAILED")
+                bff_csrf_rejected_upstream_events = len(rejected_audit.json()["data"]["items"])
+                combined_bff_text = response_text + write.text + csrf_rejected.text + rejected_audit.text
+                if (
+                    bff_write_status != 200
+                    or bff_csrf_rejected_status != 403
+                    or bff_csrf_rejected_upstream_events != 0
+                    or token in combined_bff_text
+                    or decoy_cookie in combined_bff_text
+                    or api_origin in combined_bff_text
+                ):
+                    raise RuntimeError(
+                        "NEXT_BFF_WRITE_CSRF_CONTRACT_FAILED:"
+                        f"write={bff_write_status}:write_code={write.json().get('error', {}).get('code')}:"
+                        f"csrf={bff_csrf_rejected_status}:"
+                        f"upstream_events={bff_csrf_rejected_upstream_events}:"
+                        f"credential_hit={token in combined_bff_text or decoy_cookie in combined_bff_text}:"
+                        f"internal_url_hit={api_origin in combined_bff_text}"
+                    )
                 static_root = ROOT / "apps/web/.next/static"
                 forbidden = ("NEXT" + "_PUBLIC_API_BASE_URL", api_origin)
                 client_bundle_forbidden_hits = sum(
@@ -264,7 +332,12 @@ def main() -> None:
             if not port_is_released(api_port):
                 raise RuntimeError("API_LISTENER_REMAINED_AFTER_SHUTDOWN")
             combined_log = first_log + second_log + next_log
-            if token in combined_log or str(database_path) in combined_log or api_origin in next_log:
+            if (
+                token in combined_log
+                or "private-other-cookie" in combined_log
+                or str(database_path) in combined_log
+                or api_origin in next_log
+            ):
                 raise RuntimeError("PROCESS_LOG_SECRET_OR_INTERNAL_ADDRESS_EXPOSED")
             runtime_summary = {
                 "schema_version": "1.0",
@@ -297,6 +370,10 @@ def main() -> None:
                 "status": bff_status,
                 "trace_id": bff_trace,
                 "direct_and_bff_session_meaning_equal": same_meaning,
+                "same_origin_write_status": bff_write_status,
+                "cross_origin_write_status": bff_csrf_rejected_status,
+                "cross_origin_write_upstream_audit_events": bff_csrf_rejected_upstream_events,
+                "forwarded_cookie_names": ["__Host-daon_session"] if arguments.with_next else None,
                 "client_bundle_forbidden_hits": client_bundle_forbidden_hits,
                 "response_internal_url_or_credential_hits": 0,
                 "gui_browser_claimed": False,
