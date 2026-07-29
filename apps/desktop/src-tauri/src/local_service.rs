@@ -9,7 +9,7 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub const PROTOCOL_VERSION: &str = "1.0";
+pub const PROTOCOL_VERSION: &str = "1.1";
 pub const READY_MAX_BYTES: usize = 4096;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -115,8 +115,11 @@ impl AppCredentials {
             self.app_instance_id,
             hex(&nonce)
         );
-        let signature = hmac_sha256(&self.root_secret, unsigned.as_bytes());
-        Ok(format!("{unsigned}|{}", hex(&signature)))
+        nonce.fill(0);
+        let mut signature = hmac_sha256(&self.root_secret, unsigned.as_bytes());
+        let token = format!("{unsigned}|{}", hex(&signature));
+        signature.fill(0);
+        Ok(token)
     }
 
     pub fn bootstrap_json(&self) -> String {
@@ -160,10 +163,12 @@ fn hmac_sha256(secret: &[u8; 32], message: &[u8]) -> [u8; 32] {
     }
     let mut inner = Sha256::new();
     inner.update(inner_pad);
+    inner_pad.fill(0);
     inner.update(message);
     let inner_digest = inner.finalize();
     let mut outer = Sha256::new();
     outer.update(outer_pad);
+    outer_pad.fill(0);
     outer.update(inner_digest);
     outer.finalize().into()
 }

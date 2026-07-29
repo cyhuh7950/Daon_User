@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Final
 
 
-PROTOCOL_VERSION: Final = "1.0"
+PROTOCOL_VERSION: Final = "1.1"
 MAX_BOOTSTRAP_BYTES: Final = 4096
 MAX_INSTANCE_ID_LENGTH: Final = 128
 _INSTANCE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -36,7 +36,7 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def parse_bootstrap(payload: bytes) -> Bootstrap:
+def parse_bootstrap(payload: bytes | bytearray) -> Bootstrap:
     if not payload or len(payload) > MAX_BOOTSTRAP_BYTES:
         raise BootstrapError("invalid bootstrap size")
     try:

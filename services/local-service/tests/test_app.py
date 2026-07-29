@@ -84,7 +84,7 @@ def test_fixed_read_only_commands_require_command_bound_single_use_tokens() -> N
     status_headers = auth_headers("runtime.status.read")
     response = test_client.get("/v1/status", headers=status_headers)
     assert response.status_code == 200
-    assert response.json() == {"status": "ready", "protocol_version": "1.0"}
+    assert response.json() == {"status": "ready", "protocol_version": "1.1"}
     assert test_client.get("/v1/status", headers=status_headers).status_code == 401
 
     capabilities = test_client.get(
@@ -130,6 +130,7 @@ def test_authenticated_storage_file_vector_restart_and_lock_contract(tmp_path: P
             "workspace_id": workspace,
             "area": "source",
             "content_base64": b64encode(payload).decode("ascii"),
+            "content_type": "text/plain",
         },
     )
     assert put.status_code == 200
@@ -209,6 +210,7 @@ def test_parallel_storage_requests_and_lock_race_fail_closed(tmp_path: Path) -> 
             "workspace_id": workspace,
             "area": "source",
             "content_base64": b64encode(b"parallel-lock-canary").decode("ascii"),
+            "content_type": "text/plain",
         },
     )
     object_id = put.json()["object_id"]
@@ -257,6 +259,7 @@ def test_parallel_storage_requests_and_lock_race_fail_closed(tmp_path: Path) -> 
                 "workspace_id": workspace,
                 "area": "source",
                 "content_base64": b64encode(b"race-write").decode("ascii"),
+                "content_type": "text/plain",
             },
         ),
     ]

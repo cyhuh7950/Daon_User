@@ -80,7 +80,7 @@ function assertReadyEnvelope(value, expectedInstance) {
     JSON.stringify(keys) !==
       JSON.stringify(["app_instance_id", "event", "port", "protocol_version"]) ||
     value.event !== "ready" ||
-    value.protocol_version !== "1.0" ||
+    value.protocol_version !== "1.1" ||
     value.app_instance_id !== expectedInstance ||
     !Number.isInteger(value.port) ||
     value.port < 1 ||
@@ -319,7 +319,7 @@ async function runSingleLifecycle(
   try {
     child.stdin.write(
       `${JSON.stringify({
-        protocol_version: "1.0",
+        protocol_version: "1.1",
         app_instance_id: appInstanceId,
         root_secret: rootSecret,
         storage_root_key: storageRootKey,

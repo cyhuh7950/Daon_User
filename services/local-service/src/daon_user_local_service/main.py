@@ -242,22 +242,31 @@ def _parent_identity_matches(expected_parent_process_id: int) -> bool:
 
 
 def run() -> int:
+    payload = bytearray()
     try:
-        payload = read_bootstrap_line(sys.stdin.buffer)
+        payload.extend(read_bootstrap_line(sys.stdin.buffer))
         bootstrap = parse_bootstrap(payload)
     except BootstrapReadTimeout:
         return EXIT_BOOTSTRAP_TIMEOUT
     except BootstrapError:
         return EXIT_BOOTSTRAP_INVALID
+    finally:
+        payload[:] = b"\x00" * len(payload)
+        payload.clear()
     if not _parent_identity_matches(bootstrap.parent_process_id):
         return EXIT_PARENT_MISMATCH
 
+    storage_key = bytearray()
     try:
+        storage_key.extend(bytes.fromhex(bootstrap.storage_root_key))
         storage = LocalEncryptedStore.open(
-            Path(bootstrap.storage_root), bytes.fromhex(bootstrap.storage_root_key)
+            Path(bootstrap.storage_root), storage_key
         )
     except (OSError, LocalStorageError, ValueError):
         return EXIT_STORAGE_UNAVAILABLE
+    finally:
+        storage_key[:] = b"\x00" * len(storage_key)
+        storage_key.clear()
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)

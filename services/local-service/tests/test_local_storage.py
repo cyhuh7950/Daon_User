@@ -40,7 +40,7 @@ def _all_storage_bytes(root: Path) -> bytes:
 def test_metadata_file_and_vector_survive_restart_without_plaintext(tmp_path: Path) -> None:
     key = os.urandom(32)
     store = LocalEncryptedStore.open(tmp_path, key)
-    object_id = store.put_file(WORKSPACE_A, "source", CANARY)
+    object_id = store.put_file(WORKSPACE_A, "source", CANARY, content_type="text/plain")
     _put_vector(store, WORKSPACE_A, "chunk-a")
     store.close()
 
@@ -58,7 +58,7 @@ def test_metadata_file_and_vector_survive_restart_without_plaintext(tmp_path: Pa
 def test_wrong_or_missing_key_never_recreates_existing_ciphertext(tmp_path: Path) -> None:
     key = os.urandom(32)
     store = LocalEncryptedStore.open(tmp_path, key)
-    store.put_file(WORKSPACE_A, "source", CANARY)
+    store.put_file(WORKSPACE_A, "source", CANARY, content_type="text/plain")
     store.close()
     before = _all_storage_bytes(tmp_path)
 
@@ -70,7 +70,7 @@ def test_wrong_or_missing_key_never_recreates_existing_ciphertext(tmp_path: Path
 
 def test_lock_and_corruption_fail_closed(tmp_path: Path) -> None:
     store = LocalEncryptedStore.open(tmp_path, os.urandom(32))
-    object_id = store.put_file(WORKSPACE_A, "source", CANARY)
+    object_id = store.put_file(WORKSPACE_A, "source", CANARY, content_type="text/plain")
     blob = store.blob_path_for_test(WORKSPACE_A, "source", object_id)
     damaged = bytearray(blob.read_bytes())
     damaged[-1] ^= 1
@@ -86,7 +86,7 @@ def test_lock_and_corruption_fail_closed(tmp_path: Path) -> None:
 
 def test_workspace_scope_and_path_inputs_are_enforced(tmp_path: Path) -> None:
     store = LocalEncryptedStore.open(tmp_path, os.urandom(32))
-    object_id = store.put_file(WORKSPACE_A, "source", CANARY)
+    object_id = store.put_file(WORKSPACE_A, "source", CANARY, content_type="text/plain")
     _put_vector(store, WORKSPACE_A, "chunk-a")
 
     with pytest.raises(LocalStorageError, match="LOCAL_OBJECT_NOT_FOUND"):
@@ -95,7 +95,7 @@ def test_workspace_scope_and_path_inputs_are_enforced(tmp_path: Path) -> None:
 
     for invalid in ("../escape", "C:\\escape", "source/child", ""):
         with pytest.raises(LocalStorageError, match="LOCAL_SCOPE_INVALID"):
-            store.put_file(WORKSPACE_A, invalid, CANARY)
+            store.put_file(WORKSPACE_A, invalid, CANARY, content_type="text/plain")
     store.close()
 
 
@@ -104,12 +104,18 @@ def test_failed_atomic_replace_leaves_no_successful_record(
 ) -> None:
     store = LocalEncryptedStore.open(tmp_path, os.urandom(32))
 
-    def fail_replace(_source: Path, _destination: Path) -> None:
+    def fail_replace(
+        _root: Path,
+        _directory: Path,
+        _temporary: Path,
+        _destination: Path,
+        _payload: bytes,
+    ) -> None:
         raise OSError("injected replace failure")
 
-    monkeypatch.setattr("daon_user_local_service.local_storage.os.replace", fail_replace)
+    monkeypatch.setattr("daon_user_local_service.local_storage.atomic_write", fail_replace)
     with pytest.raises(LocalStorageError, match="LOCAL_WRITE_FAILED"):
-        store.put_file(WORKSPACE_A, "source", CANARY)
+        store.put_file(WORKSPACE_A, "source", CANARY, content_type="text/plain")
     assert store.list_object_ids(WORKSPACE_A, "source") == []
     assert not list((tmp_path / "files").rglob("*.tmp"))
     store.close()
@@ -119,12 +125,15 @@ def test_parallel_file_and_vector_operations_share_one_private_connection_lock(
     tmp_path: Path,
 ) -> None:
     store = LocalEncryptedStore.open(tmp_path, os.urandom(32))
-    seed_id = store.put_file(WORKSPACE_A, "source", CANARY)
+    seed_id = store.put_file(WORKSPACE_A, "source", CANARY, content_type="text/plain")
     _put_vector(store, WORKSPACE_A, "seed")
 
     def exercise(index: int) -> tuple[bytes, list[str], str]:
         object_id = store.put_file(
-            WORKSPACE_A, "source", CANARY + index.to_bytes(2, "big")
+            WORKSPACE_A,
+            "source",
+            CANARY + str(index).encode("ascii"),
+            content_type="text/plain",
         )
         _put_vector(store, WORKSPACE_A, f"chunk-{index}")
         return (

@@ -54,7 +54,7 @@ def bootstrap() -> bytes:
     return (
         json.dumps(
             {
-                "protocol_version": "1.0",
+                "protocol_version": "1.1",
                 "app_instance_id": "instance-123",
                 "root_secret": "ab" * 32,
                 "storage_root_key": "cd" * 32,
@@ -77,7 +77,7 @@ def test_run_rejects_invalid_bootstrap_without_starting_listener(
     ("payload", "keep_pipe_open", "expected_code"),
     [
         (b"", True, 65),
-        (b'{"protocol_version":"1.0"', True, 65),
+        (b'{"protocol_version":"1.1"', True, 65),
         (bootstrap().removesuffix(b"\n"), False, 64),
         (b"x" * (MAX_BOOTSTRAP_BYTES + 1) + b"\n", False, 64),
         (b"not-json\n", False, 64),
@@ -249,7 +249,7 @@ def test_run_binds_only_loopback_emits_safe_ready_and_closes(
     envelope = json.loads(output.getvalue())
     assert envelope == {
         "event": "ready",
-        "protocol_version": "1.0",
+        "protocol_version": "1.1",
         "app_instance_id": "instance-123",
         "port": 48123,
     }
