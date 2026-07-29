@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M4-05",
+  "actual_api_process": true,
+  "raw_http": {
+    "live": 200,
+    "ready": 200,
+    "session": 200,
+    "authorization": 200,
+    "trace_id": "trace-process-001"
+  },
+  "graceful_shutdown_observed": true,
+  "graceful_exit_mode": "signal_handled",
+  "graceful_exit_code": 0,
+  "same_port_restart": true,
+  "restart_statuses": [
+    200,
+    200,
+    200
+  ],
+  "restart_graceful_shutdown_observed": true,
+  "restart_exit_code": 0,
+  "credential_or_database_path_log_hits": 0,
+  "owned_processes_remaining": 0,
+  "listeners_remaining": 0
+}

@@ -198,6 +198,24 @@ wheels = [
 name = "daon-user-api"
 version = "0.0.0"
 source = { virtual = "services/api" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = "==0.139.2" },
+    { name = "uvicorn", specifier = "==0.51.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "httpx", specifier = "==0.28.1" }]
 
 [[package]]
 name = "daon-user-local-service"

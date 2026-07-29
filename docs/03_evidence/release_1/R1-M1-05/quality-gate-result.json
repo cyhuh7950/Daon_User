@@ -1,12 +1,12 @@
 {
   "schema_version": "1.0",
   "policy_path": "quality-gate-policy.json",
-  "policy_sha256": "767EEE2BB7142BCEECF94DF32674AE9EB2A789D71B83B699A0303C31EC8323D2",
-  "git_sha": "8a9a934b4ae8e69a51ad3f630ba3eeae46458d12",
-  "started_at": "2026-07-26T10:47:58.202Z",
-  "ended_at": "2026-07-26T10:52:31.962Z",
-  "overall_status": "PASS",
-  "exit_code": 0,
+  "policy_sha256": "327E031BED78C6AC735BA3A7DC9FBF838A505ABD1D19459557DDCEBC4E8177D9",
+  "git_sha": "7bc082d652e38d40d1dc88e41b628b10b1f3b311",
+  "started_at": "2026-07-29T00:13:30.122Z",
+  "ended_at": "2026-07-29T00:17:33.491Z",
+  "overall_status": "FAIL",
+  "exit_code": 1,
   "categories": {
     "lint": {
       "status": "PASS",
@@ -21,8 +21,8 @@
             "run",
             "lint:workspace"
           ],
-          "started_at": "2026-07-26T10:47:58.509Z",
-          "ended_at": "2026-07-26T10:47:59.488Z",
+          "started_at": "2026-07-29T00:13:30.399Z",
+          "ended_at": "2026-07-29T00:13:31.121Z",
           "evidence_files": [
             {
               "path": "scripts/lint-workspace.mjs",
@@ -44,8 +44,8 @@
             "run",
             "verify:desktop-lint"
           ],
-          "started_at": "2026-07-26T10:48:11.631Z",
-          "ended_at": "2026-07-26T10:48:12.441Z",
+          "started_at": "2026-07-29T00:13:41.035Z",
+          "ended_at": "2026-07-29T00:13:41.706Z",
           "evidence_files": [
             {
               "path": "scripts/lint-workspace.mjs",
@@ -53,7 +53,32 @@
             },
             {
               "path": "apps/desktop/src/desktop-shell.jsx",
-              "sha256": "99A479090A32623289A61A172B226805C3DBC48F5DD1ED54BBB2FACE5FD7172F"
+              "sha256": "C336D3107E3F1208174FF83DAA544F842661F7DDB65AAC59FE5932D29B4ED79D"
+            }
+          ]
+        },
+        {
+          "id": "mobile-shell-lint",
+          "component": "apps/mobile",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "lint",
+            "--workspace",
+            "@daon-user/mobile"
+          ],
+          "started_at": "2026-07-29T00:15:53.492Z",
+          "ended_at": "2026-07-29T00:15:54.786Z",
+          "evidence_files": [
+            {
+              "path": "scripts/lint-workspace.mjs",
+              "sha256": "6DB9810F13D6E8B9BD5019D34892EDDA4DAFB5470D3404A69B4620ED92A0FE79"
+            },
+            {
+              "path": "apps/mobile/src/MobileShell.tsx",
+              "sha256": "F5AA1C7E8B1A69208EE2276667E413C9238A71B5D43A04D46E7D31B8B79C9C00"
             }
           ]
         },
@@ -67,8 +92,8 @@
             "run",
             "lint:workspace"
           ],
-          "started_at": "2026-07-26T10:51:20.297Z",
-          "ended_at": "2026-07-26T10:51:21.424Z",
+          "started_at": "2026-07-29T00:16:05.379Z",
+          "ended_at": "2026-07-29T00:16:06.021Z",
           "evidence_files": [
             {
               "path": "scripts/lint-workspace.mjs",
@@ -90,8 +115,8 @@
             "run",
             "verify:product-foundation"
           ],
-          "started_at": "2026-07-26T10:51:31.906Z",
-          "ended_at": "2026-07-26T10:51:32.618Z",
+          "started_at": "2026-07-29T00:16:15.829Z",
+          "ended_at": "2026-07-29T00:16:16.478Z",
           "evidence_files": [
             {
               "path": "packages/contracts/navigation.json",
@@ -113,8 +138,8 @@
             "run",
             "verify:product-foundation"
           ],
-          "started_at": "2026-07-26T10:51:33.339Z",
-          "ended_at": "2026-07-26T10:51:34.084Z",
+          "started_at": "2026-07-29T00:16:17.074Z",
+          "ended_at": "2026-07-29T00:16:17.684Z",
           "evidence_files": [
             {
               "path": "packages/design-tokens/tokens.json",
@@ -131,6 +156,28 @@
           ]
         },
         {
+          "id": "api-authorization-lint",
+          "component": "services/api",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "scripts/verify-api-authorization.mjs"
+          ],
+          "started_at": "2026-07-29T00:16:20.916Z",
+          "ended_at": "2026-07-29T00:16:25.763Z",
+          "evidence_files": [
+            {
+              "path": "services/api/src/daon_user_api/authorization.py",
+              "sha256": "573293C096FE888B68FB2C8F5E22CABE39BE77365CD40B534F598FEC23D59657"
+            },
+            {
+              "path": "services/api/src/daon_user_api/identity.py",
+              "sha256": "71FE889853504DCB5FBEA13708DFC2B0AB9C686E679562E7912E148502C09953"
+            }
+          ]
+        },
+        {
           "id": "local-service-lint",
           "component": "services/local-service",
           "status": "PASS",
@@ -140,16 +187,16 @@
             "scripts/run-local-service-tool.mjs",
             "lint"
           ],
-          "started_at": "2026-07-26T10:51:37.674Z",
-          "ended_at": "2026-07-26T10:51:39.127Z",
+          "started_at": "2026-07-29T00:16:55.719Z",
+          "ended_at": "2026-07-29T00:16:56.136Z",
           "evidence_files": [
             {
               "path": "services/local-service/pyproject.toml",
-              "sha256": "C16C4883DCA08E91FB7607918CD0CDE674141D8C7E088F4C9CE305FF6945A62E"
+              "sha256": "691C2A2E5EA7E0AB6227F56FB59E09F922C17E9B10FC7C5ED0C9B747EC14763D"
             },
             {
               "path": "services/local-service/src/daon_user_local_service/app.py",
-              "sha256": "19D89FA1A2B14012023561EDB9BFB14854A86243061E8F288A00684B265580FC"
+              "sha256": "D6A7F90D6766B195237814AE213B70DA59A132645C6FC3101CC3CAC09829940B"
             }
           ]
         }
@@ -159,6 +206,7 @@
           "component": "apps/web",
           "status": "REQUIRED",
           "evidence": [
+            "apps/web/app/bff/api/[...path]/route.js",
             "apps/web/app/bff/shell/runtime/route.js",
             "apps/web/app/layout.jsx",
             "apps/web/app/notifications/page.jsx",
@@ -167,6 +215,7 @@
             "apps/web/app/settings/account/page.jsx",
             "apps/web/app/settings/organization/page.jsx",
             "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/bff-api-proxy.js",
             "apps/web/lib/web-shell-runtime.js",
             "apps/web/next.config.mjs"
           ]
@@ -190,11 +239,24 @@
         },
         {
           "component": "apps/mobile",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/mobile/package.json",
-            "apps/mobile/README.md",
-            "apps/mobile/package.json"
+            "apps/mobile/babel.config.cjs",
+            "apps/mobile/index.js",
+            "apps/mobile/ios/ci/prepare-simulator.mjs",
+            "apps/mobile/ios/ci/write-evidence.mjs",
+            "apps/mobile/metro.config.cjs",
+            "apps/mobile/src/App.tsx",
+            "apps/mobile/src/domain/mobile-studio-actions.ts",
+            "apps/mobile/src/domain/navigation.ts",
+            "apps/mobile/src/domain/public-api-client.ts",
+            "apps/mobile/src/domain/screens.ts",
+            "apps/mobile/src/MobileShell.tsx",
+            "apps/mobile/src/platform/android-deep-link.ts",
+            "apps/mobile/src/platform/android-host.ts",
+            "apps/mobile/src/platform/design-token-adapter.ts",
+            "apps/mobile/src/platform/ios-host.ts",
+            "apps/mobile/src/platform/native-deep-link.ts"
           ]
         },
         {
@@ -226,7 +288,9 @@
           "component": "packages/contracts",
           "status": "REQUIRED",
           "evidence": [
+            "packages/contracts/mobile-studio-actions.json",
             "packages/contracts/navigation.json",
+            "packages/contracts/openapi/v1/openapi.json",
             "packages/contracts/screens.json"
           ]
         },
@@ -241,11 +305,28 @@
         },
         {
           "component": "services/api",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "services/api/pyproject.toml",
-            "services/api/README.md",
-            "services/api/pyproject.toml"
+            "services/api/src/daon_user_api/audit.py",
+            "services/api/src/daon_user_api/authorization.py",
+            "services/api/src/daon_user_api/identity.py",
+            "services/api/src/daon_user_api/main.py",
+            "services/api/src/daon_user_api/runtime.py",
+            "services/api/src/daon_user_api/__init__.py",
+            "services/api/src/daon_user_api/__main__.py",
+            "services/api/tests/runtime_process_probe.py",
+            "services/api/tests/test_audit_core.py",
+            "services/api/tests/test_audit_integrity.py",
+            "services/api/tests/test_authorization_access.py",
+            "services/api/tests/test_authorization_persistence.py",
+            "services/api/tests/test_authorization_roles.py",
+            "services/api/tests/test_authorization_role_scope_c01.py",
+            "services/api/tests/test_authorization_support.py",
+            "services/api/tests/test_identity_oidc.py",
+            "services/api/tests/test_identity_persistence.py",
+            "services/api/tests/test_identity_security_c01.py",
+            "services/api/tests/test_identity_sessions.py",
+            "services/api/tests/test_identity_step_up.py"
           ]
         },
         {
@@ -278,16 +359,41 @@
             "run",
             "verify:desktop-type"
           ],
-          "started_at": "2026-07-26T10:48:12.445Z",
-          "ended_at": "2026-07-26T10:49:36.251Z",
+          "started_at": "2026-07-29T00:13:41.708Z",
+          "ended_at": "2026-07-29T00:14:53.703Z",
           "evidence_files": [
             {
               "path": "apps/desktop/src-tauri/Cargo.toml",
-              "sha256": "CEED12AD23A40659BC86C6D49BB5B9BF8ACD6800C266B11BC14905E9A664AA2E"
+              "sha256": "6EAF81E9C7BA96FE7FED31FA6FC161A9E330935326D7CA9DF5E90F79E93C91A8"
             },
             {
               "path": "apps/desktop/src-tauri/Cargo.lock",
-              "sha256": "A3EB16FF206DC70011C2A6A88CD55B63159DCFB111E09C681237FFDCC71AE040"
+              "sha256": "1FAAAF0BC091374E9F98E7556E5971A9A14F5F188567E9B883310CEB06630804"
+            }
+          ]
+        },
+        {
+          "id": "mobile-shell-type",
+          "component": "apps/mobile",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "type",
+            "--workspace",
+            "@daon-user/mobile"
+          ],
+          "started_at": "2026-07-29T00:15:54.787Z",
+          "ended_at": "2026-07-29T00:15:57.453Z",
+          "evidence_files": [
+            {
+              "path": "apps/mobile/tsconfig.json",
+              "sha256": "A58137CEF7A67DEED29159D9EC5ABC24A394A27D5FE5D1B2817EEBF6501A8491"
+            },
+            {
+              "path": "apps/mobile/src/domain/navigation.ts",
+              "sha256": "A163F4604B0A665DA995F4B9B191E0D559CDF036263DAB1D491A296C11081BAC"
             }
           ]
         },
@@ -303,8 +409,8 @@
             "packages/design-tokens/tsconfig.json",
             "--noEmit"
           ],
-          "started_at": "2026-07-26T10:51:34.087Z",
-          "ended_at": "2026-07-26T10:51:35.676Z",
+          "started_at": "2026-07-29T00:16:17.686Z",
+          "ended_at": "2026-07-29T00:16:18.990Z",
           "evidence_files": [
             {
               "path": "packages/design-tokens/tokens.ts",
@@ -313,6 +419,28 @@
             {
               "path": "packages/design-tokens/tsconfig.json",
               "sha256": "383F64998C76898F424946F9DE0B04F052413A3AC16E0E431B6A7A807BBE86CE"
+            }
+          ]
+        },
+        {
+          "id": "api-authorization-type",
+          "component": "services/api",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "scripts/verify-api-authorization.mjs"
+          ],
+          "started_at": "2026-07-29T00:16:25.765Z",
+          "ended_at": "2026-07-29T00:16:31.350Z",
+          "evidence_files": [
+            {
+              "path": "services/api/src/daon_user_api/authorization.py",
+              "sha256": "573293C096FE888B68FB2C8F5E22CABE39BE77365CD40B534F598FEC23D59657"
+            },
+            {
+              "path": "services/api/tests/test_authorization_persistence.py",
+              "sha256": "E5320209FAC9A2886782F50CC19D2E3C41C8849671393FE0B8C0032E047548B0"
             }
           ]
         },
@@ -326,16 +454,16 @@
             "scripts/run-local-service-tool.mjs",
             "type"
           ],
-          "started_at": "2026-07-26T10:51:39.129Z",
-          "ended_at": "2026-07-26T10:51:55.796Z",
+          "started_at": "2026-07-29T00:16:56.143Z",
+          "ended_at": "2026-07-29T00:16:57.759Z",
           "evidence_files": [
             {
               "path": "services/local-service/pyproject.toml",
-              "sha256": "C16C4883DCA08E91FB7607918CD0CDE674141D8C7E088F4C9CE305FF6945A62E"
+              "sha256": "691C2A2E5EA7E0AB6227F56FB59E09F922C17E9B10FC7C5ED0C9B747EC14763D"
             },
             {
               "path": "services/local-service/src/daon_user_local_service/protocol.py",
-              "sha256": "6F494D542C0DDC99F02A9A060F39A520D76AD912B9F4D241DB9097E5D7A75EED"
+              "sha256": "F68BD5092DC230DEC1320CE5CDE26EF6F3E85605A7441942486E2F99175AE36B"
             }
           ]
         }
@@ -364,11 +492,20 @@
         },
         {
           "component": "apps/mobile",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/mobile/package.json",
-            "apps/mobile/README.md",
-            "apps/mobile/package.json"
+            "apps/mobile/src/App.tsx",
+            "apps/mobile/src/domain/mobile-studio-actions.ts",
+            "apps/mobile/src/domain/navigation.ts",
+            "apps/mobile/src/domain/public-api-client.ts",
+            "apps/mobile/src/domain/screens.ts",
+            "apps/mobile/src/MobileShell.tsx",
+            "apps/mobile/src/platform/android-deep-link.ts",
+            "apps/mobile/src/platform/android-host.ts",
+            "apps/mobile/src/platform/design-token-adapter.ts",
+            "apps/mobile/src/platform/ios-host.ts",
+            "apps/mobile/src/platform/native-deep-link.ts",
+            "apps/mobile/tsconfig.json"
           ]
         },
         {
@@ -399,11 +536,28 @@
         },
         {
           "component": "services/api",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "services/api/pyproject.toml",
-            "services/api/README.md",
-            "services/api/pyproject.toml"
+            "services/api/src/daon_user_api/audit.py",
+            "services/api/src/daon_user_api/authorization.py",
+            "services/api/src/daon_user_api/identity.py",
+            "services/api/src/daon_user_api/main.py",
+            "services/api/src/daon_user_api/runtime.py",
+            "services/api/src/daon_user_api/__init__.py",
+            "services/api/src/daon_user_api/__main__.py",
+            "services/api/tests/runtime_process_probe.py",
+            "services/api/tests/test_audit_core.py",
+            "services/api/tests/test_audit_integrity.py",
+            "services/api/tests/test_authorization_access.py",
+            "services/api/tests/test_authorization_persistence.py",
+            "services/api/tests/test_authorization_roles.py",
+            "services/api/tests/test_authorization_role_scope_c01.py",
+            "services/api/tests/test_authorization_support.py",
+            "services/api/tests/test_identity_oidc.py",
+            "services/api/tests/test_identity_persistence.py",
+            "services/api/tests/test_identity_security_c01.py",
+            "services/api/tests/test_identity_sessions.py",
+            "services/api/tests/test_identity_step_up.py"
           ]
         },
         {
@@ -424,7 +578,7 @@
       ]
     },
     "unit": {
-      "status": "PASS",
+      "status": "FAIL",
       "checks": [
         {
           "id": "web-workspace-unit",
@@ -436,8 +590,8 @@
             "run",
             "verify:workspace"
           ],
-          "started_at": "2026-07-26T10:47:59.492Z",
-          "ended_at": "2026-07-26T10:48:00.809Z",
+          "started_at": "2026-07-29T00:13:31.124Z",
+          "ended_at": "2026-07-29T00:13:32.148Z",
           "evidence_files": [
             {
               "path": "scripts/tests/workspace.test.mjs",
@@ -448,19 +602,40 @@
         {
           "id": "desktop-shell-unit",
           "component": "apps/desktop",
-          "status": "PASS",
-          "exit_code": 0,
+          "status": "FAIL",
+          "exit_code": 101,
           "command": [
             "npm",
             "run",
             "verify:desktop-unit"
           ],
-          "started_at": "2026-07-26T10:49:36.253Z",
-          "ended_at": "2026-07-26T10:51:18.935Z",
+          "started_at": "2026-07-29T00:14:53.706Z",
+          "ended_at": "2026-07-29T00:15:50.578Z",
           "evidence_files": [
             {
               "path": "scripts/tests/desktop-tauri-shell.test.mjs",
-              "sha256": "A757F1A945F0F19191F05D82E979BC7F08D6C797D3AF4CE4F2FEB3583E8CDD25"
+              "sha256": "9BDDE33D2188768D9AB9EBD8774F41692CCC21B090CEB99D9DF2448FDA97B2D3"
+            }
+          ]
+        },
+        {
+          "id": "mobile-shell-unit",
+          "component": "apps/mobile",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "unit",
+            "--workspace",
+            "@daon-user/mobile"
+          ],
+          "started_at": "2026-07-29T00:15:57.455Z",
+          "ended_at": "2026-07-29T00:15:58.681Z",
+          "evidence_files": [
+            {
+              "path": "scripts/tests/mobile-shared-shell.test.mjs",
+              "sha256": "125D8D887B694509C4BA5011668CDBE5DC80EBEA12F9217FE087D5D9B616AEEC"
             }
           ]
         },
@@ -474,8 +649,8 @@
             "run",
             "verify:workspace"
           ],
-          "started_at": "2026-07-26T10:51:21.425Z",
-          "ended_at": "2026-07-26T10:51:23.267Z",
+          "started_at": "2026-07-29T00:16:06.023Z",
+          "ended_at": "2026-07-29T00:16:06.992Z",
           "evidence_files": [
             {
               "path": "scripts/tests/workspace.test.mjs",
@@ -493,12 +668,38 @@
             "run",
             "verify:product-foundation"
           ],
-          "started_at": "2026-07-26T10:51:35.678Z",
-          "ended_at": "2026-07-26T10:51:36.334Z",
+          "started_at": "2026-07-29T00:16:18.992Z",
+          "ended_at": "2026-07-29T00:16:19.593Z",
           "evidence_files": [
             {
               "path": "scripts/tests/product-foundation.test.mjs",
-              "sha256": "079854C89000AB4F822FFF1616A9826403D6035DAA65AD173A6D2C3A74D1D4ED"
+              "sha256": "CAEDC506F1AFD1992ACA773842BC1FEAB3A7C755EA982EEE5ADC0C0E50861B19"
+            }
+          ]
+        },
+        {
+          "id": "api-authorization-unit",
+          "component": "services/api",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "node",
+            "scripts/verify-api-authorization.mjs"
+          ],
+          "started_at": "2026-07-29T00:16:31.354Z",
+          "ended_at": "2026-07-29T00:16:37.005Z",
+          "evidence_files": [
+            {
+              "path": "services/api/tests/test_authorization_roles.py",
+              "sha256": "3659F7C3DB70B3057D6BDB6B9D965A749644A35473BD49A14034C2EE3A6CDD6A"
+            },
+            {
+              "path": "services/api/tests/test_authorization_access.py",
+              "sha256": "752553F3916E9ACC520EFE2875116A08911C93E3EE147DEB5F2E1BC4AF457F43"
+            },
+            {
+              "path": "services/api/tests/test_identity_security_c01.py",
+              "sha256": "3090D72068C1788721ADCEF20E6B00933E530D6615F8DB3FDC003F2EDC2536C7"
             }
           ]
         },
@@ -512,16 +713,16 @@
             "scripts/run-local-service-tool.mjs",
             "unit"
           ],
-          "started_at": "2026-07-26T10:51:55.798Z",
-          "ended_at": "2026-07-26T10:52:02.376Z",
+          "started_at": "2026-07-29T00:16:57.763Z",
+          "ended_at": "2026-07-29T00:17:04.904Z",
           "evidence_files": [
             {
               "path": "services/local-service/tests/test_protocol.py",
-              "sha256": "4006F0C646055509B19F832C3C2AEDFCCDB902CECA54E05A3888A4EB3CA150E7"
+              "sha256": "C00F0D8F8D9FFDD411A400DE117FAD630176A68ABE46B4C6BA3A4640516B8B1A"
             },
             {
               "path": "services/local-service/tests/test_app.py",
-              "sha256": "CAE4EFA5D59EF499F409AFCB5FCD30B10F131366B559CCDB145016A83C8F33A1"
+              "sha256": "D478750D8A9EFF9D498784E9622FD64AD95A1F780A7D37DC76D431D57F6DD62E"
             }
           ]
         },
@@ -535,12 +736,12 @@
             "--test",
             "scripts/tests/quality-gate.test.mjs"
           ],
-          "started_at": "2026-07-26T10:52:03.899Z",
-          "ended_at": "2026-07-26T10:52:04.801Z",
+          "started_at": "2026-07-29T00:17:06.491Z",
+          "ended_at": "2026-07-29T00:17:07.300Z",
           "evidence_files": [
             {
               "path": "scripts/tests/quality-gate.test.mjs",
-              "sha256": "AF15213C0C0B2176C9DDD81620F307698414BD19C711C5B412047C010644458F"
+              "sha256": "BD63A2B728D10BF1F1F104D81AE451F25F70D4105AC8E3D8DC0F61DF93995883"
             }
           ]
         },
@@ -555,16 +756,16 @@
             "scripts/tests/local-service-runtime-verifier.test.mjs",
             "scripts/tests/local-service-stage-helper.test.mjs"
           ],
-          "started_at": "2026-07-26T10:52:04.802Z",
-          "ended_at": "2026-07-26T10:52:06.389Z",
+          "started_at": "2026-07-29T00:17:07.301Z",
+          "ended_at": "2026-07-29T00:17:08.566Z",
           "evidence_files": [
             {
               "path": "scripts/verify-local-service-runtime.mjs",
-              "sha256": "89AC2ACEBA2F1C16C37EB741B614413B2F1CE6516EACE72598EF0F5BC2924573"
+              "sha256": "3A3C25EA11ED35926DD456B9F784E4FE06E57D018991636109E894925BCBC245"
             },
             {
               "path": "scripts/stage-local-service-sidecar.ps1",
-              "sha256": "9A49019476BB61E6B4E229D534ACE8B1DDA1FFC2A5423C7296549C519D52EFF7"
+              "sha256": "3705F0FDB28D364CC4595835E01CEA7BC0EBCE44C197524E919FC0E1F7455116"
             }
           ]
         }
@@ -574,6 +775,7 @@
           "component": "apps/web",
           "status": "REQUIRED",
           "evidence": [
+            "apps/web/app/bff/api/[...path]/route.js",
             "apps/web/app/bff/shell/runtime/route.js",
             "apps/web/app/layout.jsx",
             "apps/web/app/notifications/page.jsx",
@@ -582,6 +784,7 @@
             "apps/web/app/settings/account/page.jsx",
             "apps/web/app/settings/organization/page.jsx",
             "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/bff-api-proxy.js",
             "apps/web/lib/web-shell-runtime.js",
             "apps/web/next.config.mjs"
           ]
@@ -605,11 +808,24 @@
         },
         {
           "component": "apps/mobile",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/mobile/package.json",
-            "apps/mobile/README.md",
-            "apps/mobile/package.json"
+            "apps/mobile/babel.config.cjs",
+            "apps/mobile/index.js",
+            "apps/mobile/ios/ci/prepare-simulator.mjs",
+            "apps/mobile/ios/ci/write-evidence.mjs",
+            "apps/mobile/metro.config.cjs",
+            "apps/mobile/src/App.tsx",
+            "apps/mobile/src/domain/mobile-studio-actions.ts",
+            "apps/mobile/src/domain/navigation.ts",
+            "apps/mobile/src/domain/public-api-client.ts",
+            "apps/mobile/src/domain/screens.ts",
+            "apps/mobile/src/MobileShell.tsx",
+            "apps/mobile/src/platform/android-deep-link.ts",
+            "apps/mobile/src/platform/android-host.ts",
+            "apps/mobile/src/platform/design-token-adapter.ts",
+            "apps/mobile/src/platform/ios-host.ts",
+            "apps/mobile/src/platform/native-deep-link.ts"
           ]
         },
         {
@@ -655,11 +871,28 @@
         },
         {
           "component": "services/api",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "services/api/pyproject.toml",
-            "services/api/README.md",
-            "services/api/pyproject.toml"
+            "services/api/src/daon_user_api/audit.py",
+            "services/api/src/daon_user_api/authorization.py",
+            "services/api/src/daon_user_api/identity.py",
+            "services/api/src/daon_user_api/main.py",
+            "services/api/src/daon_user_api/runtime.py",
+            "services/api/src/daon_user_api/__init__.py",
+            "services/api/src/daon_user_api/__main__.py",
+            "services/api/tests/runtime_process_probe.py",
+            "services/api/tests/test_audit_core.py",
+            "services/api/tests/test_audit_integrity.py",
+            "services/api/tests/test_authorization_access.py",
+            "services/api/tests/test_authorization_persistence.py",
+            "services/api/tests/test_authorization_roles.py",
+            "services/api/tests/test_authorization_role_scope_c01.py",
+            "services/api/tests/test_authorization_support.py",
+            "services/api/tests/test_identity_oidc.py",
+            "services/api/tests/test_identity_persistence.py",
+            "services/api/tests/test_identity_security_c01.py",
+            "services/api/tests/test_identity_sessions.py",
+            "services/api/tests/test_identity_step_up.py"
           ]
         },
         {
@@ -686,6 +919,31 @@
       "status": "PASS",
       "checks": [
         {
+          "id": "mobile-shell-contract",
+          "component": "apps/mobile",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "contract",
+            "--workspace",
+            "@daon-user/mobile"
+          ],
+          "started_at": "2026-07-29T00:15:58.683Z",
+          "ended_at": "2026-07-29T00:15:59.777Z",
+          "evidence_files": [
+            {
+              "path": "packages/contracts/mobile-studio-actions.json",
+              "sha256": "D3C7BAA4D0449121E801EE89BE110891E34CFCC3AFC681CFE488796A7D8549AF"
+            },
+            {
+              "path": "scripts/verify-mobile-studio-contract.mjs",
+              "sha256": "6F68B9A3C6FBA1D9A9686B9834520B00CE8D59BD144DCFE8AD17085C92550F34"
+            }
+          ]
+        },
+        {
           "id": "contracts-contract",
           "component": "packages/contracts",
           "status": "PASS",
@@ -695,8 +953,8 @@
             "run",
             "verify:product-foundation"
           ],
-          "started_at": "2026-07-26T10:51:32.620Z",
-          "ended_at": "2026-07-26T10:51:33.338Z",
+          "started_at": "2026-07-29T00:16:16.480Z",
+          "ended_at": "2026-07-29T00:16:17.072Z",
           "evidence_files": [
             {
               "path": "packages/contracts/navigation.json",
@@ -718,16 +976,16 @@
             "scripts/run-local-service-tool.mjs",
             "contract"
           ],
-          "started_at": "2026-07-26T10:52:02.378Z",
-          "ended_at": "2026-07-26T10:52:03.590Z",
+          "started_at": "2026-07-29T00:17:04.909Z",
+          "ended_at": "2026-07-29T00:17:06.203Z",
           "evidence_files": [
             {
               "path": "services/local-service/tests/test_protocol.py",
-              "sha256": "4006F0C646055509B19F832C3C2AEDFCCDB902CECA54E05A3888A4EB3CA150E7"
+              "sha256": "C00F0D8F8D9FFDD411A400DE117FAD630176A68ABE46B4C6BA3A4640516B8B1A"
             },
             {
               "path": "services/local-service/tests/test_app.py",
-              "sha256": "CAE4EFA5D59EF499F409AFCB5FCD30B10F131366B559CCDB145016A83C8F33A1"
+              "sha256": "D478750D8A9EFF9D498784E9622FD64AD95A1F780A7D37DC76D431D57F6DD62E"
             }
           ]
         }
@@ -753,11 +1011,14 @@
         },
         {
           "component": "apps/mobile",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/mobile/package.json",
-            "apps/mobile/README.md",
-            "apps/mobile/package.json"
+            "apps/mobile/android/template-provenance.json",
+            "apps/mobile/app.json",
+            "apps/mobile/ios/Daon/Images.xcassets/AppIcon.appiconset/Contents.json",
+            "apps/mobile/ios/Daon/Images.xcassets/Contents.json",
+            "apps/mobile/ios/template-provenance.json",
+            "apps/mobile/tsconfig.json"
           ]
         },
         {
@@ -773,7 +1034,9 @@
           "component": "packages/contracts",
           "status": "REQUIRED",
           "evidence": [
+            "packages/contracts/mobile-studio-actions.json",
             "packages/contracts/navigation.json",
+            "packages/contracts/openapi/v1/openapi.json",
             "packages/contracts/screens.json"
           ]
         },
@@ -827,8 +1090,8 @@
             "--workspace",
             "@daon-user/web"
           ],
-          "started_at": "2026-07-26T10:48:00.810Z",
-          "ended_at": "2026-07-26T10:48:11.627Z",
+          "started_at": "2026-07-29T00:13:32.149Z",
+          "ended_at": "2026-07-29T00:13:41.031Z",
           "evidence_files": [
             {
               "path": "apps/web/next.config.mjs",
@@ -850,8 +1113,8 @@
             "run",
             "verify:desktop-build"
           ],
-          "started_at": "2026-07-26T10:51:18.937Z",
-          "ended_at": "2026-07-26T10:51:20.295Z",
+          "started_at": "2026-07-29T00:15:50.580Z",
+          "ended_at": "2026-07-29T00:15:53.490Z",
           "evidence_files": [
             {
               "path": "apps/desktop/index.html",
@@ -860,6 +1123,35 @@
             {
               "path": "apps/desktop/src-tauri/tauri.conf.json",
               "sha256": "1739F44E951FCCCBE4F4F6235D1E7D603582270C50445252887601F42160C0A6"
+            }
+          ]
+        },
+        {
+          "id": "mobile-shell-production-bundle",
+          "component": "apps/mobile",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "build",
+            "--workspace",
+            "@daon-user/mobile"
+          ],
+          "started_at": "2026-07-29T00:15:59.779Z",
+          "ended_at": "2026-07-29T00:16:05.376Z",
+          "evidence_files": [
+            {
+              "path": "apps/mobile/index.js",
+              "sha256": "1751E6B9F37D9584CEB17F0BBF50E01864C4EB69A48EB0A893080CB215A101D1"
+            },
+            {
+              "path": "apps/mobile/metro.config.cjs",
+              "sha256": "083F55ECBB608E4D060068809863782EAE3DB5CE5283070B35E32ED7B6281D9D"
+            },
+            {
+              "path": "apps/mobile/babel.config.cjs",
+              "sha256": "AC032E2E2114D6DFFE4737789FD9B153EA121FE26B7683B4D6F840160C46256A"
             }
           ]
         },
@@ -875,8 +1167,8 @@
             "--workspace",
             "@daon-user/web"
           ],
-          "started_at": "2026-07-26T10:51:23.268Z",
-          "ended_at": "2026-07-26T10:51:31.904Z",
+          "started_at": "2026-07-29T00:16:06.993Z",
+          "ended_at": "2026-07-29T00:16:15.827Z",
           "evidence_files": [
             {
               "path": "packages/ui/src/adaptive-workspace.jsx",
@@ -900,8 +1192,8 @@
             "packages/design-tokens/tsconfig.json",
             "--noEmit"
           ],
-          "started_at": "2026-07-26T10:51:36.335Z",
-          "ended_at": "2026-07-26T10:51:37.672Z",
+          "started_at": "2026-07-29T00:16:19.595Z",
+          "ended_at": "2026-07-29T00:16:20.914Z",
           "evidence_files": [
             {
               "path": "packages/design-tokens/tokens.ts",
@@ -910,6 +1202,37 @@
             {
               "path": "packages/design-tokens/tokens.json",
               "sha256": "8DC301BD89C4A27BDC22BA17B769D554496D7EB709D92F4D0AACA63562AC8D3B"
+            }
+          ]
+        },
+        {
+          "id": "api-runtime-build",
+          "component": "services/api",
+          "status": "PASS",
+          "exit_code": 0,
+          "command": [
+            "npm",
+            "run",
+            "verify:api-runtime"
+          ],
+          "started_at": "2026-07-29T00:16:37.016Z",
+          "ended_at": "2026-07-29T00:16:55.717Z",
+          "evidence_files": [
+            {
+              "path": "services/api/pyproject.toml",
+              "sha256": "6B3A7DD9710D2462107D67032E0551683A98A39C10FC3F9AD98C33BEC4ED828F"
+            },
+            {
+              "path": "services/api/src/daon_user_api/runtime.py",
+              "sha256": "AB4226B203C793B23F0B02498DACC23DAAA1525D634563B5B7633470743B9048"
+            },
+            {
+              "path": "apps/web/app/bff/api/[...path]/route.js",
+              "sha256": "75F8C847A84C95A14F7E4D4963A35D974BD98C18B04739AF0FD09082239428DD"
+            },
+            {
+              "path": "docs/03_evidence/release_1/R1-M4-05/runtime-process-summary.json",
+              "sha256": "6EA11228E78C0CF10B4627A4082F326B187B13539FBDF0B8AA96B9C919055441"
             }
           ]
         },
@@ -923,16 +1246,16 @@
             "scripts/run-local-service-tool.mjs",
             "build"
           ],
-          "started_at": "2026-07-26T10:52:03.592Z",
-          "ended_at": "2026-07-26T10:52:03.896Z",
+          "started_at": "2026-07-29T00:17:06.206Z",
+          "ended_at": "2026-07-29T00:17:06.489Z",
           "evidence_files": [
             {
               "path": "services/local-service/entrypoint.py",
-              "sha256": "528C2255DB70714F5C5960400179D4B47782993B6511FFBD6580F701A4292AB6"
+              "sha256": "DF9131FF3BAA2EA8CCC5BFD9A1F1B3E03428AF96758D228046DAE9F723C3C6D4"
             },
             {
               "path": "services/local-service/src/daon_user_local_service/main.py",
-              "sha256": "24E99235F46260D8A3764D8331672AF5C1BF68799BFD6E9993B177A93CAD87C7"
+              "sha256": "DBF375DEF24FA73895DD485BAD35367BE3E828568D4FE28D14303AB91C9B75A4"
             }
           ]
         },
@@ -946,8 +1269,8 @@
             "run",
             "verify:toolchain"
           ],
-          "started_at": "2026-07-26T10:52:06.390Z",
-          "ended_at": "2026-07-26T10:52:07.688Z",
+          "started_at": "2026-07-29T00:17:08.568Z",
+          "ended_at": "2026-07-29T00:17:09.698Z",
           "evidence_files": [
             {
               "path": "toolchain-versions.json",
@@ -955,11 +1278,11 @@
             },
             {
               "path": "package-lock.json",
-              "sha256": "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5"
+              "sha256": "766330E29401ECFA8D6939CB6399127D4E16D94245064EC7787099D4F533222E"
             },
             {
               "path": "uv.lock",
-              "sha256": "388200B101A8ECF93C29495312F5A542F34F2FEF6C4E163D9D3547E1D131143A"
+              "sha256": "8EEB9A243DF482C1C60605532D6F874E2E717CE5D48F1728DEE915E645646415"
             }
           ]
         }
@@ -969,6 +1292,7 @@
           "component": "apps/web",
           "status": "REQUIRED",
           "evidence": [
+            "apps/web/app/bff/api/[...path]/route.js",
             "apps/web/app/bff/shell/runtime/route.js",
             "apps/web/app/globals.css",
             "apps/web/app/layout.jsx",
@@ -978,6 +1302,7 @@
             "apps/web/app/settings/account/page.jsx",
             "apps/web/app/settings/organization/page.jsx",
             "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/bff-api-proxy.js",
             "apps/web/lib/web-shell-runtime.js",
             "apps/web/next.config.mjs"
           ]
@@ -1009,11 +1334,28 @@
         },
         {
           "component": "apps/mobile",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "apps/mobile/package.json",
-            "apps/mobile/README.md",
-            "apps/mobile/package.json"
+            "apps/mobile/android/app/build.gradle",
+            "apps/mobile/android/app/debug.keystore",
+            "apps/mobile/android/app/proguard-rules.pro",
+            "apps/mobile/android/app/src/main/AndroidManifest.xml",
+            "apps/mobile/android/app/src/main/java/com/sinsan/daon/DaonAndroidHostModule.kt",
+            "apps/mobile/android/app/src/main/java/com/sinsan/daon/DaonAndroidHostPackage.kt",
+            "apps/mobile/android/app/src/main/java/com/sinsan/daon/MainActivity.kt",
+            "apps/mobile/android/app/src/main/java/com/sinsan/daon/MainApplication.kt",
+            "apps/mobile/android/app/src/main/res/drawable/rn_edit_text_material.xml",
+            "apps/mobile/android/app/src/main/res/mipmap-hdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/mipmap-mdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/values/strings.xml"
           ]
         },
         {
@@ -1062,11 +1404,28 @@
         },
         {
           "component": "services/api",
-          "status": "NOT_APPLICABLE_FOUNDATION_ONLY",
+          "status": "REQUIRED",
           "evidence": [
-            "services/api/pyproject.toml",
-            "services/api/README.md",
-            "services/api/pyproject.toml"
+            "services/api/src/daon_user_api/audit.py",
+            "services/api/src/daon_user_api/authorization.py",
+            "services/api/src/daon_user_api/identity.py",
+            "services/api/src/daon_user_api/main.py",
+            "services/api/src/daon_user_api/runtime.py",
+            "services/api/src/daon_user_api/__init__.py",
+            "services/api/src/daon_user_api/__main__.py",
+            "services/api/src/daon_user_api/__pycache__/audit.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/authorization.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/identity.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/main.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/runtime.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/__init__.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/__main__.cpython-314.pyc",
+            "services/api/tests/runtime_process_probe.py",
+            "services/api/tests/test_audit_core.py",
+            "services/api/tests/test_audit_integrity.py",
+            "services/api/tests/test_authorization_access.py",
+            "services/api/tests/test_authorization_persistence.py",
+            "services/api/tests/test_authorization_roles.py"
           ]
         },
         {
@@ -1099,8 +1458,8 @@
           "status": "PASS",
           "exit_code": 0,
           "command": null,
-          "started_at": "2026-07-26T10:47:58.341Z",
-          "ended_at": "2026-07-26T10:47:58.508Z",
+          "started_at": "2026-07-29T00:13:30.236Z",
+          "ended_at": "2026-07-29T00:13:30.399Z",
           "evidence_files": [
             "apps/desktop/app-icon.svg",
             "apps/desktop/index.html",
@@ -1125,8 +1484,74 @@
             "apps/desktop/src-tauri/tauri.windows.conf.json",
             "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs",
             "apps/desktop/src-tauri/tests/local_service_contract.rs",
+            "apps/mobile/android/app/build.gradle",
+            "apps/mobile/android/app/debug.keystore",
+            "apps/mobile/android/app/proguard-rules.pro",
+            "apps/mobile/android/app/src/main/AndroidManifest.xml",
+            "apps/mobile/android/app/src/main/java/com/sinsan/daon/DaonAndroidHostModule.kt",
+            "apps/mobile/android/app/src/main/java/com/sinsan/daon/DaonAndroidHostPackage.kt",
+            "apps/mobile/android/app/src/main/java/com/sinsan/daon/MainActivity.kt",
+            "apps/mobile/android/app/src/main/java/com/sinsan/daon/MainApplication.kt",
+            "apps/mobile/android/app/src/main/res/drawable/rn_edit_text_material.xml",
+            "apps/mobile/android/app/src/main/res/mipmap-hdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/mipmap-mdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+            "apps/mobile/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png",
+            "apps/mobile/android/app/src/main/res/values/strings.xml",
+            "apps/mobile/android/app/src/main/res/values/styles.xml",
+            "apps/mobile/android/build.gradle",
+            "apps/mobile/android/gradle/wrapper/gradle-wrapper.jar",
+            "apps/mobile/android/gradle/wrapper/gradle-wrapper.properties",
+            "apps/mobile/android/gradle.properties",
+            "apps/mobile/android/gradlew",
+            "apps/mobile/android/gradlew.bat",
+            "apps/mobile/android/settings.gradle",
+            "apps/mobile/android/template-provenance.json",
+            "apps/mobile/app.json",
+            "apps/mobile/babel.config.cjs",
+            "apps/mobile/index.js",
+            "apps/mobile/ios/ci/build-simulator.sh",
+            "apps/mobile/ios/ci/prepare-simulator.mjs",
+            "apps/mobile/ios/ci/run-ui-tests-with-diagnostics.sh",
+            "apps/mobile/ios/ci/verify-simulator.sh",
+            "apps/mobile/ios/ci/write-evidence.mjs",
+            "apps/mobile/ios/Daon/AppDelegate.swift",
+            "apps/mobile/ios/Daon/Daon-Bridging-Header.h",
+            "apps/mobile/ios/Daon/DaonIOSHost.swift",
+            "apps/mobile/ios/Daon/DaonIOSHostBridge.m",
+            "apps/mobile/ios/Daon/Images.xcassets/AppIcon.appiconset/Contents.json",
+            "apps/mobile/ios/Daon/Images.xcassets/Contents.json",
+            "apps/mobile/ios/Daon/Info.plist",
+            "apps/mobile/ios/Daon/LaunchScreen.storyboard",
+            "apps/mobile/ios/Daon/PrivacyInfo.xcprivacy",
+            "apps/mobile/ios/Daon.xcodeproj/project.pbxproj",
+            "apps/mobile/ios/Daon.xcodeproj/xcshareddata/xcschemes/Daon.xcscheme",
+            "apps/mobile/ios/DaonUITests/DaonUITests.swift",
+            "apps/mobile/ios/Podfile",
+            "apps/mobile/ios/template-provenance.json",
+            "apps/mobile/ios/_xcode.env",
+            "apps/mobile/metro.config.cjs",
             "apps/mobile/package.json",
             "apps/mobile/README.md",
+            "apps/mobile/src/App.tsx",
+            "apps/mobile/src/domain/mobile-studio-actions.ts",
+            "apps/mobile/src/domain/navigation.ts",
+            "apps/mobile/src/domain/public-api-client.ts",
+            "apps/mobile/src/domain/screens.ts",
+            "apps/mobile/src/MobileShell.tsx",
+            "apps/mobile/src/platform/android-deep-link.ts",
+            "apps/mobile/src/platform/android-host.ts",
+            "apps/mobile/src/platform/design-token-adapter.ts",
+            "apps/mobile/src/platform/ios-host.ts",
+            "apps/mobile/src/platform/native-deep-link.ts",
+            "apps/mobile/tsconfig.json",
+            "apps/web/app/bff/api/[...path]/route.js",
             "apps/web/app/bff/shell/runtime/route.js",
             "apps/web/app/globals.css",
             "apps/web/app/layout.jsx",
@@ -1136,20 +1561,64 @@
             "apps/web/app/settings/account/page.jsx",
             "apps/web/app/settings/organization/page.jsx",
             "apps/web/app/workspaces/[workspace_id]/page.jsx",
+            "apps/web/lib/bff-api-proxy.js",
             "apps/web/lib/web-shell-runtime.js",
             "apps/web/next.config.mjs",
             "apps/web/package.json",
             "apps/web/README.md",
             "services/api/pyproject.toml",
             "services/api/README.md",
+            "services/api/src/daon_user_api/audit.py",
+            "services/api/src/daon_user_api/authorization.py",
+            "services/api/src/daon_user_api/identity.py",
+            "services/api/src/daon_user_api/main.py",
+            "services/api/src/daon_user_api/runtime.py",
+            "services/api/src/daon_user_api/__init__.py",
+            "services/api/src/daon_user_api/__main__.py",
+            "services/api/src/daon_user_api/__pycache__/audit.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/authorization.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/identity.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/main.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/runtime.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/__init__.cpython-314.pyc",
+            "services/api/src/daon_user_api/__pycache__/__main__.cpython-314.pyc",
+            "services/api/tests/runtime_process_probe.py",
+            "services/api/tests/test_audit_core.py",
+            "services/api/tests/test_audit_integrity.py",
+            "services/api/tests/test_authorization_access.py",
+            "services/api/tests/test_authorization_persistence.py",
+            "services/api/tests/test_authorization_roles.py",
+            "services/api/tests/test_authorization_role_scope_c01.py",
+            "services/api/tests/test_authorization_support.py",
+            "services/api/tests/test_identity_oidc.py",
+            "services/api/tests/test_identity_persistence.py",
+            "services/api/tests/test_identity_security_c01.py",
+            "services/api/tests/test_identity_sessions.py",
+            "services/api/tests/test_identity_step_up.py",
+            "services/api/tests/test_identity_support.py",
+            "services/api/tests/test_runtime_http.py",
+            "services/api/tests/__pycache__/test_audit_core.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_audit_integrity.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_authorization_access.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_authorization_persistence.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_authorization_roles.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_authorization_role_scope_c01.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_authorization_support.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_identity_oidc.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_identity_persistence.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_identity_security_c01.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_identity_sessions.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_identity_step_up.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_identity_support.cpython-314.pyc",
+            "services/api/tests/__pycache__/test_runtime_http.cpython-314.pyc",
             "services/local-service/.pytest_cache/.gitignore",
             "services/local-service/.pytest_cache/CACHEDIR.TAG",
             "services/local-service/.pytest_cache/README.md",
             "services/local-service/.pytest_cache/v/cache/nodeids",
             "services/local-service/.ruff_cache/.gitignore",
-            "services/local-service/.ruff_cache/0.15.7/5047121110146610089",
-            "services/local-service/.ruff_cache/0.15.7/5267663106405653611",
-            "services/local-service/.ruff_cache/0.15.7/7024935205264004218",
+            "services/local-service/.ruff_cache/0.15.7/10860871976124453069",
+            "services/local-service/.ruff_cache/0.15.7/2563853851114704928",
+            "services/local-service/.ruff_cache/0.15.7/6997862837623455353",
             "services/local-service/.ruff_cache/CACHEDIR.TAG",
             "services/local-service/entrypoint.py",
             "services/local-service/pyproject.toml",
@@ -1170,7 +1639,9 @@
             "services/local-service/tests/__pycache__/test_app.cpython-314-pytest-9.0.3.pyc",
             "services/local-service/tests/__pycache__/test_main.cpython-314-pytest-9.0.3.pyc",
             "services/local-service/tests/__pycache__/test_protocol.cpython-314-pytest-9.0.3.pyc",
+            "packages/contracts/mobile-studio-actions.json",
             "packages/contracts/navigation.json",
+            "packages/contracts/openapi/v1/openapi.json",
             "packages/contracts/package.json",
             "packages/contracts/README.md",
             "packages/contracts/screens.json",
@@ -1204,6 +1675,7 @@
             "packages/ui/src/workspace-interaction.js",
             "packages/ui/src/workspace-model.js",
             "packages/ui/src/workspace.css",
+            ".github/workflows/release-1-ios-phase-a.yml",
             ".github/workflows/release-1-quality-gate.yml"
           ],
           "violation_count": 0,
@@ -1221,16 +1693,16 @@
             "--audit-level=high",
             "--json"
           ],
-          "started_at": "2026-07-26T10:52:07.691Z",
-          "ended_at": "2026-07-26T10:52:09.140Z",
+          "started_at": "2026-07-29T00:17:09.700Z",
+          "ended_at": "2026-07-29T00:17:11.416Z",
           "evidence_files": [
             {
               "path": "package.json",
-              "sha256": "56045DC1A32B1E42A1F1033D65BBD5F89E668508C23AA270E242A3F651327528"
+              "sha256": "A5E3202FE04CA9DED212FDAC6A97354358B080F7D330A2CC408B1F20100BDD07"
             },
             {
               "path": "package-lock.json",
-              "sha256": "96E9044F4B91A5C5872A460EBAAA3C9C86EEFD7DD3CF5A5764E7664C6E93FDC5"
+              "sha256": "766330E29401ECFA8D6939CB6399127D4E16D94245064EC7787099D4F533222E"
             }
           ]
         },
@@ -1244,16 +1716,16 @@
             "scripts/run-local-service-tool.mjs",
             "security"
           ],
-          "started_at": "2026-07-26T10:52:09.141Z",
-          "ended_at": "2026-07-26T10:52:31.269Z",
+          "started_at": "2026-07-29T00:17:11.418Z",
+          "ended_at": "2026-07-29T00:17:32.819Z",
           "evidence_files": [
             {
               "path": "services/local-service/pyproject.toml",
-              "sha256": "C16C4883DCA08E91FB7607918CD0CDE674141D8C7E088F4C9CE305FF6945A62E"
+              "sha256": "691C2A2E5EA7E0AB6227F56FB59E09F922C17E9B10FC7C5ED0C9B747EC14763D"
             },
             {
               "path": "uv.lock",
-              "sha256": "388200B101A8ECF93C29495312F5A542F34F2FEF6C4E163D9D3547E1D131143A"
+              "sha256": "8EEB9A243DF482C1C60605532D6F874E2E717CE5D48F1728DEE915E645646415"
             }
           ]
         }
@@ -1275,12 +1747,12 @@
             "--",
             "--no-write"
           ],
-          "started_at": "2026-07-26T10:52:31.270Z",
-          "ended_at": "2026-07-26T10:52:31.959Z",
+          "started_at": "2026-07-29T00:17:32.821Z",
+          "ended_at": "2026-07-29T00:17:33.489Z",
           "evidence_files": [
             {
               "path": "independence-policy.json",
-              "sha256": "D9FF26F9FC745518524E8DECBA334B88428CD7FAD70E29AD3B96F798DEBB6A16"
+              "sha256": "9DBA424C623C3FC1343EE07CEDD4892E140DA6DA76CF4D0480D3E48F48E044F0"
             },
             {
               "path": "repo-boundaries.json",
@@ -1292,7 +1764,15 @@
       "component_capabilities": []
     }
   },
-  "failures": [],
+  "failures": [
+    {
+      "category": "unit",
+      "code": "COMMAND_FAILED",
+      "check_id": "desktop-shell-unit",
+      "component": "apps/desktop",
+      "evidence": []
+    }
+  ],
   "limitations": [
     "Source-specific checks are N/A only while exact component signals are absent.",
     "Raw stdout, stderr, secrets, tokens, personal data, and credential values are not stored in artifacts."

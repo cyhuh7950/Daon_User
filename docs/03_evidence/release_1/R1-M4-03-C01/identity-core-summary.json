@@ -23,6 +23,6 @@
   "step_up_default_ttl_seconds": 300,
   "step_up_max_ttl_seconds": 600,
   "web_delivery_boundary": "m4_05_same_origin_cookie",
-  "source_sha256": "C588F9DE4ABF84EB3F12AFC16FD8C28C45986EF86E4BFC09B9C02E8F7807CCE6",
+  "source_sha256": "F7A725A265550572B7BC14C3D583E52E04480FC00D419708868235ADFB2737A5",
   "test_count": 18
 }

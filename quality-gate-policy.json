@@ -92,7 +92,7 @@
         "type": { "signals": { "extensions": [".py"], "files": ["pyrightconfig.json", "mypy.ini"] }, "command": { "id": "api-authorization-type", "command": ["node", "scripts/verify-api-authorization.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/src/daon_user_api/authorization.py", "services/api/tests/test_authorization_persistence.py"] } },
         "unit": { "signals": { "extensions": [".py"], "directories": ["test", "tests"] }, "command": { "id": "api-authorization-unit", "command": ["node", "scripts/verify-api-authorization.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/tests/test_authorization_roles.py", "services/api/tests/test_authorization_access.py", "services/api/tests/test_identity_security_c01.py"] } },
         "contract": { "signals": { "extensions": [".json", ".yaml", ".yml"], "files": ["openapi.json", "openapi.yaml", "openapi.yml"] }, "command": null },
-        "build": { "signals": { "extensions": [".py"], "directories": ["src", "app"] }, "command": { "id": "api-authorization-build", "command": ["node", "scripts/verify-api-authorization.mjs"], "failure_kind": "quality", "evidence_files": ["services/api/pyproject.toml", "services/api/src/daon_user_api/authorization.py"] } }
+        "build": { "signals": { "extensions": [".py"], "directories": ["src", "app"] }, "command": { "id": "api-runtime-build", "command": ["npm", "run", "verify:api-runtime"], "failure_kind": "quality", "evidence_files": ["services/api/pyproject.toml", "services/api/src/daon_user_api/runtime.py", "apps/web/app/bff/api/[...path]/route.js", "docs/03_evidence/release_1/R1-M4-05/runtime-process-summary.json"] } }
       }
     },
     {
