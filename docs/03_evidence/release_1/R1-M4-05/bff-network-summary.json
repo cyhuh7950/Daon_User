@@ -7,6 +7,12 @@
   "status": 200,
   "trace_id": "trace-process-001",
   "direct_and_bff_session_meaning_equal": true,
+  "same_origin_write_status": 200,
+  "cross_origin_write_status": 403,
+  "cross_origin_write_upstream_audit_events": 0,
+  "forwarded_cookie_names": [
+    "__Host-daon_session"
+  ],
   "client_bundle_forbidden_hits": 0,
   "response_internal_url_or_credential_hits": 0,
   "gui_browser_claimed": false,

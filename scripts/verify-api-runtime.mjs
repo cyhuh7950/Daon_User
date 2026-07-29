@@ -90,7 +90,7 @@ async function main() {
     write ? "--write" : "--no-write",
     "--with-next",
   ].filter((argument) => argument !== "--no-write"));
-  console.log("api runtime verified: unit=10 bff_unit=3 actual_api=true actual_next=true same_port_restart=true");
+  console.log("api runtime verified: unit=10 bff_unit=9 actual_api=true actual_next=true same_port_restart=true");
 }
 
 main().catch((error) => {
