@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-03-C01",
+  "implementation_sha": "c21a6b64d9c1a920fb082a4de1b40fd12be63d55",
+  "executable": "apps/desktop/src-tauri/binaries/daon-user-local-service-x86_64-pc-windows-msvc.exe",
+  "artifact_bytes": 25617607,
+  "artifact_sha256": "D9DB6D563B472047BA388CFB9DB349A61F6905324F7826BD6E14987601F0C76A",
+  "runs": [
+    {"port": 50206, "listener_count": 1, "authorized_status": 200, "replayed_status": 401, "previous_run_token_status": 401, "clean_exit": true, "listener_closed": true},
+    {"port": 50225, "listener_count": 1, "authorized_status": 200, "replayed_status": 401, "previous_run_token_status": 401, "clean_exit": true, "listener_closed": true}
+  ],
+  "credentials_unique": true,
+  "token_emitted": false,
+  "instance_emission_scope": "ready_envelope_only",
+  "output_buffers_complete": true,
+  "storage_restart_unlock": true,
+  "external_connection_count": 0,
+  "cleanup": {"runtime_processes": 0, "listeners": 0, "temporary_storage_roots": 0}
+}

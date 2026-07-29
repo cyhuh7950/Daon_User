@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-03-C01",
+  "implementation_sha": "c21a6b64d9c1a920fb082a4de1b40fd12be63d55",
+  "checks": [
+    {"id": "python-full", "result": "PASS", "detail": "84 passed; 10 consecutive full runs passed after Win32 ABI correction"},
+    {"id": "python-ruff", "result": "PASS", "detail": "all checks passed"},
+    {"id": "python-mypy-strict", "result": "PASS", "detail": "8 product source files"},
+    {"id": "windows-path-contract", "result": "PASS", "detail": "hardlink, Junction/reparse and deterministic post-check swap rejected"},
+    {"id": "schema-header-recovery", "result": "PASS", "detail": "v1 upgrade/read, v2 authenticated header, key state, DB failure and restart orphan recovery"},
+    {"id": "vector-boundary", "result": "PASS", "detail": "NaN, positive and negative infinity, float32 overflow rejected for put/search"},
+    {"id": "protocol", "result": "PASS", "detail": "Parent and Sidecar 1.1; legacy, missing and mixed contracts rejected"},
+    {"id": "js-local-service", "result": "PASS", "detail": "16 passed"},
+    {"id": "rust", "result": "PASS", "detail": "unit 16 and contract 4 passed; Clippy warnings 0 with scoped baseline allowances"},
+    {"id": "packaged-runtime", "result": "PASS", "detail": "two runs; same encrypted storage unlocked; listener and process cleanup 0"},
+    {"id": "repository-independence", "result": "PASS", "detail": "855 files; violations 0"},
+    {"id": "quality-gate", "result": "PASS", "detail": "36 checks; failures 0"},
+    {"id": "installed-nsis", "result": "PASS", "detail": "install, restart, credential revocation fail-close and uninstall verified"}
+  ]
+}
