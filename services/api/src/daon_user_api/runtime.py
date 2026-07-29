@@ -27,6 +27,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 from .audit import AuditEvent, AuditEventStore, AuditOutcome, AuditValidationError
+from .cloud_storage import PostgresCloudStore
 from .authorization import (
     AccessAction,
     AccessDecision,
@@ -69,6 +70,7 @@ class RuntimeSettings:
     bind_host: str
     port: int
     database_path: Path | None = None
+    cloud_database_dsn: str | None = None
     policy_version: str = "runtime-policy-v1"
     public_gateway_url: str | None = None
     trusted_proxy_ips: tuple[str, ...] = ()
@@ -97,6 +99,8 @@ class RuntimeSettings:
             if not loopback:
                 raise ValueError("PLAINTEXT_BIND_MUST_BE_LOOPBACK")
         else:
+            if self.cloud_database_dsn is None:
+                raise ValueError("CLOUD_DATABASE_DSN_REQUIRED")
             if self.public_gateway_url is None:
                 raise ValueError("PUBLIC_GATEWAY_REQUIRED")
             parsed = urlsplit(self.public_gateway_url)
@@ -139,6 +143,7 @@ class RuntimeSettings:
             bind_host=os.environ.get("DAON_API_BIND_HOST", "127.0.0.1"),
             port=int(os.environ.get("DAON_API_PORT", "8000")),
             database_path=None if database is None else Path(database),
+            cloud_database_dsn=os.environ.get("DAON_CLOUD_DATABASE_DSN"),
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
             trusted_proxy_ips=proxies,
@@ -200,6 +205,7 @@ class RuntimeDependencies:
     identity_repository: SqliteIdentityRepository
     authorization_repository: SqliteAuthorizationRepository
     notification_service: NotificationService | None = None
+    cloud_store: PostgresCloudStore | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -210,6 +216,8 @@ class RuntimeDependencies:
         self.state.drain(self.settings.drain_timeout_seconds)
         self.authorization_repository.close()
         self.identity_repository.close()
+        if self.cloud_store is not None:
+            self.cloud_store.close()
         self._closed = True
 
 
@@ -479,7 +487,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/health/ready")
     async def ready(request: Request) -> JSONResponse:
-        status = 200 if dependencies.state.ready else 503
+        cloud_ready = (
+            dependencies.cloud_store is None
+            or dependencies.cloud_store.readiness().ready
+        )
+        status = 200 if dependencies.state.ready and cloud_ready else 503
         response = JSONResponse(
             status_code=status,
             content={"status": "ready" if status == 200 else "not_ready"},
@@ -703,6 +715,11 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         audit_store=audit_store,
         clock=lambda: datetime.now(timezone.utc),
     )
+    cloud_store = (
+        None
+        if settings.cloud_database_dsn is None
+        else PostgresCloudStore(settings.cloud_database_dsn)
+    )
     return RuntimeDependencies(
         settings=settings,
         identity_service=identity_service,
@@ -711,4 +728,5 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         identity_repository=identity_repository,
         authorization_repository=authorization_repository,
         notification_service=notification_service,
+        cloud_store=cloud_store,
     )

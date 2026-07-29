@@ -1,0 +1,28 @@
+name: ${COMPOSE_PROJECT_NAME:?isolated project name required}
+
+services:
+  database:
+    image: pgvector/pgvector:0.8.2-pg18-trixie
+    environment:
+      POSTGRES_DB: ${DAON_DB_NAME:?database name required}
+      POSTGRES_USER: ${DAON_DB_OWNER:?owner required}
+      POSTGRES_PASSWORD: ${DAON_DB_OWNER_PASSWORD:?owner password required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [daon_m5]
+    volumes:
+      - daon_m5_db:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:${DAON_DB_PORT:?isolated port required}:5432"
+    restart: "no"
+
+networks:
+  daon_m5:
+    name: ${COMPOSE_PROJECT_NAME}_network
+
+volumes:
+  daon_m5_db:
+    name: ${COMPOSE_PROJECT_NAME}_db
