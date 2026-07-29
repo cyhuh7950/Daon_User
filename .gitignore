@@ -17,6 +17,7 @@ build/
 .next/
 target/
 apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/gen/
 __pycache__/
 .pytest_cache/
 *.py[cod]

@@ -1,7 +1,9 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -78,7 +80,7 @@ function assertReadyEnvelope(value, expectedInstance) {
     JSON.stringify(keys) !==
       JSON.stringify(["app_instance_id", "event", "port", "protocol_version"]) ||
     value.event !== "ready" ||
-    value.protocol_version !== "1.0" ||
+    value.protocol_version !== "1.1" ||
     value.app_instance_id !== expectedInstance ||
     !Number.isInteger(value.port) ||
     value.port < 1 ||
@@ -90,12 +92,12 @@ function assertReadyEnvelope(value, expectedInstance) {
 
 export function assertRuntimeOutputBoundary(
   { stdout, stderr, stdoutTruncated, stderrTruncated },
-  { rootSecret, requestTokens, appInstanceId }
+  { rootSecret, storageRootKey, requestTokens, appInstanceId }
 ) {
   if (stdoutTruncated || stderrTruncated) {
     throw new Error("runtime output exceeded bounded inspection buffer");
   }
-  const secrets = [rootSecret, ...requestTokens];
+  const secrets = [rootSecret, storageRootKey, ...requestTokens];
   if (secrets.some((secret) => stdout.includes(secret) || stderr.includes(secret))) {
     throw new Error("credential appeared in runtime output");
   }
@@ -293,7 +295,12 @@ async function assertPortClosed(port) {
   throw new Error("listener remained reachable after parent stdin EOF");
 }
 
-async function runSingleLifecycle(executablePath, previousRunToken) {
+async function runSingleLifecycle(
+  executablePath,
+  previousRunToken,
+  storageRoot,
+  storageRootKey
+) {
   const appInstanceId = randomBytes(16).toString("hex");
   const rootSecret = randomBytes(32).toString("hex");
   const requestTokens = [];
@@ -312,9 +319,11 @@ async function runSingleLifecycle(executablePath, previousRunToken) {
   try {
     child.stdin.write(
       `${JSON.stringify({
-        protocol_version: "1.0",
+        protocol_version: "1.1",
         app_instance_id: appInstanceId,
         root_secret: rootSecret,
+        storage_root_key: storageRootKey,
+        storage_root: storageRoot,
         parent_process_id: process.pid
       })}\n`
     );
@@ -505,7 +514,7 @@ async function runSingleLifecycle(executablePath, previousRunToken) {
         stdoutTruncated: stdout.truncated,
         stderrTruncated: stderr.truncated
       },
-      { rootSecret, requestTokens, appInstanceId }
+      { rootSecret, storageRootKey, requestTokens, appInstanceId }
     );
     return {
       appInstanceId,
@@ -554,39 +563,61 @@ async function runSingleLifecycle(executablePath, previousRunToken) {
 export async function runPackagedLocalServiceLifecycle(
   executablePath = generatedSidecarPath
 ) {
-  const first = await runSingleLifecycle(executablePath);
-  const second = await runSingleLifecycle(executablePath, first.replayProbeToken);
-  if (first.appInstanceId === second.appInstanceId || first.rootSecret === second.rootSecret) {
-    throw new Error("per-instance credentials were reused");
+  const storageRoot = await mkdtemp(path.join(os.tmpdir(), "daon-local-storage-runtime-"));
+  const storageRootKey = randomBytes(32).toString("hex");
+  try {
+    const first = await runSingleLifecycle(
+      executablePath,
+      undefined,
+      storageRoot,
+      storageRootKey
+    );
+    const second = await runSingleLifecycle(
+      executablePath,
+      first.replayProbeToken,
+      storageRoot,
+      storageRootKey
+    );
+    if (first.appInstanceId === second.appInstanceId || first.rootSecret === second.rootSecret) {
+      throw new Error("per-instance credentials were reused");
+    }
+    return {
+      schema_version: "1.0",
+      executable: path.relative(repositoryRoot, executablePath).split(path.sep).join("/"),
+      runs: [
+        {
+          port: first.port,
+          listener_count: first.listener_count,
+          statuses: first.statuses,
+          http_boundaries: first.http_boundaries,
+          output_attestation: first.output_attestation,
+          clean_exit: first.clean_exit,
+          listener_closed: first.listener_closed
+        },
+        {
+          port: second.port,
+          listener_count: second.listener_count,
+          statuses: second.statuses,
+          http_boundaries: second.http_boundaries,
+          output_attestation: second.output_attestation,
+          clean_exit: second.clean_exit,
+          listener_closed: second.listener_closed
+        }
+      ],
+      credentials_unique: true,
+      token_emitted: false,
+      instance_emission_scope: "ready_envelope_only",
+      output_buffers_complete: true,
+      storage_restart_unlock: true
+    };
+  } finally {
+    await rm(storageRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100
+    });
   }
-  return {
-    schema_version: "1.0",
-    executable: path.relative(repositoryRoot, executablePath).split(path.sep).join("/"),
-    runs: [
-      {
-        port: first.port,
-        listener_count: first.listener_count,
-        statuses: first.statuses,
-        http_boundaries: first.http_boundaries,
-        output_attestation: first.output_attestation,
-        clean_exit: first.clean_exit,
-        listener_closed: first.listener_closed
-      },
-      {
-        port: second.port,
-        listener_count: second.listener_count,
-        statuses: second.statuses,
-        http_boundaries: second.http_boundaries,
-        output_attestation: second.output_attestation,
-        clean_exit: second.clean_exit,
-        listener_closed: second.listener_closed
-      }
-    ],
-    credentials_unique: true,
-    token_emitted: false,
-    instance_emission_scope: "ready_envelope_only",
-    output_buffers_complete: true
-  };
 }
 
 if (path.resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {

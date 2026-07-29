@@ -9,7 +9,7 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub const PROTOCOL_VERSION: &str = "1.0";
+pub const PROTOCOL_VERSION: &str = "1.1";
 pub const READY_MAX_BYTES: usize = 4096;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -28,19 +28,53 @@ fn hex(bytes: &[u8]) -> String {
 pub struct AppCredentials {
     app_instance_id: String,
     root_secret: [u8; 32],
+    storage_root_key: [u8; 32],
+    storage_root: String,
 }
 
 impl AppCredentials {
     pub fn generate() -> Result<Self, String> {
         let mut instance = [0_u8; 16];
         let mut root_secret = [0_u8; 32];
+        let mut storage_root_key = [0_u8; 32];
         getrandom::fill(&mut instance).map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
         getrandom::fill(&mut root_secret)
+            .map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
+        getrandom::fill(&mut storage_root_key)
             .map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
         Ok(Self {
             app_instance_id: hex(&instance),
             root_secret,
+            storage_root_key,
+            storage_root: std::env::temp_dir()
+                .join("daon-local-storage-test")
+                .to_string_lossy()
+                .into_owned(),
         })
+    }
+
+    #[cfg(windows)]
+    fn generate_for_app() -> Result<Self, &'static str> {
+        use crate::windows_credential::WindowsCredentialStore;
+
+        let storage_root = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .ok_or("LOCAL_STORAGE_PATH_UNAVAILABLE")?
+            .join("Daon")
+            .join("User")
+            .join("local-storage");
+        let existing_ciphertext = storage_root.join("metadata.db").is_file();
+        let secret = WindowsCredentialStore::new("DaonUser/LocalStorage/v1".to_owned())
+            .load_or_create(existing_ciphertext)?;
+        let mut credentials = Self::generate().map_err(|_| "LOCAL_RANDOM_UNAVAILABLE")?;
+        credentials.storage_root_key = secret.bytes();
+        credentials.storage_root = storage_root.to_string_lossy().into_owned();
+        Ok(credentials)
+    }
+
+    #[cfg(not(windows))]
+    fn generate_for_app() -> Result<Self, &'static str> {
+        Self::generate().map_err(|_| "LOCAL_RANDOM_UNAVAILABLE")
     }
 
     pub fn app_instance_id(&self) -> &str {
@@ -61,6 +95,12 @@ impl AppCredentials {
             (capability, command),
             ("runtime.read", "runtime.status.read")
                 | ("runtime.read", "runtime.capabilities.read")
+                | ("storage.read", "storage.status.read")
+                | ("storage.read", "storage.file.get")
+                | ("storage.read", "storage.vector.search")
+                | ("storage.write", "storage.file.put")
+                | ("storage.write", "storage.vector.put")
+                | ("storage.write", "storage.lock")
         );
         if !authorized {
             return Err("LOCAL_COMMAND_NOT_ALLOWED".to_owned());
@@ -75,8 +115,11 @@ impl AppCredentials {
             self.app_instance_id,
             hex(&nonce)
         );
-        let signature = hmac_sha256(&self.root_secret, unsigned.as_bytes());
-        Ok(format!("{unsigned}|{}", hex(&signature)))
+        nonce.fill(0);
+        let mut signature = hmac_sha256(&self.root_secret, unsigned.as_bytes());
+        let token = format!("{unsigned}|{}", hex(&signature));
+        signature.fill(0);
+        Ok(token)
     }
 
     pub fn bootstrap_json(&self) -> String {
@@ -84,6 +127,8 @@ impl AppCredentials {
             "protocol_version": PROTOCOL_VERSION,
             "app_instance_id": self.app_instance_id,
             "root_secret": self.root_secret_hex(),
+            "storage_root_key": hex(&self.storage_root_key),
+            "storage_root": self.storage_root,
             "parent_process_id": std::process::id(),
         })
         .to_string()
@@ -96,7 +141,16 @@ impl fmt::Debug for AppCredentials {
             .debug_struct("AppCredentials")
             .field("app_instance_id", &"[redacted]")
             .field("root_secret", &"[redacted]")
+            .field("storage_root_key", &"[redacted]")
+            .field("storage_root", &self.storage_root)
             .finish()
+    }
+}
+
+impl Drop for AppCredentials {
+    fn drop(&mut self) {
+        self.root_secret.fill(0);
+        self.storage_root_key.fill(0);
     }
 }
 
@@ -109,10 +163,12 @@ fn hmac_sha256(secret: &[u8; 32], message: &[u8]) -> [u8; 32] {
     }
     let mut inner = Sha256::new();
     inner.update(inner_pad);
+    inner_pad.fill(0);
     inner.update(message);
     let inner_digest = inner.finalize();
     let mut outer = Sha256::new();
     outer.update(outer_pad);
+    outer_pad.fill(0);
     outer.update(inner_digest);
     outer.finalize().into()
 }
@@ -624,13 +680,11 @@ impl LocalServiceManager {
             inner: self.inner.clone(),
             generation,
         };
-        let result = AppCredentials::generate()
-            .map_err(|_| "LOCAL_RANDOM_UNAVAILABLE")
-            .and_then(|credentials| {
-                self.inner
-                    .launcher
-                    .launch(credentials, self.inner.timing.startup_timeout, &permit)
-            })
+        let result = AppCredentials::generate_for_app().and_then(|credentials| {
+            self.inner
+                .launcher
+                .launch(credentials, self.inner.timing.startup_timeout, &permit)
+        })
             .and_then(|service| match service.verify_health() {
                 Ok(()) => Ok(service),
                 Err(error) => {

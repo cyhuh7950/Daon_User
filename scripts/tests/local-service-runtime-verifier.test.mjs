@@ -28,7 +28,7 @@ test("runtime output inspection permits the protocol instance only in ready and 
   const requestToken = "request-token";
   const ready = `${JSON.stringify({
     event: "ready",
-    protocol_version: "1.0",
+    protocol_version: "1.1",
     app_instance_id: instance,
     port: 48123
   })}\n`;

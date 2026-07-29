@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from base64 import b64decode, b64encode
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import re
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
 
 from daon_user_local_service.app import create_app
+from daon_user_local_service.local_storage import LocalEncryptedStore
 from daon_user_local_service.security import issue_request_token
 
 
@@ -18,23 +23,34 @@ EXPECTED_MAX_HEADER_BYTES = 8192
 OPAQUE_TRACE = re.compile(r"^[0-9a-f]{16}$")
 
 
-def client(clock: Callable[[], int] = lambda: NOW) -> TestClient:
+def client(
+    clock: Callable[[], int] = lambda: NOW,
+    storage: LocalEncryptedStore | None = None,
+) -> TestClient:
     return TestClient(
         create_app(
             root_secret=ROOT_SECRET,
             app_instance_id=INSTANCE,
             listener_port=PORT,
+            storage=storage,
             clock=clock,
         ),
         base_url=f"http://127.0.0.1:{PORT}",
     )
 
 
-def token(command: str, *, nonce: str, issued_at: int = NOW, ttl_seconds: int = 60) -> str:
+def token(
+    command: str,
+    *,
+    nonce: str,
+    capability: str = "runtime.read",
+    issued_at: int = NOW,
+    ttl_seconds: int = 60,
+) -> str:
     return issue_request_token(
         root_secret=ROOT_SECRET,
         app_instance_id=INSTANCE,
-        capability="runtime.read",
+        capability=capability,
         command=command,
         issued_at=issued_at,
         ttl_seconds=ttl_seconds,
@@ -42,8 +58,15 @@ def token(command: str, *, nonce: str, issued_at: int = NOW, ttl_seconds: int = 
     )
 
 
-def auth_headers(command: str, *, nonce: str = "34" * 32) -> dict[str, str]:
-    return {"authorization": f"Bearer {token(command, nonce=nonce)}"}
+def auth_headers(
+    command: str,
+    *,
+    nonce: str = "34" * 32,
+    capability: str = "runtime.read",
+) -> dict[str, str]:
+    return {
+        "authorization": f"Bearer {token(command, nonce=nonce, capability=capability)}"
+    }
 
 
 def assert_safe_error(response: object, expected_code: str) -> None:
@@ -61,7 +84,7 @@ def test_fixed_read_only_commands_require_command_bound_single_use_tokens() -> N
     status_headers = auth_headers("runtime.status.read")
     response = test_client.get("/v1/status", headers=status_headers)
     assert response.status_code == 200
-    assert response.json() == {"status": "ready", "protocol_version": "1.0"}
+    assert response.json() == {"status": "ready", "protocol_version": "1.1"}
     assert test_client.get("/v1/status", headers=status_headers).status_code == 401
 
     capabilities = test_client.get(
@@ -75,9 +98,208 @@ def test_fixed_read_only_commands_require_command_bound_single_use_tokens() -> N
             {
                 "capability": "runtime.read",
                 "commands": ["runtime.capabilities.read", "runtime.status.read"],
-            }
+            },
+            {
+                "capability": "storage.read",
+                "commands": [
+                    "storage.file.get",
+                    "storage.status.read",
+                    "storage.vector.search",
+                ],
+            },
+            {
+                "capability": "storage.write",
+                "commands": ["storage.file.put", "storage.lock", "storage.vector.put"],
+            },
         ],
     }
+
+
+def test_authenticated_storage_file_vector_restart_and_lock_contract(tmp_path: Path) -> None:
+    storage = LocalEncryptedStore.open(tmp_path, bytes.fromhex("cd" * 32))
+    test_client = client(storage=storage)
+    workspace = "11111111-1111-4111-8111-111111111111"
+    payload = b"LOCAL-API-ENCRYPTED-CANARY"
+
+    put = test_client.post(
+        "/v1/storage/file/put",
+        headers=auth_headers(
+            "storage.file.put", capability="storage.write", nonce="10" * 32
+        ),
+        json={
+            "workspace_id": workspace,
+            "area": "source",
+            "content_base64": b64encode(payload).decode("ascii"),
+            "content_type": "text/plain",
+        },
+    )
+    assert put.status_code == 200
+    object_id = put.json()["object_id"]
+
+    get = test_client.post(
+        "/v1/storage/file/get",
+        headers=auth_headers("storage.file.get", capability="storage.read", nonce="11" * 32),
+        json={"workspace_id": workspace, "area": "source", "object_id": object_id},
+    )
+    assert get.status_code == 200
+    assert b64decode(get.json()["content_base64"]) == payload
+
+    vector = {
+        "workspace_id": workspace,
+        "area": "source",
+        "item_id": "chunk-a",
+        "embedding": [1.0, 0.0, 0.0],
+        "model_digest": "a" * 64,
+        "artifact_digest": "b" * 64,
+        "embedding_version": "embedding-v1",
+        "source_version": "source-v1",
+        "object_version": "object-v1",
+    }
+    assert test_client.post(
+        "/v1/storage/vector/put",
+        headers=auth_headers(
+            "storage.vector.put", capability="storage.write", nonce="12" * 32
+        ),
+        json=vector,
+    ).status_code == 200
+    search = test_client.post(
+        "/v1/storage/vector/search",
+        headers=auth_headers(
+            "storage.vector.search", capability="storage.read", nonce="13" * 32
+        ),
+        json={
+            "workspace_id": workspace,
+            "area": "source",
+            "embedding": [1.0, 0.0, 0.0],
+            "limit": 1,
+        },
+    )
+    assert search.json() == {"item_ids": ["chunk-a"]}
+
+    locked = test_client.post(
+        "/v1/storage/lock",
+        headers=auth_headers("storage.lock", capability="storage.write", nonce="14" * 32),
+    )
+    assert locked.json() == {"state": "locked"}
+    status = test_client.get(
+        "/v1/storage/status",
+        headers=auth_headers(
+            "storage.status.read", capability="storage.read", nonce="15" * 32
+        ),
+    )
+    assert status.json() == {"state": "locked"}
+    denied = test_client.post(
+        "/v1/storage/file/get",
+        headers=auth_headers("storage.file.get", capability="storage.read", nonce="16" * 32),
+        json={"workspace_id": workspace, "area": "source", "object_id": object_id},
+    )
+    assert denied.status_code == 423
+    assert denied.json()["error_code"] == "LOCAL_KEY_UNAVAILABLE"
+
+
+def test_parallel_storage_requests_and_lock_race_fail_closed(tmp_path: Path) -> None:
+    storage = LocalEncryptedStore.open(tmp_path, bytes.fromhex("ef" * 32))
+    test_client = client(storage=storage)
+    workspace = "11111111-1111-4111-8111-111111111111"
+    put = test_client.post(
+        "/v1/storage/file/put",
+        headers=auth_headers(
+            "storage.file.put", capability="storage.write", nonce="20" * 32
+        ),
+        json={
+            "workspace_id": workspace,
+            "area": "source",
+            "content_base64": b64encode(b"parallel-lock-canary").decode("ascii"),
+            "content_type": "text/plain",
+        },
+    )
+    object_id = put.json()["object_id"]
+    vector = {
+        "workspace_id": workspace,
+        "area": "source",
+        "item_id": "parallel-seed",
+        "embedding": [1.0, 0.0, 0.0],
+        "model_digest": "a" * 64,
+        "artifact_digest": "b" * 64,
+        "embedding_version": "embedding-v1",
+        "source_version": "source-v1",
+        "object_version": "object-v1",
+    }
+    assert test_client.post(
+        "/v1/storage/vector/put",
+        headers=auth_headers(
+            "storage.vector.put", capability="storage.write", nonce="21" * 32
+        ),
+        json=vector,
+    ).status_code == 200
+
+    requests = [
+        (
+            "/v1/storage/file/get",
+            "storage.file.get",
+            "storage.read",
+            {"workspace_id": workspace, "area": "source", "object_id": object_id},
+        ),
+        (
+            "/v1/storage/vector/search",
+            "storage.vector.search",
+            "storage.read",
+            {
+                "workspace_id": workspace,
+                "area": "source",
+                "embedding": [1.0, 0.0, 0.0],
+                "limit": 1,
+            },
+        ),
+        (
+            "/v1/storage/file/put",
+            "storage.file.put",
+            "storage.write",
+            {
+                "workspace_id": workspace,
+                "area": "source",
+                "content_base64": b64encode(b"race-write").decode("ascii"),
+                "content_type": "text/plain",
+            },
+        ),
+    ]
+
+    def request(index: int) -> int:
+        path, command, capability, body = requests[index]
+        return cast(int, test_client.post(
+            path,
+            headers=auth_headers(
+                command, capability=capability, nonce=f"{80 + index:02x}" * 32
+            ),
+            json=body,
+        ).status_code)
+
+    def lock() -> int:
+        return cast(int, test_client.post(
+            "/v1/storage/lock",
+            headers=auth_headers(
+                "storage.lock", capability="storage.write", nonce="60" * 32
+            ),
+        ).status_code)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(request, index) for index in range(len(requests))]
+        lock_future = pool.submit(lock)
+        statuses = [future.result() for future in futures]
+        lock_status = lock_future.result()
+
+    assert lock_status == 200
+    assert all(status in {200, 423} for status in statuses)
+    for index, (path, command, capability, body) in enumerate(requests):
+        after_lock = test_client.post(
+            path,
+            headers=auth_headers(
+                command, capability=capability, nonce=f"{112 + index:02x}" * 32
+            ),
+            json=body,
+        )
+        assert after_lock.status_code == 423
+        assert after_lock.json()["error_code"] == "LOCAL_KEY_UNAVAILABLE"
 
 
 @pytest.mark.parametrize(

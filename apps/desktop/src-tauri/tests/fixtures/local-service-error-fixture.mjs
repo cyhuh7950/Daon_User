@@ -88,7 +88,7 @@ if (mode === "stubborn_tree") {
 process.stdout.write(
   `${JSON.stringify({
     event: "ready",
-    protocol_version: "1.0",
+    protocol_version: "1.1",
     app_instance_id: bootstrap.app_instance_id,
     port
   })}\n`
