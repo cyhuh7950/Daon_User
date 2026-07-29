@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -45,6 +46,69 @@ def port_is_released(port: int) -> bool:
         return False
 
 
+class ProcessTreeShutdownError(RuntimeError):
+    pass
+
+
+def _signal_owned_process_tree(process: subprocess.Popen[str], *, force: bool) -> None:
+    if os.name == "nt":
+        if force:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
+        elif process.poll() is None:
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        return
+    if process.poll() is None:
+        try:
+            if os.getpgid(process.pid) != process.pid:
+                raise ProcessTreeShutdownError("PROCESS_TREE_NOT_ISOLATED")
+        except ProcessLookupError:
+            pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+
+def _wait_posix_process_group_gone(group_id: int, timeout: float) -> bool:
+    if os.name == "nt":
+        return True
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(group_id, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def force_cleanup_process_tree(process: subprocess.Popen[str], timeout: float = 5) -> str:
+    if os.name == "nt" and process.poll() is not None:
+        output, _ = process.communicate(timeout=timeout)
+        return output
+    _signal_owned_process_tree(process, force=True)
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        try:
+            output, _ = process.communicate(timeout=1)
+        except subprocess.TimeoutExpired as final_error:
+            if process.stdout is not None:
+                process.stdout.close()
+            raise ProcessTreeShutdownError("PROCESS_TREE_FORCE_CLEANUP_TIMEOUT") from final_error
+        raise ProcessTreeShutdownError("PROCESS_TREE_FORCE_CLEANUP_TIMEOUT") from error
+    if not _wait_posix_process_group_gone(process.pid, timeout):
+        raise ProcessTreeShutdownError("PROCESS_GROUP_REMAINED_AFTER_FORCE_CLEANUP")
+    return output
+
+
 def wait_json(url: str, *, headers: dict[str, str] | None = None, timeout: float = 30) -> httpx.Response:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
@@ -59,19 +123,21 @@ def wait_json(url: str, *, headers: dict[str, str] | None = None, timeout: float
     raise RuntimeError("PROCESS_READY_TIMEOUT") from last_error
 
 
-def stop_process(process: subprocess.Popen[str]) -> tuple[int, str]:
-    if process.poll() is None:
-        if os.name == "nt":
-            process.send_signal(signal.CTRL_BREAK_EVENT)
-        else:
-            process.send_signal(signal.SIGTERM)
-        try:
-            process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
-            raise RuntimeError("PROCESS_GRACEFUL_SHUTDOWN_TIMEOUT")
-    output = "" if process.stdout is None else process.stdout.read()
+def stop_process(
+    process: subprocess.Popen[str],
+    *,
+    graceful_timeout: float = 15,
+    force_timeout: float = 5,
+) -> tuple[int, str]:
+    _signal_owned_process_tree(process, force=False)
+    try:
+        output, _ = process.communicate(timeout=graceful_timeout)
+    except subprocess.TimeoutExpired as error:
+        force_cleanup_process_tree(process, timeout=force_timeout)
+        raise ProcessTreeShutdownError("PROCESS_TREE_GRACEFUL_SHUTDOWN_TIMEOUT") from error
+    if not _wait_posix_process_group_gone(process.pid, force_timeout):
+        force_cleanup_process_tree(process, timeout=force_timeout)
+        raise ProcessTreeShutdownError("PROCESS_GROUP_REMAINED_AFTER_GRACEFUL_SHUTDOWN")
     return int(process.returncode or 0), output
 
 
@@ -96,6 +162,7 @@ def start_api(port: int, database_path: Path) -> subprocess.Popen[str]:
         encoding="utf-8",
         errors="replace",
         creationflags=flags,
+        start_new_session=os.name != "nt",
     )
 
 
@@ -107,11 +174,16 @@ def start_next(port: int, api_port: int) -> subprocess.Popen[str]:
         "DAON_RUNTIME_PROFILE": "test",
         "DAON_API_INTERNAL_URL": f"http://127.0.0.1:{api_port}",
     }
-    executable = "npm.cmd" if os.name == "nt" else "npm"
+    executable = shutil.which("node")
+    if executable is None:
+        raise RuntimeError("NEXT_NODE_EXECUTABLE_NOT_FOUND")
+    next_cli = ROOT / "node_modules/next/dist/bin/next"
+    if not next_cli.is_file():
+        raise RuntimeError("NEXT_CLI_NOT_FOUND")
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     return subprocess.Popen(
-        [executable, "run", "start", "--workspace", "@daon-user/web", "--", "-p", str(port), "-H", "127.0.0.1"],
-        cwd=ROOT,
+        [executable, str(next_cli), "start", "-p", str(port), "-H", "127.0.0.1"],
+        cwd=ROOT / "apps/web",
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -119,7 +191,14 @@ def start_next(port: int, api_port: int) -> subprocess.Popen[str]:
         encoding="utf-8",
         errors="replace",
         creationflags=flags,
+        start_new_session=os.name != "nt",
     )
+
+
+def next_exit_is_graceful(exit_code: int, platform_name: str = os.name) -> bool:
+    if platform_name == "nt":
+        return exit_code in {0, 0xC000013A}
+    return exit_code in {0, -signal.SIGTERM, 128 + signal.SIGTERM}
 
 
 def seed_database(database_path: Path) -> tuple[str, str]:
@@ -184,6 +263,8 @@ def main() -> None:
         second = None
         next_process = None
         next_log = ""
+        next_exit_code = None
+        next_graceful_shutdown_observed = None
         web_port: int | None = None
         try:
             live = wait_json(f"{api_origin}/health/live")
@@ -318,10 +399,14 @@ def main() -> None:
                 )
                 if client_bundle_forbidden_hits:
                     raise RuntimeError("NEXT_CLIENT_BUNDLE_INTERNAL_ADDRESS_EXPOSED")
-                _, next_log = stop_process(next_process)
+                raw_next_exit_code, next_log = stop_process(next_process)
                 next_process = None
+                if not next_exit_is_graceful(raw_next_exit_code):
+                    raise RuntimeError(f"NEXT_GRACEFUL_EXIT_NONZERO:{raw_next_exit_code}")
+                next_exit_code = 0
                 if not port_is_released(web_port):
                     raise RuntimeError("NEXT_LISTENER_REMAINED_AFTER_SHUTDOWN")
+                next_graceful_shutdown_observed = True
 
             _second_code, second_log = stop_process(second)
             second = None
@@ -370,6 +455,8 @@ def main() -> None:
                 "status": bff_status,
                 "trace_id": bff_trace,
                 "direct_and_bff_session_meaning_equal": same_meaning,
+                "graceful_shutdown_observed": next_graceful_shutdown_observed,
+                "graceful_exit_code": next_exit_code,
                 "same_origin_write_status": bff_write_status,
                 "cross_origin_write_status": bff_csrf_rejected_status,
                 "cross_origin_write_upstream_audit_events": bff_csrf_rejected_upstream_events,
@@ -399,9 +486,8 @@ def main() -> None:
             print(json.dumps({"runtime": runtime_summary, "bff": bff_summary}, ensure_ascii=False))
         finally:
             for process in (next_process, second, first):
-                if process is not None and process.poll() is None:
-                    process.kill()
-                    process.wait(timeout=5)
+                if process is not None:
+                    force_cleanup_process_tree(process)
 
 
 if __name__ == "__main__":
