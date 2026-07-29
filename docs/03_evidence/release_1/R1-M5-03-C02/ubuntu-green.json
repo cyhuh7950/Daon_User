@@ -1,0 +1,45 @@
+{
+  "work_order_id": "R1-M5-03-C02",
+  "issue_id": "R1-M5-03",
+  "git_sha": "11a121e8063f8d3fb7803da072dae2b19edf78a7",
+  "environment": {
+    "host": "ysna-server",
+    "checkout": "/home/ubuntu/deploy/daon-user/R1-M5-03/C02-989090fcf5bf3a74ad900082f30f4aee021c26c1",
+    "container_os": "Ubuntu 24.04",
+    "architecture": "aarch64",
+    "node": "24.18.0",
+    "npm": "11.12.1",
+    "uv": "0.11.2",
+    "python": "3.14.3"
+  },
+  "checks": [
+    {
+      "command": "node scripts/run-local-service-tool.mjs type",
+      "exit_code": 0,
+      "result": "PASS",
+      "files_checked": 16
+    },
+    {
+      "command": "node scripts/run-local-service-tool.mjs unit",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests": "84 passed, 2 skipped",
+      "coverage_percent": 88.80,
+      "active_posix_module_coverage_percent": 83,
+      "coverage_threshold_percent": 85
+    }
+  ],
+  "security_contract": {
+    "posix_descriptor_relative_access": true,
+    "o_nofollow": true,
+    "single_link_and_inode_validation": true,
+    "same_directory_descriptor_relative_atomic_replace_and_fsync": true,
+    "symlink_swap_test": "PASS"
+  },
+  "secret_values_recorded": 0,
+  "resources": {
+    "containers_removed": true,
+    "shared_compose_or_database_used": false,
+    "server_checkout_restored_to_green_sha": true
+  }
+}

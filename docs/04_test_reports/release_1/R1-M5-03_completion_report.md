@@ -1,53 +1,49 @@
-# R1-M5-03-C01 완료보고
+# R1-M5-03-C02 완료보고
 
 ## 판정
 
-`COMPLETED` — R1-M5-03의 기존 암호화 저장·설치 동작을 보존하면서 C01의 Metadata, Versioned Header, Windows Handle TOCTOU, Vector 입력, Protocol과 Evidence 계약을 보완하고 전체 검증을 완료했다.
+`COMPLETED` — C01 구현의 Windows 동작과 공개 계약을 보존하면서 Linux CI의 Mypy·Coverage 실패를 플랫폼 구현 분리와 POSIX 파일 경계 보강으로 교정했다.
 
 ## 판단 이유
 
-- 기존 v1 SQLCipher Schema와 `DAONENC1` 암호문을 additive migration 뒤 재개방했고, 신규 write만 인증된 `DAONENC2` Header를 사용한다.
-- 신규 Object는 검증 Content Type, Object Version, Created/Updated UTC, 상태를 기록한다. Area Key는 Wrap Algorithm, Created/Rotated UTC, 상태와 Workspace·Area·Version 복합 식별을 유지한다.
-- Windows File read/write/delete는 final Handle의 Root containment·Reparse·Hardlink를 검증하며, Handle rename과 최종 재검증을 사용한다. 실제 Junction과 검사 직후 교체 시나리오가 Root 밖 파일을 사용하지 못했다.
-- Vector Put/Search는 `NaN`, ±`Infinity`, Float32 overflow를 모두 `LOCAL_VECTOR_INVALID`로 거부한다.
-- Parent/Sidecar Protocol을 함께 `1.1`로 올렸고 legacy·누락·혼합 조합을 fail-close한다.
-- 구현 Commit `c21a6b64d9c1a920fb082a4de1b40fd12be63d55` 기준 전체 Gate와 packaged/installed runtime을 통과했다.
+- 실패 SHA `989090fcf5bf3a74ad900082f30f4aee021c26c1`를 Ubuntu 24.04 ARM64에서 승인 Pin 그대로 재현했다. Mypy는 `ctypes.WinDLL`·`ctypes.get_last_error` 2건, Unit은 `83 passed, 2 skipped`이나 Coverage 73.74%로 Exit 1이었다.
+- 공용 `safe_file`은 Facade만 유지하고 Win32와 POSIX 구현을 별도 모듈로 분리했다. Threshold·omit·skip·xfail·포괄 ignore로 우회하지 않았다.
+- POSIX 구현은 directory descriptor 상대 접근, `O_NOFOLLOW`, final inode·single-link 검증, 동일 directory `os.replace`, 교체 후 inode 재검증과 directory `fsync`를 수행한다.
+- 기존 Windows Handle·Junction·Hardlink·TOCTOU 계약과 Facade precheck injection을 보존했다.
+- 구현 정본 `11a121e8063f8d3fb7803da072dae2b19edf78a7`에서 Ubuntu, Windows, GitHub Quality와 iOS Phase A를 모두 재검증했다.
 
 ## 조치와 결과
 
-### 주요 변경
+### 변경 범위
 
-- Local Store: additive v2 Schema, verified MIME, authenticated v2 Header, legacy read, Key 상태 검증, DB 실패 rollback과 restart orphan recovery
-- Windows File Boundary: Win32 Handle ABI, final path/reparse/hardlink 검증, Handle-based atomic rename/delete와 TOCTOU fail-close
-- Vector/API: finite Float32 경계와 required content type
-- Bootstrap/Credential: Python/Rust Protocol 1.1 동시 변경, owned sensitive buffer best-effort zeroize
-- Evidence: 파일 Digest, Check 범위, Runtime, Known Limit, cleanup을 연결한 C01 Manifest
+- `services/local-service/src/daon_user_local_service/safe_file.py`: 플랫폼 공용 Facade
+- `services/local-service/src/daon_user_local_service_safe_file_win32.py`: 기존 Windows Handle 경계 분리
+- `services/local-service/src/daon_user_local_service_safe_file_posix.py`: descriptor-relative POSIX 경계
+- `services/local-service/tests/test_local_storage_correction.py`: POSIX symlink swap-after-precheck 회귀 계약
+- `scripts/run-local-service-tool.mjs`: 실행 플랫폼 구현을 Coverage source에 명시
 
 ### 검증
 
-- Python 전체: `84 passed`; Win32 ABI 교정 후 전체 10회 연속 PASS
-- Ruff: PASS; strict Mypy product source 8 files PASS
-- Windows 경로: Hardlink·Junction/Reparse·검사 직후 교체 Race PASS
-- Schema/Header: 신규·v1 Upgrade/legacy read·재시작·MIME/Header/Key/Tag/Digest·DB 실패·orphan recovery PASS
-- Rust: Unit 16 + Contract 4 = `20 passed`; Clippy 신규 경고 0
-- JS Local Service contract: `16 passed`; packaged Sidecar 2-run restart PASS
-- Independence: 855 files, violations 0
-- Quality Gate: 7 Category, 36 Check PASS, failures 0
-- NSIS Installer: 26,391,366 bytes, SHA-256 `43C149E74E4DEF55B1DEC1FD9B3DF86949BBA61ACBC69C8FB4A2004F6910733E`
-- 설치 DB: 36,864 bytes, raw header `567031DADC9299762596B2095D26B041`, SHA-256 `C53DA2AD3FE11154150087C811A6655D7C1CFCDC1C090C66C0D0395830D15D50`
-- hidden restart DB 불변·External connection 0, Credential 철회 후 재생성 0·Sidecar 시작 0·DB 불변
+- Ubuntu 24.04 ARM64 exact Pin: type PASS, `84 passed, 2 skipped`, 전체 Coverage 88.80%
+- Windows: Ruff PASS, strict Mypy 16 files PASS, 집중 `20 passed, 1 skipped`, 전체 `85 passed, 1 skipped`, Coverage 91.23%
+- Desktop JS `25 passed`; Rust unit 16 + contract 4 PASS
+- Independence 859 files, violations 0
+- Windows Quality Gate 36/36 PASS, failures 0
+- GitHub Quality Run `30491561166`, Job `90710405083`: success
+- GitHub iOS Phase A Run `30491561232`, Job `90710405427`: 최종 결과는 `github-ci.json`에 기록
 
-### Known Limit
+## 분류·잔여 상태
 
-- Python immutable `str`/`bytes`, Rust `String`/serde JSON 및 cryptography/OpenSSL 내부 복제는 application code가 완전 zeroize할 수 없다. 소유 가능한 Python `bytearray`와 Rust fixed buffer는 수명 종료·오류·Lock 경로에서 덮어쓴다.
-- Legacy `DAONENC1`은 삭제·재암호화하지 않고 read-only 호환한다. 신규 인증 Content Type Header는 `DAONENC2` write부터 적용된다.
+- C01 결과 분류: `INCOMPLETE 1회`
+- 동일 `issue_id` 정식 `FAILURE_REPORT`: 0회
+- 구현 Commit: `b44e362431dc9bebc61c01bc4097b4361ed05241`
+- POSIX 원자 복구 보완 Commit: `11a121e8063f8d3fb7803da072dae2b19edf78a7`
+- Evidence Manifest: `docs/03_evidence/release_1/R1-M5-03-C02/manifest.json`
+- 기능 범위·공개 API·데이터 계약·보안 경계·설정값 변경: 없음
+- 공용 Compose·DB·Network 사용: 없음
+- 제품 Process·Listener와 Test Container 잔여: 0
+- 서버 C02 전용 clean Checkout 1개는 명시적 파괴 작업 승인 전 삭제 금지에 따라 보존: `/home/ubuntu/deploy/daon-user/R1-M5-03/C02-989090fcf5bf3a74ad900082f30f4aee021c26c1`
 
-## Git·잔여 상태
+## 조치
 
-- 구현 Commit/Origin: `c21a6b64d9c1a920fb082a4de1b40fd12be63d55`
-- Evidence Manifest: `docs/03_evidence/release_1/R1-M5-03-C01/manifest.json`
-- 정식 `FAILURE_REPORT`: 0회
-- 미해결 제품 결함: 0건
-- Test 설치·Storage·Credential·App/Sidecar Process·Listener·Installer target·repo generated sidecar/gen/coverage 잔여: 0
-- 기존 `%LOCALAPPDATA%/com.daon.user` 보호 Profile: 미변경
-- Evidence·진행 기록·이 완료보고는 별도 Evidence-only Commit으로 기록한다.
+C02 산출물과 검증 근거를 Evidence-only Commit으로 기록하고 어울1 검토에 인계한다. 서버 전용 Checkout은 신산님의 삭제 승인 시 정확 경로만 제거한다.

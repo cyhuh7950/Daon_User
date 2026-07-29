@@ -1,5 +1,7 @@
 # R1-M5-03 진행 복구 기록
 
+> 2026-07-30 C02 완료: C01은 Ubuntu Quality Gate type/unit 실패로 `INCOMPLETE 1회`, 정식 `FAILURE_REPORT 0회`다. C02 구현 정본은 OneDrive Branch `codex/r1-m5-03` Commit `11a121e8063f8d3fb7803da072dae2b19edf78a7`이며 Ubuntu·Windows·GitHub Quality/iOS Phase A를 재검증했다. 세부 기록은 `R1-M5-03-C02_progress.md`, 증거 정본은 `docs/03_evidence/release_1/R1-M5-03-C02/manifest.json`을 따른다.
+
 > 2026-07-30 C01 완료: `R1-M5-03-C01` 보정 구현·전체 Gate·실제 NSIS 설치 검증을 완료했다. 구현 정본은 Commit `c21a6b64d9c1a920fb082a4de1b40fd12be63d55`, Evidence 정본은 `docs/03_evidence/release_1/R1-M5-03-C01/manifest.json`이다.
 
 > 2026-07-30 C01 판정: 원 완료 결과는 `CORRECTION_REQUIRED`로 전환됐다. 현재 정본은 OneDrive 작업공간, Branch `codex/r1-m5-03`, 시작 HEAD `717b58df1031d2d95d0a9df96375e4df2091b226`이며, 다음 작업은 `R1-M5-03-C01_correction_work_order.md`의 Metadata·Versioned Header·Windows Handle TOCTOU·Vector 입력·Protocol 보완이다. 세부 복구 기록은 `R1-M5-03-C01_progress.md`를 따른다.
@@ -11,12 +13,12 @@
 | 작업 | R1-M5-03 Local 암호화 저장 |
 | 담당 | 어울2 (단일 Writer) |
 | 상태 | COMPLETED |
-| 현재 단계 | C01 구현·검증·실제 설치·정리·구현 Push 완료 |
+| 현재 단계 | C02 Linux CI 교정·전체 검증·정리 완료 |
 | 작업 위치 | `C:\Users\cyhuh\OneDrive\바탕 화면\D Driver\Project\Daon_User` |
 | 브랜치 | `codex/r1-m5-03` |
-| 인계 HEAD | `c21a6b64d9c1a920fb082a4de1b40fd12be63d55` |
+| 인계 구현 SHA | `11a121e8063f8d3fb7803da072dae2b19edf78a7` |
 | 정식 FAILURE_REPORT | 0회 |
-| 다음 작업 | C01 Evidence-only Commit·Push 후 어울1 검토 |
+| 다음 작업 | C02 Evidence-only Commit·Push 후 어울1 검토 |
 
 ## 진행 이력
 

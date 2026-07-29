@@ -1,0 +1,40 @@
+{
+  "work_order_id": "R1-M5-03-C02",
+  "issue_id": "R1-M5-03",
+  "git_sha": "11a121e8063f8d3fb7803da072dae2b19edf78a7",
+  "environment": "official OneDrive Windows checkout",
+  "checks": [
+    {"name": "ruff", "result": "PASS"},
+    {"name": "strict_mypy", "result": "PASS", "files_checked": 16},
+    {
+      "name": "junction_toctou_hardlink_focus",
+      "result": "PASS",
+      "tests": "20 passed, 1 skipped"
+    },
+    {
+      "name": "local_service_unit",
+      "result": "PASS",
+      "tests": "85 passed, 1 skipped",
+      "coverage_percent": 91.23,
+      "coverage_threshold_percent": 85
+    },
+    {"name": "desktop_js", "result": "PASS", "tests": 25},
+    {"name": "desktop_rust_unit", "result": "PASS", "tests": 16},
+    {"name": "desktop_rust_contract", "result": "PASS", "tests": 4},
+    {"name": "repository_independence", "result": "PASS", "scanned_files": 859, "violations": 0},
+    {
+      "name": "release_1_quality_gate",
+      "result": "PASS",
+      "exit_code": 0,
+      "checks": 36,
+      "failures": 0,
+      "policy_sha256": "75BD94A46CA0970ADA60D3F53EB71EEC681891FEBA19DCFD6C2B60E290444D13"
+    }
+  ],
+  "secret_values_recorded": 0,
+  "resources": {
+    "product_processes_or_listeners_started": false,
+    "coverage_file_removed": true,
+    "unrelated_generated_evidence_restored": true
+  }
+}
