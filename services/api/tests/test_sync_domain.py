@@ -96,6 +96,15 @@ class SyncDomainTests(unittest.TestCase):
         )
         self.assertEqual(first.batch_id, replay.batch_id)
         self.assertEqual(self.transfer.transmission_count, 1)
+        partial = self.service.get_operation(self.context, operation.operation_id)
+        resumed = self.service.transfer_batch(
+            self.context, operation_id=operation.operation_id,
+            expected_version=partial.version, idempotency_key="batch-resume",
+            cursor=first.next_cursor,
+            payloads=(TransferPayload("item-b", b"local-b", "cloud-v1", DIGEST_B),),
+        )
+        self.assertEqual(resumed.transferred_item_ids, ("item-b",))
+        self.assertEqual(self.transfer.transmission_count, 2)
         with self.assertRaisesRegex(SyncError, "SYNC_VERSION_CONFLICT"):
             self.service.transfer_batch(
                 self.context, operation_id=operation.operation_id, expected_version=approved.version,
@@ -130,6 +139,46 @@ class SyncDomainTests(unittest.TestCase):
         final = self.service.get_operation(self.context, operation.operation_id)
         self.assertEqual(final.source_mutations, 0)
         self.assertEqual(final.overwrite_count, 0)
+
+    def test_each_resolution_choice_has_explicit_non_overwrite_semantics(self) -> None:
+        for index, choice in enumerate(ConflictResolutionChoice):
+            with self.subTest(choice=choice.value):
+                transfer = ReferenceTransferPort()
+                service = SyncService(
+                    ReferenceSyncRepository(), transfer,
+                    clock=lambda: datetime(2026, 7, 30, 13, 0, tzinfo=UTC),
+                )
+                operation = service.create_operation(
+                    self.context, target_area="cloud_sync", items=(self.items[1],),
+                    idempotency_key=f"create-resolution-{index}", if_match="*",
+                )
+                approved = service.approve(
+                    self.context, operation_id=operation.operation_id,
+                    approved_item_ids=("item-b",),
+                    step_up_authorization_id=f"step-resolution-{index}",
+                    expected_version=1, idempotency_key=f"approve-resolution-{index}",
+                    approval_verified=True,
+                )
+                batch = service.transfer_batch(
+                    self.context, operation_id=operation.operation_id,
+                    expected_version=approved.version,
+                    idempotency_key=f"batch-resolution-{index}", cursor=None,
+                    payloads=(TransferPayload("item-b", b"local-b", "cloud-v2", DIGEST_A),),
+                )
+                current = service.get_operation(self.context, operation.operation_id)
+                resolution = service.resolve_conflict(
+                    self.context, operation_id=operation.operation_id,
+                    conflict_id=batch.conflict_ids[0], expected_version=current.version,
+                    idempotency_key=f"resolve-resolution-{index}", choice=choice,
+                    content=None if choice is ConflictResolutionChoice.KEEP_CLOUD else b"local-b",
+                )
+                self.assertEqual(resolution.choice, choice)
+                self.assertEqual(
+                    transfer.transmission_count,
+                    0 if choice is ConflictResolutionChoice.KEEP_CLOUD else 1,
+                )
+                final = service.get_operation(self.context, operation.operation_id)
+                self.assertEqual((final.source_mutations, final.overwrite_count), (0, 0))
 
 
 if __name__ == "__main__":

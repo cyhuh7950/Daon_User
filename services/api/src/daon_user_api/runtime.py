@@ -5,13 +5,15 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import asyncio
+import base64
+import binascii
 import os
 import re
 import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -54,7 +56,28 @@ from .notification import (
     parse_inbox_filter,
     parse_notification_filter,
 )
-from .object_queue import MinioObjectStorageAdapter, ObjectStoragePort
+from .object_queue import (
+    MinioObjectStorageAdapter,
+    ObjectQueueCoordinator,
+    ObjectStoragePort,
+    PostgresObjectQueueStore,
+)
+from .sync import (
+    ConflictResolutionChoice,
+    ReferenceSyncRepository,
+    ReferenceTransferPort,
+    SyncContext,
+    SyncError,
+    SyncItemInput,
+    SyncOperationView,
+    SyncService,
+    TransferPayload,
+)
+from .sync_postgres import (
+    ObjectQueueSyncTransferPort,
+    PostgresSyncService,
+    UnavailableSyncTransferPort,
+)
 
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
@@ -236,6 +259,8 @@ class RuntimeDependencies:
     notification_service: NotificationService | None = None
     cloud_store: PostgresCloudStore | None = None
     object_storage: ObjectStoragePort | None = None
+    sync_service: SyncService | PostgresSyncService | None = None
+    object_queue_store: PostgresObjectQueueStore | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -248,6 +273,8 @@ class RuntimeDependencies:
         self.identity_repository.close()
         if self.cloud_store is not None:
             self.cloud_store.close()
+        if self.object_queue_store is not None:
+            self.object_queue_store.close()
         self._closed = True
 
 
@@ -266,6 +293,50 @@ class AccessDecisionBody(BaseModel):
 class NotificationReadBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     state: str
+
+
+class SyncItemBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_id: str
+    source_version_id: str
+    local_object_id: str
+    digest_sha256: str
+    byte_size: int
+    content_type: str
+    base_cloud_version_id: str | None = None
+    base_cloud_digest: str | None = None
+
+
+class SyncCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_area: str
+    items: list[SyncItemBody]
+
+
+class SyncApproveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approved_item_ids: list[str]
+    step_up_authorization_id: str
+
+
+class SyncTransferItemBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_id: str
+    content_base64: str
+    current_cloud_version_id: str | None = None
+    current_cloud_digest: str | None = None
+
+
+class SyncTransferBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cursor: str | None = None
+    items: list[SyncTransferItemBody]
+
+
+class SyncResolutionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    choice: ConflictResolutionChoice
+    content_base64: str | None = None
 
 
 def _trace_id(request: Request) -> str:
@@ -344,6 +415,8 @@ def _enum_json(value: object) -> object:
         return value.value
     if isinstance(value, datetime):
         return value.isoformat()
+    if is_dataclass(value) and not isinstance(value, type):
+        return _dataclass_json(value)
     if isinstance(value, Mapping):
         return {str(key): _enum_json(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
@@ -395,6 +468,43 @@ def _idempotency_key(value: str) -> str:
     return value
 
 
+def _sync_expected_version(value: str, operation_id: str | None = None) -> int | str:
+    if value == "*" and operation_id is None:
+        return value
+    if operation_id is None:
+        raise SyncError("IF_MATCH_INVALID", 400)
+    matched = re.fullmatch(r'"sync:' + re.escape(operation_id) + r':([1-9][0-9]*)"', value)
+    if matched is None:
+        raise SyncError("IF_MATCH_INVALID", 400)
+    return int(matched.group(1))
+
+
+def _sync_content(value: str | None, *, required: bool) -> bytes | None:
+    if value is None:
+        if required:
+            raise SyncError("SYNC_CONTENT_REQUIRED", 400)
+        return None
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        raise SyncError("SYNC_CONTENT_INVALID", 400) from None
+
+
+def _sync_context(principal: IdentityPrincipal, workspace_id: str, request: Request,
+                  dependencies: RuntimeDependencies) -> SyncContext:
+    return SyncContext(
+        tenant_id=principal.tenant_id,
+        workspace_id=workspace_id,
+        actor_id=principal.user_id,
+        trace_id=request.state.trace_id,
+        policy_version=dependencies.settings.policy_version,
+    )
+
+
+def _sync_view_json(view: SyncOperationView) -> dict[str, object]:
+    return _dataclass_json(view)
+
+
 def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityPrincipal:
     token, expected_kind = _credential(request)
     view = dependencies.identity_service.describe_access(
@@ -413,6 +523,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         repository=ReferenceNotificationRepository(),
         authorization_service=dependencies.authorization_service,
         audit_store=dependencies.audit_store,
+        clock=lambda: datetime.now(timezone.utc),
+    )
+    sync_service = dependencies.sync_service or SyncService(
+        ReferenceSyncRepository(), ReferenceTransferPort(),
         clock=lambda: datetime.now(timezone.utc),
     )
     @asynccontextmanager
@@ -506,6 +620,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     @app.exception_handler(AuditValidationError)
     async def audit_error(request: Request, _error: AuditValidationError) -> JSONResponse:
         return _error_response(400, "INVALID_REQUEST", request.state.trace_id)
+
+    @app.exception_handler(SyncError)
+    async def sync_error(request: Request, error: SyncError) -> JSONResponse:
+        return _error_response(
+            error.status, error.code, request.state.trace_id, retryable=error.retryable
+        )
 
     @app.exception_handler(Exception)
     async def unexpected_error(request: Request, _error: Exception) -> JSONResponse:
@@ -721,6 +841,173 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         seed = "|".join(f"{item.request_id}:{item.status}" for item in page.items) + f"|{page.next_cursor}"
         return _json_with_etag(content, seed)
 
+    @app.post("/api/v1/workspaces/{id}/sync-operations", status_code=201)
+    async def create_sync_operation(
+        id: str,
+        body: SyncCreateBody,
+        request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            requested_permissions=(Permission.DATA_AREA_MOVE,),
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = sync_service.create_operation(
+            _sync_context(principal, id, request, dependencies),
+            target_area=body.target_area,
+            items=tuple(SyncItemInput(**item.model_dump()) for item in body.items),
+            idempotency_key=idempotency_key,
+            if_match=cast(str, _sync_expected_version(if_match)),
+        )
+        response = JSONResponse(content={
+            "data": _sync_view_json(view), "meta": {"trace_id": request.state.trace_id}
+        }, status_code=201)
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/sync-operations/{id}")
+    async def get_sync_operation(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        workspace_id = sync_service.locate_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = sync_service.get_operation(
+            _sync_context(principal, workspace_id, request, dependencies), id
+        )
+        response = JSONResponse(content={
+            "data": _sync_view_json(view), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.post("/api/v1/sync-operations/{id}/approve")
+    async def approve_sync_operation(
+        id: str,
+        body: SyncApproveBody,
+        request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        workspace_id = sync_service.locate_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.APPROVE,
+            requested_permissions=(Permission.DATA_AREA_MOVE,),
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=body.step_up_authorization_id,
+            access_token=access_token,
+            action_group="data_area_move", target_id=id,
+            policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id,
+        )
+        view = sync_service.approve(
+            _sync_context(principal, workspace_id, request, dependencies),
+            operation_id=id, approved_item_ids=tuple(body.approved_item_ids),
+            step_up_authorization_id=body.step_up_authorization_id,
+            expected_version=cast(int, _sync_expected_version(if_match, id)),
+            idempotency_key=idempotency_key, approval_verified=True,
+        )
+        response = JSONResponse(content={
+            "data": _sync_view_json(view), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.post("/api/v1/sync-operations/{id}/transfer-batches")
+    async def transfer_sync_batch(
+        id: str,
+        body: SyncTransferBody,
+        request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        workspace_id = sync_service.locate_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.EDIT,
+            requested_permissions=(Permission.DATA_AREA_MOVE,),
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        batch = sync_service.transfer_batch(
+            _sync_context(principal, workspace_id, request, dependencies),
+            operation_id=id,
+            expected_version=cast(int, _sync_expected_version(if_match, id)),
+            idempotency_key=idempotency_key, cursor=body.cursor,
+            payloads=tuple(TransferPayload(
+                item.item_id, cast(bytes, _sync_content(item.content_base64, required=True)),
+                item.current_cloud_version_id, item.current_cloud_digest,
+            ) for item in body.items),
+        )
+        view = sync_service.get_operation(
+            _sync_context(principal, workspace_id, request, dependencies), id
+        )
+        response = JSONResponse(content={
+            "data": _dataclass_json(batch),
+            "operation": _sync_view_json(view),
+            "meta": {"trace_id": request.state.trace_id},
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.post("/api/v1/sync-operations/{id}/conflicts/{conflict_id}/resolution")
+    async def resolve_sync_conflict(
+        id: str,
+        conflict_id: str,
+        body: SyncResolutionBody,
+        request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        workspace_id = sync_service.locate_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.EDIT,
+            requested_permissions=(Permission.DATA_AREA_MOVE,),
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        resolution = sync_service.resolve_conflict(
+            _sync_context(principal, workspace_id, request, dependencies),
+            operation_id=id, conflict_id=conflict_id,
+            expected_version=cast(int, _sync_expected_version(if_match, id)),
+            idempotency_key=idempotency_key, choice=body.choice,
+            content=_sync_content(
+                body.content_base64,
+                required=body.choice is not ConflictResolutionChoice.KEEP_CLOUD,
+            ),
+        )
+        view = sync_service.get_operation(
+            _sync_context(principal, workspace_id, request, dependencies), id
+        )
+        response = JSONResponse(content={
+            "data": _dataclass_json(resolution),
+            "operation": _sync_view_json(view),
+            "meta": {"trace_id": request.state.trace_id},
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
     return app
 
 
@@ -771,6 +1058,26 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             secret_key=secret_key,
             secure=settings.object_storage_secure,
         )
+    sync_service: SyncService | PostgresSyncService
+    object_queue_store: PostgresObjectQueueStore | None = None
+    if cloud_store is None:
+        sync_service = SyncService(
+            ReferenceSyncRepository(), ReferenceTransferPort(),
+            clock=lambda: datetime.now(timezone.utc),
+        )
+    else:
+        transfer_port: ObjectQueueSyncTransferPort | UnavailableSyncTransferPort
+        if object_storage is None:
+            transfer_port = UnavailableSyncTransferPort()
+        else:
+            assert settings.cloud_database_dsn is not None
+            object_queue_store = PostgresObjectQueueStore(settings.cloud_database_dsn)
+            transfer_port = ObjectQueueSyncTransferPort(ObjectQueueCoordinator(
+                object_queue_store, object_storage, id_factory=lambda: secrets.token_hex(16)
+            ))
+        sync_service = PostgresSyncService(
+            cloud_store, transfer_port, clock=lambda: datetime.now(timezone.utc)
+        )
     return RuntimeDependencies(
         settings=settings,
         identity_service=identity_service,
@@ -781,4 +1088,6 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         notification_service=notification_service,
         cloud_store=cloud_store,
         object_storage=object_storage,
+        sync_service=sync_service,
+        object_queue_store=object_queue_store,
     )
