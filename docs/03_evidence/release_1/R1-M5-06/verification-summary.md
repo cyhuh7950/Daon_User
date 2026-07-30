@@ -2,12 +2,13 @@
 
 - 검증 작업공간: 공식 OneDrive 정본, Branch `codex/r1-m5-06`.
 - TDD RED: Retention Module·Migration `0005`·OpenAPI 6 Route·Runtime Route·Local Tombstone 부재를 각각 실패로 확인했다.
-- Target GREEN: Retention Domain/Contract/Runtime HTTP 9건 통과, Retention Domain Coverage 92%.
-- API 전체 회귀: 136건 통과, 23건 조건부 Skip. Skip은 PostgreSQL·MinIO·POSIX 전용 환경 조건이다.
+- Target GREEN: Retention Domain/Contract/Runtime HTTP 12건 통과, Retention Domain Coverage 92%, Runtime Coverage 88%.
+- API 전체 회귀: 139건 통과, 23건 조건부 Skip. Skip은 PostgreSQL·MinIO·POSIX 전용 환경 조건이다.
 - Local Service 전체 회귀: 92건 통과, 1건 조건부 Skip.
 - Local 암호화 검증: SQLCipher DB에서 Tombstone Restart, Pending Ack, Device Ack, Device Revoke, Key Destruction과 평문 Canary 0건을 확인했다.
 - OpenAPI/Runtime: 승인된 Method·Path 6종만 등록됐으며 실제 ASGI 흐름으로 멱등 요청, 현재 권한, Step-up 결합 거부, Hold 적용·해제, 유예 오류, Cancel을 확인했다.
 - Quality Gate 최종 실행: Lint 8, Type 5, Unit 9, Contract 3, Build 8, Security 3, Independence 1 전부 통과, Failure 0.
+- C01 공개 오류 계약: 승인된 신규 3코드만 OpenAPI enum에 추가했고 unavailable은 `RESOURCE_UNAVAILABLE`, 내부 검증·멱등·Version 충돌은 `INVALID_REQUEST`, Fixture Guard는 `CURRENT_ACCESS_DENIED`로 매핑했다. 현재 Retention Domain 오류 19종을 전수 매핑해 공개 enum 이탈 0건을 확인했다. RED 2건 확인 후 GREEN 6건, OpenAPI 9건, Quality Gate Contract/Security Test 37건과 Workspace Lint 16파일이 통과했다.
 - 변경 범위: Browser 코드, 설정값, 의존성, 외부 서버, 기존 사용자·운영 데이터 변경 0건.
 
 ## 검증 한계

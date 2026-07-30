@@ -8,10 +8,11 @@
 
 - Migration `0005`, 삭제·보존·Legal Hold Domain, 승인 API/OpenAPI 6종, Local SQLCipher Tombstone/Ack 계약을 구현했다.
 - 요청 즉시 비활성화, 30일 유예, Hold 우선, 멱등·Optimistic Concurrency, 실패 항목만 재시도, Local Ack 전 `purged` 금지와 Fixture Allowlist를 자동 검증했다.
-- API 전체 136건, Local 전체 92건과 최종 Quality Gate 7개 범주가 통과했다.
+- API 전체 139건, Local 전체 92건과 최종 Quality Gate 7개 범주가 통과했다.
+- C01에서 내부 Retention Domain 오류의 직접 공개를 제거하고 승인 신규 3코드만 OpenAPI에 추가했다. 현재 Domain 오류 19종의 공개 매핑을 전수 확인했으며 관련 Contract/Runtime 6건, OpenAPI 9건, Quality Gate Contract/Security Test 37건과 Workspace Lint가 통과했다.
 - PostgreSQL·MinIO 환경 변수가 없고 Docker CLI가 없으며 WSL 접근도 거부돼 실제 Migration/RLS/Object 검증은 조건부 Skip이었다. 이를 Mock 성공이나 정적 통과로 대체하지 않는다.
 - Browser 코드·의존성·설정·외부 서버·기존 운영 데이터는 변경하지 않았다.
-- 구현 Commit은 `78191e63c7cc64c676babe96ca0dae394e89a733`이다.
+- 최신 구현 Commit은 `0f3b1c1a1a19615c5986449ffe89cee005f0371b`이다.
 
 ## 조치
 
