@@ -674,15 +674,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.exception_handler(RetentionError)
     async def retention_error(request: Request, error: RetentionError) -> JSONResponse:
-        safe = {
-            "DELETION_GRACE_PERIOD_ACTIVE", "LEGAL_HOLD_ACTIVE",
-            "DELETION_CLEANUP_PENDING", "STEP_UP_REQUIRED", "CURRENT_ACCESS_DENIED",
-            "RETENTION_VERSION_CONFLICT", "DELETION_REQUEST_UNAVAILABLE",
-            "LEGAL_HOLD_UNAVAILABLE", "SOURCE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED",
-            "FIXTURE_ONLY_PURGE_REQUIRED",
+        public_codes = {
+            "DELETION_GRACE_PERIOD_ACTIVE": "DELETION_GRACE_PERIOD_ACTIVE",
+            "LEGAL_HOLD_ACTIVE": "LEGAL_HOLD_ACTIVE",
+            "DELETION_CLEANUP_PENDING": "DELETION_CLEANUP_PENDING",
+            "STEP_UP_REQUIRED": "STEP_UP_REQUIRED",
+            "CURRENT_ACCESS_DENIED": "CURRENT_ACCESS_DENIED",
+            "DELETION_REQUEST_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+            "LEGAL_HOLD_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+            "SOURCE_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+            "FIXTURE_ONLY_PURGE_REQUIRED": "CURRENT_ACCESS_DENIED",
         }
         return _error_response(
-            error.status, error.code if error.code in safe else "INVALID_REQUEST",
+            error.status, public_codes.get(error.code, "INVALID_REQUEST"),
             request.state.trace_id, retryable=error.retryable,
         )
 
