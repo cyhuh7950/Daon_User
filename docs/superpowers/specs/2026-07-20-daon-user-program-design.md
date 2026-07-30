@@ -7,7 +7,7 @@
 | 문서 구분 | 독립 제품 상세 설계 정본 |
 | 문서 버전 | 0.7 |
 | 작성일 | 2026-07-20 |
-| 개정 | 2026-07-20 · ysna-server 격리 개발·통합 배포 기준 반영 |
+| 개정 | 2026-07-30 · R1-M5-05 Sync·Copy/Publish 공개 API·승인·충돌 계약 반영 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 승인 기록 | `APR-G0-DESIGN-20260720-01` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
@@ -964,6 +964,11 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 /api/v1/notifications
 /api/v1/notifications/{id}
 /api/v1/inbox
+/api/v1/workspaces/{id}/sync-operations
+/api/v1/sync-operations/{id}
+/api/v1/sync-operations/{id}/approve
+/api/v1/sync-operations/{id}/transfer-batches
+/api/v1/sync-operations/{id}/conflicts/{conflict_id}/resolution
 ```
 
 ### 17.2 공통 원칙
@@ -990,6 +995,11 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 - `GET /api/v1/inbox`는 ReviewRequest·ApprovalRequest·Delivery 등 실행 가능한 요청의 읽기 Projection이다. Inbox 자체에 승인·반려·전달 Write를 만들지 않으며 각 소유 Domain API와 원 상태·Audit 계보를 연결한다.
 - Notification 대상은 Server가 Event와 현재 Membership·Capability·Resource ACL로 계산한다. Client Payload의 Recipient·Role·Grant·Deep Link를 권한 정본으로 신뢰하지 않고, 생성·전달·읽음 상태를 Source Event·AuditEvent·Trace ID와 연결한다.
 - R1-M4-07의 실제 전송 채널은 In-app으로 제한한다. Push·Email Adapter는 자격·계정과 후속 플랫폼 계약이 확보될 때까지 외부 차단으로 유지하며 성공으로 가장하지 않는다.
+- `POST /api/v1/workspaces/{id}/sync-operations`는 대상 영역과 전송 범위의 Preview를 만들며 원본 영역·원본 Version을 변경하지 않는다. `GET /api/v1/sync-operations/{id}`는 승인·전송·재색인 요청 상태와 Version 충돌을 현재 권한으로 반환한다.
+- `POST /api/v1/sync-operations/{id}/approve`는 권한·조직 정책·민감정보와 유효한 `step_up_authorization_id`를 서버에서 재검증한 뒤 승인 Snapshot을 고정한다. 승인 전에는 Object·Content 전송과 Cloud 재색인 요청을 모두 금지한다.
+- `POST /api/v1/sync-operations/{id}/transfer-batches`는 승인 Snapshot에 포함된 항목만 재개 가능한 Batch로 전송한다. 모든 Write는 Idempotency Key와 `If-Match`를 요구하고, Client가 내부 Worker·저장소 주소·Credential을 지정하지 못하게 한다.
+- `POST /api/v1/sync-operations/{id}/conflicts/{conflict_id}/resolution`은 `keep_local_as_new_version | keep_cloud | keep_both` 중 권한 있는 사용자의 명시 선택만 받는다. 자동 병합·자동 덮어쓰기는 금지하며 선택 전에는 충돌 상태를 유지한다.
+- Local Offline Queue는 M5-03 암호화 저장소 안에 승인 상태·Manifest·Batch Cursor만 보존한다. 연결 복구 시 현재 권한·정책·승인 유효성·대상 Version을 다시 확인하고 승인된 항목만 전송한다. 실제 M6 재색인이 완료되기 전에는 `reindex_requested`까지만 기록하고 성공을 가장하지 않는다.
 
 ### 17.3 Local API
 
@@ -1423,6 +1433,7 @@ M4~M6의 모든 수평 구현이 끝날 때까지 통합 검증을 미루지 않
 | iOS Build는 승인된 macOS·Xcode·Apple Signing 환경에서 수행 | 확정 |
 | 첫 코드 변경 전 Git 문서 기준 Commit·Baseline Manifest 고정 | 확정 |
 | 구 독립 설계서는 `SUPERSEDED`, 현행 정본만 구현 기준 | 확정 |
+| Sync·Copy/Publish 공개 API는 Preview→Step-up 승인→승인 항목의 재개 전송→명시적 충돌 해결 순서로 고정하고, 원본 영역·Version의 암묵적 변경과 자동 병합·덮어쓰기를 금지 | 확정 · 신산님 승인 2026-07-30 · `APR-R1-M5-05-SYNC-API-20260730-01` |
 | Next.js·Tauri·React Native·FastAPI | 확정 |
 | 독립 Release 1·2·3 | 확정 |
 
