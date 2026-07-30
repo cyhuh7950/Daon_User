@@ -9,7 +9,8 @@
 - 상세 설계 §16의 Entity 52개를 `data_canon_manifest`로 1:1 추적하고, PostgreSQL `0003`의 전용 관계형 Table·복합 FK·Unique·Index·강제 RLS로 구현했다.
 - SourceVersion부터 Processing/Evidence/Index, Routing/Run/Citation, Studio/Approval/Delivery/KnowledgeRegistration까지 계보를 구조적으로 연결했다.
 - Snapshot·Version·Attempt·Evidence·Ledger는 DB Trigger와 최소 권한으로 제자리 Update/Delete를 거부한다. Canonical JSON Object·정규 문자열·SHA-256 Digest·Previous Version chain도 DB에서 검증한다.
-- 상태 값만 저장하지 않고 7개 Entity의 허용 전이 84개, Optimistic Version, 불변 Transition/Audit Ledger를 실제 `daon_app` Session으로 전부 검증했다.
+- GenerationRequest의 비승인 `confirmed→configuring` 역전이를 제거하고 `configuring→confirmed→submitted` 단방향 계약을 유지했다. 7개 Entity의 승인 전이 83개를 실제 `daon_app` Session으로 전부 검증했다.
+- 성공·불법 전이·Version 충돌·missing/cross-scope 거부를 Commit 가능한 구조화 결과로 처리해 Attempt/Audit Ledger를 보존하고, Repository가 Commit 이후 안정 Error로 변환한다. 동일 Attempt 동시 재전송도 Ledger 1건으로 직렬화했다.
 - M5-03 SQLCipher 저장소에 Cloud와 동일한 ID·Version·schema_version·digest·created_at·previous_version 의미의 `local_private` Envelope를 추가했다. Cloud 조직·승인·Provider Secret 복제와 Sync/Copy/Publish는 구현하지 않았다.
 - 실제 PostgreSQL 18.4 Migration/Backup/Rollback/Restore, Local 암호화 DB Restart, Service Health와 회귀 검증 근거가 모두 있다.
 
@@ -24,18 +25,19 @@
 - Evidence: `docs/03_evidence/release_1/R1-M5-04/manifest.json`, `server-validation.py`, `server-validation-summary.md`
 - 진행 복구 기록: `docs/04_test_reports/release_1/R1-M5-04_progress.md`
 
-Commit은 RED `f837ae3`, 구현 `6682f43`, 서버 검증기 `937ceb0`, Readiness 회귀 `89f42e1`, Local Network 0 검증 `d851acb`로 분리했다.
+원 구현 Commit은 RED `f837ae3`, 구현 `6682f43`, 서버 검증기 `937ceb0`, Readiness 회귀 `89f42e1`, Local Network 0 검증 `d851acb`로 분리했다. C01은 RED `87fcc00`, 구현 `e0dde27`, 동시성 검증기 `fff3495`로 분리했다.
 
 ## 테스트 결과
 
-- PostgreSQL 18.4: Entity 52, 강제 RLS Table 51, Scope FK 174, 전이 84/84 PASS
+- PostgreSQL 18.4: Entity 52, 강제 RLS Table 52, Scope FK 175, 승인 전이 83/83 PASS
+- Attempt/Audit: 성공·거부 Commit 보존, 동일 Attempt 동시 결과 2/Ledger 1, 서로 다른 Attempt 동시 성공 1/Version Conflict 1 PASS
 - Migration: `0001→0002→0003`, 재적용, `0003→0002→0003`, 사전 Backup Restore 후 재검증 PASS
-- 실제 DB 영향 Suite: 최종 SHA Cloud/Data Canon 15/15 PASS. 직전 동일 제품 SHA Object/Queue 14/14 PASS, S3 전용 2 SKIP
+- 실제 DB C01 영향 Suite: 최종 제품 SHA `fff3495` Cloud/Data Canon Domain·Contract·Repository 17/17 PASS, SKIP 0. 선행 Object/Queue 14/14 PASS와 S3 전용 2 SKIP은 회귀 경계가 바뀌지 않음
 - Local: 88 PASS/1 플랫폼 Skip, 평문 Canary 0, 외부 Network 시도 0, 변경범위 Mypy/Ruff PASS
 - API 로컬 전체: 117건 중 96 PASS/21 환경 Skip. API 서버 전체의 Node 전용 1건 환경 오류는 로컬 Node 환경 PASS, 서버 POSIX Process 4 PASS로 분리 검증
 - 실제 Service: live 200, ready 200, Restart ready 200
-- Web Build/TypeScript PASS, Workspace Lint PASS, 독립성 위반 0, Quality Gate PASS
-- 서버 정리: Checkout/Container/Network/Volume 각 0, 보호 자원 Before/After 동일
+- Web Build/TypeScript PASS, Workspace Lint PASS, 독립성 위반 0, SHA `fff3495` Quality Gate 37/37 PASS
+- 서버 정리: 신산님의 명시 승인 후 C01 `ROOT=0 C=0 N=0 V=0`. 보호 Container `shared-db`·`netdata`·`nginx-proxy-manager`와 `proxy-network` ID Before/After 동일
 
 ## 기존 기능 유지·영향 범위
 
