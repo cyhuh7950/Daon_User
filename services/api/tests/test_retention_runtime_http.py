@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 import httpx
@@ -176,6 +177,55 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         combined = created.text + held.text + released.text + early.text + cancelled.text
         for forbidden in (str(self.db_path), "fixture/content/path", "content_digest", "secret"):
             self.assertNotIn(forbidden, combined.lower())
+
+    async def test_internal_retention_codes_map_to_openapi_safe_error_codes(self) -> None:
+        openapi_path = Path(__file__).resolve().parents[3] / "packages/contracts/openapi/v1/openapi.json"
+        safe_codes = set(json.loads(openapi_path.read_text(encoding="utf-8"))[
+            "components"
+        ]["schemas"]["SafeErrorCode"]["enum"])
+        missing = await self.client.post(
+            "/api/v1/sources/fixture-source-missing/deletion-requests",
+            headers={"Idempotency-Key": "idem-safe-missing", "If-Match": "*"},
+            json={"inventory": self.inventory},
+        )
+        created = await self.client.post(
+            f"/api/v1/sources/{self.source_id}/deletion-requests",
+            headers={"Idempotency-Key": "idem-safe-create", "If-Match": "*"},
+            json={"inventory": self.inventory},
+        )
+        self.assertEqual(created.status_code, 201)
+        request_id = created.json()["data"]["request_id"]
+        changed_inventory = [dict(item) for item in self.inventory]
+        changed_inventory[0]["reference_id"] = "fixture-http-original-changed"
+        reused = await self.client.post(
+            f"/api/v1/sources/{self.source_id}/deletion-requests",
+            headers={"Idempotency-Key": "idem-safe-create", "If-Match": "*"},
+            json={"inventory": changed_inventory},
+        )
+        conflict = await self.client.post(
+            f"/api/v1/deletion-requests/{request_id}/cancel",
+            headers={
+                "Idempotency-Key": "idem-safe-conflict",
+                "If-Match": f'"deletion:{request_id}:99"',
+            },
+            json={},
+        )
+        results = {
+            "unavailable": (missing.status_code, missing.json()["error"]["code"]),
+            "idempotency": (reused.status_code, reused.json()["error"]["code"]),
+            "version": (conflict.status_code, conflict.json()["error"]["code"]),
+        }
+        self.assertEqual(results, {
+            "unavailable": (404, "RESOURCE_UNAVAILABLE"),
+            "idempotency": (409, "INVALID_REQUEST"),
+            "version": (409, "INVALID_REQUEST"),
+        })
+        self.assertTrue({code for _, code in results.values()}.issubset(safe_codes))
+        joined = "".join(response.text for response in (missing, reused, conflict))
+        for internal_code in (
+            "SOURCE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED", "RETENTION_VERSION_CONFLICT"
+        ):
+            self.assertNotIn(internal_code, joined)
 
 
 if __name__ == "__main__":
