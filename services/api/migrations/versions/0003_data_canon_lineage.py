@@ -190,7 +190,11 @@ TRANSITIONS = {
         (("accepted", "waiting_approval")), (("planning", "waiting_approval")),
         (("waiting_user", "cancelled")), (("waiting_approval", "cancelled")),
     },
-    "GenerationRequest": {("configuring", "confirmed"), ("confirmed", "submitted")},
+    "GenerationRequest": {
+        ("configuring", "confirmed"),
+        ("confirmed", "configuring"),
+        ("confirmed", "submitted"),
+    },
     "OutputVersion": {("generating", "draft"), ("draft", "review_requested"), ("review_requested", "in_review"), ("in_review", "revision_requested"), ("in_review", "approved"), ("approved", "delivered")},
     "ApprovalRequest": {("pending", "approved"), ("pending", "rejected"), ("pending", "expired"), ("pending", "withdrawn")},
     "KnowledgeRegistration": {("requested", "registered"), ("requested", "rejected")},
