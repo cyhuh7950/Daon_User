@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "issue_id": "R1-M5-06",
   "branch": "codex/r1-m5-06",
-  "implementation_commit": "PENDING",
+  "implementation_commit": "78191e63c7cc64c676babe96ca0dae394e89a733",
   "verdict": "BLOCKED",
   "reason": "actual PostgreSQL 18.4 RLS and Object fixture evidence unavailable in the current approved local environment",
   "evidence": {

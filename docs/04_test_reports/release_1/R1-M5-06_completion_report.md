@@ -11,6 +11,7 @@
 - API 전체 136건, Local 전체 92건과 최종 Quality Gate 7개 범주가 통과했다.
 - PostgreSQL·MinIO 환경 변수가 없고 Docker CLI가 없으며 WSL 접근도 거부돼 실제 Migration/RLS/Object 검증은 조건부 Skip이었다. 이를 Mock 성공이나 정적 통과로 대체하지 않는다.
 - Browser 코드·의존성·설정·외부 서버·기존 운영 데이터는 변경하지 않았다.
+- 구현 Commit은 `78191e63c7cc64c676babe96ca0dae394e89a733`이다.
 
 ## 조치
 
