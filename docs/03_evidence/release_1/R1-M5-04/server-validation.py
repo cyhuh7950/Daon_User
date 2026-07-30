@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from typing import Iterable
 
 import psycopg
@@ -292,6 +294,36 @@ def verify_transitions() -> dict[str, int]:
                 "WHERE action='canon.transition' AND outcome='denied'"
             ).fetchone()
             check(denied_attempts == denied_audits, "DENIED_AUDIT_COUNT_DRIFT")
+            success_attempts = connection.execute(
+                "SELECT count(*) FROM canon_transition_attempts WHERE outcome='succeeded'"
+            ).fetchone()
+            success_transitions = connection.execute(
+                "SELECT count(*) FROM canon_state_transitions"
+            ).fetchone()
+            success_audits = connection.execute(
+                "SELECT count(*) FROM audit_events "
+                "WHERE action='canon.transition' AND outcome='succeeded'"
+            ).fetchone()
+            check(
+                success_attempts == success_transitions == success_audits,
+                "SUCCESS_LEDGER_COUNT_DRIFT",
+            )
+        with connection.transaction():
+            set_scope(connection, CONTEXT_A2)
+            check(
+                connection.execute(
+                    "SELECT count(*) FROM canon_transition_attempts "
+                    "WHERE attempt_id='cross-scope-transition' AND outcome='denied'"
+                ).fetchone() == (1,),
+                "CROSS_SCOPE_ATTEMPT_MISSING",
+            )
+            check(
+                connection.execute(
+                    "SELECT count(*) FROM audit_events "
+                    "WHERE event_id='cross-scope-transition' AND outcome='denied'"
+                ).fetchone() == (1,),
+                "CROSS_SCOPE_AUDIT_MISSING",
+            )
         for statement in (
             "UPDATE canon_transition_attempts SET outcome='succeeded' "
             "WHERE attempt_id='illegal-transition'",
@@ -309,6 +341,75 @@ def verify_transitions() -> dict[str, int]:
         "allowed_edges_executed": executed, "illegal_edges_rejected": 3,
         "lost_updates_rejected": 1, "missing_or_cross_scope_rejected": 2,
         "attempt_ledger_mutations_rejected": 2,
+    }
+
+
+def verify_concurrency() -> dict[str, int]:
+    with psycopg.connect(APP_DSN) as connection, connection.transaction():
+        set_scope(connection, CONTEXT_A)
+        insert_canon(connection, CONTEXT_A, "sources", "concurrent-lost-update")
+        insert_canon(connection, CONTEXT_A, "sources", "concurrent-idempotent")
+
+    def run_attempt(
+        barrier: Barrier, record_id: str, attempt_id: str,
+    ) -> tuple[object, ...]:
+        with psycopg.connect(APP_DSN) as connection, connection.transaction():
+            set_scope(connection, CONTEXT_A)
+            barrier.wait(timeout=5)
+            return call_transition(
+                connection, "Source", record_id, 1, "security_check", attempt_id,
+            )
+
+    lost_barrier = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        lost_results = list(executor.map(
+            lambda attempt_id: run_attempt(
+                lost_barrier, "concurrent-lost-update", attempt_id
+            ),
+            ("concurrent-attempt-a", "concurrent-attempt-b"),
+        ))
+    check(
+        sum(result[2] == "succeeded" for result in lost_results) == 1
+        and sum(result[3] == "CANON_VERSION_CONFLICT" for result in lost_results) == 1,
+        "CONCURRENT_LOST_UPDATE_RESULT_INVALID",
+    )
+
+    replay_barrier = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        replay_results = list(executor.map(
+            lambda _index: run_attempt(
+                replay_barrier, "concurrent-idempotent", "concurrent-same-attempt"
+            ),
+            range(2),
+        ))
+    check(
+        replay_results == [
+            ("security_check", 2, "succeeded", None),
+            ("security_check", 2, "succeeded", None),
+        ],
+        "CONCURRENT_ATTEMPT_REPLAY_INVALID",
+    )
+    with psycopg.connect(APP_DSN) as connection, connection.transaction():
+        set_scope(connection, CONTEXT_A)
+        counts = connection.execute(
+            "SELECT "
+            "(SELECT count(*) FROM canon_transition_attempts "
+            " WHERE record_id='concurrent-lost-update'),"
+            "(SELECT count(*) FROM canon_state_transitions "
+            " WHERE record_id='concurrent-lost-update'),"
+            "(SELECT count(*) FROM audit_events "
+            " WHERE target_id='concurrent-lost-update' AND action='canon.transition'),"
+            "(SELECT count(*) FROM canon_transition_attempts "
+            " WHERE attempt_id='concurrent-same-attempt'),"
+            "(SELECT count(*) FROM canon_state_transitions "
+            " WHERE transition_id='concurrent-same-attempt'),"
+            "(SELECT count(*) FROM audit_events "
+            " WHERE event_id='concurrent-same-attempt')"
+        ).fetchone()
+        check(counts == (2, 1, 2, 1, 1, 1), "CONCURRENT_LEDGER_COUNT_DRIFT")
+    return {
+        "lost_update_successes": 1, "lost_update_denials": 1,
+        "same_attempt_results": 2, "same_attempt_ledgers": 1,
     }
 
 
@@ -379,8 +480,12 @@ def main() -> None:
     schema = verify_schema()
     seed_foundation()
     transitions = verify_transitions()
+    concurrency = verify_concurrency()
     lineage = verify_lineage_immutability_and_scope()
-    print(json.dumps({"status": "pass", "schema": schema, "transitions": transitions, "lineage": lineage}, sort_keys=True))
+    print(json.dumps({
+        "status": "pass", "schema": schema, "transitions": transitions,
+        "concurrency": concurrency, "lineage": lineage,
+    }, sort_keys=True))
 
 
 if __name__ == "__main__":
