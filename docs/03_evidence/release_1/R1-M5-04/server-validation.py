@@ -85,15 +85,28 @@ def shortest_path(
     raise AssertionError(f"CANON_UNREACHABLE_STATE:{target}")
 
 
+def call_transition(
+    connection: psycopg.Connection[tuple[object, ...]], entity: str, record_id: str,
+    version: int, target: str, transition_id: str,
+) -> tuple[object, ...]:
+    row = connection.execute(
+        "SELECT state, version, outcome, error_code "
+        "FROM transition_canon_state(%s,%s,%s,%s,%s,%s,%s,%s)",
+        (entity, record_id, version, target, transition_id, "SERVER_VALIDATION", transition_id, "policy-v1"),
+    ).fetchone()
+    check(row is not None, "CANON_TRANSITION_RESULT_MISSING")
+    return tuple(row)
+
+
 def transition(
     connection: psycopg.Connection[tuple[object, ...]], entity: str, record_id: str,
     version: int, target: str, transition_id: str,
 ) -> int:
-    row = connection.execute(
-        "SELECT state, version FROM transition_canon_state(%s,%s,%s,%s,%s,%s,%s,%s)",
-        (entity, record_id, version, target, transition_id, "SERVER_VALIDATION", transition_id, "policy-v1"),
-    ).fetchone()
-    check(row is not None and row[0] == target and row[1] == version + 1, "CANON_TRANSITION_RESULT_INVALID")
+    row = call_transition(connection, entity, record_id, version, target, transition_id)
+    check(
+        row == (target, version + 1, "succeeded", None),
+        "CANON_TRANSITION_RESULT_INVALID",
+    )
     return version + 1
 
 
@@ -125,9 +138,9 @@ def verify_schema() -> dict[str, int]:
         check(connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0003",), "MIGRATION_REVISION_INVALID")
         rls = connection.execute(
             "SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = ANY(%s)",
-            (list(mapped_tables | {"canon_state_transitions"}),),
+            (list(mapped_tables | {"canon_state_transitions", "canon_transition_attempts"}),),
         ).fetchall()
-        check(len(rls) == len(mapped_tables) + 1, "CANON_TABLE_MISSING")
+        check(len(rls) == len(mapped_tables) + 2, "CANON_TABLE_MISSING")
         check(all(row[1] and row[2] for row in rls), "CANON_RLS_NOT_FORCED")
         for mapping in MANIFEST["entity_mappings"].values():
             columns = {
@@ -139,7 +152,7 @@ def verify_schema() -> dict[str, int]:
             check(set(mapping["columns"].values()) <= columns, f"MANIFEST_COLUMN_MISSING:{mapping['table']}")
         fk_definitions = connection.execute(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE contype='f' AND conrelid::regclass::text = ANY(%s)",
-            (list(mapped_tables),),
+            (list(mapped_tables | {"canon_transition_attempts"}),),
         ).fetchall()
         check(len(fk_definitions) >= 45, "CANON_FK_COVERAGE_LOW")
         check(all("(tenant_id, workspace_id" in str(row[0]) for row in fk_definitions), "CANON_SCOPE_FK_INCOMPLETE")
@@ -166,23 +179,137 @@ def verify_transitions() -> dict[str, int]:
         with connection.transaction():
             set_scope(connection, CONTEXT_A)
             insert_canon(connection, CONTEXT_A, "sources", "illegal-transition-source")
-            try:
-                transition(connection, "Source", "illegal-transition-source", 1, "ready", "illegal-transition")
-            except psycopg.errors.CheckViolation as error:
-                check("CANON_TRANSITION_INVALID" in str(error), "ILLEGAL_TRANSITION_ERROR_UNSTABLE")
-            else:
-                raise AssertionError("ILLEGAL_TRANSITION_ACCEPTED")
+            denied = call_transition(
+                connection, "Source", "illegal-transition-source", 1, "ready",
+                "illegal-transition",
+            )
+            check(
+                denied == ("registered", 1, "denied", "CANON_TRANSITION_INVALID"),
+                "ILLEGAL_TRANSITION_ACCEPTED",
+            )
+            replay = call_transition(
+                connection, "Source", "illegal-transition-source", 1, "ready",
+                "illegal-transition",
+            )
+            check(replay == denied, "DENIED_ATTEMPT_REPLAY_DRIFT")
+            check(
+                connection.execute(
+                    "SELECT count(*) FROM canon_transition_attempts "
+                    "WHERE attempt_id='illegal-transition'"
+                ).fetchone() == (1,),
+                "DENIED_ATTEMPT_DUPLICATED",
+            )
         with connection.transaction():
             set_scope(connection, CONTEXT_A)
             insert_canon(connection, CONTEXT_A, "sources", "stale-transition-source")
             transition(connection, "Source", "stale-transition-source", 1, "security_check", "fresh-transition")
+            replay = call_transition(
+                connection, "Source", "stale-transition-source", 1, "security_check",
+                "fresh-transition",
+            )
+            check(replay == ("security_check", 2, "succeeded", None), "SUCCESS_REPLAY_DRIFT")
+            reused = call_transition(
+                connection, "Source", "stale-transition-source", 1, "processing",
+                "fresh-transition",
+            )
+            check(
+                reused == (None, None, "denied", "CANON_ATTEMPT_ID_REUSED"),
+                "ATTEMPT_ID_REUSE_NOT_REJECTED",
+            )
+            check(
+                connection.execute(
+                    "SELECT count(*) FROM canon_transition_attempts "
+                    "WHERE attempt_id='fresh-transition'"
+                ).fetchone() == (1,),
+                "SUCCESS_ATTEMPT_DUPLICATED",
+            )
+            denied = call_transition(
+                connection, "Source", "stale-transition-source", 1, "processing",
+                "stale-transition",
+            )
+            check(
+                denied == ("security_check", 2, "denied", "CANON_VERSION_CONFLICT"),
+                "STALE_TRANSITION_ACCEPTED",
+            )
+        with connection.transaction():
+            set_scope(connection, CONTEXT_A)
+            insert_canon(connection, CONTEXT_A, "generation_requests", "generation-one-way")
+            version = transition(
+                connection, "GenerationRequest", "generation-one-way", 1, "confirmed",
+                "generation-confirm",
+            )
+            reverse = call_transition(
+                connection, "GenerationRequest", "generation-one-way", version, "configuring",
+                "generation-reverse",
+            )
+            check(
+                reverse == ("confirmed", 2, "denied", "CANON_TRANSITION_INVALID"),
+                "GENERATION_REVERSE_ACCEPTED",
+            )
+            version = transition(
+                connection, "GenerationRequest", "generation-one-way", version, "submitted",
+                "generation-submit",
+            )
+            terminal = call_transition(
+                connection, "GenerationRequest", "generation-one-way", version, "confirmed",
+                "generation-terminal-reverse",
+            )
+            check(
+                terminal == ("submitted", 3, "denied", "CANON_TRANSITION_INVALID"),
+                "GENERATION_TERMINAL_REVERSE_ACCEPTED",
+            )
+        with connection.transaction():
+            set_scope(connection, CONTEXT_A)
+            missing = call_transition(
+                connection, "Source", "missing-source", 1, "security_check",
+                "missing-transition",
+            )
+            check(
+                missing == (None, None, "denied", "CANON_RECORD_NOT_FOUND"),
+                "MISSING_TRANSITION_NOT_RECORDED",
+            )
+        with connection.transaction():
+            set_scope(connection, CONTEXT_A2)
+            cross_scope = call_transition(
+                connection, "Source", "source-base", 1, "security_check",
+                "cross-scope-transition",
+            )
+            check(
+                cross_scope == (None, None, "denied", "CANON_RECORD_NOT_FOUND"),
+                "CROSS_SCOPE_TRANSITION_DISCLOSED",
+            )
+        with connection.transaction():
+            set_scope(connection, CONTEXT_A)
+            state = connection.execute(
+                "SELECT state, version FROM sources WHERE record_id='source-base'"
+            ).fetchone()
+            check(state == ("registered", 1), "CROSS_SCOPE_TRANSITION_CHANGED_STATE")
+            denied_attempts = connection.execute(
+                "SELECT count(*) FROM canon_transition_attempts WHERE outcome='denied'"
+            ).fetchone()
+            denied_audits = connection.execute(
+                "SELECT count(*) FROM audit_events "
+                "WHERE action='canon.transition' AND outcome='denied'"
+            ).fetchone()
+            check(denied_attempts == denied_audits, "DENIED_AUDIT_COUNT_DRIFT")
+        for statement in (
+            "UPDATE canon_transition_attempts SET outcome='succeeded' "
+            "WHERE attempt_id='illegal-transition'",
+            "DELETE FROM canon_transition_attempts WHERE attempt_id='illegal-transition'",
+        ):
             try:
-                transition(connection, "Source", "stale-transition-source", 1, "processing", "stale-transition")
-            except psycopg.errors.SerializationFailure as error:
-                check("CANON_VERSION_CONFLICT" in str(error), "VERSION_CONFLICT_ERROR_UNSTABLE")
+                with connection.transaction():
+                    set_scope(connection, CONTEXT_A)
+                    connection.execute(statement)
+            except psycopg.errors.InsufficientPrivilege:
+                pass
             else:
-                raise AssertionError("STALE_TRANSITION_ACCEPTED")
-    return {"allowed_edges_executed": executed, "illegal_edges_rejected": 1, "lost_updates_rejected": 1}
+                raise AssertionError("ATTEMPT_LEDGER_MUTATION_ACCEPTED")
+    return {
+        "allowed_edges_executed": executed, "illegal_edges_rejected": 3,
+        "lost_updates_rejected": 1, "missing_or_cross_scope_rejected": 2,
+        "attempt_ledger_mutations_rejected": 2,
+    }
 
 
 def verify_lineage_immutability_and_scope() -> dict[str, int]:

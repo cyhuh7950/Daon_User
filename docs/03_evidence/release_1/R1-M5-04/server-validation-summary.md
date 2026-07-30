@@ -15,4 +15,3 @@
 - 정리: Checkout 0, Container 0, Network 0, Volume 0. `shared-db`, `netdata`, `nginx-proxy-manager` Before/After 동일.
 
 전체 API Server Suite의 1회 실행에서 Python 전용 Runner Image에 Node/Next가 없어 Process Launcher 1건이 환경 오류였으나, 같은 Test는 Node가 있는 로컬 전체 API Suite에서 통과했고 서버 POSIX Process 4건은 통과했다. 제품 결함으로 분류하지 않았다.
-

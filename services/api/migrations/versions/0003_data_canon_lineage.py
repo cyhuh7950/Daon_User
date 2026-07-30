@@ -190,7 +190,7 @@ TRANSITIONS = {
         (("accepted", "waiting_approval")), (("planning", "waiting_approval")),
         (("waiting_user", "cancelled")), (("waiting_approval", "cancelled")),
     },
-    "GenerationRequest": {("configuring", "confirmed"), ("confirmed", "configuring"), ("confirmed", "submitted")},
+    "GenerationRequest": {("configuring", "confirmed"), ("confirmed", "submitted")},
     "OutputVersion": {("generating", "draft"), ("draft", "review_requested"), ("review_requested", "in_review"), ("in_review", "revision_requested"), ("in_review", "approved"), ("approved", "delivered")},
     "ApprovalRequest": {("pending", "approved"), ("pending", "rejected"), ("pending", "expired"), ("pending", "withdrawn")},
     "KnowledgeRegistration": {("requested", "registered"), ("requested", "rejected")},
@@ -289,6 +289,36 @@ def upgrade() -> None:
           FOREIGN KEY (tenant_id, workspace_id) REFERENCES workspaces(tenant_id, workspace_id),
           FOREIGN KEY (entity_type, source_state, target_state)
             REFERENCES canon_transition_rules(entity_type, source_state, target_state)
+        );
+        CREATE TABLE canon_transition_attempts (
+          tenant_id text NOT NULL,
+          workspace_id text NOT NULL,
+          entity_type text NOT NULL,
+          record_id text NOT NULL,
+          attempt_id text NOT NULL CHECK (attempt_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'),
+          expected_version integer NOT NULL CHECK (expected_version > 0),
+          current_version integer CHECK (current_version > 0),
+          source_state text,
+          target_state text NOT NULL,
+          actor_id text NOT NULL,
+          reason_code text NOT NULL,
+          safe_error_code text,
+          trace_id text NOT NULL,
+          policy_version text NOT NULL,
+          outcome text NOT NULL CHECK (outcome IN ('succeeded','denied')),
+          result_state text,
+          result_version integer CHECK (result_version > 0),
+          occurred_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (tenant_id, workspace_id, attempt_id),
+          FOREIGN KEY (tenant_id, workspace_id) REFERENCES workspaces(tenant_id, workspace_id),
+          CHECK (
+            (outcome = 'succeeded' AND safe_error_code IS NULL
+              AND result_state IS NOT NULL AND result_version IS NOT NULL)
+            OR
+            (outcome = 'denied' AND safe_error_code IN (
+              'CANON_TRANSITION_INVALID','CANON_VERSION_CONFLICT','CANON_RECORD_NOT_FOUND'
+            ))
+          )
         );
 
         CREATE FUNCTION validate_canon_insert() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -396,6 +426,9 @@ def upgrade() -> None:
         CREATE TRIGGER canon_state_transitions_immutable
           BEFORE UPDATE OR DELETE ON canon_state_transitions
           FOR EACH ROW EXECUTE FUNCTION reject_canon_immutable_mutation();
+        CREATE TRIGGER canon_transition_attempts_immutable
+          BEFORE UPDATE OR DELETE ON canon_transition_attempts
+          FOR EACH ROW EXECUTE FUNCTION reject_canon_immutable_mutation();
 
         CREATE FUNCTION transition_canon_state(
           p_entity_type text,
@@ -406,16 +439,45 @@ def upgrade() -> None:
           p_reason_code text,
           p_trace_id text,
           p_policy_version text
-        ) RETURNS TABLE(state text, version integer)
+        ) RETURNS TABLE(state text, version integer, outcome text, error_code text)
         LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
         DECLARE
           v_table text;
           v_source_state text;
           v_version integer;
+          v_error_code text;
+          v_existing public.canon_transition_attempts%ROWTYPE;
           v_tenant text := nullif(current_setting('app.tenant_id', true), '');
           v_workspace text := nullif(current_setting('app.workspace_id', true), '');
           v_actor text := nullif(current_setting('app.actor_id', true), '');
         BEGIN
+          IF v_tenant IS NULL OR v_workspace IS NULL OR v_actor IS NULL THEN
+            RAISE EXCEPTION 'CANON_SCOPE_DENIED' USING ERRCODE = '42501';
+          END IF;
+          PERFORM pg_advisory_xact_lock(
+            hashtextextended(v_tenant || ':' || v_workspace || ':' || p_transition_id, 0)
+          );
+          SELECT a.* INTO v_existing
+          FROM public.canon_transition_attempts AS a
+          WHERE a.tenant_id = v_tenant AND a.workspace_id = v_workspace
+            AND a.attempt_id = p_transition_id;
+          IF FOUND THEN
+            IF v_existing.entity_type <> p_entity_type
+               OR v_existing.record_id <> p_record_id
+               OR v_existing.expected_version <> p_expected_version
+               OR v_existing.target_state <> p_target_state
+               OR v_existing.actor_id <> v_actor
+               OR v_existing.reason_code <> p_reason_code
+               OR v_existing.trace_id <> p_trace_id
+               OR v_existing.policy_version <> p_policy_version THEN
+              RETURN QUERY SELECT NULL::text, NULL::integer, 'denied'::text,
+                'CANON_ATTEMPT_ID_REUSED'::text;
+            ELSE
+              RETURN QUERY SELECT v_existing.result_state, v_existing.result_version,
+                v_existing.outcome, v_existing.safe_error_code;
+            END IF;
+            RETURN;
+          END IF;
           v_table := CASE p_entity_type
             WHEN 'Source' THEN 'sources'
             WHEN 'ProcessingRun' THEN 'processing_runs'
@@ -426,25 +488,54 @@ def upgrade() -> None:
             WHEN 'KnowledgeRegistration' THEN 'knowledge_registrations'
             ELSE NULL
           END;
-          IF v_table IS NULL OR v_tenant IS NULL OR v_workspace IS NULL OR v_actor IS NULL THEN
-            RAISE EXCEPTION 'CANON_SCOPE_DENIED' USING ERRCODE = '42501';
+          IF v_table IS NULL THEN
+            v_error_code := 'CANON_TRANSITION_INVALID';
+          ELSE
+            EXECUTE format(
+              'SELECT state, version FROM public.%I WHERE tenant_id = $1 AND workspace_id = $2 AND record_id = $3 FOR UPDATE',
+              v_table
+            ) INTO v_source_state, v_version USING v_tenant, v_workspace, p_record_id;
           END IF;
-          EXECUTE format(
-            'SELECT state, version FROM public.%I WHERE tenant_id = $1 AND workspace_id = $2 AND record_id = $3 FOR UPDATE',
-            v_table
-          ) INTO v_source_state, v_version USING v_tenant, v_workspace, p_record_id;
-          IF v_source_state IS NULL THEN
-            RAISE EXCEPTION 'CANON_RECORD_NOT_FOUND' USING ERRCODE = 'P0002';
-          END IF;
-          IF v_version <> p_expected_version THEN
-            RAISE EXCEPTION 'CANON_VERSION_CONFLICT' USING ERRCODE = '40001';
-          END IF;
-          IF NOT EXISTS (
+          IF v_error_code IS NULL AND v_source_state IS NULL THEN
+            v_error_code := 'CANON_RECORD_NOT_FOUND';
+          ELSIF v_error_code IS NULL AND v_version <> p_expected_version THEN
+            v_error_code := 'CANON_VERSION_CONFLICT';
+          ELSIF v_error_code IS NULL AND NOT EXISTS (
             SELECT 1 FROM public.canon_transition_rules
             WHERE entity_type = p_entity_type AND source_state = v_source_state
               AND target_state = p_target_state
           ) THEN
-            RAISE EXCEPTION 'CANON_TRANSITION_INVALID' USING ERRCODE = '23514';
+            v_error_code := 'CANON_TRANSITION_INVALID';
+          END IF;
+          IF v_error_code IS NOT NULL THEN
+            INSERT INTO public.canon_transition_attempts (
+              tenant_id, workspace_id, entity_type, record_id, attempt_id,
+              expected_version, current_version, source_state, target_state,
+              actor_id, reason_code, safe_error_code, trace_id, policy_version,
+              outcome, result_state, result_version
+            ) VALUES (
+              v_tenant, v_workspace, p_entity_type, p_record_id, p_transition_id,
+              p_expected_version, v_version, v_source_state, p_target_state,
+              v_actor, p_reason_code, v_error_code, p_trace_id, p_policy_version,
+              'denied', v_source_state, v_version
+            );
+            INSERT INTO public.audit_events (
+              event_id, tenant_id, workspace_id, actor_id, action, target_type,
+              target_id, outcome, trace_id, policy_version, before_value, after_value, metadata
+            ) VALUES (
+              p_transition_id, v_tenant, v_workspace, v_actor, 'canon.transition',
+              p_entity_type, p_record_id, 'denied', p_trace_id, p_policy_version,
+              CASE WHEN v_source_state IS NULL THEN NULL ELSE
+                jsonb_build_object('state', v_source_state, 'version', v_version) END,
+              CASE WHEN v_source_state IS NULL THEN NULL ELSE
+                jsonb_build_object('state', v_source_state, 'version', v_version) END,
+              jsonb_build_object(
+                'attempt_id', p_transition_id, 'reason_code', p_reason_code,
+                'safe_error_code', v_error_code, 'target_state', p_target_state
+              )
+            );
+            RETURN QUERY SELECT v_source_state, v_version, 'denied'::text, v_error_code;
+            RETURN;
           END IF;
           PERFORM set_config('app.canon_transition', '1', true);
           EXECUTE format(
@@ -460,6 +551,17 @@ def upgrade() -> None:
             v_version + 1, v_actor, v_source_state, p_target_state, p_reason_code,
             p_trace_id, p_policy_version
           );
+          INSERT INTO public.canon_transition_attempts (
+            tenant_id, workspace_id, entity_type, record_id, attempt_id,
+            expected_version, current_version, source_state, target_state,
+            actor_id, reason_code, safe_error_code, trace_id, policy_version,
+            outcome, result_state, result_version
+          ) VALUES (
+            v_tenant, v_workspace, p_entity_type, p_record_id, p_transition_id,
+            p_expected_version, v_version, v_source_state, p_target_state,
+            v_actor, p_reason_code, NULL, p_trace_id, p_policy_version,
+            'succeeded', p_target_state, v_version + 1
+          );
           INSERT INTO public.audit_events (
             event_id, tenant_id, workspace_id, actor_id, action, target_type,
             target_id, outcome, trace_id, policy_version, before_value, after_value, metadata
@@ -468,15 +570,15 @@ def upgrade() -> None:
             p_entity_type, p_record_id, 'succeeded', p_trace_id, p_policy_version,
             jsonb_build_object('state', v_source_state, 'version', v_version),
             jsonb_build_object('state', p_target_state, 'version', v_version + 1),
-            jsonb_build_object('reason_code', p_reason_code)
+            jsonb_build_object('attempt_id', p_transition_id, 'reason_code', p_reason_code)
           );
-          RETURN QUERY SELECT p_target_state, v_version + 1;
+          RETURN QUERY SELECT p_target_state, v_version + 1, 'succeeded'::text, NULL::text;
         END $$;
         REVOKE ALL ON FUNCTION transition_canon_state(text,text,integer,text,text,text,text,text) FROM PUBLIC;
         GRANT EXECUTE ON FUNCTION transition_canon_state(text,text,integer,text,text,text,text,text) TO daon_app;
     """)
 
-    scoped_tables = (*ENTITY_TABLES, "canon_state_transitions")
+    scoped_tables = (*ENTITY_TABLES, "canon_state_transitions", "canon_transition_attempts")
     predicate = (
         "tenant_id = nullif(current_setting('app.tenant_id', true), '') "
         "AND workspace_id = nullif(current_setting('app.workspace_id', true), '')"
@@ -498,6 +600,7 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS reject_canon_immutable_mutation() CASCADE")
     op.execute("DROP FUNCTION IF EXISTS validate_canon_insert() CASCADE")
     op.execute("DROP TABLE IF EXISTS canon_state_transitions CASCADE")
+    op.execute("DROP TABLE IF EXISTS canon_transition_attempts CASCADE")
     op.execute("DROP TABLE IF EXISTS canon_transition_rules CASCADE")
     for table in reversed(ENTITY_TABLES):
         op.execute(f"DROP TABLE IF EXISTS {table} CASCADE")

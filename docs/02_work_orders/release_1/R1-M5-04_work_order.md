@@ -101,4 +101,3 @@
 - Evidence Manifest에는 exact Commit SHA, Migration Revision, Schema/Entity Mapping, FK/RLS/불변/상태 전이/Local Projection Test, Backup/Rollback/Restore, Service Health, 보호 자원 Before/After를 연결한다.
 - 결과는 `판정 → 판단 이유 → 조치`와 `COMPLETED | FAILURE_REPORT | INCOMPLETE | BLOCKED` 계약으로 반환한다. 실제 PostgreSQL 18.4와 암호화 Local DB 증거가 없으면 `COMPLETED`로 보고하지 않는다.
 - 단일 구현 Commit과 Evidence-only Commit을 구분하고, 종료 전 Local HEAD·Origin Branch·검증 exact SHA, Working Tree Clean, 잔여 Process·Listener·App 0, 서버 격리 자원 상태와 정식 실패보고 횟수를 보고한다.
-
