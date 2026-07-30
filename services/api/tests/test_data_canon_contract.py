@@ -51,7 +51,9 @@ class DataCanonManifestContractTests(unittest.TestCase):
             "CANON_TRANSITION_INVALID",
             "CANON_VERSION_CONFLICT",
             "canon_state_transitions",
+            "canon_transition_attempts",
             "transition_canon_state",
+            "CANON_ATTEMPT_ID_REUSED",
             "source_versions",
             "run_snapshots",
             "model_attempts",
@@ -59,6 +61,7 @@ class DataCanonManifestContractTests(unittest.TestCase):
             "knowledge_registrations",
         ):
             self.assertIn(token, source)
+        self.assertNotIn('(\"confirmed\", \"configuring\")', source)
 
 
 if __name__ == "__main__":
