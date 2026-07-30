@@ -65,8 +65,7 @@ _TRANSITIONS: dict[str, frozenset[tuple[str, str]]] = {
         *((state, "cancelled") for state in ("accepted", "planning", "retrieving", "generating", "validating", "waiting_user", "waiting_approval")),
     }),
     "GenerationRequest": frozenset({
-        ("configuring", "confirmed"), ("confirmed", "configuring"),
-        ("confirmed", "submitted"),
+        ("configuring", "confirmed"), ("confirmed", "submitted"),
     }),
     "OutputVersion": frozenset({
         ("generating", "draft"), ("draft", "review_requested"),
@@ -170,6 +169,7 @@ def _database_error(error: Error) -> CanonError:
         "CANON_IMMUTABLE_MUTATION", "CANON_DIGEST_MISMATCH",
         "CANON_PREVIOUS_VERSION_INVALID", "CANON_SNAPSHOT_INVALID",
         "CANON_STATE_INITIAL_INVALID",
+        "CANON_ATTEMPT_ID_REUSED",
         "CANON_TRANSITION_INVALID", "CANON_VERSION_CONFLICT",
         "CANON_SCOPE_DENIED", "CANON_RECORD_NOT_FOUND",
     ):
@@ -298,7 +298,7 @@ class PostgresDataCanonStore:
             raise CanonError("CANON_TRANSITION_INVALID")
         with self._transaction(context) as connection:
             row = connection.execute(
-                "SELECT state, version FROM transition_canon_state"
+                "SELECT state, version, outcome, error_code FROM transition_canon_state"
                 "(%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     entity_type, record_id, expected_version, target_state,
@@ -307,10 +307,17 @@ class PostgresDataCanonStore:
             ).fetchone()
         if row is None:
             raise CanonError("CANON_RECORD_NOT_FOUND")
+        if str(row[2]) == "denied":
+            raise CanonError(str(row[3]))
+        if str(row[2]) != "succeeded" or row[0] is None or row[1] is None:
+            raise CanonError("CANON_DATABASE_UNAVAILABLE")
         return CanonicalState(str(row[0]), int(row[1]))
 
     def count(self, context: CanonicalContext, table: str, record_id: str) -> int:
-        allowed = {"sources", "source_versions", "canon_state_transitions"}
+        allowed = {
+            "sources", "source_versions", "canon_state_transitions",
+            "canon_transition_attempts",
+        }
         if table not in allowed:
             raise CanonError("CANON_SNAPSHOT_INVALID")
         with self._transaction(context) as connection:
