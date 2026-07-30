@@ -72,6 +72,18 @@ class LocalCanonicalEnvelope:
     data_area: str = "local_private"
 
 
+@dataclass(frozen=True, slots=True)
+class LocalSyncQueueState:
+    operation_id: str
+    version: int
+    approval_state: str
+    manifest_digest: str
+    batch_cursor: str | None
+    conflict_id: str | None
+    queued_at: str
+    previous_version: int | None
+
+
 def _valid_utf8_text(value: bytes) -> bool:
     if b"\x00" in value:
         return False
@@ -271,6 +283,29 @@ class LocalEncryptedStore:
             CREATE TRIGGER IF NOT EXISTS canonical_envelopes_delete_immutable
             BEFORE DELETE ON canonical_envelopes
             BEGIN SELECT RAISE(ABORT, 'LOCAL_CANON_IMMUTABLE'); END;
+            CREATE TABLE IF NOT EXISTS sync_queue_states (
+                workspace_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK (version > 0),
+                approval_state TEXT NOT NULL CHECK (approval_state IN (
+                    'draft','awaiting_approval','approved','transferring','conflict',
+                    'reindex_requested','blocked','cancelled'
+                )),
+                manifest_digest TEXT NOT NULL CHECK (length(manifest_digest) = 64),
+                batch_cursor TEXT,
+                conflict_id TEXT,
+                queued_at TEXT NOT NULL,
+                previous_version INTEGER,
+                PRIMARY KEY (workspace_id, operation_id, version),
+                CHECK ((version = 1) = (previous_version IS NULL)),
+                CHECK (previous_version IS NULL OR previous_version = version - 1)
+            );
+            CREATE TRIGGER IF NOT EXISTS sync_queue_states_update_immutable
+            BEFORE UPDATE ON sync_queue_states
+            BEGIN SELECT RAISE(ABORT, 'LOCAL_SYNC_QUEUE_IMMUTABLE'); END;
+            CREATE TRIGGER IF NOT EXISTS sync_queue_states_delete_immutable
+            BEFORE DELETE ON sync_queue_states
+            BEGIN SELECT RAISE(ABORT, 'LOCAL_SYNC_QUEUE_IMMUTABLE'); END;
             """
         )
         now = _utc_now()
@@ -689,6 +724,101 @@ class LocalEncryptedStore:
             if not statement.startswith(("UPDATE canonical_envelopes", "DELETE FROM canonical_envelopes")):
                 raise _fail("LOCAL_CANON_SNAPSHOT_INVALID")
             self._db().execute(statement, parameters)
+
+    def append_sync_queue_state(
+        self,
+        workspace_id: str,
+        *,
+        operation_id: str,
+        version: int,
+        approval_state: str,
+        manifest_digest: str,
+        batch_cursor: str | None,
+        conflict_id: str | None,
+        queued_at: str,
+        previous_version: int | None,
+    ) -> None:
+        """Append encrypted reconnect metadata without copying payloads or credentials."""
+        with self._operation_lock:
+            _scope(workspace_id, "cache")
+            if (
+                not _CANON_ID.fullmatch(operation_id)
+                or not isinstance(version, int)
+                or isinstance(version, bool)
+                or version < 1
+                or approval_state not in {
+                    "draft", "awaiting_approval", "approved", "transferring",
+                    "conflict", "reindex_requested", "blocked", "cancelled",
+                }
+                or not _DIGEST.fullmatch(manifest_digest)
+                or (batch_cursor is not None and not _CANON_ID.fullmatch(batch_cursor))
+                or (conflict_id is not None and not _CANON_ID.fullmatch(conflict_id))
+                or not _UTC_TIMESTAMP.fullmatch(queued_at)
+                or (version == 1) != (previous_version is None)
+                or (previous_version is not None and previous_version != version - 1)
+            ):
+                raise _fail("LOCAL_SYNC_QUEUE_INVALID")
+            database = self._db()
+            if previous_version is not None:
+                prior = database.execute(
+                    "SELECT version FROM sync_queue_states WHERE workspace_id = ? "
+                    "AND operation_id = ? AND version = ?",
+                    (workspace_id, operation_id, previous_version),
+                ).fetchone()
+                if prior != (previous_version,):
+                    raise _fail("LOCAL_SYNC_QUEUE_PREVIOUS_INVALID")
+            try:
+                database.execute(
+                    "INSERT INTO sync_queue_states "
+                    "(workspace_id, operation_id, version, approval_state, manifest_digest, "
+                    "batch_cursor, conflict_id, queued_at, previous_version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        workspace_id, operation_id, version, approval_state,
+                        manifest_digest, batch_cursor, conflict_id, queued_at,
+                        previous_version,
+                    ),
+                )
+                database.commit()
+            except sqlite.IntegrityError as error:
+                database.rollback()
+                raise _fail("LOCAL_SYNC_QUEUE_IMMUTABLE") from error
+
+    def get_sync_queue_state(
+        self, workspace_id: str, operation_id: str
+    ) -> LocalSyncQueueState:
+        with self._operation_lock:
+            _scope(workspace_id, "cache")
+            if not _CANON_ID.fullmatch(operation_id):
+                raise _fail("LOCAL_SYNC_QUEUE_INVALID")
+            row = self._db().execute(
+                "SELECT version, approval_state, manifest_digest, batch_cursor, "
+                "conflict_id, queued_at, previous_version FROM sync_queue_states "
+                "WHERE workspace_id = ? AND operation_id = ? ORDER BY version DESC LIMIT 1",
+                (workspace_id, operation_id),
+            ).fetchone()
+            if row is None:
+                raise _fail("LOCAL_SYNC_QUEUE_NOT_FOUND")
+            return LocalSyncQueueState(
+                operation_id, int(row[0]), str(row[1]), str(row[2]),
+                None if row[3] is None else str(row[3]),
+                None if row[4] is None else str(row[4]), str(row[5]),
+                None if row[6] is None else int(row[6]),
+            )
+
+    def list_resumable_sync_operations(self, workspace_id: str) -> list[str]:
+        with self._operation_lock:
+            _scope(workspace_id, "cache")
+            rows = self._db().execute(
+                "SELECT current.operation_id FROM sync_queue_states AS current "
+                "JOIN (SELECT operation_id, max(version) AS version FROM sync_queue_states "
+                "WHERE workspace_id = ? GROUP BY operation_id) AS latest "
+                "ON latest.operation_id = current.operation_id AND latest.version = current.version "
+                "WHERE current.workspace_id = ? AND current.approval_state IN "
+                "('approved','transferring','conflict') ORDER BY current.operation_id",
+                (workspace_id, workspace_id),
+            ).fetchall()
+            return [str(row[0]) for row in rows]
 
     def put_vector(
         self,

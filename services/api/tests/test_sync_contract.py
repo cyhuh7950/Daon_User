@@ -42,9 +42,13 @@ class SyncContractTests(unittest.TestCase):
         for path, methods in SYNC_PATHS.items():
             for method in methods:
                 operation = document["paths"][path][method]
-                parameter_names = {
-                    item.get("name") for item in operation.get("parameters", [])
-                }
+                parameter_names = set()
+                for item in operation.get("parameters", []):
+                    if "$ref" in item:
+                        parameter = document["components"]["parameters"][item["$ref"].rsplit("/", 1)[1]]
+                    else:
+                        parameter = item
+                    parameter_names.add(parameter.get("name"))
                 if method != "get":
                     self.assertIn("Idempotency-Key", parameter_names)
                     self.assertIn("If-Match", parameter_names)
