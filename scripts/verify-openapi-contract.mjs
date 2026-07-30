@@ -58,7 +58,13 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/sync-operations/{id}",
   "/api/v1/sync-operations/{id}/approve",
   "/api/v1/sync-operations/{id}/transfer-batches",
-  "/api/v1/sync-operations/{id}/conflicts/{conflict_id}/resolution"
+  "/api/v1/sync-operations/{id}/conflicts/{conflict_id}/resolution",
+  "/api/v1/sources/{id}/deletion-requests",
+  "/api/v1/deletion-requests/{id}",
+  "/api/v1/deletion-requests/{id}/cancel",
+  "/api/v1/deletion-requests/{id}/purge",
+  "/api/v1/sources/{id}/legal-holds",
+  "/api/v1/legal-holds/{id}/release"
 ]);
 
 const HTTP_METHODS = new Set(["get", "post", "patch", "delete"]);

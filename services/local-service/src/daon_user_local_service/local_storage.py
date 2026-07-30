@@ -84,6 +84,17 @@ class LocalSyncQueueState:
     previous_version: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class LocalDeletionTombstone:
+    request_id: str
+    reference_id: str
+    version: int
+    state: str
+    evidence: str | None
+    recorded_at: str
+    previous_version: int | None
+
+
 def _valid_utf8_text(value: bytes) -> bool:
     if b"\x00" in value:
         return False
@@ -306,6 +317,30 @@ class LocalEncryptedStore:
             CREATE TRIGGER IF NOT EXISTS sync_queue_states_delete_immutable
             BEFORE DELETE ON sync_queue_states
             BEGIN SELECT RAISE(ABORT, 'LOCAL_SYNC_QUEUE_IMMUTABLE'); END;
+            CREATE TABLE IF NOT EXISTS deletion_tombstones (
+                workspace_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                reference_id TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK (version > 0),
+                state TEXT NOT NULL CHECK (state IN (
+                    'pending_ack','acknowledged','device_revoked','key_destroyed'
+                )),
+                evidence TEXT CHECK (evidence IN (
+                    'device_ack','device_revoked','key_destroyed'
+                )),
+                recorded_at TEXT NOT NULL,
+                previous_version INTEGER,
+                PRIMARY KEY (workspace_id, request_id, reference_id, version),
+                CHECK ((version = 1) = (previous_version IS NULL)),
+                CHECK (previous_version IS NULL OR previous_version = version - 1),
+                CHECK ((state = 'pending_ack') = (evidence IS NULL))
+            );
+            CREATE TRIGGER IF NOT EXISTS deletion_tombstones_update_immutable
+            BEFORE UPDATE ON deletion_tombstones
+            BEGIN SELECT RAISE(ABORT, 'LOCAL_DELETION_TOMBSTONE_IMMUTABLE'); END;
+            CREATE TRIGGER IF NOT EXISTS deletion_tombstones_delete_immutable
+            BEFORE DELETE ON deletion_tombstones
+            BEGIN SELECT RAISE(ABORT, 'LOCAL_DELETION_TOMBSTONE_IMMUTABLE'); END;
             """
         )
         now = _utc_now()
@@ -817,6 +852,104 @@ class LocalEncryptedStore:
                 "WHERE current.workspace_id = ? AND current.approval_state IN "
                 "('approved','transferring','conflict') ORDER BY current.operation_id",
                 (workspace_id, workspace_id),
+            ).fetchall()
+            return [str(row[0]) for row in rows]
+
+    def append_deletion_tombstone(
+        self,
+        workspace_id: str,
+        *,
+        request_id: str,
+        reference_id: str,
+        version: int,
+        state: str,
+        evidence: str | None,
+        recorded_at: str,
+        previous_version: int | None,
+    ) -> None:
+        """Append encrypted Local Copy access-revocation evidence."""
+        with self._operation_lock:
+            _scope(workspace_id, "cache")
+            allowed = {
+                "pending_ack": None,
+                "acknowledged": "device_ack",
+                "device_revoked": "device_revoked",
+                "key_destroyed": "key_destroyed",
+            }
+            if (
+                not _CANON_ID.fullmatch(request_id)
+                or not _CANON_ID.fullmatch(reference_id)
+                or not isinstance(version, int)
+                or isinstance(version, bool)
+                or version < 1
+                or state not in allowed
+                or evidence != allowed[state]
+                or not _UTC_TIMESTAMP.fullmatch(recorded_at)
+                or (version == 1) != (previous_version is None)
+                or (previous_version is not None and previous_version != version - 1)
+            ):
+                raise _fail("LOCAL_DELETION_TOMBSTONE_INVALID")
+            database = self._db()
+            if previous_version is not None:
+                prior = database.execute(
+                    "SELECT version FROM deletion_tombstones WHERE workspace_id = ? "
+                    "AND request_id = ? AND reference_id = ? AND version = ?",
+                    (workspace_id, request_id, reference_id, previous_version),
+                ).fetchone()
+                if prior != (previous_version,):
+                    raise _fail("LOCAL_DELETION_TOMBSTONE_PREVIOUS_INVALID")
+            try:
+                database.execute(
+                    "INSERT INTO deletion_tombstones "
+                    "(workspace_id,request_id,reference_id,version,state,evidence,"
+                    "recorded_at,previous_version) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        workspace_id, request_id, reference_id, version, state,
+                        evidence, recorded_at, previous_version,
+                    ),
+                )
+                database.commit()
+            except sqlite.IntegrityError as error:
+                database.rollback()
+                raise _fail("LOCAL_DELETION_TOMBSTONE_IMMUTABLE") from error
+
+    def get_deletion_tombstone(
+        self, workspace_id: str, request_id: str, reference_id: str
+    ) -> LocalDeletionTombstone:
+        with self._operation_lock:
+            _scope(workspace_id, "cache")
+            if not _CANON_ID.fullmatch(request_id) or not _CANON_ID.fullmatch(reference_id):
+                raise _fail("LOCAL_DELETION_TOMBSTONE_INVALID")
+            row = self._db().execute(
+                "SELECT version,state,evidence,recorded_at,previous_version "
+                "FROM deletion_tombstones WHERE workspace_id=? AND request_id=? "
+                "AND reference_id=? ORDER BY version DESC LIMIT 1",
+                (workspace_id, request_id, reference_id),
+            ).fetchone()
+            if row is None:
+                raise _fail("LOCAL_DELETION_TOMBSTONE_NOT_FOUND")
+            return LocalDeletionTombstone(
+                request_id, reference_id, int(row[0]), str(row[1]),
+                None if row[2] is None else str(row[2]), str(row[3]),
+                None if row[4] is None else int(row[4]),
+            )
+
+    def list_completed_deletion_tombstones(
+        self, workspace_id: str, request_id: str
+    ) -> list[str]:
+        with self._operation_lock:
+            _scope(workspace_id, "cache")
+            if not _CANON_ID.fullmatch(request_id):
+                raise _fail("LOCAL_DELETION_TOMBSTONE_INVALID")
+            rows = self._db().execute(
+                "SELECT current.reference_id FROM deletion_tombstones AS current "
+                "JOIN (SELECT reference_id,max(version) AS version FROM deletion_tombstones "
+                "WHERE workspace_id=? AND request_id=? GROUP BY reference_id) AS latest "
+                "ON latest.reference_id=current.reference_id AND latest.version=current.version "
+                "WHERE current.workspace_id=? AND current.request_id=? "
+                "AND current.state IN ('acknowledged','device_revoked','key_destroyed') "
+                "ORDER BY current.reference_id",
+                (workspace_id, request_id, workspace_id, request_id),
             ).fetchall()
             return [str(row[0]) for row in rows]
 

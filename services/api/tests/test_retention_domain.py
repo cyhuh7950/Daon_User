@@ -63,6 +63,26 @@ class RetentionDomainTests(unittest.TestCase):
                 idempotency_key="retention-create-a", if_match="*",
             )
 
+    def test_hold_created_before_deletion_blocks_request_immediately(self) -> None:
+        self.service.register_source(self.context, "fixture-source-preheld")
+        hold = self.service.apply_legal_hold(
+            self.context, source_id="fixture-source-preheld", expected_version=1,
+            idempotency_key="hold-predelete", step_up_verified=True,
+        )
+        self.assertEqual(hold.state, "active")
+        inventory = tuple(
+            DerivativeInput(
+                item.kind, f"fixture-preheld-{item.kind}",
+                acknowledgement_required=item.acknowledgement_required,
+            )
+            for item in self.inventory
+        )
+        created = self.service.create_request(
+            self.context, source_id="fixture-source-preheld", inventory=inventory,
+            idempotency_key="create-preheld", if_match="*",
+        )
+        self.assertEqual(created.state, "blocked_by_hold")
+
     def test_grace_hold_release_cancel_and_lost_update_are_deterministic(self) -> None:
         created = self._create()
         with self.assertRaisesRegex(RetentionError, "DELETION_GRACE_PERIOD_ACTIVE"):
@@ -111,7 +131,14 @@ class RetentionDomainTests(unittest.TestCase):
                 )
         unsafe = self.service.create_request(
             self.context, source_id="fixture-source-unsafe",
-            inventory=(DerivativeInput("cache", "production-cache"),),
+            inventory=tuple(
+                DerivativeInput(
+                    item.kind,
+                    "production-cache" if item.kind == "cache" else f"fixture-unsafe-{item.kind}",
+                    acknowledgement_required=item.acknowledgement_required,
+                )
+                for item in self.inventory
+            ),
             idempotency_key="unsafe-create", if_match="*",
         )
         self.now = unsafe.grace_until + timedelta(seconds=1)
