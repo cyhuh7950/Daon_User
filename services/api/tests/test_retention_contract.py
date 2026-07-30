@@ -4,6 +4,8 @@ import json
 import unittest
 from pathlib import Path
 
+from daon_user_api.runtime import _retention_public_error_code
+
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "services" / "api" / "migrations" / "versions" / "0005_retention_legal_hold.py"
@@ -67,6 +69,35 @@ class RetentionContractTests(unittest.TestCase):
             "FIXTURE_ONLY_PURGE_REQUIRED",
             "DELETION_INVENTORY_INVALID",
         }.isdisjoint(codes))
+
+    def test_every_retention_domain_code_maps_inside_public_safe_error_enum(self) -> None:
+        document = json.loads(OPENAPI.read_text(encoding="utf-8"))
+        public_codes = set(document["components"]["schemas"]["SafeErrorCode"]["enum"])
+        expected = {
+            "CURRENT_ACCESS_DENIED": "CURRENT_ACCESS_DENIED",
+            "DELETION_CLEANUP_PENDING": "DELETION_CLEANUP_PENDING",
+            "DELETION_GRACE_PERIOD_ACTIVE": "DELETION_GRACE_PERIOD_ACTIVE",
+            "DELETION_INVENTORY_INVALID": "INVALID_REQUEST",
+            "DELETION_REQUEST_ACTIVE": "INVALID_REQUEST",
+            "DELETION_REQUEST_INVALID": "INVALID_REQUEST",
+            "DELETION_REQUEST_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+            "FIXTURE_ONLY_PURGE_REQUIRED": "CURRENT_ACCESS_DENIED",
+            "IDEMPOTENCY_KEY_REUSED": "INVALID_REQUEST",
+            "IF_MATCH_INVALID": "INVALID_REQUEST",
+            "LEGAL_HOLD_ACTIVE": "LEGAL_HOLD_ACTIVE",
+            "LEGAL_HOLD_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+            "LOCAL_COPY_ACK_INVALID": "INVALID_REQUEST",
+            "RETENTION_CONTEXT_INVALID": "INVALID_REQUEST",
+            "RETENTION_DERIVATIVE_INVALID": "INVALID_REQUEST",
+            "RETENTION_INPUT_INVALID": "INVALID_REQUEST",
+            "RETENTION_VERSION_CONFLICT": "INVALID_REQUEST",
+            "SOURCE_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+            "STEP_UP_REQUIRED": "STEP_UP_REQUIRED",
+        }
+
+        mapped = {code: _retention_public_error_code(code) for code in expected}
+        self.assertEqual(mapped, expected)
+        self.assertTrue(set(mapped.values()).issubset(public_codes))
 
 
 if __name__ == "__main__":
