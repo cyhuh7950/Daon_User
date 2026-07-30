@@ -420,6 +420,23 @@ def _notification_domain_error(error: NotificationError) -> tuple[int, str, bool
     return error.http_status, error.code if error.code in safe_codes else "INVALID_REQUEST", False
 
 
+_RETENTION_PUBLIC_CODES = {
+    "DELETION_GRACE_PERIOD_ACTIVE": "DELETION_GRACE_PERIOD_ACTIVE",
+    "LEGAL_HOLD_ACTIVE": "LEGAL_HOLD_ACTIVE",
+    "DELETION_CLEANUP_PENDING": "DELETION_CLEANUP_PENDING",
+    "STEP_UP_REQUIRED": "STEP_UP_REQUIRED",
+    "CURRENT_ACCESS_DENIED": "CURRENT_ACCESS_DENIED",
+    "DELETION_REQUEST_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+    "LEGAL_HOLD_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+    "SOURCE_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+    "FIXTURE_ONLY_PURGE_REQUIRED": "CURRENT_ACCESS_DENIED",
+}
+
+
+def _retention_public_error_code(code: str) -> str:
+    return _RETENTION_PUBLIC_CODES.get(code, "INVALID_REQUEST")
+
+
 def _require_query_keys(request: Request, allowed: frozenset[str]) -> None:
     if any(key not in allowed for key in request.query_params):
         raise HTTPException(status_code=400)
@@ -674,19 +691,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.exception_handler(RetentionError)
     async def retention_error(request: Request, error: RetentionError) -> JSONResponse:
-        public_codes = {
-            "DELETION_GRACE_PERIOD_ACTIVE": "DELETION_GRACE_PERIOD_ACTIVE",
-            "LEGAL_HOLD_ACTIVE": "LEGAL_HOLD_ACTIVE",
-            "DELETION_CLEANUP_PENDING": "DELETION_CLEANUP_PENDING",
-            "STEP_UP_REQUIRED": "STEP_UP_REQUIRED",
-            "CURRENT_ACCESS_DENIED": "CURRENT_ACCESS_DENIED",
-            "DELETION_REQUEST_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
-            "LEGAL_HOLD_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
-            "SOURCE_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
-            "FIXTURE_ONLY_PURGE_REQUIRED": "CURRENT_ACCESS_DENIED",
-        }
         return _error_response(
-            error.status, public_codes.get(error.code, "INVALID_REQUEST"),
+            error.status, _retention_public_error_code(error.code),
             request.state.trace_id, retryable=error.retryable,
         )
 
