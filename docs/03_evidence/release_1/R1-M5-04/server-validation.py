@@ -235,30 +235,97 @@ def verify_transitions() -> dict[str, int]:
             )
         with connection.transaction():
             set_scope(connection, CONTEXT_A)
-            insert_canon(connection, CONTEXT_A, "generation_requests", "generation-one-way")
+            insert_canon(
+                connection, CONTEXT_A, "generation_settings_snapshots",
+                "generation-settings-before-change",
+            )
+            insert_canon(
+                connection, CONTEXT_A, "generation_requests", "generation-pre-submit-change",
+                {"generation_settings_snapshot_id": "generation-settings-before-change"},
+            )
             version = transition(
-                connection, "GenerationRequest", "generation-one-way", 1, "confirmed",
+                connection, "GenerationRequest", "generation-pre-submit-change", 1, "confirmed",
                 "generation-confirm",
             )
-            reverse = call_transition(
-                connection, "GenerationRequest", "generation-one-way", version, "configuring",
+            version = transition(
+                connection, "GenerationRequest", "generation-pre-submit-change", version, "configuring",
                 "generation-reverse",
             )
+            snapshot_before = connection.execute(
+                "SELECT generation_settings_snapshot_id FROM generation_requests "
+                "WHERE record_id='generation-pre-submit-change'"
+            ).fetchone()
             check(
-                reverse == ("confirmed", 2, "denied", "CANON_TRANSITION_INVALID"),
-                "GENERATION_REVERSE_ACCEPTED",
+                snapshot_before == ("generation-settings-before-change",),
+                "GENERATION_RETURN_MUTATED_SNAPSHOT_LINK",
+            )
+            insert_canon(
+                connection, CONTEXT_A, "generation_settings_snapshots",
+                "generation-settings-after-change",
             )
             version = transition(
-                connection, "GenerationRequest", "generation-one-way", version, "submitted",
+                connection, "GenerationRequest", "generation-pre-submit-change", version, "confirmed",
+                "generation-reconfirm",
+            )
+            version = transition(
+                connection, "GenerationRequest", "generation-pre-submit-change", version, "submitted",
                 "generation-submit",
             )
-            terminal = call_transition(
-                connection, "GenerationRequest", "generation-one-way", version, "confirmed",
-                "generation-terminal-reverse",
+            terminal_configuring = call_transition(
+                connection, "GenerationRequest", "generation-pre-submit-change", version, "configuring",
+                "generation-terminal-configuring",
             )
             check(
-                terminal == ("submitted", 3, "denied", "CANON_TRANSITION_INVALID"),
-                "GENERATION_TERMINAL_REVERSE_ACCEPTED",
+                terminal_configuring == ("submitted", 5, "denied", "CANON_TRANSITION_INVALID"),
+                "GENERATION_SUBMITTED_CONFIGURING_ACCEPTED",
+            )
+            terminal_confirmed = call_transition(
+                connection, "GenerationRequest", "generation-pre-submit-change", version, "confirmed",
+                "generation-terminal-confirmed",
+            )
+            check(
+                terminal_confirmed == ("submitted", 5, "denied", "CANON_TRANSITION_INVALID"),
+                "GENERATION_SUBMITTED_CONFIRMED_ACCEPTED",
+            )
+            generation_counts = connection.execute(
+                "SELECT "
+                "(SELECT count(*) FROM canon_state_transitions "
+                " WHERE record_id='generation-pre-submit-change'),"
+                "(SELECT count(*) FROM canon_transition_attempts "
+                " WHERE record_id='generation-pre-submit-change' AND outcome='succeeded'),"
+                "(SELECT count(*) FROM audit_events "
+                " WHERE target_id='generation-pre-submit-change' AND action='canon.transition' "
+                "   AND outcome='succeeded'),"
+                "(SELECT count(*) FROM canon_transition_attempts "
+                " WHERE record_id='generation-pre-submit-change' AND outcome='denied'),"
+                "(SELECT count(*) FROM audit_events "
+                " WHERE target_id='generation-pre-submit-change' AND action='canon.transition' "
+                "   AND outcome='denied'),"
+                "(SELECT count(*) FROM generation_settings_snapshots "
+                " WHERE record_id IN ('generation-settings-before-change',"
+                "                     'generation-settings-after-change')) ,"
+                "(SELECT count(*) FROM output_versions "
+                " WHERE generation_settings_snapshot_id IN ('generation-settings-before-change',"
+                "                                            'generation-settings-after-change'))"
+            ).fetchone()
+            check(
+                generation_counts == (4, 4, 4, 2, 2, 2, 0),
+                "GENERATION_PRE_SUBMIT_LEDGER_OR_OUTPUT_DRIFT",
+            )
+            linked_successes = connection.execute(
+                "SELECT count(*) FROM canon_state_transitions AS transitions "
+                "JOIN canon_transition_attempts AS attempts "
+                "  ON attempts.attempt_id=transitions.transition_id "
+                " AND attempts.trace_id=transitions.trace_id "
+                "JOIN audit_events AS audits "
+                "  ON audits.event_id=attempts.attempt_id "
+                " AND audits.trace_id=attempts.trace_id "
+                "WHERE transitions.record_id='generation-pre-submit-change' "
+                "  AND attempts.outcome='succeeded' AND audits.outcome='succeeded'"
+            ).fetchone()
+            check(
+                linked_successes == (4,),
+                "GENERATION_SUCCESS_ATTEMPT_TRACE_LINK_DRIFT",
             )
         with connection.transaction():
             set_scope(connection, CONTEXT_A)
@@ -341,6 +408,9 @@ def verify_transitions() -> dict[str, int]:
         "allowed_edges_executed": executed, "illegal_edges_rejected": 3,
         "lost_updates_rejected": 1, "missing_or_cross_scope_rejected": 2,
         "attempt_ledger_mutations_rejected": 2,
+        "generation_pre_submit_successes": 4,
+        "generation_submitted_denials": 2,
+        "generation_output_revisions": 0,
     }
 
 

@@ -65,7 +65,8 @@ _TRANSITIONS: dict[str, frozenset[tuple[str, str]]] = {
         *((state, "cancelled") for state in ("accepted", "planning", "retrieving", "generating", "validating", "waiting_user", "waiting_approval")),
     }),
     "GenerationRequest": frozenset({
-        ("configuring", "confirmed"), ("confirmed", "submitted"),
+        ("configuring", "confirmed"), ("confirmed", "configuring"),
+        ("confirmed", "submitted"),
     }),
     "OutputVersion": frozenset({
         ("generating", "draft"), ("draft", "review_requested"),

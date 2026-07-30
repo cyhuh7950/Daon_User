@@ -61,7 +61,7 @@ class DataCanonManifestContractTests(unittest.TestCase):
             "knowledge_registrations",
         ):
             self.assertIn(token, source)
-        self.assertNotIn('(\"confirmed\", \"configuring\")', source)
+        self.assertIn('(\"confirmed\", \"configuring\")', source)
 
 
 if __name__ == "__main__":

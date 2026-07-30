@@ -42,7 +42,8 @@ class DataCanonDomainTests(unittest.TestCase):
         self.assertFalse(transition_allowed("OutputVersion", "approved", "draft"))
         self.assertTrue(transition_allowed("GenerationRequest", "configuring", "confirmed"))
         self.assertTrue(transition_allowed("GenerationRequest", "confirmed", "submitted"))
-        self.assertFalse(transition_allowed("GenerationRequest", "confirmed", "configuring"))
+        self.assertTrue(transition_allowed("GenerationRequest", "confirmed", "configuring"))
+        self.assertFalse(transition_allowed("GenerationRequest", "submitted", "configuring"))
         self.assertFalse(transition_allowed("GenerationRequest", "submitted", "confirmed"))
 
 

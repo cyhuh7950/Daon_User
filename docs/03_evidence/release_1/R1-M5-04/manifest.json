@@ -1,10 +1,11 @@
 {
   "schema_version": "1.0",
   "work_order_id": "R1-M5-04",
-  "validated_commit": "fff34959a24e2963f3003e4cb6a378c045a9b31b",
-  "implementation_commit": "e0dde2732a9ee54ec2890c59cf6129425826b472",
-  "correction_red_commit": "87fcc00",
-  "correction_validation_commit": "fff34959a24e2963f3003e4cb6a378c045a9b31b",
+  "validated_commit": "a6752c54f2dc69d6bf56bb844ac774bdb623bb3a",
+  "implementation_commit": "a6752c54f2dc69d6bf56bb844ac774bdb623bb3a",
+  "correction_stage": "C02",
+  "correction_red_commit": "0b00d92284704e4b9137049bd50cf58c1f2af6ad",
+  "correction_validation_commit": "a6752c54f2dc69d6bf56bb844ac774bdb623bb3a",
   "migration_revision": "0003",
   "server": {
     "host": "ysna-server",
@@ -12,19 +13,20 @@
     "postgresql": "18.4",
     "pgvector": "0.8.2",
     "image_digest": "sha256:b7337db8fe39d12fe8ecb0003c72680f24479813a744b43154eee6f2eab5a5f3",
-    "isolated_root": "/home/ubuntu/deploy/daon-user/R1-M5-04-C01",
+    "isolated_root": "/home/ubuntu/deploy/daon-user/R1-M5-04-C02",
+    "compose_project": "daon_r1_m5_04_c02_a6752c5",
     "shared_resources_used_or_changed": false
   },
   "schema": {
     "manifest_entities": 52,
     "new_forced_rls_tables": 52,
     "scoped_foreign_keys": 175,
-    "transition_rules": 83,
+    "transition_rules": 84,
     "orphan_or_cross_scope_links": 0,
     "unconstrained_json_or_eav": false
   },
   "database_validation": {
-    "allowed_transitions_executed": 83,
+    "allowed_transitions_executed": 84,
     "illegal_transitions_rejected": 3,
     "lost_updates_rejected": 1,
     "missing_or_cross_scope_rejected": 2,
@@ -33,6 +35,10 @@
     "invalid_digests_rejected": 1,
     "cross_scope_rows": 0,
     "lineage_paths_verified": 5,
+    "generation_pre_submit_successes": 4,
+    "generation_submitted_denials": 2,
+    "generation_snapshots": 2,
+    "generation_output_revisions": 0,
     "cloud_data_tests_passed": 17,
     "object_queue_tests_passed": 14,
     "object_storage_tests_skipped_without_s3": 2
@@ -79,7 +85,7 @@
     "web_build_and_typecheck": "pass",
     "workspace_lint": "pass",
     "independence_violations": 0,
-    "quality_gate_at_fff3495": "pass",
+    "quality_gate_at_a6752c5": "pass",
     "quality_gate_checks": 37,
     "final_delta_after_quality_gate": "evidence and progress only"
   },
