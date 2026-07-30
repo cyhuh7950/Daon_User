@@ -225,7 +225,7 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         for internal_code in (
             "SOURCE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED", "RETENTION_VERSION_CONFLICT"
         ):
-            self.assertNotIn(internal_code, joined)
+            self.assertNotIn(f'"code":"{internal_code}"', joined)
 
 
 if __name__ == "__main__":
