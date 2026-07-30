@@ -1,0 +1,113 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-05",
+  "approval_id": "APR-R1-M5-05-SYNC-API-20260730-01",
+  "validated_implementation_commit": "365015a70e47b001573d04baccb36f66ac05822f",
+  "execution_actor": "어울1 under explicit user approval",
+  "evidence_author": "어울2",
+  "migration_revision": "0004",
+  "server": {
+    "host": "ysna-server",
+    "checkout": "/home/ubuntu/deploy/daon-user/R1-M5-05-C01/365015a70e47b001573d04baccb36f66ac05822f",
+    "runtime_label": "R1-M5-05-C01/runtime-365015a",
+    "compose_project": "daon_r1_m5_05_c01_365015a",
+    "database_name": "daon_r1_m5_05_c01",
+    "bucket_name": "daon-r1-m5-05-c01-365015a",
+    "postgresql": "18.4",
+    "pgvector": "0.8.2",
+    "app_least_privilege": "pass"
+  },
+  "provenance_correction": {
+    "prior_claim": "server checkout already existed",
+    "live_fact": "checkout was initially absent and was cloned by 어울1 from public GitHub",
+    "classification": "evidence accuracy correction, not a product failure or formal failure report"
+  },
+  "migration": {
+    "blank_0001_to_0004": "pass",
+    "first_restore": "failed because post-test dump contained test fixtures",
+    "first_restore_cloud_constraint_failures": 5,
+    "clean_database_recreated": true,
+    "clean_post_0004_restore": "pass",
+    "post_restore_restart": "pass"
+  },
+  "server_tests": {
+    "sync_postgres": {"passed": 1, "failed": 0},
+    "sync_contract_domain_runtime_http": {"passed": 8, "failed": 0},
+    "cloud_rls": {"passed": 11, "failed": 0},
+    "object_queue": {"passed": 16, "failed": 0},
+    "canon": {"passed": 4, "failed": 0},
+    "post_clean_restore": {
+      "sync_postgres": {"passed": 1, "failed": 0},
+      "cloud_rls": {"passed": 11, "failed": 0},
+      "object_queue": {"passed": 16, "failed": 0},
+      "canon": {"passed": 4, "failed": 0}
+    },
+    "runtime_api": {
+      "entrypoint": "python -m daon_user_api.main",
+      "ready_status": 200,
+      "sync_paths": 5,
+      "graceful_exit": true
+    }
+  },
+  "local_linux": {
+    "passed": 89,
+    "platform_skipped": 2,
+    "first_environment_failure": "readonly checkout with TEMP=.",
+    "recovery": "isolated writable temporary directory",
+    "product_failure": false
+  },
+  "final_regression": {
+    "toolchain": {
+      "node": "24.18.0",
+      "npm": "11.12.1",
+      "uv": "0.11.2",
+      "python": "3.14.3"
+    },
+    "api_full": {"passed": 126, "failed": 0},
+    "openapi": {
+      "paths": 52,
+      "operations": 76,
+      "schemas": 69,
+      "errors": 28,
+      "sha256": "F7CE2D661F34A63080ADDBE4E0194898D5253D1E37030836E75535E9D6BD7E14"
+    },
+    "workspace_lint_files": 16,
+    "independence": {
+      "components": 8,
+      "edges": 10,
+      "package_files": 10,
+      "scanned_files": 205,
+      "violations": 0
+    }
+  },
+  "environment_recoveries": [
+    "post-test dump replaced by clean post-0004 dump",
+    "readonly TEMP replaced by isolated writable TEMP",
+    "Python-only runner Node absence replaced by required combined toolchain",
+    "runner Next CLI absence replaced by temporary workspace npm ci",
+    "tmpfs TypeScript EACCES and Node 22 engine mismatch replaced by required Node 24.18.0 ephemeral rootfs"
+  ],
+  "protected_resources": {
+    "containers_unchanged": ["shared-db", "netdata", "nginx-proxy-manager"],
+    "network_unchanged": "proxy-network",
+    "common_default": "absent_before_and_after",
+    "validation_containers_remaining": 0,
+    "unchanged": true
+  },
+  "preserved_isolated_resources": {
+    "cleanup_status": "not approved; preserved",
+    "database_container": "healthy",
+    "object_storage_container": "up",
+    "networks": 1,
+    "volumes": ["database", "object-storage"]
+  },
+  "not_performed": [
+    "browser or browser Network validation because no browser code changed",
+    "release test-plan TP wave or Go/No-Go decision",
+    "OCI production deployment",
+    "isolated resource cleanup"
+  ],
+  "secrets_or_credentials_in_evidence": 0,
+  "formal_failure_reports": 0,
+  "status": "COMPLETED"
+}
