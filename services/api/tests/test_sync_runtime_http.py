@@ -57,7 +57,7 @@ class SyncRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_app(self.dependencies)),
-            base_url="http://127.0.0.1",
+            base_url="https://api.test.invalid",
             cookies={WEB_SESSION_COOKIE: self.session.access_token},
         )
 
