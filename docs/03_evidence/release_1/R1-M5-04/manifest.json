@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-04",
+  "validated_commit": "fff34959a24e2963f3003e4cb6a378c045a9b31b",
+  "implementation_commit": "e0dde2732a9ee54ec2890c59cf6129425826b472",
+  "correction_red_commit": "87fcc00",
+  "correction_validation_commit": "fff34959a24e2963f3003e4cb6a378c045a9b31b",
+  "migration_revision": "0003",
+  "server": {
+    "host": "ysna-server",
+    "architecture": "aarch64",
+    "postgresql": "18.4",
+    "pgvector": "0.8.2",
+    "image_digest": "sha256:b7337db8fe39d12fe8ecb0003c72680f24479813a744b43154eee6f2eab5a5f3",
+    "isolated_root": "/home/ubuntu/deploy/daon-user/R1-M5-04-C01",
+    "shared_resources_used_or_changed": false
+  },
+  "schema": {
+    "manifest_entities": 52,
+    "new_forced_rls_tables": 52,
+    "scoped_foreign_keys": 175,
+    "transition_rules": 83,
+    "orphan_or_cross_scope_links": 0,
+    "unconstrained_json_or_eav": false
+  },
+  "database_validation": {
+    "allowed_transitions_executed": 83,
+    "illegal_transitions_rejected": 3,
+    "lost_updates_rejected": 1,
+    "missing_or_cross_scope_rejected": 2,
+    "immutable_mutations_rejected": 2,
+    "attempt_ledger_mutations_rejected": 2,
+    "invalid_digests_rejected": 1,
+    "cross_scope_rows": 0,
+    "lineage_paths_verified": 5,
+    "cloud_data_tests_passed": 17,
+    "object_queue_tests_passed": 14,
+    "object_storage_tests_skipped_without_s3": 2
+  },
+  "transition_attempt_validation": {
+    "success_attempts_equal_transitions": true,
+    "denied_attempts_persisted_after_commit": true,
+    "audit_linked_to_each_attempt": true,
+    "same_attempt_concurrent_results": 2,
+    "same_attempt_concurrent_ledgers": 1,
+    "different_attempt_concurrent_successes": 1,
+    "different_attempt_concurrent_version_conflicts": 1,
+    "attempt_id_reuse_error": "CANON_ATTEMPT_ID_REUSED"
+  },
+  "migration_validation": {
+    "preflight": "pass",
+    "blank_0001_0002_0003": "pass",
+    "head_reapply": "pass",
+    "downgrade_0003_to_0002": "pass",
+    "upgrade_0002_to_0003": "pass",
+    "pre_0003_backup_restore": "pass",
+    "post_restore_full_validation": "pass"
+  },
+  "local_projection": {
+    "tests_passed": 88,
+    "platform_specific_skipped": 1,
+    "restart_reproduction": "pass",
+    "update_delete_rejected": "pass",
+    "workspace_area_isolation": "pass",
+    "plaintext_canary_hits": 0,
+    "external_network_attempts": 0,
+    "changed_scope_mypy": "pass",
+    "ruff": "pass"
+  },
+  "service_health": {
+    "live_status": 200,
+    "ready_status": 200,
+    "restart_ready_status": 200
+  },
+  "regression": {
+    "api_local": {"passed": 96, "skipped": 21},
+    "api_local_total_including_new": {"passed": 96, "skipped": 21},
+    "api_server_correction_affected": {"passed": 17, "skipped": 0},
+    "web_build_and_typecheck": "pass",
+    "workspace_lint": "pass",
+    "independence_violations": 0,
+    "quality_gate_at_fff3495": "pass",
+    "quality_gate_checks": 37,
+    "final_delta_after_quality_gate": "evidence and progress only"
+  },
+  "cleanup": {
+    "status": "complete_after_explicit_user_approval",
+    "checkout_remaining": 0,
+    "containers_remaining": 0,
+    "networks_remaining": 0,
+    "volumes_remaining": 0,
+    "protected_resources_unchanged": true
+  },
+  "secrets_or_dsn_in_evidence": 0,
+  "formal_failure_reports": 0
+}
