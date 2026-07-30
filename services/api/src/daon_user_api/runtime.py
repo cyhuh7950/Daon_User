@@ -78,6 +78,10 @@ from .sync_postgres import (
     PostgresSyncService,
     UnavailableSyncTransferPort,
 )
+from .retention import (
+    DerivativeInput, ReferenceCleanupPort, ReferenceRetentionRepository,
+    RetentionContext, RetentionError, RetentionService,
+)
 
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
@@ -260,6 +264,7 @@ class RuntimeDependencies:
     cloud_store: PostgresCloudStore | None = None
     object_storage: ObjectStoragePort | None = None
     sync_service: SyncService | PostgresSyncService | None = None
+    retention_service: RetentionService | None = None
     object_queue_store: PostgresObjectQueueStore | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
@@ -337,6 +342,23 @@ class SyncResolutionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     choice: ConflictResolutionChoice
     content_base64: str | None = None
+
+
+class RetentionDerivativeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str
+    reference_id: str
+    acknowledgement_required: bool = False
+
+
+class DeletionCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    inventory: list[RetentionDerivativeBody]
+
+
+class SensitiveRetentionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    step_up_authorization_id: str
 
 
 def _trace_id(request: Request) -> str:
@@ -505,6 +527,25 @@ def _sync_view_json(view: SyncOperationView) -> dict[str, object]:
     return _dataclass_json(view)
 
 
+def _retention_expected_version(value: str, resource_id: str, kind: str) -> int:
+    matched = re.fullmatch(
+        r'"' + re.escape(kind) + r':' + re.escape(resource_id) + r':([1-9][0-9]*)"', value
+    )
+    if matched is None:
+        raise RetentionError("IF_MATCH_INVALID", 400)
+    return int(matched.group(1))
+
+
+def _retention_context(
+    principal: IdentityPrincipal, workspace_id: str, request: Request,
+    dependencies: RuntimeDependencies, *, organization_admin: bool = False,
+) -> RetentionContext:
+    return RetentionContext(
+        principal.tenant_id, workspace_id, principal.user_id, request.state.trace_id,
+        dependencies.settings.policy_version, organization_admin,
+    )
+
+
 def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityPrincipal:
     token, expected_kind = _credential(request)
     view = dependencies.identity_service.describe_access(
@@ -527,6 +568,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     )
     sync_service = dependencies.sync_service or SyncService(
         ReferenceSyncRepository(), ReferenceTransferPort(),
+        clock=lambda: datetime.now(timezone.utc),
+    )
+    retention_service = dependencies.retention_service or RetentionService(
+        ReferenceRetentionRepository(), ReferenceCleanupPort(),
         clock=lambda: datetime.now(timezone.utc),
     )
     @asynccontextmanager
@@ -625,6 +670,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def sync_error(request: Request, error: SyncError) -> JSONResponse:
         return _error_response(
             error.status, error.code, request.state.trace_id, retryable=error.retryable
+        )
+
+    @app.exception_handler(RetentionError)
+    async def retention_error(request: Request, error: RetentionError) -> JSONResponse:
+        safe = {
+            "DELETION_GRACE_PERIOD_ACTIVE", "LEGAL_HOLD_ACTIVE",
+            "DELETION_CLEANUP_PENDING", "STEP_UP_REQUIRED", "CURRENT_ACCESS_DENIED",
+            "RETENTION_VERSION_CONFLICT", "DELETION_REQUEST_UNAVAILABLE",
+            "LEGAL_HOLD_UNAVAILABLE", "SOURCE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED",
+            "FIXTURE_ONLY_PURGE_REQUIRED",
+        }
+        return _error_response(
+            error.status, error.code if error.code in safe else "INVALID_REQUEST",
+            request.state.trace_id, retryable=error.retryable,
         )
 
     @app.exception_handler(Exception)
@@ -1008,6 +1067,190 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.headers["ETag"] = view.etag
         return response
 
+    @app.post("/api/v1/sources/{id}/deletion-requests", status_code=201)
+    async def create_deletion_request(
+        id: str, body: DeletionCreateBody, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        workspace_id = retention_service.locate_source_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.EDIT,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = retention_service.create_request(
+            _retention_context(principal, workspace_id, request, dependencies),
+            source_id=id,
+            inventory=tuple(DerivativeInput(**item.model_dump()) for item in body.inventory),
+            idempotency_key=idempotency_key, if_match=if_match,
+        )
+        response = JSONResponse(
+            {"data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}},
+            status_code=201,
+        )
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/deletion-requests/{id}")
+    async def get_deletion_request(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        workspace_id = retention_service.locate_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = retention_service.get_request(
+            _retention_context(principal, workspace_id, request, dependencies), id
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.post("/api/v1/deletion-requests/{id}/cancel")
+    async def cancel_deletion_request(
+        id: str, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        workspace_id = retention_service.locate_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.EDIT,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = retention_service.cancel(
+            _retention_context(principal, workspace_id, request, dependencies), id,
+            expected_version=_retention_expected_version(if_match, id, "deletion"),
+            idempotency_key=idempotency_key,
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.post("/api/v1/deletion-requests/{id}/purge")
+    async def purge_deletion_request(
+        id: str, body: SensitiveRetentionBody, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        workspace_id = retention_service.locate_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=body.step_up_authorization_id,
+            access_token=access_token,
+            action_group="permanent_delete_or_restore_rollback", target_id=id,
+            policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id,
+        )
+        view = retention_service.purge(
+            _retention_context(
+                principal, workspace_id, request, dependencies, organization_admin=True
+            ), id,
+            expected_version=_retention_expected_version(if_match, id, "deletion"),
+            idempotency_key=idempotency_key, step_up_verified=True,
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.post("/api/v1/sources/{id}/legal-holds", status_code=201)
+    async def apply_legal_hold(
+        id: str, body: SensitiveRetentionBody, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        workspace_id = retention_service.locate_source_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=body.step_up_authorization_id,
+            access_token=access_token,
+            action_group="permanent_delete_or_restore_rollback", target_id=id,
+            policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id,
+        )
+        source_etag, source_version = retention_service.source_etag(principal.tenant_id, id)
+        if if_match != source_etag:
+            raise RetentionError("IF_MATCH_INVALID", 400)
+        hold = retention_service.apply_legal_hold(
+            _retention_context(
+                principal, workspace_id, request, dependencies, organization_admin=True
+            ), source_id=id, expected_version=source_version,
+            idempotency_key=idempotency_key, step_up_verified=True,
+        )
+        response = JSONResponse(
+            {"data": _dataclass_json(hold), "meta": {"trace_id": request.state.trace_id}},
+            status_code=201,
+        )
+        response.headers["ETag"] = hold.etag
+        return response
+
+    @app.post("/api/v1/legal-holds/{id}/release")
+    async def release_legal_hold(
+        id: str, body: SensitiveRetentionBody, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        workspace_id = retention_service.locate_hold_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=body.step_up_authorization_id,
+            access_token=access_token,
+            action_group="permanent_delete_or_restore_rollback", target_id=id,
+            policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id,
+        )
+        hold = retention_service.release_legal_hold(
+            _retention_context(
+                principal, workspace_id, request, dependencies, organization_admin=True
+            ), id,
+            expected_version=_retention_expected_version(if_match, id, "legal-hold"),
+            idempotency_key=idempotency_key, step_up_verified=True,
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(hold), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = hold.etag
+        return response
+
     return app
 
 
@@ -1089,5 +1332,9 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         cloud_store=cloud_store,
         object_storage=object_storage,
         sync_service=sync_service,
+        retention_service=RetentionService(
+            ReferenceRetentionRepository(), ReferenceCleanupPort(),
+            clock=lambda: datetime.now(timezone.utc),
+        ),
         object_queue_store=object_queue_store,
     )

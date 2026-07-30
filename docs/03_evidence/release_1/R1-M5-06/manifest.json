@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "issue_id": "R1-M5-06",
+  "branch": "codex/r1-m5-06",
+  "implementation_commit": "PENDING",
+  "verdict": "BLOCKED",
+  "reason": "actual PostgreSQL 18.4 RLS and Object fixture evidence unavailable in the current approved local environment",
+  "evidence": {
+    "tdd_red": "recorded in progress log",
+    "retention_target_tests": { "passed": 9, "failed": 0, "coverage_percent": 92 },
+    "api_regression": { "passed": 136, "skipped": 23, "failed": 0 },
+    "local_regression": { "passed": 92, "skipped": 1, "failed": 0 },
+    "quality_gate": {
+      "overall": "PASS",
+      "lint": 8,
+      "type": 5,
+      "unit": 9,
+      "contract": 3,
+      "build": 8,
+      "security": 3,
+      "independence": 1,
+      "failures": 0
+    },
+    "postgresql_18_4": "NOT_RUN_ENVIRONMENT_UNAVAILABLE",
+    "object_fixture": "NOT_RUN_ENVIRONMENT_UNAVAILABLE",
+    "external_deployment": "NOT_RUN_APPROVAL_REQUIRED"
+  },
+  "protected_untracked_files": [
+    "docs/04_test_reports/release_1/interim_review_2026-07-30.md",
+    "docs/04_test_reports/release_1_model_provider_queries.md"
+  ]
+}
