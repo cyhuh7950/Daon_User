@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 from pathlib import Path
 from typing import Mapping
 
@@ -90,3 +91,23 @@ def test_local_projection_rejects_bad_digest_previous_and_cloud_only_fields(tmp_
                 digest_sha256=_digest(forbidden), created_at="2026-07-30T00:00:02Z",
                 previous_version_id=None, payload=forbidden,
             )
+
+
+def test_local_projection_opens_no_external_network(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    attempts: list[object] = []
+
+    def reject_network(_socket: socket.socket, address: object) -> None:
+        attempts.append(address)
+        raise AssertionError("LOCAL_CANON_NETWORK_FORBIDDEN")
+
+    monkeypatch.setattr(socket.socket, "connect", reject_network)
+    payload = {"title": "offline-only"}
+    with LocalEncryptedStore.open(tmp_path / "canon-network", MASTER_KEY) as store:
+        store.put_canonical_envelope(
+            WORKSPACE_A, "source", entity_type="SourceVersion", entity_id="source-offline",
+            aggregate_id="source-offline", version=1, schema_version=1,
+            digest_sha256=_digest(payload), created_at="2026-07-30T00:00:00Z",
+            previous_version_id=None, payload=payload,
+        )
+        store.get_canonical_envelope(WORKSPACE_A, "source", "SourceVersion", "source-offline")
+    assert attempts == []
