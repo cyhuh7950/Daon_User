@@ -40,6 +40,10 @@ class DataCanonDomainTests(unittest.TestCase):
         self.assertFalse(transition_allowed("Source", "ready", "registered"))
         self.assertFalse(transition_allowed("Run", "completed", "generating"))
         self.assertFalse(transition_allowed("OutputVersion", "approved", "draft"))
+        self.assertTrue(transition_allowed("GenerationRequest", "configuring", "confirmed"))
+        self.assertTrue(transition_allowed("GenerationRequest", "confirmed", "submitted"))
+        self.assertFalse(transition_allowed("GenerationRequest", "confirmed", "configuring"))
+        self.assertFalse(transition_allowed("GenerationRequest", "submitted", "confirmed"))
 
 
 @unittest.skipUnless(os.environ.get("DAON_TEST_POSTGRES_DSN"), "isolated PostgreSQL DSN required")
@@ -88,6 +92,7 @@ class PostgresDataCanonIntegrationTests(unittest.TestCase):
             policy_version="policy-canon-1",
         )
         self.assertEqual((first.state, first.version), ("security_check", 2))
+        self.assertEqual(self.store.count(self.context, "canon_transition_attempts", source_id), 1)
         with self.assertRaisesRegex(CanonError, "CANON_VERSION_CONFLICT"):
             self.store.transition(
                 self.context,
@@ -99,6 +104,24 @@ class PostgresDataCanonIntegrationTests(unittest.TestCase):
                 reason_code="STALE_WRITER",
                 policy_version="policy-canon-1",
             )
+        self.assertEqual(self.store.count(self.context, "canon_transition_attempts", source_id), 2)
+        with self.assertRaisesRegex(CanonError, "CANON_RECORD_NOT_FOUND"):
+            self.store.transition(
+                self.context,
+                entity_type="Source",
+                record_id="source-canon-missing",
+                expected_version=1,
+                target_state="security_check",
+                transition_id="transition-canon-missing",
+                reason_code="MISSING_TARGET",
+                policy_version="policy-canon-1",
+            )
+        self.assertEqual(
+            self.store.count(
+                self.context, "canon_transition_attempts", "source-canon-missing"
+            ),
+            1,
+        )
 
 
 if __name__ == "__main__":
