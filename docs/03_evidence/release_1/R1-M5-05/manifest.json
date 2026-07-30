@@ -80,6 +80,89 @@
       "violations": 0
     }
   },
+  "required_contract_evidence": {
+    "approval_snapshot_and_rls": {
+      "verdict": "pass",
+      "evidence": [
+        "server sync PostgreSQL 1/1",
+        "server Cloud/RLS 11/11",
+        "post-clean-restore sync 1/1 and Cloud/RLS 11/11"
+      ],
+      "confirmed_result": "approval snapshot, manifest item, batch, target version and reindex rows each persisted once under scoped daon_app access"
+    },
+    "step_up": {
+      "verdict": "pass",
+      "evidence": [
+        "sync Runtime HTTP 1/1",
+        "sync Domain unauthorized-scope test 1/1",
+        "server sync contract/domain/runtime/http group 8/8"
+      ],
+      "confirmed_result": "invalid Step-up returned 403; bound one-time Step-up approved the exact operation before transfer"
+    },
+    "batch_idempotency_and_resume": {
+      "verdict": "pass",
+      "evidence": [
+        "sync Domain idempotent-resume-lost-update test 1/1",
+        "server sync PostgreSQL restart projection 1/1"
+      ],
+      "confirmed_result": "same batch key reused one batch and one transmission; partial cursor resumed only the remaining approved item"
+    },
+    "local_encryption_and_restart": {
+      "verdict": "pass",
+      "evidence": [
+        "Local sync queue tests 2/2",
+        "Linux Local full 89 pass and 2 platform skips"
+      ],
+      "confirmed_result": "encrypted metadata reopened after restart; operation and cursor plaintext canary hits were 0"
+    },
+    "reconnect": {
+      "verdict": "pass_with_approved_scope",
+      "evidence": [
+        "Local encrypted restart and approved-only resume test 1/1",
+        "Local offline lock and network isolation test 1/1",
+        "sync Domain partial batch resume test 1/1"
+      ],
+      "confirmed_result": "draft operation did not resume; approved operation resumed after reopen; locked key blocked resume; completed item was not retransmitted",
+      "deferred_boundary": "device pairing and relay remain R1-M6-04; no mock success claimed"
+    },
+    "conflict_three_resolutions": {
+      "verdict": "pass",
+      "evidence": [
+        "sync Domain explicit conflict test 1/1",
+        "three resolution subtests 3/3: keep_local_as_new_version, keep_cloud, keep_both",
+        "server sync contract/domain/runtime/http group 8/8"
+      ],
+      "confirmed_result": "all choices were explicit; keep_cloud transmitted 0 objects; local and both created new target versions without overwrite"
+    },
+    "source_area_and_version_immutability": {
+      "verdict": "pass",
+      "evidence": [
+        "sync Domain source_mutations and overwrite_count assertions",
+        "server sync PostgreSQL 1/1",
+        "server Canon immutability 4/4"
+      ],
+      "confirmed_result": "source_mutations=0 and overwrite_count=0; target was represented as a new object/version"
+    },
+    "unauthorized_network_or_transmission_zero": {
+      "verdict": "pass",
+      "evidence": [
+        "sync Domain unauthorized transfer test 1/1",
+        "Local offline network isolation test 1/1"
+      ],
+      "confirmed_result": "before approval and after scope-expansion denial transmission_count remained 0; offline socket connection attempts were 0",
+      "browser_network": "not performed because browser code was unchanged"
+    },
+    "audit_and_trace": {
+      "verdict": "pass_with_tested_scope",
+      "evidence": [
+        "server API full 126/126 including M4 Audit/Identity/Authorization regression",
+        "sync Runtime HTTP 1/1 using AuditEventStore and request trace context",
+        "server sync PostgreSQL 1/1 persisting NOT NULL trace-linked sync rows"
+      ],
+      "confirmed_result": "existing M4 audit boundary remained green and Sync persistence/runtime completed with trace-linked records",
+      "dedicated_sync_audit_row_count": "not separately measured; no count is claimed"
+    }
+  },
   "environment_recoveries": [
     "post-test dump replaced by clean post-0004 dump",
     "readonly TEMP replaced by isolated writable TEMP",
