@@ -49,6 +49,25 @@ class RetentionContractTests(unittest.TestCase):
             set(PATHS),
         )
 
+    def test_public_safe_error_enum_has_only_approved_retention_additions(self) -> None:
+        document = json.loads(OPENAPI.read_text(encoding="utf-8"))
+        codes = set(document["components"]["schemas"]["SafeErrorCode"]["enum"])
+        approved = {
+            "DELETION_GRACE_PERIOD_ACTIVE",
+            "LEGAL_HOLD_ACTIVE",
+            "DELETION_CLEANUP_PENDING",
+        }
+        self.assertTrue(approved.issubset(codes))
+        self.assertTrue({
+            "RETENTION_VERSION_CONFLICT",
+            "DELETION_REQUEST_UNAVAILABLE",
+            "LEGAL_HOLD_UNAVAILABLE",
+            "SOURCE_UNAVAILABLE",
+            "IDEMPOTENCY_KEY_REUSED",
+            "FIXTURE_ONLY_PURGE_REQUIRED",
+            "DELETION_INVENTORY_INVALID",
+        }.isdisjoint(codes))
+
 
 if __name__ == "__main__":
     unittest.main()
