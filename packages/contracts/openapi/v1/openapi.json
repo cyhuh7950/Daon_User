@@ -51,6 +51,9 @@
     },
     {
       "name": "Audit"
+    },
+    {
+      "name": "Sync"
     }
   ],
   "paths": {
@@ -3293,6 +3296,68 @@
           }
         }
       }
+    },
+    "/api/v1/workspaces/{id}/sync-operations": {
+      "post": {
+        "operationId": "createSyncOperationPreview", "tags": ["Sync"],
+        "summary": "Local-private에서 Cloud-sync로 복사할 항목 Preview 생성",
+        "x-implementation-owner": "R1-M5-05",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "$ref": "#/components/parameters/IfMatch" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncCreateRequest" } } } },
+        "responses": { "201": { "$ref": "#/components/responses/SyncOperationResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/sync-operations/{id}": {
+      "get": {
+        "operationId": "getSyncOperation", "tags": ["Sync"],
+        "summary": "Sync Operation과 재개 상태 조회", "x-implementation-owner": "R1-M5-05",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": { "200": { "$ref": "#/components/responses/SyncOperationResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/sync-operations/{id}/approve": {
+      "post": {
+        "operationId": "approveSyncOperation", "tags": ["Sync"],
+        "summary": "Step-up으로 결합한 승인 Snapshot 생성", "x-implementation-owner": "R1-M5-05",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "$ref": "#/components/parameters/IfMatch" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncApproveRequest" } } } },
+        "responses": { "200": { "$ref": "#/components/responses/SyncOperationResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/sync-operations/{id}/transfer-batches": {
+      "post": {
+        "operationId": "transferSyncBatch", "tags": ["Sync"],
+        "summary": "승인 Manifest 범위의 재개 가능한 Copy Batch 전송", "x-implementation-owner": "R1-M5-05",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "$ref": "#/components/parameters/IfMatch" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncTransferRequest" } } } },
+        "responses": { "200": { "$ref": "#/components/responses/SyncBatchResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/sync-operations/{id}/conflicts/{conflict_id}/resolution": {
+      "post": {
+        "operationId": "resolveSyncConflict", "tags": ["Sync"],
+        "summary": "Version 충돌을 명시 선택으로 해결", "x-implementation-owner": "R1-M5-05",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "name": "conflict_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "$ref": "#/components/parameters/IfMatch" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncConflictResolutionRequest" } } } },
+        "responses": { "200": { "$ref": "#/components/responses/SyncResolutionResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
     }
   },
   "components": {
@@ -3848,6 +3913,21 @@
             }
           }
         }
+      },
+      "SyncOperationResponse": {
+        "description": "Sync Operation 상태와 불변 승인·Batch·Conflict Projection",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncOperationEnvelope" } } }
+      },
+      "SyncBatchResponse": {
+        "description": "중복 실행 안전한 Batch 결과와 현재 Operation",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncMutationEnvelope" } } }
+      },
+      "SyncResolutionResponse": {
+        "description": "명시 Conflict 해결 결과와 현재 Operation",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncMutationEnvelope" } } }
       }
     },
     "schemas": {
@@ -5122,6 +5202,83 @@
             "additionalProperties": true
           }
         }
+      },
+      "SyncItemInput": {
+        "type": "object", "additionalProperties": false,
+        "required": ["item_id", "source_version_id", "local_object_id", "digest_sha256", "byte_size", "content_type"],
+        "properties": {
+          "item_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "local_object_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "digest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "byte_size": { "type": "integer", "minimum": 0 },
+          "content_type": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "base_cloud_version_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+          "base_cloud_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+        }
+      },
+      "SyncCreateRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["target_area", "items"],
+        "properties": {
+          "target_area": { "type": "string", "const": "cloud_sync" },
+          "items": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/components/schemas/SyncItemInput" } }
+        }
+      },
+      "SyncApproveRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["approved_item_ids", "step_up_authorization_id"],
+        "properties": {
+          "approved_item_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true }
+        }
+      },
+      "SyncTransferRequest": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {
+          "cursor": { "type": ["string", "null"], "minLength": 1, "maxLength": 512 },
+          "items": { "type": "array", "minItems": 1, "maxItems": 25, "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["item_id", "content_base64"],
+            "properties": {
+              "item_id": { "$ref": "#/components/schemas/OpaqueId" },
+              "content_base64": { "type": "string", "contentEncoding": "base64", "writeOnly": true },
+              "current_cloud_version_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+              "current_cloud_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+            }
+          } }
+        }
+      },
+      "SyncConflictResolutionRequest": {
+        "type": "object", "additionalProperties": false, "required": ["choice"],
+        "properties": {
+          "choice": { "type": "string", "enum": ["keep_local_as_new_version", "keep_cloud", "keep_both"] },
+          "content_base64": { "type": ["string", "null"], "contentEncoding": "base64", "writeOnly": true }
+        }
+      },
+      "SyncOperation": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "tenant_id", "workspace_id", "actor_id", "target_area", "state", "version", "manifest_digest", "approved_item_ids", "completed_item_ids", "batches", "conflicts", "target_versions", "reindex_state", "source_mutations", "overwrite_count"],
+        "properties": {
+          "operation_id": { "$ref": "#/components/schemas/OpaqueId" }, "tenant_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "actor_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "target_area": { "type": "string", "const": "cloud_sync" },
+          "state": { "type": "string", "enum": ["awaiting_approval", "approved", "transferring", "conflict", "reindex_requested", "failed", "cancelled"] },
+          "version": { "type": "integer", "minimum": 1 }, "manifest_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "approved_item_ids": { "type": "array", "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "completed_item_ids": { "type": "array", "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "batches": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "conflicts": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "target_versions": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "reindex_state": { "type": ["string", "null"] }, "source_mutations": { "type": "integer", "const": 0 }, "overwrite_count": { "type": "integer", "const": 0 }
+        }
+      },
+      "SyncOperationEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "$ref": "#/components/schemas/SyncOperation" }, "meta": { "type": "object", "additionalProperties": true } }
+      },
+      "SyncMutationEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "operation", "meta"],
+        "properties": { "data": { "type": "object", "additionalProperties": true }, "operation": { "$ref": "#/components/schemas/SyncOperation" }, "meta": { "type": "object", "additionalProperties": true } }
       }
     }
   }

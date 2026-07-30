@@ -1,9 +1,9 @@
 {
   "schema_version": "1.0",
   "contract_version": "1.0.0",
-  "canonical_sha256": "37E0A4ABAA00D1CEE9C6E3A0D3B0173233D637705D434642921CE8124A88C162",
-  "path_count": 47,
-  "operation_count": 71,
-  "schema_count": 61,
+  "canonical_sha256": "F7CE2D661F34A63080ADDBE4E0194898D5253D1E37030836E75535E9D6BD7E14",
+  "path_count": 52,
+  "operation_count": 76,
+  "schema_count": 69,
   "error_code_count": 28
 }

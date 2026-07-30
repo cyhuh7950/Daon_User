@@ -6,9 +6,9 @@
 | --- | --- |
 | 문서 구분 | Release 1 구현 작업계획 정본 |
 | 계획 ID | `DAON-USER-R1-PLAN` |
-| 계획 버전 | `0.9` |
+| 계획 버전 | `1.0` |
 | 작성일 | 2026-07-20 |
-| 최종 수정일 | 2026-07-20 |
+| 최종 수정일 | 2026-07-30 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 구현 상태 | `READY` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
@@ -53,6 +53,7 @@
 | 0.7 | 2026-07-20 | G0-BASELINE 승인, R1-D001·D003·D009·D010 확정, 외부 차단 조건 유지, 구현 상태 `READY` 전환 | C0 승인 기록 | 신산님 승인 |
 | 0.8 | 2026-07-20 | R1-M1-03 레지스트리 사전검증에 따라 Python 3.14.3·Tauri CLI 2.11.4·React Native 0.86.0을 정확 Pin하고 진행 복구 경로를 운영 규칙과 정합화 | C1 기술 정정 | 어울1 확정 |
 | 0.9 | 2026-07-20 | WSL 필수 통합을 ysna-server 격리 개발·통합 흐름으로 대체하고 Git Push·전용 PostgreSQL 18.4 Migration·서버 Test·PR Merge Gate와 ARM64·공유 자원 금지 계약 반영 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-DEVENV-YSNA-20260720-01` |
+| 1.0 | 2026-07-30 | R1-M5-05 Sync·Copy/Publish 공개 API 5종, Step-up 승인 Snapshot, 재개 전송, 명시적 충돌 선택과 자동 덮어쓰기 금지 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-05-SYNC-API-20260730-01` |
 
 ---
 
@@ -471,7 +472,7 @@ Cloud-sync와 Windows Local-private가 서로 다른 저장·실행 영역을 �
 | R1-M5-02 | R1-M4-05, R1-M5-01 | Object·Queue·Worker 저장 | S3 호환 Object, Prefix Policy, 비동기 Queue·Worker | 원본·산출물 Digest, 실패 Queue·재처리 |
 | R1-M5-03 | R1-M4-06 | Local 암호화 저장 | SQLite, File Store, Embedded Vector Adapter, OS Secure Store Key | Restart, 암호화, Vector 검색, Key 철회 |
 | R1-M5-04 | R1-M5-01, R1-M5-02, R1-M5-03 | 데이터 정본·계보 | Source/Run/RuleSet/Model/Studio/Audit Entity와 불변 Version | Migration·FK·상태 전이·Snapshot 불변 테스트 |
-| R1-M5-05 | R1-M4-02, R1-M5-03, R1-M5-04 | Sync·Copy/Publish·충돌 | 승인 전송, Version 비교, Offline Queue, Reconnect | 무승인 전송 0건, 자동 덮어쓰기 0건, Audit 연결 |
+| R1-M5-05 | R1-M4-02, R1-M5-03, R1-M5-04 | Sync·Copy/Publish·충돌 | Preview·Step-up 승인 Snapshot, 승인 항목 재개 전송, Version 비교, 암호화 Offline Queue, Reconnect, 명시적 충돌 선택 API | 무승인 전송 0건, 원본 암묵 변경 0건, 자동 병합·덮어쓰기 0건, Batch 재개·Audit 연결 |
 | R1-M5-06 | R1-M5-04, R1-M5-05 | 삭제·보존·Legal Hold | 유예 삭제, 파생 정리, Cache·Local Copy 추적, Legal Hold | 전용 Fixture 삭제·보존·정리 후 기존 데이터 불변 |
 | R1-M5-07 | R1-M5-01, R1-M5-03, R1-M5-04, R1-M5-06 | Backup·Restore·손상 복구 | Cloud Backup·격리 Restore, Local 손상 복구 | 복구 후 권한·계보 재검증, 운영 대상은 G9-DRILL 없으면 금지 |
 

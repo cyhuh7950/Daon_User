@@ -42,6 +42,7 @@
 | R1-D023 | 확정 | 기존 범용 앱 설정 진입을 보존하고 알림 전용 공개 API 진입을 별도로 제공한다. iOS 16 이상은 `UIApplication.openNotificationSettingsURLString`, iOS 15.1은 기존 `openSettingsURLString` Fallback을 사용하며 비공개 URL·Settings/TCC 직접 조작은 금지한다. | 신산님 승인 · 2026-07-28 |
 
 | R1-D024 | 확정 | R1-M4-07은 공개 `GET /api/v1/notifications`, `GET·PATCH /api/v1/notifications/{id}`, `GET /api/v1/inbox`를 추가한다. Notification 읽음 Write는 ETag·멱등성을 적용하고, 대상·Deep Link는 현재 권한으로 재검증한다. Inbox는 소유 Domain 요청의 읽기 Projection이며 실제 전송은 In-app부터 구현하고 Push·Email과 영속 DB Adapter는 후속 경계로 유지한다. | 신산님 승인 · `APR-R1-M4-07-NOTIFICATION-API-20260729-01` |
+| R1-D025 | 확정 | R1-M5-05는 SyncOperation 생성·조회, Step-up 승인, 승인 항목의 재개 가능한 Transfer Batch, 사용자 충돌 해결 공개 API를 추가한다. 원본 Local-private 영역·Version은 불변으로 보존하고 무승인 전송·자동 병합·자동 덮어쓰기를 금지한다. | 신산님 승인 · `APR-R1-M5-05-SYNC-API-20260730-01` |
 
 ## G0 판정
 
@@ -74,3 +75,9 @@
 | 변경 ID | 일자 | 등급 | 변경 | 근거와 영향 |
 | --- | --- | --- | --- | --- |
 | `CHG-R1-M4-07-NOTIFICATION-API-001` | 2026-07-29 | C2 | Notification 목록·단건·읽음 전이와 Inbox Projection 공개 API를 R1-D024로 고정 | 신산님 명시 승인. M4 Notification 기반을 Web BFF·Native Gateway가 공유할 공개 계약으로 만들고, 권한·ETag·멱등성·Audit·Trace를 적용한다. Push·Email과 DB 영속화는 승인되지 않은 성공으로 가장하지 않고 후속 Adapter 경계를 유지한다. |
+
+## M5 승인 결정 기록
+
+| 변경 ID | 일자 | 등급 | 변경 | 근거와 영향 |
+| --- | --- | --- | --- | --- |
+| `CHG-R1-M5-05-SYNC-API-001` | 2026-07-30 | C2 | Sync·Copy/Publish의 공개 API 5종과 승인·재개 전송·충돌 선택 계약을 R1-D025로 고정 | 신산님 명시 승인. §6.3의 5단계와 §21.3의 승인 항목만 Sync·자동 덮어쓰기 금지를 API·저장 계약으로 구현한다. 실제 M6 재색인 완료는 범위에서 제외한다. |
