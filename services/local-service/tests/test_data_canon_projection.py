@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Mapping
 
 import pytest
 
@@ -14,7 +15,7 @@ WORKSPACE_B = "22222222-2222-4222-8222-222222222222"
 MASTER_KEY = bytes(range(32))
 
 
-def _digest(payload: dict[str, object]) -> str:
+def _digest(payload: Mapping[str, object]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     return hashlib.sha256(encoded).hexdigest()
 

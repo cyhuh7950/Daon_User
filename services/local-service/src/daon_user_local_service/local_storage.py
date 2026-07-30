@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import re
 import struct
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Final
 
 import sqlite_vec  # type: ignore[import-untyped]
@@ -41,6 +43,35 @@ _KEY_VERSION: Final = 1
 _DIGEST: Final = re.compile(r"^[0-9a-f]{64}$")
 _FLOAT32_MAX: Final = 3.4028234663852886e38
 _WRAP_ALGORITHM: Final = "AES-256-GCM+HKDF-SHA256"
+_CANON_ENTITY_TYPES: Final = frozenset({
+    "Source", "SourceVersion", "ProcessingRun", "Run", "RunSnapshot", "RunResult",
+    "EvidenceSpan", "Citation", "StudioOutput", "OutputVersion",
+    "PendingOperationReference",
+})
+_CANON_FORBIDDEN_FIELDS: Final = frozenset({
+    "organization_policy", "approval", "approval_request", "provider_secret",
+    "provider_credential", "secret", "secret_reference", "cloud_access_token",
+})
+_CANON_ID: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+_UTC_TIMESTAMP: Final = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LocalCanonicalEnvelope:
+    entity_type: str
+    entity_id: str
+    aggregate_id: str
+    version: int
+    schema_version: int
+    digest_sha256: str
+    created_at: str
+    previous_version_id: str | None
+    payload: dict[str, object]
+    data_area: str = "local_private"
+
+
 def _valid_utf8_text(value: bytes) -> bool:
     if b"\x00" in value:
         return False
@@ -218,6 +249,28 @@ class LocalEncryptedStore:
                 object_version TEXT NOT NULL,
                 PRIMARY KEY (workspace_id, area, item_id)
             );
+            CREATE TABLE IF NOT EXISTS canonical_envelopes (
+                workspace_id TEXT NOT NULL,
+                area TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                aggregate_id TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK (version > 0),
+                schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+                digest_sha256 TEXT NOT NULL CHECK (length(digest_sha256) = 64),
+                created_at TEXT NOT NULL,
+                previous_version_id TEXT,
+                payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+                data_area TEXT NOT NULL CHECK (data_area = 'local_private'),
+                PRIMARY KEY (workspace_id, area, entity_type, entity_id),
+                UNIQUE (workspace_id, area, entity_type, aggregate_id, version)
+            );
+            CREATE TRIGGER IF NOT EXISTS canonical_envelopes_update_immutable
+            BEFORE UPDATE ON canonical_envelopes
+            BEGIN SELECT RAISE(ABORT, 'LOCAL_CANON_IMMUTABLE'); END;
+            CREATE TRIGGER IF NOT EXISTS canonical_envelopes_delete_immutable
+            BEFORE DELETE ON canonical_envelopes
+            BEGIN SELECT RAISE(ABORT, 'LOCAL_CANON_IMMUTABLE'); END;
             """
         )
         now = _utc_now()
@@ -508,6 +561,134 @@ class LocalEncryptedStore:
             f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0(embedding float[{dimension}] distance_metric=cosine)"
         )
         return table
+
+    @staticmethod
+    def _canonical_payload(payload: Mapping[str, object]) -> tuple[dict[str, object], str]:
+        if not isinstance(payload, Mapping):
+            raise _fail("LOCAL_CANON_SNAPSHOT_INVALID")
+
+        def visit(value: object) -> None:
+            if isinstance(value, Mapping):
+                for key, child in value.items():
+                    if not isinstance(key, str) or key.lower() in _CANON_FORBIDDEN_FIELDS:
+                        raise _fail("LOCAL_CANON_FIELD_FORBIDDEN")
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+            elif value is not None and not isinstance(value, (str, int, float, bool)):
+                raise _fail("LOCAL_CANON_SNAPSHOT_INVALID")
+
+        normalized = dict(payload)
+        visit(normalized)
+        try:
+            encoded = json.dumps(
+                normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise _fail("LOCAL_CANON_SNAPSHOT_INVALID") from error
+        return normalized, encoded
+
+    def put_canonical_envelope(
+        self,
+        workspace_id: str,
+        area: str,
+        *,
+        entity_type: str,
+        entity_id: str,
+        aggregate_id: str,
+        version: int,
+        schema_version: int,
+        digest_sha256: str,
+        created_at: str,
+        previous_version_id: str | None,
+        payload: Mapping[str, object],
+    ) -> None:
+        with self._operation_lock:
+            _scope(workspace_id, area)
+            if (
+                entity_type not in _CANON_ENTITY_TYPES
+                or not _CANON_ID.fullmatch(entity_id)
+                or not _CANON_ID.fullmatch(aggregate_id)
+                or version < 1
+                or schema_version < 1
+                or not _DIGEST.fullmatch(digest_sha256)
+                or not _UTC_TIMESTAMP.fullmatch(created_at)
+                or (
+                    previous_version_id is not None
+                    and not _CANON_ID.fullmatch(previous_version_id)
+                )
+            ):
+                raise _fail("LOCAL_CANON_SNAPSHOT_INVALID")
+            if (version == 1) != (previous_version_id is None):
+                raise _fail("LOCAL_CANON_PREVIOUS_VERSION_INVALID")
+            normalized, encoded = self._canonical_payload(payload)
+            actual = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            if actual != digest_sha256:
+                raise _fail("LOCAL_CANON_DIGEST_MISMATCH")
+            database = self._db()
+            if previous_version_id is not None:
+                previous = database.execute(
+                    "SELECT aggregate_id, version FROM canonical_envelopes "
+                    "WHERE workspace_id = ? AND area = ? AND entity_type = ? AND entity_id = ?",
+                    (workspace_id, area, entity_type, previous_version_id),
+                ).fetchone()
+                if previous != (aggregate_id, version - 1):
+                    raise _fail("LOCAL_CANON_PREVIOUS_VERSION_INVALID")
+            try:
+                database.execute(
+                    "INSERT INTO canonical_envelopes "
+                    "(workspace_id, area, entity_type, entity_id, aggregate_id, version, "
+                    "schema_version, digest_sha256, created_at, previous_version_id, "
+                    "payload_json, data_area) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local_private')",
+                    (
+                        workspace_id, area, entity_type, entity_id, aggregate_id, version,
+                        schema_version, digest_sha256, created_at, previous_version_id, encoded,
+                    ),
+                )
+                database.commit()
+            except sqlite.IntegrityError as error:
+                database.rollback()
+                raise _fail("LOCAL_CANON_IMMUTABLE") from error
+            del normalized
+
+    def get_canonical_envelope(
+        self,
+        workspace_id: str,
+        area: str,
+        entity_type: str,
+        entity_id: str,
+    ) -> LocalCanonicalEnvelope:
+        with self._operation_lock:
+            _scope(workspace_id, area)
+            if entity_type not in _CANON_ENTITY_TYPES or not _CANON_ID.fullmatch(entity_id):
+                raise _fail("LOCAL_CANON_SNAPSHOT_INVALID")
+            row = self._db().execute(
+                "SELECT aggregate_id, version, schema_version, digest_sha256, created_at, "
+                "previous_version_id, payload_json, data_area FROM canonical_envelopes "
+                "WHERE workspace_id = ? AND area = ? AND entity_type = ? AND entity_id = ?",
+                (workspace_id, area, entity_type, entity_id),
+            ).fetchone()
+            if row is None:
+                raise _fail("LOCAL_CANON_NOT_FOUND")
+            payload = json.loads(str(row[6]))
+            if not isinstance(payload, dict):
+                raise _fail("LOCAL_CIPHERTEXT_CORRUPT")
+            return LocalCanonicalEnvelope(
+                entity_type, entity_id, str(row[0]), int(row[1]), int(row[2]),
+                str(row[3]), str(row[4]), None if row[5] is None else str(row[5]),
+                payload, str(row[7]),
+            )
+
+    def execute_canonical_mutation_for_test(
+        self, statement: str, parameters: tuple[object, ...]
+    ) -> None:
+        """Exercise DB immutability in tests without exposing a product mutation API."""
+        with self._operation_lock:
+            if not statement.startswith(("UPDATE canonical_envelopes", "DELETE FROM canonical_envelopes")):
+                raise _fail("LOCAL_CANON_SNAPSHOT_INVALID")
+            self._db().execute(statement, parameters)
 
     def put_vector(
         self,
