@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-04",
+  "validated_commit": "d851acbf2974ea0e26dfb884d88b601054bd9031",
+  "implementation_commit": "6682f43a10d0a70addb48748928d27fb563fe69b",
+  "migration_revision": "0003",
+  "server": {
+    "host": "ysna-server",
+    "architecture": "aarch64",
+    "postgresql": "18.4",
+    "pgvector": "0.8.2",
+    "image_digest": "sha256:b7337db8fe39d12fe8ecb0003c72680f24479813a744b43154eee6f2eab5a5f3",
+    "isolated_root": "/home/ubuntu/deploy/daon-user/R1-M5-04",
+    "shared_resources_used_or_changed": false
+  },
+  "schema": {
+    "manifest_entities": 52,
+    "new_forced_rls_tables": 51,
+    "scoped_foreign_keys": 174,
+    "transition_rules": 84,
+    "orphan_or_cross_scope_links": 0,
+    "unconstrained_json_or_eav": false
+  },
+  "database_validation": {
+    "allowed_transitions_executed": 84,
+    "illegal_transitions_rejected": 1,
+    "lost_updates_rejected": 1,
+    "immutable_mutations_rejected": 2,
+    "invalid_digests_rejected": 1,
+    "cross_scope_rows": 0,
+    "lineage_paths_verified": 5,
+    "cloud_data_tests_passed": 15,
+    "object_queue_tests_passed": 14,
+    "object_storage_tests_skipped_without_s3": 2
+  },
+  "migration_validation": {
+    "preflight": "pass",
+    "blank_0001_0002_0003": "pass",
+    "head_reapply": "pass",
+    "downgrade_0003_to_0002": "pass",
+    "upgrade_0002_to_0003": "pass",
+    "pre_0003_backup_restore": "pass",
+    "post_restore_full_validation": "pass"
+  },
+  "local_projection": {
+    "tests_passed": 88,
+    "platform_specific_skipped": 1,
+    "restart_reproduction": "pass",
+    "update_delete_rejected": "pass",
+    "workspace_area_isolation": "pass",
+    "plaintext_canary_hits": 0,
+    "external_network_attempts": 0,
+    "changed_scope_mypy": "pass",
+    "ruff": "pass"
+  },
+  "service_health": {
+    "live_status": 200,
+    "ready_status": 200,
+    "restart_ready_status": 200
+  },
+  "regression": {
+    "api_local": {"passed": 96, "skipped": 21},
+    "api_local_total_including_new": {"passed": 96, "skipped": 21},
+    "api_server_affected": {"passed": 29, "skipped": 2},
+    "web_build_and_typecheck": "pass",
+    "workspace_lint": "pass",
+    "independence_violations": 0,
+    "quality_gate_at_89f42e1": "pass",
+    "final_delta_after_quality_gate": "local verification test and progress only"
+  },
+  "cleanup": {
+    "checkout_remaining": 0,
+    "containers_remaining": 0,
+    "networks_remaining": 0,
+    "volumes_remaining": 0,
+    "protected_resources_unchanged": true
+  },
+  "secrets_or_dsn_in_evidence": 0,
+  "formal_failure_reports": 0
+}
