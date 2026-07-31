@@ -34,12 +34,22 @@ def _environment_or_file(name: str) -> str | None:
     return Path(file_name).read_text(encoding="utf-8").strip()
 
 
+def _environment_or_bytes(name: str) -> bytes | None:
+    value = os.environ.get(name)
+    if value:
+        return value.encode("utf-8")
+    file_name = os.environ.get(f"{name}_FILE")
+    if not file_name:
+        return None
+    return Path(file_name).read_bytes()
+
+
 DSN = _environment_or_file("DAON_RECOVERY_INTEGRATION_DSN")
 ENDPOINT = os.environ.get("DAON_RECOVERY_INTEGRATION_OBJECT_ENDPOINT")
 BUCKET = os.environ.get("DAON_RECOVERY_INTEGRATION_BUCKET")
 ACCESS_KEY = _environment_or_file("DAON_RECOVERY_INTEGRATION_ACCESS_KEY")
 SECRET_KEY = _environment_or_file("DAON_RECOVERY_INTEGRATION_SECRET_KEY")
-MANIFEST_KEY = _environment_or_file("DAON_RECOVERY_INTEGRATION_MANIFEST_KEY")
+MANIFEST_KEY = _environment_or_bytes("DAON_RECOVERY_INTEGRATION_MANIFEST_KEY")
 CONFIGURED = all((DSN, ENDPOINT, BUCKET, ACCESS_KEY, SECRET_KEY, MANIFEST_KEY))
 
 
@@ -101,7 +111,7 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
         return PostgresRecoveryService(
             DSN,
             self.storage,
-            manifest_key=MANIFEST_KEY.encode("utf-8"),
+            manifest_key=MANIFEST_KEY,
             clock=lambda: datetime.now(timezone.utc),
         )
 
