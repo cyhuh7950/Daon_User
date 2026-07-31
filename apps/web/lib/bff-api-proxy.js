@@ -32,6 +32,8 @@ const AUDIT_QUERY = new Set([
 ]);
 const NOTIFICATION_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 const INBOX_QUERY = new Set(["cursor", "filter", "limit", "search"]);
+const BACKUP_QUERY = new Set(["workspace_id"]);
+const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
 
 export class BffConfigurationError extends Error {
   constructor(code) {
@@ -66,6 +68,46 @@ export function parseInternalApiBase(rawValue, profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (segments.length === 1 && segments[0] === "backups") {
+    if (method === "GET") return { path: "/api/v1/backups", query: BACKUP_QUERY };
+    return method === "POST"
+      ? { path: "/api/v1/backups", query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1])) {
+    return method === "GET"
+      ? { path: `/api/v1/backups/${encodeURIComponent(segments[1])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "backups"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "restore-previews"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/backups/${encodeURIComponent(segments[1])}/restore-previews`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 2
+    && segments[0] === "restore-requests"
+    && SAFE_SEGMENT.test(segments[1])
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/restore-requests/${encodeURIComponent(segments[1])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "restore-requests"
+    && SAFE_SEGMENT.test(segments[1])
+    && RESTORE_ACTIONS.has(segments[2])
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/restore-requests/${encodeURIComponent(segments[1])}/${segments[2]}`, query: null }
+      : { methodRejected: true };
+  }
   if (segments.length === 1 && segments[0] === "session") {
     return method === "GET" ? { path: "/api/v1/session", query: null } : { methodRejected: true };
   }

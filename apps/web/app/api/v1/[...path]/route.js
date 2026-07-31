@@ -34,4 +34,5 @@ async function handler(request, context) {
 
 export const dynamic = "force-dynamic";
 export const GET = handler;
+export const POST = handler;
 export const PATCH = handler;
