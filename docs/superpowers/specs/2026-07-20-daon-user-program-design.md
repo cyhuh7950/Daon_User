@@ -5,9 +5,9 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 구분 | 독립 제품 상세 설계 정본 |
-| 문서 버전 | 0.8 |
+| 문서 버전 | 0.9 |
 | 작성일 | 2026-07-20 |
-| 개정 | 2026-07-31 · R1-M5-06 삭제·보존·Legal Hold 공개 API·파생 정리·Local Copy 계약 반영 |
+| 개정 | 2026-07-31 · R1-M5-07 Backup·격리 Restore·Local 손상 복구 공개 계약 반영 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 승인 기록 | `APR-G0-DESIGN-20260720-01` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
@@ -811,6 +811,8 @@ Release 1에서 추가 인증이 필요한 민감 작업의 최소 목록은 다
 
 조직은 민감 작업을 추가할 수 있지만 이 최소 목록을 임의로 제거하지 못한다. 추가 인증은 작업 시작 전에 서버가 현재 권한을 다시 확인한 뒤 `actor + action + target + policy_version`에 묶인 단기 `StepUpAuthorization`으로 발급한다. 민감 Write는 유효한 불투명 `step_up_authorization_id`가 없으면 `STEP_UP_REQUIRED`로 거부하고 어떤 변경도 시작하지 않는다. 장기 승인 수명주기와 추가 인증을 같은 상태로 취급하지 않으며 성공·실패·만료와 사용된 작업을 Audit에 남긴다.
 
+Restore는 Preview 생성과 Execute 시작을 서로 다른 민감 작업으로 취급한다. 두 단계 모두 현재 조직 권한·Workspace ACL·AccessDecision·정책을 다시 확인하고, Execute에는 `actor + action + target + policy_version`에 정확히 결합된 새 StepUpAuthorization을 요구한다. Preview 때의 권한·승인을 Execute 권한으로 재사용하지 않는다.
+
 ### 14.5 권한 변경과 과거 결과
 
 - OutputVersion과 실행 계보는 감사·보존 정책에 따라 불변으로 유지한다. 보존은 현재 사용자에게 접근 권한을 부여한다는 뜻이 아니다.
@@ -883,7 +885,7 @@ Web·모바일과 Windows의 Cloud-sync 작업은 공개 Gateway 계약을 사�
 | 대화·실행 | Conversation, Message, Run, RunStep, RunSnapshot, RunResult, Citation |
 | 산출물 | GenerationRequest, GenerationSettingsSnapshot, StudioOutput, OutputVersion, EvidenceReference |
 | 검토·전달 | ReviewRequest, ApprovalRequest, Approval, Delivery, KnowledgeRegistration |
-| 운영 | Connector, ExternalReference, EgressDecision, AuditEvent, Notification |
+| 운영 | Connector, ExternalReference, EgressDecision, AuditEvent, Notification, BackupRecord, BackupManifest, RestoreRequest, RestorePreview, RestoreVerification, LocalRecoveryJob |
 
 주요 확장 정본 계약은 다음과 같다.
 
@@ -924,6 +926,18 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 - 콘텐츠 삭제 뒤에도 Audit 1년 정책의 최소 계보인 opaque ID, actor/action/target, timestamp, policy/hold/deletion decision, trace/hash chain을 콘텐츠와 분리 보존한다. 원문·Object Path·Secret·Content Digest는 사용자 증거에 노출하지 않으며 이 계보는 현재 접근 권한을 부여하지 않는다.
 - 보존된 OutputVersion·RunSnapshot·EvidenceReference는 현재 접근 권한을 부여하지 않으며 §14.5의 현재 권한 재검증을 항상 적용한다.
 - 로컬·클라우드 삭제 상태와 실패·재처리 결과를 화면에서 확인한다.
+
+### 16.3 Backup·Restore·Local 손상 복구
+
+- `BackupRecord`의 정상 상태는 `queued → capturing → verifying → ready`, 대체 상태는 `failed | expired`다. 자동 Cloud Backup은 Pilot RPO 15분 안에 생성하고 조직 관리자의 수동 Backup 요청도 같은 정본·검증 경로를 사용한다.
+- Backup은 일관된 PostgreSQL Snapshot, Object Inventory와 Checksum, Schema Revision, 정책·보존 Watermark, 불투명 계보 Manifest를 한 세트로 고정한다. 저장·전송 암호화와 최소 권한을 적용하고 Secret·원문·Raw Object Path를 증거에 남기지 않는다.
+- `RestoreRequest`의 정상 상태는 `requested → preview_ready → authorized → restoring → verifying → completed`, 대체 상태는 `cancelled | failed | blocked`다. Preview 없이 Execute하지 않으며 원본 Tenant·Workspace·DB·Bucket을 제자리 덮어쓰지 않는다.
+- M5 Restore 대상은 새 전용 Tenant·Workspace·DB·Bucket·Local Fixture로 제한한다. 운영 데이터·운영 자원 Restore와 파괴적 손상 주입은 `G9-DRILL` 사전 승인 없이는 `blocked`로 Fail-close한다.
+- Preview와 Execute는 각각 현재 조직 권한·Workspace ACL·AccessDecision·정책·Step-up 결합을 재검증한다. Execute 직전과 `completed` 전에는 Tenant·Workspace·RLS·현재 ACL·계보·Audit Hash Chain·Legal Hold·Deletion Tombstone을 다시 검증한다.
+- 현재 Retention Ledger·Legal Hold·Deletion Tombstone은 Backup 시점의 내용보다 우선한다. 이미 Purge된 콘텐츠는 Restore로 되살리지 않으며, 제외·차단된 항목과 사유를 Preview·검증 결과에 안전하게 표시한다.
+- `LocalRecoveryJob`의 정상 상태는 `detected → quarantined → scanning → repairable → repairing → verified`, 대체 상태는 `manual_recovery_required | failed`다. 손상 자료는 암호화 격리하고 검증된 Snapshot·Journal·정본 Metadata 범위 안에서만 복구한다.
+- Local 무결성을 확립할 수 없으면 조용히 폐기하거나 성공으로 표시하지 않고 `manual_recovery_required`로 전환한다. Restart 뒤 격리·검사·복구 상태를 복원하고 사용자는 Windows 운영 화면과 Local Loopback API로 진행과 결과를 확인한다.
+- Backup·Restore·Local Recovery의 요청·상태·Preview·검증·결과는 AuditEvent·Trace와 연결한다. R1-M2의 Production-bound `BackupRestoreAdapter`를 승계하고 M9-07에서 정식 RTO/RPO 훈련을 수행한다.
 
 ## 17. API 계약
 
@@ -980,6 +994,12 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 /api/v1/deletion-requests/{id}/purge
 /api/v1/sources/{id}/legal-holds
 /api/v1/legal-holds/{id}/release
+/api/v1/backups
+/api/v1/backups/{id}
+/api/v1/backups/{id}/restore-previews
+/api/v1/restore-requests/{id}
+/api/v1/restore-requests/{id}/execute
+/api/v1/restore-requests/{id}/cancel
 ```
 
 ### 17.2 공통 원칙
@@ -1016,6 +1036,10 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 - `POST /api/v1/sources/{id}/legal-holds`와 `POST /api/v1/legal-holds/{id}/release`는 조직 권한과 현재 정책을 재검증하고 `actor + action + target + policy_version`이 일치하는 StepUpAuthorization을 요구한다. Active Hold는 삭제보다 우선하며 해제 후 삭제 상태는 §16.2 규칙으로 결정론적으로 복귀한다.
 - 삭제·Hold Write는 Idempotency Key, `If-Match`, Tenant·Workspace Scope, 현재 AccessDecision, 안전 오류, Trace·Audit를 요구한다. 영구 Purge와 Hold 적용·해제는 현재 권한·정책을 작업 시작 직전에 다시 검증한다.
 - 공개 안전 오류는 `DELETION_GRACE_PERIOD_ACTIVE`, `LEGAL_HOLD_ACTIVE`, `DELETION_CLEANUP_PENDING`과 기존 `STEP_UP_REQUIRED`, `CURRENT_ACCESS_DENIED`를 사용한다. 내부 Object 경로·Secret·원문·Content Digest와 불필요한 내부 상태를 노출하지 않고 필요 이상의 새 오류 Code를 만들지 않는다.
+- Cloud Backup·Restore 공개 계약은 `POST /api/v1/backups`, `GET /api/v1/backups`, `GET /api/v1/backups/{id}`, `POST /api/v1/backups/{id}/restore-previews`, `GET /api/v1/restore-requests/{id}`, `POST /api/v1/restore-requests/{id}/execute`, `POST /api/v1/restore-requests/{id}/cancel`의 정확한 7개 Method·Path로 제한한다.
+- Backup·Restore Write는 Idempotency Key와 적용 가능한 경우 `If-Match`를 요구한다. GET도 현재 Tenant·Workspace·AccessDecision을 재검증하며, Client가 내부 DB·Bucket·Worker·Credential·Raw Path를 지정하지 못하게 한다.
+- Restore Preview는 복원 대상·제외 대상·현재 Retention/Legal Hold/Deletion Tombstone 조정·예상 격리 목적지를 반환한다. Execute는 Preview 상태, 현재 정책·권한, 결합된 Step-up, Version을 다시 확인하며 stale·중복 요청과 Allowlist 밖 대상을 Fail-close한다.
+- R1-M5-07은 새 전용 Fixture로만 Restore한다. `G9-DRILL`이 없으면 운영 대상 Restore·제자리 덮어쓰기·파괴적 손상 주입을 `blocked`로 종료하고, 기존 `INVALID_REQUEST`, `RESOURCE_UNAVAILABLE`, `CURRENT_ACCESS_DENIED`, `STEP_UP_REQUIRED` 안전 오류에 매핑한다. 새 공개 SafeError Code는 추가하지 않는다.
 
 ### 17.3 Local API
 
@@ -1024,6 +1048,8 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 - Process 소유권·App Instance 검증
 - 명시 Capability·Command Allowlist
 - 외부 Interface Listen 금지
+- R1-M5-07 공개 Local 계약은 `POST /local/v1/recovery/scans`, `GET /local/v1/recovery/jobs/{id}`, `POST /local/v1/recovery/jobs/{id}/repair`의 정확한 3개 Method·Path로 제한한다.
+- Scan은 암호화 격리와 손상 범위 판정만 수행하고, Repair는 검증된 Snapshot·Journal·정본 Metadata와 Fixture Allowlist 범위 안에서만 실행한다. 복구 무결성을 증명하지 못하면 `manual_recovery_required`로 Fail-close한다.
 
 ## 18. 상태와 안전 오류
 
@@ -1195,9 +1221,13 @@ Local-private 자료의 외부 자동 Fallback은 금지한다.
 - 개인·조직별 보존 정책
 - Legal Hold와 사용자 삭제 분리
 - 원본·파생·Cache 삭제 추적
-- Backup·Restore 후 권한·계보 재검증
+- Cloud 자동 Backup은 RPO 15분 안에 일관된 DB Snapshot·Object Checksum·Schema·정책/보존 Watermark·불투명 계보 Manifest를 생성·검증한다.
+- Restore는 Preview→별도 Step-up Execute→격리 Restore→무결성 검증 순서로 수행하고 제자리 덮어쓰기를 금지한다.
+- Backup보다 현재 Retention Ledger·Legal Hold·Deletion Tombstone을 우선하며 Purge된 콘텐츠를 부활시키지 않는다.
+- Backup·Restore 후 현재 권한·RLS·계보·Audit Hash Chain을 재검증한다.
+- Local 손상 자료는 암호화 격리하고 검증된 Snapshot·Journal·정본 Metadata로 제한 복구하며, 검증 불가 시 수동 복구 상태로 전환한다.
 - 감사 기록 위변조 방지
-- 복구 목표와 훈련 결과를 운영 화면에서 관리
+- 상태·Preview·진행·결과와 복구 목표·훈련 결과를 Web·Windows 운영 화면과 API로 관리한다. CLI 조작을 사용자 운영 절차로 요구하지 않는다.
 
 ## 22. 기술 구성과 배포
 
@@ -1451,6 +1481,7 @@ M4~M6의 모든 수평 구현이 끝날 때까지 통합 검증을 미루지 않
 | 구 독립 설계서는 `SUPERSEDED`, 현행 정본만 구현 기준 | 확정 |
 | Sync·Copy/Publish 공개 API는 Preview→Step-up 승인→승인 항목의 재개 전송→명시적 충돌 해결 순서로 고정하고, 원본 영역·Version의 암묵적 변경과 자동 병합·덮어쓰기를 금지 | 확정 · 신산님 승인 2026-07-30 · `APR-R1-M5-05-SYNC-API-20260730-01` |
 | 삭제·보존·Legal Hold 공개 API 6종과 30일 유예·Audit 1년·Hold 우선·파생 Inventory·Known Local Copy Tombstone/Ack 계약 | 확정 · 신산님 승인 2026-07-31 · `R1-D026` · `APR-R1-M5-06-RETENTION-API-20260731-01` |
+| Backup·격리 Restore Cloud 공개 API 7종과 Local 손상 복구 Loopback API 3종, Preview·Execute 재검증, 현재 Retention 우선, Fixture-only·G9-DRILL 경계 | 확정 · 신산님 승인 2026-07-31 · `R1-D027` · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
 | Next.js·Tauri·React Native·FastAPI | 확정 |
 | 독립 Release 1·2·3 | 확정 |
 

@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "issue_id": "R1-M5-07",
+  "branch": "codex/r1-m5-07",
+  "implementation_commit": null,
+  "verdict": "NOT_STARTED",
+  "approval_record_id": "APR-R1-M5-07-RECOVERY-API-20260731-01",
+  "decision_id": "R1-D027",
+  "evidence": {
+    "tdd_red": null,
+    "migration_0006": null,
+    "postgresql_18_4_rls": null,
+    "minio_backup_restore": null,
+    "cloud_api_7_routes": null,
+    "local_api_3_routes": null,
+    "retention_reconciliation": null,
+    "local_encrypted_recovery": null,
+    "actual_ui_and_same_origin_network": null,
+    "quality_gate": null,
+    "external_deployment": {
+      "status": "NOT_APPROVED",
+      "server": "ysna-server",
+      "resources_created": false,
+      "cleanup_performed": false
+    }
+  },
+  "protected_untracked_files": [
+    "docs/04_test_reports/release_1/interim_review_2026-07-30.md",
+    "docs/04_test_reports/release_1_model_provider_queries.md"
+  ]
+}

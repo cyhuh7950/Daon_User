@@ -6,7 +6,7 @@
 | --- | --- |
 | 문서 구분 | Release 1 구현 작업계획 정본 |
 | 계획 ID | `DAON-USER-R1-PLAN` |
-| 계획 버전 | `1.1` |
+| 계획 버전 | `1.2` |
 | 작성일 | 2026-07-20 |
 | 최종 수정일 | 2026-07-31 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
@@ -15,7 +15,7 @@
 | 대상 Release | Release 1 — 핵심 업무형 |
 | 상세 설계 정본 | `docs/superpowers/specs/2026-07-20-daon-user-program-design.md` |
 | 상세 설계 배포본 | `docs/Daon 사용자형 지식 업무지원 프로그램 상세 설계서.docx` |
-| 상세 설계 정본 SHA-256 | `3317B404F9FD4A2AFFE3A15EBBF456DE0B88AE56249666872C09629059C82038` |
+| 상세 설계 정본 SHA-256 | `B35759D057822FCE688D22178B9C8C54331D84C653EB370FB45048A8464644BC` |
 | 상세 설계 배포본 SHA-256 | `DAB1F8A936D69B18355EB986579A0CA5535169E829AB80D30DAC067606FEA0DF` |
 | 계획 정본 경로 | `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` |
 | 승인 기준 Manifest | `docs/02_work_orders/release_1_baseline_manifest.json` · M0 생성 예정 |
@@ -55,6 +55,7 @@
 | 0.9 | 2026-07-20 | WSL 필수 통합을 ysna-server 격리 개발·통합 흐름으로 대체하고 Git Push·전용 PostgreSQL 18.4 Migration·서버 Test·PR Merge Gate와 ARM64·공유 자원 금지 계약 반영 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-DEVENV-YSNA-20260720-01` |
 | 1.0 | 2026-07-30 | R1-M5-05 Sync·Copy/Publish 공개 API 5종, Step-up 승인 Snapshot, 재개 전송, 명시적 충돌 선택과 자동 덮어쓰기 금지 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-05-SYNC-API-20260730-01` |
 | 1.1 | 2026-07-31 | R1-M5-06 삭제·보존·Legal Hold 공개 API 6종, 상태·파생 Inventory·Local Copy Tombstone/Ack·최소 Audit 계보 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-06-RETENTION-API-20260731-01` |
+| 1.2 | 2026-07-31 | R1-M5-07 Backup·격리 Restore Cloud API 7종, Local 손상 복구 API 3종, Preview·Execute 재검증·현재 Retention 우선·Fixture-only 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
 
 ---
 
@@ -263,6 +264,7 @@ Milestone 이동, G0/G2/G9 Gate 우회, M2 승인 전 개별 기능 구현 또�
 | R1-D020 | 권한 변경 후 과거 결과 | OutputVersion 불변 보존, 현재 ACL 재검증, 무권한 근거·파생부 마스킹/차단, 현재 정책 새 Run | 확정 · 신산님 승인 2026-07-20 |
 | R1-D023 | iOS 알림 설정 진입 | 기존 범용 앱 설정 기능 보존 + 알림 전용 공개 API 진입, iOS 16+ `openNotificationSettingsURLString`, iOS 15.1 기존 앱 설정 Fallback, 비공개 URL·TCC 직접 조작 금지 | 확정 · 신산님 승인 2026-07-28 |
 | R1-D026 | 삭제·보존·Legal Hold 공개 계약 | 6개 API, 30일 유예, Audit 1년, Hold 우선, 영구 Purge·Hold의 결합 Step-up/현재 권한·정책 재검증, 파생 Inventory와 Known Local Copy Tombstone/Ack | 확정 · 신산님 승인 2026-07-31 · `APR-R1-M5-06-RETENTION-API-20260731-01` |
+| R1-D027 | Backup·Restore·Local 손상 복구 공개 계약 | Cloud 7개 API, Local Loopback 3개 API, RPO 15분, Preview 후 별도 Step-up Execute, 현재 Retention·Hold·Tombstone 우선, Fixture-only 격리 Restore와 G9-DRILL 경계 | 확정 · 신산님 승인 2026-07-31 · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
 
 R1-D013~020은 이번 승인으로 설계 계약이 확정되었으므로 M0에서 재결정하지 않고 결정 기록·추적표·Baseline Manifest에 고정한다. 나머지 미확정 항목은 추측으로 채우지 않는다. M1 진입 전에 각 항목을 `확정`, `범위 제외 승인`, `외부 차단` 중 하나로 분류하고 근거를 기록한다.
 
@@ -476,14 +478,16 @@ Cloud-sync와 Windows Local-private가 서로 다른 저장·실행 영역을 �
 | R1-M5-04 | R1-M5-01, R1-M5-02, R1-M5-03 | 데이터 정본·계보 | Source/Run/RuleSet/Model/Studio/Audit Entity와 불변 Version | Migration·FK·상태 전이·Snapshot 불변 테스트 |
 | R1-M5-05 | R1-M4-02, R1-M5-03, R1-M5-04 | Sync·Copy/Publish·충돌 | Preview·Step-up 승인 Snapshot, 승인 항목 재개 전송, Version 비교, 암호화 Offline Queue, Reconnect, 명시적 충돌 선택 API | 무승인 전송 0건, 원본 암묵 변경 0건, 자동 병합·덮어쓰기 0건, Batch 재개·Audit 연결 |
 | R1-M5-06 | R1-M5-04, R1-M5-05 | 삭제·보존·Legal Hold | 공개 API 6종, `requested→deactivated→grace_period→cleanup_pending→purged`와 대체 상태, Migration `0005`, 정규화 파생 Inventory·Append-only Attempt/Audit/Trace, Local Tombstone/Ack, 현재 권한·정책·결합 Step-up·Idempotency·If-Match | TDD 부정 경로, PostgreSQL 18.4 `0001→0005`·재적용·`0005→0004→0005`, RLS·Runtime/OpenAPI 6 Route, 부분 실패 재시도·중복 삭제 0, Local 암호화 Restart/Ack, 최소 Audit 계보, 전용 Fixture만 Purge하고 기존 데이터 불변 |
-| R1-M5-07 | R1-M5-01, R1-M5-03, R1-M5-04, R1-M5-06 | Backup·Restore·손상 복구 | Cloud Backup·격리 Restore, Local 손상 복구 | 복구 후 권한·계보 재검증, 운영 대상은 G9-DRILL 없으면 금지 |
+| R1-M5-07 | R1-M5-01, R1-M5-03, R1-M5-04, R1-M5-06 | Backup·Restore·손상 복구 | Cloud 공개 API 7종, Local Loopback API 3종, Migration `0006`, 자동·수동 Backup, Preview→별도 Step-up Execute→Fixture-only 격리 Restore, 암호화 Local 격리·제한 복구, M2 `BackupRestoreAdapter` 승계 | TDD 부정 경로, PostgreSQL 18.4 `0001→0006`·재적용·`0006→0005→0006`, RLS·MinIO Checksum/누락, Runtime/OpenAPI 7+3 Route, 현재 Retention·Hold·Tombstone 우선과 Purge 부활 0, Local Restart·Repair·수동복구, actual 화면/API·same-origin Network, G9-DRILL 없는 운영 대상 Fail-close |
 
 ### M5 Exit Gate
 
 - Local-private와 Cloud-sync 경로를 별도 테스트로 통과
 - 저장·전송 암호화, Tenant·Workspace·영역별 Key 분리 증거
 - 승인 없는 영역 이동과 External 전송 0건
-- Backup·Restore와 Local 손상 복구를 화면/API에서 확인
+- Backup·Restore와 Local 손상 복구를 Web·Windows 화면/API에서 확인하고 Browser Network의 Cloud 호출이 same-origin임을 증명
+- Restore Preview·Execute별 현재 권한·정책·Step-up 재검증, Fixture Allowlist 밖 Restore 0건, Purge된 콘텐츠 부활 0건
+- 운영 대상 Restore·파괴적 손상 주입은 G9-DRILL 승인 전 Fail-close
 
 ## 16. M6 — Source·지식·LLM·Connector
 

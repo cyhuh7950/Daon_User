@@ -12,7 +12,7 @@
     {
       "id": "DESIGN_MD",
       "path": "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
-      "sha256": "155103A308A7F9765E077DA725941EC893F04E9156F5011AFA50827E32E045E7"
+      "sha256": "B35759D057822FCE688D22178B9C8C54331D84C653EB370FB45048A8464644BC"
     },
     {
       "id": "DESIGN_DOCX",
@@ -22,7 +22,7 @@
     {
       "id": "IMPLEMENTATION_PLAN",
       "path": "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
-      "sha256": "A68D0E225FF0BDE8945353D3FE1F813BA4B6C6460C398D6E3831DA98348FB312"
+      "sha256": "A4EA5502E0A2594D444723A106C4242582C287BC9CB93BCDAC881F4346FDBBDA"
     },
     {
       "id": "TEST_PLAN",
@@ -32,7 +32,7 @@
     {
       "id": "DECISIONS",
       "path": "docs/01_architecture/DECISIONS.md",
-      "sha256": "4F7FD3BEA9B555AB8AC566C3FBDB5912A653827676CDA813A9860857E6C26340"
+      "sha256": "9F0E7F333E63B556A0BBC1CE88056F946CE4EB9F7102F7DF7FA6ED2301647415"
     },
     {
       "id": "RISK_REGISTER",
@@ -78,10 +78,11 @@
     "APR-DEVENV-YSNA-20260720-01",
     "APR-R1-M4-07-NOTIFICATION-API-20260729-01",
     "APR-R1-M5-05-SYNC-API-20260730-01",
-    "APR-R1-M5-06-RETENTION-API-20260731-01"
+    "APR-R1-M5-06-RETENTION-API-20260731-01",
+    "APR-R1-M5-07-RECOVERY-API-20260731-01"
   ],
   "decision_status": {
-    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020", "R1-D021", "R1-D022", "R1-D023", "R1-D024", "R1-D025", "R1-D026"],
+    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020", "R1-D021", "R1-D022", "R1-D023", "R1-D024", "R1-D025", "R1-D026", "R1-D027"],
     "g0_approval_requested": [],
     "external_blocked": ["R1-D004", "R1-D006", "R1-D007", "R1-D008", "R1-D011", "R1-D012"]
   },
@@ -187,6 +188,22 @@
       "approval_record_id": "APR-R1-M5-06-RETENTION-API-20260731-01",
       "product_contract_changed": true,
       "public_api_contract_changed": true
+    },
+    {
+      "id": "CHG-R1-M5-07-RECOVERY-API-001",
+      "classification": "C2",
+      "owner": "신산님",
+      "summary": "Backup·격리 Restore Cloud API 7종과 Local 손상 복구 Loopback API 3종, 현재 Retention 우선·Fixture-only 계약 승인",
+      "affected_documents": [
+        "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
+        "docs/01_architecture/DECISIONS.md",
+        "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
+        "docs/02_work_orders/release_1_baseline_manifest.json",
+        "docs/02_work_orders/release_1/R1-M5-07_work_order.md"
+      ],
+      "approval_record_id": "APR-R1-M5-07-RECOVERY-API-20260731-01",
+      "product_contract_changed": true,
+      "public_api_contract_changed": true
     }
   ],
   "notes": [
@@ -199,6 +216,7 @@
     "CHG-R1-MANIFEST-002 synchronizes already approved post-G0 decisions; it does not create or alter a product contract.",
     "R1-D024 and CHG-R1-M4-07-NOTIFICATION-API-001 record the explicitly approved Notification and Inbox public API contract.",
     "R1-D025 and CHG-R1-M5-05-SYNC-API-001 synchronize the approved Sync and Copy/Publish public API contract with this manifest.",
-    "R1-D026 and CHG-R1-M5-06-RETENTION-API-001 synchronize the approved deletion, retention, and Legal Hold public API contract with this manifest."
+    "R1-D026 and CHG-R1-M5-06-RETENTION-API-001 synchronize the approved deletion, retention, and Legal Hold public API contract with this manifest.",
+    "R1-D027 and CHG-R1-M5-07-RECOVERY-API-001 synchronize the approved Backup, isolated Restore, and Local recovery public API contract with this manifest."
   ]
 }
