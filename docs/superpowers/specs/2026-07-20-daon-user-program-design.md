@@ -5,9 +5,9 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 구분 | 독립 제품 상세 설계 정본 |
-| 문서 버전 | 0.7 |
+| 문서 버전 | 0.8 |
 | 작성일 | 2026-07-20 |
-| 개정 | 2026-07-30 · R1-M5-05 Sync·Copy/Publish 공개 API·승인·충돌 계약 반영 |
+| 개정 | 2026-07-31 · R1-M5-06 삭제·보존·Legal Hold 공개 API·파생 정리·Local Copy 계약 반영 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 승인 기록 | `APR-G0-DESIGN-20260720-01` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
@@ -913,10 +913,15 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 
 ### 16.2 삭제와 보존
 
-- 삭제는 비활성화·유예 기간·파생 데이터 정리 순서로 처리한다.
-- 원본 삭제 시 Index·Preview·Cache·Local Copy를 추적 정리한다.
-- Legal Hold는 일반 삭제보다 우선한다.
-- 감사에 필요한 최소 계보는 정책에 따라 콘텐츠와 분리 보존한다.
+- R1-D009 Pilot 기본값은 삭제 유예 30일, Audit 보존 1년이며 Active Legal Hold가 일반 삭제보다 항상 우선한다.
+- `DeletionRequest`는 `requested → deactivated → grace_period → cleanup_pending → purged`를 정상 상태로 사용하고 `cancelled | blocked_by_hold | failed`를 대체 상태로 사용한다. 요청 즉시 Source를 비활성화해 새 Run·Sync·Export·KnowledgeRegistration 사용을 차단하되 SourceVersion·Object를 즉시 물리 삭제하지 않는다.
+- `grace_until` 전에는 영구 Purge를 시작하지 않는다. Cancel은 Purge 시작 전만 허용하고 기존 SourceVersion을 새로 쓰지 않은 채 Source 사용 가능 상태를 복구한다.
+- Active `LegalHold`는 어느 단계에서든 Purge보다 우선하여 `blocked_by_hold`로 전이한다. Hold 해제 후 `grace_until` 전이면 `grace_period`, 기한이 지났으면 `cleanup_pending`으로 결정론적으로 복귀한다.
+- 영구 Purge는 유예 종료, Active Hold 0건, 유효한 StepUpAuthorization, 현재 조직 권한·정책, `If-Match`를 모두 만족해야 시작한다. 같은 Idempotency Key의 재요청은 중복 삭제를 만들지 않는다.
+- 삭제 정본은 `DeletionRequest`, `DeletionCleanupItem`, `DeletionAttempt`, `LegalHold`, `LegalHoldTarget`, AuditEvent·Trace 관계로 정규화한다. 파생 Inventory는 original object/content, Index, Preview, Cache, known Local Copy, Sync target/reference를 항목별로 고정하고 상태·시도·결과·Audit·Trace를 Append-only로 기록한다. 한 항목이라도 미정리면 `purged`로 전이하지 않는다.
+- 부분 실패는 안전하게 `cleanup_pending` 또는 재시도 가능한 `failed`로 남기며 실패 항목만 재시도한다. 완료 항목을 중복 삭제하거나 전체 성공으로 가장하지 않는다.
+- Known Local Copy는 기존 SQLCipher 경계에서 암호화 Tombstone과 Ack를 추적한다. 온라인 장치 Ack 또는 Revoke/Key Destruction으로 접근 불가가 증명되기 전에는 정리 완료로 표시하지 않는다. 실제 Device Pairing·Relay는 R1-M6-04 범위이므로 Mock 성공을 금지한다.
+- 콘텐츠 삭제 뒤에도 Audit 1년 정책의 최소 계보인 opaque ID, actor/action/target, timestamp, policy/hold/deletion decision, trace/hash chain을 콘텐츠와 분리 보존한다. 원문·Object Path·Secret·Content Digest는 사용자 증거에 노출하지 않으며 이 계보는 현재 접근 권한을 부여하지 않는다.
 - 보존된 OutputVersion·RunSnapshot·EvidenceReference는 현재 접근 권한을 부여하지 않으며 §14.5의 현재 권한 재검증을 항상 적용한다.
 - 로컬·클라우드 삭제 상태와 실패·재처리 결과를 화면에서 확인한다.
 
@@ -969,6 +974,12 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 /api/v1/sync-operations/{id}/approve
 /api/v1/sync-operations/{id}/transfer-batches
 /api/v1/sync-operations/{id}/conflicts/{conflict_id}/resolution
+/api/v1/sources/{id}/deletion-requests
+/api/v1/deletion-requests/{id}
+/api/v1/deletion-requests/{id}/cancel
+/api/v1/deletion-requests/{id}/purge
+/api/v1/sources/{id}/legal-holds
+/api/v1/legal-holds/{id}/release
 ```
 
 ### 17.2 공통 원칙
@@ -1000,6 +1011,11 @@ RunSnapshot은 실행 중 수정하지 않는다. 각 실행 시도는 불변 Mo
 - `POST /api/v1/sync-operations/{id}/transfer-batches`는 승인 Snapshot에 포함된 항목만 재개 가능한 Batch로 전송한다. 모든 Write는 Idempotency Key와 `If-Match`를 요구하고, Client가 내부 Worker·저장소 주소·Credential을 지정하지 못하게 한다.
 - `POST /api/v1/sync-operations/{id}/conflicts/{conflict_id}/resolution`은 `keep_local_as_new_version | keep_cloud | keep_both` 중 권한 있는 사용자의 명시 선택만 받는다. 자동 병합·자동 덮어쓰기는 금지하며 선택 전에는 충돌 상태를 유지한다.
 - Local Offline Queue는 M5-03 암호화 저장소 안에 승인 상태·Manifest·Batch Cursor만 보존한다. 연결 복구 시 현재 권한·정책·승인 유효성·대상 Version을 다시 확인하고 승인된 항목만 전송한다. 실제 M6 재색인이 완료되기 전에는 `reindex_requested`까지만 기록하고 성공을 가장하지 않는다.
+- `POST /api/v1/sources/{id}/deletion-requests`는 Source를 즉시 비활성화하고 유예 종료 시각과 정규화된 파생 Inventory를 고정한다. `GET /api/v1/deletion-requests/{id}`도 Tenant·Workspace Scope와 현재 권한을 재검증해 상태·정리 항목·허용 조치만 반환한다.
+- `POST /api/v1/deletion-requests/{id}/cancel`은 Purge 시작 전만 허용하고 기존 SourceVersion을 변경하지 않은 채 사용 상태를 복구한다. `POST /api/v1/deletion-requests/{id}/purge`는 유예 종료·Active Hold 0건·현재 권한·정책·`If-Match`·결합된 Step-up을 모두 확인한 뒤 미완료 항목만 정리한다.
+- `POST /api/v1/sources/{id}/legal-holds`와 `POST /api/v1/legal-holds/{id}/release`는 조직 권한과 현재 정책을 재검증하고 `actor + action + target + policy_version`이 일치하는 StepUpAuthorization을 요구한다. Active Hold는 삭제보다 우선하며 해제 후 삭제 상태는 §16.2 규칙으로 결정론적으로 복귀한다.
+- 삭제·Hold Write는 Idempotency Key, `If-Match`, Tenant·Workspace Scope, 현재 AccessDecision, 안전 오류, Trace·Audit를 요구한다. 영구 Purge와 Hold 적용·해제는 현재 권한·정책을 작업 시작 직전에 다시 검증한다.
+- 공개 안전 오류는 `DELETION_GRACE_PERIOD_ACTIVE`, `LEGAL_HOLD_ACTIVE`, `DELETION_CLEANUP_PENDING`과 기존 `STEP_UP_REQUIRED`, `CURRENT_ACCESS_DENIED`를 사용한다. 내부 Object 경로·Secret·원문·Content Digest와 불필요한 내부 상태를 노출하지 않고 필요 이상의 새 오류 Code를 만들지 않는다.
 
 ### 17.3 Local API
 
@@ -1434,6 +1450,7 @@ M4~M6의 모든 수평 구현이 끝날 때까지 통합 검증을 미루지 않
 | 첫 코드 변경 전 Git 문서 기준 Commit·Baseline Manifest 고정 | 확정 |
 | 구 독립 설계서는 `SUPERSEDED`, 현행 정본만 구현 기준 | 확정 |
 | Sync·Copy/Publish 공개 API는 Preview→Step-up 승인→승인 항목의 재개 전송→명시적 충돌 해결 순서로 고정하고, 원본 영역·Version의 암묵적 변경과 자동 병합·덮어쓰기를 금지 | 확정 · 신산님 승인 2026-07-30 · `APR-R1-M5-05-SYNC-API-20260730-01` |
+| 삭제·보존·Legal Hold 공개 API 6종과 30일 유예·Audit 1년·Hold 우선·파생 Inventory·Known Local Copy Tombstone/Ack 계약 | 확정 · 신산님 승인 2026-07-31 · `R1-D026` · `APR-R1-M5-06-RETENTION-API-20260731-01` |
 | Next.js·Tauri·React Native·FastAPI | 확정 |
 | 독립 Release 1·2·3 | 확정 |
 

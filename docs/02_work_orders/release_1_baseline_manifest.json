@@ -12,7 +12,7 @@
     {
       "id": "DESIGN_MD",
       "path": "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
-      "sha256": "5559450E29E03BBAB9892DEF899A9888D20E387EBE734F77A9AA826759E9DFF6"
+      "sha256": "155103A308A7F9765E077DA725941EC893F04E9156F5011AFA50827E32E045E7"
     },
     {
       "id": "DESIGN_DOCX",
@@ -22,7 +22,7 @@
     {
       "id": "IMPLEMENTATION_PLAN",
       "path": "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
-      "sha256": "6693010D25B304A134AC414CB8F884D21DC6DF1365D98D855F2732BE4840F047"
+      "sha256": "A68D0E225FF0BDE8945353D3FE1F813BA4B6C6460C398D6E3831DA98348FB312"
     },
     {
       "id": "TEST_PLAN",
@@ -32,7 +32,7 @@
     {
       "id": "DECISIONS",
       "path": "docs/01_architecture/DECISIONS.md",
-      "sha256": "D3BB98B0A181DE1332E23B5A3E7FA3BF946091CE64617A0DF3C272EFCCBD1423"
+      "sha256": "4F7FD3BEA9B555AB8AC566C3FBDB5912A653827676CDA813A9860857E6C26340"
     },
     {
       "id": "RISK_REGISTER",
@@ -76,10 +76,12 @@
     "APR-TP0-20260720-01",
     "APR-G0-BASELINE-20260720-01",
     "APR-DEVENV-YSNA-20260720-01",
-    "APR-R1-M4-07-NOTIFICATION-API-20260729-01"
+    "APR-R1-M4-07-NOTIFICATION-API-20260729-01",
+    "APR-R1-M5-05-SYNC-API-20260730-01",
+    "APR-R1-M5-06-RETENTION-API-20260731-01"
   ],
   "decision_status": {
-    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020", "R1-D021", "R1-D022", "R1-D023", "R1-D024"],
+    "confirmed": ["R1-D001", "R1-D002", "R1-D003", "R1-D005", "R1-D009", "R1-D010", "R1-D013", "R1-D014", "R1-D015", "R1-D016", "R1-D017", "R1-D018", "R1-D019", "R1-D020", "R1-D021", "R1-D022", "R1-D023", "R1-D024", "R1-D025", "R1-D026"],
     "g0_approval_requested": [],
     "external_blocked": ["R1-D004", "R1-D006", "R1-D007", "R1-D008", "R1-D011", "R1-D012"]
   },
@@ -153,6 +155,38 @@
       "approval_record_id": "APR-R1-M4-07-NOTIFICATION-API-20260729-01",
       "product_contract_changed": true,
       "public_api_contract_changed": true
+    },
+    {
+      "id": "CHG-R1-M5-05-SYNC-API-001",
+      "classification": "C2",
+      "owner": "신산님",
+      "summary": "Sync·Copy/Publish 공개 API 5종과 승인·재개 전송·충돌 선택 계약 승인",
+      "affected_documents": [
+        "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
+        "docs/01_architecture/DECISIONS.md",
+        "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
+        "docs/02_work_orders/release_1_baseline_manifest.json",
+        "packages/contracts/openapi/v1/openapi.json"
+      ],
+      "approval_record_id": "APR-R1-M5-05-SYNC-API-20260730-01",
+      "product_contract_changed": true,
+      "public_api_contract_changed": true
+    },
+    {
+      "id": "CHG-R1-M5-06-RETENTION-API-001",
+      "classification": "C2",
+      "owner": "신산님",
+      "summary": "삭제·보존·Legal Hold 공개 API 6종과 상태·파생 정리·Local Copy·최소 Audit 계보 계약 승인",
+      "affected_documents": [
+        "docs/superpowers/specs/2026-07-20-daon-user-program-design.md",
+        "docs/01_architecture/DECISIONS.md",
+        "docs/02_work_orders/daon_user_program_release_1_implementation_plan.md",
+        "docs/02_work_orders/release_1_baseline_manifest.json",
+        "docs/02_work_orders/release_1/R1-M5-06_work_order.md"
+      ],
+      "approval_record_id": "APR-R1-M5-06-RETENTION-API-20260731-01",
+      "product_contract_changed": true,
+      "public_api_contract_changed": true
     }
   ],
   "notes": [
@@ -163,6 +197,8 @@
     "ysna-server approval applies only to the development-integration environment; Oracle Cloud production deployment still requires G9-DEPLOY approval.",
     "Document SHA-256 values are canonical Git Blob hashes so Windows checkout line-ending conversion does not change the approved baseline identity.",
     "CHG-R1-MANIFEST-002 synchronizes already approved post-G0 decisions; it does not create or alter a product contract.",
-    "R1-D024 and CHG-R1-M4-07-NOTIFICATION-API-001 record the explicitly approved Notification and Inbox public API contract."
+    "R1-D024 and CHG-R1-M4-07-NOTIFICATION-API-001 record the explicitly approved Notification and Inbox public API contract.",
+    "R1-D025 and CHG-R1-M5-05-SYNC-API-001 synchronize the approved Sync and Copy/Publish public API contract with this manifest.",
+    "R1-D026 and CHG-R1-M5-06-RETENTION-API-001 synchronize the approved deletion, retention, and Legal Hold public API contract with this manifest."
   ]
 }

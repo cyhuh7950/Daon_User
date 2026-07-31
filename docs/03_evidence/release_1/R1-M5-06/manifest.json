@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0",
+  "issue_id": "R1-M5-06",
+  "branch": "codex/r1-m5-06",
+  "implementation_commit": "0f3b1c1a1a19615c5986449ffe89cee005f0371b",
+  "verdict": "COMPLETED",
+  "reason": "어울1이 검증 증거를 수락하고 신산님이 R1-M5-06 최종 완료를 명시 승인함",
+  "evidence": {
+    "tdd_red": "recorded in progress log",
+    "retention_target_tests": { "passed": 12, "failed": 0, "retention_coverage_percent": 92, "runtime_coverage_percent": 88 },
+    "api_regression": { "passed": 139, "skipped": 23, "failed": 0 },
+    "local_regression": { "passed": 92, "skipped": 1, "failed": 0 },
+    "quality_gate": {
+      "overall": "PASS",
+      "lint": 8,
+      "type": 5,
+      "unit": 9,
+      "contract": 3,
+      "build": 8,
+      "security": 3,
+      "independence": 1,
+      "failures": 0
+    },
+    "c01_safe_error_contract": {
+      "red": "2 expected failures",
+      "green": "6 passed",
+      "openapi_contract": "9 passed",
+      "quality_gate_contract_and_security_tests": "37 passed",
+      "workspace_lint_files": 16,
+      "unapproved_internal_public_codes": 0,
+      "approved_retention_public_codes": 3,
+      "retention_domain_codes_mapped": 19
+    },
+    "postgresql_18_4": {
+      "status": "PASS",
+      "server_version": "18.4 (Debian 18.4-1.pgdg13+1)",
+      "pre_migration_public_tables": 0,
+      "migration_sequence": "0001→0002→0003→0004→0005",
+      "idempotent_reapply": "0005 PASS",
+      "rollback_reapply": "0005→0004→0005 PASS",
+      "final_revision": "0005",
+      "retention_tables": 7,
+      "pre_migration_backup_sha256": "d7225fd0d4e7b03985a8d92a22b5e98fbc5199de6abb2fc2d45ab9320adcc283",
+      "revision_0005_backup_sha256": "4a3b53044eeb37bfbd6f9d9c30025b507bf02503cbed35e879dbddee4dd570d4"
+    },
+    "rls_and_invariants": {
+      "status": "PASS",
+      "session_role": "daon_app",
+      "bypassrls": false,
+      "cross_tenant_visible_rows": 0,
+      "cross_workspace_visible_rows": 0,
+      "cross_scope_fk": "REJECTED",
+      "active_hold_transition": "REJECTED",
+      "retention_lineage_delete": "REJECTED"
+    },
+    "object_fixture": {
+      "status": "PASS",
+      "bucket": "daon-r1-m5-06-c01-0f3b1c1",
+      "flow": "fixture create→grace→hold→release→partial failure→failed-item retry→local ack→purged",
+      "completed_item_redelete_count": 0,
+      "non_fixture_object_delete_count": 0
+    },
+    "server_runtime": {
+      "status": "PASS",
+      "health_live": 200,
+      "health_ready": 200,
+      "retention_domain_contract_runtime_minio_tests": "13 passed",
+      "postgres_retention_integration": "1 passed",
+      "local_tombstone_target": "2 passed",
+      "local_regression": "91 passed, 2 platform skips",
+      "api_regression": "138 passed; 1 Node/Next presence-only environment error separately passed with an ephemeral harness"
+    },
+    "external_deployment": {
+      "status": "PASS",
+      "server": "ysna-server",
+      "root": "/home/ubuntu/deploy/daon-user/R1-M5-06-C01",
+      "compose_project": "daon_r1_m5_06_c01_0f3b1c1",
+      "exact_checkout": "0f3b1c1a1a19615c5986449ffe89cee005f0371b",
+      "cleanup_performed": false,
+      "protected_shared_resources_touched": false
+    }
+  },
+  "protected_untracked_files": [
+    "docs/04_test_reports/release_1/interim_review_2026-07-30.md",
+    "docs/04_test_reports/release_1_model_provider_queries.md"
+  ]
+}
