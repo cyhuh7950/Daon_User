@@ -5,6 +5,7 @@ import os
 import secrets
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 import psycopg
 
@@ -23,18 +24,29 @@ from daon_user_api.recovery_postgres import (
 )
 
 
-DSN = os.environ.get("DAON_RECOVERY_INTEGRATION_DSN")
+def _environment_or_file(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value:
+        return value
+    file_name = os.environ.get(f"{name}_FILE")
+    if not file_name:
+        return None
+    return Path(file_name).read_text(encoding="utf-8").strip()
+
+
+DSN = _environment_or_file("DAON_RECOVERY_INTEGRATION_DSN")
 ENDPOINT = os.environ.get("DAON_RECOVERY_INTEGRATION_OBJECT_ENDPOINT")
 BUCKET = os.environ.get("DAON_RECOVERY_INTEGRATION_BUCKET")
-ACCESS_KEY = os.environ.get("DAON_RECOVERY_INTEGRATION_ACCESS_KEY")
-SECRET_KEY = os.environ.get("DAON_RECOVERY_INTEGRATION_SECRET_KEY")
-CONFIGURED = all((DSN, ENDPOINT, BUCKET, ACCESS_KEY, SECRET_KEY))
+ACCESS_KEY = _environment_or_file("DAON_RECOVERY_INTEGRATION_ACCESS_KEY")
+SECRET_KEY = _environment_or_file("DAON_RECOVERY_INTEGRATION_SECRET_KEY")
+MANIFEST_KEY = _environment_or_file("DAON_RECOVERY_INTEGRATION_MANIFEST_KEY")
+CONFIGURED = all((DSN, ENDPOINT, BUCKET, ACCESS_KEY, SECRET_KEY, MANIFEST_KEY))
 
 
 @unittest.skipUnless(CONFIGURED, "R1-M5-07 PostgreSQL/MinIO integration environment required")
 class PostgresRecoveryIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
-        assert DSN and ENDPOINT and BUCKET and ACCESS_KEY and SECRET_KEY
+        assert DSN and ENDPOINT and BUCKET and ACCESS_KEY and SECRET_KEY and MANIFEST_KEY
         suffix = secrets.token_hex(6)
         self.tenant_id = f"fixture-tenant-{suffix}"
         self.workspace_id = f"fixture-workspace-{suffix}"
@@ -85,11 +97,11 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
         self.cloud.close()
 
     def _service(self) -> PostgresRecoveryService:
-        assert DSN
+        assert DSN and MANIFEST_KEY
         return PostgresRecoveryService(
             DSN,
             self.storage,
-            manifest_key=hashlib.sha256(b"r1-m5-07-c02-integration").digest(),
+            manifest_key=MANIFEST_KEY.encode("utf-8"),
             clock=lambda: datetime.now(timezone.utc),
         )
 
@@ -148,7 +160,54 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
                 (self.object_id,),
             ).fetchone()
         self.assertEqual(target, (self.digest, len(self.content), "completed"))
+
+        wrong_workspace = RecoveryContext(
+            self.tenant_id,
+            f"wrong-{self.workspace_id}",
+            self.actor_id,
+            self.context.trace_id,
+            self.context.policy_version,
+            organization_admin=True,
+        )
+        with self.assertRaisesRegex(Exception, "BACKUP_UNAVAILABLE"):
+            restarted.get_backup(wrong_workspace, backup.backup_id)
+        with self.assertRaisesRegex(Exception, "BACKUP_UNAVAILABLE"):
+            restarted.locate_backup_workspace(
+                f"wrong-{self.tenant_id}", backup.backup_id
+            )
         restarted.close()
+
+    def test_missing_and_corrupt_source_objects_fail_closed(self) -> None:
+        service = self._service()
+        try:
+            with self.assertRaisesRegex(Exception, "RESOURCE_UNAVAILABLE"):
+                service.create_backup(
+                    self.context,
+                    trigger="manual",
+                    schema_revision="0006",
+                    retention_watermark="watermark-c02",
+                    objects=(
+                        BackupObjectInput(
+                            secrets.token_hex(16), self.digest, len(self.content)
+                        ),
+                    ),
+                    idempotency_key=f"missing-{self.object_id}",
+                )
+            with self.assertRaisesRegex(Exception, "RESOURCE_UNAVAILABLE"):
+                service.create_backup(
+                    self.context,
+                    trigger="manual",
+                    schema_revision="0006",
+                    retention_watermark="watermark-c02",
+                    objects=(
+                        BackupObjectInput(
+                            self.object_id, "0" * 64, len(self.content)
+                        ),
+                    ),
+                    idempotency_key=f"corrupt-{self.object_id}",
+                )
+        finally:
+            service.close()
 
 
 class RecoveryRuntimeFailCloseTests(unittest.TestCase):

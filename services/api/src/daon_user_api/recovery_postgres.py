@@ -181,6 +181,7 @@ class PostgresRecoveryService:
             self._ensure_open()
             with self._pool.connection(timeout=2.0) as connection:
                 with connection.transaction():
+                    connection.execute("SET LOCAL ROLE daon_app")
                     connection.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
                     connection.execute(
                         "SELECT set_config('app.workspace_id', %s, true)",

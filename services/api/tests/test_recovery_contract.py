@@ -36,6 +36,15 @@ class RecoveryContractTests(unittest.TestCase):
         ):
             self.assertIn(token, source)
 
+    def test_postgres_recovery_forces_least_privilege_role_before_rls_context(self) -> None:
+        source = (
+            ROOT / "services" / "api" / "src" / "daon_user_api" / "recovery_postgres.py"
+        ).read_text(encoding="utf-8")
+        self.assertLess(
+            source.index('connection.execute("SET LOCAL ROLE daon_app")'),
+            source.index("SELECT set_config('app.tenant_id'"),
+        )
+
     def test_openapi_exposes_exact_seven_operations_and_write_guards(self) -> None:
         document = json.loads(OPENAPI.read_text(encoding="utf-8"))
         actual = {
