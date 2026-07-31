@@ -186,6 +186,29 @@ class ReferenceRestorePort:
         return True
 
 
+class UnavailableRecoveryService:
+    """Fail-closed runtime port used when durable recovery is not configured."""
+
+    @staticmethod
+    def _unavailable(*_args: object, **_kwargs: object) -> object:
+        raise RecoveryError("RESOURCE_UNAVAILABLE", 503, retryable=False)
+
+    create_backup = _unavailable
+    list_backups = _unavailable
+    get_backup = _unavailable
+    locate_backup_workspace = _unavailable
+    locate_restore_workspace = _unavailable
+    backup_due = _unavailable
+    create_restore_preview = _unavailable
+    get_restore_request = _unavailable
+    execute_restore = _unavailable
+    cancel_restore = _unavailable
+
+    @staticmethod
+    def close() -> None:
+        return None
+
+
 class RecoveryService:
     def __init__(
         self,
