@@ -2,21 +2,59 @@
   "schema_version": "1.0",
   "issue_id": "R1-M5-07",
   "branch": "codex/r1-m5-07",
-  "implementation_commit": null,
-  "verdict": "NOT_STARTED",
+  "implementation_commit": "d47de39d07d4e336d59b7f186b48c847204e4c8a",
+  "verdict": "LOCAL_IMPLEMENTATION_PASS_EXTERNAL_EVIDENCE_PENDING",
   "approval_record_id": "APR-R1-M5-07-RECOVERY-API-20260731-01",
   "decision_id": "R1-D027",
   "evidence": {
-    "tdd_red": null,
-    "migration_0006": null,
-    "postgresql_18_4_rls": null,
-    "minio_backup_restore": null,
-    "cloud_api_7_routes": null,
-    "local_api_3_routes": null,
-    "retention_reconciliation": null,
-    "local_encrypted_recovery": null,
-    "actual_ui_and_same_origin_network": null,
-    "quality_gate": null,
+    "tdd_red": {
+      "status": "PASS",
+      "evidence": "docs/04_test_reports/release_1/R1-M5-07_progress.md"
+    },
+    "migration_0006": {
+      "status": "STATIC_CONTRACT_PASS_RUNTIME_PENDING",
+      "evidence": "services/api/tests/test_recovery_contract.py"
+    },
+    "postgresql_18_4_rls": {
+      "status": "PENDING_EXTERNAL_APPROVAL",
+      "evidence": null
+    },
+    "minio_backup_restore": {
+      "status": "PENDING_EXTERNAL_APPROVAL",
+      "evidence": null
+    },
+    "cloud_api_7_routes": {
+      "status": "PASS_LOCAL_HTTP",
+      "evidence": "services/api/tests/test_recovery_runtime_http.py"
+    },
+    "local_api_3_routes": {
+      "status": "PASS_LOCAL_HTTP",
+      "evidence": "services/local-service/tests/test_app.py"
+    },
+    "retention_reconciliation": {
+      "status": "PASS_REFERENCE_DOMAIN",
+      "evidence": "services/api/tests/test_recovery_domain.py"
+    },
+    "local_encrypted_recovery": {
+      "status": "PASS_LOCAL_SQLCIPHER",
+      "evidence": "services/local-service/tests/test_recovery.py"
+    },
+    "actual_ui_and_same_origin_network": {
+      "status": "BUILD_AND_ADAPTER_PASS_BROWSER_PENDING",
+      "evidence": "scripts/tests/recovery-api.test.mjs"
+    },
+    "openapi_contract": {
+      "status": "PASS",
+      "evidence": "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json"
+    },
+    "quality_gate": {
+      "status": "PASS",
+      "duration_seconds": 395.8,
+      "exit_code": 0,
+      "categories": 7,
+      "failures": 0,
+      "evidence": "docs/03_evidence/release_1/R1-M5-07/verification-summary.md"
+    },
     "external_deployment": {
       "status": "NOT_APPROVED",
       "server": "ysna-server",
