@@ -2,7 +2,7 @@
 
 ## 판정
 
-`BLOCKED` — 승인된 로컬 구현·자동 회귀·Quality Gate는 통과했으나, 완료 필수 조건인 PostgreSQL 18.4/RLS·MinIO·실제 화면/Browser Network·ysna-server 통합 증거는 별도 승인 전 수행할 수 없다.
+`VERIFYING` — 로컬 구현·자동 회귀·Quality Gate와 ysna-server PostgreSQL 18.4/RLS·MinIO 실제 데이터 검증은 통과했다. 실제 Web/Windows 화면과 Browser Network 증거가 남아 있어 최종 `COMPLETED`는 보류한다.
 
 ## 판단 이유
 
@@ -12,13 +12,14 @@
 - Web same-origin Adapter와 운영 화면의 요청·목록·Preview·진행·결과 UI를 연결했다. Server/Client 경계는 Client Wrapper로 고정했고 Production Build를 통과했다.
 - API 147건, Local 96건, Web 27건, OpenAPI·Lint·Build와 최종 Quality Gate 7개 범주가 통과했다.
 - 과거 Evidence 정본은 변경하지 않았고 현재 OpenAPI 요약을 R1-M5-07 Evidence Pack에 분리했다.
-- 외부 배포·DB Migration·MinIO·실제 Browser 검증은 승인되지 않았으므로 수행하지 않았다. 이 상태에서는 작업지시서에 따라 `COMPLETED`로 보고할 수 없다.
+- ysna-server C01 전용 환경에서 Migration·RLS·MinIO·실제 Backup/Restore Integration을 수행했다. DB `daon_r1_m5_07_c02`는 Revision `0006`, Backup 1건·Restore 1건·Locator 1건이며 Integration 3건이 통과했다.
+- 실제 Web/Windows 화면과 Browser Network 검증은 현재 C01 Compose가 DB·MinIO만 기동해 남아 있다. 이 증거가 확보되기 전에는 작업지시서에 따라 `COMPLETED`로 보고하지 않는다.
 
 ## 조치
 
 - 로컬 구현 Commit `d47de39d07d4e336d59b7f186b48c847204e4c8a`과 Evidence Commit을 `codex/r1-m5-07`에 Push한 뒤 쓰기를 중지한다.
-- 어울1은 신산님에게 ysna-server 격리 배포·PostgreSQL 18.4/RLS·MinIO·실제 Browser/Windows 검증 승인을 요청한다.
-- 승인 후 작업지시서의 외부 검증을 수행하고 Evidence Manifest의 미검증 항목을 실제 근거로 갱신해야 최종 완료 판단이 가능하다.
+- 어울1은 Web/API 서비스 기동 또는 별도 운영형 Browser 검증 경로를 확정한 뒤 실제 화면·same-origin Network 증거를 수집한다.
+- Browser 증거 수집 후 Evidence Manifest와 이 보고서의 최종 판정을 갱신하고 신산님에게 Go/No-Go를 요청한다.
 
 ## 변경 결과
 
@@ -26,3 +27,11 @@
 - Local: 암호화 Append-only Recovery 상태, Restart/Repair Service, command-bound Loopback 3개 Route.
 - Web: same-origin Recovery API Adapter, Operations 실제 API 패널, Client 경계 Wrapper.
 - Test/Evidence: Domain·Contract·HTTP·암호화 Restart·Web Adapter·전체 회귀와 R1-M5-07 OpenAPI 요약.
+
+## 외부 검증 재개 증거 (2026-07-31)
+
+- C01 원격 repo는 exact `bc139fa6303657d9f1de8431e89a5caf4df758ef` detached clean 상태다.
+- 전용 PostgreSQL 컨테이너는 `pg_isready` 통과, `server_version=18.4`, C02 DB revision `0006`이다. `daon_app`은 superuser·bypassrls·login이 모두 false다.
+- C02 DB catalog에서 대상 RLS forced, 정책 94건, non-internal trigger 128건을 확인했고 최소권한 context에서 `backup_records` 교차 노출 0건을 확인했다.
+- 전용 MinIO는 내부 `mc ready` 통과했으나 초기 Bucket이 없어 사용자 승인 후 지정 Bucket `daon-r1-m5-07-c01-8c8a40c`를 생성했다. private 정책으로 유지하고 Fixture object `source/fixture-c02-object-001` (24 bytes, SHA-256 `8a82cd795775d6157eafa4b4efca99ef35212ce63ced19cfea5f8f51e272dedb`)을 seed했다.
+- API/Restart 통합 실행기는 원격 호스트에 준비되어 있지 않아 실제 7종 API·Restart·Manifest Restore 실행은 아직 미완료다. 따라서 최종 판정은 계속 `BLOCKED`이며 Formal Failure 0회다.

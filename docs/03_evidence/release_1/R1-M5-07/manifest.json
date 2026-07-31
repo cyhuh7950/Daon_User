@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "issue_id": "R1-M5-07",
   "branch": "codex/r1-m5-07",
-  "implementation_commit": "d47de39d07d4e336d59b7f186b48c847204e4c8a",
-  "verdict": "LOCAL_IMPLEMENTATION_PASS_EXTERNAL_EVIDENCE_PENDING",
+  "implementation_commit": "bc139fa6303657d9f1de8431e89a5caf4df758ef",
+  "verdict": "EXTERNAL_DATA_PASS_BROWSER_EVIDENCE_PENDING",
   "approval_record_id": "APR-R1-M5-07-RECOVERY-API-20260731-01",
   "decision_id": "R1-D027",
   "evidence": {
@@ -12,16 +12,17 @@
       "evidence": "docs/04_test_reports/release_1/R1-M5-07_progress.md"
     },
     "migration_0006": {
-      "status": "STATIC_CONTRACT_PASS_RUNTIME_PENDING",
-      "evidence": "services/api/tests/test_recovery_contract.py"
+      "status": "PASS_EXTERNAL_POSTGRESQL_18_4",
+      "evidence": "docs/04_test_reports/release_1/R1-M5-07_progress.md"
     },
     "postgresql_18_4_rls": {
-      "status": "PENDING_EXTERNAL_APPROVAL",
-      "evidence": null
+      "status": "PASS_EXTERNAL",
+      "evidence": "docs/04_test_reports/release_1/R1-M5-07_progress.md"
     },
     "minio_backup_restore": {
-      "status": "PENDING_EXTERNAL_APPROVAL",
-      "evidence": null
+      "status": "PASS_EXTERNAL",
+      "bucket": "daon-r1-m5-07-c01-8c8a40c",
+      "evidence": "docs/04_test_reports/release_1/R1-M5-07_progress.md"
     },
     "cloud_api_7_routes": {
       "status": "PASS_LOCAL_HTTP",
@@ -55,10 +56,25 @@
       "failures": 0,
       "evidence": "docs/03_evidence/release_1/R1-M5-07/verification-summary.md"
     },
-    "external_deployment": {
-      "status": "NOT_APPROVED",
+    "external_data_integration": {
+      "status": "PASS",
       "server": "ysna-server",
-      "resources_created": false,
+      "checkout": "bc139fa6303657d9f1de8431e89a5caf4df758ef",
+      "database": "daon_r1_m5_07_c02",
+      "postgresql": "18.4",
+      "migration_revision": "0006",
+      "backup_records": 1,
+      "restore_requests": 1,
+      "locator_rows": 1,
+      "integration_tests": "3 passed",
+      "test_container_cleanup": "automatic"
+    },
+    "external_deployment": {
+      "status": "DATA_PASS_BROWSER_PENDING",
+      "server": "ysna-server",
+      "root": "/home/ubuntu/deploy/daon-user/R1-M5-07-C01",
+      "compose_project": "daon_r1_m5_07_c01_8c8a40c",
+      "resources_created": true,
       "cleanup_performed": false
     }
   },
