@@ -6,6 +6,8 @@ import secrets
 import unittest
 from datetime import datetime, timezone
 
+import psycopg
+
 from daon_user_api.cloud_storage import CloudAccessContext, PostgresCloudStore
 from daon_user_api.object_queue import (
     DurableObjectWorker,
@@ -14,6 +16,7 @@ from daon_user_api.object_queue import (
     PostgresObjectQueueStore,
 )
 from daon_user_api.recovery import BackupObjectInput, RecoveryContext, RestoreDestination
+from daon_user_api.runtime import RuntimeSettings, build_dependencies
 from daon_user_api.recovery_postgres import (
     MinioRecoveryStorageAdapter,
     PostgresRecoveryService,
@@ -131,7 +134,51 @@ class PostgresRecoveryIntegrationTests(unittest.TestCase):
             self.storage.read_fixture(restored.preview.destination, self.object_id),
             self.content,
         )
+        with psycopg.connect(DSN) as connection:
+            connection.execute(
+                "SELECT set_config('app.tenant_id', %s, true)",
+                (restored.preview.destination.tenant_id,),
+            )
+            connection.execute(
+                "SELECT set_config('app.workspace_id', %s, true)",
+                (restored.preview.destination.workspace_id,),
+            )
+            target = connection.execute(
+                "SELECT digest_sha256,byte_size,status FROM object_records WHERE object_id=%s",
+                (self.object_id,),
+            ).fetchone()
+        self.assertEqual(target, (self.digest, len(self.content), "completed"))
         restarted.close()
+
+
+class RecoveryRuntimeFailCloseTests(unittest.TestCase):
+    def test_build_dependencies_never_installs_reference_recovery_fallback(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            dependencies = build_dependencies(RuntimeSettings.for_test(
+                database_path=Path(directory) / "runtime.sqlite3",
+                policy_version="policy-c02",
+            ))
+            try:
+                self.assertIsNotNone(dependencies.recovery_service)
+                self.assertNotEqual(
+                    type(dependencies.recovery_service).__name__, "RecoveryService"
+                )
+                with self.assertRaisesRegex(Exception, "RESOURCE_UNAVAILABLE"):
+                    dependencies.recovery_service.create_backup(  # type: ignore[union-attr]
+                        RecoveryContext(
+                            "fixture-tenant", "fixture-workspace", "fixture-actor",
+                            "fixture-trace", "policy-c02", organization_admin=True,
+                        ),
+                        trigger="manual", schema_revision="0006",
+                        retention_watermark="fixture-watermark",
+                        objects=(BackupObjectInput("a" * 32, "b" * 64, 1),),
+                        idempotency_key="fixture-idempotency",
+                    )
+            finally:
+                dependencies.close()
 
 
 if __name__ == "__main__":

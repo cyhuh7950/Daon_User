@@ -84,8 +84,9 @@ from .retention import (
 )
 from .recovery import (
     BackupObjectInput, RecoveryContext, RecoveryError, RecoveryService,
-    ReferenceRecoveryRepository, ReferenceRestorePort, RestoreDestination,
+    RestoreDestination, UnavailableRecoveryService,
 )
+from .recovery_postgres import MinioRecoveryStorageAdapter, PostgresRecoveryService
 
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
@@ -107,6 +108,7 @@ class RuntimeSettings:
     object_storage_bucket: str | None = None
     object_access_key_file: Path | None = None
     object_secret_key_file: Path | None = None
+    recovery_manifest_key_file: Path | None = None
     object_storage_secure: bool = True
     policy_version: str = "runtime-policy-v1"
     public_gateway_url: str | None = None
@@ -203,6 +205,11 @@ class RuntimeSettings:
                 if os.environ.get("DAON_OBJECT_SECRET_KEY_FILE") is None
                 else Path(os.environ["DAON_OBJECT_SECRET_KEY_FILE"])
             ),
+            recovery_manifest_key_file=(
+                None
+                if os.environ.get("DAON_RECOVERY_MANIFEST_KEY_FILE") is None
+                else Path(os.environ["DAON_RECOVERY_MANIFEST_KEY_FILE"])
+            ),
             object_storage_secure=os.environ.get("DAON_OBJECT_STORAGE_SECURE", "true").lower() == "true",
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
@@ -269,7 +276,7 @@ class RuntimeDependencies:
     object_storage: ObjectStoragePort | None = None
     sync_service: SyncService | PostgresSyncService | None = None
     retention_service: RetentionService | None = None
-    recovery_service: RecoveryService | None = None
+    recovery_service: RecoveryService | PostgresRecoveryService | UnavailableRecoveryService | None = None
     object_queue_store: PostgresObjectQueueStore | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
@@ -285,6 +292,11 @@ class RuntimeDependencies:
             self.cloud_store.close()
         if self.object_queue_store is not None:
             self.object_queue_store.close()
+        recovery_close = (
+            None if self.recovery_service is None else getattr(self.recovery_service, "close", None)
+        )
+        if callable(recovery_close):
+            recovery_close()
         self._closed = True
 
 
@@ -666,10 +678,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ReferenceRetentionRepository(), ReferenceCleanupPort(),
         clock=lambda: datetime.now(timezone.utc),
     )
-    recovery_service = dependencies.recovery_service or RecoveryService(
-        ReferenceRecoveryRepository(), ReferenceRestorePort(),
-        clock=lambda: datetime.now(timezone.utc),
-    )
+    recovery_service = dependencies.recovery_service or UnavailableRecoveryService()
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
@@ -1576,6 +1585,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             secure=settings.object_storage_secure,
         )
     sync_service: SyncService | PostgresSyncService
+    recovery_service: PostgresRecoveryService | UnavailableRecoveryService
     object_queue_store: PostgresObjectQueueStore | None = None
     if cloud_store is None:
         sync_service = SyncService(
@@ -1595,6 +1605,23 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         sync_service = PostgresSyncService(
             cloud_store, transfer_port, clock=lambda: datetime.now(timezone.utc)
         )
+    if (
+        settings.cloud_database_dsn is None
+        or object_storage is None
+        or settings.recovery_manifest_key_file is None
+    ):
+        recovery_service = UnavailableRecoveryService()
+    else:
+        try:
+            manifest_key = settings.recovery_manifest_key_file.read_bytes()
+        except OSError:
+            raise ValueError("RECOVERY_MANIFEST_KEY_REFERENCE_UNAVAILABLE") from None
+        recovery_service = PostgresRecoveryService(
+            settings.cloud_database_dsn,
+            MinioRecoveryStorageAdapter(object_storage),
+            manifest_key=manifest_key,
+            clock=lambda: datetime.now(timezone.utc),
+        )
     return RuntimeDependencies(
         settings=settings,
         identity_service=identity_service,
@@ -1610,5 +1637,6 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             ReferenceRetentionRepository(), ReferenceCleanupPort(),
             clock=lambda: datetime.now(timezone.utc),
         ),
+        recovery_service=recovery_service,
         object_queue_store=object_queue_store,
     )

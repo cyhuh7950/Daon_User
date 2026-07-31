@@ -25,12 +25,14 @@ class RecoveryContractTests(unittest.TestCase):
         source = MIGRATION.read_text(encoding="utf-8")
         for token in (
             'revision = "0006"', 'down_revision = "0005"',
+            "backup_record_locator", "restore_request_locator",
             "backup_records", "backup_manifests", "restore_requests",
             "restore_previews", "restore_verifications",
             "ENABLE ROW LEVEL SECURITY", "FORCE ROW LEVEL SECURITY",
             "RECOVERY_IMMUTABLE_MUTATION", "BACKUP_RECORD_IMMUTABLE_MUTATION",
             "RESTORE_REQUEST_IMMUTABLE_MUTATION", "destination_tenant_id LIKE 'fixture-%'",
-            "retention_rechecked boolean NOT NULL",
+            "retention_rechecked boolean NOT NULL", "REFERENCES workspaces(tenant_id, workspace_id)",
+            "OLD.state = 'queued'", "OLD.state = 'preview_ready'",
         ):
             self.assertIn(token, source)
 
