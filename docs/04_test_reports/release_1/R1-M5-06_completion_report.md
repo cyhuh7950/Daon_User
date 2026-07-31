@@ -2,7 +2,7 @@
 
 ## 판정
 
-`REVIEW_PENDING` — 로컬 구현·자동 회귀·Quality Gate와 승인된 ysna-server 격리 PostgreSQL 18.4/RLS·Object Fixture 검증까지 수행했다. 최종 완료 판정은 어울1이 증거를 검토한 뒤 결정한다.
+`COMPLETED` — 로컬 구현·자동 회귀·Quality Gate와 승인된 ysna-server 격리 PostgreSQL 18.4/RLS·Object Fixture 검증을 어울1이 수락했고, 신산님이 R1-M5-06의 최종 완료를 명시 승인했다.
 
 ## 판단 이유
 
@@ -19,9 +19,9 @@
 
 ## 조치
 
-- 서버 검증 Evidence Commit을 Branch `codex/r1-m5-06`에 Push한다.
-- 어울1이 Evidence Manifest·Progress·이 보고서와 서버 자원 상태를 검토해 최종 판정을 내린다.
+- R1-M5-06을 `COMPLETED`로 최종 확정하고 Evidence Manifest·Progress·이 보고서에 승인 결과를 반영한다.
 - 전용 서버 자원은 승인 조건대로 정리하지 않고 유지한다. Cleanup이 필요하면 별도 승인을 받는다.
+- 테스트 계획의 다음 독립 테스트 웨이브 도달 전까지 별도 Go/No-Go 요청은 하지 않는다.
 
 ## 변경 결과
 
