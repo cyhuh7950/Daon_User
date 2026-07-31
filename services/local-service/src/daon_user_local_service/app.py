@@ -16,6 +16,7 @@ from starlette.responses import Response
 
 from .protocol import PROTOCOL_VERSION
 from .local_storage import LocalEncryptedStore, LocalStorageError
+from .recovery import LocalRecoveryService
 from .security import NonceReplayCache, TokenError, verify_request_token
 
 
@@ -27,6 +28,9 @@ FILE_GET_PATH: Final = "/v1/storage/file/get"
 VECTOR_PUT_PATH: Final = "/v1/storage/vector/put"
 VECTOR_SEARCH_PATH: Final = "/v1/storage/vector/search"
 STORAGE_LOCK_PATH: Final = "/v1/storage/lock"
+RECOVERY_SCAN_PATH: Final = "/local/v1/recovery/scans"
+RECOVERY_JOB_PATH: Final = "/local/v1/recovery/jobs/{id}"
+RECOVERY_REPAIR_PATH: Final = "/local/v1/recovery/jobs/{id}/repair"
 CAPABILITY_CATALOG_VERSION: Final = "1.0"
 MAX_HEADER_BYTES: Final = 8192
 MAX_REQUEST_BODY_BYTES: Final = 0
@@ -73,6 +77,15 @@ COMMAND_REGISTRY: Final = {
     STORAGE_LOCK_PATH: CommandContract(
         "storage.write", "storage.lock", "POST", STORAGE_LOCK_PATH
     ),
+    RECOVERY_SCAN_PATH: CommandContract(
+        "recovery.write", "recovery.scan", "POST", RECOVERY_SCAN_PATH, 4096
+    ),
+    RECOVERY_JOB_PATH: CommandContract(
+        "recovery.read", "recovery.job.read", "GET", RECOVERY_JOB_PATH
+    ),
+    RECOVERY_REPAIR_PATH: CommandContract(
+        "recovery.write", "recovery.repair", "POST", RECOVERY_REPAIR_PATH, 1024
+    ),
 }
 
 
@@ -110,6 +123,20 @@ class VectorSearchRequest(StrictModel):
     area: str = Field(max_length=32)
     embedding: list[float] = Field(min_length=1, max_length=4096)
     limit: int = Field(ge=1, le=100)
+
+
+class RecoveryScanRequest(StrictModel):
+    workspace_id: str = Field(max_length=64)
+    target_id: str = Field(max_length=256)
+    snapshot_checksum: str = Field(min_length=64, max_length=64)
+    metadata_checksum: str = Field(min_length=64, max_length=64)
+    actual_checksum: str = Field(min_length=64, max_length=64)
+    journal_present: bool
+
+
+class RecoveryRepairRequest(StrictModel):
+    workspace_id: str = Field(max_length=64)
+    expected_version: int = Field(ge=1)
 
 
 def _safe_error(status_code: int, error_code: str) -> JSONResponse:
@@ -210,6 +237,12 @@ def create_app(
             return _safe_error(401, "LOCAL_AUTH_REQUIRED")
 
         contract = COMMAND_REGISTRY.get(request.url.path)
+        if contract is None and request.url.path.startswith("/local/v1/recovery/jobs/"):
+            contract = (
+                COMMAND_REGISTRY[RECOVERY_REPAIR_PATH]
+                if request.url.path.endswith("/repair")
+                else COMMAND_REGISTRY[RECOVERY_JOB_PATH]
+            )
         if contract is None:
             return _safe_error(404, "COMMAND_NOT_ALLOWED")
         if not (
@@ -329,6 +362,40 @@ def create_app(
         try:
             active_storage().lock()
             return {"state": "locked"}
+        except LocalStorageError as error:
+            return storage_error(error)
+
+    @app.post(RECOVERY_SCAN_PATH, response_model=None)
+    async def recovery_scan(request: RecoveryScanRequest) -> dict[str, object] | JSONResponse:
+        try:
+            service = LocalRecoveryService(active_storage())
+            return {"data": service.view(service.scan(
+                request.workspace_id, target_id=request.target_id,
+                snapshot_checksum=request.snapshot_checksum,
+                metadata_checksum=request.metadata_checksum,
+                actual_checksum=request.actual_checksum,
+                journal_present=request.journal_present,
+            ))}
+        except LocalStorageError as error:
+            return storage_error(error)
+
+    @app.get(RECOVERY_JOB_PATH, response_model=None)
+    async def recovery_job(id: str) -> dict[str, object] | JSONResponse:
+        try:
+            service = LocalRecoveryService(active_storage())
+            return {"data": service.view(service.find(id))}
+        except LocalStorageError as error:
+            return storage_error(error)
+
+    @app.post(RECOVERY_REPAIR_PATH, response_model=None)
+    async def recovery_repair(
+        id: str, request: RecoveryRepairRequest
+    ) -> dict[str, object] | JSONResponse:
+        try:
+            service = LocalRecoveryService(active_storage())
+            return {"data": service.view(service.repair(
+                request.workspace_id, id, expected_version=request.expected_version,
+            ))}
         except LocalStorageError as error:
             return storage_error(error)
 

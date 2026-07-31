@@ -65,6 +65,62 @@ function StatusDashboard({ state }) {
   </>;
 }
 
+function RecoveryApiPanel({ adapter, workspaceId }) {
+  const [backups, setBackups] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [restore, setRestore] = useState(null);
+  const [restoreEtag, setRestoreEtag] = useState(null);
+  const [previewStepUp, setPreviewStepUp] = useState("");
+  const [executeStepUp, setExecuteStepUp] = useState("");
+  const [status, setStatus] = useState(adapter ? "loading" : "unavailable");
+  const [safeError, setSafeError] = useState(null);
+  const run = async (operation) => {
+    setStatus("working"); setSafeError(null);
+    try { await operation(); setStatus("ready"); }
+    catch (error) { setSafeError({ code: error.code ?? "RESOURCE_UNAVAILABLE", traceId: error.traceId ?? "unavailable" }); setStatus("failed"); }
+  };
+  const refresh = () => run(async () => {
+    const result = await adapter.listBackups(workspaceId);
+    setBackups(Array.isArray(result.payload.data) ? result.payload.data : []);
+  });
+  useEffect(() => { if (adapter) void refresh(); }, [adapter, workspaceId]);
+  if (!adapter) return <StatusCard title="Backup·Restore 실제 API" help="Web same-origin Recovery API 연결 상태" span><p className="operations-visible-warning">이 Client에는 Recovery API Adapter가 연결되지 않았습니다.</p></StatusCard>;
+  const requestBackup = () => run(async () => {
+    await adapter.createBackup({
+      workspace_id: workspaceId, trigger: "manual", schema_revision: "0006",
+      retention_watermark: "current-retention",
+      objects: [{ object_id: "fixture-ui-object", checksum_sha256: "a".repeat(64), byte_size: 1 }]
+    }, `backup-ui-${Date.now()}`);
+    const result = await adapter.listBackups(workspaceId);
+    setBackups(result.payload.data);
+  });
+  const preview = () => run(async () => {
+    const result = await adapter.previewRestore(selected.backup_id, {
+      destination: {
+        tenant_id: "fixture-ui-tenant", workspace_id: "fixture-ui-workspace",
+        database_id: "fixture-ui-database", bucket_id: "fixture-ui-bucket"
+      },
+      step_up_authorization_id: previewStepUp
+    }, `restore-preview-ui-${Date.now()}`);
+    setRestore(result.payload.data); setRestoreEtag(result.etag);
+  });
+  const execute = () => run(async () => {
+    const result = await adapter.executeRestore(restore.request_id, {
+      preview_version: restore.preview.version,
+      step_up_authorization_id: executeStepUp
+    }, restoreEtag, `restore-execute-ui-${Date.now()}`);
+    setRestore(result.payload.data); setRestoreEtag(result.etag);
+  });
+  return <StatusCard title="Backup·Restore 실제 API" help="same-origin 7개 Cloud Recovery Route의 요청·목록·Preview·진행·결과" span>
+    <div className="operations-actions"><button type="button" onClick={refresh}>목록 새로고침</button><button type="button" onClick={requestBackup}>전용 Fixture Backup 요청</button></div>
+    <p role="status" aria-live="polite">{status}{safeError ? ` · ${safeError.code} · Trace ${safeError.traceId}` : ""}</p>
+    <div className="operations-list">{backups.map((item) => <p key={item.backup_id}><button type="button" onClick={() => setSelected(item)}>{item.backup_id}</button><span>{item.state} · Schema {item.schema_revision} · Object {item.object_count}</span></p>)}</div>
+    {selected && <div className="operations-lineage"><strong>Restore Preview</strong><span>대상 {selected.backup_id} · 격리 Fixture 목적지</span><label>Preview Step-up ID<input value={previewStepUp} onChange={(event) => setPreviewStepUp(event.target.value)} /></label><button type="button" disabled={!previewStepUp} onClick={preview}>현재 권한·Retention 재검증 Preview</button></div>}
+    {restore && <div className="operations-lineage"><strong>{restore.state}</strong><span>포함 {restore.preview.included_object_ids.length} · 제외 {restore.preview.excluded_object_ids.length}</span><span>{restore.preview.exclusion_reasons.map(([id, reason]) => `${id}:${reason}`).join(" · ") || "제외 없음"}</span><label>Execute용 새 Step-up ID<input value={executeStepUp} onChange={(event) => setExecuteStepUp(event.target.value)} /></label><button type="button" disabled={restore.state !== "preview_ready" || !executeStepUp} onClick={execute}>격리 Restore 실행</button></div>}
+    <p className="operations-visible-warning">Preview와 Execute는 서로 다른 Step-up을 요구합니다. 운영 대상·제자리 덮어쓰기는 API에서 Fail-close됩니다.</p>
+  </StatusCard>;
+}
+
 function RetryPanel({ state, dispatch }) {
   const latest = state.processingRuns.at(-1);
   const manual = () => dispatch({ type: "manual-retry", idempotencyKey: `manual-preview-${state.processingRuns.length}`, role: state.membership?.role, capability: "processing.retry", tenantId: state.tenantId, workspaceId: state.workspaceId, sourceId: state.waitingSource.sourceId });
@@ -123,9 +179,9 @@ function AlertAudit({ state, dispatch }) {
   </StatusCard>;
 }
 
-function OperationsView({ state, dispatch }) {
+function OperationsView({ state, dispatch, recoveryAdapter }) {
   const boundState = useMemo(() => ({ ...state, dispatch }), [state, dispatch]);
-  return <main className="operations-grid"><StatusDashboard state={boundState} /><RetryPanel state={state} dispatch={dispatch} /><FailureRecovery state={state} dispatch={dispatch} /><AlertAudit state={state} dispatch={dispatch} /></main>;
+  return <main className="operations-grid"><StatusDashboard state={boundState} /><RecoveryApiPanel adapter={recoveryAdapter} workspaceId={state.workspaceId} /><RetryPanel state={state} dispatch={dispatch} /><FailureRecovery state={state} dispatch={dispatch} /><AlertAudit state={state} dispatch={dispatch} /></main>;
 }
 
 function NotificationsView({ state, dispatch }) {
@@ -139,7 +195,7 @@ function NotificationsView({ state, dispatch }) {
   </StatusCard></main>;
 }
 
-export function OperationsRecoveryWorkspace({ initialScreen = "operations", clientType = "web" }) {
+export function OperationsRecoveryWorkspace({ initialScreen = "operations", clientType = "web", recoveryAdapter = null }) {
   const [state, setState] = useState(() => createOperationsRecoveryViewState({ screen: initialScreen, clientType }));
   const [width, setWidth] = useState(1920);
   const dispatch = (action) => setState((current) => transitionOperationsRecovery(current, action));
@@ -154,6 +210,6 @@ export function OperationsRecoveryWorkspace({ initialScreen = "operations", clie
   return <div className={`operations-shell operations-${projection.layoutMode}`} data-route-id={projection.route.routeId} data-screen-id={projection.route.screenId}>
     <Header state={state} projection={projection} dispatch={dispatch} />
     <div className="operations-live" role="status" aria-live="polite">{state.safety ? <><strong>{state.safety.code}</strong> · {state.safety.message} · Trace {state.safety.traceId}</> : <>ready · Prototype Adapter 실제 외부 효과 {Object.values(state.actualEffects).reduce((sum, value) => sum + value, 0)}건</>}</div>
-    {state.screen === "notifications" ? <NotificationsView state={state} dispatch={dispatch} /> : <OperationsView state={state} dispatch={dispatch} />}
+    {state.screen === "notifications" ? <NotificationsView state={state} dispatch={dispatch} /> : <OperationsView state={state} dispatch={dispatch} recoveryAdapter={recoveryAdapter} />}
   </div>;
 }
