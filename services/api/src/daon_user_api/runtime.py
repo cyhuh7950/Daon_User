@@ -82,6 +82,10 @@ from .retention import (
     DerivativeInput, ReferenceCleanupPort, ReferenceRetentionRepository,
     RetentionContext, RetentionError, RetentionService,
 )
+from .recovery import (
+    BackupObjectInput, RecoveryContext, RecoveryError, RecoveryService,
+    ReferenceRecoveryRepository, ReferenceRestorePort, RestoreDestination,
+)
 
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
@@ -265,6 +269,7 @@ class RuntimeDependencies:
     object_storage: ObjectStoragePort | None = None
     sync_service: SyncService | PostgresSyncService | None = None
     retention_service: RetentionService | None = None
+    recovery_service: RecoveryService | None = None
     object_queue_store: PostgresObjectQueueStore | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
@@ -361,6 +366,42 @@ class SensitiveRetentionBody(BaseModel):
     step_up_authorization_id: str
 
 
+class BackupObjectBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    object_id: str
+    checksum_sha256: str
+    byte_size: int
+
+
+class BackupCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace_id: str
+    trigger: str
+    schema_revision: str
+    retention_watermark: str
+    objects: list[BackupObjectBody]
+
+
+class RestoreDestinationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tenant_id: str
+    workspace_id: str
+    database_id: str
+    bucket_id: str
+
+
+class RestorePreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    destination: RestoreDestinationBody
+    step_up_authorization_id: str
+
+
+class RestoreExecuteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    preview_version: int
+    step_up_authorization_id: str
+
+
 def _trace_id(request: Request) -> str:
     traceparent = request.headers.get("traceparent", "").lower()
     matched = _TRACEPARENT.fullmatch(traceparent)
@@ -435,6 +476,21 @@ _RETENTION_PUBLIC_CODES = {
 
 def _retention_public_error_code(code: str) -> str:
     return _RETENTION_PUBLIC_CODES.get(code, "INVALID_REQUEST")
+
+
+_RECOVERY_PUBLIC_CODES = {
+    "CURRENT_ACCESS_DENIED": "CURRENT_ACCESS_DENIED",
+    "STEP_UP_REQUIRED": "STEP_UP_REQUIRED",
+    "BACKUP_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+    "RESTORE_REQUEST_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+    "RESOURCE_UNAVAILABLE": "RESOURCE_UNAVAILABLE",
+    "FIXTURE_ONLY_RESTORE_REQUIRED": "CURRENT_ACCESS_DENIED",
+    "IN_PLACE_RESTORE_FORBIDDEN": "CURRENT_ACCESS_DENIED",
+}
+
+
+def _recovery_public_error_code(code: str) -> str:
+    return _RECOVERY_PUBLIC_CODES.get(code, "INVALID_REQUEST")
 
 
 def _require_query_keys(request: Request, allowed: frozenset[str]) -> None:
@@ -563,6 +619,25 @@ def _retention_context(
     )
 
 
+def _recovery_expected_version(value: str, resource_id: str) -> int:
+    matched = re.fullmatch(
+        r'"restore:' + re.escape(resource_id) + r':([1-9][0-9]*)"', value
+    )
+    if matched is None:
+        raise RecoveryError("IF_MATCH_INVALID", 400)
+    return int(matched.group(1))
+
+
+def _recovery_context(
+    principal: IdentityPrincipal, workspace_id: str, request: Request,
+    dependencies: RuntimeDependencies, *, organization_admin: bool = True,
+) -> RecoveryContext:
+    return RecoveryContext(
+        principal.tenant_id, workspace_id, principal.user_id, request.state.trace_id,
+        dependencies.settings.policy_version, organization_admin,
+    )
+
+
 def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityPrincipal:
     token, expected_kind = _credential(request)
     view = dependencies.identity_service.describe_access(
@@ -589,6 +664,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     )
     retention_service = dependencies.retention_service or RetentionService(
         ReferenceRetentionRepository(), ReferenceCleanupPort(),
+        clock=lambda: datetime.now(timezone.utc),
+    )
+    recovery_service = dependencies.recovery_service or RecoveryService(
+        ReferenceRecoveryRepository(), ReferenceRestorePort(),
         clock=lambda: datetime.now(timezone.utc),
     )
     @asynccontextmanager
@@ -693,6 +772,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def retention_error(request: Request, error: RetentionError) -> JSONResponse:
         return _error_response(
             error.status, _retention_public_error_code(error.code),
+            request.state.trace_id, retryable=error.retryable,
+        )
+
+    @app.exception_handler(RecoveryError)
+    async def recovery_error(request: Request, error: RecoveryError) -> JSONResponse:
+        return _error_response(
+            error.status, _recovery_public_error_code(error.code),
             request.state.trace_id, retryable=error.retryable,
         )
 
@@ -1259,6 +1345,184 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "data": _dataclass_json(hold), "meta": {"trace_id": request.state.trace_id}
         })
         response.headers["ETag"] = hold.etag
+        return response
+
+    @app.post("/api/v1/backups", status_code=201)
+    async def create_backup(
+        body: BackupCreateBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=body.workspace_id,
+            action=Action.POLICY_MANAGE, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = recovery_service.create_backup(
+            _recovery_context(principal, body.workspace_id, request, dependencies),
+            trigger=body.trigger, schema_revision=body.schema_revision,
+            retention_watermark=body.retention_watermark,
+            objects=tuple(BackupObjectInput(**item.model_dump()) for item in body.objects),
+            idempotency_key=idempotency_key,
+        )
+        response = JSONResponse(
+            {"data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}},
+            status_code=201,
+        )
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/backups")
+    async def list_backups(request: Request, workspace_id: str = Query()) -> JSONResponse:
+        _require_query_keys(request, frozenset({"workspace_id"}))
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        views = recovery_service.list_backups(
+            _recovery_context(principal, workspace_id, request, dependencies)
+        )
+        return _json_with_etag(
+            {"data": [_dataclass_json(view) for view in views],
+             "meta": {"trace_id": request.state.trace_id}},
+            "|".join(view.etag for view in views),
+        )
+
+    @app.get("/api/v1/backups/{id}")
+    async def get_backup(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        workspace_id = recovery_service.locate_backup_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = recovery_service.get_backup(
+            _recovery_context(principal, workspace_id, request, dependencies), id
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.post("/api/v1/backups/{id}/restore-previews", status_code=201)
+    async def create_restore_preview(
+        id: str, body: RestorePreviewBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        workspace_id = recovery_service.locate_backup_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=body.step_up_authorization_id,
+            access_token=access_token,
+            action_group="permanent_delete_or_restore_rollback", target_id=id,
+            policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id,
+        )
+        view = recovery_service.create_restore_preview(
+            _recovery_context(principal, workspace_id, request, dependencies), id,
+            destination=RestoreDestination(**body.destination.model_dump()),
+            idempotency_key=idempotency_key, step_up_verified=True,
+        )
+        response = JSONResponse(
+            {"data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}},
+            status_code=201,
+        )
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/restore-requests/{id}")
+    async def get_restore_request(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        workspace_id = recovery_service.locate_restore_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = recovery_service.get_restore_request(
+            _recovery_context(principal, workspace_id, request, dependencies), id
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.post("/api/v1/restore-requests/{id}/execute")
+    async def execute_restore(
+        id: str, body: RestoreExecuteBody, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        workspace_id = recovery_service.locate_restore_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=body.step_up_authorization_id,
+            access_token=access_token,
+            action_group="permanent_delete_or_restore_rollback", target_id=id,
+            policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id,
+        )
+        view = recovery_service.execute_restore(
+            _recovery_context(principal, workspace_id, request, dependencies), id,
+            expected_version=_recovery_expected_version(if_match, id),
+            preview_version=body.preview_version, idempotency_key=idempotency_key,
+            step_up_verified=True,
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.post("/api/v1/restore-requests/{id}/cancel")
+    async def cancel_restore(
+        id: str, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        workspace_id = recovery_service.locate_restore_workspace(principal.tenant_id, id)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = recovery_service.cancel_restore(
+            _recovery_context(principal, workspace_id, request, dependencies), id,
+            expected_version=_recovery_expected_version(if_match, id),
+            idempotency_key=idempotency_key,
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(view), "meta": {"trace_id": request.state.trace_id}
+        })
+        response.headers["ETag"] = view.etag
         return response
 
     return app

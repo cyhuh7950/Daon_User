@@ -64,7 +64,13 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/deletion-requests/{id}/cancel",
   "/api/v1/deletion-requests/{id}/purge",
   "/api/v1/sources/{id}/legal-holds",
-  "/api/v1/legal-holds/{id}/release"
+  "/api/v1/legal-holds/{id}/release",
+  "/api/v1/backups",
+  "/api/v1/backups/{id}",
+  "/api/v1/backups/{id}/restore-previews",
+  "/api/v1/restore-requests/{id}",
+  "/api/v1/restore-requests/{id}/execute",
+  "/api/v1/restore-requests/{id}/cancel"
 ]);
 
 const HTTP_METHODS = new Set(["get", "post", "patch", "delete"]);
@@ -432,7 +438,7 @@ export function buildSummary(document) {
 export async function verifyOpenApiContract({ root, write = false } = {}) {
   const repositoryRoot = root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const contractPath = path.join(repositoryRoot, "packages/contracts/openapi/v1/openapi.json");
-  const evidencePath = path.join(repositoryRoot, "docs/03_evidence/release_1/R1-M4-01/openapi-contract-summary.json");
+  const evidencePath = path.join(repositoryRoot, "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json");
   const document = JSON.parse(await readFile(contractPath, "utf8"));
   const summary = buildSummary(document);
   const expected = `${JSON.stringify(summary, null, 2)}\n`;

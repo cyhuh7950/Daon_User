@@ -94,9 +94,17 @@ def test_fixed_read_only_commands_require_command_bound_single_use_tokens() -> N
     assert capabilities.status_code == 200
     assert capabilities.json() == {
         "catalog_version": "1.0",
-        "capabilities": [
-            {
-                "capability": "runtime.read",
+            "capabilities": [
+                {
+                    "capability": "recovery.read",
+                    "commands": ["recovery.job.read"],
+                },
+                {
+                    "capability": "recovery.write",
+                    "commands": ["recovery.repair", "recovery.scan"],
+                },
+                {
+                    "capability": "runtime.read",
                 "commands": ["runtime.capabilities.read", "runtime.status.read"],
             },
             {
@@ -418,3 +426,49 @@ def test_oversized_headers_and_auth_failures_are_safe() -> None:
         response = test_client.get("/v1/status", headers={"authorization": authorization})
         assert response.status_code == 401
         assert_safe_error(response, "LOCAL_AUTH_REQUIRED")
+
+
+def test_authenticated_recovery_scan_get_and_repair_http_contract(tmp_path: Path) -> None:
+    workspace = "55555555-5555-4555-8555-555555555555"
+    storage = LocalEncryptedStore.open(tmp_path / "recovery-http", bytes.fromhex("ef" * 32))
+    test_client = client(storage=storage)
+    scanned = test_client.post(
+        "/local/v1/recovery/scans",
+        headers=auth_headers(
+            "recovery.scan", capability="recovery.write", nonce="71" * 32
+        ),
+        json={
+            "workspace_id": workspace,
+            "target_id": "fixture-http-damaged-object",
+            "snapshot_checksum": "a" * 64,
+            "metadata_checksum": "a" * 64,
+            "actual_checksum": "b" * 64,
+            "journal_present": True,
+        },
+    )
+    assert scanned.status_code == 200
+    job_id = scanned.json()["data"]["job_id"]
+    assert scanned.json()["data"]["state"] == "repairable"
+
+    fetched = test_client.get(
+        f"/local/v1/recovery/jobs/{job_id}",
+        headers=auth_headers(
+            "recovery.job.read", capability="recovery.read", nonce="72" * 32
+        ),
+    )
+    assert fetched.status_code == 200
+    assert fetched.json()["data"]["job_id"] == job_id
+
+    repaired = test_client.post(
+        f"/local/v1/recovery/jobs/{job_id}/repair",
+        headers=auth_headers(
+            "recovery.repair", capability="recovery.write", nonce="73" * 32
+        ),
+        json={"workspace_id": workspace, "expected_version": 4},
+    )
+    assert repaired.status_code == 200
+    assert repaired.json()["data"]["state"] == "verified"
+    serialized = scanned.text + fetched.text + repaired.text
+    assert ROOT_SECRET not in serialized
+    assert str(tmp_path) not in serialized
+    storage.close()

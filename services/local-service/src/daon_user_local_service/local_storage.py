@@ -95,6 +95,19 @@ class LocalDeletionTombstone:
     previous_version: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class LocalRecoveryJobState:
+    job_id: str
+    version: int
+    state: str
+    target_id: str
+    snapshot_checksum: str
+    actual_checksum: str
+    journal_present: bool
+    recorded_at: str
+    previous_version: int | None
+
+
 def _valid_utf8_text(value: bytes) -> bool:
     if b"\x00" in value:
         return False
@@ -341,6 +354,30 @@ class LocalEncryptedStore:
             CREATE TRIGGER IF NOT EXISTS deletion_tombstones_delete_immutable
             BEFORE DELETE ON deletion_tombstones
             BEGIN SELECT RAISE(ABORT, 'LOCAL_DELETION_TOMBSTONE_IMMUTABLE'); END;
+            CREATE TABLE IF NOT EXISTS recovery_job_states (
+                workspace_id TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK (version > 0),
+                state TEXT NOT NULL CHECK (state IN (
+                    'detected','quarantined','scanning','repairable','repairing',
+                    'verified','manual_recovery_required','failed'
+                )),
+                target_id TEXT NOT NULL,
+                snapshot_checksum TEXT NOT NULL CHECK (length(snapshot_checksum) = 64),
+                actual_checksum TEXT NOT NULL CHECK (length(actual_checksum) = 64),
+                journal_present INTEGER NOT NULL CHECK (journal_present IN (0,1)),
+                recorded_at TEXT NOT NULL,
+                previous_version INTEGER,
+                PRIMARY KEY (workspace_id, job_id, version),
+                CHECK ((version = 1) = (previous_version IS NULL)),
+                CHECK (previous_version IS NULL OR previous_version = version - 1)
+            );
+            CREATE TRIGGER IF NOT EXISTS recovery_job_states_update_immutable
+            BEFORE UPDATE ON recovery_job_states
+            BEGIN SELECT RAISE(ABORT, 'LOCAL_RECOVERY_JOB_IMMUTABLE'); END;
+            CREATE TRIGGER IF NOT EXISTS recovery_job_states_delete_immutable
+            BEFORE DELETE ON recovery_job_states
+            BEGIN SELECT RAISE(ABORT, 'LOCAL_RECOVERY_JOB_IMMUTABLE'); END;
             """
         )
         now = _utc_now()
@@ -952,6 +989,111 @@ class LocalEncryptedStore:
                 (workspace_id, request_id, workspace_id, request_id),
             ).fetchall()
             return [str(row[0]) for row in rows]
+
+    def append_recovery_job_state(
+        self,
+        workspace_id: str,
+        *,
+        job_id: str,
+        version: int,
+        state: str,
+        target_id: str,
+        snapshot_checksum: str,
+        actual_checksum: str,
+        journal_present: bool,
+        recorded_at: str,
+        previous_version: int | None,
+    ) -> None:
+        """Append an encrypted recovery/quarantine state without storing raw paths."""
+        with self._operation_lock:
+            _scope(workspace_id, "cache")
+            allowed = {
+                "detected", "quarantined", "scanning", "repairable", "repairing",
+                "verified", "manual_recovery_required", "failed",
+            }
+            if (
+                not _CANON_ID.fullmatch(job_id)
+                or not _CANON_ID.fullmatch(target_id)
+                or not isinstance(version, int)
+                or isinstance(version, bool)
+                or version < 1
+                or state not in allowed
+                or not _DIGEST.fullmatch(snapshot_checksum)
+                or not _DIGEST.fullmatch(actual_checksum)
+                or not isinstance(journal_present, bool)
+                or not _UTC_TIMESTAMP.fullmatch(recorded_at)
+                or (version == 1) != (previous_version is None)
+                or (previous_version is not None and previous_version != version - 1)
+            ):
+                raise _fail("LOCAL_RECOVERY_JOB_INVALID")
+            database = self._db()
+            if previous_version is not None:
+                prior = database.execute(
+                    "SELECT version FROM recovery_job_states WHERE workspace_id=? "
+                    "AND job_id=? AND version=?",
+                    (workspace_id, job_id, previous_version),
+                ).fetchone()
+                if prior != (previous_version,):
+                    raise _fail("LOCAL_RECOVERY_JOB_PREVIOUS_INVALID")
+            try:
+                database.execute(
+                    "INSERT INTO recovery_job_states "
+                    "(workspace_id,job_id,version,state,target_id,snapshot_checksum,"
+                    "actual_checksum,journal_present,recorded_at,previous_version) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        workspace_id, job_id, version, state, target_id,
+                        snapshot_checksum, actual_checksum, int(journal_present),
+                        recorded_at, previous_version,
+                    ),
+                )
+                database.commit()
+            except sqlite.IntegrityError as error:
+                database.rollback()
+                raise _fail("LOCAL_RECOVERY_JOB_IMMUTABLE") from error
+
+    def get_recovery_job_state(
+        self, workspace_id: str, job_id: str
+    ) -> LocalRecoveryJobState:
+        with self._operation_lock:
+            _scope(workspace_id, "cache")
+            if not _CANON_ID.fullmatch(job_id):
+                raise _fail("LOCAL_RECOVERY_JOB_INVALID")
+            row = self._db().execute(
+                "SELECT version,state,target_id,snapshot_checksum,actual_checksum,"
+                "journal_present,recorded_at,previous_version FROM recovery_job_states "
+                "WHERE workspace_id=? AND job_id=? ORDER BY version DESC LIMIT 1",
+                (workspace_id, job_id),
+            ).fetchone()
+            if row is None:
+                raise _fail("LOCAL_RECOVERY_JOB_NOT_FOUND")
+            return LocalRecoveryJobState(
+                job_id, int(row[0]), str(row[1]), str(row[2]), str(row[3]),
+                str(row[4]), bool(row[5]), str(row[6]),
+                None if row[7] is None else int(row[7]),
+            )
+
+    def find_recovery_job_state(self, job_id: str) -> tuple[str, LocalRecoveryJobState]:
+        with self._operation_lock:
+            if not _CANON_ID.fullmatch(job_id):
+                raise _fail("LOCAL_RECOVERY_JOB_INVALID")
+            rows = self._db().execute(
+                "SELECT workspace_id,version,state,target_id,snapshot_checksum,"
+                "actual_checksum,journal_present,recorded_at,previous_version "
+                "FROM recovery_job_states WHERE job_id=? ORDER BY version DESC",
+                (job_id,),
+            ).fetchall()
+            if not rows:
+                raise _fail("LOCAL_RECOVERY_JOB_NOT_FOUND")
+            workspace_id = str(rows[0][0])
+            if any(str(row[0]) != workspace_id for row in rows):
+                raise _fail("LOCAL_RECOVERY_JOB_SCOPE_CONFLICT")
+            row = rows[0]
+            return workspace_id, LocalRecoveryJobState(
+                job_id, int(row[1]), str(row[2]), str(row[3]), str(row[4]),
+                str(row[5]), bool(row[6]), str(row[7]),
+                None if row[8] is None else int(row[8]),
+            )
 
     def put_vector(
         self,
