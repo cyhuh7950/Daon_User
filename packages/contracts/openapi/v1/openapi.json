@@ -54,6 +54,9 @@
     },
     {
       "name": "Sync"
+    },
+    {
+      "name": "Retention"
     }
   ],
   "paths": {
@@ -3358,6 +3361,58 @@
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncConflictResolutionRequest" } } } },
         "responses": { "200": { "$ref": "#/components/responses/SyncResolutionResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
       }
+    },
+    "/api/v1/sources/{id}/deletion-requests": {
+      "post": {
+        "operationId": "createDeletionRequest", "tags": ["Retention"],
+        "summary": "Source를 즉시 비활성화하고 유예 삭제 요청 생성", "x-implementation-owner": "R1-M5-06",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletionCreateRequest" } } } },
+        "responses": { "201": { "$ref": "#/components/responses/RetentionResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/deletion-requests/{id}": {
+      "get": {
+        "operationId": "getDeletionRequest", "tags": ["Retention"],
+        "summary": "현재 권한으로 삭제·파생 정리 상태 조회", "x-implementation-owner": "R1-M5-06",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": { "200": { "$ref": "#/components/responses/RetentionResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/deletion-requests/{id}/cancel": {
+      "post": {
+        "operationId": "cancelDeletionRequest", "tags": ["Retention"],
+        "summary": "Purge 시작 전 삭제 요청 취소", "x-implementation-owner": "R1-M5-06",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": { "200": { "$ref": "#/components/responses/RetentionResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/deletion-requests/{id}/purge": {
+      "post": {
+        "operationId": "purgeDeletionRequest", "tags": ["Retention"],
+        "summary": "유예·Hold·Step-up·현재 권한 확인 후 미완료 파생 항목 정리", "x-implementation-owner": "R1-M5-06",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensitiveRetentionRequest" } } } },
+        "responses": { "200": { "$ref": "#/components/responses/RetentionResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/sources/{id}/legal-holds": {
+      "post": {
+        "operationId": "applyLegalHold", "tags": ["Retention"],
+        "summary": "조직 권한과 결합 Step-up으로 Legal Hold 적용", "x-implementation-owner": "R1-M5-06",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensitiveRetentionRequest" } } } },
+        "responses": { "201": { "$ref": "#/components/responses/LegalHoldResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/legal-holds/{id}/release": {
+      "post": {
+        "operationId": "releaseLegalHold", "tags": ["Retention"],
+        "summary": "조직 권한과 결합 Step-up으로 Legal Hold 해제", "x-implementation-owner": "R1-M5-06",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SensitiveRetentionRequest" } } } },
+        "responses": { "200": { "$ref": "#/components/responses/LegalHoldResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
     }
   },
   "components": {
@@ -3928,6 +3983,16 @@
         "description": "명시 Conflict 해결 결과와 현재 Operation",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncMutationEnvelope" } } }
+      },
+      "RetentionResponse": {
+        "description": "삭제 요청과 파생 정리 상태",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RetentionEnvelope" } } }
+      },
+      "LegalHoldResponse": {
+        "description": "Legal Hold 상태",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LegalHoldEnvelope" } } }
       }
     },
     "schemas": {
@@ -4423,6 +4488,9 @@
           "COST_LIMIT_EXCEEDED",
           "STEP_UP_REQUIRED",
           "CURRENT_ACCESS_DENIED",
+          "DELETION_GRACE_PERIOD_ACTIVE",
+          "LEGAL_HOLD_ACTIVE",
+          "DELETION_CLEANUP_PENDING",
           "IMPORTANT_KNOWLEDGE_CONFLICT",
           "NO_AVAILABLE_UNDERSTANDING_MODEL",
           "NO_AVAILABLE_DEPLOYMENT"
@@ -5279,6 +5347,31 @@
       "SyncMutationEnvelope": {
         "type": "object", "additionalProperties": false, "required": ["data", "operation", "meta"],
         "properties": { "data": { "type": "object", "additionalProperties": true }, "operation": { "$ref": "#/components/schemas/SyncOperation" }, "meta": { "type": "object", "additionalProperties": true } }
+      },
+      "RetentionDerivativeInput": {
+        "type": "object", "additionalProperties": false,
+        "required": ["kind", "reference_id"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["original_content", "index", "preview", "cache", "known_local_copy", "sync_reference"] },
+          "reference_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "acknowledgement_required": { "type": "boolean", "default": false }
+        }
+      },
+      "DeletionCreateRequest": {
+        "type": "object", "additionalProperties": false, "required": ["inventory"],
+        "properties": { "inventory": { "type": "array", "minItems": 6, "maxItems": 100, "items": { "$ref": "#/components/schemas/RetentionDerivativeInput" } } }
+      },
+      "SensitiveRetentionRequest": {
+        "type": "object", "additionalProperties": false, "required": ["step_up_authorization_id"],
+        "properties": { "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true } }
+      },
+      "RetentionEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "type": "object", "additionalProperties": true }, "meta": { "type": "object", "additionalProperties": true } }
+      },
+      "LegalHoldEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "type": "object", "additionalProperties": true }, "meta": { "type": "object", "additionalProperties": true } }
       }
     }
   }
