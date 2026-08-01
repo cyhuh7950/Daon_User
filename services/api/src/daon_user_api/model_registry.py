@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import re
-from typing import Final
+from typing import Callable, Final
 
 
 _DIGEST: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -96,11 +96,19 @@ class ModelRegistry:
 
 
 class RegistryModelAdapter:
-    def __init__(self, registry: ModelRegistry) -> None:
+    def __init__(self, registry: ModelRegistry, handler: Callable[[bytes], object] | None = None) -> None:
         self._registry = registry
+        self._handler = handler
 
     def understand(self, binding_id: str, payload: bytes) -> dict[str, object]:
         _binding, deployment = self._registry.resolve_binding(binding_id)
         if not payload:
             raise ValueError("model input must not be empty")
-        raise AdapterUnavailable("NO_AVAILABLE_DEPLOYMENT")
+        if self._handler is None:
+            raise AdapterUnavailable("NO_AVAILABLE_DEPLOYMENT")
+        return {
+            "deployment_id": deployment.deployment_id,
+            "artifact_digest": deployment.artifact_digest,
+            "input_size": len(payload),
+            "output": self._handler(payload),
+        }

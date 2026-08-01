@@ -67,6 +67,24 @@ class ModelRegistryContractTests(unittest.TestCase):
             RegistryModelAdapter(self.registry).understand(binding.binding_id, b"pdf")
         self.assertEqual(error.exception.code, "NO_AVAILABLE_DEPLOYMENT")
 
+    def test_adapter_returns_output_with_deployment_lineage(self) -> None:
+        self.registry.register_artifact(self.artifact)
+        self.registry.register_deployment(self.deployment)
+        self.registry.mark_ready(self.deployment.deployment_id, health_ok=True)
+        self.registry.bind(ModelBinding(
+            binding_id="binding-001",
+            workspace_id="workspace-001",
+            deployment_id=self.deployment.deployment_id,
+            role="vision",
+            allowed_data_realm="cloud_sync",
+        ))
+        result = RegistryModelAdapter(
+            self.registry,
+            handler=lambda payload: {"text": payload.decode("utf-8")},
+        ).understand("binding-001", b"pdf")
+        self.assertEqual(result["output"], {"text": "pdf"})
+        self.assertEqual(result["artifact_digest"], self.artifact.digest)
+
 
 if __name__ == "__main__":
     unittest.main()
