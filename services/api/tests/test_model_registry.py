@@ -35,6 +35,7 @@ class ModelRegistryContractTests(unittest.TestCase):
         ready = self.registry.mark_ready(self.deployment.deployment_id, health_ok=True)
         self.assertEqual(ready.status, "ready")
         self.assertEqual(ready.artifact_digest, self.artifact.digest)
+        self.assertIsNotNone(ready.health_checked_at)
 
     def test_binding_rejects_unhealthy_or_wrong_realm(self) -> None:
         self.registry.register_artifact(self.artifact)
