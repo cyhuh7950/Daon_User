@@ -1,0 +1,8 @@
+# R1-M6-01 진행 복구 기록
+
+`work_order_id=R1-M6-01` · `issue_id=R1-M6-01-I001` · 공식 정본: `C:\Users\cyhuh\OneDrive\바탕 화면\D Driver\Project\Daon_User`
+
+| recorded_at | stage | status | completed | changed_files | commands_and_tests | error_cause_recovery | next_step | commit_or_build |
+|---|---|---|---|---|---|---|---|---|
+| 2026-08-01T00:00:00+09:00 | 착수·기준선 확인 | IN_PROGRESS | AGENTS.md, 승인 상세 설계서 0.9, 구현계획 1.2, 테스트계획 0.7, Baseline Manifest, Work Order EOF 확인; 공식 경로·branch·HEAD·dirty 상태 기록 | 없음 | `git rev-parse --show-toplevel`; `git branch --show-current`; `git rev-parse HEAD`; `git status --short` | 보호 Untracked 2개(`interim_review_2026-07-30.md`, `release_1_model_provider_queries.md`) 확인, 수정·Stage 금지 | 기존 모델 정본·테스트 구조 분석 후 RED 작성 | 기준 HEAD `5209ea973afdee696e13aeaf2d5e2e731738969c` |
+| 2026-08-01T02:00:00+09:00 | RED 착수 대기·복구 | INCOMPLETE | 승인 문서 전체 확인과 공식 정본 기준선 확인까지 완료했으나 RED 테스트 실행 전 상위 워크플로가 장시간 무응답 회수를 위해 일시 중단했다. | 진행 파일만; 제품 코드·테스트 변경 없음 | 공식 OneDrive 경로·Branch·HEAD·보호 Untracked를 재확인했다. 실패보고로 계산하지 않으며 환경/도구 정체로 분류한다. | 변경 파일·임시 자원 없음. | 동일 어울2가 이 마지막 단계에서 RED 작성부터 재개한다. | 기준 HEAD `5209ea973afdee696e13aeaf2d5e2e731738969c` |
