@@ -5,3 +5,4 @@
 | 2026-08-03 Asia/Seoul | 착수·계약 확인 | IN_PROGRESS | M7-01~05 선행 확인 | 문서 2개, 본 진행 기록 | 계획서·의존성 확인 | 실제 플랫폼 장애훈련은 후속 | TDD 테스트 작성 | 미정 |
 | 2026-08-03 Asia/Seoul | TDD RED | RED_CONFIRMED | 만료·의존성 장애·Evidence 차단·Reconnect 테스트 3개 작성 | `services/api/tests/test_operations_regression.py` | 전용 unittest → ModuleNotFoundError | 원인: Operations 모듈 미존재 | 운영 상태 구현 | RED 커밋 대기 |
 | 2026-08-03 Asia/Seoul | 구현·GREEN | GREEN | 만료·Index/Model 장애·Evidence 차단·Reconnect 상태 구현 | `services/api/src/daon_user_api/operations_regression.py` | 전용 3/3 OK; API 전체 220건, 25 skipped, OK | 오류 없음 | 결과보고·커밋·push | 구현 커밋 대기 |
+| 2026-08-03 Asia/Seoul | 종료·보고 | COMPLETED | 결과보고서 작성, 운영 축소 상태·복구 증거 정리, 보호 파일 보존 확인 | `R1-M7-06_report.md` 포함 추적 문서 | 외부 호출·비밀값 로그·브라우저 호출 추가 없음; 보호 untracked 2개 유지 | 다음 Release 1 통합 단계 자동 진행 | `2cfe5c5` · pushed `codex/r1-m5-07` |
