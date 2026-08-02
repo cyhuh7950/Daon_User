@@ -4,3 +4,4 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-08-02 Asia/Seoul | 착수·계약 확인 | IN_PROGRESS | 작업지시서·프롬프트 작성, M6-06/10/14 선행 내부 계약 확인 | 문서 2개, 본 진행 기록 | 계획서·의존성 확인 | 실제 Provider·Office 검증은 별도 | TDD 테스트 작성 | 미정 |
 | 2026-08-02 Asia/Seoul | TDD RED | RED_CONFIRMED | 형식별 Vision-first·evidence·Parser-only 차단 테스트 3개 작성 | `services/api/tests/test_format_understanding.py` | 전용 unittest → ModuleNotFoundError | 원인: `format_understanding.py` 미존재 | 형식 처리 구현 | RED 커밋 대기 |
+| 2026-08-02 Asia/Seoul | 구현·GREEN | GREEN | 문서·표·이미지 형식별 이해·evidence 위치·Parser-only 차단 구현 | `services/api/src/daon_user_api/format_understanding.py` | 전용 3/3 OK; API 전체 190건, 25 skipped, OK | 오류 없음 | 결과보고·커밋·push | 구현 커밋 대기 |
