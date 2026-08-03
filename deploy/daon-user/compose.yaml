@@ -1,0 +1,52 @@
+name: ${COMPOSE_PROJECT_NAME:?isolated project name required}
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    environment:
+      DAON_RUNTIME_PROFILE: production
+      DAON_API_BIND_HOST: 0.0.0.0
+      DAON_API_PORT: 8000
+      DAON_API_DATABASE_PATH: /var/lib/daon-user/runtime.sqlite3
+      DAON_CLOUD_DATABASE_DSN: ${DAON_CLOUD_DATABASE_DSN:?cloud database DSN reference required}
+      DAON_PUBLIC_GATEWAY_URL: ${DAON_PUBLIC_GATEWAY_URL:?public HTTPS gateway required}
+      DAON_TRUSTED_PROXY_IPS: ${DAON_TRUSTED_PROXY_IPS:?trusted proxy IPs required}
+      DAON_OBJECT_STORAGE_ENDPOINT: ${DAON_OBJECT_STORAGE_ENDPOINT-}
+      DAON_OBJECT_STORAGE_BUCKET: ${DAON_OBJECT_STORAGE_BUCKET-}
+      DAON_OBJECT_STORAGE_SECURE: ${DAON_OBJECT_STORAGE_SECURE-true}
+      DAON_OBJECT_ACCESS_KEY_FILE: /run/secrets/object_access_key
+      DAON_OBJECT_SECRET_KEY_FILE: /run/secrets/object_secret_key
+      DAON_RECOVERY_MANIFEST_KEY_FILE: /run/secrets/recovery_manifest_key
+    secrets: [object_access_key, object_secret_key, recovery_manifest_key]
+    volumes: [daon_user_api_runtime:/var/lib/daon-user]
+    networks: [daon_user, proxy-network]
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3330
+      DAON_RUNTIME_PROFILE: production
+      DAON_API_INTERNAL_URL: ${DAON_API_INTERNAL_URL:?server-side BFF API URL required}
+    depends_on:
+      api: {condition: service_healthy}
+    ports: ["3330:3330"]
+    networks: [daon_user, proxy-network]
+    restart: unless-stopped
+
+networks:
+  daon_user: {name: ${COMPOSE_PROJECT_NAME}_network}
+  proxy-network: {external: true, name: proxy-network}
+
+volumes:
+  daon_user_api_runtime: {name: ${COMPOSE_PROJECT_NAME}_api_runtime}
+
+secrets:
+  object_access_key: {file: ${DAON_OBJECT_ACCESS_KEY_FILE:?object access key reference required}}
+  object_secret_key: {file: ${DAON_OBJECT_SECRET_KEY_FILE:?object secret key reference required}}
+  recovery_manifest_key: {file: ${DAON_RECOVERY_MANIFEST_KEY_FILE:?recovery manifest key reference required}}
