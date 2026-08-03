@@ -52,7 +52,7 @@
 | 0.6 | 2026-07-20 | TP-0 승인 기록, 화면·same-origin API·3단계 배포 표준, 단계별 진행 복구 기록, 작업지시서/프롬프트 분리, 3회 미완료·실패 사용자 결정 Gate 반영 | C2 사용자 결정 + C1 운영 정합화 | 신산님 승인 |
 | 0.7 | 2026-07-20 | G0-BASELINE 승인, R1-D001·D003·D009·D010 확정, 외부 차단 조건 유지, 구현 상태 `READY` 전환 | C0 승인 기록 | 신산님 승인 |
 | 0.8 | 2026-07-20 | R1-M1-03 레지스트리 사전검증에 따라 Python 3.14.3·Tauri CLI 2.11.4·React Native 0.86.0을 정확 Pin하고 진행 복구 경로를 운영 규칙과 정합화 | C1 기술 정정 | 어울1 확정 |
-| 0.9 | 2026-07-20 | WSL 필수 통합을 ysna-server 격리 개발·통합 흐름으로 대체하고 Git Push·전용 PostgreSQL 18.4 Migration·서버 Test·PR Merge Gate와 ARM64·공유 자원 금지 계약 반영 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-DEVENV-YSNA-20260720-01` |
+| 1.0 | 2026-08-03 | 개발 기준을 `ssh WSL-server`로 확정하고 기존 `local-postgres:5432`·`postgres_env_default`·`proxy-network`를 사용하도록 정합화. ysna-server는 공용 `shared-db`·외부 `proxy-network`를 사용하며 기존 공용 자원은 변경하지 않음 | 신산님 지시 · 환경 정합화 |
 | 1.0 | 2026-07-30 | R1-M5-05 Sync·Copy/Publish 공개 API 5종, Step-up 승인 Snapshot, 재개 전송, 명시적 충돌 선택과 자동 덮어쓰기 금지 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-05-SYNC-API-20260730-01` |
 | 1.1 | 2026-07-31 | R1-M5-06 삭제·보존·Legal Hold 공개 API 6종, 상태·파생 Inventory·Local Copy Tombstone/Ack·최소 Audit 계보 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-06-RETENTION-API-20260731-01` |
 | 1.2 | 2026-07-31 | R1-M5-07 Backup·격리 Restore Cloud API 7종, Local 손상 복구 API 3종, Preview·Execute 재검증·현재 Retention 우선·Fixture-only 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
@@ -221,8 +221,8 @@ Milestone 이동, G0/G2/G9 Gate 우회, M2 승인 전 개별 기능 구현 또�
 - 기준 Desktop 화면은 1920×1080이고 기본 본문·Form 12px, 작은 설명 10px, 아주 작은 보조 9px, Sidebar 제목 14px, 화면 제목 16px를 적용한다.
 - 상시 설명 박스를 금지하고 `i` 아이콘·Tooltip·Popover를 사용하되 필수 오류·경고·진행 상태는 별도 상태 영역과 복구 동작으로 노출한다.
 - Browser 코드는 same-origin 상대 경로만 사용하며 API 절대주소, `localhost`, `127.0.0.1`, Docker 내부 Host·Port와 `NEXT_PUBLIC_API_BASE_URL` Client Fetch를 금지한다.
-- 개발은 로컬 수정·기본 검증 → Git Push → ysna-server 격리 배포 → 전용 PostgreSQL 18.4 DB Migration → 서버 통합 테스트 → PR Merge 순서를 따른다. WSL은 선택적 격리 대체 환경이며 필수 Gate가 아니다. 지정 테스트 통과 후 Oracle Cloud 운영 배포는 별도 G9-DEPLOY 승인을 유지한다.
-- ysna-server 배포는 `/home/ubuntu/deploy/daon-user` 아래의 Branch/Release별 Compose Project·Network·Volume을 사용한다. 기존 `shared-db`, `common`, `netdata`, `proxy`를 사용하거나 변경하지 않으며 ARM64 또는 Multi-arch Image만 허용한다.
+- 개발은 로컬 수정·기본 검증 → Git Push → `ssh WSL-server`의 기존 Docker 환경에서 통합 테스트 → ysna-server Git 기준선 배포 → 서버 통합 테스트 → PR Merge 순서를 따른다. WSL-server의 `local-postgres:5432`·`postgres_env_default`·`proxy-network`를 사용하며, ysna-server는 `/home/ubuntu/deploy/daon-user`에서 공용 `shared-db`·`proxy-network`를 사용한다. 기존 공용 컨테이너·DB·Volume은 변경하지 않는다.
+- Daon Web은 `3330`을 사용하고 `proxy-network`에 연결한다. Browser는 same-origin Proxy/BFF만 호출한다. ARM64 또는 Multi-arch Image만 허용한다.
 - Migration은 사전점검·Backup·적용·Rollback 검증을 한 작업 단위로 기록하고, 배포 Commit SHA·Service Health·서버 테스트 결과가 모두 있어야 PR Merge로 진행한다.
 
 ## 7. 구현 시작 Gate와 M0 필수 결정
