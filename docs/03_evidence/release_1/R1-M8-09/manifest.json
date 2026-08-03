@@ -1,0 +1,20 @@
+{
+  "report_id": "R1-M8-09",
+  "issue_id": "R1-M8-09-I001",
+  "status": "BLOCKED",
+  "evidence_policy": "static_and_actual_separated",
+  "actual_evidence": [],
+  "static_evidence": [
+    "execution-environment.md",
+    "reference-hashes.json"
+  ],
+  "blocked_reasons": [
+    "Upstage credentials are not configured",
+    "No Daon User Web/API process was running on WSL-server",
+    "No authenticated browser session or target service URL was available",
+    "Source/ProcessingRun/solar-pro3/document-parse CP3 route is not present in the current Web BFF route allowlist"
+  ],
+  "product_code_changed": false,
+  "database_changed": false,
+  "operational_server_changed": false
+}

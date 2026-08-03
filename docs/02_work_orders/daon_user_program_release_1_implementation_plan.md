@@ -6,9 +6,9 @@
 | --- | --- |
 | 문서 구분 | Release 1 구현 작업계획 정본 |
 | 계획 ID | `DAON-USER-R1-PLAN` |
-| 계획 버전 | `1.2` |
+| 계획 버전 | `1.3` |
 | 작성일 | 2026-07-20 |
-| 최종 수정일 | 2026-07-31 |
+| 최종 수정일 | 2026-08-04 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 구현 상태 | `READY` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
@@ -56,6 +56,7 @@
 | 1.0 | 2026-07-30 | R1-M5-05 Sync·Copy/Publish 공개 API 5종, Step-up 승인 Snapshot, 재개 전송, 명시적 충돌 선택과 자동 덮어쓰기 금지 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-05-SYNC-API-20260730-01` |
 | 1.1 | 2026-07-31 | R1-M5-06 삭제·보존·Legal Hold 공개 API 6종, 상태·파생 Inventory·Local Copy Tombstone/Ack·최소 Audit 계보 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-06-RETENTION-API-20260731-01` |
 | 1.2 | 2026-07-31 | R1-M5-07 Backup·격리 Restore Cloud API 7종, Local 손상 복구 API 3종, Preview·Execute 재검증·현재 Retention 우선·Fixture-only 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
+| 1.3 | 2026-08-04 | CP3 Go 결정 기록, M5~M8 증거·Milestone Exit 소급 검증, 내부 계약 완료와 실제 여정 검증 분리, 계획 버전·Work Order 추적성 정합화 | C2 사용자 승인 + C0 검증 부채 정리 | 신산님 승인 · `APR-CP3-GO-20260804-01` |
 
 ---
 
@@ -315,6 +316,20 @@ flowchart LR
 | CP5 Studio Beta | M8 | 생성 설정을 포함한 5종 산출물 전체 수명주기 |
 | RC 운영 검증 | M9 | 배포·Update·Alarm·Recovery·전체 회귀 |
 
+#### CP3 Go 결정(2026-08-04)
+
+신산님은 `APR-CP3-GO-20260804-01`로 CP3 실제 실행을 승인했다. 이는 CP3 통과를 면제하거나 확장 Gate를 완화하는 결정이 아니다. Upstage 기본 Provider와 단일 승인 모델을 사용해 실제 Process·저장소·모델·브라우저 증거를 확보할 때까지 추가 형식·Provider·Connector·플랫폼 범위의 신규 확장은 중지한다. 이미 내부 계약 범위로 진행된 M6~M8 Work Order는 `CONTRACT_COMPLETE / JOURNEY_UNVERIFIED`로 재분류하고, CP3·Milestone Exit·Evidence Manifest 소급 검증을 선행한다.
+
+| 항목 | 결정 |
+| --- | --- |
+| CP3 판정 | `GO_TO_EXECUTION` — 실제 Thin Vertical E2E 실행 준비·수행 |
+| 기본 Provider | Upstage external API |
+| CP3 의미 이해·생성 모델 | `solar-pro3` (Provider Profile·Model Artifact·Deployment Digest 고정) |
+| Parser/OCR 검증·보완 | Upstage `document-parse` 전용. 의미 이해를 대체하지 않음 |
+| 미확정 역할 | ASR·Embedding·Reranker의 정확한 모델 ID는 CP3 이후 역할별 Readiness에서 별도 확정하며, 그 전까지 외부 차단 유지 |
+| Gate 완화 | 없음 |
+| 선행 복구 | M5~M8 Evidence Manifest 및 M5~M7 Milestone Exit 소급 검증 |
+
 ### 8.2 단계 상태
 
 | 상태 | 의미 |
@@ -326,6 +341,7 @@ flowchart LR
 | `VERIFYING` | 구현 종료 후 증거·회귀·독립 검토 중 |
 | `COMPLETED` | 완료 조건과 필수 증거가 승인됨 |
 | `REWORK` | 유효한 실패보고 후 같은 `issue_id`로 재작업 중 |
+| `CONTRACT_COMPLETE / JOURNEY_UNVERIFIED` | 내부 계약·정적 검증은 충족했으나 실제 사용자 여정·운영 증거가 없어 제품 완료로 확정하지 않은 상태 |
 
 ## 9. Milestone 요약
 

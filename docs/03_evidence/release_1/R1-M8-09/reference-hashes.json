@@ -1,0 +1,8 @@
+{
+  "report_id": "R1-M8-09",
+  "status": "BLOCKED",
+  "baseline_commit": "2d11bbe",
+  "actual_evidence_count": 0,
+  "static_evidence_count": 2,
+  "note": "CP3 실제 Process·저장소·모델·Browser Network/Console 증거를 확보하지 못함"
+}

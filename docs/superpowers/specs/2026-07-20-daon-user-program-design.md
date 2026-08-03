@@ -1452,6 +1452,8 @@ M4~M6의 모든 수평 구현이 끝날 때까지 통합 검증을 미루지 않
 | 중요 충돌은 ConflictPolicyVersion으로 자동 판정하고 검토자는 상향 가능, 미해결 시 승인·전달·생산 지식 등록 차단 | 확정 · 신산님 승인 2026-07-20 |
 | 생산 지식 명시 등록·불변 Version | 확정 |
 | Local·Internal·External LLM 선택 | 확정 |
+| Release 1 CP3 기본 외부 Provider는 Upstage로 사용 | 확정 · 신산님 승인 2026-08-04 · `APR-CP3-GO-20260804-01` |
+| CP3 기본 의미 이해·생성 모델은 Upstage `solar-pro3`, Document Parse(`document-parse`)는 Parser/OCR 검증·보완과 원문 위치 재현에만 사용 | 확정 · 신산님 승인 2026-08-04 · `APR-CP3-GO-20260804-01` |
 | 자동·로컬만·직접 선택 | 확정 |
 | Windows PC와 사내 Local LLM | 확정 |
 | Managed Local Model + 기존 Runtime 연결 | 확정 |
