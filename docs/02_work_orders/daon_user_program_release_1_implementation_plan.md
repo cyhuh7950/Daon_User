@@ -6,7 +6,7 @@
 | --- | --- |
 | 문서 구분 | Release 1 구현 작업계획 정본 |
 | 계획 ID | `DAON-USER-R1-PLAN` |
-| 계획 버전 | `1.4` |
+| 계획 버전 | `1.5` |
 | 작성일 | 2026-07-20 |
 | 최종 수정일 | 2026-08-04 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
@@ -58,6 +58,7 @@
 | 1.2 | 2026-07-31 | R1-M5-07 Backup·격리 Restore Cloud API 7종, Local 손상 복구 API 3종, Preview·Execute 재검증·현재 Retention 우선·Fixture-only 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
 | 1.3 | 2026-08-04 | CP3 Go 결정 기록, M5~M8 증거·Milestone Exit 소급 검증, 내부 계약 완료와 실제 여정 검증 분리, 계획 버전·Work Order 추적성 정합화 | C2 사용자 승인 + C0 검증 부채 정리 | 신산님 승인 · `APR-CP3-GO-20260804-01` |
 | 1.4 | 2026-08-05 | Provider 독립 구조·다중 LLM 후보·화면 기반 Provider/Model 선택·Secret 전용 `.env` 계약 반영 | C2 사용자 결정 + C1 정합화 | 신산님 승인 |
+| 1.5 | 2026-08-05 | WSL-server·ysna-server 컨테이너 생성 전 사전검증·Health Gate·실패 시 생성 금지 규칙 추가 | C1 운영 정합화 | 신산님 승인 |
 
 ---
 
@@ -226,6 +227,18 @@ Milestone 이동, G0/G2/G9 Gate 우회, M2 승인 전 개별 기능 구현 또�
 - 개발은 로컬 수정·기본 검증 → Git Push → `ssh WSL-server`의 기존 Docker 환경에서 통합 테스트 → ysna-server Git 기준선 배포 → 서버 통합 테스트 → PR Merge 순서를 따른다. WSL-server의 `local-postgres:5432`·`postgres_env_default`·`proxy-network`를 사용하며, ysna-server는 `/home/ubuntu/deploy/daon-user`에서 공용 `shared-db`·`proxy-network`를 사용한다. 기존 공용 컨테이너·DB·Volume은 변경하지 않는다.
 - Daon Web은 `3330`을 사용하고 `proxy-network`에 연결한다. Browser는 same-origin Proxy/BFF만 호출한다. ARM64 또는 Multi-arch Image만 허용한다.
 - Migration은 사전점검·Backup·적용·Rollback 검증을 한 작업 단위로 기록하고, 배포 Commit SHA·Service Health·서버 테스트 결과가 모두 있어야 PR Merge로 진행한다.
+
+### 컨테이너 생성 사전검증·화면 표시 Gate
+
+WSL-server와 ysna-server에 Docker 컨테이너를 생성하기 전 다음을 모두 확인한다.
+
+1. 배포 대상 저장소가 승인된 `master` Commit과 일치한다.
+2. Compose interpolation·Secret reference·Dockerfile·Image build가 오류 없이 검증된다.
+3. 서버별 `.env`에 DB DSN·공용 Network·Gateway·Secret 경로가 설정되고, Provider API Key는 값 노출 없이 존재 여부만 확인된다.
+4. 기존 `local-postgres`/`shared-db`, `postgres_env_default`/`proxy-network`, `common`·`proxy`·`netdata`의 보호 상태가 사전·사후 동일하다.
+5. Web·API·Object Storage 의존성, Healthcheck, 포트 `3330`, same-origin Proxy 경로가 모두 준비된다.
+
+위 조건 중 하나라도 실패하면 컨테이너를 생성하지 않고 `BLOCKED`로 기록한다. 조건을 충족한 뒤에만 `docker compose up -d --build`를 실행하며, API·Web Healthcheck와 실제 브라우저 HTTP 응답이 통과해야 화면을 정상 제공 상태로 판정한다. 502·Health 실패·Build 실패 상태에서는 Nginx Proxy 설정을 임의로 바꾸거나 우회하지 않는다.
 
 ## 7. 구현 시작 Gate와 M0 필수 결정
 
