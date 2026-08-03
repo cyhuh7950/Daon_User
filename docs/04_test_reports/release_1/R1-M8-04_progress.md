@@ -5,3 +5,4 @@
 | 2026-08-03 Asia/Seoul | 착수·계약 확인 | IN_PROGRESS | M8-03 선행 완료 확인 | 작업지시서·프롬프트·본 진행 기록 | 계획·설계 §13.1/§13.4 확인 | 오류 없음 | TDD RED 작성 | 미정 |
 | 2026-08-03 Asia/Seoul | TDD RED | RED_CONFIRMED | 비교·변경·누락·근거 계보 테스트 3개 작성 | `services/api/tests/test_comparison_table.py` | 전용 unittest → ModuleNotFoundError | 원인: Comparison 모듈 미존재 | 비교 구현 | RED 커밋 대기 |
 | 2026-08-03 Asia/Seoul | 구현·GREEN | GREEN | 기준·값·차이·누락·Cell 근거·Version 계보 구현 | `services/api/src/daon_user_api/comparison_table.py` | 전용 3/3 OK; API 전체 232건, 25 skipped, OK | 오류 없음 | 결과보고·커밋·push | 구현 커밋 대기 |
+| 2026-08-03 Asia/Seoul | 종료·보고 | COMPLETED | 결과보고서 작성·테스트 증거 기록·보호 파일 보존 확인 | `docs/04_test_reports/release_1/R1-M8-04_report.md` | 전용·전체 테스트 증거 기록; 보호 untracked 2개 유지 | 오류 없음 | 다음 M8 산출물 자동 진행 | `a86e9a6` pushed `codex/r1-m5-07` |
