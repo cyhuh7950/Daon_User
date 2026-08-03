@@ -531,6 +531,8 @@ Audio-capable LLM의 직접 이해를 정책상 허용하면 `audio_understandin
 
 ### 10.3 사용자 선택
 
+Provider·Model 설정 화면에서 사용 가능한 Provider, Endpoint, 모델 ID, 역할(Text·Vision·Audio·Speech-to-text·Embedding·Reranker), 데이터 영역, 허용 여부와 Routing Policy를 등록·검증하고 현재 Workspace에서 사용할 구성을 선택한다. API Key·Secret은 화면이나 데이터 계약에 저장하지 않고 서버의 Secret Reference로만 연결한다. Provider별 모델명과 Endpoint는 `.env`에 고정하지 않는다.
+
 - `auto`: 승인된 RoutingPolicyVersion 안에서 자동 선택
 - `local_only`: 외부 API를 후보에서 제외
   - `device_only`
@@ -1452,8 +1454,8 @@ M4~M6의 모든 수평 구현이 끝날 때까지 통합 검증을 미루지 않
 | 중요 충돌은 ConflictPolicyVersion으로 자동 판정하고 검토자는 상향 가능, 미해결 시 승인·전달·생산 지식 등록 차단 | 확정 · 신산님 승인 2026-07-20 |
 | 생산 지식 명시 등록·불변 Version | 확정 |
 | Local·Internal·External LLM 선택 | 확정 |
-| Release 1 CP3 기본 외부 Provider는 Upstage로 사용 | 확정 · 신산님 승인 2026-08-04 · `APR-CP3-GO-20260804-01` |
-| CP3 기본 의미 이해·생성 모델은 Upstage `solar-pro3`, Document Parse(`document-parse`)는 Parser/OCR 검증·보완과 원문 위치 재현에만 사용 | 확정 · 신산님 승인 2026-08-04 · `APR-CP3-GO-20260804-01` |
+| Release 1 CP3는 Provider 독립 구조로 실행하며 Upstage·Cerebras·Groq·Mistral·OpenAI·Gemini·OpenRouter·Anthropic·Ollama를 허용 후보로 등록 | 확정 · 신산님 승인 2026-08-05 |
+| Provider·Endpoint·Model·역할 설정은 화면에서 등록·선택하고 `.env`에는 API Key·Secret 등 비공개 인증정보만 저장 | 확정 · 신산님 승인 2026-08-05 |
 | 자동·로컬만·직접 선택 | 확정 |
 | Windows PC와 사내 Local LLM | 확정 |
 | Managed Local Model + 기존 Runtime 연결 | 확정 |

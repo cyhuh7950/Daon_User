@@ -6,7 +6,7 @@
 | --- | --- |
 | 문서 구분 | Release 1 테스트·검증 계획 정본 |
 | 계획 ID | `DAON-USER-R1-TEST-PLAN` |
-| 계획 버전 | `0.8` |
+| 계획 버전 | `0.9` |
 | 작성일 | 2026-07-20 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 승인 기록 | `APR-TP0-20260720-01` |
@@ -33,6 +33,7 @@
 | 0.6 | 2026-07-20 | 설계 질의 Q1~Q3·Q7·Q8·N1~N3 전량 해소 반영: 시나리오 v0.5로 확정 계약(중요 충돌 severity·가중치 0.5~2.0·COST_LIMIT_EXCEEDED·오디오 2경로·waiting_model 재처리·Step-up·현재 권한 AccessDecision) 채움, 질의서 종결 | 승인 대기 |
 | 0.7 | 2026-07-20 | TP-0 Baseline 예외, TP-2A M6 중간 진입, CP1 매핑, TP-5 선행조건, 웨이브 보고 경로·결정권자 정합화 | 신산님 승인 |
 | 0.8 | 2026-08-04 | CP3 Go 실행 결정 반영, Upstage `solar-pro3` 의미 이해·생성 및 `document-parse` 검증 경로 고정, M5~M8 증거·Milestone Exit 소급 검증과 `CONTRACT_COMPLETE / JOURNEY_UNVERIFIED` 추적 추가 | 신산님 승인 · `APR-CP3-GO-20260804-01` |
+| 0.9 | 2026-08-05 | Provider 독립 구조·다중 LLM 후보·화면 기반 Provider/Model 선택·Secret 전용 `.env` 계약 반영 | 신산님 승인 |
 
 ---
 

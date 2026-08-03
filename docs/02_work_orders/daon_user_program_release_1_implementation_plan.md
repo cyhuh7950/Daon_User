@@ -6,7 +6,7 @@
 | --- | --- |
 | 문서 구분 | Release 1 구현 작업계획 정본 |
 | 계획 ID | `DAON-USER-R1-PLAN` |
-| 계획 버전 | `1.3` |
+| 계획 버전 | `1.4` |
 | 작성일 | 2026-07-20 |
 | 최종 수정일 | 2026-08-04 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
@@ -57,6 +57,7 @@
 | 1.1 | 2026-07-31 | R1-M5-06 삭제·보존·Legal Hold 공개 API 6종, 상태·파생 Inventory·Local Copy Tombstone/Ack·최소 Audit 계보 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-06-RETENTION-API-20260731-01` |
 | 1.2 | 2026-07-31 | R1-M5-07 Backup·격리 Restore Cloud API 7종, Local 손상 복구 API 3종, Preview·Execute 재검증·현재 Retention 우선·Fixture-only 계약 확정 | C2 사용자 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
 | 1.3 | 2026-08-04 | CP3 Go 결정 기록, M5~M8 증거·Milestone Exit 소급 검증, 내부 계약 완료와 실제 여정 검증 분리, 계획 버전·Work Order 추적성 정합화 | C2 사용자 승인 + C0 검증 부채 정리 | 신산님 승인 · `APR-CP3-GO-20260804-01` |
+| 1.4 | 2026-08-05 | Provider 독립 구조·다중 LLM 후보·화면 기반 Provider/Model 선택·Secret 전용 `.env` 계약 반영 | C2 사용자 결정 + C1 정합화 | 신산님 승인 |
 
 ---
 
@@ -318,15 +319,15 @@ flowchart LR
 
 #### CP3 Go 결정(2026-08-04)
 
-신산님은 `APR-CP3-GO-20260804-01`로 CP3 실제 실행을 승인했다. 이는 CP3 통과를 면제하거나 확장 Gate를 완화하는 결정이 아니다. Upstage 기본 Provider와 단일 승인 모델을 사용해 실제 Process·저장소·모델·브라우저 증거를 확보할 때까지 추가 형식·Provider·Connector·플랫폼 범위의 신규 확장은 중지한다. 이미 내부 계약 범위로 진행된 M6~M8 Work Order는 `CONTRACT_COMPLETE / JOURNEY_UNVERIFIED`로 재분류하고, CP3·Milestone Exit·Evidence Manifest 소급 검증을 선행한다.
+신산님은 `APR-CP3-GO-20260804-01`로 CP3 실제 실행을 승인했다. 이는 CP3 통과를 면제하거나 확장 Gate를 완화하는 결정이 아니다. Provider 독립 구조에서 화면으로 선택한 승인 Provider·Model을 사용해 실제 Process·저장소·모델·브라우저 증거를 확보할 때까지 추가 형식·Connector·플랫폼 범위의 신규 확장은 중지한다. 이미 내부 계약 범위로 진행된 M6~M8 Work Order는 `CONTRACT_COMPLETE / JOURNEY_UNVERIFIED`로 재분류하고, CP3·Milestone Exit·Evidence Manifest 소급 검증을 선행한다.
 
 | 항목 | 결정 |
 | --- | --- |
 | CP3 판정 | `GO_TO_EXECUTION` — 실제 Thin Vertical E2E 실행 준비·수행 |
-| 기본 Provider | Upstage external API |
-| CP3 의미 이해·생성 모델 | `solar-pro3` (Provider Profile·Model Artifact·Deployment Digest 고정) |
-| Parser/OCR 검증·보완 | Upstage `document-parse` 전용. 의미 이해를 대체하지 않음 |
-| 미확정 역할 | ASR·Embedding·Reranker의 정확한 모델 ID는 CP3 이후 역할별 Readiness에서 별도 확정하며, 그 전까지 외부 차단 유지 |
+| Provider | 화면에서 선택한 승인 Provider (Upstage 포함) |
+| CP3 모델 | 화면에서 선택한 역할별 ModelDeployment·Model Artifact·Deployment Digest |
+| Parser/OCR 검증·보완 | 선택 Provider의 Parser/OCR Adapter 전용. 의미 이해를 대체하지 않음 |
+| `.env` 저장 범위 | API Key·Secret 등 비공개 인증정보만 저장 |
 | Gate 완화 | 없음 |
 | 선행 복구 | M5~M8 Evidence Manifest 및 M5~M7 Milestone Exit 소급 검증 |
 
