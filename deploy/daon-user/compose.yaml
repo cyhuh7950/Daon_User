@@ -13,8 +13,8 @@ services:
       DAON_CLOUD_DATABASE_DSN: ${DAON_CLOUD_DATABASE_DSN:?cloud database DSN reference required}
       DAON_PUBLIC_GATEWAY_URL: ${DAON_PUBLIC_GATEWAY_URL:?public HTTPS gateway required}
       DAON_TRUSTED_PROXY_IPS: ${DAON_TRUSTED_PROXY_IPS:?trusted proxy IPs required}
-      DAON_OBJECT_STORAGE_ENDPOINT: ${DAON_OBJECT_STORAGE_ENDPOINT-}
-      DAON_OBJECT_STORAGE_BUCKET: ${DAON_OBJECT_STORAGE_BUCKET-}
+      DAON_OBJECT_STORAGE_ENDPOINT: ${DAON_OBJECT_STORAGE_ENDPOINT:?object storage endpoint required}
+      DAON_OBJECT_STORAGE_BUCKET: ${DAON_OBJECT_STORAGE_BUCKET:?object storage bucket required}
       DAON_OBJECT_STORAGE_SECURE: ${DAON_OBJECT_STORAGE_SECURE-true}
       DAON_OBJECT_ACCESS_KEY_FILE: /run/secrets/object_access_key
       DAON_OBJECT_SECRET_KEY_FILE: /run/secrets/object_secret_key
