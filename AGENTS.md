@@ -89,7 +89,7 @@
 ## 개발·화면·API 표준
 
 - 개발은 `로컬 수정·기본 검증 → Git Push → ysna-server 격리 배포 → 전용 DB Migration → 서버 통합 테스트 → PR Merge` 순서로 진행한다. WSL은 선택적 대체 환경이며 필수 Gate가 아니다. 운영 배포는 지정 테스트 완료 후 Oracle Cloud에 GitHub 기준선으로 수행한다.
-- ysna-server 배포 루트는 `/home/ubuntu/deploy/daon-user`로 제한한다. Daon 전용 Compose Project·Volume을 사용하되, 공용 `proxy-network`에 연결하고 공용 `shared-db`를 DB Host로 사용한다. `common/pgdata`, 공용 DB 컨테이너, `proxy`, `netdata` 자체는 변경하지 않는다.
+- 로컬 WSL은 기존 `local-postgres`·`postgres_env_default`를 사용하고, Web/API를 `proxy-network`에도 연결한다. ysna-server 배포 루트는 `/home/ubuntu/deploy/daon-user`로 제한하며, Daon 전용 Compose Project·Volume을 사용하되 공용 `proxy-network`와 `shared-db`를 연결한다. 공용 DB 컨테이너·Volume·`proxy`·`netdata` 자체는 변경하지 않는다.
 - 서버 배포는 Git Commit SHA, Migration 사전점검·Backup·적용·Rollback, Service Health와 실제 서버 테스트 증거를 남긴다. Browser 코드는 환경별 내부 주소를 직접 사용하지 않고 same-origin BFF·Reverse Proxy를 유지한다.
 - 기준 화면은 1920×1080, 기본 본문·폼 12px, 작은 설명 10px, 아주 작은 보조 9px, 사이드바 제목 14px, 제목 16px다.
 - 설명 박스를 상시 노출하지 않고 `i` 아이콘·Tooltip·Popover를 사용한다.
