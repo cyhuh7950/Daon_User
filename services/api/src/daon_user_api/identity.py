@@ -292,8 +292,6 @@ class SqliteIdentityRepository:
           state TEXT NOT NULL DEFAULT 'active',
           UNIQUE(issuer, subject)
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS users_login_id_unique ON users(login_id) WHERE login_id IS NOT NULL;
-        CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL;
         CREATE TABLE IF NOT EXISTS email_verification_tokens (
           token_id TEXT PRIMARY KEY,
           user_id TEXT NOT NULL REFERENCES users(user_id),
@@ -399,6 +397,8 @@ class SqliteIdentityRepository:
         ):
             if name not in columns:
                 connection.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
+        connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_login_id_unique ON users(login_id) WHERE login_id IS NOT NULL")
+        connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL")
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _ensure_open(self) -> None:
