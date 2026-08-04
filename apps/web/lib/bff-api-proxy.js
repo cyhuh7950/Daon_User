@@ -55,7 +55,11 @@ export function parseInternalApiBase(rawValue, profile = "production") {
     throw new BffConfigurationError("BFF_INTERNAL_API_ORIGIN_REQUIRED");
   }
   if (profile === "production") {
-    if (parsed.protocol !== "https:") {
+    // Browser traffic remains same-origin HTTPS. The isolated Docker service
+    // is reached server-side over its fixed Compose DNS name and private
+    // network, so only that exact internal origin may use HTTP.
+    const isolatedInternalHttp = parsed.protocol === "http:" && parsed.hostname === "api";
+    if (parsed.protocol !== "https:" && !isolatedInternalHttp) {
       throw new BffConfigurationError("BFF_INTERNAL_API_HTTPS_REQUIRED");
     }
   } else {
