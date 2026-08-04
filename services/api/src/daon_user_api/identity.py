@@ -31,6 +31,9 @@ from .audit import ActorType, AuditEventDraft, AuditOutcome
 SCHEMA_VERSION = 1
 PASSWORD_MIN_LENGTH = 12
 PASSWORD_HASHER = PasswordHasher()
+MAIL_REQUEST_COOLDOWN = timedelta(seconds=60)
+MAIL_REQUEST_WINDOW = timedelta(hours=1)
+MAIL_REQUEST_MAX_PER_WINDOW = 3
 OIDC_TRANSACTION_TTL = timedelta(minutes=5)
 ACCESS_TTL = timedelta(hours=1)
 REFRESH_TTL = timedelta(days=30)
@@ -614,18 +617,30 @@ class IdentityService:
         )
         return token
 
+    def _enforce_mail_rate_limit(self, connection: sqlite3.Connection, *, table: str,
+                                 user_id: str, now: datetime) -> None:
+        rows = connection.execute(
+            f"SELECT created_at FROM {table} WHERE user_id=? AND created_at>? ORDER BY created_at DESC",
+            (user_id, _iso(now - MAIL_REQUEST_WINDOW)),
+        ).fetchall()
+        if rows and now - _dt(str(rows[0]["created_at"])) < MAIL_REQUEST_COOLDOWN:
+            raise IdentityError("RATE_LIMITED", 429)
+        if len(rows) >= MAIL_REQUEST_MAX_PER_WINDOW:
+            raise IdentityError("RATE_LIMITED", 429)
+
     def signup(self, *, login_id: str, email: str, password: str,
                trace_id: str, policy_version: str) -> None:
         login = _checked_text(login_id).lower()
         address, secret = _email(email), _password(password)
+        password_digest = PASSWORD_HASHER.hash(secret)
         _checked_text(trace_id); _checked_text(policy_version)
         now, user_id, tenant_id = self._now(), _id("usr"), _id("tenant")
         with self._lock, self._repository.transaction() as connection:
             if connection.execute("SELECT 1 FROM users WHERE login_id=? OR email=?", (login, address)).fetchone():
-                raise IdentityError("SIGNUP_ALREADY_EXISTS", 409)
+                return
             connection.execute(
                 "INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,state) VALUES (?,?,?,?,?,?,?)",
-                (user_id, "local", login, login, address, PASSWORD_HASHER.hash(secret), "pending_email"),
+                (user_id, "local", login, login, address, password_digest, "pending_email"),
             )
             self._repository._ensure_tenant(connection, tenant_id)
             connection.execute("INSERT INTO memberships(tenant_id,user_id,role) VALUES (?,?,?)", (tenant_id, user_id, "personal_owner"))
@@ -654,6 +669,7 @@ class IdentityService:
             row = connection.execute("SELECT * FROM users WHERE login_id=? OR email=?", (value, value)).fetchone()
             if row is None or row["state"] != "pending_email":
                 return
+            self._enforce_mail_rate_limit(connection, table="email_verification_tokens", user_id=str(row["user_id"]), now=now)
             token = self._issue_token(connection, table="email_verification_tokens", user_id=str(row["user_id"]), now=now, ttl=timedelta(hours=24))
             self._email_sender.send(recipient=str(row["email"]), subject="Daon 이메일 인증 재전송", body=f"Daon 이메일 인증 토큰: {token}")
 
@@ -664,6 +680,7 @@ class IdentityService:
             row = connection.execute("SELECT * FROM users WHERE (login_id=? OR email=?) AND issuer='local' AND email_verified_at IS NOT NULL", (value, value)).fetchone()
             if row is None:
                 return
+            self._enforce_mail_rate_limit(connection, table="password_reset_tokens", user_id=str(row["user_id"]), now=now)
             token = self._issue_token(connection, table="password_reset_tokens", user_id=str(row["user_id"]), now=now, ttl=timedelta(minutes=30))
             self._email_sender.send(recipient=str(row["email"]), subject="Daon 비밀번호 재설정", body=f"Daon 비밀번호 재설정 토큰: {token}")
 
