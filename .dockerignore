@@ -2,10 +2,13 @@
 .gitignore
 .env
 .env.*
-node_modules
-**/node_modules
-**/.next
-**/dist
+node_modules/
+apps/web/node_modules/
+apps/web/.next/
+packages/*/node_modules/
+apps/*/dist/
+**/.next/
+**/dist/
 docs
 .agent_workspaces
 .codex
