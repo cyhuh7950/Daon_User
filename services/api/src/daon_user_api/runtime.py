@@ -42,6 +42,7 @@ from .authorization import (
 )
 from .identity import (
     ClientKind,
+    DevicePlatform,
     IdentityError,
     IdentityPrincipal,
     IdentityService,
@@ -306,6 +307,35 @@ class AuthorizationEvaluationBody(BaseModel):
     requested_permissions: list[Permission]
 
 
+class SignupBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    login_id: str
+    email: str
+    password: str
+
+
+class LoginBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    login_id: str
+    password: str
+
+
+class TokenBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str
+
+
+class IdentifierBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    identifier: str
+
+
+class PasswordResetConfirmBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str
+    new_password: str
+
+
 class AccessDecisionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     resource_id: str
@@ -460,7 +490,7 @@ def _domain_error(error: IdentityError | AuthorizationError) -> tuple[int, str, 
         return 404, "RESOURCE_UNAVAILABLE", False
     if status == 403 and error.code == "ACTION_DENIED":
         return 403, "FORBIDDEN", False
-    safe_special = {"CURRENT_ACCESS_DENIED", "STEP_UP_REQUIRED", "VERSION_CONFLICT"}
+    safe_special = {"CURRENT_ACCESS_DENIED", "STEP_UP_REQUIRED", "VERSION_CONFLICT", "EMAIL_DELIVERY_UNAVAILABLE"}
     return status, error.code if error.code in safe_special else "INVALID_REQUEST", status >= 500
 
 
@@ -821,6 +851,44 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             content={"status": "ready" if status == 200 else "not_ready"},
         )
         response.headers["X-Trace-Id"] = request.state.trace_id
+        return response
+
+    @app.post("/api/v1/auth/signup", status_code=202)
+    async def signup(body: SignupBody, request: Request) -> dict[str, object]:
+        dependencies.identity_service.signup(
+            login_id=body.login_id, email=body.email, password=body.password,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        return {"data": {"status": "verification_required"}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.post("/api/v1/auth/verify-email")
+    async def verify_email(body: TokenBody, request: Request) -> dict[str, object]:
+        dependencies.identity_service.verify_email(token=body.token, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+        return {"data": {"status": "verified"}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.post("/api/v1/auth/resend-verification", status_code=202)
+    async def resend_verification(body: IdentifierBody, request: Request) -> dict[str, object]:
+        dependencies.identity_service.resend_verification(identifier=body.identifier, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+        return {"data": {"status": "accepted"}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.post("/api/v1/auth/password-reset/request", status_code=202)
+    async def password_reset_request(body: IdentifierBody, request: Request) -> dict[str, object]:
+        dependencies.identity_service.request_password_reset(identifier=body.identifier, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+        return {"data": {"status": "accepted"}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.post("/api/v1/auth/password-reset/confirm")
+    async def password_reset_confirm(body: PasswordResetConfirmBody, request: Request) -> dict[str, object]:
+        dependencies.identity_service.confirm_password_reset(token=body.token, new_password=body.new_password, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+        return {"data": {"status": "reset"}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.post("/api/v1/auth/login")
+    async def login(body: LoginBody, request: Request) -> JSONResponse:
+        credentials = dependencies.identity_service.local_login(
+            login_id=body.login_id, password=body.password, platform=DevicePlatform.WEB,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id}, "meta": {"trace_id": request.state.trace_id}})
+        response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=3600, httponly=True, secure=True, samesite="lax", path="/")
         return response
 
     @app.get("/api/v1/session")

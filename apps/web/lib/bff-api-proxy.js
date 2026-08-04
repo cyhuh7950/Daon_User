@@ -13,6 +13,7 @@ const RESPONSE_HEADERS = new Set([
   "content-type",
   "etag",
   "retry-after",
+  "set-cookie",
   "x-trace-id",
 ]);
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -72,6 +73,12 @@ export function parseInternalApiBase(rawValue, profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (segments.length === 2 && segments[0] === "auth" && new Set(["signup", "login", "verify-email", "resend-verification"]).has(segments[1])) {
+    return method === "POST" ? { path: `/api/v1/auth/${segments[1]}`, query: null } : { methodRejected: true };
+  }
+  if (segments.length === 3 && segments[0] === "auth" && segments[1] === "password-reset" && new Set(["request", "confirm"]).has(segments[2])) {
+    return method === "POST" ? { path: `/api/v1/auth/password-reset/${segments[2]}`, query: null } : { methodRejected: true };
+  }
   if (segments.length === 1 && segments[0] === "backups") {
     if (method === "GET") return { path: "/api/v1/backups", query: BACKUP_QUERY };
     return method === "POST"
