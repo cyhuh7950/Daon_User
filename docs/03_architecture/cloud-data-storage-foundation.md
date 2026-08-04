@@ -2,7 +2,7 @@
 
 ## 결정
 
-Release 1 Cloud 정본은 PostgreSQL 18.4와 pgvector 0.8.2를 사용한다. Migration은 Alembic 1.18.5, Application Driver와 Pool은 Psycopg 3.3.4로 고정한다. 테스트·개발용 M4 SQLite Reference는 회귀 검증에 남지만 Production profile은 Cloud DSN 없이는 시작 설정을 승인하지 않으며 Postgres Adapter는 메모리 대체 성공 경로를 갖지 않는다.
+Release 1 Cloud 정본의 배포 기준은 PostgreSQL 18.4와 pgvector 0.8.2다. `cloud_admin preflight`는 동일 Migration·RLS 계약을 검증할 수 있는 PostgreSQL 15~18 major를 허용하며, 실제 서버 버전은 증거에 그대로 기록한다. Migration은 Alembic 1.18.5, Application Driver와 Pool은 Psycopg 3.3.4로 고정한다. 테스트·개발용 M4 SQLite Reference는 회귀 검증에 남지만 Production profile은 Cloud DSN 없이는 시작 설정을 승인하지 않으며 Postgres Adapter는 메모리 대체 성공 경로를 갖지 않는다.
 
 ## 경계
 

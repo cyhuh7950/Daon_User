@@ -10,14 +10,14 @@
 
 ## 단일 목표와 사용자 완료 조건
 
-- 목표: PostgreSQL `18.4`와 pgvector를 Daon 사용자 프로그램 Cloud 정본으로 도입하고, 반복 가능한 Migration·Transaction·RLS·Service Authorization 이중 격리 기반을 완성한다.
+- 목표: PostgreSQL `18.4` 배포 기준과 PostgreSQL `15~18` 호환 preflight를 갖춘 pgvector Cloud 정본을 도입하고, 반복 가능한 Migration·Transaction·RLS·Service Authorization 이중 격리 기반을 완성한다.
 - 사용자는 별도 DB 명령을 실행하지 않는다. 서비스가 Migration 상태와 Health를 API/운영 경계에서 확인할 수 있어야 한다.
 - 같은 Tenant·Workspace의 권한 있는 요청만 정본을 읽고 변경하며, 다른 Tenant·Workspace·권한 없는 Service Role의 직접·우회 접근은 DB와 Service 양쪽에서 차단돼야 한다.
 - Migration은 깨끗한 DB 적용, 재적용, 전진 호환 점검, 승인된 Rollback/복원 경로가 재현 가능해야 한다.
 
 ## Cloud 정본·Migration 계약
 
-- PostgreSQL `18.4` 전용 개발 DB와 pgvector Extension을 사용한다. 기존 `shared-db`, `/home/ubuntu/deploy/common`, `netdata`, `proxy` 또는 다른 프로젝트 DB·Volume을 사용하거나 변경하지 않는다.
+- 배포 기준은 PostgreSQL `18.4` 전용 개발 DB와 pgvector Extension이다. `cloud_admin preflight`의 호환 판정은 PostgreSQL major `15~18`을 허용하되 실제 서버 버전을 결과에 기록한다. 기존 `shared-db`, `/home/ubuntu/deploy/common`, `netdata`, `proxy` 또는 다른 프로젝트 DB·Volume을 사용하거나 변경하지 않는다.
 - Repository Port와 PostgreSQL Adapter를 분리해 M4 Reference Adapter의 외부 의미를 보존한다. Test 전용 In-memory Adapter를 운영 기본값이나 자동 Fallback으로 사용하지 않는다.
 - Migration Framework와 DB Driver는 Python 3.14.3·ARM64 호환의 고정 버전을 사용한다. 새 의존성은 선택 이유·대안·Lock Diff·취약점/License 점검 근거를 남긴다.
 - 최초 Migration은 Tenant·Workspace·Membership/Role·Session/Device·Authorization Policy/Binding·Audit·Idempotency·Notification/Inbox 기반 Entity 중 M4에서 실제 영속 계약이 존재하는 최소 정본을 포함한다. M5-04가 소유하는 Source/Run/RuleSet/Model/Studio 전체 정본을 선점하지 않는다.

@@ -59,6 +59,7 @@
 | 1.3 | 2026-08-04 | CP3 Go 결정 기록, M5~M8 증거·Milestone Exit 소급 검증, 내부 계약 완료와 실제 여정 검증 분리, 계획 버전·Work Order 추적성 정합화 | C2 사용자 승인 + C0 검증 부채 정리 | 신산님 승인 · `APR-CP3-GO-20260804-01` |
 | 1.4 | 2026-08-05 | Provider 독립 구조·다중 LLM 후보·화면 기반 Provider/Model 선택·Secret 전용 `.env` 계약 반영 | C2 사용자 결정 + C1 정합화 | 신산님 승인 |
 | 1.5 | 2026-08-05 | WSL-server·ysna-server 컨테이너 생성 전 사전검증·Health Gate·실패 시 생성 금지 규칙 추가 | C1 운영 정합화 | 신산님 승인 |
+| 1.6 | 2026-08-04 | ysna PostgreSQL 16→18.4 업그레이드, WSL PostgreSQL 15.18 유지, Daon DB Adapter·Migration PostgreSQL 15~18 호환 계약 반영 | C2 사용자 결정 + C1 환경 정합화 | 신산님 승인 |
 
 ---
 
@@ -502,7 +503,7 @@ Cloud-sync와 Windows Local-private가 서로 다른 저장·실행 영역을 �
 
 | Work Order | depends_on | 단일 목표 | 주요 산출물 | 필수 완료 증거 |
 | --- | --- | --- | --- | --- |
-| R1-M5-01 | R1-M4-04, R1-M4-05 | Cloud 정본·격리 | PostgreSQL+pgvector Migration, RLS, Service Authorization | Migration 재적용, Transaction, Tenant 격리 |
+| R1-M5-01 | R1-M4-04, R1-M4-05 | Cloud 정본·격리 | PostgreSQL 18.4 배포 기준·15~18 호환 preflight, pgvector Migration, RLS, Service Authorization | Migration 재적용, Transaction, Tenant 격리, 지원 major 경계 |
 | R1-M5-02 | R1-M4-05, R1-M5-01 | Object·Queue·Worker 저장 | S3 호환 Object, Prefix Policy, 비동기 Queue·Worker | 원본·산출물 Digest, 실패 Queue·재처리 |
 | R1-M5-03 | R1-M4-06 | Local 암호화 저장 | SQLite, File Store, Embedded Vector Adapter, OS Secure Store Key | Restart, 암호화, Vector 검색, Key 철회 |
 | R1-M5-04 | R1-M5-01, R1-M5-02, R1-M5-03 | 데이터 정본·계보 | Source/Run/RuleSet/Model/Studio/Audit Entity와 불변 Version | Migration·FK·상태 전이·Snapshot 불변 테스트 |

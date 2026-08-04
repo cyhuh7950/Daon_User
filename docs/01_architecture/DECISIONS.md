@@ -37,7 +37,7 @@
 | R1-D018 | 확정 | Audio-capable LLM 또는 ASR+LLM 의미 이해와 시간 근거 검증, ASR-only ready 금지 | `APR-G0-DESIGN-20260720-01` |
 | R1-D019 | 확정 | `waiting_model`은 제한 자동 재큐와 권한 사용자 수동 재처리, 새 ProcessingRun과 중복 억제 | `APR-G0-DESIGN-20260720-01` |
 | R1-D020 | 확정 | 과거 OutputVersion 불변 보존, 모든 접근·전달·등록·재실행은 현재 권한으로 재검증 | `APR-G0-DESIGN-20260720-01` |
-| R1-D021 | 확정 | 개발·통합은 로컬 수정·검증→Git Push→`/home/ubuntu/deploy/daon-user` 격리 배포→전용 PostgreSQL 18.4 Migration→서버 Test→PR Merge로 한다. 기존 `shared-db`와 `common/netdata/proxy` 사용·변경을 금지하고 ARM64/Multi-arch 호환성을 검증한다. WSL은 선택적 대체 환경이며 OCI 운영 G9 승인은 유지한다. | `APR-DEVENV-YSNA-20260720-01` |
+| R1-D021 | 확정 | 개발·통합은 로컬 수정·검증→Git Push→`/home/ubuntu/deploy/daon-user` 배포→PostgreSQL Migration→서버 Test→PR Merge로 한다. ysna-server는 승인된 업그레이드 후 PostgreSQL 18.4, WSL은 기존 PostgreSQL 15.18을 사용하며 Adapter·Migration은 major 15~18을 지원한다. 기존 `common/netdata/proxy`와 다른 서비스의 데이터 경계는 보존하고 ARM64/Multi-arch 호환성을 검증한다. | `APR-DEVENV-YSNA-20260720-01` |
 | R1-D022 | 확정 | Next `16.3.0-canary.93`을 Sharp·PostCSS 취약점 제거를 위한 Release 1 개발·검증 전용 임시 보안 브리지로 사용한다. 안정판 전환 전 운영 Release를 금지하며 안전 범위를 포함한 안정판 출시 시 동일 회귀·Quality Gate 후 즉시 교체한다. | `APR-R1-M2-06-SEC02-20260722-01` · 신산님 승인 |
 | R1-D023 | 확정 | 기존 범용 앱 설정 진입을 보존하고 알림 전용 공개 API 진입을 별도로 제공한다. iOS 16 이상은 `UIApplication.openNotificationSettingsURLString`, iOS 15.1은 기존 `openSettingsURLString` Fallback을 사용하며 비공개 URL·Settings/TCC 직접 조작은 금지한다. | 신산님 승인 · 2026-07-28 |
 

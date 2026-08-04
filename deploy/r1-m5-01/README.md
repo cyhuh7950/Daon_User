@@ -2,7 +2,7 @@
 
 이 Compose는 `ysna-server`의 `/home/ubuntu/deploy/daon-user/R1-M5-01/<exact-sha>`에서만 사용한다. `shared-db`, `common`, `netdata`, `proxy`와 기존 Network·Volume을 참조하지 않는다.
 
-고정 기준은 PostgreSQL `18.4`, pgvector `0.8.2`, Alembic `1.18.5`, Psycopg `3.3.4`다. Image tag를 사용하기 전에 Digest를 증거에 기록하고 `cloud_admin preflight`가 실제 서버 버전과 대상 DB 정체성을 검증한다. Secret과 연결 문자열은 `.env`나 저장소에 기록하지 않고 검증 Process 환경에만 주입한다.
+배포 기준은 PostgreSQL `18.4`, pgvector `0.8.2`, Alembic `1.18.5`, Psycopg `3.3.4`다. `cloud_admin preflight`는 호환 범위 PostgreSQL `15~18` major와 대상 DB 정체성을 검증하고 실제 서버 버전을 결과에 기록한다. Image tag를 사용하기 전에 Digest를 증거에 기록한다. Secret과 연결 문자열은 `.env`나 저장소에 기록하지 않고 검증 Process 환경에만 주입한다.
 
 자동 검증 순서는 다음과 같다.
 

@@ -15,13 +15,13 @@
 
 | 환경 | DB | 네트워크 | 데이터 보존 |
 | --- | --- | --- | --- |
-| 로컬/WSL | 기존 `local-postgres` (pgvector PostgreSQL 15) | `postgres_env_default` | `/home/daon/postgres_env/pgdata` |
-| ysna-server | 공용 `shared-db`의 Daon 전용 Schema/Role | 외부 `proxy-network` | 기존 공용 DB·Volume 보존 |
+| 로컬/WSL | 기존 `local-postgres` (pgvector PostgreSQL 15.18) | `postgres_env_default` | `/home/daon/postgres_env/pgdata` |
+| ysna-server | 공용 `shared-db`의 Daon 전용 Schema/Role (PostgreSQL 18.4) | 외부 `proxy-network` | 업그레이드 전 논리 백업·기존 데이터 디렉터리 보존 |
 
 ## 금지
 
 - 운영 API를 SQLite와 PostgreSQL에 분산 저장하지 않는다.
-- 공용 `shared-db`의 기존 Schema·Role·Volume을 임의 변경하지 않는다.
+- 공용 `shared-db`의 기존 Schema·Role·Volume은 임의 변경하지 않는다. 승인된 PostgreSQL 버전 업그레이드는 백업·복원·검증 절차를 거친다.
 - Migration 전 Backup·사전점검·Rollback 계획 없이 서버 적용하지 않는다.
 - Web Browser가 DB/API 내부 주소를 직접 호출하지 않는다.
 
@@ -29,7 +29,8 @@
 
 - 로컬 WSL Daon 컨테이너는 `postgres_env_default`와 `proxy-network`에 연결하고 DB Host는 `local-postgres`를 사용한다.
 - ysna-server Daon 컨테이너는 외부 `proxy-network`에 연결하고 DB Host는 `shared-db`를 사용한다.
-- 두 환경 모두 공용 DB 컨테이너와 데이터 Volume을 새로 만들거나 삭제하지 않는다.
+- 두 환경 모두 공용 DB의 기존 데이터 경계를 유지하며, Daon은 전용 Role·권한으로 접근한다.
+- PostgreSQL Adapter와 Migration은 지원 major 범위 15~18에서 동작해야 하며 실제 서버 버전은 Health/Evidence에 기록한다.
 
 ## 완료 조건
 
