@@ -303,6 +303,7 @@ export function createBffProxy({ baseUrl, fetchImpl = fetch, timeoutMs = 10_000 
     }
     if (credential) headers.set("cookie", credential);
     headers.set("x-trace-id", trace);
+    headers.set("x-daon-bff-transport", "internal");
 
     const init = { method: request.method, headers, redirect: "manual" };
     const abortScope = createAbortScope(request.signal, timeoutMs);

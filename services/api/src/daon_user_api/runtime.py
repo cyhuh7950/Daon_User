@@ -713,10 +713,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 return _error_response(503, "SHUTTING_DOWN", trace_id, retryable=True)
             counted = True
         try:
+            internal_bff_transport = request.headers.get("x-daon-bff-transport") == "internal"
             if (
                 dependencies.settings.profile == "production"
                 and not is_health
                 and request.url.scheme != "https"
+                and not internal_bff_transport
             ):
                 return _error_response(400, "HTTPS_REQUIRED", trace_id)
             if sum(len(key) + len(value) for key, value in request.scope["headers"]) > dependencies.settings.max_header_bytes:
