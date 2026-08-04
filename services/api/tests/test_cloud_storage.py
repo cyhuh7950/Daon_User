@@ -19,11 +19,11 @@ MIGRATION = ROOT / "services" / "api" / "migrations" / "versions" / "0001_cloud_
 
 
 class CloudStorageContractTests(unittest.TestCase):
-    def test_postgres_patch_version_accepts_packaging_suffix_only(self) -> None:
-        self.assertTrue(server_version_supported("18.4"))
-        self.assertTrue(server_version_supported("18.4 (Debian 18.4-1.pgdg13+1)"))
-        self.assertFalse(server_version_supported("18.3"))
-        self.assertFalse(server_version_supported("18.40"))
+    def test_postgres_major_version_range_accepts_packaging_suffix(self) -> None:
+        for value in ("15.13", "16.9 (Debian 16.9-1.pgdg12+1)", "17.5", "18.4"):
+            self.assertTrue(server_version_supported(value), value)
+        for value in ("14.12", "19.0", "18", "postgres 18.4"):
+            self.assertFalse(server_version_supported(value), value)
 
     def test_access_context_rejects_untrusted_or_empty_scope(self) -> None:
         with self.assertRaises(ValueError):

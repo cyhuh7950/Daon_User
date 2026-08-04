@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 
 import psycopg
 from psycopg import sql
@@ -18,7 +19,11 @@ def _required(name: str) -> str:
 
 
 def server_version_supported(value: str) -> bool:
-    return value == "18.4" or value.startswith("18.4 ")
+    match = re.match(r"^(\d+)\.(\d+)(?:\s|$)", value)
+    if match is None:
+        return False
+    major = int(match.group(1))
+    return 15 <= major <= 18
 
 
 def preflight() -> dict[str, object]:
@@ -34,7 +39,7 @@ def preflight() -> dict[str, object]:
         raise RuntimeError("DATABASE_TARGET_MISMATCH")
     return {
         "status": "pass",
-        "server_version": "18.4",
+        "server_version": str(row[0]),
         "target_identity_verified": True,
         "vector_version": None if extension is None else str(extension[0]),
     }
