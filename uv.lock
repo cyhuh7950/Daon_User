@@ -342,6 +342,7 @@ version = "0.0.0"
 source = { virtual = "services/api" }
 dependencies = [
     { name = "alembic" },
+    { name = "argon2-cffi" },
     { name = "fastapi" },
     { name = "minio" },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -356,6 +357,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = "==1.18.5" },
+    { name = "argon2-cffi", specifier = "==25.1.0" },
     { name = "fastapi", specifier = "==0.139.2" },
     { name = "minio", specifier = "==7.2.20" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = "==3.3.4" },

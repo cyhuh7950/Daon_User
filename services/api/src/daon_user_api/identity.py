@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import re
 import secrets
 import sqlite3
+import smtplib
+from email.message import EmailMessage
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -19,10 +22,15 @@ from pathlib import Path
 from threading import RLock
 from typing import Callable, Iterator, Protocol
 
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+
 from .audit import ActorType, AuditEventDraft, AuditOutcome
 
 
 SCHEMA_VERSION = 1
+PASSWORD_MIN_LENGTH = 12
+PASSWORD_HASHER = PasswordHasher()
 OIDC_TRANSACTION_TTL = timedelta(minutes=5)
 ACCESS_TTL = timedelta(hours=1)
 REFRESH_TTL = timedelta(days=30)
@@ -154,6 +162,44 @@ class SessionRevocationEvent:
     session_id: str
 
 
+class EmailSender(Protocol):
+    def send(self, *, recipient: str, subject: str, body: str) -> None: ...
+
+
+class SmtpEmailSender:
+    def __init__(self, *, host: str | None, port: int, username: str | None,
+                 password: str | None, sender: str | None, secure: bool) -> None:
+        self.host, self.port = host, port
+        self.username, self.password, self.sender, self.secure = username, password, sender, secure
+
+    @classmethod
+    def from_env(cls) -> "SmtpEmailSender":
+        return cls(
+            host=os.environ.get("DAON_SMTP_HOST"),
+            port=int(os.environ.get("DAON_SMTP_PORT", "587")),
+            username=os.environ.get("DAON_SMTP_USERNAME"),
+            password=os.environ.get("DAON_SMTP_PASSWORD"),
+            sender=os.environ.get("DAON_EMAIL_FROM"),
+            secure=os.environ.get("DAON_SMTP_SECURE", "true").lower() == "true",
+        )
+
+    def send(self, *, recipient: str, subject: str, body: str) -> None:
+        if not self.host or not self.sender:
+            raise IdentityError("EMAIL_DELIVERY_UNAVAILABLE", 503)
+        message = EmailMessage()
+        message["From"], message["To"], message["Subject"] = self.sender, recipient, subject
+        message.set_content(body)
+        try:
+            with smtplib.SMTP(self.host, self.port, timeout=10) as server:
+                if self.secure:
+                    server.starttls()
+                if self.username:
+                    server.login(self.username, self.password or "")
+                server.send_message(message)
+        except (OSError, smtplib.SMTPException) as error:
+            raise IdentityError("EMAIL_DELIVERY_UNAVAILABLE", 503) from error
+
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -190,6 +236,23 @@ def _checked_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _email(value: object) -> str:
+    if not isinstance(value, str) or value != value.strip() or len(value) > 320:
+        raise IdentityError("INVALID_INPUT")
+    normalized = value.strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+        raise IdentityError("INVALID_INPUT")
+    return normalized
+
+
+def _password(value: object) -> str:
+    if not isinstance(value, str) or len(value) < PASSWORD_MIN_LENGTH or len(value) > 256:
+        raise IdentityError("PASSWORD_POLICY_FAILED")
+    if any(ord(character) < 32 for character in value):
+        raise IdentityError("PASSWORD_POLICY_FAILED")
+    return value
+
+
 class SqliteIdentityRepository:
     """Injected-path, transactional SQLite adapter with restart-safe IAM state."""
 
@@ -220,9 +283,34 @@ class SqliteIdentityRepository:
         );
         CREATE TABLE IF NOT EXISTS users (
           user_id TEXT PRIMARY KEY,
-          issuer TEXT NOT NULL,
+          issuer TEXT NOT NULL DEFAULT 'oidc',
           subject TEXT NOT NULL,
+          login_id TEXT,
+          email TEXT,
+          password_digest TEXT,
+          email_verified_at TEXT,
+          state TEXT NOT NULL DEFAULT 'active',
           UNIQUE(issuer, subject)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS users_login_id_unique ON users(login_id) WHERE login_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS email_verification_tokens (
+          token_id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(user_id),
+          token_digest TEXT NOT NULL UNIQUE,
+          expires_at TEXT NOT NULL,
+          used_at TEXT,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+          token_id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(user_id),
+          token_digest TEXT NOT NULL UNIQUE,
+          expires_at TEXT NOT NULL,
+          used_at TEXT,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS memberships (
           tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
@@ -304,6 +392,13 @@ class SqliteIdentityRepository:
         );
         """
         connection.executescript(schema)
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(users)")}
+        for name, definition in (
+            ("login_id", "TEXT"), ("email", "TEXT"), ("password_digest", "TEXT"),
+            ("email_verified_at", "TEXT"), ("state", "TEXT NOT NULL DEFAULT 'active'"),
+        ):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _ensure_open(self) -> None:
@@ -464,12 +559,14 @@ class IdentityService:
         audit_store: object,
         oidc_policies: tuple[OidcClientPolicy, ...],
         clock: Callable[[], datetime],
+        email_sender: EmailSender | None = None,
     ) -> None:
         self._repository = repository
         self._audit_store = audit_store
         self._clock = clock
         self._lock = RLock()
         self._policies = tuple(oidc_policies)
+        self._email_sender = email_sender or SmtpEmailSender.from_env()
 
     def _now(self) -> datetime:
         return _checked_utc(self._clock())
@@ -507,6 +604,102 @@ class IdentityService:
             self._audit_store.append(draft)  # type: ignore[attr-defined]
         except Exception as error:
             raise IdentityError("AUDIT_WRITE_FAILED", 503) from error
+
+    def _issue_token(self, connection: sqlite3.Connection, *, table: str, user_id: str,
+                     now: datetime, ttl: timedelta) -> str:
+        token = _opaque()
+        connection.execute(
+            f"INSERT INTO {table}(token_id,user_id,token_digest,expires_at,used_at,attempts,created_at) VALUES (?,?,?,?,?,?,?)",
+            (_id("tok"), user_id, _digest(token), _iso(now + ttl), None, 0, _iso(now)),
+        )
+        return token
+
+    def signup(self, *, login_id: str, email: str, password: str,
+               trace_id: str, policy_version: str) -> None:
+        login = _checked_text(login_id).lower()
+        address, secret = _email(email), _password(password)
+        _checked_text(trace_id); _checked_text(policy_version)
+        now, user_id, tenant_id = self._now(), _id("usr"), _id("tenant")
+        with self._lock, self._repository.transaction() as connection:
+            if connection.execute("SELECT 1 FROM users WHERE login_id=? OR email=?", (login, address)).fetchone():
+                raise IdentityError("SIGNUP_ALREADY_EXISTS", 409)
+            connection.execute(
+                "INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,state) VALUES (?,?,?,?,?,?,?)",
+                (user_id, "local", login, login, address, PASSWORD_HASHER.hash(secret), "pending_email"),
+            )
+            self._repository._ensure_tenant(connection, tenant_id)
+            connection.execute("INSERT INTO memberships(tenant_id,user_id,role) VALUES (?,?,?)", (tenant_id, user_id, "personal_owner"))
+            token = self._issue_token(connection, table="email_verification_tokens", user_id=user_id, now=now, ttl=timedelta(hours=24))
+            self._email_sender.send(recipient=address, subject="Daon 이메일 인증", body=f"Daon 이메일 인증 토큰: {token}\n24시간 내 인증하세요.")
+            self._audit(action="identity.signup.accepted", outcome=AuditOutcome.SUCCEEDED, trace_id=trace_id,
+                        policy_version=policy_version, tenant_id=tenant_id, actor_id=user_id,
+                        target_type="user", target_id=user_id)
+
+    def verify_email(self, *, token: str, trace_id: str, policy_version: str) -> None:
+        _checked_text(token, opaque=True); _checked_text(trace_id); _checked_text(policy_version)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            row = connection.execute("SELECT * FROM email_verification_tokens WHERE token_digest=?", (_digest(token),)).fetchone()
+            if row is None or row["used_at"] is not None or _dt(str(row["expires_at"])) <= now:
+                raise IdentityError("EMAIL_TOKEN_INVALID", 400)
+            connection.execute("UPDATE email_verification_tokens SET used_at=?,attempts=attempts+1 WHERE token_id=?", (_iso(now), str(row["token_id"])))
+            connection.execute("UPDATE users SET email_verified_at=?,state='active' WHERE user_id=?", (_iso(now), str(row["user_id"])))
+            self._audit(action="identity.email_verified", outcome=AuditOutcome.SUCCEEDED, trace_id=trace_id,
+                        policy_version=policy_version, tenant_id="identity-public", actor_id=str(row["user_id"]), target_type="user", target_id=str(row["user_id"]))
+
+    def resend_verification(self, *, identifier: str, trace_id: str, policy_version: str) -> None:
+        value = _checked_text(identifier).lower(); _checked_text(trace_id); _checked_text(policy_version)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            row = connection.execute("SELECT * FROM users WHERE login_id=? OR email=?", (value, value)).fetchone()
+            if row is None or row["state"] != "pending_email":
+                return
+            token = self._issue_token(connection, table="email_verification_tokens", user_id=str(row["user_id"]), now=now, ttl=timedelta(hours=24))
+            self._email_sender.send(recipient=str(row["email"]), subject="Daon 이메일 인증 재전송", body=f"Daon 이메일 인증 토큰: {token}")
+
+    def request_password_reset(self, *, identifier: str, trace_id: str, policy_version: str) -> None:
+        value = _checked_text(identifier).lower(); _checked_text(trace_id); _checked_text(policy_version)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            row = connection.execute("SELECT * FROM users WHERE (login_id=? OR email=?) AND issuer='local' AND email_verified_at IS NOT NULL", (value, value)).fetchone()
+            if row is None:
+                return
+            token = self._issue_token(connection, table="password_reset_tokens", user_id=str(row["user_id"]), now=now, ttl=timedelta(minutes=30))
+            self._email_sender.send(recipient=str(row["email"]), subject="Daon 비밀번호 재설정", body=f"Daon 비밀번호 재설정 토큰: {token}")
+
+    def confirm_password_reset(self, *, token: str, new_password: str, trace_id: str, policy_version: str) -> None:
+        _checked_text(token, opaque=True); secret = _password(new_password); _checked_text(trace_id); _checked_text(policy_version)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            row = connection.execute("SELECT * FROM password_reset_tokens WHERE token_digest=?", (_digest(token),)).fetchone()
+            if row is None or row["used_at"] is not None or _dt(str(row["expires_at"])) <= now:
+                raise IdentityError("PASSWORD_RESET_TOKEN_INVALID", 400)
+            connection.execute("UPDATE users SET password_digest=? WHERE user_id=?", (PASSWORD_HASHER.hash(secret), str(row["user_id"])))
+            connection.execute("UPDATE password_reset_tokens SET used_at=?,attempts=attempts+1 WHERE token_id=?", (_iso(now), str(row["token_id"])))
+            connection.execute("UPDATE sessions SET state='revoked',updated_at=? WHERE user_id=?", (_iso(now), str(row["user_id"])))
+            connection.execute("UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id IN (SELECT session_id FROM sessions WHERE user_id=?)", (_iso(now), str(row["user_id"])))
+
+    def local_login(self, *, login_id: str, password: str, platform: DevicePlatform,
+                    trace_id: str, policy_version: str) -> SessionCredentials:
+        login = _checked_text(login_id).lower(); secret = _password(password)
+        _checked_text(trace_id); _checked_text(policy_version)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            row = connection.execute("SELECT * FROM users WHERE login_id=? AND issuer='local'", (login,)).fetchone()
+            try:
+                if row is None or row["password_digest"] is None or row["email_verified_at"] is None or row["state"] != "active":
+                    raise VerifyMismatchError()
+                PASSWORD_HASHER.verify(str(row["password_digest"]), secret)
+            except Exception as error:
+                raise IdentityError("AUTHENTICATION_REQUIRED", 401) from error
+            user_id = str(row["user_id"]); tenant = connection.execute("SELECT tenant_id FROM memberships WHERE user_id=? ORDER BY tenant_id LIMIT 1", (user_id,)).fetchone()
+            if tenant is None:
+                raise IdentityError("AUTHENTICATION_REQUIRED", 401)
+            tenant_id = str(tenant[0]); device_id, session_id, access = _id("dev"), _id("ses"), _opaque()
+            connection.execute("INSERT INTO devices(device_id,tenant_id,user_id,platform,state,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (device_id, tenant_id, user_id, platform.value, "registered", _iso(now), _iso(now), _iso(now)))
+            connection.execute("INSERT INTO sessions(session_id,tenant_id,user_id,device_id,client_kind,access_digest,access_expires_at,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (session_id, tenant_id, user_id, device_id, "web", _digest(access), _iso(now + ACCESS_TTL), "active", _iso(now), _iso(now)))
+            self._audit(action="identity.login.succeeded", outcome=AuditOutcome.SUCCEEDED, trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id, actor_id=user_id, target_type="session", target_id=session_id, metadata={"client_type": "web", "auth_method": "local"})
+        return SessionCredentials(access, None, user_id, session_id, device_id, tenant_id, ClientKind.WEB, "web_session_cookie_boundary_m4_05")
 
     def begin_oidc_login(
         self, *, issuer: str, client_id: str, audience: str, redirect_uri: str,
