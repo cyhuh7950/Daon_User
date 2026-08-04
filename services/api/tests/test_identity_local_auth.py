@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -11,10 +11,16 @@ class Sender:
     def send(self, **message): self.messages.append(message)
 
 
-def service(tmp_path):
+class Clock:
+    def __init__(self): self.now = datetime(2026, 8, 5, tzinfo=timezone.utc)
+    def __call__(self): return self.now
+    def advance(self, **delta): self.now += timedelta(**delta)
+
+
+def service(tmp_path, clock=None):
     sender = Sender()
     repo = SqliteIdentityRepository(tmp_path / "identity.db")
-    service = IdentityService(repository=repo, audit_store=AuditEventStore(), oidc_policies=(), clock=lambda: datetime.now(timezone.utc), email_sender=sender)
+    service = IdentityService(repository=repo, audit_store=AuditEventStore(), oidc_policies=(), clock=clock or (lambda: datetime.now(timezone.utc)), email_sender=sender)
     return service, repo, sender
 
 
@@ -41,4 +47,31 @@ def test_smtp_missing_configuration_is_explicit(tmp_path):
     with pytest.raises(IdentityError) as error:
         identity.signup(login_id="bob", email="bob@example.com", password="correct horse battery staple", trace_id="t1", policy_version="p1")
     assert error.value.code == "EMAIL_DELIVERY_UNAVAILABLE"
+    repo.close()
+
+
+def test_duplicate_signup_does_not_disclose_existing_account(tmp_path):
+    identity, repo, sender = service(tmp_path)
+    input_data = dict(login_id="alice", email="alice@example.com", password="correct horse battery staple", trace_id="t1", policy_version="p1")
+    identity.signup(**input_data)
+    identity.signup(**input_data)
+    assert len(sender.messages) == 1
+    repo.close()
+
+
+def test_verification_and_reset_mail_requests_are_rate_limited(tmp_path):
+    clock = Clock()
+    identity, repo, sender = service(tmp_path, clock)
+    identity.signup(login_id="alice", email="alice@example.com", password="correct horse battery staple", trace_id="t1", policy_version="p1")
+    with pytest.raises(IdentityError) as verification_error:
+        identity.resend_verification(identifier="alice", trace_id="t2", policy_version="p1")
+    assert verification_error.value.code == "RATE_LIMITED"
+    clock.advance(seconds=61)
+    identity.resend_verification(identifier="alice", trace_id="t3", policy_version="p1")
+    token = sender.messages[0]["body"].split(": ", 1)[1].splitlines()[0]
+    identity.verify_email(token=token, trace_id="t4", policy_version="p1")
+    identity.request_password_reset(identifier="alice", trace_id="t5", policy_version="p1")
+    with pytest.raises(IdentityError) as reset_error:
+        identity.request_password_reset(identifier="alice", trace_id="t6", policy_version="p1")
+    assert reset_error.value.code == "RATE_LIMITED"
     repo.close()
