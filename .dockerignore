@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+node_modules
+**/node_modules
+**/.next
+**/dist
+docs
+.agent_workspaces
+.codex
+.agents
+.superpowers
+*.log
+coverage
+.coverage
