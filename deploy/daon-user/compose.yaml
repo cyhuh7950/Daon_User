@@ -19,9 +19,44 @@ services:
       DAON_OBJECT_ACCESS_KEY_FILE: /run/secrets/object_access_key
       DAON_OBJECT_SECRET_KEY_FILE: /run/secrets/object_secret_key
       DAON_RECOVERY_MANIFEST_KEY_FILE: /run/secrets/recovery_manifest_key
-    secrets: [object_access_key, object_secret_key, recovery_manifest_key]
-    volumes: [daon_user_api_runtime:/var/lib/daon-user]
-    networks: [daon_user, proxy-network]
+    secrets:
+      - object_access_key
+      - object_secret_key
+      - recovery_manifest_key
+    volumes:
+      - daon_user_api_runtime:/var/lib/daon-user
+    networks:
+      - daon_user
+      - proxy-network
+    depends_on:
+      object-storage:
+        condition: service_healthy
+    restart: unless-stopped
+
+  object-storage:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/object_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/object_secret_key
+    secrets:
+      - object_access_key
+      - object_secret_key
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://localhost:9000/minio/health/live || exit 1
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - daon_user_object_storage:/data
+    networks:
+      - daon_user
     restart: unless-stopped
 
   web:
@@ -34,19 +69,32 @@ services:
       DAON_RUNTIME_PROFILE: production
       DAON_API_INTERNAL_URL: ${DAON_API_INTERNAL_URL:?server-side BFF API URL required}
     depends_on:
-      api: {condition: service_healthy}
-    ports: ["3330:3330"]
-    networks: [daon_user, proxy-network]
+      api:
+        condition: service_healthy
+    ports:
+      - "3330:3330"
+    networks:
+      - daon_user
+      - proxy-network
     restart: unless-stopped
 
 networks:
-  daon_user: {name: ${COMPOSE_PROJECT_NAME}_network}
-  proxy-network: {external: true, name: proxy-network}
+  daon_user:
+    name: ${COMPOSE_PROJECT_NAME}_network
+  proxy-network:
+    external: true
+    name: proxy-network
 
 volumes:
-  daon_user_api_runtime: {name: ${COMPOSE_PROJECT_NAME}_api_runtime}
+  daon_user_api_runtime:
+    name: ${COMPOSE_PROJECT_NAME}_api_runtime
+  daon_user_object_storage:
+    name: ${COMPOSE_PROJECT_NAME}_object_storage
 
 secrets:
-  object_access_key: {file: ${DAON_OBJECT_ACCESS_KEY_FILE:?object access key reference required}}
-  object_secret_key: {file: ${DAON_OBJECT_SECRET_KEY_FILE:?object secret key reference required}}
-  recovery_manifest_key: {file: ${DAON_RECOVERY_MANIFEST_KEY_FILE:?recovery manifest key reference required}}
+  object_access_key:
+    file: ${DAON_OBJECT_ACCESS_KEY_FILE:?object access key reference required}
+  object_secret_key:
+    file: ${DAON_OBJECT_SECRET_KEY_FILE:?object secret key reference required}
+  recovery_manifest_key:
+    file: ${DAON_RECOVERY_MANIFEST_KEY_FILE:?recovery manifest key reference required}
