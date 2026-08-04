@@ -74,8 +74,10 @@ services:
     ports:
       - "3330:3330"
     networks:
-      - daon_user
-      - proxy-network
+      daon_user: {}
+      proxy-network:
+        aliases:
+          - daon-web
     restart: unless-stopped
 
 networks:
