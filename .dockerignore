@@ -10,6 +10,7 @@ apps/*/dist/
 **/.next/
 **/dist/
 docs
+backups
 .agent_workspaces
 .codex
 .agents
