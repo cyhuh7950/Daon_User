@@ -17,7 +17,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 
 _SAFE_SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_EXPECTED_SCHEMA_REVISION = "0007"
+_EXPECTED_SCHEMA_REVISION = "0008"
 
 
 class _PoolAvailabilityLogFilter(logging.Filter):
