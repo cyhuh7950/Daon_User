@@ -34,6 +34,7 @@ const AUDIT_QUERY = new Set([
 const NOTIFICATION_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 const INBOX_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 const BACKUP_QUERY = new Set(["workspace_id"]);
+const MODEL_SETTINGS_QUERY = new Set(["workspace_id"]);
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
 
 export class BffConfigurationError extends Error {
@@ -73,6 +74,22 @@ export function parseInternalApiBase(rawValue, profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (segments.length === 1 && new Set(["model-profiles", "model-deployments"]).has(segments[0])) {
+    if (method === "GET") return { path: `/api/v1/${segments[0]}`, query: MODEL_SETTINGS_QUERY };
+    return method === "POST"
+      ? { path: `/api/v1/${segments[0]}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "model-policy"
+  ) {
+    return new Set(["GET", "PATCH"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/model-policy`, query: null }
+      : { methodRejected: true };
+  }
   if (segments.length === 2 && segments[0] === "auth" && new Set(["signup", "login", "verify-email", "resend-verification"]).has(segments[1])) {
     return method === "POST" ? { path: `/api/v1/auth/${segments[1]}`, query: null } : { methodRejected: true };
   }

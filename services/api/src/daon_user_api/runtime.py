@@ -88,6 +88,14 @@ from .recovery import (
     RestoreDestination, UnavailableRecoveryService,
 )
 from .recovery_postgres import MinioRecoveryStorageAdapter, PostgresRecoveryService
+from .provider_settings import (
+    PostgresProviderSettingsRepository,
+    ProviderSettingsContext,
+    ProviderSettingsError,
+    ProviderSettingsService,
+    ReferenceProviderSettingsRepository,
+    ServerCredentialPresenceResolver,
+)
 
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
@@ -279,6 +287,7 @@ class RuntimeDependencies:
     retention_service: RetentionService | None = None
     recovery_service: RecoveryService | PostgresRecoveryService | UnavailableRecoveryService | None = None
     object_queue_store: PostgresObjectQueueStore | None = None
+    provider_settings_service: ProviderSettingsService | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -442,6 +451,33 @@ class RestoreExecuteBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     preview_version: int
     step_up_authorization_id: str
+
+
+class ProviderProfileBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace_id: str
+    provider_code: str
+    base_url: str
+    active: bool
+    expected_version: int
+
+
+class ModelDeploymentBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace_id: str
+    deployment_id: str
+    provider_code: str
+    model_id: str
+    roles: list[str]
+    active: bool
+    selected: bool
+    expected_version: int
+
+
+class ModelPolicyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    bindings: dict[str, str]
+    expected_version: int
 
 
 def _trace_id(request: Request) -> str:
@@ -680,6 +716,16 @@ def _recovery_context(
     )
 
 
+def _provider_settings_context(
+    principal: IdentityPrincipal, workspace_id: str, request: Request,
+    dependencies: RuntimeDependencies,
+) -> ProviderSettingsContext:
+    return ProviderSettingsContext(
+        principal.tenant_id, workspace_id, principal.user_id, request.state.trace_id,
+        dependencies.settings.policy_version,
+    )
+
+
 def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityPrincipal:
     token, expected_kind = _credential(request)
     view = dependencies.identity_service.describe_access(
@@ -709,6 +755,14 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         clock=lambda: datetime.now(timezone.utc),
     )
     recovery_service = dependencies.recovery_service or UnavailableRecoveryService()
+    provider_settings_service = dependencies.provider_settings_service or ProviderSettingsService(
+        (
+            ReferenceProviderSettingsRepository()
+            if dependencies.cloud_store is None
+            else PostgresProviderSettingsRepository(dependencies.cloud_store)
+        ),
+        ServerCredentialPresenceResolver(),
+    )
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
@@ -860,6 +914,22 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
         return {"data": {"status": "verification_required"}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.exception_handler(ProviderSettingsError)
+    async def provider_settings_error(
+        request: Request, error: ProviderSettingsError,
+    ) -> JSONResponse:
+        public_codes = {
+            "VERSION_CONFLICT", "PROVIDER_CODE_UNSUPPORTED", "PROVIDER_BASE_URL_INVALID",
+            "PROVIDER_PROFILE_REQUIRED", "MODEL_DEPLOYMENT_INVALID", "MODEL_ROLE_UNSUPPORTED",
+            "MODEL_BINDING_INVALID", "DATABASE_UNAVAILABLE", "DATABASE_TIMEOUT",
+        }
+        return _error_response(
+            error.status,
+            error.code if error.code in public_codes else "INVALID_REQUEST",
+            request.state.trace_id,
+            retryable=error.retryable,
+        )
 
     @app.post("/api/v1/auth/verify-email")
     async def verify_email(body: TokenBody, request: Request) -> dict[str, object]:
@@ -1428,6 +1498,156 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "data": _dataclass_json(hold), "meta": {"trace_id": request.state.trace_id}
         })
         response.headers["ETag"] = hold.etag
+        return response
+
+    @app.get("/api/v1/model-profiles")
+    async def list_model_profiles(request: Request, workspace_id: str = Query()) -> JSONResponse:
+        _require_query_keys(request, frozenset({"workspace_id", "cursor", "limit", "filter", "search"}))
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        snapshot = provider_settings_service.snapshot(
+            _provider_settings_context(principal, workspace_id, request, dependencies)
+        )
+        return _json_with_etag(
+            {
+                "data": [
+                    {**_dataclass_json(item), "etag": item.etag}
+                    for item in snapshot.profiles
+                ],
+                "meta": {"trace_id": request.state.trace_id, "workspace_id": workspace_id},
+            },
+            "|".join(item.etag for item in snapshot.profiles),
+        )
+
+    @app.post("/api/v1/model-profiles", status_code=201)
+    async def save_model_profile(
+        body: ProviderProfileBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=body.workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        profile = provider_settings_service.save_profile(
+            _provider_settings_context(principal, body.workspace_id, request, dependencies),
+            provider_code=body.provider_code, base_url=body.base_url, active=body.active,
+            expected_version=body.expected_version,
+        )
+        response = JSONResponse(
+            {"data": {**_dataclass_json(profile), "etag": profile.etag},
+             "meta": {"trace_id": request.state.trace_id}},
+            status_code=201,
+        )
+        response.headers["ETag"] = profile.etag
+        return response
+
+    @app.get("/api/v1/model-deployments")
+    async def list_model_deployments(
+        request: Request, workspace_id: str = Query(),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset({"workspace_id", "cursor", "limit", "filter", "search"}))
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        snapshot = provider_settings_service.snapshot(
+            _provider_settings_context(principal, workspace_id, request, dependencies)
+        )
+        return _json_with_etag(
+            {
+                "data": [
+                    {**_dataclass_json(item), "etag": item.etag}
+                    for item in snapshot.deployments
+                ],
+                "meta": {"trace_id": request.state.trace_id, "workspace_id": workspace_id},
+            },
+            "|".join(item.etag for item in snapshot.deployments),
+        )
+
+    @app.post("/api/v1/model-deployments", status_code=201)
+    async def save_model_deployment(
+        body: ModelDeploymentBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=body.workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        deployment = provider_settings_service.save_deployment(
+            _provider_settings_context(principal, body.workspace_id, request, dependencies),
+            deployment_id=body.deployment_id, provider_code=body.provider_code,
+            model_id=body.model_id, roles=tuple(body.roles), active=body.active,
+            selected=body.selected, expected_version=body.expected_version,
+        )
+        response = JSONResponse(
+            {"data": {**_dataclass_json(deployment), "etag": deployment.etag},
+             "meta": {"trace_id": request.state.trace_id}},
+            status_code=201,
+        )
+        response.headers["ETag"] = deployment.etag
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/model-policy")
+    async def get_model_policy(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        snapshot = provider_settings_service.snapshot(
+            _provider_settings_context(principal, id, request, dependencies)
+        )
+        etag = f'"model-policy:{id}:{snapshot.binding_version}"'
+        response = JSONResponse({
+            "data": {"workspace_id": id, "bindings": snapshot.role_bindings,
+                     "version": snapshot.binding_version},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+        response.headers["ETag"] = etag
+        return response
+
+    @app.patch("/api/v1/workspaces/{id}/model-policy")
+    async def update_model_policy(
+        id: str, body: ModelPolicyBody, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        if if_match != f'"model-policy:{id}:{body.expected_version}"':
+            raise ProviderSettingsError("VERSION_CONFLICT", 409)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        bindings, version = provider_settings_service.save_role_bindings(
+            _provider_settings_context(principal, id, request, dependencies),
+            bindings=body.bindings, expected_version=body.expected_version,
+        )
+        etag = f'"model-policy:{id}:{version}"'
+        response = JSONResponse({
+            "data": {"workspace_id": id, "bindings": bindings, "version": version},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+        response.headers["ETag"] = etag
         return response
 
     @app.post("/api/v1/backups", status_code=201)

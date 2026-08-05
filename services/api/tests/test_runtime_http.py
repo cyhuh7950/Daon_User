@@ -6,6 +6,7 @@ import asyncio
 import time
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -152,6 +153,19 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(live.json()["status"], "live")
         self.assertEqual(ready.json()["status"], "ready")
         self.assertNotIn("access-control-allow-origin", live.headers)
+
+    async def test_signup_preserves_the_verification_required_response_contract(self) -> None:
+        with patch.object(self.identity, "signup", return_value=None):
+            response = await self.client.post(
+                "/api/v1/auth/signup",
+                json={
+                    "login_id": "new-user",
+                    "email": "new-user@example.com",
+                    "password": "correct horse battery staple",
+                },
+            )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["data"], {"status": "verification_required"})
 
     async def test_cloud_migration_failure_only_drops_readiness(self) -> None:
         self.dependencies.cloud_store = UnreadyCloudStore()  # type: ignore[assignment]
