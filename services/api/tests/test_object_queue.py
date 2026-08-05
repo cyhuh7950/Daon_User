@@ -7,6 +7,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 from daon_user_api.cloud_storage import CloudAccessContext
 from daon_user_api.object_queue import (
@@ -83,6 +84,15 @@ class SimulatedWorkerCrash(RuntimeError):
 
 
 class ObjectQueueContractTests(unittest.TestCase):
+    def test_minio_bucket_provisioning_is_explicit_and_idempotent(self) -> None:
+        adapter = object.__new__(MinioObjectStorageAdapter)
+        adapter._bucket = "daon-user-objects"  # type: ignore[attr-defined]
+        adapter._client = Mock()  # type: ignore[attr-defined]
+        adapter._client.bucket_exists.side_effect = [False, True]  # type: ignore[attr-defined]
+        self.assertTrue(adapter.ensure_bucket())
+        self.assertFalse(adapter.ensure_bucket())
+        adapter._client.make_bucket.assert_called_once_with("daon-user-objects")  # type: ignore[attr-defined]
+
     def test_migration_declares_outbox_jobs_attempts_and_forced_rls(self) -> None:
         source = MIGRATION.read_text(encoding="utf-8")
         for token in (

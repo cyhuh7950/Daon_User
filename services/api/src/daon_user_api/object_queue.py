@@ -241,6 +241,21 @@ class MinioObjectStorageAdapter:
         except Exception:
             return False
 
+    def ensure_bucket(self) -> bool:
+        """Create only the configured dedicated bucket; return whether it was created."""
+        try:
+            if self._client.bucket_exists(self._bucket):
+                return False
+            self._client.make_bucket(self._bucket)
+            return True
+        except Exception as error:
+            try:
+                if self._client.bucket_exists(self._bucket):
+                    return False
+            except Exception:
+                pass
+            raise self._safe_error(error) from None
+
     def put_staged(self, key: str, content: bytes, content_type: str, digest: str) -> StagedObject:
         if not isinstance(content, bytes) or not _DIGEST.fullmatch(digest):
             raise ObjectStorageError("OBJECT_CHECKSUM_MISMATCH", retryable=False)
