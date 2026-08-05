@@ -199,8 +199,32 @@ test("Next Prototype Harness는 실제 Route를 제공하고 내부 API 주소�
   assert.match(home, /route_id === "home"/);
   assert.match(home, /screen_id === "home"/);
   assert.doesNotMatch(home, /AdaptiveWorkspace/);
-  assert.match(workspace, /AdaptiveWorkspace/);
+  assert.match(workspace, /ActualWorkspace/);
   assert.match(workspace, /workspace_detail/);
+});
+
+test("실제 Workspace Route는 로그인 Workspace ID로 단일 PDF를 same-origin 등록한다", async () => {
+  const page = await read("apps/web/app/workspaces/[workspace_id]/page.jsx");
+  const actualWorkspace = await read("apps/web/components/actual-workspace.jsx");
+  const adaptive = await read("packages/ui/src/adaptive-workspace.jsx");
+  const sourcePane = await read("packages/ui/src/source-knowledge-pane.jsx");
+  const uploadClient = await read("apps/web/lib/source-upload-api.js");
+  const authPane = await read("apps/web/lib/auth-pane.jsx");
+
+  assert.match(page, /params/);
+  assert.match(page, /workspace_id/);
+  assert.match(page, /ActualWorkspace/);
+  assert.match(actualWorkspace, /uploadPdfSource/);
+  assert.match(actualWorkspace, /workspaceId/);
+  assert.match(adaptive, /onUploadPdf/);
+  assert.match(sourcePane, /type="file"/);
+  assert.match(sourcePane, /accept="application\/pdf"/);
+  assert.match(sourcePane, /onUploadPdf/);
+  assert.match(sourcePane, /등록 완료/);
+  assert.match(authPane, /result\?\.data\?\.workspace_id/);
+  assert.match(authPane, /window\.location\.assign\(`\/workspaces\/\$\{encodeURIComponent\(result\.data\.workspace_id\)\}`\)/);
+  assert.match(uploadClient, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/sources/);
+  assert.doesNotMatch(`${page}\n${actualWorkspace}\n${sourcePane}\n${uploadClient}`, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
 });
 
 test("M2-01 Route·Screen·Token 정본은 수정 없이 직접 소비된다", async () => {

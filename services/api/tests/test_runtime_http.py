@@ -167,6 +167,29 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["data"], {"status": "verification_required"})
 
+    async def test_first_local_login_bootstraps_and_returns_personal_workspace(self) -> None:
+        credentials = replace(
+            self.web,
+            user_id="user-local-001",
+            tenant_id="tenant-local-001",
+        )
+        with patch.object(self.identity, "local_login", return_value=credentials):
+            first = await self.client.post(
+                "/api/v1/auth/login",
+                json={"login_id": "local-user", "password": "valid-password-001"},
+            )
+            second = await self.client.post(
+                "/api/v1/auth/login",
+                json={"login_id": "local-user", "password": "valid-password-001"},
+            )
+        self.assertEqual((first.status_code, second.status_code), (200, 200))
+        workspace_id = first.json()["data"]["workspace_id"]
+        self.assertEqual(second.json()["data"]["workspace_id"], workspace_id)
+        self.assertEqual(
+            self.authorization_repository.primary_workspace_id("tenant-local-001"),
+            workspace_id,
+        )
+
     async def test_cloud_migration_failure_only_drops_readiness(self) -> None:
         self.dependencies.cloud_store = UnreadyCloudStore()  # type: ignore[assignment]
         live = await self.client.get("/health/live")

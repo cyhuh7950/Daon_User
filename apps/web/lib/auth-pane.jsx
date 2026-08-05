@@ -20,8 +20,11 @@ export function AuthPane() {
         "password-reset/request": () => authApi.requestPasswordReset(payload.identifier),
         "password-reset/confirm": () => authApi.confirmPasswordReset(payload.token, payload.new_password),
       };
-      await operations[path]();
+      const result = await operations[path]();
       setMessage(success);
+      if (path === "login" && result?.data?.workspace_id) {
+        window.location.assign(`/workspaces/${encodeURIComponent(result.data.workspace_id)}`);
+      }
     }
     catch (error) { setMessage(`처리 실패: ${error.message}`); }
   };

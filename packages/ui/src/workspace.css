@@ -103,6 +103,11 @@ select { width: 100%; min-height: var(--daon-target-desktop-control); margin-top
 .source-metadata dt, .version-snapshot dt, .run-snapshot dt, .weight-snapshot dt, .conflict-card dt { color: var(--daon-color-text-secondary); font-size: var(--daon-font-auxiliary); }
 .source-metadata dd, .version-snapshot dd, .run-snapshot dd, .weight-snapshot dd, .conflict-card dd { margin: 0; overflow-wrap: anywhere; font-weight: 700; }
 .registration-entry { margin-top: var(--daon-spacing-2); padding: var(--daon-spacing-3); border: 1px solid var(--daon-color-accent); background: #EFF6FF; }
+.pdf-upload-form { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--daon-spacing-2); margin: var(--daon-spacing-2) 0; }
+.pdf-upload-form input { min-width: 0; font-size: var(--daon-font-body); }
+.upload-status { margin: var(--daon-spacing-2) 0; font-size: var(--daon-font-description); }
+.upload-status-success { color: var(--daon-color-success); }
+.upload-status-error { color: var(--daon-color-danger); }
 .registration-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--daon-spacing-2); }
 .registration-grid button { display: flex; flex-direction: column; align-items: flex-start; min-height: var(--daon-target-touch-control); padding: var(--daon-spacing-2); }
 .registration-grid span { color: var(--daon-color-danger); font-size: var(--daon-font-auxiliary); }
@@ -133,7 +138,7 @@ select { width: 100%; min-height: var(--daon-target-desktop-control); margin-top
   .source-list-item, .source-tabs button, .registration-grid button, .recovery-options button, .finalization-actions button { min-height: var(--daon-target-touch-control); }
 }
 @media (max-width: 599px) {
-  .registration-grid, .recovery-options, .finalization-actions { grid-template-columns: 1fr; }
+  .registration-grid, .recovery-options, .finalization-actions, .pdf-upload-form { grid-template-columns: 1fr; }
   .source-tabs { grid-template-columns: repeat(2, 1fr); }
   .source-metadata, .version-snapshot, .run-snapshot, .weight-snapshot, .conflict-card dl { grid-template-columns: 1fr; }
 }

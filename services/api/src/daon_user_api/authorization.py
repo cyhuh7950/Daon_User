@@ -533,6 +533,26 @@ class SqliteAuthorizationRepository:
             raise AuthorizationError("INVALID_ROLE_SCOPE")
         timestamp = _iso(now)
         with self.transaction() as connection:
+            existing_workspace = connection.execute(
+                "SELECT tenant_id,workspace_kind,data_area "
+                "FROM auth_workspaces WHERE workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+            if existing_workspace is not None:
+                existing_role = connection.execute(
+                    "SELECT role,state FROM auth_tenant_roles WHERE tenant_id=? AND user_id=?",
+                    (tenant_id, owner_user_id),
+                ).fetchone()
+                if (
+                    str(existing_workspace["tenant_id"]) != tenant_id
+                    or str(existing_workspace["workspace_kind"]) != workspace_kind
+                    or str(existing_workspace["data_area"]) != data_area
+                    or existing_role is None
+                    or str(existing_role["role"]) != owner_role.value
+                    or str(existing_role["state"]) != "active"
+                ):
+                    raise AuthorizationError("PERSISTENCE_CONFLICT", 409)
+                return
             incompatible = connection.execute(
                 "SELECT 1 FROM auth_workspaces WHERE tenant_id=? AND workspace_kind<>? LIMIT 1",
                 (tenant_id, workspace_kind),
@@ -565,6 +585,21 @@ class SqliteAuthorizationRepository:
                 "INSERT INTO auth_workspace_policies(tenant_id,workspace_id,version,updated_at) VALUES (?,?,?,?)",
                 (tenant_id, workspace_id, 1, timestamp),
             )
+
+    def primary_workspace_id(self, tenant_id: str) -> str | None:
+        checked_tenant = _checked_id(tenant_id)
+        with self._lock:
+            self._ensure_open()
+            connection = self._connect()
+            try:
+                row = connection.execute(
+                    "SELECT workspace_id FROM auth_workspaces WHERE tenant_id=? "
+                    "ORDER BY CASE workspace_kind WHEN 'personal' THEN 0 ELSE 1 END, workspace_id LIMIT 1",
+                    (checked_tenant,),
+                ).fetchone()
+                return None if row is None else str(row[0])
+            finally:
+                connection.close()
 
     def foreign_keys_enabled(self) -> int:
         with self._lock:
