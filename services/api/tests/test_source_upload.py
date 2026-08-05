@@ -38,6 +38,10 @@ class PostgresSourceUploadServiceTests(unittest.TestCase):
         self.assertEqual(result.source_version_id, f"sv-{submitted_id}")
         self.assertEqual(result.status, "accepted")
         service._canon_store.register_uploaded_source.assert_called_once()  # type: ignore[attr-defined]
+        self.assertEqual(
+            service._canon_store.register_uploaded_source.call_args.kwargs["digest_sha256"],  # type: ignore[attr-defined]
+            result.digest_sha256,
+        )
 
 
 if __name__ == "__main__":
