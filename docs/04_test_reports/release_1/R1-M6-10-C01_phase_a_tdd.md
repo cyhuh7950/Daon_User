@@ -15,6 +15,7 @@
 - `python -m unittest discover -s tests -p 'test_*.py'`: 252 passed, 25 skipped.
 - Provider 예외 처리기 삽입으로 이동한 회원가입 202 응답을 RED로 재현하고 원래 계약을 복구했다.
 - `node --test scripts/tests/provider-settings-web.test.mjs scripts/tests/api-bff-runtime.test.mjs`: 13 passed.
+- 배포 Compose의 Provider 환경 전달 계약을 RED로 재현하고 보완한 통합 Node 검증: 14 passed.
 - `node scripts/verify-openapi-contract.mjs`: paths 64, operations 90, schemas 87, errors 31, SHA-256 `AE3A0B618C04940158C55E8127E52A8A774A65FD59A4770F42C824C167854B22`.
 - `node scripts/lint-workspace.mjs ...`: 3 files passed.
 
