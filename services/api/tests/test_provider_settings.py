@@ -86,7 +86,7 @@ class ProviderSettingsContractTests(unittest.TestCase):
                 model_id="gpt-test", roles=("administrator",), active=True,
                 selected=False, expected_version=0,
             )
-        self.assertEqual(set(MODEL_ROLES), {"text", "vision", "audio_understanding", "speech_to_text", "embedding", "reranker"})
+        self.assertEqual(set(MODEL_ROLES), {"text", "vision", "document_parser", "audio_understanding", "speech_to_text", "embedding", "reranker"})
 
 
 if __name__ == "__main__":

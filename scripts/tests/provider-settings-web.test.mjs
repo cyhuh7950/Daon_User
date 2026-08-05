@@ -17,6 +17,10 @@ test("model connections screen edits approved providers, models, roles and safe 
     read("apps/web/app/settings/model-connections/page.jsx"),
     read("apps/web/components/provider-settings-workspace.jsx")
   ]);
+  assert.match(pane, /document_parser/);
+  assert.match(pane, /deploymentDrafts/);
+  assert.match(pane, /모델 추가/);
+  assert.doesNotMatch(pane, /new Map\(deploymentsResult\.payload\.data\.map\(\(item\) => \[item\.provider_code/);
   assert.match(page, /ProviderSettingsWorkspace/);
   for (const provider of ["CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI", "OPENROUTER", "ANTHROPIC", "OLLAMA"]) assert.match(pane, new RegExp(provider));
   for (const label of ["Base URL", "모델 ID", "역할 매핑", "활성", "선택", "Credential 설정됨"]) assert.match(pane, new RegExp(label));
