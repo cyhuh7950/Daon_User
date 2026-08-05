@@ -233,7 +233,7 @@ class PostgresProviderSettingsRepository:
     def list_profiles(self, context: ProviderSettingsContext) -> tuple[ProviderProfileView, ...]:
         try:
             with self._transaction(context, "model.settings.read") as connection:
-                rows = connection.execute("SELECT profile_id,provider_code,provider_kind,base_url,active,version FROM provider_profiles ORDER BY provider_code").fetchall()
+                rows = connection.execute("SELECT profile_id,provider_code,provider_kind,base_url,active,version FROM provider_setting_profiles ORDER BY provider_code").fetchall()
             return tuple(self._profile(cast(tuple[object, ...], row)) for row in rows)
         except CloudDatabaseError as error:
             raise ProviderSettingsError(error.code, 503, retryable=error.retryable) from None
@@ -244,12 +244,12 @@ class PostgresProviderSettingsRepository:
             with self._transaction(context, "model.settings.write") as connection:
                 if expected_version == 0:
                     row = connection.execute(
-                        "INSERT INTO provider_profiles (tenant_id,workspace_id,profile_id,provider_code,provider_kind,base_url,active,version,updated_by,policy_version,trace_id) VALUES (%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s) RETURNING profile_id,provider_code,provider_kind,base_url,active,version",
+                        "INSERT INTO provider_setting_profiles (tenant_id,workspace_id,profile_id,provider_code,provider_kind,base_url,active,version,updated_by,policy_version,trace_id) VALUES (%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s) RETURNING profile_id,provider_code,provider_kind,base_url,active,version",
                         (context.tenant_id, context.workspace_id, profile.profile_id, profile.provider_code, profile.provider_kind, profile.base_url, profile.active, context.actor_id, context.policy_version, context.trace_id),
                     ).fetchone()
                 else:
                     row = connection.execute(
-                        "UPDATE provider_profiles SET base_url=%s,active=%s,version=version+1,updated_by=%s,policy_version=%s,trace_id=%s,updated_at=now() WHERE provider_code=%s AND version=%s RETURNING profile_id,provider_code,provider_kind,base_url,active,version",
+                        "UPDATE provider_setting_profiles SET base_url=%s,active=%s,version=version+1,updated_by=%s,policy_version=%s,trace_id=%s,updated_at=now() WHERE provider_code=%s AND version=%s RETURNING profile_id,provider_code,provider_kind,base_url,active,version",
                         (profile.base_url, profile.active, context.actor_id, context.policy_version, context.trace_id, profile.provider_code, expected_version),
                     ).fetchone()
                 if row is None:
@@ -263,7 +263,7 @@ class PostgresProviderSettingsRepository:
     def list_deployments(self, context: ProviderSettingsContext) -> tuple[ModelDeploymentView, ...]:
         try:
             with self._transaction(context, "model.settings.read") as connection:
-                rows = connection.execute("SELECT d.deployment_id,d.profile_id,p.provider_code,d.model_id,d.roles,d.active,d.selected,d.version FROM model_deployments d JOIN provider_profiles p USING (tenant_id,workspace_id,profile_id) ORDER BY p.provider_code,d.deployment_id").fetchall()
+                rows = connection.execute("SELECT d.deployment_id,d.profile_id,p.provider_code,d.model_id,d.roles,d.active,d.selected,d.version FROM provider_setting_deployments d JOIN provider_setting_profiles p USING (tenant_id,workspace_id,profile_id) ORDER BY p.provider_code,d.deployment_id").fetchall()
             return tuple(self._deployment(cast(tuple[object, ...], row)) for row in rows)
         except CloudDatabaseError as error:
             raise ProviderSettingsError(error.code, 503, retryable=error.retryable) from None
@@ -274,12 +274,12 @@ class PostgresProviderSettingsRepository:
             with self._transaction(context, "model.settings.write") as connection:
                 if expected_version == 0:
                     row = connection.execute(
-                        "INSERT INTO model_deployments (tenant_id,workspace_id,deployment_id,profile_id,model_id,roles,active,selected,version,updated_by,policy_version,trace_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s) RETURNING deployment_id,profile_id,(SELECT provider_code FROM provider_profiles WHERE profile_id=%s),model_id,roles,active,selected,version",
+                        "INSERT INTO provider_setting_deployments (tenant_id,workspace_id,deployment_id,profile_id,model_id,roles,active,selected,version,updated_by,policy_version,trace_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s) RETURNING deployment_id,profile_id,(SELECT provider_code FROM provider_setting_profiles WHERE profile_id=%s),model_id,roles,active,selected,version",
                         (context.tenant_id, context.workspace_id, deployment.deployment_id, deployment.profile_id, deployment.model_id, list(deployment.roles), deployment.active, deployment.selected, context.actor_id, context.policy_version, context.trace_id, deployment.profile_id),
                     ).fetchone()
                 else:
                     row = connection.execute(
-                        "UPDATE model_deployments d SET model_id=%s,roles=%s,active=%s,selected=%s,version=version+1,updated_by=%s,policy_version=%s,trace_id=%s,updated_at=now() FROM provider_profiles p WHERE d.tenant_id=p.tenant_id AND d.workspace_id=p.workspace_id AND d.profile_id=p.profile_id AND d.deployment_id=%s AND d.version=%s RETURNING d.deployment_id,d.profile_id,p.provider_code,d.model_id,d.roles,d.active,d.selected,d.version",
+                        "UPDATE provider_setting_deployments d SET model_id=%s,roles=%s,active=%s,selected=%s,version=version+1,updated_by=%s,policy_version=%s,trace_id=%s,updated_at=now() FROM provider_setting_profiles p WHERE d.tenant_id=p.tenant_id AND d.workspace_id=p.workspace_id AND d.profile_id=p.profile_id AND d.deployment_id=%s AND d.version=%s RETURNING d.deployment_id,d.profile_id,p.provider_code,d.model_id,d.roles,d.active,d.selected,d.version",
                         (deployment.model_id, list(deployment.roles), deployment.active, deployment.selected, context.actor_id, context.policy_version, context.trace_id, deployment.deployment_id, expected_version),
                     ).fetchone()
                 if row is None:
@@ -293,7 +293,7 @@ class PostgresProviderSettingsRepository:
     def get_role_bindings(self, context: ProviderSettingsContext) -> tuple[dict[str, str], int]:
         try:
             with self._transaction(context, "model.settings.read") as connection:
-                rows = connection.execute("SELECT role,deployment_id,version FROM model_role_bindings ORDER BY role").fetchall()
+                rows = connection.execute("SELECT role,deployment_id,version FROM provider_setting_role_bindings ORDER BY role").fetchall()
             bindings = {str(row[0]): str(row[1]) for row in rows}
             version = max((int(cast(int, row[2])) for row in rows), default=0)
             return bindings, version
@@ -304,20 +304,20 @@ class PostgresProviderSettingsRepository:
                            expected_version: int) -> tuple[dict[str, str], int]:
         try:
             with self._transaction(context, "model.settings.write") as connection:
-                rows = connection.execute("SELECT role,deployment_id,version FROM model_role_bindings FOR UPDATE").fetchall()
+                rows = connection.execute("SELECT role,deployment_id,version FROM provider_setting_role_bindings FOR UPDATE").fetchall()
                 actual = max((int(cast(int, row[2])) for row in rows), default=0)
                 if actual != expected_version:
                     raise ProviderSettingsError("VERSION_CONFLICT", 409)
                 if bindings:
-                    valid = connection.execute("SELECT deployment_id,roles,active FROM model_deployments WHERE deployment_id = ANY(%s)", (list(set(bindings.values())),)).fetchall()
+                    valid = connection.execute("SELECT deployment_id,roles,active FROM provider_setting_deployments WHERE deployment_id = ANY(%s)", (list(set(bindings.values())),)).fetchall()
                     capabilities = {str(row[0]): (set(cast(list[str], row[1])), bool(row[2])) for row in valid}
                     if any(deployment not in capabilities or not capabilities[deployment][1] or role not in capabilities[deployment][0] for role, deployment in bindings.items()):
                         raise ProviderSettingsError("MODEL_BINDING_INVALID")
-                connection.execute("DELETE FROM model_role_bindings")
+                connection.execute("DELETE FROM provider_setting_role_bindings")
                 next_version = actual + 1
                 now = datetime.now(timezone.utc)
                 for role, deployment_id in bindings.items():
-                    connection.execute("INSERT INTO model_role_bindings (tenant_id,workspace_id,role,deployment_id,version,updated_by,policy_version,trace_id,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (context.tenant_id, context.workspace_id, role, deployment_id, next_version, context.actor_id, context.policy_version, context.trace_id, now))
+                    connection.execute("INSERT INTO provider_setting_role_bindings (tenant_id,workspace_id,role,deployment_id,version,updated_by,policy_version,trace_id,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (context.tenant_id, context.workspace_id, role, deployment_id, next_version, context.actor_id, context.policy_version, context.trace_id, now))
                 return dict(bindings), next_version
         except ProviderSettingsError:
             raise

@@ -9,12 +9,16 @@ branch_labels = None
 depends_on = None
 
 
-TABLES = ("provider_profiles", "model_deployments", "model_role_bindings")
+TABLES = (
+    "provider_setting_profiles",
+    "provider_setting_deployments",
+    "provider_setting_role_bindings",
+)
 
 
 def upgrade() -> None:
     op.execute("""
-        CREATE TABLE provider_profiles (
+        CREATE TABLE provider_setting_profiles (
           tenant_id text NOT NULL,
           workspace_id text NOT NULL,
           profile_id text NOT NULL,
@@ -38,7 +42,7 @@ def upgrade() -> None:
           FOREIGN KEY (tenant_id, workspace_id)
             REFERENCES workspaces(tenant_id, workspace_id)
         );
-        CREATE TABLE model_deployments (
+        CREATE TABLE provider_setting_deployments (
           tenant_id text NOT NULL,
           workspace_id text NOT NULL,
           deployment_id text NOT NULL,
@@ -59,9 +63,9 @@ def upgrade() -> None:
           updated_at timestamptz NOT NULL DEFAULT now(),
           PRIMARY KEY (tenant_id, workspace_id, deployment_id),
           FOREIGN KEY (tenant_id, workspace_id, profile_id)
-            REFERENCES provider_profiles(tenant_id, workspace_id, profile_id)
+            REFERENCES provider_setting_profiles(tenant_id, workspace_id, profile_id)
         );
-        CREATE TABLE model_role_bindings (
+        CREATE TABLE provider_setting_role_bindings (
           tenant_id text NOT NULL,
           workspace_id text NOT NULL,
           role text NOT NULL CHECK (role IN (
@@ -75,7 +79,7 @@ def upgrade() -> None:
           updated_at timestamptz NOT NULL DEFAULT now(),
           PRIMARY KEY (tenant_id, workspace_id, role),
           FOREIGN KEY (tenant_id, workspace_id, deployment_id)
-            REFERENCES model_deployments(tenant_id, workspace_id, deployment_id)
+            REFERENCES provider_setting_deployments(tenant_id, workspace_id, deployment_id)
         );
     """)
     predicate = (

@@ -32,3 +32,10 @@
 - ysna-server와 WSL-server의 Migration 0007 사전점검·Backup·적용·재기동.
 - 서버 Web Build 및 API 0007 readiness.
 - 실제 로그인 Session에서 `/settings/model-connections` 조회·저장과 Browser Network same-origin 확인.
+
+## 실제 PostgreSQL 드리프트 교정
+
+- ysna-server Migration `0006 → 0007` RED: 기존 Canonical `provider_profiles`와 새 설정 Projection 이름이 충돌해 `DuplicateTable`로 안전하게 Rollback됐다.
+- 기존 `0003`의 불변 Canonical Entity·FK·RLS·Trigger는 변경하지 않았다.
+- 신규 mutable 설정 저장소를 `provider_setting_profiles`, `provider_setting_deployments`, `provider_setting_role_bindings`로 분리했다.
+- 로컬 회귀: API 252 passed·25 skipped, Node 14 passed, 예약 테이블 SQL 참조 0건.
