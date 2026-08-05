@@ -38,6 +38,7 @@ from .authorization import (
     AuthorizationGrant,
     AuthorizationService,
     Permission,
+    Role,
     SqliteAuthorizationRepository,
 )
 from .identity import (
@@ -665,6 +666,10 @@ def _idempotency_key(value: str) -> str:
     return value
 
 
+def _personal_workspace_id(tenant_id: str) -> str:
+    return f"workspace-{hashlib.sha256(tenant_id.encode('utf-8')).hexdigest()[:24]}"
+
+
 def _sync_expected_version(value: str, operation_id: str | None = None) -> int | str:
     if value == "*" and operation_id is None:
         return value
@@ -1008,7 +1013,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             login_id=body.login_id, password=body.password, platform=DevicePlatform.WEB,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id}, "meta": {"trace_id": request.state.trace_id}})
+        workspace_id = dependencies.authorization_repository.primary_workspace_id(
+            credentials.tenant_id
+        ) or _personal_workspace_id(credentials.tenant_id)
+        dependencies.authorization_repository.bootstrap_workspace(
+            tenant_id=credentials.tenant_id,
+            workspace_id=workspace_id,
+            owner_user_id=credentials.user_id,
+            owner_role=Role.PERSONAL_OWNER,
+            workspace_kind="personal",
+            data_area="cloud_sync",
+            cost_limit_cents=1000,
+            now=datetime.now(timezone.utc),
+        )
+        response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id, "workspace_id": workspace_id}, "meta": {"trace_id": request.state.trace_id}})
         response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=3600, httponly=True, secure=True, samesite="lax", path="/")
         return response
 
@@ -1075,10 +1093,14 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if view.client_kind is not expected_kind:
             raise IdentityError("ACCESS_INVALID", 401)
         principal = view.principal
+        workspace_id = dependencies.authorization_repository.primary_workspace_id(
+            principal.tenant_id
+        )
         return {
             "data": {
                 "user_id": principal.user_id,
                 "tenant_id": principal.tenant_id,
+                "workspace_id": workspace_id,
                 "session_id": principal.session_id,
                 "device_id": principal.device_id,
                 "client_kind": view.client_kind.value,

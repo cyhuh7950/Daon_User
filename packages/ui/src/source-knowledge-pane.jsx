@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   AUTHORITY_ORDER,
   PROCESSING_PATHS,
@@ -20,12 +20,31 @@ function SourceStatus({ status }) {
   return <span className={`source-status source-status-${status}`}><span aria-hidden="true">●</span>{STATUS_LABELS[status] ?? status}</span>;
 }
 
-function RegistrationEntry({ onClose }) {
-  const entries = ["사용자 파일", "직접 입력", "인터넷 검색", "LLM 일반지식", "Daon 승인 지식", "사용자 생산 지식"];
+function RegistrationEntry({ workspaceId, onUploadPdf, onClose }) {
+  const [file, setFile] = useState(null);
+  const [status, setStatus] = useState({ kind: "idle", message: "PDF 파일 한 개를 선택해 등록하세요." });
+  const entries = ["직접 입력", "인터넷 검색", "LLM 일반지식", "Daon 승인 지식", "사용자 생산 지식"];
+  const upload = async (event) => {
+    event.preventDefault();
+    if (!file || !onUploadPdf) return;
+    setStatus({ kind: "uploading", message: "PDF를 안전하게 등록하는 중입니다." });
+    try {
+      const result = await onUploadPdf(file);
+      setStatus({ kind: "success", message: `등록 완료 · ${result.source_id}` });
+    } catch (error) {
+      setStatus({ kind: "error", message: `등록 실패 · ${error instanceof Error ? error.message : "PDF_UPLOAD_FAILED"}` });
+    }
+  };
   return (
     <section className="registration-entry" aria-labelledby="registration-title">
       <div className="card-row"><h3 id="registration-title">Source 등록 진입</h3><button type="button" onClick={onClose}>닫기</button></div>
-      <p className="secondary">프로토타입 데이터 · 실제 Upload·API·DB·LLM 실행 unavailable</p>
+      <form className="pdf-upload-form" onSubmit={upload}>
+        <label htmlFor="source-pdf-file">사용자 PDF</label>
+        <input id="source-pdf-file" type="file" accept="application/pdf" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+        <button type="submit" disabled={!workspaceId || !onUploadPdf || !file || status.kind === "uploading"}>PDF 등록</button>
+      </form>
+      <p className={`upload-status upload-status-${status.kind}`} role="status">{onUploadPdf ? status.message : "실제 PDF 등록 연결 unavailable"}</p>
+      <p className="secondary">PDF 등록은 실제 API·Object Storage·DB에 연결됩니다. 의미 이해·색인·대화 실행은 다음 연결 단계까지 unavailable입니다.</p>
       <div className="registration-grid">{entries.map((entry) => <button type="button" key={entry} disabled title="M6에서 실제 연결">{entry}<span>unavailable</span></button>)}</div>
       <p className="visible-notice">사용자 생산 지식은 명시적으로 등록해야 하며 Daon 승인 지식으로 자동 승격되지 않습니다.</p>
     </section>
@@ -102,7 +121,7 @@ function ConflictPanel({ conflicts, onResolve, onRaise }) {
   );
 }
 
-export function SourceKnowledgePane({ selectedSourceId, domainState, onDomainAction, onSelectSource, onOpenEvidence }) {
+export function SourceKnowledgePane({ workspaceId, onUploadPdf, selectedSourceId, domainState, onDomainAction, onSelectSource, onOpenEvidence }) {
   const seed = useMemo(() => createSourcePrototypeSeed(), []);
   const projectedSources = seed.sources.map((source) => projectSourceState(source, domainState.sourceStateById[source.id]));
   const selectedSource = projectedSources.find((source) => source.id === selectedSourceId) ?? projectedSources[0];
@@ -111,7 +130,7 @@ export function SourceKnowledgePane({ selectedSourceId, domainState, onDomainAct
     <section className="workspace-pane source-knowledge-pane" id="pane-knowledge" aria-labelledby="pane-knowledge-title">
       <div className="pane-heading"><div><p className="eyebrow">자료·지식 · 프로토타입 데이터</p><h2 id="pane-knowledge-title">Source·권위 흐름</h2></div><Help id="knowledge-domain" label="자료·지식 흐름 설명">실제 Upload·API·DB·LLM 실행은 연결되지 않았으며 unavailable로 표시합니다.</Help></div>
       <button type="button" className="primary-action" onClick={() => onDomainAction({ type: "set-registration-open", open: !domainState.registrationOpen })} aria-expanded={domainState.registrationOpen} aria-controls="source-registration-entry">Source 등록 진입</button>
-      {domainState.registrationOpen && <div id="source-registration-entry"><RegistrationEntry onClose={() => onDomainAction({ type: "set-registration-open", open: false })} /></div>}
+      {domainState.registrationOpen && <div id="source-registration-entry"><RegistrationEntry workspaceId={workspaceId} onUploadPdf={onUploadPdf} onClose={() => onDomainAction({ type: "set-registration-open", open: false })} /></div>}
       <div className="source-workbench">
         <nav className="source-list" aria-label="Source 목록">{projectedSources.map((source) => <button type="button" key={source.id} className={source.id === selectedSource.id ? "source-list-item selected" : "source-list-item"} aria-current={source.id === selectedSource.id ? "true" : undefined} onClick={() => onSelectSource(source.id)}><span><strong>{source.name}</strong><small>{TYPE_LABELS[source.type]} · {source.group}</small></span><SourceStatus status={source.status} /></button>)}</nav>
         <article className="source-detail" aria-live="polite">
