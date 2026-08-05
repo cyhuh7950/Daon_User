@@ -124,6 +124,7 @@ class UpstageDocumentUnderstandingAdapterTests(unittest.TestCase):
         self.assertEqual(result.semantic.summary, "Vision first. Parser validates later.")
         self.assertEqual(result.parser.role, "validation_only")
         self.assertEqual(result.parser.pages, (1,))
+        self.assertEqual(result.parser.page_texts, ((1, "Daon CP3 contract test. Vision first. Parser validates later."),))
         self.assertEqual(result.lineage["semantic_model_revision"], "information-extract-260610")
         self.assertEqual(result.lineage["parser_model_revision"], "document-parse-260630")
         self.assertEqual(result.lineage["parser_role"], "validation_only")

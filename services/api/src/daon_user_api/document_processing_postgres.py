@@ -177,6 +177,10 @@ class PostgresDocumentProcessingRepository:
             "parser_validation": {
                 "text": result.parser.text, "markdown": result.parser.markdown,
                 "html": result.parser.html, "pages": list(result.parser.pages),
+                "page_texts": [
+                    {"page": page, "text": page_text}
+                    for page, page_text in result.parser.page_texts
+                ],
                 "role": result.parser.role,
             },
             "lineage": dict(result.lineage),
