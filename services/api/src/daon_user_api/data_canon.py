@@ -280,6 +280,84 @@ class PostgresDataCanonStore:
                 ),
             )
 
+    def register_uploaded_source(
+        self,
+        context: CanonicalContext,
+        *,
+        source_id: str,
+        source_version_id: str,
+        object_id: str,
+        filename: str,
+        digest_sha256: str,
+        byte_size: int,
+        created_at: datetime,
+    ) -> None:
+        payload: dict[str, object] = {
+            "filename": filename,
+            "content_type": "application/pdf",
+            "byte_size": byte_size,
+            "object_id": object_id,
+        }
+        snapshot = CanonicalSnapshot(
+            source_version_id, source_id, 1, 1, digest_sha256, None, payload
+        )
+        payload_json = canonical_json_bytes(snapshot.payload).decode("utf-8")
+        with self._transaction(context) as connection:
+            existing_source = connection.execute(
+                "SELECT record_id FROM sources WHERE record_id=%s", (source_id,)
+            ).fetchone()
+            if existing_source is None:
+                connection.execute(
+                    "INSERT INTO sources "
+                    "(tenant_id, workspace_id, record_id, aggregate_id, state, version, "
+                    "schema_version, canonical_json, digest_sha256, created_by, trace_id) "
+                    "VALUES (%s, %s, %s, %s, 'registered', 1, 1, '{}'::jsonb, "
+                    "encode(sha256(convert_to('{}'::jsonb::text, 'UTF8')), 'hex'), %s, %s)",
+                    (
+                        context.tenant_id,
+                        context.workspace_id,
+                        source_id,
+                        source_id,
+                        context.actor_id,
+                        context.trace_id,
+                    ),
+                )
+            existing_version = connection.execute(
+                "SELECT source_id, object_id, digest_sha256, canonical_json "
+                "FROM source_versions WHERE record_id=%s",
+                (source_version_id,),
+            ).fetchone()
+            if existing_version is None:
+                connection.execute(
+                    "INSERT INTO source_versions "
+                    "(tenant_id, workspace_id, record_id, aggregate_id, version, schema_version, "
+                    "previous_version_id, canonical_json, canonical_text, digest_sha256, created_at, "
+                    "created_by, trace_id, source_id, object_id) "
+                    "VALUES (%s, %s, %s, %s, 1, 1, NULL, %s::jsonb, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        context.tenant_id,
+                        context.workspace_id,
+                        source_version_id,
+                        source_id,
+                        payload_json,
+                        payload_json,
+                        digest_sha256,
+                        created_at,
+                        context.actor_id,
+                        context.trace_id,
+                        source_id,
+                        object_id,
+                    ),
+                )
+            elif (
+                str(existing_version[0]) != source_id
+                or str(existing_version[1]) != object_id
+                or str(existing_version[2]) != digest_sha256
+                or canonical_json_bytes(cast(Mapping[str, object], existing_version[3]))
+                != canonical_json_bytes(payload)
+            ):
+                raise CanonError("CANON_SNAPSHOT_INVALID")
+
     def transition(
         self,
         context: CanonicalContext,

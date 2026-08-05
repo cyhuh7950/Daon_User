@@ -1,4 +1,5 @@
 const MAX_REQUEST_BYTES = 65_536;
+const MAX_SOURCE_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_SESSION_COOKIE_BYTES = 4_096;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUEST_HEADERS = new Set([
@@ -7,6 +8,7 @@ const REQUEST_HEADERS = new Set([
   "if-match",
   "traceparent",
   "x-trace-id",
+  "x-source-filename",
 ]);
 const RESPONSE_HEADERS = new Set([
   "cache-control",
@@ -74,6 +76,20 @@ export function parseInternalApiBase(rawValue, profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "sources"
+  ) {
+    return method === "POST"
+      ? {
+          path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`,
+          query: null,
+          maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES,
+        }
+      : { methodRejected: true };
+  }
   if (segments.length === 1 && new Set(["model-profiles", "model-deployments"]).has(segments[0])) {
     if (method === "GET") return { path: `/api/v1/${segments[0]}`, query: MODEL_SETTINGS_QUERY };
     return method === "POST"
@@ -341,7 +357,7 @@ export function createBffProxy({ baseUrl, fetchImpl = fetch, timeoutMs = 10_000 
           return cancellationError(abortScope, trace)
             ?? createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
         }
-        if (body.byteLength > MAX_REQUEST_BYTES) {
+        if (body.byteLength > (route.maxRequestBytes ?? MAX_REQUEST_BYTES)) {
           return createBffSafeError(413, "REQUEST_TOO_LARGE", trace);
         }
         init.body = body;
