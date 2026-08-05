@@ -297,9 +297,11 @@ class PostgresDataCanonStore:
             "content_type": "application/pdf",
             "byte_size": byte_size,
             "object_id": object_id,
+            "content_digest_sha256": digest_sha256,
         }
+        snapshot_digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
         snapshot = CanonicalSnapshot(
-            source_version_id, source_id, 1, 1, digest_sha256, None, payload
+            source_version_id, source_id, 1, 1, snapshot_digest, None, payload
         )
         payload_json = canonical_json_bytes(snapshot.payload).decode("utf-8")
         with self._transaction(context) as connection:
@@ -341,7 +343,7 @@ class PostgresDataCanonStore:
                         source_id,
                         payload_json,
                         payload_json,
-                        digest_sha256,
+                        snapshot_digest,
                         created_at,
                         context.actor_id,
                         context.trace_id,
@@ -352,7 +354,7 @@ class PostgresDataCanonStore:
             elif (
                 str(existing_version[0]) != source_id
                 or str(existing_version[1]) != object_id
-                or str(existing_version[2]) != digest_sha256
+                or str(existing_version[2]) != snapshot_digest
                 or canonical_json_bytes(cast(Mapping[str, object], existing_version[3]))
                 != canonical_json_bytes(payload)
             ):
