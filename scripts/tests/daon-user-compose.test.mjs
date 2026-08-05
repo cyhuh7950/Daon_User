@@ -15,3 +15,8 @@ test("API container receives approved provider secret references without browser
   }
   assert.doesNotMatch(source, /NEXT_PUBLIC_[A-Z_]*(?:API_KEY|OLLAMA|API_BASE_URL)/);
 });
+
+test("dedicated object bucket provisioning is explicit in the API container", async () => {
+  const source = await readFile(composeUrl, "utf8");
+  assert.match(source, /DAON_OBJECT_STORAGE_PROVISION_BUCKET:\s*true/);
+});

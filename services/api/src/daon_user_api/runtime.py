@@ -128,6 +128,7 @@ class RuntimeSettings:
     object_secret_key_file: Path | None = None
     recovery_manifest_key_file: Path | None = None
     object_storage_secure: bool = True
+    object_storage_provision_bucket: bool = False
     policy_version: str = "runtime-policy-v1"
     public_gateway_url: str | None = None
     trusted_proxy_ips: tuple[str, ...] = ()
@@ -231,6 +232,9 @@ class RuntimeSettings:
                 else Path(os.environ["DAON_RECOVERY_MANIFEST_KEY_FILE"])
             ),
             object_storage_secure=os.environ.get("DAON_OBJECT_STORAGE_SECURE", "true").lower() == "true",
+            object_storage_provision_bucket=(
+                os.environ.get("DAON_OBJECT_STORAGE_PROVISION_BUCKET", "false").lower() == "true"
+            ),
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
             trusted_proxy_ips=proxies,
@@ -1971,13 +1975,16 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             secret_key = settings.object_secret_key_file.read_text(encoding="utf-8").strip()
         except OSError:
             raise ValueError("OBJECT_SECRET_REFERENCE_UNAVAILABLE") from None
-        object_storage = MinioObjectStorageAdapter(
+        adapter = MinioObjectStorageAdapter(
             endpoint=settings.object_storage_endpoint,
             bucket=settings.object_storage_bucket,
             access_key=access_key,
             secret_key=secret_key,
             secure=settings.object_storage_secure,
         )
+        if settings.object_storage_provision_bucket:
+            adapter.ensure_bucket()
+        object_storage = adapter
     sync_service: SyncService | PostgresSyncService
     recovery_service: PostgresRecoveryService | UnavailableRecoveryService
     object_queue_store: PostgresObjectQueueStore | None = None
