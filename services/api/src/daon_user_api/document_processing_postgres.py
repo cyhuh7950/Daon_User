@@ -41,17 +41,18 @@ class PostgresDocumentProcessingRepository:
 
     @staticmethod
     def _transition(
-        connection, context: DocumentProcessingContext, *, processing_run_id: str,
+        connection, context: DocumentProcessingContext, *, entity_type: str,
+        aggregate_id: str,
         expected_version: int, target_state: str, reason_code: str,
     ) -> int:
         transition_id = PostgresDocumentProcessingRepository._opaque_id(
-            "tr", processing_run_id, target_state, str(expected_version),
+            "tr", entity_type, aggregate_id, target_state, str(expected_version),
         )
         row = connection.execute(
             "SELECT state,version,outcome,error_code FROM transition_canon_state"
             "(%s,%s,%s,%s,%s,%s,%s,%s)",
             (
-                "ProcessingRun", processing_run_id, expected_version, target_state,
+                entity_type, aggregate_id, expected_version, target_state,
                 transition_id, reason_code, context.trace_id, context.policy_version,
             ),
         ).fetchone()
@@ -149,9 +150,43 @@ class PostgresDocumentProcessingRepository:
                 ).fetchone()
                 if row is None or str(row[2]) != source_version_id:
                     raise DocumentUnderstandingError("PROCESSING_RUN_CONFLICT", status=409)
+                source_row = connection.execute(
+                    "SELECT sv.source_id,s.state,s.version FROM source_versions sv "
+                    "JOIN sources s ON s.tenant_id=sv.tenant_id AND "
+                    "s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
+                    "WHERE sv.record_id=%s",
+                    (source_version_id,),
+                ).fetchone()
+                if source_row is None:
+                    raise DocumentUnderstandingError("SOURCE_NOT_FOUND", status=404)
+                source_id, source_state, source_version = (
+                    str(source_row[0]), str(source_row[1]), int(source_row[2])
+                )
+                if source_state == "registered":
+                    source_version = self._transition(
+                        connection, context, entity_type="Source", aggregate_id=source_id,
+                        expected_version=source_version, target_state="security_check",
+                        reason_code="PDF_SECURITY_CHECK_PASSED",
+                    )
+                    source_state = "security_check"
+                if source_state == "security_check":
+                    self._transition(
+                        connection, context, entity_type="Source", aggregate_id=source_id,
+                        expected_version=source_version, target_state="processing",
+                        reason_code="DOCUMENT_PROCESSING_STARTED",
+                    )
+                elif source_state in {"waiting_model", "partial_understanding", "needs_review", "failed"}:
+                    self._transition(
+                        connection, context, entity_type="Source", aggregate_id=source_id,
+                        expected_version=source_version, target_state="processing",
+                        reason_code="DOCUMENT_PROCESSING_RESTARTED",
+                    )
+                elif source_state != "processing":
+                    raise DocumentUnderstandingError("SOURCE_PROCESSING_STATE_INVALID", status=409)
                 if str(row[0]) == "accepted" and int(row[1]) == 1:
                     self._transition(
-                        connection, context, processing_run_id=processing_run_id,
+                        connection, context, entity_type="ProcessingRun",
+                        aggregate_id=processing_run_id,
                         expected_version=1, target_state="vision_llm_understanding",
                         reason_code="ORIGINAL_PDF_UNDERSTANDING_STARTED",
                     )
@@ -190,12 +225,14 @@ class PostgresDocumentProcessingRepository:
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
                 version = self._transition(
-                    connection, context, processing_run_id=processing_run_id,
+                    connection, context, entity_type="ProcessingRun",
+                    aggregate_id=processing_run_id,
                     expected_version=2, target_state="parser_ocr_validation",
                     reason_code="SEMANTIC_UNDERSTANDING_COMPLETED",
                 )
                 version = self._transition(
-                    connection, context, processing_run_id=processing_run_id,
+                    connection, context, entity_type="ProcessingRun",
+                    aggregate_id=processing_run_id,
                     expected_version=version, target_state="evidence_reconciliation",
                     reason_code="PARSER_VALIDATION_COMPLETED",
                 )
@@ -234,10 +271,27 @@ class PostgresDocumentProcessingRepository:
                         ),
                     )
                 self._transition(
-                    connection, context, processing_run_id=processing_run_id,
+                    connection, context, entity_type="ProcessingRun",
+                    aggregate_id=processing_run_id,
                     expected_version=version, target_state="completed",
                     reason_code="EVIDENCE_RECONCILIATION_COMPLETED",
                 )
+                if result.status == "needs_review":
+                    source_row = connection.execute(
+                        "SELECT sv.source_id,s.state,s.version FROM source_versions sv "
+                        "JOIN sources s ON s.tenant_id=sv.tenant_id AND "
+                        "s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
+                        "WHERE sv.record_id=%s",
+                        (result.source_version_id,),
+                    ).fetchone()
+                    if source_row is None or str(source_row[1]) != "processing":
+                        raise DocumentUnderstandingError("SOURCE_PROCESSING_STATE_INVALID", status=409)
+                    self._transition(
+                        connection, context, entity_type="Source",
+                        aggregate_id=str(source_row[0]), expected_version=int(source_row[2]),
+                        target_state="needs_review",
+                        reason_code="UNDERSTANDING_PARSER_CONFLICT",
+                    )
         except Exception as error:
             raise self._database_error(error) from None
 
@@ -251,16 +305,29 @@ class PostgresDocumentProcessingRepository:
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
                 row = connection.execute(
-                    "SELECT state,version FROM processing_runs WHERE record_id=%s",
+                    "SELECT pr.state,pr.version,sv.source_id,s.state,s.version "
+                    "FROM processing_runs pr JOIN source_versions sv ON "
+                    "sv.tenant_id=pr.tenant_id AND sv.workspace_id=pr.workspace_id "
+                    "AND sv.record_id=pr.source_version_id JOIN sources s ON "
+                    "s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id "
+                    "AND s.record_id=sv.source_id WHERE pr.record_id=%s",
                     (processing_run_id,),
                 ).fetchone()
                 if row is None:
                     raise DocumentUnderstandingError("PROCESSING_RUN_NOT_FOUND", status=404)
                 if str(row[0]) != "failed":
                     self._transition(
-                        connection, context, processing_run_id=processing_run_id,
+                        connection, context, entity_type="ProcessingRun",
+                        aggregate_id=processing_run_id,
                         expected_version=int(row[1]), target_state="failed",
                         reason_code=reason,
+                    )
+                source_target = "waiting_model" if retryable else "failed"
+                if str(row[3]) == "processing":
+                    self._transition(
+                        connection, context, entity_type="Source",
+                        aggregate_id=str(row[2]), expected_version=int(row[4]),
+                        target_state=source_target, reason_code=reason,
                     )
         except Exception as error:
             raise self._database_error(error) from None

@@ -28,8 +28,8 @@ class Cursor:
 
 class FakeConnection:
     def __init__(self) -> None:
-        self.state = "accepted"
-        self.version = 1
+        self.states = {"ProcessingRun": "accepted", "Source": "registered"}
+        self.versions = {"ProcessingRun": 1, "Source": 1}
         self.source_version_id = "source-version-cp3"
         self.inserts: list[str] = []
 
@@ -44,19 +44,25 @@ class FakeConnection:
             self.inserts.append("processing_runs")
             return Cursor()
         if sql.startswith("SELECT state,version,source_version_id"):
-            return Cursor((self.state, self.version, self.source_version_id))
+            return Cursor((self.states["ProcessingRun"], self.versions["ProcessingRun"], self.source_version_id))
+        if sql.startswith("SELECT sv.source_id,s.state,s.version"):
+            return Cursor(("source-cp3", self.states["Source"], self.versions["Source"]))
         if sql.startswith("SELECT state,version,outcome,error_code FROM transition_canon_state"):
-            self.state = params[3]
-            self.version += 1
-            return Cursor((self.state, self.version, "succeeded", None))
+            entity_type = params[0]
+            self.states[entity_type] = params[3]
+            self.versions[entity_type] += 1
+            return Cursor((self.states[entity_type], self.versions[entity_type], "succeeded", None))
         if sql.startswith("INSERT INTO understanding_results"):
             self.inserts.append("understanding_results")
             return Cursor()
         if sql.startswith("INSERT INTO extraction_evidence"):
             self.inserts.append("extraction_evidence")
             return Cursor()
-        if sql.startswith("SELECT state,version FROM processing_runs"):
-            return Cursor((self.state, self.version))
+        if sql.startswith("SELECT pr.state,pr.version,sv.source_id,s.state,s.version"):
+            return Cursor((
+                self.states["ProcessingRun"], self.versions["ProcessingRun"],
+                "source-cp3", self.states["Source"], self.versions["Source"],
+            ))
         raise AssertionError(sql)
 
 
@@ -99,8 +105,9 @@ class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
         self.repository.complete(self.context, run_id, result)
 
         self.assertEqual(document.content, PDF)
-        self.assertEqual(self.cloud.connection.state, "completed")
-        self.assertEqual(self.cloud.connection.version, 5)
+        self.assertEqual(self.cloud.connection.states["ProcessingRun"], "completed")
+        self.assertEqual(self.cloud.connection.versions["ProcessingRun"], 5)
+        self.assertEqual(self.cloud.connection.states["Source"], "processing")
         self.assertEqual(self.cloud.connection.inserts, [
             "processing_runs", "understanding_results",
             "extraction_evidence", "extraction_evidence",
@@ -113,8 +120,25 @@ class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
             self.context, run_id, "UNDERSTANDING_PROVIDER_UNAVAILABLE", retryable=True,
         )
 
-        self.assertEqual(self.cloud.connection.state, "failed")
+        self.assertEqual(self.cloud.connection.states["ProcessingRun"], "failed")
+        self.assertEqual(self.cloud.connection.states["Source"], "waiting_model")
         self.assertEqual(self.cloud.connection.inserts, ["processing_runs"])
+
+    def test_parser_conflict_moves_source_to_needs_review_instead_of_ready(self) -> None:
+        run_id = self.repository.start(self.context, "source-version-cp3")
+        result = DocumentUnderstandingResult(
+            "source-cp3", "source-version-cp3", "needs_review",
+            ("vision_llm_understanding", "parser_ocr_validation", "evidence_reconciliation"),
+            SemanticUnderstanding("Daon", "Vision first", ("Unsupported fact",)),
+            ParserValidation("Different text", "Different text", "<p>Different text</p>", (1,)),
+            {"provider_code": "UPSTAGE", "parser_role": "validation_only"},
+            "UNDERSTANDING_PARSER_CONFLICT",
+        )
+
+        self.repository.complete(self.context, run_id, result)
+
+        self.assertEqual(self.cloud.connection.states["ProcessingRun"], "completed")
+        self.assertEqual(self.cloud.connection.states["Source"], "needs_review")
 
 
 if __name__ == "__main__":
