@@ -11,9 +11,18 @@ ROOT = Path(__file__).resolve().parents[3]
 class ProviderSettingsSurfaceContractTests(unittest.TestCase):
     def test_migration_0007_has_rls_and_no_secret_columns(self) -> None:
         migration = (ROOT / "services/api/migrations/versions/0007_provider_model_settings.py").read_text("utf-8")
-        for table in ("provider_profiles", "model_deployments", "model_role_bindings"):
+        migration_0003 = (ROOT / "services/api/migrations/versions/0003_data_canon_lineage.py").read_text("utf-8")
+        for table in (
+            "provider_setting_profiles",
+            "provider_setting_deployments",
+            "provider_setting_role_bindings",
+        ):
             self.assertIn(f"CREATE TABLE {table}", migration)
             self.assertIn(f'"{table}"', migration)
+        for reserved in ("CREATE TABLE provider_profiles (", "CREATE TABLE model_deployments ("):
+            self.assertNotIn(reserved, migration)
+        self.assertIn('"provider_profiles"', migration_0003)
+        self.assertIn('"model_deployments"', migration_0003)
         self.assertIn('f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"', migration)
         self.assertIn('f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"', migration)
         self.assertIn("current_setting('app.tenant_id', true)", migration)
