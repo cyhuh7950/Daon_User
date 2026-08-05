@@ -18,7 +18,7 @@ PROVIDER_CODES = (
     "OPENROUTER", "ANTHROPIC", "OLLAMA",
 )
 MODEL_ROLES = (
-    "text", "vision", "audio_understanding", "speech_to_text", "embedding", "reranker",
+    "text", "vision", "document_parser", "audio_understanding", "speech_to_text", "embedding", "reranker",
 )
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _CREDENTIAL_ENV = {
