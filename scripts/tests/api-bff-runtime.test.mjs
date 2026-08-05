@@ -433,3 +433,63 @@ test("BFF exposes only approved Notification and Inbox paths with same-origin CS
   assert.equal(rejected.status, 403);
   assert.equal(crossOriginCalls, 0);
 });
+
+test("BFF exposes only bounded Provider settings paths and query", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: {}, meta: {} });
+    },
+  });
+  const getProfiles = await proxy(new Request(
+    "https://app.example.com/bff/api/model-profiles?workspace_id=workspace-001&secret=blocked",
+  ), ["model-profiles"]);
+  const getDeployments = await proxy(new Request(
+    "https://app.example.com/bff/api/model-deployments?workspace_id=workspace-001&internal=blocked",
+  ), ["model-deployments"]);
+  const getPolicy = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/model-policy",
+  ), ["workspaces", "workspace-001", "model-policy"]);
+  const patchPolicy = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/model-policy",
+    {
+      method: "PATCH",
+      headers: {
+        Origin: "https://app.example.com",
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+        "If-Match": '"policy-v1"',
+        "Idempotency-Key": "idem-policy-001",
+      },
+      body: JSON.stringify({ selected_deployment_ids: [] }),
+    },
+  ), ["workspaces", "workspace-001", "model-policy"]);
+  assert.deepEqual(
+    [getProfiles.status, getDeployments.status, getPolicy.status, patchPolicy.status],
+    [200, 200, 200, 200],
+  );
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/model-profiles?workspace_id=workspace-001", method: "GET" },
+    { url: "https://api.example.com/api/v1/model-deployments?workspace_id=workspace-001", method: "GET" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-policy", method: "GET" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-policy", method: "PATCH" },
+  ]);
+
+  let rejectedCalls = 0;
+  const rejectingProxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async () => { rejectedCalls += 1; return new Response(); },
+  });
+  const invalidId = await rejectingProxy(new Request(
+    "https://app.example.com/bff/api/workspaces/%2Fetc/model-policy",
+  ), ["workspaces", "/etc", "model-policy"]);
+  const invalidMethod = await rejectingProxy(new Request(
+    "https://app.example.com/bff/api/model-profiles",
+    { method: "DELETE", headers: { Origin: "https://app.example.com" } },
+  ), ["model-profiles"]);
+  assert.equal(invalidId.status, 404);
+  assert.equal(invalidMethod.status, 405);
+  assert.equal(rejectedCalls, 0);
+});
