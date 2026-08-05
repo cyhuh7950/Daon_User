@@ -83,6 +83,7 @@ class ParserValidation:
     markdown: str
     html: str
     pages: tuple[int, ...]
+    page_texts: tuple[tuple[int, str], ...] = ()
     role: str = "validation_only"
 
 
@@ -288,12 +289,30 @@ class UpstageDocumentUnderstandingAdapter:
                 int(cast(dict[str, object], element)["page"])
                 for element in elements if isinstance(element, dict) and "page" in element
             }))
+            page_parts: dict[int, list[str]] = {}
+            for element in elements:
+                if not isinstance(element, dict) or "page" not in element:
+                    continue
+                element_content = element.get("content")
+                if not isinstance(element_content, dict):
+                    continue
+                part = str(element_content.get("text", "")).strip()
+                if part:
+                    page_parts.setdefault(int(element["page"]), []).append(part)
             revision = str(response["model"]).strip()
         except (KeyError, TypeError, ValueError):
             raise DocumentUnderstandingError("PARSER_VALIDATION_RESPONSE_INVALID", status=502) from None
         if not text or not pages or any(page < 1 for page in pages) or not revision:
             raise DocumentUnderstandingError("PARSER_VALIDATION_RESPONSE_INVALID", status=502)
-        return ParserValidation(text, markdown, html, pages), revision
+        page_texts = (
+            ((pages[0], text),)
+            if len(pages) == 1
+            else tuple(
+                (page, "\n".join(page_parts[page]))
+                for page in pages if page_parts.get(page)
+            )
+        )
+        return ParserValidation(text, markdown, html, pages, page_texts), revision
 
     def understand(
         self, request: DocumentUnderstandingRequest, selection: DocumentModelSelection,
