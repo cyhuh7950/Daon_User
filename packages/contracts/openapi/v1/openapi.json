@@ -454,11 +454,26 @@
         "tags": [
           "Source"
         ],
-        "summary": "Workspace Source 등록",
-        "x-implementation-owner": "R1-M6-05",
+        "summary": "단일 PDF Workspace Source 등록",
+        "x-implementation-owner": "R1-M6-10-C01",
         "responses": {
-          "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+          "202": {
+            "description": "Object Storage와 PostgreSQL 정본 등록 완료, 처리 대기",
+            "headers": {
+              "X-Trace-Id": {
+                "$ref": "#/components/headers/XTraceId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceUploadEnvelope"
+                }
+              }
+            }
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -478,6 +493,15 @@
           "412": {
             "$ref": "#/components/responses/PreconditionFailed"
           },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
           "500": {
             "$ref": "#/components/responses/SafeFailure"
           }
@@ -488,10 +512,28 @@
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "name": "X-Source-Filename",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[^/\\\\\\u0000-\\u001f]{1,251}\\.pdf$",
+              "maxLength": 255
+            }
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "required": true,
+          "content": {
+            "application/pdf": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
         }
       }
     },
@@ -3793,6 +3835,21 @@
           }
         }
       },
+      "ServiceUnavailable": {
+        "description": "일시적인 저장소 또는 처리 기반 사용 불가",
+        "headers": {
+          "X-Trace-Id": {
+            "$ref": "#/components/headers/XTraceId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SafeErrorEnvelope"
+            }
+          }
+        }
+      },
       "NoContentResponse": {
         "description": "Versioned Resource 변경 성공",
         "headers": {
@@ -4472,6 +4529,45 @@
           },
           "step_up_authorization_id": {
             "$ref": "#/components/schemas/OpaqueId"
+          }
+        }
+      },
+      "SourceUpload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_id",
+          "source_version_id",
+          "object_id",
+          "digest_sha256",
+          "byte_size",
+          "status",
+          "replayed"
+        ],
+        "properties": {
+          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "object_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+          "digest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "byte_size": { "type": "integer", "minimum": 1, "maximum": 26214400 },
+          "status": { "type": "string", "enum": ["accepted"] },
+          "replayed": { "type": "boolean" }
+        }
+      },
+      "SourceUploadEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/SourceUpload" },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["trace_id", "workspace_id"],
+            "properties": {
+              "trace_id": { "$ref": "#/components/schemas/OpaqueId" },
+              "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }
+            }
           }
         }
       },

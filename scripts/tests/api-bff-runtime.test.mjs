@@ -493,3 +493,54 @@ test("BFF exposes only bounded Provider settings paths and query", async () => {
   assert.equal(invalidMethod.status, 405);
   assert.equal(rejectedCalls, 0);
 });
+
+test("BFF uploads a bounded PDF only through the approved workspace source route", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({
+        url: String(url),
+        method: init.method,
+        type: init.headers.get("content-type"),
+        filename: init.headers.get("x-source-filename"),
+        bytes: init.body.byteLength,
+      });
+      return Response.json({ data: { status: "accepted" }, meta: {} }, { status: 202 });
+    },
+  });
+  const response = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/sources",
+    {
+      method: "POST",
+      headers: {
+        Origin: "https://app.example.com",
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/pdf",
+        "Idempotency-Key": "pdf-upload-001",
+        "X-Source-Filename": "fixture.pdf",
+      },
+      body: Buffer.from("%PDF-1.7\nfixture"),
+    },
+  ), ["workspaces", "workspace-001", "sources"]);
+  assert.equal(response.status, 202);
+  assert.deepEqual(captured, [{
+    url: "https://api.example.com/api/v1/workspaces/workspace-001/sources",
+    method: "POST",
+    type: "application/pdf",
+    filename: "fixture.pdf",
+    bytes: 16,
+  }]);
+
+  let calls = 0;
+  const rejected = await createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async () => { calls += 1; return new Response(); },
+  })(new Request("https://app.example.com/bff/api/workspaces/%2Fetc/sources", {
+    method: "POST",
+    headers: { Origin: "https://app.example.com", "Content-Type": "application/pdf" },
+    body: Buffer.from("%PDF-1.7"),
+  }), ["workspaces", "/etc", "sources"]);
+  assert.equal(rejected.status, 404);
+  assert.equal(calls, 0);
+});

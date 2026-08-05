@@ -63,6 +63,13 @@ from .object_queue import (
     ObjectStoragePort,
     PostgresObjectQueueStore,
 )
+from .data_canon import PostgresDataCanonStore
+from .source_ingest import SourceIngestor, SourceRejected
+from .source_upload import (
+    PostgresSourceUploadService,
+    SourceUploadError,
+    SourceUploadPort,
+)
 from .sync import (
     ConflictResolutionChoice,
     ReferenceSyncRepository,
@@ -104,6 +111,8 @@ _TRACEPARENT = re.compile(
     r"^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$"
 )
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+_SOURCE_UPLOAD_PATH = re.compile(r"^/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/sources$")
+_PDF_FILENAME = re.compile(r"^[^/\\\x00-\x1f]{1,251}\.pdf$", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +132,7 @@ class RuntimeSettings:
     public_gateway_url: str | None = None
     trusted_proxy_ips: tuple[str, ...] = ()
     max_body_bytes: int = 65_536
+    source_upload_max_bytes: int = 25 * 1024 * 1024
     max_header_bytes: int = 16_384
     request_timeout_seconds: float = 30.0
     drain_timeout_seconds: float = 10.0
@@ -134,6 +144,7 @@ class RuntimeSettings:
             raise ValueError("RUNTIME_PORT_INVALID")
         if (
             self.max_body_bytes < 1
+            or self.source_upload_max_bytes < 1
             or self.max_header_bytes < 1
             or self.request_timeout_seconds <= 0
             or self.drain_timeout_seconds <= 0
@@ -223,6 +234,9 @@ class RuntimeSettings:
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
             trusted_proxy_ips=proxies,
+            source_upload_max_bytes=int(
+                os.environ.get("DAON_SOURCE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024))
+            ),
         )
 
 
@@ -288,6 +302,7 @@ class RuntimeDependencies:
     recovery_service: RecoveryService | PostgresRecoveryService | UnavailableRecoveryService | None = None
     object_queue_store: PostgresObjectQueueStore | None = None
     provider_settings_service: ProviderSettingsService | None = None
+    source_upload_service: SourceUploadPort | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -302,6 +317,11 @@ class RuntimeDependencies:
             self.cloud_store.close()
         if self.object_queue_store is not None:
             self.object_queue_store.close()
+        source_upload_close = (
+            None if self.source_upload_service is None else getattr(self.source_upload_service, "close", None)
+        )
+        if callable(source_upload_close):
+            source_upload_close()
         recovery_close = (
             None if self.recovery_service is None else getattr(self.recovery_service, "close", None)
         )
@@ -809,18 +829,28 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 return _error_response(431, "REQUEST_HEADERS_TOO_LARGE", trace_id)
             if request.method in _BODY_METHODS:
                 content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                if content_type != "application/json":
+                is_source_upload = (
+                    request.method == "POST" and _SOURCE_UPLOAD_PATH.fullmatch(request.url.path) is not None
+                )
+                expected_type = "application/pdf" if is_source_upload else "application/json"
+                if content_type != expected_type:
                     return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
                 declared = request.headers.get("content-length")
                 if declared is not None:
                     try:
-                        if int(declared) > dependencies.settings.max_body_bytes:
+                        limit = (
+                            dependencies.settings.source_upload_max_bytes
+                            if is_source_upload
+                            else dependencies.settings.max_body_bytes
+                        )
+                        if int(declared) > limit:
                             return _error_response(413, "REQUEST_TOO_LARGE", trace_id)
                     except ValueError:
                         return _error_response(400, "INVALID_REQUEST", trace_id)
-                body = await request.body()
-                if len(body) > dependencies.settings.max_body_bytes:
-                    return _error_response(413, "REQUEST_TOO_LARGE", trace_id)
+                if not is_source_upload:
+                    body = await request.body()
+                    if len(body) > dependencies.settings.max_body_bytes:
+                        return _error_response(413, "REQUEST_TOO_LARGE", trace_id)
             response = cast(Response, await call_next(request))
             response.headers["X-Trace-Id"] = trace_id
             response.headers["Cache-Control"] = "no-store"
@@ -931,6 +961,23 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             retryable=error.retryable,
         )
 
+    @app.exception_handler(SourceUploadError)
+    async def source_upload_error(
+        request: Request, error: SourceUploadError,
+    ) -> JSONResponse:
+        public_codes = {
+            "SOURCE_FILENAME_INVALID", "CORRUPTED_SOURCE", "MIME_MISMATCH",
+            "SOURCE_STORAGE_PENDING", "SOURCE_STORAGE_FAILED",
+            "SOURCE_STORAGE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED",
+            "SOURCE_CANON_CONFLICT", "SOURCE_CANON_UNAVAILABLE",
+        }
+        return _error_response(
+            error.status,
+            error.code if error.code in public_codes else "INVALID_REQUEST",
+            request.state.trace_id,
+            retryable=error.retryable,
+        )
+
     @app.post("/api/v1/auth/verify-email")
     async def verify_email(body: TokenBody, request: Request) -> dict[str, object]:
         dependencies.identity_service.verify_email(token=body.token, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
@@ -959,6 +1006,59 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id}, "meta": {"trace_id": request.state.trace_id}})
         response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=3600, httponly=True, secure=True, samesite="lax", path="/")
+        return response
+
+    @app.post("/api/v1/workspaces/{id}/sources", status_code=202)
+    async def upload_pdf_source(
+        id: str,
+        request: Request,
+        source_filename: str = Header(alias="X-Source-Filename"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        if _PDF_FILENAME.fullmatch(source_filename) is None:
+            raise SourceUploadError("SOURCE_FILENAME_INVALID")
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal,
+            workspace_id=id,
+            action=Action.EDIT,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if dependencies.source_upload_service is None:
+            raise SourceUploadError("SOURCE_STORAGE_UNAVAILABLE", 503, retryable=True)
+        chunks: list[bytes] = []
+        byte_size = 0
+        async for chunk in request.stream():
+            byte_size += len(chunk)
+            if byte_size > dependencies.settings.source_upload_max_bytes:
+                raise SourceUploadError("REQUEST_TOO_LARGE", 413)
+            chunks.append(chunk)
+        content = b"".join(chunks)
+        try:
+            SourceIngestor().register_file(source_filename, "application/pdf", content)
+        except SourceRejected as error:
+            raise SourceUploadError(str(error)) from None
+        result = await asyncio.to_thread(
+            dependencies.source_upload_service.register_pdf,
+            tenant_id=principal.tenant_id,
+            workspace_id=id,
+            actor_id=principal.user_id,
+            filename=source_filename,
+            content=content,
+            idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id,
+        )
+        response = JSONResponse(
+            {
+                "data": _dataclass_json(result),
+                "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+            },
+            status_code=202,
+        )
+        response.headers["ETag"] = f'"source:{result.source_id}:1"'
         return response
 
     @app.get("/api/v1/session")
@@ -1881,6 +1981,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     sync_service: SyncService | PostgresSyncService
     recovery_service: PostgresRecoveryService | UnavailableRecoveryService
     object_queue_store: PostgresObjectQueueStore | None = None
+    source_upload_service: PostgresSourceUploadService | None = None
     if cloud_store is None:
         sync_service = SyncService(
             ReferenceSyncRepository(), ReferenceTransferPort(),
@@ -1916,6 +2017,16 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             manifest_key=manifest_key,
             clock=lambda: datetime.now(timezone.utc),
         )
+    if (
+        settings.cloud_database_dsn is not None
+        and object_storage is not None
+        and object_queue_store is not None
+    ):
+        source_upload_service = PostgresSourceUploadService(
+            queue_store=object_queue_store,
+            object_storage=object_storage,
+            canon_store=PostgresDataCanonStore(settings.cloud_database_dsn),
+        )
     return RuntimeDependencies(
         settings=settings,
         identity_service=identity_service,
@@ -1933,4 +2044,5 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         ),
         recovery_service=recovery_service,
         object_queue_store=object_queue_store,
+        source_upload_service=source_upload_service,
     )

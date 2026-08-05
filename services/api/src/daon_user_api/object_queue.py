@@ -851,10 +851,11 @@ class ObjectQueueCoordinator:
         content_type: str,
         idempotency_key: str,
         trace_id: str,
+        object_id: str | None = None,
     ) -> ObjectSubmission:
         if not isinstance(content, bytes) or not _CONTENT_TYPE.fullmatch(content_type):
             raise ObjectQueueError("OBJECT_METADATA_INVALID")
-        object_id = self._id_factory()
+        object_id = self._id_factory() if object_id is None else object_id
         if not _OPAQUE_ID.fullmatch(object_id):
             raise ObjectQueueError("OBJECT_ID_INVALID")
         digest = hashlib.sha256(content).hexdigest()

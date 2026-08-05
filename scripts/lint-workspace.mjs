@@ -26,6 +26,7 @@ const DEFAULT_FILES = [
 const APPROVED_FETCH_ADAPTERS = new Set([
   "apps/web/lib/notification-inbox-api.js",
   "apps/web/lib/provider-settings-api.js",
+  "apps/web/lib/source-upload-api.js",
 ]);
 
 export function lintSource(file, source) {
