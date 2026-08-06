@@ -120,6 +120,20 @@ class DocumentProcessingServiceTests(unittest.TestCase):
             "processing-run-cp3", "UNDERSTANDING_PROVIDER_UNAVAILABLE", True,
         ))
 
+    def test_worker_processes_an_existing_run_without_creating_a_second_run(self) -> None:
+        repository = RecordingRepository()
+        service = DocumentProcessingService(
+            repository, SnapshotService(), CredentialResolver(), AdapterFactory(Adapter()),
+        )
+
+        result = service.process_existing(
+            self.context, source_id="source-cp3", processing_run_id="processing-run-existing",
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual([event[0] for event in repository.events], ["load", "complete"])
+        self.assertEqual(repository.events[-1][1], ("processing-run-existing", "ready"))
+
 
 if __name__ == "__main__":
     unittest.main()

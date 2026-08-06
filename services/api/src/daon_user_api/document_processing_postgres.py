@@ -117,7 +117,10 @@ class PostgresDocumentProcessingRepository:
         except Exception as error:
             raise self._database_error(error) from None
 
-    def start(self, context: DocumentProcessingContext, source_version_id: str) -> str:
+    def start(
+        self, context: DocumentProcessingContext, source_version_id: str,
+        *, enqueue: bool = False,
+    ) -> str:
         processing_run_id = self._opaque_id(
             "pr", context.tenant_id, context.workspace_id, source_version_id, context.trace_id,
         )
@@ -192,6 +195,20 @@ class PostgresDocumentProcessingRepository:
                     )
                 elif str(row[0]) != "vision_llm_understanding":
                     raise DocumentUnderstandingError("PROCESSING_RUN_CONFLICT", status=409)
+                if enqueue:
+                    job_id = self._opaque_id("dpj", processing_run_id)
+                    connection.execute(
+                        "INSERT INTO document_processing_jobs "
+                        "(tenant_id,workspace_id,job_id,source_id,source_version_id,"
+                        "processing_run_id,state,created_by,trace_id,policy_version) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s) "
+                        "ON CONFLICT (tenant_id,workspace_id,processing_run_id) DO NOTHING",
+                        (
+                            context.tenant_id, context.workspace_id, job_id, source_id,
+                            source_version_id, processing_run_id, context.actor_id,
+                            context.trace_id, context.policy_version,
+                        ),
+                    )
             return processing_run_id
         except Exception as error:
             raise self._database_error(error) from None
