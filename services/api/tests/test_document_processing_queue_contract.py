@@ -41,6 +41,15 @@ class DocumentProcessingQueueContractTests(unittest.TestCase):
         for forbidden in ("content", "api_key", "credential", "object_key"):
             self.assertNotIn(forbidden, signature.casefold())
 
+    def test_expired_worker_lease_is_reclaimable_and_audited(self) -> None:
+        recovery = (
+            ROOT / "services/api/migrations/versions/0009_document_processing_lease_recovery.py"
+        ).read_text("utf-8")
+
+        self.assertIn("job.state = 'leased' AND job.lease_until <= clock_timestamp()", recovery)
+        self.assertIn("'lease_lost'", recovery)
+        self.assertIn("ON CONFLICT (tenant_id,workspace_id,job_id,attempt_number) DO NOTHING", recovery)
+
 
 if __name__ == "__main__":
     unittest.main()

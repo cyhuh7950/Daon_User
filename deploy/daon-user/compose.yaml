@@ -77,6 +77,43 @@ services:
       - daon_user
     restart: unless-stopped
 
+  document-worker:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    command: ["python", "-m", "daon_user_api.document_processing_worker"]
+    environment:
+      DAON_CLOUD_DATABASE_DSN: ${DAON_CLOUD_DATABASE_DSN:?cloud database DSN reference required}
+      DAON_OBJECT_STORAGE_ENDPOINT: ${DAON_OBJECT_STORAGE_ENDPOINT:?object storage endpoint required}
+      DAON_OBJECT_STORAGE_BUCKET: ${DAON_OBJECT_STORAGE_BUCKET:?object storage bucket required}
+      DAON_OBJECT_STORAGE_SECURE: ${DAON_OBJECT_STORAGE_SECURE-true}
+      DAON_OBJECT_ACCESS_KEY_FILE: /run/secrets/object_access_key
+      DAON_OBJECT_SECRET_KEY_FILE: /run/secrets/object_secret_key
+      DAON_DOCUMENT_WORKER_ID: ${COMPOSE_PROJECT_NAME}-document-worker
+      DAON_DOCUMENT_WORKER_LEASE_SECONDS: ${DAON_DOCUMENT_WORKER_LEASE_SECONDS-600}
+      DAON_DOCUMENT_WORKER_POLL_SECONDS: ${DAON_DOCUMENT_WORKER_POLL_SECONDS-0.5}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY-}
+      GROQ_API_KEY: ${GROQ_API_KEY-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY-}
+      UPSTAGE_API_KEY: ${UPSTAGE_API_KEY-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL-}
+      LLM_DATA_REGION: ${LLM_DATA_REGION-}
+      LLM_EXTERNAL_EGRESS_APPROVED: ${LLM_EXTERNAL_EGRESS_APPROVED-false}
+    secrets:
+      - object_access_key
+      - object_secret_key
+    networks:
+      - daon_user
+      - proxy-network
+    depends_on:
+      object-storage:
+        condition: service_healthy
+    restart: unless-stopped
+
   web:
     build:
       context: ../..
