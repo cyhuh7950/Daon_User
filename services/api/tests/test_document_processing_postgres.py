@@ -43,6 +43,9 @@ class FakeConnection:
         if sql.startswith("INSERT INTO processing_runs"):
             self.inserts.append("processing_runs")
             return Cursor()
+        if sql.startswith("INSERT INTO document_processing_jobs"):
+            self.inserts.append("document_processing_jobs")
+            return Cursor()
         if sql.startswith("SELECT state,version,source_version_id"):
             return Cursor((self.states["ProcessingRun"], self.versions["ProcessingRun"], self.source_version_id))
         if sql.startswith("SELECT sv.source_id,s.state,s.version"):
@@ -139,6 +142,17 @@ class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
 
         self.assertEqual(self.cloud.connection.states["ProcessingRun"], "completed")
         self.assertEqual(self.cloud.connection.states["Source"], "needs_review")
+
+    def test_async_start_creates_run_and_queue_job_in_the_same_transaction(self) -> None:
+        run_id = self.repository.start(
+            self.context, "source-version-cp3", enqueue=True,
+        )
+
+        self.assertTrue(run_id.startswith("pr-"))
+        self.assertEqual(self.cloud.connection.inserts, [
+            "processing_runs", "document_processing_jobs",
+        ])
+        self.assertEqual(self.cloud.capabilities, ["source.process"])
 
 
 if __name__ == "__main__":

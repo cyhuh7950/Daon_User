@@ -55,7 +55,10 @@ class DocumentProcessingRepository(Protocol):
         self, context: DocumentProcessingContext, source_id: str,
     ) -> StoredSourceDocument: ...
 
-    def start(self, context: DocumentProcessingContext, source_version_id: str) -> str: ...
+    def start(
+        self, context: DocumentProcessingContext, source_version_id: str,
+        *, enqueue: bool = False,
+    ) -> str: ...
 
     def complete(
         self, context: DocumentProcessingContext, processing_run_id: str,
@@ -107,6 +110,19 @@ class DocumentProcessingService:
     ) -> DocumentUnderstandingResult:
         document = self._repository.load_source_document(context, source_id)
         processing_run_id = self._repository.start(context, document.source_version_id)
+        return self._execute(context, document, processing_run_id)
+
+    def process_existing(
+        self, context: DocumentProcessingContext, *, source_id: str,
+        processing_run_id: str,
+    ) -> DocumentUnderstandingResult:
+        document = self._repository.load_source_document(context, source_id)
+        return self._execute(context, document, processing_run_id)
+
+    def _execute(
+        self, context: DocumentProcessingContext, document: StoredSourceDocument,
+        processing_run_id: str,
+    ) -> DocumentUnderstandingResult:
         try:
             snapshot = self._provider_settings.snapshot(context.provider_context())
             selection = resolve_document_model_selection(snapshot)
