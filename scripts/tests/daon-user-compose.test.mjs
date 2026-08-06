@@ -32,6 +32,7 @@ test("document worker is internal and receives the same server-only dependencies
   assert.match(worker, /UPSTAGE_API_KEY:/);
   assert.match(worker, /object_access_key/);
   assert.match(worker, /DAON_DOCUMENT_WORKER_LEASE_SECONDS:\s*\$\{DAON_DOCUMENT_WORKER_LEASE_SECONDS-600\}/);
+  assert.match(worker, /healthcheck:\s*\n\s+disable:\s*true/);
   assert.doesNotMatch(worker, /\n\s+ports:/);
   assert.doesNotMatch(worker, /NEXT_PUBLIC_/);
 });
