@@ -43,12 +43,14 @@ class DocumentProcessingQueueContractTests(unittest.TestCase):
 
     def test_expired_worker_lease_is_reclaimable_and_audited(self) -> None:
         recovery = (
-            ROOT / "services/api/migrations/versions/0009_document_processing_lease_recovery.py"
+            ROOT / "services/api/migrations/versions/0010_document_processing_claim_qualification.py"
         ).read_text("utf-8")
 
         self.assertIn("job.state = 'leased' AND job.lease_until <= clock_timestamp()", recovery)
         self.assertIn("'lease_lost'", recovery)
         self.assertIn("ON CONFLICT (tenant_id,workspace_id,job_id,attempt_number) DO NOTHING", recovery)
+        for column in ("tenant_id", "workspace_id", "job_id", "attempt", "lease_owner"):
+            self.assertIn(f"candidate.{column}", recovery)
 
 
 if __name__ == "__main__":
