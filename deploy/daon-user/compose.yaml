@@ -112,6 +112,8 @@ services:
     depends_on:
       object-storage:
         condition: service_healthy
+    healthcheck:
+      disable: true
     restart: unless-stopped
 
   web:
