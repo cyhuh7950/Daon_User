@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BRANCH_STATES, EVIDENCE_STATES, RUN_STAGES } from "./run-model-evidence-model.js";
 
 const MODE_OPTIONS = [
@@ -28,7 +28,51 @@ function statusMark(status) {
   return "→";
 }
 
-export function RunModelEvidencePane({ domainState, onDomainAction, onOpenEvidence }) {
+function ActualQuestionPanel({ runtime }) {
+  const [sourceId, setSourceId] = useState(runtime.source?.sourceId ?? "");
+  const [sourceVersionId, setSourceVersionId] = useState(runtime.source?.sourceVersionId ?? "");
+  const [question, setQuestion] = useState("");
+  const [state, setState] = useState({ kind: "idle", answer: null, message: "" });
+
+  useEffect(() => {
+    if (!runtime.source) return;
+    setSourceId(runtime.source.sourceId);
+    setSourceVersionId(runtime.source.sourceVersionId);
+  }, [runtime.source]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!sourceId || !sourceVersionId || !question.trim()) return;
+    setState({ kind: "running", answer: null, message: "질문을 실행하고 있습니다." });
+    try {
+      const answer = await runtime.ask({ sourceId, sourceVersionId, question });
+      setState({
+        kind: answer.insufficient ? "insufficient" : "completed",
+        answer,
+        message: answer.insufficient ? "근거가 부족합니다." : "근거 제한 답변이 완료되었습니다.",
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "QUESTION_FAILED";
+      setState({ kind: "failed", answer: null, message: `요청을 완료하지 못했습니다. (${code})` });
+    }
+  };
+
+  return (
+    <section className="actual-question-card" aria-labelledby="actual-question-title">
+      <div className="pane-heading"><div><p className="eyebrow">Actual Workspace</p><h3 id="actual-question-title">Actual Workspace 질문</h3></div><Help id="actual-question">실제 Provider·Index·Citation을 사용하며 현재 ready PDF의 근거 밖 사실은 답변하지 않습니다.</Help></div>
+      <form className="run-control-grid" onSubmit={submit}>
+        <label htmlFor="actual-source-id">Source ID<input id="actual-source-id" value={sourceId} onChange={(event) => setSourceId(event.target.value)} autoComplete="off" /></label>
+        <label htmlFor="actual-source-version-id">Source Version<input id="actual-source-version-id" value={sourceVersionId} onChange={(event) => setSourceVersionId(event.target.value)} autoComplete="off" /></label>
+        <label htmlFor="actual-question-input">질문<textarea id="actual-question-input" value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={2000} rows={3} /></label>
+        <button className="primary-action" type="submit" disabled={state.kind === "running" || !sourceId || !sourceVersionId || !question.trim()}>실제 질문 실행</button>
+      </form>
+      <p className={`actual-question-status state-${state.kind}`} role="status">{state.message || "ready Source와 Source Version을 선택해 질문하세요."}</p>
+      {state.answer && <section className="actual-answer" aria-label="실제 근거 제한 답변"><p>{state.answer.answer}</p><dl className="version-snapshot"><div><dt>Run</dt><dd>{state.answer.run_id}</dd></div><div><dt>근거 상태</dt><dd>{state.answer.insufficient ? "insufficient" : "sufficient"}</dd></div></dl><div className="run-actions">{state.answer.citations.map((citation) => <a className="secondary-action" key={citation.citation_id} href={runtime.citationUrl(citation)} target="_blank" rel="noopener noreferrer">Citation · page {citation.page} · {citation.source_version_id}</a>)}</div></section>}
+    </section>
+  );
+}
+
+export function RunModelEvidencePane({ actualQuestion = null, domainState, onDomainAction, onOpenEvidence }) {
   const { run, settings, selectedScenario } = domainState;
   const selectedMode = settings.mode === "local_only" ? `${settings.mode}.${settings.localScope}` : settings.mode;
   const citation = run.citations[0];
@@ -40,6 +84,7 @@ export function RunModelEvidencePane({ domainState, onDomainAction, onOpenEviden
 
   return (
     <section className="workspace-pane run-pane" id="pane-conversation" aria-labelledby="pane-conversation-title">
+      {actualQuestion && <ActualQuestionPanel runtime={actualQuestion} />}
       <div className="pane-heading"><div><p className="eyebrow">Production-bound Prototype</p><h2 id="pane-conversation-title">대화·실행</h2></div><Help id="overview">Fixture와 순수 Reducer만 실행하며 실제 API·DB·LLM·Provider Network는 0건입니다.</Help></div>
 
       <div className="run-control-grid">

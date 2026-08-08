@@ -76,7 +76,15 @@ from .document_processing import (
     DocumentProcessingSubmissionService,
 )
 from .document_processing_postgres import PostgresDocumentProcessingRepository
-from .document_understanding_adapter import DocumentUnderstandingError
+from .document_understanding_adapter import (
+    DocumentUnderstandingError, ServerProviderCredentialResolver,
+    UrlLibDocumentUnderstandingTransport,
+)
+from .document_index_postgres import PostgresDocumentIndex
+from .question_answering_postgres import (
+    PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
+)
+from .question_answering_service import QuestionAnsweringError, QuestionAnsweringService
 from .sync import (
     ConflictResolutionChoice,
     ReferenceSyncRepository,
@@ -315,6 +323,8 @@ class RuntimeDependencies:
     provider_settings_service: ProviderSettingsService | None = None
     source_upload_service: SourceUploadPort | None = None
     document_processing_service: DocumentProcessingSubmissionService | None = None
+    question_answering_service: Any | None = None
+    citation_content_repository: Any | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -386,6 +396,13 @@ class AccessDecisionBody(BaseModel):
 class NotificationReadBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     state: str
+
+
+class QuestionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str
+    source_version_id: str
+    question: str
 
 
 class SyncItemBody(BaseModel):
@@ -799,6 +816,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ),
         ServerCredentialPresenceResolver(),
     )
+    citation_content_repository = dependencies.citation_content_repository
+    question_answering_service = dependencies.question_answering_service
+    if (
+        question_answering_service is None and dependencies.cloud_store is not None
+        and dependencies.object_storage is not None
+    ):
+        citation_content_repository = PostgresQuestionAnsweringRepository(
+            dependencies.cloud_store, dependencies.object_storage,
+        )
+        question_answering_service = QuestionAnsweringService(
+            provider_settings_service, citation_content_repository,
+            PostgresDocumentIndex(dependencies.cloud_store),
+            ServerProviderCredentialResolver(), UrlLibDocumentUnderstandingTransport(),
+        )
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
@@ -975,6 +1006,33 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             error.code if error.code in public_codes else "INVALID_REQUEST",
             request.state.trace_id,
             retryable=error.retryable,
+        )
+
+    @app.exception_handler(QuestionAnsweringError)
+    async def question_answering_error(
+        request: Request, error: QuestionAnsweringError,
+    ) -> JSONResponse:
+        public_codes = {
+            "TEXT_MODEL_NOT_SELECTED", "TEXT_MODEL_UNAVAILABLE",
+            "TEXT_PROVIDER_UNAVAILABLE", "TEXT_GENERATION_GROUNDING_INVALID",
+            "TEXT_GENERATION_RESPONSE_INVALID", "QUESTION_SOURCE_UNAVAILABLE",
+        }
+        return _error_response(
+            error.status, error.code if error.code in public_codes else "QUESTION_FAILED",
+            request.state.trace_id, retryable=error.retryable,
+        )
+
+    @app.exception_handler(QuestionRepositoryError)
+    async def question_repository_error(
+        request: Request, error: QuestionRepositoryError,
+    ) -> JSONResponse:
+        public_codes = {
+            "QUESTION_SOURCE_UNAVAILABLE", "CITATION_CONTENT_UNAVAILABLE",
+            "QUESTION_DATABASE_UNAVAILABLE",
+        }
+        return _error_response(
+            error.status, error.code if error.code in public_codes else "QUESTION_FAILED",
+            request.state.trace_id, retryable=error.retryable,
         )
 
     @app.exception_handler(SourceUploadError)
@@ -1156,6 +1214,79 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 status.processing_run_id, status.processing_state, status.source_state,
                 status.job_state, status.safe_error_code,
             ))),
+        )
+
+    @app.post("/api/v1/workspaces/{id}/questions")
+    async def ask_grounded_question(
+        id: str, body: QuestionBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if question_answering_service is None:
+            raise QuestionAnsweringError(
+                "QUESTION_SERVICE_UNAVAILABLE", status=503, retryable=True,
+            )
+        run_id = "run-" + hashlib.sha256(
+            f"{principal.tenant_id}|{id}|{principal.user_id}|{idempotency_key}".encode("utf-8")
+        ).hexdigest()[:32]
+        answer = await asyncio.to_thread(
+            question_answering_service.ask,
+            QuestionContext(
+                principal.tenant_id, id, principal.user_id,
+                request.state.trace_id, dependencies.settings.policy_version,
+            ),
+            source_id=body.source_id, source_version_id=body.source_version_id,
+            question=body.question, run_id=run_id,
+        )
+        response = JSONResponse({
+            "data": {
+                "run_id": answer.run_id, "run_result_id": answer.run_result_id,
+                "answer": answer.answer, "insufficient": answer.insufficient,
+                "citations": [_dataclass_json(item) for item in answer.citations],
+            },
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        })
+        response.headers["ETag"] = f'"run-result:{answer.run_result_id}"'
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/citations/{citation_id}/content")
+    async def get_citation_content(
+        id: str, citation_id: str, request: Request,
+    ) -> Response:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if citation_content_repository is None:
+            raise QuestionRepositoryError(
+                "CITATION_CONTENT_UNAVAILABLE", status=503, retryable=True,
+            )
+        content, page = await asyncio.to_thread(
+            citation_content_repository.read_citation_pdf,
+            QuestionContext(
+                principal.tenant_id, id, principal.user_id,
+                request.state.trace_id, dependencies.settings.policy_version,
+            ),
+            citation_id,
+        )
+        filename = re.sub(r"[^A-Za-z0-9._-]", "_", content.filename) or "source.pdf"
+        return Response(
+            content=content.content, media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "X-Citation-Page": str(page),
+                "ETag": f'"pdf:{hashlib.sha256(content.content).hexdigest()}"',
+            },
         )
 
     @app.get("/api/v1/session")

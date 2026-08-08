@@ -605,3 +605,38 @@ test("BFF exposes only same-origin document processing status reads", async () =
   ), ["workspaces", "workspace-001", "processing-runs", "run-001"]);
   assert.equal(write.status, 405);
 });
+
+test("BFF exposes grounded questions and Citation PDF only through approved same-origin routes", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return String(url).endsWith("/content")
+        ? new Response(Buffer.from("%PDF-1.4"), { headers: { "Content-Type": "application/pdf" } })
+        : Response.json({ data: { answer: "ORANGE-COMPASS-42" }, meta: {} });
+    },
+  });
+  const question = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/questions",
+    {
+      method: "POST",
+      headers: {
+        Origin: "https://app.example.com", "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ source_id: "source-cp3", source_version_id: "version-cp3", question: "phrase?" }),
+    },
+  ), ["workspaces", "workspace-001", "questions"]);
+  const citation = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/citations/citation-cp3/content",
+  ), ["workspaces", "workspace-001", "citations", "citation-cp3", "content"]);
+
+  assert.equal(question.status, 200);
+  assert.equal(citation.headers.get("content-type"), "application/pdf");
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/questions", method: "POST" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/citations/citation-cp3/content", method: "GET" },
+  ]);
+});

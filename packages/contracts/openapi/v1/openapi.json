@@ -576,6 +576,86 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/questions": {
+      "post": {
+        "operationId": "askGroundedWorkspaceQuestion",
+        "tags": ["Run", "Citation"],
+        "summary": "현재 단일 PDF 근거 제한 질문 실행",
+        "x-implementation-owner": "CP3-QUESTION-CITATION-004",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GroundedQuestionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Frozen text deployment으로 생성한 근거 제한 답변",
+            "headers": {
+              "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+              "ETag": { "$ref": "#/components/headers/ETag" }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GroundedAnswerEnvelope" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/citations/{citation_id}/content": {
+      "get": {
+        "operationId": "getCurrentCitationPdfContent",
+        "tags": ["Citation", "Source"],
+        "summary": "현재 SourceVersion Citation PDF 원문 조회",
+        "x-implementation-owner": "CP3-QUESTION-CITATION-004",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          {
+            "name": "citation_id", "in": "path", "required": true,
+            "schema": { "$ref": "#/components/schemas/OpaqueId" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "권한과 현재 lineage를 재검증한 inline PDF",
+            "headers": {
+              "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+              "ETag": { "$ref": "#/components/headers/ETag" },
+              "X-Citation-Page": {
+                "schema": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "content": {
+              "application/pdf": { "schema": { "type": "string", "format": "binary" } }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/knowledge-scope": {
       "get": {
         "operationId": "getKnowledgeScope",
@@ -4642,6 +4722,59 @@
           "meta": {
             "type": "object",
             "additionalProperties": true,
+            "required": ["trace_id", "workspace_id"],
+            "properties": {
+              "trace_id": { "$ref": "#/components/schemas/OpaqueId" },
+              "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }
+            }
+          }
+        }
+      },
+      "GroundedQuestionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "source_version_id", "question"],
+        "properties": {
+          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "question": { "type": "string", "minLength": 1, "maxLength": 2000 }
+        }
+      },
+      "GroundedCitation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page"],
+        "properties": {
+          "citation_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "evidence_span_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "page": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "GroundedAnswer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run_id", "run_result_id", "answer", "insufficient", "citations"],
+        "properties": {
+          "run_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "run_result_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "answer": { "type": "string", "minLength": 1, "maxLength": 8000 },
+          "insufficient": { "type": "boolean" },
+          "citations": {
+            "type": "array", "maxItems": 10,
+            "items": { "$ref": "#/components/schemas/GroundedCitation" }
+          }
+        }
+      },
+      "GroundedAnswerEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/GroundedAnswer" },
+          "meta": {
+            "type": "object", "additionalProperties": true,
             "required": ["trace_id", "workspace_id"],
             "properties": {
               "trace_id": { "$ref": "#/components/schemas/OpaqueId" },
