@@ -35,6 +35,8 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/runs/{id}/rule-evaluations",
   "/api/v1/conflicts/{id}",
   "/api/v1/workspaces/{id}/processing-runs/{processing_run_id}",
+  "/api/v1/workspaces/{id}/questions",
+  "/api/v1/workspaces/{id}/citations/{citation_id}/content",
   "/api/v1/sources/{id}/processing-runs",
   "/api/v1/sources/{id}/transcripts",
   "/api/v1/studio-generation-requests",

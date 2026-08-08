@@ -12,11 +12,13 @@ const REQUEST_HEADERS = new Set([
 ]);
 const RESPONSE_HEADERS = new Set([
   "cache-control",
+  "content-disposition",
   "content-type",
   "etag",
   "retry-after",
   "set-cookie",
   "x-trace-id",
+  "x-citation-page",
 ]);
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SESSION_COOKIE_NAME = "__Host-daon_session";
@@ -96,6 +98,31 @@ export function parsePublicGatewayOrigin(rawValue) {
 }
 
 function routeFor(method, segments) {
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "questions"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "citations"
+    && SAFE_SEGMENT.test(segments[3])
+    && segments[4] === "content"
+  ) {
+    return method === "GET"
+      ? {
+          path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`,
+          query: null,
+        }
+      : { methodRejected: true };
+  }
   if (
     segments.length === 4
     && segments[0] === "workspaces"
