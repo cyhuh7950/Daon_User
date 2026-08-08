@@ -38,21 +38,30 @@ function initialDeploymentDraft(providerCode) {
   };
 }
 
-export function ProviderSettingsWorkspace({ workspaceId = "workspace-release-one" }) {
+export function ProviderSettingsWorkspace({ workspaceId }) {
+  const [resolvedWorkspaceId, setResolvedWorkspaceId] = useState(workspaceId ?? null);
   const [drafts, setDrafts] = useState(() => Object.fromEntries(PROVIDERS.map((code) => [code, initialDraft(code)])));
   const [deploymentDrafts, setDeploymentDrafts] = useState([]);
   const [bindings, setBindings] = useState({});
   const [bindingVersion, setBindingVersion] = useState(0);
-  const [bindingEtag, setBindingEtag] = useState(`"model-policy:${workspaceId}:0"`);
+  const [bindingEtag, setBindingEtag] = useState(null);
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
 
   const load = useCallback(async () => {
     setStatus({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
     try {
+      const sessionResult = workspaceId ? null : await providerSettingsApi.getSession();
+      const activeWorkspaceId = workspaceId ?? sessionResult?.payload?.data?.workspace_id;
+      if (typeof activeWorkspaceId !== "string" || !activeWorkspaceId.trim()) {
+        const error = new Error("RESOURCE_UNAVAILABLE");
+        error.code = "RESOURCE_UNAVAILABLE";
+        throw error;
+      }
+      setResolvedWorkspaceId(activeWorkspaceId);
       const [profilesResult, deploymentsResult, policyResult] = await Promise.all([
-        providerSettingsApi.listProfiles(workspaceId),
-        providerSettingsApi.listDeployments(workspaceId),
-        providerSettingsApi.getModelPolicy(workspaceId)
+        providerSettingsApi.listProfiles(activeWorkspaceId),
+        providerSettingsApi.listDeployments(activeWorkspaceId),
+        providerSettingsApi.getModelPolicy(activeWorkspaceId)
       ]);
       setDrafts(Object.fromEntries(profilesResult.payload.data.map((profile) => {
         return [profile.provider_code, {
@@ -66,7 +75,7 @@ export function ProviderSettingsWorkspace({ workspaceId = "workspace-release-one
       setDeploymentDrafts(deploymentsResult.payload.data.map((item) => ({ ...item })));
       setBindings(policyResult.payload.data.bindings);
       setBindingVersion(policyResult.payload.data.version);
-      setBindingEtag(policyResult.etag ?? `"model-policy:${workspaceId}:${policyResult.payload.data.version}"`);
+      setBindingEtag(policyResult.etag ?? `"model-policy:${activeWorkspaceId}:${policyResult.payload.data.version}"`);
       setStatus({ kind: "ready", message: "Provider 설정을 조회했습니다." });
     } catch (error) {
       setStatus({ kind: "error", message: `설정을 불러오지 못했습니다. ${error.code ?? "RESOURCE_UNAVAILABLE"}` });
@@ -74,6 +83,13 @@ export function ProviderSettingsWorkspace({ workspaceId = "workspace-release-one
   }, [workspaceId]);
 
   useEffect(() => { load(); }, [load]);
+
+  function workspaceIdForWrite() {
+    if (resolvedWorkspaceId) return resolvedWorkspaceId;
+    const error = new Error("RESOURCE_UNAVAILABLE");
+    error.code = "RESOURCE_UNAVAILABLE";
+    throw error;
+  }
 
   const deployments = useMemo(
     () => deploymentDrafts.filter((item) => item.model_id && item.active),
@@ -110,8 +126,9 @@ export function ProviderSettingsWorkspace({ workspaceId = "workspace-release-one
     const draft = drafts[providerCode];
     setStatus({ kind: "saving", message: `${providerCode} 설정을 저장하는 중입니다.` });
     try {
+      const activeWorkspaceId = workspaceIdForWrite();
       const profileResult = await providerSettingsApi.saveProfile({
-        workspace_id: workspaceId,
+        workspace_id: activeWorkspaceId,
         provider_code: providerCode,
         base_url: draft.base_url,
         active: draft.active,
@@ -136,8 +153,9 @@ export function ProviderSettingsWorkspace({ workspaceId = "workspace-release-one
     if (!draft) return;
     setStatus({ kind: "saving", message: `${draft.provider_code} 모델을 저장하는 중입니다.` });
     try {
+      const activeWorkspaceId = workspaceIdForWrite();
       const result = await providerSettingsApi.saveDeployment({
-        workspace_id: workspaceId,
+        workspace_id: activeWorkspaceId,
         deployment_id: draft.deployment_id,
         provider_code: draft.provider_code,
         model_id: draft.model_id,
@@ -158,8 +176,9 @@ export function ProviderSettingsWorkspace({ workspaceId = "workspace-release-one
   async function saveBindings() {
     setStatus({ kind: "saving", message: "역할 매핑을 저장하는 중입니다." });
     try {
+      const activeWorkspaceId = workspaceIdForWrite();
       const result = await providerSettingsApi.saveModelPolicy(
-        workspaceId,
+        activeWorkspaceId,
         { bindings, expected_version: bindingVersion },
         bindingEtag,
         operationKey("model-policy")
@@ -175,7 +194,7 @@ export function ProviderSettingsWorkspace({ workspaceId = "workspace-release-one
   return (
     <main className="provider-settings-shell">
       <header>
-        <div><h1>모델·Provider 설정</h1><p>Workspace {workspaceId}</p></div>
+        <div><h1>모델·Provider 설정</h1><p>Workspace {resolvedWorkspaceId ?? "확인 중"}</p></div>
         <button type="button" onClick={load}>새로고침</button>
       </header>
       <div className={`provider-status ${status.kind}`} role="status">{status.message}</div>

@@ -20,6 +20,9 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
 }
 
 export const providerSettingsApi = Object.freeze({
+  getSession() {
+    return request("/bff/api/session");
+  },
   listProfiles(workspaceId) {
     return request(`/bff/api/model-profiles?workspace_id=${encodeURIComponent(workspaceId)}`);
   },
