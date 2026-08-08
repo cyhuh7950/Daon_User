@@ -50,6 +50,17 @@ class StoredSourceDocument:
     content: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentProcessingStatus:
+    processing_run_id: str
+    source_id: str
+    source_version_id: str
+    processing_state: str
+    source_state: str
+    job_state: str | None
+    safe_error_code: str | None
+
+
 class DocumentProcessingRepository(Protocol):
     def load_source_document(
         self, context: DocumentProcessingContext, source_id: str,
@@ -69,6 +80,28 @@ class DocumentProcessingRepository(Protocol):
         self, context: DocumentProcessingContext, processing_run_id: str,
         code: str, *, retryable: bool,
     ) -> None: ...
+
+    def get_status(
+        self, context: DocumentProcessingContext, processing_run_id: str,
+    ) -> DocumentProcessingStatus: ...
+
+
+class DocumentProcessingSubmissionService:
+    def __init__(self, repository: DocumentProcessingRepository) -> None:
+        self._repository = repository
+
+    def submit(
+        self, context: DocumentProcessingContext, source_version_id: str,
+    ) -> DocumentProcessingStatus:
+        processing_run_id = self._repository.start(
+            context, source_version_id, enqueue=True,
+        )
+        return self._repository.get_status(context, processing_run_id)
+
+    def get_status(
+        self, context: DocumentProcessingContext, processing_run_id: str,
+    ) -> DocumentProcessingStatus:
+        return self._repository.get_status(context, processing_run_id)
 
 
 class ProviderSnapshotPort(Protocol):

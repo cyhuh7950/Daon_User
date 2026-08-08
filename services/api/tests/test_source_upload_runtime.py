@@ -22,6 +22,7 @@ from daon_user_api.runtime import (
     create_app,
 )
 from daon_user_api.source_upload import SourceUploadResult
+from daon_user_api.document_processing import DocumentProcessingStatus
 
 
 class RecordingSourceUploadService:
@@ -38,6 +39,24 @@ class RecordingSourceUploadService:
             byte_size=23,
             status="accepted",
             replayed=False,
+        )
+
+
+class RecordingDocumentSubmissionService:
+    def __init__(self) -> None:
+        self.submissions: list[tuple[object, str]] = []
+
+    def submit(self, context, source_version_id: str):  # type: ignore[no-untyped-def]
+        self.submissions.append((context, source_version_id))
+        return DocumentProcessingStatus(
+            "run-001", "src-001", source_version_id,
+            "vision_llm_understanding", "processing", "pending", None,
+        )
+
+    def get_status(self, context, processing_run_id: str):  # type: ignore[no-untyped-def]
+        return DocumentProcessingStatus(
+            processing_run_id, "src-001", "source-version-001",
+            "vision_llm_understanding", "processing", "leased", None,
         )
 
 
@@ -68,6 +87,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
             now=self.clock(),
         )
         self.uploads = RecordingSourceUploadService()
+        self.processing = RecordingDocumentSubmissionService()
         self.settings = RuntimeSettings.for_test(
             database_path=db_path, policy_version=POLICY_VERSION
         )
@@ -79,6 +99,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
             identity_repository=self.identity_repository,
             authorization_repository=self.authorization_repository,
             source_upload_service=self.uploads,
+            document_processing_service=self.processing,
         )
         self.app = create_app(self.dependencies)
         self.client = httpx.AsyncClient(
@@ -129,6 +150,8 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["data"]["source_id"], "src-001")
+        self.assertEqual(response.json()["data"]["processing_run_id"], "run-001")
+        self.assertEqual(response.json()["data"]["processing_state"], "vision_llm_understanding")
         self.assertEqual(response.headers["etag"], '"source:src-001:1"')
         self.assertNotIn("object_key", response.text)
         call = self.uploads.calls[0]
@@ -136,6 +159,23 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["workspace_id"], "workspace-001")
         self.assertEqual(call["actor_id"], "user-001")
         self.assertEqual(call["filename"], "fixture.pdf")
+        context, source_version_id = self.processing.submissions[0]
+        self.assertEqual(context.workspace_id, "workspace-001")
+        self.assertEqual(source_version_id, "source-version-001")
+
+    async def test_processing_status_requires_workspace_access_and_returns_safe_state(self) -> None:
+        with self._authenticated():
+            response = await self.client.get(
+                "/api/v1/workspaces/workspace-001/processing-runs/run-001",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"X-Trace-Id": TRACE_ID},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["job_state"], "leased")
+        self.assertTrue(response.headers["etag"].startswith('"projection-'))
+        self.assertNotIn("lease_owner", response.text)
+        self.assertNotIn("credential", response.text.casefold())
 
     async def test_upload_rejects_mime_mismatch_and_corrupt_pdf_before_service(self) -> None:
         with self._authenticated():

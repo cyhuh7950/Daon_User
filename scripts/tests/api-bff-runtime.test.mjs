@@ -544,3 +544,28 @@ test("BFF uploads a bounded PDF only through the approved workspace source route
   assert.equal(rejected.status, 404);
   assert.equal(calls, 0);
 });
+
+test("BFF exposes only same-origin document processing status reads", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: { job_state: "leased" }, meta: {} });
+    },
+  });
+  const status = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/processing-runs/run-001",
+  ), ["workspaces", "workspace-001", "processing-runs", "run-001"]);
+  assert.equal(status.status, 200);
+  assert.deepEqual(captured, [{
+    url: "https://api.example.com/api/v1/workspaces/workspace-001/processing-runs/run-001",
+    method: "GET",
+  }]);
+
+  const write = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/processing-runs/run-001",
+    { method: "POST", headers: { Origin: "https://app.example.com" } },
+  ), ["workspaces", "workspace-001", "processing-runs", "run-001"]);
+  assert.equal(write.status, 405);
+});
