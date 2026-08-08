@@ -132,6 +132,10 @@ class UpstageDocumentUnderstandingAdapterTests(unittest.TestCase):
             "https://api.upstage.ai/v1/document-digitization",
         )
         self.assertEqual(transport.calls[1][2]["fields"]["model"], "document-parse")  # type: ignore[index]
+        self.assertEqual(
+            transport.calls[1][2]["fields"]["output_formats"],  # type: ignore[index]
+            '["text","html","markdown"]',
+        )
         self.assertEqual(transport.calls[1][2]["content"], PDF)  # type: ignore[index]
         self.assertEqual(result.status, "ready")
         self.assertEqual(result.substates, (
