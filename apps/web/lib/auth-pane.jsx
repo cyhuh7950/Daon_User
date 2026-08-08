@@ -34,11 +34,11 @@ export function AuthPane() {
       <div className="daon-auth-grid">
         <label>사용자 ID<input value={form.login_id} onChange={update("login_id")} autoComplete="username" /></label>
         <label>메일 주소<input type="email" value={form.email} onChange={update("email")} autoComplete="email" /></label>
-        <label>비밀번호<input type="password" value={form.password} onChange={update("password")} autoComplete="new-password" /></label>
+        <label>비밀번호<input type="password" minLength={12} value={form.password} onChange={update("password")} autoComplete="new-password" /></label>
         <label>인증·재설정 토큰<input value={form.token} onChange={update("token")} /></label>
       </div>
       <div className="daon-auth-actions">
-        <button type="button" onClick={() => run("signup", form, "인증 메일을 요청했습니다.")}>가입</button>
+        <button type="button" onClick={() => run("signup", { login_id: form.login_id, email: form.email, password: form.password }, "인증 메일을 요청했습니다.")}>가입</button>
         <button type="button" onClick={() => run("login", { login_id: form.login_id, password: form.password }, "로그인했습니다.")}>로그인</button>
         <button type="button" onClick={() => run("verify-email", { token: form.token }, "이메일 인증이 완료되었습니다.")}>이메일 인증</button>
         <button type="button" onClick={() => run("resend-verification", { identifier: form.login_id || form.email }, "인증 메일을 재요청했습니다.")}>인증 재전송</button>
