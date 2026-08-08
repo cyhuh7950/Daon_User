@@ -215,15 +215,18 @@ test("실제 Workspace Route는 로그인 Workspace ID로 단일 PDF를 same-ori
   assert.match(page, /workspace_id/);
   assert.match(page, /ActualWorkspace/);
   assert.match(actualWorkspace, /uploadPdfSource/);
+  assert.match(actualWorkspace, /getDocumentProcessingStatus/);
   assert.match(actualWorkspace, /workspaceId/);
   assert.match(adaptive, /onUploadPdf/);
   assert.match(sourcePane, /type="file"/);
   assert.match(sourcePane, /accept="application\/pdf"/);
   assert.match(sourcePane, /onUploadPdf/);
   assert.match(sourcePane, /등록 완료/);
+  assert.match(sourcePane, /처리 상태/);
   assert.match(authPane, /result\?\.data\?\.workspace_id/);
   assert.match(authPane, /window\.location\.assign\(`\/workspaces\/\$\{encodeURIComponent\(result\.data\.workspace_id\)\}`\)/);
   assert.match(uploadClient, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/sources/);
+  assert.match(uploadClient, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/processing-runs\/\$\{encodeURIComponent\(processingRunId\)\}/);
   assert.doesNotMatch(`${page}\n${actualWorkspace}\n${sourcePane}\n${uploadClient}`, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
 });
 
