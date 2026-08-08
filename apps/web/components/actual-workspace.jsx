@@ -2,10 +2,19 @@
 
 import { AdaptiveWorkspace } from "@daon-user/ui";
 
-import { uploadPdfSource } from "../lib/source-upload-api.js";
+import {
+  getDocumentProcessingStatus,
+  uploadPdfSource,
+} from "../lib/source-upload-api.js";
 
 export function ActualWorkspace({ workspaceId, routeId, screenId }) {
-  const onUploadPdf = (file) => uploadPdfSource(workspaceId, file);
+  const onUploadPdf = async (file) => {
+    const submission = await uploadPdfSource(workspaceId, file);
+    const processing = await getDocumentProcessingStatus(
+      workspaceId, submission.processing_run_id,
+    );
+    return { ...submission, processing };
+  };
 
   return (
     <AdaptiveWorkspace

@@ -25,3 +25,22 @@ export async function uploadPdfSource(workspaceId, file, { idempotencyKey } = {}
   }
   return payload.data;
 }
+
+export async function getDocumentProcessingStatus(workspaceId, processingRunId) {
+  if (!workspaceId || !processingRunId) {
+    throw new Error("PROCESSING_STATUS_INPUT_INVALID");
+  }
+  const response = await fetch(
+    `/bff/api/workspaces/${encodeURIComponent(workspaceId)}/processing-runs/${encodeURIComponent(processingRunId)}`,
+    {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+    },
+  );
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload?.error?.code ?? "PROCESSING_STATUS_FAILED");
+  }
+  return payload.data;
+}

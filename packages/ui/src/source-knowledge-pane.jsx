@@ -30,7 +30,16 @@ function RegistrationEntry({ workspaceId, onUploadPdf, onClose }) {
     setStatus({ kind: "uploading", message: "PDF를 안전하게 등록하는 중입니다." });
     try {
       const result = await onUploadPdf(file);
-      setStatus({ kind: "success", message: `등록 완료 · ${result.source_id}` });
+      const processing = result.processing ?? result;
+      const detail = [
+        processing.processing_state,
+        processing.job_state,
+        processing.safe_error_code,
+      ].filter(Boolean).join(" · ");
+      setStatus({
+        kind: processing.safe_error_code ? "error" : "success",
+        message: `등록 완료 · ${result.source_id} · 처리 상태 ${detail || "대기"}`,
+      });
     } catch (error) {
       setStatus({ kind: "error", message: `등록 실패 · ${error instanceof Error ? error.message : "PDF_UPLOAD_FAILED"}` });
     }
@@ -44,7 +53,7 @@ function RegistrationEntry({ workspaceId, onUploadPdf, onClose }) {
         <button type="submit" disabled={!workspaceId || !onUploadPdf || !file || status.kind === "uploading"}>PDF 등록</button>
       </form>
       <p className={`upload-status upload-status-${status.kind}`} role="status">{onUploadPdf ? status.message : "실제 PDF 등록 연결 unavailable"}</p>
-      <p className="secondary">PDF 등록은 실제 API·Object Storage·DB에 연결됩니다. 의미 이해·색인·대화 실행은 다음 연결 단계까지 unavailable입니다.</p>
+      <p className="secondary">PDF 등록과 최초 처리 상태 조회는 실제 API·Object Storage·DB에 연결됩니다. 의미 이해·색인·대화 실행은 다음 연결 단계까지 unavailable입니다.</p>
       <div className="registration-grid">{entries.map((entry) => <button type="button" key={entry} disabled title="M6에서 실제 연결">{entry}<span>unavailable</span></button>)}</div>
       <p className="visible-notice">사용자 생산 지식은 명시적으로 등록해야 하며 Daon 승인 지식으로 자동 승격되지 않습니다.</p>
     </section>
