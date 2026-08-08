@@ -10,7 +10,9 @@ from psycopg.types.json import Jsonb
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .data_canon import canonical_json_bytes
-from .document_processing import DocumentProcessingContext, StoredSourceDocument
+from .document_processing import (
+    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument,
+)
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
     DocumentUnderstandingResult,
@@ -122,7 +124,7 @@ class PostgresDocumentProcessingRepository:
         *, enqueue: bool = False,
     ) -> str:
         processing_run_id = self._opaque_id(
-            "pr", context.tenant_id, context.workspace_id, source_version_id, context.trace_id,
+            "pr", context.tenant_id, context.workspace_id, source_version_id, "initial",
         )
         payload: dict[str, object] = {
             "source_version_id": source_version_id,
@@ -210,6 +212,35 @@ class PostgresDocumentProcessingRepository:
                         ),
                     )
             return processing_run_id
+        except Exception as error:
+            raise self._database_error(error) from None
+
+    def get_status(
+        self, context: DocumentProcessingContext, processing_run_id: str,
+    ) -> DocumentProcessingStatus:
+        try:
+            with self._cloud_store._transaction(self._cloud_context(context, "source.read")) as connection:
+                row = connection.execute(
+                    "SELECT pr.record_id,sv.source_id,pr.source_version_id,pr.state,s.state,"
+                    "job.state,job.last_safe_error_code FROM processing_runs pr "
+                    "JOIN source_versions sv ON sv.tenant_id=pr.tenant_id AND "
+                    "sv.workspace_id=pr.workspace_id AND sv.record_id=pr.source_version_id "
+                    "JOIN sources s ON s.tenant_id=sv.tenant_id AND "
+                    "s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
+                    "LEFT JOIN document_processing_jobs job ON job.tenant_id=pr.tenant_id AND "
+                    "job.workspace_id=pr.workspace_id AND job.processing_run_id=pr.record_id "
+                    "WHERE pr.record_id=%s",
+                    (processing_run_id,),
+                ).fetchone()
+            if row is None:
+                raise DocumentUnderstandingError("PROCESSING_RUN_NOT_FOUND", status=404)
+            return DocumentProcessingStatus(
+                str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]),
+                None if row[5] is None else str(row[5]),
+                None if row[6] is None else str(row[6]),
+            )
+        except DocumentUnderstandingError:
+            raise
         except Exception as error:
             raise self._database_error(error) from None
 

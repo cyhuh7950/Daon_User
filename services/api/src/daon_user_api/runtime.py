@@ -71,6 +71,12 @@ from .source_upload import (
     SourceUploadError,
     SourceUploadPort,
 )
+from .document_processing import (
+    DocumentProcessingContext,
+    DocumentProcessingSubmissionService,
+)
+from .document_processing_postgres import PostgresDocumentProcessingRepository
+from .document_understanding_adapter import DocumentUnderstandingError
 from .sync import (
     ConflictResolutionChoice,
     ReferenceSyncRepository,
@@ -308,6 +314,7 @@ class RuntimeDependencies:
     object_queue_store: PostgresObjectQueueStore | None = None
     provider_settings_service: ProviderSettingsService | None = None
     source_upload_service: SourceUploadPort | None = None
+    document_processing_service: DocumentProcessingSubmissionService | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -987,6 +994,22 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             retryable=error.retryable,
         )
 
+    @app.exception_handler(DocumentUnderstandingError)
+    async def document_processing_error(
+        request: Request, error: DocumentUnderstandingError,
+    ) -> JSONResponse:
+        public_codes = {
+            "DOCUMENT_PROCESSING_UNAVAILABLE", "PROCESSING_RUN_NOT_FOUND",
+            "PROCESSING_RUN_CONFLICT", "SOURCE_NOT_FOUND",
+            "SOURCE_PROCESSING_STATE_INVALID", "DATABASE_UNAVAILABLE", "DATABASE_TIMEOUT",
+        }
+        return _error_response(
+            error.status,
+            error.code if error.code in public_codes else "INVALID_REQUEST",
+            request.state.trace_id,
+            retryable=error.retryable,
+        )
+
     @app.post("/api/v1/auth/verify-email")
     async def verify_email(body: TokenBody, request: Request) -> dict[str, object]:
         dependencies.identity_service.verify_email(token=body.token, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
@@ -1051,6 +1074,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         if dependencies.source_upload_service is None:
             raise SourceUploadError("SOURCE_STORAGE_UNAVAILABLE", 503, retryable=True)
+        if dependencies.document_processing_service is None:
+            raise DocumentUnderstandingError(
+                "DOCUMENT_PROCESSING_UNAVAILABLE", status=503, retryable=True,
+            )
         chunks: list[bytes] = []
         byte_size = 0
         async for chunk in request.stream():
@@ -1073,15 +1100,63 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             idempotency_key=idempotency_key,
             trace_id=request.state.trace_id,
         )
+        processing = await asyncio.to_thread(
+            dependencies.document_processing_service.submit,
+            DocumentProcessingContext(
+                principal.tenant_id, id, principal.user_id,
+                request.state.trace_id, dependencies.settings.policy_version,
+            ),
+            result.source_version_id,
+        )
+        response_data = _dataclass_json(result)
+        response_data.update({
+            "processing_run_id": processing.processing_run_id,
+            "processing_state": processing.processing_state,
+            "job_state": processing.job_state,
+        })
         response = JSONResponse(
             {
-                "data": _dataclass_json(result),
+                "data": response_data,
                 "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
             },
             status_code=202,
         )
         response.headers["ETag"] = f'"source:{result.source_id}:1"'
         return response
+
+    @app.get("/api/v1/workspaces/{id}/processing-runs/{processing_run_id}")
+    async def get_document_processing_status(
+        id: str, processing_run_id: str, request: Request,
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if dependencies.document_processing_service is None:
+            raise DocumentUnderstandingError(
+                "DOCUMENT_PROCESSING_UNAVAILABLE", status=503, retryable=True,
+            )
+        status = await asyncio.to_thread(
+            dependencies.document_processing_service.get_status,
+            DocumentProcessingContext(
+                principal.tenant_id, id, principal.user_id,
+                request.state.trace_id, dependencies.settings.policy_version,
+            ),
+            processing_run_id,
+        )
+        return _json_with_etag(
+            {
+                "data": _dataclass_json(status),
+                "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+            },
+            "|".join(filter(None, (
+                status.processing_run_id, status.processing_state, status.source_state,
+                status.job_state, status.safe_error_code,
+            ))),
+        )
 
     @app.get("/api/v1/session")
     async def session(request: Request) -> dict[str, object]:
@@ -2011,6 +2086,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     recovery_service: PostgresRecoveryService | UnavailableRecoveryService
     object_queue_store: PostgresObjectQueueStore | None = None
     source_upload_service: PostgresSourceUploadService | None = None
+    document_processing_service: DocumentProcessingSubmissionService | None = None
     if cloud_store is None:
         sync_service = SyncService(
             ReferenceSyncRepository(), ReferenceTransferPort(),
@@ -2056,6 +2132,9 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             object_storage=object_storage,
             canon_store=PostgresDataCanonStore(settings.cloud_database_dsn),
         )
+        document_processing_service = DocumentProcessingSubmissionService(
+            PostgresDocumentProcessingRepository(cloud_store, object_storage)
+        )
     return RuntimeDependencies(
         settings=settings,
         identity_service=identity_service,
@@ -2074,4 +2153,5 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         recovery_service=recovery_service,
         object_queue_store=object_queue_store,
         source_upload_service=source_upload_service,
+        document_processing_service=document_processing_service,
     )

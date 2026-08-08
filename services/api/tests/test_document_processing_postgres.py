@@ -66,6 +66,11 @@ class FakeConnection:
                 self.states["ProcessingRun"], self.versions["ProcessingRun"],
                 "source-cp3", self.states["Source"], self.versions["Source"],
             ))
+        if sql.startswith("SELECT pr.record_id,sv.source_id,pr.source_version_id"):
+            return Cursor((
+                "run-cp3", "source-cp3", self.source_version_id,
+                self.states["ProcessingRun"], self.states["Source"], "leased", None,
+            ))
         raise AssertionError(sql)
 
 
@@ -153,6 +158,28 @@ class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
             "processing_runs", "document_processing_jobs",
         ])
         self.assertEqual(self.cloud.capabilities, ["source.process"])
+
+    def test_async_start_is_idempotent_across_upload_request_traces(self) -> None:
+        first_run_id = self.repository.start(
+            self.context, "source-version-cp3", enqueue=True,
+        )
+        replay_context = DocumentProcessingContext(
+            "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-replay-cp3", "policy-v1",
+        )
+
+        replay_run_id = self.repository.start(
+            replay_context, "source-version-cp3", enqueue=True,
+        )
+
+        self.assertEqual(replay_run_id, first_run_id)
+
+    def test_status_is_workspace_scoped_and_omits_worker_lease_identity(self) -> None:
+        status = self.repository.get_status(self.context, "run-cp3")
+
+        self.assertEqual(status.processing_run_id, "run-cp3")
+        self.assertEqual(status.job_state, "leased")
+        self.assertFalse(hasattr(status, "lease_owner"))
+        self.assertEqual(self.cloud.capabilities, ["source.read"])
 
 
 if __name__ == "__main__":

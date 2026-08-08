@@ -77,6 +77,20 @@ export function parseInternalApiBase(rawValue, profile = "production") {
 
 function routeFor(method, segments) {
   if (
+    segments.length === 4
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "processing-runs"
+    && SAFE_SEGMENT.test(segments[3])
+  ) {
+    return method === "GET"
+      ? {
+          path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/processing-runs/${encodeURIComponent(segments[3])}`,
+          query: null,
+        }
+      : { methodRejected: true };
+  }
+  if (
     segments.length === 3
     && segments[0] === "workspaces"
     && SAFE_SEGMENT.test(segments[1])
