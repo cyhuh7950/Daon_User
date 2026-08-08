@@ -316,6 +316,7 @@ test("BFF classifies request and response body failures without exposing raw err
 test("BFF route configuration and unexpected errors use unique header-matched traces", async () => {
   const route = await import("../../apps/web/app/bff/api/[...path]/route.js");
   const originalBase = process.env.DAON_API_INTERNAL_URL;
+  const originalGateway = process.env.DAON_PUBLIC_GATEWAY_URL;
   const originalProfile = process.env.DAON_RUNTIME_PROFILE;
   try {
     delete process.env.DAON_API_INTERNAL_URL;
@@ -331,6 +332,7 @@ test("BFF route configuration and unexpected errors use unique header-matched tr
     assert.notEqual(firstBody.error.trace_id, "trace-client-reused");
 
     process.env.DAON_API_INTERNAL_URL = "https://api.example.com";
+    process.env.DAON_PUBLIC_GATEWAY_URL = "https://app.example.com";
     const unexpected = await route.GET(new Request("https://app.example.com/bff/api/session"), {
       params: Promise.reject(new Error("internal route secret")),
     });
@@ -342,6 +344,8 @@ test("BFF route configuration and unexpected errors use unique header-matched tr
   } finally {
     if (originalBase === undefined) delete process.env.DAON_API_INTERNAL_URL;
     else process.env.DAON_API_INTERNAL_URL = originalBase;
+    if (originalGateway === undefined) delete process.env.DAON_PUBLIC_GATEWAY_URL;
+    else process.env.DAON_PUBLIC_GATEWAY_URL = originalGateway;
     if (originalProfile === undefined) delete process.env.DAON_RUNTIME_PROFILE;
     else process.env.DAON_RUNTIME_PROFILE = originalProfile;
   }
@@ -432,6 +436,38 @@ test("BFF exposes only approved Notification and Inbox paths with same-origin CS
   }), ["notifications", "notification-001"]);
   assert.equal(rejected.status, 403);
   assert.equal(crossOriginCalls, 0);
+});
+
+test("BFF uses its configured public HTTPS origin behind a reverse proxy", async () => {
+  let calls = 0;
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://daon-user.sinsan.kr"),
+    fetchImpl: async () => { calls += 1; return Response.json({ data: { status: "ok" }, meta: {} }); },
+  });
+
+  const accepted = await proxy(new Request("http://daon-web:3330/bff/api/auth/signup", {
+    method: "POST",
+    headers: {
+      Origin: "https://daon-user.sinsan.kr",
+      "Sec-Fetch-Site": "same-origin",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ login_id: "test-user", email: "test@example.com", password: "valid-password" }),
+  }), ["auth", "signup"]);
+  const rejected = await proxy(new Request("http://daon-web:3330/bff/api/auth/signup", {
+    method: "POST",
+    headers: {
+      Origin: "https://untrusted.example",
+      "Sec-Fetch-Site": "same-origin",
+      "Content-Type": "application/json",
+    },
+    body: "{}",
+  }), ["auth", "signup"]);
+
+  assert.equal(accepted.status, 200);
+  assert.equal(rejected.status, 403);
+  assert.equal(calls, 1);
 });
 
 test("BFF exposes only bounded Provider settings paths and query", async () => {
