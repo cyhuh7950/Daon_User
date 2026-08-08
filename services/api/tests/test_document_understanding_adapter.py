@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -47,9 +48,15 @@ def provider_snapshot() -> ProviderSettingsSnapshot:
 
 
 class RecordingTransport:
-    def __init__(self, *, semantic_error: Exception | None = None) -> None:
+    def __init__(
+        self, *, semantic_error: Exception | None = None,
+        semantic_facts: tuple[str, ...] | None = None,
+        parser_text: str | None = None,
+    ) -> None:
         self.calls: list[tuple[str, str, object]] = []
         self.semantic_error = semantic_error
+        self.semantic_facts = semantic_facts or ("Vision first", "Parser validates later")
+        self.parser_text = parser_text or "Daon CP3 contract test. Vision first. Parser validates later."
 
     def post_json(self, *, url: str, api_key: str, payload: dict[str, object], timeout_seconds: float) -> dict[str, object]:
         self.calls.append(("semantic", url, payload))
@@ -57,10 +64,11 @@ class RecordingTransport:
             raise self.semantic_error
         return {
             "model": "information-extract-260610",
-            "choices": [{"message": {"content": (
-                '{"title":"Daon CP3","summary":"Vision first. Parser validates later.",'
-                '"key_facts":["Vision first","Parser validates later"]}'
-            )}}],
+            "choices": [{"message": {"content": json.dumps({
+                "title": "Daon CP3",
+                "summary": "Vision first. Parser validates later.",
+                "key_facts": self.semantic_facts,
+            })}}],
             "usage": {"prompt_tokens": 20, "completion_tokens": 12, "total_tokens": 32},
         }
 
@@ -69,9 +77,9 @@ class RecordingTransport:
         return {
             "model": "document-parse-260630",
             "content": {
-                "text": "Daon CP3 contract test. Vision first. Parser validates later.",
-                "markdown": "Daon CP3 contract test. Vision first. Parser validates later.",
-                "html": "<p>Daon CP3 contract test. Vision first. Parser validates later.</p>",
+                "text": self.parser_text,
+                "markdown": self.parser_text,
+                "html": f"<p>{self.parser_text}</p>",
             },
             "elements": [{"page": 1, "category": "paragraph", "content": {"text": "Daon CP3 contract test."}}],
             "usage": {"pages": 1},
@@ -98,6 +106,24 @@ class DocumentModelSelectionTests(unittest.TestCase):
 
 
 class UpstageDocumentUnderstandingAdapterTests(unittest.TestCase):
+    @staticmethod
+    def _understand_with_evidence(
+        semantic_facts: tuple[str, ...], parser_text: str,
+    ):
+        return UpstageDocumentUnderstandingAdapter(
+            transport=RecordingTransport(
+                semantic_facts=semantic_facts, parser_text=parser_text,
+            ),
+            api_key="up_test_secret",
+        ).understand(
+            DocumentUnderstandingRequest(
+                source_id="source-cp3", source_version_id="source-version-cp3",
+                filename="contract.pdf", content=PDF, trace_id="trace-cp3",
+                prompt_version="understanding-prompt-v1", policy_version="policy-v1",
+            ),
+            resolve_document_model_selection(provider_snapshot()),
+        )
+
     def test_original_pdf_semantic_call_precedes_separate_parser_validation(self) -> None:
         transport = RecordingTransport()
         adapter = UpstageDocumentUnderstandingAdapter(transport=transport, api_key="up_test_secret")
@@ -169,6 +195,61 @@ class UpstageDocumentUnderstandingAdapterTests(unittest.TestCase):
 
         self.assertTrue(caught.exception.retryable)
         self.assertEqual([call[0] for call in transport.calls], ["semantic"])
+
+    def test_semantic_paraphrases_with_matching_korean_and_english_anchors_are_ready(self) -> None:
+        result = self._understand_with_evidence(
+            (
+                "프로젝트 코드는 ALPHA-731입니다.",
+                "검토일은 2026년 8월 8일입니다.",
+                "Records are retained for 30 days.",
+                "The citation phrase is ORANGE-COMPASS-42.",
+                "검토자는 배포 전에 문서를 다시 확인해야 합니다.",
+            ),
+            (
+                "ALPHA-731 프로젝트의 검토일: 2026-08-08. "
+                "보존 기간은 30일이며 인용 문구 ORANGE-COMPASS-42가 포함된다. "
+                "배포 전 재검토가 필요하다."
+            ),
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertIsNone(result.conflict)
+
+    def test_identifier_anchor_mismatch_requires_review(self) -> None:
+        result = self._understand_with_evidence(
+            ("프로젝트 코드는 ALPHA-731입니다.",),
+            "프로젝트 코드는 ALPHA-999입니다.",
+        )
+
+        self.assertEqual(result.status, "needs_review")
+        self.assertEqual(result.conflict, "UNDERSTANDING_PARSER_CONFLICT")
+
+    def test_missing_date_anchor_requires_review(self) -> None:
+        result = self._understand_with_evidence(
+            ("The review date is 2026-08-08.",),
+            "검토 일정은 추후 확정됩니다.",
+        )
+
+        self.assertEqual(result.status, "needs_review")
+        self.assertEqual(result.conflict, "UNDERSTANDING_PARSER_CONFLICT")
+
+    def test_missing_numeric_unit_anchor_requires_review(self) -> None:
+        result = self._understand_with_evidence(
+            ("Records are retained for 30 days.",),
+            "기록은 정책에 따라 보존됩니다.",
+        )
+
+        self.assertEqual(result.status, "needs_review")
+        self.assertEqual(result.conflict, "UNDERSTANDING_PARSER_CONFLICT")
+
+    def test_anchorless_natural_language_difference_is_not_material_conflict(self) -> None:
+        result = self._understand_with_evidence(
+            ("검토자는 배포 전에 문서를 다시 확인해야 합니다.",),
+            "A reviewer should perform another document check before release.",
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertIsNone(result.conflict)
 
     def test_secret_is_read_server_side_and_never_appears_in_errors(self) -> None:
         with patch.dict(os.environ, {"UPSTAGE_API_KEY": "up_never_expose"}, clear=False):

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import unicodedata
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -18,6 +19,24 @@ from .provider_settings import ProviderSettingsSnapshot
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+_ISO_DATE = re.compile(r"(?<!\d)(\d{4})[-./](\d{1,2})[-./](\d{1,2})(?!\d)")
+_KOREAN_DATE = re.compile(r"(?<!\d)(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+_IDENTIFIER = re.compile(r"(?<![a-z0-9])[a-z0-9]+(?:[-_.:/][a-z0-9]+)*(?![a-z0-9])")
+_UNIT_KIND = {
+    "day": "day", "days": "day", "일": "day",
+    "month": "month", "months": "month", "개월": "month",
+    "year": "year", "years": "year", "년": "year",
+    "hour": "hour", "hours": "hour", "시간": "hour",
+    "minute": "minute", "minutes": "minute", "분": "minute",
+    "second": "second", "seconds": "second", "초": "second",
+    "item": "item", "items": "item", "건": "item",
+    "%": "percent", "percent": "percent", "퍼센트": "percent",
+}
+_UNIT_PATTERN = "|".join(sorted((re.escape(unit) for unit in _UNIT_KIND), key=len, reverse=True))
+_QUANTITY = re.compile(
+    rf"(?<![a-z0-9])(?P<number>\d+(?:[.,]\d+)?)\s*(?P<unit>{_UNIT_PATTERN})(?![a-z])"
+)
+_NUMBER = re.compile(r"(?<![a-z0-9])\d+(?:[.,]\d+)?(?![a-z0-9])")
 _CREDENTIAL_ENV = {
     "CEREBRAS": "CEREBRAS_API_KEY", "GROQ": "GROQ_API_KEY",
     "MISTRAL": "MISTRAL_API_KEY", "OPENAI": "OPENAI_API_KEY",
@@ -25,6 +44,57 @@ _CREDENTIAL_ENV = {
     "OPENROUTER": "OPENROUTER_API_KEY", "ANTHROPIC": "ANTHROPIC_API_KEY",
     "OLLAMA": "OLLAMA_BASE_URL",
 }
+
+
+def _canonical_number(value: str) -> str:
+    normalized = value.replace(",", "")
+    integer, separator, fraction = normalized.partition(".")
+    integer = integer.lstrip("0") or "0"
+    fraction = fraction.rstrip("0")
+    return f"{integer}{separator if fraction else ''}{fraction}"
+
+
+def _evidence_anchors(value: str) -> frozenset[str]:
+    """Extract deterministic material anchors for validation-only reconciliation."""
+    remaining = unicodedata.normalize("NFKC", value).casefold()
+    anchors: set[str] = set()
+
+    def date_anchor(match: re.Match[str]) -> str:
+        year, month, day = (int(part) for part in match.groups())
+        anchors.add(f"date:{year:04d}-{month:02d}-{day:02d}")
+        return " " * len(match.group(0))
+
+    remaining = _ISO_DATE.sub(date_anchor, remaining)
+    remaining = _KOREAN_DATE.sub(date_anchor, remaining)
+
+    def identifier_anchor(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if any(character.isalpha() for character in token) and any(character.isdigit() for character in token):
+            anchors.add(f"identifier:{token}")
+            return " " * len(token)
+        return token
+
+    remaining = _IDENTIFIER.sub(identifier_anchor, remaining)
+
+    def quantity_anchor(match: re.Match[str]) -> str:
+        anchors.add(
+            f"quantity:{_canonical_number(match.group('number'))}:{_UNIT_KIND[match.group('unit')]}"
+        )
+        return " " * len(match.group(0))
+
+    remaining = _QUANTITY.sub(quantity_anchor, remaining)
+    anchors.update(f"number:{_canonical_number(match.group(0))}" for match in _NUMBER.finditer(remaining))
+    return frozenset(anchors)
+
+
+def _has_material_evidence_conflict(key_facts: tuple[str, ...], parser_text: str) -> bool:
+    """Detect only missing material anchors; wording differences remain informational."""
+    parser_anchors = _evidence_anchors(parser_text)
+    return any(
+        bool(fact_anchors) and not fact_anchors.issubset(parser_anchors)
+        for fact in key_facts
+        if (fact_anchors := _evidence_anchors(fact))
+    )
 
 
 class DocumentUnderstandingError(RuntimeError):
@@ -345,9 +415,11 @@ class UpstageDocumentUnderstandingAdapter:
             timeout_seconds=self._timeout_seconds,
         )
         parser, parser_revision = self._parser(parser_response)
-        normalized_parser = " ".join(parser.text.casefold().split())
-        unsupported = tuple(fact for fact in semantic.key_facts if " ".join(fact.casefold().split()) not in normalized_parser)
-        conflict = "UNDERSTANDING_PARSER_CONFLICT" if unsupported else None
+        conflict = (
+            "UNDERSTANDING_PARSER_CONFLICT"
+            if _has_material_evidence_conflict(semantic.key_facts, parser.text)
+            else None
+        )
         return DocumentUnderstandingResult(
             request.source_id, request.source_version_id,
             "needs_review" if conflict else "ready", self._SUBSTATES, semantic, parser,
