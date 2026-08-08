@@ -336,7 +336,11 @@ class UpstageDocumentUnderstandingAdapter:
         semantic, semantic_revision = self._semantic(semantic_response)
         parser_response = self._transport.post_multipart(
             url=f"{base_url}/document-digitization", api_key=self._api_key,
-            fields={"model": selection.parser_model_id, "ocr": "force"},
+            fields={
+                "model": selection.parser_model_id,
+                "ocr": "force",
+                "output_formats": '["text","html","markdown"]',
+            },
             filename=request.filename, content=request.content,
             timeout_seconds=self._timeout_seconds,
         )
