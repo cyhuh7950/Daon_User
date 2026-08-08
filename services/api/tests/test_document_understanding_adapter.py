@@ -112,10 +112,26 @@ class UpstageDocumentUnderstandingAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual([call[0] for call in transport.calls], ["semantic", "parser"])
+        self.assertEqual(
+            transport.calls[0][1],
+            "https://api.upstage.ai/v1/information-extraction",
+        )
         semantic_payload = transport.calls[0][2]
+        self.assertEqual(semantic_payload["model"], "information-extract")
+        self.assertEqual(len(semantic_payload["messages"]), 1)  # type: ignore[arg-type]
+        self.assertEqual(semantic_payload["messages"][0]["role"], "user")  # type: ignore[index]
+        self.assertEqual(len(semantic_payload["messages"][0]["content"]), 1)  # type: ignore[index]
         image_url = semantic_payload["messages"][0]["content"][0]["image_url"]["url"]  # type: ignore[index]
-        self.assertTrue(image_url.startswith("data:application/pdf;base64,"))
+        self.assertTrue(image_url.startswith("data:application/octet-stream;base64,"))
+        self.assertTrue(semantic_payload["response_format"]["json_schema"]["strict"])  # type: ignore[index]
+        self.assertNotIn("/chat/completions", transport.calls[0][1])
+        self.assertNotIn("data:application/pdf", image_url)
         self.assertNotIn("document-parse", str(semantic_payload))
+        self.assertEqual(
+            transport.calls[1][1],
+            "https://api.upstage.ai/v1/document-digitization",
+        )
+        self.assertEqual(transport.calls[1][2]["fields"]["model"], "document-parse")  # type: ignore[index]
         self.assertEqual(transport.calls[1][2]["content"], PDF)  # type: ignore[index]
         self.assertEqual(result.status, "ready")
         self.assertEqual(result.substates, (

@@ -219,6 +219,7 @@ class UpstageDocumentUnderstandingAdapter:
         "type": "json_schema",
         "json_schema": {
             "name": "daon_document_understanding",
+            "strict": True,
             "schema": {
                 "type": "object",
                 "properties": {
@@ -320,13 +321,13 @@ class UpstageDocumentUnderstandingAdapter:
         base_url = self._base_url(selection)
         encoded = base64.b64encode(request.content).decode("ascii")
         semantic_response = self._transport.post_json(
-            url=f"{base_url}/information-extraction/chat/completions",
+            url=f"{base_url}/information-extraction",
             api_key=self._api_key,
             payload={
                 "model": selection.semantic_model_id,
                 "messages": [{"role": "user", "content": [{
                     "type": "image_url",
-                    "image_url": {"url": f"data:application/pdf;base64,{encoded}"},
+                    "image_url": {"url": f"data:application/octet-stream;base64,{encoded}"},
                 }]}],
                 "response_format": self._SCHEMA,
             },
