@@ -75,6 +75,26 @@ export function parseInternalApiBase(rawValue, profile = "production") {
   return parsed;
 }
 
+export function parsePublicGatewayOrigin(rawValue) {
+  let parsed;
+  try {
+    parsed = new URL(rawValue);
+  } catch {
+    throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_INVALID");
+  }
+  if (
+    parsed.protocol !== "https:"
+    || parsed.pathname !== "/"
+    || parsed.search
+    || parsed.hash
+    || parsed.username
+    || parsed.password
+  ) {
+    throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_HTTPS_ORIGIN_REQUIRED");
+  }
+  return parsed;
+}
+
 function routeFor(method, segments) {
   if (
     segments.length === 4
@@ -253,13 +273,13 @@ function sessionCookie(request) {
   return matches.length === 1 ? `${SESSION_COOKIE_NAME}=${matches[0]}` : null;
 }
 
-function writeRequestIsSameOrigin(request) {
+function writeRequestIsSameOrigin(request, publicOrigin) {
   if (!WRITE_METHODS.has(request.method)) return true;
   const origin = request.headers.get("origin");
   if (!origin || origin === "null" || origin.includes(",")) return false;
   let expectedOrigin;
   try {
-    expectedOrigin = new URL(request.url).origin;
+    expectedOrigin = publicOrigin?.origin ?? new URL(request.url).origin;
   } catch {
     return false;
   }
@@ -325,16 +345,19 @@ function cancellationError(scope, trace) {
   return null;
 }
 
-export function createBffProxy({ baseUrl, fetchImpl = fetch, timeoutMs = 10_000 }) {
+export function createBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000 }) {
   if (!(baseUrl instanceof URL)) {
     throw new BffConfigurationError("BFF_INTERNAL_API_URL_REQUIRED");
+  }
+  if (publicOrigin !== undefined && !(publicOrigin instanceof URL)) {
+    throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_REQUIRED");
   }
   return async function proxy(request, pathSegments, providedTrace) {
     const trace = providedTrace ?? createBffTraceId(request);
     const route = routeFor(request.method, pathSegments);
     if (!route) return createBffSafeError(404, "RESOURCE_UNAVAILABLE", trace);
     if (route.methodRejected) return createBffSafeError(405, "METHOD_NOT_ALLOWED", trace);
-    if (!writeRequestIsSameOrigin(request)) {
+    if (!writeRequestIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
     }
 

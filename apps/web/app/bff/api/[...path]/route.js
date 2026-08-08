@@ -4,6 +4,7 @@ import {
   createBffTraceId,
   createBffProxy,
   parseInternalApiBase,
+  parsePublicGatewayOrigin,
 } from "../../../../lib/bff-api-proxy.js";
 
 function configurationFailure(trace) {
@@ -23,8 +24,9 @@ async function handler(request, context) {
       process.env.DAON_API_INTERNAL_URL,
       process.env.DAON_RUNTIME_PROFILE ?? "production",
     );
+    const publicOrigin = parsePublicGatewayOrigin(process.env.DAON_PUBLIC_GATEWAY_URL);
     const { path } = await context.params;
-    return createBffProxy({ baseUrl })(request, path, trace);
+    return createBffProxy({ baseUrl, publicOrigin })(request, path, trace);
   } catch (error) {
     const errorTrace = createBffTraceId();
     if (error instanceof BffConfigurationError) return configurationFailure(errorTrace);
