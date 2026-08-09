@@ -6,9 +6,9 @@
 | --- | --- |
 | 문서 구분 | Release 1 구현 작업계획 정본 |
 | 계획 ID | `DAON-USER-R1-PLAN` |
-| 계획 버전 | `1.5` |
+| 계획 버전 | `1.7` |
 | 작성일 | 2026-07-20 |
-| 최종 수정일 | 2026-08-04 |
+| 최종 수정일 | 2026-08-09 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 구현 상태 | `READY` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
@@ -60,6 +60,7 @@
 | 1.4 | 2026-08-05 | Provider 독립 구조·다중 LLM 후보·화면 기반 Provider/Model 선택·Secret 전용 `.env` 계약 반영 | C2 사용자 결정 + C1 정합화 | 신산님 승인 |
 | 1.5 | 2026-08-05 | WSL-server·ysna-server 컨테이너 생성 전 사전검증·Health Gate·실패 시 생성 금지 규칙 추가 | C1 운영 정합화 | 신산님 승인 |
 | 1.6 | 2026-08-04 | ysna PostgreSQL 16→18.4 업그레이드, WSL PostgreSQL 15.18 유지, Daon DB Adapter·Migration PostgreSQL 15~18 호환 계약 반영 | C2 사용자 결정 + C1 환경 정합화 | 신산님 승인 |
+| 1.7 | 2026-08-09 | TP-2A/CP3 실제 E2E 최종 `PASS / GO_TO_EXPANSION` 승인과 증거 SHA 기록, Gate 완화 없이 Evidence Manifest·M5~M7 Exit 소급 검증 유지 | C0 승인·증거 기록 | 신산님 승인 · `APR-CP3-PASS-GO-20260809-01` |
 
 ---
 
@@ -344,6 +345,22 @@ flowchart LR
 | `.env` 저장 범위 | API Key·Secret 등 비공개 인증정보만 저장 |
 | Gate 완화 | 없음 |
 | 선행 복구 | M5~M8 Evidence Manifest 및 M5~M7 Milestone Exit 소급 검증 |
+
+#### CP3 최종 PASS·확장 진행 결정(2026-08-09)
+
+신산님은 실제 CP3 검증 결과에 대한 어울1의 `PASS, 다음 단계 GO` 권고를 승인하고 후속 진행을 지시했다. `APR-CP3-PASS-GO-20260809-01`에 따라 CP3 판정은 `PASS`, 다음 상태는 `GO_TO_EXPANSION`이다. 기존 2026-08-04 `GO_TO_EXECUTION` 결정은 실제 실행을 허가한 역사 기록으로 보존하며 이번 결정이 이를 완료 판정으로 잇는다.
+
+| 항목 | 최종 기록 |
+| --- | --- |
+| 판정·결정 | `PASS / GO_TO_EXPANSION` |
+| 실제 E2E 증거 Commit | `061bc4dcbddfd839fdcb64aa21ed498fe1e70e0b` |
+| CP3 결과 기록 Commit | `9c9fa4cb00d0f656507d7a61e90f3355d683b3d9` |
+| Browser·질문 | 인증 Workspace에서 단일 PDF 질문 결과 `ORANGE-COMPASS-42`, `sufficient` 확인 |
+| Model·DB 계보 | `UPSTAGE / solar-pro4`, Run `completed`, ModelAttempt `succeeded`, Audit `question.answer` `succeeded` |
+| Citation | current SourceVersion의 Citation·EvidenceSpan page 2 일치, same-origin BFF로 PDF 원문 2쪽 열기 |
+| Network Console | 별도 캡처 미확보이며 확보된 증거로 주장하지 않음 |
+| Gate 완화 | 없음 |
+| 다음 선행 작업 | M5~M8 Evidence Manifest와 M5~M7 Milestone Exit 소급 검증 |
 
 ### 8.2 단계 상태
 
