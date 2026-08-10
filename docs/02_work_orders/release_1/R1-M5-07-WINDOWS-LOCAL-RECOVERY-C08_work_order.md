@@ -24,7 +24,7 @@
 - `docs/superpowers/specs/2026-08-10-windows-recovery-adapter-design.md` 1.1
 - `docs/superpowers/plans/2026-08-10-windows-recovery-native-bridge.md` Task 3
 - `docs/02_work_orders/approvals/APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01.md`
-- `docs/02_work_orders/approvals/APR-R1-M5-07-RECOVERY-API-20260731-01.md`
+- `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` §7.2 `R1-D027` 확정 결정
 - `docs/04_test_reports/release_1_test_plan.md`
 - `docs/04_test_reports/release_1/R1-M5-07-WINDOWS-NATIVE-SESSION-C07_completion_report.md`
 
