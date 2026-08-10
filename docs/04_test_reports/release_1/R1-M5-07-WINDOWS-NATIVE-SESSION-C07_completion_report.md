@@ -15,3 +15,4 @@ COMPLETED | R1-M5-07-WINDOWS-NATIVE-SESSION-C04-I001 | 동일 문제의 C04·C05
 
 - 자동화된 Rust·정적 검증 결과이며 실제 Windows 설치형 로그인 PASS를 의미하지 않는다.
 - 내부 독립 읽기 전용 검토는 최종 승인됐으며, 외부 CLAUDE 검증과 실제 설치형 검증은 별도다.
+- 제품·테스트·C05~C07 증거 커밋은 `81cfe0e`이며 `origin/master` Push를 완료했다. 이 행을 포함하는 문서 마감은 별도 후속 문서 커밋으로 기록한다.
