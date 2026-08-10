@@ -1043,6 +1043,25 @@ impl NativeSessionRuntime {
         }
     }
 
+    pub(crate) async fn execute_cloud_once(
+        &self,
+        transport: &dyn crate::recovery_bridge::CloudRecoveryTransport,
+        request: crate::recovery_bridge::CloudRecoveryRequest,
+    ) -> Result<crate::recovery_bridge::CloudRecoveryExchange, &'static str> {
+        if self.revoke_pending.load(Ordering::Acquire) {
+            return Err("AUTHENTICATION_REQUIRED");
+        }
+        let credentials = self
+            .vault_read()
+            .await
+            .map_err(|_| "AUTHENTICATION_REQUIRED")?
+            .ok_or("AUTHENTICATION_REQUIRED")?;
+        let canaries =
+            crate::recovery_bridge::CloudResponseCanaries::for_access(&credentials.access.0);
+        let response = transport.execute(&credentials.access.0, request).await?;
+        Ok(crate::recovery_bridge::CloudRecoveryExchange { response, canaries })
+    }
+
     async fn vault_read(&self) -> Result<Option<NativeSessionCredentials>, NativeSessionError> {
         let vault = Arc::clone(&self.vault);
         tauri::async_runtime::spawn_blocking(move || vault.read())
