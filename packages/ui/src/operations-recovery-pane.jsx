@@ -195,8 +195,17 @@ function NotificationsView({ state, dispatch }) {
   </StatusCard></main>;
 }
 
-export function OperationsRecoveryWorkspace({ initialScreen = "operations", clientType = "web", recoveryAdapter = null }) {
-  const [state, setState] = useState(() => createOperationsRecoveryViewState({ screen: initialScreen, clientType }));
+export function OperationsRecoveryWorkspace({ initialScreen = "operations", clientType = "web", recoveryAdapter = null, sessionContext = null }) {
+  const [state, setState] = useState(() => createOperationsRecoveryViewState({
+    screen: initialScreen,
+    clientType,
+    ...(sessionContext ? {
+      actorId: sessionContext.userId,
+      tenantId: sessionContext.tenantId,
+      workspaceId: sessionContext.workspaceId,
+      membership: sessionContext.membership ?? null
+    } : {})
+  }));
   const [width, setWidth] = useState(1920);
   const dispatch = (action) => setState((current) => transitionOperationsRecovery(current, action));
   useEffect(() => {
