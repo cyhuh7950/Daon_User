@@ -11,7 +11,10 @@
 | 성격 | R1-M5-07 미확보 실제 Web 증거 보완 |
 | 공식 작업공간 | `C:\Users\cyhuh\Desktop\D Driver\Project\Daon_User` |
 | Branch | `master` |
-| 기준 배포 Commit | `42afc20b4bb0a800e61c2363afbdea322fc21ea8` |
+| Runtime 제품 Commit | `061bc4dcbddfd839fdcb64aa21ed498fe1e70e0b` |
+| Web Image | `sha256:e056da75e9d666249a21b48ebe645908758bc24494f84e58dab7c7086b760bc4` · 생성 2026-08-09 01:33 KST |
+| API Image | `sha256:91b454616ef6ee2c63ca6a02bcac59b576f0ccb1c4c6affc9830b66da38ba581` · 생성 2026-08-09 01:33 KST |
+| 서버 Checkout HEAD | 실행 시 확인하며 문서 Fast-forward HEAD를 Runtime Build SHA로 사용하지 않음 |
 | 대상 URL | `https://daon-user.sinsan.kr/operations` |
 | 실행 Browser | 신산님이 로그인한 Chrome |
 | 진행 기록 | `docs/04_test_reports/release_1/R1-M5-07-WEB-EVIDENCE-01_progress.md` |
@@ -69,7 +72,7 @@
 2. Browser Network에서 최소 session 요청과 Backup 목록 요청의 실제 URL·Method·Status를 기록한다.
 3. Browser 실행 코드의 요청 URL에서 내부주소·localhost 직접 호출 0건을 확인한다.
 4. Backup 데이터가 없거나 API 오류면 Empty/Error 상태와 실제 응답을 기록하고 `PASS`로 위장하지 않는다.
-5. 실제 화면과 Network를 배포 Commit `42afc20...`, 검증 시각, Actor/Workspace 표시값에 연결한다.
+5. 실제 화면과 Network를 Runtime 제품 Commit `061bc4d...`, Web/API Image ID·생성 시각, 검증 시각, Actor/Workspace 표시값에 연결한다. 서버 Checkout의 문서-only HEAD는 별도로 기록한다.
 6. 사용한 Browser Tab·DevTools를 종료하고 신산님이 즉시 화면을 사용할 수 있게 한다.
 7. Evidence Pack·Manifest·진행기록·완료보고의 JSON/경로/SHA·Secret scan·Diff check가 통과한다.
 
