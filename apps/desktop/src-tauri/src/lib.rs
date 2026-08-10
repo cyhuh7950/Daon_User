@@ -27,17 +27,17 @@ async fn native_login(
 }
 
 #[tauri::command]
-fn native_logout(
+async fn native_logout(
     runtime: tauri::State<'_, NativeSessionRuntime>,
 ) -> Result<NativeSessionStatus, NativeSessionError> {
-    runtime.logout()
+    runtime.logout().await
 }
 
 #[tauri::command]
-fn native_session_status(
+async fn native_session_status(
     runtime: tauri::State<'_, NativeSessionRuntime>,
 ) -> Result<NativeSessionStatus, NativeSessionError> {
-    runtime.status()
+    runtime.status().await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
