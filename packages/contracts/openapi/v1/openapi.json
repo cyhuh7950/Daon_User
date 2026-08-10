@@ -3184,11 +3184,7 @@
         ],
         "summary": "Native Refresh 회전",
         "x-implementation-owner": "R1-M4-03",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
+        "parameters": [],
         "requestBody": {
           "required": true,
           "content": {
@@ -3201,7 +3197,7 @@
         },
         "responses": {
           "200": {
-            "$ref": "#/components/responses/IdentitySessionResponse"
+            "$ref": "#/components/responses/NativeCredentialSessionResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"

@@ -55,11 +55,18 @@ test("OpenAPI 검증기는 안전 오류의 내부 필드와 absolute server를 
   assert.throws(() => validateOpenApiDocument(absoluteServer), /server|absolute url/i);
 });
 
-test("OpenAPI 검증기는 Write Header 누락을 거부한다", async () => {
+test("Native Refresh 공개 계약은 단일 opaque credential과 Idempotency 예외를 고정한다", async () => {
   const document = clone(await loadContract());
   const post = document.paths["/api/v1/session/refresh"].post;
-  post.parameters = post.parameters.filter((parameter) => parameter.$ref !== "#/components/parameters/IdempotencyKey");
-  assert.throws(() => validateOpenApiDocument(document), /Idempotency-Key/i);
+  assert.deepEqual(post.parameters ?? [], []);
+  assert.equal(post.requestBody.content["application/json"].schema.$ref, "#/components/schemas/NativeRefreshRequest");
+  assert.equal(post.responses["200"].$ref, "#/components/responses/NativeCredentialSessionResponse");
+  const request = document.components.schemas.NativeRefreshRequest;
+  assert.deepEqual(request.required, ["refresh_credential"]);
+  assert.equal(request.additionalProperties, false);
+  assert.equal(request.properties.refresh_credential.writeOnly, true);
+  assert.equal(request.properties.refresh_credential.default, undefined);
+  assert.equal(request.properties.refresh_credential.example, undefined);
 });
 
 test("OpenAPI 검증기는 Run Event SSE Content 누락을 거부한다", async () => {

@@ -295,6 +295,17 @@ function validateIdentityContract(document) {
   if (schemas.NativeRefreshRequest?.properties?.refresh_credential?.writeOnly !== true) {
     fail("Native refresh credential must be writeOnly");
   }
+  const nativeRefresh = schemas.NativeRefreshRequest;
+  if (
+    nativeRefresh?.type !== "object" || nativeRefresh.additionalProperties !== false
+    || JSON.stringify(nativeRefresh.required) !== JSON.stringify(["refresh_credential"])
+    || JSON.stringify(Object.keys(nativeRefresh.properties ?? {}).sort()) !== JSON.stringify(["refresh_credential"])
+    || nativeRefresh.properties?.refresh_credential?.writeOnly !== true
+    || "default" in nativeRefresh.properties?.refresh_credential
+    || "example" in nativeRefresh.properties?.refresh_credential
+  ) {
+    fail("Native refresh must expose only the approved writeOnly refresh credential input");
+  }
   const nativeLogin = schemas.NativeLocalLoginRequest;
   if (
     nativeLogin?.type !== "object" || nativeLogin.additionalProperties !== false
@@ -330,7 +341,7 @@ function validateIdentityContract(document) {
     "/api/v1/session/step-up": ["post", "StepUpAuthorizationResponse"],
     "/api/v1/session/oidc/transactions": ["post", "OidcLoginStartResponse"],
     "/api/v1/session/oidc/callback": ["post", "IdentitySessionResponse"],
-    "/api/v1/session/refresh": ["post", "IdentitySessionResponse"],
+    "/api/v1/session/refresh": ["post", "NativeCredentialSessionResponse"],
     "/api/v1/session/revoke": ["post", "SessionRevocationResponse"],
     "/api/v1/devices/{id}/trust": ["post", "SuccessResponse"],
     "/api/v1/devices/{id}/revoke": ["post", "DeviceRevocationResponse"]
@@ -405,7 +416,11 @@ export function validateOpenApiDocument(document) {
 
       const refs = parameterRefs(operation);
       if (apiPath.includes("{id}") && !refs.has("#/components/parameters/ResourceId")) fail(`${operationId} missing opaque ResourceId`);
-      if (method === "post" && apiPath !== "/api/v1/auth/native/login" && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
+      const idempotencyExemptPosts = new Set([
+        "/api/v1/auth/native/login",
+        "/api/v1/session/refresh"
+      ]);
+      if (method === "post" && !idempotencyExemptPosts.has(apiPath) && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
       if ((method === "patch" || method === "delete") && !refs.has("#/components/parameters/IfMatch")) fail(`${operationId} missing If-Match`);
       if (operation["x-list-operation"] === true) {
         for (const name of ["Cursor", "Limit", "Filter", "Search"]) {

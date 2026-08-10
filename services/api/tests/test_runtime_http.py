@@ -237,6 +237,78 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((invalid.status_code, invalid.json()["error"]["code"]), (401, "AUTHENTICATION_REQUIRED"))
 
+    async def test_native_refresh_rotates_once_and_returns_native_credentials_without_cookie(self) -> None:
+        with patch.object(self.identity, "rotate_refresh", wraps=self.identity.rotate_refresh) as rotate:
+            response = await self.client.post(
+                "/api/v1/session/refresh",
+                json={"refresh_credential": self.native.refresh_token},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get_list("set-cookie"), [])
+        rotate.assert_called_once()
+        payload = response.json()["data"]
+        self.assertEqual(payload["user_id"], self.native.user_id)
+        self.assertEqual(payload["tenant_id"], self.native.tenant_id)
+        self.assertEqual(payload["session_id"], self.native.session_id)
+        self.assertEqual(payload["device_id"], self.native.device_id)
+        self.assertEqual(payload["client_kind"], "native")
+        self.assertEqual(payload["delivery"], "native_https_opaque_bearer")
+        self.assertTrue(payload["workspace_id"])
+        self.assertTrue(payload["access_credential"])
+        self.assertTrue(payload["refresh_credential"])
+        self.assertNotEqual(payload["refresh_credential"], self.native.refresh_token)
+
+    async def test_native_refresh_rejects_extra_invalid_expired_and_replayed_credentials(self) -> None:
+        extra = await self.client.post(
+            "/api/v1/session/refresh",
+            json={"refresh_credential": self.native.refresh_token, "platform": "web"},
+        )
+        invalid = await self.client.post(
+            "/api/v1/session/refresh",
+            json={"refresh_credential": "x" * 64},
+        )
+        self.assertEqual((extra.status_code, extra.json()["error"]["code"]), (400, "INVALID_REQUEST"))
+        self.assertEqual((invalid.status_code, invalid.json()["error"]["code"]), (401, "AUTHENTICATION_REQUIRED"))
+
+        first = await self.client.post(
+            "/api/v1/session/refresh",
+            json={"refresh_credential": self.native.refresh_token},
+        )
+        replayed = await self.client.post(
+            "/api/v1/session/refresh",
+            json={"refresh_credential": self.native.refresh_token},
+        )
+        session_revoked = await self.client.post(
+            "/api/v1/session/refresh",
+            json={"refresh_credential": first.json()["data"]["refresh_credential"]},
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual((replayed.status_code, replayed.json()["error"]["code"]), (401, "REFRESH_REPLAYED"))
+        self.assertEqual((session_revoked.status_code, session_revoked.json()["error"]["code"]), (401, "AUTHENTICATION_REQUIRED"))
+
+        start = self.identity.begin_oidc_login(
+            issuer="https://login.example.com", client_id="daon-native",
+            audience="daon-user-api", redirect_uri="com.sinsan.daon:/oidc/callback",
+            client_kind=ClientKind.NATIVE, tenant_id="tenant-001",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+        provider = FakeVerifiedOidcProvider()
+        provider.expected_nonce = start.nonce
+        expired_credentials = self.identity.complete_oidc_login(
+            state=start.state, authorization_code=provider.authorization_code,
+            code_verifier=start.code_verifier, client_id="daon-native",
+            redirect_uri="com.sinsan.daon:/oidc/callback", provider=provider,
+            platform=DevicePlatform.WINDOWS, trace_id=TRACE_ID,
+            policy_version=POLICY_VERSION,
+        )
+        self.clock.advance(days=31)
+        expired = await self.client.post(
+            "/api/v1/session/refresh",
+            json={"refresh_credential": expired_credentials.refresh_token},
+        )
+        self.assertEqual((expired.status_code, expired.json()["error"]["code"]), (401, "AUTHENTICATION_REQUIRED"))
+
     async def test_cloud_migration_failure_only_drops_readiness(self) -> None:
         self.dependencies.cloud_store = UnreadyCloudStore()  # type: ignore[assignment]
         live = await self.client.get("/health/live")

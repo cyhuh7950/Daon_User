@@ -377,6 +377,11 @@ class NativeLocalLoginBody(BaseModel):
     password: str
 
 
+class NativeRefreshBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    refresh_credential: str
+
+
 class TokenBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     token: str
@@ -575,6 +580,8 @@ def _error_response(status: int, code: str, trace_id: str, *, retryable: bool = 
 
 def _domain_error(error: IdentityError | AuthorizationError) -> tuple[int, str, bool]:
     status = error.http_status
+    if status == 401 and error.code == "REFRESH_REPLAYED":
+        return 401, "REFRESH_REPLAYED", False
     if status == 401:
         return 401, "AUTHENTICATION_REQUIRED", False
     if status == 404:
@@ -1139,6 +1146,38 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             cost_limit_cents=1000,
             now=datetime.now(timezone.utc),
         )
+        session = dependencies.identity_service.describe_access(
+            credentials.access_token, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        return {
+            "data": {
+                "user_id": credentials.user_id,
+                "tenant_id": credentials.tenant_id,
+                "workspace_id": workspace_id,
+                "session_id": credentials.session_id,
+                "device_id": credentials.device_id,
+                "client_kind": ClientKind.NATIVE.value,
+                "delivery": "native_https_opaque_bearer",
+                "access_credential": credentials.access_token,
+                "refresh_credential": credentials.refresh_token,
+                "expires_at": session.expires_at.isoformat(),
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        }
+
+    @app.post("/api/v1/session/refresh")
+    async def rotate_native_refresh(
+        body: NativeRefreshBody, request: Request,
+    ) -> dict[str, object]:
+        credentials = dependencies.identity_service.rotate_refresh(
+            body.refresh_credential,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        workspace_id = dependencies.authorization_repository.primary_workspace_id(
+            credentials.tenant_id
+        ) or _personal_workspace_id(credentials.tenant_id)
         session = dependencies.identity_service.describe_access(
             credentials.access_token, trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
