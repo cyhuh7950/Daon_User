@@ -1,5 +1,6 @@
 pub mod local_service;
 pub mod native_session;
+pub mod recovery_bridge;
 #[cfg(windows)]
 pub mod windows_credential;
 

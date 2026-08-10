@@ -1,5 +1,5 @@
 use daon_user_desktop_lib::local_service::{
-    AppCredentials, LocalServiceState, READY_MAX_BYTES, parse_ready_envelope,
+    parse_ready_envelope, AppCredentials, LocalServiceState, READY_MAX_BYTES,
 };
 #[cfg(windows)]
 use daon_user_desktop_lib::windows_credential::WindowsCredentialStore;
@@ -25,6 +25,8 @@ fn each_app_launch_generates_distinct_credentials() {
     assert!(first.bootstrap_json().len() <= 4096);
     assert!(!format!("{first:?}").contains(first_bootstrap["root_secret"].as_str().unwrap()));
     assert!(!format!("{first:?}").contains(first_bootstrap["storage_root_key"].as_str().unwrap()));
+    assert!(!format!("{first:?}").contains(first_bootstrap["storage_root"].as_str().unwrap()));
+    assert!(format!("{first:?}").contains("storage_root: \"[redacted]\""));
 }
 
 #[test]
@@ -58,6 +60,43 @@ fn public_status_never_contains_port_or_secret() {
     );
     assert!(!json.contains("port"));
     assert!(!json.contains("token"));
+}
+
+#[test]
+fn recovery_token_allowlist_adds_only_the_three_approved_pairs() {
+    let credentials = AppCredentials::generate().expect("credentials");
+    let allowed = [
+        ("recovery.write", "recovery.scan"),
+        ("recovery.read", "recovery.job.read"),
+        ("recovery.write", "recovery.repair"),
+    ];
+    let mut tokens = Vec::new();
+    for (scope, capability) in allowed {
+        let token = credentials
+            .issue_request_token(scope, capability, 2_000_000_000)
+            .expect("approved recovery token");
+        let fields: Vec<_> = token.split('|').collect();
+        assert_eq!(fields[4], scope);
+        assert_eq!(fields[5], capability);
+        tokens.push(token);
+    }
+    assert_eq!(tokens.len(), 3);
+    assert_ne!(tokens[0], tokens[1]);
+    assert_ne!(tokens[0], tokens[2]);
+    assert_ne!(tokens[1], tokens[2]);
+
+    for (scope, capability) in [
+        ("recovery.read", "recovery.scan"),
+        ("recovery.write", "recovery.job.read"),
+        ("recovery.read", "recovery.repair"),
+        ("runtime.read", "recovery.scan"),
+        ("recovery.write", "storage.file.put"),
+    ] {
+        assert_eq!(
+            credentials.issue_request_token(scope, capability, 2_000_000_000),
+            Err("LOCAL_COMMAND_NOT_ALLOWED".to_owned())
+        );
+    }
 }
 
 #[cfg(windows)]

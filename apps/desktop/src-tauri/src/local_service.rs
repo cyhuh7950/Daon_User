@@ -8,6 +8,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use zeroize::{Zeroize, Zeroizing};
 
 pub const PROTOCOL_VERSION: &str = "1.1";
 pub const READY_MAX_BYTES: usize = 4096;
@@ -38,8 +39,7 @@ impl AppCredentials {
         let mut root_secret = [0_u8; 32];
         let mut storage_root_key = [0_u8; 32];
         getrandom::fill(&mut instance).map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
-        getrandom::fill(&mut root_secret)
-            .map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
+        getrandom::fill(&mut root_secret).map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
         getrandom::fill(&mut storage_root_key)
             .map_err(|_| "LOCAL_RANDOM_UNAVAILABLE".to_owned())?;
         Ok(Self {
@@ -101,6 +101,9 @@ impl AppCredentials {
                 | ("storage.write", "storage.file.put")
                 | ("storage.write", "storage.vector.put")
                 | ("storage.write", "storage.lock")
+                | ("recovery.write", "recovery.scan")
+                | ("recovery.read", "recovery.job.read")
+                | ("recovery.write", "recovery.repair")
         );
         if !authorized {
             return Err("LOCAL_COMMAND_NOT_ALLOWED".to_owned());
@@ -142,7 +145,7 @@ impl fmt::Debug for AppCredentials {
             .field("app_instance_id", &"[redacted]")
             .field("root_secret", &"[redacted]")
             .field("storage_root_key", &"[redacted]")
-            .field("storage_root", &self.storage_root)
+            .field("storage_root", &"[redacted]")
             .finish()
     }
 }
@@ -264,6 +267,7 @@ struct RunningService {
     child: Child,
     stdin: Option<ChildStdin>,
     credentials: AppCredentials,
+    recovery_sensitive: Arc<RecoverySensitiveBase>,
     port: u16,
     #[cfg(windows)]
     job: WindowsJob,
@@ -280,9 +284,8 @@ impl WindowsJob {
         use std::mem::size_of;
         use std::ptr::null;
         use windows_sys::Win32::System::JobObjects::{
-            CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         };
 
         // SAFETY: Null security/name pointers request an unnamed job with default security.
@@ -321,9 +324,8 @@ impl WindowsJob {
 
         // SAFETY: Both handles are live. The child is created suspended, so it
         // cannot create an unassigned descendant before this call succeeds.
-        let assigned = unsafe {
-            AssignProcessToJobObject(self.raw(), child.as_raw_handle().cast())
-        };
+        let assigned =
+            unsafe { AssignProcessToJobObject(self.raw(), child.as_raw_handle().cast()) };
         (assigned != 0)
             .then_some(())
             .ok_or("LOCAL_JOB_ASSIGN_FAILED")
@@ -353,12 +355,9 @@ fn resume_primary_thread(process_id: u32) -> Result<(), &'static str> {
     use std::mem::size_of;
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32,
-        TH32CS_SNAPTHREAD,
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
     };
-    use windows_sys::Win32::System::Threading::{
-        OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
-    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
     // SAFETY: Snapshot flags and process id follow the ToolHelp contract.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
@@ -416,6 +415,12 @@ fn spawn_suspended_in_job(command: &mut Command) -> Result<(Child, WindowsJob), 
 trait ManagedService: Send {
     fn poll_exit(&mut self) -> Result<Option<i32>, &'static str>;
     fn verify_health(&self) -> Result<(), &'static str>;
+    fn prepare_recovery_request(
+        &self,
+        scope: &str,
+        capability: &str,
+        issued_at: u64,
+    ) -> Result<RecoveryRequestContext, &'static str>;
     fn stop(self: Box<Self>, timeout: Duration) -> Result<(), &'static str>;
 }
 
@@ -478,7 +483,7 @@ impl ServiceLauncher for RealServiceLauncher {
             startup_timeout,
             permit,
         )
-            .map(|running| Box::new(running) as Box<dyn ManagedService>)
+        .map(|running| Box::new(running) as Box<dyn ManagedService>)
     }
 }
 
@@ -494,8 +499,62 @@ impl ManagedService for RunningService {
         verify_health(self)
     }
 
+    fn prepare_recovery_request(
+        &self,
+        scope: &str,
+        capability: &str,
+        issued_at: u64,
+    ) -> Result<RecoveryRequestContext, &'static str> {
+        Ok(RecoveryRequestContext {
+            port: self.port,
+            token: self
+                .credentials
+                .issue_request_token(scope, capability, issued_at)
+                .map_err(|_| "LOCAL_TOKEN_ISSUE_FAILED")?,
+            sensitive: self.recovery_sensitive.clone(),
+        })
+    }
+
     fn stop(self: Box<Self>, timeout: Duration) -> Result<(), &'static str> {
         stop_child(*self, timeout)
+    }
+}
+
+#[cfg(feature = "contract-test")]
+struct ContractRecoveryService {
+    credentials: AppCredentials,
+    recovery_sensitive: Arc<RecoverySensitiveBase>,
+    port: u16,
+}
+
+#[cfg(feature = "contract-test")]
+impl ManagedService for ContractRecoveryService {
+    fn poll_exit(&mut self) -> Result<Option<i32>, &'static str> {
+        Ok(None)
+    }
+
+    fn verify_health(&self) -> Result<(), &'static str> {
+        Ok(())
+    }
+
+    fn prepare_recovery_request(
+        &self,
+        scope: &str,
+        capability: &str,
+        issued_at: u64,
+    ) -> Result<RecoveryRequestContext, &'static str> {
+        Ok(RecoveryRequestContext {
+            port: self.port,
+            token: self
+                .credentials
+                .issue_request_token(scope, capability, issued_at)
+                .map_err(|_| "LOCAL_TOKEN_ISSUE_FAILED")?,
+            sensitive: self.recovery_sensitive.clone(),
+        })
+    }
+
+    fn stop(self: Box<Self>, _timeout: Duration) -> Result<(), &'static str> {
+        Ok(())
     }
 }
 
@@ -543,6 +602,7 @@ struct ManagerTiming {
     startup_timeout: Duration,
     shutdown_timeout: Duration,
     monitor_interval: Duration,
+    recovery_timeout: Duration,
 }
 
 impl Default for ManagerTiming {
@@ -551,6 +611,7 @@ impl Default for ManagerTiming {
             startup_timeout: STARTUP_TIMEOUT,
             shutdown_timeout: SHUTDOWN_TIMEOUT,
             monitor_interval: Duration::from_secs(1),
+            recovery_timeout: IO_TIMEOUT,
         }
     }
 }
@@ -573,6 +634,37 @@ impl Default for LocalServiceManager {
     }
 }
 
+#[cfg(feature = "contract-test")]
+pub struct ContractRecoveryCanaries {
+    root_secret: String,
+    storage_root: String,
+    quarantine_path: String,
+}
+
+#[cfg(feature = "contract-test")]
+impl ContractRecoveryCanaries {
+    pub fn root_secret(&self) -> &str {
+        &self.root_secret
+    }
+
+    pub fn storage_root(&self) -> &str {
+        &self.storage_root
+    }
+
+    pub fn quarantine_path(&self) -> &str {
+        &self.quarantine_path
+    }
+}
+
+#[cfg(feature = "contract-test")]
+impl Drop for ContractRecoveryCanaries {
+    fn drop(&mut self) {
+        self.root_secret.zeroize();
+        self.storage_root.zeroize();
+        self.quarantine_path.zeroize();
+    }
+}
+
 impl LocalServiceManager {
     pub fn new() -> Self {
         Self::with_real_launcher(None)
@@ -580,6 +672,46 @@ impl LocalServiceManager {
 
     pub fn with_sidecar_path(executable: PathBuf) -> Self {
         Self::with_real_launcher(Some(executable))
+    }
+
+    #[cfg(feature = "contract-test")]
+    pub fn with_contract_recovery_endpoint(port: u16, recovery_timeout: Duration) -> Self {
+        Self::with_contract_recovery_endpoint_and_canaries(port, recovery_timeout).0
+    }
+
+    #[cfg(feature = "contract-test")]
+    pub fn with_contract_recovery_endpoint_and_canaries(
+        port: u16,
+        recovery_timeout: Duration,
+    ) -> (Self, ContractRecoveryCanaries) {
+        let manager = Self::with_launcher_and_timing(
+            Arc::new(RealServiceLauncher {
+                executable: None,
+                executable_args: Vec::new(),
+                environment: Vec::new(),
+            }),
+            ManagerTiming {
+                recovery_timeout,
+                ..ManagerTiming::default()
+            },
+        );
+        let credentials = AppCredentials::generate().expect("contract credentials");
+        let recovery_sensitive = Arc::new(RecoverySensitiveBase::new(&credentials));
+        let canaries = ContractRecoveryCanaries {
+            root_secret: recovery_sensitive.root_secret.clone(),
+            storage_root: recovery_sensitive.storage_root.clone(),
+            quarantine_path: recovery_sensitive.quarantine_path.clone(),
+        };
+        {
+            let mut runtime = manager.inner.runtime.lock().expect("contract runtime");
+            runtime.public = LocalServiceState::ready();
+            runtime.running = Some(Box::new(ContractRecoveryService {
+                credentials,
+                recovery_sensitive,
+                port,
+            }));
+        }
+        (manager, canaries)
     }
 
     fn with_real_launcher(executable: Option<PathBuf>) -> Self {
@@ -593,10 +725,7 @@ impl LocalServiceManager {
         )
     }
 
-    fn with_launcher_and_timing(
-        launcher: Arc<dyn ServiceLauncher>,
-        timing: ManagerTiming,
-    ) -> Self {
+    fn with_launcher_and_timing(launcher: Arc<dyn ServiceLauncher>, timing: ManagerTiming) -> Self {
         Self {
             inner: Arc::new(ManagerInner {
                 spawn_gate: Mutex::new(()),
@@ -619,6 +748,45 @@ impl LocalServiceManager {
             .lock()
             .map(|runtime| runtime.public.clone())
             .unwrap_or_else(|_| LocalServiceState::unavailable("LOCAL_STATE_POISONED"))
+    }
+
+    pub(crate) fn execute_recovery_request(
+        &self,
+        scope: &str,
+        capability: &str,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<LocalHttpResponse, &'static str> {
+        if !approved_recovery_request(scope, capability, method, path, body.len()) {
+            return Err("LOCAL_COMMAND_NOT_ALLOWED");
+        }
+        let issued_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "LOCAL_TOKEN_TIME_INVALID")?
+            .as_secs();
+        let context = {
+            let runtime = self
+                .inner
+                .runtime
+                .lock()
+                .map_err(|_| "LOCAL_STATE_POISONED")?;
+            if runtime.shutting_down || runtime.public.state() != "ready" {
+                return Err("LOCAL_SERVICE_UNAVAILABLE");
+            }
+            runtime
+                .running
+                .as_ref()
+                .ok_or("LOCAL_SERVICE_UNAVAILABLE")?
+                .prepare_recovery_request(scope, capability, issued_at)?
+        };
+        execute_recovery_http(
+            context,
+            method,
+            path,
+            body,
+            self.inner.timing.recovery_timeout,
+        )
     }
 
     pub fn start_async(&self) -> LocalServiceState {
@@ -680,19 +848,18 @@ impl LocalServiceManager {
             inner: self.inner.clone(),
             generation,
         };
-        let result = AppCredentials::generate_for_app().and_then(|credentials| {
-            self.inner
-                .launcher
-                .launch(credentials, self.inner.timing.startup_timeout, &permit)
-        })
+        let result = AppCredentials::generate_for_app()
+            .and_then(|credentials| {
+                self.inner
+                    .launcher
+                    .launch(credentials, self.inner.timing.startup_timeout, &permit)
+            })
             .and_then(|service| match service.verify_health() {
                 Ok(()) => Ok(service),
-                Err(error) => {
-                    match service.stop(self.inner.timing.shutdown_timeout) {
-                        Ok(()) => Err(error),
-                        Err(stop_error) => Err(stop_error),
-                    }
-                }
+                Err(error) => match service.stop(self.inner.timing.shutdown_timeout) {
+                    Ok(()) => Err(error),
+                    Err(stop_error) => Err(stop_error),
+                },
             });
 
         let mut stale_service = None;
@@ -843,9 +1010,7 @@ fn spawn_sidecar(
     #[cfg(windows)]
     let (child, job) = spawn_suspended_in_job(&mut command)?;
     #[cfg(not(windows))]
-    let child = command
-        .spawn()
-        .map_err(|_| "LOCAL_SERVICE_START_FAILED")?;
+    let child = command.spawn().map_err(|_| "LOCAL_SERVICE_START_FAILED")?;
     drop(spawn_gate);
     let mut starting = StartingChild(Some(child));
     let mut child_stdin = starting
@@ -879,10 +1044,12 @@ fn spawn_sidecar(
     let payload = line.strip_suffix(b"\n").unwrap_or(&line);
     let ready =
         parse_ready_envelope(payload, &credentials).map_err(|_| "LOCAL_SERVICE_READY_REJECTED")?;
+    let recovery_sensitive = Arc::new(RecoverySensitiveBase::new(&credentials));
     let running = RunningService {
         child: starting.into_child(),
         stdin: Some(child_stdin),
         credentials,
+        recovery_sensitive,
         port: ready.port(),
         #[cfg(windows)]
         job,
@@ -896,8 +1063,8 @@ fn spawn_sidecar(
 
 fn verify_health(running: &RunningService) -> Result<(), &'static str> {
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, running.port);
-    let mut stream =
-        TcpStream::connect_timeout(&address.into(), IO_TIMEOUT).map_err(|_| "LOCAL_HEALTH_FAILED")?;
+    let mut stream = TcpStream::connect_timeout(&address.into(), IO_TIMEOUT)
+        .map_err(|_| "LOCAL_HEALTH_FAILED")?;
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
         .map_err(|_| "LOCAL_HEALTH_FAILED")?;
@@ -928,6 +1095,338 @@ fn verify_health(running: &RunningService) -> Result<(), &'static str> {
         return Err("LOCAL_HEALTH_REJECTED");
     }
     Ok(())
+}
+
+pub(crate) struct LocalHttpResponse {
+    pub(crate) status: u16,
+    pub(crate) content_type: Option<String>,
+    pub(crate) content_length: Option<usize>,
+    pub(crate) body: Vec<u8>,
+}
+
+const RECOVERY_RESPONSE_MAX_BYTES: usize = 1_048_576;
+const RECOVERY_HEADER_MAX_BYTES: usize = 8192;
+
+struct RecoverySensitiveBase {
+    root_secret: String,
+    storage_root: String,
+    quarantine_path: String,
+}
+
+impl RecoverySensitiveBase {
+    fn new(credentials: &AppCredentials) -> Self {
+        Self {
+            root_secret: credentials.root_secret_hex(),
+            storage_root: credentials.storage_root.clone(),
+            quarantine_path: PathBuf::from(&credentials.storage_root)
+                .join("quarantine")
+                .to_string_lossy()
+                .into_owned(),
+        }
+    }
+}
+
+impl Drop for RecoverySensitiveBase {
+    fn drop(&mut self) {
+        self.root_secret.zeroize();
+        self.storage_root.zeroize();
+        self.quarantine_path.zeroize();
+    }
+}
+
+struct RecoveryRequestContext {
+    port: u16,
+    token: String,
+    sensitive: Arc<RecoverySensitiveBase>,
+}
+
+impl Drop for RecoveryRequestContext {
+    fn drop(&mut self) {
+        self.token.zeroize();
+    }
+}
+
+impl RecoveryRequestContext {
+    fn appears_in(&self, response: &[u8]) -> bool {
+        let port = Zeroizing::new(self.port.to_string());
+        [
+            port.as_bytes(),
+            self.token.as_bytes(),
+            self.sensitive.root_secret.as_bytes(),
+            self.sensitive.storage_root.as_bytes(),
+            self.sensitive.quarantine_path.as_bytes(),
+        ]
+        .into_iter()
+        .any(|canary| {
+            !canary.is_empty()
+                && response
+                    .windows(canary.len())
+                    .any(|window| window == canary)
+        })
+    }
+
+    fn appears_in_decoded_json(&self, body: &[u8]) -> bool {
+        let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(body) else {
+            return false;
+        };
+        let port = Zeroizing::new(self.port.to_string());
+        let storage_root = Zeroizing::new(normalize_windows_path(&self.sensitive.storage_root));
+        let quarantine_path =
+            Zeroizing::new(normalize_windows_path(&self.sensitive.quarantine_path));
+        self.json_value_contains_context(&mut value, &port, &storage_root, &quarantine_path)
+    }
+
+    fn json_value_contains_context(
+        &self,
+        value: &mut serde_json::Value,
+        port: &str,
+        storage_root: &str,
+        quarantine_path: &str,
+    ) -> bool {
+        match value {
+            serde_json::Value::String(text) => {
+                let found = self.string_contains_context(text, port, storage_root, quarantine_path);
+                text.zeroize();
+                found
+            }
+            serde_json::Value::Array(values) => {
+                let mut found = false;
+                for value in values {
+                    found |= self.json_value_contains_context(
+                        value,
+                        port,
+                        storage_root,
+                        quarantine_path,
+                    );
+                }
+                found
+            }
+            serde_json::Value::Object(values) => {
+                let mut found = false;
+                for (mut key, mut value) in std::mem::take(values) {
+                    found |=
+                        self.string_contains_context(&key, port, storage_root, quarantine_path);
+                    key.zeroize();
+                    found |= self.json_value_contains_context(
+                        &mut value,
+                        port,
+                        storage_root,
+                        quarantine_path,
+                    );
+                }
+                found
+            }
+            _ => false,
+        }
+    }
+
+    fn string_contains_context(
+        &self,
+        value: &str,
+        port: &str,
+        storage_root: &str,
+        quarantine_path: &str,
+    ) -> bool {
+        if value.contains(port)
+            || value.contains(&self.token)
+            || contains_ascii_case_insensitive(value, &self.sensitive.root_secret)
+        {
+            return true;
+        }
+        let normalized = Zeroizing::new(normalize_windows_path(value));
+        (!storage_root.is_empty() && normalized.contains(storage_root))
+            || (!quarantine_path.is_empty() && normalized.contains(quarantine_path))
+    }
+}
+
+fn contains_ascii_case_insensitive(value: &str, needle: &str) -> bool {
+    !needle.is_empty()
+        && value
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+fn normalize_windows_path(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|character| if character == '\\' { '/' } else { character })
+        .collect()
+}
+
+fn approved_recovery_request(
+    scope: &str,
+    capability: &str,
+    method: &str,
+    path: &str,
+    body_len: usize,
+) -> bool {
+    match (scope, capability, method, path) {
+        ("recovery.write", "recovery.scan", "POST", "/local/v1/recovery/scans") => body_len <= 4096,
+        ("recovery.read", "recovery.job.read", "GET", path) => {
+            body_len == 0 && recovery_job_path(path, false)
+        }
+        ("recovery.write", "recovery.repair", "POST", path) => {
+            body_len <= 1024 && recovery_job_path(path, true)
+        }
+        _ => false,
+    }
+}
+
+fn recovery_job_path(path: &str, repair: bool) -> bool {
+    const PREFIX: &str = "/local/v1/recovery/jobs/";
+    let Some(mut job_id) = path.strip_prefix(PREFIX) else {
+        return false;
+    };
+    if repair {
+        let Some(value) = job_id.strip_suffix("/repair") else {
+            return false;
+        };
+        job_id = value;
+    } else if job_id.contains('/') {
+        return false;
+    }
+    !job_id.is_empty()
+        && job_id.len() <= 256
+        && job_id.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+        })
+}
+
+fn execute_recovery_http(
+    context: RecoveryRequestContext,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    timeout: Duration,
+) -> Result<LocalHttpResponse, &'static str> {
+    let deadline = Instant::now() + timeout;
+    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, context.port);
+    let mut stream = TcpStream::connect_timeout(&address.into(), remaining(deadline)?)
+        .map_err(|_| "LOCAL_RECOVERY_CONNECT_FAILED")?;
+    let socket_timeout = remaining(deadline)?;
+    stream
+        .set_read_timeout(Some(socket_timeout))
+        .and_then(|_| stream.set_write_timeout(Some(socket_timeout)))
+        .map_err(|_| "LOCAL_RECOVERY_TIMEOUT_CONFIG_FAILED")?;
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {token}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        context.port,
+        body.len(),
+        token = context.token,
+    );
+    let write_result = stream.write_all(request.as_bytes()).and_then(|_| {
+        if body.is_empty() {
+            Ok(())
+        } else {
+            stream.set_write_timeout(Some(remaining(deadline).map_err(std::io::Error::other)?))?;
+            stream.write_all(body)
+        }
+    });
+    request.zeroize();
+    write_result.map_err(|_| "LOCAL_RECOVERY_REQUEST_FAILED")?;
+
+    let mut raw = Zeroizing::new(Vec::new());
+    let maximum = RECOVERY_HEADER_MAX_BYTES + RECOVERY_RESPONSE_MAX_BYTES + 1;
+    let mut chunk = [0_u8; 8192];
+    loop {
+        stream
+            .set_read_timeout(Some(remaining(deadline)?))
+            .map_err(|_| "LOCAL_RECOVERY_TIMEOUT_CONFIG_FAILED")?;
+        let count = stream.read(&mut chunk).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::TimedOut
+                || error.kind() == std::io::ErrorKind::WouldBlock
+            {
+                "LOCAL_RECOVERY_REQUEST_TIMEOUT"
+            } else {
+                "LOCAL_RECOVERY_RESPONSE_REJECTED"
+            }
+        })?;
+        if count == 0 {
+            break;
+        }
+        if raw.len() + count > maximum {
+            return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
+        }
+        raw.extend_from_slice(&chunk[..count]);
+    }
+    if context.appears_in(&raw) {
+        raw.zeroize();
+        return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
+    }
+    let parsed = parse_local_http_response(&raw);
+    raw.zeroize();
+    let mut response = parsed?;
+    if context.appears_in_decoded_json(&response.body) {
+        response.body.zeroize();
+        return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
+    }
+    Ok(response)
+}
+
+fn remaining(deadline: Instant) -> Result<Duration, &'static str> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or("LOCAL_RECOVERY_REQUEST_TIMEOUT")
+}
+
+fn parse_local_http_response(raw: &[u8]) -> Result<LocalHttpResponse, &'static str> {
+    let separator = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or("LOCAL_RECOVERY_RESPONSE_REJECTED")?;
+    if separator > RECOVERY_HEADER_MAX_BYTES {
+        return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
+    }
+    let headers =
+        std::str::from_utf8(&raw[..separator]).map_err(|_| "LOCAL_RECOVERY_RESPONSE_REJECTED")?;
+    let mut lines = headers.split("\r\n");
+    let mut status_line = lines
+        .next()
+        .ok_or("LOCAL_RECOVERY_RESPONSE_REJECTED")?
+        .split_ascii_whitespace();
+    if status_line.next() != Some("HTTP/1.1") {
+        return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
+    }
+    let status = status_line
+        .next()
+        .filter(|value| value.len() == 3 && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or("LOCAL_RECOVERY_RESPONSE_REJECTED")?;
+    let mut content_type = None;
+    let mut content_length = None;
+    for line in lines {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or("LOCAL_RECOVERY_RESPONSE_REJECTED")?;
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("content-type") {
+            if content_type.replace(value.to_owned()).is_some() {
+                return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
+            }
+        } else if name.eq_ignore_ascii_case("content-length") {
+            let length = value
+                .parse::<usize>()
+                .map_err(|_| "LOCAL_RECOVERY_RESPONSE_REJECTED")?;
+            if content_length.replace(length).is_some() {
+                return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
+            }
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
+        }
+    }
+    let body = raw[(separator + 4)..].to_vec();
+    if body.len() > RECOVERY_RESPONSE_MAX_BYTES || content_length != Some(body.len()) {
+        return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
+    }
+    Ok(LocalHttpResponse {
+        status,
+        content_type,
+        content_length,
+        body,
+    })
 }
 
 trait ProcessTermination {
@@ -978,9 +1477,7 @@ impl ProcessTermination for RunningTermination<'_> {
     }
 
     fn kill_child(&mut self) -> Result<(), &'static str> {
-        self.child
-            .kill()
-            .map_err(|_| "LOCAL_CHILD_KILL_FAILED")
+        self.child.kill().map_err(|_| "LOCAL_CHILD_KILL_FAILED")
     }
 }
 
@@ -1012,9 +1509,7 @@ fn stop_process(
     }
 
     #[cfg(windows)]
-    if process.terminate_job().is_ok()
-        && wait_for_process_exit(process, clock, timeout)?
-    {
+    if process.terminate_job().is_ok() && wait_for_process_exit(process, clock, timeout)? {
         return Ok(());
     }
 
@@ -1089,6 +1584,21 @@ mod manager_tests {
         assert!(!debug.contains(credentials.app_instance_id()));
     }
 
+    #[test]
+    fn recovery_http_parser_rejects_a_forged_status_line() {
+        let body = br#"{"data":{}}"#;
+        let raw = format!(
+            "GARBAGE 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).expect("body")
+        )
+        .into_bytes();
+        assert_eq!(
+            parse_local_http_response(&raw).err(),
+            Some("LOCAL_RECOVERY_RESPONSE_REJECTED")
+        );
+    }
+
     struct FakeControl {
         exited: AtomicBool,
         healthy: AtomicBool,
@@ -1126,6 +1636,15 @@ mod manager_tests {
                 .load(Ordering::SeqCst)
                 .then_some(())
                 .ok_or("LOCAL_HEALTH_FAILED")
+        }
+
+        fn prepare_recovery_request(
+            &self,
+            _scope: &str,
+            _capability: &str,
+            _issued_at: u64,
+        ) -> Result<RecoveryRequestContext, &'static str> {
+            Err("LOCAL_TEST_RECOVERY_UNAVAILABLE")
         }
 
         fn stop(self: Box<Self>, _timeout: Duration) -> Result<(), &'static str> {
@@ -1212,9 +1731,7 @@ mod manager_tests {
             ));
             thread::sleep(self.delay);
             match self.plans.lock().expect("plans").pop_front() {
-                Some(LaunchPlan::Service(control)) => {
-                    Ok(Box::new(FakeService { control }))
-                }
+                Some(LaunchPlan::Service(control)) => Ok(Box::new(FakeService { control })),
                 Some(LaunchPlan::Error(code)) => Err(code),
                 None => Err("LOCAL_TEST_PLAN_EXHAUSTED"),
             }
@@ -1226,6 +1743,7 @@ mod manager_tests {
             startup_timeout: Duration::from_millis(100),
             shutdown_timeout: Duration::from_millis(20),
             monitor_interval: Duration::from_millis(5),
+            recovery_timeout: Duration::from_millis(100),
         }
     }
 
@@ -1308,8 +1826,7 @@ mod manager_tests {
             ],
             Duration::ZERO,
         );
-        let manager =
-            LocalServiceManager::with_launcher_and_timing(launcher.clone(), timing());
+        let manager = LocalServiceManager::with_launcher_and_timing(launcher.clone(), timing());
 
         manager.start_async();
         wait_for_state(&manager, "ready");
@@ -1333,8 +1850,7 @@ mod manager_tests {
             ],
             Duration::ZERO,
         );
-        let manager =
-            LocalServiceManager::with_launcher_and_timing(launcher.clone(), timing());
+        let manager = LocalServiceManager::with_launcher_and_timing(launcher.clone(), timing());
 
         manager.start_async();
         wait_for_state(&manager, "ready");
@@ -1357,8 +1873,7 @@ mod manager_tests {
     #[test]
     fn shutdown_after_start_reservation_prevents_process_spawn() {
         let launcher = GatedLauncher::new();
-        let manager =
-            LocalServiceManager::with_launcher_and_timing(launcher.clone(), timing());
+        let manager = LocalServiceManager::with_launcher_and_timing(launcher.clone(), timing());
 
         manager.start_async();
         wait_for_flag(&launcher.reserved);
@@ -1381,8 +1896,7 @@ mod manager_tests {
         control.block_stop.store(true, Ordering::SeqCst);
         let launcher =
             FakeLauncher::new(vec![LaunchPlan::Service(control.clone())], Duration::ZERO);
-        let manager =
-            LocalServiceManager::with_launcher_and_timing(launcher, timing());
+        let manager = LocalServiceManager::with_launcher_and_timing(launcher, timing());
         manager.start_async();
         wait_for_state(&manager, "ready");
 
@@ -1403,15 +1917,17 @@ mod manager_tests {
             vec![LaunchPlan::Error("LOCAL_SERVICE_START_TIMEOUT")],
             Duration::ZERO,
         );
-        let manager =
-            LocalServiceManager::with_launcher_and_timing(launcher.clone(), timing());
+        let manager = LocalServiceManager::with_launcher_and_timing(launcher.clone(), timing());
         manager.start_async();
         assert_eq!(
             wait_for_state(&manager, "unavailable").error_code(),
             Some("LOCAL_SERVICE_START_TIMEOUT")
         );
         manager.shutdown();
-        assert_eq!(manager.start_async().error_code(), Some("LOCAL_SERVICE_STOPPED"));
+        assert_eq!(
+            manager.start_async().error_code(),
+            Some("LOCAL_SERVICE_STOPPED")
+        );
         assert_eq!(launcher.launch_count(), 1);
     }
 
@@ -1461,11 +1977,8 @@ mod manager_tests {
         let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let open = TcpStream::connect_timeout(
-                &address.into(),
-                Duration::from_millis(100),
-            )
-            .is_ok();
+            let open =
+                TcpStream::connect_timeout(&address.into(), Duration::from_millis(100)).is_ok();
             if open == expected_open {
                 return;
             }
@@ -1507,11 +2020,7 @@ mod manager_tests {
             job: &job,
         };
         assert_eq!(
-            wait_for_process_exit(
-                &mut process,
-                &SystemStopClock,
-                Duration::from_secs(5)
-            ),
+            wait_for_process_exit(&mut process, &SystemStopClock, Duration::from_secs(5)),
             Ok(true)
         );
         wait_for_fixture_listener(port, false);
@@ -1722,8 +2231,8 @@ mod manager_tests {
             Ok(mode) => mode,
             Err(_) => return,
         };
-        let role = std::env::var("DAON_MANAGER_FIXTURE_ROLE")
-            .unwrap_or_else(|_| "parent".to_owned());
+        let role =
+            std::env::var("DAON_MANAGER_FIXTURE_ROLE").unwrap_or_else(|_| "parent".to_owned());
         let port: u16 = std::env::var("DAON_MANAGER_FIXTURE_PORT")
             .expect("fixture port")
             .parse()
@@ -1751,7 +2260,9 @@ mod manager_tests {
             return;
         }
         if mode == "invalid_then_ready" && launch_index == 0 {
-            println!(r#"{{"event":"Ready","protocol_version":"0","app_instance_id":"invalid","port":{port}}}"#);
+            println!(
+                r#"{{"event":"Ready","protocol_version":"0","app_instance_id":"invalid","port":{port}}}"#
+            );
             return;
         }
 
@@ -1809,11 +2320,7 @@ mod manager_tests {
     }
 
     #[cfg(windows)]
-    fn manager_fixture(
-        mode: &str,
-        port: u16,
-        marker: &std::path::Path,
-    ) -> LocalServiceManager {
+    fn manager_fixture(mode: &str, port: u16, marker: &std::path::Path) -> LocalServiceManager {
         let executable = std::env::var_os("PATH")
             .into_iter()
             .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
@@ -1828,10 +2335,7 @@ mod manager_tests {
                 executable_args: vec![fixture.to_string_lossy().into_owned()],
                 environment: vec![
                     ("DAON_MANAGER_FIXTURE_MODE".to_owned(), mode.to_owned()),
-                    (
-                        "DAON_MANAGER_FIXTURE_PORT".to_owned(),
-                        port.to_string(),
-                    ),
+                    ("DAON_MANAGER_FIXTURE_PORT".to_owned(), port.to_string()),
                     (
                         "DAON_MANAGER_FIXTURE_MARKER".to_owned(),
                         marker.to_string_lossy().into_owned(),
@@ -1844,6 +2348,7 @@ mod manager_tests {
                 startup_timeout: Duration::from_secs(2),
                 shutdown_timeout: Duration::from_millis(250),
                 monitor_interval: Duration::from_millis(10),
+                recovery_timeout: Duration::from_millis(250),
             },
         )
     }
@@ -1909,7 +2414,10 @@ mod manager_tests {
                         .flatten()
                 })
                 .collect();
-            if process_ids.iter().all(|process_id| !process_is_running(*process_id)) {
+            if process_ids
+                .iter()
+                .all(|process_id| !process_is_running(*process_id))
+            {
                 match std::fs::remove_file(marker) {
                     Ok(()) => return,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
