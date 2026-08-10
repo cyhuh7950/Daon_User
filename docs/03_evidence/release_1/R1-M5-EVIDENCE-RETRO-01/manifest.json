@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0-retro-audit",
+  "work_order_id": "R1-M5-EVIDENCE-RETRO-01",
+  "issue_id": "R1-M5-EVIDENCE-RETRO-01-I001",
+  "status": "COMPLETED",
+  "scope": "C0 evidence and validation-record reconstruction only; this is not an M5 product completion verdict",
+  "baseline": {
+    "head": "e74ee123324b500d087cc919958bf7382ae1bf3e",
+    "approval_documents": {
+      "design_0_9": "87F338381F62ECD36EE5991969950BC87F154F0E229C65322B5BE0162C224560",
+      "implementation_plan_1_7": "F63DD247D35FBB9E45A5D724F907AEC25C9EB00A0B5FD12A94F519972D7E4096",
+      "test_plan_0_9": "CF607EE9CF25552F051BBC382EB269E5AE11C7C0E614C7C6D2223FE6DE7560F2",
+      "baseline_manifest": "530D6FB9C9EDBCB41A8D6DA1CD61046367176CD6978D0A1B2D9CF04BFDCFCCED",
+      "cp3_approval": "6C9CC839848C3AAA04727E272D06B81998090DA82DDDCA1A5CD13CE6382CCFC6",
+      "verification_debt": "0CB3927F3F259653204491B451F80A31D2261DD3B49A6F07B171301C6D6FF3E3"
+    },
+    "hash_verdict": "Work Order reference hashes for design, implementation plan, test plan, and baseline manifest all matched."
+  },
+  "evidence_files": [
+    {"path": "docs/03_evidence/release_1/R1-M5-EVIDENCE-RETRO-01/evidence-index.md", "sha256": "6CA551566FDD521EFDDCC9C494B854B0C7A67560797EB3246082111A1F61AA5E", "type": "historical_record", "recorded_commit": null, "provenance_status": "pending_current_commit"}
+  ],
+  "work_order_manifests": [
+    "docs/03_evidence/release_1/R1-M5-01/manifest.json",
+    "docs/03_evidence/release_1/R1-M5-02/manifest.json",
+    "docs/03_evidence/release_1/R1-M5-03/manifest.json",
+    "docs/03_evidence/release_1/R1-M5-04/manifest.json",
+    "docs/03_evidence/release_1/R1-M5-05/manifest.json",
+    "docs/03_evidence/release_1/R1-M5-06/manifest.json",
+    "docs/03_evidence/release_1/R1-M5-07/manifest.json"
+  ],
+  "known_limits": [
+    "Baseline manifest original approval hashes differ from current approved-revision working-tree hashes; neither is changed by this audit.",
+    "R1-M5-07 remains VERIFYING with actual Web/Windows UI and same-origin Browser Network evidence unverified.",
+    "No product test, build, server, browser, Docker, DB, Object Storage, WSL, or ysna-server command was executed by this retrospective audit."
+  ],
+  "self_checksum_policy": "This manifest is parsed and path-validated by the retrospective verifier; it does not checksum itself to avoid recursive checksum drift."
+}

@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0-retro-audit",
+  "work_order_id": "R1-M5-01",
+  "issue_id": "R1-M5-01",
+  "retrospective_audit": {
+    "work_order_id": "R1-M5-EVIDENCE-RETRO-01",
+    "audit_status": "historical_record_completed",
+    "historical_status": "COMPLETED",
+    "implementation_commit": "6d8d079e3b7c23c54f653a986f9d3dd03fa04607",
+    "correction_relationships": [
+      {
+        "work_order_id": "R1-M5-01-C01",
+        "status": "COMPLETED",
+        "implementation_commit": "f872e89f57c5771601eafc9e0a8e637e323d6f4d",
+        "relationship": "liveness/readiness and workspace-scoped idempotency correction; original history retained"
+      }
+    ],
+    "environment": ["local", "ysna-server isolated PostgreSQL 18.4/pgvector 0.8.2"],
+    "evidence_files": [
+      {"path": "docs/03_evidence/release_1/R1-M5-01/dependency-decision.md", "sha256": "379217CC6ADFCCD03A7859E6A3439C6C712EFEEB3C3FA809741D6318FB27030E", "type": "contract/static", "recorded_commit": "6d8d079e3b7c23c54f653a986f9d3dd03fa04607"},
+      {"path": "docs/03_evidence/release_1/R1-M5-01/server-validation-manifest.json", "sha256": "0E580DA21E0EB00207C36C7F5A31252CDA25F236F77868742452FE4206C7068A", "type": "actual_db_object_api", "recorded_commit": "aec8fd442d6409be238c2b79b2ef9e06c3902a60"},
+      {"path": "docs/03_evidence/release_1/R1-M5-01/server-validation-summary.md", "sha256": "AA79E4776E7B79C9291E1354F10150815F8542BCE95164C0E551FDF5EEFF32F1", "type": "actual_db_object_api", "recorded_commit": "aec8fd442d6409be238c2b79b2ef9e06c3902a60"},
+      {"path": "docs/03_evidence/release_1/R1-M5-01-C01/local-verification.md", "sha256": "E817F872CAD2FABC83D87C365757516E1CB94B547DEA221AEBD311A3AD68B94F", "type": "automated_test", "recorded_commit": "a7c489d79b0ffaaf18c6919f29035a335a9743ba"},
+      {"path": "docs/03_evidence/release_1/R1-M5-01-C01/server-verification.json", "sha256": "365313B9546C07091D5995F39CBFF542174E251D925C1FF2F2A660689EA429D4", "type": "actual_db_object_api", "recorded_commit": "a7c489d79b0ffaaf18c6919f29035a335a9743ba"}
+    ],
+    "known_limits": [
+      "Object Storage, Queue/Worker and Local-private storage are other Work Order scopes.",
+      "Oracle Cloud production deployment was not performed.",
+      "No actual browser/UI/Network evidence is claimed by this Cloud storage Work Order."
+    ],
+    "self_checksum_policy": "This manifest is validated by the retrospective verifier and does not checksum itself to avoid recursive checksum drift."
+  }
+}

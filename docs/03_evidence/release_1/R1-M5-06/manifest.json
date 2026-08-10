@@ -83,5 +83,14 @@
   "protected_untracked_files": [
     "docs/04_test_reports/release_1/interim_review_2026-07-30.md",
     "docs/04_test_reports/release_1_model_provider_queries.md"
-  ]
+  ],
+  "retrospective_audit": {
+    "work_order_id": "R1-M5-EVIDENCE-RETRO-01",
+    "audit_status": "historical_record_completed",
+    "evidence_files": [
+      {"path": "docs/03_evidence/release_1/R1-M5-06/verification-summary.md", "sha256": "EC73A09545DF8AA0F51649ED27039739F49B84EA36A3BC54663FC02B875F9E10", "type": "actual_db_object_api", "recorded_commit": "be8c5eb50a49550dcbb401a615166566a65eb41f"}
+    ],
+    "known_limits": ["Server isolated resources were deliberately preserved; cleanup requires separate approval.", "One Node/Next presence-only server-image environment check used a separate ephemeral harness."],
+    "self_checksum_policy": "This manifest is validated by the retrospective verifier and does not checksum itself to avoid recursive checksum drift."
+  }
 }

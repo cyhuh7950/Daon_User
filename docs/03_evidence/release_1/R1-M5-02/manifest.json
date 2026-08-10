@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0-retro-audit",
+  "work_order_id": "R1-M5-02",
+  "issue_id": "R1-M5-02",
+  "retrospective_audit": {
+    "work_order_id": "R1-M5-EVIDENCE-RETRO-01",
+    "audit_status": "historical_record_completed",
+    "historical_status": "COMPLETED",
+    "implementation_commit": "f3da3c78a3fce3abecf94dff932df3cdb66d53d3",
+    "correction_relationships": [{"work_order_id": "R1-M5-02-C01", "status": "COMPLETED", "relationship": "object integration fixture correction; product/API/schema/compose contracts were not changed"}],
+    "environment": ["local", "ysna-server isolated PostgreSQL 18.4/pgvector 0.8.2/MinIO"],
+    "evidence_files": [
+      {"path": "docs/03_evidence/release_1/R1-M5-02-C01/manifest.json", "sha256": "B75BC4852686E125724F024AA2A669072AEC5EF106F36B143433E7DADDB20D51", "type": "historical_record", "recorded_commit": "908df03e17db7cc8434bd818f93f0cec7ba187b4"},
+      {"path": "docs/03_evidence/release_1/R1-M5-02-C01/server-runtime-validation.sh", "sha256": "D37550B541DCC65E892E386305858880FBC4F2AA1ECD710B2D3D7A503205B4EC", "type": "contract/static", "recorded_commit": "908df03e17db7cc8434bd818f93f0cec7ba187b4"},
+      {"path": "docs/03_evidence/release_1/R1-M5-02-C01/server-validation-summary.md", "sha256": "F8A00FDCD4196A7710022556AFC23AA2EF5B1B96BF9230F7B5AF350FF5789643", "type": "actual_db_object_api", "recorded_commit": "908df03e17db7cc8434bd818f93f0cec7ba187b4"},
+      {"path": "docs/03_evidence/release_1/R1-M5-02-C01/server-validation.sh", "sha256": "480AE5E0ACD0B429D6BDBE39D221CE3B3E0B7541534FCA01A728422F3D0A4BAC", "type": "contract/static", "recorded_commit": "908df03e17db7cc8434bd818f93f0cec7ba187b4"}
+    ],
+    "known_limits": ["Browser Network verification was not performed because browser code was unchanged.", "Release test-plan wave and OCI deployment were not performed.", "The manifest is a retrospective evidence index, not a new runtime execution."],
+    "self_checksum_policy": "This manifest is validated by the retrospective verifier and does not checksum itself to avoid recursive checksum drift."
+  }
+}

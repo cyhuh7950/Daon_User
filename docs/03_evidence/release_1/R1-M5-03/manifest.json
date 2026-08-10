@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0-retro-audit",
+  "work_order_id": "R1-M5-03",
+  "issue_id": "R1-M5-03",
+  "retrospective_audit": {
+    "work_order_id": "R1-M5-EVIDENCE-RETRO-01",
+    "audit_status": "historical_record_completed_with_correction",
+    "historical_status": "COMPLETED",
+    "implementation_commits": ["c21a6b64d9c1a920fb082a4de1b40fd12be63d55", "11a121e8063f8d3fb7803da072dae2b19edf78a7"],
+    "correction_relationships": [{"work_order_id": "R1-M5-03-C01", "status": "INCOMPLETE", "relationship": "initial local storage correction was not a formal failure report"}, {"work_order_id": "R1-M5-03-C02", "status": "COMPLETED", "relationship": "Linux CI type/coverage correction; Windows contract preserved"}],
+    "environment": ["official Windows checkout/installed NSIS app", "ysna-server Ubuntu 24.04 ARM64", "GitHub CI"],
+    "evidence_files": [
+      {"path": "docs/03_evidence/release_1/R1-M5-03/feasibility_probe.py", "sha256": "6EF08F01B3FF0B3C620437134A55693ACE34E8E1A67408B55E43657A50491E98", "type": "contract/static", "recorded_commit": "f11320d942cf5635d51fd9d0dbbce355f776f488"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03/installed-app.json", "sha256": "0A8FAE4A9F1885F169825AC8BF8345D4798295F37FF8C815D3D8C7A697922634", "type": "actual_ui_network", "recorded_commit": "f11320d942cf5635d51fd9d0dbbce355f776f488"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03/packaged-runtime.json", "sha256": "3279B35B53E27ECA927866CADE6D1D05D3B76739B802A5BF9E433AC26DBBD76D", "type": "actual_ui_network", "recorded_commit": "f11320d942cf5635d51fd9d0dbbce355f776f488"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03-C01/installed-app.json", "sha256": "903890BC4E31F39A04692855B08C0EE288BB10C2147728B4BE5BF4CD443C9FCA", "type": "actual_ui_network", "recorded_commit": "989090fcf5bf3a74ad900082f30f4aee021c26c1"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03-C01/manifest.json", "sha256": "C4CFA1A51370749BB73CF8CD256A726DF9A7C008A9A8337E1CCDC2730FA58D36", "type": "historical_record", "recorded_commit": "989090fcf5bf3a74ad900082f30f4aee021c26c1"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03-C01/packaged-runtime.json", "sha256": "7FF61147EA0EEAE789C6190170AA346C4AA58E64B8E00C260FA248E9EAF03CD7", "type": "actual_ui_network", "recorded_commit": "989090fcf5bf3a74ad900082f30f4aee021c26c1"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03-C01/verification-results.json", "sha256": "160DEACA836882CBB65E41A712A73AC5996E069F5AAEB2A4604674AEF721D845", "type": "automated_test", "recorded_commit": "989090fcf5bf3a74ad900082f30f4aee021c26c1"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03-C02/github-ci.json", "sha256": "6A97BA7C5438E3E5DE072AE4DF17149842A90E3EA420B7BD7C5B92BE3E36A122", "type": "historical_record", "recorded_commit": "7669d9c263ac5c8327183fe65fcd80c091bcf1e0"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03-C02/manifest.json", "sha256": "1D2A56BACA011A17F560E878467AA3194B770B58DACB75BE7BA13855CA8808B3", "type": "historical_record", "recorded_commit": "7669d9c263ac5c8327183fe65fcd80c091bcf1e0"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03-C02/ubuntu-green.json", "sha256": "262BB887AE91987BF9FEE5F4DE7BC54CB48C0AFA4A3FA1574D3811D1C24DC6C3", "type": "automated_test", "recorded_commit": "7669d9c263ac5c8327183fe65fcd80c091bcf1e0"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03-C02/ubuntu-red.json", "sha256": "F1B420B2CA6FD7EEF29D04BB649C8E352EA36ED1CC29BFA65DA58D3686EF3ADF", "type": "historical_record", "recorded_commit": "7669d9c263ac5c8327183fe65fcd80c091bcf1e0"},
+      {"path": "docs/03_evidence/release_1/R1-M5-03-C02/windows-green.json", "sha256": "83CBE23E0E952C29153488B90AE8C0BEF6EB6242792C61CA848EC6374AFB3DE2", "type": "automated_test", "recorded_commit": "7669d9c263ac5c8327183fe65fcd80c091bcf1e0"}
+    ],
+    "known_limits": ["C01 has one INCOMPLETE record but zero formal FAILURE_REPORT records.", "A clean server checkout remains preserved pending separate destructive-action approval.", "This evidence does not prove the later M5 Web Cloud same-origin journey."],
+    "self_checksum_policy": "This manifest is validated by the retrospective verifier and does not checksum itself to avoid recursive checksum drift."
+  }
+}

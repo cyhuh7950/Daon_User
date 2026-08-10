@@ -98,5 +98,16 @@
     "protected_resources_unchanged": true
   },
   "secrets_or_dsn_in_evidence": 0,
-  "formal_failure_reports": 0
+  "formal_failure_reports": 0,
+  "retrospective_audit": {
+    "work_order_id": "R1-M5-EVIDENCE-RETRO-01",
+    "audit_status": "historical_record_completed",
+    "evidence_files": [
+      {"path": "docs/03_evidence/release_1/R1-M5-04/server-validation-summary.md", "sha256": "8A9F7746ED901892783CD69C430A5942340062763C0C4D2B15FA2F1A2123E7C7", "type": "actual_db_object_api", "recorded_commit": "97c5319132af521a3f4ceb4e6a07747a998b95f9"},
+      {"path": "docs/03_evidence/release_1/R1-M5-04/server-validation.py", "sha256": "67E4ECE20AD2BD08F33CDD908200FFFEE54365A3E71A103E35449ECEDFE2C8BB", "type": "contract/static", "recorded_commit": "0b00d92284704e4b9137049bd50cf58c1f2af6ad"}
+    ],
+    "correction_relationships": [{"work_order_id": "R1-M5-04-C01", "status": "historical correction", "relationship": "original C01 history retained"}, {"work_order_id": "R1-M5-04-C02", "status": "COMPLETED", "implementation_commit": "a6752c54f2dc69d6bf56bb844ac774bdb623bb3a", "relationship": "approved GenerationRequest transition correction"}],
+    "known_limits": ["Two S3-specific tests were outside the DB-only fixture scope.", "Browser code was unchanged; no browser Network evidence is claimed."],
+    "self_checksum_policy": "This manifest is validated by the retrospective verifier and does not checksum itself to avoid recursive checksum drift."
+  }
 }

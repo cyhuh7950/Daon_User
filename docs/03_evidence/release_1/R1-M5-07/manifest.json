@@ -81,5 +81,16 @@
   "protected_untracked_files": [
     "docs/04_test_reports/release_1/interim_review_2026-07-30.md",
     "docs/04_test_reports/release_1_model_provider_queries.md"
-  ]
+  ],
+  "retrospective_audit": {
+    "work_order_id": "R1-M5-EVIDENCE-RETRO-01",
+    "audit_status": "historical_record_verifying",
+    "evidence_files": [
+      {"path": "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json", "sha256": "5BACA07602DEFB33EA8B9F0FABAF51017F4C52EE69F06810EFF666069975200A", "type": "contract/static", "recorded_commit": "061bc4dcbddfd839fdcb64aa21ed498fe1e70e0b"},
+      {"path": "docs/03_evidence/release_1/R1-M5-07/verification-summary.md", "sha256": "40F618DEC4DA3A44E26DB849E7CADA91CC0097D9EF77240FEB944D6EDA6A7E28", "type": "actual_db_object_api", "recorded_commit": "57717efd4bed4d172d9f828a41a03a6077c0d278"}
+    ],
+    "status_conflict": "The completion report has VERIFYING and a later historical BLOCKED note; neither is promoted to COMPLETED. Existing manifest remains EXTERNAL_DATA_PASS_BROWSER_EVIDENCE_PENDING.",
+    "known_limits": ["Actual Web/Windows screens and browser same-origin Network evidence are unverified.", "ysna-server Web/API service browser validation is unverified.", "No G9-DRILL destructive production restore was run."],
+    "self_checksum_policy": "This manifest is validated by the retrospective verifier and does not checksum itself to avoid recursive checksum drift."
+  }
 }

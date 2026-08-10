@@ -192,5 +192,15 @@
   ],
   "secrets_or_credentials_in_evidence": 0,
   "formal_failure_reports": 0,
-  "status": "COMPLETED"
+  "status": "COMPLETED",
+  "retrospective_audit": {
+    "work_order_id": "R1-M5-EVIDENCE-RETRO-01",
+    "audit_status": "historical_record_completed",
+    "evidence_files": [
+      {"path": "docs/03_evidence/release_1/R1-M5-05/completion-report.md", "sha256": "2B6AA2D0F76657A4A5DF24E7153F5C9FDE1A94E55438380EF5D04DF00660D9FF", "type": "historical_record", "recorded_commit": "95262e2e6f74ed8fe275cd401a2dbcd343ccecb8"}
+    ],
+    "correction_relationships": [{"work_order_id": "R1-M5-05-C02", "status": "COMPLETED", "relationship": "completion report and manifest evidence linkage repair; formal failures remain zero"}],
+    "known_limits": ["Browser/Browser Network validation was not performed because browser code was unchanged.", "Release TP wave, OCI deployment, and isolated-resource cleanup were not performed."],
+    "self_checksum_policy": "This manifest is validated by the retrospective verifier and does not checksum itself to avoid recursive checksum drift."
+  }
 }
