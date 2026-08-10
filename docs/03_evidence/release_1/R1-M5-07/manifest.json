@@ -50,6 +50,12 @@
       "observed_at": "2026-08-10T11:24:00+09:00",
       "note": "After deployment correction, Chrome showed the Recovery API area ready with zero Backup rows after automatic initialization and one read-only refresh. Network URL/method/status and same-origin/internal-direct-zero remain unproven because the approved Browser Client does not expose Network event/response details; the existing browser-pending verdict remains unchanged."
     },
+    "web_network_02": {
+      "status": "BLOCKED_NETWORK_CAPTURE_CAPABILITY_UNAVAILABLE",
+      "evidence": "docs/03_evidence/release_1/R1-M5-07-WEB-NETWORK-02/manifest.json",
+      "observed_at": "2026-08-10T11:51:16+09:00",
+      "note": "The approved Browser Client exposes no Network event/response API, and its read-only evaluation context exposes neither fetch/XMLHttpRequest nor document mutation needed for the explicitly allowed same-tab temporary instrumentation. No request or sensitive information was captured; the browser-pending verdict remains unchanged."
+    },
     "openapi_contract": {
       "status": "PASS",
       "evidence": "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json"

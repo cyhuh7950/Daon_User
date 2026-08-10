@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-07-WEB-NETWORK-02",
+  "issue_id": "R1-M5-07-WEB-NETWORK-02-I001",
+  "verdict": "BLOCKED_NETWORK_CAPTURE_CAPABILITY_UNAVAILABLE",
+  "observed_at": "2026-08-10T11:51:16+09:00",
+  "target_url": "https://daon-user.sinsan.kr/operations",
+  "probe_url": "https://daon-user.sinsan.kr/",
+  "runtime": {
+    "product_commit": "d0f0d0985120b78e8b6a0d32e22c69df12d3969e",
+    "web_image": "sha256:117cfd39f5bce3a50392a99aca8037658a6c44f0a6b805e2c8966eb559345722",
+    "api_image": "sha256:91b454616ef6ee2c63ca6a02bcac59b576f0ccb1c4c6affc9830b66da38ba581",
+    "evidence_worktree_head": "ef73042bfaf5446f21b674bc91ac91f501a15027"
+  },
+  "network": {
+    "formal_api_available": false,
+    "temporary_same_tab_instrumentation_installed": false,
+    "session_request": "NOT_PROVEN",
+    "backup_list_request": "NOT_PROVEN",
+    "same_origin_proven": false,
+    "internal_direct_request_zero_proven": false,
+    "captured_request_count": 0,
+    "blocker": "NETWORK_CAPTURE_CAPABILITY_UNAVAILABLE"
+  },
+  "privacy": {
+    "headers_collected": false,
+    "cookies_collected": false,
+    "tokens_collected": false,
+    "bodies_collected": false,
+    "storage_collected": false
+  },
+  "browser_cleanup": {
+    "new_tab_only": true,
+    "finalized": true,
+    "kept_tabs": 0,
+    "user_control_returned": true
+  },
+  "files": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-NETWORK-02/capture-capability.json",
+      "sha256": "5534E5F3FFF8B1E529F1E264744183D39CEA98FBEED939DA512B27AF55247F79",
+      "kind": "structured_capture_capability_probe"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-NETWORK-02/capability-observation.md",
+      "sha256": "69E38B5671C74B1059BC5528D52A75C8ADBBACE8987B75585C6779CEFF7D4C65",
+      "kind": "human_readable_blocker_observation"
+    }
+  ]
+}

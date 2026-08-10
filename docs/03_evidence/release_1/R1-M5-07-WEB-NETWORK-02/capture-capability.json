@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-07-WEB-NETWORK-02",
+  "issue_id": "R1-M5-07-WEB-NETWORK-02-I001",
+  "observed_at": "2026-08-10T11:51:16+09:00",
+  "target_url": "https://daon-user.sinsan.kr/operations",
+  "probe_url": "https://daon-user.sinsan.kr/",
+  "browser": {
+    "family": "Chrome",
+    "control_surface": "approved browser-client",
+    "new_validation_tab_only": true,
+    "tab_capabilities": [{"id": "pageAssets", "description": "page asset listing and bundling"}],
+    "formal_network_event_or_response_api": false
+  },
+  "same_tab_instrumentation_probe": {
+    "page_evaluate": {
+      "window_fetch_type": "undefined",
+      "result": "not_installed",
+      "error_class": "TypeError",
+      "error_summary": "fetch binding unavailable in the approved read-only evaluation context"
+    },
+    "body_locator_evaluate": {
+      "page_view_present": true,
+      "origin": "https://daon-user.sinsan.kr",
+      "fetch_type": "undefined",
+      "xmlhttprequest_type": "undefined",
+      "result": "not_installed"
+    },
+    "temporary_script_attempt": {
+      "result": "not_installed",
+      "error_class": "TypeError",
+      "error_summary": "document mutation API unavailable in the approved read-only evaluation context"
+    }
+  },
+  "captured_requests": [],
+  "sensitive_information_collection": {
+    "headers": false,
+    "cookies": false,
+    "tokens": false,
+    "request_body": false,
+    "response_body": false,
+    "local_storage": false,
+    "session_storage": false
+  },
+  "instrumentation_installed": false,
+  "state_changing_actions": 0,
+  "browser_cleanup": {
+    "finalized": true,
+    "kept_tabs": 0,
+    "user_control_returned": true
+  },
+  "verdict": "BLOCKED_NETWORK_CAPTURE_CAPABILITY_UNAVAILABLE"
+}
