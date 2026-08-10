@@ -81,3 +81,10 @@
 - 근거: `FORBIDDEN` 비반사 대조군 통과와 exact/Unicode-escaped Access 반사 거부가 Canary 경계를 직접 검증하며, `Bytes::from_owner(CloudWireBuffer)`와 최소 `bytes 1.12.1` Pin이 유지됨을 최신 Diff로 확인했다.
 - 정리: 테스트 전용 `%TEMP%\daon-user-c09-di-red`만 절대경로·Temp 하위 여부를 검증한 뒤 삭제했고 저장소 `gen` 잔존은 없다.
 - 다음 작업: 사용자 삭제31·원 미추적3을 제외한 C09/R01/R02 작업 파일만 Stage·Commit·`master` Push한다.
+
+## 2026-08-11T02:52:00+09:00 · Commit·Push · PASS
+
+- Stage: C09/R01/R02 코드·계획·작업지시·진행·완료보고 16개만 포함했다. 사용자 삭제 31건과 원 미추적 문서 3건은 제외·보존했다.
+- Commit: `e1c8681` (`feat(desktop): add cloud recovery native port`), 16 files changed.
+- Push: `origin/master`가 `b952208..e1c8681`로 정상 갱신됐다.
+- 다음 작업: 이 Commit/Push 증거를 문서 정본에 반영한 후 별도 문서 Commit으로 `master`를 동기화하고 승인 계획 Task 5로 진행한다.
