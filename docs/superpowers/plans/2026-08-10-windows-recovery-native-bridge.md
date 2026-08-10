@@ -98,12 +98,15 @@ node --test scripts/tests/desktop-local-service.test.mjs
 **Files:**
 
 - Modify: `apps/desktop/src-tauri/src/recovery_bridge.rs`
+- Modify: `apps/desktop/src-tauri/src/native_session.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
 - Modify: `apps/desktop/src-tauri/tests/recovery_bridge_contract.rs`
+- Modify: `apps/desktop/src-tauri/tests/native_session_contract.rs`
 - Modify: `services/api/tests/test_recovery_runtime_http.py`
 
 - [ ] Mock Transport RED로 다음 7개 계약만 허용한다: `POST /api/v1/backups`, `GET /api/v1/backups`, `GET /api/v1/backups/{id}`, `POST /api/v1/backups/{id}/restore-previews`, `GET /api/v1/restore-requests/{id}`, `POST /api/v1/restore-requests/{id}/execute`, `POST /api/v1/restore-requests/{id}/cancel`.
 - [ ] `CloudRecoveryPort`가 Vault Access를 Authorization Bearer에 넣되 Header·Token·URL을 Debug·Error·DTO에 포함하지 않게 한다.
+- [ ] 실제 코드 구조에 맞춰 `NativeSessionRuntime`이 Vault Credential을 외부 DTO로 반환하지 않고 Rust 내부의 승인된 Cloud Recovery 실행 경계에만 전달한다. Credential 원문을 반환하는 Public 함수·Tauri Command는 추가하지 않는다.
 - [ ] Preview·Execute는 서로 다른 Step-up, Execute·Cancel은 `If-Match`, 모든 Write는 `Idempotency-Key`를 요구한다. 누락·재사용·ETag 충돌은 자동 재시도하지 않는다.
 - [ ] Access 만료는 Task 2 Session 계층에서 1회 회전하되 상태 변경 요청은 새 Credential로 자동 재실행하지 않는다.
 - [ ] 다음을 실행한다.
