@@ -10,3 +10,7 @@ COMPLETED | R1-M5-07-WINDOWS-NATIVE-AUTH-C03-I001 | 신산님의 현재 대화 �
 ## 최종 계약 정합화
 
 COMPLETED | R1-M5-07-WINDOWS-NATIVE-AUTH-C03-I001 | 어울1 판단으로 Native login은 일반 업무 Write가 아닌 인증 Route임을 확정했다. OpenAPI의 IdempotencyKey 표기를 제거하고 Validator는 이 정확한 Path에만 Header 검사 예외를 둬 Runtime과 계약을 일치시켰다. | Native Route의 `parameters`는 비어 있고, 일반 POST Header fail-close test는 `/api/v1/session/refresh`를 대상으로 유지했다. OpenAPI summary는 `ED7F5DF3C1BA6AC3569EEC4B8FCDA85509B59BD65D80F144EBD8E0E911DCBD4D`로 갱신됐다. | Node OpenAPI 11/11 passed; validator write/no-write passed; prior focused Python 25 passed, full API 288 passed/25 skipped, diff check passed. | 설치형 Native vault/Rust bridge와 실제 Windows 로그인 증거는 아직 수행하지 않았다. | 어울1의 최종 변경 검토와 Commit/Push 여부 판단.
+
+## Fix round 1
+
+COMPLETED | R1-M5-07-WINDOWS-NATIVE-AUTH-C03-I001 | OpenAPI validator의 Secret scan 우회와 opaque credential example/default 우회를 보정했다. | `NativeLocalLoginRequest.properties.password`는 이름과 required 값만 중립화해 전역 명칭 검사 충돌을 피하고 속성 객체의 description/title/format/extension은 그대로 scan한다. `NativeCredentialSession`의 access·refresh 각각은 writeOnly와 example/default 부재를 강제한다. | RED 2건(속성 내부 password 명칭, 각 credential example/default) 확인 후 Node OpenAPI 13/13, validator write/no-write, diff check 통과. | 제품 Python·Runtime은 변경하지 않았으므로 이전 focused 25 passed 및 full API 288 passed/25 skipped를 재실행하지 않았다. | 어울1 review.
