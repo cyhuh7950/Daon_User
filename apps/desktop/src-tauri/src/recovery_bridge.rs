@@ -5,8 +5,8 @@ use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use zeroize::{Zeroize, Zeroizing};
@@ -622,11 +622,198 @@ impl ConsumptionCache {
     }
 }
 
+pub struct NativeRecoveryRuntime {
+    transport: Arc<dyn CloudRecoveryTransport>,
+    used_idempotency: Arc<Mutex<ConsumptionCache>>,
+    used_step_up: Arc<Mutex<ConsumptionCache>>,
+}
+
+impl NativeRecoveryRuntime {
+    pub fn new() -> Self {
+        Self {
+            transport: Arc::new(
+                NativeCloudRecoveryClient::fixed()
+                    .expect("fixed Native recovery public gateway must build"),
+            ),
+            used_idempotency: Arc::new(Mutex::new(ConsumptionCache::default())),
+            used_step_up: Arc::new(Mutex::new(ConsumptionCache::default())),
+        }
+    }
+
+    #[cfg(feature = "contract-test")]
+    #[doc(hidden)]
+    pub fn for_contract_test(transport: Arc<dyn CloudRecoveryTransport>) -> Self {
+        Self {
+            transport,
+            used_idempotency: Arc::new(Mutex::new(ConsumptionCache::default())),
+            used_step_up: Arc::new(Mutex::new(ConsumptionCache::default())),
+        }
+    }
+
+    fn port<'a>(
+        &'a self,
+        session: &'a crate::native_session::NativeSessionRuntime,
+    ) -> CloudRecoveryPort<'a> {
+        CloudRecoveryPort::with_consumption_caches(
+            session,
+            self.transport.as_ref(),
+            Arc::clone(&self.used_idempotency),
+            Arc::clone(&self.used_step_up),
+        )
+    }
+
+    pub async fn cloud_create_backup(
+        &self,
+        session: &crate::native_session::NativeSessionRuntime,
+        input: CloudCreateBackupCommandInput,
+    ) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+        let body = encode_cloud_body(&BackupInput {
+            workspace_id: input.workspace_id,
+            trigger: input.trigger,
+            schema_revision: input.schema_revision,
+            retention_watermark: input.retention_watermark,
+            objects: input.objects,
+        })?;
+        self.port(session)
+            .execute(CloudRecoveryRequest {
+                method: "POST",
+                path: "/api/v1/backups".to_owned(),
+                query: None,
+                body,
+                idempotency_key: Some(input.idempotency_key.into_cloud_secret()),
+                if_match: None,
+            })
+            .await
+    }
+
+    pub async fn cloud_list_backups(
+        &self,
+        session: &crate::native_session::NativeSessionRuntime,
+        input: CloudListBackupsCommandInput,
+    ) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+        self.port(session)
+            .execute(CloudRecoveryRequest {
+                method: "GET",
+                path: "/api/v1/backups".to_owned(),
+                query: Some(format!("workspace_id={}", input.workspace_id)),
+                body: Zeroizing::new(Vec::new()),
+                idempotency_key: None,
+                if_match: None,
+            })
+            .await
+    }
+
+    pub async fn cloud_get_backup(
+        &self,
+        session: &crate::native_session::NativeSessionRuntime,
+        input: CloudGetBackupCommandInput,
+    ) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+        self.port(session)
+            .execute(CloudRecoveryRequest {
+                method: "GET",
+                path: format!("/api/v1/backups/{}", input.backup_id),
+                query: None,
+                body: Zeroizing::new(Vec::new()),
+                idempotency_key: None,
+                if_match: None,
+            })
+            .await
+    }
+
+    pub async fn cloud_preview_restore(
+        &self,
+        session: &crate::native_session::NativeSessionRuntime,
+        input: CloudPreviewRestoreCommandInput,
+    ) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+        let body = encode_cloud_body(&PreviewInput {
+            destination: input.destination,
+            step_up_authorization_id: input.step_up_authorization_id,
+        })?;
+        self.port(session)
+            .execute(CloudRecoveryRequest {
+                method: "POST",
+                path: format!("/api/v1/backups/{}/restore-previews", input.backup_id),
+                query: None,
+                body,
+                idempotency_key: Some(input.idempotency_key.into_cloud_secret()),
+                if_match: None,
+            })
+            .await
+    }
+
+    pub async fn cloud_get_restore(
+        &self,
+        session: &crate::native_session::NativeSessionRuntime,
+        input: CloudGetRestoreCommandInput,
+    ) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+        self.port(session)
+            .execute(CloudRecoveryRequest {
+                method: "GET",
+                path: format!("/api/v1/restore-requests/{}", input.restore_request_id),
+                query: None,
+                body: Zeroizing::new(Vec::new()),
+                idempotency_key: None,
+                if_match: None,
+            })
+            .await
+    }
+
+    pub async fn cloud_execute_restore(
+        &self,
+        session: &crate::native_session::NativeSessionRuntime,
+        input: CloudExecuteRestoreCommandInput,
+    ) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+        let body = encode_cloud_body(&ExecuteInput {
+            preview_version: input.preview_version,
+            step_up_authorization_id: input.step_up_authorization_id,
+        })?;
+        self.port(session)
+            .execute(CloudRecoveryRequest {
+                method: "POST",
+                path: format!(
+                    "/api/v1/restore-requests/{}/execute",
+                    input.restore_request_id
+                ),
+                query: None,
+                body,
+                idempotency_key: Some(input.idempotency_key.into_cloud_secret()),
+                if_match: Some(input.if_match.into_cloud_secret()),
+            })
+            .await
+    }
+
+    pub async fn cloud_cancel_restore(
+        &self,
+        session: &crate::native_session::NativeSessionRuntime,
+        input: CloudCancelRestoreCommandInput,
+    ) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+        self.port(session)
+            .execute(CloudRecoveryRequest {
+                method: "POST",
+                path: format!(
+                    "/api/v1/restore-requests/{}/cancel",
+                    input.restore_request_id
+                ),
+                query: None,
+                body: Zeroizing::new(Vec::new()),
+                idempotency_key: Some(input.idempotency_key.into_cloud_secret()),
+                if_match: Some(input.if_match.into_cloud_secret()),
+            })
+            .await
+    }
+}
+
+fn encode_cloud_body(value: &impl Serialize) -> Result<Zeroizing<Vec<u8>>, LocalRecoveryError> {
+    serde_json::to_vec(value)
+        .map(Zeroizing::new)
+        .map_err(|_| LocalRecoveryError::new("CLOUD_RECOVERY_INPUT_INVALID", false))
+}
+
 pub struct CloudRecoveryPort<'a> {
     session: &'a crate::native_session::NativeSessionRuntime,
     transport: &'a dyn CloudRecoveryTransport,
-    used_idempotency: Mutex<ConsumptionCache>,
-    used_step_up: Mutex<ConsumptionCache>,
+    used_idempotency: Arc<Mutex<ConsumptionCache>>,
+    used_step_up: Arc<Mutex<ConsumptionCache>>,
 }
 
 impl<'a> CloudRecoveryPort<'a> {
@@ -637,8 +824,22 @@ impl<'a> CloudRecoveryPort<'a> {
         Self {
             session,
             transport,
-            used_idempotency: Mutex::new(ConsumptionCache::default()),
-            used_step_up: Mutex::new(ConsumptionCache::default()),
+            used_idempotency: Arc::new(Mutex::new(ConsumptionCache::default())),
+            used_step_up: Arc::new(Mutex::new(ConsumptionCache::default())),
+        }
+    }
+
+    fn with_consumption_caches(
+        session: &'a crate::native_session::NativeSessionRuntime,
+        transport: &'a dyn CloudRecoveryTransport,
+        used_idempotency: Arc<Mutex<ConsumptionCache>>,
+        used_step_up: Arc<Mutex<ConsumptionCache>>,
+    ) -> Self {
+        Self {
+            session,
+            transport,
+            used_idempotency,
+            used_step_up,
         }
     }
 
@@ -757,9 +958,15 @@ fn valid_cloud_id(id: &str) -> bool {
         })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(transparent)]
 struct SensitiveInput(String);
+
+impl SensitiveInput {
+    fn into_cloud_secret(mut self) -> CloudSecret {
+        CloudSecret::new(std::mem::take(&mut self.0))
+    }
+}
 
 impl Drop for SensitiveInput {
     fn drop(&mut self) {
@@ -769,7 +976,7 @@ impl Drop for SensitiveInput {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct BackupObjectInput {
     object_id: String,
@@ -778,7 +985,7 @@ struct BackupObjectInput {
     _byte_size: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct BackupInput {
     workspace_id: String,
@@ -788,7 +995,7 @@ struct BackupInput {
     objects: Vec<BackupObjectInput>,
 }
 
-#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct RestoreDestinationInput {
     tenant_id: String,
@@ -797,18 +1004,99 @@ struct RestoreDestinationInput {
     bucket_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PreviewInput {
     destination: RestoreDestinationInput,
     step_up_authorization_id: SensitiveInput,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ExecuteInput {
     preview_version: u64,
     step_up_authorization_id: SensitiveInput,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudCreateBackupCommandInput {
+    workspace_id: String,
+    trigger: String,
+    schema_revision: String,
+    retention_watermark: String,
+    objects: Vec<BackupObjectInput>,
+    idempotency_key: SensitiveInput,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudListBackupsCommandInput {
+    workspace_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudGetBackupCommandInput {
+    backup_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudPreviewRestoreCommandInput {
+    backup_id: String,
+    destination: RestoreDestinationInput,
+    step_up_authorization_id: SensitiveInput,
+    idempotency_key: SensitiveInput,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudGetRestoreCommandInput {
+    restore_request_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudExecuteRestoreCommandInput {
+    restore_request_id: String,
+    preview_version: u64,
+    step_up_authorization_id: SensitiveInput,
+    idempotency_key: SensitiveInput,
+    if_match: SensitiveInput,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudCancelRestoreCommandInput {
+    restore_request_id: String,
+    idempotency_key: SensitiveInput,
+    if_match: SensitiveInput,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalStartScanCommandInput {
+    workspace_id: String,
+    target_id: String,
+    snapshot_checksum: String,
+    metadata_checksum: String,
+    actual_checksum: String,
+    journal_present: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalGetJobCommandInput {
+    job_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalRepairJobCommandInput {
+    job_id: String,
+    workspace_id: String,
+    expected_version: u64,
 }
 
 fn valid_cloud_write_body(request: &CloudRecoveryRequest) -> bool {
@@ -1549,6 +1837,184 @@ impl<'a> LocalRecoveryPort<'a> {
             })?;
         validate_response(response)
     }
+}
+
+#[tauri::command]
+pub async fn recovery_cloud_create_backup(
+    input: CloudCreateBackupCommandInput,
+    recovery: tauri::State<'_, NativeRecoveryRuntime>,
+    session: tauri::State<'_, crate::native_session::NativeSessionRuntime>,
+) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+    recovery.cloud_create_backup(&session, input).await
+}
+
+#[tauri::command]
+pub async fn recovery_cloud_list_backups(
+    input: CloudListBackupsCommandInput,
+    recovery: tauri::State<'_, NativeRecoveryRuntime>,
+    session: tauri::State<'_, crate::native_session::NativeSessionRuntime>,
+) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+    recovery.cloud_list_backups(&session, input).await
+}
+
+#[tauri::command]
+pub async fn recovery_cloud_get_backup(
+    input: CloudGetBackupCommandInput,
+    recovery: tauri::State<'_, NativeRecoveryRuntime>,
+    session: tauri::State<'_, crate::native_session::NativeSessionRuntime>,
+) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+    recovery.cloud_get_backup(&session, input).await
+}
+
+#[tauri::command]
+pub async fn recovery_cloud_preview_restore(
+    input: CloudPreviewRestoreCommandInput,
+    recovery: tauri::State<'_, NativeRecoveryRuntime>,
+    session: tauri::State<'_, crate::native_session::NativeSessionRuntime>,
+) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+    recovery.cloud_preview_restore(&session, input).await
+}
+
+#[tauri::command]
+pub async fn recovery_cloud_get_restore(
+    input: CloudGetRestoreCommandInput,
+    recovery: tauri::State<'_, NativeRecoveryRuntime>,
+    session: tauri::State<'_, crate::native_session::NativeSessionRuntime>,
+) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+    recovery.cloud_get_restore(&session, input).await
+}
+
+#[tauri::command]
+pub async fn recovery_cloud_execute_restore(
+    input: CloudExecuteRestoreCommandInput,
+    recovery: tauri::State<'_, NativeRecoveryRuntime>,
+    session: tauri::State<'_, crate::native_session::NativeSessionRuntime>,
+) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+    recovery.cloud_execute_restore(&session, input).await
+}
+
+#[tauri::command]
+pub async fn recovery_cloud_cancel_restore(
+    input: CloudCancelRestoreCommandInput,
+    recovery: tauri::State<'_, NativeRecoveryRuntime>,
+    session: tauri::State<'_, crate::native_session::NativeSessionRuntime>,
+) -> Result<CloudRecoveryProjection, LocalRecoveryError> {
+    recovery.cloud_cancel_restore(&session, input).await
+}
+
+#[tauri::command]
+pub async fn recovery_local_start_scan(
+    input: LocalStartScanCommandInput,
+    manager: tauri::State<'_, LocalServiceManager>,
+) -> Result<LocalRecoveryJob, LocalRecoveryError> {
+    run_local_start_scan(manager.inner().clone(), input).await
+}
+
+#[tauri::command]
+pub async fn recovery_local_get_job(
+    input: LocalGetJobCommandInput,
+    manager: tauri::State<'_, LocalServiceManager>,
+) -> Result<LocalRecoveryJob, LocalRecoveryError> {
+    run_local_get_job(manager.inner().clone(), input).await
+}
+
+#[tauri::command]
+pub async fn recovery_local_repair_job(
+    input: LocalRepairJobCommandInput,
+    manager: tauri::State<'_, LocalServiceManager>,
+) -> Result<LocalRecoveryJob, LocalRecoveryError> {
+    run_local_repair_job(manager.inner().clone(), input).await
+}
+
+async fn run_local_start_scan<T>(
+    transport: T,
+    input: LocalStartScanCommandInput,
+) -> Result<LocalRecoveryJob, LocalRecoveryError>
+where
+    T: LocalRecoveryTransport + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        LocalRecoveryPort::new(&transport).scan(RecoveryScanRequest {
+            workspace_id: input.workspace_id,
+            target_id: input.target_id,
+            snapshot_checksum: input.snapshot_checksum,
+            metadata_checksum: input.metadata_checksum,
+            actual_checksum: input.actual_checksum,
+            journal_present: input.journal_present,
+        })
+    })
+    .await
+    .map_err(|_| LocalRecoveryError::new("LOCAL_RECOVERY_REQUEST_FAILED", true))?
+}
+
+async fn run_local_get_job<T>(
+    transport: T,
+    input: LocalGetJobCommandInput,
+) -> Result<LocalRecoveryJob, LocalRecoveryError>
+where
+    T: LocalRecoveryTransport + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        LocalRecoveryPort::new(&transport).get_job(&input.job_id)
+    })
+    .await
+    .map_err(|_| LocalRecoveryError::new("LOCAL_RECOVERY_REQUEST_FAILED", true))?
+}
+
+async fn run_local_repair_job<T>(
+    transport: T,
+    input: LocalRepairJobCommandInput,
+) -> Result<LocalRecoveryJob, LocalRecoveryError>
+where
+    T: LocalRecoveryTransport + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        LocalRecoveryPort::new(&transport).repair(
+            &input.job_id,
+            RecoveryRepairRequest {
+                workspace_id: input.workspace_id,
+                expected_version: input.expected_version,
+            },
+        )
+    })
+    .await
+    .map_err(|_| LocalRecoveryError::new("LOCAL_RECOVERY_REQUEST_FAILED", true))?
+}
+
+#[cfg(feature = "contract-test")]
+#[doc(hidden)]
+pub async fn recovery_local_start_scan_for_contract<T>(
+    transport: T,
+    input: LocalStartScanCommandInput,
+) -> Result<LocalRecoveryJob, LocalRecoveryError>
+where
+    T: LocalRecoveryTransport + Send + 'static,
+{
+    run_local_start_scan(transport, input).await
+}
+
+#[cfg(feature = "contract-test")]
+#[doc(hidden)]
+pub async fn recovery_local_get_job_for_contract<T>(
+    transport: T,
+    input: LocalGetJobCommandInput,
+) -> Result<LocalRecoveryJob, LocalRecoveryError>
+where
+    T: LocalRecoveryTransport + Send + 'static,
+{
+    run_local_get_job(transport, input).await
+}
+
+#[cfg(feature = "contract-test")]
+#[doc(hidden)]
+pub async fn recovery_local_repair_job_for_contract<T>(
+    transport: T,
+    input: LocalRepairJobCommandInput,
+) -> Result<LocalRecoveryJob, LocalRecoveryError>
+where
+    T: LocalRecoveryTransport + Send + 'static,
+{
+    run_local_repair_job(transport, input).await
 }
 
 fn validate_id(value: &str, max: usize) -> Result<(), LocalRecoveryError> {
