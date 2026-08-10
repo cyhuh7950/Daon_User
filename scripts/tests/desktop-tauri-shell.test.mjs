@@ -74,12 +74,24 @@ test("production Tauri configuration is bundled and WebView remains fail-closed"
 test("native session commands retain a fixed HTTPS gateway and never expose credentials to the WebView", async () => {
   const rust = await read("apps/desktop/src-tauri/src/native_session.rs");
   const manifest = await read("apps/desktop/src-tauri/Cargo.toml");
-  assert.match(manifest, /reqwest\s*=\s*\{\s*version\s*=\s*"=0\.13\.4",\s*default-features\s*=\s*false,\s*features\s*=\s*\["json",\s*"rustls"\]\s*\}/);
+  const wrapper = await read("scripts/run-isolated-desktop-cargo.mjs");
+  assert.match(manifest, /\[features\][\s\S]*?default\s*=\s*\[\][\s\S]*?contract-test\s*=\s*\[\]/u);
+  assert.match(manifest, /reqwest\s*=\s*\{\s*version\s*=\s*"=0\.13\.4",\s*default-features\s*=\s*false,\s*features\s*=\s*\["json",\s*"rustls",\s*"stream"\]\s*\}/);
+  assert.match(manifest, /zeroize\s*=\s*"=1\.9\.0"/);
   assert.match(rust, /DaonUser\/NativeSession\/v1/);
   assert.match(rust, /https:\/\/daon-user\.sinsan\.kr/);
   assert.match(rust, /\/api\/v1\/auth\/native\/login/);
   assert.match(rust, /\/api\/v1\/session\/refresh/);
-  assert.doesNotMatch(rust, /std::env|NEXT_PUBLIC_|localhost|127\.0\.0\.1|Authorization.*Debug/u);
+  assert.match(rust, /redirect\(reqwest::redirect::Policy::none\(\)\)/);
+  assert.match(rust, /connect_timeout/);
+  assert.match(rust, /MAX_RESPONSE_BYTES/);
+  assert.doesNotMatch(rust, /CONTRACT_TEST_ONLY_START|CONTRACT_TEST_ONLY_END/u);
+  assert.match(rust, /#\[cfg\(feature = "contract-test"\)\]\s*pub trait NativeIdentityTransportPort/u);
+  assert.match(rust, /#\[cfg\(feature = "contract-test"\)\]\s*pub trait NativeSessionVaultPort/u);
+  assert.doesNotMatch(rust, /NativeRefreshFlow|NativeRefreshTransport/u);
+  assert.match(rust, /#\[cfg\(feature = "contract-test"\)\][\s\S]{0,80}?pub fn for_contract_test\(/u);
+  assert.match(wrapper, /"--features",\s*"contract-test"/u);
+  assert.match(rust, /gateway\.starts_with\("http:\/\/127\.0\.0\.1:"\)/u);
 });
 
 test("desktop bundle includes valid Windows ICO and cross-platform square RGBA PNG", async () => {

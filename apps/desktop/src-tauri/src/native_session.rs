@@ -1,5 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{
+    fmt,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(windows)]
 use std::ptr::null_mut;
@@ -23,14 +33,55 @@ const NATIVE_REFRESH_ENDPOINT: &str = "https://daon-user.sinsan.kr/api/v1/sessio
 const MAX_CREDENTIAL_BYTES: usize = 512;
 const MAX_PERSISTED_BYTES: usize = 2560;
 const MAX_SAFE_ID_BYTES: usize = 256;
+pub const CONNECT_TIMEOUT_SECONDS: u64 = 5;
+pub const REQUEST_TIMEOUT_SECONDS: u64 = 20;
+pub const MAX_RESPONSE_BYTES: usize = 128 * 1024;
 
 fn wipe_text(value: &mut String) {
-    let mut bytes = std::mem::take(value).into_bytes();
-    bytes.fill(0);
+    value.zeroize();
+}
+
+#[cfg(feature = "contract-test")]
+thread_local! {
+    static PARTIAL_SECRET_DROP_AUDIT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(feature = "contract-test")]
+pub fn reset_partial_secret_drop_audit_for_contract() {
+    PARTIAL_SECRET_DROP_AUDIT.with(|audit| audit.set(0));
+}
+
+#[cfg(feature = "contract-test")]
+pub fn partial_secret_drop_count_for_contract() -> usize {
+    PARTIAL_SECRET_DROP_AUDIT.with(std::cell::Cell::get)
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(transparent)]
+struct SecretString(String);
+
+impl SecretString {
+    fn take(&mut self) -> String {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl Drop for SecretString {
+    fn drop(&mut self) {
+        self.0.zeroize();
+        #[cfg(feature = "contract-test")]
+        PARTIAL_SECRET_DROP_AUDIT.with(|audit| audit.set(audit.get() + 1));
+    }
 }
 
 fn valid_safe_text(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_SAFE_ID_BYTES && !value.contains('\0')
+}
+
+fn valid_rfc3339(value: &str) -> bool {
+    OffsetDateTime::parse(value, &Rfc3339)
+        .map(|parsed| parsed.offset().is_utc())
+        .unwrap_or(false)
 }
 
 #[derive(Clone, Deserialize, PartialEq, Eq)]
@@ -62,6 +113,7 @@ impl NativeSessionProjection {
         ]
         .iter()
         .any(|value| !valid_safe_text(value))
+            || !valid_rfc3339(&expires_at)
         {
             return Err("AUTHENTICATION_REQUIRED");
         }
@@ -124,7 +176,7 @@ impl SecretBytes {
         let bytes = std::mem::take(&mut value).into_bytes();
         if !(40..=MAX_CREDENTIAL_BYTES).contains(&bytes.len()) || bytes.contains(&0) {
             let mut rejected = bytes;
-            rejected.fill(0);
+            rejected.zeroize();
             return Err("AUTHENTICATION_REQUIRED");
         }
         Ok(Self(bytes))
@@ -137,7 +189,7 @@ impl SecretBytes {
 
 impl Drop for SecretBytes {
     fn drop(&mut self) {
-        self.0.fill(0);
+        self.0.zeroize();
     }
 }
 
@@ -178,27 +230,22 @@ impl NativeSessionCredentials {
             Err("AUTHENTICATION_REQUIRED")
         } else {
             Self::new(
-                std::mem::take(&mut wire.access_credential),
-                std::mem::take(&mut wire.refresh_credential),
-                wire.projection,
+                wire.access_credential.take(),
+                wire.refresh_credential.take(),
+                wire.projection.clone(),
             )
         };
-        wipe_text(&mut wire.access_credential);
-        wipe_text(&mut wire.refresh_credential);
         result
     }
 
     fn persisted_bytes(&self) -> Result<Vec<u8>, &'static str> {
-        let mut wire = PersistedNativeSession {
+        let wire = PersistedNativeSession {
             version: 1,
-            access_credential: self.access.to_text()?,
-            refresh_credential: self.refresh.to_text()?,
+            access_credential: SecretString(self.access.to_text()?),
+            refresh_credential: SecretString(self.refresh.to_text()?),
             projection: self.projection.clone(),
         };
-        let result = serde_json::to_vec(&wire).map_err(|_| "AUTHENTICATION_REQUIRED");
-        wipe_text(&mut wire.access_credential);
-        wipe_text(&mut wire.refresh_credential);
-        result
+        serde_json::to_vec(&wire).map_err(|_| "AUTHENTICATION_REQUIRED")
     }
 }
 
@@ -217,8 +264,8 @@ impl fmt::Debug for NativeSessionCredentials {
 #[serde(deny_unknown_fields)]
 struct PersistedNativeSession {
     version: u8,
-    access_credential: String,
-    refresh_credential: String,
+    access_credential: SecretString,
+    refresh_credential: SecretString,
     projection: NativeSessionProjection,
 }
 
@@ -248,7 +295,7 @@ impl NativeSessionVault {
     pub fn write(&self, credentials: &NativeSessionCredentials) -> Result<(), &'static str> {
         let mut blob = credentials.persisted_bytes()?;
         if blob.is_empty() || blob.len() > MAX_PERSISTED_BYTES {
-            blob.fill(0);
+            blob.zeroize();
             return Err("AUTHENTICATION_REQUIRED");
         }
         let mut target = wide(&self.target);
@@ -264,7 +311,7 @@ impl NativeSessionVault {
         };
         // SAFETY: The UTF-16 and blob buffers stay live and mutable for the Win32 call.
         let written = unsafe { CredWriteW(&credential, 0) } != 0;
-        blob.fill(0);
+        blob.zeroize();
         written.then_some(()).ok_or("AUTHENTICATION_REQUIRED")
     }
 
@@ -306,12 +353,22 @@ impl NativeSessionVault {
             }
             .to_vec()
         };
+        if !credential.CredentialBlob.is_null() && credential.CredentialBlobSize > 0 {
+            // SAFETY: CredentialBlob belongs to the live CredReadW allocation and is wiped before CredFree.
+            unsafe {
+                std::slice::from_raw_parts_mut(
+                    credential.CredentialBlob,
+                    credential.CredentialBlobSize as usize,
+                )
+            }
+            .zeroize();
+        }
         // SAFETY: raw is exactly the allocation returned by CredReadW and freed once.
         unsafe { CredFree(raw.cast()) };
         let result = NativeSessionCredentials::from_persisted_bytes(&blob).map(Some);
-        blob.fill(0);
+        blob.zeroize();
         if result.is_err() {
-            let _ = self.revoke();
+            self.revoke().map_err(|_| "AUTHENTICATION_REQUIRED")?;
         }
         result
     }
@@ -348,6 +405,21 @@ impl fmt::Debug for NativeSessionVault {
     }
 }
 
+impl NativeSessionVaultPort for NativeSessionVault {
+    fn read(&self) -> Result<Option<NativeSessionCredentials>, NativeSessionError> {
+        NativeSessionVault::read(self).map_err(|_| NativeSessionError::authentication_required())
+    }
+
+    fn write(&self, credentials: &NativeSessionCredentials) -> Result<(), NativeSessionError> {
+        NativeSessionVault::write(self, credentials)
+            .map_err(|_| NativeSessionError::authentication_required())
+    }
+
+    fn revoke(&self) -> Result<(), NativeSessionError> {
+        NativeSessionVault::revoke(self).map_err(|_| NativeSessionError::authentication_required())
+    }
+}
+
 #[cfg(windows)]
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -368,6 +440,10 @@ impl NativeSessionError {
     pub fn code(&self) -> &'static str {
         self.code
     }
+
+    pub fn authentication_required_for_contract() -> Self {
+        Self::authentication_required()
+    }
 }
 
 impl fmt::Debug for NativeSessionError {
@@ -377,6 +453,125 @@ impl fmt::Debug for NativeSessionError {
             .field("code", &self.code)
             .finish()
     }
+}
+
+pub struct NativeHttpResponse {
+    status: u16,
+    content_type: Option<String>,
+    content_length: Option<usize>,
+    has_set_cookie: bool,
+    body: Vec<u8>,
+    drop_audit: Option<Arc<AtomicUsize>>,
+}
+
+impl NativeHttpResponse {
+    pub fn from_parts(
+        status: u16,
+        content_type: Option<String>,
+        content_length: Option<usize>,
+        has_set_cookie: bool,
+        body: Vec<u8>,
+    ) -> Self {
+        Self {
+            status,
+            content_type,
+            content_length,
+            has_set_cookie,
+            body,
+            drop_audit: None,
+        }
+    }
+
+    fn with_drop_audit(mut self, drop_audit: Option<Arc<AtomicUsize>>) -> Self {
+        self.drop_audit = drop_audit;
+        self
+    }
+
+    pub fn into_credentials(mut self) -> Result<NativeSessionCredentials, NativeSessionError> {
+        let content_type = self
+            .content_type
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let valid_content_type = content_type.split(';').next() == Some("application/json");
+        let valid_status = (200..300).contains(&self.status);
+        if !valid_status
+            || (300..400).contains(&self.status)
+            || self.has_set_cookie
+            || !valid_content_type
+            || self
+                .content_length
+                .is_some_and(|length| length > MAX_RESPONSE_BYTES)
+            || self.body.len() > MAX_RESPONSE_BYTES
+        {
+            return Err(NativeSessionError::authentication_required());
+        }
+        let parsed = serde_json::from_slice::<NativeSessionEnvelope>(&self.body)
+            .map_err(|_| NativeSessionError::authentication_required());
+        self.body.zeroize();
+        let mut wire = parsed?.data;
+        wire.drop_audit = self.drop_audit.clone();
+        wire.into_credentials()
+    }
+}
+
+impl Drop for NativeHttpResponse {
+    fn drop(&mut self) {
+        self.body.zeroize();
+        if let Some(audit) = &self.drop_audit {
+            audit.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
+#[cfg(feature = "contract-test")]
+pub trait NativeSessionVaultPort: Send + Sync {
+    fn read(&self) -> Result<Option<NativeSessionCredentials>, NativeSessionError>;
+    fn write(&self, credentials: &NativeSessionCredentials) -> Result<(), NativeSessionError>;
+    fn revoke(&self) -> Result<(), NativeSessionError>;
+}
+
+#[cfg(not(feature = "contract-test"))]
+pub(crate) trait NativeSessionVaultPort: Send + Sync {
+    fn read(&self) -> Result<Option<NativeSessionCredentials>, NativeSessionError>;
+    fn write(&self, credentials: &NativeSessionCredentials) -> Result<(), NativeSessionError>;
+    fn revoke(&self) -> Result<(), NativeSessionError>;
+}
+
+#[cfg(feature = "contract-test")]
+pub trait NativeIdentityTransportPort: Send + Sync {
+    fn login<'a>(
+        &'a self,
+        login_id: String,
+        password: String,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<NativeSessionCredentials, NativeSessionError>> + Send + 'a>,
+    >;
+
+    fn refresh<'a>(
+        &'a self,
+        credentials: &'a NativeSessionCredentials,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<NativeSessionCredentials, NativeSessionError>> + Send + 'a>,
+    >;
+}
+
+#[cfg(not(feature = "contract-test"))]
+pub(crate) trait NativeIdentityTransportPort: Send + Sync {
+    fn login<'a>(
+        &'a self,
+        login_id: String,
+        password: String,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<NativeSessionCredentials, NativeSessionError>> + Send + 'a>,
+    >;
+
+    fn refresh<'a>(
+        &'a self,
+        credentials: &'a NativeSessionCredentials,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<NativeSessionCredentials, NativeSessionError>> + Send + 'a>,
+    >;
 }
 
 #[derive(Clone, Serialize)]
@@ -399,6 +594,10 @@ impl NativeSessionStatus {
             session: None,
         }
     }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.authenticated
+    }
 }
 
 impl fmt::Debug for NativeSessionStatus {
@@ -413,6 +612,9 @@ impl fmt::Debug for NativeSessionStatus {
 
 pub struct NativeIdentityClient {
     client: reqwest::Client,
+    login_endpoint: String,
+    refresh_endpoint: String,
+    drop_audit: Option<Arc<AtomicUsize>>,
 }
 
 impl NativeIdentityClient {
@@ -426,15 +628,61 @@ impl NativeIdentityClient {
         }
         let client = reqwest::Client::builder()
             .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
             .build()
             .map_err(|_| NativeSessionError::authentication_required())?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            login_endpoint: NATIVE_LOGIN_ENDPOINT.to_owned(),
+            refresh_endpoint: NATIVE_REFRESH_ENDPOINT.to_owned(),
+            drop_audit: None,
+        })
     }
 
-    pub fn endpoint(&self, path: &str) -> Result<&'static str, NativeSessionError> {
+    #[cfg(feature = "contract-test")]
+    #[doc(hidden)]
+    pub fn for_contract_test(
+        gateway: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Self, NativeSessionError> {
+        if !gateway.starts_with("http://127.0.0.1:")
+            || gateway.contains('\r')
+            || gateway.contains('\n')
+        {
+            return Err(NativeSessionError::authentication_required());
+        }
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(timeout)
+            .timeout(timeout)
+            .build()
+            .map_err(|_| NativeSessionError::authentication_required())?;
+        Ok(Self {
+            client,
+            login_endpoint: format!("{gateway}{NATIVE_LOGIN_PATH}"),
+            refresh_endpoint: format!("{gateway}{NATIVE_REFRESH_PATH}"),
+            drop_audit: None,
+        })
+    }
+
+    #[cfg(feature = "contract-test")]
+    #[doc(hidden)]
+    pub fn for_contract_test_with_drop_audit(
+        gateway: &str,
+        timeout: std::time::Duration,
+        drop_audit: Arc<AtomicUsize>,
+    ) -> Result<Self, NativeSessionError> {
+        let mut client = Self::for_contract_test(gateway, timeout)?;
+        client.drop_audit = Some(drop_audit);
+        Ok(client)
+    }
+
+    pub fn endpoint(&self, path: &str) -> Result<&str, NativeSessionError> {
         match path {
-            NATIVE_LOGIN_PATH => Ok(NATIVE_LOGIN_ENDPOINT),
-            NATIVE_REFRESH_PATH => Ok(NATIVE_REFRESH_ENDPOINT),
+            NATIVE_LOGIN_PATH => Ok(&self.login_endpoint),
+            NATIVE_REFRESH_PATH => Ok(&self.refresh_endpoint),
             _ => Err(NativeSessionError::authentication_required()),
         }
     }
@@ -444,7 +692,11 @@ impl NativeIdentityClient {
         login_id: String,
         password: String,
     ) -> Result<NativeSessionCredentials, NativeSessionError> {
-        let mut request = NativeLoginRequest { login_id, password };
+        let mut request = NativeLoginRequest {
+            login_id,
+            password,
+            drop_audit: self.drop_audit.clone(),
+        };
         if !valid_safe_text(&request.login_id)
             || request.password.is_empty()
             || request.password.len() > 256
@@ -471,6 +723,7 @@ impl NativeIdentityClient {
                 .refresh
                 .to_text()
                 .map_err(|_| NativeSessionError::authentication_required())?,
+            drop_audit: self.drop_audit.clone(),
         };
         let response = self
             .client
@@ -486,21 +739,42 @@ impl NativeIdentityClient {
         &self,
         response: Result<reqwest::Response, reqwest::Error>,
     ) -> Result<NativeSessionCredentials, NativeSessionError> {
-        let response = response.map_err(|_| NativeSessionError::authentication_required())?;
-        if !response.status().is_success()
-            || response.headers().contains_key(reqwest::header::SET_COOKIE)
-        {
+        let mut response = response.map_err(|_| NativeSessionError::authentication_required())?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let content_length = response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok());
+        let has_set_cookie = response.headers().contains_key(reqwest::header::SET_COOKIE);
+        if content_length.is_some_and(|length| length > MAX_RESPONSE_BYTES) {
             return Err(NativeSessionError::authentication_required());
         }
-        let mut payload = response
-            .bytes()
+        let mut payload = SecretResponseBuffer::new(self.drop_audit.clone());
+        while let Some(chunk) = response
+            .chunk()
             .await
             .map_err(|_| NativeSessionError::authentication_required())?
-            .to_vec();
-        let parsed = serde_json::from_slice::<NativeSessionEnvelope>(&payload);
-        payload.fill(0);
-        let wire = parsed.map_err(|_| NativeSessionError::authentication_required())?;
-        wire.data.into_credentials()
+        {
+            if payload.bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                return Err(NativeSessionError::authentication_required());
+            }
+            payload.bytes.extend_from_slice(&chunk);
+        }
+        NativeHttpResponse::from_parts(
+            status,
+            content_type,
+            content_length,
+            has_set_cookie,
+            std::mem::take(&mut payload.bytes),
+        )
+        .with_drop_audit(self.drop_audit.clone())
+        .into_credentials()
     }
 }
 
@@ -510,35 +784,80 @@ impl fmt::Debug for NativeIdentityClient {
     }
 }
 
+impl NativeIdentityTransportPort for NativeIdentityClient {
+    fn login<'a>(
+        &'a self,
+        login_id: String,
+        password: String,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<NativeSessionCredentials, NativeSessionError>> + Send + 'a>,
+    > {
+        Box::pin(NativeIdentityClient::login(self, login_id, password))
+    }
+
+    fn refresh<'a>(
+        &'a self,
+        credentials: &'a NativeSessionCredentials,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<NativeSessionCredentials, NativeSessionError>> + Send + 'a>,
+    > {
+        Box::pin(NativeIdentityClient::refresh_once(self, credentials))
+    }
+}
+
 #[derive(Serialize)]
 struct NativeLoginRequest {
     login_id: String,
     password: String,
+    #[serde(skip)]
+    drop_audit: Option<Arc<AtomicUsize>>,
 }
 
 impl NativeLoginRequest {
     fn wipe(&mut self) {
         wipe_text(&mut self.password);
+        if let Some(audit) = &self.drop_audit {
+            audit.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
+impl Drop for NativeLoginRequest {
+    fn drop(&mut self) {
+        self.wipe();
     }
 }
 
 #[derive(Serialize)]
 struct NativeRefreshRequest {
     refresh_credential: String,
+    #[serde(skip)]
+    drop_audit: Option<Arc<AtomicUsize>>,
 }
 
 impl NativeRefreshRequest {
     fn wipe(&mut self) {
         wipe_text(&mut self.refresh_credential);
+        if let Some(audit) = &self.drop_audit {
+            audit.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
+impl Drop for NativeRefreshRequest {
+    fn drop(&mut self) {
+        self.wipe();
     }
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NativeSessionEnvelope {
     data: NativeSessionWire,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NativeSessionWire {
     user_id: String,
     tenant_id: String,
@@ -547,9 +866,11 @@ struct NativeSessionWire {
     device_id: String,
     client_kind: String,
     delivery: String,
-    access_credential: String,
-    refresh_credential: String,
+    access_credential: SecretString,
+    refresh_credential: SecretString,
     expires_at: String,
+    #[serde(skip)]
+    drop_audit: Option<Arc<AtomicUsize>>,
 }
 
 impl NativeSessionWire {
@@ -568,28 +889,82 @@ impl NativeSessionWire {
                 )
                 .map_err(|_| NativeSessionError::authentication_required())?;
                 NativeSessionCredentials::new(
-                    std::mem::take(&mut self.access_credential),
-                    std::mem::take(&mut self.refresh_credential),
+                    self.access_credential.take(),
+                    self.refresh_credential.take(),
                     projection,
                 )
                 .map_err(|_| NativeSessionError::authentication_required())
             };
-        wipe_text(&mut self.access_credential);
-        wipe_text(&mut self.refresh_credential);
         result
     }
 }
 
+impl Drop for NativeSessionWire {
+    fn drop(&mut self) {
+        self.access_credential.0.zeroize();
+        self.refresh_credential.0.zeroize();
+        if let Some(audit) = &self.drop_audit {
+            audit.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
+struct SecretResponseBuffer {
+    bytes: Zeroizing<Vec<u8>>,
+    drop_audit: Option<Arc<AtomicUsize>>,
+}
+
+impl SecretResponseBuffer {
+    fn new(drop_audit: Option<Arc<AtomicUsize>>) -> Self {
+        Self {
+            bytes: Zeroizing::new(Vec::new()),
+            drop_audit,
+        }
+    }
+}
+
+impl Drop for SecretResponseBuffer {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+        if let Some(audit) = &self.drop_audit {
+            audit.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
 pub struct NativeSessionRuntime {
-    client: NativeIdentityClient,
-    vault: NativeSessionVault,
+    client: Arc<dyn NativeIdentityTransportPort>,
+    vault: Arc<dyn NativeSessionVaultPort>,
+    transition_gate: tokio::sync::Mutex<()>,
+    generation: AtomicU64,
+    revoke_pending: AtomicBool,
 }
 
 impl NativeSessionRuntime {
     pub fn new() -> Self {
         Self {
-            client: NativeIdentityClient::fixed().expect("fixed Native public gateway must build"),
-            vault: NativeSessionVault::for_app(),
+            client: Arc::new(
+                NativeIdentityClient::fixed().expect("fixed Native public gateway must build"),
+            ),
+            vault: Arc::new(NativeSessionVault::for_app()),
+            transition_gate: tokio::sync::Mutex::new(()),
+            generation: AtomicU64::new(0),
+            revoke_pending: AtomicBool::new(false),
+        }
+    }
+
+    #[cfg(feature = "contract-test")]
+    #[doc(hidden)]
+    pub fn for_contract_test(
+        vault: Arc<dyn NativeSessionVaultPort>,
+        client: Arc<dyn NativeIdentityTransportPort>,
+    ) -> Self {
+        Self {
+            client,
+            vault,
+            transition_gate: tokio::sync::Mutex::new(()),
+            generation: AtomicU64::new(0),
+            revoke_pending: AtomicBool::new(false),
         }
     }
 
@@ -598,52 +973,119 @@ impl NativeSessionRuntime {
         login_id: String,
         password: String,
     ) -> Result<NativeSessionStatus, NativeSessionError> {
+        let _guard = self.transition_gate.lock().await;
+        if self.revoke_pending.load(Ordering::Acquire) {
+            if self.vault_revoke().await.is_err() {
+                return Err(NativeSessionError::authentication_required());
+            }
+            self.revoke_pending.store(false, Ordering::Release);
+        }
         let credentials = match self.client.login(login_id, password).await {
             Ok(value) => value,
-            Err(error) => return self.fail_closed(error),
+            Err(_) => return self.fail_closed().await,
         };
-        if self.vault.write(&credentials).is_err() {
-            return self.fail_closed(NativeSessionError::authentication_required());
+        if self.vault_write(&credentials).await.is_err() {
+            return self.fail_closed().await;
         }
+        self.revoke_pending.store(false, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::AcqRel);
         Ok(NativeSessionStatus::authenticated(credentials.projection()))
     }
 
     pub async fn refresh_once(&self) -> Result<NativeSessionStatus, NativeSessionError> {
-        let current = self
-            .vault
-            .read()
-            .map_err(|_| NativeSessionError::authentication_required())?
-            .ok_or_else(NativeSessionError::authentication_required)?;
-        let replacement = match self.client.refresh_once(&current).await {
-            Ok(value) => value,
-            Err(error) => return self.fail_closed(error),
-        };
-        if self.vault.write(&replacement).is_err() {
-            return self.fail_closed(NativeSessionError::authentication_required());
+        let arrival_generation = self.generation.load(Ordering::Acquire);
+        let _guard = self.transition_gate.lock().await;
+        if self.revoke_pending.load(Ordering::Acquire) && self.vault_revoke().await.is_err() {
+            return Err(NativeSessionError::authentication_required());
         }
+        self.revoke_pending.store(false, Ordering::Release);
+        if self.generation.load(Ordering::Acquire) != arrival_generation {
+            return match self.vault_read().await? {
+                Some(credentials) => {
+                    Ok(NativeSessionStatus::authenticated(credentials.projection()))
+                }
+                None => Err(NativeSessionError::authentication_required()),
+            };
+        }
+        let current = match self.vault_read().await {
+            Ok(Some(value)) => value,
+            _ => return self.fail_closed().await,
+        };
+        let replacement = match self.client.refresh(&current).await {
+            Ok(value) => value,
+            Err(_) => return self.fail_closed().await,
+        };
+        if self.vault_write(&replacement).await.is_err() {
+            return self.fail_closed().await;
+        }
+        self.generation.fetch_add(1, Ordering::AcqRel);
         Ok(NativeSessionStatus::authenticated(replacement.projection()))
     }
 
-    pub fn logout(&self) -> Result<NativeSessionStatus, NativeSessionError> {
-        self.vault
-            .revoke()
-            .map_err(|_| NativeSessionError::authentication_required())?;
+    pub async fn logout(&self) -> Result<NativeSessionStatus, NativeSessionError> {
+        let _guard = self.transition_gate.lock().await;
+        if self.vault_revoke().await.is_err() {
+            self.revoke_pending.store(true, Ordering::Release);
+            return Err(NativeSessionError::authentication_required());
+        }
+        self.revoke_pending.store(false, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::AcqRel);
         Ok(NativeSessionStatus::unauthenticated())
     }
 
-    pub fn status(&self) -> Result<NativeSessionStatus, NativeSessionError> {
-        match self
-            .vault
-            .read()
-            .map_err(|_| NativeSessionError::authentication_required())?
-        {
+    pub async fn status(&self) -> Result<NativeSessionStatus, NativeSessionError> {
+        if self.revoke_pending.load(Ordering::Acquire) {
+            return Err(NativeSessionError::authentication_required());
+        }
+        match self.vault_read().await? {
             Some(credentials) => Ok(NativeSessionStatus::authenticated(credentials.projection())),
             None => Ok(NativeSessionStatus::unauthenticated()),
         }
     }
 
-    fn fail_closed<T>(&self, error: NativeSessionError) -> Result<T, NativeSessionError> {
-        let _ = self.vault.revoke();
-        Err(error)
+    async fn vault_read(&self) -> Result<Option<NativeSessionCredentials>, NativeSessionError> {
+        let vault = Arc::clone(&self.vault);
+        tauri::async_runtime::spawn_blocking(move || vault.read())
+            .await
+            .map_err(|_| NativeSessionError::authentication_required())?
+            .map_err(|_| NativeSessionError::authentication_required())
+    }
+
+    async fn vault_write(
+        &self,
+        credentials: &NativeSessionCredentials,
+    ) -> Result<(), NativeSessionError> {
+        let persisted = credentials
+            .persisted_bytes()
+            .map_err(|_| NativeSessionError::authentication_required())?;
+        let vault = Arc::clone(&self.vault);
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let mut persisted = persisted;
+            let decoded = NativeSessionCredentials::from_persisted_bytes(&persisted)
+                .map_err(|_| NativeSessionError::authentication_required());
+            persisted.zeroize();
+            let credentials = decoded?;
+            vault
+                .write(&credentials)
+                .map_err(|_| NativeSessionError::authentication_required())
+        })
+        .await
+        .map_err(|_| NativeSessionError::authentication_required())?;
+        result
+    }
+
+    async fn vault_revoke(&self) -> Result<(), NativeSessionError> {
+        let vault = Arc::clone(&self.vault);
+        tauri::async_runtime::spawn_blocking(move || vault.revoke())
+            .await
+            .map_err(|_| NativeSessionError::authentication_required())?
+            .map_err(|_| NativeSessionError::authentication_required())
+    }
+
+    async fn fail_closed<T>(&self) -> Result<T, NativeSessionError> {
+        if self.vault_revoke().await.is_err() {
+            self.revoke_pending.store(true, Ordering::Release);
+        }
+        Err(NativeSessionError::authentication_required())
     }
 }

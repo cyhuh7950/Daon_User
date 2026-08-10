@@ -11,16 +11,23 @@ rust-version = "1.97.1"
 name = "daon_user_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+contract-test = []
+
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 getrandom = "=0.4.3"
-reqwest = { version = "=0.13.4", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "=0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.10.9"
 tauri = { version = "=2.11.4", features = [] }
+time = { version = "=0.3.51", features = ["parsing"] }
+tokio = { version = "=1.53.1", features = ["rt", "sync"] }
+zeroize = "=1.9.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
