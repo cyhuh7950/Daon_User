@@ -6,6 +6,12 @@ pub mod windows_credential;
 
 use local_service::{LocalServiceManager, LocalServiceState};
 use native_session::{NativeSessionError, NativeSessionRuntime, NativeSessionStatus};
+use recovery_bridge::{
+    NativeRecoveryRuntime, recovery_cloud_cancel_restore, recovery_cloud_create_backup,
+    recovery_cloud_execute_restore, recovery_cloud_get_backup, recovery_cloud_get_restore,
+    recovery_cloud_list_backups, recovery_cloud_preview_restore, recovery_local_get_job,
+    recovery_local_repair_job, recovery_local_start_scan,
+};
 use tauri::Manager;
 
 #[tauri::command]
@@ -49,6 +55,7 @@ pub fn run() {
             manager.start();
             app.manage(manager);
             app.manage(NativeSessionRuntime::new());
+            app.manage(NativeRecoveryRuntime::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -56,7 +63,17 @@ pub fn run() {
             local_service_retry,
             native_login,
             native_logout,
-            native_session_status
+            native_session_status,
+            recovery_cloud_create_backup,
+            recovery_cloud_list_backups,
+            recovery_cloud_get_backup,
+            recovery_cloud_preview_restore,
+            recovery_cloud_get_restore,
+            recovery_cloud_execute_restore,
+            recovery_cloud_cancel_restore,
+            recovery_local_start_scan,
+            recovery_local_get_job,
+            recovery_local_repair_job
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {

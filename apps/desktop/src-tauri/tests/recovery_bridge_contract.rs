@@ -4,9 +4,15 @@ use daon_user_desktop_lib::native_session::{
     NativeSessionProjection, NativeSessionRuntime, NativeSessionVaultPort,
 };
 use daon_user_desktop_lib::recovery_bridge::{
-    CloudRecoveryPort, CloudRecoveryRequest, CloudRecoveryResponse, CloudRecoveryTransport,
-    CloudSecret, LocalRecoveryJob, LocalRecoveryPort, LocalRecoveryTransport,
-    NativeCloudRecoveryClient, RecoveryHttpResponse, RecoveryRepairRequest, RecoveryScanRequest,
+    CloudCancelRestoreCommandInput, CloudCreateBackupCommandInput, CloudExecuteRestoreCommandInput,
+    CloudGetBackupCommandInput, CloudGetRestoreCommandInput, CloudListBackupsCommandInput,
+    CloudPreviewRestoreCommandInput, CloudRecoveryPort, CloudRecoveryRequest,
+    CloudRecoveryResponse, CloudRecoveryTransport, CloudSecret, LocalGetJobCommandInput,
+    LocalRecoveryJob, LocalRecoveryPort, LocalRecoveryTransport, LocalRepairJobCommandInput,
+    LocalStartScanCommandInput, NativeCloudRecoveryClient, NativeRecoveryRuntime,
+    RecoveryHttpResponse, RecoveryRepairRequest, RecoveryScanRequest,
+    recovery_local_get_job_for_contract, recovery_local_repair_job_for_contract,
+    recovery_local_start_scan_for_contract,
 };
 use std::future::Future;
 use std::io::{Read, Write};
@@ -46,6 +52,19 @@ struct CloudVault;
 impl NativeSessionVaultPort for CloudVault {
     fn read(&self) -> Result<Option<NativeSessionCredentials>, NativeSessionError> {
         Ok(Some(cloud_credentials()))
+    }
+    fn write(&self, _credentials: &NativeSessionCredentials) -> Result<(), NativeSessionError> {
+        Ok(())
+    }
+    fn revoke(&self) -> Result<(), NativeSessionError> {
+        Ok(())
+    }
+}
+
+struct EmptyCloudVault;
+impl NativeSessionVaultPort for EmptyCloudVault {
+    fn read(&self) -> Result<Option<NativeSessionCredentials>, NativeSessionError> {
+        Ok(None)
     }
     fn write(&self, _credentials: &NativeSessionCredentials) -> Result<(), NativeSessionError> {
         Ok(())
@@ -297,6 +316,10 @@ fn cloud_request(
     }
 }
 
+fn command_input<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
+    serde_json::from_value(value).expect("command input")
+}
+
 fn backup_create_body() -> serde_json::Value {
     serde_json::json!({
         "workspace_id":"workspace-cloud",
@@ -309,6 +332,21 @@ fn backup_create_body() -> serde_json::Value {
             "byte_size":128
         }]
     })
+}
+
+fn backup_create_command(idempotency_key: &str) -> CloudCreateBackupCommandInput {
+    command_input(serde_json::json!({
+        "workspace_id":"workspace-cloud",
+        "trigger":"manual",
+        "schema_revision":"schema-v1",
+        "retention_watermark":"watermark-v1",
+        "objects":[{
+            "object_id":"fixture-object-cloud",
+            "checksum_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "byte_size":128
+        }],
+        "idempotency_key":idempotency_key
+    }))
 }
 
 fn preview_body(step_up: &str) -> serde_json::Value {
@@ -2390,4 +2428,357 @@ fn r02_actual_write_normal_timeout_and_early_error_drop_the_app_owned_wire_buffe
         NativeCloudRecoveryClient::wire_drop_audit_for_contract() >= 3,
         "normal, timeout, and early error must each drop the app-owned wire guard"
     );
+}
+
+#[test]
+fn native_recovery_runtime_maps_exact_cloud_commands_and_keeps_consumption_history() {
+    tauri::async_runtime::block_on(async {
+        let session =
+            NativeSessionRuntime::for_contract_test(Arc::new(CloudVault), Arc::new(CloudIdentity));
+        let transport = Arc::new(FakeCloudTransport {
+            calls: Mutex::new(Vec::new()),
+            failures: Mutex::new(Vec::new()),
+        });
+        let runtime = NativeRecoveryRuntime::for_contract_test(transport.clone());
+
+        runtime
+            .cloud_create_backup(&session, backup_create_command("command-create-0001"))
+            .await
+            .expect("create");
+        runtime
+            .cloud_list_backups(
+                &session,
+                command_input::<CloudListBackupsCommandInput>(serde_json::json!({
+                    "workspace_id":"workspace-cloud"
+                })),
+            )
+            .await
+            .expect("list");
+        runtime
+            .cloud_get_backup(
+                &session,
+                command_input::<CloudGetBackupCommandInput>(serde_json::json!({
+                    "backup_id":"backup-0123456789abcdef01234567"
+                })),
+            )
+            .await
+            .expect("get backup");
+        runtime
+            .cloud_preview_restore(
+                &session,
+                command_input::<CloudPreviewRestoreCommandInput>(serde_json::json!({
+                    "backup_id":"backup-0123456789abcdef01234567",
+                    "destination":{
+                        "tenant_id":"fixture-tenant-cloud",
+                        "workspace_id":"fixture-workspace-cloud",
+                        "database_id":"fixture-database-cloud",
+                        "bucket_id":"fixture-bucket-cloud"
+                    },
+                    "step_up_authorization_id":"command-step-preview",
+                    "idempotency_key":"command-preview-0001"
+                })),
+            )
+            .await
+            .expect("preview");
+        runtime
+            .cloud_get_restore(
+                &session,
+                command_input::<CloudGetRestoreCommandInput>(serde_json::json!({
+                    "restore_request_id":"restore-cloud"
+                })),
+            )
+            .await
+            .expect("get restore");
+        runtime
+            .cloud_execute_restore(
+                &session,
+                command_input::<CloudExecuteRestoreCommandInput>(serde_json::json!({
+                    "restore_request_id":"restore-cloud",
+                    "preview_version":1,
+                    "step_up_authorization_id":"command-step-execute",
+                    "idempotency_key":"command-execute-0001",
+                    "if_match":"\"restore:restore-cloud:1\""
+                })),
+            )
+            .await
+            .expect("execute");
+        runtime
+            .cloud_cancel_restore(
+                &session,
+                command_input::<CloudCancelRestoreCommandInput>(serde_json::json!({
+                    "restore_request_id":"restore-cloud",
+                    "idempotency_key":"command-cancel-0001",
+                    "if_match":"\"restore:restore-cloud:2\""
+                })),
+            )
+            .await
+            .expect("cancel");
+
+        let calls = transport.calls.lock().expect("calls");
+        assert_eq!(calls.len(), 7);
+        assert_eq!(
+            calls
+                .iter()
+                .map(|(_, method, path)| (method.as_str(), path.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("POST", "/api/v1/backups"),
+                ("GET", "/api/v1/backups"),
+                ("GET", "/api/v1/backups/backup-0123456789abcdef01234567"),
+                (
+                    "POST",
+                    "/api/v1/backups/backup-0123456789abcdef01234567/restore-previews",
+                ),
+                ("GET", "/api/v1/restore-requests/restore-cloud"),
+                ("POST", "/api/v1/restore-requests/restore-cloud/execute"),
+                ("POST", "/api/v1/restore-requests/restore-cloud/cancel"),
+            ]
+        );
+        drop(calls);
+
+        let error = runtime
+            .cloud_create_backup(&session, backup_create_command("command-create-0001"))
+            .await
+            .expect_err("idempotency history must survive command calls");
+        assert_eq!(error.code(), "CLOUD_RECOVERY_INPUT_INVALID");
+        let error = runtime
+            .cloud_execute_restore(
+                &session,
+                command_input::<CloudExecuteRestoreCommandInput>(serde_json::json!({
+                    "restore_request_id":"restore-cloud",
+                    "preview_version":1,
+                    "step_up_authorization_id":"command-step-preview",
+                    "idempotency_key":"command-execute-0002",
+                    "if_match":"\"restore:restore-cloud:2\""
+                })),
+            )
+            .await
+            .expect_err("step-up history must survive command calls");
+        assert_eq!(error.code(), "CLOUD_RECOVERY_INPUT_INVALID");
+        assert_eq!(transport.calls.lock().expect("calls").len(), 7);
+    });
+}
+
+#[test]
+fn native_recovery_runtime_rejects_unknown_fields_and_missing_session_before_transport() {
+    let unknown = serde_json::from_value::<CloudListBackupsCommandInput>(serde_json::json!({
+        "workspace_id":"workspace-cloud",
+        "method":"DELETE"
+    }));
+    assert!(unknown.is_err());
+
+    tauri::async_runtime::block_on(async {
+        let session = NativeSessionRuntime::for_contract_test(
+            Arc::new(EmptyCloudVault),
+            Arc::new(CloudIdentity),
+        );
+        let transport = Arc::new(FakeCloudTransport {
+            calls: Mutex::new(Vec::new()),
+            failures: Mutex::new(Vec::new()),
+        });
+        let runtime = NativeRecoveryRuntime::for_contract_test(transport.clone());
+        let error = runtime
+            .cloud_list_backups(
+                &session,
+                command_input::<CloudListBackupsCommandInput>(serde_json::json!({
+                    "workspace_id":"workspace-cloud"
+                })),
+            )
+            .await
+            .expect_err("missing session");
+        assert_eq!(error.code(), "AUTHENTICATION_REQUIRED");
+        assert!(transport.calls.lock().expect("calls").is_empty());
+    });
+}
+
+struct BlockingLocalTransport {
+    entered: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
+}
+
+impl LocalRecoveryTransport for BlockingLocalTransport {
+    fn is_ready(&self) -> bool {
+        true
+    }
+
+    fn execute(
+        &self,
+        _scope: &str,
+        _capability: &str,
+        _method: &str,
+        _path: &str,
+        _body: &[u8],
+    ) -> Result<RecoveryHttpResponse, &'static str> {
+        self.entered.send(()).expect("entered");
+        self.release.recv().expect("release");
+        Ok(response(job_json("")))
+    }
+}
+
+struct UnavailableCountingTransport(Arc<AtomicUsize>);
+
+impl LocalRecoveryTransport for UnavailableCountingTransport {
+    fn is_ready(&self) -> bool {
+        false
+    }
+
+    fn execute(
+        &self,
+        _scope: &str,
+        _capability: &str,
+        _method: &str,
+        _path: &str,
+        _body: &[u8],
+    ) -> Result<RecoveryHttpResponse, &'static str> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err("must not execute")
+    }
+}
+
+struct PanicLocalTransport;
+
+impl LocalRecoveryTransport for PanicLocalTransport {
+    fn is_ready(&self) -> bool {
+        true
+    }
+
+    fn execute(
+        &self,
+        _scope: &str,
+        _capability: &str,
+        _method: &str,
+        _path: &str,
+        _body: &[u8],
+    ) -> Result<RecoveryHttpResponse, &'static str> {
+        panic!()
+    }
+}
+
+#[test]
+fn local_command_blocking_io_does_not_block_an_independent_async_operation() {
+    tauri::async_runtime::block_on(async {
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let task = tauri::async_runtime::spawn(recovery_local_get_job_for_contract(
+            BlockingLocalTransport {
+                entered: entered_sender,
+                release: release_receiver,
+            },
+            command_input::<LocalGetJobCommandInput>(serde_json::json!({"job_id":JOB_ID})),
+        ));
+        entered_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocking request entered");
+
+        let (progress_sender, progress_receiver) = mpsc::channel();
+        tauri::async_runtime::spawn(async move {
+            progress_sender.send(()).expect("independent progress");
+        });
+        progress_receiver
+            .recv_timeout(Duration::from_millis(250))
+            .expect("independent async operation must progress while Local I/O is delayed");
+
+        release_sender.send(()).expect("release blocking request");
+        task.await.expect("task join").expect("local result");
+    });
+}
+
+#[test]
+fn local_command_helpers_keep_exact_three_method_path_and_input_mappings() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let port_number = listener.local_addr().expect("address").port();
+    let (sender, receiver) = mpsc::channel();
+    let server = thread::spawn(move || {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let request = read_request(&mut stream);
+            sender.send(request).expect("capture");
+            stream
+                .write_all(&http_response("200 OK", &job_json("")))
+                .expect("response");
+        }
+    });
+    let manager =
+        LocalServiceManager::with_contract_recovery_endpoint(port_number, Duration::from_secs(1));
+
+    tauri::async_runtime::block_on(async {
+        recovery_local_start_scan_for_contract(
+            manager.clone(),
+            command_input::<LocalStartScanCommandInput>(serde_json::json!({
+                "workspace_id":WORKSPACE,
+                "target_id":"fixture-damaged-object",
+                "snapshot_checksum":"a".repeat(64),
+                "metadata_checksum":"a".repeat(64),
+                "actual_checksum":"b".repeat(64),
+                "journal_present":true
+            })),
+        )
+        .await
+        .expect("scan command");
+        recovery_local_get_job_for_contract(
+            manager.clone(),
+            command_input::<LocalGetJobCommandInput>(serde_json::json!({"job_id":JOB_ID})),
+        )
+        .await
+        .expect("get command");
+        recovery_local_repair_job_for_contract(
+            manager,
+            command_input::<LocalRepairJobCommandInput>(serde_json::json!({
+                "job_id":JOB_ID,
+                "workspace_id":WORKSPACE,
+                "expected_version":4
+            })),
+        )
+        .await
+        .expect("repair command");
+    });
+
+    let requests: Vec<_> = (0..3)
+        .map(|_| {
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("request")
+        })
+        .collect();
+    server.join().expect("server");
+    assert!(requests[0].starts_with("POST /local/v1/recovery/scans HTTP/1.1"));
+    assert!(requests[0].contains(&format!(r#""workspace_id":"{WORKSPACE}""#)));
+    assert!(requests[1].starts_with(&format!("GET /local/v1/recovery/jobs/{JOB_ID} HTTP/1.1")));
+    assert!(requests[2].starts_with(&format!(
+        "POST /local/v1/recovery/jobs/{JOB_ID}/repair HTTP/1.1"
+    )));
+    assert!(requests[2].contains(r#""expected_version":4"#));
+}
+
+#[test]
+fn local_command_unavailable_skips_transport_and_join_failure_is_safe() {
+    tauri::async_runtime::block_on(async {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let error = recovery_local_start_scan_for_contract(
+            UnavailableCountingTransport(Arc::clone(&calls)),
+            command_input::<LocalStartScanCommandInput>(serde_json::json!({
+                "workspace_id":WORKSPACE,
+                "target_id":"fixture-damaged-object",
+                "snapshot_checksum":"a".repeat(64),
+                "metadata_checksum":"a".repeat(64),
+                "actual_checksum":"b".repeat(64),
+                "journal_present":true
+            })),
+        )
+        .await
+        .expect_err("unavailable");
+        assert_eq!(error.code(), "LOCAL_SERVICE_UNAVAILABLE");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let join_error = recovery_local_get_job_for_contract(
+            PanicLocalTransport,
+            command_input::<LocalGetJobCommandInput>(serde_json::json!({"job_id":JOB_ID})),
+        )
+        .await
+        .expect_err("join failure");
+        let safe = serde_json::to_value(join_error).expect("safe join error");
+        assert_eq!(safe["code"], "LOCAL_RECOVERY_REQUEST_FAILED");
+        assert_eq!(safe["retryable"], true);
+        assert_eq!(safe["trace_id"].as_str().expect("trace").len(), 32);
+    });
 }
