@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0",
+  "issue_id": "R1-M5-07-WINDOWS-SCOPE-01-I001",
+  "work_order_id": "R1-M5-07-WINDOWS-SCOPE-01",
+  "recorded_at": "2026-08-10T12:06:31.7723810+09:00",
+  "baseline_commit": "c76d881627e2a740557f22aa9d81700cfdf36267",
+  "branch": "master",
+  "verdict": "COMPLETED_INVESTIGATION_ONLY",
+  "classification": {
+    "total_deleted": 33,
+    "direct_required": 1,
+    "indirect_required": 1,
+    "unrelated_to_windows_evidence": 31,
+    "additional_confirmation": 0
+  },
+  "minimum_restore_candidates": [
+    {
+      "path": "apps/desktop/src-tauri/src/bin/local-service-lifecycle-host.rs",
+      "classification": "direct_required",
+      "head_blob": "df932af6d5cb76686c78e5288a506139aaf9a3ed",
+      "head_size": 2837
+    },
+    {
+      "path": "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs",
+      "classification": "indirect_required",
+      "head_blob": "6f098b17d4292a0932d087559b24c518de5a7bdf",
+      "head_size": 2951
+    }
+  ],
+  "evidence": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WINDOWS-SCOPE-01/scope-analysis.md",
+      "sha256": "4947d748331b4b6e4fa5a7f8f68f2d41b7f79250eed070655fb8d971cf92d181",
+      "type": "static_read_only_scope_analysis"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M5-07-WINDOWS-SCOPE-01_completion_report.md",
+      "sha256": "782469b70ba1b4cf0e4c19028cfdc208399b50132f5ce397eb2476290852f4fd",
+      "type": "investigation_completion_report"
+    }
+  ],
+  "safety": {
+    "files_restored": 0,
+    "builds_run": 0,
+    "installations_run": 0,
+    "product_or_test_code_changes": 0,
+    "stage_commit_push_deploy": 0,
+    "server_db_docker_changes": 0,
+    "preexisting_deleted_preserved": 33,
+    "preexisting_user_untracked_preserved": 3
+  },
+  "known_limits": [
+    "Windows product verification was not executed.",
+    "The Desktop shell does not pass a Recovery adapter and exposes no Local Recovery scan/status/repair command adapter.",
+    "Restoration of the two minimum candidates requires explicit user approval and a separate work order."
+  ]
+}
