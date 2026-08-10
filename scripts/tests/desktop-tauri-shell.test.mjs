@@ -62,10 +62,24 @@ test("production Tauri configuration is bundled and WebView remains fail-closed"
   const rust = await read("apps/desktop/src-tauri/src/lib.rs");
   assert.match(rust, /local_service_status/);
   assert.match(rust, /local_service_retry/);
+  assert.match(rust, /native_login/);
+  assert.match(rust, /native_logout/);
+  assert.match(rust, /native_session_status/);
   assert.match(rust, /generate_handler!/);
   assert.doesNotMatch(rust, /tauri_plugin_shell|plugin\(/);
   assert.deepEqual(await readdir(new URL("../../apps/desktop/src-tauri/icons/", import.meta.url)), ["icon.ico", "icon.png"]);
   await assert.rejects(access(new URL("../../apps/desktop/src-tauri/gen/", import.meta.url)));
+});
+
+test("native session commands retain a fixed HTTPS gateway and never expose credentials to the WebView", async () => {
+  const rust = await read("apps/desktop/src-tauri/src/native_session.rs");
+  const manifest = await read("apps/desktop/src-tauri/Cargo.toml");
+  assert.match(manifest, /reqwest\s*=\s*\{\s*version\s*=\s*"=0\.13\.4",\s*default-features\s*=\s*false,\s*features\s*=\s*\["json",\s*"rustls"\]\s*\}/);
+  assert.match(rust, /DaonUser\/NativeSession\/v1/);
+  assert.match(rust, /https:\/\/daon-user\.sinsan\.kr/);
+  assert.match(rust, /\/api\/v1\/auth\/native\/login/);
+  assert.match(rust, /\/api\/v1\/session\/refresh/);
+  assert.doesNotMatch(rust, /std::env|NEXT_PUBLIC_|localhost|127\.0\.0\.1|Authorization.*Debug/u);
 });
 
 test("desktop bundle includes valid Windows ICO and cross-platform square RGBA PNG", async () => {
