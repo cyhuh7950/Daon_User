@@ -3026,6 +3026,53 @@
         "x-list-operation": true
       }
     },
+    "/api/v1/auth/native/login": {
+      "post": {
+        "operationId": "nativeLocalLogin",
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Windows Native 로컬 로그인",
+        "x-implementation-owner": "R1-M5-07",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeLocalLoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/NativeCredentialSessionResponse"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/SafeFailure"
+          }
+        },
+        "description": "Windows Native 계층만 HTTPS로 호출하며 opaque credential은 브라우저 JavaScript에 전달하지 않는다."
+      }
+    },
     "/api/v1/session/oidc/transactions": {
       "post": {
         "operationId": "beginOidcLogin",
@@ -4154,6 +4201,20 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/IdentitySessionEnvelope"
+            }
+          }
+        }
+      },
+      "NativeCredentialSessionResponse": {
+        "description": "Windows Native 로그인에서만 전달하는 opaque Access·Refresh credential과 안전한 Session projection",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/NativeCredentialSessionEnvelope"
             }
           }
         }
@@ -5384,6 +5445,101 @@
         "properties": {
           "data": {
             "$ref": "#/components/schemas/IdentitySession"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "NativeLocalLoginRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "login_id",
+          "password"
+        ],
+        "properties": {
+          "login_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "writeOnly": true
+          }
+        }
+      },
+      "NativeCredentialSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "user_id",
+          "tenant_id",
+          "workspace_id",
+          "session_id",
+          "device_id",
+          "client_kind",
+          "delivery",
+          "access_credential",
+          "refresh_credential",
+          "expires_at"
+        ],
+        "properties": {
+          "user_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "tenant_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "session_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "device_id": {
+            "$ref": "#/components/schemas/OpaqueId"
+          },
+          "client_kind": {
+            "type": "string",
+            "const": "native"
+          },
+          "delivery": {
+            "type": "string",
+            "const": "native_https_opaque_bearer"
+          },
+          "access_credential": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 512,
+            "writeOnly": true
+          },
+          "refresh_credential": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 512,
+            "writeOnly": true
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "NativeCredentialSessionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/NativeCredentialSession"
           },
           "meta": {
             "type": "object",

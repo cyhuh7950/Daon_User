@@ -7,6 +7,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const REQUIRED_PATHS = Object.freeze([
+  "/api/v1/auth/native/login",
   "/api/v1/session",
   "/api/v1/session/step-up",
   "/api/v1/session/oidc/transactions",
@@ -277,7 +278,8 @@ function validateAuditContract(document) {
 function validateIdentityContract(document) {
   const schemas = document.components?.schemas ?? {};
   for (const name of [
-    "IdentitySession", "OidcLoginStartRequest", "OidcLoginStart",
+    "IdentitySession", "NativeLocalLoginRequest", "NativeCredentialSession",
+    "OidcLoginStartRequest", "OidcLoginStart",
     "OidcCallbackRequest", "NativeRefreshRequest", "StepUpAuthorizationRequest",
     "StepUpAuthorization", "DeviceRevokeRequest", "DeviceRevocation",
     "SessionRevokeRequest", "SessionRevocation"
@@ -293,6 +295,25 @@ function validateIdentityContract(document) {
   if (schemas.NativeRefreshRequest?.properties?.refresh_credential?.writeOnly !== true) {
     fail("Native refresh credential must be writeOnly");
   }
+  const nativeLogin = schemas.NativeLocalLoginRequest;
+  if (
+    nativeLogin?.type !== "object" || nativeLogin.additionalProperties !== false
+    || JSON.stringify(nativeLogin.required) !== JSON.stringify(["login_id", "password"])
+    || JSON.stringify(Object.keys(nativeLogin.properties ?? {}).sort()) !== JSON.stringify(["login_id", "password"])
+    || nativeLogin.properties?.password?.writeOnly !== true
+    || "default" in nativeLogin.properties?.password || "example" in nativeLogin.properties?.password
+  ) {
+    fail("Native local login must expose only the approved writeOnly password input");
+  }
+  const nativeCredential = schemas.NativeCredentialSession;
+  if (
+    nativeCredential?.properties?.client_kind?.const !== "native"
+    || nativeCredential?.properties?.delivery?.const !== "native_https_opaque_bearer"
+    || nativeCredential?.properties?.access_credential?.writeOnly !== true
+    || nativeCredential?.properties?.refresh_credential?.writeOnly !== true
+  ) {
+    fail("Native credential session must retain opaque credential boundaries");
+  }
   if (schemas.DeviceRevokeRequest?.properties?.step_up_authorization?.writeOnly !== true) {
     fail("Device revoke Step-up value must be writeOnly");
   }
@@ -300,6 +321,7 @@ function validateIdentityContract(document) {
     fail("Session revoke Step-up value must be writeOnly");
   }
   const requiredOperations = {
+    "/api/v1/auth/native/login": ["post", "NativeCredentialSessionResponse"],
     "/api/v1/session": ["get", "IdentitySessionResponse"],
     "/api/v1/session/step-up": ["post", "StepUpAuthorizationResponse"],
     "/api/v1/session/oidc/transactions": ["post", "OidcLoginStartResponse"],
@@ -337,7 +359,13 @@ export function validateOpenApiDocument(document) {
     }
   }
 
-  const serialized = JSON.stringify(document);
+  const secretScanDocument = structuredClone(document);
+  const nativeLoginForScan = secretScanDocument.components?.schemas?.NativeLocalLoginRequest;
+  delete nativeLoginForScan?.properties?.password;
+  if (Array.isArray(nativeLoginForScan?.required)) {
+    nativeLoginForScan.required = nativeLoginForScan.required.filter((field) => field !== "password");
+  }
+  const serialized = JSON.stringify(secretScanDocument);
   for (const pattern of FORBIDDEN_SOURCE_TOKENS) if (pattern.test(serialized)) fail(`forbidden token ${pattern}`);
 
   if (!isObject(document.paths)) fail("paths must be an object");
@@ -368,7 +396,7 @@ export function validateOpenApiDocument(document) {
 
       const refs = parameterRefs(operation);
       if (apiPath.includes("{id}") && !refs.has("#/components/parameters/ResourceId")) fail(`${operationId} missing opaque ResourceId`);
-      if (method === "post" && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
+      if (method === "post" && apiPath !== "/api/v1/auth/native/login" && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
       if ((method === "patch" || method === "delete") && !refs.has("#/components/parameters/IfMatch")) fail(`${operationId} missing If-Match`);
       if (operation["x-list-operation"] === true) {
         for (const name of ["Cursor", "Limit", "Filter", "Search"]) {

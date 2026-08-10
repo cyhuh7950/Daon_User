@@ -78,6 +78,7 @@ git diff --check
 - `services/api/tests/test_identity_sessions.py`
 - `services/api/tests/test_runtime_http.py`
 - `scripts/tests/openapi-contract.test.mjs`
+- `scripts/verify-openapi-contract.mjs` — 승인된 `/api/v1/auth/native/login` Route·Schema를 기존 Required Path와 Identity Contract Validator에 등록하고, `NativeLocalLoginRequest.properties.password` 요청 필드명 한 곳만 기존 Secret 명칭 검사에서 허용하는 최소 변경만 허용. 이 로그인 Route 한 곳은 일반 업무 Write용 `Idempotency-Key` 규칙에서 제외해 Runtime·OpenAPI를 일치시킨다. Response·Example·Default·다른 Schema의 Password/Token 노출 차단은 유지한다.
 - `docs/04_test_reports/release_1/R1-M5-07-WINDOWS-NATIVE-AUTH-C03_progress.md`
 - `docs/04_test_reports/release_1/R1-M5-07-WINDOWS-NATIVE-AUTH-C03_completion_report.md`
 

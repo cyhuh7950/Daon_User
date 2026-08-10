@@ -371,6 +371,12 @@ class LoginBody(BaseModel):
     password: str
 
 
+class NativeLocalLoginBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    login_id: str
+    password: str
+
+
 class TokenBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     token: str
@@ -1110,6 +1116,48 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id, "workspace_id": workspace_id}, "meta": {"trace_id": request.state.trace_id}})
         response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=3600, httponly=True, secure=True, samesite="lax", path="/")
         return response
+
+    @app.post("/api/v1/auth/native/login")
+    async def native_local_login(
+        body: NativeLocalLoginBody, request: Request,
+    ) -> dict[str, object]:
+        credentials = dependencies.identity_service.local_native_login(
+            login_id=body.login_id, password=body.password,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        workspace_id = dependencies.authorization_repository.primary_workspace_id(
+            credentials.tenant_id
+        ) or _personal_workspace_id(credentials.tenant_id)
+        dependencies.authorization_repository.bootstrap_workspace(
+            tenant_id=credentials.tenant_id,
+            workspace_id=workspace_id,
+            owner_user_id=credentials.user_id,
+            owner_role=Role.PERSONAL_OWNER,
+            workspace_kind="personal",
+            data_area="cloud_sync",
+            cost_limit_cents=1000,
+            now=datetime.now(timezone.utc),
+        )
+        session = dependencies.identity_service.describe_access(
+            credentials.access_token, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        return {
+            "data": {
+                "user_id": credentials.user_id,
+                "tenant_id": credentials.tenant_id,
+                "workspace_id": workspace_id,
+                "session_id": credentials.session_id,
+                "device_id": credentials.device_id,
+                "client_kind": ClientKind.NATIVE.value,
+                "delivery": "native_https_opaque_bearer",
+                "access_credential": credentials.access_token,
+                "refresh_credential": credentials.refresh_token,
+                "expires_at": session.expires_at.isoformat(),
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        }
 
     @app.post("/api/v1/workspaces/{id}/sources", status_code=202)
     async def upload_pdf_source(

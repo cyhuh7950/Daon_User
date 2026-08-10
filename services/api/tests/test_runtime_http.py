@@ -190,6 +190,53 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             workspace_id,
         )
 
+    async def test_native_local_login_returns_opaque_credentials_without_cookie_and_rejects_client_kind_overrides(self) -> None:
+        class Sender:
+            messages: list[dict[str, str]] = []
+
+            def send(self, **message: str) -> None:
+                self.messages.append(message)
+
+        self.identity._email_sender = Sender()
+        self.identity.signup(
+            login_id="native-local-user", email="native-local-user@example.com",
+            password="correct horse battery staple", trace_id="trace-native-signup",
+            policy_version=POLICY_VERSION,
+        )
+        sender = self.identity._email_sender
+        verification_token = sender.messages[-1]["body"].split(": ", 1)[1].splitlines()[0]
+        self.identity.verify_email(
+            token=verification_token, trace_id="trace-native-verify",
+            policy_version=POLICY_VERSION,
+        )
+
+        response = await self.client.post(
+            "/api/v1/auth/native/login",
+            json={"login_id": "native-local-user", "password": "correct horse battery staple"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get_list("set-cookie"), [])
+        payload = response.json()["data"]
+        self.assertEqual(payload["client_kind"], "native")
+        self.assertEqual(payload["delivery"], "native_https_opaque_bearer")
+        self.assertTrue(payload["access_credential"])
+        self.assertTrue(payload["refresh_credential"])
+        self.assertTrue(payload["workspace_id"])
+        self.assertNotIn("password", response.text)
+
+        for body in (
+            {"login_id": "native-local-user", "password": "correct horse battery staple", "platform": "web"},
+            {"login_id": "native-local-user", "password": "correct horse battery staple", "client_kind": "web"},
+        ):
+            rejected = await self.client.post("/api/v1/auth/native/login", json=body)
+            self.assertEqual(rejected.status_code, 400)
+            self.assertEqual(rejected.json()["error"]["code"], "INVALID_REQUEST")
+        invalid = await self.client.post(
+            "/api/v1/auth/native/login",
+            json={"login_id": "native-local-user", "password": "wrong password value"},
+        )
+        self.assertEqual((invalid.status_code, invalid.json()["error"]["code"]), (401, "AUTHENTICATION_REQUIRED"))
+
     async def test_cloud_migration_failure_only_drops_readiness(self) -> None:
         self.dependencies.cloud_store = UnreadyCloudStore()  # type: ignore[assignment]
         live = await self.client.get("/health/live")
