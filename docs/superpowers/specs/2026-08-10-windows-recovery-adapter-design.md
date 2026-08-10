@@ -5,13 +5,14 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 ID | `DAON-WINDOWS-RECOVERY-ADAPTER-DESIGN` |
-| 버전 | `1.0` |
+| 버전 | `1.1` |
 | 작성일 | 2026-08-10 |
 | 상태 | 신산님 승인 설계의 문서화·구현 전 검토 |
 | 승인 결정 | 신산님 2026-08-10 · Tauri Native Bridge 안 승인 |
 | 상위 설계 | `docs/superpowers/specs/2026-07-20-daon-user-program-design.md` 0.9 |
-| 상위 계획 | `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` 1.7 · R1-M5-07 |
+| 상위 계획 | `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` 1.8 · R1-M5-07 |
 | 공개 계약 승인 | `APR-R1-M5-07-RECOVERY-API-20260731-01` |
+| Native 로그인 승인 | `APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01` |
 
 ## 2. 배경과 문제
 
@@ -96,6 +97,15 @@ flowchart LR
 - Access 만료 시 Native Session 계층에서 1회 회전한다. Replay·철회·실패 시 `AUTHENTICATION_REQUIRED`로 닫고 Recovery 요청을 재실행하지 않는다.
 - Step-up ID와 Idempotency Key는 요청별로 전달하되 Log·Evidence에는 원문을 남기지 않는다.
 - Native Session 연결이 아직 준비되지 않았으면 Cloud Adapter는 Fixture를 반환하지 않고 `AUTHENTICATION_REQUIRED`를 표시한다.
+
+### 5.3.1 Windows Native 로컬 로그인
+
+- 기존 `POST /api/v1/auth/login`은 Web 전용 Secure·HttpOnly Cookie 계약을 그대로 유지한다.
+- Windows 설치형은 별도 `POST /api/v1/auth/native/login`에 `login_id`·`password`만 HTTPS로 전송한다. `platform`, `client_kind`, Tenant·Workspace는 요청에서 받지 않는다.
+- 서버는 Platform `windows`, Client Kind `native`를 고정해 Device·Session과 단일 사용 Refresh Family를 만들고, 사용자·Tenant·기본 Workspace·Session·Device ID와 opaque Access·Refresh Credential을 반환한다. 응답 Cookie는 0건이다.
+- Rust가 응답을 직접 수신하고 `DaonUser/NativeSession/v1` Windows Credential Manager Target에 저장한다. 기존 `DaonUser/LocalStorage/v1` Root Key Target과 절대 공유하지 않는다.
+- JavaScript에는 인증 성공 여부와 Safe Session Projection만 전달하며 Access·Refresh 원문, Authorization Header, Gateway URL은 전달하지 않는다.
+- Access 만료 시 Rust는 기존 `POST /api/v1/session/refresh` 회전 계약을 최대 1회 사용한다. Refresh 재사용·철회·회전 실패 시 저장 Credential을 폐기하고 `AUTHENTICATION_REQUIRED`로 닫으며 원 Recovery 요청은 자동 재실행하지 않는다.
 
 ### 5.4 LocalRecoveryPort
 

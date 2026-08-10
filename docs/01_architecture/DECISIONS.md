@@ -45,6 +45,7 @@
 | R1-D025 | 확정 | R1-M5-05는 SyncOperation 생성·조회, Step-up 승인, 승인 항목의 재개 가능한 Transfer Batch, 사용자 충돌 해결 공개 API를 추가한다. 원본 Local-private 영역·Version은 불변으로 보존하고 무승인 전송·자동 병합·자동 덮어쓰기를 금지한다. | 신산님 승인 · `APR-R1-M5-05-SYNC-API-20260730-01` |
 | R1-D026 | 확정 | R1-M5-06은 삭제·조회·취소·영구 Purge와 Legal Hold 적용·해제 공개 API 6종을 추가한다. 삭제 유예 30일·Audit 1년·Legal Hold 우선, 파생 Inventory와 Known Local Copy Tombstone/Ack, 영구 Purge·Hold의 현재 권한·정책·결합 Step-up 계약을 적용한다. | 신산님 승인 · `APR-R1-M5-06-RETENTION-API-20260731-01` |
 | R1-D027 | 확정 | R1-M5-07은 Cloud Backup·Restore 공개 API 7종과 Windows Local 손상 복구 Loopback API 3종을 추가한다. RPO 15분, Preview 후 별도 Step-up Execute, 현재 Retention·Legal Hold·Deletion Tombstone 우선, Fixture-only 격리 Restore와 G9-DRILL 경계를 적용한다. | 신산님 승인 · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
+| R1-D028 | 확정 | 기존 Web Cookie 로그인은 변경하지 않고 Windows 설치형 로컬 계정용 `POST /api/v1/auth/native/login`을 분리한다. 서버가 `windows/native`를 고정하며 opaque Access·Refresh를 Rust Native 계층에만 전달하고, Refresh 회전·재사용 탐지·철회를 적용한다. Credential은 Local Storage Root Key와 다른 Windows Credential Manager Target에 보관하고 WebView·Log·환경 변수에는 노출하지 않는다. | 신산님 승인 · `APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01` |
 
 ## G0 판정
 
@@ -85,3 +86,4 @@
 | `CHG-R1-M5-05-SYNC-API-001` | 2026-07-30 | C2 | Sync·Copy/Publish의 공개 API 5종과 승인·재개 전송·충돌 선택 계약을 R1-D025로 고정 | 신산님 명시 승인. §6.3의 5단계와 §21.3의 승인 항목만 Sync·자동 덮어쓰기 금지를 API·저장 계약으로 구현한다. 실제 M6 재색인 완료는 범위에서 제외한다. |
 | `CHG-R1-M5-06-RETENTION-API-001` | 2026-07-31 | C2 | 삭제·보존·Legal Hold 공개 API 6종과 상태·파생 정리·Local Copy·최소 Audit 계보 계약을 R1-D026으로 고정 | 신산님 명시 승인. R1-D009의 30일 유예·Audit 1년·Hold 우선을 구현 계약으로 구체화한다. M5-07 Backup 제품, M6-04 실제 Device Relay, 운영 OCI와 실제 사용자 데이터 Purge는 범위에서 제외한다. |
 | `CHG-R1-M5-07-RECOVERY-API-001` | 2026-07-31 | C2 | Backup·격리 Restore Cloud API 7종과 Local 손상 복구 Loopback API 3종을 R1-D027로 고정 | 신산님 명시 승인. R1-D009의 RPO 15분과 복구 경계를 운영형 API·상태·검증 계약으로 구체화한다. M5는 새 전용 Fixture만 다루며 운영 데이터 Restore·파괴적 손상 주입과 정식 RTO/RPO 훈련은 G9-DRILL·M9-07로 유지한다. |
+| `CHG-R1-M5-07-WINDOWS-NATIVE-LOGIN-001` | 2026-08-10 | C2 | Web 로그인 불변, Windows 전용 Native 로컬 로그인 API와 Tauri Recovery Bridge의 Credential 경계를 R1-D028로 고정 | 신산님 명시 승인. 현재 Web 전용 로컬 로그인으로는 Windows Native Cloud Recovery 세션을 안전하게 발급할 수 없어 공개 API를 분리한다. 기존 Web Cookie·OIDC·Refresh 계약을 깨지 않고 Windows Platform을 서버에서 고정하며, Credential은 Rust·Windows Credential Manager 경계 밖으로 내보내지 않는다. |

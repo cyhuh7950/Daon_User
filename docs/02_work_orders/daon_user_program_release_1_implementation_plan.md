@@ -6,16 +6,16 @@
 | --- | --- |
 | 문서 구분 | Release 1 구현 작업계획 정본 |
 | 계획 ID | `DAON-USER-R1-PLAN` |
-| 계획 버전 | `1.7` |
+| 계획 버전 | `1.8` |
 | 작성일 | 2026-07-20 |
-| 최종 수정일 | 2026-08-09 |
+| 최종 수정일 | 2026-08-10 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 구현 상태 | `READY` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
 | 대상 Release | Release 1 — 핵심 업무형 |
 | 상세 설계 정본 | `docs/superpowers/specs/2026-07-20-daon-user-program-design.md` |
 | 상세 설계 배포본 | `docs/Daon 사용자형 지식 업무지원 프로그램 상세 설계서.docx` |
-| 상세 설계 정본 SHA-256 | `B35759D057822FCE688D22178B9C8C54331D84C653EB370FB45048A8464644BC` |
+| 상세 설계 정본 SHA-256 | `6FF5E944C4C7BA66A73B82333A9172391B7ED96F2B532FABB7779BC28518F418` |
 | 상세 설계 배포본 SHA-256 | `DAB1F8A936D69B18355EB986579A0CA5535169E829AB80D30DAC067606FEA0DF` |
 | 계획 정본 경로 | `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` |
 | 승인 기준 Manifest | `docs/02_work_orders/release_1_baseline_manifest.json` · M0 생성 예정 |
@@ -61,6 +61,7 @@
 | 1.5 | 2026-08-05 | WSL-server·ysna-server 컨테이너 생성 전 사전검증·Health Gate·실패 시 생성 금지 규칙 추가 | C1 운영 정합화 | 신산님 승인 |
 | 1.6 | 2026-08-04 | ysna PostgreSQL 16→18.4 업그레이드, WSL PostgreSQL 15.18 유지, Daon DB Adapter·Migration PostgreSQL 15~18 호환 계약 반영 | C2 사용자 결정 + C1 환경 정합화 | 신산님 승인 |
 | 1.7 | 2026-08-09 | TP-2A/CP3 실제 E2E 최종 `PASS / GO_TO_EXPANSION` 승인과 증거 SHA 기록, Gate 완화 없이 Evidence Manifest·M5~M7 Exit 소급 검증 유지 | C0 승인·증거 기록 | 신산님 승인 · `APR-CP3-PASS-GO-20260809-01` |
+| 1.8 | 2026-08-10 | Windows Recovery Tauri Native Bridge와 별도 Native 로컬 로그인 API, opaque Token 회전·Windows Credential Manager 보관·Web 로그인 불변 계약 반영 | C2 공개 API·보안 경계 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01` |
 
 ---
 
@@ -282,6 +283,7 @@ WSL-server와 ysna-server에 Docker 컨테이너를 생성하기 전 다음을 �
 | R1-D023 | iOS 알림 설정 진입 | 기존 범용 앱 설정 기능 보존 + 알림 전용 공개 API 진입, iOS 16+ `openNotificationSettingsURLString`, iOS 15.1 기존 앱 설정 Fallback, 비공개 URL·TCC 직접 조작 금지 | 확정 · 신산님 승인 2026-07-28 |
 | R1-D026 | 삭제·보존·Legal Hold 공개 계약 | 6개 API, 30일 유예, Audit 1년, Hold 우선, 영구 Purge·Hold의 결합 Step-up/현재 권한·정책 재검증, 파생 Inventory와 Known Local Copy Tombstone/Ack | 확정 · 신산님 승인 2026-07-31 · `APR-R1-M5-06-RETENTION-API-20260731-01` |
 | R1-D027 | Backup·Restore·Local 손상 복구 공개 계약 | Cloud 7개 API, Local Loopback 3개 API, RPO 15분, Preview 후 별도 Step-up Execute, 현재 Retention·Hold·Tombstone 우선, Fixture-only 격리 Restore와 G9-DRILL 경계 | 확정 · 신산님 승인 2026-07-31 · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
+| R1-D028 | Windows Native 로컬 로그인·Recovery Bridge | Web Cookie 로그인 불변, 별도 `POST /api/v1/auth/native/login`, 서버 고정 `windows/native`, opaque Access/Refresh 회전, Rust 전용 Windows Credential Manager 보관, WebView Credential 노출 0건 | 확정 · 신산님 승인 2026-08-10 · `APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01` |
 
 R1-D013~020은 이번 승인으로 설계 계약이 확정되었으므로 M0에서 재결정하지 않고 결정 기록·추적표·Baseline Manifest에 고정한다. 나머지 미확정 항목은 추측으로 채우지 않는다. M1 진입 전에 각 항목을 `확정`, `범위 제외 승인`, `외부 차단` 중 하나로 분류하고 근거를 기록한다.
 
@@ -498,7 +500,7 @@ Web BFF와 Native Public API가 동일한 의미를 가지도록 OpenAPI·Auth·
 | --- | --- | --- | --- | --- |
 | R1-M4-01 | R1-M3-01, R1-M3-04 | OpenAPI v1 공통 계약 | Resource ID, Pagination, Filter, Error, ETag, Idempotency, SSE, COST_LIMIT_EXCEEDED·STEP_UP_REQUIRED·CURRENT_ACCESS_DENIED | Schema Diff, Contract Test, 안전 오류 응답 |
 | R1-M4-02 | R1-M4-01 | Audit Event Core | Actor·Trace·Policy Version·변경 전후·Append-only 저장 계약 | Audit 단위·통합 테스트, 변조·누락 검사 |
-| R1-M4-03 | R1-M4-01, R1-M4-02 | 사용자·조직·Session 인증 | OIDC Authorization Code+PKCE, Web Session, Native Token, Device, StepUpAuthorization, 최소 IAM 영속화 | 실제 로그인·갱신·철회·만료·401, 민감 작업 추가 인증·만료·재사용 거부와 Audit 흐름 |
+| R1-M4-03 | R1-M4-01, R1-M4-02 | 사용자·조직·Session 인증 | OIDC Authorization Code+PKCE, Web Cookie Session, 별도 Windows Native 로컬 로그인, opaque Native Access/Refresh, Device, StepUpAuthorization, 최소 IAM 영속화 | Web 로그인 응답·Cookie 불변, Native `windows/native` 서버 고정·Cookie 0건, 실제 로그인·회전·철회·만료·Refresh 재사용 거부·401, 민감 작업 추가 인증·만료·재사용 거부와 Audit 흐름 |
 | R1-M4-04 | R1-M4-02, R1-M4-03 | Tenant·Workspace 권한 | Membership, 역할, 세부 권한, 정책 상속, 과거 Output 현재 ACL·AccessDecision | 403/404 비노출, 권한 축소 후 원문·파생부 마스킹/차단과 현재 정책 새 Run, Tenant 교차 접근 0건, Audit 일치 |
 | R1-M4-05 | R1-M4-01, R1-M4-03, R1-M4-04 | BFF·Gateway·FastAPI 경계 | same-origin Web, HTTPS Native, Trace ID, Graceful Shutdown | 실제 HTTP, Network URL, Process 종료·재기동 |
 | R1-M4-06 | R1-M3-03, R1-M4-03, R1-M4-04 | Loopback Local API 보안 | 단기 Token, Process·Instance 검증, Capability/Command Allowlist | 외부 Interface 거부, 위조 Token·명령 거부 |
@@ -526,7 +528,7 @@ Cloud-sync와 Windows Local-private가 서로 다른 저장·실행 영역을 �
 | R1-M5-04 | R1-M5-01, R1-M5-02, R1-M5-03 | 데이터 정본·계보 | Source/Run/RuleSet/Model/Studio/Audit Entity와 불변 Version | Migration·FK·상태 전이·Snapshot 불변 테스트 |
 | R1-M5-05 | R1-M4-02, R1-M5-03, R1-M5-04 | Sync·Copy/Publish·충돌 | Preview·Step-up 승인 Snapshot, 승인 항목 재개 전송, Version 비교, 암호화 Offline Queue, Reconnect, 명시적 충돌 선택 API | 무승인 전송 0건, 원본 암묵 변경 0건, 자동 병합·덮어쓰기 0건, Batch 재개·Audit 연결 |
 | R1-M5-06 | R1-M5-04, R1-M5-05 | 삭제·보존·Legal Hold | 공개 API 6종, `requested→deactivated→grace_period→cleanup_pending→purged`와 대체 상태, Migration `0005`, 정규화 파생 Inventory·Append-only Attempt/Audit/Trace, Local Tombstone/Ack, 현재 권한·정책·결합 Step-up·Idempotency·If-Match | TDD 부정 경로, PostgreSQL 18.4 `0001→0005`·재적용·`0005→0004→0005`, RLS·Runtime/OpenAPI 6 Route, 부분 실패 재시도·중복 삭제 0, Local 암호화 Restart/Ack, 최소 Audit 계보, 전용 Fixture만 Purge하고 기존 데이터 불변 |
-| R1-M5-07 | R1-M5-01, R1-M5-03, R1-M5-04, R1-M5-06 | Backup·Restore·손상 복구 | Cloud 공개 API 7종, Local Loopback API 3종, Migration `0006`, 자동·수동 Backup, Preview→별도 Step-up Execute→Fixture-only 격리 Restore, 암호화 Local 격리·제한 복구, M2 `BackupRestoreAdapter` 승계 | TDD 부정 경로, PostgreSQL 18.4 `0001→0006`·재적용·`0006→0005→0006`, RLS·MinIO Checksum/누락, Runtime/OpenAPI 7+3 Route, 현재 Retention·Hold·Tombstone 우선과 Purge 부활 0, Local Restart·Repair·수동복구, actual 화면/API·same-origin Network, G9-DRILL 없는 운영 대상 Fail-close |
+| R1-M5-07 | R1-M5-01, R1-M5-03, R1-M5-04, R1-M5-06 | Backup·Restore·손상 복구 | Cloud 공개 API 7종, Local Loopback API 3종, Migration `0006`, 자동·수동 Backup, Preview→별도 Step-up Execute→Fixture-only 격리 Restore, 암호화 Local 격리·제한 복구, Web same-origin Adapter와 Windows Tauri Native Bridge | TDD 부정 경로, PostgreSQL 18.4 `0001→0006`·재적용·`0006→0005→0006`, RLS·MinIO Checksum/누락, Runtime/OpenAPI 7+3 Route, Windows Native 로그인·Credential Vault·Cloud 7+Local 3 Bridge, 현재 Retention·Hold·Tombstone 우선과 Purge 부활 0, Web/설치형 actual 화면·API, Credential·내부 URL 노출 0건, G9-DRILL 없는 운영 대상 Fail-close |
 
 ### M5 Exit Gate
 

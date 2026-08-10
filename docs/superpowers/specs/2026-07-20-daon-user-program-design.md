@@ -7,7 +7,7 @@
 | 문서 구분 | 독립 제품 상세 설계 정본 |
 | 문서 버전 | 0.9 |
 | 작성일 | 2026-07-20 |
-| 개정 | 2026-07-31 · R1-M5-07 Backup·격리 Restore·Local 손상 복구 공개 계약 반영 |
+| 개정 | 2026-08-10 · Windows Native 로그인·Recovery Tauri Bridge 계약 반영 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 승인 기록 | `APR-G0-DESIGN-20260720-01` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
@@ -167,6 +167,10 @@ Section·Page·Layout 구조 변경, 표 구조 변경, 근거 연결 변경, �
 - Web은 same-origin BFF를 사용한다.
 - Windows·iOS·Android는 버전이 명시된 HTTPS 공개 API를 사용한다.
 - 네이티브 인증은 OAuth/OIDC Authorization Code + PKCE를 기본으로 한다.
+- 기존 `POST /api/v1/auth/login`은 Web 전용이다. 성공 시 same-origin Secure·HttpOnly Cookie만 발급하며 Native Token을 응답에 포함하지 않는다.
+- Windows 설치형의 로컬 계정 로그인은 별도 `POST /api/v1/auth/native/login`을 사용한다. 요청은 `login_id`와 `password`만 허용하고 Platform은 서버가 `windows`, Client Kind는 `native`로 고정하여 클라이언트가 덮어쓸 수 없게 한다.
+- Windows Native 로그인 성공 응답은 사용자·Tenant·Workspace·Session·Device 식별자와 opaque Access·Refresh Credential을 HTTPS로 Rust Native 계층에만 전달한다. Cookie는 발급하지 않으며 Refresh 회전·재사용 탐지·Session 철회는 기존 Native Identity 계약을 재사용한다.
+- Native Credential은 WebView JavaScript·환경 변수·로그·Evidence·Local Storage에 노출하지 않고, Rust가 Local Storage Root Key와 분리된 Windows Credential Manager Target에 저장한다.
 - Provider URL, 내부 서비스 주소, API Key와 DB 주소는 클라이언트에 저장하지 않는다.
 
 ## 5. 정보 구조와 적응형 3면 워크스페이스
@@ -1486,6 +1490,7 @@ M4~M6의 모든 수평 구현이 끝날 때까지 통합 검증을 미루지 않
 | Sync·Copy/Publish 공개 API는 Preview→Step-up 승인→승인 항목의 재개 전송→명시적 충돌 해결 순서로 고정하고, 원본 영역·Version의 암묵적 변경과 자동 병합·덮어쓰기를 금지 | 확정 · 신산님 승인 2026-07-30 · `APR-R1-M5-05-SYNC-API-20260730-01` |
 | 삭제·보존·Legal Hold 공개 API 6종과 30일 유예·Audit 1년·Hold 우선·파생 Inventory·Known Local Copy Tombstone/Ack 계약 | 확정 · 신산님 승인 2026-07-31 · `R1-D026` · `APR-R1-M5-06-RETENTION-API-20260731-01` |
 | Backup·격리 Restore Cloud 공개 API 7종과 Local 손상 복구 Loopback API 3종, Preview·Execute 재검증, 현재 Retention 우선, Fixture-only·G9-DRILL 경계 | 확정 · 신산님 승인 2026-07-31 · `R1-D027` · `APR-R1-M5-07-RECOVERY-API-20260731-01` |
+| Web Cookie 로그인을 보존하면서 Windows 전용 `POST /api/v1/auth/native/login`을 분리하고, 서버 고정 `windows/native` 세션·opaque Access/Refresh 회전·Rust 전용 Windows Credential Manager 보관을 적용 | 확정 · 신산님 승인 2026-08-10 · `R1-D028` · `APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01` |
 | Next.js·Tauri·React Native·FastAPI | 확정 |
 | 독립 Release 1·2·3 | 확정 |
 
