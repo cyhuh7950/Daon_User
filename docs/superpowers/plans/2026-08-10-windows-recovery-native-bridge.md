@@ -100,6 +100,8 @@ node --test scripts/tests/desktop-local-service.test.mjs
 - Modify: `apps/desktop/src-tauri/src/recovery_bridge.rs`
 - Modify: `apps/desktop/src-tauri/src/native_session.rs`
 - Modify: `apps/desktop/src-tauri/src/lib.rs`
+- Modify: `apps/desktop/src-tauri/Cargo.toml`
+- Modify: `apps/desktop/src-tauri/Cargo.lock`
 - Modify: `apps/desktop/src-tauri/tests/recovery_bridge_contract.rs`
 - Modify: `apps/desktop/src-tauri/tests/native_session_contract.rs`
 - Modify: `services/api/tests/test_recovery_runtime_http.py`
@@ -109,6 +111,7 @@ node --test scripts/tests/desktop-local-service.test.mjs
 - [ ] 실제 코드 구조에 맞춰 `NativeSessionRuntime`이 Vault Credential을 외부 DTO로 반환하지 않고 Rust 내부의 승인된 Cloud Recovery 실행 경계에만 전달한다. Credential 원문을 반환하는 Public 함수·Tauri Command는 추가하지 않는다.
 - [ ] Preview·Execute는 서로 다른 Step-up, Execute·Cancel은 `If-Match`, 모든 Write는 `Idempotency-Key`를 요구한다. 누락·재사용·ETag 충돌은 자동 재시도하지 않는다.
 - [ ] Access 만료는 Task 2 Session 계층에서 1회 회전하되 상태 변경 요청은 새 Credential로 자동 재실행하지 않는다.
+- [ ] 민감 Write Body는 Daon이 일반 `Vec` 복사본을 만들지 않는다. 현재 Lock의 `bytes = 1.12.1`만 직접 Pin하고 `Bytes::from_owner`로 Zeroizing 소유자를 실제 `reqwest::Body`에 이전하여 정상·오류·Timeout·Future Abort에서 실제 송신 소유자가 Zeroize되게 한다. 그 밖의 HTTP/TLS 의존성은 추가하지 않는다.
 - [ ] 다음을 실행한다.
 
 ```powershell
