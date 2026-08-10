@@ -17,7 +17,7 @@
     "hash_verdict": "Work Order reference hashes for design, implementation plan, test plan, and baseline manifest all matched."
   },
   "evidence_files": [
-    {"path": "docs/03_evidence/release_1/R1-M5-EVIDENCE-RETRO-01/evidence-index.md", "sha256": "6CA551566FDD521EFDDCC9C494B854B0C7A67560797EB3246082111A1F61AA5E", "type": "historical_record", "recorded_commit": null, "provenance_status": "pending_current_commit"}
+    {"path": "docs/03_evidence/release_1/R1-M5-EVIDENCE-RETRO-01/evidence-index.md", "sha256": "6CA551566FDD521EFDDCC9C494B854B0C7A67560797EB3246082111A1F61AA5E", "type": "historical_record", "recorded_commit": "04503737cc5dbe19e74dded6f03814813dbc4028", "provenance_status": "recorded"}
   ],
   "work_order_manifests": [
     "docs/03_evidence/release_1/R1-M5-01/manifest.json",
