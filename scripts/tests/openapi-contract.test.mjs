@@ -105,6 +105,22 @@ test("OpenAPI 검증기는 승인된 Native 요청 password 한 곳 밖의 secre
   assert.throws(() => validateOpenApiDocument(document), /forbidden token.*password/i);
 });
 
+test("OpenAPI 검증기는 승인된 Native password 속성 내부의 secret 명칭도 거부한다", async () => {
+  const document = clone(await loadContract());
+  document.components.schemas.NativeLocalLoginRequest.properties.password.description = "password must never be logged";
+  assert.throws(() => validateOpenApiDocument(document), /forbidden token.*password/i);
+});
+
+test("OpenAPI 검증기는 Native opaque credential의 example과 default를 각각 거부한다", async () => {
+  for (const field of ["access_credential", "refresh_credential"]) {
+    for (const attribute of ["example", "default"]) {
+      const document = clone(await loadContract());
+      document.components.schemas.NativeCredentialSession.properties[field][attribute] = "opaque-value";
+      assert.throws(() => validateOpenApiDocument(document), /Native credential session/i);
+    }
+  }
+});
+
 test("Audit Event 목록은 generic Resource가 아닌 불변 Hash-chain 계약을 사용한다", async () => {
   const document = await loadContract();
   const operation = document.paths["/api/v1/audit-events"].get;

@@ -311,6 +311,10 @@ function validateIdentityContract(document) {
     || nativeCredential?.properties?.delivery?.const !== "native_https_opaque_bearer"
     || nativeCredential?.properties?.access_credential?.writeOnly !== true
     || nativeCredential?.properties?.refresh_credential?.writeOnly !== true
+    || "example" in nativeCredential.properties?.access_credential
+    || "default" in nativeCredential.properties?.access_credential
+    || "example" in nativeCredential.properties?.refresh_credential
+    || "default" in nativeCredential.properties?.refresh_credential
   ) {
     fail("Native credential session must retain opaque credential boundaries");
   }
@@ -361,9 +365,14 @@ export function validateOpenApiDocument(document) {
 
   const secretScanDocument = structuredClone(document);
   const nativeLoginForScan = secretScanDocument.components?.schemas?.NativeLocalLoginRequest;
-  delete nativeLoginForScan?.properties?.password;
+  if (isObject(nativeLoginForScan?.properties?.password)) {
+    nativeLoginForScan.properties.native_local_login_input = nativeLoginForScan.properties.password;
+    delete nativeLoginForScan.properties.password;
+  }
   if (Array.isArray(nativeLoginForScan?.required)) {
-    nativeLoginForScan.required = nativeLoginForScan.required.filter((field) => field !== "password");
+    nativeLoginForScan.required = nativeLoginForScan.required.map((field) => (
+      field === "password" ? "native_local_login_input" : field
+    ));
   }
   const serialized = JSON.stringify(secretScanDocument);
   for (const pattern of FORBIDDEN_SOURCE_TOKENS) if (pattern.test(serialized)) fail(`forbidden token ${pattern}`);
