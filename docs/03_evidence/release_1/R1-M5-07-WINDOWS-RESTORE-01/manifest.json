@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "issue_id": "R1-M5-07-WINDOWS-RESTORE-01-I001",
+  "work_order_id": "R1-M5-07-WINDOWS-RESTORE-01",
+  "recorded_at": "2026-08-10T12:29:55.1422393+09:00",
+  "baseline_commit": "f2b147ae001621084e8b8fcf1eb671a8b415ca67",
+  "branch": "master",
+  "verdict": "COMPLETED_RESTORE_AND_SCOPED_REGRESSION_PASS",
+  "restored_files": [
+    {
+      "path": "apps/desktop/src-tauri/src/bin/local-service-lifecycle-host.rs",
+      "expected_blob": "df932af6d5cb76686c78e5288a506139aaf9a3ed",
+      "actual_blob": "df932af6d5cb76686c78e5288a506139aaf9a3ed",
+      "status": "PASS"
+    },
+    {
+      "path": "apps/desktop/src-tauri/tests/fixtures/local-service-error-fixture.mjs",
+      "expected_blob": "6f098b17d4292a0932d087559b24c518de5a7bdf",
+      "actual_blob": "6f098b17d4292a0932d087559b24c518de5a7bdf",
+      "status": "PASS"
+    }
+  ],
+  "tests": [
+    {
+      "command": "node --test scripts/tests/desktop-local-service.test.mjs",
+      "passed": 10,
+      "failed": 0,
+      "exit_code": 0
+    },
+    {
+      "command": "npm run verify:desktop-rust-unit",
+      "passed": 20,
+      "failed": 0,
+      "exit_code": 0,
+      "note": "The first sandboxed attempt ended with Tauri temporary permission-file os error 5. The same command passed outside the sandbox without source or configuration changes."
+    }
+  ],
+  "evidence": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WINDOWS-RESTORE-01/verification-summary.md",
+      "sha256": "859e0d083b027443c800efc59f9556abcfe4c8a4676dfc4812f9154b82e0c16b"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M5-07-WINDOWS-RESTORE-01_completion_report.md",
+      "sha256": "57e1fad2bf78520de948c471a6c5da485c52e5f3c148e17939e8499ad232e9ba"
+    }
+  ],
+  "safety": {
+    "restored_paths": 2,
+    "other_deleted_preserved": 31,
+    "user_untracked_preserved": 3,
+    "restored_content_edits": 0,
+    "adapter_or_product_changes": 0,
+    "build_install_server_db_docker_changes": 0,
+    "commit_push_deploy": 0,
+    "isolated_targets_remaining": 0,
+    "cargo_rustc_processes_remaining": 0
+  },
+  "known_limits": [
+    "No Windows installer build or installed application journey was executed.",
+    "Windows BackupRestore and Local Recovery adapters remain outside this restoration work order.",
+    "This verdict does not promote R1-M5-07 or M5 Exit to PASS."
+  ]
+}
