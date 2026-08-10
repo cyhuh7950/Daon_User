@@ -119,6 +119,29 @@ node scripts/run-isolated-desktop-cargo.mjs test
 uv run --project services/api python -m pytest services/api/tests/test_recovery_runtime_http.py services/api/tests/test_recovery_contract.py -q
 ```
 
+## Task 4.5: Native Recovery 전용 Tauri Command Surface
+
+**Files:**
+
+- Modify: `apps/desktop/src-tauri/src/recovery_bridge.rs`
+- Modify: `apps/desktop/src-tauri/src/lib.rs`
+- Modify: `apps/desktop/src-tauri/tests/recovery_bridge_contract.rs`
+- Create: `scripts/tests/desktop-recovery-command-surface.test.mjs`
+
+- [ ] RED로 Recovery Command 0개, 범용 Method·Path 주입 가능성, 매 호출 소비 이력 초기화, Credential·Gateway·Loopback Context 직렬화 위험을 고정한다.
+- [ ] 앱 수명주기 `NativeRecoveryRuntime`이 고정 Cloud Client와 Idempotency·Step-up Digest LRU를 소유하고 기존 `NativeSessionRuntime`·`LocalServiceManager` State를 재사용하게 한다.
+- [ ] 범용 Command 없이 설계서 §5.2.1의 Cloud 7개·Local 3개 전용 Command만 `generate_handler!`에 등록한다.
+- [ ] 각 Command는 `deny_unknown_fields` 전용 입력 DTO를 받고 승인 Method·Path·Body·Query·Header 의미를 Rust 내부에서만 조립한다.
+- [ ] Safe Projection/Error만 직렬화하며 Access·Refresh·Password·Gateway·Authorization·Loopback Port·App Instance Secret의 JavaScript 반환과 Debug/Log를 0건으로 고정한다.
+- [ ] 다음을 실행한다.
+
+```powershell
+node --test scripts/tests/desktop-recovery-command-surface.test.mjs
+node scripts/run-isolated-desktop-cargo.mjs test
+npm run verify:desktop-lint
+git diff --check
+```
+
 ## Task 5: Windows React Adapter와 운영 화면 연결
 
 **Files:**

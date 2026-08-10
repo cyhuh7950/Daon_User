@@ -5,10 +5,10 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 ID | `DAON-WINDOWS-RECOVERY-ADAPTER-DESIGN` |
-| 버전 | `1.1` |
+| 버전 | `1.2` |
 | 작성일 | 2026-08-10 |
-| 상태 | 신산님 승인 설계의 문서화·구현 전 검토 |
-| 승인 결정 | 신산님 2026-08-10 · Tauri Native Bridge 안 승인 |
+| 상태 | 신산님 승인 · Native Recovery Command Surface 보정 반영 |
+| 승인 결정 | 신산님 2026-08-10 · Tauri Native Bridge 안 승인 / 2026-08-11 · Cloud 7·Local 3 전용 Command 보정 승인 |
 | 상위 설계 | `docs/superpowers/specs/2026-07-20-daon-user-program-design.md` 0.9 |
 | 상위 계획 | `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` 1.8 · R1-M5-07 |
 | 공개 계약 승인 | `APR-R1-M5-07-RECOVERY-API-20260731-01` |
@@ -87,6 +87,28 @@ flowchart LR
 - Cloud와 Local 호출은 서로 다른 Client·Credential·Timeout·Audit Context를 사용한다.
 - 응답은 승인된 API DTO만 반환하고 Header·Credential·내부 URL을 제거한다.
 - 실행 중 상태가 바뀌면 각 요청에서 Session·Workspace·Step-up을 다시 검증한다.
+
+### 5.2.1 NativeRecoveryRuntime과 전용 Tauri Command
+
+실제 코드에는 CloudRecoveryPort·LocalRecoveryPort만 있고 React가 호출할 Recovery Tauri Command가 없으므로, Windows React Adapter보다 먼저 Native Command Surface를 보정한다.
+
+- `NativeRecoveryRuntime`은 앱 수명주기 동안 고정 `NativeCloudRecoveryClient`와 Cloud Idempotency·Step-up 소비 이력을 소유한다. Command 호출마다 Port를 새로 만들어 소비 이력을 초기화하지 않는다.
+- `NativeSessionRuntime`과 `LocalServiceManager`는 기존 Tauri State를 그대로 재사용하며 Credential·Gateway·Loopback Port·App Instance Secret은 JavaScript에 반환하지 않는다.
+- 범용 `method/path/body` Command는 만들지 않고 다음 10개 전용 Command만 등록한다.
+  - `recovery_cloud_create_backup`
+  - `recovery_cloud_list_backups`
+  - `recovery_cloud_get_backup`
+  - `recovery_cloud_preview_restore`
+  - `recovery_cloud_get_restore`
+  - `recovery_cloud_execute_restore`
+  - `recovery_cloud_cancel_restore`
+  - `recovery_local_start_scan`
+  - `recovery_local_get_job`
+  - `recovery_local_repair_job`
+- 각 Command 입력은 `#[serde(deny_unknown_fields)]` 전용 DTO로 역직렬화하고, Rust가 승인된 Method·Path·Body·Query·Header 의미를 내부에서 조립한다. JavaScript는 Method·Path·Gateway·Authorization을 지정하지 못한다.
+- Cloud Write의 Idempotency·Step-up·If-Match 원문은 요청 수명 동안 Zeroizing 소유자에만 존재하고, 사용 이력에는 SHA-256 Digest만 제한 LRU로 보존한다.
+- Command 반환은 `CloudRecoveryProjection`, `LocalRecoveryJob`, `LocalRecoveryError`의 Safe 직렬화 계약만 사용한다. Unknown field·Unknown Error·내부 Context 반사는 `*_RESPONSE_REJECTED` 또는 승인 Safe Error로 닫는다.
+- `lib.rs`의 `generate_handler!` 등록과 `app.manage(NativeRecoveryRuntime)` 초기화가 일치하지 않으면 Build/Test에서 실패해야 한다.
 
 ### 5.3 CloudRecoveryPort
 
@@ -170,11 +192,11 @@ flowchart LR
 
 ## 8. 구현 단계
 
-1. TDD로 JavaScript Adapter의 Command·DTO·Safe Error 계약을 고정한다.
-2. TDD로 Rust Port와 Command Allowlist·입력 경계·Credential 비노출을 고정한다.
+1. TDD로 `NativeRecoveryRuntime`과 전용 Tauri Command 10개의 Allowlist·입력 경계·Credential 비노출·상태 지속을 고정한다.
+2. TDD로 JavaScript Adapter의 Command·DTO·Safe Error 계약을 고정한다.
 3. LocalRecoveryPort를 기존 Local Service 3개 API에 연결한다.
 4. NativeSessionPort와 CloudRecoveryPort를 기존 M4 Native Identity·Cloud 7 API에 연결한다.
-5. Desktop Shell과 공용 Operations UI에 Adapter를 주입한다.
+5. JavaScript Adapter의 Command·DTO·Safe Error 계약을 고정하고 Desktop Shell·공용 Operations UI에 주입한다.
 6. Unit·Contract·Rust·Local Service·Desktop Build 회귀 후 NSIS 설치형에서 실제 화면을 검증한다.
 
 ## 9. 테스트 계약

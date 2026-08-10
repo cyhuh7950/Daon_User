@@ -7,7 +7,7 @@
 - 공식 작업공간: `C:\Users\cyhuh\Desktop\D Driver\Project\Daon_User`; Branch: `master`; 승인 기준 HEAD: `bdbb7f6ab3bc347fcd15d462c26871bf2ac428ea`.
 - 신산님이 `master` 단독 작업을 명시했으므로 Branch·Worktree를 생성하지 않는다. 어울2가 이 범위의 유일 Writer다.
 - 착수 전 `AGENTS.md`, `docs/superpowers/plans/2026-08-10-windows-recovery-native-bridge.md`의 Global Constraints·Task 5·Completion Contract, `docs/superpowers/specs/2026-08-10-windows-recovery-adapter-design.md`, `docs/04_test_reports/release_1/R1-M5-07-WINDOWS-CLOUD-RECOVERY-C09-R02_completion_report.md`를 EOF까지 읽고 SHA-256과 적용 조항을 진행 기록에 남긴다.
-- 선행 완료: C09/R01/R02 Cloud Recovery Native Port는 제품 Commit `e1c8681`, 수락 기록 Commit `bdbb7f6`으로 `origin/master`에 반영됐고 독립 검토 Critical 0·Important 0이다.
+- 선행 완료: C09/R01/R02 Cloud Recovery Native Port는 제품 Commit `e1c8681`, 수락 기록 Commit `bdbb7f6`으로 `origin/master`에 반영됐고 독립 검토 Critical 0·Important 0이다. C10 구현은 `R1-M5-07-WINDOWS-COMMAND-C10A` 완료 후 재개한다.
 
 ## 2. 단일 목표와 완료 조건
 
