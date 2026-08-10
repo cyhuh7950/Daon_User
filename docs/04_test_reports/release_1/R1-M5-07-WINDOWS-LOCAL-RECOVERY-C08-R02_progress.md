@@ -63,3 +63,10 @@
 - Minor 보정: 중간 Read/Deadline/과대 응답 종료에서도 Raw Buffer가 남지 않도록 `Zeroizing<Vec<u8>>`로 소유한다. Decoded JSON은 모든 Object key·문자열 값을 단락 없이 끝까지 순회하며 검사 직후 Zeroize한다.
 - 최종 재검증: Rust 전체 58/58 PASS(exit 0, 145.0초), Python 24/24, Node 10/10, Desktop lint, 소유 Rust rustfmt-check 모두 PASS.
 - 다음 작업: 최종 독립 확인 후 허용 파일만 Stage·Commit·origin/master Push한다.
+
+## 2026-08-10T23:09:35+09:00 · 기술 수락/통합 · COMPLETED
+
+- 최종 독립 검토: `Spec PASS`, `Code APPROVED`, `Critical 0`, `Important 0`. 후속 Zeroize 재확인에서도 직전 Minor 핵심 범위가 해소됐고 새 Critical/Important 0건이다.
+- 통합: 사용자 삭제 31건과 기존 사용자 미추적 문서 3건을 Stage에서 제외하고 C08 허용 파일 14건만 Commit `65c64a4`(`feat(desktop): add native local recovery bridge`)으로 생성했다.
+- 원격: `git push origin master` 성공, `origin/master`가 `0fb7093..65c64a4`로 전진했다.
+- 종료: C08 Local Recovery Native Port의 자동·정적·실제 Loopback 범위를 기술 수락한다. 실제 Windows 설치형·화면·운영 Restore는 후속 Gate 범위다.
