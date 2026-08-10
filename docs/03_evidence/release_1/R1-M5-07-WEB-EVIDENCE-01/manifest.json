@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M5-07-WEB-EVIDENCE-01",
+  "issue_id": "R1-M5-07-WEB-EVIDENCE-01-I001",
+  "verdict": "BLOCKED_AUTHENTICATION_REQUIRED",
+  "observed_at": "2026-08-10T10:07:12+09:00",
+  "target_url": "https://daon-user.sinsan.kr/operations",
+  "runtime": {
+    "product_commit": "061bc4dcbddfd839fdcb64aa21ed498fe1e70e0b",
+    "web_image": "sha256:e056da75e9d666249a21b48ebe645908758bc24494f84e58dab7c7086b760bc4",
+    "api_image": "sha256:91b454616ef6ee2c63ca6a02bcac59b576f0ccb1c4c6affc9830b66da38ba581",
+    "server_checkout_document_head": "2fb74f1b54f520df2525559a3f8bf6cda06683d4",
+    "server_checkout_is_runtime_build": false
+  },
+  "screen": {
+    "title": "운영 상태·복구",
+    "labels": ["Production-bound Prototype", "실제 API 미실행", "ready · Prototype Adapter 실제 외부 효과 0건"],
+    "recovery_api_status": "failed · AUTHENTICATION_REQUIRED",
+    "initial_trace_id": "trace-bff-0edf20bb-95d8-4603-8856-08ce14d016d7",
+    "captured_trace_id": "trace-bff-d5fe2d7d-1651-4e7b-859f-a94bf145a447",
+    "original_capture": {
+      "png": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-authentication-required-2026-08-10.png",
+      "dom_snapshot": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-authentication-required-2026-08-10.dom.txt"
+    }
+  },
+  "network": {
+    "session_request": "NOT_OBSERVED",
+    "backup_list_request": "NOT_OBSERVED",
+    "same_origin_proven": false,
+    "internal_direct_request_zero_proven": false,
+    "reason": "AUTHENTICATION_REQUIRED 화면 상태 확인 후 우회/추가 클릭 금지"
+  },
+  "browser_cleanup": {
+    "new_tab_only": true,
+    "finalized": true,
+    "user_control_returned": true
+  },
+  "files": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/screen-state.md",
+      "sha256": "DD30224341DF61CD8EF7F4848591D0288106F0BDA941C4B92DA3D45549890B8F",
+      "kind": "actual_chrome_screen_dom"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/network-observation.md",
+      "sha256": "AC09A3088225C0546F58C9A019284C81386499AEBC37EB55BAA3CFD6362299DA",
+      "kind": "network_blocked_observation"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-authentication-required-2026-08-10.png",
+      "sha256": "1A31E892A096CF785C896D0E44ABE35538224043B455350995101A45F8D51268",
+      "kind": "actual_chrome_full_page_screenshot"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-authentication-required-2026-08-10.dom.txt",
+      "sha256": "2338A6519B23F8C9B2197308CA0E99DE4E761171F9040A39F54D2632808786D7",
+      "kind": "actual_chrome_dom_snapshot"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M5-07-WEB-EVIDENCE-01_progress.md",
+      "sha256": "D4D954F0A94411B98F8DED4389AFEC1C36EA9EE1797E97B4E4B381741B9C62BF",
+      "kind": "progress_record"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M5-07-WEB-EVIDENCE-01_completion_report.md",
+      "sha256": "5FB05A11577E3D5D9F1DD679CA8121073CC987607A32A11B44F636CE5B00A47B",
+      "kind": "completion_report"
+    }
+  ]
+}

@@ -44,6 +44,12 @@
       "status": "BUILD_AND_ADAPTER_PASS_BROWSER_PENDING",
       "evidence": "scripts/tests/recovery-api.test.mjs"
     },
+    "web_evidence_01": {
+      "status": "BLOCKED_AUTHENTICATION_REQUIRED",
+      "evidence": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/manifest.json",
+      "observed_at": "2026-08-10T10:07:12+09:00",
+      "note": "Chrome read-only screen evidence found AUTHENTICATION_REQUIRED before session and backup-list Network details could be collected; this does not change the existing browser-pending verdict."
+    },
     "openapi_contract": {
       "status": "PASS",
       "evidence": "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json"
