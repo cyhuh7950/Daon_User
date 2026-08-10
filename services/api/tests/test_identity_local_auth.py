@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from daon_user_api.audit import AuditEventStore
-from daon_user_api.identity import DevicePlatform, IdentityError, IdentityService, SqliteIdentityRepository
+from daon_user_api.identity import ClientKind, DevicePlatform, IdentityError, IdentityService, SqliteIdentityRepository
 
 
 class Sender:
@@ -38,6 +38,43 @@ def test_signup_verify_login_and_password_reset(tmp_path):
     with pytest.raises(IdentityError) as error:
         identity.validate_access(credentials.access_token, trace_id="t6", policy_version="p1")
     assert error.value.code == "SESSION_REVOKED"
+    repo.close()
+
+
+def test_local_native_login_issues_windows_native_rotating_credentials_without_changing_web_contract(tmp_path):
+    identity, repo, sender = service(tmp_path)
+    identity.signup(login_id="alice", email="alice@example.com", password="correct horse battery staple", trace_id="t1", policy_version="p1")
+    token = sender.messages[-1]["body"].split(": ", 1)[1].splitlines()[0]
+    identity.verify_email(token=token, trace_id="t2", policy_version="p1")
+
+    web = identity.local_login(login_id="alice", password="correct horse battery staple", platform=DevicePlatform.WEB, trace_id="t3", policy_version="p1")
+    native = identity.local_native_login(login_id="alice", password="correct horse battery staple", trace_id="t4", policy_version="p1")
+
+    assert web.client_kind is ClientKind.WEB
+    assert web.refresh_token is None
+    assert web.delivery == "web_session_cookie_boundary_m4_05"
+    assert native.client_kind is ClientKind.NATIVE
+    assert native.delivery == "native_opaque_refresh_rotation"
+    assert native.refresh_token is not None
+    connection = repo._connect()
+    try:
+        device = connection.execute("SELECT platform FROM devices WHERE device_id=?", (native.device_id,)).fetchone()
+        session = connection.execute("SELECT client_kind FROM sessions WHERE session_id=?", (native.session_id,)).fetchone()
+        refresh_family = connection.execute("SELECT family_id FROM refresh_families WHERE session_id=?", (native.session_id,)).fetchall()
+        refresh_token = connection.execute("SELECT used_at FROM refresh_tokens WHERE family_id=?", (refresh_family[0][0],)).fetchone()
+    finally:
+        connection.close()
+    assert device[0] == DevicePlatform.WINDOWS.value
+    assert session[0] == ClientKind.NATIVE.value
+    assert len(refresh_family) == 1
+    assert refresh_token[0] is None
+
+    rotated = identity.rotate_refresh(native.refresh_token, trace_id="t5", policy_version="p1")
+    assert rotated.client_kind is ClientKind.NATIVE
+    assert rotated.refresh_token is not None
+    with pytest.raises(IdentityError) as error:
+        identity.rotate_refresh(native.refresh_token, trace_id="t6", policy_version="p1")
+    assert error.value.code == "REFRESH_REPLAYED"
     repo.close()
 
 

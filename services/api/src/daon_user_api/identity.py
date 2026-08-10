@@ -718,6 +718,62 @@ class IdentityService:
             self._audit(action="identity.login.succeeded", outcome=AuditOutcome.SUCCEEDED, trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id, actor_id=user_id, target_type="session", target_id=session_id, metadata={"client_type": "web", "auth_method": "local"})
         return SessionCredentials(access, None, user_id, session_id, device_id, tenant_id, ClientKind.WEB, "web_session_cookie_boundary_m4_05")
 
+    def local_native_login(
+        self, *, login_id: str, password: str, trace_id: str, policy_version: str,
+    ) -> SessionCredentials:
+        """Issue the Windows-only opaque credential pair for a verified local user."""
+        login = _checked_text(login_id).lower(); secret = _password(password)
+        _checked_text(trace_id); _checked_text(policy_version)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE login_id=? AND issuer='local'", (login,)
+            ).fetchone()
+            try:
+                if (
+                    row is None or row["password_digest"] is None
+                    or row["email_verified_at"] is None or row["state"] != "active"
+                ):
+                    raise VerifyMismatchError()
+                PASSWORD_HASHER.verify(str(row["password_digest"]), secret)
+            except Exception as error:
+                raise IdentityError("AUTHENTICATION_REQUIRED", 401) from error
+            user_id = str(row["user_id"])
+            tenant = connection.execute(
+                "SELECT tenant_id FROM memberships WHERE user_id=? ORDER BY tenant_id LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if tenant is None:
+                raise IdentityError("AUTHENTICATION_REQUIRED", 401)
+            tenant_id = str(tenant[0]); device_id, session_id = _id("dev"), _id("ses")
+            access, refresh, family_id = _opaque(), _opaque(), _id("fam")
+            connection.execute(
+                "INSERT INTO devices(device_id,tenant_id,user_id,platform,state,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                (device_id, tenant_id, user_id, DevicePlatform.WINDOWS.value, "registered", _iso(now), _iso(now), _iso(now)),
+            )
+            connection.execute(
+                "INSERT INTO sessions(session_id,tenant_id,user_id,device_id,client_kind,access_digest,access_expires_at,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (session_id, tenant_id, user_id, device_id, ClientKind.NATIVE.value, _digest(access), _iso(now + ACCESS_TTL), "active", _iso(now), _iso(now)),
+            )
+            connection.execute(
+                "INSERT INTO refresh_families(family_id,session_id,state,created_at,updated_at) VALUES (?,?,?,?,?)",
+                (family_id, session_id, "active", _iso(now), _iso(now)),
+            )
+            connection.execute(
+                "INSERT INTO refresh_tokens(refresh_id,family_id,refresh_digest,expires_at,used_at,created_at) VALUES (?,?,?,?,?,?)",
+                (_id("ref"), family_id, _digest(refresh), _iso(now + REFRESH_TTL), None, _iso(now)),
+            )
+            self._audit(
+                action="identity.login.succeeded", outcome=AuditOutcome.SUCCEEDED,
+                trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id,
+                actor_id=user_id, target_type="session", target_id=session_id,
+                metadata={"client_type": ClientKind.NATIVE.value, "auth_method": "local"},
+            )
+        return SessionCredentials(
+            access, refresh, user_id, session_id, device_id, tenant_id,
+            ClientKind.NATIVE, "native_opaque_refresh_rotation",
+        )
+
     def begin_oidc_login(
         self, *, issuer: str, client_id: str, audience: str, redirect_uri: str,
         client_kind: ClientKind, tenant_id: str, trace_id: str, policy_version: str,

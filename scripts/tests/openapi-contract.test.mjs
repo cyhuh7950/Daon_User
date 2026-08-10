@@ -57,7 +57,7 @@ test("OpenAPI 검증기는 안전 오류의 내부 필드와 absolute server를 
 
 test("OpenAPI 검증기는 Write Header 누락을 거부한다", async () => {
   const document = clone(await loadContract());
-  const post = Object.values(document.paths).map((item) => item.post).find(Boolean);
+  const post = document.paths["/api/v1/session/refresh"].post;
   post.parameters = post.parameters.filter((parameter) => parameter.$ref !== "#/components/parameters/IdempotencyKey");
   assert.throws(() => validateOpenApiDocument(document), /Idempotency-Key/i);
 });
@@ -68,6 +68,41 @@ test("OpenAPI 검증기는 Run Event SSE Content 누락을 거부한다", async 
     "application/json": { schema: { $ref: "#/components/schemas/SuccessEnvelope" } }
   };
   assert.throws(() => validateOpenApiDocument(document), /text\/event-stream/i);
+});
+
+test("Native 로컬 로그인 공개 계약은 credential 비노출 경계와 Windows 고정 발급을 기술한다", async () => {
+  const document = await loadContract();
+  const operation = document.paths["/api/v1/auth/native/login"].post;
+  assert.equal(operation.operationId, "nativeLocalLogin");
+  assert.deepEqual(operation.parameters ?? [], []);
+  assert.equal(operation.requestBody.content["application/json"].schema.$ref, "#/components/schemas/NativeLocalLoginRequest");
+  assert.equal(operation.responses["200"].$ref, "#/components/responses/NativeCredentialSessionResponse");
+
+  const request = document.components.schemas.NativeLocalLoginRequest;
+  assert.deepEqual(request.required, ["login_id", "password"]);
+  assert.equal(request.additionalProperties, false);
+  assert.equal(request.properties.password.writeOnly, true);
+  assert.equal(request.properties.password.default, undefined);
+  assert.equal(request.properties.password.example, undefined);
+
+  const session = document.components.schemas.NativeCredentialSession;
+  assert.deepEqual(session.required, [
+    "user_id", "tenant_id", "workspace_id", "session_id", "device_id", "client_kind",
+    "delivery", "access_credential", "refresh_credential", "expires_at"
+  ]);
+  assert.equal(session.properties.client_kind.const, "native");
+  assert.equal(session.properties.delivery.const, "native_https_opaque_bearer");
+  for (const field of ["access_credential", "refresh_credential"]) {
+    assert.equal(session.properties[field].format, undefined);
+    assert.equal(session.properties[field].default, undefined);
+    assert.equal(session.properties[field].example, undefined);
+  }
+});
+
+test("OpenAPI 검증기는 승인된 Native 요청 password 한 곳 밖의 secret 명칭을 계속 거부한다", async () => {
+  const document = clone(await loadContract());
+  document.components.schemas.NativeCredentialSession.properties.password = { type: "string" };
+  assert.throws(() => validateOpenApiDocument(document), /forbidden token.*password/i);
 });
 
 test("Audit Event 목록은 generic Resource가 아닌 불변 Hash-chain 계약을 사용한다", async () => {
