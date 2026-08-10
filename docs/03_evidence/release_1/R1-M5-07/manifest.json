@@ -45,10 +45,10 @@
       "evidence": "scripts/tests/recovery-api.test.mjs"
     },
     "web_evidence_01": {
-      "status": "BLOCKED_RESOURCE_UNAVAILABLE_NETWORK_UNPROVEN",
+      "status": "SCREEN_READY_EMPTY_LIST_NETWORK_UNPROVEN",
       "evidence": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/manifest.json",
-      "observed_at": "2026-08-10T10:42:42+09:00",
-      "note": "Chrome login was recovered, but the read-only Backup-list flow displayed RESOURCE_UNAVAILABLE and the approved Browser Client surface did not expose Network event/response details; this does not change the existing browser-pending verdict."
+      "observed_at": "2026-08-10T11:24:00+09:00",
+      "note": "After deployment correction, Chrome showed the Recovery API area ready with zero Backup rows after automatic initialization and one read-only refresh. Network URL/method/status and same-origin/internal-direct-zero remain unproven because the approved Browser Client does not expose Network event/response details; the existing browser-pending verdict remains unchanged."
     },
     "openapi_contract": {
       "status": "PASS",

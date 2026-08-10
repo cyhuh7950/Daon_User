@@ -2,26 +2,26 @@
 
 ## 판정
 
-`BLOCKED / RESOURCE_UNAVAILABLE`
+`PARTIAL / SCREEN_READY_EMPTY_LIST / NETWORK_NOT_PROVEN`
 
 ## 판단 이유
 
-- 최초 검증의 `AUTHENTICATION_REQUIRED` 후 신산님이 Chrome 로그인 완료를 명시했고, 같은 읽기 전용 Work Order를 재개했다.
-- 로그인 후 `Backup·Restore 실제 API`는 `working`에서 `failed · RESOURCE_UNAVAILABLE`으로 전이했다. 읽기 전용 `목록 새로고침` 1회도 같은 오류로 끝났다.
-- Evidence Manifest는 과거 인증 차단과 현재 로그인 후 오류를 별도 `attempts`로 분리했으며, 현재 `screen.recovery_api_status`와 top-level verdict는 모두 `RESOURCE_UNAVAILABLE`을 가리킨다.
-- 실제 화면은 계속 `Production-bound Prototype`, `실제 API 미실행`, `ready · Prototype Adapter 실제 외부 효과 0건`을 표시했다. 이 상태는 실제 Adapter 연결 성공이 아니다.
-- Browser 공개 제어 표면에는 Network event/response API가 없고 Resource Timing도 evaluator에 노출되지 않아, 요구된 session·Backup 목록 URL·method·HTTP status 및 same-origin 직접 증명은 확보하지 못했다.
-- 자격증명/Cookie/Storage 열람, Backup 생성, Restore Preview·Execute·Cancel, SSH·DB·Docker·직접 API 호출 없이 새 Tab을 닫고 Chrome 제어를 반환했다.
+- 배포 보정 Runtime 제품 Commit/서버 Checkout `d0f0d0985120b78e8b6a0d32e22c69df12d3969e`, Web Image `sha256:117cfd39f5bce3a50392a99aca8037658a6c44f0a6b805e2c8966eb559345722`에서 신산님의 로그인 상태를 사용했다.
+- 새 검증 Tab의 자동 Session→Recovery 초기화 뒤 `Backup·Restore 실제 API`는 `ready`였다. 허용된 읽기 전용 `목록 새로고침` 1회 뒤에도 `ready`, Backup 행/표 0건, 오류 Trace 0건이었다.
+- 화면 PASS는 이전 `AUTHENTICATION_REQUIRED`와 `RESOURCE_UNAVAILABLE` 오류가 현재 attempt에서 재현되지 않고 Recovery 영역이 `ready`가 된 범위다. 실제 Backup 데이터 행 표시 PASS는 0건이라 주장하지 않는다.
+- Browser 공개 제어 표면에는 Network event/response API가 없어 session·Backup URL·method·HTTP status, same-origin 및 내부 API 절대주소/localhost 직접 호출 0건은 `NOT_PROVEN`이다.
+- 기존 두 실패 attempt 원본은 보존하고, 배포 보정 attempt의 PNG·DOM·관찰 기록을 별도 연결했다.
+- 자격증명/Cookie/Storage 열람, Backup 생성, Restore Preview·Execute·Cancel, SSH·DB·Docker·직접 API 호출 없이 수집 직후 Tab/관련 제어 화면을 finalize해 Chrome 제어를 반환했다.
 
 ## 조치
 
-1. 로그인 후 `RESOURCE_UNAVAILABLE` 화면, PNG·DOM 원본, Trace와 Network 도구 한계를 Evidence Pack에 기록했다.
-2. 기존 `R1-M5-07` Manifest에는 본 보완 작업의 현재 차단 결과 link metadata만 갱신하고 기존 `EXTERNAL_DATA_PASS_BROWSER_EVIDENCE_PENDING` 판정을 유지한다.
-3. 어울1은 동일 Runtime의 Recovery API/BFF resource availability 원인을 승인된 서버 운영 절차에서 판단하고, Browser Network event/response 접근 방법을 제공하거나 재검증 범위를 지시해야 한다.
+1. 현재 화면 PNG·DOM 원본과 `SCREEN_READY_EMPTY_LIST / NETWORK_NOT_PROVEN` 관찰을 Evidence Pack의 3차 attempt로 추가했다.
+2. 기존 `R1-M5-07` Manifest의 link metadata만 현재 결과로 갱신하고 기존 `EXTERNAL_DATA_PASS_BROWSER_EVIDENCE_PENDING` 판정은 유지한다.
+3. 어울1은 화면 ready/빈 목록을 수용할지와 별도 Browser Network 원본 수집 수단을 제공할지 판단해야 한다.
 
 ## 증거 범위
 
-- 실제 Chrome 화면/DOM: 인증 차단 원본과 로그인 후 Resource-unavailable 원본 PNG·DOM을 모두 보존.
-- Browser Network: session·Backup 목록 요청의 URL·method·status 미확보, same-origin·internal direct-call 0건 미증명.
+- 실제 Chrome 화면/DOM: 과거 인증 차단·Resource-unavailable 및 현재 배포 보정 ready/빈 목록 원본 PNG·DOM을 모두 보존.
+- Browser Network: session·Backup 목록 요청 URL·method·status 미확보, same-origin·internal direct-call 0건 미증명(`NOT_PROVEN`).
 - 정적/Build/자동 테스트: 이번 읽기 전용 Browser 증거 보완 작업에서는 재실행하지 않음.
 - 제품/M5 Exit/TP-2/TP-5: 통과를 주장하지 않음.

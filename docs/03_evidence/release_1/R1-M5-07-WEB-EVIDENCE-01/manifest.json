@@ -2,23 +2,23 @@
   "schema_version": "1.0",
   "work_order_id": "R1-M5-07-WEB-EVIDENCE-01",
   "issue_id": "R1-M5-07-WEB-EVIDENCE-01-I001",
-  "verdict": "BLOCKED_RESOURCE_UNAVAILABLE_NETWORK_UNPROVEN",
-  "observed_at": "2026-08-10T10:42:42+09:00",
+  "verdict": "SCREEN_READY_EMPTY_LIST_NETWORK_UNPROVEN",
+  "observed_at": "2026-08-10T11:24:00+09:00",
   "target_url": "https://daon-user.sinsan.kr/operations",
   "runtime": {
-    "product_commit": "061bc4dcbddfd839fdcb64aa21ed498fe1e70e0b",
-    "web_image": "sha256:e056da75e9d666249a21b48ebe645908758bc24494f84e58dab7c7086b760bc4",
+    "product_commit": "d0f0d0985120b78e8b6a0d32e22c69df12d3969e",
+    "web_image": "sha256:117cfd39f5bce3a50392a99aca8037658a6c44f0a6b805e2c8966eb559345722",
     "api_image": "sha256:91b454616ef6ee2c63ca6a02bcac59b576f0ccb1c4c6affc9830b66da38ba581",
-    "server_checkout_document_head": "2fb74f1b54f520df2525559a3f8bf6cda06683d4",
-    "server_checkout_is_runtime_build": false,
-    "local_worktree_head": "0f9b2bc8cd6fd6ccee290ede5530bc9466bff66d",
-    "local_worktree_is_runtime_build": false
+    "server_checkout_document_head": "d0f0d0985120b78e8b6a0d32e22c69df12d3969e",
+    "server_checkout_is_runtime_build": true,
+    "local_worktree_head": "d0f0d0985120b78e8b6a0d32e22c69df12d3969e",
+    "local_worktree_is_runtime_build": true
   },
   "screen": {
     "title": "운영 상태·복구",
     "labels": ["Production-bound Prototype", "실제 API 미실행", "ready · Prototype Adapter 실제 외부 효과 0건"],
-    "recovery_api_status": "failed · RESOURCE_UNAVAILABLE",
-    "current_attempt_id": "logged_in_resource_unavailable_2026-08-10"
+    "recovery_api_status": "ready · Backup rows 0",
+    "current_attempt_id": "deployment_corrected_ready_empty_list_2026-08-10"
   },
   "attempts": [
     {
@@ -46,15 +46,36 @@
         "png": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-resource-unavailable-2026-08-10.png",
         "dom_snapshot": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-resource-unavailable-2026-08-10.dom.txt"
       }
+    },
+    {
+      "attempt_id": "deployment_corrected_ready_empty_list_2026-08-10",
+      "observed_at": "2026-08-10T11:24:00+09:00",
+      "status": "ready · Backup rows 0 · Network NOT_PROVEN",
+      "traces": [],
+      "runtime": {
+        "product_commit": "d0f0d0985120b78e8b6a0d32e22c69df12d3969e",
+        "web_image": "sha256:117cfd39f5bce3a50392a99aca8037658a6c44f0a6b805e2c8966eb559345722",
+        "api_image": "sha256:91b454616ef6ee2c63ca6a02bcac59b576f0ccb1c4c6affc9830b66da38ba581"
+      },
+      "read_only_actions": {
+        "automatic_session_and_backup_initialization": true,
+        "refresh_clicks": 1,
+        "state_changing_clicks": 0
+      },
+      "capture": {
+        "png": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-deployment-correction-2026-08-10.png",
+        "dom_snapshot": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-deployment-correction-2026-08-10.dom.txt",
+        "observation": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/deployment-correction-observation.md"
+      }
     }
   ],
   "network": {
-    "session_request": "NOT_OBSERVED",
-    "backup_list_request": "NOT_OBSERVED",
+    "session_request": "NOT_PROVEN",
+    "backup_list_request": "NOT_PROVEN",
     "same_origin_proven": false,
     "internal_direct_request_zero_proven": false,
-    "reason": "로그인 복구 후에도 Browser 공개 제어 표면에서 Network event/response API 또는 Resource Timing을 얻지 못했고, Backup 목록 읽기 UI는 RESOURCE_UNAVAILABLE을 표시함",
-    "current_attempt_id": "logged_in_resource_unavailable_2026-08-10"
+    "reason": "배포 보정 후 자동 읽기와 새로고침 화면은 ready 및 Backup 행 0건이지만 Browser 공개 제어 표면이 Network event/response 원본을 제공하지 않아 URL·method·HTTP status와 same-origin/internal-direct 0건을 증명하지 못함",
+    "current_attempt_id": "deployment_corrected_ready_empty_list_2026-08-10"
   },
   "browser_cleanup": {
     "new_tab_only": true,
@@ -98,13 +119,28 @@
       "kind": "logged_in_read_only_network_observation"
     },
     {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-deployment-correction-2026-08-10.png",
+      "sha256": "C9D6CE7DC26733009B57800E3CFC2231397AAB74282014789F0D0E56E98B82C7",
+      "kind": "actual_chrome_full_page_screenshot"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-deployment-correction-2026-08-10.dom.txt",
+      "sha256": "35AE89C8D1554B256D0E9EF8EFF0CA65CF09D18B8AF4FBF907113F5D34AD7A67",
+      "kind": "actual_chrome_dom_snapshot"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/deployment-correction-observation.md",
+      "sha256": "AC99F18B4050DE138BDBC35A1F31B5D64550A79C8F66885813EBF7DA55CD7FE1",
+      "kind": "deployment_corrected_read_only_observation"
+    },
+    {
       "path": "docs/04_test_reports/release_1/R1-M5-07-WEB-EVIDENCE-01_progress.md",
-      "sha256": "D616266056DF1A1AEF2E2C5FBE5A5F0F5997FDDA93FC0BCE4F6A0CF5174C60CF",
+      "sha256": "6A2546162406DED88B07BA1D5C43465BEB98C61324CD80A987BAD31DBC33F1CF",
       "kind": "progress_record"
     },
     {
       "path": "docs/04_test_reports/release_1/R1-M5-07-WEB-EVIDENCE-01_completion_report.md",
-      "sha256": "4EB864E6AAC48CBD9CAAACAC3F9C8E0E3F9EF9F260B0B8E767B6CABED6441F03",
+      "sha256": "96BBB5D06226BD87B257AC7865E031230ECC3750B7389BF6137B1D5D9DC9790E",
       "kind": "completion_report"
     }
   ]
