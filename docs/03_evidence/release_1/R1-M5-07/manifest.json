@@ -45,10 +45,10 @@
       "evidence": "scripts/tests/recovery-api.test.mjs"
     },
     "web_evidence_01": {
-      "status": "BLOCKED_AUTHENTICATION_REQUIRED",
+      "status": "BLOCKED_RESOURCE_UNAVAILABLE_NETWORK_UNPROVEN",
       "evidence": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/manifest.json",
-      "observed_at": "2026-08-10T10:07:12+09:00",
-      "note": "Chrome read-only screen evidence found AUTHENTICATION_REQUIRED before session and backup-list Network details could be collected; this does not change the existing browser-pending verdict."
+      "observed_at": "2026-08-10T10:42:42+09:00",
+      "note": "Chrome login was recovered, but the read-only Backup-list flow displayed RESOURCE_UNAVAILABLE and the approved Browser Client surface did not expose Network event/response details; this does not change the existing browser-pending verdict."
     },
     "openapi_contract": {
       "status": "PASS",

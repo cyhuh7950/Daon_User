@@ -2,33 +2,59 @@
   "schema_version": "1.0",
   "work_order_id": "R1-M5-07-WEB-EVIDENCE-01",
   "issue_id": "R1-M5-07-WEB-EVIDENCE-01-I001",
-  "verdict": "BLOCKED_AUTHENTICATION_REQUIRED",
-  "observed_at": "2026-08-10T10:07:12+09:00",
+  "verdict": "BLOCKED_RESOURCE_UNAVAILABLE_NETWORK_UNPROVEN",
+  "observed_at": "2026-08-10T10:42:42+09:00",
   "target_url": "https://daon-user.sinsan.kr/operations",
   "runtime": {
     "product_commit": "061bc4dcbddfd839fdcb64aa21ed498fe1e70e0b",
     "web_image": "sha256:e056da75e9d666249a21b48ebe645908758bc24494f84e58dab7c7086b760bc4",
     "api_image": "sha256:91b454616ef6ee2c63ca6a02bcac59b576f0ccb1c4c6affc9830b66da38ba581",
     "server_checkout_document_head": "2fb74f1b54f520df2525559a3f8bf6cda06683d4",
-    "server_checkout_is_runtime_build": false
+    "server_checkout_is_runtime_build": false,
+    "local_worktree_head": "0f9b2bc8cd6fd6ccee290ede5530bc9466bff66d",
+    "local_worktree_is_runtime_build": false
   },
   "screen": {
     "title": "운영 상태·복구",
     "labels": ["Production-bound Prototype", "실제 API 미실행", "ready · Prototype Adapter 실제 외부 효과 0건"],
-    "recovery_api_status": "failed · AUTHENTICATION_REQUIRED",
-    "initial_trace_id": "trace-bff-0edf20bb-95d8-4603-8856-08ce14d016d7",
-    "captured_trace_id": "trace-bff-d5fe2d7d-1651-4e7b-859f-a94bf145a447",
-    "original_capture": {
-      "png": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-authentication-required-2026-08-10.png",
-      "dom_snapshot": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-authentication-required-2026-08-10.dom.txt"
-    }
+    "recovery_api_status": "failed · RESOURCE_UNAVAILABLE",
+    "current_attempt_id": "logged_in_resource_unavailable_2026-08-10"
   },
+  "attempts": [
+    {
+      "attempt_id": "pre_login_authentication_required_2026-08-10",
+      "observed_at": "2026-08-10T10:21:16+09:00",
+      "status": "failed · AUTHENTICATION_REQUIRED",
+      "traces": [
+        "trace-bff-0edf20bb-95d8-4603-8856-08ce14d016d7",
+        "trace-bff-d5fe2d7d-1651-4e7b-859f-a94bf145a447"
+      ],
+      "capture": {
+        "png": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-authentication-required-2026-08-10.png",
+        "dom_snapshot": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-authentication-required-2026-08-10.dom.txt"
+      }
+    },
+    {
+      "attempt_id": "logged_in_resource_unavailable_2026-08-10",
+      "observed_at": "2026-08-10T10:42:42+09:00",
+      "status": "failed · RESOURCE_UNAVAILABLE",
+      "traces": [
+        "trace-bff-a0e83d68-af6b-4db6-9157-8f55a72c5c30",
+        "trace-bff-7be791bd-e230-4088-8587-f3e435de93e7"
+      ],
+      "capture": {
+        "png": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-resource-unavailable-2026-08-10.png",
+        "dom_snapshot": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-resource-unavailable-2026-08-10.dom.txt"
+      }
+    }
+  ],
   "network": {
     "session_request": "NOT_OBSERVED",
     "backup_list_request": "NOT_OBSERVED",
     "same_origin_proven": false,
     "internal_direct_request_zero_proven": false,
-    "reason": "AUTHENTICATION_REQUIRED 화면 상태 확인 후 우회/추가 클릭 금지"
+    "reason": "로그인 복구 후에도 Browser 공개 제어 표면에서 Network event/response API 또는 Resource Timing을 얻지 못했고, Backup 목록 읽기 UI는 RESOURCE_UNAVAILABLE을 표시함",
+    "current_attempt_id": "logged_in_resource_unavailable_2026-08-10"
   },
   "browser_cleanup": {
     "new_tab_only": true,
@@ -57,13 +83,28 @@
       "kind": "actual_chrome_dom_snapshot"
     },
     {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-resource-unavailable-2026-08-10.png",
+      "sha256": "A1A9C3376250113BA6BF9BD348CF3E8B30E86533F1225B6DBC02AC35A841CAF3",
+      "kind": "actual_chrome_full_page_screenshot"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/operations-resource-unavailable-2026-08-10.dom.txt",
+      "sha256": "378C250F936227C284504018EDE9FC144E819C1E76605E938671383511B98711",
+      "kind": "actual_chrome_dom_snapshot"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M5-07-WEB-EVIDENCE-01/resource-unavailable-observation.md",
+      "sha256": "F2A371446DD3DE80EEEADADF69D18143DBAC3B14381499A359EFEC3168936FD5",
+      "kind": "logged_in_read_only_network_observation"
+    },
+    {
       "path": "docs/04_test_reports/release_1/R1-M5-07-WEB-EVIDENCE-01_progress.md",
-      "sha256": "D4D954F0A94411B98F8DED4389AFEC1C36EA9EE1797E97B4E4B381741B9C62BF",
+      "sha256": "D616266056DF1A1AEF2E2C5FBE5A5F0F5997FDDA93FC0BCE4F6A0CF5174C60CF",
       "kind": "progress_record"
     },
     {
       "path": "docs/04_test_reports/release_1/R1-M5-07-WEB-EVIDENCE-01_completion_report.md",
-      "sha256": "5FB05A11577E3D5D9F1DD679CA8121073CC987607A32A11B44F636CE5B00A47B",
+      "sha256": "4EB864E6AAC48CBD9CAAACAC3F9C8E0E3F9EF9F260B0B8E767B6CABED6441F03",
       "kind": "completion_report"
     }
   ]

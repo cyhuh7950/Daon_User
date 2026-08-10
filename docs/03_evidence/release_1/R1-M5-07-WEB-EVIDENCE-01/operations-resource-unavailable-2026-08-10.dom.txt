@@ -1,0 +1,174 @@
+- complementary:
+  - generic: ●
+  - generic: Web Shell 준비
+  - button "Web Shell 상태 설명": i
+- banner:
+  - paragraph: 운영·알림·복구
+  - heading "운영 상태·복구" [level=1]
+  - generic: Production-bound Prototype
+  - generic: wide-dashboard
+  - generic: 실제 API 미실행
+- navigation "운영과 알림 화면":
+  - button "운영 상태"
+  - button "알림"
+  - link "조직 설정":
+    - /url: /settings/organization
+- status: ready · Prototype Adapter 실제 외부 효과 0건
+- main:
+  - heading "Service 상태" [level=2]
+  - button "API·Worker·DB·Object Storage 안전 상태 설명": i
+  - article:
+    - strong: API
+    - generic: healthy
+    - generic: SERVICE_HEALTHY
+  - article:
+    - strong: Worker
+    - generic: degraded
+    - generic: QUEUE_DELAYED
+  - article:
+    - strong: DB
+    - generic: healthy
+    - generic: SERVICE_HEALTHY
+  - article:
+    - strong: Object Storage
+    - generic: healthy
+    - generic: SERVICE_HEALTHY
+  - heading "Queue 상태" [level=2]
+  - button "처리·Index·실패·자동·수동 재처리 Queue 설명": i
+  - text: Queue Filter
+  - combobox "Queue Filter":
+    - option "전체" [selected]
+    - option "Source Processing"
+    - option "Index Build"
+    - option "실패 Queue"
+    - option "자동 재처리"
+    - option "수동 재처리"
+  - article:
+    - strong: Source Processing
+    - generic: processing
+    - generic: 4건
+  - article:
+    - strong: Index Build
+    - generic: processing
+    - generic: 2건
+  - article:
+    - strong: 실패 Queue
+    - generic: warning
+    - generic: 1건
+  - article:
+    - strong: 자동 재처리
+    - generic: ready
+    - generic: 0건
+  - article:
+    - strong: 수동 재처리
+    - generic: ready
+    - generic: 0건
+  - heading "Model·Runtime Node" [level=2]
+  - button "불투명 Deployment·역할·Health·Capacity 설명": i
+  - paragraph:
+    - strong: local · vision
+    - generic: ready · available · model-deployment-local-001
+  - paragraph:
+    - strong: internal · text
+    - generic: ready · available · model-deployment-internal-001
+  - paragraph:
+    - strong: external · vision
+    - generic: degraded · limited · model-deployment-external-001
+  - paragraph:
+    - strong: Runtime Node
+    - generic: healthy · available · runtime-node-local-001
+  - paragraph:
+    - strong: Runtime Node
+    - generic: healthy · available · runtime-node-organization-001
+  - heading "Connector·비용" [level=2]
+  - button "Daon·인터넷과 사용자·조직 비용 한도 설명": i
+  - paragraph:
+    - strong: daon
+    - generic: healthy · CONNECTOR_READY
+  - paragraph:
+    - strong: internet
+    - generic: healthy · CONNECTOR_READY
+  - paragraph:
+    - strong: user
+    - generic: 4.2 GB / 10 GB · 48K / 100K · KRW 8,400 / 20,000 · WITHIN_LIMIT
+  - paragraph:
+    - strong: organization
+    - generic: 78 GB / 100 GB · 2M / 2M · KRW 300,000 / 300,000 · COST_LIMIT_EXCEEDED
+  - heading "Backup·Restore·Update·Rollback" [level=2]
+  - button "복구 목표·훈련 결과와 요청 Preview 설명": i
+  - term: Backup
+  - definition: verified · 마지막 성공 2026-07-21T03:00:00+09:00
+  - term: 복구 목표
+  - definition: RPO 24h · RTO 4h
+  - term: Restore Drill
+  - definition: passed_fixture · 실제 Restore 0건
+  - term: Update
+  - definition: pilot · preview_only · Rollback true
+  - paragraph: "`prototype_fixture` 요청 Preview와 `deferred_actual`을 분리합니다. G9-DRILL/G9-DEPLOY 승인 없는 실제 Backup·Restore·Update·Rollback은 0건입니다."
+  - heading "Backup·Restore 실제 API" [level=2]
+  - button "same-origin 7개 Cloud Recovery Route의 요청·목록·Preview·진행·결과 설명": i
+  - button "목록 새로고침" [active]
+  - button "전용 Fixture Backup 요청"
+  - status: failed · RESOURCE_UNAVAILABLE · Trace trace-bff-7be791bd-e230-4088-8587-f3e435de93e7
+  - paragraph: Preview와 Execute는 서로 다른 Step-up을 요구합니다. 운영 대상·제자리 덮어쓰기는 API에서 Fail-close됩니다.
+  - heading "waiting_model 재처리" [level=2]
+  - button "Readiness Event 제한 자동 Queue와 현재 권한 수동 새 Run 설명": i
+  - term: SourceVersion
+  - definition: source-waiting-model-001-v3
+  - term: 필수 역할
+  - definition: vision
+  - term: 이전 ProcessingRun
+  - definition: processing-run-failed-001 · 불변 true
+  - term: Mode·Backoff
+  - definition: auto · 2026-07-22T20:00:00+09:00
+  - generic "재처리 Mode":
+    - button "auto" [pressed]
+    - button "local_only"
+    - button "pinned"
+    - button "direct"
+  - button "healthy Readiness Event 자동 Queue"
+  - button "현재 권한 수동 재처리 Preview"
+  - button "같은 Event 중복 억제"
+  - button "이해·검증→indexing→ready" [disabled]
+  - button "정책 후보 0" [disabled]
+  - button "Runtime 재소진" [disabled]
+  - paragraph: pinned·직접 선택은 Readiness Event만으로 자동 실행하지 않습니다. 활성 Run·Event ID·Idempotency Key·Backoff 중복은 새 Run 0건으로 억제합니다.
+  - heading "장애별 축소 운영" [level=2]
+  - button "각 장애를 독립 주입하고 다른 Service를 바꾸지 않는 Prototype Fixture 설명": i
+  - button "Daon Connector 장애"
+  - button "External LLM 장애"
+  - button "Local LLM 장애"
+  - button "인터넷 Connector 장애"
+  - button "Index 장애"
+  - button "Evidence Store 장애"
+  - heading "Incident·복구" [level=2]
+  - button "detected→warning→restricted→recovering→recovered 명시 상태 설명": i
+  - text: Incident
+  - combobox "Incident":
+    - option "incident-runtime-001 · detected" [selected]
+  - list:
+    - listitem: detected
+    - listitem: warning
+    - listitem: restricted
+    - listitem: recovering
+    - listitem: recovered
+  - 'button "다음 복구 단계: warning"'
+  - heading "보안 운영 신호" [level=2]
+  - button "비용·Step-up·과거 AccessDecision 집계 설명": i
+  - paragraph:
+    - strong: 비용
+    - generic: COST_LIMIT_EXCEEDED · Frozen Context 자동 재시도 false
+  - paragraph:
+    - strong: Step-up
+    - generic: failed · expired · 실제 Write 0건
+  - paragraph:
+    - strong: AccessDecision
+    - generic: partially_redacted · access_blocked · 원본 OutputVersion 변경 0건
+  - button "Step-up 없이 Restore"
+  - button "승인 없는 Restore Preview"
+  - button "승인 없는 Update Preview"
+  - heading "Alert·Audit Preview" [level=2]
+  - button "안정 Alert Key 중복 억제와 Append-only Audit 설명": i
+  - button "운영 경고 Signal"
+  - button "같은 Signal Count 갱신"
+- alert
