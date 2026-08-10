@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
+import { parseRecoverySessionContext, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
 
 test("Recovery Web Adapter는 정확한 Cloud 7 Route를 same-origin으로만 호출한다", async () => {
   const source = await readFile("apps/web/lib/recovery-api.js", "utf8");
@@ -11,6 +12,47 @@ test("Recovery Web Adapter는 정확한 Cloud 7 Route를 same-origin으로만 �
     "/execute", "/cancel", "Idempotency-Key", "If-Match", "same-origin"
   ]) assert.match(source, new RegExp(token.replaceAll("/", "\\/")));
   assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
+});
+
+test("Recovery Web Adapter는 same-origin Session Context를 먼저 조회한다", async () => {
+  const source = await readFile("apps/web/lib/recovery-api.js", "utf8");
+  assert.match(source, /getSession\(\)\s*\{\s*return request\("\/api\/v1\/session"\)/);
+  assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
+});
+
+test("Recovery Session coordinator는 유효 Context만 Pane 초기화 뒤 Backup 목록에 전달한다", async () => {
+  const calls = [];
+  const adapter = {
+    async getSession() {
+      calls.push("session");
+      return { payload: { data: { user_id: "user-real", tenant_id: "tenant-real", workspace_id: "workspace-real" } } };
+    },
+    async listBackups(workspaceId) {
+      calls.push(`backups:${workspaceId}`);
+      return { payload: { data: [] } };
+    }
+  };
+  const context = await resolveRecoverySession(adapter, async (resolved) => {
+    calls.push(`pane:${resolved.workspaceId}`);
+    await adapter.listBackups(resolved.workspaceId);
+    return resolved;
+  });
+  assert.deepEqual(context, { userId: "user-real", tenantId: "tenant-real", workspaceId: "workspace-real", membership: null });
+  assert.deepEqual(calls, ["session", "pane:workspace-real", "backups:workspace-real"]);
+});
+
+test("Recovery Session coordinator는 malformed 또는 거부된 Session에서 Pane·Backup 호출 없이 fail-close한다", async () => {
+  assert.equal(parseRecoverySessionContext({ data: { user_id: "user", tenant_id: "", workspace_id: "workspace" } }), null);
+  let initialized = 0;
+  await assert.rejects(
+    resolveRecoverySession({ async getSession() { return { payload: { data: {} } }; } }, () => { initialized += 1; }),
+    { code: "RESOURCE_UNAVAILABLE" }
+  );
+  await assert.rejects(
+    resolveRecoverySession({ async getSession() { const error = new Error("denied"); error.code = "ACCESS_INVALID"; throw error; } }, () => { initialized += 1; }),
+    { code: "ACCESS_INVALID" }
+  );
+  assert.equal(initialized, 0);
 });
 
 test("두 Next catch-all은 Cloud Recovery POST를 공통 Proxy로 연결한다", async () => {

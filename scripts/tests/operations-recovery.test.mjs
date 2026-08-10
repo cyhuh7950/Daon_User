@@ -421,3 +421,46 @@ test("Operations·Notifications Route와 Pane은 정본·접근성·same-origin�
   assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL|fetch\s*\(/i);
   assert.doesNotMatch(source, /password|cookie|api[_-]?key|credential|stack trace|database host/i);
 });
+
+test("운영 Web Wrapper는 Session 확인 뒤 실제 Workspace만 Recovery Pane에 주입한다", async () => {
+  const [wrapper, pane] = await Promise.all([
+    read("apps/web/app/operations/recovery-workspace.jsx"),
+    read("packages/ui/src/operations-recovery-pane.jsx")
+  ]);
+  assert.match(wrapper, /resolveRecoverySession\(recoveryApi\)/);
+  assert.match(wrapper, /active = false/);
+  assert.doesNotMatch(wrapper, /workspace-release-one/);
+  assert.match(pane, /sessionContext/);
+  for (const token of ["actorId: sessionContext.userId", "tenantId: sessionContext.tenantId", "workspaceId: sessionContext.workspaceId", "membership: sessionContext.membership ?? null"]) {
+    assert.ok(pane.includes(token));
+  }
+});
+
+test("실제 Session Scope는 fixture 관리자 Membership 없이 Preview·retry를 fail-close한다", async () => {
+  const model = await loadModel();
+  const state = model.createOperationsRecoveryViewState({
+    actorId: "user-real",
+    tenantId: "tenant-real",
+    workspaceId: "workspace-real",
+    membership: null
+  });
+  const retry = model.transitionOperationsRecovery(state, {
+    type: "manual-retry",
+    idempotencyKey: "real-session-retry",
+    tenantId: state.tenantId,
+    workspaceId: state.workspaceId,
+    sourceId: state.waitingSource.sourceId
+  });
+  const preview = model.transitionOperationsRecovery(state, {
+    type: "preview-recovery",
+    action: "restore",
+    tenantId: state.tenantId,
+    workspaceId: state.workspaceId,
+    stepUpAuthorizationId: "stepup-restore-001",
+    approvalId: "g9-drill-001"
+  });
+  assert.equal(state.membership, null);
+  assert.match(retry.safety.code, /CURRENT_ACCESS_DENIED|AUTHORIZATION_DENIED/);
+  assert.equal(preview.safety.code, "RECOVERY_AUTHORIZATION_DENIED");
+  assert.equal(preview.recoveryPreview, null);
+});

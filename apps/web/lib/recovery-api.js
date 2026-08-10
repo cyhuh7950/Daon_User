@@ -1,5 +1,30 @@
 const JSON_HEADERS = Object.freeze({ "Content-Type": "application/json" });
 
+function sessionFailure() {
+  const error = new Error("RESOURCE_UNAVAILABLE");
+  error.code = "RESOURCE_UNAVAILABLE";
+  return error;
+}
+
+export function parseRecoverySessionContext(payload) {
+  const session = payload?.data;
+  const values = [session?.user_id, session?.tenant_id, session?.workspace_id];
+  if (!values.every((value) => typeof value === "string" && value.trim())) return null;
+  return {
+    userId: session.user_id,
+    tenantId: session.tenant_id,
+    workspaceId: session.workspace_id,
+    membership: null
+  };
+}
+
+export async function resolveRecoverySession(adapter, initializePane = (context) => context) {
+  const { payload } = await adapter.getSession();
+  const context = parseRecoverySessionContext(payload);
+  if (!context) throw sessionFailure();
+  return initializePane(context);
+}
+
 async function request(path, { method = "GET", body, headers = {} } = {}) {
   const response = await fetch(path, {
     method,
@@ -20,6 +45,9 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
 }
 
 export const recoveryApi = Object.freeze({
+  getSession() {
+    return request("/api/v1/session");
+  },
   listBackups(workspaceId) {
     return request(`/api/v1/backups?workspace_id=${encodeURIComponent(workspaceId)}`);
   },
