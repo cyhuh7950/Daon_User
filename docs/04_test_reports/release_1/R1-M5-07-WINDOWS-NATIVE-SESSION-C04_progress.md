@@ -1,0 +1,6 @@
+# R1-M5-07 Windows Native Session Vault·HTTPS Client 진행 기록
+
+| recorded_at | stage | status | completed | changed_files | commands_and_tests | error_cause_recovery | next_step | commit_or_build |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-08-10T00:00:00+09:00 | 착수·정본 확인 | IN_PROGRESS | 공식 작업공간 `C:\Users\cyhuh\Desktop\D Driver\Project\Daon_User`, `master`, HEAD `c08f5bfea11d996120b09d85a3a934805a61b17a`, 승인 문서와 Task 2 계약 확인 | 본 진행 기록 | `git rev-parse --show-toplevel`; `git branch --show-current`; `git rev-parse HEAD`; `git status --short`; 승인 문서·기존 Rust 구현 읽기 | 사용자 보존 대상: 추적 삭제 31건, 미추적 문서 3건 확인. 허용 경로 밖 변경 없음 | RED 테스트 작성 후 기존 구현으로 실패를 확인 | 미커밋·미빌드 |
+| 2026-08-10T00:08:00+09:00 | 승인 계약·Runtime 대조 | BLOCKED | 설계·OpenAPI·작업지시서는 `POST /api/v1/session/refresh`를 전제하지만 공식 `services/api/src/daon_user_api/runtime.py` 및 전체 코드 검색에 Route·Body·응답 구현이 없다. `IdentityService.rotate_refresh`와 OpenAPI 경로만 존재한다. | 본 진행 기록 | `rg -n --hidden --glob '!*.lock' --glob '!node_modules/**' 'session/refresh|refresh\("|rotate_refresh|RefreshBody' .` | Rust Client만 구현하면 실제 Refresh가 404가 되어 승인된 회전 계약을 충족하지 못한다. Runtime/OpenAPI는 Task 2 허용 경로 밖이다. 어울1에 증거·별도 API 작업지시서 필요 판단을 전달했다. | 어울1의 Runtime Refresh API 선행 작업지시서 또는 계약 변경 판단 대기 | 미커밋·미빌드 |

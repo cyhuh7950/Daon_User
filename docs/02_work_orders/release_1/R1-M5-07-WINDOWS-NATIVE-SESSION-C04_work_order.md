@@ -8,7 +8,7 @@
 | issue_id | `R1-M5-07-WINDOWS-NATIVE-SESSION-C04-I001` |
 | 버전 | `1.0` |
 | 상태 | `READY` |
-| 선행 기준 | `81b04887f3aec2c5800d4f6210076e0bca4b9b08` · Task 1 검토 승인 |
+| 선행 기준 | Task 1 검토 승인 + `R1-M4-03-NATIVE-REFRESH-C02` 완료·검토 승인 |
 | 공식 작업공간 | `C:\Users\cyhuh\Desktop\D Driver\Project\Daon_User` |
 | Branch | `master` |
 | 진행 기록 | `docs/04_test_reports/release_1/R1-M5-07-WINDOWS-NATIVE-SESSION-C04_progress.md` |
@@ -26,6 +26,8 @@
 - `docs/02_work_orders/approvals/APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01.md`
 - `docs/04_test_reports/release_1_test_plan.md`
 - `docs/04_test_reports/release_1/R1-M5-07-WINDOWS-NATIVE-AUTH-C03_completion_report.md`
+- `docs/02_work_orders/release_1/R1-M4-03-NATIVE-REFRESH-C02_work_order.md`
+- `docs/04_test_reports/release_1/R1-M4-03-NATIVE-REFRESH-C02_completion_report.md`
 
 ## 3. 목표
 
