@@ -171,7 +171,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
   let reactAct;
   const priorNodeEnv = process.env.NODE_ENV;
   try {
-    const { act, createElement } = await import("react");
+    const { act, createElement, StrictMode } = await import("react");
     const { createRoot } = await import("react-dom/client");
     reactAct = act;
     const { build } = await import("vite");
@@ -194,11 +194,33 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     const session = { user_id: "user-1", tenant_id: "tenant-1", workspace_id: "workspace-1", session_id: "session-1", device_id: "device-1", expires_at: "2026-08-11T01:00:00Z" };
     const calls = [];
     let scheduledPoll = null;
-    const invoke = async (command) => {
+    let polledSession = { authenticated: false, session: null };
+    let resolveSessionTwoSources;
+    const sessionTwo = { ...session, user_id: "user-2", workspace_id: "workspace-2", session_id: "session-2" };
+    const invoke = async (command, args) => {
       calls.push(command);
-      if (command === "native_session_status") return { authenticated: false, session: null };
-      if (command === "native_login") return { authenticated: true, session };
+      if (command === "native_session_status") return polledSession;
+      if (command === "native_login") {
+        polledSession = { authenticated: true, session };
+        return polledSession;
+      }
       if (command === "native_recovery_authorization_status") return { recovery_operations: operations };
+      if (command === "workspace_list_sources" && args.input.workspace_id === "workspace-2") {
+        return new Promise((resolve) => { resolveSessionTwoSources = resolve; });
+      }
+      if (command === "workspace_list_sources") return [{
+        source_id: `source-${args.input.workspace_id}`,
+        source_version_id: `version-${args.input.workspace_id}`,
+        filename: `${args.input.workspace_id}.pdf`,
+        source_state: "ready",
+        processing_state: "completed",
+        job_state: "completed"
+      }];
+      if (command === "workspace_list_studio_outputs") return [];
+      if (command === "workspace_ask_question") return {
+        run_id: "run-1", run_result_id: "result-1", answer: "StrictMode 질문 성공", insufficient: false,
+        citations: [{ citation_id: "citation-1", source_id: "source-workspace-1", source_version_id: "version-workspace-1", evidence_span_id: "span-1", page: 1 }]
+      };
       if (command === "recovery_cloud_list_backups") return { data: [], etag: null };
       if (command === "local_service_status") return { state: "ready", retryable: false, error_code: null };
       throw new Error(`unexpected:${command}`);
@@ -207,7 +229,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     dom.document.body.appendChild(container);
     root = createRoot(container);
     await act(async () => {
-      root.render(createElement(DesktopShell, { nativeInvoke: invoke, sessionWatchOptions: { schedule: (poll) => { scheduledPoll = poll; return 1; }, cancel: () => {} } }));
+      root.render(createElement(StrictMode, null, createElement(DesktopShell, { nativeInvoke: invoke, sessionWatchOptions: { schedule: (poll) => { scheduledPoll = poll; return 1; }, cancel: () => {} } })));
     });
     assert.ok(scheduledPoll, "제품 Tree가 주입된 watch scheduler를 사용해야 한다");
     assert.equal(findElements(container, (node) => node.getAttribute("aria-label") === "Windows 주 탐색").length, 0);
@@ -229,6 +251,32 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     const shell = findElements(container, (node) => node.getAttribute("data-client-type") === "windows")[0];
     assert.equal(shell.getAttribute("data-session-tree-key"), "session-1:5");
     assert.equal(calls.filter((command) => command === "recovery_cloud_list_backups").length, 0);
+    assert.match(container.textContent, /workspace-1\.pdf/u);
+    const strictQuestion = findElements(container, (node) => node.tagName === "INPUT"
+      && (node.getAttribute("type") ?? node.type) !== "file"
+      && !["login-id", "password"].includes(node.getAttribute("name") ?? node.name)
+      && !node.getAttribute("maxlength"))[0];
+    strictQuestion.value = "근거는?";
+    const strictQuestionProps = Object.keys(strictQuestion).find((key) => key.startsWith("__reactProps$"));
+    assert.equal(strictQuestion.disabled, false);
+    await act(async () => {
+      strictQuestion[strictQuestionProps].onChange({ currentTarget: strictQuestion, target: strictQuestion });
+    });
+    const strictQuestionForm = findElements(container, (node) => node.tagName === "FORM" && node.textContent.includes("질문 실행"))[0];
+    const strictQuestionFormProps = Object.keys(strictQuestionForm).find((key) => key.startsWith("__reactProps$"));
+    await act(async () => { await strictQuestionForm[strictQuestionFormProps].onSubmit({ preventDefault() {} }); });
+    assert.ok(calls.includes("workspace_ask_question"), `StrictMode 질문 Command 호출 필요: ${calls.join(",")}`);
+    assert.match(container.textContent, /StrictMode 질문 성공/u, "StrictMode effect 재실행 뒤에도 Session lifetime signal이 살아 있어야 한다");
+    polledSession = { authenticated: true, session: sessionTwo };
+    await act(async () => { await scheduledPoll(); await Promise.resolve(); });
+    assert.equal(shell.getAttribute("data-session-tree-key"), "session-2:7");
+    assert.doesNotMatch(container.textContent, /workspace-1\.pdf/u, "이전 Session Source가 재노출되면 안 된다");
+    assert.ok(resolveSessionTwoSources, "새 Session Source 조회가 시작되어야 한다");
+    await act(async () => { resolveSessionTwoSources([{
+      source_id: "source-workspace-2", source_version_id: "version-workspace-2", filename: "workspace-2.pdf",
+      source_state: "ready", processing_state: "completed", job_state: "completed"
+    }]); });
+    assert.match(container.textContent, /workspace-2\.pdf/u);
 
     await act(async () => { root.unmount(); });
     root = null;
@@ -506,7 +554,7 @@ test("Web Processing은 queued→leased→processing→completed를 polling한 �
       source_state: "ready", processing_state: "completed", job_state: "completed", safe_error_code: null
     };
     const processingStatuses = [
-      { ...terminalStatus, source_state: "registered", processing_state: "accepted", job_state: "queued" },
+      { ...terminalStatus, source_state: "registered", processing_state: "accepted", job_state: null },
       { ...terminalStatus, source_state: "processing", processing_state: "vision_llm_understanding", job_state: "leased" },
       { ...terminalStatus, source_state: "indexing", processing_state: "completed", job_state: "processing" },
       terminalStatus
