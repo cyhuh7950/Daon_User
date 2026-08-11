@@ -5,10 +5,10 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 ID | `DAON-WINDOWS-RECOVERY-ADAPTER-DESIGN` |
-| 버전 | `1.2` |
+| 버전 | `1.3` |
 | 작성일 | 2026-08-10 |
-| 상태 | 신산님 승인 · Native Recovery Command Surface 보정 반영 |
-| 승인 결정 | 신산님 2026-08-10 · Tauri Native Bridge 안 승인 / 2026-08-11 · Cloud 7·Local 3 전용 Command 보정 승인 |
+| 상태 | 신산님 승인 · Native Recovery 권한 Projection·로그인 UI 보정 반영 |
+| 승인 결정 | 신산님 2026-08-10 · Tauri Native Bridge 안 승인 / 2026-08-11 · Cloud 7·Local 3 전용 Command 보정 승인 / 2026-08-11 · Recovery 최소 권한 Projection·Windows 로그인 UI 승인 |
 | 상위 설계 | `docs/superpowers/specs/2026-07-20-daon-user-program-design.md` 0.9 |
 | 상위 계획 | `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` 1.8 · R1-M5-07 |
 | 공개 계약 승인 | `APR-R1-M5-07-RECOVERY-API-20260731-01` |
@@ -129,6 +129,23 @@ flowchart LR
 - JavaScript에는 인증 성공 여부와 Safe Session Projection만 전달하며 Access·Refresh 원문, Authorization Header, Gateway URL은 전달하지 않는다.
 - Access 만료 시 Rust는 기존 `POST /api/v1/session/refresh` 회전 계약을 최대 1회 사용한다. Refresh 재사용·철회·회전 실패 시 저장 Credential을 폐기하고 `AUTHENTICATION_REQUIRED`로 닫으며 원 Recovery 요청은 자동 재실행하지 않는다.
 
+### 5.3.2 Recovery 최소 권한 Projection
+
+- Cloud Recovery 7종의 서버 최종 권위는 기존과 동일하게 현재 Workspace의 `Action.POLICY_MANAGE` 판정이다. 별도 Role·Permission 체계를 추가하지 않는다.
+- `GET /api/v1/session`은 기존 Safe Session 필드에 `recovery_operations`를 추가한다. 값은 서버가 현재 Principal·Tenant·Workspace·정책 버전으로 평가한 다음 고정 문자열의 정렬된 배열이다.
+  - `cloud_backup_create`
+  - `cloud_backup_list`
+  - `cloud_backup_get`
+  - `cloud_restore_preview`
+  - `cloud_restore_get`
+  - `cloud_restore_execute`
+  - `cloud_restore_cancel`
+- `POLICY_MANAGE`가 허용되면 7종 전체, 거부되면 빈 배열을 반환한다. 역할·전체 Effective Permission·정책 내부 사유는 JavaScript에 반환하지 않는다.
+- Rust는 별도 읽기 전용 Tauri Command `native_recovery_authorization_status`에서 Vault Access를 Rust 내부에서만 사용해 `GET /api/v1/session`을 호출하고, 현재 Native Session 식별자·Workspace와 응답이 정확히 일치할 때만 Safe Projection을 반환한다.
+- Projection은 Credential Manager/Vault에 저장하지 않는다. Desktop 시작·로그인 성공·Session 갱신·Operations 진입 시 새로 조회하며, 조회 실패·Unknown field·식별자 불일치·권한 거부는 빈 허용 목록과 Safe Error로 Fail-close한다.
+- `recovery_operations`는 버튼 가시성·Handler 사전 차단을 위한 최소 권한 힌트다. Cloud 7 API는 매 요청마다 `POLICY_MANAGE`와 Step-up을 다시 검증하는 최종 권위자로 유지한다.
+- Local 3종은 Cloud 권한 Projection에 포함하지 않는다. 기존 `LocalServiceManager` readiness와 고정 Scope·Capability HMAC 검증이 최종 권위다.
+
 ### 5.4 LocalRecoveryPort
 
 - `LocalServiceManager`의 동적 Loopback 주소와 App Instance Credential을 Native 내부에서만 사용한다.
@@ -150,6 +167,9 @@ flowchart LR
 - 공용 `RecoveryApiPanel`은 Cloud Adapter를 사용하고, Local Recovery는 별도 상태 영역에서 Scan→Job 상태→Repair/Manual 경로를 보여준다.
 - Cloud Session 미연결과 Local Service 미준비를 서로 다른 상태로 표시한다.
 - 권한이 없거나 Step-up이 없는 버튼은 실행하지 않으며 Safe Error와 Trace만 표시한다.
+- Cloud 버튼과 Handler는 `recovery_operations`의 해당 Operation을 이중 확인하며, 미허용 Operation은 Tauri Recovery invoke 0건이다.
+- Windows 최초 실행에는 실제 Native 로그인·로그아웃 UI를 제공한다. Login ID와 Password는 제출 수명에만 존재하고 React 지속 State·Storage·Log·Error에 보존하지 않는다.
+- 로그인 성공 시 Safe Session과 최신 Recovery 권한 Projection으로 Operations Tree를 재생성한다. 로그인 실패·권한 Projection 실패 시 Cloud Recovery invoke는 0건이다.
 - Prototype Fixture와 실제 Adapter 결과를 혼합하지 않는다.
 
 ## 6. 데이터 흐름
@@ -182,6 +202,7 @@ flowchart LR
 | 조건 | 결과 |
 | --- | --- |
 | Native Session 없음·만료·철회 | `AUTHENTICATION_REQUIRED`, Cloud 요청 0건 또는 재실행 0건 |
+| 권한 Projection 없음·거부·불일치 | 빈 `recovery_operations`, Cloud Recovery Tauri invoke 0건 |
 | Local Service 미준비 | `LOCAL_SERVICE_UNAVAILABLE`, Cloud 자동 전환 0건 |
 | 잘못된 Command·Path·Capability | `LOCAL_COMMAND_NOT_ALLOWED`, Local 요청 0건 |
 | Step-up 없음·불일치 | `STEP_UP_REQUIRED`, Restore 상태 변경 0건 |
@@ -196,8 +217,9 @@ flowchart LR
 2. TDD로 JavaScript Adapter의 Command·DTO·Safe Error 계약을 고정한다.
 3. LocalRecoveryPort를 기존 Local Service 3개 API에 연결한다.
 4. NativeSessionPort와 CloudRecoveryPort를 기존 M4 Native Identity·Cloud 7 API에 연결한다.
-5. JavaScript Adapter의 Command·DTO·Safe Error 계약을 고정하고 Desktop Shell·공용 Operations UI에 주입한다.
-6. Unit·Contract·Rust·Local Service·Desktop Build 회귀 후 NSIS 설치형에서 실제 화면을 검증한다.
+5. 서버 Session과 Rust Native Session에 Recovery 최소 권한 Projection을 연결하고 Vault 비저장·현재 Session 일치·빈 목록 Fail-close를 고정한다.
+6. JavaScript Adapter의 Command·DTO·Safe Error 계약, Native 로그인 UI와 권한별 Handler 차단을 고정하고 Desktop Shell·공용 Operations UI에 주입한다.
+7. Unit·Contract·Rust·Local Service·Desktop Build 회귀 후 NSIS 설치형에서 실제 화면을 검증한다.
 
 ## 9. 테스트 계약
 
@@ -206,6 +228,8 @@ flowchart LR
 - Adapter가 없는 현재 Desktop에서 실제 API 미연결을 재현한다.
 - 잘못된 Command·Path·Workspace·Job ID·DTO를 거부한다.
 - Session 없음·만료·Refresh replay에서 Cloud 요청을 만들지 않는다.
+- 권한 Projection 없음·거부·Unknown field·Session/Workspace 불일치에서 Cloud Recovery Tauri invoke를 만들지 않는다.
+- 로그인 응답과 Session Projection의 Unknown·Credential 유사 필드를 거부하고 Password를 State·Storage·Log에 남기지 않는다.
 - Local Service 미준비·위조 Token·Capability 불일치에서 Local 요청을 만들지 않는다.
 - Preview Step-up을 Execute에 재사용하지 못한다.
 - Fixture Allowlist 밖 목적지와 운영 대상 Restore를 거부한다.

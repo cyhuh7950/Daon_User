@@ -4,19 +4,20 @@
 
 **Goal:** Windows 설치형이 WebView에 Credential·내부 주소를 노출하지 않고 별도 Native 로컬 로그인으로 Cloud Recovery 7종과 인증된 Local Recovery 3종을 실제 사용하게 한다.
 
-**Architecture:** React는 Tauri `invoke`만 호출하고 Rust가 Native Session Vault, HTTPS Cloud Port, 인증된 Loopback Local Port를 소유한다. 기존 Web 로그인·same-origin BFF·CSP `connect-src 'none'`은 변경하지 않으며 Server와 Local Service가 권한·Step-up·경로 Allowlist를 최종 재검증한다.
+**Architecture:** React는 Tauri `invoke`만 호출하고 Rust가 Native Session Vault, HTTPS Cloud Port, 인증된 Loopback Local Port를 소유한다. 서버의 현재 Workspace `POLICY_MANAGE` 판정은 Safe Recovery Operation 목록으로만 Desktop에 투영하며 Vault에는 저장하지 않는다. 기존 Web 로그인·same-origin BFF·CSP `connect-src 'none'`은 변경하지 않으며 Server와 Local Service가 권한·Step-up·경로 Allowlist를 최종 재검증한다.
 
 **Tech Stack:** Python 3.14.3, FastAPI, Pydantic v2, OpenAPI 3.1, Rust 1.97.1, Tauri 2.11.4, `reqwest = 0.13.4` rustls, Windows Credential Manager, React 19.2.7, Node 24.18.0.
 
 ## Global Constraints
 
 - 공식 작업공간 `C:\Users\cyhuh\Desktop\D Driver\Project\Daon_User`, Branch `master`만 사용한다.
-- 승인 기준은 설계 개정본, 계획 1.8, Windows Recovery 설계 1.1, `R1-D028`, `APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01`이다.
+- 승인 기준은 설계 개정본, 계획 1.8, Windows Recovery 설계 1.3, `R1-D028`, `APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01`과 신산님의 2026-08-11 Recovery 최소 권한 Projection·Windows 로그인 UI 승인이다.
 - 기존 사용자 삭제 31건과 미추적 문서 3건을 복원·수정·Stage하지 않는다.
 - 한 시점 한 Writer만 코드를 수정하고 모든 구현은 TDD RED→최소 GREEN→회귀 순서로 진행한다.
 - 기존 `POST /api/v1/auth/login` Web Cookie 계약, Web same-origin BFF, CSP `connect-src 'none'`, Cloud 7개·Local 3개 Method/Path를 변경하지 않는다.
 - Access·Refresh·Password·Authorization Header·Gateway URL·Loopback Port·Local Token은 JavaScript·Log·Evidence에 노출하지 않는다.
 - 운영 Restore·파괴적 손상 주입·G9-DRILL 우회는 수행하지 않는다.
+- Recovery 권한 Projection은 역할·전체 Permission을 노출하지 않고 Cloud 7종 고정 Operation만 반환하며, 조회 실패·불일치·Unknown field는 빈 목록으로 Fail-close한다.
 
 ---
 
@@ -142,6 +143,37 @@ npm run verify:desktop-lint
 git diff --check
 ```
 
+## Task 4.6: Native Recovery 최소 권한 Projection
+
+**Files:**
+
+- Modify: `services/api/src/daon_user_api/runtime.py`
+- Modify: `services/api/tests/test_runtime_http.py`
+- Modify: `services/api/tests/test_identity_local_auth.py`
+- Modify: `packages/contracts/openapi/v1/openapi.json`
+- Modify: `scripts/tests/openapi-contract.test.mjs`
+- Modify: `scripts/verify-openapi-contract.mjs`
+- Modify: `apps/desktop/src-tauri/src/native_session.rs`
+- Modify: `apps/desktop/src-tauri/src/lib.rs`
+- Modify: `apps/desktop/src-tauri/tests/native_session_contract.rs`
+- Modify: `scripts/tests/desktop-tauri-shell.test.mjs`
+
+- [ ] API RED로 `GET /api/v1/session`의 `recovery_operations` 부재, 권한 거부 시 역할·Permission 노출 가능성, 현재 Workspace 불일치를 먼저 실패시킨다.
+- [ ] 서버는 현재 Principal·Workspace에 `Action.POLICY_MANAGE`를 평가하고 허용 시 설계 §5.3.2의 Cloud 7 Operation 전체, 거부 시 빈 배열만 반환한다. 권한 거부는 Session 인증 실패로 바꾸지 않는다.
+- [ ] OpenAPI Session Safe Projection에 정렬·중복 없는 7개 Enum 배열을 추가하고 Unknown Operation·역할·Effective Permission·Credential 필드는 금지한다.
+- [ ] Rust RED로 `native_recovery_authorization_status` 부재, Vault 저장 가능성, Session/Workspace 불일치, Unknown field, HTTP 오류에서 기존 권한 재사용을 먼저 실패시킨다.
+- [ ] Rust는 Vault Access를 내부에서만 사용해 고정 `GET /api/v1/session`을 호출하고 현재 Vault Session과 정확히 일치하는 Safe Projection만 반환한다. Projection은 Vault JSON에 저장하지 않는다.
+- [ ] `lib.rs`에는 읽기 전용 `native_recovery_authorization_status` 하나만 등록한다. JavaScript가 Action·Permission·Method·Path·Gateway·Authorization을 지정하지 못하게 한다.
+- [ ] 다음을 실행한다.
+
+```powershell
+uv run --project services/api python -m pytest services/api/tests/test_runtime_http.py services/api/tests/test_identity_local_auth.py -q
+node --test scripts/tests/openapi-contract.test.mjs scripts/tests/desktop-tauri-shell.test.mjs
+node scripts/verify-openapi-contract.mjs
+node scripts/run-isolated-desktop-cargo.mjs test
+git diff --check
+```
+
 ## Task 5: Windows React Adapter와 운영 화면 연결
 
 **Files:**
@@ -157,7 +189,10 @@ git diff --check
 
 - [ ] RED로 React가 fetch/XHR를 사용하지 않고 Tauri `invoke`만 호출하며 Adapter 부재·Session 부재·Local Service 미준비에서 Fixture 성공을 만들지 않는 계약을 고정한다.
 - [ ] `WindowsRecoveryAdapter`에 Cloud 7개와 Local 3개 메서드를 구현하고 Safe DTO·Safe Error만 통과시킨다.
-- [ ] `desktop-shell.jsx`가 Adapter를 한 번 생성하여 Operations 화면에 주입한다. 로그인 전 Cloud는 `AUTHENTICATION_REQUIRED`, Local 미준비는 `LOCAL_SERVICE_UNAVAILABLE`로 분리한다.
+- [ ] `native-session-bridge.js`는 authenticated/unauthenticated 응답을 exact-key 검증하고 Rust 승인 Safe Error 집합만 보존한다. Unknown·Credential 유사 필드는 상태·Callback에 전달하지 않는다.
+- [ ] Windows 최초 실행 로그인·로그아웃 UI를 기존 `native_login/logout/status`에 연결한다. Password는 uncontrolled 입력에서 제출 직후 지우고 React State·Storage·Log·Error에 보존하지 않는다.
+- [ ] `desktop-shell.jsx`가 Adapter와 Session Bridge를 한 번 생성하여 Operations 화면에 주입한다. 로그인 성공과 Session 변경은 Tree를 재생성하고 최신 `native_recovery_authorization_status`를 조회한다.
+- [ ] Cloud 버튼·Handler는 해당 `recovery_operations`가 없으면 Tauri Recovery invoke를 0건으로 차단한다. 로그인 전 Cloud는 `AUTHENTICATION_REQUIRED`, Local 미준비는 `LOCAL_SERVICE_UNAVAILABLE`로 분리한다.
 - [ ] 공용 UI에 Local Scan→Job 조회→Repair 상태 영역을 추가하되 Web 기존 Cloud 화면과 권한 Fail-close를 보존한다.
 - [ ] CSP `connect-src 'none'`, 브라우저 절대주소·localhost·`NEXT_PUBLIC_*` 0건을 정적·실행 테스트로 확인한다.
 - [ ] 다음을 실행한다.
@@ -165,6 +200,7 @@ git diff --check
 ```powershell
 node --test scripts/tests/windows-recovery-adapter.test.mjs scripts/tests/operations-recovery.test.mjs scripts/tests/desktop-tauri-shell.test.mjs
 node --check apps/desktop/src/windows-recovery-adapter.js
+node --check apps/desktop/src/native-session-bridge.js
 npm run verify:desktop-lint
 npm run verify:workspace
 ```
@@ -199,7 +235,7 @@ git diff --check
 
 ## Completion Contract
 
-- Native 로그인 API, Rust Session Vault, Cloud 7·Local 3 Port, React Adapter가 실제 계약으로 연결되어야 한다.
+- Native 로그인 API, Rust Session Vault, 최신 Recovery 권한 Projection, Cloud 7·Local 3 Port, React Adapter가 실제 계약으로 연결되어야 한다.
 - Web 로그인·Web Recovery·기존 Local Service Lifecycle 회귀가 통과해야 한다.
 - Credential·내부 주소의 JavaScript·Log·Evidence 노출은 0건이어야 한다.
 - 자동 테스트와 설치형 실제 검증을 구분하고 실제 설치형 검증 전에는 R1-WIN-01 또는 M5 Exit PASS를 주장하지 않는다.
