@@ -438,14 +438,14 @@ test("Recovery Pane은 Cloud 7종의 조회·생성·Preview·상태 조회·실
   }
 });
 
-test("운영 Web Wrapper는 Session 확인 뒤 실제 Workspace만 Recovery Pane에 주입한다", async () => {
+test("운영 Web Wrapper는 Stage A Safe surface이고 실제 Recovery 자산은 Stage C용으로 보존한다", async () => {
   const [wrapper, pane] = await Promise.all([
     read("apps/web/app/operations/recovery-workspace.jsx"),
     read("packages/ui/src/operations-recovery-pane.jsx")
   ]);
-  assert.match(wrapper, /resolveRecoverySession\(recoveryApi\)/);
-  assert.match(wrapper, /active = false/);
-  assert.doesNotMatch(wrapper, /workspace-release-one/);
+  assert.match(wrapper, /RESOURCE_UNAVAILABLE/);
+  assert.match(wrapper, /후속 Stage C/);
+  assert.doesNotMatch(wrapper, /recoveryApi|resolveRecoverySession|OperationsRecoveryWorkspace|useEffect|fetch\s*\(/);
   assert.match(pane, /sessionContext/);
   for (const token of ["actorId: sessionContext.userId", "tenantId: sessionContext.tenantId", "workspaceId: sessionContext.workspaceId", "membership: sessionContext.membership ?? null"]) {
     assert.ok(pane.includes(token));

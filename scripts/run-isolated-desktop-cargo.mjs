@@ -18,6 +18,17 @@ const GENERATED_SIDECAR = path.join(
   "binaries",
   "daon-user-local-service-x86_64-pc-windows-msvc.exe"
 );
+const INSTALLER_BEFORE_BUILD_COMMAND = "npm run build && node ../../scripts/verify-product-ui-boundary.mjs --target desktop";
+
+export function createDesktopCargoEnvironment(mode) {
+  if (mode === "installer") {
+    return { TAURI_CONFIG: JSON.stringify({ build: { beforeBuildCommand: INSTALLER_BEFORE_BUILD_COMMAND } }) };
+  }
+  return {
+    TAURI_CONFIG: JSON.stringify({ bundle: { externalBin: [] } }),
+    ...(mode === "manager-runtime" ? { DAON_LOCAL_SERVICE_SIDECAR: generatedSidecarPath } : {})
+  };
+}
 
 export async function cleanupGeneratedSidecar(candidate = GENERATED_SIDECAR) {
   const resolved = path.resolve(candidate);
@@ -185,14 +196,7 @@ async function main() {
     keepOnSuccess: isInstaller,
     command,
     args,
-    envOverrides: isInstaller
-      ? {}
-      : {
-          TAURI_CONFIG: JSON.stringify({ bundle: { externalBin: [] } }),
-          ...(isManagerRuntime
-            ? { DAON_LOCAL_SERVICE_SIDECAR: generatedSidecarPath }
-            : {})
-        }
+    envOverrides: createDesktopCargoEnvironment(mode)
   });
   if (isInstaller) await cleanupGeneratedSidecar();
   if (result.error) console.error(`DESKTOP_CARGO_CHILD_ERROR ${result.error.code ?? result.error.message}`);

@@ -7,6 +7,44 @@ function requiredId(value) {
   return value;
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value, keys) {
+  if (!isRecord(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function isSafeId(value) {
+  return typeof value === "string" && SAFE_ID.test(value);
+}
+
+function isGroundedCitation(value) {
+  return hasExactKeys(value, ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page"])
+    && isSafeId(value.citation_id)
+    && isSafeId(value.source_id)
+    && isSafeId(value.source_version_id)
+    && isSafeId(value.evidence_span_id)
+    && Number.isSafeInteger(value.page)
+    && value.page >= 1;
+}
+
+function isGroundedAnswer(value) {
+  return hasExactKeys(value, ["run_id", "run_result_id", "answer", "insufficient", "citations"])
+    && isSafeId(value.run_id)
+    && isSafeId(value.run_result_id)
+    && typeof value.answer === "string"
+    && value.answer.length >= 1
+    && value.answer.length <= 8_000
+    && typeof value.insufficient === "boolean"
+    && Array.isArray(value.citations)
+    && value.citations.length <= 10
+    && value.citations.every(isGroundedCitation);
+}
+
 async function responseData(response) {
   let payload;
   try {
@@ -18,7 +56,13 @@ async function responseData(response) {
     const code = payload?.error?.code;
     throw new Error(typeof code === "string" ? code : "QUESTION_FAILED");
   }
-  if (!payload?.data || typeof payload.data.answer !== "string") {
+  if (
+    !hasExactKeys(payload, ["data", "meta"])
+    || !isGroundedAnswer(payload.data)
+    || !isRecord(payload.meta)
+    || !isSafeId(payload.meta.trace_id)
+    || !isSafeId(payload.meta.workspace_id)
+  ) {
     throw new Error("QUESTION_RESPONSE_INVALID");
   }
   return payload.data;

@@ -24,9 +24,11 @@ export function AuthPane() {
       setMessage(success);
       if (path === "login" && result?.data?.workspace_id) {
         window.location.assign(`/workspaces/${encodeURIComponent(result.data.workspace_id)}`);
+      } else if (path === "login") {
+        setMessage("WORKSPACE_REQUIRED");
       }
     }
-    catch (error) { setMessage(`처리 실패: ${error.message}`); }
+    catch { setMessage("처리 실패: 요청을 완료하지 못했습니다."); }
   };
   return (
     <section className="daon-auth-pane" aria-labelledby="daon-auth-title">

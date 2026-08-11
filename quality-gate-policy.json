@@ -110,6 +110,7 @@
     }
   ],
   "mandatory_checks": [
+    { "id": "product-ui-boundary", "category": "security", "command": ["npm", "run", "verify:product-ui-boundary"], "failure_kind": "quality", "evidence_files": ["scripts/verify-product-ui-boundary.mjs", "scripts/tests/product-ui-boundary.test.mjs"] },
     { "id": "quality-gate-runner-tests", "category": "unit", "command": ["node", "--test", "scripts/tests/quality-gate.test.mjs"], "failure_kind": "quality", "evidence_files": ["scripts/tests/quality-gate.test.mjs"] },
     { "id": "local-service-runtime-verifier-tests", "category": "unit", "command": ["node", "--test", "scripts/tests/local-service-runtime-verifier.test.mjs", "scripts/tests/local-service-stage-helper.test.mjs"], "failure_kind": "quality", "evidence_files": ["scripts/verify-local-service-runtime.mjs", "scripts/stage-local-service-sidecar.ps1"] },
     { "id": "toolchain-baseline", "category": "build", "command": ["npm", "run", "verify:toolchain"], "failure_kind": "quality", "evidence_files": ["toolchain-versions.json", "package-lock.json", "uv.lock"] },

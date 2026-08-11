@@ -1,5 +1,4 @@
 import "@daon-user/design-tokens/tokens.css";
-import { WebShellRuntimeStatus } from "@daon-user/ui";
 import "./globals.css";
 
 export const metadata = {
@@ -8,5 +7,5 @@ export const metadata = {
 };
 
 export default function RootLayout({ children }) {
-  return <html lang="ko"><body><WebShellRuntimeStatus />{children}</body></html>;
+  return <html lang="ko"><body>{children}</body></html>;
 }

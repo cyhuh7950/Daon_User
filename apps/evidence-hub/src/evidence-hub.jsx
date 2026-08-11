@@ -6,8 +6,8 @@ import {
   createProductionBoundEvidenceState,
   projectProductionBoundEvidence,
   transitionProductionBoundEvidence
-} from "./production-bound-evidence-model.js";
-import "./workspace.css";
+} from "./evidence-hub-model.js";
+import "./evidence-hub.css";
 
 const STORAGE_KEY = "daon-m2-production-bound-evidence-state";
 
@@ -20,7 +20,7 @@ function InfoTip({ id, open, onToggle, children }) {
   );
 }
 
-export function ProductionBoundEvidenceHub({ route, screen }) {
+export function EvidenceHubApp({ route, screen }) {
   const [state, dispatch] = useReducer(transitionProductionBoundEvidence, undefined, createProductionBoundEvidenceState);
   const [sessionRestored, setSessionRestored] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -60,6 +60,7 @@ export function ProductionBoundEvidenceHub({ route, screen }) {
 
   return (
     <main className="evidence-hub" data-route-id={route.route_id} data-screen-id={screen.screen_id} data-client-type={projection.selected_client_type} data-state={projection.selected_status}>
+      <p className="evidence-local-only" role="status">개발·검증 전용 · 사용자 제품 아님 · 외부 API와 상태 변경 없음</p>
       <header className="evidence-header">
         <div>
           <p className="evidence-eyebrow">M2 Exit · Production-bound Prototype Evidence Pack</p>

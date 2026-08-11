@@ -13,8 +13,9 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
   fs.writeFileSync(RECONCILIATION_PATH, `${JSON.stringify(buildPredecessorReconciliation(), null, 2)}\n`, "utf8");
   console.log(`wrote ${RECONCILIATION_PATH}`);
 } else {
-  const model = await import("../../packages/ui/src/production-bound-evidence-model.js").catch(() => ({}));
-  const currentReconciliation = buildPredecessorReconciliation();
+  const model = await import("../../apps/evidence-hub/src/evidence-hub-model.js").catch(() => ({}));
+  // M2 선행 검증은 이후 승인 작업의 Worktree 상태가 아니라 당시 고정 Evidence를 검증한다.
+  const currentReconciliation = JSON.parse(fs.readFileSync(RECONCILIATION_PATH, "utf8"));
   const expectedJourneys = ["workspace_context", "knowledge_authority", "model_lineage", "studio_generation", "review_delivery_registration", "account_security", "operations_recovery", "negative_states"];
   const expectedClients = ["web", "windows", "android", "ios"];
 
@@ -307,19 +308,19 @@ if (process.argv.includes("--write-predecessor-reconciliation")) {
     assert.equal(projected.checked_journey_ids.includes("negative_states"), true);
   });
 
-  test("Home은 전용 Evidence Hub에 연결되고 실제 기존 Route 5종을 제공한다", () => {
-    const page = fs.readFileSync("apps/web/app/page.jsx", "utf8");
-    const pane = fs.readFileSync("packages/ui/src/production-bound-evidence-pane.jsx", "utf8");
-    assert.match(page, /ProductionBoundEvidenceHub/);
+  test("로컬 Evidence Hub는 실제 기존 Route 5종을 제공한다", () => {
+    const main = fs.readFileSync("apps/evidence-hub/src/main.jsx", "utf8");
+    const pane = fs.readFileSync("apps/evidence-hub/src/evidence-hub.jsx", "utf8");
+    assert.match(main, /EvidenceHubApp/);
     for (const href of ["/workspaces/workspace-release-one", "/settings/account", "/settings/organization", "/operations", "/notifications"]) assert.match(pane, new RegExp(`href=\\"${href.replaceAll("/", "\\/")}\\"`));
-    assert.match(page, /route_id === "home"/);
-    assert.match(page, /screen_id === "home"/);
+    assert.match(main, /route_id === "home"/);
+    assert.match(main, /screen_id === "home"/);
     assert.match(pane, /data-route-id=\{route\.route_id\}/);
     assert.match(pane, /data-screen-id=\{screen\.screen_id\}/);
   });
 
   test("Hub Browser source에는 직접 API·내부주소·Mobile DOM Import·Native 성공 주장이 없다", () => {
-    const sources = ["apps/web/app/page.jsx", "packages/ui/src/production-bound-evidence-pane.jsx", "packages/ui/src/production-bound-evidence-model.js"].map((file) => fs.readFileSync(file, "utf8")).join("\n");
+    const sources = ["apps/evidence-hub/src/main.jsx", "apps/evidence-hub/src/evidence-hub.jsx", "apps/evidence-hub/src/evidence-hub-model.js"].map((file) => fs.readFileSync(file, "utf8")).join("\n");
     assert.doesNotMatch(sources, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL|fetch\s*\(/);
     assert.doesNotMatch(sources, /react-native|@react-native/);
     assert.match(sources, /native_runtime_executed:\s*false/);

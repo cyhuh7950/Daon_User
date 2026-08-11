@@ -21,10 +21,13 @@ test("question client posts only to same-origin BFF with bounded lineage input",
       idempotencyKey: "question-cp3",
       fetchImpl: async (url, init) => {
         calls.push({ url, init });
-        return Response.json({ data: {
-          run_id: "run-cp3", answer: "ORANGE-COMPASS-42", insufficient: false,
-          citations: [{ citation_id: "citation-cp3", source_id: "source-cp3", source_version_id: "source-version-cp3", page: 2 }],
-        } });
+        return Response.json({
+          data: {
+            run_id: "run-cp3", run_result_id: "result-cp3", answer: "ORANGE-COMPASS-42", insufficient: false,
+            citations: [{ citation_id: "citation-cp3", source_id: "source-cp3", source_version_id: "source-version-cp3", evidence_span_id: "span-cp3", page: 2 }],
+          },
+          meta: { trace_id: "trace-cp3", workspace_id: "workspace-cp3" },
+        });
       },
     },
   );
