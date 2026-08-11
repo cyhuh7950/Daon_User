@@ -191,18 +191,10 @@
           }
         },
         "parameters": [
-          {
-            "$ref": "#/components/parameters/Cursor"
-          },
-          {
-            "$ref": "#/components/parameters/Limit"
-          },
-          {
-            "$ref": "#/components/parameters/Filter"
-          },
-          {
-            "$ref": "#/components/parameters/Search"
-          }
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Filter" },
+          { "$ref": "#/components/parameters/Search" }
         ],
         "x-list-operation": true
       }
@@ -409,7 +401,7 @@
         "x-implementation-owner": "R1-M6-05",
         "responses": {
           "200": {
-            "$ref": "#/components/responses/ListSuccessResponse"
+            "$ref": "#/components/responses/WorkspaceSourceListResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -434,23 +426,8 @@
           }
         },
         "parameters": [
-          {
-            "$ref": "#/components/parameters/ResourceId"
-          },
-          {
-            "$ref": "#/components/parameters/Cursor"
-          },
-          {
-            "$ref": "#/components/parameters/Limit"
-          },
-          {
-            "$ref": "#/components/parameters/Filter"
-          },
-          {
-            "$ref": "#/components/parameters/Search"
-          }
-        ],
-        "x-list-operation": true
+          { "$ref": "#/components/parameters/ResourceId" }
+        ]
       },
       "post": {
         "operationId": "createWorkspaceSource",
@@ -617,6 +594,56 @@
           "409": { "$ref": "#/components/responses/Conflict" },
           "412": { "$ref": "#/components/responses/PreconditionFailed" },
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/studio/reports": {
+      "post": {
+        "operationId": "createGroundedWorkspaceStudioReport",
+        "tags": ["Studio", "Citation"],
+        "summary": "근거 기반 보고서 생성 및 Canon 저장",
+        "x-implementation-owner": "R1-USER-PRODUCT-SEPARATION-STAGE-B-01",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioReportCreateRequest" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StudioReportResponse" },
+          "201": { "$ref": "#/components/responses/StudioReportResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" },
+          "504": { "$ref": "#/components/responses/SafeFailure" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/studio/outputs": {
+      "get": {
+        "operationId": "listGroundedWorkspaceStudioOutputs",
+        "tags": ["Studio", "Citation"],
+        "summary": "저장된 근거 기반 보고서 목록 조회",
+        "x-implementation-owner": "R1-USER-PRODUCT-SEPARATION-STAGE-B-01",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/StudioOutputListResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" },
+          "504": { "$ref": "#/components/responses/SafeFailure" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
       }
@@ -4000,6 +4027,21 @@
           }
         }
       },
+      "WorkspaceSourceListResponse": {
+        "description": "Workspace의 실제 Source 최신 버전 목록",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceSourceListEnvelope" } } }
+      },
+      "StudioReportResponse": {
+        "description": "근거 기반 보고서 생성 또는 멱등 재생",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioReportEnvelope" } } }
+      },
+      "StudioOutputListResponse": {
+        "description": "저장된 근거 기반 보고서 목록",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioOutputListEnvelope" } } }
+      },
       "ServiceUnavailable": {
         "description": "일시적인 저장소 또는 처리 기반 사용 불가",
         "headers": {
@@ -4709,6 +4751,67 @@
           "step_up_authorization_id": {
             "$ref": "#/components/schemas/OpaqueId"
           }
+        }
+      },
+      "WorkspaceSourceProjection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["source_id", "source_version_id", "filename", "source_state", "processing_state", "job_state"],
+        "properties": {
+          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "filename": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "source_state": { "type": "string", "enum": ["registered", "security_check", "processing", "indexing", "ready"] },
+          "processing_state": { "type": "string" },
+          "job_state": { "type": "string" }
+        }
+      },
+      "WorkspaceSourceListEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["sources"], "properties": { "sources": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/components/schemas/WorkspaceSourceProjection" } } } },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
+        }
+      },
+      "StudioReportCreateRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["source_id", "source_version_id", "run_id", "run_result_id", "title", "purpose"],
+        "properties": {
+          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "run_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "run_result_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      },
+      "StudioOutputProjection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["studio_output_id", "output_version_id", "output_type", "title", "purpose", "status", "content", "run_id", "run_result_id", "citations"],
+        "properties": {
+          "studio_output_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "output_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "output_type": { "type": "string", "const": "evidence_report" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "status": { "type": "string", "const": "draft" },
+          "content": { "type": "string", "minLength": 1, "maxLength": 20000 },
+          "run_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "run_result_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "citations": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/GroundedCitation" } }
+        }
+      },
+      "StudioReportEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/StudioOutputProjection" },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id", "replayed"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "replayed": { "type": "boolean" } } }
+        }
+      },
+      "StudioOutputListEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["outputs"], "properties": { "outputs": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/components/schemas/StudioOutputProjection" } } } },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
         }
       },
       "SourceUpload": {

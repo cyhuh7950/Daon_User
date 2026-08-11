@@ -69,6 +69,24 @@ test("Native Refresh 공개 계약은 단일 opaque credential과 Idempotency �
   assert.equal(request.properties.refresh_credential.example, undefined);
 });
 
+test("사용자 Studio 보고서 수직 Route는 exact 요청·응답 계약을 고정한다", async () => {
+  const document = await loadContract();
+  const create = document.paths["/api/v1/workspaces/{id}/studio/reports"].post;
+  const list = document.paths["/api/v1/workspaces/{id}/studio/outputs"].get;
+  assert.equal(create.requestBody.content["application/json"].schema.$ref, "#/components/schemas/StudioReportCreateRequest");
+  assert.equal(create.responses["201"].$ref, "#/components/responses/StudioReportResponse");
+  assert.equal(list.responses["200"].$ref, "#/components/responses/StudioOutputListResponse");
+  const request = document.components.schemas.StudioReportCreateRequest;
+  assert.equal(request.additionalProperties, false);
+  assert.deepEqual(request.required, ["source_id", "source_version_id", "run_id", "run_result_id", "title", "purpose"]);
+  const output = document.components.schemas.StudioOutputProjection;
+  assert.equal(output.additionalProperties, false);
+  assert.equal(output.properties.output_type.const, "evidence_report");
+  assert.equal(output.properties.status.const, "draft");
+  assert.equal(document.components.parameters.IdempotencyKey.schema.minLength, 16);
+  assert.equal(document.components.parameters.IdempotencyKey.schema.maxLength, 128);
+});
+
 test("Session Safe Projection은 Recovery 최소 권한만 exact enum 배열로 공개한다", async () => {
   const document = await loadContract();
   assert.equal(

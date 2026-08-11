@@ -31,3 +31,31 @@ export function normalizeProductWorkspaceState(state) {
   assertSafeError(state.safeError ?? null);
   return state;
 }
+
+const PRODUCT_WORKSPACE_ADAPTER_METHODS = Object.freeze([
+  "listSources", "uploadPdf", "getProcessingStatus", "askQuestion",
+  "citationUrl", "createReport", "listStudioOutputs"
+]);
+
+export function assertProductWorkspaceAdapter(adapter) {
+  if (
+    !adapter
+    || PRODUCT_WORKSPACE_ADAPTER_METHODS.some((method) => typeof adapter[method] !== "function")
+  ) throw new Error("WORKSPACE_ADAPTER_INVALID");
+  return adapter;
+}
+
+export function canCreateGroundedReport(state) {
+  return state?.status === "ready"
+    && typeof state.selectedSource?.sourceId === "string"
+    && typeof state.selectedSource?.sourceVersionId === "string"
+    && state.answer?.insufficient === false
+    && typeof state.answer?.run_id === "string"
+    && typeof state.answer?.run_result_id === "string"
+    && Array.isArray(state.answer?.citations)
+    && state.answer.citations.length > 0
+    && state.answer.citations.every((citation) => (
+      citation?.source_id === state.selectedSource.sourceId
+      && citation?.source_version_id === state.selectedSource.sourceVersionId
+    ));
+}
