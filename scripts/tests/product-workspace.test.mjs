@@ -61,7 +61,7 @@ test("Product Studio 실제 React는 근거 충족 전 생성 비활성, 충족 
     const entry = (await readdir(output)).find((name) => name.startsWith("product-workspace") && /\.m?js$/u.test(name));
     const {
       ProductWorkspaceShell, projectSafeQuestionAnswer, submitGroundedReport,
-      submitGroundedReportForm,
+      submitGroundedReportForm, openNativeCitation,
     } = await import(`${pathToFileURL(path.join(output, entry)).href}?stageB=${Date.now()}`);
     const disabled = renderToStaticMarkup(createElement(ProductWorkspaceShell, {
       workspaceId: "workspace-1", state: createProductWorkspaceState({ status: "loading" }), adapter,
@@ -86,6 +86,20 @@ test("Product Studio 실제 React는 근거 충족 전 생성 비활성, 충족 
       (citation) => `/bff/api/workspaces/workspace-1/citations/${citation.citation_id}/content#page=${citation.page}`,
       ready.selectedSource,
     ), /QUESTION_RESPONSE_INVALID/);
+
+    let resolveCitation;
+    let opened = 0;
+    const citationController = new AbortController();
+    const lateCitation = openNativeCitation({ preventDefault() {} }, {
+      adapter: { citationContent: async () => new Promise((resolve) => { resolveCitation = resolve; }) },
+      citation: ready.answer.citations[0], signal: citationController.signal,
+      openWindow: () => { opened += 1; }, objectUrl: { createObjectURL: () => "blob:late", revokeObjectURL() {} },
+      BlobType: Blob, schedule() {}
+    });
+    citationController.abort();
+    resolveCitation({ content_type: "application/pdf", page: 2, bytes: [0x25, 0x50, 0x44, 0x46, 0x2d] });
+    assert.equal(await lateCitation, false);
+    assert.equal(opened, 0, "Session 종료 뒤 늦은 Citation PDF를 열면 안 된다");
 
     let createCalls = 0;
     let listCalls = 0;
