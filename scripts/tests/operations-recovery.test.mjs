@@ -422,6 +422,22 @@ test("Operations·Notifications Route와 Pane은 정본·접근성·same-origin�
   assert.doesNotMatch(source, /password|cookie|api[_-]?key|credential|stack trace|database host/i);
 });
 
+test("Windows Operations Pane은 Local Scan→Job 조회→명시 Repair를 Cloud와 분리한다", async () => {
+  const pane = await read("packages/ui/src/operations-recovery-pane.jsx");
+  for (const token of ["LocalRecoveryPanel", "startRecoveryScan", "getRecoveryJob", "repairRecoveryJob", "LOCAL_SERVICE_UNAVAILABLE", "manual_recovery_required", "repairable"]) {
+    assert.match(pane, new RegExp(token));
+  }
+  assert.match(pane, /disabled=\{[^}]*state !== "repairable"/);
+  assert.doesNotMatch(pane, /fetch\s*\(|XMLHttpRequest|WebSocket|https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_/i);
+});
+
+test("Recovery Pane은 Cloud 7종의 조회·생성·Preview·상태 조회·실행·취소를 명시 동작으로 제공한다", async () => {
+  const pane = await read("packages/ui/src/operations-recovery-pane.jsx");
+  for (const token of ["listBackups", "createBackup", "getBackup", "previewRestore", "getRestore", "executeRestore", "cancelRestore", "Restore 상태 새로고침", "Restore 취소 요청"]) {
+    assert.match(pane, new RegExp(token));
+  }
+});
+
 test("운영 Web Wrapper는 Session 확인 뒤 실제 Workspace만 Recovery Pane에 주입한다", async () => {
   const [wrapper, pane] = await Promise.all([
     read("apps/web/app/operations/recovery-workspace.jsx"),
@@ -434,6 +450,34 @@ test("운영 Web Wrapper는 Session 확인 뒤 실제 Workspace만 Recovery Pane
   for (const token of ["actorId: sessionContext.userId", "tenantId: sessionContext.tenantId", "workspaceId: sessionContext.workspaceId", "membership: sessionContext.membership ?? null"]) {
     assert.ok(pane.includes(token));
   }
+});
+
+test("Windows Native Session 부재 상태는 fixture 관리자 권한으로 초기화하지 않는다", async () => {
+  const pane = await read("packages/ui/src/operations-recovery-pane.jsx");
+  assert.match(pane, /clientType === "windows" && !sessionContext/);
+  assert.match(pane, /membership: null/);
+  assert.match(pane, /native-session-unavailable/);
+});
+
+test("Windows Cloud Recovery 권한 Guard는 버튼 Handler 진입에서도 미허용 invoke를 0건으로 차단한다", async () => {
+  const model = await loadModel();
+  let invokeCount = 0;
+  const invoke = async () => { invokeCount += 1; return "invoked"; };
+  const fullOperations = ["cloud_backup_create", "cloud_backup_get", "cloud_backup_list", "cloud_restore_cancel", "cloud_restore_execute", "cloud_restore_get", "cloud_restore_preview"];
+  for (const recoveryOperations of [[], null, ["cloud_backup_list"], ["cloud_backup_list", "unknown"]]) {
+    for (const operation of fullOperations) {
+      await assert.rejects(
+        model.invokeAuthorizedCloudRecovery({ recoveryOperations, operation, invoke }),
+        { code: "AUTHENTICATION_REQUIRED" }
+      );
+    }
+  }
+  assert.equal(invokeCount, 0);
+  assert.equal(
+    await model.invokeAuthorizedCloudRecovery({ recoveryOperations: fullOperations, operation: "cloud_restore_execute", invoke }),
+    "invoked"
+  );
+  assert.equal(invokeCount, 1);
 });
 
 test("실제 Session Scope는 fixture 관리자 Membership 없이 Preview·retry를 fail-close한다", async () => {

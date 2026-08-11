@@ -20,6 +20,7 @@ from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import (
     AccessAction,
     Action,
+    AuthorizationError,
     EvidenceDependency,
     HistoricalResultDescriptor,
     Role,
@@ -350,6 +351,68 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         joined = f"{web.text}{native.text}"
         self.assertNotIn(self.web.access_token, joined)
         self.assertNotIn(self.native.access_token, joined)
+
+    async def test_session_projects_only_current_workspace_recovery_operations(self) -> None:
+        response = await self.client.get(
+            "/api/v1/session",
+            headers={
+                "Authorization": f"Bearer {self.native.access_token}",
+                "X-Workspace-Id": "workspace-foreign",
+                "X-Role": "viewer",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["workspace_id"], "workspace-001")
+        self.assertEqual(
+            data["recovery_operations"],
+            [
+                "cloud_backup_create",
+                "cloud_backup_get",
+                "cloud_backup_list",
+                "cloud_restore_cancel",
+                "cloud_restore_execute",
+                "cloud_restore_get",
+                "cloud_restore_preview",
+            ],
+        )
+        self.assertEqual(data["recovery_operations"], sorted(set(data["recovery_operations"])))
+        forbidden = {
+            "role", "role_scope", "effective_permissions", "permission",
+            "policy_denial_reason", "access_credential", "refresh_credential",
+        }
+        self.assertTrue(forbidden.isdisjoint(data))
+
+    async def test_session_permission_denial_is_an_authenticated_empty_projection(self) -> None:
+        denied = AuthorizationError("ACTION_DENIED", 403)
+        with patch.object(self.authorization, "authorize_action", side_effect=denied):
+            response = await self.client.get(
+                "/api/v1/session",
+                headers={"Authorization": f"Bearer {self.native.access_token}"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["recovery_operations"], [])
+        self.assertNotIn("ACTION_DENIED", response.text)
+        self.assertNotIn("role", response.text.lower())
+        self.assertNotIn("permission", response.text.lower())
+
+    async def test_session_does_not_collapse_authorization_failures_into_denial(self) -> None:
+        for internal_code in ("AUDIT_WRITE_FAILED", "AUTHORIZATION_STORE_UNAVAILABLE"):
+            with self.subTest(internal_code=internal_code), patch.object(
+                self.authorization,
+                "authorize_action",
+                side_effect=AuthorizationError(internal_code, 503),
+            ):
+                response = await self.client.get(
+                    "/api/v1/session",
+                    headers={"Authorization": f"Bearer {self.native.access_token}"},
+                )
+
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.json()["error"]["code"], "INVALID_REQUEST")
+            self.assertTrue(response.json()["error"]["retryable"])
 
     async def test_authorization_uses_repository_identity_and_rejects_spoofed_claims(self) -> None:
         trace_id = "trace-runtime-authorize-001"

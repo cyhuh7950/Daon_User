@@ -1,9 +1,9 @@
 use daon_user_desktop_lib::native_session::{
     LOCAL_STORAGE_CREDENTIAL_TARGET, NATIVE_SESSION_CREDENTIAL_TARGET, NativeHttpResponse,
-    NativeIdentityClient, NativeIdentityTransportPort, NativeSessionCredentials,
-    NativeSessionProjection, NativeSessionRuntime, NativeSessionStatus, NativeSessionVault,
-    NativeSessionVaultPort, PUBLIC_GATEWAY, partial_secret_drop_count_for_contract,
-    reset_partial_secret_drop_audit_for_contract,
+    NativeIdentityClient, NativeIdentityTransportPort, NativeRecoveryAuthorizationProjection,
+    NativeSessionCredentials, NativeSessionProjection, NativeSessionRuntime, NativeSessionStatus,
+    NativeSessionVault, NativeSessionVaultPort, PUBLIC_GATEWAY,
+    partial_secret_drop_count_for_contract, reset_partial_secret_drop_audit_for_contract,
 };
 use std::thread;
 use std::{
@@ -177,6 +177,125 @@ fn actual_reqwest_redirect_never_hits_destination_or_forwards_login_secret() {
         assert!(
             matches!(destination.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
         );
+    }
+}
+
+#[test]
+fn recovery_authorization_uses_fixed_get_and_rejects_unknown_or_mismatched_projection() {
+    let valid_data = r#"{"user_id":"usr-contract","tenant_id":"ten-contract","workspace_id":"wsp-contract","session_id":"ses-contract","device_id":"dev-contract","client_kind":"native","delivery":"native_https_opaque_bearer","expires_at":"2026-08-10T12:00:00+00:00","recovery_operations":["cloud_backup_create","cloud_backup_get","cloud_backup_list","cloud_restore_cancel","cloud_restore_execute","cloud_restore_get","cloud_restore_preview"]}"#;
+    let cases = [
+        (valid_data.to_owned(), true),
+        (
+            valid_data.replace(
+                "\"cloud_backup_create\",\"cloud_backup_get\",\"cloud_backup_list\",\"cloud_restore_cancel\",\"cloud_restore_execute\",\"cloud_restore_get\",\"cloud_restore_preview\"",
+                "",
+            ),
+            true,
+        ),
+        (
+            valid_data.replace(
+                "\"cloud_backup_create\",\"cloud_backup_get\",\"cloud_backup_list\",\"cloud_restore_cancel\",\"cloud_restore_execute\",\"cloud_restore_get\",\"cloud_restore_preview\"",
+                "\"cloud_backup_list\"",
+            ),
+            false,
+        ),
+        (
+            valid_data.replace(
+                "\"workspace_id\":\"wsp-contract\"",
+                "\"workspace_id\":\"wsp-other\"",
+            ),
+            false,
+        ),
+        (
+            valid_data.replace(
+                "\"recovery_operations\":",
+                "\"role\":\"organization_admin\",\"recovery_operations\":",
+            ),
+            false,
+        ),
+        (
+            valid_data.replace("cloud_restore_preview", "cloud_restore_admin"),
+            false,
+        ),
+        (
+            valid_data.replace(
+                "cloud_backup_get\",\"cloud_backup_list",
+                "cloud_backup_list\",\"cloud_backup_get",
+            ),
+            false,
+        ),
+    ];
+
+    for (data, accepted) in cases {
+        let body = format!(r#"{{"data":{data},"meta":{{"trace_id":"trace-authz-contract"}}}}"#);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(), body
+        ).into_bytes();
+        let (gateway, request, server) = serve_once(response, std::time::Duration::ZERO);
+        let client =
+            NativeIdentityClient::for_contract_test(&gateway, std::time::Duration::from_secs(2))
+                .expect("test client");
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(client.fetch_recovery_authorization(&credentials()));
+        let captured = request.recv().expect("request");
+        server.join().expect("server");
+        let request_text = String::from_utf8_lossy(&captured);
+        assert!(request_text.starts_with("GET /api/v1/session HTTP/1.1\r\n"));
+        assert!(request_text.contains("authorization: Bearer access-contract-secret-"));
+        assert_eq!(result.is_ok(), accepted);
+        if accepted {
+            let operations = result.expect("safe projection");
+            if data.contains("\"recovery_operations\":[]") {
+                assert!(operations.recovery_operations().is_empty());
+            } else {
+                assert_eq!(
+                    operations.recovery_operations(),
+                    [
+                        "cloud_backup_create",
+                        "cloud_backup_get",
+                        "cloud_backup_list",
+                        "cloud_restore_cancel",
+                        "cloud_restore_execute",
+                        "cloud_restore_get",
+                        "cloud_restore_preview"
+                    ]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn recovery_authorization_rejects_non_200_success_statuses() {
+    let data = r#"{"user_id":"usr-contract","tenant_id":"ten-contract","workspace_id":"wsp-contract","session_id":"ses-contract","device_id":"dev-contract","client_kind":"native","delivery":"native_https_opaque_bearer","expires_at":"2026-08-10T12:00:00+00:00","recovery_operations":["cloud_backup_create","cloud_backup_get","cloud_backup_list","cloud_restore_cancel","cloud_restore_execute","cloud_restore_get","cloud_restore_preview"]}"#;
+    let body = format!(r#"{{"data":{data},"meta":{{"trace_id":"trace-authz-contract"}}}}"#);
+
+    for status in [201, 202, 206] {
+        let response = format!(
+            "HTTP/1.1 {status} Unexpected Success\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(), body
+        )
+        .into_bytes();
+        let (gateway, _request, server) = serve_once(response, std::time::Duration::ZERO);
+        let client =
+            NativeIdentityClient::for_contract_test(&gateway, std::time::Duration::from_secs(2))
+                .expect("test client");
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(client.fetch_recovery_authorization(&credentials()));
+        let error = result
+            .err()
+            .expect("only HTTP 200 is an authorization projection success");
+        assert_eq!(error.code(), "AUTHENTICATION_REQUIRED");
+        server.join().expect("server");
     }
 }
 
@@ -396,6 +515,7 @@ impl NativeSessionVaultPort for RuntimeVault {
 struct RuntimeTransport {
     calls: AtomicUsize,
     login_calls: AtomicUsize,
+    authorization_calls: AtomicUsize,
     block_first: AtomicBool,
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
@@ -406,6 +526,7 @@ impl RuntimeTransport {
         Self {
             calls: AtomicUsize::new(0),
             login_calls: AtomicUsize::new(0),
+            authorization_calls: AtomicUsize::new(0),
             block_first: AtomicBool::new(block_first),
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
@@ -458,6 +579,83 @@ impl NativeIdentityTransportPort for RuntimeTransport {
             Ok(replacement_credentials())
         })
     }
+
+    fn recovery_authorization<'a>(
+        &'a self,
+        _credentials: &'a NativeSessionCredentials,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        NativeRecoveryAuthorizationProjection,
+                        daon_user_desktop_lib::native_session::NativeSessionError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            if self.authorization_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                Ok(NativeRecoveryAuthorizationProjection::for_contract_test(
+                    projection(),
+                    "native".to_owned(),
+                    "native_https_opaque_bearer".to_owned(),
+                    vec![
+                        "cloud_backup_create".to_owned(),
+                        "cloud_backup_get".to_owned(),
+                        "cloud_backup_list".to_owned(),
+                        "cloud_restore_cancel".to_owned(),
+                        "cloud_restore_execute".to_owned(),
+                        "cloud_restore_get".to_owned(),
+                        "cloud_restore_preview".to_owned(),
+                    ],
+                ))
+            } else {
+                Err(daon_user_desktop_lib::native_session::NativeSessionError::authentication_required_for_contract())
+            }
+        })
+    }
+}
+
+#[test]
+fn recovery_authorization_failure_never_reuses_a_previous_success_or_writes_vault() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let vault = Arc::new(RuntimeVault::new(0));
+            let transport = Arc::new(RuntimeTransport::new(false));
+            let runtime = NativeSessionRuntime::for_contract_test(vault.clone(), transport.clone());
+
+            assert_eq!(
+                runtime
+                    .recovery_authorization_status()
+                    .await
+                    .expect("first authorization")
+                    .recovery_operations(),
+                [
+                    "cloud_backup_create",
+                    "cloud_backup_get",
+                    "cloud_backup_list",
+                    "cloud_restore_cancel",
+                    "cloud_restore_execute",
+                    "cloud_restore_get",
+                    "cloud_restore_preview"
+                ]
+            );
+            assert_eq!(
+                runtime
+                    .recovery_authorization_status()
+                    .await
+                    .expect_err("second authorization must fail closed")
+                    .code(),
+                "AUTHENTICATION_REQUIRED"
+            );
+            assert_eq!(transport.authorization_calls.load(Ordering::Acquire), 2);
+            assert_eq!(*vault.state.lock().expect("state"), 0);
+        });
 }
 
 #[test]

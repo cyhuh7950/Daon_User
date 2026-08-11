@@ -6,7 +6,132 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+class MinimalEvent {
+  constructor(type, options = {}) {
+    this.type = type;
+    this.bubbles = options.bubbles !== false;
+    this.cancelable = options.cancelable !== false;
+    this.defaultPrevented = false;
+    this.cancelBubble = false;
+    this.target = null;
+    this.currentTarget = null;
+  }
+  preventDefault() { if (this.cancelable) this.defaultPrevented = true; }
+  stopPropagation() { this.cancelBubble = true; }
+}
+
+class MinimalNode {
+  constructor(nodeType, nodeName, ownerDocument = null) {
+    this.nodeType = nodeType;
+    this.nodeName = nodeName;
+    this.ownerDocument = ownerDocument;
+    this.parentNode = null;
+    this.childNodes = [];
+    this.listeners = new Map();
+  }
+  appendChild(child) { child.parentNode = this; this.childNodes.push(child); return child; }
+  insertBefore(child, before) {
+    child.parentNode = this;
+    const index = this.childNodes.indexOf(before);
+    if (index < 0) this.childNodes.push(child); else this.childNodes.splice(index, 0, child);
+    return child;
+  }
+  removeChild(child) { const index = this.childNodes.indexOf(child); if (index >= 0) this.childNodes.splice(index, 1); child.parentNode = null; return child; }
+  get firstChild() { return this.childNodes[0] ?? null; }
+  get lastChild() { return this.childNodes.at(-1) ?? null; }
+  get textContent() { return this.nodeType === 3 ? this.nodeValue : this.childNodes.map((child) => child.textContent).join(""); }
+  set textContent(value) {
+    if (this.nodeType === 3) { this.nodeValue = String(value); return; }
+    this.childNodes = [];
+    if (value !== "") this.appendChild(this.ownerDocument.createTextNode(String(value)));
+  }
+  addEventListener(type, listener) { const listeners = this.listeners.get(type) ?? []; listeners.push(listener); this.listeners.set(type, listeners); }
+  removeEventListener(type, listener) { this.listeners.set(type, (this.listeners.get(type) ?? []).filter((item) => item !== listener)); }
+  dispatchEvent(event) {
+    if (event.type === "click" && this.disabled) return true;
+    if (!event.target) event.target = this;
+    event.currentTarget = this;
+    for (const listener of this.listeners.get(event.type) ?? []) listener.call(this, event);
+    if (event.bubbles && !event.cancelBubble && this.parentNode) this.parentNode.dispatchEvent(event);
+    return !event.defaultPrevented;
+  }
+  contains(candidate) { return candidate === this || this.childNodes.some((child) => child.contains?.(candidate)); }
+  getRootNode() { let node = this; while (node.parentNode) node = node.parentNode; return node; }
+}
+
+class MinimalElement extends MinimalNode {
+  constructor(tagName, ownerDocument) {
+    super(1, tagName.toUpperCase(), ownerDocument);
+    this.tagName = this.nodeName;
+    this.namespaceURI = "http://www.w3.org/1999/xhtml";
+    this.attributes = new Map();
+    this.style = {};
+    this.value = "";
+    this.disabled = false;
+    this.hidden = false;
+  }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); if (name === "class") this.className = String(value); if (name === "value") this.value = String(value); if (name === "disabled") this.disabled = true; if (name === "hidden") this.hidden = true; }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  removeAttribute(name) { this.attributes.delete(name); if (name === "disabled") this.disabled = false; if (name === "hidden") this.hidden = false; }
+  hasAttribute(name) { return this.attributes.has(name); }
+  get options() { return this.tagName === "SELECT" ? this.childNodes.filter((child) => child.tagName === "OPTION") : undefined; }
+  focus() { this.ownerDocument.activeElement = this; }
+  blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = this.ownerDocument.body; }
+}
+
+class MinimalText extends MinimalNode {
+  constructor(value, ownerDocument) { super(3, "#text", ownerDocument); this.nodeValue = String(value); }
+}
+
+function installMinimalDom() {
+  const document = new MinimalNode(9, "#document", null);
+  document.ownerDocument = document;
+  document.createElement = (tagName) => new MinimalElement(tagName, document);
+  document.createElementNS = (_namespace, tagName) => new MinimalElement(tagName, document);
+  document.createTextNode = (value) => new MinimalText(value, document);
+  document.createComment = (value) => { const node = new MinimalNode(8, "#comment", document); node.nodeValue = value; return node; };
+  document.getElementById = (id) => findElements(document, (node) => node.getAttribute("id") === id)[0] ?? null;
+  document.documentElement = document.createElement("html");
+  document.body = document.createElement("body");
+  document.documentElement.appendChild(document.body);
+  document.appendChild(document.documentElement);
+  document.activeElement = document.body;
+  const createStorage = () => {
+    const values = new Map();
+    return { getItem: (key) => values.get(String(key)) ?? null, setItem: (key, value) => values.set(String(key), String(value)), removeItem: (key) => values.delete(String(key)), clear: () => values.clear() };
+  };
+  const window = {
+    document,
+    innerWidth: 1920,
+    location: { pathname: "/" },
+    history: { pushState: (_state, _title, pathname) => { window.location.pathname = pathname; } },
+    localStorage: createStorage(),
+    sessionStorage: createStorage(),
+    addEventListener: (...args) => document.addEventListener(...args),
+    removeEventListener: (...args) => document.removeEventListener(...args),
+    dispatchEvent: (...args) => document.dispatchEvent(...args),
+    Event: MinimalEvent,
+    MouseEvent: MinimalEvent,
+    Node: MinimalNode,
+    Element: MinimalElement,
+    HTMLElement: MinimalElement,
+    HTMLIFrameElement: class extends MinimalElement {}
+  };
+  document.defaultView = window;
+  const prior = Object.fromEntries(["window", "document", "Node", "Element", "HTMLElement", "HTMLIFrameElement", "Event", "MouseEvent", "IS_REACT_ACT_ENVIRONMENT"].map((key) => [key, globalThis[key]]));
+  Object.assign(globalThis, { window, document, Node: MinimalNode, Element: MinimalElement, HTMLElement: MinimalElement, HTMLIFrameElement: window.HTMLIFrameElement, Event: MinimalEvent, MouseEvent: MinimalEvent, IS_REACT_ACT_ENVIRONMENT: true });
+  return { document, window, restore: () => { for (const [key, value] of Object.entries(prior)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } } };
+}
+
+function findElements(root, predicate, matches = []) {
+  if (root?.nodeType === 1 && predicate(root)) matches.push(root);
+  for (const child of root?.childNodes ?? []) findElements(child, predicate, matches);
+  return matches;
+}
+
+const buttonByText = (root, label) => findElements(root, (node) => node.tagName === "BUTTON" && node.textContent.trim() === label)[0];
 
 const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
 const readBinary = (path) => readFile(new URL(`../../${path}`, import.meta.url));
@@ -18,6 +143,199 @@ test("desktop shell directly consumes shared UI, tokens, and contracts", async (
   assert.match(source, /@daon-user\/contracts\/screens\.json/);
   assert.match(source, /@daon-user\/design-tokens\/tokens\.css/);
   assert.doesNotMatch(source, /apps\/web|next\/|NEXT_PUBLIC_/);
+});
+
+test("desktop shell은 Native Session과 Windows Recovery Adapter를 한 번 생성해 Operations에만 주입한다", async () => {
+  const source = await read("apps/desktop/src/desktop-shell.jsx");
+  const authPanel = await read("apps/desktop/src/native-auth-panel.jsx");
+  assert.match(source, /createNativeSessionBridge/);
+  assert.match(source, /new WindowsRecoveryAdapter/);
+  assert.match(source, /useMemo\(\(\) => createNativeSessionBridge/);
+  assert.match(source, /useMemo\(\(\) => new WindowsRecoveryAdapter/);
+  assert.match(source, /recoveryAdapter=\{recoveryAdapter\}/);
+  assert.match(source, /sessionContext=\{sessionContext\}/);
+  assert.match(source, /NativeAuthPanel/);
+  assert.match(source, /recoveryAuthorizationStatus/);
+  assert.match(source, /recoveryOperations:/);
+  assert.match(source, /authorizationRevision: request \* 2/);
+  assert.match(source, /authorizationRevision: request \* 2 \+ 1/);
+  assert.match(source, /sessionId: nativeSession\.sessionId/);
+  assert.match(authPanel, /type="password"/);
+  assert.match(authPanel, /defaultValue=""/);
+  assert.doesNotMatch(authPanel, /setPassword|useState\([^)]*password|localStorage|sessionStorage|console\./i);
+  assert.doesNotMatch(source, /fetch\s*\(|XMLHttpRequest|WebSocket|https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_/i);
+});
+
+test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을 fail-close한다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".c10-r02-react-"));
+  const dom = installMinimalDom();
+  let root;
+  let reactAct;
+  const priorNodeEnv = process.env.NODE_ENV;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    reactAct = act;
+    const { build } = await import("vite");
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/desktop/src/desktop-shell.jsx"), formats: ["es"], fileName: "desktop-shell" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("desktop-shell") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Vite actual JSX bundle entry가 필요하다");
+    const { DesktopShell } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?r02=${Date.now()}`);
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    const operations = ["cloud_backup_create", "cloud_backup_get", "cloud_backup_list", "cloud_restore_cancel", "cloud_restore_execute", "cloud_restore_get", "cloud_restore_preview"];
+    const session = { user_id: "user-1", tenant_id: "tenant-1", workspace_id: "workspace-1", session_id: "session-1", device_id: "device-1", expires_at: "2026-08-11T01:00:00Z" };
+    const calls = [];
+    let scheduledPoll = null;
+    const invoke = async (command) => {
+      calls.push(command);
+      if (command === "native_session_status") return { authenticated: false, session: null };
+      if (command === "native_login") return { authenticated: true, session };
+      if (command === "native_recovery_authorization_status") return { recovery_operations: operations };
+      if (command === "recovery_cloud_list_backups") return { data: [], etag: null };
+      if (command === "local_service_status") return { state: "ready", retryable: false, error_code: null };
+      throw new Error(`unexpected:${command}`);
+    };
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(DesktopShell, { nativeInvoke: invoke, sessionWatchOptions: { schedule: (poll) => { scheduledPoll = poll; return 1; }, cancel: () => {} } }));
+    });
+    assert.ok(scheduledPoll, "제품 Tree가 주입된 watch scheduler를 사용해야 한다");
+    const loginId = findElements(container, (node) => (node.getAttribute("name") ?? node.name) === "login-id")[0];
+    const password = findElements(container, (node) => (node.getAttribute("name") ?? node.name) === "password")[0];
+    assert.ok(loginId, "실제 Login ID DOM input이 필요하다");
+    assert.ok(password, "실제 Password DOM input이 필요하다");
+    loginId.value = "user-1";
+    password.value = "password-value";
+    const form = findElements(container, (node) => node.tagName === "FORM")[0];
+    await act(async () => { form.dispatchEvent(new MinimalEvent("submit")); });
+    assert.equal(password.value, "");
+    assert.ok(calls.includes("native_login"), `native_login 호출 필요: ${calls.join(",")}`);
+    assert.match(container.textContent, /인증됨 · user-1 · workspace-1/);
+    const shell = findElements(container, (node) => node.getAttribute("data-client-type") === "windows")[0];
+    assert.equal(shell.getAttribute("data-session-tree-key"), "session-1:5");
+    assert.equal(calls.filter((command) => command === "recovery_cloud_list_backups").length, 1);
+
+    await act(async () => { root.unmount(); });
+    root = null;
+
+    const rejectedCalls = [];
+    const rejectedInvoke = async (command) => {
+      rejectedCalls.push(command);
+      if (command === "native_session_status") return { authenticated: false, session: null };
+      if (command === "native_login") throw { code: "AUTHENTICATION_REQUIRED" };
+      if (command === "local_service_status") return { state: "ready", retryable: false, error_code: null };
+      throw new Error(`unexpected:${command}`);
+    };
+    const rejectedContainer = dom.document.createElement("div");
+    dom.document.body.appendChild(rejectedContainer);
+    root = createRoot(rejectedContainer);
+    await act(async () => { root.render(createElement(DesktopShell, { nativeInvoke: rejectedInvoke, sessionWatchOptions: { schedule: () => 1, cancel: () => {} } })); });
+    const rejectedLoginId = findElements(rejectedContainer, (node) => (node.getAttribute("name") ?? node.name) === "login-id")[0];
+    const rejectedPassword = findElements(rejectedContainer, (node) => (node.getAttribute("name") ?? node.name) === "password")[0];
+    rejectedLoginId.value = "user-1";
+    rejectedPassword.value = "password-value";
+    await act(async () => { findElements(rejectedContainer, (node) => node.tagName === "FORM")[0].dispatchEvent(new MinimalEvent("submit")); });
+    assert.equal(rejectedPassword.value, "");
+    assert.match(rejectedContainer.textContent, /AUTHENTICATION_REQUIRED/);
+    assert.match(findElements(rejectedContainer, (node) => node.getAttribute("data-client-type") === "windows")[0].getAttribute("data-session-tree-key"), /^unauthenticated:/u);
+    assert.equal(rejectedCalls.filter((command) => command.startsWith("recovery_")).length, 0);
+    await act(async () => { root.unmount(); });
+    root = null;
+
+    for (const authorizationMode of ["empty", "reject"]) {
+      const deniedCalls = [];
+      const deniedInvoke = async (command) => {
+        deniedCalls.push(command);
+        if (command === "native_session_status") return { authenticated: false, session: null };
+        if (command === "native_login") return { authenticated: true, session };
+        if (command === "native_recovery_authorization_status") {
+          if (authorizationMode === "reject") throw { code: "AUTHENTICATION_REQUIRED" };
+          return { recovery_operations: [] };
+        }
+        if (command === "local_service_status") return { state: "ready", retryable: false, error_code: null };
+        throw new Error(`unexpected:${command}`);
+      };
+      const deniedContainer = dom.document.createElement("div");
+      dom.document.body.appendChild(deniedContainer);
+      root = createRoot(deniedContainer);
+      await act(async () => { root.render(createElement(DesktopShell, { nativeInvoke: deniedInvoke, sessionWatchOptions: { schedule: () => 1, cancel: () => {} } })); });
+      const deniedLoginId = findElements(deniedContainer, (node) => (node.getAttribute("name") ?? node.name) === "login-id")[0];
+      const deniedPassword = findElements(deniedContainer, (node) => (node.getAttribute("name") ?? node.name) === "password")[0];
+      deniedLoginId.value = "user-1";
+      deniedPassword.value = "password-value";
+      await act(async () => { findElements(deniedContainer, (node) => node.tagName === "FORM")[0].dispatchEvent(new MinimalEvent("submit")); });
+      const cloudButtons = ["목록 새로고침", "전용 Fixture Backup 요청"].map((label) => buttonByText(deniedContainer, label));
+      assert.ok(cloudButtons.every(Boolean), `${authorizationMode}: Cloud 버튼이 렌더되어야 한다`);
+      assert.ok(cloudButtons.every((button) => button.disabled), `${authorizationMode}: Cloud 버튼은 권한 없이 비활성이어야 한다`);
+      await act(async () => { for (const button of cloudButtons) button.dispatchEvent(new MinimalEvent("click")); });
+      assert.equal(deniedCalls.filter((command) => command.startsWith("recovery_cloud_")).length, 0);
+      await act(async () => { root.unmount(); });
+      root = null;
+    }
+
+    let resolveLateAuthorization;
+    let resolveLogout;
+    let logoutStarted = false;
+    let authorizationCount = 0;
+    let latePoll = null;
+    const raceCalls = [];
+    const raceInvoke = async (command) => {
+      raceCalls.push(command);
+      if (command === "native_session_status") return logoutStarted ? { authenticated: true, session } : { authenticated: false, session: null };
+      if (command === "native_login") return { authenticated: true, session };
+      if (command === "native_recovery_authorization_status") {
+        authorizationCount += 1;
+        if (authorizationCount === 1) return { recovery_operations: operations };
+        return new Promise((resolve) => { resolveLateAuthorization = resolve; });
+      }
+      if (command === "native_logout") { logoutStarted = true; return new Promise((resolve) => { resolveLogout = resolve; }); }
+      if (command === "recovery_cloud_list_backups") return { data: [], etag: null };
+      if (command === "local_service_status") return { state: "ready", retryable: false, error_code: null };
+      throw new Error(`unexpected:${command}`);
+    };
+    const raceContainer = dom.document.createElement("div");
+    dom.document.body.appendChild(raceContainer);
+    root = createRoot(raceContainer);
+    await act(async () => { root.render(createElement(DesktopShell, { nativeInvoke: raceInvoke, sessionWatchOptions: { schedule: (poll) => { latePoll = poll; return 1; }, cancel: () => {} } })); });
+    const raceLoginId = findElements(raceContainer, (node) => (node.getAttribute("name") ?? node.name) === "login-id")[0];
+    const racePassword = findElements(raceContainer, (node) => (node.getAttribute("name") ?? node.name) === "password")[0];
+    raceLoginId.value = "user-1";
+    racePassword.value = "password-value";
+    await act(async () => { findElements(raceContainer, (node) => node.tagName === "FORM")[0].dispatchEvent(new MinimalEvent("submit")); });
+    const recoveryBeforeLogout = raceCalls.filter((command) => command.startsWith("recovery_")).length;
+    await act(async () => { buttonByText(raceContainer, "Operations").dispatchEvent(new MinimalEvent("click")); });
+    assert.ok(resolveLateAuthorization, "Operations 진입의 늦은 Authorization이 필요하다");
+    await act(async () => { buttonByText(raceContainer, "로그아웃").dispatchEvent(new MinimalEvent("click")); });
+    assert.match(findElements(raceContainer, (node) => node.getAttribute("data-client-type") === "windows")[0].getAttribute("data-session-tree-key"), /^unauthenticated:/u);
+    await act(async () => {
+      resolveLateAuthorization({ recovery_operations: operations });
+      await latePoll();
+      resolveLogout({ authenticated: false, session: null });
+    });
+    assert.doesNotMatch(raceContainer.textContent, /인증됨 · user-1 · workspace-1/);
+    assert.match(findElements(raceContainer, (node) => node.getAttribute("data-client-type") === "windows")[0].getAttribute("data-session-tree-key"), /^unauthenticated:/u);
+    assert.equal(raceCalls.filter((command) => command.startsWith("recovery_")).length, recoveryBeforeLogout);
+  } finally {
+    if (root) {
+      await reactAct(async () => { root.unmount(); });
+    }
+    dom.restore();
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
 });
 
 test("native navigation exposes only approved Windows routes by stable key", async () => {
@@ -92,6 +410,16 @@ test("native session commands retain a fixed HTTPS gateway and never expose cred
   assert.match(rust, /#\[cfg\(feature = "contract-test"\)\][\s\S]{0,80}?pub fn for_contract_test\(/u);
   assert.match(wrapper, /"--features",\s*"contract-test"/u);
   assert.match(rust, /gateway\.starts_with\("http:\/\/127\.0\.0\.1:"\)/u);
+});
+
+test("Recovery 권한 조회는 입력 없는 전용 Tauri command와 고정 Session path만 사용한다", async () => {
+  const rust = await read("apps/desktop/src-tauri/src/native_session.rs");
+  const lib = await read("apps/desktop/src-tauri/src/lib.rs");
+  assert.match(rust, /\/api\/v1\/session/u);
+  assert.match(lib, /async fn native_recovery_authorization_status\(\s*runtime:/u);
+  assert.match(lib, /native_recovery_authorization_status,/u);
+  assert.doesNotMatch(lib, /native_recovery_authorization_status\([^)]*(?:method|path|gateway|authorization|action|permission)/iu);
+  assert.doesNotMatch(rust, /recovery_operations[\s\S]{0,120}(?:persisted_bytes|vault_write)/iu);
 });
 
 test("desktop bundle includes valid Windows ICO and cross-platform square RGBA PNG", async () => {

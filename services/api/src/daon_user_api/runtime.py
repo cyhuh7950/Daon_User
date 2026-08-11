@@ -1389,6 +1389,28 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         workspace_id = dependencies.authorization_repository.primary_workspace_id(
             principal.tenant_id
         )
+        recovery_operations: list[str] = []
+        try:
+            dependencies.authorization_service.authorize_action(
+                principal=principal,
+                workspace_id=workspace_id,
+                action=Action.POLICY_MANAGE,
+                trace_id=request.state.trace_id,
+                policy_version=dependencies.settings.policy_version,
+            )
+        except AuthorizationError as error:
+            if error.code != "ACTION_DENIED":
+                raise
+        else:
+            recovery_operations = [
+                "cloud_backup_create",
+                "cloud_backup_get",
+                "cloud_backup_list",
+                "cloud_restore_cancel",
+                "cloud_restore_execute",
+                "cloud_restore_get",
+                "cloud_restore_preview",
+            ]
         return {
             "data": {
                 "user_id": principal.user_id,
@@ -1399,6 +1421,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 "client_kind": view.client_kind.value,
                 "delivery": "same_origin_secure_cookie" if view.client_kind is ClientKind.WEB else "native_https_opaque_bearer",
                 "expires_at": view.expires_at.isoformat(),
+                "recovery_operations": recovery_operations,
             },
             "meta": {"trace_id": request.state.trace_id},
         }
