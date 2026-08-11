@@ -2,9 +2,10 @@
 
 ## 1. 문서 정보
 
-- 상태: `APPROVED_DIRECTION · WRITTEN_FOR_USER_REVIEW`
+- 상태: `APPROVED`
 - 작성일: 2026-08-11
 - 승인 방향: 신산님이 개발·검증용 Evidence Hub는 로그인 없이 관리하고 실제 사용자 프로그램과 분리하도록 승인했다.
+- 최종 승인: 2026-08-11 신산님이 본 설계 기준 진행을 승인했다.
 - 기준선: 공식 Desktop 정본 `master`, 설계 착수 HEAD `ec0508633803edb975d24321eef19e3407d59eea`.
 - 선행 정본: `2026-07-20-daon-user-program-design.md`, `production_bound_prototype_handoff_contract.md`, Windows Recovery 설계 1.3.
 
