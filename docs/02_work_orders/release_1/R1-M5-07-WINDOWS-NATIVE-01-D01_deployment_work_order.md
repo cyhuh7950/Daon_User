@@ -3,7 +3,7 @@
 ## 1. 승인과 기준선
 
 - Work Order ID: `R1-M5-07-WINDOWS-NATIVE-01-D01`; Issue ID: `R1-M5-07-WINDOWS-NATIVE-01-I001`.
-- 상태: `READY` · 2026-08-11.
+- 상태: `HOLD_PRODUCT_UI_CORRECTION` · 2026-08-11. 신산님의 Evidence Hub·사용자 제품 분리 승인에 따라 실제 사용자 화면 보정과 검증 전까지 배포하지 않는다.
 - 신산님은 2026-08-11 Native 로그인 실패 원인이 ysna-server 구버전 배포임을 보고받고 최신 `origin/master` 재배포를 `그래`로 승인했다.
 - 공식 로컬 정본은 `C:\Users\cyhuh\Desktop\D Driver\Project\Daon_User`, Branch `master`; 배포 대상 서버 경로는 `ysna-server:/home/ubuntu/deploy/daon-user`다.
 - 기존 제품 기준선은 Commit `66742bfd64c9799686875fd7ecae237b2cb3bd0c`; Task 6 문서 포함 승인 기준선은 착수 시 `origin/master`의 exact SHA를 기록한다.
