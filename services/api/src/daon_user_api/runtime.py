@@ -7,6 +7,7 @@ import ipaddress
 import asyncio
 import base64
 import binascii
+import json
 import os
 import re
 import secrets
@@ -85,6 +86,10 @@ from .question_answering_postgres import (
     PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
 )
 from .question_answering_service import QuestionAnsweringError, QuestionAnsweringService
+from .studio_report import (
+    StudioReportContext, StudioReportCreateRequest, StudioReportError, StudioReportService,
+)
+from .studio_report_postgres import PostgresStudioReportRepository
 from .sync import (
     ConflictResolutionChoice,
     ReferenceSyncRepository,
@@ -325,6 +330,8 @@ class RuntimeDependencies:
     document_processing_service: DocumentProcessingSubmissionService | None = None
     question_answering_service: Any | None = None
     citation_content_repository: Any | None = None
+    studio_report_service: Any | None = None
+    studio_report_repository: Any | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -414,6 +421,16 @@ class QuestionBody(BaseModel):
     source_id: str
     source_version_id: str
     question: str
+
+
+class StudioReportBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str
+    source_version_id: str
+    run_id: str
+    run_result_id: str
+    title: str
+    purpose: str
 
 
 class SyncItemBody(BaseModel):
@@ -703,6 +720,12 @@ def _idempotency_key(value: str) -> str:
     return value
 
 
+def _studio_idempotency_key(value: str) -> str:
+    if len(value) < 16 or len(value) > 128 or not _TRACE_ID.fullmatch(value):
+        raise HTTPException(status_code=400)
+    return value
+
+
 def _personal_workspace_id(tenant_id: str) -> str:
     return f"workspace-{hashlib.sha256(tenant_id.encode('utf-8')).hexdigest()[:24]}"
 
@@ -792,6 +815,16 @@ def _provider_settings_context(
     )
 
 
+def _studio_context(
+    principal: IdentityPrincipal, workspace_id: str, request: Request,
+    dependencies: RuntimeDependencies,
+) -> StudioReportContext:
+    return StudioReportContext(
+        principal.tenant_id, workspace_id, principal.user_id, request.state.trace_id,
+        dependencies.settings.policy_version,
+    )
+
+
 def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityPrincipal:
     token, expected_kind = _credential(request)
     view = dependencies.identity_service.describe_access(
@@ -843,6 +876,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             PostgresDocumentIndex(dependencies.cloud_store),
             ServerProviderCredentialResolver(), UrlLibDocumentUnderstandingTransport(),
         )
+    studio_report_repository = dependencies.studio_report_repository
+    studio_report_service = dependencies.studio_report_service
+    if studio_report_repository is None and dependencies.cloud_store is not None:
+        studio_report_repository = PostgresStudioReportRepository(dependencies.cloud_store)
+    if studio_report_service is None and studio_report_repository is not None:
+        studio_report_service = StudioReportService(studio_report_repository)
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
@@ -1048,6 +1087,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             request.state.trace_id, retryable=error.retryable,
         )
 
+    @app.exception_handler(StudioReportError)
+    async def studio_report_error(
+        request: Request, error: StudioReportError,
+    ) -> JSONResponse:
+        public_codes = {
+            "EVIDENCE_REQUIRED", "RESOURCE_UNAVAILABLE", "IDEMPOTENCY_CONFLICT",
+            "STUDIO_DATABASE_UNAVAILABLE", "STUDIO_SERVICE_UNAVAILABLE",
+        }
+        return _error_response(
+            error.status, error.code if error.code in public_codes else "INVALID_REQUEST",
+            request.state.trace_id, retryable=error.retryable,
+        )
+
     @app.exception_handler(SourceUploadError)
     async def source_upload_error(
         request: Request, error: SourceUploadError,
@@ -1198,6 +1250,27 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id},
         }
 
+    @app.get("/api/v1/workspaces/{id}/sources")
+    async def list_workspace_sources(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if studio_report_repository is None:
+            raise StudioReportError("STUDIO_SERVICE_UNAVAILABLE", status=503, retryable=True)
+        sources = await asyncio.to_thread(
+            studio_report_repository.list_sources,
+            _studio_context(principal, id, request, dependencies),
+        )
+        content = {
+            "data": {"sources": [_dataclass_json(source) for source in sources]},
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        }
+        return _json_with_etag(content, json.dumps(content["data"], sort_keys=True))
+
     @app.post("/api/v1/workspaces/{id}/sources", status_code=202)
     async def upload_pdf_source(
         id: str,
@@ -1342,6 +1415,60 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         })
         response.headers["ETag"] = f'"run-result:{answer.run_result_id}"'
         return response
+
+    @app.post("/api/v1/workspaces/{id}/studio/reports", status_code=201)
+    async def create_studio_report(
+        id: str, body: StudioReportBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _studio_idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if studio_report_service is None:
+            raise StudioReportError("STUDIO_SERVICE_UNAVAILABLE", status=503, retryable=True)
+        output, replayed = await asyncio.to_thread(
+            studio_report_service.create,
+            _studio_context(principal, id, request, dependencies),
+            StudioReportCreateRequest(
+                body.source_id, body.source_version_id, body.run_id, body.run_result_id,
+                body.title, body.purpose,
+            ),
+            idempotency_key,
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(output),
+            "meta": {
+                "trace_id": request.state.trace_id, "workspace_id": id, "replayed": replayed,
+            },
+        }, status_code=200 if replayed else 201)
+        response.headers["ETag"] = f'"studio-output:{output.output_version_id}"'
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/studio/outputs")
+    async def list_studio_outputs(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if studio_report_service is None:
+            raise StudioReportError("STUDIO_SERVICE_UNAVAILABLE", status=503, retryable=True)
+        outputs = await asyncio.to_thread(
+            studio_report_service.list_outputs,
+            _studio_context(principal, id, request, dependencies),
+        )
+        content = {
+            "data": {"outputs": [_dataclass_json(output) for output in outputs]},
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        }
+        return _json_with_etag(content, json.dumps(content["data"], sort_keys=True))
 
     @app.get("/api/v1/workspaces/{id}/citations/{citation_id}/content")
     async def get_citation_content(

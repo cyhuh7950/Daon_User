@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
-import { createProductWorkspaceState, normalizeProductWorkspaceState } from "./product-workspace-model.js";
+import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState } from "./product-workspace-model.js";
 import "./workspace.css";
 
 const STATE_LABELS = Object.freeze({
@@ -182,7 +182,7 @@ function processingDisposition(status, submission) {
   return "pending";
 }
 
-function projectSafeQuestionAnswer(answer, workspaceId, citationUrl) {
+export function projectSafeQuestionAnswer(answer, workspaceId, citationUrl, selectedSource) {
   const validAnswer = hasExactKeys(answer, ["run_id", "run_result_id", "answer", "insufficient", "citations"])
     && isSafeDtoId(answer.run_id)
     && isSafeDtoId(answer.run_result_id)
@@ -200,7 +200,9 @@ function projectSafeQuestionAnswer(answer, workspaceId, citationUrl) {
       && isSafeDtoId(citation.source_version_id)
       && isSafeDtoId(citation.evidence_span_id)
       && Number.isSafeInteger(citation.page)
-      && citation.page >= 1;
+      && citation.page >= 1
+      && citation.source_id === selectedSource?.sourceId
+      && citation.source_version_id === selectedSource?.sourceVersionId;
     if (!validCitation) throw new Error("QUESTION_RESPONSE_INVALID");
     let contentUrl;
     try {
@@ -215,11 +217,90 @@ function projectSafeQuestionAnswer(answer, workspaceId, citationUrl) {
   return { ...answer, citations };
 }
 
+export async function submitGroundedReport({ adapter, state, title, purpose, idempotencyKey }) {
+  const reportTitle = typeof title === "string" ? title.trim() : "";
+  const reportPurpose = typeof purpose === "string" ? purpose.trim() : "";
+  if (
+    !adapter || typeof adapter.createReport !== "function" || typeof adapter.listStudioOutputs !== "function"
+    || !canCreateGroundedReport(state) || !reportTitle || !reportPurpose
+  ) return { submitted: false, outputs: state?.studioOutputs ?? [] };
+  await adapter.createReport({
+    source_id: state.selectedSource.sourceId,
+    source_version_id: state.selectedSource.sourceVersionId,
+    run_id: state.answer.run_id,
+    run_result_id: state.answer.run_result_id,
+    title: reportTitle,
+    purpose: reportPurpose
+  }, { idempotencyKey });
+  return { submitted: true, outputs: await adapter.listStudioOutputs() };
+}
+
+export async function submitGroundedReportForm(event, {
+  adapter, state, title, purpose, idempotencyRef, uuid = () => crypto.randomUUID(),
+}) {
+  event?.preventDefault();
+  const normalized = {
+    source_id: state?.selectedSource?.sourceId,
+    source_version_id: state?.selectedSource?.sourceVersionId,
+    run_id: state?.answer?.run_id,
+    run_result_id: state?.answer?.run_result_id,
+    title: typeof title === "string" ? title.trim() : "",
+    purpose: typeof purpose === "string" ? purpose.trim() : ""
+  };
+  if (!canCreateGroundedReport(state) || !normalized.title || !normalized.purpose) {
+    return { submitted: false, outputs: state?.studioOutputs ?? [] };
+  }
+  const fingerprint = JSON.stringify(normalized);
+  let key = idempotencyRef?.current?.fingerprint === fingerprint
+    ? idempotencyRef.current.key
+    : `report-${uuid()}`;
+  if (typeof key !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/u.test(key)) {
+    throw new Error("STUDIO_INPUT_INVALID");
+  }
+  if (idempotencyRef) idempotencyRef.current = { fingerprint, key };
+  return submitGroundedReport({ adapter, state, title: normalized.title, purpose: normalized.purpose, idempotencyKey: key });
+}
+
 export function ProductWorkspaceShell({ workspaceId, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null }) {
   const [viewState, setViewState] = useState(() => normalizeProductWorkspaceState(state));
   const [processing, setProcessing] = useState(null);
   const [question, setQuestion] = useState("");
+  const [reportTitle, setReportTitle] = useState("");
+  const [reportPurpose, setReportPurpose] = useState("");
+  const [reportPending, setReportPending] = useState(false);
   const pollControllerRef = useRef(null);
+  const reportIdempotencyRef = useRef(null);
+
+  useEffect(() => {
+    if (!adapter || typeof adapter.listSources !== "function" || !workspaceId) return undefined;
+    const controller = new AbortController();
+    Promise.all([
+      adapter.listSources({ signal: controller.signal }),
+      typeof adapter.listStudioOutputs === "function"
+        ? adapter.listStudioOutputs({ signal: controller.signal })
+        : Promise.resolve([])
+    ]).then(([sources, studioOutputs]) => {
+      if (controller.signal.aborted) return;
+      const projected = sources.map((source) => ({
+        sourceId: source.source_id,
+        sourceVersionId: source.source_version_id,
+        filename: source.filename,
+        ready: source.source_state === "ready"
+          && source.processing_state === "completed"
+          && source.job_state === "completed"
+      }));
+      const selectedSource = projected.find((source) => source.ready) ?? null;
+      setViewState({
+        ...createProductWorkspaceState({ status: projected.length ? "ready" : "empty" }),
+        sources: projected, selectedSource, studioOutputs
+      });
+    }).catch((error) => {
+      if (!controller.signal.aborted) {
+        setViewState(createProductWorkspaceState({ status: "error", safeError: safeErrorCode(error, "SOURCE_LIST_FAILED") }));
+      }
+    });
+    return () => controller.abort();
+  }, [adapter, workspaceId]);
 
   useEffect(() => () => {
     pollControllerRef.current?.abort();
@@ -316,12 +397,43 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
     if (!adapter || !viewState.selectedSource || !question.trim()) return;
     try {
       const answer = await adapter.askQuestion({ ...viewState.selectedSource, question: question.trim() });
-      const safeAnswer = projectSafeQuestionAnswer(answer, workspaceId, adapter.citationUrl);
+      const safeAnswer = projectSafeQuestionAnswer(answer, workspaceId, adapter.citationUrl, viewState.selectedSource);
       setViewState((current) => ({ ...current, answer: safeAnswer }));
+      reportIdempotencyRef.current = null;
     } catch (error) {
       setViewState(createProductWorkspaceState({ status: "error", safeError: safeErrorCode(error, "QUESTION_FAILED") }));
     }
   };
+
+  const selectSource = (source) => {
+    if (!source.ready) return;
+    reportIdempotencyRef.current = null;
+    setViewState((current) => ({ ...current, selectedSource: source, answer: null }));
+  };
+
+  const createReport = async (event) => {
+    if (
+      !adapter || typeof adapter.createReport !== "function" || reportPending
+      || !canCreateGroundedReport(viewState) || !reportTitle.trim() || !reportPurpose.trim()
+    ) {
+      event.preventDefault();
+      return;
+    }
+    setReportPending(true);
+    try {
+      const result = await submitGroundedReportForm(event, {
+        adapter, state: viewState, title: reportTitle, purpose: reportPurpose,
+        idempotencyRef: reportIdempotencyRef,
+      });
+      if (result.submitted) setViewState((current) => ({ ...current, studioOutputs: result.outputs }));
+    } catch (error) {
+      setViewState((current) => ({ ...current, safeError: safeErrorCode(error, "STUDIO_CREATE_FAILED") }));
+    } finally {
+      setReportPending(false);
+    }
+  };
+
+  const reportReady = canCreateGroundedReport(viewState);
 
   return (
     <main className="adaptive-workspace" data-product-workspace-state={viewState.status} data-workspace-id={workspaceId ?? ""}>
@@ -336,6 +448,15 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
         <SafePane id="product-pane-sources" title="Source·지식·권위" description="PDF 등록과 처리 상태는 실제 same-origin 연결만 사용합니다.">
           <label>PDF Source<input type="file" accept="application/pdf" onChange={uploadPdf} disabled={!adapter} /></label>
           {processing ? <p role="status">처리 상태: {processing.job_state ?? "PROCESSING_STATUS_AVAILABLE"}</p> : null}
+          <ul aria-label="Source 목록">
+            {viewState.sources.map((source) => (
+              <li key={`${source.sourceId}:${source.sourceVersionId}`}>
+                <button type="button" onClick={() => selectSource(source)} disabled={!source.ready}>
+                  {source.filename ?? source.sourceId}
+                </button>
+              </li>
+            ))}
+          </ul>
         </SafePane>
         <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
           <form onSubmit={askQuestion}>
@@ -347,7 +468,26 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
             <a key={citation.citation_id} href={citation.content_url}>Citation page {citation.page}</a>
           ))}
         </SafePane>
-        <SafePane id="product-pane-studio" title="업무 Studio" description="근거 기반 결과 연결 전에는 생성 결과를 표시하지 않습니다." />
+        <SafePane id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">
+          <form onSubmit={createReport}>
+            <label>보고서 제목<input value={reportTitle} maxLength={200} onChange={(event) => setReportTitle(event.currentTarget.value)} /></label>
+            <label>결과 목적<input value={reportPurpose} maxLength={500} onChange={(event) => setReportPurpose(event.currentTarget.value)} /></label>
+            <button type="submit" disabled={!reportReady || !reportTitle.trim() || !reportPurpose.trim() || reportPending}>보고서 생성</button>
+          </form>
+          <ul aria-label="저장된 보고서">
+            {viewState.studioOutputs.map((output) => (
+              <li key={output.studio_output_id}>
+                <strong>{output.title}</strong>
+                <span>{output.status}</span>
+                <ul aria-label={`${output.title} Citation 계보`}>
+                  {output.citations.map((citation) => (
+                    <li key={citation.citation_id}>Citation page {citation.page}</li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        </SafePane>
       </div>
       {viewState.safeError ? <p className="safe-error" role="alert">{viewState.safeError}</p> : null}
     </main>
