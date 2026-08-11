@@ -185,6 +185,9 @@ Commit message: `feat: isolate local evidence hub`
 - Create: `scripts/tests/product-ui-boundary.test.mjs`
 - Modify: `package.json`
 - Modify: `quality-gate-policy.json`
+- Modify: `packages/ui/package.json`
+- Modify: `apps/web/app/operations/recovery-workspace.jsx`
+- Modify: `apps/web/components/notification-inbox-workspace.jsx`
 - Modify: `scripts/build-local-service-sidecar.mjs`
 - Modify: `scripts/run-isolated-desktop-cargo.mjs`
 
@@ -204,7 +207,7 @@ const forbidden = [
 ];
 ```
 
-Test는 제품에 도달 가능한 공용 UI Source와 `apps/web/.next`, `apps/desktop/dist`의 텍스트 Asset을 검사하고, Evidence 앱 자체는 제외한다. 필수 Bundle Root·대표 Asset 부재, Symlink 또는 부분 Build는 PASS가 아니라 fail-close다.
+Test는 제품 Entry의 실제 Import graph를 재귀 추적해 공용 UI Source와 `apps/web/.next`, `apps/desktop/dist`의 텍스트 Asset을 검사하고, Evidence 앱 자체는 제외한다. Next/Vite Manifest가 참조하는 Route·Chunk·CSS가 하나라도 없거나 Symlink·부분 Build이면 fail-close다.
 
 - [ ] **Step 2: 현재 제품 Source에서 RED를 확인한다**
 
@@ -240,6 +243,7 @@ Commit message: `test: enforce product evidence boundary`
 - Modify: `apps/web/app/page.jsx`
 - Modify: `apps/web/app/layout.jsx`
 - Modify: `apps/web/lib/auth-pane.jsx`
+- Modify: `apps/web/lib/question-answering-api.js`
 - Create: `packages/ui/src/product-workspace-shell.jsx`
 - Create: `packages/ui/src/product-workspace-model.js`
 - Modify: `packages/ui/src/index.js`
@@ -286,7 +290,7 @@ Shell은 3면 Layout만 소유하고 Fixture ID·Prototype Action·가짜 성공
 
 - [ ] **Step 4: Web Home을 인증 전용 화면으로 바꾼다**
 
-`apps/web/app/page.jsx`는 `AuthPane`만 렌더링한다. 로그인 성공은 기존 `workspace_id`로 `/workspaces/{id}` 이동하고, Workspace가 없으면 `WORKSPACE_REQUIRED` Safe 상태를 표시한다. 기존 `ActualWorkspace`의 PDF Upload·Processing Status·Question·Citation 실제 연결은 Fixture 없는 Product Adapter로 보존하며 Stage A에서 제거하지 않는다.
+`apps/web/app/page.jsx`는 `AuthPane`만 렌더링한다. 로그인 성공은 기존 `workspace_id`로 `/workspaces/{id}` 이동하고, Workspace가 없으면 `WORKSPACE_REQUIRED` Safe 상태를 표시한다. 기존 `ActualWorkspace`의 PDF Upload·Processing Status·Question·Citation 실제 연결은 Fixture 없는 Product Adapter로 보존하며 Stage A에서 제거하지 않는다. Source는 `source_state=ready`, `processing_state=ready`, `job_state=completed`가 모두 확인된 때만 질문 가능 상태로 전환한다. Question·Citation 응답은 exact DTO 검증 후 State에 반영하고 이상 응답은 render 밖에서 `QUESTION_RESPONSE_INVALID` Safe 상태로 전환한다.
 
 - [ ] **Step 5: Windows Login을 독립 화면으로 바꾼다**
 
