@@ -82,4 +82,3 @@ git diff --check
 - 결과는 `status | issue_id | 수행한 작업 | 생성·변경한 결과 | 테스트 결과 | 미해결 사항 | 다음으로 필요한 판단` 형식으로 반환한다.
 - 모든 자동 회귀와 허용 실제 단계가 증거로 충족되면 `COMPLETED`를 사용한다. 자격증명·Fixture·GUI·환경 부재는 `BLOCKED`이며 실패 횟수에 포함하지 않는다. 제품 결함은 재현 가능한 `FAILURE_REPORT`로 제출한다.
 - Commit·Push·배포·운영 Restore·사용자 데이터 삭제는 어울1 소유이므로 수행하지 않는다.
-
