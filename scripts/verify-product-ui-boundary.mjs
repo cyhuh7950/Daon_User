@@ -72,18 +72,27 @@ async function collectRequiredRoot(candidate, options) {
 
 async function validateRequiredArtifact(artifact, boundaryErrors) {
   const candidate = path.resolve(artifact.path);
+  const codePrefix = artifact.codePrefix ?? "REQUIRED_ASSET";
   const type = await pathType(candidate);
   if (type === "missing") {
-    boundaryErrors.push({ path: candidate, code: "REQUIRED_ASSET_MISSING" });
+    boundaryErrors.push({ path: candidate, code: `${codePrefix}_MISSING` });
     return;
   }
   if (type === "symlink") {
-    boundaryErrors.push({ path: candidate, code: "SYMLINK_NOT_ALLOWED" });
+    boundaryErrors.push({ path: candidate, code: artifact.codePrefix ? `${codePrefix}_SYMLINK` : "SYMLINK_NOT_ALLOWED" });
     return;
   }
   if (artifact.type && artifact.type !== type) {
-    boundaryErrors.push({ path: candidate, code: "REQUIRED_ASSET_INVALID" });
+    boundaryErrors.push({ path: candidate, code: `${codePrefix}_INVALID` });
     return;
+  }
+  if (type === "file" && artifact.readable) {
+    try {
+      await readFile(candidate, "utf8");
+    } catch {
+      boundaryErrors.push({ path: candidate, code: `${codePrefix}_UNREADABLE` });
+      return;
+    }
   }
   if (type === "directory" && artifact.extensions?.length) {
     const files = await collectTextFiles(candidate, { required: false, boundaryErrors });
@@ -382,12 +391,25 @@ export async function scanDefaultProductUiBoundary({ root = repositoryRoot, targ
   let viteDistRoot = null;
   if (includeWeb) {
     const webAppRoot = path.join(root, "apps/web/app");
+    const requiredProductEntries = [
+      path.join(webAppRoot, "settings/account/page.jsx"),
+      path.join(webAppRoot, "settings/organization/page.jsx")
+    ];
     nextBuildRoot = path.join(root, "apps/web/.next");
     sourceRoots.push(webAppRoot, path.join(root, "apps/web/components"), path.join(root, "apps/web/lib"));
     bundleRoots.push(path.join(nextBuildRoot, "static"), path.join(nextBuildRoot, "server/app"), path.join(nextBuildRoot, "server/chunks"));
     const entryCandidates = await collectTextFiles(webAppRoot, { source: true, required: true, boundaryErrors: [] });
-    sourceEntryFiles.push(...entryCandidates.filter((file) => /(?:^|[\\/])(?:page|layout|route|loading|error|not-found)\.(?:js|jsx|mjs|cjs|ts|tsx)$/u.test(file)));
+    sourceEntryFiles.push(
+      ...entryCandidates.filter((file) => /(?:^|[\\/])(?:page|layout|route|loading|error|not-found)\.(?:js|jsx|mjs|cjs|ts|tsx)$/u.test(file)),
+      ...requiredProductEntries
+    );
     requiredArtifacts.push(
+      ...requiredProductEntries.map((entryPath) => ({
+        path: entryPath,
+        type: "file",
+        readable: true,
+        codePrefix: "REQUIRED_PRODUCT_ENTRY"
+      })),
       { path: path.join(nextBuildRoot, "BUILD_ID"), type: "file" },
       { path: path.join(nextBuildRoot, "build-manifest.json"), type: "file" },
       { path: path.join(nextBuildRoot, "server/app-paths-manifest.json"), type: "file" },
