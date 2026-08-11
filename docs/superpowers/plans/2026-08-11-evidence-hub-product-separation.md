@@ -290,7 +290,7 @@ Shell은 3면 Layout만 소유하고 Fixture ID·Prototype Action·가짜 성공
 
 - [ ] **Step 4: Web Home을 인증 전용 화면으로 바꾼다**
 
-`apps/web/app/page.jsx`는 `AuthPane`만 렌더링한다. 로그인 성공은 기존 `workspace_id`로 `/workspaces/{id}` 이동하고, Workspace가 없으면 `WORKSPACE_REQUIRED` Safe 상태를 표시한다. 기존 `ActualWorkspace`의 PDF Upload·Processing Status·Question·Citation 실제 연결은 Fixture 없는 Product Adapter로 보존하며 Stage A에서 제거하지 않는다. Source는 `source_state=ready`, `processing_state=ready`, `job_state=completed`가 모두 확인된 때만 질문 가능 상태로 전환한다. Question·Citation 응답은 exact DTO 검증 후 State에 반영하고 이상 응답은 render 밖에서 `QUESTION_RESPONSE_INVALID` Safe 상태로 전환한다.
+`apps/web/app/page.jsx`는 `AuthPane`만 렌더링한다. 로그인 성공은 기존 `workspace_id`로 `/workspaces/{id}` 이동하고, Workspace가 없으면 `WORKSPACE_REQUIRED` Safe 상태를 표시한다. 기존 `ActualWorkspace`의 PDF Upload·Processing Status·Question·Citation 실제 연결은 Fixture 없는 Product Adapter로 보존하며 Stage A에서 제거하지 않는다. Source는 실제 Runtime 정본인 `source_state=ready`, `processing_state=completed`, `job_state=completed`가 모두 확인된 때만 질문 가능 상태로 전환한다. `queued → leased → processing`은 loading 상태에서 1초 간격으로 재조회한다. Upload 시작부터 처리 완료까지 단일 monotonic 전체 Deadline 150초를 적용하고, 개별 Status 요청은 10초 뒤 request-local 신호로 중단한다. Upload·Status composite·Poll wait는 동일 operation `AbortSignal` 수명에 결속하며 새 Upload 또는 Unmount는 이전 operation을 중단하고 그 결과를 State에 반영하지 않는다. Question·Citation 응답은 exact DTO 검증 후 State에 반영하고 이상 응답은 render 밖에서 `QUESTION_RESPONSE_INVALID` Safe 상태로 전환한다.
 
 - [ ] **Step 5: Windows Login을 독립 화면으로 바꾼다**
 

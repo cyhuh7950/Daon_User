@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  AccountSecurityWorkspace,
-  AdaptiveWorkspace,
-  OperationsRecoveryWorkspace,
-  ProductionBoundEvidenceHub
-} from "@daon-user/ui";
+import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-model";
+import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import navigation from "@daon-user/contracts/navigation.json";
-import screens from "@daon-user/contracts/screens.json";
 import "@daon-user/design-tokens/tokens.css";
 import "./desktop-shell.css";
 import { createWindowsNavigation, selectNativeRoute } from "./desktop-shell-model.js";
@@ -17,10 +12,8 @@ import {
 } from "./local-service-bridge.js";
 import { createNativeSessionBridge } from "./native-session-bridge.js";
 import { NativeAuthPanel } from "./native-auth-panel.jsx";
-import { WindowsRecoveryAdapter } from "./windows-recovery-adapter.js";
 
 const LABELS = {
-  Home: "Home",
   WorkspaceDetail: "Workspace",
   AccountSettings: "Account",
   OrganizationSettings: "Organization",
@@ -28,22 +21,18 @@ const LABELS = {
   Notifications: "Notifications"
 };
 
-function RouteSurface({ routeKey, route, screen, recoveryAdapter, sessionContext, sessionTreeKey }) {
-  if (routeKey === "Home") return <ProductionBoundEvidenceHub route={route} screen={screen} />;
-  if (routeKey === "WorkspaceDetail") return <AdaptiveWorkspace routeId={route.route_id} screenId={screen.screen_id} />;
-  if (routeKey === "AccountSettings") return <AccountSecurityWorkspace initialScreen="account" />;
-  if (routeKey === "OrganizationSettings") return <AccountSecurityWorkspace initialScreen="organization" />;
-  if (routeKey === "Operations") return <OperationsRecoveryWorkspace key={sessionTreeKey} initialScreen="operations" clientType="windows" recoveryAdapter={recoveryAdapter} sessionContext={sessionContext} />;
-  return <OperationsRecoveryWorkspace key={sessionTreeKey} initialScreen="notifications" clientType="windows" recoveryAdapter={recoveryAdapter} sessionContext={sessionContext} />;
+function RouteSurface({ routeKey, workspaceId }) {
+  if (routeKey === "WorkspaceDetail") {
+    return <ProductWorkspaceShell workspaceId={workspaceId} state={createProductWorkspaceState({ status: "unavailable", safeError: "WORKSPACE_ADAPTER_UNAVAILABLE" })} />;
+  }
+  return <section className="desktop-safe-surface" role="status"><h2>{LABELS[routeKey]}</h2><p>실제 사용자 기능 연결 전에는 성공 데이터를 표시하지 않습니다.</p></section>;
 }
 
 export function DesktopShell({ nativeInvoke, sessionWatchOptions } = {}) {
-  const routes = useMemo(() => createWindowsNavigation(navigation.routes), []);
   const sessionBridge = useMemo(() => createNativeSessionBridge({ invoke: nativeInvoke }), [nativeInvoke]);
-  const recoveryAdapter = useMemo(() => new WindowsRecoveryAdapter({ invoke: nativeInvoke }), [nativeInvoke]);
   const authorizationRequest = useRef(0);
   const currentSession = useRef({ authenticated: false });
-  const [activeKey, setActiveKey] = useState("Home");
+  const [activeKey, setActiveKey] = useState("WorkspaceDetail");
   const [nativeSession, setNativeSession] = useState({ authenticated: false, recoveryOperations: [], authorizationRevision: 0 });
   const [localService, setLocalService] = useState({
     state: "starting",
@@ -63,7 +52,13 @@ export function DesktopShell({ nativeInvoke, sessionWatchOptions } = {}) {
       setNativeSession({ authenticated: false, recoveryOperations: [], authorizationRevision: request * 2 });
       return;
     }
-    setNativeSession({ ...status, recoveryOperations: [], authorizationRevision: request * 2 });
+    setNativeSession((current) => ({
+      ...status,
+      recoveryOperations: current.authenticated && current.sessionId === status.sessionId
+        ? current.recoveryOperations
+        : [],
+      authorizationRevision: request * 2
+    }));
     try {
       const authorization = await sessionBridge.recoveryAuthorizationStatus();
       if (authorizationRequest.current !== request) return;
@@ -82,14 +77,15 @@ export function DesktopShell({ nativeInvoke, sessionWatchOptions } = {}) {
     }
   }, [activeKey, applyNativeSession]);
 
-  const sessionContext = nativeSession.authenticated ? {
-    userId: nativeSession.userId,
-    tenantId: nativeSession.tenantId,
-    workspaceId: nativeSession.workspaceId,
-    sessionId: nativeSession.sessionId,
-    recoveryOperations: nativeSession.recoveryOperations,
-    membership: null
-  } : null;
+  const routes = useMemo(() => createWindowsNavigation(navigation.routes, {
+    organization: false,
+    operations: nativeSession.recoveryOperations.length > 0
+  }), [nativeSession.recoveryOperations.length]);
+
+  useEffect(() => {
+    setActiveKey((current) => selectNativeRoute("WorkspaceDetail", current, routes));
+  }, [routes]);
+
   const sessionTreeKey = nativeSession.authenticated
     ? `${nativeSession.sessionId}:${nativeSession.authorizationRevision}`
     : `unauthenticated:${nativeSession.authorizationRevision}`;
@@ -98,6 +94,18 @@ export function DesktopShell({ nativeInvoke, sessionWatchOptions } = {}) {
     setLocalService({ state: "retrying", retryable: false, error_code: null });
     setLocalService(await retryLocalService());
   };
+
+  if (!nativeSession.authenticated) {
+    return (
+      <main className="desktop-login-shell" data-client-type="windows" data-runtime-state={localService.state} data-session-tree-key={sessionTreeKey}>
+        <div className="desktop-login-card">
+          <p className="desktop-eyebrow">Windows App</p>
+          <h1>Daon 사용자 프로그램</h1>
+          <NativeAuthPanel sessionBridge={sessionBridge} sessionStatus={nativeSession} onSessionChange={(status) => { void applyNativeSession(status); }} />
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div className="desktop-shell" data-client-type="windows" data-runtime-state={localService.state} data-session-tree-key={sessionTreeKey}>
@@ -130,16 +138,11 @@ export function DesktopShell({ nativeInvoke, sessionWatchOptions } = {}) {
         ))}
       </nav>
       <div className="desktop-content">
-        {routes.map((route) => {
-          const screen = screens.screens.find((candidate) => candidate.screen_id === route.route_id)
-            ?? screens.screens.find((candidate) => candidate.route_id === route.route_id)
-            ?? { screen_id: route.route_id };
-          return (
+        {routes.map((route) => (
             <section key={route.key} hidden={route.key !== activeKey} aria-label={LABELS[route.key]}>
-              <RouteSurface routeKey={route.key} route={route} screen={screen} recoveryAdapter={recoveryAdapter} sessionContext={sessionContext} sessionTreeKey={sessionTreeKey} />
+              <RouteSurface routeKey={route.key} workspaceId={nativeSession.workspaceId} />
             </section>
-          );
-        })}
+        ))}
       </div>
     </div>
   );

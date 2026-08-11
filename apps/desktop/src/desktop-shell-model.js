@@ -1,16 +1,21 @@
-const REQUIRED_NATIVE_KEYS = new Set([
-  "Home",
+const DEFAULT_NATIVE_KEYS = Object.freeze([
   "WorkspaceDetail",
+  "Notifications",
   "AccountSettings",
-  "OrganizationSettings",
-  "Operations",
-  "Notifications"
 ]);
 
-export function createWindowsNavigation(routes) {
-  return routes
-    .filter((route) => route.clients.includes("windows") && REQUIRED_NATIVE_KEYS.has(route.native_route_key))
-    .map((route) => ({ ...route, key: route.native_route_key }));
+export function createWindowsNavigation(routes, permissionProjection = {}) {
+  const allowedKeys = [
+    ...DEFAULT_NATIVE_KEYS,
+    ...(permissionProjection.organization === true ? ["OrganizationSettings"] : []),
+    ...(permissionProjection.operations === true ? ["Operations"] : [])
+  ];
+  const windowsRoutes = new Map(routes
+    .filter((route) => route.clients.includes("windows"))
+    .map((route) => [route.native_route_key, route]));
+  return allowedKeys
+    .filter((key) => windowsRoutes.has(key))
+    .map((key) => ({ ...windowsRoutes.get(key), key }));
 }
 
 export function selectNativeRoute(currentKey, requestedKey, routes) {

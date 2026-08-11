@@ -1,6 +1,6 @@
 "use client";
 
-export async function uploadPdfSource(workspaceId, file, { idempotencyKey } = {}) {
+export async function uploadPdfSource(workspaceId, file, { idempotencyKey, signal } = {}) {
   if (!workspaceId || !file || file.type !== "application/pdf") {
     throw new Error("PDF_UPLOAD_INPUT_INVALID");
   }
@@ -17,6 +17,7 @@ export async function uploadPdfSource(workspaceId, file, { idempotencyKey } = {}
         "X-Source-Filename": file.name,
       },
       body: file,
+      signal,
     },
   );
   const payload = await response.json();
@@ -26,7 +27,7 @@ export async function uploadPdfSource(workspaceId, file, { idempotencyKey } = {}
   return payload.data;
 }
 
-export async function getDocumentProcessingStatus(workspaceId, processingRunId) {
+export async function getDocumentProcessingStatus(workspaceId, processingRunId, { signal } = {}) {
   if (!workspaceId || !processingRunId) {
     throw new Error("PROCESSING_STATUS_INPUT_INVALID");
   }
@@ -36,6 +37,7 @@ export async function getDocumentProcessingStatus(workspaceId, processingRunId) 
       method: "GET",
       credentials: "same-origin",
       cache: "no-store",
+      signal,
     },
   );
   const payload = await response.json();

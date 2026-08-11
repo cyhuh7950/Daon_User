@@ -140,29 +140,26 @@ test("desktop shell directly consumes shared UI, tokens, and contracts", async (
   const source = await read("apps/desktop/src/desktop-shell.jsx");
   assert.match(source, /@daon-user\/ui/);
   assert.match(source, /@daon-user\/contracts\/navigation\.json/);
-  assert.match(source, /@daon-user\/contracts\/screens\.json/);
   assert.match(source, /@daon-user\/design-tokens\/tokens\.css/);
   assert.doesNotMatch(source, /apps\/web|next\/|NEXT_PUBLIC_/);
 });
 
-test("desktop shell은 Native Session과 Windows Recovery Adapter를 한 번 생성해 Operations에만 주입한다", async () => {
+test("desktop shell은 Native Session과 Product Workspace를 결합하고 Prototype 제품 화면을 import하지 않는다", async () => {
   const source = await read("apps/desktop/src/desktop-shell.jsx");
   const authPanel = await read("apps/desktop/src/native-auth-panel.jsx");
   assert.match(source, /createNativeSessionBridge/);
-  assert.match(source, /new WindowsRecoveryAdapter/);
   assert.match(source, /useMemo\(\(\) => createNativeSessionBridge/);
-  assert.match(source, /useMemo\(\(\) => new WindowsRecoveryAdapter/);
-  assert.match(source, /recoveryAdapter=\{recoveryAdapter\}/);
-  assert.match(source, /sessionContext=\{sessionContext\}/);
+  assert.match(source, /ProductWorkspaceShell/);
   assert.match(source, /NativeAuthPanel/);
   assert.match(source, /recoveryAuthorizationStatus/);
   assert.match(source, /recoveryOperations:/);
   assert.match(source, /authorizationRevision: request \* 2/);
   assert.match(source, /authorizationRevision: request \* 2 \+ 1/);
-  assert.match(source, /sessionId: nativeSession\.sessionId/);
+  assert.match(source, /nativeSession\.sessionId/);
   assert.match(authPanel, /type="password"/);
   assert.match(authPanel, /defaultValue=""/);
   assert.doesNotMatch(authPanel, /setPassword|useState\([^)]*password|localStorage|sessionStorage|console\./i);
+  assert.doesNotMatch(source, /ProductionBoundEvidenceHub|AdaptiveWorkspace|AccountSecurityWorkspace|OperationsRecoveryWorkspace/);
   assert.doesNotMatch(source, /fetch\s*\(|XMLHttpRequest|WebSocket|https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_/i);
 });
 
@@ -213,6 +210,9 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
       root.render(createElement(DesktopShell, { nativeInvoke: invoke, sessionWatchOptions: { schedule: (poll) => { scheduledPoll = poll; return 1; }, cancel: () => {} } }));
     });
     assert.ok(scheduledPoll, "제품 Tree가 주입된 watch scheduler를 사용해야 한다");
+    assert.equal(findElements(container, (node) => node.getAttribute("aria-label") === "Windows 주 탐색").length, 0);
+    assert.equal(buttonByText(container, "Workspace"), undefined);
+    assert.doesNotMatch(container.textContent, /Evidence Hub|Workspace 준비 상태/);
     const loginId = findElements(container, (node) => (node.getAttribute("name") ?? node.name) === "login-id")[0];
     const password = findElements(container, (node) => (node.getAttribute("name") ?? node.name) === "password")[0];
     assert.ok(loginId, "실제 Login ID DOM input이 필요하다");
@@ -224,9 +224,11 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     assert.equal(password.value, "");
     assert.ok(calls.includes("native_login"), `native_login 호출 필요: ${calls.join(",")}`);
     assert.match(container.textContent, /인증됨 · user-1 · workspace-1/);
+    assert.equal(buttonByText(container, "Workspace")?.getAttribute("aria-current"), "page");
+    assert.doesNotMatch(container.textContent, /Evidence Hub/);
     const shell = findElements(container, (node) => node.getAttribute("data-client-type") === "windows")[0];
     assert.equal(shell.getAttribute("data-session-tree-key"), "session-1:5");
-    assert.equal(calls.filter((command) => command === "recovery_cloud_list_backups").length, 1);
+    assert.equal(calls.filter((command) => command === "recovery_cloud_list_backups").length, 0);
 
     await act(async () => { root.unmount(); });
     root = null;
@@ -277,10 +279,8 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
       deniedLoginId.value = "user-1";
       deniedPassword.value = "password-value";
       await act(async () => { findElements(deniedContainer, (node) => node.tagName === "FORM")[0].dispatchEvent(new MinimalEvent("submit")); });
-      const cloudButtons = ["목록 새로고침", "전용 Fixture Backup 요청"].map((label) => buttonByText(deniedContainer, label));
-      assert.ok(cloudButtons.every(Boolean), `${authorizationMode}: Cloud 버튼이 렌더되어야 한다`);
-      assert.ok(cloudButtons.every((button) => button.disabled), `${authorizationMode}: Cloud 버튼은 권한 없이 비활성이어야 한다`);
-      await act(async () => { for (const button of cloudButtons) button.dispatchEvent(new MinimalEvent("click")); });
+      assert.equal(buttonByText(deniedContainer, "Organization"), undefined, `${authorizationMode}: Organization 메뉴가 없어야 한다`);
+      assert.equal(buttonByText(deniedContainer, "Operations"), undefined, `${authorizationMode}: Operations 메뉴가 없어야 한다`);
       assert.equal(deniedCalls.filter((command) => command.startsWith("recovery_cloud_")).length, 0);
       await act(async () => { root.unmount(); });
       root = null;
@@ -318,6 +318,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     const recoveryBeforeLogout = raceCalls.filter((command) => command.startsWith("recovery_")).length;
     await act(async () => { buttonByText(raceContainer, "Operations").dispatchEvent(new MinimalEvent("click")); });
     assert.ok(resolveLateAuthorization, "Operations 진입의 늦은 Authorization이 필요하다");
+    assert.equal(buttonByText(raceContainer, "Operations")?.getAttribute("aria-current"), "page", "권한 재조회 중에도 Operations Route를 유지해야 한다");
     await act(async () => { buttonByText(raceContainer, "로그아웃").dispatchEvent(new MinimalEvent("click")); });
     assert.match(findElements(raceContainer, (node) => node.getAttribute("data-client-type") === "windows")[0].getAttribute("data-session-tree-key"), /^unauthenticated:/u);
     await act(async () => {
@@ -338,17 +339,706 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
   }
 });
 
-test("native navigation exposes only approved Windows routes by stable key", async () => {
-  const { createWindowsNavigation } = await import("../../apps/desktop/src/desktop-shell-model.js");
+test("Web Operations 직접 진입은 Safe unavailable만 렌더하고 Session·Recovery Network를 호출하지 않는다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-operations-react-"));
+  const dom = installMinimalDom();
+  const priorFetch = globalThis.fetch;
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  let networkCalls = 0;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    globalThis.fetch = async () => {
+      networkCalls += 1;
+      return Response.json({ error: { code: "AUTHENTICATION_REQUIRED" } }, { status: 401 });
+    };
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/web/app/operations/recovery-workspace.jsx"), formats: ["es"], fileName: "operations-safe" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("operations-safe") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Web Operations actual JSX bundle entry가 필요하다");
+    const { RecoveryOperationsWorkspace } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?stageA=${Date.now()}`);
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(RecoveryOperationsWorkspace, { routeId: "operations", screenId: "operations" }));
+      await Promise.resolve();
+    });
+    assert.match(container.textContent, /RESOURCE_UNAVAILABLE/);
+    assert.match(container.textContent, /후속 Stage C/);
+    assert.equal(networkCalls, 0, "Session·Backup·Restore Network는 0건이어야 한다");
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    globalThis.fetch = priorFetch;
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
+test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·unavailable·error를 실제 React로 표시한다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-web-workspace-react-"));
+  const dom = installMinimalDom();
+  const priorFetch = globalThis.fetch;
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "actual-workspace" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("actual-workspace") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Web actual Workspace JSX bundle entry가 필요하다");
+    const workspaceModule = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?stageA=${Date.now()}`);
+    assert.equal(typeof workspaceModule.createWebProductWorkspaceAdapter, "function");
+
+    const calls = [];
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url, method: init.method ?? "GET", signal: init.signal });
+      if (String(url).endsWith("/sources")) return Response.json({ data: { source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32), digest_sha256: "b".repeat(64), byte_size: 128, status: "accepted", replayed: false, processing_run_id: "run-1", processing_state: "queued", job_state: "queued" }, meta: { trace_id: "trace-upload-1", workspace_id: "workspace-1" } }, { status: 202 });
+      if (String(url).includes("/processing-runs/")) return Response.json({ data: { processing_run_id: "run-1", source_id: "source-1", source_version_id: "version-1", processing_state: "completed", source_state: "ready", job_state: "completed", safe_error_code: null }, meta: { trace_id: "trace-processing-1", workspace_id: "workspace-1" } });
+      if (String(url).endsWith("/questions")) return Response.json({ data: { run_id: "answer-run-1", run_result_id: "answer-result-1", answer: "근거 답변", insufficient: false, citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2 }] }, meta: { trace_id: "trace-question-1", workspace_id: "workspace-1" } });
+      throw new Error(`unexpected:${url}`);
+    };
+    const adapter = workspaceModule.createWebProductWorkspaceAdapter("workspace-1");
+    const uploadController = new AbortController();
+    const upload = await adapter.uploadPdf(
+      { name: "actual.pdf", type: "application/pdf" },
+      { signal: uploadController.signal }
+    );
+    const processingController = new AbortController();
+    const processing = await adapter.getProcessingStatus(upload.processing_run_id, { signal: processingController.signal });
+    const answer = await adapter.askQuestion({ sourceId: upload.source_id, sourceVersionId: upload.source_version_id, question: "근거는?" });
+    const citation = adapter.citationUrl(answer.citations[0]);
+    assert.deepEqual(calls.map((call) => call.url), [
+      "/bff/api/workspaces/workspace-1/sources",
+      "/bff/api/workspaces/workspace-1/processing-runs/run-1",
+      "/bff/api/workspaces/workspace-1/questions"
+    ]);
+    assert.equal(processing.job_state, "completed");
+    assert.equal(calls[0].signal, uploadController.signal, "actual upload fetch가 operation AbortSignal을 전달해야 한다");
+    assert.equal(calls[1].signal, processingController.signal, "actual status fetch가 polling AbortSignal을 전달해야 한다");
+    assert.equal(citation, "/bff/api/workspaces/workspace-1/citations/citation-1/content#page=2");
+
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root.render(createElement(workspaceModule.ActualWorkspace, { workspaceId: "" })); });
+    assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "unavailable").length, 1);
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    const failingAdapter = {
+      uploadPdf: async () => { throw new Error("PDF_UPLOAD_FAILED"); },
+      getProcessingStatus: async () => { throw new Error("PROCESSING_STATUS_FAILED"); },
+      askQuestion: async () => { throw new Error("QUESTION_FAILED"); },
+      citationUrl: () => ""
+    };
+    await act(async () => { root.render(createElement(workspaceModule.ActualWorkspace, { workspaceId: "workspace-1", adapter: failingAdapter })); });
+    assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "loading").length, 1);
+    const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+    assert.ok(fileInput, "실제 PDF 선택 input이 필요하다");
+    fileInput.files = [{ name: "failure.pdf", type: "application/pdf" }];
+    await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); });
+    assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1);
+    assert.match(container.textContent, /PDF_UPLOAD_FAILED/);
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    globalThis.fetch = priorFetch;
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
+test("Web Processing은 queued→leased→processing→completed를 polling한 뒤에만 질문·Citation에 도달한다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-processing-react-"));
+  const dom = installMinimalDom();
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "processing-workspace" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("processing-workspace") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Processing actual JSX bundle entry가 필요하다");
+    const { ActualWorkspace } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?processing=${Date.now()}`);
+    const uploadResult = {
+      source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32), digest_sha256: "b".repeat(64),
+      byte_size: 128, status: "accepted", replayed: false, processing_run_id: "run-1", processing_state: "queued", job_state: "queued"
+    };
+    const terminalStatus = {
+      processing_run_id: "run-1", source_id: "source-1", source_version_id: "version-1",
+      source_state: "ready", processing_state: "completed", job_state: "completed", safe_error_code: null
+    };
+    const processingStatuses = [
+      { ...terminalStatus, source_state: "registered", processing_state: "accepted", job_state: "queued" },
+      { ...terminalStatus, source_state: "processing", processing_state: "vision_llm_understanding", job_state: "leased" },
+      { ...terminalStatus, source_state: "indexing", processing_state: "completed", job_state: "processing" },
+      terminalStatus
+    ];
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    root = createRoot(container);
+    let statusCalls = 0;
+    let questionCalls = 0;
+    const waits = [];
+    const readyAdapter = {
+      uploadPdf: async () => uploadResult,
+      getProcessingStatus: async () => processingStatuses[statusCalls++],
+      askQuestion: async () => {
+        questionCalls += 1;
+        return {
+          run_id: "run-answer", run_result_id: "result-answer", answer: "근거 답변", insufficient: false,
+          citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2 }]
+        };
+      },
+      citationUrl: () => "/bff/api/workspaces/workspace-1/citations/citation-1/content#page=2"
+    };
+    const processingPollOptions = { maxAttempts: 4, intervalMs: 17, wait: async (intervalMs) => { waits.push(intervalMs); } };
+    await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter: readyAdapter, processingPollOptions })); });
+    const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+    fileInput.files = [{ name: "ready.pdf", type: "application/pdf" }];
+    await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
+    assert.equal(statusCalls, 4);
+    assert.deepEqual(waits, [17, 17, 17]);
+    assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "ready").length, 1);
+    const questionInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) !== "file")[0];
+    assert.equal(questionInput.disabled, false);
+    questionInput.value = "근거는?";
+    const questionPropsKey = Object.keys(questionInput).find((key) => key.startsWith("__reactProps$"));
+    await act(async () => { questionInput[questionPropsKey].onChange({ currentTarget: questionInput, target: questionInput }); });
+    const form = findElements(container, (node) => node.tagName === "FORM")[0];
+    const formPropsKey = Object.keys(form).find((key) => key.startsWith("__reactProps$"));
+    await act(async () => { await form[formPropsKey].onSubmit({ preventDefault() {} }); });
+    assert.equal(questionCalls, 1);
+    assert.match(container.textContent, /근거 답변/);
+    assert.equal(findElements(container, (node) => node.tagName === "A" && node.getAttribute("href")?.endsWith("#page=2")).length, 1);
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
+test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 Safe error로 만들고 unmount에서 중단한다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-processing-safe-react-"));
+  const dom = installMinimalDom();
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "processing-safe-workspace" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("processing-safe-workspace") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Processing Safe actual JSX bundle entry가 필요하다");
+    const { ActualWorkspace } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?processingSafe=${Date.now()}`);
+    const uploadResult = {
+      source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32), digest_sha256: "b".repeat(64),
+      byte_size: 128, status: "accepted", replayed: false, processing_run_id: "run-1", processing_state: "accepted", job_state: "pending"
+    };
+    const pendingStatus = {
+      processing_run_id: "run-1", source_id: "source-1", source_version_id: "version-1",
+      source_state: "processing", processing_state: "vision_llm_understanding", job_state: "leased", safe_error_code: null
+    };
+    const cases = [
+      { name: "timeout", status: pendingStatus, deadlineMs: 2, expectedCode: "PROCESSING_TIMEOUT", expectedCalls: 2 },
+      { name: "lineage mismatch", status: { ...pendingStatus, source_version_id: "version-other" }, deadlineMs: 4, expectedCode: "PROCESSING_LINEAGE_MISMATCH", expectedCalls: 1 },
+      { name: "malformed", status: { processing_run_id: "run-1", source_id: "source-1", source_version_id: "version-1", source_state: "processing", processing_state: "accepted", job_state: "pending" }, deadlineMs: 4, expectedCode: "PROCESSING_STATUS_INVALID", expectedCalls: 1 }
+    ];
+
+    for (const scenario of cases) {
+      const container = dom.document.createElement("div");
+      dom.document.body.appendChild(container);
+      root = createRoot(container);
+      let statusCalls = 0;
+      let questionCalls = 0;
+      let virtualNow = 0;
+      const adapter = {
+        uploadPdf: async () => uploadResult,
+        getProcessingStatus: async () => { statusCalls += 1; return scenario.status; },
+        askQuestion: async () => { questionCalls += 1; throw new Error("QUESTION_SHOULD_NOT_RUN"); },
+        citationUrl: () => ""
+      };
+      const processingPollOptions = {
+        deadlineMs: scenario.deadlineMs,
+        intervalMs: 1,
+        now: () => virtualNow,
+        wait: async (intervalMs) => { virtualNow += intervalMs; }
+      };
+      await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter, processingPollOptions })); });
+      const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+      fileInput.files = [{ name: `${scenario.name}.pdf`, type: "application/pdf" }];
+      await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
+      assert.equal(statusCalls, scenario.expectedCalls, scenario.name);
+      assert.equal(questionCalls, 0, scenario.name);
+      assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1, scenario.name);
+      assert.match(container.textContent, new RegExp(scenario.expectedCode), scenario.name);
+      const questionInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) !== "file")[0];
+      assert.equal(questionInput.disabled, true, scenario.name);
+      await act(async () => { root.unmount(); });
+      root = null;
+    }
+
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    root = createRoot(container);
+    let statusCalls = 0;
+    let questionCalls = 0;
+    let waitSignal;
+    const adapter = {
+      uploadPdf: async () => uploadResult,
+      getProcessingStatus: async (_runId, { signal } = {}) => { statusCalls += 1; assert.equal(signal?.aborted, false); return pendingStatus; },
+      askQuestion: async () => { questionCalls += 1; throw new Error("QUESTION_SHOULD_NOT_RUN"); },
+      citationUrl: () => ""
+    };
+    const processingPollOptions = {
+      maxAttempts: 4,
+      intervalMs: 1,
+      wait: (_intervalMs, signal) => new Promise((resolve, reject) => {
+        waitSignal = signal;
+        signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+      })
+    };
+    await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter, processingPollOptions })); });
+    const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+    fileInput.files = [{ name: "unmount.pdf", type: "application/pdf" }];
+    await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
+    for (let attempt = 0; attempt < 20 && !waitSignal; attempt += 1) await Promise.resolve();
+    assert.ok(waitSignal, "poll wait가 시작되어야 한다");
+    await act(async () => { root.unmount(); await Promise.resolve(); });
+    root = null;
+    assert.equal(waitSignal?.aborted, true);
+    assert.equal(statusCalls, 1, "unmount 뒤 status network 재호출은 없어야 한다");
+    assert.equal(questionCalls, 0);
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
+test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 150초 Deadline 안에서 Safe timeout한다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-processing-sla-react-"));
+  const dom = installMinimalDom();
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "processing-sla-workspace" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("processing-sla-workspace") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Processing SLA actual JSX bundle entry가 필요하다");
+    const { ActualWorkspace } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?processingSla=${Date.now()}`);
+    const uploadResult = {
+      source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32), digest_sha256: "b".repeat(64),
+      byte_size: 128, status: "accepted", replayed: false, processing_run_id: "run-1", processing_state: "queued", job_state: "queued"
+    };
+    const terminalStatus = {
+      processing_run_id: "run-1", source_id: "source-1", source_version_id: "version-1",
+      source_state: "ready", processing_state: "completed", job_state: "completed", safe_error_code: null
+    };
+
+    const successContainer = dom.document.createElement("div");
+    dom.document.body.appendChild(successContainer);
+    root = createRoot(successContainer);
+    let virtualNow = 0;
+    let statusCalls = 0;
+    const waitSignals = [];
+    const successAdapter = {
+      uploadPdf: async () => uploadResult,
+      getProcessingStatus: async () => {
+        statusCalls += 1;
+        return statusCalls >= 14
+          ? terminalStatus
+          : { ...terminalStatus, source_state: "processing", processing_state: "vision_llm_understanding", job_state: "leased" };
+      },
+      askQuestion: async () => { throw new Error("QUESTION_SHOULD_NOT_RUN"); },
+      citationUrl: () => ""
+    };
+    await act(async () => {
+      root.render(createElement(ActualWorkspace, {
+        workspaceId: "workspace-1",
+        adapter: successAdapter,
+        processingPollOptions: {
+          deadlineMs: 150_000,
+          intervalMs: 1_000,
+          statusRequestTimeoutMs: 10_000,
+          now: () => virtualNow,
+          wait: async (intervalMs, signal) => { waitSignals.push(signal); virtualNow += intervalMs; }
+        }
+      }));
+    });
+    const successInput = findElements(successContainer, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+    successInput.files = [{ name: "slow-success.pdf", type: "application/pdf" }];
+    await act(async () => { successInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
+    assert.equal(statusCalls, 14, "12초를 넘겨 완료된 실제 처리도 150초 Deadline 안이면 성공해야 한다");
+    assert.equal(virtualNow, 13_000);
+    assert.ok(waitSignals.length === 13 && waitSignals.every((signal) => signal === waitSignals[0] && !signal.aborted));
+    assert.equal(findElements(successContainer, (node) => node.getAttribute("data-product-workspace-state") === "ready").length, 1);
+    await act(async () => { root.unmount(); });
+    root = null;
+
+    const timeoutContainer = dom.document.createElement("div");
+    dom.document.body.appendChild(timeoutContainer);
+    root = createRoot(timeoutContainer);
+    let timeoutStatusCalls = 0;
+    const statusSignals = [];
+    const hangingAdapter = {
+      uploadPdf: async () => uploadResult,
+      getProcessingStatus: async (_runId, { signal } = {}) => {
+        timeoutStatusCalls += 1;
+        statusSignals.push(signal);
+        return new Promise(() => {});
+      },
+      askQuestion: async () => { throw new Error("QUESTION_SHOULD_NOT_RUN"); },
+      citationUrl: () => ""
+    };
+    await act(async () => {
+      root.render(createElement(ActualWorkspace, {
+        workspaceId: "workspace-1",
+        adapter: hangingAdapter,
+        processingPollOptions: { deadlineMs: 80, intervalMs: 1, statusRequestTimeoutMs: 5 }
+      }));
+    });
+    const timeoutInput = findElements(timeoutContainer, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+    timeoutInput.files = [{ name: "hang.pdf", type: "application/pdf" }];
+    await act(async () => {
+      timeoutInput.dispatchEvent(new MinimalEvent("change"));
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    });
+    assert.ok(timeoutStatusCalls >= 2, "개별 status 10초 제한 뒤 전체 Deadline 전이면 재시도해야 한다");
+    assert.ok(statusSignals.every((signal) => signal?.aborted), "각 status fetch의 request-local signal은 제한 시 중단되어야 한다");
+    assert.equal(findElements(timeoutContainer, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1);
+    assert.match(timeoutContainer.textContent, /PROCESSING_TIMEOUT/);
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
+test("Web Upload lifecycle은 새 Upload와 unmount에서 이전 operation을 abort하고 이전 결과를 반영하지 않는다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-upload-lifecycle-react-"));
+  const dom = installMinimalDom();
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "upload-lifecycle-workspace" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("upload-lifecycle-workspace") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Upload lifecycle actual JSX bundle entry가 필요하다");
+    const { ActualWorkspace } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?uploadLifecycle=${Date.now()}`);
+    const terminalStatus = (runId, sourceId) => ({
+      processing_run_id: runId, source_id: sourceId, source_version_id: `${sourceId}-version`,
+      source_state: "ready", processing_state: "completed", job_state: "completed", safe_error_code: null
+    });
+    let firstResolve;
+    let firstSignal;
+    const statusRunIds = [];
+    const adapter = {
+      uploadPdf: (file, { signal } = {}) => {
+        if (file.name === "first.pdf") {
+          firstSignal = signal;
+          return new Promise((resolve) => { firstResolve = resolve; });
+        }
+        return Promise.resolve({ source_id: "source-2", source_version_id: "source-2-version", processing_run_id: "run-2" });
+      },
+      getProcessingStatus: async (runId) => { statusRunIds.push(runId); return terminalStatus(runId, "source-2"); },
+      askQuestion: async () => { throw new Error("QUESTION_SHOULD_NOT_RUN"); },
+      citationUrl: () => ""
+    };
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter })); });
+    const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+    fileInput.files = [{ name: "first.pdf", type: "application/pdf" }];
+    await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
+    assert.ok(firstSignal && !firstSignal.aborted, "첫 Upload가 operation signal을 받아야 한다");
+    fileInput.files = [{ name: "second.pdf", type: "application/pdf" }];
+    await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
+    assert.equal(firstSignal.aborted, true, "새 Upload는 이전 Upload fetch를 중단해야 한다");
+    firstResolve({ source_id: "source-1", source_version_id: "source-1-version", processing_run_id: "run-1" });
+    await act(async () => { await Promise.resolve(); });
+    assert.deepEqual(statusRunIds, ["run-2"], "중단된 첫 Upload 결과는 status/state에 반영되지 않아야 한다");
+    assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "ready").length, 1);
+    await act(async () => { root.unmount(); });
+    root = null;
+
+    let unmountResolve;
+    let unmountSignal;
+    let unmountStatusCalls = 0;
+    const unmountAdapter = {
+      uploadPdf: (_file, { signal } = {}) => {
+        unmountSignal = signal;
+        return new Promise((resolve) => { unmountResolve = resolve; });
+      },
+      getProcessingStatus: async () => { unmountStatusCalls += 1; return terminalStatus("run-unmount", "source-unmount"); },
+      askQuestion: async () => { throw new Error("QUESTION_SHOULD_NOT_RUN"); },
+      citationUrl: () => ""
+    };
+    const unmountContainer = dom.document.createElement("div");
+    dom.document.body.appendChild(unmountContainer);
+    root = createRoot(unmountContainer);
+    await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter: unmountAdapter })); });
+    const unmountInput = findElements(unmountContainer, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+    unmountInput.files = [{ name: "unmount-upload.pdf", type: "application/pdf" }];
+    await act(async () => { unmountInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
+    await act(async () => { root.unmount(); await Promise.resolve(); });
+    root = null;
+    assert.equal(unmountSignal?.aborted, true, "unmount는 진행 중 Upload fetch를 중단해야 한다");
+    unmountResolve({ source_id: "source-unmount", source_version_id: "source-unmount-version", processing_run_id: "run-unmount" });
+    await act(async () => { await Promise.resolve(); });
+    assert.equal(unmountStatusCalls, 0, "unmount 뒤 Upload 결과는 status/state에 반영되지 않아야 한다");
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
+test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation을 crash 없이 거부한다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-question-react-"));
+  const dom = installMinimalDom();
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "question-workspace" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("question-workspace") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Question actual JSX bundle entry가 필요하다");
+    const { ActualWorkspace } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?question=${Date.now()}`);
+    const uploadResult = {
+      source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32), digest_sha256: "b".repeat(64),
+      byte_size: 128, status: "accepted", replayed: false, processing_run_id: "run-1", processing_state: "queued", job_state: "queued"
+    };
+    const processingStatus = {
+      processing_run_id: "run-1", source_id: "source-1", source_version_id: "version-1",
+      source_state: "ready", processing_state: "completed", job_state: "completed", safe_error_code: null
+    };
+    const validCitation = {
+      citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2
+    };
+    const validAnswer = {
+      run_id: "answer-run-1", run_result_id: "answer-result-1", answer: "근거 답변", insufficient: false, citations: [validCitation]
+    };
+    const cases = [
+      { name: "normal", answer: validAnswer, url: "/bff/api/workspaces/workspace-1/citations/citation-1/content#page=2", expected: "ready" },
+      { name: "citations object", answer: { ...validAnswer, citations: { citation: validCitation } }, url: "", expected: "error" },
+      { name: "invalid id", answer: { ...validAnswer, citations: [{ ...validCitation, citation_id: "bad/id" }] }, url: "", expected: "error" },
+      { name: "invalid id type", answer: { ...validAnswer, citations: [{ ...validCitation, citation_id: 7 }] }, url: "/bff/api/workspaces/workspace-1/citations/7/content#page=2", expected: "error" },
+      { name: "invalid page", answer: { ...validAnswer, citations: [{ ...validCitation, page: 0 }] }, url: "", expected: "error" },
+      { name: "unknown field", answer: { ...validAnswer, unexpected: true }, url: "", expected: "error" },
+      { name: "invalid citationUrl", answer: validAnswer, url: "https://internal.invalid/citation", expected: "error" }
+    ];
+
+    for (const scenario of cases) {
+      const container = dom.document.createElement("div");
+      dom.document.body.appendChild(container);
+      root = createRoot(container);
+      const adapter = {
+        uploadPdf: async () => uploadResult,
+        getProcessingStatus: async () => processingStatus,
+        askQuestion: async () => scenario.answer,
+        citationUrl: () => scenario.url
+      };
+      await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter })); });
+      const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+      fileInput.files = [{ name: "ready.pdf", type: "application/pdf" }];
+      await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
+      const questionInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) !== "file")[0];
+      questionInput.value = "근거는?";
+      const questionPropsKey = Object.keys(questionInput).find((key) => key.startsWith("__reactProps$"));
+      assert.ok(questionPropsKey, "실제 React question input props가 필요하다");
+      await act(async () => {
+        questionInput[questionPropsKey].onChange({ currentTarget: questionInput, target: questionInput });
+      });
+      const form = findElements(container, (node) => node.tagName === "FORM")[0];
+      const formPropsKey = Object.keys(form).find((key) => key.startsWith("__reactProps$"));
+      assert.ok(formPropsKey, "실제 React question form props가 필요하다");
+      let renderError = null;
+      try {
+        await act(async () => { await form[formPropsKey].onSubmit({ preventDefault() {} }); });
+      } catch (error) {
+        renderError = error;
+      }
+      assert.equal(renderError, null, `${scenario.name}는 render crash 없이 Safe state로 전환해야 한다`);
+      assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === scenario.expected).length, 1, scenario.name);
+      if (scenario.expected === "error") assert.match(container.textContent, /QUESTION_RESPONSE_INVALID/, scenario.name);
+      else {
+        assert.match(container.textContent, /근거 답변/);
+        assert.equal(findElements(container, (node) => node.tagName === "A" && node.getAttribute("href") === scenario.url).length, 1);
+      }
+      await act(async () => { root.unmount(); });
+      root = null;
+    }
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
+test("Web Login actual React는 same-origin 성공 응답의 Workspace로 이동한다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-web-login-react-"));
+  const dom = installMinimalDom();
+  const priorFetch = globalThis.fetch;
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    const redirects = [];
+    const calls = [];
+    dom.window.location.assign = (target) => { redirects.push(target); };
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init });
+      return Response.json({ data: { workspace_id: "workspace-login-1" } });
+    };
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/web/lib/auth-pane.jsx"), formats: ["es"], fileName: "auth-pane" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("auth-pane") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Web AuthPane actual JSX bundle entry가 필요하다");
+    const { AuthPane } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?stageA=${Date.now()}`);
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root.render(createElement(AuthPane)); });
+    const inputs = findElements(container, (node) => node.tagName === "INPUT");
+    const password = inputs.find((node) => (node.getAttribute("type") ?? node.type) === "password");
+    const loginId = inputs[0];
+    loginId.value = "user-login-1";
+    password.value = "password-value";
+    await act(async () => {
+      loginId.dispatchEvent(new MinimalEvent("input"));
+      password.dispatchEvent(new MinimalEvent("input"));
+      buttonByText(container, "로그인").dispatchEvent(new MinimalEvent("click"));
+      await Promise.resolve();
+    });
+    assert.equal(calls[0].url, "/bff/api/auth/login");
+    assert.deepEqual(redirects, ["/workspaces/workspace-login-1"]);
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    globalThis.fetch = priorFetch;
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
+test("native navigation은 기본 사용자 메뉴만 노출하고 권한 없는 직접 Route를 거부한다", async () => {
+  const { createWindowsNavigation, selectNativeRoute } = await import("../../apps/desktop/src/desktop-shell-model.js");
   const navigation = JSON.parse(await read("packages/contracts/navigation.json"));
   const routes = createWindowsNavigation(navigation.routes);
   assert.ok(routes.length > 0);
   assert.ok(routes.every((route) => route.clients.includes("windows")));
   assert.ok(routes.every((route) => route.key === route.native_route_key));
-  assert.deepEqual(
-    ["Home", "WorkspaceDetail", "AccountSettings", "OrganizationSettings", "Operations", "Notifications"].filter((key) => routes.some((route) => route.key === key)),
-    ["Home", "WorkspaceDetail", "AccountSettings", "OrganizationSettings", "Operations", "Notifications"]
-  );
+  assert.deepEqual(routes.map((route) => route.key), ["WorkspaceDetail", "Notifications", "AccountSettings"]);
+  assert.equal(selectNativeRoute("WorkspaceDetail", "OrganizationSettings", routes), "WorkspaceDetail");
+  assert.equal(selectNativeRoute("WorkspaceDetail", "Operations", routes), "WorkspaceDetail");
+  const authorizedRoutes = createWindowsNavigation(navigation.routes, { organization: true, operations: true });
+  assert.deepEqual(authorizedRoutes.map((route) => route.key), ["WorkspaceDetail", "Notifications", "AccountSettings", "OrganizationSettings", "Operations"]);
   assert.ok(routes.every((route) => !("capabilities" in route)));
 });
 
@@ -517,8 +1207,16 @@ test("non-installer Cargo can override only the generated bundle input contract"
   });
   assert.equal(result.exitCode, 0);
   assert.equal(observedEnvironment.TAURI_CONFIG, tauriConfig);
-  assert.match(wrapperSource, /isInstaller\s*\?\s*\{\}\s*:\s*\{\s*TAURI_CONFIG/u);
   assert.match(wrapperSource, /externalBin:\s*\[\]/u);
+});
+
+test("installer Tauri 환경은 Frontend Build 직후 Product UI Bundle Gate를 실행한다", async () => {
+  const wrapper = await import(`../run-isolated-desktop-cargo.mjs?t=${Date.now()}`);
+  assert.equal(typeof wrapper.createDesktopCargoEnvironment, "function");
+  const environment = wrapper.createDesktopCargoEnvironment("installer");
+  const config = JSON.parse(environment.TAURI_CONFIG);
+  assert.equal(config.build.beforeBuildCommand, "npm run build && node ../../scripts/verify-product-ui-boundary.mjs --target desktop");
+  assert.deepEqual(wrapper.createDesktopCargoEnvironment("check"), { TAURI_CONFIG: JSON.stringify({ bundle: { externalBin: [] } }) });
 });
 
 test("isolated cargo wrapper removes only gen created by its child and preserves pre-existing sentinels", async () => {

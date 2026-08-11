@@ -12,6 +12,9 @@
     "packages/*"
   ],
   "scripts": {
+    "dev:evidence-hub": "npm run dev --workspace @daon-user/evidence-hub -- --host 127.0.0.1",
+    "verify:evidence-hub": "node --test scripts/tests/evidence-hub-boundary.test.mjs scripts/tests/platform-prototype-evidence.test.mjs",
+    "verify:product-ui-boundary": "node scripts/verify-product-ui-boundary.mjs",
     "verify:toolchain": "node scripts/verify-toolchain-baseline.mjs",
     "verify:independence": "node scripts/verify-repository-independence.mjs",
     "verify:product-foundation": "node --test scripts/tests/product-foundation.test.mjs",

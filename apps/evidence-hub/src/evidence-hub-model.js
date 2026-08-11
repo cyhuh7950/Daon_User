@@ -1,3 +1,4 @@
+// 로컬 Evidence Hub의 기존 M2 계약을 내용 보존해 소유한다.
 const CLIENTS = [
   { client_type: "web", label: "Web", proof: "실제 Next Production Build·Chrome Prototype", m3_owners: ["R1-M3-01"], native_runtime_executed: false, dom_ui_imported: true, ipc_or_local_service_verified: false },
   { client_type: "windows", label: "Windows", proof: "공용 React UI·Route·State·Adapter 계약 Projection", m3_owners: ["R1-M3-02", "R1-M3-03"], native_runtime_executed: false, dom_ui_imported: true, ipc_or_local_service_verified: false },

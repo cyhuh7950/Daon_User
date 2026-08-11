@@ -58,6 +58,7 @@
 - Modify: `apps/web/components/actual-workspace.jsx`
 - Modify: `apps/web/package.json`
 - Modify: `apps/web/lib/question-answering-api.js`
+- Modify: `apps/web/lib/source-upload-api.js` only for approved operation `AbortSignal` propagation
 - Modify: `apps/web/app/operations/recovery-workspace.jsx` only for approved Stage A Safe unavailable surface
 - Modify: `apps/web/components/notification-inbox-workspace.jsx` only for explicit product subpath import
 - Modify: `apps/desktop/src/desktop-shell.jsx`
@@ -104,7 +105,11 @@ git diff --check
 - Web `.next/static`, `.next/server/app` 사용자 Page tree, `.next/server/chunks`, Desktop `dist`의 필수 Root·대표 Asset 부재는 fail-close한다. Symlink와 부분 Build도 PASS 처리하지 않는다. Server-only 예외는 어울1이 승인한 exact BFF 두 Source와 대응 BFF route 산출물만 허용한다.
 - Product Entry에서 실제 Import graph를 재귀 추적해 모든 공용 UI 전이 Source를 검사한다. Next/Vite Manifest가 참조하는 Route·Chunk·CSS가 하나라도 없으면 부분 Build로 fail-close한다.
 - 기존 Web PDF Upload·Processing Status·Question·Citation 실제 연결은 Product Workspace에서 보존하고 실행 기반 회귀로 검증한다. 해당 호출을 제거하거나 제거 상태를 정답으로 고정하지 않는다.
-- `source_state=ready`, `processing_state=ready`, `job_state=completed`가 모두 확인되기 전에는 Source를 질문 가능 상태로 승격하지 않는다. `leased|queued|processing`은 loading을 유지한다.
+- 실제 Runtime 정본인 `source_state=ready`, `processing_state=completed`, `job_state=completed`가 모두 확인되기 전에는 Source를 질문 가능 상태로 승격하지 않는다. `leased|queued|processing`은 loading을 유지한다.
+- PDF Upload 시작부터 처리 완료까지 monotonic 전체 Deadline은 150초, Poll 간격은 1초, 개별 Status 요청 제한은 10초로 고정한다. 횟수 제한으로 150초보다 일찍 정상 처리를 실패시키지 않는다.
+- 한 Upload operation의 `AbortSignal`을 Upload fetch, 각 Status request-local signal의 상위 수명, Poll wait에 전달한다. 개별 Status 제한은 해당 요청만 중단하고 전체 Deadline 전이면 재시도한다. 전체 Deadline은 `PROCESSING_TIMEOUT` Safe 상태로 종료한다.
+- 새 Upload 또는 Unmount는 이전 operation을 즉시 중단한다. 중단된 Upload·Status·Wait의 완료·실패 결과는 State에 0건 반영하고 후속 Network를 시작하지 않는다.
+- 실제 React와 fetch 경계에서 12초 초과 정상 완료, 영구대기 Status 전체 Deadline, 새 Upload·Unmount 중단, `queued→leased→processing→completed`와 lineage·malformed 회귀, Upload·Status fetch Signal 전달을 검증한다.
 - Question 응답의 outer/data와 Citation 배열·각 Citation ID·Source/Version·EvidenceSpan·page를 exact 검증하고 이상 응답은 `QUESTION_RESPONSE_INVALID` Safe 상태로 전환한다. render 중 throw를 금지한다.
 - 승인된 Operations 사용자가 권한 재조회 중 Workspace로 되돌아가지 않고 Operations에 남는지 실제 React Harness로 검증한다.
 - `npm run verify:workspace`는 마지막에 실행하되 보존된 사용자 삭제 Web 설정 Route 파생 실패를 이번 변경 실패와 분리한다.
