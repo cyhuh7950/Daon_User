@@ -104,4 +104,3 @@ git diff --check
 - 완료 보고: `docs/04_test_reports/release_1/R1-USER-PRODUCT-SEPARATION-01_completion_report.md`.
 - 결과는 `status | issue_id | 수행한 작업 | 생성·변경한 결과 | 테스트 결과 | 미해결 사항 | 다음으로 필요한 판단` 형식으로 반환한다.
 - Commit·Push·배포·Browser·Installer는 어울1 소유이므로 수행하지 않는다.
-
