@@ -16,6 +16,7 @@
 ## 3. 허용 파일
 
 - `apps/desktop/src-tauri/src/workspace_bridge.rs`
+- `apps/desktop/src-tauri/src/native_session.rs`
 - `apps/desktop/src-tauri/src/lib.rs`
 - `apps/desktop/src-tauri/tests/workspace_bridge_contract.rs`
 - `apps/desktop/src/windows-workspace-adapter.js`
@@ -45,6 +46,8 @@ WebView 입력은 각 Command 전용 `deny_unknown_fields` DTO만 허용하고 `
 ### 4.2 Native 보안 경계
 
 - Access는 Native Vault에서 Rust 내부로만 읽고 응답·Debug·Error·Event에 포함하지 않는다.
+- `native_session.rs`에는 crate-private 고정 Workspace operation enum과 전용 authenticated executor만 추가한다. Credential getter, raw Access 반환, 임의 URL·Method·Path 또는 범용 credential callback은 금지한다.
+- `workspace_bridge.rs`는 검증된 전용 DTO를 operation enum으로 전달하고 Safe response만 받는다. Access와 Authorization Header 소유·삭제는 `native_session.rs` 내부에서 끝난다.
 - 고정 HTTPS Gateway와 고정 Path/Method만 사용한다.
 - 기존 Native Session의 redirect none, connect/total timeout, 응답 128KiB 상한, Content-Type·status·exact DTO, Secret owner/zeroize 경계를 재사용한다.
 - Session 없음·Workspace mismatch·입력 오류는 network 0으로 fail-close한다.
