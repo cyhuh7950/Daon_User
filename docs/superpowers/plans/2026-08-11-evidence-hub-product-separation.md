@@ -99,9 +99,11 @@ Commit files: `AGENTS.md`, 복원된 4경로, 작업지시서, 프롬프트, pro
 - Create: `apps/evidence-hub/src/evidence-hub-model.js`
 - Create: `apps/evidence-hub/src/evidence-hub.css`
 - Modify: `packages/ui/src/index.js`
+- Modify: `packages/ui/src/workspace.css`
 - Delete after content-preserving move: `packages/ui/src/production-bound-evidence-pane.jsx`
 - Delete after content-preserving move: `packages/ui/src/production-bound-evidence-model.js`
 - Modify: `package.json`
+- Modify: `apps/web/package.json`
 - Create: `scripts/tests/evidence-hub-boundary.test.mjs`
 - Modify: `scripts/tests/platform-prototype-evidence.test.mjs`
 
@@ -202,7 +204,7 @@ const forbidden = [
 ];
 ```
 
-Test는 Source roots와 `apps/web/.next`, `apps/desktop/dist`의 텍스트 Asset을 검사하고, Evidence 앱 자체는 제외한다.
+Test는 제품에 도달 가능한 공용 UI Source와 `apps/web/.next`, `apps/desktop/dist`의 텍스트 Asset을 검사하고, Evidence 앱 자체는 제외한다. 필수 Bundle Root·대표 Asset 부재, Symlink 또는 부분 Build는 PASS가 아니라 fail-close다.
 
 - [ ] **Step 2: 현재 제품 Source에서 RED를 확인한다**
 
@@ -218,7 +220,7 @@ Root script:
 "verify:product-ui-boundary": "node scripts/verify-product-ui-boundary.mjs"
 ```
 
-Desktop installer wrapper는 Frontend Build 직후, NSIS 실행 전에 Desktop `dist`를 검사한다. Web은 Production Build 직후 `.next/static`과 Server App chunk를 검사한다.
+Desktop installer wrapper는 Frontend Build 직후, NSIS 실행 전에 Desktop `dist`를 검사한다. Web `build` Script는 Next Production Build 직후 `.next/static`, `.next/server/app` 사용자 Page tree와 `.next/server/chunks`를 검사한다. Server-only exact 예외는 `apps/web/app/bff/shell/runtime/route.js`, `apps/web/lib/web-shell-runtime.js` 및 대응 BFF `route.js`·`.map`·`.nft.json`만 허용한다.
 
 - [ ] **Step 4: 검증기 자체 테스트를 통과시킨다**
 
@@ -284,7 +286,7 @@ Shell은 3면 Layout만 소유하고 Fixture ID·Prototype Action·가짜 성공
 
 - [ ] **Step 4: Web Home을 인증 전용 화면으로 바꾼다**
 
-`apps/web/app/page.jsx`는 `AuthPane`만 렌더링한다. 로그인 성공은 기존 `workspace_id`로 `/workspaces/{id}` 이동하고, Workspace가 없으면 `WORKSPACE_REQUIRED` Safe 상태를 표시한다.
+`apps/web/app/page.jsx`는 `AuthPane`만 렌더링한다. 로그인 성공은 기존 `workspace_id`로 `/workspaces/{id}` 이동하고, Workspace가 없으면 `WORKSPACE_REQUIRED` Safe 상태를 표시한다. 기존 `ActualWorkspace`의 PDF Upload·Processing Status·Question·Citation 실제 연결은 Fixture 없는 Product Adapter로 보존하며 Stage A에서 제거하지 않는다.
 
 - [ ] **Step 5: Windows Login을 독립 화면으로 바꾼다**
 
@@ -292,7 +294,7 @@ Shell은 3면 Layout만 소유하고 Fixture ID·Prototype Action·가짜 성공
 
 - [ ] **Step 6: 권한 없는 메뉴를 DOM과 Handler 양쪽에서 차단한다**
 
-기본 Navigation은 Workspace, Notifications, Account다. Organization·Operations는 승인된 Projection이 있을 때만 목록에 포함하고, 직접 Route 요청도 `selectNativeRoute`에서 거부한다.
+기본 Navigation은 Workspace, Notifications, Account다. Organization·Operations는 승인된 Projection이 있을 때만 목록에 포함하고, 직접 Route 요청도 `selectNativeRoute`에서 거부한다. Operations 권한 재조회 중에는 기존 검증 Projection을 유지하거나 갱신 결과를 원자 적용하여 승인 사용자의 현재 Route가 Workspace로 되돌아가지 않게 한다.
 
 - [ ] **Step 7: GREEN과 Product Source Gate를 검증한다**
 

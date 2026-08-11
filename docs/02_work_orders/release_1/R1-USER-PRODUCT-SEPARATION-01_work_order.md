@@ -46,6 +46,7 @@
 - Restore exact 4 paths: §3.1의 Web 파일
 - Create: `apps/evidence-hub/**`
 - Modify: `packages/ui/src/index.js`
+- Modify: `packages/ui/src/workspace.css` only to remove Evidence-only selectors from product CSS
 - Move/Delete after content preservation: `packages/ui/src/production-bound-evidence-pane.jsx`
 - Move/Delete after content preservation: `packages/ui/src/production-bound-evidence-model.js`
 - Create: `packages/ui/src/product-workspace-shell.jsx`
@@ -54,6 +55,7 @@
 - Modify: `apps/web/app/layout.jsx`
 - Modify: `apps/web/lib/auth-pane.jsx`
 - Modify: `apps/web/components/actual-workspace.jsx`
+- Modify: `apps/web/package.json`
 - Modify: `apps/desktop/src/desktop-shell.jsx`
 - Modify: `apps/desktop/src/desktop-shell-model.js`
 - Modify: `apps/desktop/src/desktop-shell.css`
@@ -65,6 +67,7 @@
 - Modify: `scripts/run-isolated-desktop-cargo.mjs`
 - Create: `scripts/verify-product-ui-boundary.mjs`
 - Create/Modify: `scripts/tests/evidence-hub-boundary.test.mjs`, `scripts/tests/product-ui-boundary.test.mjs`, `scripts/tests/platform-prototype-evidence.test.mjs`, `scripts/tests/workspace.test.mjs`, `scripts/tests/desktop-tauri-shell.test.mjs`, `scripts/tests/windows-recovery-adapter.test.mjs`
+- Modify when required for existing actual-path regression: `scripts/tests/source-upload-api.test.mjs`, `scripts/tests/question-answering-api.test.mjs`
 - Append/Create: `docs/04_test_reports/release_1/R1-USER-PRODUCT-SEPARATION-01_progress.md`
 - Create: `docs/04_test_reports/release_1/R1-USER-PRODUCT-SEPARATION-01_completion_report.md`
 
@@ -94,6 +97,9 @@ git diff --check
 
 - 실제 React Harness에서 Windows 비인증 Login-only, 인증 후 Workspace 기본 Route, 권한 없는 메뉴·Handler 0회를 검증한다. Regex만으로 완료하지 않는다.
 - Product Source와 Build Bundle을 모두 Scan한다. Evidence 앱 내부의 금지 Token은 허용하지만 제품 Import Graph에 포함되면 실패해야 한다.
+- Web `.next/static`, `.next/server/app` 사용자 Page tree, `.next/server/chunks`, Desktop `dist`의 필수 Root·대표 Asset 부재는 fail-close한다. Symlink와 부분 Build도 PASS 처리하지 않는다. Server-only 예외는 어울1이 승인한 exact BFF 두 Source와 대응 BFF route 산출물만 허용한다.
+- 기존 Web PDF Upload·Processing Status·Question·Citation 실제 연결은 Product Workspace에서 보존하고 실행 기반 회귀로 검증한다. 해당 호출을 제거하거나 제거 상태를 정답으로 고정하지 않는다.
+- 승인된 Operations 사용자가 권한 재조회 중 Workspace로 되돌아가지 않고 Operations에 남는지 실제 React Harness로 검증한다.
 - `npm run verify:workspace`는 마지막에 실행하되 보존된 사용자 삭제 Web 설정 Route 파생 실패를 이번 변경 실패와 분리한다.
 - Build·자동 테스트는 실제 Web Production Chrome·Windows NSIS 사용자 여정 PASS를 대신하지 않는다.
 
