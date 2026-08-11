@@ -3,6 +3,7 @@ pub mod native_session;
 pub mod recovery_bridge;
 #[cfg(windows)]
 pub mod windows_credential;
+pub mod workspace_bridge;
 
 use local_service::{LocalServiceManager, LocalServiceState};
 use native_session::{
@@ -16,6 +17,11 @@ use recovery_bridge::{
     recovery_local_repair_job, recovery_local_start_scan,
 };
 use tauri::Manager;
+use workspace_bridge::{
+    workspace_ask_question, workspace_citation_content, workspace_create_report,
+    workspace_list_sources, workspace_list_studio_outputs, workspace_processing_status,
+    workspace_upload_pdf,
+};
 
 #[tauri::command]
 fn local_service_status(manager: tauri::State<'_, LocalServiceManager>) -> LocalServiceState {
@@ -84,7 +90,14 @@ pub fn run() {
             recovery_cloud_cancel_restore,
             recovery_local_start_scan,
             recovery_local_get_job,
-            recovery_local_repair_job
+            recovery_local_repair_job,
+            workspace_list_sources,
+            workspace_upload_pdf,
+            workspace_processing_status,
+            workspace_ask_question,
+            workspace_citation_content,
+            workspace_create_report,
+            workspace_list_studio_outputs
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {

@@ -12,6 +12,7 @@ import {
 } from "./local-service-bridge.js";
 import { createNativeSessionBridge } from "./native-session-bridge.js";
 import { NativeAuthPanel } from "./native-auth-panel.jsx";
+import { createWindowsWorkspaceAdapter } from "./windows-workspace-adapter.js";
 
 const LABELS = {
   WorkspaceDetail: "Workspace",
@@ -21,9 +22,9 @@ const LABELS = {
   Notifications: "Notifications"
 };
 
-function RouteSurface({ routeKey, workspaceId }) {
+function RouteSurface({ routeKey, workspaceId, workspaceAdapter, sessionKey }) {
   if (routeKey === "WorkspaceDetail") {
-    return <ProductWorkspaceShell workspaceId={workspaceId} state={createProductWorkspaceState({ status: "unavailable", safeError: "WORKSPACE_ADAPTER_UNAVAILABLE" })} />;
+    return <ProductWorkspaceShell key={sessionKey} workspaceId={workspaceId} adapter={workspaceAdapter} state={createProductWorkspaceState({ status: workspaceAdapter ? "loading" : "unavailable", safeError: workspaceAdapter ? null : "WORKSPACE_ADAPTER_UNAVAILABLE" })} />;
   }
   return <section className="desktop-safe-surface" role="status"><h2>{LABELS[routeKey]}</h2><p>실제 사용자 기능 연결 전에는 성공 데이터를 표시하지 않습니다.</p></section>;
 }
@@ -89,6 +90,12 @@ export function DesktopShell({ nativeInvoke, sessionWatchOptions } = {}) {
   const sessionTreeKey = nativeSession.authenticated
     ? `${nativeSession.sessionId}:${nativeSession.authorizationRevision}`
     : `unauthenticated:${nativeSession.authorizationRevision}`;
+  const workspaceAdapter = useMemo(
+    () => nativeSession.authenticated
+      ? createWindowsWorkspaceAdapter(nativeSession.workspaceId, { invoke: nativeInvoke })
+      : null,
+    [nativeInvoke, nativeSession.authenticated, nativeSession.sessionId, nativeSession.workspaceId]
+  );
 
   const retry = async () => {
     setLocalService({ state: "retrying", retryable: false, error_code: null });
@@ -140,7 +147,7 @@ export function DesktopShell({ nativeInvoke, sessionWatchOptions } = {}) {
       <div className="desktop-content">
         {routes.map((route) => (
             <section key={route.key} hidden={route.key !== activeKey} aria-label={LABELS[route.key]}>
-              <RouteSurface routeKey={route.key} workspaceId={nativeSession.workspaceId} />
+              <RouteSurface routeKey={route.key} workspaceId={nativeSession.workspaceId} workspaceAdapter={workspaceAdapter} sessionKey={nativeSession.sessionId} />
             </section>
         ))}
       </div>

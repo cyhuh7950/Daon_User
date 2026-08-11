@@ -152,7 +152,7 @@ function processingDisposition(status, submission) {
     && isSafeDtoId(status.source_version_id)
     && typeof status.processing_state === "string"
     && typeof status.source_state === "string"
-    && typeof status.job_state === "string"
+    && (status.job_state === null || typeof status.job_state === "string")
     && (status.safe_error_code === null || (
       typeof status.safe_error_code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(status.safe_error_code)
     ));
@@ -177,7 +177,7 @@ function processingDisposition(status, submission) {
   if (
     !PENDING_SOURCE_STATES.has(status.source_state)
     || !PENDING_PROCESSING_STATES.has(status.processing_state)
-    || !PENDING_JOB_STATES.has(status.job_state)
+    || (status.job_state !== null && !PENDING_JOB_STATES.has(status.job_state))
   ) throw new Error("PROCESSING_STATUS_INVALID");
   return "pending";
 }
@@ -217,7 +217,7 @@ export function projectSafeQuestionAnswer(answer, workspaceId, citationUrl, sele
   return { ...answer, citations };
 }
 
-export async function submitGroundedReport({ adapter, state, title, purpose, idempotencyKey }) {
+export async function submitGroundedReport({ adapter, state, title, purpose, idempotencyKey, signal }) {
   const reportTitle = typeof title === "string" ? title.trim() : "";
   const reportPurpose = typeof purpose === "string" ? purpose.trim() : "";
   if (
@@ -231,12 +231,12 @@ export async function submitGroundedReport({ adapter, state, title, purpose, ide
     run_result_id: state.answer.run_result_id,
     title: reportTitle,
     purpose: reportPurpose
-  }, { idempotencyKey });
-  return { submitted: true, outputs: await adapter.listStudioOutputs() };
+  }, { idempotencyKey, signal });
+  return { submitted: true, outputs: await adapter.listStudioOutputs({ signal }) };
 }
 
 export async function submitGroundedReportForm(event, {
-  adapter, state, title, purpose, idempotencyRef, uuid = () => crypto.randomUUID(),
+  adapter, state, title, purpose, idempotencyRef, uuid = () => crypto.randomUUID(), signal,
 }) {
   event?.preventDefault();
   const normalized = {
@@ -258,7 +258,40 @@ export async function submitGroundedReportForm(event, {
     throw new Error("STUDIO_INPUT_INVALID");
   }
   if (idempotencyRef) idempotencyRef.current = { fingerprint, key };
-  return submitGroundedReport({ adapter, state, title: normalized.title, purpose: normalized.purpose, idempotencyKey: key });
+  return submitGroundedReport({ adapter, state, title: normalized.title, purpose: normalized.purpose, idempotencyKey: key, signal });
+}
+
+export async function openNativeCitation(event, { adapter, citation, signal, registerObjectUrl, unregisterObjectUrl, openWindow = globalThis.open, objectUrl = globalThis.URL, BlobType = globalThis.Blob, schedule = globalThis.setTimeout }) {
+  if (typeof adapter?.citationContent !== "function") return false;
+  event?.preventDefault();
+  const result = await adapter.citationContent(citation, { signal });
+  if (signal?.aborted) return false;
+  const bytes = result?.bytes;
+  if (
+    !hasExactKeys(result, ["content_type", "page", "bytes"])
+    || result.content_type !== "application/pdf"
+    || result.page !== citation?.page
+    || !Array.isArray(bytes) || bytes.length < 5 || bytes.length > 25 * 1024 * 1024
+    || bytes.slice(0, 5).some((byte, index) => byte !== [0x25, 0x50, 0x44, 0x46, 0x2d][index])
+    || typeof objectUrl?.createObjectURL !== "function" || typeof objectUrl?.revokeObjectURL !== "function"
+    || typeof BlobType !== "function" || typeof openWindow !== "function"
+  ) throw new Error("CITATION_RESPONSE_INVALID");
+  const url = objectUrl.createObjectURL(new BlobType([Uint8Array.from(bytes)], { type: "application/pdf" }));
+  registerObjectUrl?.(url);
+  if (signal?.aborted) {
+    objectUrl.revokeObjectURL(url);
+    unregisterObjectUrl?.(url);
+    return false;
+  }
+  try {
+    openWindow(`${url}#page=${result.page}`, "_blank", "noopener,noreferrer");
+  } finally {
+    schedule(() => {
+      objectUrl.revokeObjectURL(url);
+      unregisterObjectUrl?.(url);
+    }, 60_000);
+  }
+  return true;
 }
 
 export function ProductWorkspaceShell({ workspaceId, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null }) {
@@ -270,6 +303,8 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
   const [reportPending, setReportPending] = useState(false);
   const pollControllerRef = useRef(null);
   const reportIdempotencyRef = useRef(null);
+  const lifetimeControllerRef = useRef(null);
+  const citationUrlsRef = useRef(new Set());
 
   useEffect(() => {
     if (!adapter || typeof adapter.listSources !== "function" || !workspaceId) return undefined;
@@ -302,8 +337,16 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
     return () => controller.abort();
   }, [adapter, workspaceId]);
 
-  useEffect(() => () => {
-    pollControllerRef.current?.abort();
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetimeControllerRef.current = controller;
+    return () => {
+      pollControllerRef.current?.abort();
+      controller.abort();
+      if (lifetimeControllerRef.current === controller) lifetimeControllerRef.current = null;
+      for (const url of citationUrlsRef.current) globalThis.URL?.revokeObjectURL?.(url);
+      citationUrlsRef.current.clear();
+    };
   }, []);
 
   const uploadPdf = async (event) => {
@@ -396,7 +439,10 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
     event.preventDefault();
     if (!adapter || !viewState.selectedSource || !question.trim()) return;
     try {
-      const answer = await adapter.askQuestion({ ...viewState.selectedSource, question: question.trim() });
+      const signal = lifetimeControllerRef.current?.signal;
+      if (!signal || signal.aborted) return;
+      const answer = await adapter.askQuestion({ ...viewState.selectedSource, question: question.trim() }, { signal });
+      if (signal.aborted) return;
       const safeAnswer = projectSafeQuestionAnswer(answer, workspaceId, adapter.citationUrl, viewState.selectedSource);
       setViewState((current) => ({ ...current, answer: safeAnswer }));
       reportIdempotencyRef.current = null;
@@ -423,7 +469,7 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
     try {
       const result = await submitGroundedReportForm(event, {
         adapter, state: viewState, title: reportTitle, purpose: reportPurpose,
-        idempotencyRef: reportIdempotencyRef,
+        idempotencyRef: reportIdempotencyRef, signal: lifetimeControllerRef.current?.signal,
       });
       if (result.submitted) setViewState((current) => ({ ...current, studioOutputs: result.outputs }));
     } catch (error) {
@@ -465,7 +511,17 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
           </form>
           {viewState.answer ? <p>{viewState.answer.answer}</p> : null}
           {viewState.answer?.citations?.map((citation) => (
-            <a key={citation.citation_id} href={citation.content_url}>Citation page {citation.page}</a>
+            <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
+              void openNativeCitation(event, {
+                adapter,
+                citation,
+                signal: lifetimeControllerRef.current?.signal,
+                registerObjectUrl: (url) => citationUrlsRef.current.add(url),
+                unregisterObjectUrl: (url) => citationUrlsRef.current.delete(url)
+              }).catch((error) => {
+                setViewState((current) => ({ ...current, status: "error", safeError: safeErrorCode(error, "CITATION_RESPONSE_INVALID") }));
+              });
+            }}>Citation page {citation.page}</a>
           ))}
         </SafePane>
         <SafePane id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">
