@@ -249,6 +249,7 @@ Commit message: `test: enforce product evidence boundary`
 - Modify: `packages/ui/src/index.js`
 - Modify: `apps/web/components/actual-workspace.jsx`
 - Modify: `apps/desktop/src/desktop-shell.jsx`
+- Modify: `packages/ui/src/product-workspace-shell.jsx`
 - Modify: `apps/desktop/src/desktop-shell-model.js`
 - Modify: `apps/desktop/src/desktop-shell.css`
 - Modify: `apps/desktop/src/native-auth-panel.jsx`
@@ -516,6 +517,7 @@ Commit message: `feat: connect web grounded studio report`
 - Consumes: Native Credential Vault의 Access, 고정 Gateway, Task 4·5 API 계약.
 - Produces Tauri Commands: `workspace_list_sources`, `workspace_upload_pdf`, `workspace_processing_status`, `workspace_ask_question`, `workspace_citation_content`, `workspace_create_report`, `workspace_list_studio_outputs`.
 - Produces JS: `WindowsWorkspaceAdapter` implementing `ProductWorkspaceAdapter`.
+- Windows Adapter는 기존 7개 필수 Method를 유지하고 선택적 async `citationContent` capability로 Native PDF bytes를 연다. Web의 `citationUrl` same-origin anchor 의미는 변경하지 않는다.
 
 - [ ] **Step 1: 전용 Command Surface RED를 작성한다**
 

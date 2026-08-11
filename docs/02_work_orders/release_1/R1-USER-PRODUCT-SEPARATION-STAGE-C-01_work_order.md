@@ -21,6 +21,7 @@
 - `apps/desktop/src-tauri/tests/workspace_bridge_contract.rs`
 - `apps/desktop/src/windows-workspace-adapter.js`
 - `apps/desktop/src/desktop-shell.jsx`
+- `packages/ui/src/product-workspace-shell.jsx`
 - `scripts/run-isolated-desktop-cargo.mjs`
 - `scripts/tests/windows-workspace-adapter.test.mjs`
 - `scripts/tests/desktop-tauri-shell.test.mjs`
@@ -49,7 +50,8 @@ WebView 입력은 각 Command 전용 `deny_unknown_fields` DTO만 허용하고 `
 - `native_session.rs`에는 crate-private 고정 Workspace operation enum과 전용 authenticated executor만 추가한다. Credential getter, raw Access 반환, 임의 URL·Method·Path 또는 범용 credential callback은 금지한다.
 - `workspace_bridge.rs`는 검증된 전용 DTO를 operation enum으로 전달하고 Safe response만 받는다. Access와 Authorization Header 소유·삭제는 `native_session.rs` 내부에서 끝난다.
 - 고정 HTTPS Gateway와 고정 Path/Method만 사용한다.
-- 기존 Native Session의 redirect none, connect/total timeout, 응답 128KiB 상한, Content-Type·status·exact DTO, Secret owner/zeroize 경계를 재사용한다.
+- 기존 Native Session의 redirect none, connect/total timeout, JSON 응답 128KiB 상한, Content-Type·status·exact DTO, Secret owner/zeroize 경계를 재사용한다.
+- Citation PDF 응답은 JSON 한도와 분리해 `application/pdf`, PDF signature, 최대 25MiB를 엄격 검증하고 그 밖의 bytes는 Safe fail-close한다.
 - Session 없음·Workspace mismatch·입력 오류는 network 0으로 fail-close한다.
 - Upload는 PDF filename·MIME·size·bytes를 엄격 검증하고 허용 상한을 넘기면 network 0이다.
 - Write는 자동 replay하지 않는다. Idempotency Key는 Rust에서 16~128 Safe 값으로 생성·요청 fingerprint에 결속한다.
@@ -57,6 +59,8 @@ WebView 입력은 각 Command 전용 `deny_unknown_fields` DTO만 허용하고 `
 ### 4.3 JS Adapter·Shell
 
 - `WindowsWorkspaceAdapter`는 Stage B `ProductWorkspaceAdapter` 7개 메서드를 구현한다.
+- 기존 7개 필수 메서드와 `citationUrl` 의미는 보존한다. Windows Adapter만 선택적 async `citationContent(citation)` capability를 제공하며 공용 Shell은 이 capability가 있을 때 Citation 클릭의 기본 이동을 중단하고 Native bytes로 `blob:` PDF URL을 열어 page fragment를 적용한다.
+- Web Adapter는 `citationContent`를 구현하지 않으며 기존 same-origin Citation anchor 동작을 그대로 유지한다. Windows Native PDF bytes와 생성한 object URL은 작업 수명 뒤 revoke하고 State·로그·Error에 보존하지 않는다.
 - 하나의 인증 Session 수명에서 Adapter 한 인스턴스만 만들고 `ProductWorkspaceShell`에 주입한다.
 - unauthenticated/logout/session change 시 이전 Adapter 결과를 재노출하지 않는다.
 - WebView Source에는 `fetch`, Gateway, localhost/loopback, Authorization, Credential 문자열이 없어야 한다.
