@@ -5,7 +5,10 @@ pub mod recovery_bridge;
 pub mod windows_credential;
 
 use local_service::{LocalServiceManager, LocalServiceState};
-use native_session::{NativeSessionError, NativeSessionRuntime, NativeSessionStatus};
+use native_session::{
+    NativeRecoveryAuthorizationStatus, NativeSessionError, NativeSessionRuntime,
+    NativeSessionStatus,
+};
 use recovery_bridge::{
     NativeRecoveryRuntime, recovery_cloud_cancel_restore, recovery_cloud_create_backup,
     recovery_cloud_execute_restore, recovery_cloud_get_backup, recovery_cloud_get_restore,
@@ -47,6 +50,13 @@ async fn native_session_status(
     runtime.status().await
 }
 
+#[tauri::command]
+async fn native_recovery_authorization_status(
+    runtime: tauri::State<'_, NativeSessionRuntime>,
+) -> Result<NativeRecoveryAuthorizationStatus, NativeSessionError> {
+    runtime.recovery_authorization_status().await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -64,6 +74,7 @@ pub fn run() {
             native_login,
             native_logout,
             native_session_status,
+            native_recovery_authorization_status,
             recovery_cloud_create_backup,
             recovery_cloud_list_backups,
             recovery_cloud_get_backup,

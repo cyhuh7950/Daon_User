@@ -13,6 +13,10 @@ const RECOVERY_CAPABILITIES = Object.freeze({
   update: "recovery.update.preview"
 });
 const RECOVERY_NOW = "2026-07-22T21:00:00+09:00";
+export const CLOUD_RECOVERY_OPERATIONS = Object.freeze([
+  "cloud_backup_create", "cloud_backup_get", "cloud_backup_list", "cloud_restore_cancel",
+  "cloud_restore_execute", "cloud_restore_get", "cloud_restore_preview"
+]);
 
 export const OPERATIONS_STATES = Object.freeze(["loading", "empty", "ready", "warning", "error", "forbidden", "unavailable"]);
 export const OPERATIONS_RECOVERY_ADAPTERS = Object.freeze({
@@ -22,6 +26,18 @@ export const OPERATIONS_RECOVERY_ADAPTERS = Object.freeze({
   backup: "BackupRestoreAdapter · R1-M5-07/R1-M9-07",
   update: "ReleaseUpdateAdapter · R1-M9-03~06"
 });
+
+export async function invokeAuthorizedCloudRecovery({ recoveryOperations, operation, invoke }) {
+  const exactProjection = Array.isArray(recoveryOperations)
+    && recoveryOperations.length === CLOUD_RECOVERY_OPERATIONS.length
+    && recoveryOperations.every((value, index) => value === CLOUD_RECOVERY_OPERATIONS[index]);
+  if (!exactProjection || !CLOUD_RECOVERY_OPERATIONS.includes(operation) || !recoveryOperations.includes(operation)) {
+    const error = new Error("AUTHENTICATION_REQUIRED");
+    error.code = "AUTHENTICATION_REQUIRED";
+    throw error;
+  }
+  return invoke();
+}
 
 function safe(code, message, retryable = false, userAction = "review_operations") {
   return { code, message, failedStage: "operations_recovery_prototype", impact: "Prototype 변경 0건", retryable, userAction, traceId: "trace-operations-prototype-001" };

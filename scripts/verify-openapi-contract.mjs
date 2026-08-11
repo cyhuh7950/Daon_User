@@ -277,6 +277,15 @@ function validateAuditContract(document) {
 
 function validateIdentityContract(document) {
   const schemas = document.components?.schemas ?? {};
+  const recoveryOperations = [
+    "cloud_backup_create",
+    "cloud_backup_get",
+    "cloud_backup_list",
+    "cloud_restore_cancel",
+    "cloud_restore_execute",
+    "cloud_restore_get",
+    "cloud_restore_preview"
+  ];
   for (const name of [
     "IdentitySession", "NativeLocalLoginRequest", "NativeCredentialSession",
     "OidcLoginStartRequest", "OidcLoginStart",
@@ -294,6 +303,28 @@ function validateIdentityContract(document) {
   }
   if (schemas.NativeRefreshRequest?.properties?.refresh_credential?.writeOnly !== true) {
     fail("Native refresh credential must be writeOnly");
+  }
+  const identitySession = schemas.IdentitySession;
+  if (
+    identitySession?.type !== "object" || identitySession.additionalProperties !== false
+    || JSON.stringify(identitySession.required) !== JSON.stringify([
+      "user_id", "tenant_id", "workspace_id", "session_id", "device_id", "client_kind",
+      "delivery", "expires_at", "recovery_operations"
+    ])
+    || identitySession.properties?.workspace_id?.$ref !== "#/components/schemas/OpaqueId"
+    || identitySession.properties?.recovery_operations?.type !== "array"
+    || identitySession.properties?.recovery_operations?.uniqueItems !== true
+    || identitySession.properties?.recovery_operations?.items?.type !== "string"
+    || JSON.stringify(identitySession.properties?.recovery_operations?.items?.enum)
+      !== JSON.stringify(recoveryOperations)
+  ) {
+    fail("Identity session recovery operation projection must use the exact safe allowlist");
+  }
+  if (
+    document.paths?.["/api/v1/session"]?.get?.responses?.["503"]?.$ref
+      !== "#/components/responses/ServiceUnavailable"
+  ) {
+    fail("GET /api/v1/session must declare ServiceUnavailable 503");
   }
   const nativeRefresh = schemas.NativeRefreshRequest;
   if (

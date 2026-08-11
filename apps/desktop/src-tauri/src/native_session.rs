@@ -28,8 +28,10 @@ pub const PUBLIC_GATEWAY: &str = "https://daon-user.sinsan.kr";
 
 const NATIVE_LOGIN_PATH: &str = "/api/v1/auth/native/login";
 const NATIVE_REFRESH_PATH: &str = "/api/v1/session/refresh";
+const NATIVE_AUTHORIZATION_PATH: &str = "/api/v1/session";
 const NATIVE_LOGIN_ENDPOINT: &str = "https://daon-user.sinsan.kr/api/v1/auth/native/login";
 const NATIVE_REFRESH_ENDPOINT: &str = "https://daon-user.sinsan.kr/api/v1/session/refresh";
+const NATIVE_AUTHORIZATION_ENDPOINT: &str = "https://daon-user.sinsan.kr/api/v1/session";
 const MAX_CREDENTIAL_BYTES: usize = 512;
 const MAX_PERSISTED_BYTES: usize = 2560;
 const MAX_SAFE_ID_BYTES: usize = 256;
@@ -554,6 +556,19 @@ pub trait NativeIdentityTransportPort: Send + Sync {
     ) -> Pin<
         Box<dyn Future<Output = Result<NativeSessionCredentials, NativeSessionError>> + Send + 'a>,
     >;
+
+    fn recovery_authorization<'a>(
+        &'a self,
+        _credentials: &'a NativeSessionCredentials,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<NativeRecoveryAuthorizationProjection, NativeSessionError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(NativeSessionError::authentication_required()) })
+    }
 }
 
 #[cfg(not(feature = "contract-test"))]
@@ -572,12 +587,88 @@ pub(crate) trait NativeIdentityTransportPort: Send + Sync {
     ) -> Pin<
         Box<dyn Future<Output = Result<NativeSessionCredentials, NativeSessionError>> + Send + 'a>,
     >;
+
+    fn recovery_authorization<'a>(
+        &'a self,
+        _credentials: &'a NativeSessionCredentials,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<NativeRecoveryAuthorizationProjection, NativeSessionError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(NativeSessionError::authentication_required()) })
+    }
 }
 
 #[derive(Clone, Serialize)]
 pub struct NativeSessionStatus {
     authenticated: bool,
     session: Option<NativeSessionProjection>,
+}
+
+const RECOVERY_OPERATIONS: [&str; 7] = [
+    "cloud_backup_create",
+    "cloud_backup_get",
+    "cloud_backup_list",
+    "cloud_restore_cancel",
+    "cloud_restore_execute",
+    "cloud_restore_get",
+    "cloud_restore_preview",
+];
+
+#[derive(Clone, Debug, Serialize)]
+pub struct NativeRecoveryAuthorizationStatus {
+    recovery_operations: Vec<String>,
+}
+
+impl NativeRecoveryAuthorizationStatus {
+    fn new(recovery_operations: Vec<String>) -> Self {
+        Self {
+            recovery_operations,
+        }
+    }
+
+    pub fn recovery_operations(&self) -> &[String] {
+        &self.recovery_operations
+    }
+}
+
+#[derive(Clone)]
+pub struct NativeRecoveryAuthorizationProjection {
+    session: NativeSessionProjection,
+    client_kind: String,
+    delivery: String,
+    recovery_operations: Vec<String>,
+}
+
+impl NativeRecoveryAuthorizationProjection {
+    fn matches(&self, expected: &NativeSessionProjection) -> bool {
+        self.client_kind == "native"
+            && self.delivery == "native_https_opaque_bearer"
+            && self.session == *expected
+    }
+
+    pub fn recovery_operations(&self) -> &[String] {
+        &self.recovery_operations
+    }
+
+    #[cfg(feature = "contract-test")]
+    #[doc(hidden)]
+    pub fn for_contract_test(
+        session: NativeSessionProjection,
+        client_kind: String,
+        delivery: String,
+        recovery_operations: Vec<String>,
+    ) -> Self {
+        Self {
+            session,
+            client_kind,
+            delivery,
+            recovery_operations,
+        }
+    }
 }
 
 impl NativeSessionStatus {
@@ -614,6 +705,7 @@ pub struct NativeIdentityClient {
     client: reqwest::Client,
     login_endpoint: String,
     refresh_endpoint: String,
+    authorization_endpoint: String,
     drop_audit: Option<Arc<AtomicUsize>>,
 }
 
@@ -637,6 +729,7 @@ impl NativeIdentityClient {
             client,
             login_endpoint: NATIVE_LOGIN_ENDPOINT.to_owned(),
             refresh_endpoint: NATIVE_REFRESH_ENDPOINT.to_owned(),
+            authorization_endpoint: NATIVE_AUTHORIZATION_ENDPOINT.to_owned(),
             drop_audit: None,
         })
     }
@@ -663,6 +756,7 @@ impl NativeIdentityClient {
             client,
             login_endpoint: format!("{gateway}{NATIVE_LOGIN_PATH}"),
             refresh_endpoint: format!("{gateway}{NATIVE_REFRESH_PATH}"),
+            authorization_endpoint: format!("{gateway}{NATIVE_AUTHORIZATION_PATH}"),
             drop_audit: None,
         })
     }
@@ -683,6 +777,7 @@ impl NativeIdentityClient {
         match path {
             NATIVE_LOGIN_PATH => Ok(&self.login_endpoint),
             NATIVE_REFRESH_PATH => Ok(&self.refresh_endpoint),
+            NATIVE_AUTHORIZATION_PATH => Ok(&self.authorization_endpoint),
             _ => Err(NativeSessionError::authentication_required()),
         }
     }
@@ -733,6 +828,70 @@ impl NativeIdentityClient {
             .await;
         request.wipe();
         self.credentials_from_response(response).await
+    }
+
+    pub async fn fetch_recovery_authorization(
+        &self,
+        credentials: &NativeSessionCredentials,
+    ) -> Result<NativeRecoveryAuthorizationProjection, NativeSessionError> {
+        let access = std::str::from_utf8(&credentials.access.0)
+            .map_err(|_| NativeSessionError::authentication_required())?;
+        let response = self
+            .client
+            .get(self.endpoint(NATIVE_AUTHORIZATION_PATH)?)
+            .bearer_auth(access)
+            .send()
+            .await;
+        let projection = self.authorization_from_response(response).await?;
+        if !projection.matches(credentials.projection()) {
+            return Err(NativeSessionError::authentication_required());
+        }
+        Ok(projection)
+    }
+
+    async fn authorization_from_response(
+        &self,
+        response: Result<reqwest::Response, reqwest::Error>,
+    ) -> Result<NativeRecoveryAuthorizationProjection, NativeSessionError> {
+        let mut response = response.map_err(|_| NativeSessionError::authentication_required())?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let content_length = response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok());
+        if status != 200
+            || response.headers().contains_key(reqwest::header::SET_COOKIE)
+            || content_type
+                .as_deref()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .split(';')
+                .next()
+                != Some("application/json")
+            || content_length.is_some_and(|length| length > MAX_RESPONSE_BYTES)
+        {
+            return Err(NativeSessionError::authentication_required());
+        }
+        let mut payload = Zeroizing::new(Vec::new());
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| NativeSessionError::authentication_required())?
+        {
+            if payload.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                return Err(NativeSessionError::authentication_required());
+            }
+            payload.extend_from_slice(&chunk);
+        }
+        let envelope: NativeRecoveryAuthorizationEnvelope = serde_json::from_slice(&payload)
+            .map_err(|_| NativeSessionError::authentication_required())?;
+        envelope.into_projection()
     }
 
     async fn credentials_from_response(
@@ -803,6 +962,22 @@ impl NativeIdentityTransportPort for NativeIdentityClient {
     > {
         Box::pin(NativeIdentityClient::refresh_once(self, credentials))
     }
+
+    fn recovery_authorization<'a>(
+        &'a self,
+        credentials: &'a NativeSessionCredentials,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<NativeRecoveryAuthorizationProjection, NativeSessionError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(NativeIdentityClient::fetch_recovery_authorization(
+            self,
+            credentials,
+        ))
+    }
 }
 
 #[derive(Serialize)]
@@ -854,6 +1029,75 @@ impl Drop for NativeRefreshRequest {
 #[serde(deny_unknown_fields)]
 struct NativeSessionEnvelope {
     data: NativeSessionWire,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeRecoveryAuthorizationEnvelope {
+    data: NativeRecoveryAuthorizationWire,
+    meta: NativeRecoveryAuthorizationMeta,
+}
+
+impl NativeRecoveryAuthorizationEnvelope {
+    fn into_projection(self) -> Result<NativeRecoveryAuthorizationProjection, NativeSessionError> {
+        if !valid_safe_text(&self.meta.trace_id) {
+            return Err(NativeSessionError::authentication_required());
+        }
+        self.data.into_projection()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeRecoveryAuthorizationMeta {
+    trace_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeRecoveryAuthorizationWire {
+    user_id: String,
+    tenant_id: String,
+    workspace_id: String,
+    session_id: String,
+    device_id: String,
+    client_kind: String,
+    delivery: String,
+    expires_at: String,
+    recovery_operations: Vec<String>,
+}
+
+impl NativeRecoveryAuthorizationWire {
+    fn into_projection(self) -> Result<NativeRecoveryAuthorizationProjection, NativeSessionError> {
+        if !matches!(self.recovery_operations.len(), 0 | 7)
+            || self
+                .recovery_operations
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || self.recovery_operations.iter().any(|operation| {
+                RECOVERY_OPERATIONS
+                    .binary_search(&operation.as_str())
+                    .is_err()
+            })
+        {
+            return Err(NativeSessionError::authentication_required());
+        }
+        let session = NativeSessionProjection::new(
+            self.user_id,
+            self.tenant_id,
+            self.workspace_id,
+            self.session_id,
+            self.device_id,
+            self.expires_at,
+        )
+        .map_err(|_| NativeSessionError::authentication_required())?;
+        Ok(NativeRecoveryAuthorizationProjection {
+            session,
+            client_kind: self.client_kind,
+            delivery: self.delivery,
+            recovery_operations: self.recovery_operations,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -1041,6 +1285,25 @@ impl NativeSessionRuntime {
             Some(credentials) => Ok(NativeSessionStatus::authenticated(credentials.projection())),
             None => Ok(NativeSessionStatus::unauthenticated()),
         }
+    }
+
+    pub async fn recovery_authorization_status(
+        &self,
+    ) -> Result<NativeRecoveryAuthorizationStatus, NativeSessionError> {
+        if self.revoke_pending.load(Ordering::Acquire) {
+            return Err(NativeSessionError::authentication_required());
+        }
+        let credentials = self
+            .vault_read()
+            .await?
+            .ok_or_else(NativeSessionError::authentication_required)?;
+        let projection = self.client.recovery_authorization(&credentials).await?;
+        if !projection.matches(credentials.projection()) {
+            return Err(NativeSessionError::authentication_required());
+        }
+        Ok(NativeRecoveryAuthorizationStatus::new(
+            projection.recovery_operations,
+        ))
     }
 
     pub(crate) async fn execute_cloud_once(

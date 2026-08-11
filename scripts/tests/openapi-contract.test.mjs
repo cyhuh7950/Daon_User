@@ -69,6 +69,69 @@ test("Native Refresh 공개 계약은 단일 opaque credential과 Idempotency �
   assert.equal(request.properties.refresh_credential.example, undefined);
 });
 
+test("Session Safe Projection은 Recovery 최소 권한만 exact enum 배열로 공개한다", async () => {
+  const document = await loadContract();
+  assert.equal(
+    document.paths["/api/v1/session"].get.responses["503"].$ref,
+    "#/components/responses/ServiceUnavailable"
+  );
+  const session = document.components.schemas.IdentitySession;
+  assert.equal(session.additionalProperties, false);
+  assert.deepEqual(session.required, [
+    "user_id", "tenant_id", "workspace_id", "session_id", "device_id", "client_kind",
+    "delivery", "expires_at", "recovery_operations"
+  ]);
+  assert.deepEqual(session.properties.recovery_operations, {
+    type: "array",
+    uniqueItems: true,
+    items: {
+      type: "string",
+      enum: [
+        "cloud_backup_create",
+        "cloud_backup_get",
+        "cloud_backup_list",
+        "cloud_restore_cancel",
+        "cloud_restore_execute",
+        "cloud_restore_get",
+        "cloud_restore_preview"
+      ]
+    }
+  });
+  for (const forbidden of ["role", "role_scope", "effective_permissions", "permission", "access_credential", "refresh_credential"]) {
+    assert.equal(session.properties[forbidden], undefined, forbidden);
+  }
+});
+
+test("OpenAPI 검증기는 Session ServiceUnavailable 503 누락을 거부한다", async () => {
+  const document = clone(await loadContract());
+  delete document.paths["/api/v1/session"].get.responses["503"];
+  assert.throws(() => validateOpenApiDocument(document), /session.*503|503.*session/i);
+});
+
+test("OpenAPI 검증기는 Recovery Unknown Operation과 중복 허용을 거부한다", async () => {
+  const unknown = clone(await loadContract());
+  unknown.components.schemas.IdentitySession.required.push("workspace_id", "recovery_operations");
+  unknown.components.schemas.IdentitySession.properties.workspace_id = { $ref: "#/components/schemas/OpaqueId" };
+  unknown.components.schemas.IdentitySession.properties.recovery_operations = {
+    type: "array", uniqueItems: true, items: { type: "string", enum: [
+      "cloud_backup_create", "cloud_backup_get", "cloud_backup_list", "cloud_restore_cancel",
+      "cloud_restore_execute", "cloud_restore_get", "cloud_restore_preview", "cloud_restore_admin"
+    ] }
+  };
+  assert.throws(() => validateOpenApiDocument(unknown), /recovery operation/i);
+
+  const duplicated = clone(await loadContract());
+  duplicated.components.schemas.IdentitySession.required.push("workspace_id", "recovery_operations");
+  duplicated.components.schemas.IdentitySession.properties.workspace_id = { $ref: "#/components/schemas/OpaqueId" };
+  duplicated.components.schemas.IdentitySession.properties.recovery_operations = {
+    type: "array", uniqueItems: true, items: { type: "string", enum: [
+      "cloud_backup_create", "cloud_backup_create", "cloud_backup_get", "cloud_backup_list",
+      "cloud_restore_cancel", "cloud_restore_execute", "cloud_restore_get", "cloud_restore_preview"
+    ] }
+  };
+  assert.throws(() => validateOpenApiDocument(duplicated), /recovery operation/i);
+});
+
 test("OpenAPI 검증기는 Run Event SSE Content 누락을 거부한다", async () => {
   const document = clone(await loadContract());
   document.components.responses.EventStreamResponse.content = {

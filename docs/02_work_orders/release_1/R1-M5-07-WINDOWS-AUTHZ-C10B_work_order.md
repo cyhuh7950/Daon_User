@@ -50,6 +50,7 @@
 - `packages/contracts/openapi/v1/openapi.json`
 - `scripts/tests/openapi-contract.test.mjs`
 - `scripts/verify-openapi-contract.mjs`
+- `docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json` — 승인 OpenAPI 변경의 검증기 파생 요약만 갱신
 - `apps/desktop/src-tauri/src/native_session.rs`
 - `apps/desktop/src-tauri/src/lib.rs`
 - `apps/desktop/src-tauri/tests/native_session_contract.rs`
