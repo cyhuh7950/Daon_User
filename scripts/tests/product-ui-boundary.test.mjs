@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -81,6 +81,8 @@ test("검증기는 필수 Root·대표 Asset 부재와 Symlink·부분 Build를 
 async function createDefaultFixture(fixtureRoot) {
   const files = {
     "apps/web/app/page.jsx": "export default function Page() { return null; }\n",
+    "apps/web/app/settings/account/page.jsx": "export default function AccountSettingsPage() { return null; }\n",
+    "apps/web/app/settings/organization/page.jsx": "export default function OrganizationSettingsPage() { return null; }\n",
     "apps/web/components/actual-workspace.jsx": "export function ActualWorkspace() { return null; }\n",
     "apps/web/lib/auth-pane.jsx": "export function AuthPane() { return null; }\n",
     "apps/web/.next/BUILD_ID": "fixture-build\n",
@@ -106,6 +108,53 @@ async function createDefaultFixture(fixtureRoot) {
     await writeFile(target, content, "utf8");
   }
 }
+
+test("Web account·organization Route는 누락되면 필수 Product Entry 오류로 fail-close한다", async () => {
+  const verifier = await loadVerifier();
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-product-boundary-required-entry-"));
+  try {
+    await createDefaultFixture(fixtureRoot);
+    await rm(path.join(fixtureRoot, "apps/web/app/settings/account/page.jsx"));
+    await rm(path.join(fixtureRoot, "apps/web/app/settings/organization/page.jsx"));
+
+    const result = await verifier.scanDefaultProductUiBoundary({ root: fixtureRoot, target: "web" });
+    assert.equal(result.ok, false);
+    assert.deepEqual(
+      result.boundaryErrors
+        .filter((item) => item.code === "REQUIRED_PRODUCT_ENTRY_MISSING")
+        .map((item) => item.path)
+        .sort(),
+      [
+        "apps/web/app/settings/account/page.jsx",
+        "apps/web/app/settings/organization/page.jsx"
+      ]
+    );
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Web 필수 Product Entry의 Symlink 대체는 fail-close한다", async () => {
+  const verifier = await loadVerifier();
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-product-boundary-required-symlink-"));
+  try {
+    await createDefaultFixture(fixtureRoot);
+    const accountEntry = path.join(fixtureRoot, "apps/web/app/settings/account/page.jsx");
+    const linkedDirectory = path.join(fixtureRoot, "linked-account-entry");
+    await rm(accountEntry);
+    await mkdir(linkedDirectory);
+    await symlink(linkedDirectory, accountEntry, "junction");
+
+    const result = await verifier.scanDefaultProductUiBoundary({ root: fixtureRoot, target: "web" });
+    assert.equal(result.ok, false);
+    assert.ok(result.boundaryErrors.some((item) => (
+      item.code === "REQUIRED_PRODUCT_ENTRY_SYMLINK"
+      && item.path === "apps/web/app/settings/account/page.jsx"
+    )));
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
 
 test("제품 Entry의 신규 explicit UI subpath와 재귀 전이 Source를 자동 추적한다", async () => {
   const verifier = await loadVerifier();
@@ -265,6 +314,71 @@ test("BFF server chunk 예외는 exact route와 NFT referencer 계보가 모두 
 test("Web production build는 Next 산출 직후 Web 제품 경계 Gate를 실행한다", async () => {
   const manifest = JSON.parse(await readFile(path.join(root, "apps/web/package.json"), "utf8"));
   assert.equal(manifest.scripts.build, "next build && node ../../scripts/verify-product-ui-boundary.mjs --target web");
+});
+
+test("account·organization 실제 React Route는 Safe 화면을 렌더하고 Network·Adapter·Tauri 호출이 0이다", async () => {
+  const output = await mkdtemp(path.join(root, ".task8-c01-react-"));
+  const originalFetch = globalThis.fetch;
+  const originalTauri = globalThis.__TAURI_INTERNALS__;
+  let networkCalls = 0;
+  let adapterCalls = 0;
+  let tauriCalls = 0;
+  try {
+    const { build } = await import("vite");
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root,
+      build: {
+        outDir: output,
+        emptyOutDir: false,
+        lib: {
+          entry: {
+            account: path.join(root, "apps/web/app/settings/account/page.jsx"),
+            organization: path.join(root, "apps/web/app/settings/organization/page.jsx")
+          },
+          formats: ["es"]
+        },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/server"] }
+      }
+    });
+
+    globalThis.fetch = async () => {
+      networkCalls += 1;
+      throw new Error("NETWORK_CALL_NOT_ALLOWED");
+    };
+    globalThis.__TAURI_INTERNALS__ = {
+      invoke: async () => {
+        tauriCalls += 1;
+        throw new Error("TAURI_CALL_NOT_ALLOWED");
+      }
+    };
+    const adapter = new Proxy({}, { get() { adapterCalls += 1; return () => {}; } });
+    const outputFiles = await readdir(output);
+    const accountFile = outputFiles.find((name) => name.startsWith("account") && /\.m?js$/u.test(name));
+    const organizationFile = outputFiles.find((name) => name.startsWith("organization") && /\.m?js$/u.test(name));
+    assert.ok(accountFile, "account Route build output이 필요하다");
+    assert.ok(organizationFile, "organization Route build output이 필요하다");
+    const accountModule = await import(`${pathToFileURL(path.join(output, accountFile)).href}?safe=${Date.now()}`);
+    const organizationModule = await import(`${pathToFileURL(path.join(output, organizationFile)).href}?safe=${Date.now()}`);
+    const accountHtml = renderToStaticMarkup(createElement(accountModule.default, { adapter }));
+    const organizationHtml = renderToStaticMarkup(createElement(organizationModule.default, { adapter }));
+
+    assert.match(accountHtml, /계정 설정/);
+    assert.match(organizationHtml, /조직 설정/);
+    for (const html of [accountHtml, organizationHtml]) {
+      assert.match(html, /RESOURCE_UNAVAILABLE/);
+      assert.doesNotMatch(html, /Evidence|Prototype|Mock|prototype_fixture|deferred_actual/);
+    }
+    assert.deepEqual({ networkCalls, adapterCalls, tauriCalls }, { networkCalls: 0, adapterCalls: 0, tauriCalls: 0 });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalTauri === undefined) delete globalThis.__TAURI_INTERNALS__;
+    else globalThis.__TAURI_INTERNALS__ = originalTauri;
+    await rm(output, { recursive: true, force: true });
+  }
 });
 
 test("현재 Web·Desktop 제품 Source와 존재하는 Build Bundle에는 금지 Token이 없다", async () => {
