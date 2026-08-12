@@ -9,9 +9,11 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 
@@ -29,6 +31,43 @@ from daon_user_api.identity import ClientKind, DevicePlatform
 
 ROOT = Path(__file__).resolve().parents[3]
 EVIDENCE = ROOT / "docs/03_evidence/release_1/R1-M4-05"
+NATIVE_TEST_LOGIN = "runtime-native-probe"
+NATIVE_TEST_PASSWORD = "probe-only-not-a-secret-value"
+
+
+class DiscardTestEmailSender:
+    def send(self, **_message: str) -> None:
+        return None
+
+
+class NativeFramingUpstream(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def _respond(self, status: int, body: bytes, media_type: str = "application/json") -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", media_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:  # noqa: N802
+        authorization = self.headers.get("Authorization", "")
+        if not authorization.startswith("Bearer ") or len(authorization) <= len("Bearer "):
+            self._respond(401, b'{"error":{"code":"AUTHENTICATION_REQUIRED"}}')
+        elif self.path == "/api/v1/backups?workspace_id=workspace-probe":
+            body = json.dumps({"data": "x" * 200_000, "meta": {}}).encode()
+            self._respond(200, body, "application/json; charset=utf-8")
+        elif self.path == "/api/v1/workspaces/workspace-probe/citations/citation-probe/content":
+            body = b"%PDF-1.4\n% runtime framing probe\n"
+            self._respond(200, body, "application/pdf; version=1.4")
+        else:
+            self._respond(404, b'{"error":{"code":"RESOURCE_UNAVAILABLE"}}')
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._respond(405, b'{"error":{"code":"METHOD_NOT_ALLOWED"}}')
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return None
 
 
 def free_port() -> int:
@@ -173,6 +212,7 @@ def start_next(port: int, api_port: int) -> subprocess.Popen[str]:
         "HOSTNAME": "127.0.0.1",
         "DAON_RUNTIME_PROFILE": "test",
         "DAON_API_INTERNAL_URL": f"http://127.0.0.1:{api_port}",
+        "DAON_PUBLIC_GATEWAY_URL": f"https://localhost:{port}",
     }
     executable = shutil.which("node")
     if executable is None:
@@ -207,6 +247,19 @@ def seed_database(database_path: Path) -> tuple[str, str]:
     identity, identity_repository, _, _ = create_service(
         database_path, clock=clock, audit_store=audit
     )
+    identity._email_sender = DiscardTestEmailSender()
+    identity.signup(
+        login_id=NATIVE_TEST_LOGIN,
+        email="runtime-native-probe@example.invalid",
+        password=NATIVE_TEST_PASSWORD,
+        trace_id="trace-native-probe-signup",
+        policy_version=POLICY_VERSION,
+    )
+    with identity_repository.transaction() as connection:
+        connection.execute(
+            "UPDATE users SET state='active', email_verified_at=? WHERE login_id=?",
+            (datetime.now(timezone.utc).isoformat(), NATIVE_TEST_LOGIN),
+        )
     start = identity.begin_oidc_login(
         issuer="https://login.example.com",
         client_id="daon-web",
@@ -262,6 +315,9 @@ def main() -> None:
         first_log = ""
         second = None
         next_process = None
+        framing_next_process = None
+        framing_upstream = None
+        framing_thread = None
         next_log = ""
         next_exit_code = None
         next_graceful_shutdown_observed = None
@@ -311,10 +367,12 @@ def main() -> None:
             bff_csrf_rejected_status = None
             bff_csrf_rejected_upstream_events = None
             client_bundle_forbidden_hits = None
+            native_access = None
             if arguments.with_next:
                 web_port = free_port()
                 next_process = start_next(web_port, api_port)
                 web_origin = f"http://localhost:{web_port}"
+                public_web_origin = f"https://localhost:{web_port}"
                 wait_json(f"{web_origin}/")
                 direct = httpx.get(f"{api_origin}/api/v1/session", headers=cookie, timeout=5)
                 decoy_cookie = "private-other-cookie"
@@ -335,11 +393,80 @@ def main() -> None:
                     or decoy_cookie in response_text
                 ):
                     raise RuntimeError("NEXT_BFF_PROCESS_CONTRACT_FAILED")
+                native_empty_login = httpx.post(
+                    f"{web_origin}/api/v1/auth/native/login",
+                    headers={"Content-Type": "application/json", "X-Trace-Id": "trace-native-login-empty-001"},
+                    json={}, timeout=10,
+                )
+                native_login = httpx.post(
+                    f"{web_origin}/api/v1/auth/native/login",
+                    headers={"Content-Type": "application/json", "X-Trace-Id": "trace-native-login-001"},
+                    json={"login_id": NATIVE_TEST_LOGIN, "password": NATIVE_TEST_PASSWORD}, timeout=10,
+                )
+                if native_login.status_code != 200:
+                    raise RuntimeError(f"NEXT_NATIVE_LOGIN_FAILED:{native_login.status_code}")
+                native_data = native_login.json()["data"]
+                native_access = native_data["access_credential"]
+                native_workspace = native_data["workspace_id"]
+                native_unauthorized = httpx.get(f"{web_origin}/api/v1/session", timeout=10)
+                native_authorized = httpx.get(
+                    f"{web_origin}/api/v1/session",
+                    headers={"Authorization": f"Bearer {native_access}", "X-Trace-Id": "trace-native-session-001"},
+                    timeout=10,
+                )
+                native_cookie_trace = "trace-native-cookie-reject-001"
+                native_cookie = httpx.get(
+                    f"{web_origin}/api/v1/session",
+                    headers={
+                        "Authorization": f"Bearer {native_access}",
+                        "Cookie": "blocked=value",
+                        "X-Trace-Id": native_cookie_trace,
+                    }, timeout=10,
+                )
+                native_unknown_trace = "trace-native-unknown-reject-001"
+                native_unknown = httpx.get(
+                    f"{web_origin}/api/v1/unknown",
+                    headers={"Authorization": f"Bearer {native_access}", "X-Trace-Id": native_unknown_trace},
+                    timeout=10,
+                )
+                recovery = httpx.get(
+                    f"{web_origin}/api/v1/backups",
+                    params={"workspace_id": native_workspace},
+                    headers={"Authorization": f"Bearer {native_access}", "X-Trace-Id": "trace-native-recovery-001"},
+                    timeout=10,
+                )
+                notifications = httpx.get(f"{web_origin}/bff/api/notifications", params={"limit": 50}, headers=browser_cookie, timeout=10)
+                inbox = httpx.get(f"{web_origin}/bff/api/inbox", params={"limit": 50}, headers=browser_cookie, timeout=10)
+                for response_with_framing in (native_authorized, recovery):
+                    media_type = response_with_framing.headers.get("content-type", "").split(";", 1)[0].lower()
+                    if (
+                        media_type != "application/json"
+                        or response_with_framing.headers.get("content-length") != str(len(response_with_framing.content))
+                        or "transfer-encoding" in response_with_framing.headers
+                    ):
+                        raise RuntimeError("NEXT_NATIVE_JSON_FRAMING_FAILED")
+                if (
+                    native_empty_login.status_code == 404
+                    or native_unauthorized.status_code != 401
+                    or native_authorized.status_code != 200
+                    or native_cookie.status_code != 400
+                    or native_unknown.status_code != 404
+                    or recovery.status_code not in {200, 503}
+                    or notifications.status_code != 200
+                    or inbox.status_code != 200
+                ):
+                    raise RuntimeError(
+                        "NEXT_NATIVE_AND_WEB_ADAPTER_CONTRACT_FAILED:"
+                        f"empty_login={native_empty_login.status_code}:login={native_login.status_code}:unauthorized={native_unauthorized.status_code}:"
+                        f"authorized={native_authorized.status_code}:cookie={native_cookie.status_code}:"
+                        f"unknown={native_unknown.status_code}:recovery={recovery.status_code}:"
+                        f"notifications={notifications.status_code}:inbox={inbox.status_code}"
+                    )
                 write = httpx.post(
                     f"{web_origin}/bff/api/workspaces/workspace-001/authorization/evaluations",
                     headers={
                         **browser_cookie,
-                        "Origin": web_origin,
+                        "Origin": public_web_origin,
                         "Sec-Fetch-Site": "same-origin",
                         "Content-Type": "application/json",
                         "Idempotency-Key": "idem-bff-process-001",
@@ -372,11 +499,23 @@ def main() -> None:
                 if rejected_audit.status_code != 200:
                     raise RuntimeError("NEXT_BFF_CSRF_AUDIT_CHECK_FAILED")
                 bff_csrf_rejected_upstream_events = len(rejected_audit.json()["data"]["items"])
+                native_rejected_upstream_events = 0
+                for rejected_trace in (native_cookie_trace, native_unknown_trace):
+                    native_rejected_audit = httpx.get(
+                        f"{web_origin}/bff/api/audit-events",
+                        headers={**browser_cookie, "X-Trace-Id": f"audit-{rejected_trace}"},
+                        params={"tenant_id": "tenant-001", "trace_id": rejected_trace, "limit": 50},
+                        timeout=10,
+                    )
+                    if native_rejected_audit.status_code != 200:
+                        raise RuntimeError("NEXT_NATIVE_REJECT_AUDIT_CHECK_FAILED")
+                    native_rejected_upstream_events += len(native_rejected_audit.json()["data"]["items"])
                 combined_bff_text = response_text + write.text + csrf_rejected.text + rejected_audit.text
                 if (
                     bff_write_status != 200
                     or bff_csrf_rejected_status != 403
                     or bff_csrf_rejected_upstream_events != 0
+                    or native_rejected_upstream_events != 0
                     or token in combined_bff_text
                     or decoy_cookie in combined_bff_text
                     or api_origin in combined_bff_text
@@ -408,6 +547,48 @@ def main() -> None:
                     raise RuntimeError("NEXT_LISTENER_REMAINED_AFTER_SHUTDOWN")
                 next_graceful_shutdown_observed = True
 
+                framing_api_port = free_port()
+                framing_web_port = free_port()
+                framing_upstream = ThreadingHTTPServer(("127.0.0.1", framing_api_port), NativeFramingUpstream)
+                framing_thread = threading.Thread(target=framing_upstream.serve_forever, daemon=True)
+                framing_thread.start()
+                framing_next_process = start_next(framing_web_port, framing_api_port)
+                framing_web_origin = f"http://localhost:{framing_web_port}"
+                wait_json(f"{framing_web_origin}/")
+                framing_headers = {"Authorization": "Bearer runtime-probe-credential"}
+                framing_recovery = httpx.get(
+                    f"{framing_web_origin}/api/v1/backups",
+                    params={"workspace_id": "workspace-probe"}, headers=framing_headers, timeout=10,
+                )
+                framing_pdf = httpx.get(
+                    f"{framing_web_origin}/api/v1/workspaces/workspace-probe/citations/citation-probe/content",
+                    headers=framing_headers, timeout=10,
+                )
+                for framed, expected_type in (
+                    (framing_recovery, "application/json"), (framing_pdf, "application/pdf"),
+                ):
+                    if (
+                        framed.status_code != 200
+                        or framed.headers.get("content-type", "").split(";", 1)[0].lower() != expected_type
+                        or framed.headers.get("content-length") != str(len(framed.content))
+                        or "transfer-encoding" in framed.headers
+                    ):
+                        raise RuntimeError("NEXT_NATIVE_FAKE_UPSTREAM_FRAMING_FAILED")
+                if len(framing_recovery.content) <= 128 * 1024 or not framing_pdf.content.startswith(b"%PDF-"):
+                    raise RuntimeError("NEXT_NATIVE_FAKE_UPSTREAM_BODY_FAILED")
+                framing_next_exit, framing_next_log = stop_process(framing_next_process)
+                framing_next_process = None
+                next_log += framing_next_log
+                if not next_exit_is_graceful(framing_next_exit) or not port_is_released(framing_web_port):
+                    raise RuntimeError("NEXT_NATIVE_FRAMING_PROCESS_CLEANUP_FAILED")
+                framing_upstream.shutdown()
+                framing_upstream.server_close()
+                framing_upstream = None
+                framing_thread.join(timeout=5)
+                if framing_thread.is_alive() or not port_is_released(framing_api_port):
+                    raise RuntimeError("NEXT_NATIVE_FRAMING_UPSTREAM_CLEANUP_FAILED")
+                framing_thread = None
+
             _second_code, second_log = stop_process(second)
             second = None
             if not all(marker in second_log for marker in graceful_markers):
@@ -419,6 +600,8 @@ def main() -> None:
             combined_log = first_log + second_log + next_log
             if (
                 token in combined_log
+                or NATIVE_TEST_PASSWORD in combined_log
+                or (native_access is not None and native_access in combined_log)
                 or "private-other-cookie" in combined_log
                 or str(database_path) in combined_log
                 or api_origin in next_log
@@ -485,9 +668,14 @@ def main() -> None:
                         raise RuntimeError(f"EVIDENCE_MISMATCH:{name}")
             print(json.dumps({"runtime": runtime_summary, "bff": bff_summary}, ensure_ascii=False))
         finally:
-            for process in (next_process, second, first):
+            for process in (framing_next_process, next_process, second, first):
                 if process is not None:
                     force_cleanup_process_tree(process)
+            if framing_upstream is not None:
+                framing_upstream.shutdown()
+                framing_upstream.server_close()
+            if framing_thread is not None:
+                framing_thread.join(timeout=5)
 
 
 if __name__ == "__main__":

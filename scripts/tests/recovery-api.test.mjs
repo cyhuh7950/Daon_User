@@ -3,12 +3,12 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
-import { parseRecoverySessionContext, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
+import { parseRecoverySessionContext, recoveryApi, resolveRecoverySession } from "../../apps/web/lib/recovery-api.js";
 
 test("Recovery Web Adapter는 정확한 Cloud 7 Route를 same-origin으로만 호출한다", async () => {
   const source = await readFile("apps/web/lib/recovery-api.js", "utf8");
   for (const token of [
-    "/api/v1/backups", "/restore-previews", "/api/v1/restore-requests/",
+    "/bff/api/backups", "/restore-previews", "/bff/api/restore-requests/",
     "/execute", "/cancel", "Idempotency-Key", "If-Match", "same-origin"
   ]) assert.match(source, new RegExp(token.replaceAll("/", "\\/")));
   assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
@@ -16,8 +16,46 @@ test("Recovery Web Adapter는 정확한 Cloud 7 Route를 same-origin으로만 �
 
 test("Recovery Web Adapter는 same-origin Session Context를 먼저 조회한다", async () => {
   const source = await readFile("apps/web/lib/recovery-api.js", "utf8");
-  assert.match(source, /getSession\(\)\s*\{\s*return request\("\/api\/v1\/session"\)/);
+  assert.match(source, /getSession\(\)\s*\{\s*return request\("\/bff\/api\/session"\)/);
+  assert.doesNotMatch(source, /\/api\/v1/);
   assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
+});
+
+test("Recovery Adapter는 Session과 Cloud 7 operation을 Browser BFF로만 전달한다", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url, init });
+      return Response.json({ data: {}, meta: {} }, { headers: { ETag: '"recovery-v1"' } });
+    };
+    await recoveryApi.getSession();
+    await recoveryApi.listBackups("workspace/1");
+    await recoveryApi.createBackup({ workspace_id: "workspace/1" }, "idem-create");
+    await recoveryApi.getBackup("backup/1");
+    await recoveryApi.previewRestore("backup/1", { mode: "preview" }, "idem-preview");
+    await recoveryApi.getRestore("restore/1");
+    await recoveryApi.executeRestore("restore/1", { confirmation: "approved" }, '"restore:1"', "idem-execute");
+    await recoveryApi.cancelRestore("restore/1", '"restore:1"', "idem-cancel");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.deepEqual(calls.map(({ url }) => url), [
+    "/bff/api/session",
+    "/bff/api/backups?workspace_id=workspace%2F1",
+    "/bff/api/backups",
+    "/bff/api/backups/backup%2F1",
+    "/bff/api/backups/backup%2F1/restore-previews",
+    "/bff/api/restore-requests/restore%2F1",
+    "/bff/api/restore-requests/restore%2F1/execute",
+    "/bff/api/restore-requests/restore%2F1/cancel",
+  ]);
+  assert.equal(calls.every(({ url, init }) => !url.startsWith("/api/v1") && init.credentials === "same-origin"), true);
+  assert.deepEqual(calls.slice(2).map(({ init }) => init.method), ["POST", "GET", "POST", "GET", "POST", "POST"]);
+  assert.equal(calls[2].init.headers["Idempotency-Key"], "idem-create");
+  assert.equal(calls[4].init.headers["Idempotency-Key"], "idem-preview");
+  assert.equal(calls[6].init.headers["If-Match"], '"restore:1"');
+  assert.equal(calls[6].init.body, JSON.stringify({ confirmation: "approved" }));
 });
 
 test("Recovery Session coordinator는 유효 Context만 Pane 초기화 뒤 Backup 목록에 전달한다", async () => {
