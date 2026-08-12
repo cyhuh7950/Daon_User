@@ -1,6 +1,10 @@
 const MAX_REQUEST_BYTES = 65_536;
 const MAX_SOURCE_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_NATIVE_RESPONSE_BYTES = 128 * 1024;
+const MAX_NATIVE_RECOVERY_RESPONSE_BYTES = 1024 * 1024;
 const MAX_SESSION_COOKIE_BYTES = 4_096;
+const MIN_NATIVE_BEARER_BYTES = 16;
+const MAX_NATIVE_BEARER_BYTES = 4_096;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUEST_HEADERS = new Set([
   "content-type",
@@ -17,6 +21,15 @@ const RESPONSE_HEADERS = new Set([
   "etag",
   "retry-after",
   "set-cookie",
+  "x-trace-id",
+  "x-citation-page",
+]);
+const NATIVE_RESPONSE_HEADERS = new Set([
+  "cache-control",
+  "content-disposition",
+  "content-type",
+  "etag",
+  "retry-after",
   "x-trace-id",
   "x-citation-page",
 ]);
@@ -251,6 +264,81 @@ function routeFor(method, segments) {
   return null;
 }
 
+function nativeRouteFor(method, segments, requestUrl) {
+  const route = (path, options = {}) => ({ path, protected: true, ...options });
+  let matched = null;
+  if (segments.length === 3 && segments[0] === "auth" && segments[1] === "native" && segments[2] === "login") {
+    matched = method === "POST" ? route("/api/v1/auth/native/login", { protected: false, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 2 && segments[0] === "session" && segments[1] === "refresh") {
+    matched = method === "POST" ? route("/api/v1/session/refresh", { protected: false, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 1 && segments[0] === "session") {
+    matched = method === "GET" ? route("/api/v1/session") : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "sources") {
+    matched = new Set(["GET", "POST"]).has(method)
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaType: "application/pdf" } : {})
+      : { methodRejected: true };
+  } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs" && SAFE_SEGMENT.test(segments[3])) {
+    matched = method === "GET"
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/processing-runs/${encodeURIComponent(segments[3])}`)
+      : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "questions") {
+    matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, { requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "citations" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "content") {
+    matched = method === "GET"
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { expectsPdf: true, maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
+      : { methodRejected: true };
+  } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "reports") {
+    matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/reports`, { requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "outputs") {
+    matched = method === "GET" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/outputs`) : { methodRejected: true };
+  } else if (segments.length === 1 && segments[0] === "backups") {
+    matched = new Set(["GET", "POST"]).has(method) ? route("/api/v1/backups", { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, ...(method === "POST" ? { requestMediaType: "application/json" } : {}) }) : { methodRejected: true };
+  } else if (segments.length === 2 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1])) {
+    matched = method === "GET" ? route(`/api/v1/backups/${encodeURIComponent(segments[1])}`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES }) : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "restore-previews") {
+    matched = method === "POST" ? route(`/api/v1/backups/${encodeURIComponent(segments[1])}/restore-previews`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 2 && segments[0] === "restore-requests" && SAFE_SEGMENT.test(segments[1])) {
+    matched = method === "GET" ? route(`/api/v1/restore-requests/${encodeURIComponent(segments[1])}`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES }) : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "restore-requests" && SAFE_SEGMENT.test(segments[1]) && RESTORE_ACTIONS.has(segments[2])) {
+    matched = method === "POST" ? route(`/api/v1/restore-requests/${encodeURIComponent(segments[1])}/${segments[2]}`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, requestMediaType: "application/json" }) : { methodRejected: true };
+  }
+  if (!matched || matched.methodRejected) return matched;
+
+  const incoming = new URL(requestUrl);
+  if (method === "GET" && segments.length === 1 && segments[0] === "backups") {
+    const entries = [...incoming.searchParams];
+    if (entries.length !== 1 || entries[0][0] !== "workspace_id" || !SAFE_SEGMENT.test(entries[0][1])) return null;
+    matched.query = new URLSearchParams([["workspace_id", entries[0][1]]]);
+  } else if (incoming.search) {
+    return null;
+  }
+  return matched;
+}
+
+function nativeBearer(request) {
+  const raw = request.headers.get("authorization");
+  const match = raw?.match(/^Bearer ([^\x00-\x20\x7f,]+)$/);
+  if (!match) return null;
+  const bytes = Buffer.byteLength(match[1], "utf8");
+  return bytes >= MIN_NATIVE_BEARER_BYTES && bytes <= MAX_NATIVE_BEARER_BYTES ? match[1] : null;
+}
+
+function nativeSensitiveBodyValues(body) {
+  try {
+    const parsed = JSON.parse(Buffer.from(body).toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    return ["password", "access_credential", "refresh_credential"]
+      .map((key) => parsed[key])
+      .filter((value) => typeof value === "string" && value.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function exactMediaType(rawValue) {
+  return rawValue?.split(";", 1)[0].trim().toLowerCase() ?? "";
+}
+
 export function createBffTraceId(request) {
   const supplied = request?.headers?.get("x-trace-id");
   return supplied && SAFE_SEGMENT.test(supplied)
@@ -459,6 +547,115 @@ export function createBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeo
             ?? createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
         }
       }
+      return new Response(body, { status: upstream.status, headers: responseHeaders });
+    } finally {
+      abortScope.cleanup();
+    }
+  };
+}
+
+export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000 }) {
+  if (!(baseUrl instanceof URL)) throw new BffConfigurationError("BFF_INTERNAL_API_URL_REQUIRED");
+  if (publicOrigin !== undefined && !(publicOrigin instanceof URL)) {
+    throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_REQUIRED");
+  }
+  return async function nativeProxy(request, pathSegments, providedTrace) {
+    const trace = providedTrace ?? createBffTraceId(request);
+    const route = nativeRouteFor(request.method, pathSegments, request.url);
+    if (!route) return createBffSafeError(404, "RESOURCE_UNAVAILABLE", trace);
+    if (route.methodRejected) return createBffSafeError(405, "METHOD_NOT_ALLOWED", trace);
+    if (request.headers.has("cookie")) return createBffSafeError(400, "COOKIE_NOT_ALLOWED", trace);
+
+    const bearer = route.protected ? nativeBearer(request) : null;
+    if (route.protected && !bearer) return createBffSafeError(401, "AUTHENTICATION_REQUIRED", trace);
+    const destination = new URL(route.path, baseUrl);
+    if (route.query) destination.search = route.query.toString();
+    const headers = new Headers();
+    for (const [key, value] of request.headers) {
+      if (REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
+    }
+    if (bearer) headers.set("authorization", `Bearer ${bearer}`);
+    headers.set("x-trace-id", trace);
+    headers.set("x-daon-bff-transport", "internal");
+
+    const init = { method: request.method, headers, redirect: "manual" };
+    const sensitiveValues = bearer ? [bearer] : [];
+    const abortScope = createAbortScope(request.signal, timeoutMs);
+    try {
+      if (abortScope.signal.aborted) return cancellationError(abortScope, trace);
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        let body;
+        try {
+          body = await waitWithAbort(request.arrayBuffer(), abortScope.signal);
+        } catch {
+          return cancellationError(abortScope, trace) ?? createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
+        }
+        if (body.byteLength > (route.maxRequestBytes ?? MAX_REQUEST_BYTES)) {
+          return createBffSafeError(413, "REQUEST_TOO_LARGE", trace);
+        }
+        sensitiveValues.push(...nativeSensitiveBodyValues(body));
+        if (body.byteLength > 0 && exactMediaType(request.headers.get("content-type")) !== route.requestMediaType) {
+          return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
+        }
+        init.body = body;
+      }
+
+      let upstream;
+      try {
+        upstream = await waitWithAbort(fetchImpl(destination, { ...init, signal: abortScope.signal }), abortScope.signal);
+      } catch {
+        return cancellationError(abortScope, trace) ?? createBffSafeError(503, "GATEWAY_UNAVAILABLE", trace, true);
+      }
+      if (upstream.status >= 300 && upstream.status < 400) {
+        return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      }
+      if (upstream.headers.has("set-cookie")) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      for (const [key, value] of upstream.headers) {
+        if (
+          NATIVE_RESPONSE_HEADERS.has(key.toLowerCase())
+          && (value.includes(baseUrl.origin) || sensitiveValues.some((sensitive) => value.includes(sensitive)))
+        ) {
+          return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        }
+      }
+      const transferEncoding = upstream.headers.get("transfer-encoding");
+      const rawLength = upstream.headers.get("content-length");
+      if (transferEncoding && rawLength) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      if (transferEncoding && transferEncoding.toLowerCase() !== "chunked") {
+        return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      }
+      const declaredLength = rawLength === null || /^\d+$/u.test(rawLength) ? Number(rawLength) : Number.NaN;
+      const maxResponseBytes = route.maxResponseBytes ?? MAX_NATIVE_RESPONSE_BYTES;
+      if (!Number.isFinite(declaredLength) || declaredLength > maxResponseBytes) {
+        return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      }
+
+      let body = null;
+      if (upstream.status !== 204) {
+        const contentType = upstream.headers.get("content-type")?.toLowerCase() ?? "";
+        const expectedType = route.expectsPdf ? "application/pdf" : "application/json";
+        if (exactMediaType(contentType) !== expectedType) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        try {
+          body = await waitWithAbort(upstream.arrayBuffer(), abortScope.signal, () => upstream.body?.cancel());
+        } catch {
+          return cancellationError(abortScope, trace) ?? createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
+        if (body.byteLength > maxResponseBytes || (rawLength !== null && body.byteLength !== declaredLength)) {
+          return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        }
+        const textBody = Buffer.from(body).toString("utf8");
+        if (textBody.includes(baseUrl.origin) || sensitiveValues.some((value) => textBody.includes(value))) {
+          return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        }
+      }
+
+      const responseHeaders = new Headers();
+      for (const [key, value] of upstream.headers) {
+        if (NATIVE_RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders.set(key, value);
+      }
+      responseHeaders.set("Content-Length", String(body?.byteLength ?? 0));
+      responseHeaders.set("Cache-Control", "no-store");
+      if (!responseHeaders.has("x-trace-id")) responseHeaders.set("x-trace-id", trace);
       return new Response(body, { status: upstream.status, headers: responseHeaders });
     } finally {
       abortScope.cleanup();

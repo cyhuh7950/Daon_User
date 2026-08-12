@@ -7,6 +7,227 @@ import {
   parseInternalApiBase,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("Native BFF는 login·refresh만 무자격이고 exact 보호 Route에는 단일 Bearer를 요구한다", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  assert.equal(typeof createNativeBffProxy, "function");
+  const captured = [];
+  const proxy = createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({
+        url: String(url), method: init.method,
+        authorization: init.headers.get("authorization"),
+        cookie: init.headers.get("cookie"),
+      });
+      return Response.json({ data: { status: "accepted" }, meta: {} });
+    },
+  });
+
+  const login = await proxy(new Request("https://app.example.com/api/v1/auth/native/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer blocked-on-exchange" },
+    body: JSON.stringify({ login_id: "user", password: "not-a-real-password" }),
+  }), ["auth", "native", "login"]);
+  const refresh = await proxy(new Request("https://app.example.com/api/v1/session/refresh", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }), ["session", "refresh"]);
+  const session = await proxy(new Request("https://app.example.com/api/v1/session", {
+    headers: { Authorization: "Bearer opaque-native-credential" },
+  }), ["session"]);
+
+  assert.deepEqual([login.status, refresh.status, session.status], [200, 200, 200]);
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/auth/native/login", method: "POST", authorization: null, cookie: null },
+    { url: "https://api.example.com/api/v1/session/refresh", method: "POST", authorization: null, cookie: null },
+    { url: "https://api.example.com/api/v1/session", method: "GET", authorization: "Bearer opaque-native-credential", cookie: null },
+  ]);
+});
+
+test("Native BFF exact Workspace·Recovery Route와 query만 허용하고 다른 입력은 upstream 0이다", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  assert.equal(typeof createNativeBffProxy, "function");
+  const captured = [];
+  const proxy = createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return String(url).endsWith("/content")
+        ? new Response(Buffer.from("%PDF-1.4"), { headers: { "Content-Type": "application/pdf" } })
+        : Response.json({ data: {}, meta: {} });
+    },
+  });
+  const bearer = { Authorization: "Bearer opaque-native-credential" };
+  const cases = [
+    ["GET", "workspaces/workspace-1/sources", ["workspaces", "workspace-1", "sources"]],
+    ["POST", "workspaces/workspace-1/sources", ["workspaces", "workspace-1", "sources"]],
+    ["GET", "workspaces/workspace-1/processing-runs/run-1", ["workspaces", "workspace-1", "processing-runs", "run-1"]],
+    ["POST", "workspaces/workspace-1/questions", ["workspaces", "workspace-1", "questions"]],
+    ["GET", "workspaces/workspace-1/citations/citation-1/content", ["workspaces", "workspace-1", "citations", "citation-1", "content"]],
+    ["POST", "workspaces/workspace-1/studio/reports", ["workspaces", "workspace-1", "studio", "reports"]],
+    ["GET", "workspaces/workspace-1/studio/outputs", ["workspaces", "workspace-1", "studio", "outputs"]],
+    ["POST", "backups", ["backups"]],
+    ["GET", "backups?workspace_id=workspace-1", ["backups"]],
+    ["GET", "backups/backup-1", ["backups", "backup-1"]],
+    ["POST", "backups/backup-1/restore-previews", ["backups", "backup-1", "restore-previews"]],
+    ["GET", "restore-requests/restore-1", ["restore-requests", "restore-1"]],
+    ["POST", "restore-requests/restore-1/execute", ["restore-requests", "restore-1", "execute"]],
+    ["POST", "restore-requests/restore-1/cancel", ["restore-requests", "restore-1", "cancel"]],
+  ];
+  for (const [method, relative, segments] of cases) {
+    const sourceUpload = method === "POST" && relative.endsWith("/sources");
+    const request = new Request(`https://app.example.com/api/v1/${relative}`, {
+      method, headers: { ...bearer, "Content-Type": sourceUpload ? "application/pdf" : "application/json" },
+      body: method === "POST" ? (sourceUpload ? "%PDF-1.4" : "{}") : undefined,
+    });
+    assert.equal((await proxy(request, segments)).status, 200, `${method} ${relative}`);
+  }
+  const acceptedCalls = captured.length;
+  for (const [request, segments, status] of [
+    [new Request("https://app.example.com/api/v1/session"), ["session"], 401],
+    [new Request("https://app.example.com/api/v1/session", { headers: { Authorization: "Basic opaque" } }), ["session"], 401],
+    [new Request("https://app.example.com/api/v1/session", { headers: { Authorization: "Bearer short" } }), ["session"], 401],
+    [new Request("https://app.example.com/api/v1/session", { headers: { Authorization: "Bearer opaque-native-credential", Cookie: "x=y" } }), ["session"], 400],
+    [new Request("https://app.example.com/api/v1/admin", { headers: bearer }), ["admin"], 404],
+    [new Request("https://app.example.com/api/v1/session", { method: "POST", headers: bearer }), ["session"], 405],
+    [new Request("https://app.example.com/api/v1/backups?workspace_id=workspace-1&extra=x", { headers: bearer }), ["backups"], 404],
+  ]) {
+    assert.equal((await proxy(request, segments)).status, status);
+  }
+  assert.equal(captured.length, acceptedCalls);
+});
+
+test("Native BFF는 Set-Cookie·redirect·oversize·Credential 반사를 fail-close한다", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  assert.equal(typeof createNativeBffProxy, "function");
+  const request = () => new Request("https://app.example.com/api/v1/session", {
+    headers: { Authorization: "Bearer opaque-native-credential" },
+  });
+  for (const upstream of [
+    new Response("", { status: 302, headers: { Location: "https://internal.example/private" } }),
+    Response.json({ data: {} }, { headers: { "Set-Cookie": "secret=value" } }),
+    Response.json({ data: { reflected: "opaque-native-credential" } }),
+    new Response("x".repeat(131_073), { headers: { "Content-Type": "application/json" } }),
+    new Response("not-json", { headers: { "Content-Type": "text/plain" } }),
+    Response.json({ data: {} }, { headers: { "X-Trace-Id": "opaque-native-credential" } }),
+  ]) {
+    const response = await createNativeBffProxy({
+      baseUrl: new URL("https://api.example.com"), fetchImpl: async () => upstream,
+    })(request(), ["session"]);
+    assert.equal(response.status, 502);
+    const text = await response.text();
+    assert.doesNotMatch(text, /opaque-native-credential|internal\.example|secret=value/);
+    assert.equal(response.headers.has("set-cookie"), false);
+    assert.equal(response.headers.has("location"), false);
+  }
+
+  let cookieLoginCalls = 0;
+  const cookieLogin = await createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async () => { cookieLoginCalls += 1; return Response.json({ data: {} }); },
+  })(new Request("https://app.example.com/api/v1/auth/native/login", {
+    method: "POST", headers: { Cookie: "session=blocked", "Content-Type": "application/json" }, body: "{}",
+  }), ["auth", "native", "login"]);
+  assert.equal(cookieLogin.status, 400);
+  assert.equal(cookieLoginCalls, 0);
+});
+
+test("Native Recovery JSON은 1MiB, 일반 JSON은 128KiB 응답 상한을 적용한다", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const payload = JSON.stringify({ data: "x".repeat(200_000) });
+  const fetchImpl = async () => new Response(payload, { headers: { "Content-Type": "application/json" } });
+  const bearer = { Authorization: "Bearer opaque-native-credential" };
+  const recovery = await createNativeBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl })(
+    new Request("https://app.example.com/api/v1/backups?workspace_id=workspace-1", { headers: bearer }), ["backups"],
+  );
+  const ordinary = await createNativeBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl })(
+    new Request("https://app.example.com/api/v1/session", { headers: bearer }), ["session"],
+  );
+  assert.deepEqual([recovery.status, ordinary.status], [200, 502]);
+  assert.equal(recovery.headers.get("content-length"), String(Buffer.byteLength(payload)));
+  assert.equal(recovery.headers.has("transfer-encoding"), false);
+
+  const tooLarge = JSON.stringify({ data: "x".repeat(1024 * 1024) });
+  const rejected = await createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async () => new Response(tooLarge, { headers: { "Content-Type": "application/json" } }),
+  })(new Request("https://app.example.com/api/v1/backups?workspace_id=workspace-1", { headers: bearer }), ["backups"]);
+  assert.equal(rejected.status, 502);
+});
+
+test("Native media type은 parameter 제거 후 exact JSON/PDF만 허용하고 framing을 계산한다", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const calls = [];
+  const proxy = createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (_url, init) => {
+      calls.push(init);
+      return new Response(JSON.stringify({ data: {} }), {
+        headers: { "Content-Type": "application/json; charset=utf-8", "Transfer-Encoding": "chunked" },
+      });
+    },
+  });
+  const login = await proxy(new Request("https://app.example.com/api/v1/auth/native/login", {
+    method: "POST", headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ login_id: "user", password: "sensitive-login-value" }),
+  }), ["auth", "native", "login"]);
+  assert.equal(login.status, 200);
+  assert.equal(login.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.equal(login.headers.get("content-length"), String(Buffer.byteLength(JSON.stringify({ data: {} }))));
+  assert.equal(login.headers.has("transfer-encoding"), false);
+
+  let invalidCalls = 0;
+  const invalid = await createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async () => { invalidCalls += 1; return Response.json({ data: {} }); },
+  })(new Request("https://app.example.com/api/v1/auth/native/login", {
+    method: "POST", headers: { "Content-Type": "application/jsonx" }, body: JSON.stringify({ password: "sensitive-login-value" }),
+  }), ["auth", "native", "login"]);
+  assert.deepEqual([invalid.status, invalidCalls], [415, 0]);
+
+  const reflected = await createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async () => new Response(JSON.stringify({ error: "sensitive-login-value" }), { headers: { "Content-Type": "application/json; charset=utf-8" } }),
+  })(new Request("https://app.example.com/api/v1/auth/native/login", {
+    method: "POST", headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ password: "sensitive-login-value" }),
+  }), ["auth", "native", "login"]);
+  assert.equal(reflected.status, 502);
+});
+
+test("public /api/v1 Route Handler는 Native proxy를 실행해 login non-404·Session 401·Cookie upstream0을 보장한다", async () => {
+  const route = await import("../../apps/web/app/api/v1/[...path]/route.js");
+  const originalBase = process.env.DAON_API_INTERNAL_URL;
+  const originalGateway = process.env.DAON_PUBLIC_GATEWAY_URL;
+  const originalProfile = process.env.DAON_RUNTIME_PROFILE;
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    process.env.DAON_API_INTERNAL_URL = "https://api.example.com";
+    process.env.DAON_PUBLIC_GATEWAY_URL = "https://app.example.com";
+    process.env.DAON_RUNTIME_PROFILE = "production";
+    globalThis.fetch = async () => {
+      calls += 1;
+      return Response.json({ error: { code: "INPUT_INVALID", message: "safe" } }, { status: 422 });
+    };
+    const login = await route.POST(new Request("https://app.example.com/api/v1/auth/native/login", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    }), { params: Promise.resolve({ path: ["auth", "native", "login"] }) });
+    const session = await route.GET(new Request("https://app.example.com/api/v1/session"), {
+      params: Promise.resolve({ path: ["session"] }),
+    });
+    const cookie = await route.GET(new Request("https://app.example.com/api/v1/session", {
+      headers: { Authorization: "Bearer opaque-native-credential", Cookie: "x=y" },
+    }), { params: Promise.resolve({ path: ["session"] }) });
+    assert.equal(login.status, 422);
+    assert.equal(session.status, 401);
+    assert.equal(cookie.status, 400);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBase === undefined) delete process.env.DAON_API_INTERNAL_URL; else process.env.DAON_API_INTERNAL_URL = originalBase;
+    if (originalGateway === undefined) delete process.env.DAON_PUBLIC_GATEWAY_URL; else process.env.DAON_PUBLIC_GATEWAY_URL = originalGateway;
+    if (originalProfile === undefined) delete process.env.DAON_RUNTIME_PROFILE; else process.env.DAON_RUNTIME_PROFILE = originalProfile;
+  }
+});
+
 test("BFF internal destination is server-only, fixed and profile constrained", () => {
   assert.throws(() => parseInternalApiBase("http://api.internal:8000", "production"), BffConfigurationError);
   assert.equal(parseInternalApiBase("http://api:8000", "production").origin, "http://api:8000");
