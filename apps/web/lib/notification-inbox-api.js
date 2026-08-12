@@ -11,13 +11,13 @@ async function asResult(response) {
 export const notificationInboxApi = Object.freeze({
   async list(mode) {
     const path = mode === "notifications"
-      ? "/api/v1/notifications?limit=50"
-      : "/api/v1/inbox?limit=50";
+      ? "/bff/api/notifications?limit=50"
+      : "/bff/api/inbox?limit=50";
     return asResult(await fetch(path, { credentials: "same-origin", cache: "no-store" }));
   },
 
   async markRead(item) {
-    const response = await fetch(`/api/v1/notifications/${encodeURIComponent(item.id)}`, {
+    const response = await fetch(`/bff/api/notifications/${encodeURIComponent(item.id)}`, {
       method: "PATCH",
       credentials: "same-origin",
       headers: {

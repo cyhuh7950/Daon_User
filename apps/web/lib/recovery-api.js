@@ -46,35 +46,35 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
 
 export const recoveryApi = Object.freeze({
   getSession() {
-    return request("/api/v1/session");
+    return request("/bff/api/session");
   },
   listBackups(workspaceId) {
-    return request(`/api/v1/backups?workspace_id=${encodeURIComponent(workspaceId)}`);
+    return request(`/bff/api/backups?workspace_id=${encodeURIComponent(workspaceId)}`);
   },
   createBackup(input, idempotencyKey) {
-    return request("/api/v1/backups", {
+    return request("/bff/api/backups", {
       method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
     });
   },
   getBackup(id) {
-    return request(`/api/v1/backups/${encodeURIComponent(id)}`);
+    return request(`/bff/api/backups/${encodeURIComponent(id)}`);
   },
   previewRestore(backupId, input, idempotencyKey) {
-    return request(`/api/v1/backups/${encodeURIComponent(backupId)}/restore-previews`, {
+    return request(`/bff/api/backups/${encodeURIComponent(backupId)}/restore-previews`, {
       method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
     });
   },
   getRestore(id) {
-    return request(`/api/v1/restore-requests/${encodeURIComponent(id)}`);
+    return request(`/bff/api/restore-requests/${encodeURIComponent(id)}`);
   },
   executeRestore(id, input, etag, idempotencyKey) {
-    return request(`/api/v1/restore-requests/${encodeURIComponent(id)}/execute`, {
+    return request(`/bff/api/restore-requests/${encodeURIComponent(id)}/execute`, {
       method: "POST", body: input,
       headers: { "If-Match": etag, "Idempotency-Key": idempotencyKey }
     });
   },
   cancelRestore(id, etag, idempotencyKey) {
-    return request(`/api/v1/restore-requests/${encodeURIComponent(id)}/cancel`, {
+    return request(`/bff/api/restore-requests/${encodeURIComponent(id)}/cancel`, {
       method: "POST", headers: { "If-Match": etag, "Idempotency-Key": idempotencyKey }
     });
   }
