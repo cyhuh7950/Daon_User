@@ -4,7 +4,7 @@
 
 **Goal:** 기존·신규 Workspace에 보수적인 Studio 기본 정책 Canon 6종을 원자적으로 보장하고 운영 Studio 목록을 정상화한다.
 
-**Architecture:** Alembic `0013`이 기존 Workspace를 idempotent backfill하고 `workspaces AFTER INSERT` Trigger로 신규 Workspace를 같은 PostgreSQL transaction에서 초기화한다. Runtime과 Repository는 기존 fail-close Projection을 유지하며 정책 누락과 실제 DB 장애의 Safe Error를 구분한다.
+**Architecture:** Alembic `0013`이 기존 Workspace를 idempotent backfill하고 `workspaces AFTER INSERT` Trigger로 신규 Workspace를 같은 PostgreSQL transaction에서 초기화한다. Runtime과 Repository는 기존 fail-close Projection을 유지하며 정책 누락과 실제 DB 장애의 Safe Error를 구분한다. 운영에서 확인된 psycopg extended-protocol JSONB bind 타입 오류는 Repository의 해당 `workspace_id` 인자에만 `::text`를 명시해 해소한다.
 
 **Tech Stack:** Python 3.12+, Alembic, PostgreSQL 15/18, psycopg 3, FastAPI, pytest 9, Node 24, Next.js 16.
 
@@ -244,3 +244,44 @@ Studio 잠금 6종 표시
 ```
 
 서버에서 current migration `0013`, backfill counts, RLS, API health/log, 공용 컨테이너 ID 불변과 rollback 자원을 기록한다.
+
+---
+
+### Task 4: 운영 Projection JSONB bind 타입 정합성
+
+**Files:**
+- Modify: `services/api/src/daon_user_api/studio_workspace_postgres.py`
+- Modify: `services/api/tests/test_studio_workspace_postgres.py`
+- Modify: `docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py`
+- Modify: Task 3의 Evidence·Progress·Completion·Manifest
+
+**Interfaces:**
+- Consumes: current `0013` 기본 Canon, product `_policy_projection()`, psycopg 3 extended protocol, `daon_app` RLS context.
+- Produces: 공개 응답·정책값·SQL 순서 변경 없이 정상 Studio 목록 `{outputs: [], studio_locks: 6}`.
+
+- [ ] **Step 1: RED 고정**
+
+운영 재현과 동일하게 product Repository SQL을 실제 PostgreSQL에서 parameter bind로 실행한다. 수정 전에는 `jsonb_build_object(..., 'workspace_id', %s, ...)`의 bind가 SQLSTATE `42P18`로 실패해야 한다. 단위 계약도 JSONB `workspace_id` 인자가 명시적 text bind가 아니면 실패하도록 추가한다.
+
+- [ ] **Step 2: 최소 GREEN**
+
+`studio_workspace_postgres.py`의 Projection JSONB 객체 안 `workspace_id` bind 한 곳만 아래처럼 변경한다.
+
+```diff
+- 'workspace_id', %s,
++ 'workspace_id', %s::text,
+```
+
+다른 parameter, query, 정책 선택, 응답 DTO, Runtime, Migration과 Web는 변경하지 않는다.
+
+- [ ] **Step 3: 실제 PostgreSQL·회귀**
+
+disposable PostgreSQL 15 또는 18에서 Migration `0001→0013` 후 product Repository를 app role/RLS context와 실제 psycopg extended protocol로 실행한다. SQLSTATE `42P18` 0, `outputs=[]`, locks 6, cross-tenant 0을 확인한다. focused와 전체 API를 재실행하고 disposable DB를 exact 삭제한다.
+
+- [ ] **Step 4: 독립 검토·commit·push·API-only 재배포**
+
+Critical/Important 0을 확인한 뒤 허용 파일만 commit·push한다. ysna-server는 backup과 API rollback image를 확인하고 exact commit을 checkout해 API image·API container만 교체한다. Migration은 이미 `0013`이므로 새 upgrade나 Web·worker·공용 서비스 재생성을 하지 않는다.
+
+- [ ] **Step 5: 운영 Browser Gate**
+
+기존 로그인 세션의 same-origin Workspace를 reload해 Source 5 유지, `STUDIO_DATABASE_UNAVAILABLE` 0, `POLICY_PROJECTION_UNAVAILABLE` 0, 저장 산출물 empty, Studio locks 6을 확인한다. 내부 URL·SQLSTATE·stack·secret 노출 0과 API safe log error 0을 기록한다.

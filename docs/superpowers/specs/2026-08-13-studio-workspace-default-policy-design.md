@@ -66,6 +66,8 @@ v2의 `aggregate_id`는 v1과 동일하고, `previous_version_id`는 v1 `record_
 
 `PostgresStudioWorkspaceRepository._policy_projection()`의 fail-close 계약은 유지한다. 필수 정책이 없거나 inactive/stale/scope mismatch이면 Studio 목록과 생성은 계속 안전 오류로 중단한다.
 
+운영 PostgreSQL 18과 psycopg 3 extended protocol에서 Projection의 `jsonb_build_object`에 전달하는 bare `workspace_id` bind는 SQLSTATE `42P18 IndeterminateDatatype`를 발생시킨다. 개별 정책 조회, literal 전체 Projection, RLS·GRANT와 Studio 목록 SQL은 정상임을 확인했다. 따라서 공개 API·데이터·정책 선택을 바꾸지 않고 해당 JSONB 인자만 `%s::text`로 명시해 PostgreSQL 타입 추론을 결정론화한다. 다른 bind, SQL 순서, 필수값과 fail-close 조건은 변경하지 않는다.
+
 정상 기본 세트가 있으면 Studio 목록은 빈 `outputs`와 6개 잠금을 반환한다. Source 목록과 Question은 Studio 조회 실패와 독립적으로 유지된다.
 
 `STUDIO_DATABASE_UNAVAILABLE`은 실제 pool/SQL 장애에만 사용한다. 정책 누락은 `POLICY_PROJECTION_UNAVAILABLE`로 유지하며 Runtime 공개 Safe Error allowlist에 포함해 DB 장애로 오인되지 않게 한다.
@@ -108,6 +110,7 @@ Downgrade 후 `0012` schema와 Egress deny Binding은 그대로 남아야 한다
 - 신규 Workspace INSERT 한 transaction에서 6개 기본 Canon 생성
 - Canon digest, FK, immutable, RLS, cross-tenant 0건
 - Studio 목록이 `outputs=[]`, 6 locks, 공개 정책 오류 exact code를 반환
+- product Repository를 실제 psycopg extended protocol과 `daon_app` RLS context로 실행해 SQLSTATE `42P18` 없이 `outputs=[]`, 6 locks를 반환
 - Source/Question/Auth/Egress 전체 관련 회귀, OpenAPI/BFF, build·TypeScript·boundary
 
 운영 검증:

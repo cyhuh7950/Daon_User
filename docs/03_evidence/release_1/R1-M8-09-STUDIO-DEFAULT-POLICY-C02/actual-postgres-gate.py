@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 
 import psycopg
 from alembic import command
@@ -12,6 +14,12 @@ from psycopg.types.json import Jsonb
 
 
 ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT / "services/api/src"))
+
+from daon_user_api.studio_workspace import StudioContext
+from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+
+
 DSN = os.environ.get("DAON_DB_MIGRATION_DSN", "")
 TABLES = (
     "workspace_policies",
@@ -21,6 +29,17 @@ TABLES = (
     "ruleset_version_snapshots",
     "ruleset_bindings",
 )
+
+
+class GateCloudStore:
+    @contextmanager
+    def _transaction(self, access):  # type: ignore[no-untyped-def]
+        with psycopg.connect(DSN) as connection:
+            with connection.transaction():
+                connection.execute("SET LOCAL ROLE daon_app")
+                connection.execute("SELECT set_config('app.tenant_id',%s,true)", (access.tenant_id,))
+                connection.execute("SELECT set_config('app.workspace_id',%s,true)", (access.workspace_id,))
+                yield connection
 
 
 def require(condition: bool, message: str) -> None:
@@ -112,6 +131,39 @@ def clean_legacy_case(connection: psycopg.Connection, workspace_id: str) -> None
         "DELETE FROM workspaces WHERE tenant_id='tenant-gate' AND workspace_id=%s",
         (workspace_id,),
     )
+
+
+def seed_deny_egress(connection: psycopg.Connection, workspace_id: str) -> None:
+    payload = {
+        "allowed_destinations": [],
+        "allowed_provider_kinds": [],
+        "classification": "restricted",
+        "masking_required": True,
+        "max_bytes": 0,
+        "mode": "deny_external",
+        "redaction_required": True,
+        "required_approver": "organization_admin",
+    }
+    canonical_text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical_text.encode()).hexdigest()
+    for scope_type, target_workspace, suffix in (
+        ("organization", None, "organization"),
+        ("workspace", workspace_id, workspace_id),
+    ):
+        policy_id = "gate:egress-policy:" + hashlib.md5(suffix.encode()).hexdigest()
+        binding_id = "gate:egress-binding:" + hashlib.md5(suffix.encode()).hexdigest()
+        connection.execute(
+            "INSERT INTO egress_policy_versions "
+            "(tenant_id,organization_id,workspace_id,policy_version_id,scope_type,policy_version,state,canonical_json,canonical_text,digest_sha256,created_by,trace_id) "
+            "VALUES ('tenant-gate','tenant-gate',%s,%s,%s,1,'active',%s,%s,%s,'gate:repository','gate:repository')",
+            (target_workspace, policy_id, scope_type, Jsonb(payload), canonical_text, digest),
+        )
+        connection.execute(
+            "INSERT INTO egress_policy_bindings "
+            "(tenant_id,organization_id,workspace_id,binding_id,scope_type,policy_version_id,binding_version,active,current,created_by,trace_id) "
+            "VALUES ('tenant-gate','tenant-gate',%s,%s,%s,%s,1,true,true,'gate:repository','gate:repository')",
+            (target_workspace, binding_id, scope_type, policy_id),
+        )
 
 
 def main() -> None:
@@ -478,7 +530,25 @@ def main() -> None:
         require(connection.execute("SELECT count(*) FROM workspace_policies WHERE record_id=%s", (f"studio-default:workspace-policy:{suffix}",)).fetchone()[0] == 1, "deterministic reapply")
         require(connection.execute("SELECT count(*) FROM knowledge_scopes WHERE tenant_id='tenant-gate' AND workspace_id='workspace-legacy' AND record_id=%s AND version=2 AND previous_version_id=%s", (legacy_v2_id, legacy_scope_id)).fetchone()[0] == 1, "legacy deterministic v2 reapply")
 
-    print("PASS postgres=actual migration=0001-0013 legacy=v1-to-v2+idempotent+weight-fk negatives=8+compat-collision conflict=fail-close latest-invalid=fail-close history-tie=fail-close revision0012+rows-preserved backfill=missing+partial+full-preserved0 trigger=6 digest=valid fk=rejected immutable=rejected rls=cross-tenant0 downgrade=legacy-ref-fail-close+owned-v2-only reapply=deterministic")
+        seed_deny_egress(connection, "workspace-new")
+
+    context = StudioContext(
+        "tenant-gate", "workspace-new", "gate-actor", "gate-trace", "0013",
+    )
+    result = PostgresStudioWorkspaceRepository(GateCloudStore()).list_outputs(context)
+    require(result["outputs"] == (), "repository outputs empty")
+    require(len(result["studio_locks"]) == 6, "repository policy locks")
+    with psycopg.connect(DSN) as connection:
+        with connection.transaction():
+            connection.execute("SET LOCAL ROLE daon_app")
+            connection.execute("SELECT set_config('app.tenant_id','tenant-gate',true)")
+            connection.execute("SELECT set_config('app.workspace_id','workspace-new',true)")
+            cross_tenant = connection.execute(
+                "SELECT count(*) FROM workspace_policies WHERE tenant_id='tenant-other' OR workspace_id='workspace-other'"
+            ).fetchone()[0]
+            require(cross_tenant == 0, "repository RLS cross tenant")
+
+    print("PASS postgres=actual migration=0001-0013 legacy=v1-to-v2+idempotent+weight-fk negatives=8+compat-collision conflict=fail-close latest-invalid=fail-close history-tie=fail-close revision0012+rows-preserved backfill=missing+partial+full-preserved0 trigger=6 digest=valid fk=rejected immutable=rejected rls=cross-tenant0 repository=sqlstate0+outputs0+locks6 downgrade=legacy-ref-fail-close+owned-v2-only reapply=deterministic")
 
 
 if __name__ == "__main__":

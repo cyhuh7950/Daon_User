@@ -68,3 +68,25 @@ has_scope=false
 - focused `16 passed, 1 skipped`, 전체 API `360 passed, 26 skipped, 134 subtests`, Node 61, OpenAPI 75/94/120/31, Web build·TypeScript와 Product Boundary가 PASS했다.
 - disposable DB는 exact drop되어 remaining 0이고 공용 `local-postgres`는 running이다.
 - 이 절은 local 재배포 준비 증거이며 production 재배포 성공을 뜻하지 않는다. 운영 HEAD/revision/service는 위 rollback 상태 그대로다.
+
+## f8ed4e4 재배포 Gate
+
+판정: `DEPLOYED_BROWSER_AUTH_PENDING`
+
+- target: `f8ed4e4acf360c3d21848df2c1b8bbb6ec5b8a26`; `ca00719`, `6bfd10b` ancestry와 detached checkout 확인.
+- 기존 backup SHA-256 `20a0a2d47412a9914da6cb39b1252106da5fc22058f03f8f2c5b4f35335c0f38`, restore-list 1180, rollback image `sha256:6b8754d7a843aaee33b1a8fa4c62a77f8c92654419639871775880142a655f79` 재검증.
+- Migration은 비밀을 stdin으로만 전달한 one-off에서 `0012→0013 (head)` 성공. 성공 전 service recreate는 0.
+- 운영 Canon: Workspace 5, latest valid WorkspacePolicy 5, exact legacy v1 1, compat v2 1, compat v2를 참조하는 WeightProfile 1, RuleSet Reference/Snapshot/Binding 각 5. RLS app role own 1/cross 0.
+- API image `sha256:49d09e80221db2e445582a67d58622ff1f33ce221af605565113504ab8ae156f`, worker image `sha256:e664bd7b1e5dfdaa665769ad102cc56f19e7452857e14d932d8da8620776fc95`. API와 document-worker만 recreate했고 Web는 기존 ID `9053452c7307f4520a57027a0ed4257c709d2e117018438f3d1448e0b3c4466d` 유지.
+- API healthy, worker running, public root 200, same-origin BFF session unauthenticated 401, 최근 API/worker safe error 0, one-off remaining 0.
+- target Workspace Source는 5건(`failed=3`, `needs_review=1`, `ready=1`), 저장 Studio Output은 0건.
+- object storage `e5c606a...`, shared-db `c962c98...`, proxy `337026a...`, netdata `8cab33d...` ID와 running/health는 preflight 대비 불변.
+- Chrome의 새 production 탭과 기존 Workspace 탭 모두 session expired. 실제 DOM은 `AUTHENTICATION_REQUIRED`; 자격 추측·입력 없이 로그인 화면을 handoff했다. 따라서 Source 5·Studio 오류 0·잠금 6의 authenticated Browser 확인만 미실행이며 서버/DB/API 배포 성공과 분리한다.
+- 서버 보호 dirty는 `backups/`, `secrets/`만 유지했고 비밀·cookie·내부 URL을 Evidence에 기록하지 않았다.
+
+## Task 4 local Repository remediation
+
+- 운영 API image의 product `_policy_projection`을 app DSN·RLS context로 재현했을 때 `jsonb_build_object`의 `workspace_id` parameter `$9`에서 SQLSTATE `42P18 IndeterminateDatatype`가 발생했다. 정책별 subquery, 목록 query, literal projection, GRANT와 RLS는 각각 성공해 원인을 해당 untyped bind 한 곳으로 분리했다.
+- 승인된 계획 예외대로 그 bind만 `%s::text`로 변경했다. unit RED `1 failed, 10 passed, 1 skipped`, focused GREEN `17 passed, 1 skipped`, 전체 API `361 passed, 26 skipped, 134 subtests passed`.
+- PostgreSQL 15.18의 고유 disposable DB `daon_c02_task4_20260814021242`에서 fresh 0001→0013과 기존 fail-close·downgrade·reapply 회귀를 수행했다. `daon_app` 역할과 tenant/workspace RLS context의 actual product `list_outputs` Repository는 SQLSTATE 0, outputs 0, locks 6, cross-tenant 0이었다.
+- DB는 exact drop되어 remaining 0이고 공용 `local-postgres`는 running이다. 이 절은 local fix 증거이며 API-only 재배포나 authenticated production Browser 성공을 뜻하지 않는다.

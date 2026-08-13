@@ -2,7 +2,7 @@
 
 ## 판정
 
-IN_PROGRESS — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001`
+READY_FOR_REVIEW — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001` Task 4 local remediation 완료, API-only 재배포·운영 Browser 재검증 대기
 
 ## 구현 결과
 
@@ -15,13 +15,14 @@ IN_PROGRESS — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001`
 - canonical text는 key 정렬·공백 없는 exact JSON이며 SHA-256 digest, Canon FK, immutable trigger와 RLS를 유지한다.
 - downgrade는 비소유 계보 참조가 있으면 `STUDIO_DEFAULT_POLICY_ROLLBACK_BLOCKED`로 전체 fail-close한다. 참조가 없을 때만 6 immutable trigger를 migration role로 잠시 비활성화하고 결정론 ID와 `created_by='migration:0013'`가 함께 일치하는 소유 행만 FK 역순 삭제한다.
 - Studio 정책 누락은 공개 409 `POLICY_PROJECTION_UNAVAILABLE`, DB 장애는 기존 503 `STUDIO_DATABASE_UNAVAILABLE`로 구분된다.
+- PostgreSQL extended protocol에서 `jsonb_build_object` 내부의 untyped `workspace_id` bind가 SQLSTATE 42P18을 일으키던 product Projection 한 곳을 `%s::text`로 고정했다. SQL 구조·bind 순서·Migration·Runtime·Web·공개 API는 변경하지 않았다.
 
 ## 검증 결과
 
 - Migration 정적 계약: 7 passed(legacy RED는 구현 전 1 failed, 6 passed).
-- Studio focused: 15 passed, 1 skipped(전용 PostgreSQL DSN 환경변수 기반 별도 test; actual Gate로 실행 범위 대체 검증).
-- Studio+Egress 관련: 16 passed, 1 skipped.
-- 전체 API: 360 passed, 26 skipped, 134 subtests passed.
+- Task 4 RED: 운영 app-role/RLS actual psycopg `42P18 IndeterminateDatatype`, unit `1 failed, 10 passed, 1 skipped`.
+- Studio+Egress focused GREEN: 17 passed, 1 skipped.
+- 전체 API: 361 passed, 26 skipped, 134 subtests passed.
 - Node Workspace/Studio/BFF/OpenAPI: 61 passed.
 - OpenAPI verifier: paths 75, operations 94, schemas 120, errors 31.
 - Web production build 및 TypeScript: PASS.
@@ -40,11 +41,11 @@ IN_PROGRESS — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001`
 - 비소유 RuleEvaluation 참조 상태의 downgrade 전체 rollback과 revision/행 보존을 확인.
 - 참조 제거 후 owned-only `0013→0012`, 기존 Canon 보존, `0012→0013` 결정론 reapply를 확인.
 - 최종 disposable DB 삭제 후 matching prefix remaining 0, 공용 `local-postgres` running=true.
+- Task 4 고유 DB `daon_c02_task4_20260814021242`, PostgreSQL 15.18에서 actual product `list_outputs` Repository를 `daon_app` 역할·RLS context로 실행해 SQLSTATE 0, Studio outputs 0, locks 6, cross-tenant 0을 확인했다. 기존 0001→0013·downgrade·reapply Gate도 함께 PASS했고 exact DB drop 후 remaining 0이었다.
 
 ## 범위와 미해결
 
-- 제품 공개 API, Repository projection SQL, Egress 정책값·보안경계, 의존성은 변경하지 않았다.
-- target `6bfd10b` ysna 배포는 승인받아 backup·rollback image·build까지 수행했으나 운영 KnowledgeScope 최신 Canon 한 행의 필수 `workspace_id`·`scope` 누락으로 Migration 0013이 `STUDIO_DEFAULT_POLICY_LATEST_INVALID` fail-close했다.
-- DB revision0012와 기존 데이터가 보존됐고 서비스 recreate 없이 checkout/API image tag를 사전 `9845890` 상태로 복구했다. 운영 Browser Gate는 target이 배포되지 않아 수행하지 않았다.
-- 다음 진행에는 해당 운영 Canon을 immutable 계보에 맞게 교정하는 별도 데이터 변경 또는 migration 호환 계약 변경에 대한 신산님 승인이 필요하다.
-- 신산님이 승인한 exact legacy Question KnowledgeScope v2 append-only 호환 구현과 local actual PostgreSQL Gate는 완료했다. 운영은 여전히 rollback 상태인 revision 0012이므로 어울1 검토·commit/push와 재배포 Gate 전에는 최종 COMPLETED로 승격하지 않는다.
+- 로그인된 운영 Browser에서 Source 5는 정상화됐지만 Studio 목록은 계속 503이었다. product Repository를 운영 app DSN/RLS context에서 직접 재현해 `jsonb_build_object`의 untyped `workspace_id` bind가 SQLSTATE `42P18 IndeterminateDatatype`를 발생시키는 정확한 원인을 확인했다.
+- 신산님은 공개 API·정책·Migration 변경 없이 해당 bind 한 곳만 `%s::text`로 고정하고 실제 PostgreSQL RED→GREEN, 전체 회귀, API-only 재배포, authenticated Browser를 재검증하는 Task 4 계획 예외를 승인했다. 이 Gate가 끝날 때까지 완료 판정은 `IN_PROGRESS`다.
+- exact `f8ed4e4acf360c3d21848df2c1b8bbb6ec5b8a26`와 Migration `0013`은 ysna-server에 배포돼 있으며 API·worker·DB Gate는 PASS 상태다. 현재 수정은 Migration이나 정책 데이터를 다시 변경하지 않는다.
+- Task 4 local 완료 조건인 actual app-role Repository `outputs=[]`·locks 6와 전체 API 회귀는 충족했다. 독립 리뷰, exact commit/push, API-only 재배포와 로그인된 운영 Browser의 Studio 오류 0 확인은 어울1 후속 Gate로 남는다.

@@ -26,11 +26,14 @@
 5. 정책 누락과 실제 DB 장애의 공개 Safe Error를 구분한다.
 6. 실제 PostgreSQL 15 또는 18에서 upgrade·downgrade·reapply·RLS·digest·FK·Trigger를 검증한다.
 7. 보호 dirty를 보존하고 허용 파일만 변경한다.
+8. 운영 actual repository 재현에서 확정된 SQLSTATE `42P18`은 계획 Task 4에 따라 TDD로 고정하고, Projection JSONB의 `workspace_id` bind 한 곳에만 `::text`를 명시한다.
+9. current `0013`을 유지하고 API만 재배포한다. Web·worker·Migration·공용 서비스는 변경하거나 재생성하지 않는다.
 
 ## 허용 파일
 
 - `services/api/migrations/versions/0013_studio_workspace_default_policy.py`
 - `services/api/src/daon_user_api/runtime.py`
+- `services/api/src/daon_user_api/studio_workspace_postgres.py`
 - `services/api/tests/test_studio_workspace_default_policy_migration.py`
 - `services/api/tests/test_studio_workspace_postgres.py`
 - `services/api/tests/test_studio_workspace_runtime_http.py`
@@ -49,6 +52,8 @@
 - 자격정보·DSN·내부 URL·stack을 Evidence나 오류 응답에 기록
 - 관련 없는 리팩터링, 보호 dirty stage/restore/delete
 - 어울2 commit·push·배포
+
+Task 4 구현 완료 후 commit·push·API-only 배포는 어울1의 독립 검토와 승인된 Gate 지시에 따라 수행한다.
 
 ## 결과 계약
 
