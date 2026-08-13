@@ -6,16 +6,16 @@
 | --- | --- |
 | 문서 구분 | Release 1 구현 작업계획 정본 |
 | 계획 ID | `DAON-USER-R1-PLAN` |
-| 계획 버전 | `1.8` |
+| 계획 버전 | `1.9` |
 | 작성일 | 2026-07-20 |
-| 최종 수정일 | 2026-08-10 |
+| 최종 수정일 | 2026-08-13 |
 | 상태 | 승인 · 신산님 · 2026-07-20 |
 | 구현 상태 | `READY` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
 | 대상 Release | Release 1 — 핵심 업무형 |
 | 상세 설계 정본 | `docs/superpowers/specs/2026-07-20-daon-user-program-design.md` |
 | 상세 설계 배포본 | `docs/Daon 사용자형 지식 업무지원 프로그램 상세 설계서.docx` |
-| 상세 설계 정본 SHA-256 | `6FF5E944C4C7BA66A73B82333A9172391B7ED96F2B532FABB7779BC28518F418` |
+| 상세 설계 정본 SHA-256 | 승인 개정 반영 후 작업 패킷에서 재계산·고정 |
 | 상세 설계 배포본 SHA-256 | `DAB1F8A936D69B18355EB986579A0CA5535169E829AB80D30DAC067606FEA0DF` |
 | 계획 정본 경로 | `docs/02_work_orders/daon_user_program_release_1_implementation_plan.md` |
 | 승인 기준 Manifest | `docs/02_work_orders/release_1_baseline_manifest.json` · M0 생성 예정 |
@@ -62,6 +62,7 @@
 | 1.6 | 2026-08-04 | ysna PostgreSQL 16→18.4 업그레이드, WSL PostgreSQL 15.18 유지, Daon DB Adapter·Migration PostgreSQL 15~18 호환 계약 반영 | C2 사용자 결정 + C1 환경 정합화 | 신산님 승인 |
 | 1.7 | 2026-08-09 | TP-2A/CP3 실제 E2E 최종 `PASS / GO_TO_EXPANSION` 승인과 증거 SHA 기록, Gate 완화 없이 Evidence Manifest·M5~M7 Exit 소급 검증 유지 | C0 승인·증거 기록 | 신산님 승인 · `APR-CP3-PASS-GO-20260809-01` |
 | 1.8 | 2026-08-10 | Windows Recovery Tauri Native Bridge와 별도 Native 로컬 로그인 API, opaque Token 회전·Windows Credential Manager 보관·Web 로그인 불변 계약 반영 | C2 공개 API·보안 경계 승인 + C1 실행 정합화 | 신산님 승인 · `APR-R1-M5-07-WINDOWS-NATIVE-LOGIN-20260810-01` |
+| 1.9 | 2026-08-13 | R1-M8-09 실제 PG Gate에서 확인된 Egress 정책 정본 부재를 Versioned Organization/Workspace Binding, deny 우선, 기존 Workspace deny Backfill, 정책 API/UI·Step-up 수정 작업으로 보강 | C2 데이터·공개 API·보안 경계 승인 | 신산님 승인 · `APR-R1-M8-09-EGRESS-POLICY-C01-20260813-01` |
 
 ---
 
@@ -620,6 +621,7 @@ Cloud-sync와 Windows Local-private가 서로 다른 저장·실행 영역을 �
 | R1-M8-07 | R1-M4-07, R1-M8-01, R1-M8-02, R1-M8-03, R1-M8-04, R1-M8-05, R1-M8-06 | 검토·승인·전달 | ReviewRequest, revision_requested→draft, ApprovalRequest, Approval, Delivery, Step-up, 현재 AccessDecision | 승인 요청 기본 7일·조직 1~30일, 24시간 전 알림, 만료·회수 자동 승인 0건, 민감 승인·외부 전달 추가 인증, 권한 축소 차단, Audit, 승인 후 변경 시 재승인 |
 | R1-M8-08 | R1-M6-05, R1-M8-07 | 생산 지식 등록 | KnowledgeRegistration, 불변 SourceVersion, 순환 탐지, Step-up·현재 권한 | 명시 등록과 추가 인증, 원본·Run·Model·검토 계보, 권한 축소 후 등록 0건, 자동 Daon 승격 0건 |
 | R1-M8-09 | R1-M7-01, R1-M8-02, R1-M8-03, R1-M8-04, R1-M8-05, R1-M8-06, R1-M8-07, R1-M8-08 | Web Studio E2E | R1-WEB-02 | Production Chrome 실제 클릭, 생성 설정·잠금·Snapshot, 5종 파일, Version·Review·Approval·Audit |
+| R1-M8-09-EGRESS-POLICY-C01 | R1-M8-09, R1-M6-02, R1-M6-10, R1-M6-12, R1-M6-13 | Versioned Egress 정책 정본·관리 화면·Run 결속 수정 | R1-WEB-01, R1-WEB-02, R1-OPS-01 | Migration 0012·deny Backfill·RLS·Step-up 정책 API/UI·Frozen RoutingContext·EgressDecision·실제 PostgreSQL·Browser Network |
 | R1-M8-10 | R1-M7-02, R1-M8-01, R1-M8-06 | Windows Offline Studio 초안 | R1-WIN-01 잔여 | 네트워크 차단 상태 생성·편집, 암호화 Queue·RunSnapshot, 재연결 승인 Sync |
 | R1-M8-11 | R1-M7-03, R1-M8-02, R1-M8-03, R1-M8-04, R1-M8-05, R1-M8-06, R1-M8-07, R1-M8-08 | Windows 전체 Studio E2E | R1-WIN-03 | 설치 App 실제 클릭, 생성 설정·잠금·Snapshot, 5종 파일, Version·Review·Approval·Audit |
 | R1-M8-12 | R1-M4-07, R1-M7-04, R1-M8-07 | Android 간단 편집·검토·승인 | 제목·기존 텍스트·단순 표 Cell·Comment·검토·승인 화이트리스트, 구조·Layout·근거 연결·재생성 차단 | 실기기 허용/거부 Matrix, API 우회 거부, Notification, 제한 Offline 열람, Reconnect·Audit |
@@ -682,7 +684,7 @@ M9의 전체 회귀와 승인은 개발 Work Order가 아니라 다음 Verificat
 | 여정 ID | 주 담당 Work Order | 필수 선행 Work Order | 최종 증거 |
 | --- | --- | --- | --- |
 | R1-WEB-01 | R1-M7-01 | G2-UX, R1-M3-01, R1-M4-01, R1-M4-03, R1-M4-04, R1-M4-05, R1-M5-01, R1-M5-02, R1-M5-04, R1-M6-01, R1-M6-02, R1-M6-05, R1-M6-06, R1-M6-08, R1-M6-09, R1-M6-10, R1-M6-11, R1-M6-12, R1-M6-13, R1-M6-14, R1-M6-15, R1-M6-16 | 파일·직접 입력·인터넷·Daon·가중치, Production Chrome, Network·Console, RunSnapshot |
-| R1-WEB-02 | R1-M8-09 | R1-M7-01, R1-M8-01, R1-M8-02, R1-M8-03, R1-M8-04, R1-M8-05, R1-M8-06, R1-M8-07, R1-M8-08 | GenerationSettingsSnapshot, 5종 파일, Version·Review·Approval·Audit·KnowledgeRegistration |
+| R1-WEB-02 | R1-M8-09, R1-M8-09-EGRESS-POLICY-C01 | R1-M7-01, R1-M8-01, R1-M8-02, R1-M8-03, R1-M8-04, R1-M8-05, R1-M8-06, R1-M8-07, R1-M8-08 | GenerationSettingsSnapshot, Versioned Egress Policy/Decision, 5종 파일, Version·Review·Approval·Audit·KnowledgeRegistration |
 | R1-WIN-01 | R1-M7-02, R1-M8-10 | G2-UX, R1-M3-02, R1-M3-03, R1-M4-02, R1-M4-03, R1-M4-04, R1-M4-06, R1-M5-03, R1-M5-04, R1-M5-05, R1-M6-01, R1-M6-02, R1-M6-03, R1-M6-04, R1-M6-05, R1-M6-06, R1-M6-07, R1-M6-08, R1-M6-09, R1-M6-10, R1-M6-14, R1-M6-15, R1-M6-16 | EXE, Loopback·IPC, 외부 연결 0, Local ASR·검색·질문·근거·Studio 초안·암호화 Queue·승인 Sync |
 | R1-WIN-02 | R1-M7-03 | R1-M3-02, R1-M4-05, R1-M5-05, R1-M6-10, R1-M6-12, R1-M6-13, R1-M6-14, R1-M6-16 | Route·Model·Network·EgressDecision·Audit |
 | R1-WIN-03 | R1-M8-11 | R1-M7-03, R1-M8-01, R1-M8-02, R1-M8-03, R1-M8-04, R1-M8-05, R1-M8-06, R1-M8-07, R1-M8-08 | 실제 App 클릭, GenerationSettingsSnapshot, 5종 파일, Version·Review·Approval·Audit |

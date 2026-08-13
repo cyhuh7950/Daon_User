@@ -1,0 +1,8 @@
+.egress-policy-pane { font-size: 12px; max-width: 760px; padding: 24px; }
+.egress-policy-pane header { display: flex; align-items: center; gap: 8px; }
+.egress-policy-pane h1 { font-size: 16px; margin: 0; }
+.egress-policy-pane form { display: grid; gap: 12px; margin-top: 16px; }
+.egress-policy-pane label { display: grid; gap: 6px; }
+.egress-policy-pane input, .egress-policy-pane select, .egress-policy-pane button { font: inherit; min-height: 32px; }
+.egress-policy-pane .info-button { width: 24px; min-height: 24px; border-radius: 50%; }
+.egress-policy-pane .policy-lock { font-size: 10px; }

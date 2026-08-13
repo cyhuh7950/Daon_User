@@ -92,7 +92,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
                 headers={
                     "Content-Type": "application/json", "X-Trace-Id": TRACE_ID,
-                    "Idempotency-Key": "question-cp3",
+                    "Idempotency-Key": "question-cp3-0001",
                 },
                 json={
                     "source_id": "source-cp3", "source_version_id": "source-version-cp3",
@@ -106,6 +106,22 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("minio", response.text.casefold())
         self.assertNotIn("localhost", response.text.casefold())
         self.assertEqual(self.service.calls[0][0].workspace_id, "workspace-001")
+
+    async def test_question_rejects_unbounded_or_unsafe_idempotency_before_service(self) -> None:
+        for invalid_key in ("x" * 15, "x" * 129, "unsafe/key-value"):
+            self.service.calls.clear()
+            with self._authenticated():
+                response = await self.client.post(
+                    "/api/v1/workspaces/workspace-001/questions",
+                    cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                    headers={"Idempotency-Key": invalid_key},
+                    json={
+                        "source_id": "source-cp3", "source_version_id": "source-version-cp3",
+                        "question": "bounded question",
+                    },
+                )
+            self.assertEqual(response.status_code, 400, invalid_key)
+            self.assertEqual(self.service.calls, [])
 
     async def test_citation_content_is_inline_pdf_after_current_access_recheck(self) -> None:
         with self._authenticated():

@@ -5,11 +5,11 @@
 | 항목 | 내용 |
 | --- | --- |
 | 문서 구분 | 독립 제품 상세 설계 정본 |
-| 문서 버전 | 0.9 |
+| 문서 버전 | 1.0 |
 | 작성일 | 2026-07-20 |
-| 개정 | 2026-08-10 · Windows Native 로그인·Recovery Tauri Bridge 계약 반영 |
-| 상태 | 승인 · 신산님 · 2026-07-20 |
-| 승인 기록 | `APR-G0-DESIGN-20260720-01` |
+| 개정 | 2026-08-13 · Versioned Egress Policy·Organization deny 우선·관리 UI 계약 반영 |
+| 상태 | 승인 · 신산님 · 2026-07-20 · Egress 개정 승인 2026-08-13 |
+| 승인 기록 | `APR-G0-DESIGN-20260720-01` · `APR-R1-M8-09-EGRESS-POLICY-C01-20260813-01` |
 | 대상 제품 | Daon 사용자형 지식 업무지원 프로그램 |
 | 제품 관계 | Daon2, Daon2.5, Daon3과 별개의 독립 제품 |
 | 정본 | 이 Markdown 문서 |
@@ -1180,6 +1180,24 @@ Release 1은 읽기와 실행만 지원한다. 사용자 생산 지식을 Daon�
 - 실행·Provider·Model
 
 Local-private 자료의 외부 자동 Fallback은 금지한다.
+
+#### 20.2.1 Egress 정책 정본과 Version Binding
+
+- `EgressPolicyVersion`은 정책 정본이고 `EgressDecision`은 특정 Run의 평가 결과다. 결과를 다음 Run의 정책으로 재사용하지 않는다.
+- Organization 기본 정책과 Workspace Binding을 별도 Versioned Canon으로 저장한다. 정책 Version은 생성 후 불변이며 Binding 전환은 새 Version을 활성화하는 방식으로만 수행한다.
+- Effective policy는 현재 Tenant·Organization·Workspace에 결속된 active/current Version만 사용한다. Organization의 `deny_external`은 Workspace allow보다 항상 우선하며, 누락·비활성·stale·scope 불일치는 `EGRESS_POLICY_UNAVAILABLE`로 fail-close한다.
+- 기존 Workspace는 Migration `0012`에서 명시적 `deny_external` Version과 Binding으로 멱등 Backfill한다. Provider 종류나 Data Area만으로 allow를 추론하지 않는다.
+- 외부 전송 허용 Version은 허용 Provider kind·destination, 데이터 분류, 최대 Byte, 필수 Masking/Redaction, 승인 주체를 canonical payload와 digest로 고정한다.
+- Run 시작 시 effective policy Version/Binding, Data Realm, Provider/Deployment, SourceVersion/Chunk/Field, 분류, 예상 Byte, Masking/Redaction과 승인 주체를 Frozen RoutingContext와 RunSnapshot에 고정한다.
+- 외부 호출 전에 Routing 평가와 append-only `EgressDecision`을 Transaction으로 저장하고 `RoutingDecision`에 결속한다. Commit 전에는 Provider 호출을 시작하지 않는다.
+- 동일 Idempotency Key는 같은 actor·workspace·policy/binding Version·provider/deployment·전송 fingerprint에서만 replay한다. 정책이나 전송 범위가 바뀌면 새 Run을 만든다.
+
+#### 20.2.2 정책 관리 API·화면·보안
+
+- Organization 관리자 화면에서 Organization 기본 정책과 Workspace effective policy를 조회하고 새 정책 Version을 생성·활성화한다. 상위 deny로 잠긴 값은 읽기 전용과 잠금 사유로 표시한다.
+- 정책 변경은 현재 Organization/Workspace 관리자 권한, ETag/expected version, CSRF, Audit와 `organization_security_or_connector_policy_change` Step-up Authorization을 모두 재검증한다.
+- Browser는 same-origin `/bff/api/...`만 사용하며 내부 API 주소·Credential·정책 원문 중 비공개 필드를 노출하지 않는다.
+- 화면 표준 1920×1080·본문/폼 12px를 적용하고 설명은 `i` Tooltip/Popover로 제공한다.
 
 ### 20.3 Prompt Injection·도구 보호
 

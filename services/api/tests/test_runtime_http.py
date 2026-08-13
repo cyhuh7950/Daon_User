@@ -32,6 +32,7 @@ from daon_user_api.runtime import (
     WEB_SESSION_COOKIE,
     RuntimeDependencies,
     RuntimeSettings,
+    request_timeout_for_path,
     build_dependencies,
     create_app,
 )
@@ -562,6 +563,11 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeSettingsTests(unittest.TestCase):
+    def test_grounded_question_only_gets_bounded_model_timeout(self) -> None:
+        settings = RuntimeSettings.for_test(database_path=Path("runtime.sqlite3"), policy_version="policy-v1")
+        self.assertEqual(request_timeout_for_path(settings, "/api/v1/workspaces/workspace-a/questions"), 95.0)
+        self.assertEqual(request_timeout_for_path(settings, "/api/v1/session"), 30.0)
+
     def test_object_storage_requires_complete_secret_references_and_build_is_lazy(self) -> None:
         with self.assertRaises(ValueError):
             RuntimeSettings(

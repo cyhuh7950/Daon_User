@@ -254,6 +254,15 @@ class UrlLibDocumentUnderstandingTransport:
         )
         return self._request(request, timeout_seconds)
 
+    def post_json_no_auth(
+        self, *, url: str, payload: dict[str, object], timeout_seconds: float,
+    ) -> dict[str, object]:
+        request = urllib.request.Request(
+            url, data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        return self._request(request, timeout_seconds)
+
     def post_multipart(
         self, *, url: str, api_key: str, fields: dict[str, str], filename: str,
         content: bytes, timeout_seconds: float,

@@ -248,3 +248,35 @@ test("Notification·Inbox 공개 계약은 ACL·Cursor·ETag·멱등성 경계�
   assert.equal(document.components.schemas.Notification.properties.title.description.includes("Plain text"), true);
   assert.equal(document.components.schemas.InboxItem.description.includes("read-only projection"), true);
 });
+
+test("Product Studio OpenAPI는 Runtime method·exact body·7 media type 불일치를 거부한다", async () => {
+  const document = clone(await loadContract());
+  document.paths["/api/v1/reviews"].get = structuredClone(document.paths["/api/v1/studio-outputs"].get);
+  assert.throws(() => validateOpenApiDocument(document), /Studio Runtime method mismatch/);
+  delete document.paths["/api/v1/reviews"].get;
+  const bodyMismatch = clone(await loadContract());
+  bodyMismatch.paths["/api/v1/approvals"].post.requestBody.$ref = "#/components/requestBodies/ResourceMutation";
+  assert.throws(() => validateOpenApiDocument(bodyMismatch), /Studio Runtime request mismatch/);
+  const mediaMismatch = clone(await loadContract());
+  delete mediaMismatch.components.responses.StudioExportResponse.content["image/png"];
+  assert.throws(() => validateOpenApiDocument(mediaMismatch), /Studio export media types mismatch/);
+  for (const [apiPath, response] of [
+    ["/api/v1/studio-generation-requests", "#/components/responses/StudioGenerationMutationResponse"],
+    ["/api/v1/studio-outputs/{id}/versions", "#/components/responses/StudioVersionMutationResponse"],
+    ["/api/v1/reviews", "#/components/responses/StudioActionMutationResponse"],
+  ]) {
+    assert.equal(document.paths[apiPath].post.responses["201"].$ref, response);
+    assert.equal(document.paths[apiPath].post.responses["200"].$ref, response);
+  }
+  const responseMismatch = structuredClone(document);
+  responseMismatch.paths["/api/v1/reviews"].post.responses["201"].$ref = "#/components/responses/CreatedResponse";
+  assert.throws(() => validateOpenApiDocument(responseMismatch), /Studio Runtime response mismatch/);
+  assert.ok(document.components.schemas.StudioRevisionRequest.properties.settings.$ref.endsWith("/StudioGenerationSettings"));
+  assert.ok(document.components.schemas.StudioVersionMutationEnvelope.properties.data.required.includes("content"));
+  assert.deepEqual(document.components.schemas.StudioVersionMutationEnvelope.properties.data.properties.content.oneOf, [
+    { type: "string" }, { type: "object" },
+  ]);
+  for (const responseName of ["StudioGenerationMutationResponse", "StudioVersionMutationResponse", "StudioActionMutationResponse"]) {
+    assert.equal(document.components.responses[responseName].headers.ETag.$ref, "#/components/headers/ETag");
+  }
+});

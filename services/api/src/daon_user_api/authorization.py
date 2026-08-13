@@ -1019,6 +1019,33 @@ class AuthorizationService:
             if not allowed:
                 raise AuthorizationError("ACTION_DENIED", 403)
 
+    def organization_admin_workspace(
+        self, *, principal: IdentityPrincipal, trace_id: str, policy_version: str,
+    ) -> str:
+        """Return a server-selected organization workspace for tenant-scoped writes."""
+        with self._repository.transaction() as connection:
+            tenant_role = self._tenant_role(connection, principal)
+            role = None if tenant_role is None else Role(str(tenant_role["role"]))
+            row = connection.execute(
+                "SELECT workspace_id FROM auth_workspaces "
+                "WHERE tenant_id=? AND workspace_kind='organization' "
+                "ORDER BY workspace_id LIMIT 1",
+                (principal.tenant_id,),
+            ).fetchone()
+            allowed = role is Role.ORGANIZATION_ADMIN and row is not None
+            self._audit(
+                action="authorization.organization_policy.allowed" if allowed
+                else "authorization.organization_policy.denied",
+                outcome=AuditOutcome.SUCCEEDED if allowed else AuditOutcome.DENIED,
+                principal=principal, trace_id=trace_id, policy_version=policy_version,
+                workspace_id=None, target_type="organization_policy",
+                target_id=principal.tenant_id,
+                metadata={"reason_code": "ORGANIZATION_ADMIN" if allowed else "ACTION_DENIED"},
+            )
+            if not allowed:
+                raise AuthorizationError("ACTION_DENIED", 403)
+            return str(row[0])
+
     def set_membership(
         self, *, principal: IdentityPrincipal, workspace_id: str, user_id: str,
         role: Role, expected_version: int, trace_id: str, policy_version: str,

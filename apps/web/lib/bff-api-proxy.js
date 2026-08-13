@@ -23,6 +23,7 @@ const RESPONSE_HEADERS = new Set([
   "set-cookie",
   "x-trace-id",
   "x-citation-page",
+  "x-content-type-options",
 ]);
 const NATIVE_RESPONSE_HEADERS = new Set([
   "cache-control",
@@ -52,7 +53,9 @@ const NOTIFICATION_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 const INBOX_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 const BACKUP_QUERY = new Set(["workspace_id"]);
 const MODEL_SETTINGS_QUERY = new Set(["workspace_id"]);
+const STUDIO_QUERY = new Set(["workspace_id"]);
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
+const GROUNDED_QUESTION_TIMEOUT_MS = 100_000;
 
 export class BffConfigurationError extends Error {
   constructor(code) {
@@ -90,15 +93,19 @@ export function parseInternalApiBase(rawValue, profile = "production") {
   return parsed;
 }
 
-export function parsePublicGatewayOrigin(rawValue) {
+export function parsePublicGatewayOrigin(rawValue, profile = "production") {
   let parsed;
   try {
     parsed = new URL(rawValue);
   } catch {
     throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_INVALID");
   }
+  const localTestHttp = profile === "local_test"
+    && parsed.protocol === "http:"
+    && new Set(["localhost", "127.0.0.1"]).has(parsed.hostname)
+    && parsed.port !== "";
   if (
-    parsed.protocol !== "https:"
+    (profile === "local_test" ? !localTestHttp : parsed.protocol !== "https:")
     || parsed.pathname !== "/"
     || parsed.search
     || parsed.hash
@@ -111,6 +118,66 @@ export function parsePublicGatewayOrigin(rawValue) {
 }
 
 function routeFor(method, segments) {
+  if (segments.length === 2 && segments[0] === "session" && segments[1] === "step-up") {
+    return method === "POST" ? { path: "/api/v1/session/step-up", query: null } : { methodRejected: true };
+  }
+  if (segments.length === 1 && new Set([
+    "studio-generation-requests", "studio-outputs", "reviews", "approval-requests",
+    "approvals", "deliveries", "knowledge-registrations",
+  ]).has(segments[0])) {
+    if (method === "GET" && segments[0] === "studio-outputs") return { path: `/api/v1/${segments[0]}`, query: STUDIO_QUERY };
+    return method === "POST" && segments[0] !== "studio-outputs"
+      ? { path: `/api/v1/${segments[0]}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "studio-outputs" && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "versions"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 6 && segments[0] === "studio-outputs" && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "versions" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "exports"
+    && new Set(["docx", "pdf", "xlsx", "csv", "json", "svg", "png"]).has(segments[5])
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions/${encodeURIComponent(segments[3])}/exports/${segments[5]}`, query: STUDIO_QUERY }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "questions"
+    && segments[3] === "authorization"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions/authorization`, query: null, groundedQuestion: true }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "egress-policy"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/egress-policy`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && new Set(["organizations", "workspaces"]).has(segments[0])
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "egress-policy-versions"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/${segments[0]}/${encodeURIComponent(segments[1])}/egress-policy-versions`, query: null }
+      : { methodRejected: true };
+  }
   if (
     segments.length === 3
     && segments[0] === "workspaces"
@@ -118,7 +185,7 @@ function routeFor(method, segments) {
     && segments[2] === "questions"
   ) {
     return method === "POST"
-      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, query: null }
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, query: null, groundedQuestion: true }
       : { methodRejected: true };
   }
   if (
@@ -156,8 +223,10 @@ function routeFor(method, segments) {
     && SAFE_SEGMENT.test(segments[1])
     && segments[2] === "sources"
   ) {
-    return method === "POST"
-      ? {
+    if (method === "GET") {
+      return { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, query: null };
+    }
+    return method === "POST" ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`,
           query: null,
           maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES,
@@ -281,6 +350,8 @@ function nativeRouteFor(method, segments, requestUrl) {
     matched = method === "GET"
       ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/processing-runs/${encodeURIComponent(segments[3])}`)
       : { methodRejected: true };
+  } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "questions" && segments[3] === "authorization") {
+    matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions/authorization`, { requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "questions") {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, { requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "citations" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "content") {
@@ -460,7 +531,10 @@ function cancellationError(scope, trace) {
   return null;
 }
 
-export function createBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000 }) {
+export function createBffProxy({
+  baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000,
+  questionTimeoutMs = GROUNDED_QUESTION_TIMEOUT_MS,
+}) {
   if (!(baseUrl instanceof URL)) {
     throw new BffConfigurationError("BFF_INTERNAL_API_URL_REQUIRED");
   }
@@ -498,7 +572,10 @@ export function createBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeo
     headers.set("x-daon-bff-transport", "internal");
 
     const init = { method: request.method, headers, redirect: "manual" };
-    const abortScope = createAbortScope(request.signal, timeoutMs);
+    const abortScope = createAbortScope(
+      request.signal,
+      route.groundedQuestion ? questionTimeoutMs : timeoutMs,
+    );
     try {
       if (abortScope.signal.aborted) return cancellationError(abortScope, trace);
       if (request.method !== "GET" && request.method !== "HEAD") {
