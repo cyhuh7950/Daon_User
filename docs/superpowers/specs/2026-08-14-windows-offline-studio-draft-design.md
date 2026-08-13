@@ -32,13 +32,47 @@ Desktop 전용 평문 Queue, 별도 SQLite, Browser fetch, Cloud 우선 생성, 
 
 ### 3.1 화면 구조
 
-Windows Workspace의 Studio 영역은 1920×1080 기준 세 영역으로 구성한다.
+Windows Workspace는 현재의 1920×1080 3열 구조와 기능 위치를 유지한다. 화면을 새 Dashboard나 별도 Studio Cockpit으로 재배치하지 않는다.
 
-- **초안 설정**: 목적, 독자, Local Source, Template, 분량, 검토 조건, Local Model 상태
-- **초안 편집**: Section 제목·본문·Evidence·`unverified` 경고, 저장 상태, Version
-- **동기화 대기함**: 로컬 Version, 대상 Cloud Workspace, 승인 상태, 충돌 상태, 마지막 검증 시각
+- **왼쪽 — Source·지식·권위**: Local Source 등록·선택·준비 상태와 근거 범위
+- **가운데 — 대화·실행**: 근거 질문, Citation, 초안 편집 시 Section 제목·본문·Evidence·`unverified` 경고와 저장 상태
+- **오른쪽 — 업무 Studio**: 산출물 유형, 생성 설정, Version·검토 조건, 저장된 산출물과 Sync 대기 상태
 
-기본 본문·폼은 12px, 보조 설명은 10px, 제목은 16px을 사용한다. 긴 설명 박스를 상시 노출하지 않고 `i` 아이콘 Tooltip·Popover로 처리한다. 오류는 사용자가 할 수 있는 조치와 Safe Error Code만 표시한다.
+초안 편집을 시작하면 가운데 패널의 대화 본문이 Draft Editor로 전환된다. 왼쪽 Source와 오른쪽 업무 Studio의 위치·폭·의미는 유지한다. 오른쪽에는 생성 설정·근거 점검·Version 기록·검토 조건·Sync 대기함을 단계별 내부 View로 표시하고 한 화면에 모든 Form을 펼치지 않는다.
+
+### 3.1.1 시각 디자인 언어
+
+NotebookLM의 `Sources · Chat · Studio` 작업 위계와 절제된 도구 배치를 참고하되 Google 제품을 복제하지 않고 Daon 고유 표현으로 구현한다. 확정 시각 방향은 `NotebookLM-inspired Violet`이다.
+
+- Canvas는 연한 중립색, 각 패널은 불투명 Surface와 얇은 Border·13px Radius·절제된 Shadow를 사용한다.
+- Accent는 Violet 단일 계열로 선택·주요 Action·Citation·활성 상태에만 사용한다. 모든 Button·Panel을 색칠하지 않는다.
+- 제목 16px, Panel 제목 14px, 기본 본문·Form 12px, 보조 설명 10px, 아주 작은 보조 9px 기준을 유지한다.
+- Panel 제목에는 의미가 있는 16px Line Icon과 짧은 Label을 사용한다. 장식용 대형 Illustration·Gradient·과도한 Badge는 사용하지 않는다.
+- Primary Action은 Panel당 하나만 채움 Button으로 두고 나머지는 Secondary·Ghost 강도로 구분한다.
+- Source 선택, Citation, Version, Sync 상태는 색상뿐 아니라 Icon·Text·Shape를 함께 사용해 구분한다.
+- 빈 공간은 의미 있는 Empty State·최근 항목·작업 상태로 사용하며 가짜 통계나 장식용 Card를 만들지 않는다.
+- 긴 설명 Box의 상시 노출을 금지한다. 필수 Label은 화면에 두고 추가 설명은 `i` Icon Tooltip·Popover로 제공한다.
+- 오류는 하단의 거대한 고정 Box가 아니라 관련 Panel의 Inline Alert 또는 상단 상태에서 접근하는 상세 팝업으로 표시한다. Safe Error Code와 사용자가 할 조치만 노출한다.
+
+Light·Dark Theme 모두 동일한 위계와 WCAG AA 대비를 유지한다. 애니메이션은 Panel 전환·Popup 등장에 150~200ms 이하로 제한하고 `prefers-reduced-motion`을 존중한다.
+
+### 3.1.2 운영상태·설정 팝업
+
+상단 App Bar에는 작은 전체 상태 표시와 `운영상태`, `설정` Button을 둔다. 상세 정보는 기본 3열 작업 화면을 밀어내지 않고 별도 Modal Popup으로 연다.
+
+- **상시 상태**: 정상·주의·오류 중 하나와 Offline·Cloud 연결 여부만 짧게 표시한다.
+- **운영상태 Popup**: Local Service, 암호화 저장소, Managed Local Model, Cloud Sync, 대기 작업, 마지막 확인 시각과 안전한 조치를 표시한다.
+- **설정 Popup**: Local Model, 기본 출력 형식, Version 저장 방식, Sync 승인 방식을 묶어서 표시한다.
+- 조직 강제 RuleSet·검토 조건·Egress 정책은 읽기 전용으로 표시하며 이 Popup에서 해제할 수 없다.
+- 설정 변경이 있으면 저장·취소를 명시하고, 미저장 변경이 있는 상태에서 닫을 때 확인한다.
+- Modal은 `role=dialog`, `aria-modal=true`, 제목 연결, 최초 Focus, Tab Trap, Escape·닫기, Background inert와 Focus 복귀를 구현한다.
+- 오류·상태 응답에는 내부 URL, Local Port, Token, Path, Stack, SQLSTATE를 포함하지 않는다.
+
+Critical 오류는 Popup 안에만 숨기지 않는다. 상단 상태가 `주의 | 오류`로 바뀌고 해당 Panel의 Action을 fail-close한 뒤 사용자가 운영상태 Popup에서 상세 조치를 확인한다.
+
+### 3.1.3 향후 화면 적용 기준
+
+향후 Windows Workspace에 추가되는 화면은 별도 시각 체계를 만들지 않고 이 설계의 App Bar, Violet Accent, Surface, Panel Header, Button 위계, Inline Alert, Modal Popup, 상태 표시와 Focus 계약을 재사용한다. 이 Work Order는 무관한 기존 화면 전체를 일괄 재설계하지 않는다. 새 화면과 이번 범위에서 직접 수정하는 화면부터 적용하고, 기존 화면은 해당 기능을 후속 변경할 때 같은 기준으로 정렬한다.
 
 ### 3.2 정상 흐름
 
@@ -245,6 +279,8 @@ Upgrade는 backfill count, exact-one CHECK, digest·Approval Snapshot 결속, RL
 - `LocalEncryptedStore` Canon allowlist와 Offline Studio 저장 Adapter
 - Tauri Local Studio Bridge와 command 등록
 - Desktop Offline Studio Adapter·상태 모델·Pane
+- Desktop Workspace 3열 구조를 보존하는 NotebookLM-inspired Violet 시각 Token·Panel·App Bar
+- 운영상태·설정 Modal Popup과 접근성·미저장 변경 Guard
 - 기존 Sync API를 호출하는 Native 재연결 Adapter 연결
 - 기존 다섯 Sync 경로의 Item DTO·Domain·PostgreSQL Adapter·OpenAPI 확장
 - Migration `0014_sync_output_versions`와 actual PostgreSQL upgrade·rollback Gate
@@ -265,6 +301,10 @@ Web BFF, Web Workspace Studio, Egress 정책값, 인증 모델과 공개 Sync �
 - 다른 Workspace UUID의 Draft·Queue 조회 0
 - Loopback capability/method/path/body/nonce 부정 Matrix
 - React 실제 click으로 설정 확인→생성→편집→Queue 표시
+- React 실제 DOM에서 3열 순서·Panel 의미·가운데 Draft Editor 전환·오른쪽 단계 View 유지
+- 운영상태·설정 Popup open/close·Focus Trap·Escape·Focus 복귀·Background inert·미저장 Guard
+- Light·Dark·1920×1080·1280×720에서 겹침·잘림 0, 기준 Font와 대비 유지
+- 상시 설명 Box·브라우저 기본 Button 스타일·내부 기술 오류 노출 0
 - React 제품 코드 fetch/XHR/WebSocket·내부 주소 0
 - Reconnect 전송은 승인 없음·만료·권한 축소·Version 충돌에서 transport 0
 - 승인된 exact 항목의 Batch 재개와 중복 전송 0
@@ -299,6 +339,7 @@ Web BFF, Web Workspace Studio, Egress 정책값, 인증 모델과 공개 Sync �
 - 암호화 Queue와 승인 전 외부 전송 0
 - 재연결 승인 항목만 Sync, Source dependency 선행, Cloud OutputVersion 계보 일치, 충돌 자동 덮어쓰기 0
 - 실제 설치 App·Network·암호화 증거
+- 실제 설치 App에서 Violet 시각 체계·3열 구조·운영상태/설정 Popup·Keyboard Focus 검증
 - 관련 자동 회귀·Desktop Build·Boundary·보안 Scan PASS
 - 변경 파일·Evidence·Rollback·잔여 Process 0 보고
 
