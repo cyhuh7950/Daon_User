@@ -225,6 +225,17 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         self.assertEqual(set(locks), {"rulesetVersionId", "reviewCondition", "authorityPolicy", "weightProfile", "dataArea", "egressPolicy"})
         self.assertEqual(locks["rulesetVersionId"], "ruleset-v3")
 
+    def test_policy_projection_types_jsonb_workspace_bind_as_text(self) -> None:
+        connection = PolicyConnection()
+
+        PostgresStudioWorkspaceRepository._policy_projection(
+            connection, StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+        )
+
+        projection_sql = connection.statements[0][0]
+        self.assertIn("'workspace_id',%s::text", projection_sql)
+        self.assertEqual(projection_sql.count("%s::text"), 1)
+
     def test_default_policy_returns_empty_outputs_and_six_locks(self) -> None:
         result = PostgresStudioWorkspaceRepository(Cloud()).list_outputs(
             StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1")
