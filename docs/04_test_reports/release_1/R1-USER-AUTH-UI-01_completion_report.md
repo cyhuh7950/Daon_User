@@ -50,6 +50,14 @@ Cargo 후속 검증 과정에서 기존 Node `DEP0190` deprecation warning 1건�
 - 저장소의 기존 Desktop·Mobile·Model Connection·다른 작업 문서 dirty 변경은 복구·삭제·stage하지 않고 보존했다.
 - 최신 설계와 최종 diff의 외부 독립 검증 및 신산님의 최종 완료 판단이 남아 있다.
 
+## 2026-08-13 ysna Web 재배포
+
+- exact commit `bc3ecf0abef75b32d9db84b762fcdd62f94502a0`을 ysna-server에 배포했다.
+- 이전 Web image rollback tag를 확보한 뒤 Web만 build/recreate했다. DB·API·worker·공용 자원은 변경하지 않았고 migration `0012`를 유지했다.
+- server Web build·TypeScript·9 pages와 Product boundary 291/0, Web health, public root/BFF 200을 확인했다.
+- 실제 Chrome에서 로그인 input 2개와 로그인·가입·비밀번호 재설정 전환, 가입 input 3개, 재설정 요청 input 1개를 actual click으로 확인했다. 내부주소 0, Credential 입력·submit 0이다.
+- 상세 증거: `docs/03_evidence/release_1/R1-USER-AUTH-UI-01/ysna-auth-ui-deployment-evidence.md`.
+
 status | issue_id | 수행한 작업 | 생성·변경한 결과 | 테스트 결과 | 미해결 사항 | 다음으로 필요한 판단
 --- | --- | --- | --- | --- | --- | ---
-COMPLETED | R1-USER-AUTH-UI-01-I001 | 로그인·가입 인증·비밀번호 재설정의 3화면·순차 단계 분리, 민감값 정리, 중복 제출 차단, TDD·회귀·lint·build·보안 scan | AuthPane·link 스타일·실제 React 테스트·Progress·Completion | RED 2회 확인 후 focused/source/login/Desktop PASS, lint/build/boundary/diff PASS; auth 무관 Workspace 1건 분리 | 실제 Browser·운영 검증 미수행, Workspace expected-state 1건은 범위 밖 | 어울1이 auth 단일 diff 검토 후 Commit·Push·재배포 여부 판단
+COMPLETED | R1-USER-AUTH-UI-01-I001 | 인증 3화면·순차 단계 분리와 ysna Web-only 배포 | AuthPane·link 스타일·actual React 테스트·Progress/Completion·배포 Evidence | 로컬 TDD·회귀·build/boundary 및 서버 build/health, production Chrome 공개 DOM PASS; auth 무관 Workspace 1건 분리 | 자격 없는 성공 submit 이후 단계 미검증, Workspace expected-state 1건은 범위 밖 | 어울1 최종 배포 증거 검토
