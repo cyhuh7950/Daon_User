@@ -22,9 +22,10 @@
 1. AGENTS.md, 승인 설계, 구현계획, 본 지시서, 실행 프롬프트를 EOF까지 읽고 Hash를 Progress에 기록한다.
 2. 구현계획 Task 1→2→3 순서를 TDD RED→GREEN으로 수행한다.
 3. Migration `0013`은 기존 Workspace backfill, 신규 Workspace transaction Trigger, 소유 행 rollback을 모두 구현한다. 단, `0013` 비소유 계보가 소유 행을 참조하면 downgrade 전체를 fail-close한다.
-4. 정책 누락과 실제 DB 장애의 공개 Safe Error를 구분한다.
-5. 실제 PostgreSQL 15 또는 18에서 upgrade·downgrade·reapply·RLS·digest·FK·Trigger를 검증한다.
-6. 보호 dirty를 보존하고 허용 파일만 변경한다.
+4. 운영 Gate에서 확인된 Question 생성형 legacy KnowledgeScope만 승인 설계 §4.1의 exact 조건으로 동일 aggregate v2 append-only 승격한다. 기존 v1 수정, broad key 보완, 다른 불완전 Canon 자동 교정은 금지한다.
+5. 정책 누락과 실제 DB 장애의 공개 Safe Error를 구분한다.
+6. 실제 PostgreSQL 15 또는 18에서 upgrade·downgrade·reapply·RLS·digest·FK·Trigger를 검증한다.
+7. 보호 dirty를 보존하고 허용 파일만 변경한다.
 
 ## 허용 파일
 

@@ -2,7 +2,7 @@
 
 ## 판정
 
-COMPLETED — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001`
+IN_PROGRESS — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001`
 
 ## 구현 결과
 
@@ -40,4 +40,7 @@ COMPLETED — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001`
 ## 범위와 미해결
 
 - 제품 공개 API, Repository projection SQL, Egress 정책값·보안경계, 의존성은 변경하지 않았다.
-- commit·push·ysna-server 배포·운영 Browser Gate는 어울2 승인 범위 밖이라 수행하지 않았다. 어울1의 별도 판단이 필요하다.
+- target `6bfd10b` ysna 배포는 승인받아 backup·rollback image·build까지 수행했으나 운영 KnowledgeScope 최신 Canon 한 행의 필수 `workspace_id`·`scope` 누락으로 Migration 0013이 `STUDIO_DEFAULT_POLICY_LATEST_INVALID` fail-close했다.
+- DB revision0012와 기존 데이터가 보존됐고 서비스 recreate 없이 checkout/API image tag를 사전 `9845890` 상태로 복구했다. 운영 Browser Gate는 target이 배포되지 않아 수행하지 않았다.
+- 다음 진행에는 해당 운영 Canon을 immutable 계보에 맞게 교정하는 별도 데이터 변경 또는 migration 호환 계약 변경에 대한 신산님 승인이 필요하다.
+- 신산님은 2026-08-14 exact legacy Question KnowledgeScope에 한정한 v2 append-only 호환 계약을 승인했다. 구현·actual PostgreSQL·재배포 Gate 완료 전에는 COMPLETED로 승격하지 않는다.

@@ -41,6 +41,27 @@ Egress 기본값은 Migration `0012`의 Organization/Workspace `deny_external` B
 - immutable Canon의 UPDATE/DELETE는 사용하지 않는다.
 - Canon JSON, canonical text와 SHA-256 digest는 기존 DB 검증 Trigger를 통과해야 한다.
 
+### 4.1 승인된 legacy KnowledgeScope 승격
+
+운영 Gate에서 Question 실행 경로가 만든 `KnowledgeScope v1`이 발견됐다. 이 행은 테이블의 Tenant·Workspace 경계와 `source_version_ids`·`mode=single_source`는 갖지만 Studio가 요구하는 `workspace_id`·`scope`·`active`·`current`가 canonical payload에 없다. 기존 v1은 immutable이므로 수정하지 않는다.
+
+Migration `0013`은 아래 조건을 **모두** 만족하는 단일 최신 v1만 같은 aggregate의 v2로 append-only 승격한다.
+
+- 최고 version 행이 정확히 하나이고 `version=1`, `previous_version_id IS NULL`, `aggregate_id=record_id`
+- canonical payload의 key 집합이 정확히 `mode`, `source_version_ids` 두 개
+- `mode=single_source`, `source_version_ids`가 문자열 SourceVersion ID 하나만 가진 배열
+- `record_id`가 Question Repository의 `"scope-" || substr(encode(sha256(convert_to(source_version_id,'UTF8')),'hex'),1,32)` 결정론 ID와 일치
+- 같은 Tenant·Workspace의 해당 SourceVersion이 실제 존재
+- canonical text·JSON·digest가 기존 Canon Trigger 계약과 일치
+
+승격 v2는 기존 `mode`와 `source_version_ids`를 그대로 보존하고 아래 필드를 추가한다.
+
+v2 canonical payload의 정렬된 key/value는 `(active=true, current=true, mode="single_source", scope="workspace", source_version_ids=[v_legacy_source_version_id], version=2, workspace_id=p_workspace_id)`로 고정한다.
+
+v2의 `aggregate_id`는 v1과 동일하고, `previous_version_id`는 v1 `record_id`, `version=2`, `created_by=migration:0013`이다. v2 record ID는 Tenant·Workspace·v1 record ID로 계산한 결정론 ID를 사용한다. 이미 exact v2가 있으면 idempotent 성공하고, ID 충돌·다중 최신행·SourceVersion 불일치·추가 또는 누락 key·다른 mode는 기존 `LATEST_INVALID`/`HISTORY_AMBIGUOUS`/`ID_CONFLICT`로 fail-close한다.
+
+이 호환 분기는 legacy Question Scope만 다룬다. WorkspacePolicy·WeightProfile·RuleSet이나 다른 형식의 불완전 KnowledgeScope를 자동 교정하지 않는다. downgrade는 비소유 계보가 v2를 참조하면 전체 차단하고, 참조가 없을 때에만 `0013` 소유 v2를 삭제해 v1을 그대로 복원한다.
+
 ## 5. Runtime 동작
 
 `PostgresStudioWorkspaceRepository._policy_projection()`의 fail-close 계약은 유지한다. 필수 정책이 없거나 inactive/stale/scope mismatch이면 Studio 목록과 생성은 계속 안전 오류로 중단한다.
@@ -82,6 +103,8 @@ Downgrade 후 `0012` schema와 Egress deny Binding은 그대로 남아야 한다
 
 - Migration 정적 계약과 실제 PostgreSQL 15/18 upgrade·downgrade·reapply
 - 기존 Workspace의 누락 전체·부분 누락·완전 구성 idempotency
+- exact legacy Question KnowledgeScope v1의 v2 append·idempotency·downgrade/reapply
+- 유사하지만 key·ID·SourceVersion·mode가 다른 legacy 행의 fail-close와 transaction 보존
 - 신규 Workspace INSERT 한 transaction에서 6개 기본 Canon 생성
 - Canon digest, FK, immutable, RLS, cross-tenant 0건
 - Studio 목록이 `outputs=[]`, 6 locks, 공개 정책 오류 exact code를 반환

@@ -14,6 +14,7 @@
 - `0012` Egress Organization/Workspace `deny_external` Binding을 변경하거나 완화하지 않는다.
 - 브라우저 코드는 same-origin `/bff/api/...`만 사용한다.
 - 기존 Run·RunSnapshot·EgressDecision·RoutingDecision·Source·Output을 소급 수정하지 않는다.
+- 승인된 legacy Question KnowledgeScope v1만 동일 aggregate v2로 append하며 v1은 변경하지 않는다.
 - immutable Canon UPDATE/DELETE 금지. Downgrade의 `0013` 소유 행 제거만 예외이며 결정론 ID와 `created_by`를 함께 검증한다.
 - 한 시점에 한 Writer만 수정한다. 보호 dirty와 관련 없는 파일을 stage·restore·삭제하지 않는다.
 - commit·push·ysna-server 배포는 어울1의 검토와 승인된 Gate에서만 수행한다.
@@ -64,26 +65,44 @@ Expected: migration module 부재로 FAIL.
 `ensure_studio_workspace_defaults(p_tenant_id text, p_workspace_id text)`는 아래 결정론 ID를 사용한다.
 
 ```text
-studio-default:workspace-policy:<md5 tenant|workspace>
-studio-default:knowledge-scope:<md5 tenant|workspace>
-studio-default:weight-profile:<md5 tenant|workspace>
-studio-default:ruleset-reference:<md5 tenant|workspace>
-studio-default:ruleset-snapshot:<md5 tenant|workspace>
-studio-default:ruleset-binding:<md5 tenant|workspace>
+"studio-default:workspace-policy:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:knowledge-scope:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:weight-profile:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:ruleset-reference:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:ruleset-snapshot:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:ruleset-binding:" || md5(p_tenant_id || '|' || p_workspace_id)
 ```
 
-Canonical payload는 key 정렬·공백 없는 JSON text로 고정한다.
+Canonical payload는 key 정렬·공백 없는 JSON text로 고정하며, entity별 정렬된 key/value는 다음과 같다.
 
-```json
-{"active":true,"authority_policy":"workspace_admin","current":true,"data_area":"cloud_sync","version":1,"workspace_id":"<workspace>"}
-{"active":true,"current":true,"scope":"workspace","version":1,"workspace_id":"<workspace>"}
-{"active":true,"current":true,"profile":"trusted-source-v2","version":1,"workspace_id":"<workspace>"}
-{"active":true,"current":true,"name":"default-review-required","version":1,"workspace_id":"<workspace>"}
-{"active":true,"current":true,"review_condition":"review_required","rules":[],"version":1,"workspace_id":"<workspace>"}
-{"active":true,"current":true,"review_condition":"review_required","ruleset_version_id":"<snapshot-id>","version":1,"workspace_id":"<workspace>"}
+```text
+WorkspacePolicy: active=true, authority_policy="workspace_admin", current=true, data_area="cloud_sync", version=1, workspace_id=p_workspace_id
+KnowledgeScope: active=true, current=true, scope="workspace", version=1, workspace_id=p_workspace_id
+WeightProfile: active=true, current=true, profile="trusted-source-v2", version=1, workspace_id=p_workspace_id
+RuleSetReference: active=true, current=true, name="default-review-required", version=1, workspace_id=p_workspace_id
+RuleSetVersionSnapshot: active=true, current=true, review_condition="review_required", rules=[], version=1, workspace_id=p_workspace_id
+RuleSetBinding: active=true, current=true, review_condition="review_required", ruleset_version_id=v_ruleset_snapshot_id, version=1, workspace_id=p_workspace_id
 ```
 
 각 insert는 `canonical_json`, 위와 exact한 `canonical_text`, `sha256(convert_to(text,'UTF8'))`, `created_by='migration:0013'`, 결정론 trace를 사용한다. 기존 유효 최신 Canon이 있으면 해당 종류는 생성하지 않는다. WeightProfile은 기존 최신 유효 KnowledgeScope가 있으면 그 ID를 참조한다. RuleSet 3종은 `0013` 전용 세트를 완성하되 기존 RuleSet을 변경하지 않는다.
+
+최신 KnowledgeScope가 invalid이면 일반 default insert 전에 아래 exact legacy 계약을 검사한다.
+
+```text
+max version row count = 1
+version=1, previous_version_id=null, aggregate_id=record_id
+canonical keys exactly {mode,source_version_ids}
+mode=single_source
+source_version_ids = one non-empty string
+record_id = "scope-" + first32(sha256(source_version_id UTF-8))
+same tenant/workspace source_versions.record_id exists
+```
+
+모두 일치할 때에만 같은 aggregate에 결정론 v2를 append한다.
+
+v2의 정렬된 key/value는 `active=true, current=true, mode="single_source", scope="workspace", source_version_ids=[v_legacy_source_version_id], version=2, workspace_id=p_workspace_id`로 고정한다.
+
+v2는 `previous_version_id=v_legacy_scope_id`, `version=2`, `created_by=migration:0013`을 사용한다. record ID는 `"studio-compat:knowledge-scope-v2:" || md5(p_tenant_id || '|' || p_workspace_id || '|' || v_legacy_scope_id)`다. 동일 ID 충돌은 canonical text·digest·aggregate·previous version·SourceVersion 결속이 모두 exact일 때만 idempotent로 인정한다. 유사 legacy 행이나 충돌은 `STUDIO_DEFAULT_POLICY_LATEST_INVALID` 또는 `STUDIO_DEFAULT_POLICY_ID_CONFLICT` SQLSTATE 55000으로 전체 rollback한다.
 
 Trigger는 다음 경계로 설치한다.
 
@@ -95,7 +114,7 @@ FOR EACH ROW EXECUTE FUNCTION initialize_studio_workspace_defaults();
 
 Trigger 함수는 SECURITY INVOKER 기본값을 유지하고 `NEW.tenant_id`, `NEW.workspace_id`만 전달한다. Upgrade는 기존 `workspaces`를 순회해 helper를 호출한 뒤 Trigger를 설치한다.
 
-Downgrade는 Trigger→Trigger 함수→helper 순으로 제거하고, 결정론 ID와 `created_by='migration:0013'`가 모두 일치하는 행만 FK 역순으로 삭제한다. 삭제 직전에는 `0013` 소유 행이 기존 Run/RuleEvaluation 등 `0013` 비소유 계보에서 참조되는지 검사한다. 참조가 있으면 `STUDIO_DEFAULT_POLICY_ROLLBACK_BLOCKED`로 전체 transaction을 fail-close하며 계보를 끊지 않는다. 참조가 없을 때에만 migration role이 대상 6개 테이블의 `<table>_immutable` Trigger를 잠시 비활성화하고, 소유 행 삭제 후 반드시 다시 활성화한다. 다른 Canon 행·Trigger·공통 검증 함수는 변경하지 않는다.
+Downgrade는 Trigger→Trigger 함수→helper 순으로 제거하고, 결정론 ID와 `created_by='migration:0013'`가 모두 일치하는 행만 FK 역순으로 삭제한다. 삭제 직전에는 `0013` 소유 행이 기존 Run/RuleEvaluation 등 `0013` 비소유 계보에서 참조되는지 검사한다. 참조가 있으면 `STUDIO_DEFAULT_POLICY_ROLLBACK_BLOCKED`로 전체 transaction을 fail-close하며 계보를 끊지 않는다. 참조가 없을 때에만 migration role이 `workspace_policies`, `knowledge_scopes`, `weight_profiles`, `ruleset_references`, `ruleset_version_snapshots`, `ruleset_bindings`의 각 `_immutable` Trigger를 잠시 비활성화하고, 소유 행 삭제 후 반드시 다시 활성화한다. 다른 Canon 행·Trigger·공통 검증 함수는 변경하지 않는다.
 
 - [ ] **Step 4: 실제 PostgreSQL Gate 작성·실행**
 
@@ -104,6 +123,9 @@ Downgrade는 Trigger→Trigger 함수→helper 순으로 제거하고, 결정론
 ```text
 fresh 0001→0013
 기존 Workspace 전체누락/부분누락/완전구성
+exact legacy Question Scope v1→v2 append, helper 2회 idempotency
+legacy v2를 참조하는 비소유 계보가 없을 때 downgrade 후 v1만 보존, reapply 동일 v2
+wrong key/ID/mode/source-version legacy 행은 revision 0012와 기존 행을 보존한 채 fail-close
 신규 Workspace INSERT 즉시 6 Canon
 digest/FK/immutable/RLS/cross-tenant
 0013→0012 시 소유 행만 제거

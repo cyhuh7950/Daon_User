@@ -7,9 +7,9 @@
   "result_branch": "codex/user-auth-screen-split",
   "source_hashes": {
     "agents": "AABB11177EA7541B62C0AD6E6AB2FD745FCD4ADED72A25DF98522FC8E41B47EA",
-    "design": "E41E66A25E52CB4D666BFE53C88E6A32EFC4AABDE3E1DD7513ACAFFE38AD3411",
-    "plan": "F2F345B40332B204D1AA309E2D06BCE73F551D9FBF139C7709B0E75C899369DF",
-    "work_order": "17BBC9C5954845B94561FEE215B364A1251910E8BD2C59BE4E7984EDAC00984B",
+    "design": "B5F20B2E99886646CCDA8C29778ABB6860B07DA91389AF6AFD5979FD2436B394",
+    "plan": "D35669018E486515C74798D5F6103DFFC8B0DE8994B8DF12025C03290866DE9A",
+    "work_order": "7959013690E43162137EF881630F5AE6B6FB6AB67DAB903E7D6A0CA6B146FA7E",
     "prompt": "B66A4422CEEA9092030DAF716C85657A4A928D1B1640A4AD7B9E62F6FFB96670"
   },
   "artifact_hashes": {
@@ -19,8 +19,9 @@
     "services/api/tests/test_studio_workspace_postgres.py": "3E79BE0A212F7854CA6EE2064B68C1929C96E5C2C74D888F8EB6A4EB7FCE10BD",
     "services/api/tests/test_studio_workspace_runtime_http.py": "7769DA6A507C14BDB40E07E9521B8F222399D7F6F612EDDDD6E16F3D18378088",
     "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py": "D4DBFA9351282BD5F47D63AC5C9EEA89AA8272CDC36BC570759547D11A0110E0",
-    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_progress.md": "9E5949B63F2B9C7D7AECBE557BB3D6026AAE8B77C64B0BDB10E4DA01C8A3D855",
-    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_completion_report.md": "9EDADB7A3390CE20A2DA25359EDB06E9E976B1F4C4E870077C859C4927367297"
+    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/ysna-deployment-gate-evidence.md": "CCD44993A62C3DF57ECFD18D21240B22EFD16825AC60BA487826E1A527D89B77",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_progress.md": "4F879EB4EBC8AC1D2924B2D15ABD4FEEF3232E8C637D9A14163A90572C206DF2",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_completion_report.md": "6FB1CCD7B433FF844299D25998B282F0C04EC417CF41765ABD2CFCA0D322FB98"
   },
   "checks": [
     {"name": "migration_contract", "result": "6 passed"},
@@ -33,11 +34,13 @@
     {"name": "product_ui_boundary", "result": "scanned=281 violations=0 boundaryErrors=0"},
     {"name": "actual_postgres", "result": "PASS 0001-0013 invalid-id-conflict latest-invalid max-version-tie fail-close revision0012 rows-preserved missing partial full-preserved0 idempotent trigger digest FK immutable RLS downgrade reapply"},
     {"name": "disposable_cleanup", "result": "remaining=0 local-postgres-running=true"},
+    {"name": "ysna_deployment", "result": "BLOCKED_ROLLED_BACK latest KnowledgeScope missing workspace_id and scope; DB0012 and services preserved"},
     {"name": "diff_check", "result": "PASS"},
     {"name": "staged_files", "result": "0"}
   ],
   "known_limits": [
-    "Commit, push, ysna-server deployment and production Browser Gate require separate main-agent approval and were not performed."
+    "Approved legacy KnowledgeScope v2 append-only compatibility is pending implementation and deployment verification.",
+    "Production Browser Gate was not run because target commit services were not switched."
   ],
-  "result": "COMPLETED"
+  "result": "IN_PROGRESS"
 }
