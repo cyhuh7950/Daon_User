@@ -31,6 +31,15 @@ def upgrade() -> None:
           v_latest_count integer;
           v_latest_json jsonb;
           v_latest_record_id text;
+          v_latest_aggregate_id text;
+          v_latest_version integer;
+          v_latest_previous_version_id text;
+          v_latest_canonical_text text;
+          v_latest_digest text;
+          v_latest_created_by text;
+          v_legacy_scope_id text;
+          v_legacy_source_version_id text;
+          v_compat_scope_id text;
           v_text text;
         BEGIN
           SELECT count(*) INTO v_latest_count FROM workspace_policies
@@ -78,14 +87,107 @@ def upgrade() -> None:
           IF v_latest_count > 1 THEN
             RAISE EXCEPTION 'STUDIO_DEFAULT_POLICY_HISTORY_AMBIGUOUS' USING ERRCODE = '55000';
           ELSIF v_latest_count = 1 THEN
-            SELECT record_id,canonical_json INTO v_selected_scope_id,v_latest_json FROM knowledge_scopes
+            SELECT record_id,aggregate_id,version,previous_version_id,canonical_json,canonical_text,digest_sha256,created_by
+              INTO v_selected_scope_id,v_latest_aggregate_id,v_latest_version,
+                   v_latest_previous_version_id,v_latest_json,v_latest_canonical_text,v_latest_digest,v_latest_created_by
+              FROM knowledge_scopes
              WHERE tenant_id = p_tenant_id AND workspace_id = p_workspace_id
                AND version = (SELECT max(version) FROM knowledge_scopes WHERE tenant_id = p_tenant_id AND workspace_id = p_workspace_id);
+            IF v_selected_scope_id LIKE 'studio-compat:knowledge-scope-v2:%%' THEN
+              v_legacy_source_version_id := v_latest_json->'source_version_ids'->>0;
+              v_text := '{"active":true,"current":true,"mode":"single_source","scope":"workspace","source_version_ids":['
+                || to_jsonb(v_legacy_source_version_id)::text
+                || '],"version":2,"workspace_id":' || to_jsonb(p_workspace_id)::text || '}';
+              IF v_latest_version <> 2
+                 OR v_latest_previous_version_id IS NULL
+                 OR v_latest_aggregate_id IS DISTINCT FROM v_latest_previous_version_id
+                 OR v_latest_created_by <> 'migration:0013'
+                 OR v_selected_scope_id <> 'studio-compat:knowledge-scope-v2:'
+                    || md5(p_tenant_id || '|' || p_workspace_id || '|' || v_latest_previous_version_id)
+                 OR v_latest_canonical_text IS DISTINCT FROM v_text
+                 OR v_latest_digest IS DISTINCT FROM encode(sha256(convert_to(v_text,'UTF8')),'hex')
+                 OR NOT EXISTS (
+                   SELECT 1
+                     FROM knowledge_scopes legacy
+                     JOIN source_versions source_version
+                       ON (source_version.tenant_id,source_version.workspace_id,source_version.record_id) =
+                          (legacy.tenant_id,legacy.workspace_id,v_legacy_source_version_id)
+                    WHERE legacy.tenant_id = p_tenant_id
+                      AND legacy.workspace_id = p_workspace_id
+                      AND legacy.record_id = v_latest_previous_version_id
+                      AND legacy.aggregate_id = legacy.record_id
+                      AND legacy.version = 1
+                      AND legacy.previous_version_id IS NULL
+                      AND (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(legacy.canonical_json) AS key)
+                          = ARRAY['mode','source_version_ids']::text[]
+                      AND legacy.canonical_json->>'mode' = 'single_source'
+                      AND legacy.canonical_json->'source_version_ids' = jsonb_build_array(v_legacy_source_version_id)
+                      AND legacy.record_id = 'scope-' || substr(encode(sha256(convert_to(v_legacy_source_version_id,'UTF8')),'hex'),1,32)
+                      AND legacy.canonical_text::jsonb = legacy.canonical_json
+                      AND legacy.digest_sha256 = encode(sha256(convert_to(legacy.canonical_text,'UTF8')),'hex')
+                 ) THEN
+                RAISE EXCEPTION 'STUDIO_DEFAULT_POLICY_ID_CONFLICT' USING ERRCODE = '55000';
+              END IF;
+            END IF;
             IF v_latest_json->>'active' <> 'true'
                OR v_latest_json->>'current' <> 'true'
                OR v_latest_json->>'workspace_id' IS DISTINCT FROM p_workspace_id
                OR v_latest_json->>'scope' <> 'workspace' THEN
-              RAISE EXCEPTION 'STUDIO_DEFAULT_POLICY_LATEST_INVALID' USING ERRCODE = '55000';
+              IF v_latest_version = 1
+                 AND v_latest_previous_version_id IS NULL
+                 AND v_latest_aggregate_id = v_selected_scope_id
+                 AND (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(v_latest_json) AS key)
+                     = ARRAY['mode','source_version_ids']::text[]
+                 AND v_latest_json->>'mode' = 'single_source'
+                 AND jsonb_typeof(v_latest_json->'source_version_ids') = 'array'
+                 AND jsonb_array_length(v_latest_json->'source_version_ids') = 1
+                 AND jsonb_typeof(v_latest_json->'source_version_ids'->0) = 'string'
+                 AND nullif(v_latest_json->'source_version_ids'->>0, '') IS NOT NULL
+                 AND v_latest_canonical_text::jsonb = v_latest_json
+                 AND v_latest_digest = encode(sha256(convert_to(v_latest_canonical_text,'UTF8')),'hex') THEN
+                v_legacy_scope_id := v_selected_scope_id;
+                v_legacy_source_version_id := v_latest_json->'source_version_ids'->>0;
+                IF v_legacy_scope_id = 'scope-' || substr(encode(sha256(convert_to(v_legacy_source_version_id,'UTF8')),'hex'),1,32)
+                   AND EXISTS (
+                     SELECT 1 FROM source_versions
+                      WHERE tenant_id = p_tenant_id
+                        AND workspace_id = p_workspace_id
+                        AND record_id = v_legacy_source_version_id
+                   ) THEN
+                  v_compat_scope_id := 'studio-compat:knowledge-scope-v2:'
+                    || md5(p_tenant_id || '|' || p_workspace_id || '|' || v_legacy_scope_id);
+                  v_text := '{"active":true,"current":true,"mode":"single_source","scope":"workspace","source_version_ids":['
+                    || to_jsonb(v_legacy_source_version_id)::text
+                    || '],"version":2,"workspace_id":' || to_jsonb(p_workspace_id)::text || '}';
+                  INSERT INTO knowledge_scopes (
+                    tenant_id,workspace_id,record_id,aggregate_id,version,schema_version,
+                    previous_version_id,canonical_json,canonical_text,digest_sha256,created_by,trace_id
+                  ) VALUES (
+                    p_tenant_id,p_workspace_id,v_compat_scope_id,v_legacy_scope_id,2,1,
+                    v_legacy_scope_id,v_text::jsonb,v_text,
+                    encode(sha256(convert_to(v_text,'UTF8')),'hex'),
+                    'migration:0013','migration:0013:knowledge-scope-compat:' || md5(p_tenant_id || '|' || p_workspace_id || '|' || v_legacy_scope_id)
+                  ) ON CONFLICT DO NOTHING;
+                  IF NOT EXISTS (
+                    SELECT 1 FROM knowledge_scopes
+                     WHERE tenant_id = p_tenant_id AND workspace_id = p_workspace_id
+                       AND record_id = v_compat_scope_id
+                       AND aggregate_id = v_legacy_scope_id
+                       AND version = 2
+                       AND previous_version_id = v_legacy_scope_id
+                       AND created_by = 'migration:0013'
+                       AND canonical_text = v_text
+                       AND digest_sha256 = encode(sha256(convert_to(v_text,'UTF8')),'hex')
+                  ) THEN
+                    RAISE EXCEPTION 'STUDIO_DEFAULT_POLICY_ID_CONFLICT' USING ERRCODE = '55000';
+                  END IF;
+                  v_selected_scope_id := v_compat_scope_id;
+                ELSE
+                  RAISE EXCEPTION 'STUDIO_DEFAULT_POLICY_LATEST_INVALID' USING ERRCODE = '55000';
+                END IF;
+              ELSE
+                RAISE EXCEPTION 'STUDIO_DEFAULT_POLICY_LATEST_INVALID' USING ERRCODE = '55000';
+              END IF;
             END IF;
           ELSE
             v_text := '{"active":true,"current":true,"scope":"workspace","version":1,"workspace_id":'
@@ -486,7 +588,15 @@ def downgrade() -> None:
              AND record_id = 'studio-default:weight-profile:' || md5(tenant_id || '|' || workspace_id);
           DELETE FROM knowledge_scopes
            WHERE created_by = 'migration:0013'
-             AND record_id = 'studio-default:knowledge-scope:' || md5(tenant_id || '|' || workspace_id);
+             AND (
+               record_id = 'studio-default:knowledge-scope:' || md5(tenant_id || '|' || workspace_id)
+               OR (
+                 version = 2
+                 AND previous_version_id IS NOT NULL
+                 AND record_id = 'studio-compat:knowledge-scope-v2:'
+                   || md5(tenant_id || '|' || workspace_id || '|' || previous_version_id)
+               )
+             );
           DELETE FROM workspace_policies
            WHERE created_by = 'migration:0013'
              AND record_id = 'studio-default:workspace-policy:' || md5(tenant_id || '|' || workspace_id);
