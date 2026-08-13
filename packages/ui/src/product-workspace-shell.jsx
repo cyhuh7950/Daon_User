@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
-import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState } from "./product-workspace-model.js";
+import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState } from "./product-workspace-model.js";
+import { createProductStudioState } from "./product-studio-model.js";
+import { ProductStudioPane } from "./product-studio-pane.jsx";
 import "./workspace.css";
 
 const STATE_LABELS = Object.freeze({
@@ -305,17 +307,22 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
   const reportIdempotencyRef = useRef(null);
   const lifetimeControllerRef = useRef(null);
   const citationUrlsRef = useRef(new Set());
+  const questionPasswordRef = useRef(null);
 
   useEffect(() => {
     if (!adapter || typeof adapter.listSources !== "function" || !workspaceId) return undefined;
     const controller = new AbortController();
-    Promise.all([
+    Promise.allSettled([
       adapter.listSources({ signal: controller.signal }),
-      typeof adapter.listStudioOutputs === "function"
-        ? adapter.listStudioOutputs({ signal: controller.signal })
-        : Promise.resolve([])
-    ]).then(([sources, studioOutputs]) => {
+      (typeof adapter.listStudioOutputs === "function"
+        ? (typeof adapter.listProductStudioOutputs === "function"
+          ? adapter.listProductStudioOutputs({ signal: controller.signal })
+          : adapter.listStudioOutputs({ signal: controller.signal }))
+        : Promise.resolve([]))
+    ]).then(([sourceResult, studioResult]) => {
       if (controller.signal.aborted) return;
+      if (sourceResult.status === "rejected") throw sourceResult.reason;
+      const sources = sourceResult.value;
       const projected = sources.map((source) => ({
         sourceId: source.source_id,
         sourceVersionId: source.source_version_id,
@@ -325,9 +332,16 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
           && source.job_state === "completed"
       }));
       const selectedSource = projected.find((source) => source.ready) ?? null;
+      const studioValue = studioResult.status === "fulfilled" ? studioResult.value : [];
+      const studioOutputs = Array.isArray(studioValue) ? studioValue : studioValue?.outputs ?? [];
+      const studioLocks = Array.isArray(studioValue?.studioLocks) ? studioValue.studioLocks : [];
       setViewState({
         ...createProductWorkspaceState({ status: projected.length ? "ready" : "empty" }),
-        sources: projected, selectedSource, studioOutputs
+        sources: projected, selectedSource, studioOutputs, studioLocks,
+        studioStatus: studioResult.status === "fulfilled" ? "ready" : "unavailable",
+        studioSafeError: studioResult.status === "fulfilled"
+          ? null
+          : safeErrorCode(studioResult.reason, "STUDIO_LIST_FAILED"),
       });
     }).catch((error) => {
       if (!controller.signal.aborted) {
@@ -441,13 +455,32 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
     try {
       const signal = lifetimeControllerRef.current?.signal;
       if (!signal || signal.aborted) return;
-      const answer = await adapter.askQuestion({ ...viewState.selectedSource, question: question.trim() }, { signal });
+      const idempotencyKey = crypto.randomUUID();
+      let stepUpAuthorizationId = null;
+      const password = questionPasswordRef.current?.value || "";
+      if (password && adapter.authorizeQuestion) {
+        const authorization = await adapter.authorizeQuestion(
+          { ...viewState.selectedSource, question: question.trim(), password },
+          { signal, idempotencyKey },
+        );
+        stepUpAuthorizationId = authorization.step_up_authorization_id;
+      }
+      if (questionPasswordRef.current) questionPasswordRef.current.value = "";
+      const answer = await adapter.askQuestion(
+        { ...viewState.selectedSource, question: question.trim(), stepUpAuthorizationId },
+        { signal, idempotencyKey },
+      );
       if (signal.aborted) return;
       const safeAnswer = projectSafeQuestionAnswer(answer, workspaceId, adapter.citationUrl, viewState.selectedSource);
       setViewState((current) => ({ ...current, answer: safeAnswer }));
       reportIdempotencyRef.current = null;
     } catch (error) {
-      setViewState(createProductWorkspaceState({ status: "error", safeError: safeErrorCode(error, "QUESTION_FAILED") }));
+      setViewState((current) => projectQuestionFailureState(
+        current,
+        new Error(safeErrorCode(error, "QUESTION_FAILED")),
+      ));
+    } finally {
+      if (questionPasswordRef.current) questionPasswordRef.current.value = "";
     }
   };
 
@@ -507,6 +540,7 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
         <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
           <form onSubmit={askQuestion}>
             <label>질문<input value={question} onChange={(event) => setQuestion(event.currentTarget.value)} disabled={!viewState.selectedSource} /></label>
+            <label title="외부 Provider 전송 정책이 요구할 때만 현재 비밀번호로 추가 인증합니다.">외부 전송 추가 인증<input ref={questionPasswordRef} type="password" autoComplete="current-password" /></label>
             <button type="submit" disabled={!viewState.selectedSource || !question.trim()}>질문 실행</button>
           </form>
           {viewState.answer ? <p>{viewState.answer.answer}</p> : null}
@@ -525,6 +559,25 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
           ))}
         </SafePane>
         <SafePane id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">
+          <ProductStudioPane
+            key={`${viewState.answer?.run_id ?? "no-run"}:${viewState.selectedSource?.sourceVersionId ?? "no-source"}`}
+            adapter={adapter}
+            state={createProductStudioState({
+              workspaceId,
+              grounded: canCreateGroundedReport(viewState) ? {
+                sourceId: viewState.selectedSource.sourceId,
+                sourceVersionId: viewState.selectedSource.sourceVersionId,
+                runId: viewState.answer.run_id,
+                runResultId: viewState.answer.run_result_id,
+              } : null,
+              locks: Array.isArray(viewState.studioLocks) ? viewState.studioLocks : [],
+              outputs: viewState.studioOutputs,
+              status: viewState.studioStatus === "unavailable"
+                ? "unavailable"
+                : reportReady ? "ready" : "unavailable",
+              safeError: viewState.studioSafeError ?? null,
+            })}
+          />
           <form onSubmit={createReport}>
             <label>보고서 제목<input value={reportTitle} maxLength={200} onChange={(event) => setReportTitle(event.currentTarget.value)} /></label>
             <label>결과 목적<input value={reportPurpose} maxLength={500} onChange={(event) => setReportPurpose(event.currentTarget.value)} /></label>
@@ -536,7 +589,7 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
                 <strong>{output.title}</strong>
                 <span>{output.status}</span>
                 <ul aria-label={`${output.title} Citation 계보`}>
-                  {output.citations.map((citation) => (
+                  {(Array.isArray(output.citations) ? output.citations : []).map((citation) => (
                     <li key={citation.citation_id}>Citation page {citation.page}</li>
                   ))}
                 </ul>

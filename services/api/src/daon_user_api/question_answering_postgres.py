@@ -292,6 +292,7 @@ class PostgresQuestionAnsweringRepository:
         source_version_id: str, question: str, selection: TextModelSelection,
         evidence: tuple[IndexedEvidenceChunk, ...], result: GroundedTextResult,
         provider_called: bool = True,
+        egress_authorization: Mapping[str, object] | None = None,
     ) -> StoredQuestionAnswer:
         if not _SAFE_ID.fullmatch(run_id) or not question.strip():
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
@@ -308,10 +309,12 @@ class PostgresQuestionAnsweringRepository:
         deployment_id = self._opaque_id(
             "deployment", selection.deployment_id, str(selection.binding_version),
         )
-        routing_policy_id = self._opaque_id(
+        authorization = dict(egress_authorization or {})
+        routing_policy_id = authorization.get("routing_policy_version_id") or self._opaque_id(
             "routing-policy", str(selection.binding_version), selection.deployment_id,
         )
-        routing_decision_id = self._opaque_id("routing", run_id)
+        routing_decision_id = authorization.get("routing_decision_id") or self._opaque_id("routing", run_id)
+        egress_decision_id = authorization.get("egress_decision_id")
         attempt_id = self._opaque_id("attempt", run_id, selection.deployment_id)
         run_snapshot_id = self._opaque_id("run-snapshot", run_id)
         run_result_id = self._opaque_id("run-result", run_id)
@@ -363,7 +366,10 @@ class PostgresQuestionAnsweringRepository:
                     "weights_requested": {}, "weights_effective": {}, "weight_clamps": [],
                     "ruleset_snapshot_ids": [], "routing_policy_version_id": routing_policy_id,
                     "candidate_order": [deployment_id], "data_area": "workspace",
-                    "data_classification": "workspace_private", "egress_decision_id": None,
+                    "data_classification": "workspace_private",
+                    "egress_decision_id": egress_decision_id,
+                    "egress_policy_fingerprint": authorization.get("policy_fingerprint"),
+                    "frozen_routing_context": authorization.get("frozen_routing_context"),
                     "user_policy_version": context.policy_version,
                     "organization_policy_version": context.policy_version,
                     "cost_limit": 0, "currency": "USD",
@@ -380,8 +386,9 @@ class PostgresQuestionAnsweringRepository:
                     self._insert_canon(connection, context, "routing_decisions", routing_decision_id, {
                         "run_id": run_id, "selected_deployment_id": deployment_id,
                         "candidate_order": [deployment_id], "reason": "selected_text_role_binding",
-                    }, extra_columns=("run_id", "routing_policy_version_id"),
-                        extra_values=(run_id, routing_policy_id))
+                        "egress_decision_id": egress_decision_id,
+                    }, extra_columns=("run_id", "routing_policy_version_id", "egress_decision_id"),
+                        extra_values=(run_id, routing_policy_id, egress_decision_id))
                     self._insert_canon(connection, context, "model_attempts", attempt_id, {
                         "run_id": run_id, "deployment_id": deployment_id,
                         "model_artifact_id": artifact_id, "outcome": "succeeded",

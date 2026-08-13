@@ -12,10 +12,34 @@ from test_identity_support import (
     create_service,
     native_login,
 )
-from daon_user_api.identity import ClientKind, IdentityError, MINIMUM_STEP_UP_ACTION_GROUPS
+from daon_user_api.identity import ClientKind, DevicePlatform, IdentityError, MINIMUM_STEP_UP_ACTION_GROUPS, PASSWORD_HASHER
 
 
 class IdentityStepUpTests(unittest.TestCase):
+    def test_step_up_requires_current_local_password_and_oidc_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service, repository, _, _ = create_service(Path(directory) / "identity.sqlite3")
+            connection = repository._connect()
+            try:
+                connection.execute("INSERT OR IGNORE INTO tenants(tenant_id) VALUES ('tenant-001')")
+                connection.execute("INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,email_verified_at,state) VALUES (?,?,?,?,?,?,?,'active')", ("local-step-user", "local", "step-user", "step-user", "step@example.com", PASSWORD_HASHER.hash("correct horse battery staple"), "2026-07-29T00:00:00+00:00"))
+                connection.execute("INSERT INTO memberships(tenant_id,user_id,role) VALUES ('tenant-001','local-step-user','member')")
+                connection.commit()
+            finally:
+                connection.close()
+            credentials = service.local_login(login_id="step-user", password="correct horse battery staple", platform=DevicePlatform.WEB, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            repository.add_step_up_action("tenant-001", "final_approval_or_knowledge_registration")
+            with self.assertRaises(IdentityError) as wrong:
+                service.issue_step_up_after_reauthentication(access_token=credentials.access_token, password="wrong password value", action_group="final_approval_or_knowledge_registration", target_id="version-1", policy_version=POLICY_VERSION, trace_id=TRACE_ID)
+            self.assertEqual(wrong.exception.code, "STEP_UP_REAUTH_REQUIRED")
+            issued = service.issue_step_up_after_reauthentication(access_token=credentials.access_token, password="correct horse battery staple", action_group="final_approval_or_knowledge_registration", target_id="version-1", policy_version=POLICY_VERSION, trace_id=TRACE_ID)
+            self.assertTrue(issued.authorization)
+            oidc = native_login(service)
+            with self.assertRaises(IdentityError) as unavailable:
+                service.issue_step_up_after_reauthentication(access_token=oidc.access_token, password="anything long enough", action_group="final_approval_or_knowledge_registration", target_id="version-1", policy_version=POLICY_VERSION, trace_id=TRACE_ID)
+            self.assertEqual(unavailable.exception.code, "STEP_UP_REAUTH_UNAVAILABLE")
+            repository.close()
+
     def test_minimum_actions_add_only_binding_ttl_and_one_time(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service, repository, audit, clock = create_service(Path(directory) / "identity.sqlite3")

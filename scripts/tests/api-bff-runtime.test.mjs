@@ -5,7 +5,18 @@ import {
   BffConfigurationError,
   createBffProxy,
   parseInternalApiBase,
+  parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
+
+test("BFF local_test public origin은 exact loopback HTTP만 허용하고 production은 계속 HTTPS를 강제한다", () => {
+  assert.equal(parsePublicGatewayOrigin("http://localhost:3080", "local_test").origin, "http://localhost:3080");
+  assert.equal(parsePublicGatewayOrigin("http://127.0.0.1:3080", "local_test").origin, "http://127.0.0.1:3080");
+  for (const invalid of ["http://0.0.0.0:3080", "http://host.docker.internal:3080", "http://localhost:3080/path", "https://localhost:3080"]) {
+    assert.throws(() => parsePublicGatewayOrigin(invalid, "local_test"), BffConfigurationError);
+  }
+  assert.throws(() => parsePublicGatewayOrigin("http://localhost:3080", "production"), BffConfigurationError);
+  assert.equal(parsePublicGatewayOrigin("https://app.example.com", "production").origin, "https://app.example.com");
+});
 
 test("Native BFF는 login·refresh만 무자격이고 exact 보호 Route에는 단일 Bearer를 요구한다", async () => {
   const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
@@ -659,6 +670,32 @@ test("BFF exposes only approved Notification and Inbox paths with same-origin CS
   assert.equal(crossOriginCalls, 0);
 });
 
+test("BFF는 grounded question만 model 상한 100초를 사용하고 일반 route 10초는 유지한다", async () => {
+  const calls = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    timeoutMs: 20,
+    questionTimeoutMs: 60,
+    fetchImpl: async (_url, init) => {
+      calls.push(init.signal);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return new Response(JSON.stringify({ data: {}, meta: {} }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  const question = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-a/questions", {
+    method: "POST", headers: { Origin: "https://app.example.com" }, body: "{}",
+  }), ["workspaces", "workspace-a", "questions"]);
+  assert.equal(question.status, 200);
+  const ordinary = await proxy(new Request("https://app.example.com/bff/api/access-decisions", {
+    method: "POST", headers: { Origin: "https://app.example.com" }, body: "{}",
+  }), ["access-decisions"]);
+  assert.equal(ordinary.status, 504);
+  assert.equal((await ordinary.json()).error.code, "GATEWAY_TIMEOUT");
+});
+
 test("BFF uses its configured public HTTPS origin behind a reverse proxy", async () => {
   let calls = 0;
   const proxy = createBffProxy({
@@ -802,6 +839,21 @@ test("BFF uploads a bounded PDF only through the approved workspace source route
   assert.equal(calls, 0);
 });
 
+test("BFF source route는 실제 Runtime과 동일하게 GET 목록과 POST PDF만 허용한다", async () => {
+  const calls = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), method: init.method });
+      return Response.json({ data: { sources: [] }, meta: {} });
+    },
+  });
+  const response = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/sources"), ["workspaces", "workspace-001", "sources"]);
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [{ url: "https://api.example.com/api/v1/workspaces/workspace-001/sources", method: "GET" }]);
+});
+
 test("BFF exposes only same-origin document processing status reads", async () => {
   const captured = [];
   const proxy = createBffProxy({
@@ -859,5 +911,52 @@ test("BFF exposes grounded questions and Citation PDF only through approved same
   assert.deepEqual(captured, [
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/questions", method: "POST" },
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/citations/citation-cp3/content", method: "GET" },
+  ]);
+});
+
+test("BFF exposes Question authorization as exact POST only", async () => {
+  const captured = [];
+  const proxy = createBffProxy({ baseUrl: new URL("https://api.example.com"), publicOrigin: new URL("https://app.example.com"), fetchImpl: async (url, init) => { captured.push({ url: String(url), method: init.method }); return Response.json({ data: {}, meta: {} }, { status: 201 }); } });
+  const response = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/questions/authorization", { method: "POST", headers: { Origin: "https://app.example.com", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" }, body: JSON.stringify({ source_id: "source", source_version_id: "version", question: "q", password: "memory-only" }) }), ["workspaces", "workspace-001", "questions", "authorization"]);
+  assert.equal(response.status, 201);
+  assert.deepEqual(captured, [{ url: "https://api.example.com/api/v1/workspaces/workspace-001/questions/authorization", method: "POST" }]);
+});
+
+test("BFF allowlists Product Studio lifecycle and bounded export paths", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return String(url).includes("/exports/")
+        ? new Response(Buffer.from("%PDF-1.4"), { headers: {
+          "Content-Type": "application/pdf", "Content-Disposition": 'attachment; filename="studio-version-1.pdf"',
+          "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", ETag: '"sha256:test"',
+        } })
+        : Response.json({ data: {}, meta: {} });
+    },
+  });
+  const post = (path, segments) => proxy(new Request(`https://app.example.com/bff/api/${path}`, {
+    method: "POST", headers: { Origin: "https://app.example.com", "Content-Type": "application/json", "Idempotency-Key": "studio-action-0001" }, body: "{}",
+  }), segments);
+  const generation = await post("studio-generation-requests", ["studio-generation-requests"]);
+  const review = await post("reviews", ["reviews"]);
+  const exportResponse = await proxy(new Request("https://app.example.com/bff/api/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-1"), ["studio-outputs", "output-1", "versions", "version-1", "exports", "pdf"]);
+  assert.equal(generation.status, 200);
+  assert.equal(review.status, 200);
+  assert.equal(exportResponse.headers.get("content-type"), "application/pdf");
+  assert.equal(exportResponse.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(exportResponse.headers.get("content-disposition"), 'attachment; filename="studio-version-1.pdf"');
+  assert.equal(exportResponse.headers.get("etag"), '"sha256:test"');
+  const wrongMethods = await Promise.all([
+    proxy(new Request("https://app.example.com/bff/api/reviews"), ["reviews"]),
+    post("studio-outputs", ["studio-outputs"]),
+    proxy(new Request("https://app.example.com/bff/api/studio-outputs/output-1/versions?workspace_id=workspace-1"), ["studio-outputs", "output-1", "versions"]),
+  ]);
+  assert.deepEqual(wrongMethods.map((response) => response.status), [405, 405, 405]);
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/studio-generation-requests", method: "POST" },
+    { url: "https://api.example.com/api/v1/reviews", method: "POST" },
+    { url: "https://api.example.com/api/v1/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-1", method: "GET" },
   ]);
 });

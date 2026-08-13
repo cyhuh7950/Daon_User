@@ -1126,6 +1126,31 @@ class IdentityService:
                         metadata={"action_group": action_group})
         return StepUpGrant(raw, now, expires)
 
+    def issue_step_up_after_reauthentication(
+        self, *, access_token: str, password: str, action_group: str, target_id: str,
+        policy_version: str, trace_id: str,
+        ttl_seconds: int = DEFAULT_STEP_UP_TTL_SECONDS,
+    ) -> StepUpGrant:
+        """Issue a step-up grant only after current local credentials are verified."""
+        secret = _password(password)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            principal = self._principal(connection, access_token, now)
+            user = connection.execute(
+                "SELECT issuer,password_digest FROM users WHERE user_id=?",
+                (str(principal["user_id"]),),
+            ).fetchone()
+            if user is None or str(user["issuer"]) != "local" or user["password_digest"] is None:
+                raise IdentityError("STEP_UP_REAUTH_UNAVAILABLE", 403)
+            try:
+                PASSWORD_HASHER.verify(str(user["password_digest"]), secret)
+            except Exception as error:
+                raise IdentityError("STEP_UP_REAUTH_REQUIRED", 403) from error
+        return self.issue_step_up(
+            access_token=access_token, action_group=action_group, target_id=target_id,
+            policy_version=policy_version, trace_id=trace_id, ttl_seconds=ttl_seconds,
+        )
+
     def _consume_step_up(self, connection: sqlite3.Connection, *, raw: str | None,
                          principal: sqlite3.Row, action_group: str, target_id: str,
                          policy_version: str, trace_id: str, now: datetime) -> None:

@@ -23,6 +23,10 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/workspaces/{id}/knowledge-scope",
   "/api/v1/workspaces/{id}/weight-profile",
   "/api/v1/workspaces/{id}/model-policy",
+  "/api/v1/workspaces/{id}/egress-policy",
+  "/api/v1/workspaces/{id}/questions/authorization",
+  "/api/v1/organizations/{id}/egress-policy-versions",
+  "/api/v1/workspaces/{id}/egress-policy-versions",
   "/api/v1/workspaces/{id}/authorization/evaluations",
   "/api/v1/access-decisions",
   "/api/v1/rulesets",
@@ -45,6 +49,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/studio-generation-requests",
   "/api/v1/studio-outputs",
   "/api/v1/studio-outputs/{id}/versions",
+  "/api/v1/studio-outputs/{id}/versions/{version_id}/exports/{format_name}",
   "/api/v1/reviews",
   "/api/v1/approval-requests",
   "/api/v1/approvals",
@@ -303,6 +308,12 @@ function validateIdentityContract(document) {
   if (schemas.StepUpAuthorizationRequest?.properties?.ttl_seconds?.maximum !== 600) {
     fail("Step-up TTL maximum must be 600 seconds");
   }
+  if (
+    !schemas.StepUpAuthorizationRequest?.required?.includes("password")
+    || schemas.StepUpAuthorizationRequest?.properties?.password?.writeOnly !== true
+    || schemas.StepUpAuthorizationRequest?.properties?.password?.minLength !== 12
+    || schemas.StepUpAuthorizationRequest?.properties?.password?.maxLength !== 1024
+  ) fail("Step-up must require an approved writeOnly reauthentication password");
   if (schemas.NativeRefreshRequest?.properties?.refresh_credential?.writeOnly !== true) {
     fail("Native refresh credential must be writeOnly");
   }
@@ -418,6 +429,22 @@ export function validateOpenApiDocument(document) {
       field === "password" ? "native_local_login_input" : field
     ));
   }
+  const stepUpForScan = secretScanDocument.components?.schemas?.StepUpAuthorizationRequest;
+  if (isObject(stepUpForScan?.properties?.password)) {
+    stepUpForScan.properties.step_up_reauthentication_input = stepUpForScan.properties.password;
+    delete stepUpForScan.properties.password;
+  }
+  if (Array.isArray(stepUpForScan?.required)) {
+    stepUpForScan.required = stepUpForScan.required.map((field) => field === "password" ? "step_up_reauthentication_input" : field);
+  }
+  const questionAuthorizationForScan = secretScanDocument.components?.schemas?.GroundedQuestionAuthorizationRequest;
+  if (isObject(questionAuthorizationForScan?.properties?.password)) {
+    questionAuthorizationForScan.properties.question_reauthentication_input = questionAuthorizationForScan.properties.password;
+    delete questionAuthorizationForScan.properties.password;
+  }
+  if (Array.isArray(questionAuthorizationForScan?.required)) {
+    questionAuthorizationForScan.required = questionAuthorizationForScan.required.map((field) => field === "password" ? "question_reauthentication_input" : field);
+  }
   const serialized = JSON.stringify(secretScanDocument);
   for (const pattern of FORBIDDEN_SOURCE_TOKENS) if (pattern.test(serialized)) fail(`forbidden token ${pattern}`);
 
@@ -425,6 +452,50 @@ export function validateOpenApiDocument(document) {
   const actualPaths = Object.keys(document.paths);
   for (const requiredPath of REQUIRED_PATHS) if (!(requiredPath in document.paths)) fail(`required path missing ${requiredPath}`);
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
+  const studioRuntimeMethods = new Map([
+    ["/api/v1/studio-generation-requests", ["post"]],
+    ["/api/v1/studio-outputs", ["get"]],
+    ["/api/v1/studio-outputs/{id}/versions", ["post"]],
+    ["/api/v1/reviews", ["post"]], ["/api/v1/approval-requests", ["post"]],
+    ["/api/v1/approvals", ["post"]], ["/api/v1/deliveries", ["post"]],
+    ["/api/v1/knowledge-registrations", ["post"]],
+  ]);
+  for (const [apiPath, expectedMethods] of studioRuntimeMethods) {
+    const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method)).sort();
+    if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Studio Runtime method mismatch ${apiPath}`);
+  }
+  const studioRequestBodies = new Map([
+    ["/api/v1/studio-generation-requests", "#/components/requestBodies/StudioGeneration"],
+    ["/api/v1/studio-outputs/{id}/versions", "#/components/requestBodies/StudioRevision"],
+    ["/api/v1/reviews", "#/components/requestBodies/StudioAction"],
+    ["/api/v1/approval-requests", "#/components/requestBodies/StudioAction"],
+    ["/api/v1/approvals", "#/components/requestBodies/StudioAction"],
+    ["/api/v1/deliveries", "#/components/requestBodies/StudioAction"],
+    ["/api/v1/knowledge-registrations", "#/components/requestBodies/StudioAction"],
+  ]);
+  for (const [apiPath, expectedRef] of studioRequestBodies) {
+    if (document.paths[apiPath]?.post?.requestBody?.$ref !== expectedRef) fail(`Studio Runtime request mismatch ${apiPath}`);
+  }
+  const studioResponses = new Map([
+    ["/api/v1/studio-generation-requests", "#/components/responses/StudioGenerationMutationResponse"],
+    ["/api/v1/studio-outputs/{id}/versions", "#/components/responses/StudioVersionMutationResponse"],
+    ["/api/v1/reviews", "#/components/responses/StudioActionMutationResponse"],
+    ["/api/v1/approval-requests", "#/components/responses/StudioActionMutationResponse"],
+    ["/api/v1/approvals", "#/components/responses/StudioActionMutationResponse"],
+    ["/api/v1/deliveries", "#/components/responses/StudioActionMutationResponse"],
+    ["/api/v1/knowledge-registrations", "#/components/responses/StudioActionMutationResponse"],
+  ]);
+  for (const [apiPath, expectedRef] of studioResponses) {
+    for (const status of ["200", "201"]) {
+      if (document.paths[apiPath]?.post?.responses?.[status]?.$ref !== expectedRef) fail(`Studio Runtime response mismatch ${apiPath}`);
+    }
+  }
+  const exportMedia = Object.keys(document.components?.responses?.StudioExportResponse?.content ?? {}).sort();
+  const requiredExportMedia = [
+    "application/json", "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "image/png", "image/svg+xml", "text/csv",
+  ].sort();
+  if (JSON.stringify(exportMedia) !== JSON.stringify(requiredExportMedia)) fail("Studio export media types mismatch Runtime");
 
   walk(document, (value) => {
     if (isObject(value) && "$ref" in value) resolveRef(document, value.$ref);

@@ -3,16 +3,37 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { findElements, installMinimalDom } from "./product-studio-dom.mjs";
 
 import {
   assertProductWorkspaceAdapter,
   createProductWorkspaceState,
   canCreateGroundedReport,
+  projectQuestionFailureState,
 } from "../../packages/ui/src/product-workspace-model.js";
 
 const adapter = Object.freeze({
   listSources() {}, uploadPdf() {}, getProcessingStatus() {}, askQuestion() {},
   citationUrl() {}, createReport() {}, listStudioOutputs() {},
+});
+
+test("질문 실패는 로드된 Source·Studio 잠금을 보존하고 안전 오류만 투영한다", () => {
+  const current = {
+    ...createProductWorkspaceState({ status: "ready" }),
+    sources: [{ sourceId: "source-1", sourceVersionId: "version-1", filename: "ready.pdf", ready: true }],
+    selectedSource: { sourceId: "source-1", sourceVersionId: "version-1", filename: "ready.pdf", ready: true },
+    studioLocks: [{ lock_type: "ruleset", version: "v1" }],
+    studioOutputs: [{ studio_output_id: "output-1" }],
+  };
+
+  const failed = projectQuestionFailureState(current, new Error("TEXT_MODEL_NOT_SELECTED"));
+
+  assert.equal(failed.status, "error");
+  assert.equal(failed.safeError, "TEXT_MODEL_NOT_SELECTED");
+  assert.deepEqual(failed.sources, current.sources);
+  assert.deepEqual(failed.selectedSource, current.selectedSource);
+  assert.deepEqual(failed.studioLocks, current.studioLocks);
+  assert.deepEqual(failed.studioOutputs, current.studioOutputs);
 });
 
 test("Product Workspace Adapter는 exact 7개 메서드를 요구한다", () => {
@@ -41,6 +62,41 @@ test("근거 보고서는 ready Source와 sufficient Citation 답변이 모두 �
     ...ready,
     answer: { ...ready.answer, citations: [{ ...ready.answer.citations[0], source_version_id: "version-other" }] },
   }), false);
+});
+
+test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 경고로 투영한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-studio-unavailable-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { build } = await import("vite");
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: {
+      outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "studio-unavailable" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("studio-unavailable") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?studioUnavailable=${Date.now()}`);
+    const effectAdapter = {
+      ...adapter,
+      async listSources() { return [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }]; },
+      async listStudioOutputs() { throw new Error("STUDIO_DATABASE_UNAVAILABLE http://internal.invalid stack"); },
+    };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    assert.match(container.textContent, /ready\.pdf/u);
+    const questionInput = findElements(container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.startsWith("질문"))[0];
+    assert.equal(questionInput.disabled, false);
+    assert.match(container.textContent, /STUDIO_LIST_FAILED/u);
+    assert.doesNotMatch(container.textContent, /internal\.invalid|stack/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
 });
 
 test("Product Studio 실제 React는 근거 충족 전 생성 비활성, 충족 후 보고서 입력·목록을 렌더한다", async () => {
@@ -196,6 +252,37 @@ test("Product Studio 실제 React는 근거 충족 전 생성 비활성, 충족 
       state: ready, title: "실패 보고서", purpose: "실패", idempotencyKey: "report-failure-1",
     }), /STUDIO_DATABASE_UNAVAILABLE/);
     assert.deepEqual(failedOutputs, []);
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("저장된 공통 Studio DTO 1건으로 재진입해도 신규 Pane과 기존 보고서 계보가 함께 렌더된다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".studio-reentry-react-"));
+  try {
+    const { build } = await import("vite");
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    await build({ configFile: false, logLevel: "silent", root, build: {
+      outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "product-reentry" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/server"] },
+    } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("product-reentry") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?reentry=${Date.now()}`);
+    const stored = {
+      studio_output_id: "output-1", output_version_id: "version-1", output_type: "comparison_table",
+      title: "저장 비교표", status: "draft", citations: 2,
+      version: { output_format: "xlsx", rows: [{ key: "항목", baseline: "A", current: "B", evidence: ["citation-1", "citation-2"] }] },
+    };
+    const text = renderToStaticMarkup(createElement(ProductWorkspaceShell, {
+      workspaceId: "workspace-1", adapter,
+      state: { ...createProductWorkspaceState({ status: "ready" }), studioOutputs: [stored] },
+    }));
+    assert.match(text, /저장 비교표/);
+    assert.match(text, /저장된 산출물/);
+    assert.match(text, /저장된 보고서/);
   } finally {
     await rm(output, { recursive: true, force: true });
   }

@@ -25,12 +25,13 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 from .audit import AuditEvent, AuditEventStore, AuditOutcome, AuditValidationError
 from .cloud_storage import PostgresCloudStore
+from .data_canon import canonical_json_bytes
 from .authorization import (
     AccessAction,
     AccessDecision,
@@ -85,11 +86,17 @@ from .document_index_postgres import PostgresDocumentIndex
 from .question_answering_postgres import (
     PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
 )
-from .question_answering_service import QuestionAnsweringError, QuestionAnsweringService
+from .question_answering_service import QuestionAdapterRegistry, QuestionAnsweringError, QuestionAnsweringService
+from .egress_policy import EgressPolicyService
+from .egress_policy import EgressPolicyContext, EgressPolicyError, EgressPolicyPayload
+from .egress_policy_postgres import PostgresEgressPolicyRepository
+from .question_egress import PostgresQuestionEgressAuthorizer
 from .studio_report import (
     StudioReportContext, StudioReportCreateRequest, StudioReportError, StudioReportService,
 )
 from .studio_report_postgres import PostgresStudioReportRepository
+from .studio_workspace import StudioContext, StudioError, StudioGenerationRequest, StudioWorkspaceService
+from .studio_workspace_postgres import PostgresStudioWorkspaceRepository
 from .sync import (
     ConflictResolutionChoice,
     ReferenceSyncRepository,
@@ -133,6 +140,13 @@ _TRACEPARENT = re.compile(
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 _SOURCE_UPLOAD_PATH = re.compile(r"^/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/sources$")
 _PDF_FILENAME = re.compile(r"^[^/\\\x00-\x1f]{1,251}\.pdf$", re.IGNORECASE)
+_QUESTION_REQUEST_TIMEOUT_SECONDS = 95.0
+
+
+def request_timeout_for_path(settings: "RuntimeSettings", path: str) -> float:
+    if re.fullmatch(r"/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/questions", path):
+        return _QUESTION_REQUEST_TIMEOUT_SECONDS
+    return settings.request_timeout_seconds
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +346,8 @@ class RuntimeDependencies:
     citation_content_repository: Any | None = None
     studio_report_service: Any | None = None
     studio_report_repository: Any | None = None
+    studio_workspace_service: Any | None = None
+    egress_policy_service: EgressPolicyService | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -365,11 +381,24 @@ class AuthorizationEvaluationBody(BaseModel):
     requested_permissions: list[Permission]
 
 
+class EgressPolicyVersionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: str
+    allowed_provider_kinds: list[str] = Field(max_length=32)
+    allowed_destinations: list[str] = Field(max_length=64)
+    classification: str
+    max_bytes: int = Field(ge=0, le=104_857_600)
+    masking_required: bool
+    redaction_required: bool
+    required_approver: str
+    step_up_authorization_id: str = Field(min_length=1, max_length=4096)
+
+
 class SignupBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     login_id: str
     email: str
-    password: str
+    password: str = Field(min_length=12, max_length=1024)
 
 
 class LoginBody(BaseModel):
@@ -411,6 +440,14 @@ class AccessDecisionBody(BaseModel):
     action: AccessAction
 
 
+class StepUpBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action_group: str
+    target_id: str
+    password: str
+    ttl_seconds: int = 300
+
+
 class NotificationReadBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     state: str
@@ -421,6 +458,15 @@ class QuestionBody(BaseModel):
     source_id: str
     source_version_id: str
     question: str
+    step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
+class QuestionAuthorizationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str
+    source_version_id: str
+    question: str
+    password: str
 
 
 class StudioReportBody(BaseModel):
@@ -431,6 +477,52 @@ class StudioReportBody(BaseModel):
     run_result_id: str
     title: str
     purpose: str
+
+
+class StudioSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    purpose: str
+    audience: str
+    source_version_ids: list[str]
+    ruleset_version_id: str | None = None
+    length: str
+    structure: str
+    output_format: str
+    review_condition: str
+
+
+class StudioGenerationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace_id: str
+    output_type: str
+    source_id: str
+    source_version_ids: list[str]
+    run_id: str
+    run_result_id: str
+    settings: StudioSettingsBody
+
+
+class StudioRevisionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace_id: str
+    previous_version_id: str
+    revision_type: str
+    change_reason: str
+    content: str
+    settings: StudioSettingsBody | None = None
+
+
+class StudioActionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace_id: str
+    output_version_id: str
+    step_up_authorization: str | None = None
+    review_request_id: str | None = None
+    approval_request_id: str | None = None
+    approval_id: str | None = None
+    decision: str | None = None
+    recipient: str | None = None
+    explicit: bool | None = None
 
 
 class SyncItemBody(BaseModel):
@@ -726,6 +818,12 @@ def _studio_idempotency_key(value: str) -> str:
     return value
 
 
+def _egress_idempotency_key(value: str) -> str:
+    if len(value) < 16 or len(value) > 128 or not _TRACE_ID.fullmatch(value):
+        raise HTTPException(status_code=400)
+    return value
+
+
 def _personal_workspace_id(tenant_id: str) -> str:
     return f"workspace-{hashlib.sha256(tenant_id.encode('utf-8')).hexdigest()[:24]}"
 
@@ -815,11 +913,31 @@ def _provider_settings_context(
     )
 
 
+def _egress_policy_context(
+    principal: IdentityPrincipal, workspace_id: str, request: Request,
+    dependencies: RuntimeDependencies,
+) -> EgressPolicyContext:
+    return EgressPolicyContext(
+        principal.tenant_id, principal.tenant_id, workspace_id, principal.user_id,
+        request.state.trace_id, dependencies.settings.policy_version,
+    )
+
+
 def _studio_context(
     principal: IdentityPrincipal, workspace_id: str, request: Request,
     dependencies: RuntimeDependencies,
 ) -> StudioReportContext:
     return StudioReportContext(
+        principal.tenant_id, workspace_id, principal.user_id, request.state.trace_id,
+        dependencies.settings.policy_version,
+    )
+
+
+def _product_studio_context(
+    principal: IdentityPrincipal, workspace_id: str, request: Request,
+    dependencies: RuntimeDependencies,
+) -> StudioContext:
+    return StudioContext(
         principal.tenant_id, workspace_id, principal.user_id, request.state.trace_id,
         dependencies.settings.policy_version,
     )
@@ -862,6 +980,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ),
         ServerCredentialPresenceResolver(),
     )
+    egress_policy_service = dependencies.egress_policy_service
+    if egress_policy_service is None and dependencies.cloud_store is not None:
+        egress_policy_service = EgressPolicyService(
+            PostgresEgressPolicyRepository(dependencies.cloud_store)
+        )
     citation_content_repository = dependencies.citation_content_repository
     question_answering_service = dependencies.question_answering_service
     if (
@@ -875,6 +998,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             provider_settings_service, citation_content_repository,
             PostgresDocumentIndex(dependencies.cloud_store),
             ServerProviderCredentialResolver(), UrlLibDocumentUnderstandingTransport(),
+            PostgresQuestionEgressAuthorizer(
+                dependencies.cloud_store,
+                cast(EgressPolicyService, egress_policy_service),
+            ),
+            adapter_registry=QuestionAdapterRegistry(),
         )
     studio_report_repository = dependencies.studio_report_repository
     studio_report_service = dependencies.studio_report_service
@@ -882,6 +1010,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         studio_report_repository = PostgresStudioReportRepository(dependencies.cloud_store)
     if studio_report_service is None and studio_report_repository is not None:
         studio_report_service = StudioReportService(studio_report_repository)
+    studio_workspace_service = dependencies.studio_workspace_service
+    if studio_workspace_service is None and dependencies.cloud_store is not None:
+        studio_workspace_service = StudioWorkspaceService(PostgresStudioWorkspaceRepository(dependencies.cloud_store, dependencies.object_storage))
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
@@ -893,7 +1024,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
             async def timed_handler(request: Request) -> Response:
                 try:
-                    async with asyncio.timeout(dependencies.settings.request_timeout_seconds):
+                    async with asyncio.timeout(request_timeout_for_path(dependencies.settings, request.url.path)):
                         return cast(Response, await original(request))
                 except TimeoutError:
                     return _error_response(
@@ -1060,6 +1191,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             retryable=error.retryable,
         )
 
+    @app.exception_handler(EgressPolicyError)
+    async def egress_policy_error(
+        request: Request, error: EgressPolicyError,
+    ) -> JSONResponse:
+        public_codes = {
+            "EGRESS_POLICY_UNAVAILABLE", "EGRESS_POLICY_STALE", "EGRESS_POLICY_DENIED",
+            "VERSION_CONFLICT", "IDEMPOTENCY_KEY_REUSED", "EGRESS_POLICY_PAYLOAD_INVALID",
+        }
+        return _error_response(
+            error.status, error.code if error.code in public_codes else "INVALID_REQUEST",
+            request.state.trace_id,
+        )
+
     @app.exception_handler(QuestionAnsweringError)
     async def question_answering_error(
         request: Request, error: QuestionAnsweringError,
@@ -1068,6 +1212,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "TEXT_MODEL_NOT_SELECTED", "TEXT_MODEL_UNAVAILABLE",
             "TEXT_PROVIDER_UNAVAILABLE", "TEXT_GENERATION_GROUNDING_INVALID",
             "TEXT_GENERATION_RESPONSE_INVALID", "QUESTION_SOURCE_UNAVAILABLE",
+            "EGRESS_POLICY_UNAVAILABLE", "EGRESS_POLICY_STALE", "EGRESS_POLICY_DENIED",
         }
         return _error_response(
             error.status, error.code if error.code in public_codes else "QUESTION_FAILED",
@@ -1098,6 +1243,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return _error_response(
             error.status, error.code if error.code in public_codes else "INVALID_REQUEST",
             request.state.trace_id, retryable=error.retryable,
+        )
+
+    @app.exception_handler(StudioError)
+    async def studio_workspace_error(request: Request, error: StudioError) -> JSONResponse:
+        public_codes = {
+            "STUDIO_INPUT_INVALID", "STUDIO_DATABASE_UNAVAILABLE", "STUDIO_SERVICE_UNAVAILABLE",
+            "STEP_UP_REQUIRED", "CHANGE_REASON_REQUIRED", "REVISION_TYPE_INVALID",
+            "EXPORT_FORMAT_UNSUPPORTED", "RESOURCE_UNAVAILABLE", "IDEMPOTENCY_CONFLICT",
+            "POLICY_PROJECTION_MISMATCH", "EVIDENCE_COVERAGE_INCOMPLETE", "REVIEW_REQUEST_REQUIRED",
+            "KNOWLEDGE_CYCLE_DETECTED", "OBJECT_STORAGE_UNAVAILABLE", "OBJECT_CHECKSUM_MISMATCH",
+        }
+        return _error_response(
+            error.status, error.code if error.code in public_codes else "INVALID_REQUEST",
+            request.state.trace_id,
         )
 
     @app.exception_handler(SourceUploadError)
@@ -1376,13 +1535,93 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             ))),
         )
 
+    def _question_run_id(principal: IdentityPrincipal, workspace_id: str, key: str) -> str:
+        return "run-" + hashlib.sha256(
+            f"{principal.tenant_id}|{workspace_id}|{principal.user_id}|{key}".encode("utf-8")
+        ).hexdigest()[:32]
+
+    def _question_authorization_fingerprint(
+        *, principal: IdentityPrincipal, workspace_id: str, run_id: str,
+        body: QuestionAuthorizationBody | QuestionBody, prepared: object,
+        policy_fingerprint: str, idempotency_key: str,
+    ) -> str:
+        payload = cast(Any, prepared).provider_payload
+        selection = cast(Any, prepared).selection
+        return "sha256:" + hashlib.sha256(canonical_json_bytes({
+            "actor_id": principal.user_id, "tenant_id": principal.tenant_id,
+            "workspace_id": workspace_id, "run_id": run_id,
+            "source_id": body.source_id, "source_version_id": body.source_version_id,
+            "question_fingerprint": "sha256:" + hashlib.sha256(body.question.strip().encode()).hexdigest(),
+            "provider_payload_fingerprint": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "provider_kind": selection.provider_kind,
+            "deployment_id": selection.deployment_id,
+            "effective_policy_fingerprint": policy_fingerprint,
+            "idempotency_key": idempotency_key,
+        })).hexdigest()
+
+    @app.post("/api/v1/workspaces/{id}/questions/authorization", status_code=201)
+    async def authorize_grounded_question(
+        id: str, body: QuestionAuthorizationBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _egress_idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        grant = dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            requested_permissions=(Permission.EXTERNAL_LLM,),
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if question_answering_service is None or egress_policy_service is None:
+            raise QuestionAnsweringError("QUESTION_SERVICE_UNAVAILABLE", status=503, retryable=True)
+        context = QuestionContext(
+            principal.tenant_id, id, principal.user_id,
+            request.state.trace_id, dependencies.settings.policy_version,
+        )
+        prepared = await asyncio.to_thread(
+            question_answering_service.prepare_authorization, context,
+            source_id=body.source_id, source_version_id=body.source_version_id,
+            question=body.question,
+        )
+        effective = egress_policy_service.get_effective(
+            _egress_policy_context(principal, id, request, dependencies)
+        )
+        if cast(Any, prepared).selection.provider_kind != "external_api":
+            raise QuestionAnsweringError("QUESTION_EXTERNAL_AUTHORIZATION_NOT_REQUIRED", status=409)
+        approver_roles = {
+            "workspace_manager": {Role.WORKSPACE_ADMIN, Role.ORGANIZATION_ADMIN},
+            "organization_admin": {Role.ORGANIZATION_ADMIN},
+        }
+        if grant.role not in approver_roles[effective.required_approver]:
+            raise AuthorizationError("ACTION_DENIED", 403)
+        run_id = _question_run_id(principal, id, idempotency_key)
+        request_fingerprint = _question_authorization_fingerprint(
+            principal=principal, workspace_id=id, run_id=run_id, body=body,
+            prepared=prepared, policy_fingerprint=effective.fingerprint,
+            idempotency_key=idempotency_key,
+        )
+        access_token, _ = _credential(request)
+        step_up = dependencies.identity_service.issue_step_up_after_reauthentication(
+            access_token=access_token, password=body.password,
+            action_group="external_transfer", target_id=run_id,
+            policy_version=request_fingerprint, trace_id=request.state.trace_id,
+        )
+        response = JSONResponse({"data": {
+            "step_up_authorization_id": step_up.authorization,
+            "expires_at": step_up.expires_at.isoformat(), "run_id": run_id,
+            "request_fingerprint": request_fingerprint,
+        }, "meta": {"trace_id": request.state.trace_id}}, status_code=201)
+        response.headers["ETag"] = f'"question-authorization:{request_fingerprint}"'
+        return response
+
     @app.post("/api/v1/workspaces/{id}/questions")
     async def ask_grounded_question(
         id: str, body: QuestionBody, request: Request,
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
-        _idempotency_key(idempotency_key)
+        _egress_idempotency_key(idempotency_key)
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
@@ -1393,9 +1632,46 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise QuestionAnsweringError(
                 "QUESTION_SERVICE_UNAVAILABLE", status=503, retryable=True,
             )
-        run_id = "run-" + hashlib.sha256(
-            f"{principal.tenant_id}|{id}|{principal.user_id}|{idempotency_key}".encode("utf-8")
-        ).hexdigest()[:32]
+        run_id = _question_run_id(principal, id, idempotency_key)
+        approved_authorization = None
+        if egress_policy_service is not None:
+            context = QuestionContext(
+                principal.tenant_id, id, principal.user_id,
+                request.state.trace_id, dependencies.settings.policy_version,
+            )
+            prepared = await asyncio.to_thread(
+                question_answering_service.prepare_authorization, context,
+                source_id=body.source_id, source_version_id=body.source_version_id,
+                question=body.question,
+            )
+            if cast(Any, prepared).selection.provider_kind == "external_api":
+                effective = egress_policy_service.get_effective(
+                    _egress_policy_context(principal, id, request, dependencies)
+                )
+                if effective.mode == "allow_approved_external":
+                    if body.step_up_authorization_id is None:
+                        raise QuestionAnsweringError("STEP_UP_REQUIRED", status=403)
+                    request_fingerprint = _question_authorization_fingerprint(
+                        principal=principal, workspace_id=id, run_id=run_id, body=body,
+                        prepared=prepared, policy_fingerprint=effective.fingerprint,
+                        idempotency_key=idempotency_key,
+                    )
+                    access_token, _ = _credential(request)
+                    dependencies.identity_service.consume_step_up(
+                        step_up_authorization=body.step_up_authorization_id,
+                        access_token=access_token, action_group="external_transfer",
+                        target_id=run_id, policy_version=request_fingerprint,
+                        trace_id=request.state.trace_id,
+                    )
+                    approved_authorization = {
+                        "request_fingerprint": request_fingerprint,
+                        "policy_fingerprint": effective.fingerprint,
+                        "provider_payload_fingerprint": "sha256:" + hashlib.sha256(
+                            cast(Any, prepared).provider_payload,
+                        ).hexdigest(),
+                        "provider_kind": cast(Any, prepared).selection.provider_kind,
+                        "deployment_id": cast(Any, prepared).selection.deployment_id,
+                    }
         answer = await asyncio.to_thread(
             question_answering_service.ask,
             QuestionContext(
@@ -1404,6 +1680,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             ),
             source_id=body.source_id, source_version_id=body.source_version_id,
             question=body.question, run_id=run_id,
+            approved_authorization=approved_authorization,
         )
         response = JSONResponse({
             "data": {
@@ -1415,6 +1692,162 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         })
         response.headers["ETag"] = f'"run-result:{answer.run_result_id}"'
         return response
+
+    @app.post("/api/v1/studio-generation-requests", status_code=201)
+    async def create_product_studio_generation(
+        body: StudioGenerationBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _studio_idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=body.workspace_id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        if studio_workspace_service is None:
+            raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        if body.source_version_ids != body.settings.source_version_ids:
+            raise StudioError("STUDIO_INPUT_INVALID")
+        output, replayed = await asyncio.to_thread(
+            studio_workspace_service.generate,
+            _product_studio_context(principal, body.workspace_id, request, dependencies),
+            StudioGenerationRequest(
+                body.output_type, body.source_id, tuple(body.source_version_ids), body.run_id,
+                body.run_result_id, body.settings.purpose, body.settings.audience,
+                body.settings.ruleset_version_id, body.settings.length, body.settings.structure,
+                body.settings.output_format, body.settings.review_condition,
+            ),
+            idempotency_key,
+        )
+        response = JSONResponse({"data": _enum_json(output), "meta": {
+            "trace_id": request.state.trace_id, "workspace_id": body.workspace_id, "replayed": replayed,
+        }}, status_code=200 if replayed else 201)
+        response.headers["ETag"] = f'"studio-version:{output["output_version_id"]}"'
+        return response
+
+    @app.get("/api/v1/studio-outputs")
+    async def list_product_studio_outputs(request: Request, workspace_id: str = Query()) -> JSONResponse:
+        _require_query_keys(request, frozenset({"workspace_id"}))
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        if studio_workspace_service is None:
+            raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        projection = await asyncio.to_thread(
+            studio_workspace_service.list_outputs,
+            _product_studio_context(principal, workspace_id, request, dependencies),
+        )
+        if isinstance(projection, Mapping):
+            data = {"outputs": _enum_json(projection.get("outputs", ())), "studio_locks": _enum_json(projection.get("studio_locks", ())) }
+        else:
+            data = {"outputs": _enum_json(projection), "studio_locks": []}
+        return JSONResponse({"data": data, "meta": {
+            "trace_id": request.state.trace_id, "workspace_id": workspace_id,
+        }})
+
+    @app.post("/api/v1/studio-outputs/{output_id}/versions", status_code=201)
+    async def create_product_studio_version(
+        output_id: str, body: StudioRevisionBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _studio_idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=body.workspace_id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        if studio_workspace_service is None:
+            raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        version, replayed = await asyncio.to_thread(
+            studio_workspace_service.revise,
+            _product_studio_context(principal, body.workspace_id, request, dependencies), output_id,
+            body.model_dump(exclude={"workspace_id"}), idempotency_key,
+        )
+        response = JSONResponse({"data": _enum_json(version), "meta": {
+            "trace_id": request.state.trace_id, "workspace_id": body.workspace_id, "replayed": replayed,
+        }}, status_code=200 if replayed else 201)
+        response.headers["ETag"] = f'"studio-version:{version["output_version_id"]}"'
+        return response
+
+    @app.post("/api/v1/reviews", status_code=201)
+    @app.post("/api/v1/approval-requests", status_code=201)
+    @app.post("/api/v1/approvals", status_code=201)
+    @app.post("/api/v1/deliveries", status_code=201)
+    @app.post("/api/v1/knowledge-registrations", status_code=201)
+    async def create_product_studio_action(
+        body: StudioActionBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _studio_idempotency_key(idempotency_key)
+        resource = request.url.path.rsplit("/", 1)[-1]
+        action_name = {
+            "reviews": "review", "approval-requests": "approval_request", "approvals": "approval",
+            "deliveries": "delivery", "knowledge-registrations": "knowledge_registration",
+        }[resource]
+        permission_action = {
+            "review": Action.REVIEW, "approval_request": Action.EDIT, "approval": Action.APPROVE,
+            "delivery": Action.DELIVER, "knowledge_registration": Action.KNOWLEDGE_REGISTER,
+        }[action_name]
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=body.workspace_id, action=permission_action,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        if action_name in {"approval", "delivery", "knowledge_registration"}:
+            step_up_group = {
+                "approval": "final_approval_or_knowledge_registration",
+                "delivery": "external_transfer",
+                "knowledge_registration": "final_approval_or_knowledge_registration",
+            }[action_name]
+            dependencies.identity_service.consume_step_up(
+                step_up_authorization=body.step_up_authorization, access_token=access_token,
+                action_group=step_up_group, target_id=body.output_version_id,
+                policy_version=dependencies.settings.policy_version, trace_id=request.state.trace_id,
+            )
+        if studio_workspace_service is None:
+            raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        result, replayed = await asyncio.to_thread(
+            studio_workspace_service.action,
+            _product_studio_context(principal, body.workspace_id, request, dependencies), action_name,
+            {**body.model_dump(exclude={"workspace_id", "step_up_authorization"}, exclude_none=True),
+             "step_up_verified": action_name in {"approval", "delivery", "knowledge_registration"}},
+            idempotency_key,
+        )
+        response = JSONResponse({"data": _enum_json(result), "meta": {
+            "trace_id": request.state.trace_id, "workspace_id": body.workspace_id, "replayed": replayed,
+        }}, status_code=200 if replayed else 201)
+        response.headers["ETag"] = f'"studio-action:{result["record_id"]}"'
+        return response
+
+    @app.get("/api/v1/studio-outputs/{output_id}/versions/{version_id}/exports/{format_name}")
+    async def download_product_studio_export(
+        output_id: str, version_id: str, format_name: str, request: Request,
+        workspace_id: str = Query(),
+    ) -> Response:
+        _require_query_keys(request, frozenset({"workspace_id"}))
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.DELIVER,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        if studio_workspace_service is None:
+            raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        exported = await asyncio.to_thread(
+            studio_workspace_service.export,
+            _product_studio_context(principal, workspace_id, request, dependencies),
+            output_id, version_id, format_name,
+        )
+        return Response(exported.content, media_type=exported.media_type, headers={
+            "Content-Disposition": f'attachment; filename="{exported.filename}"',
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
+            "ETag": f'"sha256:{exported.checksum_sha256}"',
+        })
 
     @app.post("/api/v1/workspaces/{id}/studio/reports", status_code=201)
     async def create_studio_report(
@@ -1552,6 +1985,25 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             },
             "meta": {"trace_id": request.state.trace_id},
         }
+
+    @app.post("/api/v1/session/step-up", status_code=201)
+    async def issue_step_up(
+        body: StepUpBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        grant = dependencies.identity_service.issue_step_up_after_reauthentication(
+            access_token=access_token, action_group=body.action_group, target_id=body.target_id,
+            password=body.password,
+            policy_version=dependencies.settings.policy_version, trace_id=request.state.trace_id,
+            ttl_seconds=body.ttl_seconds,
+        )
+        return {"data": {
+            "step_up_authorization": grant.authorization,
+            "issued_at": grant.issued_at.isoformat(), "expires_at": grant.expires_at.isoformat(),
+        }, "meta": {"trace_id": request.state.trace_id}}
 
     @app.post("/api/v1/workspaces/{workspace_id}/authorization/evaluations")
     async def authorization_evaluation(
@@ -2090,6 +2542,121 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 "meta": {"trace_id": request.state.trace_id, "workspace_id": workspace_id},
             },
             "|".join(item.etag for item in snapshot.profiles),
+        )
+
+    @app.get("/api/v1/workspaces/{id}/egress-policy")
+    async def get_workspace_egress_policy(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        if egress_policy_service is None:
+            raise EgressPolicyError("EGRESS_POLICY_UNAVAILABLE", 503)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = egress_policy_service.get_effective(
+            _egress_policy_context(principal, id, request, dependencies)
+        )
+        response = JSONResponse({
+            "data": {
+                **view.frozen_context(), "parent_locked": view.parent_locked,
+                "organization_etag": view.organization_etag,
+                "workspace_etag": view.workspace_etag,
+                "organization_policy": view.organization_policy,
+                "workspace_policy": view.workspace_policy,
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    async def create_egress_policy_version(
+        *, scope_type: str, scope_id: str, workspace_id: str,
+        body: EgressPolicyVersionBody, request: Request,
+        if_match: str, idempotency_key: str,
+    ) -> JSONResponse:
+        if egress_policy_service is None:
+            raise EgressPolicyError("EGRESS_POLICY_UNAVAILABLE", 503)
+        _egress_idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        if scope_type == "organization" and scope_id != principal.tenant_id:
+            raise AuthorizationError("ACCESS_DENIED", 403)
+        if scope_type == "organization":
+            workspace_id = dependencies.authorization_service.organization_admin_workspace(
+                principal=principal, trace_id=request.state.trace_id,
+                policy_version=dependencies.settings.policy_version,
+            )
+        else:
+            dependencies.authorization_service.authorize_action(
+                principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+                requested_permissions=(Permission.EXTERNAL_LLM,),
+                trace_id=request.state.trace_id,
+                policy_version=dependencies.settings.policy_version,
+            )
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=body.step_up_authorization_id,
+            access_token=access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id=scope_id,
+            policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id,
+        )
+        stored = egress_policy_service.create_and_activate(
+            _egress_policy_context(principal, workspace_id, request, dependencies),
+            scope_type=scope_type,
+            payload=EgressPolicyPayload(
+                mode=body.mode,
+                allowed_provider_kinds=tuple(body.allowed_provider_kinds),
+                allowed_destinations=tuple(body.allowed_destinations),
+                classification=body.classification,
+                max_bytes=body.max_bytes,
+                masking_required=body.masking_required,
+                redaction_required=body.redaction_required,
+                required_approver=body.required_approver,
+            ),
+            expected_etag=if_match,
+            idempotency_key=idempotency_key,
+        )
+        response = JSONResponse({
+            "data": {
+                "scope_type": stored.scope_type,
+                "policy_version_id": stored.policy_version_id,
+                "policy_version": stored.policy_version,
+                "binding_id": stored.binding_id,
+                "binding_version": stored.binding_version,
+                **stored.payload.as_dict(),
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        }, status_code=201)
+        response.headers["ETag"] = stored.etag
+        return response
+
+    @app.post("/api/v1/organizations/{id}/egress-policy-versions", status_code=201)
+    async def create_organization_egress_policy_version(
+        id: str, body: EgressPolicyVersionBody, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        return await create_egress_policy_version(
+            scope_type="organization", scope_id=id, workspace_id="server-resolved",
+            body=body, request=request, if_match=if_match, idempotency_key=idempotency_key,
+        )
+
+    @app.post("/api/v1/workspaces/{id}/egress-policy-versions", status_code=201)
+    async def create_workspace_egress_policy_version(
+        id: str, body: EgressPolicyVersionBody, request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        if body.workspace_id not in {None, id}:
+            raise EgressPolicyError("EGRESS_POLICY_SCOPE_MISMATCH")
+        return await create_egress_policy_version(
+            scope_type="workspace", scope_id=id, workspace_id=id,
+            body=body, request=request, if_match=if_match, idempotency_key=idempotency_key,
         )
 
     @app.post("/api/v1/model-profiles", status_code=201)

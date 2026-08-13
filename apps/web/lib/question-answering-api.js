@@ -46,6 +46,12 @@ function isGroundedAnswer(value) {
 }
 
 async function responseData(response) {
+  const contentType = response.headers?.get?.("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/json") {
+    if (response.status === 504) throw new Error("GATEWAY_TIMEOUT");
+    if (!response.ok) throw new Error("UPSTREAM_FAILURE");
+    throw new Error("QUESTION_RESPONSE_INVALID");
+  }
   let payload;
   try {
     payload = await response.json();
@@ -70,7 +76,7 @@ async function responseData(response) {
 
 export async function askGroundedQuestion(
   workspaceId,
-  { sourceId, sourceVersionId, question },
+  { sourceId, sourceVersionId, question, stepUpAuthorizationId },
   { fetchImpl = fetch, idempotencyKey = crypto.randomUUID() } = {},
 ) {
   const workspace = requiredId(workspaceId);
@@ -92,10 +98,32 @@ export async function askGroundedQuestion(
       },
       body: JSON.stringify({
         source_id: source, source_version_id: version, question: question.trim(),
+        ...(stepUpAuthorizationId ? { step_up_authorization_id: requiredId(stepUpAuthorizationId) } : {}),
       }),
     },
   );
   return responseData(response);
+}
+
+export async function authorizeGroundedQuestion(
+  workspaceId, { sourceId, sourceVersionId, question, password },
+  { fetchImpl = fetch, idempotencyKey } = {},
+) {
+  const workspace = requiredId(workspaceId);
+  if (!SAFE_ID.test(idempotencyKey || "") || typeof password !== "string" || !password) {
+    throw new Error("QUESTION_AUTHORIZATION_INPUT_INVALID");
+  }
+  const response = await fetchImpl(
+    `/bff/api/workspaces/${encodeURIComponent(workspace)}/questions/authorization`,
+    { method: "POST", credentials: "same-origin", headers: {
+      "Content-Type": "application/json", "Idempotency-Key": idempotencyKey,
+    }, body: JSON.stringify({ source_id: requiredId(sourceId),
+      source_version_id: requiredId(sourceVersionId), question: question.trim(), password }) },
+  );
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload?.error?.code || "QUESTION_AUTHORIZATION_FAILED");
+  if (!isSafeId(payload?.data?.step_up_authorization_id)) throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID");
+  return payload.data;
 }
 
 export function citationContentUrl(workspaceId, citation) {
