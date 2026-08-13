@@ -6,6 +6,10 @@ const INTERNAL_VALUE = /(?:https?:\/\/|localhost|127\.0\.0\.1|password|authoriza
 const SOURCE_KEYS = Object.freeze([
   "source_id", "source_version_id", "filename", "source_state", "processing_state", "job_state"
 ]);
+const SOURCE_STATES = Object.freeze([
+  "registered", "security_check", "processing", "indexing", "ready", "waiting_model",
+  "partial_understanding", "needs_review", "failed", "expired", "disabled", "deleting", "deleted",
+]);
 const CITATION_KEYS = Object.freeze([
   "citation_id", "source_id", "source_version_id", "evidence_span_id", "page"
 ]);
@@ -90,7 +94,7 @@ export async function listWorkspaceSources(workspaceId, { fetchImpl = fetch, sig
     && payload.data.sources.every((source) => exact(source, SOURCE_KEYS)
       && safeId(source.source_id) && safeId(source.source_version_id)
       && typeof source.filename === "string" && SAFE_FILENAME.test(source.filename)
-      && ["registered", "security_check", "processing", "indexing", "ready"].includes(source.source_state)
+      && SOURCE_STATES.includes(source.source_state)
       && typeof source.processing_state === "string" && typeof source.job_state === "string");
   if (!valid) throw new Error("SOURCE_LIST_RESPONSE_INVALID");
   return payload.data.sources;
