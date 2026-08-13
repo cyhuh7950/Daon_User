@@ -2,7 +2,7 @@
 
 ## 판정
 
-`DEPLOYMENT_BLOCKED_ROLLED_BACK` — 제품 서비스 전환 전 Migration 0013이 승인된 fail-close 조건으로 중단되어 사전 상태를 복구했다.
+`COMPLETED` — 초기 fail-close·rollback과 legacy 호환 재배포 뒤, Task 4 Repository bind 수정 commit을 API-only로 배포하고 authenticated Browser Gate까지 완료했다.
 
 ## Preflight·backup·rollback 자산
 
@@ -90,3 +90,13 @@ has_scope=false
 - 승인된 계획 예외대로 그 bind만 `%s::text`로 변경했다. unit RED `1 failed, 10 passed, 1 skipped`, focused GREEN `17 passed, 1 skipped`, 전체 API `361 passed, 26 skipped, 134 subtests passed`.
 - PostgreSQL 15.18의 고유 disposable DB `daon_c02_task4_20260814021242`에서 fresh 0001→0013과 기존 fail-close·downgrade·reapply 회귀를 수행했다. `daon_app` 역할과 tenant/workspace RLS context의 actual product `list_outputs` Repository는 SQLSTATE 0, outputs 0, locks 6, cross-tenant 0이었다.
 - DB는 exact drop되어 remaining 0이고 공용 `local-postgres`는 running이다. 이 절은 local fix 증거이며 API-only 재배포나 authenticated production Browser 성공을 뜻하지 않는다.
+
+## Task 4 API-only production Gate
+
+- target commit: `38756b7d6c1ed8a5d69f3c12acb8c651ba70668d`; parent `f8ed4e4acf360c3d21848df2c1b8bbb6ec5b8a26` ancestry와 detached checkout 확인.
+- preflight: migration `0013`, disk 109G available, backup `daon-user-pre-0013-20260814T003546+0900.dump` size 651266/SHA-256 `20a0a2d47412a9914da6cb39b1252106da5fc22058f03f8f2c5b4f35335c0f38`, rollback image `sha256:6b8754d7a843aaee33b1a8fa4c62a77f8c92654419639871775880142a655f79`, 보호 `backups/`·`secrets/` 보존.
+- API image만 build하고 API container만 recreate했다. 새 image `sha256:92efb1f696b1fb8d6aa0cb9cc9c00b30021194bb2d2a308f58fa64777a3f9378`, container `2822df033acfed34e0f6ffcb514a8bb79591f1e3d47669e6d0fbda2cd8e9db78`, healthy. Migration은 실행하지 않았고 current `0013`을 read-only 확인했다.
+- Web `9053452c7307`, worker `7a8b11ff515a`, object storage `e5c606a43bf8`, shared-db `c962c98c7970`, proxy `337026a012e2`, netdata `8cab33d7f80b` IDs와 상태는 preflight 대비 불변이다. public root 200, unauthenticated BFF session 401, API 최근 safe error 0, one-off 0.
+- 기존 로그인 Chrome production Workspace 탭을 fresh claim/reload했다. actual proxy access에서 same-origin `GET /bff/api/workspaces/{workspace}/sources` 200과 `GET /bff/api/studio-outputs?workspace_id={workspace}` 200을 확인했다.
+- 실제 DOM: Source 5(ready selectable 1), `STUDIO_DATABASE_UNAVAILABLE` 0, `POLICY_PROJECTION_UNAVAILABLE` 0, 저장 산출물 0, Workspace 정책 lock 6. 내부 URL·SQLSTATE·stack·secret 노출 0, console warning/error 0.
+- cookie·password·storage는 읽지 않았고 Browser 탭은 검증 화면 그대로 handoff/finalize했다. 서버 dirty는 보호 `backups/`, `secrets/`만 남았다.

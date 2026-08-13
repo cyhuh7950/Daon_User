@@ -2,7 +2,7 @@
 
 ## 판정
 
-READY_FOR_REVIEW — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001` Task 4 local remediation 완료, API-only 재배포·운영 Browser 재검증 대기
+COMPLETED — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001`
 
 ## 구현 결과
 
@@ -43,9 +43,11 @@ READY_FOR_REVIEW — `R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001` Task 4 local reme
 - 최종 disposable DB 삭제 후 matching prefix remaining 0, 공용 `local-postgres` running=true.
 - Task 4 고유 DB `daon_c02_task4_20260814021242`, PostgreSQL 15.18에서 actual product `list_outputs` Repository를 `daon_app` 역할·RLS context로 실행해 SQLSTATE 0, Studio outputs 0, locks 6, cross-tenant 0을 확인했다. 기존 0001→0013·downgrade·reapply Gate도 함께 PASS했고 exact DB drop 후 remaining 0이었다.
 
-## 범위와 미해결
+## 운영 장애 해결 경과와 최종 범위
 
-- 로그인된 운영 Browser에서 Source 5는 정상화됐지만 Studio 목록은 계속 503이었다. product Repository를 운영 app DSN/RLS context에서 직접 재현해 `jsonb_build_object`의 untyped `workspace_id` bind가 SQLSTATE `42P18 IndeterminateDatatype`를 발생시키는 정확한 원인을 확인했다.
-- 신산님은 공개 API·정책·Migration 변경 없이 해당 bind 한 곳만 `%s::text`로 고정하고 실제 PostgreSQL RED→GREEN, 전체 회귀, API-only 재배포, authenticated Browser를 재검증하는 Task 4 계획 예외를 승인했다. 이 Gate가 끝날 때까지 완료 판정은 `IN_PROGRESS`다.
-- exact `f8ed4e4acf360c3d21848df2c1b8bbb6ec5b8a26`와 Migration `0013`은 ysna-server에 배포돼 있으며 API·worker·DB Gate는 PASS 상태다. 현재 수정은 Migration이나 정책 데이터를 다시 변경하지 않는다.
-- Task 4 local 완료 조건인 actual app-role Repository `outputs=[]`·locks 6와 전체 API 회귀는 충족했다. 독립 리뷰, exact commit/push, API-only 재배포와 로그인된 운영 Browser의 Studio 오류 0 확인은 어울1 후속 Gate로 남는다.
+- 로그인된 운영 Browser에서 Source 5는 정상화됐지만 Studio 목록이 503이던 시점에 product Repository를 운영 app DSN/RLS context에서 직접 재현해 `jsonb_build_object`의 untyped `workspace_id` bind가 SQLSTATE `42P18 IndeterminateDatatype`를 발생시키는 정확한 원인을 확인했다.
+- 신산님 승인에 따라 공개 API·정책·Migration 변경 없이 해당 bind 한 곳만 `%s::text`로 고정하고 실제 PostgreSQL RED→GREEN, 전체 회귀, API-only 재배포, authenticated Browser 재검증을 완료했다.
+- Migration `0013`과 정책 데이터는 변경하지 않았고 API container만 교체했다.
+- 독립 리뷰 Critical/Important/Minor 0, exact commit `38756b7d6c1ed8a5d69f3c12acb8c651ba70668d` API-only 배포와 authenticated production Browser Gate까지 완료했다.
+- 운영 same-origin sources/studio-outputs는 각각 200, Source 5·ready 1·저장 산출물 0·locks 6이며 두 Studio safe error, 내부 URL, SQLSTATE, stack, secret 노출은 모두 0이다.
+- 이번 배포 증거 문서 변경은 target commit 이후의 local 문서 변경이므로 별도 후속 commit/push가 필요하다.

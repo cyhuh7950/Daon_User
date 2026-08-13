@@ -20,9 +20,9 @@
     "services/api/tests/test_studio_workspace_postgres.py": "05D35516B90BB143629906A9FDB5B0A2D8085EF6F5BD7AAA171A35D5EB1AD693",
     "services/api/tests/test_studio_workspace_runtime_http.py": "7769DA6A507C14BDB40E07E9521B8F222399D7F6F612EDDDD6E16F3D18378088",
     "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py": "2C7EAEDD4B58425938A8E02935A23784959833C11C9DDA7FA0640EAFB4848291",
-    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/ysna-deployment-gate-evidence.md": "C872B8B4577BEAFE8AAA83C7DAA1B889CF813A2F0DFC521C4FACD93FF1653B0D",
-    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_progress.md": "480E6A570ACC32E6E8AEDD42638E7A94280A190E15949C86DC3DDE7142F45504",
-    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_completion_report.md": "5DB3A8E8639A9CFA2B07725647B2B5B67393FC718806C9F1C7C9315A898B0182"
+    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/ysna-deployment-gate-evidence.md": "465404E2C1FBBD97ADC92DF4F818C1AEB11CF9B30962A4C859A307A17800264A",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_progress.md": "E6969DD0FD9412FEBA7AF136859459399A2BF90288AEA3EBAF91EB4ED54055B7",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_completion_report.md": "A7086DA68E056307C7F1163CD18C2B6A9F1F57F94490E0FB16DD97E9BB35D2E6"
   },
   "checks": [
     {"name": "migration_contract", "result": "7 passed; pre-GREEN RED 1 failed, 6 passed"},
@@ -37,12 +37,13 @@
     {"name": "disposable_cleanup", "result": "remaining=0 local-postgres-running=true"},
     {"name": "ysna_deployment", "result": "PASS f8ed4e4 current0013 API+worker only healthy root200 BFF401 safe-error0 common-resources-invariant"},
     {"name": "production_canon", "result": "PASS legacy-v1=1 compat-v2=1 weight-v2-FK=1 rulesets=5/5/5 RLS-own1-cross0 target-sources5 outputs0"},
-    {"name": "production_browser", "result": "PARTIAL AUTHENTICATION_REQUIRED on new and existing Chrome sessions; login handoff kept"},
+    {"name": "task4_api_deployment", "result": "PASS sha=38756b7 API-image=92efb1f API-container=2822df0 healthy current0013 migration-run0 root200 BFF401 safe-error0 oneoff0 common-invariant"},
+    {"name": "production_browser", "result": "PASS authenticated same-origin sources200 studio-outputs200 Source5 ready1 outputs0 locks6 safe-errors0 internalURL-SQLSTATE-stack-secret0 console-errors0"},
     {"name": "diff_check", "result": "PASS"},
     {"name": "staged_files", "result": "0"}
   ],
   "known_limits": [
-    "Task 4 fix remains uncommitted and undeployed; authenticated production Browser Studio verification is pending API-only redeployment."
+    "Deployment evidence, Progress, Completion and Manifest updates were created after target commit and require a separate documentation commit."
   ],
-  "result": "TASK4_LOCAL_READY_FOR_REVIEW"
+  "result": "COMPLETED"
 }
