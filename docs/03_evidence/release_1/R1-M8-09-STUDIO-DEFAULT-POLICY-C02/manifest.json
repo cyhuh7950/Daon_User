@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M8-09-STUDIO-DEFAULT-POLICY-C02",
+  "issue_id": "R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001",
+  "attempt_no": 1,
+  "start_head": "d42c1b28e32ad46ce92601ac5e0a9bc0d7fb454c",
+  "result_branch": "codex/user-auth-screen-split",
+  "source_hashes": {
+    "agents": "AABB11177EA7541B62C0AD6E6AB2FD745FCD4ADED72A25DF98522FC8E41B47EA",
+    "design": "E41E66A25E52CB4D666BFE53C88E6A32EFC4AABDE3E1DD7513ACAFFE38AD3411",
+    "plan": "F2F345B40332B204D1AA309E2D06BCE73F551D9FBF139C7709B0E75C899369DF",
+    "work_order": "17BBC9C5954845B94561FEE215B364A1251910E8BD2C59BE4E7984EDAC00984B",
+    "prompt": "B66A4422CEEA9092030DAF716C85657A4A928D1B1640A4AD7B9E62F6FFB96670"
+  },
+  "artifact_hashes": {
+    "services/api/migrations/versions/0013_studio_workspace_default_policy.py": "EE2F151E9C064AE1030E36CA4C8ECEB0B82EF73CCE924FE1D4D5337DBD6BF8A7",
+    "services/api/src/daon_user_api/runtime.py": "471852CEF138F9F1115D7DDCB5DCF9F651346B7C37D0457B70869156FE10B197",
+    "services/api/tests/test_studio_workspace_default_policy_migration.py": "721555A720D7D2DE5BD04E2A87B74C3A97BFB75709754E2FAB6768FEEEDDB443",
+    "services/api/tests/test_studio_workspace_postgres.py": "3E79BE0A212F7854CA6EE2064B68C1929C96E5C2C74D888F8EB6A4EB7FCE10BD",
+    "services/api/tests/test_studio_workspace_runtime_http.py": "7769DA6A507C14BDB40E07E9521B8F222399D7F6F612EDDDD6E16F3D18378088",
+    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py": "D4DBFA9351282BD5F47D63AC5C9EEA89AA8272CDC36BC570759547D11A0110E0",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_progress.md": "9E5949B63F2B9C7D7AECBE557BB3D6026AAE8B77C64B0BDB10E4DA01C8A3D855",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_completion_report.md": "9EDADB7A3390CE20A2DA25359EDB06E9E976B1F4C4E870077C859C4927367297"
+  },
+  "checks": [
+    {"name": "migration_contract", "result": "6 passed"},
+    {"name": "studio_focused", "result": "15 passed, 1 skipped"},
+    {"name": "studio_egress_related", "result": "16 passed, 1 skipped"},
+    {"name": "api_all", "result": "359 passed, 26 skipped, 134 subtests passed"},
+    {"name": "node_contracts", "result": "61 passed"},
+    {"name": "openapi", "result": "paths=75 operations=94 schemas=120 errors=31"},
+    {"name": "web_build_typescript", "result": "PASS"},
+    {"name": "product_ui_boundary", "result": "scanned=281 violations=0 boundaryErrors=0"},
+    {"name": "actual_postgres", "result": "PASS 0001-0013 invalid-id-conflict latest-invalid max-version-tie fail-close revision0012 rows-preserved missing partial full-preserved0 idempotent trigger digest FK immutable RLS downgrade reapply"},
+    {"name": "disposable_cleanup", "result": "remaining=0 local-postgres-running=true"},
+    {"name": "diff_check", "result": "PASS"},
+    {"name": "staged_files", "result": "0"}
+  ],
+  "known_limits": [
+    "Commit, push, ysna-server deployment and production Browser Gate require separate main-agent approval and were not performed."
+  ],
+  "result": "COMPLETED"
+}

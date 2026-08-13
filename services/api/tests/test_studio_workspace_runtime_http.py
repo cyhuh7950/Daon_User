@@ -12,6 +12,7 @@ from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthor
 from daon_user_api.identity import ClientKind, IdentityError, IdentityPrincipal
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
 from daon_user_api.studio_export import export_studio_output
+from daon_user_api.studio_workspace import StudioError
 from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
 
 
@@ -98,6 +99,34 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             rejected = await self.client.post("/api/v1/deliveries", cookies={WEB_SESSION_COOKIE: "opaque"}, headers={"Idempotency-Key": "delivery-key-0001"}, json={"workspace_id": "workspace-001", "output_version_id": "version-1"})
         self.assertEqual((rejected.status_code, rejected.json()["error"]["code"]), (403, "STEP_UP_REQUIRED"))
         self.assertFalse(any(call[0] == "delivery" for call in self.studio.calls))
+
+    async def test_missing_default_policy_is_public_fail_closed_409(self):
+        with self.authenticated(), patch.object(
+            self.studio,
+            "list_outputs",
+            side_effect=StudioError("POLICY_PROJECTION_UNAVAILABLE", 409),
+        ):
+            response = await self.client.get(
+                "/api/v1/studio-outputs?workspace_id=workspace-001",
+                cookies={WEB_SESSION_COOKIE: "opaque"},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "POLICY_PROJECTION_UNAVAILABLE")
+
+    async def test_database_failure_remains_public_503(self):
+        with self.authenticated(), patch.object(
+            self.studio,
+            "list_outputs",
+            side_effect=StudioError("STUDIO_DATABASE_UNAVAILABLE", 503),
+        ):
+            response = await self.client.get(
+                "/api/v1/studio-outputs?workspace_id=workspace-001",
+                cookies={WEB_SESSION_COOKIE: "opaque"},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "STUDIO_DATABASE_UNAVAILABLE")
 
     async def test_step_up_endpoint_requires_and_forwards_current_password(self):
         grant = type("Grant", (), {"authorization": "opaque-step-up", "issued_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc), "expires_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc)})()

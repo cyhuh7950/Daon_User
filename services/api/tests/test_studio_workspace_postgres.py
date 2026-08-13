@@ -225,6 +225,14 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         self.assertEqual(set(locks), {"rulesetVersionId", "reviewCondition", "authorityPolicy", "weightProfile", "dataArea", "egressPolicy"})
         self.assertEqual(locks["rulesetVersionId"], "ruleset-v3")
 
+    def test_default_policy_returns_empty_outputs_and_six_locks(self) -> None:
+        result = PostgresStudioWorkspaceRepository(Cloud()).list_outputs(
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1")
+        )
+
+        self.assertEqual(result["outputs"], ())
+        self.assertEqual(len(result["studio_locks"]), 6)
+
     def test_policy_projection_fails_closed_for_missing_inactive_stale_or_wrong_scope(self) -> None:
         context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1")
         for index, patch in ((0, None), (1, {"active": False}), (2, {"current": False}), (3, {"workspace_id": "workspace-other"}), (4, {"workspace_policy_version_id": ""})):
