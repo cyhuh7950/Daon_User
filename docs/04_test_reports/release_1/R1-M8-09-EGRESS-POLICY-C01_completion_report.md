@@ -84,3 +84,12 @@ actual PostgreSQL Gate와 정책 관리 Browser Gate에 이어 외부 Question �
 ## 결과 계약
 
 `COMPLETED | R1-M8-09-EGRESS-POLICY-C01-I001 | 승인 구현, actual PostgreSQL Gate, 정책 관리 Browser Gate와 production ready Source/external Question deny actual Chrome click 수행 | production document job helper와 secret-free external deny evidence/Manifest/Progress/Completion 갱신 | 기존 회귀 및 actual PostgreSQL PASS; Build/TypeScript/Boundary PASS; same-origin login·Source GET 200·Question POST 403; durable deny decision/audit1; model attempt/result/provider transport0; cleanup remaining0·ports0·public running·staged0 | 없음 | 어울1 최종 검토`
+
+## ysna-server 배포 결과
+
+- 승인 `APR-G9-R1-M8-09-EGRESS-20260813-01`에 따라 exact commit `adafcb363a07d17bd779bf246143c85f11532834`를 `/home/ubuntu/deploy/daon-user`에 배포했다.
+- pre-0012 custom-format backup의 size·SHA-256·restore-list를 검증하고 baseline checkout/image rollback 자산을 보존했다.
+- Daon 전용 image build, migration `0011→0012`, deterministic deny backfill·forced RLS, API/Web/document-worker 전환과 health/public same-origin 검증을 통과했다. 공용 shared-db/object-storage/proxy/netdata는 변경하지 않았다.
+- 실제 Chrome에서는 새 Studio UI와 Organization settings safe state를 확인했으나 기존 production login session이 만료되어 authenticated Source/Studio/Egress data journey는 `PARTIAL`로 분리한다.
+
+`COMPLETED | R1-M8-09-EGRESS-POLICY-C01-I001-YSNA-DEPLOY | exact adafcb3 배포·backup·0012 migration·Daon 전용 service switch | ysna deployment evidence/Progress/Completion | build PASS, current0012, backfill/RLS PASS, API/Web healthy, public same-origin 200, safe logs0, protected untracked/common resources 보존 | authenticated Browser data journey PARTIAL(session expired) | 인증 세션 확보 시 운영 Browser 보완 검증`

@@ -3,8 +3,8 @@
   "issue_id": "R1-M8-09-EGRESS-POLICY-C01-I001",
   "approval_id": "APR-R1-M8-09-EGRESS-POLICY-C01-20260813-01",
   "baseline_head": "1b652ec0858021bb2c78e408cc50c32150a88450",
-  "recorded_at": "2026-08-13T20:25:51+09:00",
-  "classification": "COMPLETED_ACTUAL_EXTERNAL_QUESTION_DENY_CLICK_PASS",
+  "recorded_at": "2026-08-13T21:09:58+09:00",
+  "classification": "YSNA_DEPLOYMENT_PASS_AUTHENTICATED_BROWSER_PARTIAL",
   "artifacts": [
     { "path": "services/api/migrations/versions/0012_egress_policy_version_binding.py", "sha256": "D2037D710C0BFAD0394E66F364DB219E3B9F95A540E6D3E25C0CB2476D51F667" },
     { "path": "services/api/src/daon_user_api/egress_policy.py", "sha256": "0D1CE51481D9F4922BC0BEC3D14C138755BC8625681EFB4F6A0819A1C0BC63A1" },
@@ -31,7 +31,8 @@
     { "path": "scripts/tests/product-workspace.test.mjs", "sha256": "436C293F5F30764BCCDE91CD3CE11F1DEE31F375D4221D2F9CC126F2690E4B99" },
     { "path": "docs/03_evidence/release_1/R1-M8-09-EGRESS-POLICY-C01/actual-browser-external-deny-app.py", "sha256": "F967E4A0047BF08E6155B0DACBFB4B7CB969F6C3D192EF2A1CC7C1BCC8B1A3CB" },
     { "path": "docs/03_evidence/release_1/R1-M8-09-EGRESS-POLICY-C01/prepare-browser-external-deny-fixture.py", "sha256": "996304E02FF41DF049A52B0AF45D02D43C09C7B6EA21100F922A45AD1769E49D" },
-    { "path": "docs/03_evidence/release_1/R1-M8-09-EGRESS-POLICY-C01/actual-browser-external-deny-evidence.md", "sha256": "6856A4B0F178321A1FA089CDB05CB5A5319310D0674B8A3D824AA913BEBB3827" }
+    { "path": "docs/03_evidence/release_1/R1-M8-09-EGRESS-POLICY-C01/actual-browser-external-deny-evidence.md", "sha256": "6856A4B0F178321A1FA089CDB05CB5A5319310D0674B8A3D824AA913BEBB3827" },
+    { "path": "docs/03_evidence/release_1/R1-M8-09-EGRESS-POLICY-C01/ysna-deployment-evidence.md", "sha256": "DEAB851DBC2AFFABF1E2C638F25E7E2725817C5E26BDB59E7FAF04089F99CE98" }
   ],
   "verification": {
     "focused_api": "13 passed; prior wire and Studio focused 14 passed, 1 skipped",
@@ -44,8 +45,11 @@
     "postgresql_15": "PASS: PostgreSQL 15.18, 0001->0012, rollback/reapply, backfill/canon/immutable/FK/RLS, repository deny/audit/ETag, Question advisory-lock concurrency, cleanup remaining0",
     "browser": "PASS: same-origin login, ready Source selected, actual Question click, safe EGRESS_POLICY_DENIED, provider transport spy 0",
     "external_question_gate": "PASS: Question POST 403; Workspace deny1, run1, denied egress1, routing1, audit denied1, model_attempts0, run_results0, transport0",
-    "step_up_header_regression": "4 focused tests PASS; production build/typecheck/boundary 269/0 PASS"
+    "step_up_header_regression": "4 focused tests PASS; production build/typecheck/boundary 269/0 PASS",
+    "ysna_deployment": "PASS: exact adafcb3, backup verified, build PASS, migration 0012, backfill/RLS, API/Web healthy, public same-origin 200, common resources preserved",
+    "ysna_authenticated_browser": "PARTIAL: current Studio and Organization safe state rendered; existing production session expired"
   },
   "secrets_recorded": false,
-  "commit_push_deploy": false
+  "commit_push": false,
+  "deployment_performed": true
 }
