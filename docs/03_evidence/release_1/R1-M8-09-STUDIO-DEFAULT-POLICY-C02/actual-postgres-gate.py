@@ -87,6 +87,33 @@ def base_payload(workspace_id: str, kind: str, *, snapshot_id: str = "") -> dict
     return {**common, **variants[kind]}
 
 
+def seed_source_version(
+    connection: psycopg.Connection, tenant_id: str, workspace_id: str, suffix: str,
+) -> str:
+    source_id = f"gate:source:{suffix}"
+    version_id = f"gate:source-version:{suffix}"
+    canonical(connection, "sources", tenant_id, workspace_id, source_id, {"name": suffix})
+    canonical(
+        connection, "source_versions", tenant_id, workspace_id, version_id,
+        {"source_id": source_id}, extra=(("source_id", source_id),),
+    )
+    return version_id
+
+
+def clean_legacy_case(connection: psycopg.Connection, workspace_id: str) -> None:
+    for table in ("weight_profiles", "knowledge_scopes", "source_versions", "sources"):
+        connection.execute(f"ALTER TABLE {table} DISABLE TRIGGER USER")
+        connection.execute(
+            f"DELETE FROM {table} WHERE tenant_id='tenant-gate' AND workspace_id=%s",
+            (workspace_id,),
+        )
+        connection.execute(f"ALTER TABLE {table} ENABLE TRIGGER USER")
+    connection.execute(
+        "DELETE FROM workspaces WHERE tenant_id='tenant-gate' AND workspace_id=%s",
+        (workspace_id,),
+    )
+
+
 def main() -> None:
     require(bool(DSN), "DAON_DB_MIGRATION_DSN_REQUIRED")
     migrate("0012")
@@ -98,8 +125,26 @@ def main() -> None:
             "('tenant-gate','workspace-missing','Missing'),"
             "('tenant-gate','workspace-partial','Partial'),"
             "('tenant-gate','workspace-full','Full'),"
+            "('tenant-gate','workspace-legacy','Legacy'),"
             "('tenant-gate','workspace-conflict','Conflict'),"
             "('tenant-other','workspace-other','Other')"
+        )
+        legacy_source_id = "gate:legacy-source"
+        legacy_source_version_id = "gate:legacy-source-version"
+        legacy_scope_id = "scope-" + hashlib.sha256(legacy_source_version_id.encode()).hexdigest()[:32]
+        canonical(
+            connection, "sources", "tenant-gate", "workspace-legacy",
+            legacy_source_id, {"name": "legacy gate source"},
+        )
+        canonical(
+            connection, "source_versions", "tenant-gate", "workspace-legacy",
+            legacy_source_version_id, {"source_id": legacy_source_id},
+            extra=(("source_id", legacy_source_id),),
+        )
+        canonical(
+            connection, "knowledge_scopes", "tenant-gate", "workspace-legacy",
+            legacy_scope_id,
+            {"mode": "single_source", "source_version_ids": [legacy_source_version_id]},
         )
         canonical(
             connection, "knowledge_scopes", "tenant-gate", "workspace-partial",
@@ -193,6 +238,79 @@ def main() -> None:
         connection.execute("DELETE FROM workspace_policies WHERE workspace_id='workspace-history-tie' AND record_id='tie:policy:b'")
         connection.execute("ALTER TABLE workspace_policies ENABLE TRIGGER workspace_policies_immutable")
 
+    legacy_negative_cases: tuple[tuple[str, dict[str, object], str, bool, str], ...] = (
+        ("extra-key", {"mode": "single_source", "source_version_ids": [], "extra": True}, "exact", True, "STUDIO_DEFAULT_POLICY_LATEST_INVALID"),
+        ("missing-key", {"mode": "single_source"}, "exact", True, "STUDIO_DEFAULT_POLICY_LATEST_INVALID"),
+        ("wrong-mode", {"mode": "workspace", "source_version_ids": []}, "exact", True, "STUDIO_DEFAULT_POLICY_LATEST_INVALID"),
+        ("array-many", {"mode": "single_source", "source_version_ids": []}, "exact", True, "STUDIO_DEFAULT_POLICY_LATEST_INVALID"),
+        ("array-string", {"mode": "single_source", "source_version_ids": "invalid"}, "exact", True, "STUDIO_DEFAULT_POLICY_LATEST_INVALID"),
+        ("wrong-record", {"mode": "single_source", "source_version_ids": []}, "wrong", True, "STUDIO_DEFAULT_POLICY_LATEST_INVALID"),
+        ("missing-source", {"mode": "single_source", "source_version_ids": ["gate:missing-source-version"]}, "exact", False, "STUDIO_DEFAULT_POLICY_LATEST_INVALID"),
+        ("cross-workspace", {"mode": "single_source", "source_version_ids": []}, "exact", False, "STUDIO_DEFAULT_POLICY_LATEST_INVALID"),
+    )
+    for case_name, template, record_mode, seed_local, expected_code in legacy_negative_cases:
+        workspace_id = f"workspace-legacy-invalid-{case_name}"
+        with psycopg.connect(DSN) as connection:
+            connection.execute(
+                "INSERT INTO workspaces(tenant_id,workspace_id,display_name) VALUES ('tenant-gate',%s,%s)",
+                (workspace_id, case_name),
+            )
+            if case_name == "cross-workspace":
+                source_version_id = seed_source_version(connection, "tenant-other", "workspace-other", case_name)
+            elif seed_local:
+                source_version_id = seed_source_version(connection, "tenant-gate", workspace_id, case_name)
+            else:
+                source_version_id = str(template["source_version_ids"][0])
+            payload = dict(template)
+            if case_name == "array-many":
+                payload["source_version_ids"] = [source_version_id, "gate:second"]
+            elif case_name not in {"missing-key", "array-string", "missing-source"}:
+                payload["source_version_ids"] = [source_version_id]
+            scope_id = "scope-" + hashlib.sha256(source_version_id.encode()).hexdigest()[:32]
+            if record_mode == "wrong":
+                scope_id = "scope-wrong"
+            canonical(connection, "knowledge_scopes", "tenant-gate", workspace_id, scope_id, payload)
+        try:
+            migrate("0013")
+        except Exception as exc:
+            require(expected_code in str(exc), f"legacy negative code {case_name}")
+        else:
+            raise AssertionError(f"legacy negative unexpectedly succeeded: {case_name}")
+        with psycopg.connect(DSN) as connection:
+            require(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0012", f"legacy negative revision {case_name}")
+            require(connection.execute("SELECT count(*) FROM knowledge_scopes WHERE tenant_id='tenant-gate' AND workspace_id=%s", (workspace_id,)).fetchone()[0] == 1, f"legacy negative rows {case_name}")
+            clean_legacy_case(connection, workspace_id)
+            if case_name == "cross-workspace":
+                connection.execute("ALTER TABLE source_versions DISABLE TRIGGER USER")
+                connection.execute("DELETE FROM source_versions WHERE tenant_id='tenant-other' AND workspace_id='workspace-other' AND record_id=%s", (source_version_id,))
+                connection.execute("ALTER TABLE source_versions ENABLE TRIGGER USER")
+                connection.execute("ALTER TABLE sources DISABLE TRIGGER USER")
+                connection.execute("DELETE FROM sources WHERE tenant_id='tenant-other' AND workspace_id='workspace-other' AND record_id=%s", (f"gate:source:{case_name}",))
+                connection.execute("ALTER TABLE sources ENABLE TRIGGER USER")
+
+    collision_workspace = "workspace-legacy-compat-collision"
+    with psycopg.connect(DSN) as connection:
+        connection.execute("INSERT INTO workspaces(tenant_id,workspace_id,display_name) VALUES ('tenant-gate',%s,'Collision')", (collision_workspace,))
+        collision_source_version = seed_source_version(connection, "tenant-gate", collision_workspace, "compat-collision")
+        collision_v1 = "scope-" + hashlib.sha256(collision_source_version.encode()).hexdigest()[:32]
+        canonical(connection, "knowledge_scopes", "tenant-gate", collision_workspace, collision_v1, {"mode": "single_source", "source_version_ids": [collision_source_version]})
+        collision_id = "studio-compat:knowledge-scope-v2:" + hashlib.md5(f"tenant-gate|{collision_workspace}|{collision_v1}".encode()).hexdigest()
+        canonical(
+            connection, "knowledge_scopes", "tenant-gate", collision_workspace, collision_id,
+            {"active": True, "current": True, "mode": "single_source", "scope": "workspace", "source_version_ids": [collision_source_version], "version": 2, "workspace_id": collision_workspace},
+            aggregate_id=collision_v1, version=2, previous_version_id=collision_v1,
+        )
+    try:
+        migrate("0013")
+    except Exception as exc:
+        require("STUDIO_DEFAULT_POLICY_ID_CONFLICT" in str(exc), "compat collision code")
+    else:
+        raise AssertionError("compat collision unexpectedly succeeded")
+    with psycopg.connect(DSN) as connection:
+        require(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0012", "compat collision revision")
+        require(connection.execute("SELECT count(*) FROM knowledge_scopes WHERE workspace_id=%s", (collision_workspace,)).fetchone()[0] == 2, "compat collision rows")
+        clean_legacy_case(connection, collision_workspace)
+
     migrate("0013")
     with psycopg.connect(DSN) as connection:
         require(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013", "revision")
@@ -210,6 +328,46 @@ def main() -> None:
         )
         require(missing_count == 6, "missing backfill")
         require(partial_count == 5, "partial backfill")
+        legacy_rows = connection.execute(
+            "SELECT record_id,aggregate_id,version,previous_version_id,canonical_json,created_by "
+            "FROM knowledge_scopes WHERE tenant_id='tenant-gate' AND workspace_id='workspace-legacy' "
+            "ORDER BY version"
+        ).fetchall()
+        require(len(legacy_rows) == 2, "legacy v2 append")
+        require(legacy_rows[0][0] == legacy_scope_id and legacy_rows[0][2] == 1, "legacy v1 preserved")
+        require(
+            legacy_rows[1][1] == legacy_scope_id
+            and legacy_rows[1][2] == 2
+            and legacy_rows[1][3] == legacy_scope_id
+            and legacy_rows[1][4] == {
+                "active": True,
+                "current": True,
+                "mode": "single_source",
+                "scope": "workspace",
+                "source_version_ids": [legacy_source_version_id],
+                "version": 2,
+                "workspace_id": "workspace-legacy",
+            }
+            and legacy_rows[1][5] == "migration:0013",
+            "legacy v2 exact",
+        )
+        legacy_v2_id = legacy_rows[1][0]
+        require(
+            connection.execute(
+                "SELECT knowledge_scope_id FROM weight_profiles "
+                "WHERE tenant_id='tenant-gate' AND workspace_id='workspace-legacy'"
+            ).fetchone()[0] == legacy_v2_id,
+            "legacy weight v2 FK",
+        )
+        connection.execute("SELECT ensure_studio_workspace_defaults('tenant-gate','workspace-legacy')")
+        connection.execute("SELECT ensure_studio_workspace_defaults('tenant-gate','workspace-legacy')")
+        require(
+            connection.execute(
+                "SELECT count(*) FROM knowledge_scopes "
+                "WHERE tenant_id='tenant-gate' AND workspace_id='workspace-legacy'"
+            ).fetchone()[0] == 2,
+            "legacy idempotency",
+        )
         require(connection.execute("SELECT count(*) FROM knowledge_scopes WHERE record_id='preexisting:scope'").fetchone()[0] == 1, "scope preserved")
         require(sum(connection.execute(f"SELECT count(*) FROM {table} WHERE tenant_id='tenant-gate' AND workspace_id='workspace-full' AND record_id LIKE 'preexisting:full-%'").fetchone()[0] for table in TABLES) == 6, "full config preserved")
         full_owned_before = sum(connection.execute(f"SELECT count(*) FROM {table} WHERE tenant_id='tenant-gate' AND workspace_id='workspace-full' AND created_by='migration:0013'").fetchone()[0] for table in TABLES)
@@ -279,6 +437,13 @@ def main() -> None:
             extra=(("ruleset_binding_id", binding_id), ("ruleset_version_snapshot_id", snapshot_id)),
             created_by="gate:non-owned",
         )
+        connection.execute("RESET ROLE")
+        canonical(
+            connection, "scope_snapshots", "tenant-gate", "workspace-legacy",
+            "gate:non-owned-legacy-scope-snapshot",
+            {"knowledge_scope_id": legacy_v2_id, "source_version_ids": [legacy_source_version_id]},
+            extra=(("knowledge_scope_id", legacy_v2_id),), created_by="gate:non-owned",
+        )
 
     try:
         migrate("0012", downgrade=True)
@@ -290,6 +455,10 @@ def main() -> None:
     with psycopg.connect(DSN) as connection:
         require(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013", "fail-close revision")
         require(connection.execute("SELECT count(*) FROM ruleset_bindings WHERE created_by='migration:0013'").fetchone()[0] > 0, "fail-close rows")
+        require(connection.execute("SELECT count(*) FROM scope_snapshots WHERE record_id='gate:non-owned-legacy-scope-snapshot'").fetchone()[0] == 1, "legacy v2 non-owned reference preserved")
+        connection.execute("ALTER TABLE scope_snapshots DISABLE TRIGGER scope_snapshots_immutable")
+        connection.execute("DELETE FROM scope_snapshots WHERE record_id='gate:non-owned-legacy-scope-snapshot'")
+        connection.execute("ALTER TABLE scope_snapshots ENABLE TRIGGER scope_snapshots_immutable")
         connection.execute("ALTER TABLE rule_evaluations DISABLE TRIGGER rule_evaluations_immutable")
         connection.execute("DELETE FROM rule_evaluations WHERE record_id='gate:non-owned-evaluation'")
         connection.execute("ALTER TABLE rule_evaluations ENABLE TRIGGER rule_evaluations_immutable")
@@ -297,6 +466,8 @@ def main() -> None:
     migrate("0012", downgrade=True)
     with psycopg.connect(DSN) as connection:
         require(connection.execute("SELECT count(*) FROM knowledge_scopes WHERE record_id='preexisting:scope'").fetchone()[0] == 1, "owned-only rollback")
+        require(connection.execute("SELECT count(*) FROM knowledge_scopes WHERE tenant_id='tenant-gate' AND workspace_id='workspace-legacy' AND record_id=%s AND version=1", (legacy_scope_id,)).fetchone()[0] == 1, "legacy v1 preserved on downgrade")
+        require(connection.execute("SELECT count(*) FROM knowledge_scopes WHERE tenant_id='tenant-gate' AND workspace_id='workspace-legacy'").fetchone()[0] == 1, "legacy owned v2 removed on downgrade")
         require(sum(connection.execute(f"SELECT count(*) FROM {table} WHERE created_by='migration:0013'").fetchone()[0] for table in TABLES) == 0, "owned cleanup")
         require(connection.execute("SELECT count(*) FROM pg_trigger WHERE tgname='studio_workspace_defaults_after_insert'").fetchone()[0] == 0, "trigger cleanup")
 
@@ -305,8 +476,9 @@ def main() -> None:
         require(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013", "reapply revision")
         suffix = hashlib.md5(b"tenant-gate|workspace-new").hexdigest()
         require(connection.execute("SELECT count(*) FROM workspace_policies WHERE record_id=%s", (f"studio-default:workspace-policy:{suffix}",)).fetchone()[0] == 1, "deterministic reapply")
+        require(connection.execute("SELECT count(*) FROM knowledge_scopes WHERE tenant_id='tenant-gate' AND workspace_id='workspace-legacy' AND record_id=%s AND version=2 AND previous_version_id=%s", (legacy_v2_id, legacy_scope_id)).fetchone()[0] == 1, "legacy deterministic v2 reapply")
 
-    print("PASS postgres=actual migration=0001-0013 conflict=fail-close latest-invalid=fail-close history-tie=fail-close revision0012+rows-preserved backfill=missing+partial+full-preserved0 trigger=6 digest=valid fk=rejected immutable=rejected rls=cross-tenant0 downgrade=fail-close+owned-only reapply=deterministic")
+    print("PASS postgres=actual migration=0001-0013 legacy=v1-to-v2+idempotent+weight-fk negatives=8+compat-collision conflict=fail-close latest-invalid=fail-close history-tie=fail-close revision0012+rows-preserved backfill=missing+partial+full-preserved0 trigger=6 digest=valid fk=rejected immutable=rejected rls=cross-tenant0 downgrade=legacy-ref-fail-close+owned-v2-only reapply=deterministic")
 
 
 if __name__ == "__main__":

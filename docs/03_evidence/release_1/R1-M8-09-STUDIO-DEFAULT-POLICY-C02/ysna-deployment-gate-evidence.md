@@ -60,3 +60,11 @@ has_scope=false
 - 서버 dirty는 보호 `backups/`, `secrets/`만 유지.
 
 서비스가 target commit으로 전환되지 않았으므로 production Browser Studio Gate는 실행하지 않았다. 기존 운영 세션·탭에는 영향을 주지 않았다.
+
+## 승인 후 local remediation 증거
+
+- 2026-08-14 승인된 §4.1 계약으로 exact Question legacy KnowledgeScope만 동일 aggregate v2 append하도록 Migration 0013을 보완했다.
+- 고유 disposable PostgreSQL에서 valid v1→v2, idempotency, v2 WeightProfile FK, 8개 malformed/missing/cross-workspace negative, compat ID collision, non-owned v2 reference downgrade 차단, v1 보존 downgrade와 deterministic reapply가 PASS했다.
+- focused `16 passed, 1 skipped`, 전체 API `360 passed, 26 skipped, 134 subtests`, Node 61, OpenAPI 75/94/120/31, Web build·TypeScript와 Product Boundary가 PASS했다.
+- disposable DB는 exact drop되어 remaining 0이고 공용 `local-postgres`는 running이다.
+- 이 절은 local 재배포 준비 증거이며 production 재배포 성공을 뜻하지 않는다. 운영 HEAD/revision/service는 위 rollback 상태 그대로다.

@@ -69,6 +69,23 @@ def test_migration_0013_rejects_ambiguous_or_invalid_latest_policy_history() -> 
     assert "v_latest_count" in sql
 
 
+def test_migration_0013_promotes_only_exact_question_legacy_scope_append_only() -> None:
+    sql = migration_sql()
+
+    assert "jsonb_object_keys(v_latest_json)" in sql
+    assert "ARRAY['mode','source_version_ids']" in sql
+    assert "v_latest_json->>'mode' = 'single_source'" in sql
+    assert "jsonb_array_length(v_latest_json->'source_version_ids') = 1" in sql
+    assert "'scope-' || substr(encode(sha256(convert_to(v_legacy_source_version_id,'UTF8')),'hex'),1,32)" in sql
+    assert "FROM source_versions" in sql
+    assert "studio-compat:knowledge-scope-v2:" in sql
+    assert "previous_version_id" in sql
+    assert "v_legacy_scope_id" in sql
+    assert '"mode":"single_source"' in sql
+    assert '"version":2' in sql
+    assert "knowledge_scope_id = v_selected_scope_id" in sql
+
+
 def test_migration_0013_downgrade_is_owned_only_reverse_fk_and_fail_closed() -> None:
     sql = migration_sql()
 

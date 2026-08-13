@@ -13,33 +13,33 @@
     "prompt": "B66A4422CEEA9092030DAF716C85657A4A928D1B1640A4AD7B9E62F6FFB96670"
   },
   "artifact_hashes": {
-    "services/api/migrations/versions/0013_studio_workspace_default_policy.py": "EE2F151E9C064AE1030E36CA4C8ECEB0B82EF73CCE924FE1D4D5337DBD6BF8A7",
+    "services/api/migrations/versions/0013_studio_workspace_default_policy.py": "019ECC6999C54AFCE82663CD0068D7D784E32D18C66B0B23EFD1918D336AF812",
     "services/api/src/daon_user_api/runtime.py": "471852CEF138F9F1115D7DDCB5DCF9F651346B7C37D0457B70869156FE10B197",
-    "services/api/tests/test_studio_workspace_default_policy_migration.py": "721555A720D7D2DE5BD04E2A87B74C3A97BFB75709754E2FAB6768FEEEDDB443",
+    "services/api/tests/test_studio_workspace_default_policy_migration.py": "7115D23D76698C1EDE10CD9632DA7E216D6DD40C2092CC21FBBE86F889E897DB",
     "services/api/tests/test_studio_workspace_postgres.py": "3E79BE0A212F7854CA6EE2064B68C1929C96E5C2C74D888F8EB6A4EB7FCE10BD",
     "services/api/tests/test_studio_workspace_runtime_http.py": "7769DA6A507C14BDB40E07E9521B8F222399D7F6F612EDDDD6E16F3D18378088",
-    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py": "D4DBFA9351282BD5F47D63AC5C9EEA89AA8272CDC36BC570759547D11A0110E0",
-    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/ysna-deployment-gate-evidence.md": "CCD44993A62C3DF57ECFD18D21240B22EFD16825AC60BA487826E1A527D89B77",
-    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_progress.md": "4F879EB4EBC8AC1D2924B2D15ABD4FEEF3232E8C637D9A14163A90572C206DF2",
-    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_completion_report.md": "6FB1CCD7B433FF844299D25998B282F0C04EC417CF41765ABD2CFCA0D322FB98"
+    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py": "F1E4EC4F17103845F8E32A3F52932A82D27A582982030B72A8E1954460A28EE7",
+    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/ysna-deployment-gate-evidence.md": "B49D8F358A6D96BC3415060E9E51F8DFB8250F7B3E126FE8EE81AA4ED2A4039F",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_progress.md": "E03F5EDB2144750034BD085CF91AE11261227EE6CDD4550A522B3F67C6AF7873",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_completion_report.md": "8D15C18960BE0F70A8EF5182F61FA6C2C5E0F22A14439B575856522B3D13126E"
   },
   "checks": [
-    {"name": "migration_contract", "result": "6 passed"},
+    {"name": "migration_contract", "result": "7 passed; pre-GREEN RED 1 failed, 6 passed"},
     {"name": "studio_focused", "result": "15 passed, 1 skipped"},
     {"name": "studio_egress_related", "result": "16 passed, 1 skipped"},
-    {"name": "api_all", "result": "359 passed, 26 skipped, 134 subtests passed"},
+    {"name": "api_all", "result": "360 passed, 26 skipped, 134 subtests passed"},
     {"name": "node_contracts", "result": "61 passed"},
     {"name": "openapi", "result": "paths=75 operations=94 schemas=120 errors=31"},
     {"name": "web_build_typescript", "result": "PASS"},
     {"name": "product_ui_boundary", "result": "scanned=281 violations=0 boundaryErrors=0"},
-    {"name": "actual_postgres", "result": "PASS 0001-0013 invalid-id-conflict latest-invalid max-version-tie fail-close revision0012 rows-preserved missing partial full-preserved0 idempotent trigger digest FK immutable RLS downgrade reapply"},
+    {"name": "actual_postgres", "result": "PASS 0001-0013 legacy-v1-v2 idempotent weight-v2-FK negatives8 compat-ID-conflict latest-invalid max-version-tie fail-close revision0012 rows-preserved missing partial full-preserved0 trigger digest FK immutable RLS nonowned-v2-reference downgrade-v1-preserved reapply"},
     {"name": "disposable_cleanup", "result": "remaining=0 local-postgres-running=true"},
     {"name": "ysna_deployment", "result": "BLOCKED_ROLLED_BACK latest KnowledgeScope missing workspace_id and scope; DB0012 and services preserved"},
     {"name": "diff_check", "result": "PASS"},
     {"name": "staged_files", "result": "0"}
   ],
   "known_limits": [
-    "Approved legacy KnowledgeScope v2 append-only compatibility is pending implementation and deployment verification.",
+    "Approved legacy KnowledgeScope v2 append-only compatibility is locally implemented and verified; production redeployment is pending.",
     "Production Browser Gate was not run because target commit services were not switched."
   ],
   "result": "IN_PROGRESS"
