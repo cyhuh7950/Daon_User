@@ -1017,6 +1017,166 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
   }
 });
 
+test("Web AuthPane actual React는 로그인·가입 인증·비밀번호 재설정을 단계별로 분리한다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".r1-auth-pane-react-"));
+  const dom = installMinimalDom();
+  const priorFetch = globalThis.fetch;
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    const redirects = [];
+    const calls = [];
+    let fetchResponse = async () => Response.json({ data: {} });
+    dom.window.location.assign = (target) => { redirects.push(target); };
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init, body: JSON.parse(init.body) });
+      return fetchResponse(url, init);
+    };
+    await build({
+      configFile: false,
+      logLevel: "silent",
+      root: repositoryRoot,
+      build: {
+        outDir: bundleRoot,
+        emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/web/lib/auth-pane.jsx"), formats: ["es"], fileName: "auth-pane" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("auth-pane") && /\.(?:m?js)$/u.test(name));
+    assert.ok(bundleEntry, "Web AuthPane actual JSX bundle entry가 필요하다");
+    const { AuthPane } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?r1Auth=${Date.now()}`);
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    root = createRoot(container);
+    const inputs = () => findElements(container, (node) => node.tagName === "INPUT");
+    const inputNamed = (name) => inputs().find((node) => (node.getAttribute("name") ?? node.name) === name);
+    const inputValue = async (name, value) => {
+      const input = inputNamed(name);
+      assert.ok(input, `${name} input이 필요하다`);
+      input.value = value;
+      await act(async () => { input.dispatchEvent(new MinimalEvent("input")); });
+      return input;
+    };
+    const click = async (label) => {
+      const button = buttonByText(container, label);
+      assert.ok(button, `${label} button이 필요하다`);
+      await act(async () => {
+        button.dispatchEvent(new MinimalEvent("click"));
+        await Promise.resolve();
+      });
+      return button;
+    };
+    const assertNoAction = (label) => assert.equal(buttonByText(container, label), undefined, `현재 DOM에 ${label}가 없어야 한다`);
+    await act(async () => { root.render(createElement(AuthPane)); });
+    assert.equal(inputs().length, 2);
+    assert.ok(inputNamed("login-id"));
+    assert.ok(inputNamed("password"));
+    assert.equal(dom.document.activeElement, inputNamed("login-id"));
+    assert.ok(buttonByText(container, "로그인"));
+    assert.match(buttonByText(container, "가입하기")?.getAttribute("class") ?? "", /daon-auth-link/u);
+    assert.match(buttonByText(container, "비밀번호를 잊으셨나요?")?.getAttribute("class") ?? "", /daon-auth-link/u);
+    for (const label of ["가입", "이메일 인증", "인증 재전송", "재설정 메일 요청", "비밀번호 재설정"]) assertNoAction(label);
+    await inputValue("login-id", "login-user");
+    await inputValue("password", "password-value");
+    fetchResponse = async () => Response.json({ error: { code: "http://internal:8000 secret stack" } }, { status: 401 });
+    const failureCallStart = calls.length;
+    await click("로그인");
+    assert.equal(calls.length - failureCallStart, 1);
+    assert.equal(calls.at(-1).url, "/bff/api/auth/login");
+    assert.deepEqual(calls.at(-1).body, { login_id: "login-user", password: "password-value" });
+    assert.equal(inputNamed("password").value, "");
+    assert.doesNotMatch(container.textContent, /http:\/\/internal|secret|stack/u);
+    assert.match(container.textContent, /요청을 완료하지 못했습니다/u);
+    await click("가입하기");
+    assert.equal(inputs().length, 3);
+    assert.ok(inputNamed("signup-login-id"));
+    assert.ok(inputNamed("email"));
+    assert.ok(inputNamed("signup-password"));
+    assert.equal(dom.document.activeElement, inputNamed("signup-login-id"));
+    assert.ok(buttonByText(container, "로그인으로 돌아가기"));
+    assertNoAction("계정 복구");
+    assertNoAction("이메일 인증");
+    assertNoAction("인증 재전송");
+    await inputValue("signup-login-id", "signup-user");
+    await inputValue("email", "signup@example.com");
+    await inputValue("signup-password", "signup-password");
+    fetchResponse = async () => Response.json({ data: {} });
+    await click("가입");
+    assert.equal(calls.at(-1).url, "/bff/api/auth/signup");
+    assert.deepEqual(calls.at(-1).body, { login_id: "signup-user", email: "signup@example.com", password: "signup-password" });
+    assert.equal(inputs().length, 1);
+    assert.ok(inputNamed("verification-token"));
+    assert.equal(dom.document.activeElement, inputNamed("verification-token"));
+    assertNoAction("가입");
+    await inputValue("verification-token", "verify-token");
+    await click("이메일 인증");
+    assert.equal(calls.at(-1).url, "/bff/api/auth/verify-email");
+    assert.deepEqual(calls.at(-1).body, { token: "verify-token" });
+    assert.equal(inputNamed("verification-token").value, "");
+    await click("인증 재전송");
+    assert.equal(calls.at(-1).url, "/bff/api/auth/resend-verification");
+    assert.deepEqual(calls.at(-1).body, { identifier: "signup-user" });
+    await click("로그인으로 돌아가기");
+    assert.equal(inputs().length, 2);
+    await click("비밀번호를 잊으셨나요?");
+    assert.equal(inputs().length, 1);
+    assert.ok(inputNamed("reset-identifier"));
+    assert.equal(dom.document.activeElement, inputNamed("reset-identifier"));
+    assert.ok(buttonByText(container, "재설정 메일 요청"));
+    assertNoAction("비밀번호 재설정");
+    await inputValue("reset-identifier", "recovery@example.com");
+    await click("재설정 메일 요청");
+    assert.equal(calls.at(-1).url, "/bff/api/auth/password-reset/request");
+    assert.deepEqual(calls.at(-1).body, { identifier: "recovery@example.com" });
+    assert.equal(inputs().length, 2);
+    assert.ok(inputNamed("reset-token"));
+    assert.ok(inputNamed("reset-password"));
+    assert.equal(dom.document.activeElement, inputNamed("reset-token"));
+    assertNoAction("재설정 메일 요청");
+    await inputValue("reset-token", "reset-token-value");
+    await inputValue("reset-password", "changed-password");
+    await click("비밀번호 재설정");
+    assert.equal(calls.at(-1).url, "/bff/api/auth/password-reset/confirm");
+    assert.deepEqual(calls.at(-1).body, { token: "reset-token-value", new_password: "changed-password" });
+    assert.equal(inputNamed("reset-token").value, "");
+    assert.equal(inputNamed("reset-password").value, "");
+    await click("로그인으로 돌아가기");
+    assert.equal(inputs().length, 2);
+    assert.equal(dom.document.activeElement, inputNamed("login-id"));
+    await inputValue("login-id", "login-user");
+    await inputValue("password", "successful-password");
+    let resolveLogin;
+    fetchResponse = () => new Promise((resolve) => { resolveLogin = resolve; });
+    const successCallStart = calls.length;
+    const loginButton = buttonByText(container, "로그인");
+    await act(async () => {
+      loginButton.dispatchEvent(new MinimalEvent("click"));
+      await Promise.resolve();
+    });
+    assert.equal(loginButton.disabled, true);
+    loginButton.dispatchEvent(new MinimalEvent("click"));
+    assert.equal(calls.length - successCallStart, 1);
+    await act(async () => {
+      resolveLogin(Response.json({ data: { workspace_id: "workspace-login-1" } }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(inputNamed("password").value, "");
+    assert.deepEqual(redirects, ["/workspaces/workspace-login-1"]);
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    globalThis.fetch = priorFetch;
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
 test("Web Login actual React는 same-origin 성공 응답의 Workspace로 이동한다", async () => {
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
   const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".stage-a-web-login-react-"));
