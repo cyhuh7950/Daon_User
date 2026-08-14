@@ -16,18 +16,37 @@ const STATE_LABELS = Object.freeze({
   unavailable: "실제 Workspace 연결이 아직 준비되지 않았습니다."
 });
 
+const PANE_ICONS = Object.freeze({
+  "product-pane-sources": "source", "product-pane-conversation": "conversation", "product-pane-studio": "studio",
+});
+
 function SafePane({ id, title, description, children }) {
   return (
     <div className="pane-slot">
       <section id={id} className="workspace-pane" aria-labelledby={`${id}-title`}>
         <div className="pane-heading">
-          <h2 id={`${id}-title`}>{title}</h2>
+          <h2 id={`${id}-title`}><span className={`pane-icon icon-${PANE_ICONS[id]}`} aria-hidden="true" />{title}</h2>
+          <button className="info-button" type="button" title={description} aria-label={`${title} 설명`}>i</button>
         </div>
-        <p className="visible-state">{description}</p>
         {children}
       </section>
     </div>
   );
+}
+
+function trapDialogFocus(event, close) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    close();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = [...event.currentTarget.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")];
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 }
 
 function safeErrorCode(error, fallback) {
@@ -296,18 +315,30 @@ export async function openNativeCitation(event, { adapter, citation, signal, reg
   return true;
 }
 
-export function ProductWorkspaceShell({ workspaceId, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null }) {
+export function ProductWorkspaceShell({ workspaceId, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null }) {
   const [viewState, setViewState] = useState(() => normalizeProductWorkspaceState(state));
   const [processing, setProcessing] = useState(null);
   const [question, setQuestion] = useState("");
   const [reportTitle, setReportTitle] = useState("");
   const [reportPurpose, setReportPurpose] = useState("");
   const [reportPending, setReportPending] = useState(false);
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  const [modalView, setModalView] = useState(null);
   const pollControllerRef = useRef(null);
   const reportIdempotencyRef = useRef(null);
   const lifetimeControllerRef = useRef(null);
   const citationUrlsRef = useRef(new Set());
   const questionPasswordRef = useRef(null);
+  const modalRef = useRef(null);
+  const modalOpenerRef = useRef(null);
+  const settingsButtonRef = useRef(null);
+
+  useEffect(() => {
+    if (!modalView) return undefined;
+    const first = modalRef.current?.querySelector?.("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])");
+    first?.focus();
+    return undefined;
+  }, [modalView]);
 
   useEffect(() => {
     if (!adapter || typeof adapter.listSources !== "function" || !workspaceId) return undefined;
@@ -513,38 +544,62 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
   };
 
   const reportReady = canCreateGroundedReport(viewState);
+  const desktopEditor = typeof desktopOfflineStudio?.editor === "function"
+    ? desktopOfflineStudio.editor(viewState)
+    : desktopOfflineStudio?.editor;
+  const desktopStudio = typeof desktopOfflineStudio?.studio === "function"
+    ? desktopOfflineStudio.studio(viewState)
+    : desktopOfflineStudio?.studio;
+  const openModal = (view, opener) => {
+    modalOpenerRef.current = opener ?? document.activeElement;
+    setSettingsMenuOpen(false);
+    setModalView(view);
+  };
+  const closeModal = () => {
+    setModalView(null);
+    queueMicrotask(() => modalOpenerRef.current?.focus?.());
+  };
+  const compactState = viewState.status === "ready" ? "준비" : viewState.status === "loading" ? "확인 중" : viewState.status === "error" ? "주의" : "연결 필요";
 
   return (
     <main className="adaptive-workspace" data-product-workspace-state={viewState.status} data-workspace-id={workspaceId ?? ""}>
-      <header className="workspace-header">
-        <div>
-          <p className="eyebrow">Daon 사용자 Workspace</p>
-          <h1>Workspace</h1>
+      <div className="workspace-surface" inert={modalView ? true : undefined} aria-hidden={modalView ? "true" : undefined}>
+      <header className="workspace-header workspace-app-bar">
+        <div className="workspace-brand"><span className="daon-mark" aria-hidden="true">D</span><div><p className="eyebrow">DAON WORKSPACE</p><h1>Workspace</h1></div></div>
+        <div className="workspace-app-actions">
+          <span className={`workspace-status status-${viewState.status}`} role="status"><span className="status-dot" aria-hidden="true" />{compactState}<span className="status-connection"> · Cloud</span></span>
+          <button type="button" onClick={(event) => openModal("operations", event.currentTarget)}>운영상태</button>
+          <div className="settings-menu-anchor">
+            <button ref={settingsButtonRef} type="button" aria-haspopup="menu" aria-expanded={settingsMenuOpen} onClick={() => setSettingsMenuOpen((open) => !open)}>설정</button>
+            {settingsMenuOpen ? <div className="settings-menu" role="menu" aria-label="Workspace 설정">
+              <button type="button" role="menuitem" onClick={() => openModal("llm", settingsButtonRef.current)}><span className="menu-icon icon-model" aria-hidden="true" /><span><strong>LLM 설정</strong><small>Provider와 모델 연결</small></span></button>
+              <button type="button" role="menuitem" disabled><span className="menu-icon icon-output" aria-hidden="true" /><span><strong>출력·버전</strong><small>준비 중</small></span></button>
+              <button type="button" role="menuitem" disabled><span className="menu-icon icon-sync" aria-hidden="true" /><span><strong>동기화·승인</strong><small>준비 중</small></span></button>
+              <button type="button" role="menuitem" disabled><span className="menu-icon icon-policy" aria-hidden="true" /><span><strong>조직 정책</strong><small>읽기 전용</small></span></button>
+            </div> : null}
+          </div>
         </div>
-        <span className={`workspace-status status-${viewState.status}`} role="status">{STATE_LABELS[viewState.status]}</span>
       </header>
-      <div className="workspace-panes" aria-label="Workspace 3면">
+      <div className="workspace-panes" data-layout="source-conversation-studio" aria-label="Workspace 3면">
         <SafePane id="product-pane-sources" title="Source·지식·권위" description="PDF 등록과 처리 상태는 실제 same-origin 연결만 사용합니다.">
-          <label>PDF Source<input type="file" accept="application/pdf" onChange={uploadPdf} disabled={!adapter} /></label>
-          {processing ? <p role="status">처리 상태: {processing.job_state ?? "PROCESSING_STATUS_AVAILABLE"}</p> : null}
-          <ul aria-label="Source 목록">
+          <label className="source-add-button"><span aria-hidden="true">＋</span>Source 추가<input type="file" accept="application/pdf" onChange={uploadPdf} disabled={!adapter} /></label>
+          {processing ? <p className="source-inline-state" role="status">처리 중 · 잠시만 기다려 주세요.</p> : null}
+          <ul className="source-list" aria-label="Source 목록">
             {viewState.sources.map((source) => (
-              <li key={`${source.sourceId}:${source.sourceVersionId}`}>
+              <li className="source-list-row" key={`${source.sourceId}:${source.sourceVersionId}`}>
                 <button type="button" onClick={() => selectSource(source)} disabled={!source.ready}>
-                  {source.filename ?? source.sourceId}
+                  <span className="source-file-icon" aria-hidden="true">PDF</span><span className="source-row-copy"><strong>{source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {source.ready ? "사용 가능" : "처리 중"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
                 </button>
               </li>
             ))}
           </ul>
+          {!viewState.sources.length ? <div className="pane-empty"><span aria-hidden="true">◇</span><strong>Source를 추가해 주세요.</strong><small>PDF를 등록하면 질문과 Studio 생성에 사용할 수 있습니다.</small></div> : null}
+          {viewState.safeError ? <p className="safe-error inline-alert" role="alert">Source를 불러오지 못했습니다. 운영상태에서 연결을 확인해 주세요.</p> : null}
         </SafePane>
         <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
-          <form onSubmit={askQuestion}>
-            <label>질문<input value={question} onChange={(event) => setQuestion(event.currentTarget.value)} disabled={!viewState.selectedSource} /></label>
-            <label title="외부 Provider 전송 정책이 요구할 때만 현재 비밀번호로 추가 인증합니다.">외부 전송 추가 인증<input ref={questionPasswordRef} type="password" autoComplete="current-password" /></label>
-            <button type="submit" disabled={!viewState.selectedSource || !question.trim()}>질문 실행</button>
-          </form>
-          {viewState.answer ? <p>{viewState.answer.answer}</p> : null}
-          {viewState.answer?.citations?.map((citation) => (
+          {desktopEditor ? desktopEditor : <div className="conversation-workspace"><div className="conversation-transcript" aria-live="polite">
+          {viewState.answer ? <article className="assistant-message"><div className="assistant-avatar" aria-hidden="true">D</div><div><span className="message-author">Daon</span><p>{viewState.answer.answer}</p></div></article> : <div className="conversation-empty"><span className="conversation-orbit" aria-hidden="true">✦</span><h3>Source에 대해 무엇이든 물어보세요.</h3><p>선택한 Source의 근거와 Citation을 사용해 답합니다.</p></div>}
+          <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
               void openNativeCitation(event, {
                 adapter,
@@ -555,11 +610,15 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
               }).catch((error) => {
                 setViewState((current) => ({ ...current, status: "error", safeError: safeErrorCode(error, "CITATION_RESPONSE_INVALID") }));
               });
-            }}>Citation page {citation.page}</a>
-          ))}
+            }}>Citation · {citation.page}쪽</a>
+          ))}</div></div><form className="conversation-composer" onSubmit={askQuestion}>
+            <label><span className="sr-only">질문</span><textarea rows="2" placeholder={viewState.selectedSource ? "Source에 대해 질문하세요" : "먼저 Source를 선택하세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} disabled={!viewState.selectedSource} /></label>
+            <details className="composer-auth"><summary title="외부 Provider 정책이 요구할 때만 사용합니다.">추가 인증</summary><label>현재 비밀번호<input ref={questionPasswordRef} type="password" autoComplete="current-password" /></label></details>
+            <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={!viewState.selectedSource || !question.trim()}>↑</button>
+          </form></div>}
         </SafePane>
         <SafePane id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">
-          <ProductStudioPane
+          {desktopStudio ? desktopStudio : <><ProductStudioPane
             key={`${viewState.answer?.run_id ?? "no-run"}:${viewState.selectedSource?.sourceVersionId ?? "no-source"}`}
             adapter={adapter}
             state={createProductStudioState({
@@ -578,11 +637,11 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
               safeError: viewState.studioSafeError ?? null,
             })}
           />
-          <form onSubmit={createReport}>
+          {reportReady ? <details className="grounded-report-legacy"><summary>빠른 근거 보고서</summary><form onSubmit={createReport}>
             <label>보고서 제목<input value={reportTitle} maxLength={200} onChange={(event) => setReportTitle(event.currentTarget.value)} /></label>
             <label>결과 목적<input value={reportPurpose} maxLength={500} onChange={(event) => setReportPurpose(event.currentTarget.value)} /></label>
             <button type="submit" disabled={!reportReady || !reportTitle.trim() || !reportPurpose.trim() || reportPending}>보고서 생성</button>
-          </form>
+          </form></details> : null}
           <ul aria-label="저장된 보고서">
             {viewState.studioOutputs.map((output) => (
               <li key={output.studio_output_id}>
@@ -595,10 +654,16 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
                 </ul>
               </li>
             ))}
-          </ul>
+          </ul></>}
         </SafePane>
       </div>
-      {viewState.safeError ? <p className="safe-error" role="alert">{viewState.safeError}</p> : null}
+      </div>
+      {modalView ? <div className="workspace-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
+        <section ref={modalRef} className={`workspace-modal workspace-modal-${modalView}`} role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title" onKeyDown={(event) => trapDialogFocus(event, closeModal)}>
+          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "llm" ? "LLM 설정" : "운영상태"}</h2></div><button className="modal-close" type="button" onClick={closeModal} aria-label="닫기">×</button></header>
+          {modalView === "llm" ? <div className="workspace-modal-content">{providerSettings ?? <div className="modal-unavailable" role="status"><strong>Provider 설정 연결이 필요합니다.</strong><p>현재 Workspace에서는 설정 상태를 불러올 수 없습니다.</p><button type="button" disabled>연결 기능 준비 중</button></div>}</div> : <div className="operations-status-grid"><article><span className="status-dot" aria-hidden="true" /><div><strong>Web Workspace</strong><small>{STATE_LABELS[viewState.status]}</small></div></article><article><span className="status-dot" aria-hidden="true" /><div><strong>same-origin 연결</strong><small>브라우저 BFF 경계를 사용합니다.</small></div></article><article><span className="status-dot" aria-hidden="true" /><div><strong>저장된 산출물</strong><small>{viewState.studioOutputs.length}개</small></div></article></div>}
+        </section>
+      </div> : null}
     </main>
   );
 }

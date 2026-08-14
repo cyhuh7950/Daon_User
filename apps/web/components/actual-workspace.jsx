@@ -2,6 +2,7 @@
 
 import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-model";
 import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
+import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, uploadPdfSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
 import { createGroundedReport, createStudioGeneration, createStudioVersion, createStudioAction, downloadStudioExport, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listWorkspaceSources } from "../lib/product-workspace-api.js";
@@ -32,6 +33,7 @@ export function ActualWorkspace({ workspaceId, adapter, processingPollOptions })
       workspaceId={workspaceId}
       adapter={activeAdapter}
       processingPollOptions={processingPollOptions}
+      providerSettings={<ProviderSettingsWorkspace workspaceId={workspaceId} embedded />}
       state={createProductWorkspaceState(workspaceId
         ? { status: "loading" }
         : { status: "unavailable", safeError: "WORKSPACE_ADAPTER_UNAVAILABLE" })}
