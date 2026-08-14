@@ -25,7 +25,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
@@ -86,7 +86,10 @@ from .document_index_postgres import PostgresDocumentIndex
 from .question_answering_postgres import (
     PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
 )
-from .question_answering_service import QuestionAdapterRegistry, QuestionAnsweringError, QuestionAnsweringService
+from .question_answering_service import (
+    QuestionAdapterRegistry, QuestionAnsweringError, QuestionAnsweringService,
+    QuestionInputSource,
+)
 from .egress_policy import EgressPolicyService
 from .egress_policy import EgressPolicyContext, EgressPolicyError, EgressPolicyPayload
 from .egress_policy_postgres import PostgresEgressPolicyRepository
@@ -113,6 +116,13 @@ from .sync_postgres import (
     PostgresSyncService,
     UnavailableSyncTransferPort,
 )
+from .knowledge_package import (
+    KnowledgePackageContext,
+    KnowledgePackageError,
+    KnowledgePackageService,
+    ReferenceKnowledgePackageRepository,
+)
+from .knowledge_package_postgres import PostgresKnowledgePackageService
 from .retention import (
     DerivativeInput, ReferenceCleanupPort, ReferenceRetentionRepository,
     RetentionContext, RetentionError, RetentionService,
@@ -130,6 +140,18 @@ from .provider_settings import (
     ReferenceProviderSettingsRepository,
     ServerCredentialPresenceResolver,
 )
+from .operations_status import OperationsStatusContext, OperationsStatusService
+from .operations_status_postgres import (
+    OperationsStatusError,
+    PostgresOperationsStatusRepository,
+)
+from .output_version_settings import (
+    OutputVersionSettingsContext,
+    OutputVersionSettingsError,
+    OutputVersionSettingsService,
+    ReferenceOutputVersionSettingsRepository,
+)
+from .output_version_settings_postgres import PostgresOutputVersionSettingsRepository
 
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
@@ -161,6 +183,7 @@ class RuntimeSettings:
     object_access_key_file: Path | None = None
     object_secret_key_file: Path | None = None
     recovery_manifest_key_file: Path | None = None
+    step_up_token_key_file: Path | None = None
     object_storage_secure: bool = True
     object_storage_provision_bucket: bool = False
     policy_version: str = "runtime-policy-v1"
@@ -207,6 +230,8 @@ class RuntimeSettings:
                 raise ValueError("CLOUD_DATABASE_DSN_REQUIRED")
             if self.public_gateway_url is None:
                 raise ValueError("PUBLIC_GATEWAY_REQUIRED")
+            if self.step_up_token_key_file is None:
+                raise ValueError("STEP_UP_TOKEN_KEY_REFERENCE_REQUIRED")
             parsed = urlsplit(self.public_gateway_url)
             if (
                 parsed.scheme != "https"
@@ -268,6 +293,10 @@ class RuntimeSettings:
             object_storage_secure=os.environ.get("DAON_OBJECT_STORAGE_SECURE", "true").lower() == "true",
             object_storage_provision_bucket=(
                 os.environ.get("DAON_OBJECT_STORAGE_PROVISION_BUCKET", "false").lower() == "true"
+            ),
+            step_up_token_key_file=(
+                None if os.environ.get("DAON_STEP_UP_TOKEN_KEY_FILE") is None
+                else Path(os.environ["DAON_STEP_UP_TOKEN_KEY_FILE"])
             ),
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
@@ -336,10 +365,13 @@ class RuntimeDependencies:
     cloud_store: PostgresCloudStore | None = None
     object_storage: ObjectStoragePort | None = None
     sync_service: SyncService | PostgresSyncService | None = None
+    knowledge_package_service: KnowledgePackageService | PostgresKnowledgePackageService | None = None
     retention_service: RetentionService | None = None
     recovery_service: RecoveryService | PostgresRecoveryService | UnavailableRecoveryService | None = None
     object_queue_store: PostgresObjectQueueStore | None = None
     provider_settings_service: ProviderSettingsService | None = None
+    operations_status_service: OperationsStatusService | None = None
+    output_version_settings_service: OutputVersionSettingsService | None = None
     source_upload_service: SourceUploadPort | None = None
     document_processing_service: DocumentProcessingSubmissionService | None = None
     question_answering_service: Any | None = None
@@ -453,20 +485,69 @@ class NotificationReadBody(BaseModel):
     state: str
 
 
+class QuestionEvidenceResourceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    resource_kind: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    resource_id: str
+    version_id: str | None = None
+
+
+class QuestionKnowledgeContextBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: str
+    resources: list[QuestionEvidenceResourceBody] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_mode(self) -> "QuestionKnowledgeContextBody":
+        identities = {(item.resource_kind, item.resource_id, item.version_id) for item in self.resources}
+        if len(identities) != len(self.resources):
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        knowledge = [item for item in self.resources if item.resource_kind == "knowledge_package"]
+        non_knowledge = [item for item in self.resources if item.resource_kind != "knowledge_package"]
+        valid = (
+            self.mode == "raw_only" and bool(non_knowledge) and not knowledge
+            or self.mode == "daon_priority" and bool(knowledge)
+            or self.mode == "mixed" and bool(non_knowledge) and bool(knowledge)
+        )
+        if not valid:
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        return self
+
+
 class QuestionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    source_id: str
-    source_version_id: str
+    source_id: str | None = None
+    source_version_id: str | None = None
+    knowledge_context: QuestionKnowledgeContextBody | None = None
     question: str
     step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=4096)
+
+    @model_validator(mode="after")
+    def validate_source_contract(self) -> "QuestionBody":
+        legacy = self.source_id is not None or self.source_version_id is not None
+        if legacy != (self.source_id is not None and self.source_version_id is not None):
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if legacy == (self.knowledge_context is not None):
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        return self
 
 
 class QuestionAuthorizationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    source_id: str
-    source_version_id: str
+    source_id: str | None = None
+    source_version_id: str | None = None
+    knowledge_context: QuestionKnowledgeContextBody | None = None
     question: str
     password: str
+
+    @model_validator(mode="after")
+    def validate_source_contract(self) -> "QuestionAuthorizationBody":
+        legacy = self.source_id is not None or self.source_version_id is not None
+        if legacy != (self.source_id is not None and self.source_version_id is not None):
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if legacy == (self.knowledge_context is not None):
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        return self
 
 
 class StudioReportBody(BaseModel):
@@ -528,13 +609,22 @@ class StudioActionBody(BaseModel):
 class SyncItemBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     item_id: str
-    source_version_id: str
+    source_version_id: str | None = None
     local_object_id: str
     digest_sha256: str
     byte_size: int
     content_type: str
     base_cloud_version_id: str | None = None
     base_cloud_digest: str | None = None
+    item_kind: str = "source_version"
+    output_version_id: str | None = None
+    dependency_item_ids: list[str] = Field(default_factory=list)
+
+
+class KnowledgeCopyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device_id: str
+    step_up_authorization_id: str
 
 
 class SyncCreateBody(BaseModel):
@@ -646,6 +736,12 @@ class ModelDeploymentBody(BaseModel):
 class ModelPolicyBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     bindings: dict[str, str]
+    expected_version: int
+
+
+class OutputVersionSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    default_formats: dict[str, str]
     expected_version: int
 
 
@@ -865,6 +961,19 @@ def _sync_view_json(view: SyncOperationView) -> dict[str, object]:
     return _dataclass_json(view)
 
 
+def _knowledge_package_context(
+    principal: IdentityPrincipal,
+    workspace_id: str,
+    request: Request,
+    dependencies: RuntimeDependencies,
+) -> KnowledgePackageContext:
+    return KnowledgePackageContext(
+        principal.tenant_id, workspace_id, principal.user_id,
+        request.state.trace_id, dependencies.settings.policy_version,
+        principal.device_id,
+    )
+
+
 def _retention_expected_version(value: str, resource_id: str, kind: str) -> int:
     matched = re.fullmatch(
         r'"' + re.escape(kind) + r':' + re.escape(resource_id) + r':([1-9][0-9]*)"', value
@@ -956,6 +1065,29 @@ def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityP
     return view.principal
 
 
+class _UnavailableKnowledgePackageContentPort:
+    def read_package(self, _context: object, _package: object) -> bytes:
+        raise KnowledgePackageError("KNOWLEDGE_PACKAGE_CONTENT_UNAVAILABLE", 503)
+
+
+def _resolve_knowledge_package_service(
+    configured: KnowledgePackageService | PostgresKnowledgePackageService | None,
+    cloud_store: PostgresCloudStore | None,
+) -> KnowledgePackageService | PostgresKnowledgePackageService:
+    if configured is not None:
+        return configured
+    if cloud_store is not None:
+        return PostgresKnowledgePackageService(
+            cloud_store,
+            _UnavailableKnowledgePackageContentPort(),
+            clock=lambda: datetime.now(timezone.utc),
+        )
+    return KnowledgePackageService(
+        ReferenceKnowledgePackageRepository(),
+        clock=lambda: datetime.now(timezone.utc),
+    )
+
+
 def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     notification_service = dependencies.notification_service or NotificationService(
         repository=ReferenceNotificationRepository(),
@@ -966,6 +1098,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     sync_service = dependencies.sync_service or SyncService(
         ReferenceSyncRepository(), ReferenceTransferPort(),
         clock=lambda: datetime.now(timezone.utc),
+    )
+    knowledge_package_service = _resolve_knowledge_package_service(
+        dependencies.knowledge_package_service, dependencies.cloud_store,
     )
     retention_service = dependencies.retention_service or RetentionService(
         ReferenceRetentionRepository(), ReferenceCleanupPort(),
@@ -979,6 +1114,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             else PostgresProviderSettingsRepository(dependencies.cloud_store)
         ),
         ServerCredentialPresenceResolver(),
+    )
+    operations_status_service = dependencies.operations_status_service
+    if operations_status_service is None and dependencies.cloud_store is not None:
+        operations_status_service = OperationsStatusService(
+            PostgresOperationsStatusRepository(dependencies.cloud_store)
+        )
+    output_version_settings_service = dependencies.output_version_settings_service or OutputVersionSettingsService(
+        ReferenceOutputVersionSettingsRepository()
+        if dependencies.cloud_store is None
+        else PostgresOutputVersionSettingsRepository(dependencies.cloud_store)
     )
     egress_policy_service = dependencies.egress_policy_service
     if egress_policy_service is None and dependencies.cloud_store is not None:
@@ -1127,6 +1272,21 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             error.status, error.code, request.state.trace_id, retryable=error.retryable
         )
 
+    @app.exception_handler(KnowledgePackageError)
+    async def knowledge_package_error(
+        request: Request, error: KnowledgePackageError,
+    ) -> JSONResponse:
+        safe_codes = {
+            "STEP_UP_REQUIRED", "CURRENT_ACCESS_DENIED", "IDEMPOTENCY_KEY_REUSED",
+            "KNOWLEDGE_PACKAGE_UNAVAILABLE", "OFFLINE_KNOWLEDGE_COPY_UNAVAILABLE",
+            "KNOWLEDGE_PACKAGE_DIGEST_MISMATCH",
+        }
+        return _error_response(
+            error.status,
+            error.code if error.code in safe_codes else "INVALID_REQUEST",
+            request.state.trace_id,
+        )
+
     @app.exception_handler(RetentionError)
     async def retention_error(request: Request, error: RetentionError) -> JSONResponse:
         return _error_response(
@@ -1182,7 +1342,32 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         public_codes = {
             "VERSION_CONFLICT", "PROVIDER_CODE_UNSUPPORTED", "PROVIDER_BASE_URL_INVALID",
             "PROVIDER_PROFILE_REQUIRED", "MODEL_DEPLOYMENT_INVALID", "MODEL_ROLE_UNSUPPORTED",
+            "PROVIDER_PROFILE_INACTIVE", "PROVIDER_CREDENTIAL_REQUIRED",
+            "PROVIDER_CONNECTION_UNAVAILABLE",
             "MODEL_BINDING_INVALID", "DATABASE_UNAVAILABLE", "DATABASE_TIMEOUT",
+        }
+        return _error_response(
+            error.status,
+            error.code if error.code in public_codes else "INVALID_REQUEST",
+            request.state.trace_id,
+            retryable=error.retryable,
+        )
+
+    @app.exception_handler(OperationsStatusError)
+    async def operations_status_error(
+        request: Request, _error: OperationsStatusError,
+    ) -> JSONResponse:
+        return _error_response(
+            503, "OPERATIONS_STATUS_UNAVAILABLE", request.state.trace_id, retryable=True,
+        )
+
+    @app.exception_handler(OutputVersionSettingsError)
+    async def output_version_settings_error(
+        request: Request, error: OutputVersionSettingsError,
+    ) -> JSONResponse:
+        public_codes = {
+            "OUTPUT_VERSION_SETTINGS_INVALID", "OUTPUT_VERSION_SETTINGS_UNAVAILABLE",
+            "VERSION_CONFLICT", "IDEMPOTENCY_KEY_REUSED",
         }
         return _error_response(
             error.status,
@@ -1541,9 +1726,48 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             f"{principal.tenant_id}|{workspace_id}|{principal.user_id}|{key}".encode("utf-8")
         ).hexdigest()[:32]
 
+    def _question_inputs(
+        principal: IdentityPrincipal, workspace_id: str, request: Request,
+        body: QuestionAuthorizationBody | QuestionBody,
+    ) -> tuple[str, tuple[QuestionInputSource, ...], str, str]:
+        if body.knowledge_context is None:
+            if body.source_id is None or body.source_version_id is None:
+                raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+            source = QuestionInputSource(
+                "raw_source", body.source_id, body.source_id, body.source_version_id,
+            )
+            return "raw_only", (source,), body.source_id, body.source_version_id
+        package_ids = tuple(
+            item.resource_id for item in body.knowledge_context.resources
+            if item.resource_kind == "knowledge_package"
+        )
+        package_sources = knowledge_package_service.resolve_question_sources(
+            _knowledge_package_context(principal, workspace_id, request, dependencies),
+            package_ids,
+        ) if package_ids else ()
+        sources = tuple(QuestionInputSource(
+            "daon_knowledge", item.package_id, item.source_id,
+            item.source_version_id, item.digest_sha256,
+        ) for item in package_sources)
+        for item in body.knowledge_context.resources:
+            if item.resource_kind == "knowledge_package":
+                continue
+            if item.resource_kind != "source" or item.version_id is None:
+                raise QuestionAnsweringError("QUESTION_RESOURCE_UNSUPPORTED", status=409)
+            sources += (QuestionInputSource(
+                "raw_source", item.resource_id, item.resource_id, item.version_id,
+            ),)
+        if not sources:
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+        return (
+            body.knowledge_context.mode, sources,
+            sources[0].source_id, sources[0].source_version_id,
+        )
+
     def _question_authorization_fingerprint(
         *, principal: IdentityPrincipal, workspace_id: str, run_id: str,
         body: QuestionAuthorizationBody | QuestionBody, prepared: object,
+        context_mode: str, context_sources: tuple[QuestionInputSource, ...],
         policy_fingerprint: str, idempotency_key: str,
     ) -> str:
         payload = cast(Any, prepared).provider_payload
@@ -1551,7 +1775,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return "sha256:" + hashlib.sha256(canonical_json_bytes({
             "actor_id": principal.user_id, "tenant_id": principal.tenant_id,
             "workspace_id": workspace_id, "run_id": run_id,
-            "source_id": body.source_id, "source_version_id": body.source_version_id,
+            "knowledge_context": {
+                "mode": context_mode,
+                "items": [_dataclass_json(item) for item in context_sources],
+            },
             "question_fingerprint": "sha256:" + hashlib.sha256(body.question.strip().encode()).hexdigest(),
             "provider_payload_fingerprint": "sha256:" + hashlib.sha256(payload).hexdigest(),
             "provider_kind": selection.provider_kind,
@@ -1580,10 +1807,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             principal.tenant_id, id, principal.user_id,
             request.state.trace_id, dependencies.settings.policy_version,
         )
+        context_mode, context_sources, source_id, source_version_id = _question_inputs(
+            principal, id, request, body,
+        )
         prepared = await asyncio.to_thread(
             question_answering_service.prepare_authorization, context,
-            source_id=body.source_id, source_version_id=body.source_version_id,
-            question=body.question,
+            source_id=source_id, source_version_id=source_version_id,
+            question=body.question, context_mode=context_mode, context_sources=context_sources,
         )
         effective = egress_policy_service.get_effective(
             _egress_policy_context(principal, id, request, dependencies)
@@ -1599,6 +1829,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         run_id = _question_run_id(principal, id, idempotency_key)
         request_fingerprint = _question_authorization_fingerprint(
             principal=principal, workspace_id=id, run_id=run_id, body=body,
+            context_mode=context_mode, context_sources=context_sources,
             prepared=prepared, policy_fingerprint=effective.fingerprint,
             idempotency_key=idempotency_key,
         )
@@ -1634,6 +1865,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 "QUESTION_SERVICE_UNAVAILABLE", status=503, retryable=True,
             )
         run_id = _question_run_id(principal, id, idempotency_key)
+        context_mode, context_sources, source_id, source_version_id = _question_inputs(
+            principal, id, request, body,
+        )
         approved_authorization = None
         if egress_policy_service is not None:
             context = QuestionContext(
@@ -1642,8 +1876,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             )
             prepared = await asyncio.to_thread(
                 question_answering_service.prepare_authorization, context,
-                source_id=body.source_id, source_version_id=body.source_version_id,
-                question=body.question,
+                source_id=source_id, source_version_id=source_version_id,
+                question=body.question, context_mode=context_mode, context_sources=context_sources,
             )
             if cast(Any, prepared).selection.provider_kind == "external_api":
                 effective = egress_policy_service.get_effective(
@@ -1654,6 +1888,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                         raise QuestionAnsweringError("STEP_UP_REQUIRED", status=403)
                     request_fingerprint = _question_authorization_fingerprint(
                         principal=principal, workspace_id=id, run_id=run_id, body=body,
+                        context_mode=context_mode, context_sources=context_sources,
                         prepared=prepared, policy_fingerprint=effective.fingerprint,
                         idempotency_key=idempotency_key,
                     )
@@ -1663,6 +1898,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                         access_token=access_token, action_group="external_transfer",
                         target_id=run_id, policy_version=request_fingerprint,
                         trace_id=request.state.trace_id,
+                        operation="question.external_transfer", idempotency_key=idempotency_key,
                     )
                     approved_authorization = {
                         "request_fingerprint": request_fingerprint,
@@ -1679,9 +1915,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 principal.tenant_id, id, principal.user_id,
                 request.state.trace_id, dependencies.settings.policy_version,
             ),
-            source_id=body.source_id, source_version_id=body.source_version_id,
+            source_id=source_id, source_version_id=source_version_id,
             question=body.question, run_id=run_id,
             approved_authorization=approved_authorization,
+            context_mode=context_mode, context_sources=context_sources,
         )
         response = JSONResponse({
             "data": {
@@ -1774,6 +2011,26 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.headers["ETag"] = f'"studio-version:{version["output_version_id"]}"'
         return response
 
+    @app.get("/api/v1/studio-outputs/{output_id}/versions")
+    async def list_product_studio_versions(
+        output_id: str, request: Request, workspace_id: str = Query(),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset({"workspace_id"}))
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        if studio_workspace_service is None:
+            raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        versions = await asyncio.to_thread(
+            studio_workspace_service.list_versions,
+            _product_studio_context(principal, workspace_id, request, dependencies), output_id,
+        )
+        return JSONResponse({"data": {"output_id": output_id, "versions": _enum_json(versions)}, "meta": {
+            "trace_id": request.state.trace_id, "workspace_id": workspace_id,
+        }})
+
     @app.post("/api/v1/reviews", status_code=201)
     @app.post("/api/v1/approval-requests", status_code=201)
     @app.post("/api/v1/approvals", status_code=201)
@@ -1810,6 +2067,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 step_up_authorization=body.step_up_authorization, access_token=access_token,
                 action_group=step_up_group, target_id=body.output_version_id,
                 policy_version=dependencies.settings.policy_version, trace_id=request.state.trace_id,
+                operation=f"studio.{action_name}", idempotency_key=idempotency_key,
             )
         if studio_workspace_service is None:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
@@ -1919,8 +2177,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise QuestionRepositoryError(
                 "CITATION_CONTENT_UNAVAILABLE", status=503, retryable=True,
             )
-        content, page = await asyncio.to_thread(
-            citation_content_repository.read_citation_pdf,
+        content, locator = await asyncio.to_thread(
+            citation_content_repository.read_citation_content,
             QuestionContext(
                 principal.tenant_id, id, principal.user_id,
                 request.state.trace_id, dependencies.settings.policy_version,
@@ -1928,13 +2186,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             citation_id,
         )
         filename = re.sub(r"[^A-Za-z0-9._-]", "_", content.filename) or "source.pdf"
-        return Response(
-            content=content.content, media_type="application/pdf",
-            headers={
+        headers = {
                 "Content-Disposition": f'inline; filename="{filename}"',
-                "X-Citation-Page": str(page),
-                "ETag": f'"pdf:{hashlib.sha256(content.content).hexdigest()}"',
-            },
+                "X-Citation-Locator-Kind": locator["kind"],
+                "ETag": f'"citation:{hashlib.sha256(content.content).hexdigest()}"',
+            }
+        if locator["kind"] == "page":
+            headers["X-Citation-Page"] = locator["value"]
+        return Response(
+            content=content.content, media_type=content.media_type,
+            headers=headers,
         )
 
     @app.get("/api/v1/session")
@@ -1993,13 +2254,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> dict[str, object]:
         _require_query_keys(request, frozenset())
-        _idempotency_key(idempotency_key)
+        _egress_idempotency_key(idempotency_key)
         access_token, _ = _credential(request)
         grant = dependencies.identity_service.issue_step_up_after_reauthentication(
             access_token=access_token, action_group=body.action_group, target_id=body.target_id,
             password=body.password,
             policy_version=dependencies.settings.policy_version, trace_id=request.state.trace_id,
-            ttl_seconds=body.ttl_seconds,
+            ttl_seconds=body.ttl_seconds, idempotency_key=idempotency_key,
         )
         return {"data": {
             "step_up_authorization": grant.authorization,
@@ -2171,6 +2432,93 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         seed = "|".join(f"{item.request_id}:{item.status}" for item in page.items) + f"|{page.next_cursor}"
         return _json_with_etag(content, seed)
 
+    @app.get("/api/v1/workspaces/{id}/knowledge-packages")
+    async def list_knowledge_packages(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        items = knowledge_package_service.list_packages(
+            _knowledge_package_context(principal, id, request, dependencies)
+        )
+        response = JSONResponse(content={
+            "data": {"items": [_dataclass_json(item) for item in items]},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+        response.headers["ETag"] = '"knowledge-packages-' + hashlib.sha256(
+            "|".join(f"{item.package_id}:{item.digest_sha256}" for item in items).encode()
+        ).hexdigest()[:24] + '"'
+        return response
+
+    @app.post(
+        "/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies",
+        status_code=201,
+    )
+    async def create_offline_knowledge_copy(
+        id: str,
+        package_id: str,
+        body: KnowledgeCopyBody,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.APPROVE,
+            requested_permissions=(Permission.DATA_AREA_MOVE,),
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=body.step_up_authorization_id,
+            access_token=access_token, action_group="data_area_move",
+            target_id=package_id,
+            policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id,
+            operation="knowledge.offline_copy", idempotency_key=idempotency_key,
+        )
+        grant = knowledge_package_service.create_offline_copy(
+            _knowledge_package_context(principal, id, request, dependencies),
+            package_id=package_id, device_id=body.device_id,
+            step_up_authorization_id=body.step_up_authorization_id,
+            idempotency_key=idempotency_key, approval_verified=True,
+        )
+        response = JSONResponse(
+            content={"data": _dataclass_json(grant), "meta": {"trace_id": request.state.trace_id}},
+            status_code=201,
+        )
+        response.headers["ETag"] = f'"offline-copy-{grant.digest_sha256[:24]}"'
+        return response
+
+    @app.get("/api/v1/offline-knowledge-copies/{copy_id}/content")
+    async def read_offline_knowledge_copy(copy_id: str, request: Request) -> Response:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        if request.state.session_view.client_kind is not ClientKind.NATIVE:
+            raise KnowledgePackageError("CURRENT_ACCESS_DENIED", 403)
+        workspace_id = request.headers.get("x-daon-workspace-id", "")
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        content = knowledge_package_service.read_content(
+            _knowledge_package_context(principal, workspace_id, request, dependencies),
+            copy_id=copy_id,
+        )
+        response = Response(
+            content=content,
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+        response.headers["ETag"] = f'"offline-copy-content-{hashlib.sha256(content).hexdigest()[:24]}"'
+        return response
+
     @app.post("/api/v1/workspaces/{id}/sync-operations", status_code=201)
     async def create_sync_operation(
         id: str,
@@ -2191,7 +2539,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         view = sync_service.create_operation(
             _sync_context(principal, id, request, dependencies),
             target_area=body.target_area,
-            items=tuple(SyncItemInput(**item.model_dump()) for item in body.items),
+            items=tuple(SyncItemInput(
+                **(item.model_dump() | {
+                    "dependency_item_ids": tuple(item.dependency_item_ids),
+                })
+            ) for item in body.items),
             idempotency_key=idempotency_key,
             if_match=cast(str, _sync_expected_version(if_match)),
         )
@@ -2245,6 +2597,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             action_group="data_area_move", target_id=id,
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
+            operation="sync.approve", idempotency_key=idempotency_key,
         )
         view = sync_service.approve(
             _sync_context(principal, workspace_id, request, dependencies),
@@ -2433,6 +2786,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             action_group="permanent_delete_or_restore_rollback", target_id=id,
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
+            operation="retention.purge", idempotency_key=idempotency_key,
         )
         view = retention_service.purge(
             _retention_context(
@@ -2469,6 +2823,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             action_group="permanent_delete_or_restore_rollback", target_id=id,
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
+            operation="retention.legal_hold.apply", idempotency_key=idempotency_key,
         )
         source_etag, source_version = retention_service.source_etag(principal.tenant_id, id)
         if if_match != source_etag:
@@ -2508,6 +2863,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             action_group="permanent_delete_or_restore_rollback", target_id=id,
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
+            operation="retention.legal_hold.release", idempotency_key=idempotency_key,
         )
         hold = retention_service.release_legal_hold(
             _retention_context(
@@ -2544,6 +2900,130 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             },
             "|".join(item.etag for item in snapshot.profiles),
         )
+
+    @app.get("/api/v1/workspaces/{id}/operations/status")
+    async def get_workspace_operations_status(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if operations_status_service is None:
+            raise OperationsStatusError()
+        try:
+            snapshot = provider_settings_service.snapshot(
+                _provider_settings_context(principal, id, request, dependencies)
+            )
+            database_ready = (
+                False
+                if dependencies.cloud_store is None
+                else (await asyncio.to_thread(dependencies.cloud_store.readiness)).ready
+            )
+            object_storage_ready = (
+                False
+                if dependencies.object_storage is None
+                else await asyncio.to_thread(dependencies.object_storage.health)
+            )
+            view = await asyncio.to_thread(
+                operations_status_service.read,
+                OperationsStatusContext(principal.tenant_id, id, principal.user_id),
+                active_providers=sum(
+                    1 for item in snapshot.profiles
+                    if item.active and item.credential_configured
+                ),
+                selected_deployments=sum(
+                    1 for item in snapshot.deployments if item.active and item.selected
+                ),
+                api_ready=dependencies.state.ready,
+                database_ready=database_ready,
+                object_storage_ready=object_storage_ready,
+                checked_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except OperationsStatusError:
+            raise
+        except Exception:
+            raise OperationsStatusError() from None
+        return _json_with_etag({
+            "data": _dataclass_json(view),
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        }, f"{id}|{view.overall_status}|{view.checked_at}")
+
+    @app.get("/api/v1/workspaces/{id}/output-version-settings")
+    async def get_workspace_output_version_settings(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = await asyncio.to_thread(
+            output_version_settings_service.get,
+            OutputVersionSettingsContext(principal.tenant_id, id, principal.user_id),
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(view),
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/sync-operations")
+    async def list_sync_operations(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        operations = sync_service.list_operations(
+            _sync_context(principal, id, request, dependencies)
+        )
+        response = JSONResponse(content={
+            "data": {"operations": [_sync_view_json(view) for view in operations]},
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        })
+        digest = hashlib.sha256("|".join(
+            f"{view.operation_id}:{view.version}" for view in operations
+        ).encode()).hexdigest()[:24]
+        response.headers["ETag"] = f'"sync-list:{id}:{digest}"'
+        return response
+
+    @app.patch("/api/v1/workspaces/{id}/output-version-settings")
+    async def patch_workspace_output_version_settings(
+        id: str,
+        body: OutputVersionSettingsBody,
+        request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _studio_idempotency_key(idempotency_key)
+        expected_etag = f'"output-version-settings:{id}:{body.expected_version}"'
+        if if_match != expected_etag:
+            raise OutputVersionSettingsError("VERSION_CONFLICT", 409)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        view = await asyncio.to_thread(
+            output_version_settings_service.save,
+            OutputVersionSettingsContext(principal.tenant_id, id, principal.user_id),
+            body.default_formats,
+            expected_version=body.expected_version,
+            idempotency_key=idempotency_key,
+        )
+        response = JSONResponse({
+            "data": _dataclass_json(view),
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        })
+        response.headers["ETag"] = view.etag
+        return response
 
     @app.get("/api/v1/workspaces/{id}/egress-policy")
     async def get_workspace_egress_policy(id: str, request: Request) -> JSONResponse:
@@ -2603,6 +3083,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             target_id=scope_id,
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
+            operation=f"egress_policy.{scope_type}.activate", idempotency_key=idempotency_key,
         )
         stored = egress_policy_service.create_and_activate(
             _egress_policy_context(principal, workspace_id, request, dependencies),
@@ -2685,6 +3166,26 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         response.headers["ETag"] = profile.etag
         return response
+
+    @app.get("/api/v1/model-profiles/{provider_code}/connection-check")
+    async def check_model_provider_connection(
+        provider_code: str, request: Request, workspace_id: str = Query(),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset({"workspace_id"}))
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        status = provider_settings_service.check_connection(
+            _provider_settings_context(principal, workspace_id, request, dependencies),
+            provider_code,
+        )
+        return _json_with_etag({
+            "data": _dataclass_json(status),
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": workspace_id},
+        }, f"{status.provider_code}|{status.status}|{status.checked_at}")
 
     @app.get("/api/v1/model-deployments")
     async def list_model_deployments(
@@ -2872,6 +3373,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             action_group="permanent_delete_or_restore_rollback", target_id=id,
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
+            operation="recovery.restore_preview", idempotency_key=idempotency_key,
         )
         view = recovery_service.create_restore_preview(
             _recovery_context(principal, workspace_id, request, dependencies), id,
@@ -2926,6 +3428,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             action_group="permanent_delete_or_restore_rollback", target_id=id,
             policy_version=dependencies.settings.policy_version,
             trace_id=request.state.trace_id,
+            operation="recovery.restore_execute", idempotency_key=idempotency_key,
         )
         view = recovery_service.execute_restore(
             _recovery_context(principal, workspace_id, request, dependencies), id,
@@ -2972,7 +3475,19 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     if settings.database_path is None:
         raise ValueError("DAON_API_DATABASE_PATH_REQUIRED")
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
-    audit_store = AuditEventStore()
+    if settings.profile == "production":
+        assert settings.cloud_database_dsn is not None and settings.step_up_token_key_file is not None
+        try:
+            step_up_token_key = settings.step_up_token_key_file.read_bytes()
+        except OSError:
+            raise ValueError("STEP_UP_TOKEN_KEY_REFERENCE_UNAVAILABLE") from None
+        if len(step_up_token_key) < 32:
+            raise ValueError("STEP_UP_TOKEN_KEY_REFERENCE_INVALID")
+        from .audit import PostgresSecurityAuditStore
+        audit_store = PostgresSecurityAuditStore(settings.cloud_database_dsn)
+    else:
+        step_up_token_key = None
+        audit_store = AuditEventStore()
     identity_repository = SqliteIdentityRepository(settings.database_path)
     authorization_repository = SqliteAuthorizationRepository(settings.database_path)
     identity_service = IdentityService(
@@ -2980,6 +3495,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         audit_store=audit_store,
         oidc_policies=(),
         clock=lambda: datetime.now(timezone.utc),
+        step_up_token_key=step_up_token_key,
     )
     authorization_service = AuthorizationService(
         repository=authorization_repository,

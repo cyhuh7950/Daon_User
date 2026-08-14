@@ -40,6 +40,7 @@ class FakeConnection:
         self.queries: list[str] = []
         self.run_version = 1
         self.completed_rows = []
+        self.citation_row = None
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
         self.queries.append(sql)
@@ -47,6 +48,8 @@ class FakeConnection:
             return Cursor(self.ready_row)
         if sql.startswith("SELECT rr.record_id,rr.canonical_json"):
             return Cursor(rows=self.completed_rows)
+        if sql.startswith("SELECT c.canonical_json->>'source_id'"):
+            return Cursor(self.citation_row)
         if sql.startswith("SELECT state,version,outcome,error_code FROM transition_canon_state"):
             self.run_version += 1
             return Cursor((params[3], self.run_version, "succeeded", None))
@@ -131,6 +134,7 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
 
         self.assertEqual(stored.run_id, "run-cp3")
         self.assertEqual(stored.citations[0].page, 2)
+        self.assertEqual(stored.citations[0].locator, {"kind": "page", "value": "2"})
         sql = " ".join(self.cloud.connection.queries)
         for table in (
             "runs", "run_snapshots", "routing_decisions", "model_attempts",
@@ -155,6 +159,25 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         self.assertIsNotNone(replay)
         self.assertEqual(replay.answer, "ORANGE-COMPASS-42")
         self.assertEqual(replay.citations[0].page, 2)
+
+    def test_daon_generated_text_citation_is_rendered_without_pdf_object(self) -> None:
+        self.cloud.connection.citation_row = (
+            "source-knowledge", "version-knowledge", "1", "1",
+            {
+                "kind": "approved_knowledge_snapshot",
+                "text": "Daon이 생성하고 승인한 일반 텍스트 지식",
+            },
+            "studio_output", "approved-knowledge.txt", "ready",
+            "span-knowledge",
+        )
+
+        content, locator = self.repository.read_citation_content(
+            self.context, "citation-knowledge",
+        )
+
+        self.assertEqual(content.media_type, "text/plain; charset=utf-8")
+        self.assertEqual(content.content.decode("utf-8"), "Daon이 생성하고 승인한 일반 텍스트 지식")
+        self.assertEqual(locator, {"kind": "section", "value": "span-knowledge"})
 
 
 if __name__ == "__main__":

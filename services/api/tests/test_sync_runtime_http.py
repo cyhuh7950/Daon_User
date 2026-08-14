@@ -80,6 +80,12 @@ class SyncRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(created.status_code, 201, created.text)
         operation_id = created.json()["data"]["operation_id"]
+        listed = await self.client.get(
+            "/api/v1/workspaces/workspace-sync-runtime/sync-operations"
+        )
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()["data"]["operations"][0]["operation_id"], operation_id)
+        self.assertEqual(listed.json()["data"]["operations"][0]["item_ids"], ["runtime-item"])
         denied = await self.client.post(
             f"/api/v1/sync-operations/{operation_id}/approve",
             headers={"Idempotency-Key": "sync-approve-denied", "If-Match": created.headers["etag"]},

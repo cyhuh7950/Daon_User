@@ -620,13 +620,17 @@ class RuntimeSettingsTests(unittest.TestCase):
                 public_gateway_url="https://api.example.com",
                 trusted_proxy_ips=("10.0.0.1",),
             )
-        valid = RuntimeSettings(
-            profile="production", bind_host="0.0.0.0", port=8000,
-            public_gateway_url="https://api.example.com",
-            trusted_proxy_ips=("10.0.0.1",),
-            cloud_database_dsn="postgresql://app@database/daon",
-        )
-        self.assertEqual(valid.public_gateway_url, "https://api.example.com")
+        with tempfile.TemporaryDirectory() as directory:
+            step_up_key = Path(directory) / "step-up.key"
+            step_up_key.write_bytes(b"s" * 32)
+            valid = RuntimeSettings(
+                profile="production", bind_host="0.0.0.0", port=8000,
+                public_gateway_url="https://api.example.com",
+                trusted_proxy_ips=("10.0.0.1",),
+                cloud_database_dsn="postgresql://app@database/daon",
+                step_up_token_key_file=step_up_key,
+            )
+            self.assertEqual(valid.public_gateway_url, "https://api.example.com")
 
 
 if __name__ == "__main__":

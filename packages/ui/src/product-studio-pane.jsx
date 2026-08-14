@@ -28,6 +28,10 @@ function outputStatusLabel(status) {
   })[status] ?? "저장됨";
 }
 
+function outputTypeLabel(outputType) {
+  return OUTPUT_TYPES.find((item) => item.id === outputType)?.label ?? "산출물";
+}
+
 function safeStudioErrorMessage(code) {
   if (!code) return null;
   return ({
@@ -46,6 +50,88 @@ function studioContentText(content) {
   return Object.values(content).map(studioContentText).filter(Boolean).join("\n");
 }
 
+function complianceJudgementLabel(value) {
+  return ({ compliant: "준수", non_compliant: "미준수", needs_review: "검토 필요" })[value] ?? "확인 필요";
+}
+
+function comparisonStateLabel(value) {
+  return ({ same: "동일", changed: "변경", missing: "누락", conflict: "충돌" })[value] ?? "확인 필요";
+}
+
+function comparisonCellText(value) {
+  if (value == null) return "—";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function knowledgeConfidenceLabel(value) {
+  return ({ verified: "검증됨", unverified: "미검증", needs_review: "검토 필요" })[value] ?? "확인 필요";
+}
+
+function draftReviewLabel(value) {
+  return ({ draft: "초안", in_review: "검토 중", revision_requested: "수정 필요", approved: "승인됨" })[value] ?? "확인 필요";
+}
+
+function StudioOutputContent({ output }) {
+  const content = output.content ?? output.version?.content;
+  if (output.output_type === "compliance_checklist" && Array.isArray(content?.items)) {
+    return <section className="studio-compliance-result" aria-label="제약·준수 점검 결과">
+      <h4>제약·준수 점검 결과</h4>
+      <div className="studio-table-scroll"><table><thead><tr><th>항목</th><th>판정</th><th>근거</th><th>조치</th></tr></thead>
+        <tbody>{content.items.map((item, index) => <tr key={item?.item_id ?? `check-${index + 1}`}>
+          <th scope="row">{item?.item_id ?? `check-${index + 1}`}</th>
+          <td><span className={`compliance-judgement judgement-${item?.judgement ?? "unknown"}`}>{complianceJudgementLabel(item?.judgement)}</span></td>
+          <td>{item?.evidence || "근거 없음"}</td><td>{item?.action || "검토"}</td>
+        </tr>)}</tbody>
+      </table></div>
+      {Array.isArray(content.warnings) && content.warnings.length ? <p className="compliance-warning">확인 필요 · {content.warnings.join(", ")}</p> : null}
+    </section>;
+  }
+  if (output.output_type === "comparison_table" && Array.isArray(content?.rows)) {
+    return <section className="studio-comparison-result" aria-label="비교·데이터 결과">
+      <h4>비교·데이터 결과</h4>
+      <div className="studio-table-scroll"><table><thead><tr><th>항목</th><th>기준</th><th>현재</th><th>상태</th><th>근거</th></tr></thead>
+        <tbody>{content.rows.map((row, index) => <tr key={row?.key ?? `row-${index + 1}`}>
+          <th scope="row">{row?.key ?? `항목 ${index + 1}`}</th>
+          <td>{comparisonCellText(row?.baseline)}</td><td>{comparisonCellText(row?.current)}</td>
+          <td><span className={`comparison-state state-${row?.state ?? "unknown"}`}>{comparisonStateLabel(row?.state)}</span></td>
+          <td>{Array.isArray(row?.evidence) ? row.evidence.filter(Boolean).join(" · ") || "근거 없음" : comparisonCellText(row?.evidence)}</td>
+        </tr>)}</tbody>
+      </table></div>
+    </section>;
+  }
+  if (output.output_type === "knowledge_map" && Array.isArray(content?.nodes) && Array.isArray(content?.edges)) {
+    const labels = Object.fromEntries(content.nodes.map((node) => [node?.id, node?.label ?? node?.id]));
+    return <section className="studio-knowledge-result" aria-label="지식 구조 결과">
+      <h4>지식 구조 결과</h4>
+      <div className="knowledge-node-grid">{content.nodes.map((node, index) => <article key={node?.id ?? `node-${index + 1}`} className="knowledge-node-card">
+        <span className="knowledge-node-mark">{index + 1}</span><strong>{node?.label ?? node?.id ?? `지식 ${index + 1}`}</strong>
+        <span className={`knowledge-confidence confidence-${node?.confidence ?? "unknown"}`}>{knowledgeConfidenceLabel(node?.confidence)}</span>
+        <small>{node?.evidence || "근거 없음"}</small>
+      </article>)}</div>
+      {content.edges.length ? <ul className="knowledge-edge-list" aria-label="지식 관계">{content.edges.map((edge, index) => <li key={edge?.id ?? `edge-${index + 1}`}>
+        <strong>{labels[edge?.source] ?? edge?.source} → {labels[edge?.target] ?? edge?.target}</strong>
+        <span>{edge?.relation ?? edge?.condition ?? "관계"}</span>
+      </li>)}</ul> : <p className="secondary">표시할 관계가 없습니다.</p>}
+    </section>;
+  }
+  if (output.output_type === "business_draft" && Array.isArray(content?.sections)) {
+    return <section className="studio-document-result" aria-label="업무 문서 결과">
+      <header><h4>업무 문서 결과</h4><span className="document-review-state">{draftReviewLabel(content.review_state)}</span></header>
+      <div className="document-section-list">{content.sections.map((section, index) => <article key={`${section?.title ?? "section"}-${index + 1}`}>
+        <span className="document-section-number">{String(index + 1).padStart(2, "0")}</span>
+        <div><h5>{section?.title || `Section ${index + 1}`}</h5><p>{section?.body || "내용 없음"}</p>
+          <ul aria-label={`${section?.title || `Section ${index + 1}`} 근거`}>{Array.isArray(section?.evidence) && section.evidence.length
+            ? section.evidence.map((evidence) => <li key={evidence}>{evidence}</li>)
+            : <li>근거 없음</li>}</ul>
+        </div>
+      </article>)}</div>
+      {Array.isArray(content.warnings) && content.warnings.length ? <p className="document-warning">확인 필요 · {content.warnings.join(", ")}</p> : null}
+    </section>;
+  }
+  return <p className="studio-output-content">{studioContentText(content)}</p>;
+}
+
 export function ProductStudioPane({ state, adapter }) {
   const [view, setView] = useState(state);
   const [revisionContent, setRevisionContent] = useState("");
@@ -55,6 +141,22 @@ export function ProductStudioPane({ state, adapter }) {
   const selectedOutput = view.outputs.find((output) => output.studio_output_id === view.selectedOutputId) ?? null;
   const generationState = view.pending ? "pending" : view.safeError ? "failed" : selectedOutput ? "completed" : "idle";
   const setField = (field, value) => setView((current) => updateGenerationSettings(current, { [field]: value }));
+  const openOutput = async (output) => {
+    setView((current) => ({ ...current, selectedOutputId: output.studio_output_id, pending: Boolean(adapter?.listStudioVersions), safeError: null }));
+    if (!adapter?.listStudioVersions) return;
+    try {
+      const versions = await adapter.listStudioVersions(output.studio_output_id);
+      const latest = versions[0] ?? null;
+      setView((current) => ({
+        ...current, pending: false,
+        outputs: current.outputs.map((item) => item.studio_output_id === output.studio_output_id
+          ? { ...item, ...(latest ?? {}), versions }
+          : item),
+      }));
+    } catch (error) {
+      setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_LIST_FAILED" }));
+    }
+  };
   const submit = async () => {
     if (!adapter?.createGeneration || !canSubmitGeneration(view)) return;
     setView((current) => ({ ...current, pending: true, safeError: null }));
@@ -134,7 +236,7 @@ export function ProductStudioPane({ state, adapter }) {
           {FUTURE_OUTPUT_TYPES.map((type) => <button className={`studio-type-tile studio-type-future tile-${TYPE_ICONS[type.id]}`} key={type.id} type="button" disabled aria-label={`${type.label}, ${type.phase} 준비 중`}><span>{type.label}</span><small>{type.phase} · 준비 중</small></button>)}
         </div>
         <section className="studio-library" aria-labelledby="stored-studio-outputs"><div className="studio-section-heading"><div><span className="section-kicker">LIBRARY</span><h3 id="stored-studio-outputs">저장된 산출물</h3></div><span className="library-count">{view.outputs.length}</span></div>
-          {view.outputs.length ? <ul>{view.outputs.map((output) => <li className="studio-library-row" key={output.studio_output_id}><span className="library-type-icon" aria-hidden="true" /><span className="library-row-copy"><button type="button" onClick={() => setView((current) => ({ ...current, selectedOutputId: output.studio_output_id }))}>{output.title}</button><small>Source {output.source_count ?? output.source_version_ids?.length ?? 1} · Version {output.output_version_id ?? "-"}</small></span><span className={`output-status status-${output.status ?? "saved"}`}>{outputStatusLabel(output.status)}</span></li>)}</ul> : <div className="studio-empty"><span className="empty-icon" aria-hidden="true">◇</span><strong>아직 저장된 산출물이 없습니다.</strong><small>위 유형을 선택하면 근거가 결속된 산출물을 만들 수 있습니다.</small></div>}
+          {view.outputs.length ? <ul>{view.outputs.map((output) => <li className="studio-library-row" key={output.studio_output_id}><span className={`library-type-icon tile-${TYPE_ICONS[output.output_type] ?? "document"}`} aria-hidden="true" /><span className="library-row-copy"><small className="library-output-type">{outputTypeLabel(output.output_type)}</small><button type="button" onClick={() => void openOutput(output)}>{output.title}</button><small>Source {output.source_count ?? output.source_version_ids?.length ?? 1} · Version {output.content_version ?? output.output_version_id ?? "-"}</small></span><span className={`output-status status-${output.status ?? "saved"}`}>{outputStatusLabel(output.status)}</span></li>)}</ul> : <div className="studio-empty"><span className="empty-icon" aria-hidden="true">◇</span><strong>아직 저장된 산출물이 없습니다.</strong><small>위 유형을 선택하면 근거가 결속된 산출물을 만들 수 있습니다.</small></div>}
         </section>
       </div> : <section className="studio-config-view" data-studio-view="config" aria-labelledby="studio-config-title">
         <header className="studio-config-header"><button className="studio-back" type="button" onClick={() => setView((current) => ({ ...current, selectedOutputType: null, settingsConfirmed: false, settingsSnapshot: null }))}>뒤로</button><div><span className="section-kicker">CREATE</span><h3 id="studio-config-title">{selected?.label} 설정</h3></div></header>
@@ -159,9 +261,11 @@ export function ProductStudioPane({ state, adapter }) {
         <div className="studio-config-library"><span className="section-kicker">LIBRARY</span><h3>저장된 산출물</h3><small>{view.outputs.length ? `${view.outputs.length}개의 산출물이 저장되어 있습니다.` : "생성 완료 후 여기에 저장됩니다."}</small></div>
       </section>}
       {selectedOutput ? <section className="studio-output-detail" aria-label="선택 산출물 상세">
-        <h3>{selectedOutput.title}</h3>
-        <p className="studio-output-content">{studioContentText(selectedOutput.content ?? selectedOutput.version?.content)}</p>
-        <p>Version {selectedOutput.output_version_id} · 근거 {selectedOutput.citations ?? 0} · 설정 {selectedOutput.settings_snapshot_id ?? "-"}</p>
+        <header className="studio-output-detail-header"><div><span className="section-kicker">{outputTypeLabel(selectedOutput.output_type)}</span><h3>{selectedOutput.title}</h3></div><span className={`output-status status-${selectedOutput.status ?? "saved"}`}>{outputStatusLabel(selectedOutput.status)}</span></header>
+        <StudioOutputContent output={selectedOutput} />
+        <p>Version {selectedOutput.content_version ?? selectedOutput.output_version_id} · 근거 {Array.isArray(selectedOutput.citations) ? selectedOutput.citations.length : selectedOutput.citations ?? 0} · 설정 {selectedOutput.settings_snapshot_id ?? "-"}</p>
+        {selectedOutput.versions?.length ? <section className="studio-version-history" aria-label="Version 이력"><h4>Version 이력</h4><ol>{selectedOutput.versions.map((version) => <li key={version.output_version_id}><strong>Version {version.content_version}</strong><span>{outputStatusLabel(version.status)} · {version.change_reason}</span></li>)}</ol></section> : null}
+        {Array.isArray(selectedOutput.citations) && selectedOutput.citations.length ? <section className="studio-citation-list" aria-label="근거 Citation"><h4>근거 Citation</h4><ul>{selectedOutput.citations.map((citation) => <li key={citation.citation_id}>{citation.origin === "daon_knowledge" ? "Daon 생성 지식" : "원본 지식"} · {citation.locator?.kind === "page" ? `${citation.locator.value}쪽` : citation.locator?.value}</li>)}</ul></section> : null}
         <label>변경 사유<input value={changeReason} onChange={(event) => setChangeReason(event.currentTarget.value)} /></label>
         <label>편집 내용<textarea value={revisionContent} onChange={(event) => setRevisionContent(event.currentTarget.value)} /></label>
         <button type="button" disabled={view.pending || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("user_edit")}>편집 새 Version</button>

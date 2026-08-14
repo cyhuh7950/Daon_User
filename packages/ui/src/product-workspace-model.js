@@ -58,15 +58,18 @@ export function assertProductWorkspaceAdapter(adapter) {
 
 export function canCreateGroundedReport(state) {
   return state?.status === "ready"
-    && typeof state.selectedSource?.sourceId === "string"
-    && typeof state.selectedSource?.sourceVersionId === "string"
     && state.answer?.insufficient === false
     && typeof state.answer?.run_id === "string"
     && typeof state.answer?.run_result_id === "string"
     && Array.isArray(state.answer?.citations)
     && state.answer.citations.length > 0
     && state.answer.citations.every((citation) => (
-      citation?.source_id === state.selectedSource.sourceId
-      && citation?.source_version_id === state.selectedSource.sourceVersionId
+      typeof citation?.source_id === "string" && citation.source_id.length > 0
+      && typeof citation?.source_version_id === "string" && citation.source_version_id.length > 0
+      && (citation.origin === "daon_knowledge" || (
+        citation.origin === "raw_source"
+        && citation.source_id === state.selectedSource?.sourceId
+        && citation.source_version_id === state.selectedSource?.sourceVersionId
+      ))
     ));
 }

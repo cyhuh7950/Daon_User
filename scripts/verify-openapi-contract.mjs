@@ -56,6 +56,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/deliveries",
   "/api/v1/knowledge-registrations",
   "/api/v1/model-profiles",
+  "/api/v1/model-profiles/{provider_code}/connection-check",
   "/api/v1/model-deployments",
   "/api/v1/model-routing/preview",
   "/api/v1/local-nodes",
@@ -65,6 +66,11 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/notifications",
   "/api/v1/notifications/{id}",
   "/api/v1/inbox",
+  "/api/v1/workspaces/{id}/knowledge-packages",
+  "/api/v1/workspaces/{id}/operations/status",
+  "/api/v1/workspaces/{id}/output-version-settings",
+  "/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies",
+  "/api/v1/offline-knowledge-copies/{copy_id}/content",
   "/api/v1/workspaces/{id}/sync-operations",
   "/api/v1/sync-operations/{id}",
   "/api/v1/sync-operations/{id}/approve",
@@ -452,10 +458,33 @@ export function validateOpenApiDocument(document) {
   const actualPaths = Object.keys(document.paths);
   for (const requiredPath of REQUIRED_PATHS) if (!(requiredPath in document.paths)) fail(`required path missing ${requiredPath}`);
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
+  const knowledgeMethods = new Map([
+    ["/api/v1/workspaces/{id}/knowledge-packages", ["get"]],
+    ["/api/v1/workspaces/{id}/operations/status", ["get"]],
+    ["/api/v1/workspaces/{id}/output-version-settings", ["get", "patch"]],
+    ["/api/v1/workspaces/{id}/sync-operations", ["get", "post"]],
+    ["/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies", ["post"]],
+    ["/api/v1/offline-knowledge-copies/{copy_id}/content", ["get"]],
+  ]);
+  for (const [apiPath, expectedMethods] of knowledgeMethods) {
+    const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method)).sort();
+    if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Knowledge Package method mismatch ${apiPath}`);
+  }
+  const syncItem = document.components?.schemas?.SyncItemInput;
+  if (
+    JSON.stringify(syncItem?.properties?.item_kind?.enum) !== JSON.stringify(["source_version", "output_version"])
+    || syncItem?.properties?.item_kind?.default !== "source_version"
+    || syncItem?.properties?.source_version_id?.type?.[1] !== "null"
+    || syncItem?.properties?.output_version_id?.type?.[1] !== "null"
+    || syncItem?.properties?.dependency_item_ids?.default?.length !== 0
+  ) fail("versioned Sync item schema mismatch");
+  if (document.components?.schemas?.OfflineKnowledgeCopyRequest?.additionalProperties !== false) {
+    fail("Offline Knowledge copy request must be exact");
+  }
   const studioRuntimeMethods = new Map([
     ["/api/v1/studio-generation-requests", ["post"]],
     ["/api/v1/studio-outputs", ["get"]],
-    ["/api/v1/studio-outputs/{id}/versions", ["post"]],
+    ["/api/v1/studio-outputs/{id}/versions", ["get", "post"]],
     ["/api/v1/reviews", ["post"]], ["/api/v1/approval-requests", ["post"]],
     ["/api/v1/approvals", ["post"]], ["/api/v1/deliveries", ["post"]],
     ["/api/v1/knowledge-registrations", ["post"]],
@@ -489,6 +518,10 @@ export function validateOpenApiDocument(document) {
     for (const status of ["200", "201"]) {
       if (document.paths[apiPath]?.post?.responses?.[status]?.$ref !== expectedRef) fail(`Studio Runtime response mismatch ${apiPath}`);
     }
+  }
+  if (document.paths["/api/v1/studio-outputs/{id}/versions"]?.get?.responses?.["200"]?.$ref
+      !== "#/components/responses/StudioVersionHistoryResponse") {
+    fail("Studio Version history response mismatch");
   }
   const exportMedia = Object.keys(document.components?.responses?.StudioExportResponse?.content ?? {}).sort();
   const requiredExportMedia = [
@@ -594,13 +627,35 @@ export function buildSummary(document) {
   };
 }
 
-export async function verifyOpenApiContract({ root, write = false } = {}) {
+const LEGACY_EVIDENCE_SUMMARY = Object.freeze({
+  schema_version: "1.0",
+  contract_version: "1.0.0",
+  canonical_sha256: "594AED28565CCDBA60F3A12565071F7EAE5239544D5632508BD612EA8D180E0A",
+  path_count: 75,
+  operation_count: 94,
+  schema_count: 120,
+  error_code_count: 31,
+});
+
+export function evidenceRelativePathForProfile(profile = "r1-m5-07") {
+  if (profile === "r1-m5-07") {
+    return "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json";
+  }
+  if (profile === "r1-m8-10") {
+    return "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/openapi-contract-summary.json";
+  }
+  fail(`unsupported evidence profile ${profile}`);
+}
+
+export async function verifyOpenApiContract({ root, write = false, evidenceProfile = "r1-m5-07" } = {}) {
   const repositoryRoot = root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const contractPath = path.join(repositoryRoot, "packages/contracts/openapi/v1/openapi.json");
-  const evidencePath = path.join(repositoryRoot, "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json");
+  const evidencePath = path.join(repositoryRoot, evidenceRelativePathForProfile(evidenceProfile));
   const document = JSON.parse(await readFile(contractPath, "utf8"));
   const summary = buildSummary(document);
-  const expected = `${JSON.stringify(summary, null, 2)}\n`;
+  const evidenceSummary = evidenceProfile === "r1-m5-07" ? LEGACY_EVIDENCE_SUMMARY : summary;
+  const expected = `${JSON.stringify(evidenceSummary, null, 2)}\n`;
+  if (write && evidenceProfile === "r1-m5-07") fail("legacy evidence is immutable");
   if (write) {
     await mkdir(path.dirname(evidencePath), { recursive: true });
     await writeFile(evidencePath, expected, "utf8");
@@ -608,14 +663,18 @@ export async function verifyOpenApiContract({ root, write = false } = {}) {
     const actual = (await readFile(evidencePath, "utf8")).replaceAll("\r\n", "\n");
     if (actual !== expected) fail("deterministic evidence does not match; run with --write");
   }
-  return summary;
+  return evidenceSummary;
 }
 
 async function main() {
   const args = process.argv.slice(2).filter((argument) => argument !== "--");
   const write = args.includes("--write");
   if (write && args.includes("--no-write")) fail("--write and --no-write are mutually exclusive");
-  const summary = await verifyOpenApiContract({ write });
+  const profileArgument = args.find((argument) => argument.startsWith("--evidence-profile="));
+  const evidenceProfile = profileArgument?.slice("--evidence-profile=".length) ?? "r1-m5-07";
+  const knownArguments = new Set(["--write", "--no-write", profileArgument].filter(Boolean));
+  if (args.some((argument) => !knownArguments.has(argument))) fail("unsupported command argument");
+  const summary = await verifyOpenApiContract({ write, evidenceProfile });
   console.log(`openapi contract verified: paths=${summary.path_count} operations=${summary.operation_count} schemas=${summary.schema_count} errors=${summary.error_code_count} sha256=${summary.canonical_sha256}`);
 }
 

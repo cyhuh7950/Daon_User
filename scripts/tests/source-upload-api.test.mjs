@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { listWorkspaceSources } from "../../apps/web/lib/product-workspace-api.js";
+import {
+  listWorkspaceKnowledgePackages,
+  listWorkspaceSources,
+} from "../../apps/web/lib/product-workspace-api.js";
 
 const source = Object.freeze({
   source_id: "source-1", source_version_id: "version-1", filename: "approved.pdf",
@@ -65,4 +68,51 @@ test("Source 목록은 Canon 밖의 unknown state를 계속 거부한다", async
     }),
     { message: "SOURCE_LIST_RESPONSE_INVALID" },
   );
+});
+
+const knowledgePackage = Object.freeze({
+  package_id: "knowledge-package-1",
+  producer: "daon2_5",
+  producer_version: "2.5.7",
+  knowledge_registration_id: "knowledge-registration-1",
+  output_version_id: "output-version-7",
+  authority: "approved",
+  registration_state: "registered",
+  review_state: "approved",
+  digest_sha256: "a".repeat(64),
+  byte_size: 4096,
+  content_type: "application/vnd.daon.knowledge+json",
+  effective_at: "2026-08-14T00:00:00Z",
+  expires_at: "2027-08-14T00:00:00Z",
+});
+
+test("검증된 Knowledge Snapshot 목록은 same-origin exact DTO로만 수용한다", async () => {
+  const calls = [];
+  const result = await listWorkspaceKnowledgePackages("workspace-1", {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return Response.json({ data: { items: [knowledgePackage] }, meta: { trace_id: "trace-knowledge-1" } });
+    },
+  });
+  assert.deepEqual(result, [knowledgePackage]);
+  assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/knowledge-packages");
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[0].init.credentials, "same-origin");
+});
+
+test("Knowledge Snapshot 목록은 미승인·만료·unknown field를 fail-close한다", async () => {
+  for (const item of [
+    { ...knowledgePackage, authority: "user_context" },
+    { ...knowledgePackage, review_state: "pending" },
+    { ...knowledgePackage, expires_at: "2025-08-14T00:00:00Z" },
+    { ...knowledgePackage, internal_url: "http://internal.invalid" },
+  ]) {
+    await assert.rejects(
+      listWorkspaceKnowledgePackages("workspace-1", {
+        now: () => Date.parse("2026-08-15T00:00:00Z"),
+        fetchImpl: async () => Response.json({ data: { items: [item] }, meta: { trace_id: "trace-knowledge-1" } }),
+      }),
+      { message: "KNOWLEDGE_PACKAGE_LIST_RESPONSE_INVALID" },
+    );
+  }
 });

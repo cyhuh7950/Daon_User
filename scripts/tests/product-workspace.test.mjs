@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { findElements, installMinimalDom } from "./product-studio-dom.mjs";
+import { MinimalEvent, findElements, installMinimalDom } from "./product-studio-dom.mjs";
 
 import {
   assertProductWorkspaceAdapter,
@@ -44,24 +44,28 @@ test("Product Workspace Adapter는 exact 7개 메서드를 요구한다", () => 
   );
 });
 
-test("근거 보고서는 ready Source와 sufficient Citation 답변이 모두 있어야 생성 가능하다", () => {
+test("근거 보고서는 Raw·Daon 혼합 Context의 sufficient Citation 답변이면 생성 가능하다", () => {
   const ready = {
     ...createProductWorkspaceState({ status: "ready" }),
     selectedSource: { sourceId: "source-1", sourceVersionId: "version-1" },
     answer: {
       run_id: "run-1", run_result_id: "result-1", answer: "근거 답변",
       insufficient: false,
-      citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2 }],
+      citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2, origin: "raw_source", context_item_id: "source-1", locator: { kind: "page", value: "2" } }],
     },
   };
   assert.equal(canCreateGroundedReport(ready), true);
   assert.equal(canCreateGroundedReport({ ...ready, answer: { ...ready.answer, insufficient: true } }), false);
   assert.equal(canCreateGroundedReport({ ...ready, answer: { ...ready.answer, citations: [] } }), false);
-  assert.equal(canCreateGroundedReport({ ...ready, selectedSource: null }), false);
-  assert.equal(canCreateGroundedReport({
-    ...ready,
-    answer: { ...ready.answer, citations: [{ ...ready.answer.citations[0], source_version_id: "version-other" }] },
-  }), false);
+  const daonOnly = {
+    ...ready, selectedSource: null,
+    answer: { ...ready.answer, citations: [{
+      ...ready.answer.citations[0], source_id: "source-daon", source_version_id: "version-daon",
+      origin: "daon_knowledge", context_item_id: "package-daon", locator: { kind: "section", value: "summary" },
+    }] },
+  };
+  assert.equal(canCreateGroundedReport(daonOnly), true);
+  assert.equal(canCreateGroundedReport({ ...daonOnly, answer: { ...daonOnly.answer, citations: [{ ...daonOnly.answer.citations[0], source_version_id: "" }] } }), false);
 });
 
 test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 경고로 투영한다", async () => {
@@ -89,10 +93,104 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     reactRoot = createRoot(container);
     await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
     assert.match(container.textContent, /ready\.pdf/u);
-    const questionInput = findElements(container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.startsWith("질문"))[0];
+    const questionInput = findElements(container, (node) => node.tagName === "TEXTAREA" && node.parentNode?.textContent.startsWith("질문"))[0];
     assert.equal(questionInput.disabled, false);
-    assert.match(container.textContent, /STUDIO_LIST_FAILED/u);
+    assert.match(container.textContent, /불러오지 못했습니다/u);
+    assert.doesNotMatch(container.textContent, /STUDIO_LIST_FAILED/u);
     assert.doesNotMatch(container.textContent, /internal\.invalid|stack/u);
+
+    await act(async () => reactRoot.unmount());
+    reactRoot = null;
+    let sourceLoads = 0;
+    const retryAdapter = {
+      ...adapter,
+      async listSources() {
+        sourceLoads += 1;
+        if (sourceLoads === 1) throw new Error("SOURCE_LIST_FAILED http://internal.invalid stack");
+        return [{ source_id: "source-1", source_version_id: "version-1", filename: "retried.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }];
+      },
+      async listStudioOutputs() { return []; },
+    };
+    const retryContainer = dom.document.createElement("div"); dom.document.body.appendChild(retryContainer);
+    reactRoot = createRoot(retryContainer);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: retryAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    const retryButton = findElements(retryContainer, (node) => node.tagName === "BUTTON" && node.textContent === "다시 시도")[0];
+    assert.ok(retryButton);
+    assert.doesNotMatch(retryContainer.textContent, /Source를 추가해 주세요/u);
+    await act(async () => { retryButton.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); await Promise.resolve(); });
+    assert.equal(sourceLoads, 2);
+    assert.match(retryContainer.textContent, /retried\.pdf/u);
+    assert.doesNotMatch(retryContainer.textContent, /internal\.invalid|stack/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("Source·지식 Pane은 검증된 Knowledge와 Raw Source 상태·Version·선택을 함께 표시한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-source-knowledge-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { build } = await import("vite");
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: {
+      outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-knowledge" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("source-knowledge") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell, buildQuestionKnowledgeContext } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourceKnowledge=${Date.now()}`);
+    const effectAdapter = {
+      ...adapter,
+      async listSources() {
+        return [
+          { source_id: "source-ready", source_version_id: "version-ready", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" },
+          { source_id: "source-review", source_version_id: "version-review", filename: "review.pdf", source_state: "needs_review", processing_state: "completed", job_state: "completed" },
+        ];
+      },
+      async listKnowledgePackages() {
+        return [{
+          package_id: "knowledge-package-1", producer: "daon2_5", producer_version: "2.5.7",
+          knowledge_registration_id: "knowledge-registration-1", output_version_id: "output-version-7",
+          authority: "approved", registration_state: "registered", review_state: "approved",
+          digest_sha256: "a".repeat(64), byte_size: 4096,
+          content_type: "application/vnd.daon.knowledge+json",
+          effective_at: "2026-08-14T00:00:00Z", expires_at: "2027-08-14T00:00:00Z",
+        }];
+      },
+      async listStudioOutputs() { return []; },
+    };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    assert.match(container.textContent, /Daon 승인 지식/u);
+    assert.match(container.textContent, /Daon 2\.5 · 2\.5\.7/u);
+    assert.match(container.textContent, /승인 · 등록됨/u);
+    assert.match(container.textContent, /Raw Source/u);
+    assert.match(container.textContent, /ready\.pdf/u);
+    assert.match(container.textContent, /Version version-ready · 사용 가능/u);
+    assert.match(container.textContent, /review\.pdf/u);
+    assert.match(container.textContent, /검토 필요/u);
+
+    const knowledgeButton = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.includes("Daon 2.5"))[0];
+    assert.ok(knowledgeButton);
+    assert.equal(knowledgeButton.getAttribute("aria-pressed"), "false");
+    await act(async () => { knowledgeButton.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(knowledgeButton.getAttribute("aria-pressed"), "true");
+    assert.deepEqual(buildQuestionKnowledgeContext(
+      { sourceId: "source-ready", sourceVersionId: "version-ready" }, "knowledge-package-1",
+    ), {
+      mode: "mixed",
+      resources: [
+        { resourceKind: "knowledge_package", resourceId: "knowledge-package-1" },
+        { resourceKind: "source", resourceId: "source-ready", versionId: "version-ready" },
+      ],
+    });
+    assert.match(container.textContent, /질문 컨텍스트 · Daon 승인 지식 \+ Raw Source/u);
+    assert.doesNotMatch(container.textContent, /internal\.invalid|digest_sha256|knowledge-registration-1/u);
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     dom.restore(); await rm(output, { recursive: true, force: true });
@@ -122,13 +220,14 @@ test("Product Studio 실제 React는 근거 충족 전 생성 비활성, 충족 
     const disabled = renderToStaticMarkup(createElement(ProductWorkspaceShell, {
       workspaceId: "workspace-1", state: createProductWorkspaceState({ status: "loading" }), adapter,
     }));
-    assert.match(disabled, /보고서 생성/);
+    assert.match(disabled, /근거 기반 보고서/);
+    assert.doesNotMatch(disabled, /빠른 근거 보고서/);
     assert.match(disabled, /disabled/);
     const ready = {
       ...createProductWorkspaceState({ status: "ready" }),
       selectedSource: { sourceId: "source-1", sourceVersionId: "version-1" },
       answer: { run_id: "run-1", run_result_id: "result-1", answer: "근거", insufficient: false,
-        citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2 }] },
+        citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2, origin: "raw_source", context_item_id: "source-1", locator: { kind: "page", value: "2" } }] },
       studioOutputs: [{ studio_output_id: "output-1", title: "기존 보고서", status: "draft", citations: [] }],
     };
     const enabled = renderToStaticMarkup(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", state: ready, adapter }));

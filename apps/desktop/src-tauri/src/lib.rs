@@ -1,5 +1,7 @@
 pub mod local_service;
 pub mod native_session;
+pub mod offline_studio_bridge;
+pub mod offline_sync_bridge;
 pub mod recovery_bridge;
 #[cfg(windows)]
 pub mod windows_credential;
@@ -9,6 +11,16 @@ use local_service::{LocalServiceManager, LocalServiceState};
 use native_session::{
     NativeRecoveryAuthorizationStatus, NativeSessionError, NativeSessionRuntime,
     NativeSessionStatus,
+};
+use offline_studio_bridge::{
+    offline_studio_append_edit, offline_studio_confirm_settings, offline_studio_generate_draft,
+    offline_studio_get_draft, offline_studio_import_raw_source, offline_studio_list_models,
+    offline_studio_list_raw_sources, offline_studio_prepare_context, offline_studio_queue_sync,
+};
+use offline_sync_bridge::{
+    OfflineSyncRuntime, offline_knowledge_list, offline_knowledge_provision,
+    offline_knowledge_refresh, offline_sync_approve, offline_sync_preview,
+    offline_sync_resolve, offline_sync_status, offline_sync_transfer,
 };
 use recovery_bridge::{
     NativeRecoveryRuntime, recovery_cloud_cancel_restore, recovery_cloud_create_backup,
@@ -72,6 +84,7 @@ pub fn run() {
             app.manage(manager);
             app.manage(NativeSessionRuntime::new());
             app.manage(NativeRecoveryRuntime::new());
+            app.manage(OfflineSyncRuntime::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -81,6 +94,23 @@ pub fn run() {
             native_logout,
             native_session_status,
             native_recovery_authorization_status,
+            offline_studio_list_models,
+            offline_studio_list_raw_sources,
+            offline_studio_import_raw_source,
+            offline_studio_prepare_context,
+            offline_studio_confirm_settings,
+            offline_studio_generate_draft,
+            offline_studio_get_draft,
+            offline_studio_append_edit,
+            offline_studio_queue_sync,
+            offline_knowledge_list,
+            offline_knowledge_provision,
+            offline_knowledge_refresh,
+            offline_sync_preview,
+            offline_sync_status,
+            offline_sync_approve,
+            offline_sync_transfer,
+            offline_sync_resolve,
             recovery_cloud_create_backup,
             recovery_cloud_list_backups,
             recovery_cloud_get_backup,

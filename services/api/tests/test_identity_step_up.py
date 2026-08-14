@@ -16,6 +16,38 @@ from daon_user_api.identity import ClientKind, DevicePlatform, IdentityError, MI
 
 
 class IdentityStepUpTests(unittest.TestCase):
+    def test_step_up_idempotency_replays_exact_grant_rejects_changed_request_and_survives_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "identity.sqlite3"
+            service, repository, _, _ = create_service(path)
+            connection = repository._connect()
+            try:
+                connection.execute("INSERT OR IGNORE INTO tenants(tenant_id) VALUES ('tenant-001')")
+                connection.execute("INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,email_verified_at,state) VALUES (?,?,?,?,?,?,?,'active')", ("step-idempotent-user", "local", "step-idempotent-user", "step-idempotent-user", "step-idempotent@example.com", PASSWORD_HASHER.hash("correct horse battery staple"), "2026-07-29T00:00:00+00:00"))
+                connection.execute("INSERT INTO memberships(tenant_id,user_id,role) VALUES ('tenant-001','step-idempotent-user','member')")
+                connection.commit()
+            finally:
+                connection.close()
+            credentials = service.local_login(login_id="step-idempotent-user", password="correct horse battery staple", platform=DevicePlatform.WEB, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            repository.add_step_up_action("tenant-001", "final_approval_or_knowledge_registration")
+            request = dict(
+                access_token=credentials.access_token, password="correct horse battery staple",
+                action_group="final_approval_or_knowledge_registration", target_id="output-001",
+                policy_version=POLICY_VERSION, trace_id=TRACE_ID, idempotency_key="step-up-idempotency-0001",
+            )
+            first = service.issue_step_up_after_reauthentication(**request)
+            replay = service.issue_step_up_after_reauthentication(**request)
+            self.assertEqual(first, replay)
+            with self.assertRaises(IdentityError) as conflict:
+                service.issue_step_up_after_reauthentication(**{**request, "target_id": "output-002"})
+            self.assertEqual(conflict.exception.code, "IDEMPOTENCY_KEY_REUSED")
+            repository.close()
+
+            restarted, restarted_repository, _, _ = create_service(path)
+            restarted_replay = restarted.issue_step_up_after_reauthentication(**request)
+            self.assertEqual(first, restarted_replay)
+            restarted_repository.close()
+
     def test_step_up_requires_current_local_password_and_oidc_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service, repository, _, _ = create_service(Path(directory) / "identity.sqlite3")
@@ -178,6 +210,36 @@ class IdentityStepUpTests(unittest.TestCase):
             for thread in threads:
                 thread.join(timeout=10)
             self.assertCountEqual(outcomes, ["used", "STEP_UP_REUSED"])
+
+    def test_step_up_consumption_replays_only_the_exact_sensitive_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service, repository, audit, _ = create_service(Path(directory) / "identity.sqlite3")
+            credentials = native_login(service)
+            issued = service.issue_step_up(
+                access_token=credentials.access_token,
+                action_group="data_area_move",
+                target_id="package-001",
+                policy_version=POLICY_VERSION,
+                trace_id=TRACE_ID,
+            )
+            request = dict(
+                step_up_authorization=issued.authorization,
+                access_token=credentials.access_token,
+                action_group="data_area_move",
+                target_id="package-001",
+                policy_version=POLICY_VERSION,
+                trace_id=TRACE_ID,
+                operation="knowledge.offline_copy",
+                idempotency_key="offline-copy-replay-0001",
+            )
+            service.consume_step_up(**request)
+            service.consume_step_up(**request)
+            with self.assertRaises(IdentityError) as changed_operation:
+                service.consume_step_up(**{**request, "operation": "sync.approve"})
+            self.assertEqual(changed_operation.exception.code, "STEP_UP_REUSED")
+            actions = [event.action for event in audit.list(tenant_id="tenant-001").items]
+            self.assertEqual(actions.count("identity.step_up.used"), 1)
+            repository.close()
 
     def test_device_revoke_is_step_up_bound_and_atomically_revokes_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

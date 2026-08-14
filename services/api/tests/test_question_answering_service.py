@@ -10,7 +10,9 @@ from daon_user_api.provider_settings import (
 from daon_user_api.question_answering_postgres import (
     QuestionContext, ReadyQuestionSource, StoredCitation, StoredQuestionAnswer,
 )
-from daon_user_api.question_answering_service import QuestionAdapterRegistry, QuestionAnsweringService
+from daon_user_api.question_answering_service import (
+    QuestionAdapterRegistry, QuestionAnsweringService, QuestionInputSource,
+)
 
 
 class FakeProviderSettings:
@@ -62,6 +64,8 @@ class FakeIndex:
         self.evidence = evidence
 
     def search(self, context, **kwargs):  # type: ignore[no-untyped-def]
+        if isinstance(self.evidence, dict):
+            return self.evidence.get(kwargs["source_version_id"], ())
         return self.evidence
 
 
@@ -88,6 +92,80 @@ class FakeEgress:
 
 
 class QuestionAnsweringServiceTests(unittest.TestCase):
+    def test_mixed_context_searches_every_bound_source_and_persists_frozen_context(self) -> None:
+        raw = IndexedEvidenceChunk(
+            "chunk-raw", "source-raw", "version-raw", 1,
+            "원문 근거", "span-raw", 0.8,
+        )
+        knowledge = IndexedEvidenceChunk(
+            "chunk-knowledge", "source-knowledge", "version-knowledge", 2,
+            "정제된 승인 지식", "span-knowledge", 1.0,
+        )
+
+        class MixedTransport(FakeTransport):
+            def post_json(self, **kwargs):  # type: ignore[no-untyped-def]
+                self.calls += 1
+                return {"choices": [{"message": {"content": json.dumps({
+                    "answer": "승인 지식과 원문을 함께 확인했습니다.",
+                    "cited_chunk_ids": ["chunk-knowledge", "chunk-raw"],
+                    "insufficient": False,
+                })}}]}
+
+        repository, transport = FakeRepository(), MixedTransport()
+        service = QuestionAnsweringService(
+            FakeProviderSettings(), repository,
+            FakeIndex({"version-raw": (raw,), "version-knowledge": (knowledge,)}),
+            FakeCredential(), transport, FakeEgress(),
+        )
+        sources = (
+            QuestionInputSource("daon_knowledge", "package-daon3", "source-knowledge", "version-knowledge"),
+            QuestionInputSource("raw_source", "version-raw", "source-raw", "version-raw"),
+        )
+
+        service.ask(
+            QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+            source_id="source-knowledge", source_version_id="version-knowledge",
+            question="근거를 종합해줘", run_id="run-mixed",
+            context_mode="mixed", context_sources=sources,
+        )
+
+        self.assertEqual(repository.persisted["context_mode"], "mixed")
+        self.assertEqual(repository.persisted["context_sources"], sources)
+        self.assertEqual(
+            tuple(item.chunk_id for item in repository.persisted["evidence"]),
+            ("chunk-knowledge", "chunk-raw"),
+        )
+        self.assertEqual(transport.calls, 1)
+
+    def test_registry_routes_groq_mistral_and_upstage_without_provider_fallback(self) -> None:
+        evidence = (IndexedEvidenceChunk(
+            "chunk-page-2", "source-cp3", "source-version-cp3", 2,
+            "ORANGE-COMPASS-42", "span-page-2", 1.0,
+        ),)
+        registry = QuestionAdapterRegistry()
+        credential = FakeCredential()
+        for provider_code, base_url in (
+            ("GROQ", "https://api.groq.com/openai/v1"),
+            ("MISTRAL", "https://api.mistral.ai/v1"),
+            ("UPSTAGE", "https://api.upstage.ai/v1"),
+        ):
+            snapshot = ProviderSettingsSnapshot(
+                "workspace-cp3",
+                (ProviderProfileView(
+                    f"profile-{provider_code.lower()}", provider_code, "external_api",
+                    base_url, True, True, 1,
+                ),),
+                (ModelDeploymentView(
+                    "deployment-text", f"profile-{provider_code.lower()}", provider_code,
+                    "selected-model", ("text",), True, True, 1,
+                ),),
+                {"text": "deployment-text"}, 1,
+            )
+            prepared = registry.prepare(
+                snapshot, evidence, "phrase?", "trace-cp3", credential, FakeTransport(),
+            )
+            self.assertEqual(prepared.selection.provider_code, provider_code)
+
     def test_ollama_provider_uses_internal_adapter_without_external_credential(self) -> None:
         evidence = (IndexedEvidenceChunk(
             "chunk-local", "source-cp3", "source-version-cp3", 1,

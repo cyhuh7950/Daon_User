@@ -138,6 +138,173 @@ test("설정 anchored menu에서 LLM 설정 accessible modal을 열고 9 Provide
   }
 });
 
+test("운영상태 Popup은 Provider·API·Storage·Sync·Queue와 안전 복구 동작을 표시한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".web-operations-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { ProductWorkspaceShell } = await bundle("packages/ui/src/product-workspace-shell.jsx", "web-operations", output);
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    const adapter = {
+      getOperationsStatus: async () => ({
+        workspace_id: "workspace-1", overall_status: "warning", checked_at: "2026-08-15T00:00:00Z",
+        components: [
+          { component_id: "provider", status: "ready", safe_code: "PROVIDER_READY", pending_count: 0, recovery_action: "none" },
+          { component_id: "api", status: "ready", safe_code: "API_READY", pending_count: 0, recovery_action: "none" },
+          { component_id: "storage", status: "ready", safe_code: "STORAGE_READY", pending_count: 0, recovery_action: "none" },
+          { component_id: "sync", status: "warning", safe_code: "SYNC_PENDING", pending_count: 2, recovery_action: "open_sync_settings" },
+          { component_id: "queue", status: "warning", safe_code: "QUEUE_ATTENTION_REQUIRED", pending_count: 3, recovery_action: "refresh_status" },
+        ],
+      }),
+    };
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", state: createProductWorkspaceState({ status: "ready" }), adapter })); });
+    await act(async () => { buttonByText(container, "운영상태").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    for (const label of ["Provider", "API", "Storage", "Sync", "Queue", "동기화 설정 열기", "상태 새로고침"]) {
+      assert.match(container.textContent, new RegExp(label, "u"));
+    }
+    assert.doesNotMatch(container.textContent, /postgres|localhost|http:\/\//iu);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore();
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("출력·버전 Popup은 유형별 형식과 append-only 정책을 저장하고 미저장 닫기를 보호한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".web-output-settings-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { ProductWorkspaceShell } = await bundle("packages/ui/src/product-workspace-shell.jsx", "web-output-settings", output);
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    const defaults = { evidence_report: "pdf", compliance_checklist: "xlsx", comparison_table: "xlsx", knowledge_graph: "json", business_draft: "docx" };
+    const saves = [];
+    const adapter = {
+      getOutputVersionSettings: async () => ({ workspace_id: "workspace-1", default_formats: defaults, version_save_mode: "append_only", version: 0, etag: '"output-version-settings:workspace-1:0"' }),
+      saveOutputVersionSettings: async (input) => { saves.push(input); return { workspace_id: "workspace-1", default_formats: input.default_formats, version_save_mode: "append_only", version: 1, etag: '"output-version-settings:workspace-1:1"' }; },
+    };
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", state: createProductWorkspaceState({ status: "ready" }), adapter })); });
+    await act(async () => { buttonByText(container, "설정").dispatchEvent(new MinimalEvent("click")); });
+    const outputSettingsButton = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.includes("출력·버전"))[0];
+    await act(async () => { outputSettingsButton.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    for (const label of ["근거 기반 보고서", "제약·준수 점검표", "비교·데이터 표", "지식 구조도", "업무 문서 초안", "Append-only"]) assert.match(container.textContent, new RegExp(label, "u"));
+    const selects = findElements(container, (node) => node.tagName === "SELECT");
+    assert.equal(selects.length, 5);
+    selects[0].value = "docx";
+    await act(async () => { selects[0].dispatchEvent(new MinimalEvent("change")); });
+    assert.equal(buttonByText(container, "저장").disabled, false);
+    await act(async () => { buttonByText(container, "저장").dispatchEvent(new MinimalEvent("click")); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.equal(saves.length, 1);
+    assert.equal(saves[0].default_formats.evidence_report, "docx");
+    selects[0].value = "pdf";
+    await act(async () => { selects[0].dispatchEvent(new MinimalEvent("change")); });
+    await act(async () => { findElements(container, (node) => node.tagName === "BUTTON" && node.getAttribute?.("aria-label") === "닫기")[0].dispatchEvent(new MinimalEvent("click")); });
+    assert.match(container.textContent, /저장하지 않은 변경/u);
+    await act(async () => { buttonByText(container, "계속 편집").dispatchEvent(new MinimalEvent("click")); });
+    assert.doesNotMatch(container.textContent, /저장하지 않은 변경/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore();
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("동기화·승인 Popup은 Preview 항목을 표시하고 Step-up 뒤 선택 항목만 승인한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".web-sync-settings-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { ProductWorkspaceShell } = await bundle("packages/ui/src/product-workspace-shell.jsx", "web-sync-settings", output);
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    const operation = {
+      operation_id: "sync-operation-1", tenant_id: "tenant-1", workspace_id: "workspace-1", actor_id: "actor-1",
+      target_area: "cloud_sync", state: "awaiting_approval", version: 1, manifest_digest: "a".repeat(64),
+      item_ids: ["item-source-1", "item-output-1"], approved_item_ids: [], completed_item_ids: [],
+      batches: [], conflicts: [], target_versions: [], reindex_state: null, source_mutations: 0, overwrite_count: 0,
+    };
+    const calls = [];
+    const adapter = {
+      listSyncOperations: async () => [operation],
+      issueStudioStepUp: async (group, target, password) => { calls.push([group, target, password]); return "step-up-sync-1"; },
+      approveSyncOperation: async (_operation, input) => { calls.push(input); return { ...operation, state: "approved", version: 2, approved_item_ids: input.approvedItemIds }; },
+    };
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", state: createProductWorkspaceState({ status: "ready" }), adapter })); });
+    await act(async () => { buttonByText(container, "설정").dispatchEvent(new MinimalEvent("click")); });
+    const syncSettingsButton = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.includes("동기화·승인"))[0];
+    await act(async () => { syncSettingsButton.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.match(container.textContent, /Preview|item-source-1|item-output-1|자동 전송하지 않습니다/u);
+    const password = findElements(container, (node) => node.tagName === "INPUT" && node.type === "password").at(-1);
+    password.value = "correct-password-1";
+    await act(async () => { buttonByText(container, "선택 항목 승인").dispatchEvent(new MinimalEvent("click")); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.deepEqual(calls[0], ["data_area_move", "sync-operation-1", "correct-password-1"]);
+    assert.deepEqual(calls[1].approvedItemIds, ["item-source-1", "item-output-1"]);
+    assert.equal(password.value, "");
+    assert.match(container.textContent, /승인됨/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore();
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("조직 정책 Popup은 조직 강제 8필드와 Workspace 적용 결과를 읽기 전용으로 표시한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".web-organization-policy-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { ProductWorkspaceShell } = await bundle("packages/ui/src/product-workspace-shell.jsx", "web-organization-policy", output);
+    const organizationPolicy = {
+      mode: "allow_approved_external", allowed_provider_kinds: ["external_api"], allowed_destinations: ["api.example.com"],
+      classification: "internal", max_bytes: 4096, masking_required: true, redaction_required: false,
+      required_approver: "organization_admin",
+    };
+    const adapter = {
+      getEgressPolicy: async () => ({
+        organization_policy_version_id: "org-policy-v1", organization_binding_id: "org-binding-v1",
+        workspace_policy_version_id: "workspace-policy-v1", workspace_binding_id: "workspace-binding-v1",
+        ...organizationPolicy, parent_locked: false, fingerprint: `sha256:${"a".repeat(64)}`,
+        organization_etag: '"org:1"', workspace_etag: '"workspace:1"',
+        organization_policy: organizationPolicy,
+        workspace_policy: { ...organizationPolicy, max_bytes: 2048 },
+      }),
+    };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", state: createProductWorkspaceState({ status: "ready" }), adapter })); });
+    await act(async () => { buttonByText(container, "설정").dispatchEvent(new MinimalEvent("click")); });
+    const policyButton = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.includes("조직 정책"))[0];
+    assert.equal(policyButton.disabled, false);
+    await act(async () => { policyButton.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    const dialog = findElements(container, (node) => node.getAttribute?.("role") === "dialog")[0];
+    for (const label of ["조직 강제 정책", "승인된 외부 전송", "external_api", "api.example.com", "internal", "4,096 bytes", "마스킹 필수", "삭제 처리 선택", "조직 관리자", "Workspace 적용 결과"]) {
+      assert.match(dialog.textContent, new RegExp(label, "u"));
+    }
+    assert.equal(findElements(dialog, (node) => ["INPUT", "SELECT", "TEXTAREA"].includes(node.tagName)).length, 0);
+    assert.doesNotMatch(dialog.textContent, /org-policy-v1|org-binding-v1|sha256:|workspace:1|internal\.invalid/iu);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+});
+
 test("생성 중·실패·완료는 동시에 노출되지 않고 안전한 사용자 상태만 표시한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".web-final-states-react-"));

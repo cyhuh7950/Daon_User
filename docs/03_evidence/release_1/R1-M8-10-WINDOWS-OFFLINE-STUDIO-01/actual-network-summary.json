@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "issue_id": "R1-M8-10-WINDOWS-OFFLINE-STUDIO-01-I001",
+  "actual_tcp": true,
+  "fixture_scope": "disposable repository and service composition",
+  "native_login": 200,
+  "knowledge_list_copy_content_import": true,
+  "encrypted_local_copy": true,
+  "sync_preview": "awaiting_approval",
+  "transfer_before_approval": 0,
+  "step_up_action": "data_area_move",
+  "approval_path": "/api/v1/sync-operations/{id}/approve",
+  "transfer_order": ["source_version", "output_version"],
+  "final_state": "reindex_requested",
+  "browser_requests": 0,
+  "raw_secret_log_hits": 0,
+  "owned_processes_remaining": 0,
+  "listeners_remaining": 0,
+  "disposable_directories_remaining": 0
+}

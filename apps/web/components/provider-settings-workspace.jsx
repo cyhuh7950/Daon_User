@@ -69,6 +69,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
   const [selectedProvider, setSelectedProvider] = useState("UPSTAGE");
   const [endpointEdits, setEndpointEdits] = useState({});
+  const [connectionChecks, setConnectionChecks] = useState({});
 
   const load = useCallback(async () => {
     setStatus({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
@@ -174,6 +175,23 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
     }
   }
 
+  async function checkConnection(providerCode) {
+    setStatus({ kind: "checking", message: `${providerCode} 연결을 확인하는 중입니다.` });
+    try {
+      const result = await providerSettingsApi.checkConnection(workspaceIdForWrite(), providerCode);
+      setConnectionChecks((current) => ({ ...current, [providerCode]: result }));
+      setStatus({
+        kind: result.status === "ready" ? "ready" : "warning",
+        message: result.status === "ready"
+          ? `${providerCode} 연결을 확인했습니다.`
+          : `${providerCode} 연결을 사용할 수 없습니다. Credential과 Provider 상태를 확인해 주세요.`,
+      });
+    } catch (error) {
+      setConnectionChecks((current) => ({ ...current, [providerCode]: { providerCode, status: "unavailable", checkedAt: null } }));
+      setStatus({ kind: "error", message: "Provider 연결을 확인하지 못했습니다. 다시 시도해 주세요." });
+    }
+  }
+
   async function saveDeployment(deploymentId) {
     const draft = deploymentDrafts.find((item) => item.deployment_id === deploymentId);
     if (!draft) return;
@@ -228,10 +246,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
         <section aria-labelledby="provider-list-title"><h2 id="provider-list-title">Provider</h2><div className="provider-grid">
           {PROVIDERS.map((providerCode) => { const draft = drafts[providerCode] ?? initialDraft(providerCode); const connection = projectProviderConnection(draft); return <button className="provider-card" type="button" aria-pressed={selectedProvider === providerCode} onClick={() => setSelectedProvider(providerCode)} key={providerCode}><span className="provider-monogram" aria-hidden="true">{providerCode.slice(0, 1)}</span><span><strong>{providerCode}</strong><small>{connection.label}</small></span><span className="provider-state-dot" aria-hidden="true" /></button>; })}
         </div></section>
-        <section className="provider-detail" aria-labelledby="provider-detail-title"><header><div><span className="section-kicker">SELECTED PROVIDER</span><h2 id="provider-detail-title">{selectedProvider}</h2></div><span className="connection-badge">{projectProviderConnection(selectedDraft).label}</span></header>
+        <section className="provider-detail" aria-labelledby="provider-detail-title"><header><div><span className="section-kicker">SELECTED PROVIDER</span><h2 id="provider-detail-title">{selectedProvider}</h2></div><span className="connection-badge">{connectionChecks[selectedProvider]?.status === "ready" ? "연결 확인됨" : projectProviderConnection(selectedDraft).label}</span></header>
           <div className="provider-detail-grid"><div className="credential-summary"><span>Endpoint</span><strong>{projectProviderEndpoint(selectedDraft.base_url)}</strong><small>내부 주소 원문은 화면에 표시하지 않습니다.</small></div><label>Endpoint 변경<input value={endpointEdits[selectedProvider] ?? ""} autoComplete="off" placeholder="새 Endpoint를 입력하면 기존 값을 교체합니다" onChange={(event) => setEndpointEdits((current) => ({ ...current, [selectedProvider]: event.target.value }))} /></label><div className="credential-summary"><span>Credential</span><strong>{selectedDraft.credential_configured ? "설정됨" : "미설정"}</strong><small>Credential 원문은 화면에 표시하지 않습니다.</small></div></div>
           <label className="styled-check"><input type="checkbox" checked={selectedDraft.active} onChange={(event) => updateDraft(selectedProvider, "active", event.target.checked)} /><span>Provider 활성</span></label>
-          <div className="provider-detail-actions"><button className="primary-button" type="button" onClick={() => saveProvider(selectedProvider)} disabled={status.kind === "saving"}>Provider 저장</button></div>
+          <div className="provider-detail-actions"><button className="secondary-button" type="button" onClick={() => checkConnection(selectedProvider)} disabled={status.kind === "checking" || !selectedDraft.active || !selectedDraft.credential_configured}>연결 시험</button><button className="primary-button" type="button" onClick={() => saveProvider(selectedProvider)} disabled={status.kind === "saving"}>Provider 저장</button></div>
           <div className="deployment-list"><div className="studio-section-heading"><h3>모델</h3><button className="secondary-button" type="button" onClick={() => addDeployment(selectedProvider)}>모델 추가</button></div>
             {selectedDeployments.length ? selectedDeployments.map((deployment) => <section className="deployment-card" key={deployment.deployment_id}><div className="provider-detail-grid"><label>Deployment ID<input value={deployment.deployment_id} disabled={deployment.version > 0} onChange={(event) => updateDeployment(deployment.deployment_id, "deployment_id", event.target.value)} /></label><label>모델 ID<input value={deployment.model_id} onChange={(event) => updateDeployment(deployment.deployment_id, "model_id", event.target.value)} /></label></div><fieldset><legend>역할</legend><div className="role-chip-grid">{ROLES.map((role) => <label className="role-chip" key={role}><input type="checkbox" checked={deployment.roles.includes(role)} onChange={() => toggleRole(deployment.deployment_id, role)} /><span>{ROLE_LABELS[role]}</span></label>)}</div></fieldset><div className="provider-switches"><label className="styled-check"><input type="checkbox" checked={deployment.active} onChange={(event) => updateDeployment(deployment.deployment_id, "active", event.target.checked)} /><span>활성</span></label><label className="styled-check"><input type="checkbox" checked={deployment.selected} onChange={(event) => updateDeployment(deployment.deployment_id, "selected", event.target.checked)} /><span>기본 선택</span></label></div><button className="secondary-button" type="button" onClick={() => saveDeployment(deployment.deployment_id)}>모델 저장</button></section>) : <div className="provider-empty"><strong>등록된 모델이 없습니다.</strong><small>실제 모델 연결 전에는 생성 Action이 활성화되지 않습니다.</small></div>}
           </div>

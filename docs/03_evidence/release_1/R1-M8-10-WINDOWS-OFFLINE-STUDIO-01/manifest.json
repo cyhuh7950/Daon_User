@@ -1,0 +1,100 @@
+{
+  "schema_version": "1.0",
+  "issue_id": "R1-M8-10-WINDOWS-OFFLINE-STUDIO-01-I001",
+  "work_order_id": "R1-M8-10-WINDOWS-OFFLINE-STUDIO-01",
+  "checkout": {
+    "branch": "codex/user-auth-screen-split",
+    "head": "dbe67f9bfe778b1ffa10b31f1e3e0faf807dd42b",
+    "migration_revision": "0017"
+  },
+  "foundation_a1_status": "PASS",
+  "foundation_a2_status": "PASS",
+  "foundation_a3_status": "PASS",
+  "foundation_b3_status": "PASS",
+  "phase_a_status": "PASS",
+  "phase_b_status": "PASS",
+  "completion_status": "INCOMPLETE",
+  "completion_blockers": [
+    "actual authenticated Desktop offline end-to-end flow remains unexecuted against the current integrated source",
+    "commit push and ysna deployment require separate user approval"
+  ],
+  "reusable_visual_api": {
+    "scope": ".desktop-shell[data-visual-system=notebook-violet]",
+    "token_file": "apps/desktop/src/workspace-visual-tokens.css",
+    "modal_component": "WorkspaceModal"
+  },
+  "artifacts": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/openapi-contract-summary.json",
+      "sha256": "EB50486780FB13A8F65583F612BFEC4E96D26A6FEDF867469937F0C67ADFF2B1"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/automated-verification-summary.json",
+      "sha256": "DB24BDBD6676A8E173C9F086B25BE6EB8B1C7C714834C18717FA5882E268BE4B"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/actual-network-summary.json",
+      "sha256": "A6EC56549805F494FB9804C129057482A681F996C6CDE7721702CEA2C059BB15"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/actual-gates-summary.json",
+      "sha256": "6A6B4909873F2906F5208896364958333491A0A0BDED0F54A2826752B654D315"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a1-actual-transcript.md",
+      "sha256": "778F9EFAFD01085CC4FD198F3820DD7EE5B3EFEACD0E7113A342BC2818A4434E"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a1-postgres-gate.py",
+      "sha256": "B9721FA37CC22204DEFB3ED44E9C1B0C8A166808C4F4B9428F74F9F83D695221"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a1-postgres-gate.sh",
+      "sha256": "CC3F077F2C4031B9BB0EF86536384C68B1034838D87F61B8A9C357019813A1B9"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a1-postgres18-gate.sh",
+      "sha256": "1BB60C6540C8C7C0FA2E044903AFC70786DF2706E86560CD5562DB7457402020"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a2-actual-transcript.md",
+      "sha256": "50D21EE7F38B9EF6E35019C8DC8D37009CE93DF0943C0E9787CFCEDCD984259C"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a2-postgres-gate.sh",
+      "sha256": "381FBD60EA626FEC0897A9841B290F81414E73ED727B61575813EB6E477A97F5"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a3-actual-transcript.md",
+      "sha256": "89998F38338EE2EF1616C19AEF99C65EF9A78E007762611DC3419751374ACC3C"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a3-postgres-gate.sh",
+      "sha256": "04EE2C1EAC5B831EF92BAC2E07AF5BCB26381C7E57B87AB85D3B203C8E70BF45"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a3-provider-check.py",
+      "sha256": "B81EDFB596FF0DB46F858C167B2B8E0148A79DC4138472FD6DD41488EB7AFBA6"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-a3-package-init.py",
+      "sha256": "73984E4E18AD775FD1F814E9501D289E9ED8F10435FF4C9B45C5A2889E11368D"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-b3-knowledge-context-transcript.md",
+      "sha256": "7F8B5D6355D22290FAA01DF461174463BCEB0B5A5A37E28B6BE8A0F91B047B13"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-b3-knowledge-context-browser.png",
+      "sha256": "738091F03B66D44BD727B52AE6712FB18E12951C28DB7607705753C0912615AB"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-b12-sync-approval-transcript.md",
+      "sha256": "697E0F8D5EDE72B1BB5DB09EDD47C68894D34F300F24377453349CF01A7AA8D0"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-b13-organization-policy-transcript.md",
+      "sha256": "BFBD8DD0A084A543D2F9B17B15AA743CF8985B0C0CC68235ECBC5DE7028AFC71"
+    }
+  ]
+}

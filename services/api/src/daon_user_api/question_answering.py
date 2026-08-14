@@ -81,7 +81,14 @@ def resolve_text_model_selection(snapshot: ProviderSettingsSnapshot) -> TextMode
     )
 
 
-class UpstageTextGenerationAdapter:
+class OpenAICompatibleTextGenerationAdapter:
+    """Grounded JSON adapter for approved OpenAI-compatible external providers."""
+
+    _BASE_URLS = {
+        "GROQ": "https://api.groq.com/openai/v1",
+        "MISTRAL": "https://api.mistral.ai/v1",
+        "UPSTAGE": "https://api.upstage.ai/v1",
+    }
     _SCHEMA: dict[str, object] = {
         "type": "json_schema",
         "json_schema": {
@@ -117,11 +124,13 @@ class UpstageTextGenerationAdapter:
     def _base_url(selection: TextModelSelection) -> str:
         parsed = urlsplit(selection.base_url)
         if (
-            selection.provider_code != "UPSTAGE" or parsed.scheme != "https"
-            or parsed.hostname != "api.upstage.ai" or parsed.username is not None
+            selection.provider_code not in OpenAICompatibleTextGenerationAdapter._BASE_URLS
+            or selection.base_url.rstrip("/")
+            != OpenAICompatibleTextGenerationAdapter._BASE_URLS.get(selection.provider_code)
+            or parsed.scheme != "https" or parsed.username is not None
             or parsed.password is not None or parsed.query or parsed.fragment
         ):
-            raise ValueError("UPSTAGE_ENDPOINT_INVALID")
+            raise ValueError("TEXT_PROVIDER_ENDPOINT_INVALID")
         return selection.base_url.rstrip("/")
 
     @classmethod
@@ -183,6 +192,10 @@ class UpstageTextGenerationAdapter:
         ):
             raise ValueError("TEXT_GENERATION_GROUNDING_INVALID")
         return GroundedTextResult(answer, cited, insufficient, usage)
+
+
+class UpstageTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
+    """Backward-compatible name for the approved Upstage adapter contract."""
 
 
 class OllamaTextGenerationAdapter:

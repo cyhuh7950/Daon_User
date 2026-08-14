@@ -104,6 +104,20 @@ impl AppCredentials {
                 | ("recovery.write", "recovery.scan")
                 | ("recovery.read", "recovery.job.read")
                 | ("recovery.write", "recovery.repair")
+                | ("studio.read", "studio_models_list")
+                | ("studio.read", "studio_raw_sources_list")
+                | ("studio.write", "studio_raw_source_import")
+                | ("studio.write", "studio_provider_settings_import")
+                | ("studio.write", "studio_context_prepare")
+                | ("studio.write", "studio_settings_confirm")
+                | ("studio.write", "studio_draft_generate")
+                | ("studio.read", "studio_draft_get")
+                | ("studio.write", "studio_draft_append_version")
+                | ("studio.write", "studio_sync_queue")
+                | ("knowledge.write", "studio_knowledge_copy_import")
+                | ("knowledge.write", "studio_knowledge_copy_refresh")
+                | ("sync.read", "studio_sync_state_read")
+                | ("sync.write", "studio_sync_state_append")
         );
         if !authorized {
             return Err("LOCAL_COMMAND_NOT_ALLOWED".to_owned());
@@ -155,6 +169,16 @@ impl Drop for AppCredentials {
         self.root_secret.fill(0);
         self.storage_root_key.fill(0);
     }
+}
+
+#[cfg(any(test, feature = "contract-test"))]
+fn credentials_for_launch() -> Result<AppCredentials, &'static str> {
+    AppCredentials::generate().map_err(|_| "LOCAL_RANDOM_UNAVAILABLE")
+}
+
+#[cfg(not(any(test, feature = "contract-test")))]
+fn credentials_for_launch() -> Result<AppCredentials, &'static str> {
+    AppCredentials::generate_for_app()
 }
 
 fn hmac_sha256(secret: &[u8; 32], message: &[u8]) -> [u8; 32] {
@@ -786,6 +810,93 @@ impl LocalServiceManager {
             path,
             body,
             self.inner.timing.recovery_timeout,
+            RECOVERY_RESPONSE_MAX_BYTES,
+            None,
+        )
+    }
+
+    pub(crate) fn execute_studio_request(
+        &self,
+        scope: &str,
+        capability: &str,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<LocalHttpResponse, &'static str> {
+        if !approved_studio_request(scope, capability, method, path, body.len()) {
+            return Err("LOCAL_COMMAND_NOT_ALLOWED");
+        }
+        let issued_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "LOCAL_TOKEN_TIME_INVALID")?
+            .as_secs();
+        let context = {
+            let runtime = self
+                .inner
+                .runtime
+                .lock()
+                .map_err(|_| "LOCAL_STATE_POISONED")?;
+            if runtime.shutting_down || runtime.public.state() != "ready" {
+                return Err("LOCAL_SERVICE_UNAVAILABLE");
+            }
+            runtime
+                .running
+                .as_ref()
+                .ok_or("LOCAL_SERVICE_UNAVAILABLE")?
+                .prepare_recovery_request(scope, capability, issued_at)?
+        };
+        execute_recovery_http(
+            context,
+            method,
+            path,
+            body,
+            self.inner.timing.recovery_timeout,
+            2 * 1024 * 1024,
+            None,
+        )
+    }
+
+    pub(crate) fn execute_workspace_studio_request(
+        &self,
+        workspace_id: &str,
+        scope: &str,
+        capability: &str,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<LocalHttpResponse, &'static str> {
+        if !valid_workspace_id(workspace_id)
+            || !approved_studio_request(scope, capability, method, path, body.len())
+        {
+            return Err("LOCAL_COMMAND_NOT_ALLOWED");
+        }
+        let issued_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "LOCAL_TOKEN_TIME_INVALID")?
+            .as_secs();
+        let context = {
+            let runtime = self
+                .inner
+                .runtime
+                .lock()
+                .map_err(|_| "LOCAL_STATE_POISONED")?;
+            if runtime.shutting_down || runtime.public.state() != "ready" {
+                return Err("LOCAL_SERVICE_UNAVAILABLE");
+            }
+            runtime
+                .running
+                .as_ref()
+                .ok_or("LOCAL_SERVICE_UNAVAILABLE")?
+                .prepare_recovery_request(scope, capability, issued_at)?
+        };
+        execute_recovery_http(
+            context,
+            method,
+            path,
+            body,
+            self.inner.timing.recovery_timeout,
+            2 * 1024 * 1024,
+            Some(workspace_id),
         )
     }
 
@@ -848,7 +959,7 @@ impl LocalServiceManager {
             inner: self.inner.clone(),
             generation,
         };
-        let result = AppCredentials::generate_for_app()
+        let result = credentials_for_launch()
             .and_then(|credentials| {
                 self.inner
                     .launcher
@@ -1294,12 +1405,117 @@ fn recovery_job_path(path: &str, repair: bool) -> bool {
         })
 }
 
+fn approved_studio_request(
+    scope: &str,
+    capability: &str,
+    method: &str,
+    path: &str,
+    body_len: usize,
+) -> bool {
+    match (scope, capability, method, path) {
+        ("studio.read", "studio_models_list", "GET", "/local/v1/studio/models") => {
+            body_len == 0
+        }
+        ("studio.read", "studio_raw_sources_list", "GET", "/local/v1/studio/raw-sources") => {
+            body_len == 0
+        }
+        ("studio.write", "studio_raw_source_import", "POST", "/local/v1/studio/raw-sources") => {
+            body_len <= 36 * 1024 * 1024
+        }
+        ("studio.write", "studio_provider_settings_import", "POST", "/local/v1/studio/provider-settings") => {
+            body_len <= 256 * 1024
+        }
+        ("studio.write", "studio_context_prepare", "POST", "/local/v1/studio/knowledge-contexts") => {
+            body_len <= 32_768
+        }
+        ("studio.write", "studio_settings_confirm", "POST", "/local/v1/studio/settings/confirm") => {
+            body_len <= 16_384
+        }
+        ("studio.write", "studio_draft_generate", "POST", "/local/v1/studio/drafts/generate") => {
+            body_len <= 4096
+        }
+        ("studio.read", "studio_draft_get", "GET", path) => {
+            body_len == 0 && studio_draft_path(path, None)
+        }
+        ("studio.write", "studio_draft_append_version", "POST", path) => {
+            body_len <= 1_100_000 && studio_draft_path(path, Some("versions"))
+        }
+        ("studio.write", "studio_sync_queue", "POST", path) => {
+            body_len <= 32_768 && studio_draft_path(path, Some("sync-queue"))
+        }
+        ("knowledge.write", "studio_knowledge_copy_import", "POST", "/local/v1/studio/knowledge-copies") => {
+            body_len <= 16 * 1024 * 1024
+        }
+        ("knowledge.write", "studio_knowledge_copy_refresh", "POST", path) => {
+            body_len <= 32 * 1024
+                && studio_scoped_id_path(path, "/local/v1/studio/knowledge-copies/", "/refresh")
+        }
+        ("sync.read", "studio_sync_state_read", "GET", path) => {
+            body_len == 0
+                && studio_scoped_id_path(path, "/local/v1/studio/sync-operations/", "")
+        }
+        ("sync.write", "studio_sync_state_append", "POST", path) => {
+            body_len <= 64 * 1024
+                && studio_scoped_id_path(path, "/local/v1/studio/sync-operations/", "/states")
+        }
+        _ => false,
+    }
+}
+
+fn studio_scoped_id_path(path: &str, prefix: &str, suffix: &str) -> bool {
+    let Some(value) = path.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(identifier) = value.strip_suffix(suffix) else {
+        return false;
+    };
+    !identifier.is_empty()
+        && !identifier.contains('/')
+        && identifier.len() <= 256
+        && identifier.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric()
+                || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+        })
+}
+
+fn valid_workspace_id(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase(),
+        })
+}
+
+fn studio_draft_path(path: &str, suffix: Option<&str>) -> bool {
+    const PREFIX: &str = "/local/v1/studio/drafts/";
+    let Some(mut draft_id) = path.strip_prefix(PREFIX) else {
+        return false;
+    };
+    if let Some(suffix) = suffix {
+        let ending = format!("/{suffix}");
+        let Some(value) = draft_id.strip_suffix(&ending) else {
+            return false;
+        };
+        draft_id = value;
+    } else if draft_id.contains('/') || draft_id == "generate" {
+        return false;
+    }
+    !draft_id.is_empty()
+        && draft_id.len() <= 256
+        && draft_id.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric()
+                || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+        })
+}
+
 fn execute_recovery_http(
     context: RecoveryRequestContext,
     method: &str,
     path: &str,
     body: &[u8],
     timeout: Duration,
+    response_max_bytes: usize,
+    workspace_id: Option<&str>,
 ) -> Result<LocalHttpResponse, &'static str> {
     let deadline = Instant::now() + timeout;
     let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, context.port);
@@ -1310,8 +1526,23 @@ fn execute_recovery_http(
         .set_read_timeout(Some(socket_timeout))
         .and_then(|_| stream.set_write_timeout(Some(socket_timeout)))
         .map_err(|_| "LOCAL_RECOVERY_TIMEOUT_CONFIG_FAILED")?;
+    let workspace_headers = if let Some(workspace_id) = workspace_id {
+        let mut key = decode_hex_32(&context.sensitive.root_secret)?;
+        let mut message = format!("{}|{workspace_id}", context.token);
+        let mut proof = hmac_sha256(&key, message.as_bytes());
+        key.fill(0);
+        message.zeroize();
+        let header = format!(
+            "X-Daon-Workspace-Id: {workspace_id}\r\nX-Daon-Workspace-Proof: {}\r\n",
+            hex(&proof),
+        );
+        proof.fill(0);
+        header
+    } else {
+        String::new()
+    };
     let mut request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {token}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {token}\r\n{workspace_headers}Accept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         context.port,
         body.len(),
         token = context.token,
@@ -1328,7 +1559,7 @@ fn execute_recovery_http(
     write_result.map_err(|_| "LOCAL_RECOVERY_REQUEST_FAILED")?;
 
     let mut raw = Zeroizing::new(Vec::new());
-    let maximum = RECOVERY_HEADER_MAX_BYTES + RECOVERY_RESPONSE_MAX_BYTES + 1;
+    let maximum = RECOVERY_HEADER_MAX_BYTES + response_max_bytes + 1;
     let mut chunk = [0_u8; 8192];
     loop {
         stream
@@ -1355,7 +1586,7 @@ fn execute_recovery_http(
         raw.zeroize();
         return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
     }
-    let parsed = parse_local_http_response(&raw);
+    let parsed = parse_local_http_response_with_limit(&raw, response_max_bytes);
     raw.zeroize();
     let mut response = parsed?;
     if context.appears_in_decoded_json(&response.body) {
@@ -1372,7 +1603,27 @@ fn remaining(deadline: Instant) -> Result<Duration, &'static str> {
         .ok_or("LOCAL_RECOVERY_REQUEST_TIMEOUT")
 }
 
+#[cfg(test)]
 fn parse_local_http_response(raw: &[u8]) -> Result<LocalHttpResponse, &'static str> {
+    parse_local_http_response_with_limit(raw, RECOVERY_RESPONSE_MAX_BYTES)
+}
+
+fn decode_hex_32(value: &str) -> Result<[u8; 32], &'static str> {
+    if value.len() != 64 {
+        return Err("LOCAL_WORKSPACE_BINDING_FAILED");
+    }
+    let mut result = [0_u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let text = std::str::from_utf8(chunk).map_err(|_| "LOCAL_WORKSPACE_BINDING_FAILED")?;
+        result[index] = u8::from_str_radix(text, 16)
+            .map_err(|_| "LOCAL_WORKSPACE_BINDING_FAILED")?;
+    }
+    Ok(result)
+}
+
+fn parse_local_http_response_with_limit(
+    raw: &[u8], response_max_bytes: usize
+) -> Result<LocalHttpResponse, &'static str> {
     let separator = raw
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -1418,7 +1669,7 @@ fn parse_local_http_response(raw: &[u8]) -> Result<LocalHttpResponse, &'static s
         }
     }
     let body = raw[(separator + 4)..].to_vec();
-    if body.len() > RECOVERY_RESPONSE_MAX_BYTES || content_length != Some(body.len()) {
+    if body.len() > response_max_bytes || content_length != Some(body.len()) {
         return Err("LOCAL_RECOVERY_RESPONSE_REJECTED");
     }
     Ok(LocalHttpResponse {

@@ -47,6 +47,16 @@ test("same-origin adapter clears current password and step-up token after save",
       assert.equal("workspace_id" in body, false);
       assert.equal(init.headers["if-match"], '"egress:org:v1"');
     }
+    if ((init.method ?? "GET") === "GET") {
+      const deny = createEgressPolicyDraft();
+      return Response.json({ data: {
+        organization_policy_version_id: "org-policy-v1", organization_binding_id: "org-binding-v1",
+        workspace_policy_version_id: "workspace-policy-v1", workspace_binding_id: "workspace-binding-v1",
+        ...deny, fingerprint: `sha256:${"a".repeat(64)}`, parent_locked: true,
+        organization_etag: '"egress:org:v1"', workspace_etag: '"egress:workspace:v1"',
+        organization_policy: deny, workspace_policy: deny,
+      }, meta: { trace_id: "trace-1" } }, { headers: { ETag: '"egress:effective:v1"' } });
+    }
     return Response.json({ data: { mode: "deny_external" }, meta: {} }, {
       status: 201, headers: { ETag: '"egress:v2"' },
     });
@@ -65,4 +75,30 @@ test("same-origin adapter clears current password and step-up token after save",
 
   await getEffectiveEgressPolicy({ fetchImpl, workspaceId: "workspace-1" });
   assert.equal(calls[2].url, "/bff/api/workspaces/workspace-1/egress-policy");
+});
+
+test("effective egress adapter는 exact read-only projection만 수용하고 내부 필드를 거부한다", async () => {
+  const payload = {
+    mode: "allow_approved_external", allowed_provider_kinds: ["external_api"],
+    allowed_destinations: ["api.example.com"], classification: "internal", max_bytes: 4096,
+    masking_required: true, redaction_required: false, required_approver: "organization_admin",
+  };
+  const projection = {
+    organization_policy_version_id: "org-policy-v1", organization_binding_id: "org-binding-v1",
+    workspace_policy_version_id: "workspace-policy-v1", workspace_binding_id: "workspace-binding-v1",
+    ...payload, fingerprint: `sha256:${"a".repeat(64)}`, parent_locked: false,
+    organization_etag: '"org:1"', workspace_etag: '"workspace:1"',
+    organization_policy: payload, workspace_policy: payload,
+  };
+  const valid = await getEffectiveEgressPolicy({
+    workspaceId: "workspace-1",
+    fetchImpl: async () => Response.json({ data: projection, meta: { trace_id: "trace-1" } }, { headers: { ETag: '"effective:1"' } }),
+  });
+  assert.deepEqual(valid.data.organization_policy, payload);
+  assert.equal(valid.etag, '"effective:1"');
+
+  await assert.rejects(() => getEffectiveEgressPolicy({
+    workspaceId: "workspace-1",
+    fetchImpl: async () => Response.json({ data: { ...projection, internal_url: "http://internal.invalid" }, meta: { trace_id: "trace-1" } }),
+  }), /EGRESS_POLICY_RESPONSE_INVALID/u);
 });

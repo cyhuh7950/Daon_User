@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import datetime
-from typing import Callable, cast
+from typing import Callable, Protocol, cast
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -19,6 +19,7 @@ from .sync import (
     SyncContext,
     SyncError,
     SyncItemInput,
+    SyncItemKind,
     SyncOperationView,
     SyncService,
     TargetVersion,
@@ -36,11 +37,25 @@ def _cloud_context(context: SyncContext, capability: str) -> CloudAccessContext:
     )
 
 
+class OfflineStudioOutputImporter(Protocol):
+    def import_bundle(
+        self, context: SyncContext, item: SyncItemInput, content: bytes,
+        idempotency_key: str, *, relation: str,
+    ) -> TargetVersion:
+        raise NotImplementedError
+
+
 class ObjectQueueSyncTransferPort:
     """Creates only server-owned Cloud objects through the durable Object Queue."""
 
-    def __init__(self, coordinator: ObjectQueueCoordinator) -> None:
+    def __init__(
+        self,
+        coordinator: ObjectQueueCoordinator,
+        *,
+        output_importer: OfflineStudioOutputImporter | None = None,
+    ) -> None:
         self._coordinator = coordinator
+        self._output_importer = output_importer
 
     def transmit(
         self,
@@ -56,6 +71,12 @@ class ObjectQueueSyncTransferPort:
         digest = hashlib.sha256(content).hexdigest()
         if digest != item.digest_sha256:
             raise SyncError("SYNC_CONTENT_DIGEST_MISMATCH", 400)
+        if item.item_kind is SyncItemKind.OUTPUT_VERSION:
+            if self._output_importer is None:
+                raise SyncError("SYNC_OUTPUT_IMPORT_UNAVAILABLE", 503, retryable=True)
+            return self._output_importer.import_bundle(
+                context, item, content, idempotency_key, relation=relation,
+            )
         try:
             submitted = self._coordinator.submit(
                 _cloud_context(context, "object.write"), area="source", content=content,
@@ -105,6 +126,9 @@ def _dump_operation(operation: _Operation, repository: ReferenceSyncRepository) 
             "byte_size": item.byte_size, "content_type": item.content_type,
             "base_cloud_version_id": item.base_cloud_version_id,
             "base_cloud_digest": item.base_cloud_digest,
+            "item_kind": item.item_kind.value,
+            "output_version_id": item.output_version_id,
+            "dependency_item_ids": list(item.dependency_item_ids),
         } for item in operation.items.values()],
         "approved_item_ids": list(operation.approved_item_ids),
         "approval_snapshot_id": operation.approval_snapshot_id,
@@ -138,10 +162,14 @@ def _hydrate(row: tuple[object, ...]) -> tuple[_Operation, ReferenceSyncReposito
     operation_id, tenant_id, workspace_id, actor_id, target_area, state, version, digest, policy, document = row
     data = cast(dict[str, object], document)
     context = SyncContext(str(tenant_id), str(workspace_id), str(actor_id), "trace-load", str(policy))
-    items = {
-        str(raw["item_id"]): SyncItemInput(**raw)
-        for raw in cast(list[dict[str, object]], data["items"])
-    }
+    items: dict[str, SyncItemInput] = {}
+    for raw in cast(list[dict[str, object]], data["items"]):
+        payload = dict(raw)
+        payload["dependency_item_ids"] = tuple(
+            cast(list[str], payload.get("dependency_item_ids", []))
+        )
+        item = SyncItemInput(**payload)
+        items[item.item_id] = item
     operation = _Operation(
         str(operation_id), context, str(target_area), items, str(digest),
         state=str(state), version=int(cast(int, version)),
@@ -262,12 +290,14 @@ class PostgresSyncService:
                     connection.execute(
                         "INSERT INTO sync_preview_items (tenant_id,workspace_id,operation_id,item_id,"
                         "source_version_id,local_object_id,object_digest,byte_size,content_type,"
-                        "base_cloud_version_id,base_cloud_digest,created_at) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "base_cloud_version_id,base_cloud_digest,item_kind,output_version_id,"
+                        "dependency_item_ids,created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (context.tenant_id, context.workspace_id, view.operation_id, item.item_id,
                          item.source_version_id, item.local_object_id, item.digest_sha256,
                          item.byte_size, item.content_type, item.base_cloud_version_id,
-                         item.base_cloud_digest, now),
+                         item.base_cloud_digest, item.item_kind.value, item.output_version_id,
+                         list(item.dependency_item_ids), now),
                     )
                 return view
         except SyncError:
@@ -286,6 +316,27 @@ class PostgresSyncService:
                 return SyncService(repository, self._transfer, clock=self._clock)._view(operation)
         except SyncError:
             raise
+        except CloudDatabaseError as error:
+            raise SyncError(error.code, 503, retryable=error.retryable) from None
+
+    def list_operations(self, context: SyncContext) -> tuple[SyncOperationView, ...]:
+        try:
+            with self._transaction(context, "sync.read") as connection:
+                rows = connection.execute(
+                    "SELECT operation_id,tenant_id,workspace_id,actor_id,target_area,state,"
+                    "version,preview_digest,policy_version,state_document FROM sync_operations "
+                    "WHERE tenant_id=%s AND workspace_id=%s "
+                    "ORDER BY updated_at DESC,operation_id DESC LIMIT 200",
+                    (context.tenant_id, context.workspace_id),
+                ).fetchall()
+                views: list[SyncOperationView] = []
+                for row in rows:
+                    operation, repository = _hydrate(row)
+                    operation.context = context
+                    views.append(SyncService(
+                        repository, self._transfer, clock=self._clock,
+                    )._view(operation))
+                return tuple(views)
         except CloudDatabaseError as error:
             raise SyncError(error.code, 503, retryable=error.retryable) from None
 
@@ -330,12 +381,15 @@ class PostgresSyncService:
                         connection.execute(
                             "INSERT INTO sync_manifest_items (tenant_id,workspace_id,approval_snapshot_id,"
                             "operation_id,item_id,source_version_id,local_object_id,object_digest,"
-                            "byte_size,content_type,base_cloud_version_id,base_cloud_digest,approved_at) "
-                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                            "byte_size,content_type,base_cloud_version_id,base_cloud_digest,item_kind,"
+                            "output_version_id,dependency_item_ids,approved_at) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                             (context.tenant_id, context.workspace_id, operation.approval_snapshot_id,
                              operation_id, item.item_id, item.source_version_id, item.local_object_id,
                              item.digest_sha256, item.byte_size, item.content_type,
-                             item.base_cloud_version_id, item.base_cloud_digest, now),
+                             item.base_cloud_version_id, item.base_cloud_digest,
+                             item.item_kind.value, item.output_version_id,
+                             list(item.dependency_item_ids), now),
                         )
                 new_batches = operation.batches[before_batches:]
                 new_conflicts = operation.conflicts[before_conflicts:]
@@ -352,15 +406,20 @@ class PostgresSyncService:
                          conflict.base_version_id, conflict.base_digest, context.trace_id, now),
                     )
                 for target in new_targets:
+                    target_item = operation.items[target.item_id]
                     connection.execute(
                         "INSERT INTO sync_target_versions (tenant_id,workspace_id,target_version_id,"
                         "operation_id,approval_snapshot_id,item_id,object_id,digest_sha256,"
-                        "previous_cloud_version_id,relation,trace_id,created_at) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "previous_cloud_version_id,relation,item_kind,target_output_version_id,"
+                        "trace_id,created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (context.tenant_id, context.workspace_id, target.target_version_id,
                          operation_id, operation.approval_snapshot_id, target.item_id,
                          target.target_object_id, target.digest_sha256,
-                         target.previous_cloud_version_id, target.relation, context.trace_id, now),
+                         target.previous_cloud_version_id, target.relation,
+                         target_item.item_kind.value,
+                         (target.target_version_id if target_item.output_version_id else None),
+                         context.trace_id, now),
                     )
                 for batch in new_batches:
                     key, value = next(

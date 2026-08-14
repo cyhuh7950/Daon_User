@@ -18,9 +18,10 @@ function cloneLocks(locks) {
 }
 
 export function createProductStudioState({ workspaceId = null, grounded = null, locks = [], outputs = [], status = "ready", safeError = null } = {}) {
+  const groundedVersions = grounded?.sourceVersionIds ?? (grounded?.sourceVersionId ? [grounded.sourceVersionId] : []);
   return {
     status, workspaceId, grounded, locks: cloneLocks(locks), selectedOutputType: null,
-    settings: grounded?.sourceVersionId ? { sourceVersionIds: [grounded.sourceVersionId] } : {}, settingsConfirmed: false, settingsSnapshot: null,
+    settings: groundedVersions.length ? { sourceVersionIds: [...groundedVersions] } : {}, settingsConfirmed: false, settingsSnapshot: null,
     outputs: Array.isArray(outputs) ? outputs : [], selectedOutputId: null, pending: false, safeError,
   };
 }
@@ -29,7 +30,9 @@ export function selectOutputType(state, outputType) {
   if (!OUTPUT_TYPE_IDS.has(outputType)) throw new Error("STUDIO_OUTPUT_TYPE_INVALID");
   return {
     ...state, selectedOutputType: outputType,
-    settings: state.grounded?.sourceVersionId ? { sourceVersionIds: [state.grounded.sourceVersionId] } : {},
+    settings: state.grounded?.sourceVersionIds?.length
+      ? { sourceVersionIds: [...state.grounded.sourceVersionIds] }
+      : state.grounded?.sourceVersionId ? { sourceVersionIds: [state.grounded.sourceVersionId] } : {},
     settingsConfirmed: false, settingsSnapshot: null,
   };
 }
@@ -52,8 +55,9 @@ function completeSettings(state) {
     return Array.isArray(value) ? value.length > 0 : typeof value === "string" && value.trim().length > 0;
   })) return false;
   const type = OUTPUT_TYPES.find((item) => item.id === state.selectedOutputType);
+  const groundedVersions = state.grounded.sourceVersionIds ?? [state.grounded.sourceVersionId];
   return type.formats.includes(state.settings.outputFormat)
-    && state.settings.sourceVersionIds.includes(state.grounded.sourceVersionId);
+    && groundedVersions.every((versionId) => state.settings.sourceVersionIds.includes(versionId));
 }
 
 export function confirmGenerationSettings(state) {

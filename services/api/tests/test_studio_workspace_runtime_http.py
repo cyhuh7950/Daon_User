@@ -27,6 +27,18 @@ class FakeStudioWorkspace:
     def list_outputs(self, context):  # type: ignore[no-untyped-def]
         return ({"studio_output_id": "output-1", "output_version_id": "version-1", "status": "draft", "title": "산출물"},)
 
+    def list_versions(self, context, output_id):  # type: ignore[no-untyped-def]
+        self.calls.append(("list_versions", context, output_id))
+        return ({
+            "output_version_id": "version-1", "content_version": 1, "previous_version_id": None,
+            "status": "draft", "content": {"body": "생성"}, "revision_type": "initial",
+            "change_reason": "initial_generation", "settings_snapshot_id": "settings-1",
+            "output_format": "pdf",
+            "citations": [{"citation_id": "citation-1", "source_version_id": "source-version-1", "evidence_span_id": "span-1", "origin": "raw_source", "locator": {"kind": "page", "value": "2"}}],
+            "review_request_id": None, "approval_request_id": None, "approval_id": None,
+            "delivery_id": None, "knowledge_registration_id": None,
+        },)
+
     def revise(self, context, output_id, revision, key):  # type: ignore[no-untyped-def]
         self.calls.append(("revise", context, output_id, revision, key))
         return {"output_version_id": "version-2", "previous_version_id": "version-1", "status": "draft", "content": "변경", "revision_type": "user_edit", "change_reason": "문구 정정", "approval_required": True, "settings_snapshot_id": "settings-1", "generation_request_id": None, "resubmission_of_rejected_version": False}, False
@@ -84,10 +96,12 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         with self.authenticated():
             created = await self.client.post("/api/v1/studio-generation-requests", cookies=cookies, headers={"Idempotency-Key": "generation-key-0001", "X-Trace-Id": TRACE_ID}, json=generation)
             listed = await self.client.get("/api/v1/studio-outputs?workspace_id=workspace-001", cookies=cookies)
+            versions = await self.client.get("/api/v1/studio-outputs/output-1/versions?workspace_id=workspace-001", cookies=cookies)
             revised = await self.client.post("/api/v1/studio-outputs/output-1/versions", cookies=cookies, headers={"Idempotency-Key": "revision-key-00001"}, json={"workspace_id": "workspace-001", "previous_version_id": "version-1", "revision_type": "user_edit", "change_reason": "문구 정정", "content": "변경"})
             review = await self.client.post("/api/v1/reviews", cookies=cookies, headers={"Idempotency-Key": "review-key-000001"}, json={"workspace_id": "workspace-001", "output_version_id": "version-1"})
             exported = await self.client.get("/api/v1/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-001", cookies=cookies)
-        self.assertEqual([created.status_code, listed.status_code, revised.status_code, review.status_code, exported.status_code], [201, 200, 201, 201, 200])
+        self.assertEqual([created.status_code, listed.status_code, versions.status_code, revised.status_code, review.status_code, exported.status_code], [201, 200, 200, 201, 201, 200])
+        self.assertEqual(versions.json()["data"]["versions"][0]["citations"][0]["origin"], "raw_source")
         for response in (created, revised, review): self.assertRegex(response.headers["etag"], r'^"studio-[^"]+"$')
         self.assertEqual(revised.json()["data"]["content"], "변경")
         self.assertTrue(exported.content.startswith(b"%PDF-"))

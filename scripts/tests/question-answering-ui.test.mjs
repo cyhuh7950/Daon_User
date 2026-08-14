@@ -24,7 +24,7 @@ test("question client posts only to same-origin BFF with bounded lineage input",
         return Response.json({
           data: {
             run_id: "run-cp3", run_result_id: "result-cp3", answer: "ORANGE-COMPASS-42", insufficient: false,
-            citations: [{ citation_id: "citation-cp3", source_id: "source-cp3", source_version_id: "source-version-cp3", evidence_span_id: "span-cp3", page: 2 }],
+            citations: [{ citation_id: "citation-cp3", source_id: "source-cp3", source_version_id: "source-version-cp3", evidence_span_id: "span-cp3", page: 2, origin: "raw_source", context_item_id: "source-cp3", locator: { kind: "page", value: "2" } }],
           },
           meta: { trace_id: "trace-cp3", workspace_id: "workspace-cp3" },
         });
@@ -40,7 +40,7 @@ test("question client posts only to same-origin BFF with bounded lineage input",
 
 test("Citation URL is same-origin and opens the exact persisted page", () => {
   assert.equal(
-    citationContentUrl("workspace-cp3", { citation_id: "citation-cp3", page: 2 }),
+    citationContentUrl("workspace-cp3", { citation_id: "citation-cp3", page: 2, locator: { kind: "page", value: "2" } }),
     "/bff/api/workspaces/workspace-cp3/citations/citation-cp3/content#page=2",
   );
 });

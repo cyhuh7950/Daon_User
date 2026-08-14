@@ -1704,6 +1704,22 @@ impl NativeSessionRuntime {
         Ok(crate::recovery_bridge::CloudRecoveryExchange { response, canaries })
     }
 
+    pub(crate) async fn execute_offline_sync_once(
+        &self,
+        transport: &dyn crate::offline_sync_bridge::OfflineCloudTransport,
+        request: crate::offline_sync_bridge::OfflineCloudRequest,
+    ) -> Result<crate::offline_sync_bridge::OfflineCloudResponse, &'static str> {
+        if self.revoke_pending.load(Ordering::Acquire) {
+            return Err("AUTHENTICATION_REQUIRED");
+        }
+        let credentials = self
+            .vault_read()
+            .await
+            .map_err(|_| "AUTHENTICATION_REQUIRED")?
+            .ok_or("AUTHENTICATION_REQUIRED")?;
+        transport.execute(&credentials.access.0, request).await
+    }
+
     pub(crate) async fn execute_workspace_once(
         &self,
         operation: NativeWorkspaceOperation,

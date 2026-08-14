@@ -22,14 +22,63 @@ function isSafeId(value) {
   return typeof value === "string" && SAFE_ID.test(value);
 }
 
+function isCitationLocator(value) {
+  return hasExactKeys(value, ["kind", "value"])
+    && typeof value.kind === "string"
+    && /^[a-z][a-z0-9_]{0,31}$/u.test(value.kind)
+    && typeof value.value === "string"
+    && value.value.length >= 1
+    && value.value.length <= 255
+    && !/[\u0000-\u001f\u007f]/u.test(value.value);
+}
+
 function isGroundedCitation(value) {
-  return hasExactKeys(value, ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page"])
+  return hasExactKeys(value, ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page", "origin", "context_item_id", "locator"])
     && isSafeId(value.citation_id)
     && isSafeId(value.source_id)
     && isSafeId(value.source_version_id)
     && isSafeId(value.evidence_span_id)
+    && ["raw_source", "daon_knowledge"].includes(value.origin)
+    && isSafeId(value.context_item_id)
+    && isCitationLocator(value.locator)
     && Number.isSafeInteger(value.page)
-    && value.page >= 1;
+    && value.page >= 1
+    && (value.locator.kind !== "page" || value.locator.value === String(value.page));
+}
+
+function knowledgeContextBody(value) {
+  if (!isRecord(value) || !["raw_only", "daon_priority", "mixed"].includes(value.mode)) {
+    throw new Error("QUESTION_INPUT_INVALID");
+  }
+  const inputResources = Array.isArray(value.resources) ? value.resources : [];
+  if (inputResources.length < 1 || inputResources.length > 8) {
+    throw new Error("QUESTION_INPUT_INVALID");
+  }
+  const resources = inputResources.map((item) => {
+    if (!isRecord(item) || !/^[a-z][a-z0-9_]{0,63}$/u.test(item.resourceKind || "")) {
+      throw new Error("QUESTION_INPUT_INVALID");
+    }
+    return {
+      resource_kind: item.resourceKind,
+      resource_id: requiredId(item.resourceId),
+      ...(item.versionId ? { version_id: requiredId(item.versionId) } : {}),
+    };
+  });
+  const knowledgeCount = resources.filter((item) => item.resource_kind === "knowledge_package").length;
+  const otherCount = resources.length - knowledgeCount;
+  const valid = value.mode === "raw_only" && otherCount && !knowledgeCount
+    || value.mode === "daon_priority" && knowledgeCount
+    || value.mode === "mixed" && otherCount && knowledgeCount;
+  if (!valid) throw new Error("QUESTION_INPUT_INVALID");
+  return { mode: value.mode, resources };
+}
+
+function questionSourceBody({ sourceId, sourceVersionId, knowledgeContext }) {
+  if (knowledgeContext) {
+    if (sourceId || sourceVersionId) throw new Error("QUESTION_INPUT_INVALID");
+    return { knowledge_context: knowledgeContextBody(knowledgeContext) };
+  }
+  return { source_id: requiredId(sourceId), source_version_id: requiredId(sourceVersionId) };
 }
 
 function isGroundedAnswer(value) {
@@ -76,12 +125,11 @@ async function responseData(response) {
 
 export async function askGroundedQuestion(
   workspaceId,
-  { sourceId, sourceVersionId, question, stepUpAuthorizationId },
+  { sourceId, sourceVersionId, knowledgeContext, question, stepUpAuthorizationId },
   { fetchImpl = fetch, idempotencyKey = crypto.randomUUID() } = {},
 ) {
   const workspace = requiredId(workspaceId);
-  const source = requiredId(sourceId);
-  const version = requiredId(sourceVersionId);
+  const sourceBody = questionSourceBody({ sourceId, sourceVersionId, knowledgeContext });
   if (
     typeof question !== "string" || !question.trim()
     || question.length > 2_000 || !SAFE_ID.test(idempotencyKey)
@@ -97,7 +145,7 @@ export async function askGroundedQuestion(
         "Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify({
-        source_id: source, source_version_id: version, question: question.trim(),
+        ...sourceBody, question: question.trim(),
         ...(stepUpAuthorizationId ? { step_up_authorization_id: requiredId(stepUpAuthorizationId) } : {}),
       }),
     },
@@ -106,7 +154,7 @@ export async function askGroundedQuestion(
 }
 
 export async function authorizeGroundedQuestion(
-  workspaceId, { sourceId, sourceVersionId, question, password },
+  workspaceId, { sourceId, sourceVersionId, knowledgeContext, question, password },
   { fetchImpl = fetch, idempotencyKey } = {},
 ) {
   const workspace = requiredId(workspaceId);
@@ -117,8 +165,10 @@ export async function authorizeGroundedQuestion(
     `/bff/api/workspaces/${encodeURIComponent(workspace)}/questions/authorization`,
     { method: "POST", credentials: "same-origin", headers: {
       "Content-Type": "application/json", "Idempotency-Key": idempotencyKey,
-    }, body: JSON.stringify({ source_id: requiredId(sourceId),
-      source_version_id: requiredId(sourceVersionId), question: question.trim(), password }) },
+    }, body: JSON.stringify({
+      ...questionSourceBody({ sourceId, sourceVersionId, knowledgeContext }),
+      question: question.trim(), password,
+    }) },
   );
   const payload = await response.json();
   if (!response.ok) throw new Error(payload?.error?.code || "QUESTION_AUTHORIZATION_FAILED");
@@ -131,5 +181,6 @@ export function citationContentUrl(workspaceId, citation) {
   const citationId = requiredId(citation?.citation_id);
   const page = Number(citation?.page);
   if (!Number.isSafeInteger(page) || page < 1) throw new Error("CITATION_INPUT_INVALID");
-  return `/bff/api/workspaces/${encodeURIComponent(workspace)}/citations/${encodeURIComponent(citationId)}/content#page=${page}`;
+  const base = `/bff/api/workspaces/${encodeURIComponent(workspace)}/citations/${encodeURIComponent(citationId)}/content`;
+  return citation?.locator?.kind === "page" ? `${base}#page=${page}` : base;
 }
