@@ -4,6 +4,32 @@ use daon_user_desktop_lib::local_service::{
 #[cfg(windows)]
 use daon_user_desktop_lib::windows_credential::WindowsCredentialStore;
 
+#[cfg(windows)]
+struct CredentialCleanup<'a> {
+    store: &'a WindowsCredentialStore,
+    armed: bool,
+}
+
+#[cfg(windows)]
+impl<'a> CredentialCleanup<'a> {
+    fn new(store: &'a WindowsCredentialStore) -> Self {
+        Self { store, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CredentialCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.store.revoke();
+        }
+    }
+}
+
 #[test]
 fn each_app_launch_generates_distinct_credentials() {
     let first = AppCredentials::generate().expect("first credentials");
@@ -111,6 +137,7 @@ fn windows_credential_manager_round_trip_and_revoke() {
             .as_nanos()
     );
     let store = WindowsCredentialStore::new(target);
+    let mut cleanup = CredentialCleanup::new(&store);
     let first = store.load_or_create(false).expect("create credential");
     assert_eq!(first.expose_for_bootstrap().len(), 64);
     let second = store.load_or_create(true).expect("reuse credential");
@@ -118,4 +145,5 @@ fn windows_credential_manager_round_trip_and_revoke() {
     assert!(!format!("{first:?}").contains(&first.expose_for_bootstrap()));
     store.revoke().expect("revoke credential");
     assert_eq!(store.read().expect("read after revoke"), None);
+    cleanup.disarm();
 }

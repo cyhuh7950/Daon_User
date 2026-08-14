@@ -128,6 +128,7 @@ class StudioWorkspaceRepository(Protocol):
     def create_version(self, context: StudioContext, output_id: str, revision: Mapping[str, object], idempotency_key: str): ...
     def record_action(self, context: StudioContext, action: str, payload: Mapping[str, object], idempotency_key: str): ...
     def list_outputs(self, context: StudioContext): ...
+    def list_versions(self, context: StudioContext, output_id: str): ...
     def export_output(self, context: StudioContext, output_id: str, version_id: str, format_name: str): ...
 
 
@@ -177,6 +178,10 @@ class StudioWorkspaceService:
 
     def list_outputs(self, context: StudioContext):
         return self._repository.list_outputs(context)
+
+    def list_versions(self, context: StudioContext, output_id: str):
+        _identifier(output_id)
+        return self._repository.list_versions(context, output_id)
 
     def export(self, context: StudioContext, output_id: str, version_id: str, format_name: str):
         _identifier(output_id); _identifier(version_id)

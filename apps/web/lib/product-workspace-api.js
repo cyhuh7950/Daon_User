@@ -10,6 +10,12 @@ const SOURCE_STATES = Object.freeze([
   "registered", "security_check", "processing", "indexing", "ready", "waiting_model",
   "partial_understanding", "needs_review", "failed", "expired", "disabled", "deleting", "deleted",
 ]);
+const KNOWLEDGE_PACKAGE_KEYS = Object.freeze([
+  "package_id", "producer", "producer_version", "knowledge_registration_id",
+  "output_version_id", "authority", "registration_state", "review_state",
+  "digest_sha256", "byte_size", "content_type", "effective_at", "expires_at",
+]);
+const KNOWLEDGE_PRODUCERS = Object.freeze(["daon2", "daon2_5", "daon3"]);
 const CITATION_KEYS = Object.freeze([
   "citation_id", "source_id", "source_version_id", "evidence_span_id", "page"
 ]);
@@ -17,6 +23,20 @@ const OUTPUT_KEYS = Object.freeze([
   "studio_output_id", "output_version_id", "output_type", "title", "purpose", "status",
   "content", "run_id", "run_result_id", "citations"
 ]);
+const OPERATIONS_COMPONENT_IDS = Object.freeze(["provider", "api", "storage", "sync", "queue"]);
+const OPERATIONS_COMPONENT_KEYS = Object.freeze([
+  "component_id", "status", "safe_code", "pending_count", "recovery_action",
+]);
+const OUTPUT_SETTING_TYPES = Object.freeze([
+  "evidence_report", "compliance_checklist", "comparison_table", "knowledge_graph", "business_draft",
+]);
+const OUTPUT_SETTING_FORMATS = Object.freeze({
+  evidence_report: Object.freeze(["pdf", "docx"]),
+  compliance_checklist: Object.freeze(["xlsx", "csv", "pdf"]),
+  comparison_table: Object.freeze(["xlsx", "csv", "pdf"]),
+  knowledge_graph: Object.freeze(["json", "svg", "png"]),
+  business_draft: Object.freeze(["docx", "pdf"]),
+});
 
 function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -100,6 +120,147 @@ export async function listWorkspaceSources(workspaceId, { fetchImpl = fetch, sig
   return payload.data.sources;
 }
 
+export async function listWorkspaceKnowledgePackages(
+  workspaceId,
+  { fetchImpl = fetch, signal, now = Date.now } = {},
+) {
+  const workspace = requiredWorkspace(workspaceId, "KNOWLEDGE_PACKAGE_LIST_INPUT_INVALID");
+  const response = await fetchImpl(
+    `/bff/api/workspaces/${encodeURIComponent(workspace)}/knowledge-packages`,
+    { method: "GET", credentials: "same-origin", cache: "no-store", signal },
+  );
+  const payload = await json(response, "KNOWLEDGE_PACKAGE_LIST_RESPONSE_INVALID");
+  if (!response.ok) {
+    throw new Error(
+      typeof payload?.error?.code === "string"
+        ? payload.error.code
+        : "KNOWLEDGE_PACKAGE_LIST_FAILED",
+    );
+  }
+  const checkedAt = now();
+  const valid = exact(payload, ["data", "meta"])
+    && exact(payload.data, ["items"])
+    && Array.isArray(payload.data.items)
+    && payload.data.items.length <= 1_000
+    && record(payload.meta)
+    && safeId(payload.meta.trace_id)
+    && payload.data.items.every((item) => {
+      const effectiveAt = Date.parse(item.effective_at);
+      const expiresAt = Date.parse(item.expires_at);
+      return exact(item, KNOWLEDGE_PACKAGE_KEYS)
+        && safeId(item.package_id)
+        && KNOWLEDGE_PRODUCERS.includes(item.producer)
+        && safeText(item.producer_version, 1, 128)
+        && safeId(item.knowledge_registration_id)
+        && safeId(item.output_version_id)
+        && item.authority === "approved"
+        && item.registration_state === "registered"
+        && item.review_state === "approved"
+        && /^[0-9a-f]{64}$/u.test(item.digest_sha256)
+        && Number.isSafeInteger(item.byte_size)
+        && item.byte_size >= 1
+        && item.byte_size <= 8 * 1024 * 1024
+        && safeText(item.content_type, 1, 255)
+        && Number.isFinite(effectiveAt)
+        && Number.isFinite(expiresAt)
+        && effectiveAt <= checkedAt
+        && checkedAt < expiresAt;
+    });
+  if (!valid) throw new Error("KNOWLEDGE_PACKAGE_LIST_RESPONSE_INVALID");
+  return payload.data.items;
+}
+
+export async function getWorkspaceOperationsStatus(
+  workspaceId, { fetchImpl = fetch, signal } = {},
+) {
+  const workspace = requiredWorkspace(workspaceId, "OPERATIONS_STATUS_INPUT_INVALID");
+  const response = await fetchImpl(
+    `/bff/api/workspaces/${encodeURIComponent(workspace)}/operations/status`,
+    { method: "GET", credentials: "same-origin", cache: "no-store", signal },
+  );
+  const payload = await json(response, "OPERATIONS_STATUS_RESPONSE_INVALID");
+  if (!response.ok) {
+    throw new Error(
+      typeof payload?.error?.code === "string"
+        ? payload.error.code
+        : "OPERATIONS_STATUS_UNAVAILABLE",
+    );
+  }
+  const data = payload?.data;
+  const components = data?.components;
+  const valid = exact(payload, ["data", "meta"])
+    && exact(data, ["workspace_id", "overall_status", "checked_at", "components"])
+    && data.workspace_id === workspace
+    && new Set(["ready", "warning", "error"]).has(data.overall_status)
+    && typeof data.checked_at === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(data.checked_at)
+    && Array.isArray(components) && components.length === 5
+    && components.every((item, index) => exact(item, OPERATIONS_COMPONENT_KEYS)
+      && item.component_id === OPERATIONS_COMPONENT_IDS[index]
+      && new Set(["ready", "warning", "error"]).has(item.status)
+      && typeof item.safe_code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(item.safe_code)
+      && Number.isSafeInteger(item.pending_count) && item.pending_count >= 0
+      && new Set(["none", "open_llm_settings", "open_sync_settings", "refresh_status"]).has(item.recovery_action))
+    && validMeta(payload.meta, workspace);
+  if (!valid) throw new Error("OPERATIONS_STATUS_RESPONSE_INVALID");
+  return data;
+}
+
+function validOutputVersionSettings(data, workspace) {
+  return exact(data, ["workspace_id", "default_formats", "version_save_mode", "version"])
+    && data.workspace_id === workspace
+    && exact(data.default_formats, OUTPUT_SETTING_TYPES)
+    && OUTPUT_SETTING_TYPES.every((type) => OUTPUT_SETTING_FORMATS[type].includes(data.default_formats[type]))
+    && data.version_save_mode === "append_only"
+    && Number.isSafeInteger(data.version) && data.version >= 0;
+}
+
+export async function getWorkspaceOutputVersionSettings(
+  workspaceId, { fetchImpl = fetch, signal } = {},
+) {
+  const workspace = requiredWorkspace(workspaceId, "OUTPUT_VERSION_SETTINGS_INPUT_INVALID");
+  const response = await fetchImpl(
+    `/bff/api/workspaces/${encodeURIComponent(workspace)}/output-version-settings`,
+    { method: "GET", credentials: "same-origin", cache: "no-store", signal },
+  );
+  const payload = await json(response, "OUTPUT_VERSION_SETTINGS_RESPONSE_INVALID");
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "OUTPUT_VERSION_SETTINGS_UNAVAILABLE");
+  if (!exact(payload, ["data", "meta"]) || !validOutputVersionSettings(payload.data, workspace)
+      || !validMeta(payload.meta, workspace)) throw new Error("OUTPUT_VERSION_SETTINGS_RESPONSE_INVALID");
+  const etag = response.headers?.get?.("etag");
+  if (typeof etag !== "string" || etag !== `"output-version-settings:${workspace}:${payload.data.version}"`) {
+    throw new Error("OUTPUT_VERSION_SETTINGS_RESPONSE_INVALID");
+  }
+  return { ...payload.data, etag };
+}
+
+export async function saveWorkspaceOutputVersionSettings(
+  workspaceId, settings,
+  { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {},
+) {
+  const workspace = requiredWorkspace(workspaceId, "OUTPUT_VERSION_SETTINGS_INPUT_INVALID");
+  if (!record(settings) || !exact(settings, ["default_formats", "version", "etag"])
+      || !validOutputVersionSettings({ workspace_id: workspace, default_formats: settings.default_formats, version_save_mode: "append_only", version: settings.version }, workspace)
+      || settings.etag !== `"output-version-settings:${workspace}:${settings.version}"`
+      || !safeIdempotencyKey(idempotencyKey)) throw new Error("OUTPUT_VERSION_SETTINGS_INPUT_INVALID");
+  const response = await fetchImpl(
+    `/bff/api/workspaces/${encodeURIComponent(workspace)}/output-version-settings`,
+    {
+      method: "PATCH", credentials: "same-origin", cache: "no-store", signal,
+      headers: { "Content-Type": "application/json", "If-Match": settings.etag, "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ default_formats: settings.default_formats, expected_version: settings.version }),
+    },
+  );
+  const payload = await json(response, "OUTPUT_VERSION_SETTINGS_RESPONSE_INVALID");
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "OUTPUT_VERSION_SETTINGS_UNAVAILABLE");
+  if (!exact(payload, ["data", "meta"]) || !validOutputVersionSettings(payload.data, workspace)
+      || !validMeta(payload.meta, workspace)) throw new Error("OUTPUT_VERSION_SETTINGS_RESPONSE_INVALID");
+  const etag = response.headers?.get?.("etag");
+  if (typeof etag !== "string" || etag !== `"output-version-settings:${workspace}:${payload.data.version}"`) {
+    throw new Error("OUTPUT_VERSION_SETTINGS_RESPONSE_INVALID");
+  }
+  return { ...payload.data, etag };
+}
+
 function validCreateRequest(request) {
   return exact(request, ["source_id", "source_version_id", "run_id", "run_result_id", "title", "purpose"])
     && safeId(request.source_id) && safeId(request.source_version_id)
@@ -144,7 +305,7 @@ const STUDIO_OUTPUT_TYPES = new Set(["evidence_report", "compliance_checklist", 
 const STUDIO_ACTIONS = new Set(["reviews", "approval-requests", "approvals", "deliveries", "knowledge-registrations"]);
 
 export async function issueStudioStepUp(actionGroup, targetId, password, { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
-  if (!new Set(["final_approval_or_knowledge_registration", "external_transfer"]).has(actionGroup) || !safeId(targetId) || typeof password !== "string" || password.length < 12 || password.length > 1024) throw new Error("STUDIO_INPUT_INVALID");
+  if (!new Set(["final_approval_or_knowledge_registration", "external_transfer", "data_area_move"]).has(actionGroup) || !safeId(targetId) || typeof password !== "string" || password.length < 12 || password.length > 1024) throw new Error("STUDIO_INPUT_INVALID");
   const response = await fetchImpl("/bff/api/session/step-up", {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
@@ -205,6 +366,56 @@ export async function createStudioVersion(workspaceId, outputId, request, { fetc
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_VERSION_FAILED");
   if (!record(payload?.data) || !safeId(payload.data.output_version_id)) throw new Error("STUDIO_RESPONSE_INVALID");
   return payload.data;
+}
+
+const STUDIO_VERSION_KEYS = Object.freeze([
+  "output_version_id", "content_version", "previous_version_id", "status", "content",
+  "revision_type", "change_reason", "settings_snapshot_id", "citations", "review_request_id",
+  "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format",
+]);
+const STUDIO_CITATION_KEYS = Object.freeze([
+  "citation_id", "source_version_id", "evidence_span_id", "origin", "locator",
+]);
+
+function validStudioCitation(value) {
+  return exact(value, STUDIO_CITATION_KEYS)
+    && safeId(value.citation_id) && safeId(value.source_version_id) && safeId(value.evidence_span_id)
+    && new Set(["raw_source", "daon_knowledge"]).has(value.origin)
+    && record(value.locator) && exact(value.locator, ["kind", "value"])
+    && new Set(["page", "section"]).has(value.locator.kind)
+    && safeText(value.locator.value, 1, 500);
+}
+
+function validStudioVersion(value) {
+  const nullableIds = ["previous_version_id", "review_request_id", "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id"];
+  let serialized;
+  try { serialized = JSON.stringify(value.content); } catch { return false; }
+  return exact(value, STUDIO_VERSION_KEYS) && safeId(value.output_version_id)
+    && Number.isSafeInteger(value.content_version) && value.content_version >= 1
+    && nullableIds.every((field) => value[field] === null || safeId(value[field]))
+    && new Set(["draft", "review_requested", "in_review", "approved", "revision_requested", "delivered"]).has(value.status)
+    && (typeof value.content === "string" || record(value.content))
+    && safeText(serialized, 1, 8 * 1024 * 1024)
+    && new Set(["initial", "user_edit", "ai_regeneration", "settings_change"]).has(value.revision_type)
+    && safeText(value.change_reason, 1, 500) && safeId(value.settings_snapshot_id)
+    && Array.isArray(value.citations) && value.citations.length <= 1_000
+    && value.citations.every(validStudioCitation)
+    && new Set(["docx", "pdf", "xlsx", "csv", "json", "svg", "png"]).has(value.output_format);
+}
+
+export async function listStudioVersions(workspaceId, outputId, { fetchImpl = fetch, signal } = {}) {
+  const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
+  if (!safeId(outputId)) throw new Error("STUDIO_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions?workspace_id=${encodeURIComponent(workspace)}`, {
+    method: "GET", credentials: "same-origin", cache: "no-store", signal,
+  });
+  const payload = await json(response, "STUDIO_RESPONSE_INVALID");
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_LIST_FAILED");
+  if (!exact(payload, ["data", "meta"]) || !exact(payload.data, ["output_id", "versions"])
+      || payload.data.output_id !== outputId || !Array.isArray(payload.data.versions)
+      || payload.data.versions.length > 1_000 || !payload.data.versions.every(validStudioVersion)
+      || !validMeta(payload.meta, workspace)) throw new Error("STUDIO_RESPONSE_INVALID");
+  return payload.data.versions;
 }
 
 export async function createStudioAction(workspaceId, action, request, { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {

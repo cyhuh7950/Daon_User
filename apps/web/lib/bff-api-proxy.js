@@ -22,6 +22,7 @@ const RESPONSE_HEADERS = new Set([
   "retry-after",
   "set-cookie",
   "x-trace-id",
+  "x-citation-locator-kind",
   "x-citation-page",
   "x-content-type-options",
 ]);
@@ -32,6 +33,7 @@ const NATIVE_RESPONSE_HEADERS = new Set([
   "etag",
   "retry-after",
   "x-trace-id",
+  "x-citation-locator-kind",
   "x-citation-page",
 ]);
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -53,6 +55,10 @@ const NOTIFICATION_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 const INBOX_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 const BACKUP_QUERY = new Set(["workspace_id"]);
 const MODEL_SETTINGS_QUERY = new Set(["workspace_id"]);
+const PROVIDER_CODES = new Set([
+  "ANTHROPIC", "CEREBRAS", "GEMINI", "GROQ", "MISTRAL", "OLLAMA",
+  "OPENAI", "OPENROUTER", "UPSTAGE",
+]);
 const STUDIO_QUERY = new Set(["workspace_id"]);
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
 const GROUNDED_QUESTION_TIMEOUT_MS = 100_000;
@@ -134,8 +140,9 @@ function routeFor(method, segments) {
     segments.length === 3 && segments[0] === "studio-outputs" && SAFE_SEGMENT.test(segments[1])
     && segments[2] === "versions"
   ) {
-    return method === "POST"
-      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions`, query: null }
+    if (method === "POST") return { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions`, query: null };
+    return method === "GET"
+      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions`, query: STUDIO_QUERY }
       : { methodRejected: true };
   }
   if (
@@ -156,6 +163,47 @@ function routeFor(method, segments) {
   ) {
     return method === "POST"
       ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions/authorization`, query: null, groundedQuestion: true }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "operations"
+    && segments[3] === "status"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/operations/status`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "output-version-settings"
+  ) {
+    return new Set(["GET", "PATCH"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/output-version-settings`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "sync-operations"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sync-operations`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "sync-operations"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "approve"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/sync-operations/${encodeURIComponent(segments[1])}/approve`, query: null }
       : { methodRejected: true };
   }
   if (
@@ -233,10 +281,30 @@ function routeFor(method, segments) {
         }
       : { methodRejected: true };
   }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "knowledge-packages"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/knowledge-packages`, query: null }
+      : { methodRejected: true };
+  }
   if (segments.length === 1 && new Set(["model-profiles", "model-deployments"]).has(segments[0])) {
     if (method === "GET") return { path: `/api/v1/${segments[0]}`, query: MODEL_SETTINGS_QUERY };
     return method === "POST"
       ? { path: `/api/v1/${segments[0]}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "model-profiles"
+    && PROVIDER_CODES.has(segments[1])
+    && segments[2] === "connection-check"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/model-profiles/${segments[1]}/connection-check`, query: MODEL_SETTINGS_QUERY }
       : { methodRejected: true };
   }
   if (

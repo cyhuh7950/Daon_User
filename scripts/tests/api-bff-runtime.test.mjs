@@ -743,6 +743,9 @@ test("BFF exposes only bounded Provider settings paths and query", async () => {
   const getDeployments = await proxy(new Request(
     "https://app.example.com/bff/api/model-deployments?workspace_id=workspace-001&internal=blocked",
   ), ["model-deployments"]);
+  const checkConnection = await proxy(new Request(
+    "https://app.example.com/bff/api/model-profiles/UPSTAGE/connection-check?workspace_id=workspace-001&secret=blocked",
+  ), ["model-profiles", "UPSTAGE", "connection-check"]);
   const getPolicy = await proxy(new Request(
     "https://app.example.com/bff/api/workspaces/workspace-001/model-policy",
   ), ["workspaces", "workspace-001", "model-policy"]);
@@ -761,12 +764,13 @@ test("BFF exposes only bounded Provider settings paths and query", async () => {
     },
   ), ["workspaces", "workspace-001", "model-policy"]);
   assert.deepEqual(
-    [getProfiles.status, getDeployments.status, getPolicy.status, patchPolicy.status],
-    [200, 200, 200, 200],
+    [getProfiles.status, getDeployments.status, checkConnection.status, getPolicy.status, patchPolicy.status],
+    [200, 200, 200, 200, 200],
   );
   assert.deepEqual(captured, [
     { url: "https://api.example.com/api/v1/model-profiles?workspace_id=workspace-001", method: "GET" },
     { url: "https://api.example.com/api/v1/model-deployments?workspace_id=workspace-001", method: "GET" },
+    { url: "https://api.example.com/api/v1/model-profiles/UPSTAGE/connection-check?workspace_id=workspace-001", method: "GET" },
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-policy", method: "GET" },
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-policy", method: "PATCH" },
   ]);
@@ -786,6 +790,102 @@ test("BFF exposes only bounded Provider settings paths and query", async () => {
   assert.equal(invalidId.status, 404);
   assert.equal(invalidMethod.status, 405);
   assert.equal(rejectedCalls, 0);
+});
+
+test("BFF는 검증된 Workspace Knowledge 목록 GET만 same-origin으로 노출한다", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: { items: [] }, meta: {} });
+    },
+  });
+  const listed = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/knowledge-packages?secret=blocked",
+  ), ["workspaces", "workspace-001", "knowledge-packages"]);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(captured, [{
+    url: "https://api.example.com/api/v1/workspaces/workspace-001/knowledge-packages",
+    method: "GET",
+  }]);
+
+  const denied = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/knowledge-packages",
+    { method: "POST", headers: { Origin: "https://app.example.com", "Sec-Fetch-Site": "same-origin" } },
+  ), ["workspaces", "workspace-001", "knowledge-packages"]);
+  assert.equal(denied.status, 405);
+  assert.equal(captured.length, 1);
+});
+
+test("BFF는 Workspace 운영상태 GET만 same-origin 안전 경로로 전달한다", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: {}, meta: {} });
+    },
+  });
+  const response = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/operations/status?secret=blocked",
+  ), ["workspaces", "workspace-001", "operations", "status"]);
+  assert.equal(response.status, 200);
+  assert.deepEqual(captured, [{
+    url: "https://api.example.com/api/v1/workspaces/workspace-001/operations/status",
+    method: "GET",
+  }]);
+  const denied = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/operations/status",
+    { method: "POST", headers: { Origin: "https://app.example.com", "Content-Type": "application/json" }, body: "{}" },
+  ), ["workspaces", "workspace-001", "operations", "status"]);
+  assert.equal(denied.status, 405);
+  assert.equal(captured.length, 1);
+});
+
+test("BFF는 출력·버전 설정 GET과 same-origin PATCH만 전달한다", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: {}, meta: {} });
+    },
+  });
+  const segments = ["workspaces", "workspace-001", "output-version-settings"];
+  assert.equal((await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/output-version-settings"), segments)).status, 200);
+  assert.equal((await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/output-version-settings", {
+    method: "PATCH",
+    headers: { Origin: "https://app.example.com", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json", "If-Match": '"output-version-settings:workspace-001:0"', "Idempotency-Key": "output-settings-idem-0001" },
+    body: JSON.stringify({ default_formats: {}, expected_version: 0 }),
+  }), segments)).status, 200);
+  assert.deepEqual(captured.map((item) => item.method), ["GET", "PATCH"]);
+  assert.ok(captured.every((item) => item.url === "https://api.example.com/api/v1/workspaces/workspace-001/output-version-settings"));
+  assert.equal((await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/output-version-settings", { method: "DELETE" }), segments)).status, 405);
+  assert.equal(captured.length, 2);
+});
+
+test("BFF는 동기화 목록과 same-origin 승인만 전달한다", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: {}, meta: {} });
+    },
+  });
+  const listSegments = ["workspaces", "workspace-001", "sync-operations"];
+  assert.equal((await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/sync-operations"), listSegments)).status, 200);
+  const approveSegments = ["sync-operations", "sync-operation-001", "approve"];
+  assert.equal((await proxy(new Request("https://app.example.com/bff/api/sync-operations/sync-operation-001/approve", {
+    method: "POST",
+    headers: { Origin: "https://app.example.com", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json", "If-Match": '"sync:sync-operation-001:1"', "Idempotency-Key": "sync-approval-idem-0001" },
+    body: "{}",
+  }), approveSegments)).status, 200);
+  assert.deepEqual(captured.map((item) => item.url), [
+    "https://api.example.com/api/v1/workspaces/workspace-001/sync-operations",
+    "https://api.example.com/api/v1/sync-operations/sync-operation-001/approve",
+  ]);
 });
 
 test("BFF uploads a bounded PDF only through the approved workspace source route", async () => {
@@ -879,7 +979,7 @@ test("BFF exposes only same-origin document processing status reads", async () =
   assert.equal(write.status, 405);
 });
 
-test("BFF exposes grounded questions and Citation PDF only through approved same-origin routes", async () => {
+test("BFF exposes grounded questions and typed Citation content only through approved same-origin routes", async () => {
   const captured = [];
   const proxy = createBffProxy({
     baseUrl: new URL("https://api.example.com"),
@@ -887,7 +987,10 @@ test("BFF exposes grounded questions and Citation PDF only through approved same
     fetchImpl: async (url, init) => {
       captured.push({ url: String(url), method: init.method });
       return String(url).endsWith("/content")
-        ? new Response(Buffer.from("%PDF-1.4"), { headers: { "Content-Type": "application/pdf" } })
+        ? new Response(Buffer.from("Daon knowledge section"), { headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "X-Citation-Locator-Kind": "section",
+        } })
         : Response.json({ data: { answer: "ORANGE-COMPASS-42" }, meta: {} });
     },
   });
@@ -907,7 +1010,8 @@ test("BFF exposes grounded questions and Citation PDF only through approved same
   ), ["workspaces", "workspace-001", "citations", "citation-cp3", "content"]);
 
   assert.equal(question.status, 200);
-  assert.equal(citation.headers.get("content-type"), "application/pdf");
+  assert.equal(citation.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(citation.headers.get("x-citation-locator-kind"), "section");
   assert.deepEqual(captured, [
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/questions", method: "POST" },
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/citations/citation-cp3/content", method: "GET" },
@@ -941,9 +1045,11 @@ test("BFF allowlists Product Studio lifecycle and bounded export paths", async (
   }), segments);
   const generation = await post("studio-generation-requests", ["studio-generation-requests"]);
   const review = await post("reviews", ["reviews"]);
+  const versions = await proxy(new Request("https://app.example.com/bff/api/studio-outputs/output-1/versions?workspace_id=workspace-1"), ["studio-outputs", "output-1", "versions"]);
   const exportResponse = await proxy(new Request("https://app.example.com/bff/api/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-1"), ["studio-outputs", "output-1", "versions", "version-1", "exports", "pdf"]);
   assert.equal(generation.status, 200);
   assert.equal(review.status, 200);
+  assert.equal(versions.status, 200);
   assert.equal(exportResponse.headers.get("content-type"), "application/pdf");
   assert.equal(exportResponse.headers.get("x-content-type-options"), "nosniff");
   assert.equal(exportResponse.headers.get("content-disposition"), 'attachment; filename="studio-version-1.pdf"');
@@ -951,12 +1057,12 @@ test("BFF allowlists Product Studio lifecycle and bounded export paths", async (
   const wrongMethods = await Promise.all([
     proxy(new Request("https://app.example.com/bff/api/reviews"), ["reviews"]),
     post("studio-outputs", ["studio-outputs"]),
-    proxy(new Request("https://app.example.com/bff/api/studio-outputs/output-1/versions?workspace_id=workspace-1"), ["studio-outputs", "output-1", "versions"]),
   ]);
-  assert.deepEqual(wrongMethods.map((response) => response.status), [405, 405, 405]);
+  assert.deepEqual(wrongMethods.map((response) => response.status), [405, 405]);
   assert.deepEqual(captured, [
     { url: "https://api.example.com/api/v1/studio-generation-requests", method: "POST" },
     { url: "https://api.example.com/api/v1/reviews", method: "POST" },
+    { url: "https://api.example.com/api/v1/studio-outputs/output-1/versions?workspace_id=workspace-1", method: "GET" },
     { url: "https://api.example.com/api/v1/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-1", method: "GET" },
   ]);
 });

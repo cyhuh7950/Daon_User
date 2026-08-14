@@ -20,6 +20,21 @@ button, input, select, textarea { font: inherit; }
 .desktop-navigation button:focus-visible { outline: 2px solid #0a67b5; outline-offset: 2px; }
 .desktop-content, .desktop-content > section { min-width: 0; }
 .desktop-content > section[hidden] { display: none; }
+.desktop-shell[data-visual-system="notebook-violet"] .desktop-titlebar { background: var(--workspace-surface); color: var(--workspace-text); border-bottom: 1px solid var(--workspace-border); }
+.desktop-shell[data-visual-system="notebook-violet"] .desktop-navigation { background: var(--workspace-surface-raised); border-color: var(--workspace-border); }
+.desktop-shell[data-visual-system="notebook-violet"] .workspace-pane { border-color: var(--workspace-border); border-radius: var(--workspace-radius); background: var(--workspace-surface); box-shadow: var(--workspace-shadow); transition: border-color var(--workspace-motion) ease; }
+.desktop-shell[data-visual-system="notebook-violet"] button:focus-visible,
+.desktop-shell[data-visual-system="notebook-violet"] input:focus-visible,
+.desktop-shell[data-visual-system="notebook-violet"] select:focus-visible { outline: 2px solid var(--workspace-accent); outline-offset: 2px; }
+.desktop-app-actions { display: flex; gap: 6px; }
+.workspace-modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgb(23 21 29 / 48%); }
+.workspace-modal { width: min(560px, 100%); max-height: min(760px, calc(100vh - 48px)); overflow: auto; padding: 18px; border: 1px solid var(--workspace-border); border-radius: var(--workspace-radius); background: var(--workspace-surface); color: var(--workspace-text); box-shadow: var(--workspace-shadow); }
+.workspace-modal > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.workspace-modal fieldset { margin: 0 0 12px; border: 1px solid var(--workspace-border); }
+.operations-status-list { display: grid; gap: 8px; }
+.operations-status-list div { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid var(--workspace-border); }
+.operations-status-list dd { margin: 0; }
+.modal-inline-alert { color: var(--workspace-danger); border-left: 3px solid currentColor; padding-left: 8px; }
 @media (max-width: 600px) {
   .desktop-titlebar { align-items: flex-start; }
   .desktop-runtime-badge { max-width: 150px; }

@@ -659,9 +659,9 @@
     },
     "/api/v1/workspaces/{id}/citations/{citation_id}/content": {
       "get": {
-        "operationId": "getCurrentCitationPdfContent",
+        "operationId": "getCurrentCitationContent",
         "tags": ["Citation", "Source"],
-        "summary": "현재 SourceVersion Citation PDF 원문 조회",
+        "summary": "현재 Evidence Resource Citation 원문 조회",
         "x-implementation-owner": "CP3-QUESTION-CITATION-004",
         "parameters": [
           { "$ref": "#/components/parameters/ResourceId" },
@@ -672,16 +672,20 @@
         ],
         "responses": {
           "200": {
-            "description": "권한과 현재 lineage를 재검증한 inline PDF",
+            "description": "권한과 현재 lineage를 재검증한 형식 중립 inline Citation",
             "headers": {
               "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
               "ETag": { "$ref": "#/components/headers/ETag" },
               "X-Citation-Page": {
                 "schema": { "type": "integer", "minimum": 1 }
+              },
+              "X-Citation-Locator-Kind": {
+                "schema": { "type": "string", "enum": ["page", "section"] }
               }
             },
             "content": {
-              "application/pdf": { "schema": { "type": "string", "format": "binary" } }
+              "application/pdf": { "schema": { "type": "string", "format": "binary" } },
+              "text/plain": { "schema": { "type": "string", "maxLength": 1048576 } }
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -2036,7 +2040,7 @@
       }
     },
     "/api/v1/studio-outputs/{id}/versions": {
-      "x-unimplemented-get": {
+      "get": {
         "operationId": "listStudioOutputVersions",
         "tags": [
           "Studio"
@@ -2045,7 +2049,7 @@
         "x-implementation-owner": "R1-M8-01",
         "responses": {
           "200": {
-            "$ref": "#/components/responses/ListSuccessResponse"
+            "$ref": "#/components/responses/StudioVersionHistoryResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2074,19 +2078,10 @@
             "$ref": "#/components/parameters/ResourceId"
           },
           {
-            "$ref": "#/components/parameters/Cursor"
-          },
-          {
-            "$ref": "#/components/parameters/Limit"
-          },
-          {
-            "$ref": "#/components/parameters/Filter"
-          },
-          {
-            "$ref": "#/components/parameters/Search"
+            "name": "workspace_id", "in": "query", "required": true,
+            "schema": { "$ref": "#/components/schemas/OpaqueId" }
           }
-        ],
-        "x-list-operation": true
+        ]
       },
       "post": {
         "operationId": "createStudioOutputVersion",
@@ -2717,6 +2712,33 @@
         "requestBody": {
           "required": true,
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderProfileMutation" } } }
+        }
+      }
+    },
+    "/api/v1/model-profiles/{provider_code}/connection-check": {
+      "get": {
+        "operationId": "checkModelProviderConnection",
+        "tags": ["Model"],
+        "summary": "Model Provider 서버 연결 확인",
+        "x-implementation-owner": "R1-M8-10-FOUNDATION-A3",
+        "parameters": [
+          { "name": "provider_code", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ProviderCode" } },
+          { "name": "workspace_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "안전 연결 상태",
+            "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderConnectionStatusEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -3592,7 +3614,81 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/operations/status": {
+      "get": {
+        "operationId": "getWorkspaceOperationsStatus", "tags": ["Operations"],
+        "summary": "Workspace Provider API Storage Sync Queue 안전 운영상태", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": {
+          "200": {
+            "description": "Workspace operations status",
+            "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OperationsStatusEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/output-version-settings": {
+      "get": {
+        "operationId": "getWorkspaceOutputVersionSettings", "tags": ["Studio"],
+        "summary": "Workspace 출력 기본 형식과 append-only Version 정책 조회", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": {
+          "200": { "description": "Workspace output and version settings", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OutputVersionSettingsEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      },
+      "patch": {
+        "operationId": "saveWorkspaceOutputVersionSettings", "tags": ["Studio"],
+        "summary": "Workspace 출력 기본 형식 저장", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OutputVersionSettingsRequest" } } } },
+        "responses": {
+          "200": { "description": "Saved Workspace output and version settings", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OutputVersionSettingsEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/knowledge-packages": {
+      "get": {
+        "operationId": "listKnowledgePackages", "tags": ["Knowledge"],
+        "summary": "승인된 Daon Knowledge Package 목록", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": { "200": { "$ref": "#/components/responses/KnowledgePackageListResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies": {
+      "post": {
+        "operationId": "createOfflineKnowledgeCopy", "tags": ["Knowledge"],
+        "summary": "Step-up 승인된 Knowledge Package 오프라인 copy 생성", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "package_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OfflineKnowledgeCopyRequest" } } } },
+        "responses": { "201": { "$ref": "#/components/responses/OfflineKnowledgeCopyResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/offline-knowledge-copies/{copy_id}/content": {
+      "get": {
+        "operationId": "readOfflineKnowledgeCopyContent", "tags": ["Knowledge"],
+        "summary": "Native Client 전용 bounded Knowledge Package content", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "name": "copy_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }, { "name": "X-Daon-Workspace-Id", "in": "header", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }],
+        "responses": { "200": { "description": "Encrypted local provisioning bytes", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/octet-stream": { "schema": { "type": "string", "contentEncoding": "binary" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
     "/api/v1/workspaces/{id}/sync-operations": {
+      "get": {
+        "operationId": "listWorkspaceSyncOperations", "tags": ["Sync"],
+        "summary": "현재 Workspace의 동기화 Preview와 승인 상태 목록", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": { "200": { "description": "현재 접근 가능한 Sync Operation 목록", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncOperationListEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      },
       "post": {
         "operationId": "createSyncOperationPreview", "tags": ["Sync"],
         "summary": "Local-private에서 Cloud-sync로 복사할 항목 Preview 생성",
@@ -4107,6 +4203,11 @@
           }
         }
       },
+      "StudioVersionHistoryResponse": {
+        "description": "Studio 산출물 Version, Citation, 검토와 승인 연결의 재진입 Projection",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioVersionHistoryEnvelope" } } }
+      },
       "StudioGenerationMutationResponse": {
         "description": "Studio 생성 또는 멱등 재생의 exact data/meta 응답",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
@@ -4430,6 +4531,16 @@
           }
         }
       },
+      "KnowledgePackageListResponse": {
+        "description": "현재 접근 가능한 승인 Knowledge Package",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": { "data": { "type": "object", "additionalProperties": false, "required": ["items"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/KnowledgePackage" } } } }, "meta": { "type": "object", "additionalProperties": true } } } } }
+      },
+      "OfflineKnowledgeCopyResponse": {
+        "description": "승인된 오프라인 copy grant",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": { "data": { "type": "object", "additionalProperties": true }, "meta": { "type": "object", "additionalProperties": true } } } } }
+      },
       "SyncOperationResponse": {
         "description": "Sync Operation 상태와 불변 승인·Batch·Conflict Projection",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
@@ -4565,6 +4676,33 @@
           "base_url": { "type": "string", "maxLength": 2048 },
           "active": { "type": "boolean" },
           "expected_version": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "ProviderConnectionStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider_code", "status", "checked_at"],
+        "properties": {
+          "provider_code": { "$ref": "#/components/schemas/ProviderCode" },
+          "status": { "type": "string", "enum": ["ready"] },
+          "checked_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ProviderConnectionStatusEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/ProviderConnectionStatus" },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["trace_id", "workspace_id"],
+            "properties": {
+              "trace_id": { "$ref": "#/components/schemas/OpaqueId" },
+              "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }
+            }
+          }
         }
       },
       "ModelDeployment": {
@@ -4907,6 +5045,57 @@
         "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id", "replayed"],
         "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "replayed": { "type": "boolean" } }
       },
+      "StudioCitationLocator": {
+        "type": "object", "additionalProperties": false, "required": ["kind", "value"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["page", "section"] },
+          "value": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      },
+      "StudioCitationProjection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["citation_id", "source_version_id", "evidence_span_id", "origin", "locator"],
+        "properties": {
+          "citation_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "evidence_span_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "origin": { "type": "string", "enum": ["raw_source", "daon_knowledge"] },
+          "locator": { "$ref": "#/components/schemas/StudioCitationLocator" }
+        }
+      },
+      "StudioVersionProjection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["output_version_id", "content_version", "previous_version_id", "status", "content", "revision_type", "change_reason", "settings_snapshot_id", "citations", "review_request_id", "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format"],
+        "properties": {
+          "output_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "content_version": { "type": "integer", "minimum": 1 },
+          "previous_version_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "status": { "type": "string", "enum": ["draft", "review_requested", "in_review", "approved", "revision_requested", "delivered"] },
+          "content": { "oneOf": [{ "type": "string" }, { "type": "object" }] },
+          "revision_type": { "type": "string", "enum": ["initial", "user_edit", "ai_regeneration", "settings_change"] },
+          "change_reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "settings_snapshot_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "citations": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/components/schemas/StudioCitationProjection" } },
+          "review_request_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "approval_request_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "approval_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "delivery_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "knowledge_registration_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "output_format": { "type": "string", "enum": ["docx", "pdf", "xlsx", "csv", "json", "svg", "png"] }
+        }
+      },
+      "StudioVersionHistoryEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["output_id", "versions"], "properties": {
+            "output_id": { "$ref": "#/components/schemas/OpaqueId" },
+            "versions": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/components/schemas/StudioVersionProjection" } }
+          } },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"], "properties": {
+            "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }
+          } }
+        }
+      },
       "StudioGenerationMutationEnvelope": {
         "type": "object", "additionalProperties": false, "required": ["data", "meta"],
         "properties": {
@@ -5126,23 +5315,50 @@
           }
         }
       },
+      "QuestionEvidenceResource": {
+        "type": "object", "additionalProperties": false,
+        "required": ["resource_kind", "resource_id"],
+        "properties": {
+          "resource_kind": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "resource_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "version_id": { "$ref": "#/components/schemas/OpaqueId" }
+        }
+      },
+      "QuestionKnowledgeContext": {
+        "type": "object", "additionalProperties": false,
+        "required": ["mode", "resources"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["daon_priority", "mixed", "raw_only"] },
+          "resources": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/components/schemas/QuestionEvidenceResource" } }
+        }
+      },
       "GroundedQuestionRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["source_id", "source_version_id", "question"],
+        "required": ["question"],
+        "oneOf": [
+          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
+          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } }
+        ],
         "properties": {
           "source_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
           "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
           "step_up_authorization_id": { "$ref": "#/components/schemas/OpaqueId" }
         }
       },
       "GroundedQuestionAuthorizationRequest": {
         "type": "object", "additionalProperties": false,
-        "required": ["source_id", "source_version_id", "question", "password"],
+        "required": ["question", "password"],
+        "oneOf": [
+          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
+          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } }
+        ],
         "properties": {
           "source_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
           "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
           "password": { "type": "string", "minLength": 1, "maxLength": 1024, "writeOnly": true }
         }
@@ -5159,13 +5375,25 @@
       "GroundedCitation": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page"],
+        "required": ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page", "origin", "context_item_id", "locator"],
         "properties": {
           "citation_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
           "evidence_span_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "page": { "type": "integer", "minimum": 1 }
+          "page": { "type": "integer", "minimum": 1 },
+          "origin": { "type": "string", "enum": ["raw_source", "daon_knowledge"] },
+          "context_item_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "locator": { "$ref": "#/components/schemas/CitationLocator" }
+        }
+      },
+      "CitationLocator": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "value"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["page", "section"] },
+          "value": { "type": "string", "minLength": 1, "maxLength": 255 }
         }
       },
       "GroundedAnswer": {
@@ -6274,10 +6502,13 @@
       },
       "SyncItemInput": {
         "type": "object", "additionalProperties": false,
-        "required": ["item_id", "source_version_id", "local_object_id", "digest_sha256", "byte_size", "content_type"],
+        "required": ["item_id", "local_object_id", "digest_sha256", "byte_size", "content_type"],
         "properties": {
           "item_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "item_kind": { "type": "string", "enum": ["source_version", "output_version"], "default": "source_version" },
+          "source_version_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+          "output_version_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+          "dependency_item_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" }, "default": [] },
           "local_object_id": { "$ref": "#/components/schemas/OpaqueId" },
           "digest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
           "byte_size": { "type": "integer", "minimum": 0 },
@@ -6285,6 +6516,17 @@
           "base_cloud_version_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
           "base_cloud_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
         }
+      },
+      "KnowledgePackage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["package_id", "producer", "producer_version", "knowledge_registration_id", "output_version_id", "authority", "registration_state", "review_state", "digest_sha256", "byte_size", "content_type", "effective_at", "expires_at"],
+        "properties": {
+          "package_id": { "$ref": "#/components/schemas/OpaqueId" }, "producer": { "type": "string", "enum": ["daon2", "daon2_5", "daon3"] }, "producer_version": { "type": "string" }, "knowledge_registration_id": { "$ref": "#/components/schemas/OpaqueId" }, "output_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "authority": { "type": "string", "const": "approved" }, "registration_state": { "type": "string", "const": "registered" }, "review_state": { "type": "string", "const": "approved" }, "digest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "byte_size": { "type": "integer", "minimum": 1, "maximum": 8388608 }, "content_type": { "type": "string" }, "effective_at": { "type": "string", "format": "date-time" }, "expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "OfflineKnowledgeCopyRequest": {
+        "type": "object", "additionalProperties": false, "required": ["device_id", "step_up_authorization_id"],
+        "properties": { "device_id": { "$ref": "#/components/schemas/OpaqueId" }, "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true } }
       },
       "SyncCreateRequest": {
         "type": "object", "additionalProperties": false,
@@ -6327,12 +6569,13 @@
       },
       "SyncOperation": {
         "type": "object", "additionalProperties": false,
-        "required": ["operation_id", "tenant_id", "workspace_id", "actor_id", "target_area", "state", "version", "manifest_digest", "approved_item_ids", "completed_item_ids", "batches", "conflicts", "target_versions", "reindex_state", "source_mutations", "overwrite_count"],
+        "required": ["operation_id", "tenant_id", "workspace_id", "actor_id", "target_area", "state", "version", "manifest_digest", "item_ids", "approved_item_ids", "completed_item_ids", "batches", "conflicts", "target_versions", "reindex_state", "source_mutations", "overwrite_count"],
         "properties": {
           "operation_id": { "$ref": "#/components/schemas/OpaqueId" }, "tenant_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "actor_id": { "$ref": "#/components/schemas/OpaqueId" },
           "target_area": { "type": "string", "const": "cloud_sync" },
           "state": { "type": "string", "enum": ["awaiting_approval", "approved", "transferring", "conflict", "reindex_requested", "failed", "cancelled"] },
           "version": { "type": "integer", "minimum": 1 }, "manifest_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "item_ids": { "type": "array", "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "approved_item_ids": { "type": "array", "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "completed_item_ids": { "type": "array", "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "batches": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
@@ -6418,6 +6661,82 @@
         "properties": {
           "preview_version": { "type": "integer", "minimum": 1 },
           "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true }
+        }
+      },
+      "OperationsStatus": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspace_id", "overall_status", "checked_at", "components"],
+        "properties": {
+          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "overall_status": { "type": "string", "enum": ["ready", "warning", "error"] },
+          "checked_at": { "type": "string", "format": "date-time" },
+          "components": {
+            "type": "array", "minItems": 5, "maxItems": 5,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["component_id", "status", "safe_code", "pending_count", "recovery_action"],
+              "properties": {
+                "component_id": { "type": "string", "enum": ["provider", "api", "storage", "sync", "queue"] },
+                "status": { "type": "string", "enum": ["ready", "warning", "error"] },
+                "safe_code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$" },
+                "pending_count": { "type": "integer", "minimum": 0 },
+                "recovery_action": { "type": "string", "enum": ["none", "open_llm_settings", "open_sync_settings", "refresh_status"] }
+              }
+            }
+          }
+        }
+      },
+      "SyncOperationListEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["operations"], "properties": { "operations": { "type": "array", "maxItems": 200, "items": { "$ref": "#/components/schemas/SyncOperation" } } } },
+          "meta": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "OperationsStatusEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/OperationsStatus" },
+          "meta": {
+            "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"],
+            "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" } }
+          }
+        }
+      },
+      "OutputFormatDefaults": {
+        "type": "object", "additionalProperties": false,
+        "required": ["evidence_report", "compliance_checklist", "comparison_table", "knowledge_graph", "business_draft"],
+        "properties": {
+          "evidence_report": { "type": "string", "enum": ["pdf", "docx"] },
+          "compliance_checklist": { "type": "string", "enum": ["xlsx", "csv", "pdf"] },
+          "comparison_table": { "type": "string", "enum": ["xlsx", "csv", "pdf"] },
+          "knowledge_graph": { "type": "string", "enum": ["json", "svg", "png"] },
+          "business_draft": { "type": "string", "enum": ["docx", "pdf"] }
+        }
+      },
+      "OutputVersionSettings": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspace_id", "default_formats", "version_save_mode", "version"],
+        "properties": {
+          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "default_formats": { "$ref": "#/components/schemas/OutputFormatDefaults" },
+          "version_save_mode": { "type": "string", "const": "append_only" },
+          "version": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "OutputVersionSettingsRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["default_formats", "expected_version"],
+        "properties": {
+          "default_formats": { "$ref": "#/components/schemas/OutputFormatDefaults" },
+          "expected_version": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "OutputVersionSettingsEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/OutputVersionSettings" },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
         }
       },
       "RecoveryEnvelope": {

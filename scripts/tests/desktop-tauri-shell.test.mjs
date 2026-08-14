@@ -136,6 +136,23 @@ const buttonByText = (root, label) => findElements(root, (node) => node.tagName 
 const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
 const readBinary = (path) => readFile(new URL(`../../${path}`, import.meta.url));
 
+test("Tauri registers the exact command-bound offline Studio bridge", async () => {
+  const lib = await read("apps/desktop/src-tauri/src/lib.rs");
+  const bridge = await read("apps/desktop/src-tauri/src/offline_studio_bridge.rs");
+  for (const command of [
+    "offline_studio_list_models", "offline_studio_list_raw_sources",
+    "offline_studio_import_raw_source", "offline_studio_prepare_context",
+    "offline_studio_confirm_settings", "offline_studio_generate_draft",
+    "offline_studio_get_draft", "offline_studio_append_edit", "offline_studio_queue_sync"
+  ]) {
+    assert.match(lib, new RegExp(command));
+    assert.match(bridge, new RegExp(command));
+  }
+  assert.match(bridge, /execute_workspace_studio_request/);
+  assert.match(bridge, /serde\(deny_unknown_fields\)/);
+  assert.doesNotMatch(bridge, /NEXT_PUBLIC_|reqwest|TcpStream|WebSocket/i);
+});
+
 test("desktop shell directly consumes shared UI, tokens, and contracts", async () => {
   const source = await read("apps/desktop/src/desktop-shell.jsx");
   assert.match(source, /@daon-user\/ui/);
@@ -161,6 +178,104 @@ test("desktop shell은 Native Session과 Product Workspace를 결합하고 Proto
   assert.doesNotMatch(authPanel, /setPassword|useState\([^)]*password|localStorage|sessionStorage|console\./i);
   assert.doesNotMatch(source, /ProductionBoundEvidenceHub|AdaptiveWorkspace|AccountSecurityWorkspace|OperationsRecoveryWorkspace/);
   assert.doesNotMatch(source, /fetch\s*\(|XMLHttpRequest|WebSocket|https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_/i);
+});
+
+test("실제 Offline Studio DOM action은 context부터 queue까지 exact 순서로 실행한다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".r1-offline-studio-react-"));
+  const dom = installMinimalDom();
+  let root;
+  try {
+    const { act, createElement, Fragment, useReducer } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({
+      configFile: false, logLevel: "silent", root: repositoryRoot,
+      build: {
+        outDir: bundleRoot, emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/desktop/src/offline-studio-pane.jsx"), formats: ["es"], fileName: "offline-studio-pane" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] }
+      }
+    });
+    const entry = (await readdir(bundleRoot)).find((name) => name.startsWith("offline-studio-pane") && /\.(?:m?js)$/u.test(name));
+    assert.ok(entry);
+    const { OfflineStudioPane } = await import(`${pathToFileURL(path.join(bundleRoot, entry)).href}?flow=${Date.now()}`);
+    const { createOfflineStudioState, reduceOfflineStudioState } = await import("../../apps/desktop/src/offline-studio-model.js");
+    const calls = [];
+    const studioAdapter = {
+      listModels: async (workspaceId) => { calls.push(["listModels", workspaceId]); return [{ deployment_id: "deployment-1", provider_code: "OLLAMA", provider_kind: "server_internal", readiness: "ready", label: "qwen" }]; },
+      listRawSources: async (workspaceId) => { calls.push(["listRawSources", workspaceId]); return [{ source_version_id: "source-v1", filename: "source.txt", digest_sha256: "a".repeat(64), quality_state: "unverified" }]; },
+      importRawSource: async (request) => { calls.push(["importRawSource", structuredClone(request)]); return { source_version_id: "source-v1" }; },
+      prepareContext: async (request) => { calls.push(["prepareContext", request]); return { mode: "raw_only", snapshot_id: "scope-1", items: [{ origin: "raw_source", item_id: "source-v1", version_id: "source-v1" }], warnings: ["RAW_SOURCE_ONLY"] }; },
+      confirmSettings: async (request) => { calls.push(["confirmSettings", request]); return { request_id: "request-1", settings_snapshot_id: "settings-1" }; },
+      generateDraft: async (request) => { calls.push(["generateDraft", request]); return { draft_id: "draft-1", output_version_id: "version-1", title: "실제 초안", sections: [{ title: "본문", body: "근거", unverified: true }] }; },
+      appendEdit: async (request) => { calls.push(["appendEdit", request]); return { draft_id: "draft-1", output_version_id: "version-2", title: "실제 초안", sections: request.sections }; },
+      queueSync: async (request) => { calls.push(["queueSync", request]); return { approval_state: "awaiting_approval", operation_id: "sync-1" }; },
+    };
+    const syncAdapter = { listKnowledge: async () => [] };
+    const sources = [{ ready: true, sourceVersionId: "source-v1" }];
+    function Harness() {
+      const [state, dispatch] = useReducer(reduceOfflineStudioState, undefined, () => createOfflineStudioState({
+        context: { mode: "raw_only", snapshotId: null, items: [{ origin: "raw_source", item_id: "source-v1", version_id: "source-v1" }], warnings: [] },
+        rawSources: [{ source_version_id: "source-v1", filename: "source.txt", digest_sha256: "a".repeat(64), quality_state: "unverified" }],
+        selectedRawSourceVersionIds: ["source-v1"],
+        selectedModelDeploymentId: "deployment-1",
+      }));
+      const props = { state, dispatch, studioAdapter, syncAdapter, workspaceId: "workspace-1", sources };
+      return createElement(Fragment, null,
+        createElement(OfflineStudioPane, { ...props, surface: "studio" }),
+        createElement(OfflineStudioPane, { ...props, surface: "editor" }),
+      );
+    }
+    const container = dom.document.createElement("div");
+    dom.document.body.appendChild(container);
+    root = createRoot(container);
+    const flush = async () => { await new Promise((resolve) => setTimeout(resolve, 0)); };
+    await act(async () => { root.render(createElement(Harness)); });
+    const rawFileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
+    assert.ok(rawFileInput, "실제 로컬 Raw Source file input이 필요하다");
+    rawFileInput.files = [{
+      name: "source.txt",
+      type: "text/plain",
+      arrayBuffer: async () => new TextEncoder().encode("local evidence").buffer,
+    }];
+    const rawFilePropsKey = Object.keys(rawFileInput).find((key) => key.startsWith("__reactProps$"));
+    assert.ok(rawFilePropsKey);
+    await act(async () => { await rawFileInput[rawFilePropsKey].onChange({ currentTarget: rawFileInput, target: rawFileInput }); await flush(); });
+    const settingsForm = findElements(container, (node) => node.tagName === "FORM" && node.getAttribute("aria-label") === "Offline Studio 설정")[0];
+    await act(async () => { settingsForm.dispatchEvent(new MinimalEvent("submit")); await flush(); });
+    await act(async () => { buttonByText(container, "초안 생성").dispatchEvent(new MinimalEvent("click")); await flush(); });
+    assert.match(container.textContent, /실제 초안/u, JSON.stringify(calls));
+    const sectionTitle = findElements(container, (node) => (node.getAttribute("name") ?? node.name) === "section-title-0")[0];
+    const sectionBody = findElements(container, (node) => (node.getAttribute("name") ?? node.name) === "section-body-0")[0];
+    assert.ok(sectionTitle, "실제 초안 제목 편집 input이 필요하다");
+    assert.ok(sectionBody, "실제 초안 본문 편집 textarea가 필요하다");
+    sectionTitle.value = "수정 제목";
+    sectionBody.value = "사용자가 수정한 본문";
+    const titlePropsKey = Object.keys(sectionTitle).find((key) => key.startsWith("__reactProps$"));
+    const bodyPropsKey = Object.keys(sectionBody).find((key) => key.startsWith("__reactProps$"));
+    assert.ok(titlePropsKey);
+    assert.ok(bodyPropsKey);
+    await act(async () => {
+      sectionTitle[titlePropsKey].onChange({ currentTarget: sectionTitle, target: sectionTitle });
+      sectionBody[bodyPropsKey].onChange({ currentTarget: sectionBody, target: sectionBody });
+    });
+    await act(async () => { buttonByText(container, "새 Version 저장").dispatchEvent(new MinimalEvent("click")); await flush(); });
+    await act(async () => { buttonByText(container, "Sync 대기열").dispatchEvent(new MinimalEvent("click")); await flush(); });
+    assert.deepEqual(calls.map(([name]) => name), ["listModels", "listRawSources", "importRawSource", "listRawSources", "prepareContext", "confirmSettings", "generateDraft", "appendEdit", "queueSync"]);
+    assert.equal(calls[2][1].workspace_id, "workspace-1");
+    assert.equal(calls[2][1].filename, "source.txt");
+    assert.equal(new TextDecoder().decode(calls[2][1].bytes), "local evidence");
+    assert.equal(calls[4][1].workspace_id, "workspace-1");
+    assert.equal(calls[5][1].context_snapshot_id, "scope-1");
+    assert.equal(calls[7][1].previous_version_id, "version-1");
+    assert.deepEqual(calls[7][1].sections, [{ title: "수정 제목", body: "사용자가 수정한 본문", unverified: true }]);
+    assert.equal(calls[8][1].output_version_id, "version-2");
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    dom.restore();
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
 });
 
 test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을 fail-close한다", async () => {
@@ -219,7 +334,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
       if (command === "workspace_list_studio_outputs") return [];
       if (command === "workspace_ask_question") return {
         run_id: "run-1", run_result_id: "result-1", answer: "StrictMode 질문 성공", insufficient: false,
-        citations: [{ citation_id: "citation-1", source_id: "source-workspace-1", source_version_id: "version-workspace-1", evidence_span_id: "span-1", page: 1 }]
+        citations: [{ citation_id: "citation-1", source_id: "source-workspace-1", source_version_id: "version-workspace-1", evidence_span_id: "span-1", page: 1, origin: "raw_source", context_item_id: "source-workspace-1", locator: { kind: "page", value: "1" } }]
       };
       if (command === "recovery_cloud_list_backups") return { data: [], etag: null };
       if (command === "local_service_status") return { state: "ready", retryable: false, error_code: null };
@@ -468,7 +583,7 @@ test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·un
       calls.push({ url, method: init.method ?? "GET", signal: init.signal });
       if (String(url).endsWith("/sources")) return Response.json({ data: { source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32), digest_sha256: "b".repeat(64), byte_size: 128, status: "accepted", replayed: false, processing_run_id: "run-1", processing_state: "queued", job_state: "queued" }, meta: { trace_id: "trace-upload-1", workspace_id: "workspace-1" } }, { status: 202 });
       if (String(url).includes("/processing-runs/")) return Response.json({ data: { processing_run_id: "run-1", source_id: "source-1", source_version_id: "version-1", processing_state: "completed", source_state: "ready", job_state: "completed", safe_error_code: null }, meta: { trace_id: "trace-processing-1", workspace_id: "workspace-1" } });
-      if (String(url).endsWith("/questions")) return Response.json({ data: { run_id: "answer-run-1", run_result_id: "answer-result-1", answer: "근거 답변", insufficient: false, citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2 }] }, meta: { trace_id: "trace-question-1", workspace_id: "workspace-1" } });
+      if (String(url).endsWith("/questions")) return Response.json({ data: { run_id: "answer-run-1", run_result_id: "answer-result-1", answer: "근거 답변", insufficient: false, citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2, origin: "raw_source", context_item_id: "source-1", locator: { kind: "page", value: "2" } }] }, meta: { trace_id: "trace-question-1", workspace_id: "workspace-1" } });
       throw new Error(`unexpected:${url}`);
     };
     const adapter = workspaceModule.createWebProductWorkspaceAdapter("workspace-1");
@@ -572,7 +687,7 @@ test("Web Processing은 queued→leased→processing→completed를 polling한 �
         questionCalls += 1;
         return {
           run_id: "run-answer", run_result_id: "result-answer", answer: "근거 답변", insufficient: false,
-          citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2 }]
+          citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2, origin: "raw_source", context_item_id: "source-1", locator: { kind: "page", value: "2" } }]
         };
       },
       citationUrl: () => "/bff/api/workspaces/workspace-1/citations/citation-1/content#page=2"
@@ -954,7 +1069,7 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
       source_state: "ready", processing_state: "completed", job_state: "completed", safe_error_code: null
     };
     const validCitation = {
-      citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2
+      citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2, origin: "raw_source", context_item_id: "source-1", locator: { kind: "page", value: "2" }
     };
     const validAnswer = {
       run_id: "answer-run-1", run_result_id: "answer-result-1", answer: "근거 답변", insufficient: false, citations: [validCitation]

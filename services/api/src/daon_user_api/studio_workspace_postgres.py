@@ -96,12 +96,61 @@ class PostgresStudioWorkspaceRepository:
                 or cast(Mapping[str, object], routing_payload).get("egress_decision_id") != str(egress_id)
             ):
                 raise StudioError("ORIGINATING_RUN_POLICY_MISMATCH", 409)
+            routing_payload_map = cast(Mapping[str, object], routing_payload)
+            selected_deployment_id = routing_payload_map.get("selected_deployment_id")
+            if not isinstance(selected_deployment_id, str) or not selected_deployment_id:
+                raise StudioError("ORIGINATING_RUN_MODEL_UNAVAILABLE", 409)
+            model_row = connection.execute(
+                "SELECT pp.canonical_json,md.canonical_json,ma.canonical_json "
+                "FROM model_deployments md "
+                "JOIN provider_profiles pp ON pp.tenant_id=md.tenant_id "
+                "AND pp.workspace_id=md.workspace_id AND pp.record_id=md.provider_profile_id "
+                "JOIN model_artifacts ma ON ma.tenant_id=md.tenant_id "
+                "AND ma.workspace_id=md.workspace_id AND ma.record_id=md.model_artifact_id "
+                "WHERE md.tenant_id=%s AND md.workspace_id=%s AND md.record_id=%s",
+                (context.tenant_id, context.workspace_id, selected_deployment_id),
+            ).fetchone()
+            if (
+                model_row is None or len(model_row) != 3
+                or any(not isinstance(item, Mapping) for item in model_row)
+            ):
+                raise StudioError("ORIGINATING_RUN_MODEL_UNAVAILABLE", 409)
+            profile_payload = cast(Mapping[str, object], model_row[0])
+            deployment_payload = cast(Mapping[str, object], model_row[1])
+            artifact_payload = cast(Mapping[str, object], model_row[2])
+            provider_code = profile_payload.get("provider_code")
+            model_id = deployment_payload.get("model_id")
+            binding_version = deployment_payload.get("binding_version")
+            if (
+                not isinstance(provider_code, str) or not provider_code
+                or provider_code != artifact_payload.get("provider_code")
+                or not isinstance(model_id, str) or not model_id
+                or model_id != artifact_payload.get("model_id")
+                or not isinstance(binding_version, int) or binding_version < 1
+                or binding_version != profile_payload.get("binding_version")
+                or not isinstance(profile_payload.get("configured_profile_id"), str)
+                or not isinstance(deployment_payload.get("configured_deployment_id"), str)
+            ):
+                raise StudioError("ORIGINATING_RUN_MODEL_UNAVAILABLE", 409)
+            model_selection = {
+                "provider_code": provider_code,
+                "provider_kind": (
+                    "server_internal" if provider_code == "OLLAMA" else "external_api"
+                ),
+                "profile_id": profile_payload["configured_profile_id"],
+                "deployment_id": deployment_payload["configured_deployment_id"],
+                "deployment_record_id": selected_deployment_id,
+                "model_id": model_id,
+                "binding_version": binding_version,
+                "routing_decision_id": str(routing_id),
+            }
             originating_run = {
                 "run_id": run_id,
                 "egress_decision_id": str(egress_id),
                 "routing_decision_id": str(routing_id),
                 "policy_fingerprint": expected_fingerprint,
                 "frozen_routing_context": dict(frozen),
+                "model_selection": model_selection,
             }
         locks = [
             {"field": "reviewCondition", "value": "review_required", "reason": "WORKSPACE_POLICY"},
@@ -221,11 +270,11 @@ class PostgresStudioWorkspaceRepository:
                 if projection["ruleset_version_id"] and projection["ruleset_version_id"] != request.ruleset_version_id:
                     raise StudioError("POLICY_PROJECTION_MISMATCH", 409)
                 lineage = connection.execute(
-                    "SELECT rr.canonical_json,count(DISTINCT sv.record_id),bool_and(s.state='ready') FROM runs r JOIN run_results rr ON rr.tenant_id=r.tenant_id AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id JOIN source_versions sv ON sv.tenant_id=r.tenant_id AND sv.workspace_id=r.workspace_id AND sv.record_id=ANY(%s) JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id WHERE s.record_id=%s AND r.record_id=%s AND rr.record_id=%s AND r.tenant_id=%s AND r.workspace_id=%s GROUP BY rr.canonical_json",
-                    (list(request.source_version_ids), request.source_id, request.run_id, request.run_result_id,
+                    "SELECT rr.canonical_json,count(DISTINCT sv.record_id),bool_and(s.state='ready'),bool_or(s.record_id=%s) FROM runs r JOIN run_results rr ON rr.tenant_id=r.tenant_id AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id JOIN source_versions sv ON sv.tenant_id=r.tenant_id AND sv.workspace_id=r.workspace_id AND sv.record_id=ANY(%s) JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id WHERE r.record_id=%s AND rr.record_id=%s AND r.tenant_id=%s AND r.workspace_id=%s GROUP BY rr.canonical_json",
+                    (request.source_id, list(request.source_version_ids), request.run_id, request.run_result_id,
                      context.tenant_id, context.workspace_id),
                 ).fetchone()
-                if lineage is None or int(lineage[1]) != len(set(request.source_version_ids)) or lineage[2] is not True or bool(cast(Mapping[str, object], lineage[0]).get("insufficient")):
+                if lineage is None or int(lineage[1]) != len(set(request.source_version_ids)) or lineage[2] is not True or lineage[3] is not True or bool(cast(Mapping[str, object], lineage[0]).get("insufficient")):
                     raise StudioError("RESOURCE_UNAVAILABLE", 404)
                 citations = connection.execute(
                     "SELECT record_id,source_version_id,evidence_span_id,canonical_json FROM citations WHERE tenant_id=%s AND workspace_id=%s AND run_result_id=%s AND source_version_id=ANY(%s) ORDER BY record_id",
@@ -242,6 +291,10 @@ class PostgresStudioWorkspaceRepository:
                 output_id = self._opaque("output", *scope); version_id = self._opaque("output-version", *scope)
                 settings = {key: value for key, value in request_payload.items() if key not in {"source_id", "run_id", "run_result_id"}}
                 settings["server_policy_projection"] = projection
+                settings["model_selection"] = cast(
+                    Mapping[str, object],
+                    cast(Mapping[str, object], projection["authoritative_values"])["originating_run"],
+                )["model_selection"]
                 self._insert(connection, context, "generation_settings_snapshots", settings_id, settings)
                 self._insert(connection, context, "generation_requests", generation_id, request_payload, state="configuring", extra_columns=("generation_settings_snapshot_id",), extra_values=(settings_id,))
                 generation_version = self._transition(connection, context, "GenerationRequest", generation_id, 1, "confirmed", self._opaque("transition", *scope, "confirmed"))
@@ -271,12 +324,68 @@ class PostgresStudioWorkspaceRepository:
             with self._cloud_store._transaction(self._cloud(context, "studio.read")) as connection:
                 projection = self._policy_projection(connection, context)
                 rows = connection.execute(
-                    "SELECT so.record_id,so.canonical_json,ov.record_id,ov.state,ov.canonical_json FROM studio_outputs so JOIN LATERAL (SELECT record_id,state,canonical_json FROM output_versions WHERE tenant_id=so.tenant_id AND workspace_id=so.workspace_id AND studio_output_id=so.record_id ORDER BY version DESC LIMIT 1) ov ON true WHERE so.tenant_id=%s AND so.workspace_id=%s ORDER BY so.created_at DESC",
+                    "SELECT so.record_id,so.canonical_json,ov.record_id,ov.state,ov.canonical_json FROM studio_outputs so JOIN LATERAL (SELECT record_id,state,canonical_json FROM output_versions WHERE tenant_id=so.tenant_id AND workspace_id=so.workspace_id AND studio_output_id=so.record_id ORDER BY content_version DESC LIMIT 1) ov ON true WHERE so.tenant_id=%s AND so.workspace_id=%s ORDER BY so.created_at DESC",
                     (context.tenant_id, context.workspace_id),
                 ).fetchall()
         except CloudDatabaseError as error:
             raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503) from error
         return {"outputs": tuple({"studio_output_id": str(row[0]), "output_version_id": str(row[2]), "status": str(row[3]), **dict(cast(Mapping[str, object], row[1])), "version": dict(cast(Mapping[str, object], row[4]))} for row in rows), "studio_locks": projection["locks"]}
+
+    def list_versions(self, context: StudioContext, output_id: str):
+        if self._cloud_store is None:
+            raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503)
+        try:
+            with self._cloud_store._transaction(self._cloud(context, "studio.read")) as connection:
+                rows = connection.execute(
+                    "SELECT ov.record_id,ov.content_version,ov.previous_version_id,ov.state,ov.canonical_json,ov.generation_settings_snapshot_id,"
+                    "COALESCE((SELECT jsonb_agg(er.canonical_json || jsonb_build_object('citation_id',er.canonical_json->>'citation_id','source_version_id',er.source_version_id,'evidence_span_id',er.evidence_span_id) ORDER BY er.record_id) FROM evidence_references er WHERE er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id),'[]'::jsonb),"
+                    "(SELECT record_id FROM review_requests WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
+                    "(SELECT record_id FROM approval_requests WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
+                    "(SELECT record_id FROM approvals WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id AND decision='approved' ORDER BY created_at DESC,record_id DESC LIMIT 1),"
+                    "(SELECT record_id FROM deliveries WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
+                    "(SELECT record_id FROM knowledge_registrations WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id AND state='registered' ORDER BY created_at DESC,record_id DESC LIMIT 1) "
+                    "FROM output_versions ov JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id AND so.record_id=ov.studio_output_id "
+                    "WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s ORDER BY ov.content_version DESC,ov.record_id DESC",
+                    (context.tenant_id, context.workspace_id, output_id),
+                ).fetchall()
+                if not rows:
+                    raise StudioError("RESOURCE_UNAVAILABLE", 404)
+        except StudioError:
+            raise
+        except CloudDatabaseError as error:
+            raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503) from error
+        result = []
+        for row in rows:
+            payload = dict(cast(Mapping[str, object], row[4]))
+            citations = []
+            for raw_citation in cast(list[Mapping[str, object]], row[6]):
+                citation = dict(raw_citation)
+                locator = citation.get("locator")
+                if not isinstance(locator, Mapping):
+                    locator = {"kind": "page", "value": str(citation.get("page", 1))}
+                citations.append({
+                    "citation_id": str(citation.get("citation_id", "")),
+                    "source_version_id": str(citation.get("source_version_id", "")),
+                    "evidence_span_id": str(citation.get("evidence_span_id", "")),
+                    "origin": str(citation.get("origin", "raw_source")),
+                    "locator": dict(locator),
+                })
+            result.append({
+                "output_version_id": str(row[0]), "content_version": int(row[1]),
+                "previous_version_id": str(row[2]) if row[2] is not None else None,
+                "status": str(row[3]), "content": payload.get("content", ""),
+                "revision_type": str(payload.get("revision_type", "initial")),
+                "change_reason": str(payload.get("change_reason", "initial_generation")),
+                "settings_snapshot_id": str(row[5]),
+                "citations": citations,
+                "review_request_id": str(row[7]) if row[7] is not None else None,
+                "approval_request_id": str(row[8]) if row[8] is not None else None,
+                "approval_id": str(row[9]) if row[9] is not None else None,
+                "delivery_id": str(row[10]) if row[10] is not None else None,
+                "knowledge_registration_id": str(row[11]) if row[11] is not None else None,
+                "output_format": str(payload.get("output_format", "")),
+            })
+        return tuple(result)
 
     def create_version(self, context: StudioContext, output_id: str, revision: Mapping[str, object], idempotency_key: str):
         if self._cloud_store is None:
@@ -285,10 +394,11 @@ class PostgresStudioWorkspaceRepository:
         scope = (context.tenant_id, context.workspace_id, context.actor_id, operation, idempotency_key)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.edit")) as connection:
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("|".join(scope),))
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None: return replay, True
                 previous = connection.execute(
-                    "SELECT aggregate_id,version,generation_settings_snapshot_id,canonical_json,state FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND studio_output_id=%s AND record_id=%s",
+                    "SELECT aggregate_id,content_version,generation_settings_snapshot_id,canonical_json,state FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND studio_output_id=%s AND record_id=%s",
                     (context.tenant_id, context.workspace_id, output_id, revision["previous_version_id"]),
                 ).fetchone()
                 if previous is None: raise StudioError("RESOURCE_UNAVAILABLE", 404)
@@ -296,6 +406,11 @@ class PostgresStudioWorkspaceRepository:
                 settings_id = str(previous[2]); generation_id = None
                 generated_citations: tuple[object, ...] = ()
                 generated_content: Mapping[str, object] | None = None
+                if revision["revision_type"] == "user_edit":
+                    generated_citations = tuple(connection.execute(
+                        "SELECT record_id,source_version_id,evidence_span_id,canonical_json FROM evidence_references WHERE tenant_id=%s AND workspace_id=%s AND output_version_id=%s ORDER BY record_id",
+                        (context.tenant_id, context.workspace_id, revision["previous_version_id"]),
+                    ).fetchall())
                 if revision["revision_type"] in {"ai_regeneration", "settings_change"}:
                     previous_payload = dict(cast(Mapping[str, object], previous[3]))
                     supplied = revision.get("settings") if revision["revision_type"] == "settings_change" else None
@@ -312,8 +427,8 @@ class PostgresStudioWorkspaceRepository:
                     if projection["review_condition"] != generation_request.review_condition or projection["ruleset_version_id"] != generation_request.ruleset_version_id:
                         raise StudioError("POLICY_PROJECTION_MISMATCH", 409)
                     lineage = connection.execute(
-                        "SELECT rr.canonical_json,count(DISTINCT sv.record_id),bool_and(s.state='ready') FROM runs r JOIN run_results rr ON rr.tenant_id=r.tenant_id AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id JOIN source_versions sv ON sv.tenant_id=r.tenant_id AND sv.workspace_id=r.workspace_id AND sv.record_id=ANY(%s) JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id WHERE s.record_id=%s AND r.record_id=%s AND rr.record_id=%s AND r.tenant_id=%s AND r.workspace_id=%s GROUP BY rr.canonical_json",
-                        (list(generation_request.source_version_ids), generation_request.source_id,
+                        "SELECT rr.canonical_json,count(DISTINCT sv.record_id),bool_and(s.state='ready'),bool_or(s.record_id=%s) FROM runs r JOIN run_results rr ON rr.tenant_id=r.tenant_id AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id JOIN source_versions sv ON sv.tenant_id=r.tenant_id AND sv.workspace_id=r.workspace_id AND sv.record_id=ANY(%s) JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id WHERE r.record_id=%s AND rr.record_id=%s AND r.tenant_id=%s AND r.workspace_id=%s GROUP BY rr.canonical_json",
+                        (generation_request.source_id, list(generation_request.source_version_ids),
                          generation_request.run_id, generation_request.run_result_id,
                          context.tenant_id, context.workspace_id),
                     ).fetchone()
@@ -321,7 +436,7 @@ class PostgresStudioWorkspaceRepository:
                         "SELECT record_id,source_version_id,evidence_span_id,canonical_json FROM citations WHERE tenant_id=%s AND workspace_id=%s AND run_result_id=%s AND source_version_id=ANY(%s) ORDER BY record_id",
                         (context.tenant_id, context.workspace_id, generation_request.run_result_id, list(generation_request.source_version_ids)),
                     ).fetchall())
-                    if lineage is None or int(lineage[1]) != len(set(generation_request.source_version_ids)) or lineage[2] is not True or not generated_citations or {str(row[1]) for row in generated_citations} != set(generation_request.source_version_ids):
+                    if lineage is None or int(lineage[1]) != len(set(generation_request.source_version_ids)) or lineage[2] is not True or lineage[3] is not True or not generated_citations or {str(row[1]) for row in generated_citations} != set(generation_request.source_version_ids):
                         raise StudioError("EVIDENCE_COVERAGE_INCOMPLETE", 409)
                     settings_id = self._opaque("settings", *scope)
                     generation_id = self._opaque("generation", *scope)
@@ -329,6 +444,10 @@ class PostgresStudioWorkspaceRepository:
                         **effective, "output_type": generation_request.output_type,
                         "revision_type": revision["revision_type"], "change_reason": revision["change_reason"],
                         "previous_settings_snapshot_id": str(previous[2]), "server_policy_projection": projection,
+                        "model_selection": cast(
+                            Mapping[str, object],
+                            cast(Mapping[str, object], projection["authoritative_values"])["originating_run"],
+                        )["model_selection"],
                     }
                     self._insert(connection, context, "generation_settings_snapshots", settings_id, settings_payload)
                     self._insert(connection, context, "generation_requests", generation_id, settings_payload, state="configuring", extra_columns=("generation_settings_snapshot_id",), extra_values=(settings_id,))
@@ -341,13 +460,14 @@ class PostgresStudioWorkspaceRepository:
                 payload = {**dict(cast(Mapping[str, object], previous[3])), **dict(revision), "content": generated_content if generated_content is not None else revision["content"], "approval_required": True, **({"generation_request_id": generation_id} if generation_id else {})}
                 text = canonical_json_bytes(payload).decode(); next_version = int(previous[1]) + 1
                 connection.execute(
-                    "INSERT INTO output_versions (tenant_id,workspace_id,record_id,aggregate_id,version,previous_version_id,schema_version,canonical_json,canonical_text,digest_sha256,state,created_by,trace_id,studio_output_id,generation_settings_snapshot_id) VALUES (%s,%s,%s,%s,%s,%s,1,%s,%s,%s,'generating',%s,%s,%s,%s)",
+                    "INSERT INTO output_versions (tenant_id,workspace_id,record_id,aggregate_id,version,content_version,previous_version_id,schema_version,canonical_json,canonical_text,digest_sha256,state,created_by,trace_id,studio_output_id,generation_settings_snapshot_id) VALUES (%s,%s,%s,%s,1,%s,%s,1,%s,%s,%s,'generating',%s,%s,%s,%s)",
                     (context.tenant_id, context.workspace_id, version_id, str(previous[0]), next_version, revision["previous_version_id"], Jsonb(payload), text, hashlib.sha256(text.encode()).hexdigest(), context.actor_id, context.trace_id, output_id, settings_id),
                 )
-                self._transition(connection, context, "OutputVersion", version_id, next_version, "draft", self._opaque("transition", *scope, "draft"))
+                self._transition(connection, context, "OutputVersion", version_id, 1, "draft", self._opaque("transition", *scope, "draft"))
                 for row in generated_citations:
                     evidence_id = self._opaque("evidence-reference", *scope, str(row[0]))
-                    evidence_payload = {"citation_id": str(row[0]), "source_version_id": str(row[1]), "evidence_span_id": str(row[2]), **dict(cast(Mapping[str, object], row[3]))}
+                    prior_payload = dict(cast(Mapping[str, object], row[3]))
+                    evidence_payload = {"citation_id": str(prior_payload.get("citation_id", row[0])), "source_version_id": str(row[1]), "evidence_span_id": str(row[2]), **prior_payload}
                     self._insert(connection, context, "evidence_references", evidence_id, evidence_payload, extra_columns=("output_version_id", "source_version_id", "evidence_span_id"), extra_values=(version_id, str(row[1]), str(row[2])))
                 result = {"output_version_id": version_id, "previous_version_id": revision["previous_version_id"], "status": "draft", "content": payload["content"], "revision_type": revision["revision_type"], "change_reason": revision["change_reason"], "approval_required": True, "settings_snapshot_id": settings_id, "generation_request_id": generation_id, "resubmission_of_rejected_version": str(previous[4]) == "revision_requested"}
                 self._finish(connection, context, operation, idempotency_key, fingerprint, result, "OutputVersion", version_id)
@@ -362,6 +482,7 @@ class PostgresStudioWorkspaceRepository:
         table = {"review": "review_requests", "approval_request": "approval_requests", "approval": "approvals", "delivery": "deliveries", "knowledge_registration": "knowledge_registrations"}[action]
         try:
             with self._cloud_store._transaction(self._cloud(context, operation)) as connection:
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("|".join(scope),))
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None: return replay, True
                 version = connection.execute("SELECT state,version FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s", (context.tenant_id, context.workspace_id, clean["output_version_id"])).fetchone()
@@ -394,14 +515,57 @@ class PostgresStudioWorkspaceRepository:
                     ).fetchone()
                     if cycle is not None: raise StudioError("KNOWLEDGE_CYCLE_DETECTED", 409)
                     source_id = self._opaque("source", *scope)
-                    source_payload = {"kind": "studio_output", "derived_output_version_id": clean["output_version_id"], "searchable": True}
+                    output_version_payload = dict(cast(Mapping[str, object], output_payload[0]))
+                    if "content" not in output_version_payload:
+                        raise StudioError("KNOWLEDGE_CONTENT_UNAVAILABLE", 409)
+                    knowledge_text = canonical_json_bytes(output_version_payload["content"]).decode("utf-8")
+                    if not knowledge_text.strip():
+                        raise StudioError("KNOWLEDGE_CONTENT_UNAVAILABLE", 409)
+                    source_payload = {
+                        "kind": "studio_output",
+                        "derived_output_version_id": clean["output_version_id"],
+                        "filename": f"{clean['output_version_id']}.knowledge.json",
+                        "searchable": True,
+                    }
                     self._insert(connection, context, "sources", source_id, source_payload, state="registered")
                     source_state_version = 1
                     for target in ("security_check", "processing", "indexing", "ready"):
                         source_state_version = self._transition(connection, context, "Source", source_id, source_state_version, target, self._opaque("transition", *scope, f"source-{target}"))
                     self._insert(connection, context, "source_versions", cast(str, registered_source_version_id), source_payload, extra_columns=("source_id",), extra_values=(source_id,))
+                    chunk_id = self._opaque("knowledge-chunk", *scope)
+                    evidence_span_id = self._opaque("knowledge-span", *scope)
+                    evidence_payload = {
+                        "source_id": source_id,
+                        "source_version_id": registered_source_version_id,
+                        "output_version_id": clean["output_version_id"],
+                        "page": 1,
+                        "text": knowledge_text,
+                        "kind": "approved_knowledge_snapshot",
+                    }
+                    self._insert(
+                        connection, context, "evidence_spans", evidence_span_id,
+                        evidence_payload,
+                        extra_columns=("source_version_id",),
+                        extra_values=(registered_source_version_id,),
+                    )
                     index_id = self._opaque("index-version", *scope)
-                    self._insert(connection, context, "index_versions", index_id, {"source_version_id": registered_source_version_id, "searchable": True}, extra_columns=("source_version_id",), extra_values=(registered_source_version_id,))
+                    self._insert(connection, context, "index_versions", index_id, {
+                        "source_id": source_id,
+                        "source_version_id": registered_source_version_id,
+                        "strategy": "approved_knowledge_snapshot",
+                        "chunks": [{
+                            "chunk_id": chunk_id,
+                            "source_id": source_id,
+                            "source_version_id": registered_source_version_id,
+                            "page": 1,
+                            "text": knowledge_text,
+                            "evidence_span_id": evidence_span_id,
+                        }],
+                        "lineage": {
+                            "output_version_id": clean["output_version_id"],
+                            "knowledge_registration_id": record_id,
+                        },
+                    }, extra_columns=("source_version_id",), extra_values=(registered_source_version_id,))
                 self._insert(connection, context, table, record_id, clean, state=state, extra_columns=extra_columns, extra_values=extra_values)
                 output_state = str(version[0]); output_version = int(version[1])
                 if action == "review" and output_state == "draft":
@@ -414,9 +578,9 @@ class PostgresStudioWorkspaceRepository:
                     ).fetchone()
                     if approval_request is None or str(approval_request[0]) != "pending": raise StudioError("APPROVAL_REQUEST_REQUIRED", 409)
                     decision = str(clean["decision"])
-                    self._transition(connection, context, "ApprovalRequest", clean["approval_request_id"], int(approval_request[1]), decision, self._opaque("transition", *scope, decision))
+                    self._transition(connection, context, "ApprovalRequest", clean["approval_request_id"], int(approval_request[1]), decision, self._opaque("transition", *scope, "approval-request", decision))
                     target_state = "approved" if decision == "approved" else "revision_requested"
-                    self._transition(connection, context, "OutputVersion", clean["output_version_id"], output_version, target_state, self._opaque("transition", *scope, target_state))
+                    self._transition(connection, context, "OutputVersion", clean["output_version_id"], output_version, target_state, self._opaque("transition", *scope, "output-version", target_state))
                 elif action == "delivery":
                     approval = connection.execute(
                         "SELECT decision FROM approvals WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s AND output_version_id=%s",

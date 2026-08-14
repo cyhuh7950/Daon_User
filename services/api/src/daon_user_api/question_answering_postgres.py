@@ -62,12 +62,24 @@ class CitationPdfContent:
 
 
 @dataclass(frozen=True, slots=True)
+class CitationContent:
+    source_id: str
+    source_version_id: str
+    filename: str
+    content: bytes
+    media_type: str
+
+
+@dataclass(frozen=True, slots=True)
 class StoredCitation:
     citation_id: str
     source_id: str
     source_version_id: str
     evidence_span_id: str
     page: int
+    origin: str = "raw_source"
+    context_item_id: str = ""
+    locator: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +225,20 @@ class PostgresQuestionAnsweringRepository:
                     str(cast(Mapping[str, object], row[3])["source_version_id"]),
                     str(cast(Mapping[str, object], row[3])["evidence_span_id"]),
                     int(cast(Mapping[str, object], row[3])["page"]),
+                    str(cast(Mapping[str, object], row[3]).get("origin", "raw_source")),
+                    str(cast(Mapping[str, object], row[3]).get(
+                        "context_item_id",
+                        cast(Mapping[str, object], row[3])["source_version_id"],
+                    )),
+                    cast(
+                        Mapping[str, str],
+                        cast(Mapping[str, object], row[3]).get(
+                            "locator",
+                            {"kind": "page", "value": str(
+                                cast(Mapping[str, object], row[3])["page"]
+                            )},
+                        ),
+                    ),
                 )
                 for row in rows if row[2] is not None and row[3] is not None
             )
@@ -226,9 +252,36 @@ class PostgresQuestionAnsweringRepository:
     def load_ready_source(
         self, context: QuestionContext, source_id: str, source_version_id: str,
     ) -> ReadyQuestionSource:
-        row = self._row(context, source_id, source_version_id, "question.read")
+        if not _SAFE_ID.fullmatch(source_id) or not _SAFE_ID.fullmatch(source_version_id):
+            raise QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE", status=404)
+        try:
+            with self._cloud_store._transaction(
+                self._cloud_context(context, "question.read"),
+            ) as connection:
+                row = connection.execute(
+                    "SELECT s.record_id,sv.record_id,s.state,"
+                    "COALESCE(sv.canonical_json->>'filename',s.canonical_json->>'filename',sv.record_id),"
+                    "s.canonical_json->>'kind' FROM sources s JOIN source_versions sv ON "
+                    "sv.tenant_id=s.tenant_id AND sv.workspace_id=s.workspace_id "
+                    "AND sv.source_id=s.record_id WHERE s.record_id=%s AND sv.record_id=%s "
+                    "AND s.state='ready' AND EXISTS (SELECT 1 FROM index_versions iv WHERE "
+                    "iv.tenant_id=sv.tenant_id AND iv.workspace_id=sv.workspace_id "
+                    "AND iv.source_version_id=sv.record_id) AND NOT EXISTS ("
+                    "SELECT 1 FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id "
+                    "AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id "
+                    "AND newer.version>sv.version)",
+                    (source_id, source_version_id),
+                ).fetchone()
+        except CloudDatabaseError as error:
+            raise QuestionRepositoryError(
+                "QUESTION_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable,
+            ) from None
+        if row is None:
+            raise QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE", status=404)
         filename = str(row[3])
-        if str(row[2]) != "ready" or not filename.lower().endswith(".pdf"):
+        if str(row[2]) != "ready" or (
+            str(row[4]) != "studio_output" and not filename.lower().endswith(".pdf")
+        ):
             raise QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE", status=404)
         return ReadyQuestionSource(str(row[0]), str(row[1]), filename)
 
@@ -287,12 +340,82 @@ class PostgresQuestionAnsweringRepository:
             raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
         return content, page
 
+    def read_citation_content(
+        self, context: QuestionContext, citation_id: str,
+    ) -> tuple[CitationContent, dict[str, str]]:
+        if not _SAFE_ID.fullmatch(citation_id):
+            raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+        try:
+            with self._cloud_store._transaction(
+                self._cloud_context(context, "citation.read"),
+            ) as connection:
+                row = connection.execute(
+                    "SELECT c.canonical_json->>'source_id',c.source_version_id,"
+                    "c.canonical_json->>'page',es.canonical_json->>'page',"
+                    "es.canonical_json,s.canonical_json->>'kind',"
+                    "COALESCE(sv.canonical_json->>'filename',s.canonical_json->>'filename',sv.record_id),"
+                    "s.state,es.record_id FROM citations c JOIN evidence_spans es ON "
+                    "es.tenant_id=c.tenant_id AND es.workspace_id=c.workspace_id "
+                    "AND es.record_id=c.evidence_span_id JOIN source_versions sv ON "
+                    "sv.tenant_id=c.tenant_id AND sv.workspace_id=c.workspace_id "
+                    "AND sv.record_id=c.source_version_id JOIN sources s ON "
+                    "s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id "
+                    "AND s.record_id=sv.source_id WHERE c.record_id=%s AND s.state='ready' "
+                    "AND EXISTS (SELECT 1 FROM index_versions iv WHERE "
+                    "iv.tenant_id=sv.tenant_id AND iv.workspace_id=sv.workspace_id "
+                    "AND iv.source_version_id=sv.record_id) AND NOT EXISTS ("
+                    "SELECT 1 FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id "
+                    "AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id "
+                    "AND newer.version>sv.version)",
+                    (citation_id,),
+                ).fetchone()
+        except CloudDatabaseError as error:
+            raise QuestionRepositoryError(
+                "QUESTION_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable,
+            ) from None
+        if row is None:
+            raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+        try:
+            source_id = str(row[0])
+            source_version_id = str(row[1])
+            page = int(row[2])
+            evidence_page = int(row[3])
+            evidence = cast(Mapping[str, object], row[4])
+            source_kind = str(row[5])
+            filename = str(row[6])
+            source_state = str(row[7])
+            evidence_span_id = str(row[8])
+        except (TypeError, ValueError):
+            raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404) from None
+        if page < 1 or page != evidence_page or source_state != "ready":
+            raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+        if source_kind == "studio_output":
+            if evidence.get("kind") != "approved_knowledge_snapshot":
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
+            text = evidence.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
+            content = text.encode("utf-8")
+            if len(content) > 1024 * 1024:
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
+            return CitationContent(
+                source_id, source_version_id, filename, content,
+                "text/plain; charset=utf-8",
+            ), {"kind": "section", "value": evidence_span_id}
+        pdf, pdf_page = self.read_citation_pdf(context, citation_id)
+        return CitationContent(
+            pdf.source_id, pdf.source_version_id, pdf.filename,
+            pdf.content, "application/pdf",
+        ), {"kind": "page", "value": str(pdf_page)}
+
     def persist_completed(
         self, context: QuestionContext, *, run_id: str, source_id: str,
         source_version_id: str, question: str, selection: TextModelSelection,
         evidence: tuple[IndexedEvidenceChunk, ...], result: GroundedTextResult,
         provider_called: bool = True,
         egress_authorization: Mapping[str, object] | None = None,
+        context_mode: str = "raw_only",
+        context_sources: tuple[object, ...] | None = None,
     ) -> StoredQuestionAnswer:
         if not _SAFE_ID.fullmatch(run_id) or not question.strip():
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
@@ -300,7 +423,27 @@ class PostgresQuestionAnsweringRepository:
         if any(chunk_id not in evidence_by_id for chunk_id in result.cited_chunk_ids):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
 
-        scope_id = self._opaque_id("scope", source_version_id)
+        context_items = tuple(context_sources or ())
+        if not context_items:
+            context_items = (type("LegacyQuestionSource", (), {
+                "origin": "raw_source", "context_item_id": source_id,
+                "source_id": source_id, "source_version_id": source_version_id,
+                "digest_sha256": None,
+            })(),)
+        source_versions = [str(item.source_version_id) for item in context_items]
+        if context_mode not in {"raw_only", "daon_priority", "mixed"}:
+            raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
+        source_context = {
+            (str(item.source_id), str(item.source_version_id)): item for item in context_items
+        }
+        if len(source_context) != len(context_items):
+            raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
+        if any(
+            (item.source_id, item.source_version_id) not in source_context
+            for item in evidence
+        ):
+            raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
+        scope_id = self._opaque_id("scope", context_mode, *source_versions)
         scope_snapshot_id = self._opaque_id("scope-snapshot", run_id)
         provider_id = self._opaque_id(
             "provider", selection.profile_id, str(selection.binding_version),
@@ -321,9 +464,31 @@ class PostgresQuestionAnsweringRepository:
 
         citations = tuple(
             StoredCitation(
-                self._opaque_id("citation", run_result_id, chunk_id), source_id,
-                source_version_id, evidence_by_id[chunk_id].evidence_span_id,
+                self._opaque_id("citation", run_result_id, chunk_id),
+                evidence_by_id[chunk_id].source_id,
+                evidence_by_id[chunk_id].source_version_id,
+                evidence_by_id[chunk_id].evidence_span_id,
                 evidence_by_id[chunk_id].page,
+                str(source_context[(
+                    evidence_by_id[chunk_id].source_id,
+                    evidence_by_id[chunk_id].source_version_id,
+                )].origin),
+                str(source_context[(
+                    evidence_by_id[chunk_id].source_id,
+                    evidence_by_id[chunk_id].source_version_id,
+                )].context_item_id),
+                {
+                    "kind": "section" if str(source_context[(
+                        evidence_by_id[chunk_id].source_id,
+                        evidence_by_id[chunk_id].source_version_id,
+                    )].origin) == "daon_knowledge" else "page",
+                    "value": evidence_by_id[chunk_id].evidence_span_id
+                    if str(source_context[(
+                        evidence_by_id[chunk_id].source_id,
+                        evidence_by_id[chunk_id].source_version_id,
+                    )].origin) == "daon_knowledge"
+                    else str(evidence_by_id[chunk_id].page),
+                },
             )
             for chunk_id in result.cited_chunk_ids
         )
@@ -332,10 +497,26 @@ class PostgresQuestionAnsweringRepository:
                 self._cloud_context(context, "question.execute"),
             ) as connection:
                 self._insert_canon(connection, context, "knowledge_scopes", scope_id, {
-                    "source_version_ids": [source_version_id], "mode": "single_source",
+                    "source_version_ids": source_versions,
+                    "mode": context_mode,
+                    "items": [{
+                        "origin": str(item.origin),
+                        "context_item_id": str(item.context_item_id),
+                        "source_id": str(item.source_id),
+                        "source_version_id": str(item.source_version_id),
+                        "digest_sha256": item.digest_sha256,
+                    } for item in context_items],
                 })
                 self._insert_canon(connection, context, "scope_snapshots", scope_snapshot_id, {
-                    "knowledge_scope_id": scope_id, "source_version_ids": [source_version_id],
+                    "knowledge_scope_id": scope_id, "source_version_ids": source_versions,
+                    "mode": context_mode,
+                    "items": [{
+                        "origin": str(item.origin),
+                        "context_item_id": str(item.context_item_id),
+                        "source_id": str(item.source_id),
+                        "source_version_id": str(item.source_version_id),
+                        "digest_sha256": item.digest_sha256,
+                    } for item in context_items],
                 }, extra_columns=("knowledge_scope_id",), extra_values=(scope_id,))
                 self._insert_canon(connection, context, "provider_profiles", provider_id, {
                     "configured_profile_id": selection.profile_id,
@@ -357,11 +538,11 @@ class PostgresQuestionAnsweringRepository:
                 })
                 self._insert_canon(connection, context, "runs", run_id, {
                     "question": question, "source_id": source_id,
-                    "source_version_id": source_version_id,
+                    "source_version_id": source_version_id, "context_mode": context_mode,
                 }, state="accepted")
                 version = self._transition(connection, context, run_id, 1, "planning")
                 run_snapshot_payload: dict[str, object] = {
-                    "source_version_ids": [source_version_id],
+                    "source_version_ids": source_versions,
                     "knowledge_scope_id": scope_id, "authority": ["source"],
                     "weights_requested": {}, "weights_effective": {}, "weight_clamps": [],
                     "ruleset_snapshot_ids": [], "routing_policy_version_id": routing_policy_id,
@@ -414,11 +595,16 @@ class PostgresQuestionAnsweringRepository:
                     ))
                 for citation in citations:
                     self._insert_canon(connection, context, "citations", citation.citation_id, {
-                        "run_result_id": run_result_id, "source_id": source_id,
-                        "source_version_id": source_version_id,
+                        "run_result_id": run_result_id, "source_id": citation.source_id,
+                        "source_version_id": citation.source_version_id,
                         "evidence_span_id": citation.evidence_span_id, "page": citation.page,
+                        "origin": citation.origin,
+                        "context_item_id": citation.context_item_id,
+                        "locator": dict(citation.locator or {
+                            "kind": "page", "value": str(citation.page),
+                        }),
                     }, extra_columns=("run_result_id", "source_version_id", "evidence_span_id"),
-                        extra_values=(run_result_id, source_version_id, citation.evidence_span_id))
+                        extra_values=(run_result_id, citation.source_version_id, citation.evidence_span_id))
                 self._transition(connection, context, run_id, version, "completed")
                 connection.execute(
                     "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,"
@@ -430,6 +616,8 @@ class PostgresQuestionAnsweringRepository:
                         "Run", run_id, "succeeded", context.trace_id,
                         context.policy_version, json.dumps({
                             "source_id": source_id, "source_version_id": source_version_id,
+                            "context_mode": context_mode,
+                            "source_version_ids": source_versions,
                             "citation_count": len(citations),
                         }),
                     ),

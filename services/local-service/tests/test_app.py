@@ -96,6 +96,13 @@ def test_fixed_read_only_commands_require_command_bound_single_use_tokens() -> N
         "catalog_version": "1.0",
             "capabilities": [
                 {
+                    "capability": "knowledge.write",
+                    "commands": [
+                        "studio_knowledge_copy_import",
+                        "studio_knowledge_copy_refresh",
+                    ],
+                },
+                {
                     "capability": "recovery.read",
                     "commands": ["recovery.job.read"],
                 },
@@ -119,7 +126,33 @@ def test_fixed_read_only_commands_require_command_bound_single_use_tokens() -> N
                 "capability": "storage.write",
                 "commands": ["storage.file.put", "storage.lock", "storage.vector.put"],
             },
-        ],
+                {
+                    "capability": "studio.read",
+                    "commands": [
+                        "studio_draft_get", "studio_models_list", "studio_raw_sources_list",
+                    ],
+                },
+                {
+                    "capability": "studio.write",
+                "commands": [
+                    "studio_context_prepare",
+                        "studio_draft_append_version",
+                        "studio_draft_generate",
+                        "studio_provider_settings_import",
+                        "studio_raw_source_import",
+                        "studio_settings_confirm",
+                    "studio_sync_queue",
+                    ],
+                },
+                {
+                    "capability": "sync.read",
+                    "commands": ["studio_sync_state_read"],
+                },
+                {
+                    "capability": "sync.write",
+                    "commands": ["studio_sync_state_append"],
+                },
+            ],
     }
 
 

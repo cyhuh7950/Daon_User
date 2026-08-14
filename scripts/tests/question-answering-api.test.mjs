@@ -8,7 +8,10 @@ const citation = Object.freeze({
   source_id: "source-1",
   source_version_id: "version-1",
   evidence_span_id: "span-1",
-  page: 2
+  page: 2,
+  origin: "raw_source",
+  context_item_id: "source-1",
+  locator: { kind: "page", value: "2" },
 });
 
 const answerData = Object.freeze({
@@ -38,6 +41,18 @@ test("Question API는 exact outer/data와 Citation Safe DTO만 반환한다", as
   );
 });
 
+test("Daon Text Citation URL은 PDF page fragment를 강제하지 않는다", () => {
+  assert.equal(
+    citationContentUrl("workspace-1", {
+      ...citation,
+      origin: "daon_knowledge",
+      context_item_id: "knowledge-package-1",
+      locator: { kind: "section", value: "span-1" },
+    }),
+    "/bff/api/workspaces/workspace-1/citations/citation-1/content",
+  );
+});
+
 test("Question authorization은 same-origin exact body와 동일 Idempotency-Key만 사용한다", async () => {
   const calls = [];
   const data = await authorizeGroundedQuestion("workspace-1", {
@@ -50,6 +65,34 @@ test("Question authorization은 same-origin exact body와 동일 Idempotency-Key
   assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/questions/authorization");
   assert.equal(calls[0].init.headers["Idempotency-Key"], "question-auth-0001");
   assert.deepEqual(Object.keys(calls[0].body).sort(), ["password", "question", "source_id", "source_version_id"]);
+});
+
+test("Question API는 승인 지식과 Raw Source를 하나의 exact Knowledge Context로 전송한다", async () => {
+  const calls = [];
+  const knowledgeContext = {
+    mode: "mixed",
+    resources: [
+      { resourceKind: "knowledge_package", resourceId: "package-daon3" },
+      { resourceKind: "source", resourceId: "source-1", versionId: "version-1" },
+    ],
+  };
+  await askGroundedQuestion("workspace-1", { knowledgeContext, question: "종합해줘" }, {
+    idempotencyKey: "question-mixed-0001",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return Response.json(envelope());
+    },
+  });
+  assert.deepEqual(calls[0].body, {
+    question: "종합해줘",
+    knowledge_context: {
+      mode: "mixed",
+      resources: [
+        { resource_kind: "knowledge_package", resource_id: "package-daon3" },
+        { resource_kind: "source", resource_id: "source-1", version_id: "version-1" },
+      ],
+    },
+  });
 });
 
 test("Question API는 non-JSON gateway timeout과 upstream failure를 안전 오류로 보존한다", async () => {
@@ -71,6 +114,7 @@ for (const [name, payload] of [
   ["citations 객체", envelope({ ...answerData, citations: { citation } })],
   ["invalid citation id", envelope({ ...answerData, citations: [{ ...citation, citation_id: "bad/id" }] })],
   ["invalid citation page", envelope({ ...answerData, citations: [{ ...citation, page: 0 }] })],
+  ["invalid citation locator", envelope({ ...answerData, citations: [{ ...citation, locator: { kind: "page", value: "3" } }] })],
   ["unknown data field", envelope({ ...answerData, unexpected: true })],
   ["unknown outer field", { ...envelope(), unexpected: true }]
 ]) {

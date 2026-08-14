@@ -10,7 +10,7 @@ import httpx
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
 from daon_user_api.identity import ClientKind, IdentityPrincipal
-from daon_user_api.question_answering_postgres import CitationPdfContent, StoredCitation, StoredQuestionAnswer
+from daon_user_api.question_answering_postgres import CitationContent, StoredCitation, StoredQuestionAnswer
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
 from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
 
@@ -28,18 +28,38 @@ class FakeQuestionService:
             kwargs["run_id"], "result-cp3", "ORANGE-COMPASS-42", False,
             (StoredCitation(
                 "citation-cp3", kwargs["source_id"], kwargs["source_version_id"],
-                "span-page-2", 2,
+                "span-page-2", 2, "raw_source", kwargs["source_id"],
+                {"kind": "page", "value": "2"},
             ),),
         )
 
 
+class FakeKnowledgePackages:
+    def resolve_question_sources(self, context, package_ids):  # type: ignore[no-untyped-def]
+        self.last = (context, package_ids)
+        return tuple(type("KnowledgeQuestionSource", (), {
+            "package_id": package_id,
+            "source_id": f"source-{package_id}",
+            "source_version_id": f"version-{package_id}",
+            "digest_sha256": "a" * 64,
+        })() for package_id in package_ids)
+
+
 class FakeCitationContent:
-    def read_citation_pdf(self, context, citation_id):  # type: ignore[no-untyped-def]
+    def __init__(self) -> None:
+        self.text_mode = False
+
+    def read_citation_content(self, context, citation_id):  # type: ignore[no-untyped-def]
         if citation_id != "citation-cp3":
             raise AssertionError(citation_id)
-        return CitationPdfContent(
-            "source-cp3", "source-version-cp3", "report.pdf", PDF, 2,
-        ), 2
+        if self.text_mode:
+            return CitationContent(
+                "source-knowledge", "version-knowledge", "approved-knowledge.txt",
+                "승인된 Daon 일반 텍스트 지식".encode("utf-8"), "text/plain; charset=utf-8",
+            ), {"kind": "section", "value": "span-knowledge"}
+        return CitationContent(
+            "source-cp3", "source-version-cp3", "report.pdf", PDF, "application/pdf",
+        ), {"kind": "page", "value": "2"}
 
 
 class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
@@ -62,6 +82,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.identity = identity
         self.service = FakeQuestionService()
+        self.knowledge = FakeKnowledgePackages()
         self.dependencies = RuntimeDependencies(
             settings=RuntimeSettings.for_test(database_path=db_path, policy_version=POLICY_VERSION),
             identity_service=identity, authorization_service=authorization,
@@ -69,6 +90,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             authorization_repository=authorization_repository,
             question_answering_service=self.service,
             citation_content_repository=FakeCitationContent(),
+            knowledge_package_service=self.knowledge,
         )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_app(self.dependencies)),
@@ -103,6 +125,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         data = response.json()["data"]
         self.assertEqual(data["answer"], "ORANGE-COMPASS-42")
         self.assertEqual(data["citations"][0]["page"], 2)
+        self.assertEqual(data["citations"][0]["locator"], {"kind": "page", "value": "2"})
         self.assertNotIn("minio", response.text.casefold())
         self.assertNotIn("localhost", response.text.casefold())
         self.assertEqual(self.service.calls[0][0].workspace_id, "workspace-001")
@@ -123,6 +146,40 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 400, invalid_key)
             self.assertEqual(self.service.calls, [])
 
+    async def test_mixed_knowledge_context_resolves_packages_and_rejects_legacy_pair(self) -> None:
+        body = {
+            "question": "승인 지식과 원문을 종합해줘",
+            "knowledge_context": {
+                "mode": "mixed",
+                "resources": [
+                    {"resource_kind": "knowledge_package", "resource_id": "package-daon3"},
+                    {"resource_kind": "source", "resource_id": "source-raw", "version_id": "version-raw"},
+                ],
+            },
+        }
+        with self._authenticated():
+            response = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-mixed-0001"}, json=body,
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        call = self.service.calls[-1][1]
+        self.assertEqual(call["context_mode"], "mixed")
+        self.assertEqual(
+            [(item.origin, item.context_item_id) for item in call["context_sources"]],
+            [("daon_knowledge", "package-daon3"), ("raw_source", "source-raw")],
+        )
+
+        with self._authenticated():
+            invalid = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-mixed-0002"},
+                json={**body, "source_id": "source-raw", "source_version_id": "version-raw"},
+            )
+        self.assertEqual(invalid.status_code, 400)
+
     async def test_citation_content_is_inline_pdf_after_current_access_recheck(self) -> None:
         with self._authenticated():
             response = await self.client.get(
@@ -134,6 +191,18 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["content-type"], "application/pdf")
         self.assertIn("inline", response.headers["content-disposition"])
         self.assertEqual(response.headers["x-citation-page"], "2")
+
+    async def test_daon_text_citation_returns_inline_plain_text(self) -> None:
+        self.dependencies.citation_content_repository.text_mode = True
+        with self._authenticated():
+            response = await self.client.get(
+                "/api/v1/workspaces/workspace-001/citations/citation-cp3/content",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "승인된 Daon 일반 텍스트 지식")
+        self.assertEqual(response.headers["content-type"], "text/plain; charset=utf-8")
+        self.assertEqual(response.headers["x-citation-locator-kind"], "section")
 
 
 if __name__ == "__main__":

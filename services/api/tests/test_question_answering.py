@@ -11,6 +11,7 @@ from daon_user_api.provider_settings import (
 )
 from daon_user_api.question_answering import (
     GroundedQuestionRequest,
+    OpenAICompatibleTextGenerationAdapter,
     UpstageTextGenerationAdapter,
     resolve_text_model_selection,
 )
@@ -32,6 +33,21 @@ def text_snapshot() -> ProviderSettingsSnapshot:
     )
 
 
+def external_text_snapshot(provider_code: str, base_url: str) -> ProviderSettingsSnapshot:
+    return ProviderSettingsSnapshot(
+        workspace_id="workspace-cp3",
+        profiles=(ProviderProfileView(
+            f"provider-{provider_code.lower()}", provider_code, "external_api",
+            base_url, True, True, 2,
+        ),),
+        deployments=(ModelDeploymentView(
+            "deployment-text", f"provider-{provider_code.lower()}", provider_code,
+            "selected-model", ("text",), True, True, 3,
+        ),),
+        role_bindings={"text": "deployment-text"}, binding_version=5,
+    )
+
+
 class RecordingTransport:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, object]]] = []
@@ -49,6 +65,46 @@ class RecordingTransport:
 
 
 class QuestionAnsweringContractTests(unittest.TestCase):
+    def test_groq_mistral_and_upstage_share_grounded_openai_compatible_contract(self) -> None:
+        evidence = (IndexedEvidenceChunk(
+            "chunk-page-2", "source-cp3", "source-version-cp3", 2,
+            "Citation verification phrase: ORANGE-COMPASS-42.", "span-page-2", 1.0,
+        ),)
+        for provider_code, base_url in (
+            ("GROQ", "https://api.groq.com/openai/v1"),
+            ("MISTRAL", "https://api.mistral.ai/v1"),
+            ("UPSTAGE", "https://api.upstage.ai/v1"),
+        ):
+            with self.subTest(provider_code=provider_code):
+                transport = RecordingTransport()
+                selection = resolve_text_model_selection(
+                    external_text_snapshot(provider_code, base_url)
+                )
+                result = OpenAICompatibleTextGenerationAdapter(
+                    transport=transport, api_key="server-secret",
+                ).generate(
+                    GroundedQuestionRequest("What is the phrase?", evidence, "trace-cp3"),
+                    selection,
+                )
+                self.assertEqual(transport.calls[0][0], f"{base_url}/chat/completions")
+                self.assertEqual(result.cited_chunk_ids, ("chunk-page-2",))
+
+    def test_openai_compatible_adapter_rejects_unapproved_provider_endpoint_pair(self) -> None:
+        selection = resolve_text_model_selection(
+            external_text_snapshot("GROQ", "https://api.mistral.ai/v1")
+        )
+        with self.assertRaisesRegex(ValueError, "TEXT_PROVIDER_ENDPOINT_INVALID"):
+            OpenAICompatibleTextGenerationAdapter(
+                transport=RecordingTransport(), api_key="server-secret",
+            ).generate(
+                GroundedQuestionRequest(
+                    "phrase?", (IndexedEvidenceChunk(
+                        "chunk-page-2", "source-cp3", "source-version-cp3", 2,
+                        "ORANGE-COMPASS-42", "span-page-2", 1.0,
+                    ),), "trace-cp3",
+                ),
+                selection,
+            )
     def test_text_role_is_frozen_to_selected_solar_pro4_deployment(self) -> None:
         selected = resolve_text_model_selection(text_snapshot())
 

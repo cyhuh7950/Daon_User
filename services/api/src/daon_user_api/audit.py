@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from threading import Lock
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 
@@ -547,6 +547,250 @@ class AuditEventStore:
             head_hash=expected_previous,
             message="AUDIT_CHAIN_VALID",
         )
+
+
+class PostgresSecurityAuditStore(AuditEventStore):
+    """Dedicated durable security-audit adapter; never shares Cloud audit_events."""
+
+    def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 4) -> None:
+        from psycopg_pool import ConnectionPool
+
+        if not isinstance(dsn, str) or not dsn:
+            raise ValueError("SECURITY_AUDIT_DSN_REQUIRED")
+        self._pool = ConnectionPool(
+            conninfo=dsn,
+            min_size=min_size,
+            max_size=max_size,
+            kwargs={"autocommit": False},
+            timeout=2.0,
+            reconnect_timeout=5.0,
+            open=False,
+        )
+        self._open_lock = Lock()
+        self._lock = Lock()
+
+    def _ensure_open(self) -> None:
+        if not self._pool.closed:
+            return
+        with self._open_lock:
+            if self._pool.closed:
+                self._pool.open(wait=False)
+
+    def close(self) -> None:
+        self._pool.close()
+
+    @staticmethod
+    def _event_from_row(row: Sequence[object]) -> AuditEvent:
+        def projection(value: object, field_name: str) -> Mapping[str, Any] | None:
+            if value is None:
+                return None
+            decoded = json.loads(value) if isinstance(value, str) else value
+            return _validate_projection(decoded, field_name)
+
+        metadata = projection(row[15], "metadata")
+        if metadata is None:
+            _fail("INVALID_METADATA")
+        event = AuditEvent(
+            sequence=int(str(row[0])),
+            event_id=str(row[1]),
+            occurred_at=_validate_utc(row[2]),
+            actor_id=str(row[3]),
+            actor_type=ActorType(str(row[4])),
+            tenant_id=str(row[5]),
+            workspace_id=None if row[6] is None else str(row[6]),
+            action=str(row[7]),
+            target_type=str(row[8]),
+            target_id=str(row[9]),
+            outcome=AuditOutcome(str(row[10])),
+            trace_id=str(row[11]),
+            policy_version=str(row[12]),
+            before=projection(row[13], "before"),
+            after=projection(row[14], "after"),
+            metadata=cast(Mapping[str, Any], metadata),
+            previous_event_hash=str(row[16]),
+            event_hash=str(row[17]),
+        )
+        _validate_event_contract(event)
+        return event
+
+    @staticmethod
+    def _columns() -> str:
+        return (
+            "sequence,event_id,occurred_at,actor_id,actor_type,tenant_id,workspace_id,"
+            "action,target_type,target_id,outcome,trace_id,policy_version,before_value,"
+            "after_value,metadata,previous_event_hash,event_hash"
+        )
+
+    def append(self, draft: AuditEventDraft) -> AuditEvent:
+        from psycopg.errors import UniqueViolation
+        from psycopg.types.json import Jsonb
+
+        validated = _validate_draft(draft)
+        self._ensure_open()
+        try:
+            with self._lock, self._pool.connection(timeout=2.0) as connection:
+                with connection.transaction():
+                    tenant_id = validated["tenant_id"]
+                    connection.execute("SET LOCAL ROLE daon_app")
+                    connection.execute(
+                        "SELECT set_config('app.tenant_id', %s, true)", (tenant_id,)
+                    )
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (tenant_id,),
+                    )
+                    row = connection.execute(
+                        "SELECT sequence,event_hash FROM security_audit_events "
+                        "WHERE tenant_id=%s ORDER BY sequence DESC LIMIT 1",
+                        (tenant_id,),
+                    ).fetchone()
+                    sequence = 1 if row is None else int(row[0]) + 1
+                    previous_hash = GENESIS_HASH if row is None else str(row[1])
+                    provisional = AuditEvent(  # type: ignore[arg-type]
+                        sequence=sequence,
+                        previous_event_hash=previous_hash,
+                        event_hash=GENESIS_HASH,
+                        **validated,
+                    )
+                    event = replace(
+                        provisional, event_hash=_calculate_event_hash(provisional)
+                    )
+                    safe_code = event.metadata.get("reason_code")
+                    connection.execute(
+                        """INSERT INTO security_audit_events
+                        (tenant_id,sequence,event_id,occurred_at,actor_id,actor_type,
+                         workspace_id,action,target_type,target_id,outcome,trace_id,
+                         policy_version,before_value,after_value,metadata,safe_code,
+                         previous_event_hash,event_hash)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                                %s,%s,%s,%s)""",
+                        (
+                            event.tenant_id,
+                            event.sequence,
+                            event.event_id,
+                            event.occurred_at,
+                            event.actor_id,
+                            event.actor_type.value,
+                            event.workspace_id,
+                            event.action,
+                            event.target_type,
+                            event.target_id,
+                            event.outcome.value,
+                            event.trace_id,
+                            event.policy_version,
+                            None if event.before is None else Jsonb(_thaw_json(event.before)),
+                            None if event.after is None else Jsonb(_thaw_json(event.after)),
+                            Jsonb(_thaw_json(event.metadata)),
+                            safe_code,
+                            event.previous_event_hash,
+                            event.event_hash,
+                        ),
+                    )
+                    return event
+        except UniqueViolation as error:
+            raise AuditDuplicateEventError() from error
+
+    def read(  # type: ignore[override]
+        self, event_id: str, *, tenant_id: str | None = None
+    ) -> AuditEvent | None:
+        checked_id = _validate_text(event_id, "event_id")
+        if tenant_id is None:
+            raise AuditValidationError("TENANT_SCOPE_REQUIRED")
+        checked_tenant = _validate_text(tenant_id, "tenant_id")
+        self._ensure_open()
+        with self._pool.connection(timeout=2.0) as connection:
+            with connection.transaction():
+                connection.execute("SET LOCAL ROLE daon_app")
+                connection.execute(
+                    "SELECT set_config('app.tenant_id', %s, true)", (checked_tenant,)
+                )
+                row = connection.execute(
+                    f"SELECT {self._columns()} FROM security_audit_events "
+                    "WHERE tenant_id=%s AND event_id=%s",
+                    (checked_tenant, checked_id),
+                ).fetchone()
+        return None if row is None else self._event_from_row(row)
+
+    def list(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: str | None = None,
+        action: str | None = None,
+        outcome: AuditOutcome | None = None,
+        trace_id: str | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+    ) -> AuditPage:
+        checked_tenant = _validate_text(tenant_id, "tenant_id")
+        checked_workspace = (
+            None if workspace_id is None else _validate_text(workspace_id, "workspace_id")
+        )
+        checked_action = None if action is None else _validate_text(action, "action")
+        checked_trace = None if trace_id is None else _validate_text(trace_id, "trace_id")
+        if outcome is not None and not isinstance(outcome, AuditOutcome):
+            _fail("INVALID_OUTCOME")
+        after = None if occurred_after is None else _validate_utc(occurred_after, "occurred_after")
+        before = None if occurred_before is None else _validate_utc(occurred_before, "occurred_before")
+        if after is not None and before is not None and after > before:
+            _fail("INVALID_TIME_RANGE")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_PAGE_LIMIT:
+            _fail("INVALID_LIMIT")
+        parameters: list[object] = [checked_tenant, _decode_cursor(cursor)]
+        clauses = ["tenant_id=%s", "sequence>%s"]
+        for column, value in (
+            ("workspace_id", checked_workspace),
+            ("action", checked_action),
+            ("outcome", None if outcome is None else outcome.value),
+            ("trace_id", checked_trace),
+        ):
+            if value is not None:
+                clauses.append(f"{column}=%s")
+                parameters.append(value)
+        if after is not None:
+            clauses.append("occurred_at>=%s")
+            parameters.append(after)
+        if before is not None:
+            clauses.append("occurred_at<=%s")
+            parameters.append(before)
+        parameters.append(limit + 1)
+        self._ensure_open()
+        with self._pool.connection(timeout=2.0) as connection:
+            with connection.transaction():
+                connection.execute("SET LOCAL ROLE daon_app")
+                connection.execute(
+                    "SELECT set_config('app.tenant_id', %s, true)", (checked_tenant,)
+                )
+                rows = connection.execute(
+                    f"SELECT {self._columns()} FROM security_audit_events "
+                    f"WHERE {' AND '.join(clauses)} ORDER BY sequence LIMIT %s",
+                    tuple(parameters),
+                ).fetchall()
+        items = tuple(self._event_from_row(row) for row in rows[:limit])
+        next_cursor = _encode_cursor(items[-1].sequence) if len(rows) > limit else None
+        return AuditPage(items=items, next_cursor=next_cursor)
+
+    def verify_integrity(  # type: ignore[override]
+        self,
+        events: Sequence[AuditEvent] | None = None,
+        *,
+        tenant_id: str | None = None,
+    ) -> IntegrityResult:
+        if events is not None:
+            return AuditEventStore().verify_integrity(events)
+        if tenant_id is None:
+            raise AuditValidationError("TENANT_SCOPE_REQUIRED")
+        candidate_events: list[AuditEvent] = []
+        cursor: str | None = None
+        while True:
+            page = self.list(tenant_id=tenant_id, cursor=cursor, limit=MAX_PAGE_LIMIT)
+            candidate_events.extend(page.items)
+            if page.next_cursor is None:
+                break
+            cursor = page.next_cursor
+        return AuditEventStore().verify_integrity(candidate_events)
 
 
 def audit_contract_summary() -> dict[str, object]:

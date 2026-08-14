@@ -22,6 +22,32 @@ use windows_sys::Win32::Security::Credentials::{
     CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredWriteW,
 };
 
+#[cfg(windows)]
+struct NativeVaultCleanup<'a> {
+    vault: &'a NativeSessionVault,
+    armed: bool,
+}
+
+#[cfg(windows)]
+impl<'a> NativeVaultCleanup<'a> {
+    fn new(vault: &'a NativeSessionVault) -> Self {
+        Self { vault, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativeVaultCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.vault.revoke();
+        }
+    }
+}
+
 fn projection() -> NativeSessionProjection {
     NativeSessionProjection::new(
         "usr-contract".to_owned(),
@@ -1101,6 +1127,7 @@ fn vault_round_trip_and_revoke_use_a_dedicated_native_target() {
             .as_nanos()
     );
     let vault = NativeSessionVault::new(target.clone()).expect("test vault");
+    let mut cleanup = NativeVaultCleanup::new(&vault);
     vault.write(&credentials()).expect("write native session");
     let loaded = vault
         .read()
@@ -1110,6 +1137,7 @@ fn vault_round_trip_and_revoke_use_a_dedicated_native_target() {
     assert!(!format!("{vault:?}").contains(&target));
     vault.revoke().expect("revoke native session");
     assert_eq!(vault.read().expect("read after revoke"), None);
+    cleanup.disarm();
 }
 
 #[cfg(windows)]
@@ -1124,6 +1152,7 @@ fn corrupt_windows_generic_credential_is_removed_before_a_status_can_be_returned
             .as_nanos()
     );
     let vault = NativeSessionVault::new(target.clone()).expect("test vault");
+    let mut cleanup = NativeVaultCleanup::new(&vault);
     let mut target_wide: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
     let mut username: Vec<u16> = "Daon Native Session"
         .encode_utf16()
@@ -1144,4 +1173,5 @@ fn corrupt_windows_generic_credential_is_removed_before_a_status_can_be_returned
     corrupt.fill(0);
     assert_eq!(vault.read(), Err("AUTHENTICATION_REQUIRED"));
     assert_eq!(vault.read().expect("revoked target read"), None);
+    cleanup.disarm();
 }

@@ -37,10 +37,12 @@ services:
       DAON_OBJECT_ACCESS_KEY_FILE: /run/secrets/object_access_key
       DAON_OBJECT_SECRET_KEY_FILE: /run/secrets/object_secret_key
       DAON_RECOVERY_MANIFEST_KEY_FILE: /run/secrets/recovery_manifest_key
+      DAON_STEP_UP_TOKEN_KEY_FILE: /run/secrets/step_up_token_key
     secrets:
       - object_access_key
       - object_secret_key
       - recovery_manifest_key
+      - step_up_token_key
     volumes:
       - daon_user_api_runtime:/var/lib/daon-user
     networks:
@@ -158,3 +160,5 @@ secrets:
     file: ${DAON_OBJECT_SECRET_KEY_FILE:?object secret key reference required}
   recovery_manifest_key:
     file: ${DAON_RECOVERY_MANIFEST_KEY_FILE:?recovery manifest key reference required}
+  step_up_token_key:
+    file: ${DAON_STEP_UP_TOKEN_KEY_FILE:?step-up token key reference required}
