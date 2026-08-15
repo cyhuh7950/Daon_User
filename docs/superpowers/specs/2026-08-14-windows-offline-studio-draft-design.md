@@ -18,6 +18,22 @@
 
 최종 Workspace Shell은 승인·배포된 상태를 기준으로 유지한다. 이후 구현은 신산님이 2026-08-14 확정한 `공통 기반 모듈·공통 API → 메뉴별 수직 기능` 순서를 따른다. 먼저 여러 화면이 함께 사용하는 인증·권한·Canon·Provider/Model·Knowledge Context·Citation·Output Version·Audit·same-origin BFF 계약을 완성하고 실제 저장·오류·보안 동작을 검증한다. 그 다음 승인된 화면 구조를 바꾸지 않고 메뉴를 하나씩 `Domain → Repository → API/BFF → UI → 실제 Browser` 순서로 닫는다.
 
+2026-08-15 이후 제품 조립 순서는 다음으로 고정한다.
+
+1. 선택된 Notebook의 `Source → LLM 대화 → Studio 산출물` 3열 작업 화면을 독립 실행 Harness에서 완성한다.
+2. Notebook 홈과 3열 화면이 공유할 화면 설정·라이선스·사용자 설명서 공통 모듈과 API를 완성한다.
+3. Notebook Domain·Repository·API와 `새 Notebook | 최근·기존 Notebook` 홈을 구현한다.
+4. `Notebook 홈 → 선택한 Notebook 3열 화면`을 결속한다.
+5. 마지막에 `로그인 → Notebook 홈`을 연결하고 운영 인증 통합 Gate를 수행한다.
+
+독립 실행 Harness는 운영 인증을 제거하거나 우회하는 기능이 아니다. 운영 API의 Session·ACL·RLS·CSRF·Step-up 계약은 처음부터 유지하고, Harness는 제품 Bundle·운영 Route와 분리된 검증 경계에서 명시적 Test Notebook Context와 Adapter만 주입한다. 운영 코드에 인증 해제 Flag·고정 사용자·고정 Token·Fixture 성공을 넣지 않는다.
+
+### 1.0.1 외부 참고 구현 기준
+
+- 화면 설정은 NowNote repository commit `c3fdef73ef66dba2e7ff63f372cbd316fb5eb639`의 `system | light | dark`, OS `prefers-color-scheme` 변경 감지, `data-theme` 적용과 화면 설정 전용 초기화 방식을 참고한다.
+- 라이선스와 사용자 설명서는 CGA repository commit `6d04bc9e4eb0942c8ecb5e8f9816d4cbd6720153`의 서명 검증·관리자 적용·한도/사용량/만료 경고와 실제 화면 기반 설명서·Getting Started·전문 활용 가이드 분리 원칙을 참고한다.
+- 참고 저장소의 Product name·Asset·DB Schema·API Path·문구를 복사하지 않는다. Daon의 Tenant·Workspace·Notebook·Provider·산출물 계약에 맞는 독립 Domain과 화면으로 구현한다.
+
 ### A1 내부 운영 Audit 내구성 결정 (2026-08-14)
 
 공개 API·DTO·사용자 데이터 계약은 변경하지 않는다. 기존 `audit_events`는 Cloud notification/Canon 용도와 `workspace_id NOT NULL` 제약을 가지므로 Identity Session·ACL·Step-up의 workspace 없는 정본 `AuditEvent`를 혼합 저장하지 않는다. Alembic head `0015`는 전용 append-only security audit를 추가한다. tenant/workspace nullable scope, actor/action/target/policy/trace/outcome/safe-code와 이전·현재 hash를 무손실로 저장하고 UPDATE/DELETE를 trigger·RLS/FORCE RLS·least privilege로 거부한다. Step-up issuance/consumption idempotency는 Identity 저장소의 schema-versioned 원장 하나를 권위 저장소로 사용해 발급·소비 상태와 원자적으로 갱신하며, PostgreSQL에 사용되지 않는 이중 원장을 만들지 않는다. fresh/upgrade/rollback/reapply, PostgreSQL 15/18, cross-tenant read/write0, restart recovery는 A1 actual Gate다.
@@ -127,6 +143,52 @@ Critical 오류는 Popup 안에만 숨기지 않는다. 상단 상태가 `주의
 ### 3.1.3 향후 화면 적용 기준
 
 향후 Windows Workspace에 추가되는 화면은 별도 시각 체계를 만들지 않고 이 설계의 App Bar, Violet Accent, Surface, Panel Header, Button 위계, Inline Alert, Modal Popup, 상태 표시와 Focus 계약을 재사용한다. 이 Work Order는 무관한 기존 화면 전체를 일괄 재설계하지 않는다. 새 화면과 이번 범위에서 직접 수정하는 화면부터 적용하고, 기존 화면은 해당 기능을 후속 변경할 때 같은 기준으로 정렬한다.
+
+### 3.1.4 Notebook 홈과 독립 3열 작업 경계
+
+`Workspace`는 Tenant·Membership·조직 정책·Provider·보안 경계이고, `Notebook`은 사용자가 주제별로 만드는 작업 단위다. 하나의 Workspace 안에 여러 Notebook을 둘 수 있으며 Notebook마다 선택 Source·Knowledge Context·대화 Thread·Studio Output·Version·생성 설정과 최근 작업 시각을 독립 보존한다.
+
+개발 중 선택된 Notebook 3열 화면은 로그인 화면과 직접 연결하지 않는다. 전용 검증 Harness가 `workspace_id + notebook_id`와 실제 Adapter 또는 명시적 Test Adapter를 주입해 화면·API 계약을 독립 검증한다. Harness는 다음을 만족해야 한다.
+
+- 운영 Build와 공개 Route에 포함되지 않는다.
+- Test Notebook Context가 없으면 fail-close하고 임의 기본 Workspace·Notebook을 만들지 않는다.
+- 실제 API 통합 시험은 정상 Session을 Test Fixture에서 발급하되 인증·ACL·RLS를 우회하지 않는다.
+- 화면 단위 시험은 Network 0인 bounded Adapter를 사용하고 성공·실패·빈 상태를 명시한다.
+- 운영 배포의 비인증 사용자는 계속 로그인 화면만 보고 보호 API는 401을 반환한다.
+
+Notebook 홈은 `새 Notebook 만들기`, 최근·기존 Notebook 목록, 제목 검색, 최근 수정·제목 정렬, Grid/List 전환, 빈 상태와 안전 오류를 제공한다. Notebook Card는 제목, Source 수, 산출물 수, 최근 수정시각과 상태만 표시하며 내부 ID·Policy fingerprint·Provider secret을 노출하지 않는다. 새 Notebook 생성은 제목과 선택적 설명만 받아 empty Notebook을 만들고, 생성 성공 후 해당 Notebook의 3열 화면으로 이동한다. 삭제·공유·Template·추천 Notebook은 별도 승인 전 추가하지 않는다.
+
+### 3.1.5 화면 설정
+
+화면 설정은 Notebook 데이터가 아니라 사용자별 공통 UI Preference다. Notebook 홈과 3열 화면에서 동일하게 적용한다.
+
+- Theme: `system | light | dark` exact 3상태. 기본은 `system`이다.
+- `system`은 `prefers-color-scheme`을 따르고 OS Theme 변경을 즉시 반영한다.
+- 초기 HTML paint 전에 안전한 저장 Preference를 적용해 Theme flash를 줄인다.
+- Theme는 Source·대화·산출물·Notebook 상태를 변경하지 않는다.
+- `화면 설정 초기화`는 Theme와 향후 승인된 화면 Preference만 초기화하며 Notebook·Source·대화·산출물은 삭제하지 않는다.
+- Web은 브라우저의 same-origin 사용자 Preference 저장 계약을 사용하고, Windows는 Local encrypted settings projection을 사용한다. 두 Client가 동기화할지는 별도 승인 전 자동 가정하지 않는다.
+- Light/Dark 모두 1920×1080, 기본 12px Typography, WCAG AA 대비, keyboard Focus, `prefers-reduced-motion`을 만족해야 한다.
+
+### 3.1.6 라이선스 설정과 사용자 설명서
+
+`설정` Menu에 `라이선스`와 `사용자 설명서`를 추가한다. 두 기능은 Notebook별 설정이 아니라 Workspace/Product 공통 기능이다.
+
+라이선스 설정은 일반 사용자에게 현재 상태를 읽기 전용으로 표시하고, 허가된 조직 관리자에게만 적용 Action을 제공한다.
+
+- 표시: 제품/Edition, License ID의 안전한 일부, 발급일·만료일, 상태, 허용 기능, 사용자·Notebook·Storage 또는 승인된 Resource별 한도/사용량/잔여량, 만료·한도 경고.
+- 적용: 서명된 License document를 관리자 화면/API로만 업로드한다. DB 직접 INSERT·서명 우회·Client-side 판정을 금지한다.
+- 검증: 서버는 승인 Public key로 서명·제품·조직·기간·Schema version을 검증한다. 발급 Private key는 Server·Git·Browser·Desktop Bundle에 저장하지 않는다.
+- Enforcement: 만료·한도 도달 시 신규 생성만 fail-close하고 허용된 기존 Notebook·Source·산출물의 조회·Export 정책은 License 계약에 따라 명시한다. 경고와 차단 사유는 Safe code와 사용자가 취할 조치로 표시한다.
+- 변경은 Audit·Idempotency·Step-up·RLS를 적용하며 일반 사용자의 Upload/Update invoke는 0건이어야 한다.
+
+사용자 설명서 Menu는 Daon 문서 Hub를 연다.
+
+1. **Getting Started**: `Notebook 생성 → Source 추가 → 질문 → Citation 확인 → Studio 산출물 생성`의 첫 성공 경로.
+2. **사용자 설명서**: Notebook 홈, 3열 화면, 설정, 운영상태, Version·검토·승인·Export의 전체 메뉴와 절차.
+3. **지식·LLM 활용 가이드**: Daon 지식과 Raw Source, Provider/Model 선택, Citation, 품질·비용·지연, 오류 대응과 운영 기준.
+
+문서 작업은 메뉴 껍데기 구현으로 끝내지 않는다. 한국어 Markdown 원본의 실제 본문을 작성하고 승인 Release별 Version을 고정한 뒤 DOCX·PDF를 생성하며, Web 내 읽기 화면과 Download를 제공한다. 실제 구현·검증된 메뉴명·상태·권한만 설명하고 준비 중 기능은 완료 기능처럼 문서화하지 않는다. 각 절은 `목적 → 접근 경로 → 조작 → 예상 결과 → 제한·오류 대응` 순서를 사용하고 실제 1920×1080 화면과 문서 캡처를 Release Gate에서 대조한다. 사용자 설명서는 공개 가능 내용과 로그인 후 조직 전용 내용을 분리하며 내부 URL·Secret·운영 Path를 포함하지 않는다. 번역본은 한국어 Release 1 정본 승인 후 별도 범위로 생성한다.
 
 ### 3.2 정상 흐름
 

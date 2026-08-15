@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 승인·배포된 NotebookLM-inspired 최종 화면을 유지하면서 공통 모듈·공통 API를 먼저 완성하고, 이후 `LLM 설정 → Source → 대화 → Studio → Library → 운영·설정` 메뉴를 하나씩 실제 기능으로 완성한다.
+**Goal:** 선택된 Notebook의 NotebookLM-inspired 3열 작업 화면을 로그인과 분리된 검증 Harness에서 먼저 완성하고, 공통 모듈·API와 공통 설정을 닫은 뒤 Notebook 홈을 구현하며, 마지막에 로그인→Notebook 홈→선택 Notebook 3열 화면을 결합한다.
 
-**Architecture:** Phase A에서 인증·권한, Canon·계보, Provider·Model, 입력·근거, 생성·산출물, same-origin BFF 상태 계약을 공통 기반으로 검증·보완한다. Phase B에서는 현재 화면 구조를 유지한 채 메뉴 하나마다 Domain·Repository·API/BFF·UI·actual Browser를 한 번에 닫고 다음 메뉴로 이동한다.
+**Architecture:** Phase A에서 인증·권한, Canon·계보, Provider·Model, 입력·근거, 생성·산출물, same-origin BFF 상태 계약을 공통 기반으로 검증·보완한다. Phase B에서는 선택된 Notebook의 3열 화면 메뉴를 수직 완성한다. Phase C에서 Theme·License·Manual 공통 기능을 구현하고, Phase D에서 Notebook Domain/API와 홈을 구현한다. Phase E에서 홈→3열을 결합한 뒤 로그인 연결을 가장 마지막에 추가한다.
 
 **Tech Stack:** Python 3.14/FastAPI/SQLCipher/AES-GCM/psycopg, Rust/Tauri 2, React/JavaScript, PostgreSQL 15·18, JSON Schema/OpenAPI, Node test runner, pytest, Cargo test.
 
@@ -14,6 +14,12 @@
 - 공식 작업공간은 `C:\Users\cyhuh\Desktop\D Driver\Project\Daon_User`, 통합 기준선은 `origin/master`다. 현재 계획 작성 Branch는 `codex/user-auth-screen-split`이며 실행 전 승인 문서가 `master`에 반영됐거나 신산님이 별도 실행 Branch를 지정했는지 확인한다. 불일치하면 코드를 수정하지 않고 보고한다.
 - 한 시점에 한 Writer만 허용하며 어울1은 설계·검토를 소유하고 구현은 `daon-developer` 어울2에게 전체 문서로 전달한다.
 - 현재 Windows Workspace의 `Source · 대화/실행 · 업무 Studio` 3열 위치·폭·의미를 유지한다. Dashboard나 별도 Cockpit으로 재배치하지 않는다.
+- `Workspace`는 조직·권한·정책 경계이고 `Notebook`은 Source·대화·산출물을 묶는 사용자 작업 단위다. 하나의 Workspace를 하나의 Notebook으로 간주하지 않는다.
+- 3열 개발 Harness는 운영 인증 우회가 아니다. 운영 API의 Session·ACL·RLS·CSRF·Step-up은 유지하고 Harness는 운영 Bundle·공개 Route 밖에서 명시 Test Notebook Context와 Adapter만 주입한다.
+- 로그인 화면과 3열 화면의 제품 연결은 Phase E까지 제거한다. 운영 비인증 Route와 보호 API의 401 계약은 그대로 유지한다.
+- 화면 설정은 `system | light | dark`, OS Theme 변경 감지, 화면 Preference 전용 초기화를 제공하며 Notebook 데이터를 변경하지 않는다.
+- 라이선스는 서명 검증·조직 범위·만료·한도·사용량·잔여·경고를 서버 권위로 관리한다. Private key·License 원문·내부 판정 정보는 Browser/Bundle/Git에 저장하지 않는다.
+- 사용자 설명서는 실제 완료 기능만 설명하는 Markdown 정본에서 Getting Started·사용자 설명서·지식/LLM 활용 가이드를 Release별로 생성하고 Web 읽기·DOCX·PDF를 제공한다.
 - 화면 기준은 1920×1080, 제목 16px, Panel 제목 14px, 본문·Form 12px, 보조 10px, 아주 작은 보조 9px이다.
 - 시각 언어는 `NotebookLM-inspired Violet`: 중립 Canvas, 불투명 Surface, 얇은 Border, 13px Radius, 절제된 Shadow, Violet 단일 Accent를 선택·주요 Action·Citation·활성 상태에만 사용한다.
 - 긴 설명 Box를 상시 노출하지 않는다. 필수 Label은 화면에 두고 추가 설명은 `i` Icon Tooltip·Popover로 제공한다.
@@ -79,6 +85,50 @@ Phase A의 각 항목은 기존 구현을 먼저 대조한다. 이미 닫힌 계
 13. **설정 → 조직 정책**.
 
 `슬라이드 | 인포그래픽 | 플래시카드 | 퀴즈 | AI 오디오 | 동영상`은 위 메뉴가 닫힌 뒤 별도 설계 승인으로 순서를 추가한다. 준비 중 Tile은 그 전까지 disabled 상태를 유지한다.
+
+### Phase C — Notebook 홈과 공유하는 공통 설정
+
+Phase B 13개 메뉴가 완료된 현재 기준선에서 다음 세 메뉴를 순서대로 수직 완성한다.
+
+1. **설정 → 화면 설정**
+   - 사용자 Preference Domain과 `system | light | dark` exact DTO를 먼저 고정한다.
+   - Web same-origin Preference API와 Windows encrypted local projection을 분리하고 자동 Client 동기화는 하지 않는다.
+   - OS Theme 변경, 초기 paint, Light/Dark token, reduced-motion, 화면 설정만 초기화, Notebook 데이터 write0을 검증한다.
+   - 1920×1080 Light/Dark와 200% Zoom actual Browser/Desktop Gate를 수행한다.
+2. **설정 → 라이선스**
+   - License document Schema·signature·organization scope·issue/expiry·feature/resource limits를 Domain/API로 구현한다.
+   - 일반 사용자는 read-only, 조직 관리자만 Step-up 후 apply 가능하다.
+   - 상태·사용량·잔여·30일 경고·만료·한도 차단을 화면과 API에서 동일하게 표시한다.
+   - Private key 저장0, invalid signature·wrong product/org·expired·replay·cross-tenant write0, Audit/RLS actual PostgreSQL을 검증한다.
+3. **설정 → 사용자 설명서**
+   - 메뉴만 구현하지 않고 실제 설명서 제작을 같은 작업 범위에서 완료한다.
+   - 한국어 Markdown 정본과 Release Version manifest를 먼저 만든다.
+   - `Daon Getting Started`, `Daon 사용자 설명서`, `Daon 지식·LLM 활용 가이드`의 실제 본문을 작성한다.
+   - 각 문서에 현재 제품의 실제 1920×1080 화면 캡처, 클릭 위치, 입력 조건, 예상 결과, 권한, 실패 시 조치를 포함한다.
+   - Markdown에서 DOCX·PDF를 생성하고 페이지 잘림·표·이미지·목차·링크를 render 검사한다.
+   - Menu Hub에서 문서 검색·Web 읽기·DOCX/PDF Download·Release Version 확인을 제공한다.
+   - 현재 화면명·권한·Safe error와 문서 내용이 일치하는지 자동 Link/Heading/Version 검사와 실제 Browser Gate로 확인한다.
+   - 산출물은 최소 `docs/manual/daon-getting-started`, `docs/manual/daon-user-manual`, `docs/manual/daon-knowledge-llm-guide`, `docs/manual/dist`와 Web download asset manifest를 포함한다.
+
+Reference baseline은 NowNote `c3fdef73ef66dba2e7ff63f372cbd316fb5eb639`과 CGA `6d04bc9e4eb0942c8ecb5e8f9816d4cbd6720153`다. 구현을 복사하지 않고 Daon 계약에 맞게 재설계한다.
+
+### Phase D — Notebook Domain·API·홈
+
+1. `Notebook`, `NotebookBinding`, `NotebookActivity`의 Tenant/Workspace scope, immutable create record, current metadata Version, RLS·Audit·Idempotency 계약을 설계한다.
+2. Notebook create/list/get/update-title API와 same-origin BFF를 구현한다. 삭제·공유·추천·Template은 이번 범위에서 제외한다.
+3. Notebook 홈에 새 Notebook, 최근·기존 Notebook, 검색, 최근 수정/제목 정렬, Grid/List 전환, Loading/Empty/Error를 구현한다.
+4. Notebook Card는 title, Source count, Output count, updated_at, safe status만 표시한다.
+5. 새 Notebook 생성→빈 3열 화면 이동, 기존 Notebook→보존된 Source/대화/Library 재진입을 actual PostgreSQL과 Browser로 검증한다.
+
+### Phase E — 제품 조립과 로그인 최종 연결
+
+1. `Notebook 홈 → 선택 Notebook 3열 화면`을 먼저 연결하고 뒤로 가기·새로고침·직접 URL·Session 내 Workspace 전환을 검증한다.
+2. 독립 3열 Harness가 운영 Build·Route·Bundle에 포함되지 않음을 Boundary 검사로 고정한다.
+3. 마지막에 로그인 성공 Redirect를 `/notebooks` 홈으로 변경한다. 로그인 응답이 Workspace ID를 반환해도 임의 Notebook을 자동 선택하지 않는다.
+4. 비인증→로그인, 인증→Notebook 홈, Notebook 선택→3열, Session 만료→안전한 로그인 복귀를 actual Browser에서 검증한다.
+5. same-origin Network, Cookie/Token 비노출, ACL/RLS cross-workspace·cross-notebook read/write0, 로그아웃 후 Browser history 재진입 차단을 확인한다.
+
+Phase E 통합 Gate 전까지 개발 검증은 로그인 조작을 요구하지 않는 독립 Harness를 사용한다. 하지만 해당 Harness PASS를 운영 인증 통합 PASS로 대체하지 않는다.
 
 아래 Task 0~8 상세 절은 이미 구현된 자산과 파일·테스트 계약의 참조 기록이다. 남은 작업의 실제 착수 순서와 Go/No-Go는 위 Phase A·B가 우선하며, Task 번호 순서대로 다시 구현하지 않는다.
 
