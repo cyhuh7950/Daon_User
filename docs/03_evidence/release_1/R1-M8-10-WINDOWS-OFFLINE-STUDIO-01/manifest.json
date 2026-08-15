@@ -4,7 +4,7 @@
   "work_order_id": "R1-M8-10-WINDOWS-OFFLINE-STUDIO-01",
   "checkout": {
     "branch": "codex/user-auth-screen-split",
-    "head": "dbe67f9bfe778b1ffa10b31f1e3e0faf807dd42b",
+    "head": "c4d626c020b8ff5ec42c9ab22f359c25b6dedf18",
     "migration_revision": "0017"
   },
   "foundation_a1_status": "PASS",
@@ -13,10 +13,11 @@
   "foundation_b3_status": "PASS",
   "phase_a_status": "PASS",
   "phase_b_status": "PASS",
+  "ysna_deployment_status": "PASS",
+  "authenticated_web_browser_status": "PASS",
   "completion_status": "INCOMPLETE",
   "completion_blockers": [
-    "actual authenticated Desktop offline end-to-end flow remains unexecuted against the current integrated source",
-    "commit push and ysna deployment require separate user approval"
+    "actual authenticated Desktop offline end-to-end flow remains unexecuted against the current integrated source"
   ],
   "reusable_visual_api": {
     "scope": ".desktop-shell[data-visual-system=notebook-violet]",
@@ -95,6 +96,10 @@
     {
       "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-b13-organization-policy-transcript.md",
       "sha256": "BFBD8DD0A084A543D2F9B17B15AA743CF8985B0C0CC68235ECBC5DE7028AFC71"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/ysna-c4d626c-deployment-transcript.md",
+      "sha256": "7DD93163E9692219F49DEDC913344D076F5473C3FEF566C8D38002DF425A4498"
     }
   ]
 }

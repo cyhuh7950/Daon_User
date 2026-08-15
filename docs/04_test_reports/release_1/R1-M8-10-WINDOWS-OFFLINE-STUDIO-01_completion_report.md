@@ -84,3 +84,12 @@ Task 3B 재작업과 Task 3C Raw Source 보완으로 독립 검토의 코드 결
 - fresh API `405 PASS·29 SKIP·137 subtests`, 주요 Node `124/124`, Web production build·TypeScript, boundary `273/0`, OpenAPI `81/103/138/31`을 통과했다.
 - actual PostgreSQL 15은 Migration `0017`, 조직/Workspace 정책 분리와 cleanup0을 확인했다. actual Browser는 1920×1080에서 13번째 메뉴까지 same-origin과 내부값 비노출을 확인했다.
 - 전체 Work Order 상단 판정은 Commit·Push·ysna 배포가 별도 승인 경계이므로 `INCOMPLETE`를 유지한다. 추가 산출물 Tile 6종은 계획대로 별도 설계 승인 전 disabled 상태를 유지한다.
+
+## 2026-08-15 ysna-server 통합 배포 판정
+
+- 판정: `YSNA_DEPLOYMENT_PASS / AUTHENTICATED_WEB_BROWSER_PASS / WORK_ORDER_INCOMPLETE`
+- exact Commit `c4d626c020b8ff5ec42c9ab22f359c25b6dedf18`을 `origin/codex/user-auth-screen-split`에 Push하고 ysna-server에 적용했다.
+- Backup SHA·restore-list·rollback images를 보존한 상태에서 Migration `0013→0017`, RLS/FORCE, API·Worker·Web build/recreate, public root/BFF health를 PASS했다.
+- 로그인된 운영 Chrome에서 Source 5건, LLM 설정 9 Provider, 출력·버전, 동기화·승인, 조직 정책 8필드, 운영상태 5항목을 실제 조회했다. Browser console error/warn 및 내부 URL·credential·token 노출은 0이다.
+- Commit·Push·ysna 배포 blocker는 해소됐다. 상단 전체 판정의 남은 이유는 Windows Desktop provider actual Gate뿐이다.
+- 추가 산출물 Tile 6종은 승인 계획대로 disabled 상태를 유지하며 이번 배포 완료를 과장하지 않는다.
