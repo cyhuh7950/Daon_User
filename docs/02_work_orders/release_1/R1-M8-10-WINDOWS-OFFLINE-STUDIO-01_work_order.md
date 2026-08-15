@@ -43,7 +43,7 @@ Task 5 RED에서 Cloud Knowledge Package bytes를 Local 암호화 저장소와 S
 
 ## 허용 범위
 
-구현계획 Tasks 1–8의 `Files`에 명시된 파일과 다음 진행·완료·Evidence 경로만 허용한다.
+구현계획 Phase A–E와 Tasks 0–8의 `Files`에 명시된 파일, 그리고 다음 진행·완료·Evidence 경로만 허용한다. 실행 순서는 Phase A→B→C→D→E이며 기존 Task 번호는 각 Phase의 세부 구현·검증 절차로 사용한다.
 
 - `docs/02_work_orders/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01_work_order.md`
 - `docs/02_work_orders/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01_prompt.md`
@@ -57,7 +57,7 @@ Task 5 RED에서 Cloud Knowledge Package bytes를 Local 암호화 저장소와 S
 
 - 정본 Root: `C:\Users\cyhuh\Desktop\D Driver\Project\Daon_User`
 - 승인 실행 Branch: `codex/user-auth-screen-split`
-- 착수 HEAD: `4665840f61451b284bec0b46209eb7d01f6daf84`
+- 재착수 HEAD: `fa5e042` (`docs: reorder notebook delivery and manual production`)
 - 기존 Desktop·Mobile·Web Settings·타 작업 문서의 dirty/untracked 변경은 사용자 자산이므로 미접촉한다.
 - 기존 Web Workspace optional prop 미사용 동작, Source Sync 기본값, Cloud 공개 API, SQLCipher/Queue, no automatic reconnect transfer를 유지한다.
 
@@ -87,7 +87,7 @@ Task 5 RED에서 Cloud Knowledge Package bytes를 Local 암호화 저장소와 S
 - Step-up exact replay는 `DAON_STEP_UP_TOKEN_KEY_FILE` root-owned reference의 versioned HMAC만 사용한다. raw/ciphertext 저장은 금지하며 production key absent/rotation pending replay는 fail-close한다.
 - A2 remediation: `0016_output_version_content_lineage`에서 OutputVersion 내용 `content_version`과 상태 전이 `version`을 분리한다. same-key 동시 Version/Action은 advisory lock 후 replay하며 최신 Version은 content_version 기준으로 결정한다. 실제 다중 Version·RLS·FK·replay 1건·rollback fail-close·reapply를 PostgreSQL에서 검증한다.
 - 대표 `UPSTAGE | GROQ | MISTRAL` 하나의 actual generation과 Citation/RunSnapshot; 필요 시 두 번째 Provider 호환성
-- Ollama installed completion model 조회·선택·내부 호출과 외부 Provider transport 0
+- Ollama는 설치된 completion model의 조회·선택·연결 계약을 다른 Provider와 같은 방식으로 확인하되 대표 생성 기능 전체 반복 시험 대상으로 강제하지 않는다.
 - actual Desktop UI 1920×1080·Light/Dark·Modal Focus·same-origin Network
 - reconnect Preview→Step-up→Approve→Resume와 deny/conflict write 0
 - Evidence manifest hash, `git diff --check`, staged 0, 보호 변경 불변
