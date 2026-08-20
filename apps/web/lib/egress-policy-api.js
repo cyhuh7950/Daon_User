@@ -73,9 +73,9 @@ export async function getEffectiveEgressPolicy({ fetchImpl = fetch, workspaceId,
   return { ...result, data: normalizeEffectivePolicy(result.data) };
 }
 
-export async function getOrganizationSettingsContext({ fetchImpl = fetch } = {}) {
+export async function getOrganizationSettingsContext({ fetchImpl = fetch, signal } = {}) {
   const session = await safeJson(await fetchImpl("/bff/api/session", {
-    method: "GET", credentials: "same-origin", cache: "no-store",
+    method: "GET", credentials: "same-origin", cache: "no-store", signal,
   }));
   return { data: {
     organization_id: session.data.tenant_id,
@@ -84,27 +84,47 @@ export async function getOrganizationSettingsContext({ fetchImpl = fetch } = {})
 }
 
 export async function saveOrganizationEgressPolicy({
-  fetchImpl = fetch, organizationId, etag, idempotencyKey, draft, sensitive,
+  fetchImpl = fetch, organizationId, etag, idempotencyKey, draft, sensitive, signal,
+}) {
+  return saveEgressPolicy({
+    fetchImpl, scope: "organizations", scopeId: organizationId,
+    etag, idempotencyKey, draft, sensitive, signal,
+  });
+}
+
+export async function saveWorkspaceEgressPolicy({
+  fetchImpl = fetch, workspaceId, etag, idempotencyKey, draft, sensitive, signal,
+}) {
+  return saveEgressPolicy({
+    fetchImpl, scope: "workspaces", scopeId: workspaceId,
+    etag, idempotencyKey, draft, sensitive, signal,
+  });
+}
+
+async function saveEgressPolicy({
+  fetchImpl, scope, scopeId, etag, idempotencyKey, draft, sensitive, signal,
 }) {
   try {
     const stepUp = await safeJson(await fetchImpl("/bff/api/session/step-up", {
       method: "POST", credentials: "same-origin",
+      signal,
       headers: {
         "content-type": "application/json",
         "idempotency-key": idempotencyKey,
       },
       body: JSON.stringify({
         action_group: "organization_security_or_connector_policy_change",
-        target_id: organizationId,
+        target_id: scopeId,
         password: sensitive.currentPassword,
       }),
     }));
     sensitive.currentPassword = "";
     sensitive.stepUpAuthorization = stepUp.data.step_up_authorization;
     return await safeJson(await fetchImpl(
-      `/bff/api/organizations/${encodeURIComponent(organizationId)}/egress-policy-versions`,
+      `/bff/api/${scope}/${encodeURIComponent(scopeId)}/egress-policy-versions`,
       {
         method: "POST", credentials: "same-origin",
+        signal,
         headers: {
           "content-type": "application/json", "if-match": etag,
           "idempotency-key": idempotencyKey,
