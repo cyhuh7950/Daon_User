@@ -21,9 +21,19 @@ PDF = b"%PDF-1.4\npage one\fpage two\n%%EOF\n"
 class FakeQuestionService:
     def __init__(self) -> None:
         self.calls = []
+        self.replay_calls = []
+        self.replay_answer = None
+
+    def replay(self, context, *, run_id, request_fingerprint):  # type: ignore[no-untyped-def]
+        self.replay_calls.append((context, run_id, request_fingerprint))
+        return self.replay_answer
 
     def ask(self, context, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append((context, kwargs))
+        if kwargs["source_id"] is None:
+            return StoredQuestionAnswer(
+                kwargs["run_id"], "result-general", "안녕하세요. 무엇을 도와드릴까요?", False, (),
+            )
         return StoredQuestionAnswer(
             kwargs["run_id"], "result-cp3", "ORANGE-COMPASS-42", False,
             (StoredCitation(
@@ -32,6 +42,14 @@ class FakeQuestionService:
                 {"kind": "page", "value": "2"},
             ),),
         )
+
+
+class FakeNotebookService:
+    def __init__(self) -> None:
+        self.required = []
+
+    def require_selected_bindings(self, context, notebook_id, *, required):  # type: ignore[no-untyped-def]
+        self.required.append((context, notebook_id, required))
 
 
 class FakeKnowledgePackages:
@@ -63,6 +81,64 @@ class FakeCitationContent:
 
 
 class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_general_conversation_allows_no_context_but_factual_question_fails_closed(self) -> None:
+        with self._authenticated():
+            response = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-general-0001"},
+                json={"notebook_id": "notebook-cp3", "question": "안녕하세요!"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["citations"], [])
+        self.assertIsNone(self.service.calls[-1][1]["source_id"])
+        self.assertEqual(self.notebooks.required[-1][2], ())
+
+        self.service.calls.clear()
+        with self._authenticated():
+            rejected = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-general-0002"},
+                json={"notebook_id": "notebook-cp3", "question": "2026년 매출은?"},
+            )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(self.service.calls, [])
+
+    async def test_completed_question_replay_precedes_binding_and_current_domain_state(self) -> None:
+        body = {
+            "notebook_id": "notebook-cp3",
+            "source_id": "source-cp3", "source_version_id": "source-version-cp3",
+            "question": "What is the verified answer?",
+        }
+        with self._authenticated():
+            first = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-replay-0001"}, json=body,
+            )
+        self.assertEqual(first.status_code, 200, first.text)
+        persisted = StoredQuestionAnswer(
+            first.json()["data"]["run_id"], first.json()["data"]["run_result_id"],
+            first.json()["data"]["answer"], False, (),
+        )
+        self.service.replay_answer = persisted
+        self.service.calls.clear()
+        self.notebooks.required.clear()
+
+        with self._authenticated():
+            replay = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-replay-0001"}, json=body,
+            )
+
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json()["data"]["run_result_id"], persisted.run_result_id)
+        self.assertEqual(self.notebooks.required, [])
+        self.assertEqual(self.service.calls, [])
+        self.assertEqual(len(self.service.replay_calls), 2)
+
     async def asyncSetUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
         db_path = Path(self.directory.name) / "runtime.sqlite3"
@@ -82,6 +158,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.identity = identity
         self.service = FakeQuestionService()
+        self.notebooks = FakeNotebookService()
         self.knowledge = FakeKnowledgePackages()
         self.dependencies = RuntimeDependencies(
             settings=RuntimeSettings.for_test(database_path=db_path, policy_version=POLICY_VERSION),
@@ -91,6 +168,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             question_answering_service=self.service,
             citation_content_repository=FakeCitationContent(),
             knowledge_package_service=self.knowledge,
+            notebook_service=self.notebooks,  # type: ignore[arg-type]
         )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_app(self.dependencies)),
@@ -117,6 +195,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                     "Idempotency-Key": "question-cp3-0001",
                 },
                 json={
+                    "notebook_id": "notebook-cp3",
                     "source_id": "source-cp3", "source_version_id": "source-version-cp3",
                     "question": "What is the citation verification phrase?",
                 },
@@ -129,6 +208,22 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("minio", response.text.casefold())
         self.assertNotIn("localhost", response.text.casefold())
         self.assertEqual(self.service.calls[0][0].workspace_id, "workspace-001")
+        self.assertEqual(self.service.calls[0][0].notebook_id, "notebook-cp3")
+        self.assertEqual(self.notebooks.required[0][1], "notebook-cp3")
+
+    async def test_question_requires_notebook_scope_before_service(self) -> None:
+        with self._authenticated():
+            response = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-cp3-0002"},
+                json={
+                    "source_id": "source-cp3", "source_version_id": "source-version-cp3",
+                    "question": "bounded question",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.service.calls, [])
 
     async def test_question_rejects_unbounded_or_unsafe_idempotency_before_service(self) -> None:
         for invalid_key in ("x" * 15, "x" * 129, "unsafe/key-value"):
@@ -148,6 +243,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mixed_knowledge_context_resolves_packages_and_rejects_legacy_pair(self) -> None:
         body = {
+            "notebook_id": "notebook-cp3",
             "question": "승인 지식과 원문을 종합해줘",
             "knowledge_context": {
                 "mode": "mixed",
@@ -183,7 +279,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
     async def test_citation_content_is_inline_pdf_after_current_access_recheck(self) -> None:
         with self._authenticated():
             response = await self.client.get(
-                "/api/v1/workspaces/workspace-001/citations/citation-cp3/content",
+                "/api/v1/workspaces/workspace-001/citations/citation-cp3/content?notebook_id=notebook-001",
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
             )
         self.assertEqual(response.status_code, 200)
@@ -196,7 +292,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.dependencies.citation_content_repository.text_mode = True
         with self._authenticated():
             response = await self.client.get(
-                "/api/v1/workspaces/workspace-001/citations/citation-cp3/content",
+                "/api/v1/workspaces/workspace-001/citations/citation-cp3/content?notebook_id=notebook-001",
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
             )
         self.assertEqual(response.status_code, 200)

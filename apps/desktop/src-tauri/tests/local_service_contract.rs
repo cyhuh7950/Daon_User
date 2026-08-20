@@ -147,3 +147,21 @@ fn windows_credential_manager_round_trip_and_revoke() {
     assert_eq!(store.read().expect("read after revoke"), None);
     cleanup.disarm();
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_screen_preference_unique_target_round_trip_and_revoke() {
+    let target = format!(
+        "DaonUser/ScreenPreferences-test/{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos(),
+    );
+    let store = WindowsCredentialStore::new(target);
+    let mut cleanup = CredentialCleanup::new(&store);
+    assert_eq!(store.read_screen_preference().expect("initial read"), None);
+    store.write_screen_preference("dark").expect("write preference");
+    assert_eq!(store.read_screen_preference().expect("round trip"), Some("dark".to_owned()));
+    store.revoke_screen_preference().expect("revoke preference");
+    assert_eq!(store.read_screen_preference().expect("read after revoke"), None);
+    cleanup.disarm();
+}

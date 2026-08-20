@@ -62,20 +62,20 @@ test("Native BFF exact Workspace·Recovery Route와 query만 허용하고 다른
     baseUrl: new URL("https://api.example.com"),
     fetchImpl: async (url, init) => {
       captured.push({ url: String(url), method: init.method });
-      return String(url).endsWith("/content")
+      return String(url).includes("/content?notebook_id=")
         ? new Response(Buffer.from("%PDF-1.4"), { headers: { "Content-Type": "application/pdf" } })
         : Response.json({ data: {}, meta: {} });
     },
   });
   const bearer = { Authorization: "Bearer opaque-native-credential" };
   const cases = [
-    ["GET", "workspaces/workspace-1/sources", ["workspaces", "workspace-1", "sources"]],
+    ["GET", "workspaces/workspace-1/sources?notebook_id=notebook-1", ["workspaces", "workspace-1", "sources"]],
     ["POST", "workspaces/workspace-1/sources", ["workspaces", "workspace-1", "sources"]],
-    ["GET", "workspaces/workspace-1/processing-runs/run-1", ["workspaces", "workspace-1", "processing-runs", "run-1"]],
+    ["GET", "workspaces/workspace-1/processing-runs/run-1?notebook_id=notebook-1", ["workspaces", "workspace-1", "processing-runs", "run-1"]],
     ["POST", "workspaces/workspace-1/questions", ["workspaces", "workspace-1", "questions"]],
-    ["GET", "workspaces/workspace-1/citations/citation-1/content", ["workspaces", "workspace-1", "citations", "citation-1", "content"]],
+    ["GET", "workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1", ["workspaces", "workspace-1", "citations", "citation-1", "content"]],
     ["POST", "workspaces/workspace-1/studio/reports", ["workspaces", "workspace-1", "studio", "reports"]],
-    ["GET", "workspaces/workspace-1/studio/outputs", ["workspaces", "workspace-1", "studio", "outputs"]],
+    ["GET", "workspaces/workspace-1/studio/outputs?notebook_id=notebook-1", ["workspaces", "workspace-1", "studio", "outputs"]],
     ["POST", "backups", ["backups"]],
     ["GET", "backups?workspace_id=workspace-1", ["backups"]],
     ["GET", "backups/backup-1", ["backups", "backup-1"]],
@@ -728,6 +728,47 @@ test("BFF uses its configured public HTTPS origin behind a reverse proxy", async
   assert.equal(calls, 1);
 });
 
+test("BFF current-session logout requires exact Origin and Referer and forwards only validated proof", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), headers: Object.fromEntries(init.headers) });
+      return Response.json({ data: { status: "logged_out", replayed: false }, meta: {} }, {
+        headers: { "Set-Cookie": "__Host-daon_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax" },
+      });
+    },
+  });
+  const accepted = await proxy(new Request("https://app.example.com/bff/api/session/logout", {
+    method: "POST",
+    headers: {
+      Origin: "https://app.example.com",
+      Referer: "https://app.example.com/notebooks/notebook-001",
+      "Sec-Fetch-Site": "same-origin",
+      Cookie: "__Host-daon_session=opaque-session-cookie-value",
+      "Content-Type": "application/json",
+    },
+  }), ["session", "logout"]);
+  const missingReferer = await proxy(new Request("https://app.example.com/bff/api/session/logout", {
+    method: "POST",
+    headers: { Origin: "https://app.example.com", Cookie: "__Host-daon_session=opaque-session-cookie-value", "Content-Type": "application/json" },
+  }), ["session", "logout"]);
+  const crossOrigin = await proxy(new Request("https://app.example.com/bff/api/session/logout", {
+    method: "POST",
+    headers: { Origin: "https://evil.example", Referer: "https://evil.example/", Cookie: "__Host-daon_session=opaque-session-cookie-value", "Content-Type": "application/json" },
+  }), ["session", "logout"]);
+
+  assert.equal(accepted.status, 200);
+  assert.match(accepted.headers.get("set-cookie"), /Max-Age=0/u);
+  assert.deepEqual([missingReferer.status, crossOrigin.status], [403, 403]);
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].url, "https://api.example.com/api/v1/session/logout");
+  assert.equal(captured[0].headers["x-daon-csrf-origin"], "https://app.example.com");
+  assert.equal(captured[0].headers["x-daon-csrf-referer"], "https://app.example.com/notebooks/notebook-001");
+  assert.equal("origin" in captured[0].headers, false);
+});
+
 test("BFF exposes only bounded Provider settings paths and query", async () => {
   const captured = [];
   const proxy = createBffProxy({
@@ -898,6 +939,7 @@ test("BFF uploads a bounded PDF only through the approved workspace source route
         method: init.method,
         type: init.headers.get("content-type"),
         filename: init.headers.get("x-source-filename"),
+        notebook: init.headers.get("x-notebook-id"),
         bytes: init.body.byteLength,
       });
       return Response.json({ data: { status: "accepted" }, meta: {} }, { status: 202 });
@@ -913,6 +955,7 @@ test("BFF uploads a bounded PDF only through the approved workspace source route
         "Content-Type": "application/pdf",
         "Idempotency-Key": "pdf-upload-001",
         "X-Source-Filename": "fixture.pdf",
+        "X-Notebook-Id": "notebook-001",
       },
       body: Buffer.from("%PDF-1.7\nfixture"),
     },
@@ -923,6 +966,7 @@ test("BFF uploads a bounded PDF only through the approved workspace source route
     method: "POST",
     type: "application/pdf",
     filename: "fixture.pdf",
+    notebook: "notebook-001",
     bytes: 16,
   }]);
 
@@ -949,9 +993,32 @@ test("BFF source route는 실제 Runtime과 동일하게 GET 목록과 POST PDF�
       return Response.json({ data: { sources: [] }, meta: {} });
     },
   });
-  const response = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/sources"), ["workspaces", "workspace-001", "sources"]);
+  const response = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/sources?notebook_id=notebook-001"), ["workspaces", "workspace-001", "sources"]);
   assert.equal(response.status, 200);
-  assert.deepEqual(calls, [{ url: "https://api.example.com/api/v1/workspaces/workspace-001/sources", method: "GET" }]);
+  assert.deepEqual(calls, [{ url: "https://api.example.com/api/v1/workspaces/workspace-001/sources?notebook_id=notebook-001", method: "GET" }]);
+});
+
+test("BFF legacy Studio report routes preserve mandatory Notebook scope", async () => {
+  const calls = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), method: init.method, body: init.body ? JSON.parse(Buffer.from(init.body).toString()) : null });
+      return Response.json({ data: { outputs: [] }, meta: {} });
+    },
+  });
+  const listed = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/studio/outputs?notebook_id=notebook-001"), ["workspaces", "workspace-001", "studio", "outputs"]);
+  const created = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-001/studio/reports", {
+    method: "POST", headers: { Origin: "https://app.example.com", "Content-Type": "application/json" },
+    body: JSON.stringify({ notebook_id: "notebook-001" }),
+  }), ["workspaces", "workspace-001", "studio", "reports"]);
+  assert.equal(listed.status, 200);
+  assert.equal(created.status, 200);
+  assert.deepEqual(calls, [
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/studio/outputs?notebook_id=notebook-001", method: "GET", body: null },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/studio/reports", method: "POST", body: { notebook_id: "notebook-001" } },
+  ]);
 });
 
 test("BFF exposes only same-origin document processing status reads", async () => {
@@ -964,11 +1031,11 @@ test("BFF exposes only same-origin document processing status reads", async () =
     },
   });
   const status = await proxy(new Request(
-    "https://app.example.com/bff/api/workspaces/workspace-001/processing-runs/run-001",
+    "https://app.example.com/bff/api/workspaces/workspace-001/processing-runs/run-001?notebook_id=notebook-001",
   ), ["workspaces", "workspace-001", "processing-runs", "run-001"]);
   assert.equal(status.status, 200);
   assert.deepEqual(captured, [{
-    url: "https://api.example.com/api/v1/workspaces/workspace-001/processing-runs/run-001",
+    url: "https://api.example.com/api/v1/workspaces/workspace-001/processing-runs/run-001?notebook_id=notebook-001",
     method: "GET",
   }]);
 
@@ -979,14 +1046,18 @@ test("BFF exposes only same-origin document processing status reads", async () =
   assert.equal(write.status, 405);
 });
 
-test("BFF exposes grounded questions and typed Citation content only through approved same-origin routes", async () => {
+test("BFF exposes grounded/general questions and typed Citation content only through approved same-origin routes", async () => {
   const captured = [];
   const proxy = createBffProxy({
     baseUrl: new URL("https://api.example.com"),
     publicOrigin: new URL("https://app.example.com"),
     fetchImpl: async (url, init) => {
-      captured.push({ url: String(url), method: init.method });
-      return String(url).endsWith("/content")
+      const forwardedBody = init.body ? await new Response(init.body).text() : "";
+      captured.push({
+        url: String(url), method: init.method,
+        body: forwardedBody ? JSON.parse(forwardedBody) : undefined,
+      });
+      return String(url).includes("/content?notebook_id=")
         ? new Response(Buffer.from("Daon knowledge section"), { headers: {
           "Content-Type": "text/plain; charset=utf-8",
           "X-Citation-Locator-Kind": "section",
@@ -1005,16 +1076,38 @@ test("BFF exposes grounded questions and typed Citation content only through app
       body: JSON.stringify({ source_id: "source-cp3", source_version_id: "version-cp3", question: "phrase?" }),
     },
   ), ["workspaces", "workspace-001", "questions"]);
+  const general = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/questions",
+    {
+      method: "POST",
+      headers: {
+        Origin: "https://app.example.com", "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ notebook_id: "notebook-001", question: "안녕하세요!" }),
+    },
+  ), ["workspaces", "workspace-001", "questions"]);
   const citation = await proxy(new Request(
-    "https://app.example.com/bff/api/workspaces/workspace-001/citations/citation-cp3/content",
+    "https://app.example.com/bff/api/workspaces/workspace-001/citations/citation-cp3/content?notebook_id=notebook-001",
   ), ["workspaces", "workspace-001", "citations", "citation-cp3", "content"]);
 
   assert.equal(question.status, 200);
+  assert.equal(general.status, 200);
   assert.equal(citation.headers.get("content-type"), "text/plain; charset=utf-8");
   assert.equal(citation.headers.get("x-citation-locator-kind"), "section");
   assert.deepEqual(captured, [
-    { url: "https://api.example.com/api/v1/workspaces/workspace-001/questions", method: "POST" },
-    { url: "https://api.example.com/api/v1/workspaces/workspace-001/citations/citation-cp3/content", method: "GET" },
+    {
+      url: "https://api.example.com/api/v1/workspaces/workspace-001/questions", method: "POST",
+      body: { source_id: "source-cp3", source_version_id: "version-cp3", question: "phrase?" },
+    },
+    {
+      url: "https://api.example.com/api/v1/workspaces/workspace-001/questions", method: "POST",
+      body: { notebook_id: "notebook-001", question: "안녕하세요!" },
+    },
+    {
+      url: "https://api.example.com/api/v1/workspaces/workspace-001/citations/citation-cp3/content?notebook_id=notebook-001",
+      method: "GET", body: undefined,
+    },
   ]);
 });
 
@@ -1064,5 +1157,31 @@ test("BFF allowlists Product Studio lifecycle and bounded export paths", async (
     { url: "https://api.example.com/api/v1/reviews", method: "POST" },
     { url: "https://api.example.com/api/v1/studio-outputs/output-1/versions?workspace_id=workspace-1", method: "GET" },
     { url: "https://api.example.com/api/v1/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-1", method: "GET" },
+  ]);
+});
+
+test("BFF exposes screen preference as same-origin exact GET PUT only", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"), publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method, contentType: init.headers.get("content-type") });
+      return Response.json({ data: { theme: "dark" }, meta: {} });
+    },
+  });
+  const get = await proxy(new Request("https://app.example.com/bff/api/preferences/screen"), ["preferences", "screen"]);
+  const put = await proxy(new Request("https://app.example.com/bff/api/preferences/screen", {
+    method: "PUT", headers: { Origin: "https://app.example.com", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" }, body: '{"theme":"dark"}',
+  }), ["preferences", "screen"]);
+  const crossOrigin = await proxy(new Request("https://app.example.com/bff/api/preferences/screen", {
+    method: "PUT", headers: { Origin: "https://other.example.com", "Content-Type": "application/json" }, body: '{"theme":"dark"}',
+  }), ["preferences", "screen"]);
+  const post = await proxy(new Request("https://app.example.com/bff/api/preferences/screen", {
+    method: "POST", headers: { Origin: "https://app.example.com", "Content-Type": "application/json" }, body: '{}',
+  }), ["preferences", "screen"]);
+  assert.deepEqual([get.status, put.status, crossOrigin.status, post.status], [200, 200, 403, 405]);
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/preferences/screen", method: "GET", contentType: null },
+    { url: "https://api.example.com/api/v1/preferences/screen", method: "PUT", contentType: "application/json" },
   ]);
 });

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
+import unicodedata
 from dataclasses import dataclass, replace
 from typing import Mapping, Protocol
 
@@ -12,10 +15,46 @@ from .document_index_postgres import IndexedEvidenceChunk
 from .document_understanding_adapter import DocumentUnderstandingError
 from .provider_settings import ProviderSettingsContext, ProviderSettingsService
 from .question_answering import (
-    GroundedQuestionRequest, GroundedTextResult, TextGenerationTransport,
+    GeneralConversationRequest, GroundedQuestionRequest, GroundedTextResult, TextGenerationTransport,
     OllamaTextGenerationAdapter, OpenAICompatibleTextGenerationAdapter,
     resolve_text_model_selection,
 )
+
+
+_GENERAL_CONVERSATION_INTENTS = frozenset({
+    "안녕", "안녕하세요", "반가워", "반갑습니다", "고마워", "고마워요", "감사합니다",
+    "도움말", "daon 사용법 알려줘", "daon 사용법을 알려줘", "다온 사용법 알려줘",
+    "다온 사용법을 알려줘", "이 제품 사용법 알려줘", "이 제품 사용법을 알려줘",
+})
+
+
+def _normalized_intent(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    if normalized != value:
+        return ""
+    normalized = normalized.strip().casefold()
+    normalized = re.sub(r"[.!?。！？]+$", "", normalized).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def is_general_conversation_intent(value: str) -> bool:
+    return isinstance(value, str) and _normalized_intent(value) in _GENERAL_CONVERSATION_INTENTS
+
+
+def question_request_fingerprint(
+    context: QuestionContext, *, run_id: str, idempotency_key: str,
+    request_payload: Mapping[str, object],
+) -> str:
+    """Bind replay only to the safe logical request and its exact scoped identity."""
+    return "sha256:" + hashlib.sha256(canonical_json_bytes({
+        "tenant_id": context.tenant_id,
+        "workspace_id": context.workspace_id,
+        "notebook_id": context.notebook_id,
+        "actor_id": context.actor_id,
+        "run_id": run_id,
+        "idempotency_key": idempotency_key,
+        "request": dict(request_payload),
+    })).hexdigest()
 from .question_answering_postgres import (
     PostgresQuestionAnsweringRepository, QuestionContext, StoredQuestionAnswer,
 )
@@ -38,7 +77,7 @@ class QuestionAdapterRegistry:
 
     @dataclass(frozen=True, slots=True)
     class Prepared:
-        request: GroundedQuestionRequest
+        request: GroundedQuestionRequest | GeneralConversationRequest
         selection: object
         adapter: object
         provider_payload: dict[str, object]
@@ -67,6 +106,29 @@ class QuestionAdapterRegistry:
 
     def generate_prepared(self, prepared: "QuestionAdapterRegistry.Prepared") -> GroundedTextResult:
         return prepared.adapter.generate(  # type: ignore[attr-defined]
+            prepared.request, prepared.selection, provider_payload=prepared.provider_payload,
+        )
+
+    def prepare_general(
+        self, snapshot, question: str, trace_id: str,  # type: ignore[no-untyped-def]
+        credential_resolver: CredentialResolver, transport: TextGenerationTransport,
+    ) -> "QuestionAdapterRegistry.Prepared":
+        selection = resolve_text_model_selection(snapshot)
+        request = GeneralConversationRequest(question.strip(), trace_id)
+        if selection.provider_code == "OLLAMA":
+            adapter = OllamaTextGenerationAdapter(transport=transport)
+        elif selection.provider_code in {"GROQ", "MISTRAL", "UPSTAGE"}:
+            adapter = OpenAICompatibleTextGenerationAdapter(
+                transport=transport, api_key=credential_resolver.resolve(selection.provider_code),
+            )
+        else:
+            raise ValueError("TEXT_PROVIDER_UNAVAILABLE")
+        return self.Prepared(
+            request, selection, adapter, adapter.general_provider_payload(request, selection),
+        )
+
+    def generate_general(self, prepared: "QuestionAdapterRegistry.Prepared") -> GroundedTextResult:
+        return prepared.adapter.generate_general(  # type: ignore[attr-defined]
             prepared.request, prepared.selection, provider_payload=prepared.provider_payload,
         )
 
@@ -149,19 +211,33 @@ class QuestionAnsweringService:
         )[:10])
 
     def prepare_authorization(
-        self, context: QuestionContext, *, source_id: str,
-        source_version_id: str, question: str,
+        self, context: QuestionContext, *, source_id: str | None,
+        source_version_id: str | None, question: str,
         context_mode: str = "raw_only",
         context_sources: tuple[QuestionInputSource, ...] | None = None,
     ) -> PreparedQuestionAuthorization:
-        del context_mode
-        sources = self._context_sources(source_id, source_version_id, context_sources)
+        general = is_general_conversation_intent(question)
+        if not general and (source_id is None or source_version_id is None):
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+        sources = () if general and source_id is None else self._context_sources(
+            source_id or "", source_version_id or "", context_sources,
+        )
         provider_context = ProviderSettingsContext(
             context.tenant_id, context.workspace_id, context.actor_id,
             context.trace_id, context.policy_version,
         )
         snapshot = self._provider_settings.snapshot(provider_context)
         selection = resolve_text_model_selection(snapshot)
+        if general:
+            prepared = self._adapter_registry.prepare_general(
+                snapshot, question, context.trace_id,
+                self._credential_resolver, self._transport,
+            )
+            wire = canonical_json_bytes(prepared.provider_payload)
+            transformer = getattr(self._egress, "prepare_payload", None)
+            if callable(transformer):
+                wire = transformer(context, wire)
+            return PreparedQuestionAuthorization(selection, wire, 0)
         evidence = self._search_context(context, sources, question)
         if not evidence:
             return PreparedQuestionAuthorization(selection, b"", 0)
@@ -176,16 +252,36 @@ class QuestionAnsweringService:
         return PreparedQuestionAuthorization(selection, wire, len(evidence))
 
     def ask(
-        self, context: QuestionContext, *, source_id: str,
-        source_version_id: str, question: str, run_id: str,
+        self, context: QuestionContext, *, source_id: str | None,
+        source_version_id: str | None, question: str, run_id: str,
         approved_authorization: Mapping[str, str] | None = None,
         context_mode: str = "raw_only",
         context_sources: tuple[QuestionInputSource, ...] | None = None,
+        request_fingerprint: str | None = None,
+        replay_checked: bool = False,
     ) -> StoredQuestionAnswer:
-        replay = self._repository.load_completed(context, run_id)
-        if replay is not None:
-            return replay
-        sources = self._context_sources(source_id, source_version_id, context_sources)
+        if request_fingerprint is None:
+            request_fingerprint = question_request_fingerprint(
+                context, run_id=run_id, idempotency_key=run_id,
+                request_payload={
+                    "question": question.strip(), "source_id": source_id,
+                    "source_version_id": source_version_id, "context_mode": context_mode,
+                },
+            )
+        if not replay_checked:
+            replay = self.replay(
+                context, run_id=run_id, request_fingerprint=request_fingerprint,
+            )
+            if replay is not None:
+                return replay
+        general = is_general_conversation_intent(question)
+        if not general and (source_id is None or source_version_id is None):
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+        if general and ((source_id is None) != (source_version_id is None)):
+            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+        sources = () if general and source_id is None else self._context_sources(
+            source_id or "", source_version_id or "", context_sources,
+        )
         provider_context = ProviderSettingsContext(
             context.tenant_id, context.workspace_id, context.actor_id,
             context.trace_id, context.policy_version,
@@ -197,6 +293,42 @@ class QuestionAnsweringService:
             code = str(error)
             status = 409 if code.startswith("TEXT_") else 503
             raise QuestionAnsweringError(code, status=status) from None
+        if general:
+            try:
+                prepared = self._adapter_registry.prepare_general(
+                    snapshot, question, context.trace_id,
+                    self._credential_resolver, self._transport,
+                )
+            except (ValueError, DocumentUnderstandingError) as error:
+                raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
+                raise QuestionAnsweringError(
+                    raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED",
+                    status=503 if raw_code.startswith("TEXT_PROVIDER_") else 502,
+                ) from None
+            frozen_bytes = canonical_json_bytes(prepared.provider_payload)
+            transformer = getattr(self._egress, "prepare_payload", None)
+            if callable(transformer):
+                frozen_bytes = transformer(context, frozen_bytes)
+                prepared = replace(prepared, provider_payload=json.loads(frozen_bytes))
+            egress_authorization = self._egress.authorize(
+                context, run_id=run_id, source_id=None, source_version_id=None,
+                selection=selection, provider_payload=frozen_bytes,
+                approved_authorization=approved_authorization,
+            )
+            try:
+                generated = self._adapter_registry.generate_general(prepared)
+            except (ValueError, DocumentUnderstandingError) as error:
+                raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
+                raise QuestionAnsweringError(
+                    raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED", status=502,
+                ) from None
+            return self._repository.persist_completed(
+                context, run_id=run_id, source_id=None, source_version_id=None,
+                question=question, selection=selection, evidence=(), result=generated,
+                provider_called=True, egress_authorization=egress_authorization,
+                context_mode="general_ungrounded", context_sources=(),
+                request_fingerprint=request_fingerprint,
+            )
         evidence = self._search_context(context, sources, question)
         if not evidence:
             egress_authorization = self._egress.authorize(
@@ -215,6 +347,7 @@ class QuestionAnsweringService:
                 provider_called=False,
                 egress_authorization=egress_authorization,
                 context_mode=context_mode, context_sources=sources,
+                request_fingerprint=request_fingerprint,
             )
         try:
             prepared = self._adapter_registry.prepare(
@@ -262,4 +395,12 @@ class QuestionAnsweringService:
             provider_called=True,
             egress_authorization=egress_authorization,
             context_mode=context_mode, context_sources=sources,
+            request_fingerprint=request_fingerprint,
+        )
+
+    def replay(
+        self, context: QuestionContext, *, run_id: str, request_fingerprint: str,
+    ) -> StoredQuestionAnswer | None:
+        return self._repository.load_completed_for_replay(
+            context, run_id, request_fingerprint,
         )

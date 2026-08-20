@@ -21,10 +21,12 @@ export function createProductWorkspaceState({ status = "loading", safeError = nu
     sources: [],
     selectedSource: null,
     answer: null,
+    answerIntent: null,
     studioOutputs: [],
     studioLocks: [],
     studioStatus: "loading",
     studioSafeError: null,
+    conversationSafeError: null,
     safeError
   };
 }
@@ -33,6 +35,7 @@ export function normalizeProductWorkspaceState(state) {
   if (!PRODUCT_WORKSPACE_STATES.includes(state?.status)) throw new Error("WORKSPACE_STATE_INVALID");
   assertSafeError(state.safeError ?? null);
   assertSafeError(state.studioSafeError ?? null);
+  assertSafeError(state.conversationSafeError ?? null);
   return state;
 }
 
@@ -40,7 +43,7 @@ export function projectQuestionFailureState(current, error) {
   const code = typeof error?.message === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(error.message)
     ? error.message
     : "QUESTION_FAILED";
-  return { ...current, status: "error", safeError: code, answer: null };
+  return { ...current, status: "error", safeError: code, answer: null, answerIntent: null };
 }
 
 const PRODUCT_WORKSPACE_ADAPTER_METHODS = Object.freeze([

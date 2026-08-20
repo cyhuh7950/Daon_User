@@ -87,7 +87,7 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_generation_version_action_and_export_routes_are_real_and_safe(self):
         generation = {
-            "workspace_id": "workspace-001", "output_type": "evidence_report", "source_id": "source-1",
+            "workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_type": "evidence_report", "source_id": "source-1",
             "source_version_ids": ["source-version-1"], "run_id": "run-1", "run_result_id": "result-1",
             "settings": {"purpose": "목적", "audience": "독자", "source_version_ids": ["source-version-1"],
                          "ruleset_version_id": None, "length": "short", "structure": "summary", "output_format": "pdf", "review_condition": "review_required"},
@@ -95,11 +95,11 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         cookies = {WEB_SESSION_COOKIE: "opaque"}
         with self.authenticated():
             created = await self.client.post("/api/v1/studio-generation-requests", cookies=cookies, headers={"Idempotency-Key": "generation-key-0001", "X-Trace-Id": TRACE_ID}, json=generation)
-            listed = await self.client.get("/api/v1/studio-outputs?workspace_id=workspace-001", cookies=cookies)
-            versions = await self.client.get("/api/v1/studio-outputs/output-1/versions?workspace_id=workspace-001", cookies=cookies)
-            revised = await self.client.post("/api/v1/studio-outputs/output-1/versions", cookies=cookies, headers={"Idempotency-Key": "revision-key-00001"}, json={"workspace_id": "workspace-001", "previous_version_id": "version-1", "revision_type": "user_edit", "change_reason": "문구 정정", "content": "변경"})
-            review = await self.client.post("/api/v1/reviews", cookies=cookies, headers={"Idempotency-Key": "review-key-000001"}, json={"workspace_id": "workspace-001", "output_version_id": "version-1"})
-            exported = await self.client.get("/api/v1/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-001", cookies=cookies)
+            listed = await self.client.get("/api/v1/studio-outputs?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
+            versions = await self.client.get("/api/v1/studio-outputs/output-1/versions?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
+            revised = await self.client.post("/api/v1/studio-outputs/output-1/versions", cookies=cookies, headers={"Idempotency-Key": "revision-key-00001"}, json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "previous_version_id": "version-1", "revision_type": "user_edit", "change_reason": "문구 정정", "content": "변경"})
+            review = await self.client.post("/api/v1/reviews", cookies=cookies, headers={"Idempotency-Key": "review-key-000001"}, json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_version_id": "version-1"})
+            exported = await self.client.get("/api/v1/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
         self.assertEqual([created.status_code, listed.status_code, versions.status_code, revised.status_code, review.status_code, exported.status_code], [201, 200, 200, 201, 201, 200])
         self.assertEqual(versions.json()["data"]["versions"][0]["citations"][0]["origin"], "raw_source")
         for response in (created, revised, review): self.assertRegex(response.headers["etag"], r'^"studio-[^"]+"$')
@@ -110,7 +110,7 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sensitive_action_without_exact_step_up_writes_zero(self):
         with self.authenticated(), patch.object(self.identity, "consume_step_up", side_effect=IdentityError("STEP_UP_REQUIRED", 403)):
-            rejected = await self.client.post("/api/v1/deliveries", cookies={WEB_SESSION_COOKIE: "opaque"}, headers={"Idempotency-Key": "delivery-key-0001"}, json={"workspace_id": "workspace-001", "output_version_id": "version-1"})
+            rejected = await self.client.post("/api/v1/deliveries", cookies={WEB_SESSION_COOKIE: "opaque"}, headers={"Idempotency-Key": "delivery-key-0001"}, json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_version_id": "version-1"})
         self.assertEqual((rejected.status_code, rejected.json()["error"]["code"]), (403, "STEP_UP_REQUIRED"))
         self.assertFalse(any(call[0] == "delivery" for call in self.studio.calls))
 
@@ -121,7 +121,7 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             side_effect=StudioError("POLICY_PROJECTION_UNAVAILABLE", 409),
         ):
             response = await self.client.get(
-                "/api/v1/studio-outputs?workspace_id=workspace-001",
+                "/api/v1/studio-outputs?workspace_id=workspace-001&notebook_id=notebook-001",
                 cookies={WEB_SESSION_COOKIE: "opaque"},
             )
 
@@ -135,7 +135,7 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             side_effect=StudioError("STUDIO_DATABASE_UNAVAILABLE", 503),
         ):
             response = await self.client.get(
-                "/api/v1/studio-outputs?workspace_id=workspace-001",
+                "/api/v1/studio-outputs?workspace_id=workspace-001&notebook_id=notebook-001",
                 cookies={WEB_SESSION_COOKIE: "opaque"},
             )
 

@@ -33,6 +33,9 @@ class Repository:
     def load_completed(self, context, run_id):  # type: ignore[no-untyped-def]
         return None
 
+    def load_completed_for_replay(self, context, run_id, request_fingerprint):  # type: ignore[no-untyped-def]
+        return None
+
     def load_ready_source(self, context, source_id, source_version_id):  # type: ignore[no-untyped-def]
         return ReadyQuestionSource(source_id, source_version_id, "ready.pdf")
 

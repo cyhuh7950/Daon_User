@@ -8,6 +8,8 @@ import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } fr
 import { createGroundedReport, createStudioGeneration, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceKnowledgePackages, listWorkspaceSources, saveWorkspaceOutputVersionSettings } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
+import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
+import { downloadManualAsset, getManualManifest, readManualDocument } from "../lib/manual-api.js";
 
 export function createWebProductWorkspaceAdapter(workspaceId) {
   return Object.freeze({
@@ -19,11 +21,16 @@ export function createWebProductWorkspaceAdapter(workspaceId) {
     listSyncOperations: (options) => listWorkspaceSyncOperations(workspaceId, options),
     approveSyncOperation: (operation, input, options) => approveWorkspaceSyncOperation(workspaceId, operation, input, options),
     getEgressPolicy: (options = {}) => getEffectiveEgressPolicy({ workspaceId, signal: options.signal }).then((result) => result.data),
+    getLicense: (options) => getWorkspaceLicense(workspaceId, options),
+    applyLicense: (document, password, options) => applyCurrentOrganizationLicenseWithStepUp(document, password, options),
+    getManualManifest,
+    readManual: (documentId, manifest, options) => readManualDocument(documentId, { ...options, manifest }),
+    downloadManual: (documentId, format, manifest, options) => downloadManualAsset(documentId, format, { ...options, manifest }),
     uploadPdf: (file, options) => uploadPdfSource(workspaceId, file, options),
     getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, options),
     askQuestion: (input, options) => askGroundedQuestion(workspaceId, input, options),
     authorizeQuestion: (input, options) => authorizeGroundedQuestion(workspaceId, input, options),
-    citationUrl: (citation) => citationContentUrl(workspaceId, citation),
+    citationUrl: (citation, options) => citationContentUrl(workspaceId, citation, options),
     createReport: (input, options) => createGroundedReport(workspaceId, input, options),
     listStudioOutputs: (options) => listStudioOutputs(workspaceId, options),
     listProductStudioOutputs: (options) => listProductStudioOutputs(workspaceId, options),
@@ -36,7 +43,7 @@ export function createWebProductWorkspaceAdapter(workspaceId) {
   });
 }
 
-export function ActualWorkspace({ workspaceId, adapter, processingPollOptions }) {
+export function ActualWorkspace({ workspaceId, adapter, processingPollOptions, onLogout }) {
   const activeAdapter = workspaceId ? (adapter ?? createWebProductWorkspaceAdapter(workspaceId)) : null;
   return (
     <ProductWorkspaceShell
@@ -44,6 +51,7 @@ export function ActualWorkspace({ workspaceId, adapter, processingPollOptions })
       adapter={activeAdapter}
       processingPollOptions={processingPollOptions}
       providerSettings={<ProviderSettingsWorkspace workspaceId={workspaceId} embedded />}
+      onLogout={onLogout}
       state={createProductWorkspaceState(workspaceId
         ? { status: "loading" }
         : { status: "unavailable", safeError: "WORKSPACE_ADAPTER_UNAVAILABLE" })}

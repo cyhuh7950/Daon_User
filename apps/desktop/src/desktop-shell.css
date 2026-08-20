@@ -1,6 +1,7 @@
 * { box-sizing: border-box; }
 html, body, #root { min-width: 0; min-height: 100%; margin: 0; }
 body { overflow-x: hidden; background: var(--color-surface-canvas, #f4f6f8); font: 12px/1.5 system-ui, sans-serif; }
+html[data-desktop-protected-concealed="true"] #root { visibility: hidden; pointer-events: none; }
 button, input, select, textarea { font: inherit; }
 .desktop-shell { min-width: 0; min-height: 100vh; color: var(--color-text-primary, #18212b); }
 .desktop-login-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #132238; }

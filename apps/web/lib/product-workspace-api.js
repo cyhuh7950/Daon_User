@@ -99,9 +99,10 @@ async function json(response, fallback) {
   }
 }
 
-export async function listWorkspaceSources(workspaceId, { fetchImpl = fetch, signal } = {}) {
+export async function listWorkspaceSources(workspaceId, { notebookId, fetchImpl = fetch, signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "SOURCE_LIST_INPUT_INVALID");
-  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/sources`, {
+  const notebook = requiredWorkspace(notebookId, "SOURCE_LIST_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/sources?notebook_id=${encodeURIComponent(notebook)}`, {
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
   const payload = await json(response, "SOURCE_LIST_RESPONSE_INVALID");
@@ -269,14 +270,14 @@ function validCreateRequest(request) {
 }
 
 export async function createGroundedReport(
-  workspaceId, request, { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {},
+  workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {},
 ) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
-  if (!validCreateRequest(request) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
+  if (!safeId(notebookId) || !validCreateRequest(request) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
   const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/studio/reports`, {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify(request),
+    body: JSON.stringify({ notebook_id: notebookId, ...request }),
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_CREATE_FAILED");
@@ -286,9 +287,10 @@ export async function createGroundedReport(
   return payload.data;
 }
 
-export async function listStudioOutputs(workspaceId, { fetchImpl = fetch, signal } = {}) {
+export async function listStudioOutputs(workspaceId, { notebookId, fetchImpl = fetch, signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
-  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/studio/outputs`, {
+  if (!safeId(notebookId)) throw new Error("STUDIO_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/studio/outputs?notebook_id=${encodeURIComponent(notebookId)}`, {
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
@@ -326,13 +328,14 @@ function validGeneration(request, workspaceId) {
     && (request.workspace_id === undefined || request.workspace_id === null || request.workspace_id === workspaceId);
 }
 
-export async function createStudioGeneration(workspaceId, request, { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function createStudioGeneration(workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
+  const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!validGeneration(request, workspace) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
   const response = await fetchImpl("/bff/api/studio-generation-requests", {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify({ ...request, workspace_id: workspace }),
+    body: JSON.stringify({ ...request, workspace_id: workspace, notebook_id: notebook }),
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_CREATE_FAILED");
@@ -340,17 +343,19 @@ export async function createStudioGeneration(workspaceId, request, { fetchImpl =
   return payload.data;
 }
 
-export async function listProductStudioOutputs(workspaceId, { fetchImpl = fetch, signal } = {}) {
+export async function listProductStudioOutputs(workspaceId, { notebookId, fetchImpl = fetch, signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
-  const response = await fetchImpl(`/bff/api/studio-outputs?workspace_id=${encodeURIComponent(workspace)}`, { method: "GET", credentials: "same-origin", cache: "no-store", signal });
+  const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/studio-outputs?workspace_id=${encodeURIComponent(workspace)}&notebook_id=${encodeURIComponent(notebook)}`, { method: "GET", credentials: "same-origin", cache: "no-store", signal });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_LIST_FAILED");
   if (!Array.isArray(payload?.data?.outputs) || !Array.isArray(payload?.data?.studio_locks)) throw new Error("STUDIO_RESPONSE_INVALID");
   return { outputs: payload.data.outputs, studioLocks: payload.data.studio_locks };
 }
 
-export async function createStudioVersion(workspaceId, outputId, request, { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function createStudioVersion(workspaceId, outputId, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
+  const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!safeId(outputId) || !record(request) || !safeId(request.previous_version_id)
       || !new Set(["user_edit", "ai_regeneration", "settings_change"]).has(request.revision_type)
       || typeof request.change_reason !== "string" || !request.change_reason.trim()
@@ -360,7 +365,7 @@ export async function createStudioVersion(workspaceId, outputId, request, { fetc
   const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions`, {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify({ ...request, workspace_id: workspace }),
+    body: JSON.stringify({ ...request, workspace_id: workspace, notebook_id: notebook }),
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_VERSION_FAILED");
@@ -403,10 +408,11 @@ function validStudioVersion(value) {
     && new Set(["docx", "pdf", "xlsx", "csv", "json", "svg", "png"]).has(value.output_format);
 }
 
-export async function listStudioVersions(workspaceId, outputId, { fetchImpl = fetch, signal } = {}) {
+export async function listStudioVersions(workspaceId, outputId, { notebookId, fetchImpl = fetch, signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
+  const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!safeId(outputId)) throw new Error("STUDIO_INPUT_INVALID");
-  const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions?workspace_id=${encodeURIComponent(workspace)}`, {
+  const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions?workspace_id=${encodeURIComponent(workspace)}&notebook_id=${encodeURIComponent(notebook)}`, {
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
@@ -418,23 +424,25 @@ export async function listStudioVersions(workspaceId, outputId, { fetchImpl = fe
   return payload.data.versions;
 }
 
-export async function createStudioAction(workspaceId, action, request, { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function createStudioAction(workspaceId, action, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
+  const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!STUDIO_ACTIONS.has(action) || !record(request) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
   const response = await fetchImpl(`/bff/api/${action}`, {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify({ ...request, workspace_id: workspace }),
+    body: JSON.stringify({ ...request, workspace_id: workspace, notebook_id: notebook }),
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_ACTION_FAILED");
   return payload.data;
 }
 
-export async function downloadStudioExport(workspaceId, outputId, versionId, format, { fetchImpl = fetch, signal } = {}) {
+export async function downloadStudioExport(workspaceId, outputId, versionId, format, { notebookId, fetchImpl = fetch, signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
+  const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!safeId(outputId) || !safeId(versionId) || !new Set(["docx", "pdf", "xlsx", "csv", "json", "svg", "png"]).has(format)) throw new Error("STUDIO_INPUT_INVALID");
-  const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions/${encodeURIComponent(versionId)}/exports/${format}?workspace_id=${encodeURIComponent(workspace)}`, { method: "GET", credentials: "same-origin", cache: "no-store", signal });
+  const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions/${encodeURIComponent(versionId)}/exports/${format}?workspace_id=${encodeURIComponent(workspace)}&notebook_id=${encodeURIComponent(notebook)}`, { method: "GET", credentials: "same-origin", cache: "no-store", signal });
   if (!response.ok) throw new Error("STUDIO_EXPORT_FAILED");
   const buffer = await response.arrayBuffer();
   if (buffer.byteLength < 4 || buffer.byteLength > 8 * 1024 * 1024) throw new Error("STUDIO_EXPORT_INVALID");

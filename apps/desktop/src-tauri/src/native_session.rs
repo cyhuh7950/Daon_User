@@ -544,65 +544,149 @@ impl Drop for NativeHttpResponse {
 }
 
 pub(crate) enum NativeWorkspaceOperation {
+    ListNotebooks {
+        workspace_id: String,
+    },
+    CreateNotebook {
+        workspace_id: String,
+        body: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
+    },
+    GetNotebook {
+        workspace_id: String,
+        notebook_id: String,
+    },
+    GetNotebookContext {
+        workspace_id: String,
+        notebook_id: String,
+    },
     ListSources {
         workspace_id: String,
+        notebook_id: String,
     },
     UploadPdf {
         workspace_id: String,
+        notebook_id: String,
         filename: String,
         bytes: Zeroizing<Vec<u8>>,
         idempotency_key: Zeroizing<String>,
     },
     ProcessingStatus {
         workspace_id: String,
+        notebook_id: String,
         processing_run_id: String,
     },
     AskQuestion {
         workspace_id: String,
+        notebook_id: String,
         body: Zeroizing<Vec<u8>>,
         idempotency_key: Zeroizing<String>,
     },
     CitationContent {
         workspace_id: String,
+        notebook_id: String,
         citation_id: String,
     },
     CreateReport {
         workspace_id: String,
+        notebook_id: String,
         body: Zeroizing<Vec<u8>>,
         idempotency_key: Zeroizing<String>,
     },
     ListStudioOutputs {
         workspace_id: String,
+        notebook_id: String,
+    },
+    GetLicense {
+        workspace_id: String,
+    },
+    LicenseStepUp {
+        workspace_id: String,
+        body: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
+    },
+    ApplyLicense {
+        workspace_id: String,
+        organization_id: String,
+        body: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
     },
 }
 
 impl NativeWorkspaceOperation {
+    fn safe_scope_id(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 256
+            && value.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_alphanumeric()
+                    || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+            })
+    }
+
+    fn scope_valid(&self) -> bool {
+        Self::safe_scope_id(self.workspace_id())
+            && match self {
+                Self::GetNotebook { notebook_id, .. }
+                | Self::GetNotebookContext { notebook_id, .. }
+                | Self::ListSources { notebook_id, .. }
+                | Self::UploadPdf { notebook_id, .. }
+                | Self::ProcessingStatus { notebook_id, .. }
+                | Self::AskQuestion { notebook_id, .. }
+                | Self::CitationContent { notebook_id, .. }
+                | Self::CreateReport { notebook_id, .. }
+                | Self::ListStudioOutputs { notebook_id, .. } => Self::safe_scope_id(notebook_id),
+                _ => true,
+            }
+    }
+
     pub(crate) fn workspace_id(&self) -> &str {
         match self {
-            Self::ListSources { workspace_id }
+            Self::ListNotebooks { workspace_id }
+            | Self::CreateNotebook { workspace_id, .. }
+            | Self::GetNotebook { workspace_id, .. }
+            | Self::GetNotebookContext { workspace_id, .. }
+            | Self::ListSources { workspace_id, .. }
             | Self::UploadPdf { workspace_id, .. }
             | Self::ProcessingStatus { workspace_id, .. }
             | Self::AskQuestion { workspace_id, .. }
             | Self::CitationContent { workspace_id, .. }
             | Self::CreateReport { workspace_id, .. }
-            | Self::ListStudioOutputs { workspace_id } => workspace_id,
+            | Self::ListStudioOutputs { workspace_id, .. }
+            | Self::GetLicense { workspace_id }
+            | Self::LicenseStepUp { workspace_id, .. }
+            | Self::ApplyLicense { workspace_id, .. } => workspace_id,
         }
     }
 
     fn method_path(&self) -> (&'static str, String) {
         match self {
-            Self::ListSources { workspace_id } => {
-                ("GET", format!("/api/v1/workspaces/{workspace_id}/sources"))
+            Self::ListNotebooks { workspace_id } => {
+                ("GET", format!("/api/v1/workspaces/{workspace_id}/notebooks"))
+            }
+            Self::CreateNotebook { workspace_id, .. } => {
+                ("POST", format!("/api/v1/workspaces/{workspace_id}/notebooks"))
+            }
+            Self::GetNotebook { workspace_id, notebook_id } => (
+                "GET",
+                format!("/api/v1/workspaces/{workspace_id}/notebooks/{notebook_id}"),
+            ),
+            Self::GetNotebookContext { workspace_id, notebook_id } => (
+                "GET",
+                format!("/api/v1/workspaces/{workspace_id}/notebooks/{notebook_id}/context"),
+            ),
+            Self::ListSources { workspace_id, notebook_id } => {
+                ("GET", format!("/api/v1/workspaces/{workspace_id}/sources?notebook_id={notebook_id}"))
             }
             Self::UploadPdf { workspace_id, .. } => {
                 ("POST", format!("/api/v1/workspaces/{workspace_id}/sources"))
             }
             Self::ProcessingStatus {
                 workspace_id,
+                notebook_id,
                 processing_run_id,
             } => (
                 "GET",
-                format!("/api/v1/workspaces/{workspace_id}/processing-runs/{processing_run_id}"),
+                format!("/api/v1/workspaces/{workspace_id}/processing-runs/{processing_run_id}?notebook_id={notebook_id}"),
             ),
             Self::AskQuestion { workspace_id, .. } => (
                 "POST",
@@ -610,26 +694,39 @@ impl NativeWorkspaceOperation {
             ),
             Self::CitationContent {
                 workspace_id,
+                notebook_id,
                 citation_id,
             } => (
                 "GET",
-                format!("/api/v1/workspaces/{workspace_id}/citations/{citation_id}/content"),
+                format!("/api/v1/workspaces/{workspace_id}/citations/{citation_id}/content?notebook_id={notebook_id}"),
             ),
             Self::CreateReport { workspace_id, .. } => (
                 "POST",
                 format!("/api/v1/workspaces/{workspace_id}/studio/reports"),
             ),
-            Self::ListStudioOutputs { workspace_id } => (
+            Self::ListStudioOutputs { workspace_id, notebook_id } => (
                 "GET",
-                format!("/api/v1/workspaces/{workspace_id}/studio/outputs"),
+                format!("/api/v1/workspaces/{workspace_id}/studio/outputs?notebook_id={notebook_id}"),
+            ),
+            Self::GetLicense { workspace_id } => (
+                "GET",
+                format!("/api/v1/workspaces/{workspace_id}/license"),
+            ),
+            Self::LicenseStepUp { .. } => ("POST", "/api/v1/session/step-up".to_owned()),
+            Self::ApplyLicense { organization_id, .. } => (
+                "POST",
+                format!("/api/v1/organizations/{organization_id}/license"),
             ),
         }
     }
 
     fn expected_status(&self, status: u16) -> bool {
         match self {
+            Self::CreateNotebook { .. } => status == 200 || status == 201,
             Self::UploadPdf { .. } => status == 202,
             Self::CreateReport { .. } => status == 200 || status == 201,
+            Self::LicenseStepUp { .. } => status == 201,
+            Self::ApplyLicense { .. } => status == 200 || status == 201,
             _ => status == 200,
         }
     }
@@ -642,6 +739,10 @@ impl NativeWorkspaceOperation {
 impl fmt::Debug for NativeWorkspaceOperation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::ListNotebooks { .. } => "NativeWorkspaceOperation::ListNotebooks",
+            Self::CreateNotebook { .. } => "NativeWorkspaceOperation::CreateNotebook([redacted])",
+            Self::GetNotebook { .. } => "NativeWorkspaceOperation::GetNotebook",
+            Self::GetNotebookContext { .. } => "NativeWorkspaceOperation::GetNotebookContext",
             Self::ListSources { .. } => "NativeWorkspaceOperation::ListSources",
             Self::UploadPdf { .. } => "NativeWorkspaceOperation::UploadPdf([redacted])",
             Self::ProcessingStatus { .. } => "NativeWorkspaceOperation::ProcessingStatus",
@@ -649,6 +750,9 @@ impl fmt::Debug for NativeWorkspaceOperation {
             Self::CitationContent { .. } => "NativeWorkspaceOperation::CitationContent",
             Self::CreateReport { .. } => "NativeWorkspaceOperation::CreateReport([redacted])",
             Self::ListStudioOutputs { .. } => "NativeWorkspaceOperation::ListStudioOutputs",
+            Self::GetLicense { .. } => "NativeWorkspaceOperation::GetLicense",
+            Self::LicenseStepUp { .. } => "NativeWorkspaceOperation::LicenseStepUp([redacted])",
+            Self::ApplyLicense { .. } => "NativeWorkspaceOperation::ApplyLicense([redacted])",
         })
     }
 }
@@ -758,8 +862,11 @@ impl NativeWorkspaceTransport for NativeWorkspaceClient {
     ) -> Pin<Box<dyn Future<Output = Result<NativeWorkspaceResponse, &'static str>> + Send + 'a>>
     {
         Box::pin(async move {
+            if !operation.scope_valid() {
+                return Err("INVALID_REQUEST");
+            }
             let (method, path) = operation.method_path();
-            if path.contains("//") || path.contains(['?', '#', '\r', '\n']) {
+            if path.contains("//") || path.contains(['#', '\r', '\n']) || path.matches('?').count() > 1 {
                 return Err("WORKSPACE_REQUEST_FAILED");
             }
             let endpoint = format!("{}{}", self.gateway, path);
@@ -788,6 +895,7 @@ impl NativeWorkspaceTransport for NativeWorkspaceClient {
                 );
             match &mut operation {
                 NativeWorkspaceOperation::UploadPdf {
+                    notebook_id,
                     filename,
                     bytes,
                     idempotency_key,
@@ -797,6 +905,7 @@ impl NativeWorkspaceTransport for NativeWorkspaceClient {
                     request = request
                         .header(reqwest::header::CONTENT_TYPE, "application/pdf")
                         .header("X-Source-Filename", filename.as_str())
+                        .header("X-Notebook-Id", notebook_id.as_str())
                         .header("Idempotency-Key", idempotency_key.as_str())
                         .body(reqwest::Body::from(bytes::Bytes::from_owner(wire)));
                 }
@@ -806,6 +915,27 @@ impl NativeWorkspaceTransport for NativeWorkspaceClient {
                     ..
                 }
                 | NativeWorkspaceOperation::CreateReport {
+                    body,
+                    idempotency_key,
+                    ..
+                }
+                | NativeWorkspaceOperation::LicenseStepUp {
+                    body,
+                    idempotency_key,
+                    ..
+                }
+                | NativeWorkspaceOperation::ApplyLicense {
+                    body,
+                    idempotency_key,
+                    ..
+                } => {
+                    let wire = WorkspaceWireBuffer(Zeroizing::new(std::mem::take(&mut **body)));
+                    request = request
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .header("Idempotency-Key", idempotency_key.as_str())
+                        .body(reqwest::Body::from(bytes::Bytes::from_owner(wire)));
+                }
+                NativeWorkspaceOperation::CreateNotebook {
                     body,
                     idempotency_key,
                     ..
@@ -1768,6 +1898,29 @@ impl NativeSessionRuntime {
         }
     }
 
+    #[cfg(feature = "contract-test")]
+    pub(crate) fn for_loopback_contract_test(
+        gateway: &str,
+        credential_target: &str,
+    ) -> Result<Self, NativeSessionError> {
+        let vault = NativeSessionVault::new(credential_target.to_owned())
+            .map_err(|_| NativeSessionError::authentication_required())?;
+        let identity = NativeIdentityClient::for_contract_test(
+            gateway,
+            std::time::Duration::from_secs(5),
+        )?;
+        let workspace = NativeWorkspaceClient::for_contract_test(
+            gateway,
+            std::time::Duration::from_secs(5),
+        )
+        .map_err(|_| NativeSessionError::authentication_required())?;
+        Ok(Self::for_workspace_contract_test(
+            Arc::new(vault),
+            Arc::new(identity),
+            Arc::new(workspace),
+        ))
+    }
+
     async fn vault_read(&self) -> Result<Option<NativeSessionCredentials>, NativeSessionError> {
         let vault = Arc::clone(&self.vault);
         tauri::async_runtime::spawn_blocking(move || vault.read())
@@ -1829,6 +1982,7 @@ mod workspace_transport_tests {
     fn list_operation() -> NativeWorkspaceOperation {
         NativeWorkspaceOperation::ListSources {
             workspace_id: "workspace-1".into(),
+            notebook_id: "notebook-1".into(),
         }
     }
 
@@ -1865,13 +2019,15 @@ mod workspace_transport_tests {
             (
                 NativeWorkspaceOperation::ListSources {
                     workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
                 },
                 "GET",
-                "/api/v1/workspaces/workspace-1/sources",
+                "/api/v1/workspaces/workspace-1/sources?notebook_id=notebook-1",
             ),
             (
                 NativeWorkspaceOperation::UploadPdf {
                     workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
                     filename: "guide.pdf".into(),
                     bytes: Zeroizing::new(b"%PDF-".to_vec()),
                     idempotency_key: Zeroizing::new("native-0123456789abcdef".into()),
@@ -1882,14 +2038,16 @@ mod workspace_transport_tests {
             (
                 NativeWorkspaceOperation::ProcessingStatus {
                     workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
                     processing_run_id: "run-1".into(),
                 },
                 "GET",
-                "/api/v1/workspaces/workspace-1/processing-runs/run-1",
+                "/api/v1/workspaces/workspace-1/processing-runs/run-1?notebook_id=notebook-1",
             ),
             (
                 NativeWorkspaceOperation::AskQuestion {
                     workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
                     body: Zeroizing::new(Vec::new()),
                     idempotency_key: Zeroizing::new("native-0123456789abcdef".into()),
                 },
@@ -1899,14 +2057,16 @@ mod workspace_transport_tests {
             (
                 NativeWorkspaceOperation::CitationContent {
                     workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
                     citation_id: "citation-1".into(),
                 },
                 "GET",
-                "/api/v1/workspaces/workspace-1/citations/citation-1/content",
+                "/api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1",
             ),
             (
                 NativeWorkspaceOperation::CreateReport {
                     workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
                     body: Zeroizing::new(Vec::new()),
                     idempotency_key: Zeroizing::new("native-0123456789abcdef".into()),
                 },
@@ -1916,9 +2076,10 @@ mod workspace_transport_tests {
             (
                 NativeWorkspaceOperation::ListStudioOutputs {
                     workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
                 },
                 "GET",
-                "/api/v1/workspaces/workspace-1/studio/outputs",
+                "/api/v1/workspaces/workspace-1/studio/outputs?notebook_id=notebook-1",
             ),
         ];
         for (operation, method, path) in cases {
@@ -1949,6 +2110,7 @@ mod workspace_transport_tests {
             b"a-credential-that-is-at-least-forty-bytes-long",
             NativeWorkspaceOperation::CitationContent {
                 workspace_id: "workspace-1".into(),
+                notebook_id: "notebook-1".into(),
                 citation_id: "citation-1".into(),
             },
         ))
@@ -1957,7 +2119,7 @@ mod workspace_transport_tests {
         assert_eq!(result.citation_page, Some(7));
         assert!(
             String::from_utf8_lossy(&request.recv().expect("request")).starts_with(
-                "GET /api/v1/workspaces/workspace-1/citations/citation-1/content HTTP/1.1"
+                "GET /api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1 HTTP/1.1"
             )
         );
     }
@@ -1972,6 +2134,7 @@ mod workspace_transport_tests {
             b"a-credential-that-is-at-least-forty-bytes-long",
             NativeWorkspaceOperation::CreateReport {
                 workspace_id: "workspace-1".into(),
+                notebook_id: "notebook-1".into(),
                 body: Zeroizing::new(b"{}".to_vec()),
                 idempotency_key: Zeroizing::new("native-0123456789abcdef".into()),
             },
@@ -1982,6 +2145,51 @@ mod workspace_transport_tests {
         assert!(wire.starts_with("post /api/v1/workspaces/workspace-1/studio/reports http/1.1"));
         assert!(wire.contains("idempotency-key: native-0123456789abcdef"));
         assert!(wire.ends_with("\r\n\r\n{}"));
+    }
+
+    #[test]
+    fn actual_workspace_transport_wires_notebook_home_and_all_seven_workspace_operations() {
+        let cases: Vec<(NativeWorkspaceOperation, u16, &str, Option<&str>)> = vec![
+            (NativeWorkspaceOperation::ListNotebooks { workspace_id: "workspace-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/notebooks HTTP/1.1", None),
+            (NativeWorkspaceOperation::CreateNotebook { workspace_id: "workspace-1".into(), body: Zeroizing::new(br#"{"title":"Notebook"}"#.to_vec()), idempotency_key: Zeroizing::new("native-0123456789abcdef".into()) }, 201, "POST /api/v1/workspaces/workspace-1/notebooks HTTP/1.1", Some("\"title\":\"notebook\"")),
+            (NativeWorkspaceOperation::GetNotebook { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/notebooks/notebook-1 HTTP/1.1", None),
+            (NativeWorkspaceOperation::GetNotebookContext { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/notebooks/notebook-1/context HTTP/1.1", None),
+            (NativeWorkspaceOperation::ListSources { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/sources?notebook_id=notebook-1 HTTP/1.1", None),
+            (NativeWorkspaceOperation::UploadPdf { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), filename: "guide.pdf".into(), bytes: Zeroizing::new(b"%PDF-".to_vec()), idempotency_key: Zeroizing::new("native-0123456789abcdef".into()) }, 202, "POST /api/v1/workspaces/workspace-1/sources HTTP/1.1", Some("x-notebook-id: notebook-1")),
+            (NativeWorkspaceOperation::ProcessingStatus { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), processing_run_id: "run-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/processing-runs/run-1?notebook_id=notebook-1 HTTP/1.1", None),
+            (NativeWorkspaceOperation::AskQuestion { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), body: Zeroizing::new(br#"{"notebook_id":"notebook-1"}"#.to_vec()), idempotency_key: Zeroizing::new("native-0123456789abcdef".into()) }, 200, "POST /api/v1/workspaces/workspace-1/questions HTTP/1.1", Some("\"notebook_id\":\"notebook-1\"")),
+            (NativeWorkspaceOperation::CitationContent { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), citation_id: "citation-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1 HTTP/1.1", None),
+            (NativeWorkspaceOperation::CreateReport { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), body: Zeroizing::new(br#"{"notebook_id":"notebook-1"}"#.to_vec()), idempotency_key: Zeroizing::new("native-0123456789abcdef".into()) }, 201, "POST /api/v1/workspaces/workspace-1/studio/reports HTTP/1.1", Some("\"notebook_id\":\"notebook-1\"")),
+            (NativeWorkspaceOperation::ListStudioOutputs { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/studio/outputs?notebook_id=notebook-1 HTTP/1.1", None),
+        ];
+        for (operation, status, request_line, required_wire) in cases {
+            let response = if operation.expects_pdf() {
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nX-Citation-Page: 1\r\nContent-Length: 5\r\n\r\n%PDF-".to_vec()
+            } else {
+                format!("HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}").into_bytes()
+            };
+            let (gateway, request) = server(response, Duration::ZERO);
+            let client = NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(200)).expect("client");
+            block_on(client.execute(b"a-credential-that-is-at-least-forty-bytes-long", operation)).expect("transport");
+            let wire = String::from_utf8_lossy(&request.recv_timeout(Duration::from_secs(1)).expect("request")).to_ascii_lowercase();
+            assert!(wire.starts_with(&request_line.to_ascii_lowercase()), "{wire}");
+            if let Some(fragment) = required_wire {
+                assert!(wire.contains(fragment), "{wire}");
+            }
+        }
+    }
+
+    #[test]
+    fn actual_workspace_transport_rejects_invalid_notebook_before_network() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let gateway = format!("http://{}", listener.local_addr().expect("address"));
+        let client = NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(100)).expect("client");
+        assert_eq!(block_on(client.execute(
+            b"a-credential-that-is-at-least-forty-bytes-long",
+            NativeWorkspaceOperation::ListSources { workspace_id: "workspace-1".into(), notebook_id: "../other".into() },
+        )).err(), Some("INVALID_REQUEST"));
+        assert!(listener.accept().is_err());
     }
 
     #[test]
@@ -2011,7 +2219,7 @@ mod workspace_transport_tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("request");
         let wire = String::from_utf8_lossy(&request_bytes);
-        assert!(wire.starts_with("GET /api/v1/workspaces/workspace-1/sources HTTP/1.1"));
+        assert!(wire.starts_with("GET /api/v1/workspaces/workspace-1/sources?notebook_id=notebook-1 HTTP/1.1"));
         assert!(wire
             .to_ascii_lowercase()
             .contains("authorization: bearer a-credential-that-is-at-least-forty-bytes-long"));

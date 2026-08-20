@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
+
+test("Notebook Home은 목록 상태·검색·정렬·보기·생성·설정 접근 계약을 제공한다", async () => {
+  const [component, css, exports] = await Promise.all([
+    read("packages/ui/src/notebook-home.jsx"),
+    read("packages/ui/src/notebook-home.css"),
+    read("packages/ui/src/index.js"),
+  ]);
+  for (const token of ["notebook-home-loading", "notebook-home-empty", "notebook-home-error", "notebook-search", "sortMode", "viewMode", "새 Notebook", "화면 설정", "라이선스", "사용자 설명서", "onOpenNotebook"]) assert.match(component, new RegExp(token, "u"));
+  assert.match(component, /mode:\s*"empty"/u);
+  assert.match(component, /mode:\s*"existing"/u);
+  assert.doesNotMatch(component, /localhost|127\.0\.0\.1|NEXT_PUBLIC_|dangerouslySetInnerHTML/u);
+  assert.match(css, /(?:font-size:\s*12px|font:\s*12px)/u);
+  assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/u);
+  assert.match(css, /:focus-visible/u);
+  assert.match(exports, /NotebookHome/u);
+});

@@ -89,10 +89,13 @@ class StudioContext:
     actor_id: str
     trace_id: str
     policy_version: str
+    notebook_id: str | None = None
 
     def __post_init__(self) -> None:
         for value in (self.tenant_id, self.workspace_id, self.actor_id, self.trace_id, self.policy_version):
             _identifier(value)
+        if self.notebook_id is not None:
+            _identifier(self.notebook_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +138,10 @@ class StudioWorkspaceRepository(Protocol):
 class StudioWorkspaceService:
     def __init__(self, repository: StudioWorkspaceRepository) -> None:
         self._repository = repository
+
+    @property
+    def creation_license_authoritative(self) -> bool:
+        return getattr(self._repository, "creation_license_authoritative", False) is True
 
     def generate(self, context: StudioContext, request: StudioGenerationRequest, idempotency_key: str):
         _identifier(idempotency_key)

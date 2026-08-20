@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from typing import Mapping, cast
 
@@ -18,6 +19,9 @@ from .document_understanding_adapter import (
     DocumentUnderstandingResult,
 )
 from .object_queue import ObjectKeyPolicy, ObjectStorageError, ObjectStoragePort
+
+
+_SAFE_NOTEBOOK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 
 
 class PostgresDocumentProcessingRepository:
@@ -216,8 +220,10 @@ class PostgresDocumentProcessingRepository:
             raise self._database_error(error) from None
 
     def get_status(
-        self, context: DocumentProcessingContext, processing_run_id: str,
+        self, context: DocumentProcessingContext, processing_run_id: str, *, notebook_id: str,
     ) -> DocumentProcessingStatus:
+        if not isinstance(notebook_id, str) or _SAFE_NOTEBOOK_ID.fullmatch(notebook_id) is None:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.read")) as connection:
                 row = connection.execute(
@@ -227,10 +233,14 @@ class PostgresDocumentProcessingRepository:
                     "sv.workspace_id=pr.workspace_id AND sv.record_id=pr.source_version_id "
                     "JOIN sources s ON s.tenant_id=sv.tenant_id AND "
                     "s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
+                    "JOIN notebook_bindings nb ON nb.tenant_id=sv.tenant_id AND "
+                    "nb.workspace_id=sv.workspace_id AND nb.notebook_id=%s "
+                    "AND nb.binding_kind='source' AND nb.record_id=sv.source_id "
+                    "AND nb.version_id=sv.record_id "
                     "LEFT JOIN document_processing_jobs job ON job.tenant_id=pr.tenant_id AND "
                     "job.workspace_id=pr.workspace_id AND job.processing_run_id=pr.record_id "
                     "WHERE pr.record_id=%s",
-                    (processing_run_id,),
+                    (notebook_id, processing_run_id),
                 ).fetchone()
             if row is None:
                 raise DocumentUnderstandingError("PROCESSING_RUN_NOT_FOUND", status=404)

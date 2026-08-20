@@ -43,7 +43,7 @@ export function AuthPane() {
       setMessage(success);
       afterSuccess?.();
       if (path === "login" && result?.data?.workspace_id) {
-        window.location.assign(`/workspaces/${encodeURIComponent(result.data.workspace_id)}`);
+        window.location.assign("/notebooks");
       } else if (path === "login") {
         setMessage("WORKSPACE_REQUIRED");
       }

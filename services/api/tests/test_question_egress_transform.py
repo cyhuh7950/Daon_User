@@ -96,6 +96,21 @@ def test_required_masking_and_redaction_transform_actual_adapter_wire(provider_c
     assert transformed == canonical_json_bytes(after)
 
 
+def test_required_masking_accepts_only_narrow_general_conversation_wire() -> None:
+    authorizer = PostgresQuestionEgressAuthorizer.__new__(PostgresQuestionEgressAuthorizer)
+    authorizer._policy_service = Policy()
+    wire = canonical_json_bytes({
+        "model": "model", "messages": [
+            {"role": "system", "content": "safe"},
+            {"role": "user", "content": "안녕하세요!"},
+        ],
+    })
+    transformed = json.loads(authorizer.prepare_payload(
+        QuestionContext("tenant", "workspace", "actor", "trace", "policy"), wire,
+    ))
+    assert transformed["messages"][1]["content"] == "[MASKED]"
+
+
 @pytest.mark.parametrize(
     "malformed",
     [

@@ -117,7 +117,8 @@ test("사용자 Studio 보고서 수직 Route는 exact 요청·응답 계약을 
   assert.equal(list.responses["200"].$ref, "#/components/responses/StudioOutputListResponse");
   const request = document.components.schemas.StudioReportCreateRequest;
   assert.equal(request.additionalProperties, false);
-  assert.deepEqual(request.required, ["source_id", "source_version_id", "run_id", "run_result_id", "title", "purpose"]);
+  assert.deepEqual(request.required, ["notebook_id", "source_id", "source_version_id", "run_id", "run_result_id", "title", "purpose"]);
+  assert.equal(list.parameters.some((parameter) => parameter.name === "notebook_id" && parameter.in === "query" && parameter.required === true), true);
   const output = document.components.schemas.StudioOutputProjection;
   assert.equal(output.additionalProperties, false);
   assert.equal(output.properties.output_type.const, "evidence_report");

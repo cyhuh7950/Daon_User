@@ -9,9 +9,12 @@ from datetime import datetime, timezone
 
 import psycopg
 
-from daon_user_api.studio_workspace import StudioContext, StudioGenerationRequest, build_structured_output
+from daon_user_api.studio_workspace import (
+    StudioContext, StudioGenerationRequest, StudioWorkspaceService, build_structured_output,
+)
 from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
 from daon_user_api.object_queue import StagedObject, StoredObject
+from daon_user_api.license import LicenseError
 
 
 class Result:
@@ -40,6 +43,10 @@ class Connection:
                 {"provider_code": "UPSTAGE", "model_id": "solar-pro4"},
             ))
         if "FROM idempotency_records" in sql: return Result()
+        if "SELECT count(*) FROM notebook_bindings" in sql:
+            return Result((len(set(params[3])),))
+        if "JOIN notebook_bindings nb" in sql and "nb.record_id=r.conversation_id" in sql:
+            return Result((1,))
         if "FROM runs r" in sql: return Result(({"answer": "근거 답변", "insufficient": False}, 1, True, True))
         if "FROM citations" in sql: return Result(rows=(("citation-1", "source-version-1", "span-1", {"page": 2}),))
         if "transition_canon_state" in sql: return Result((params[3], int(params[2]) + 1, "succeeded", None))
@@ -188,6 +195,16 @@ class ObjectStorage:
 
 
 class StudioWorkspacePostgresContractTests(unittest.TestCase):
+    def test_transactional_license_capability_requires_postgres_enforcer(self) -> None:
+        cloud = Cloud()
+        plain = StudioWorkspaceService(PostgresStudioWorkspaceRepository(cloud))
+        enforced = StudioWorkspaceService(PostgresStudioWorkspaceRepository(
+            cloud, creation_enforcer=lambda *_args: None,
+        ))
+
+        self.assertFalse(plain.creation_license_authoritative)
+        self.assertTrue(enforced.creation_license_authoritative)
+
     def request(self):
         return StudioGenerationRequest(
             output_type="evidence_report", source_id="source-1", source_version_ids=("source-version-1",),
@@ -208,14 +225,14 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         repository = PostgresStudioWorkspaceRepository(None)
         with self.assertRaisesRegex(Exception, "STUDIO_DATABASE_UNAVAILABLE"):
             repository.create_generation(
-                StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"), self.request(),
+                StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"), self.request(),
                 "generation-key-0001",
             )
 
     def test_generation_writes_complete_canon_transaction_and_grounded_content(self) -> None:
         cloud = Cloud()
         output, replayed = PostgresStudioWorkspaceRepository(cloud).create_generation(
-            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
             self.request(), "generation-key-0001",
         )
         self.assertFalse(replayed)
@@ -234,6 +251,22 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         )
         self.assertIn('"model_selection"', str(settings_insert))
 
+    def test_generation_enforces_feature_and_both_resources_inside_creation_transaction(self) -> None:
+        cloud = Cloud()
+        calls = []
+        def deny(connection, tenant_id, action, increments):
+            calls.append((connection, tenant_id, action, increments))
+            raise LicenseError("LICENSE_RESOURCE_LIMIT_REACHED", 409)
+        with self.assertRaisesRegex(LicenseError, "LICENSE_RESOURCE_LIMIT_REACHED"):
+            PostgresStudioWorkspaceRepository(cloud, creation_enforcer=deny).create_generation(
+                StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
+                self.request(), "generation-key-license-limit-0001",
+            )
+        self.assertEqual(calls, [(cloud.connection, "tenant-1", "studio.generate", {
+            "generation_runs": 1, "studio_outputs": 1,
+        })])
+        self.assertFalse(any("INSERT INTO" in sql for sql, _ in cloud.connection.statements))
+
     def test_generation_binds_daon_and_raw_citations_from_one_question_run(self) -> None:
         cloud = Cloud(); cloud.connection = MixedContextConnection()
         request = StudioGenerationRequest(
@@ -244,7 +277,7 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
             output_format="pdf", review_condition="review_required",
         )
         output, replayed = PostgresStudioWorkspaceRepository(cloud).create_generation(
-            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
             request, "mixed-generation-key-0001",
         )
         self.assertFalse(replayed)
@@ -254,7 +287,7 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
     def test_version_history_restores_citations_and_lifecycle_links(self) -> None:
         cloud = Cloud(); cloud.connection = VersionHistoryConnection()
         versions = PostgresStudioWorkspaceRepository(cloud).list_versions(
-            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
             "output-1",
         )
         self.assertEqual([item["output_version_id"] for item in versions], ["version-2", "version-1"])
@@ -266,7 +299,7 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
     def test_approval_uses_distinct_transition_ids_for_request_and_output(self) -> None:
         cloud = Cloud(); cloud.connection = ApprovalTransitionConnection()
         result, replayed = PostgresStudioWorkspaceRepository(cloud).record_action(
-            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
             "approval", {"output_version_id": "version-1", "approval_request_id": "approval-request-1", "decision": "approved", "step_up_verified": True},
             "approval-transition-key-0001",
         )
@@ -284,7 +317,7 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         cloud.connection.execute = execute
         with self.assertRaisesRegex(Exception, "ORIGINATING_RUN_MODEL_UNAVAILABLE"):
             PostgresStudioWorkspaceRepository(cloud).create_generation(
-                StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+                StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
                 self.request(), "generation-key-model-0001",
             )
         self.assertFalse(any(
@@ -302,7 +335,7 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         cloud.connection.execute = execute
         with self.assertRaisesRegex(Exception, "ORIGINATING_RUN_POLICY_UNAVAILABLE"):
             PostgresStudioWorkspaceRepository(cloud).create_generation(
-                StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+                StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
                 self.request(), "generation-key-0001",
             )
         self.assertFalse(any(sql.startswith("INSERT INTO generation_settings_snapshots") for sql, _ in cloud.connection.statements))
@@ -310,17 +343,19 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
     def test_approved_export_is_persisted_and_checksum_verified_in_object_storage(self) -> None:
         cloud = Cloud(); cloud.connection = ExportConnection(); storage = ObjectStorage()
         exported = PostgresStudioWorkspaceRepository(cloud, storage).export_output(
-            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
             "output-1", "version-1", "xlsx",
         )
         self.assertTrue(exported.content.startswith(b"PK"))
         self.assertIn("/output/", storage.final_key)
         self.assertEqual(exported.checksum_sha256, __import__("hashlib").sha256(storage.content).hexdigest())
+        export_sql = next(sql for sql, _params in cloud.connection.statements if sql.startswith("SELECT ov.canonical_json"))
+        self.assertIn("notebook_bindings", export_sql)
 
     def test_knowledge_registration_creates_source_version_before_fk_reference(self) -> None:
         cloud = Cloud(); cloud.connection = KnowledgeRegistrationConnection()
         result, replayed = PostgresStudioWorkspaceRepository(cloud).record_action(
-            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
             "knowledge_registration", {"output_version_id": "version-1", "explicit": True},
             "knowledge-key-0001",
         )
@@ -342,7 +377,7 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         for revision_type in ("ai_regeneration", "settings_change"):
             cloud = Cloud(); cloud.connection = RevisionConnection()
             result, replayed = PostgresStudioWorkspaceRepository(cloud).create_version(
-                StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"), "output-1",
+                StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"), "output-1",
                 {"previous_version_id": "version-1", "revision_type": revision_type, "change_reason": "재작업", "content": "새 내용", **({"settings": {"purpose": "새 목적", "audience": "새 독자", "source_version_ids": ["source-version-1"], "ruleset_version_id": "ruleset-v3", "length": "long", "structure": "detail", "output_format": "docx", "review_condition": "review_required"}} if revision_type == "settings_change" else {})},
                 f"revision-key-{revision_type}",
             )
@@ -359,7 +394,7 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
     def test_user_edit_version_copies_previous_evidence_references(self) -> None:
         cloud = Cloud(); cloud.connection = RevisionConnection()
         result, replayed = PostgresStudioWorkspaceRepository(cloud).create_version(
-            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1"),
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
             "output-1", {"previous_version_id": "version-1", "revision_type": "user_edit", "change_reason": "문구 정정", "content": "새 내용"},
             "revision-evidence-key-0001",
         )
@@ -369,7 +404,7 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         self.assertEqual(evidence_inserts[0][1][-3:], (result["output_version_id"], "source-version-1", "span-1"))
 
     def test_version_and_action_lock_scope_before_idempotency_replay(self) -> None:
-        context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1")
+        context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
 
         revision_cloud = Cloud(); revision_cloud.connection = RevisionConnection()
         PostgresStudioWorkspaceRepository(revision_cloud).create_version(
@@ -415,14 +450,14 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
 
     def test_default_policy_returns_empty_outputs_and_six_locks(self) -> None:
         result = PostgresStudioWorkspaceRepository(Cloud()).list_outputs(
-            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1")
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
         )
 
         self.assertEqual(result["outputs"], ())
         self.assertEqual(len(result["studio_locks"]), 6)
 
     def test_policy_projection_fails_closed_for_missing_inactive_stale_or_wrong_scope(self) -> None:
-        context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1")
+        context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
         for index, patch in ((0, None), (1, {"active": False}), (2, {"current": False}), (3, {"workspace_id": "workspace-other"}), (4, {"workspace_policy_version_id": ""})):
             connection = PolicyConnection(); original = connection.execute
             def execute(sql, params=(), *, index=index, patch=patch):

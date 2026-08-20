@@ -43,6 +43,19 @@ class GroundedQuestionRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class GeneralConversationRequest:
+    question: str
+    trace_id: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.question, str) or not self.question.strip()
+            or len(self.question) > 2_000 or not _SAFE_ID.fullmatch(self.trace_id)
+        ):
+            raise ValueError("QUESTION_REQUEST_INVALID")
+
+
+@dataclass(frozen=True, slots=True)
 class GroundedTextResult:
     answer: str
     cited_chunk_ids: tuple[str, ...]
@@ -102,6 +115,19 @@ class OpenAICompatibleTextGenerationAdapter:
                     "insufficient": {"type": "boolean"},
                 },
                 "required": ["answer", "cited_chunk_ids", "insufficient"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    _GENERAL_SCHEMA: dict[str, object] = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "daon_general_conversation_answer",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
                 "additionalProperties": False,
             },
         },
@@ -193,6 +219,48 @@ class OpenAICompatibleTextGenerationAdapter:
             raise ValueError("TEXT_GENERATION_GROUNDING_INVALID")
         return GroundedTextResult(answer, cited, insufficient, usage)
 
+    @classmethod
+    def general_provider_payload(
+        cls, request: GeneralConversationRequest, selection: TextModelSelection,
+    ) -> dict[str, object]:
+        return {
+            "model": selection.model_id,
+            "messages": [
+                {"role": "system", "content": (
+                    "Respond briefly to the greeting, thanks, or Daon product-help request. "
+                    "Do not claim to use sources or provide factual document analysis."
+                )},
+                {"role": "user", "content": request.question},
+            ],
+            "response_format": cls._GENERAL_SCHEMA,
+        }
+
+    def generate_general(
+        self, request: GeneralConversationRequest, selection: TextModelSelection,
+        *, provider_payload: dict[str, object] | None = None,
+    ) -> GroundedTextResult:
+        response = self._transport.post_json(
+            url=f"{self._base_url(selection)}/chat/completions",
+            api_key=self._api_key,
+            payload=provider_payload or self.general_provider_payload(request, selection),
+            timeout_seconds=self._timeout_seconds,
+        )
+        try:
+            choices = cast(list[object], response["choices"])
+            message = cast(dict[str, object], cast(dict[str, object], choices[0])["message"])
+            raw = message["content"]
+            parsed = cast(dict[str, object], json.loads(raw) if isinstance(raw, str) else raw)
+            if set(parsed) != {"answer"}:
+                raise ValueError
+            answer = str(parsed["answer"]).strip()
+            raw_usage = cast(dict[str, object], response.get("usage", {}))
+            usage = {key: int(value) for key, value in raw_usage.items() if isinstance(value, int)}
+        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
+        if not answer or len(answer) > 8_000:
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        return GroundedTextResult(answer, (), False, usage)
+
 
 class UpstageTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
     """Backward-compatible name for the approved Upstage adapter contract."""
@@ -275,3 +343,48 @@ class OllamaTextGenerationAdapter:
         ):
             raise ValueError("TEXT_GENERATION_GROUNDING_INVALID")
         return GroundedTextResult(answer, cited, insufficient, usage)
+
+    @staticmethod
+    def general_provider_payload(
+        request: GeneralConversationRequest, selection: TextModelSelection,
+    ) -> dict[str, object]:
+        return {
+            "model": selection.model_id,
+            "stream": False,
+            "keep_alive": "5m",
+            "options": {"num_predict": 64, "temperature": 0},
+            "format": OpenAICompatibleTextGenerationAdapter._GENERAL_SCHEMA["json_schema"]["schema"],
+            "messages": [
+                {"role": "system", "content": (
+                    "Respond briefly to the greeting, thanks, or Daon product-help request. "
+                    "Do not claim to use sources."
+                )},
+                {"role": "user", "content": request.question},
+            ],
+        }
+
+    def generate_general(
+        self, request: GeneralConversationRequest, selection: TextModelSelection,
+        *, provider_payload: dict[str, object] | None = None,
+    ) -> GroundedTextResult:
+        response = self._transport.post_json_no_auth(
+            url=f"{self._base_url(selection)}/api/chat",
+            payload=provider_payload or self.general_provider_payload(request, selection),
+            timeout_seconds=self._timeout_seconds,
+        )
+        try:
+            message = cast(dict[str, object], response["message"])
+            raw = message["content"]
+            parsed = cast(dict[str, object], json.loads(raw) if isinstance(raw, str) else raw)
+            if set(parsed) != {"answer"}:
+                raise ValueError
+            answer = str(parsed["answer"]).strip()
+            usage = {
+                "prompt_tokens": int(response.get("prompt_eval_count", 0)),
+                "completion_tokens": int(response.get("eval_count", 0)),
+            }
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
+        if not answer or len(answer) > 8_000:
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        return GroundedTextResult(answer, (), False, usage)

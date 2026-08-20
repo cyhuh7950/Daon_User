@@ -157,12 +157,12 @@ test("Web Studio Adapter는 same-origin 공통 계약과 파일 bytes만 사용�
   await createStudioGeneration("workspace-1", {
     output_type: "evidence_report", source_id: "source-1", source_version_ids: ["source-version-1"],
     run_id: "run-1", run_result_id: "result-1", settings: { purpose: "목적", audience: "독자", source_version_ids: ["source-version-1"], ruleset_version_id: null, length: "short", structure: "summary", output_format: "pdf", review_condition: "review_required" },
-  }, { fetchImpl, idempotencyKey: "generation-key-0001" });
-  await listProductStudioOutputs("workspace-1", { fetchImpl });
+  }, { notebookId: "notebook-1", fetchImpl, idempotencyKey: "generation-key-0001" });
+  await listProductStudioOutputs("workspace-1", { notebookId: "notebook-1", fetchImpl });
   await createStudioVersion("workspace-1", "output-1", {
     previous_version_id: "version-1", revision_type: "user_edit", change_reason: "표현 정리", content: "변경 내용",
-  }, { fetchImpl, idempotencyKey: "version-key-000001" });
-  await listStudioVersions("workspace-1", "output-1", { fetchImpl: async (url, init) => {
+  }, { notebookId: "notebook-1", fetchImpl, idempotencyKey: "version-key-000001" });
+  await listStudioVersions("workspace-1", "output-1", { notebookId: "notebook-1", fetchImpl: async (url, init) => {
     calls.push({ url, method: init.method });
     return Response.json({ data: { output_id: "output-1", versions: [{
       output_version_id: "version-1", content_version: 1, previous_version_id: null, status: "draft",
@@ -171,15 +171,15 @@ test("Web Studio Adapter는 same-origin 공통 계약과 파일 bytes만 사용�
       review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null,
     }] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
   } });
-  await createStudioAction("workspace-1", "reviews", { output_version_id: "version-1" }, { fetchImpl, idempotencyKey: "review-key-000001" });
-  const exported = await downloadStudioExport("workspace-1", "output-1", "version-1", "pdf", { fetchImpl });
+  await createStudioAction("workspace-1", "reviews", { output_version_id: "version-1" }, { notebookId: "notebook-1", fetchImpl, idempotencyKey: "review-key-000001" });
+  const exported = await downloadStudioExport("workspace-1", "output-1", "version-1", "pdf", { notebookId: "notebook-1", fetchImpl });
   assert.deepEqual(exported.bytes, [0x25, 0x50, 0x44, 0x46, 0x2d]);
   assert.ok(calls.every((call) => call.url.startsWith("/bff/api/")));
   assert.deepEqual(calls.map((call) => call.url), [
-    "/bff/api/studio-generation-requests", "/bff/api/studio-outputs?workspace_id=workspace-1",
+    "/bff/api/studio-generation-requests", "/bff/api/studio-outputs?workspace_id=workspace-1&notebook_id=notebook-1",
     "/bff/api/studio-outputs/output-1/versions",
-    "/bff/api/studio-outputs/output-1/versions?workspace_id=workspace-1",
-    "/bff/api/reviews", "/bff/api/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-1",
+    "/bff/api/studio-outputs/output-1/versions?workspace_id=workspace-1&notebook_id=notebook-1",
+    "/bff/api/reviews", "/bff/api/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-1&notebook_id=notebook-1",
   ]);
 });
 

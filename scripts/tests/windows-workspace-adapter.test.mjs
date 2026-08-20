@@ -23,14 +23,14 @@ test("Windows Workspace Adapter는 정확한 7개 전용 Command만 호출한다
     if (command === "workspace_processing_status") return { processing_run_id: "run-1", source_id: "source-1", source_version_id: "version-1", processing_state: "completed", source_state: "ready", job_state: "completed", safe_error_code: null };
     if (command === "workspace_ask_question") return { run_id: "run-1", run_result_id: "result-1", answer: "answer", insufficient: false, citations: [] };
     if (command === "workspace_citation_content") return { content_type: "application/pdf", page: 1, bytes: [0x25, 0x50, 0x44, 0x46, 0x2d] };
-    return { studio_output_id: "output-1", output_version_id: "version-1", output_type: "evidence_report", title: "title", purpose: "purpose", status: "draft", content: "content", run_id: "run-1", run_result_id: "result-1", citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 1 }] };
+    return { studio_output_id: "output-1", output_version_id: "version-1", output_type: "evidence_report", title: "title", purpose: "purpose", status: "draft", content: "content", run_id: "run-1", run_result_id: "result-1", citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 1, origin: "raw_source", context_item_id: "source-1", locator: { kind: "page", value: "1" } }] };
   };
-  const adapter = createWindowsWorkspaceAdapter("workspace-1", { invoke });
-  assert.deepEqual(Object.keys(adapter).sort(), ["askQuestion", "citationContent", "citationUrl", "createReport", "getProcessingStatus", "listSources", "listStudioOutputs", "uploadPdf"].sort());
+  const adapter = createWindowsWorkspaceAdapter("workspace-1", { invoke, notebookId: "notebook-1" });
+  assert.deepEqual(Object.keys(adapter).sort(), ["applyLicense", "askQuestion", "citationContent", "citationUrl", "createReport", "getLicense", "getProcessingStatus", "listSources", "listStudioOutputs", "uploadPdf"].sort());
   await adapter.listSources();
   await adapter.uploadPdf({ name: "guide.pdf", type: "application/pdf", size: 5, arrayBuffer: async () => Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d]).buffer });
   await adapter.getProcessingStatus("run-1");
-  await adapter.askQuestion({ sourceId: "source-1", sourceVersionId: "version-1", question: "question" });
+  await adapter.askQuestion({ knowledgeContext: { mode: "raw_only", resources: [{ resourceKind: "source", resourceId: "source-1", versionId: "version-1" }] }, question: "question" });
   await adapter.citationContent({ citation_id: "citation-1", page: 1 });
   await adapter.createReport(
     { source_id: "source-1", source_version_id: "version-1", run_id: "run-1", run_result_id: "result-1", title: "title", purpose: "purpose" },
@@ -40,6 +40,7 @@ test("Windows Workspace Adapter는 정확한 7개 전용 Command만 호출한다
   assert.deepEqual(calls.map(({ command }) => command), COMMANDS);
   assert.equal(calls.find(({ command }) => command === "workspace_create_report").args.input.request_idempotency_key, "report-000000000001");
   for (const { args } of calls) {
+    assert.equal(args.input.notebook_id, "notebook-1");
     const wire = JSON.stringify(args).toLowerCase();
     assert.doesNotMatch(wire, /"method"|"path"|"url"|"gateway"|"authorization"|"credential"|"password"/u);
   }
@@ -51,16 +52,17 @@ test("Windows Adapter source에는 WebView network와 내부주소가 없다", a
 });
 
 test("Windows Adapter는 unknown 응답과 잘못된 PDF를 fail-close한다", async () => {
-  const adapter = createWindowsWorkspaceAdapter("workspace-1", { invoke: async () => ({ sources: [], unknown: true }) });
+  const adapter = createWindowsWorkspaceAdapter("workspace-1", { notebookId: "notebook-1", invoke: async () => ({ sources: [], unknown: true }) });
   await assert.rejects(adapter.listSources(), /SOURCE_LIST_RESPONSE_INVALID/);
   await assert.rejects(
     adapter.uploadPdf({ name: "bad.txt", type: "text/plain", size: 4, arrayBuffer: async () => new ArrayBuffer(4) }),
     /PDF_UPLOAD_INPUT_INVALID/
   );
-  const safeError = createWindowsWorkspaceAdapter("workspace-1", { invoke: async () => Promise.reject({ code: "FORBIDDEN", retryable: false }) });
+  const safeError = createWindowsWorkspaceAdapter("workspace-1", { notebookId: "notebook-1", invoke: async () => Promise.reject({ code: "FORBIDDEN", retryable: false }) });
   await assert.rejects(safeError.listSources(), /FORBIDDEN/);
-  const unsafeError = createWindowsWorkspaceAdapter("workspace-1", { invoke: async () => Promise.reject({ code: "FORBIDDEN", retryable: false, credential: "secret" }) });
+  const unsafeError = createWindowsWorkspaceAdapter("workspace-1", { notebookId: "notebook-1", invoke: async () => Promise.reject({ code: "FORBIDDEN", retryable: false, credential: "secret" }) });
   await assert.rejects(unsafeError.listSources(), /WORKSPACE_RESPONSE_REJECTED/);
+  assert.throws(() => createWindowsWorkspaceAdapter("workspace-1", { invoke: async () => [] }), /WORKSPACE_ADAPTER_UNAVAILABLE/);
 });
 
 test("Rust Workspace Bridge는 exact 7 Command와 deny-unknown DTO만 등록한다", async () => {

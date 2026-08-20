@@ -88,6 +88,7 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
       ...adapter,
       async listSources() { return [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }]; },
       async listStudioOutputs() { throw new Error("STUDIO_DATABASE_UNAVAILABLE http://internal.invalid stack"); },
+      async loadNotebookConversation() { throw new Error("CONVERSATION_DATABASE_UNAVAILABLE http://internal.invalid stack"); },
     };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
     reactRoot = createRoot(container);
@@ -96,6 +97,7 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     const questionInput = findElements(container, (node) => node.tagName === "TEXTAREA" && node.parentNode?.textContent.startsWith("질문"))[0];
     assert.equal(questionInput.disabled, false);
     assert.match(container.textContent, /불러오지 못했습니다/u);
+    assert.match(container.textContent, /대화를 불러오지 못했습니다/u);
     assert.doesNotMatch(container.textContent, /STUDIO_LIST_FAILED/u);
     assert.doesNotMatch(container.textContent, /internal\.invalid|stack/u);
 
@@ -121,6 +123,99 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     assert.equal(sourceLoads, 2);
     assert.match(retryContainer.textContent, /retried\.pdf/u);
     assert.doesNotMatch(retryContainer.textContent, /internal\.invalid|stack/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("빈 Notebook은 좁은 일반대화만 실행하고 근거 미사용을 표시한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-general-conversation-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { build } = await import("vite");
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: {
+      outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "general-conversation" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("general-conversation") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?general=${Date.now()}`);
+    const calls = [];
+    const effectAdapter = {
+      ...adapter,
+      async listSources() { return []; },
+      async listStudioOutputs() { return []; },
+      async askQuestion(input) {
+        calls.push(input);
+        return { run_id: "run-general", run_result_id: "result-general", answer: "안녕하세요.", insufficient: false, citations: [] };
+      },
+    };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    const textarea = findElements(container, (node) => node.tagName === "TEXTAREA")[0];
+    assert.equal(textarea.disabled, false);
+    const textareaProps = textarea[Object.keys(textarea).find((key) => key.startsWith("__reactProps$"))];
+    textarea.value = "2026년 매출은?";
+    await act(async () => textareaProps.onChange({ currentTarget: textarea, target: textarea }));
+    const submit = findElements(container, (node) => node.tagName === "BUTTON" && node.getAttribute("aria-label") === "질문 실행")[0];
+    assert.equal(submit.disabled, true);
+    textarea.value = "안녕하세요!";
+    await act(async () => textareaProps.onChange({ currentTarget: textarea, target: textarea }));
+    assert.equal(submit.disabled, false);
+    const form = findElements(container, (node) => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
+    const formProps = form[Object.keys(form).find((key) => key.startsWith("__reactProps$"))];
+    await act(async () => formProps.onSubmit({ preventDefault() {} }));
+    assert.deepEqual(calls, [{ knowledgeContext: null, question: "안녕하세요!", stepUpAuthorizationId: null }]);
+    assert.match(container.textContent, /일반 대화 · 근거 미사용/u);
+
+    await act(async () => reactRoot.unmount());
+    reactRoot = null;
+    const groundedContainer = dom.document.createElement("div"); dom.document.body.appendChild(groundedContainer);
+    const groundedAdapter = {
+      ...effectAdapter,
+      async listSources() {
+        return [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }];
+      },
+      async askQuestion() {
+        return { run_id: "run-grounded", run_result_id: "result-grounded", answer: "근거 부족 모양", insufficient: false, citations: [] };
+      },
+    };
+    reactRoot = createRoot(groundedContainer);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: groundedAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    const groundedTextarea = findElements(groundedContainer, (node) => node.tagName === "TEXTAREA")[0];
+    const groundedTextareaProps = groundedTextarea[Object.keys(groundedTextarea).find((key) => key.startsWith("__reactProps$"))];
+    groundedTextarea.value = "선택 Source를 근거로 답해줘";
+    await act(async () => groundedTextareaProps.onChange({ currentTarget: groundedTextarea, target: groundedTextarea }));
+    const groundedForm = findElements(groundedContainer, (node) => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
+    const groundedFormProps = groundedForm[Object.keys(groundedForm).find((key) => key.startsWith("__reactProps$"))];
+    await act(async () => groundedFormProps.onSubmit({ preventDefault() {} }));
+    assert.doesNotMatch(groundedContainer.textContent, /일반 대화 · 근거 미사용/u);
+
+    await act(async () => reactRoot.unmount());
+    reactRoot = null;
+    let resolveOldQuestion;
+    const oldQuestion = new Promise((resolve) => { resolveOldQuestion = resolve; });
+    const staleAdapter = { ...effectAdapter, async askQuestion() { return oldQuestion; } };
+    const staleContainer = dom.document.createElement("div"); dom.document.body.appendChild(staleContainer);
+    reactRoot = createRoot(staleContainer);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-old", adapter: staleAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    const staleTextarea = findElements(staleContainer, (node) => node.tagName === "TEXTAREA")[0];
+    const staleTextareaProps = staleTextarea[Object.keys(staleTextarea).find((key) => key.startsWith("__reactProps$"))];
+    staleTextarea.value = "안녕하세요!";
+    await act(async () => staleTextareaProps.onChange({ currentTarget: staleTextarea, target: staleTextarea }));
+    const staleForm = findElements(staleContainer, (node) => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
+    const staleFormProps = staleForm[Object.keys(staleForm).find((key) => key.startsWith("__reactProps$"))];
+    let oldSubmission;
+    await act(async () => { oldSubmission = staleFormProps.onSubmit({ preventDefault() {} }); await Promise.resolve(); });
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-new", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { resolveOldQuestion({ run_id: "run-old", run_result_id: "result-old", answer: "오래된 응답", insufficient: false, citations: [] }); await oldSubmission; });
+    assert.doesNotMatch(staleContainer.textContent, /오래된 응답|일반 대화 · 근거 미사용/u);
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     dom.restore(); await rm(output, { recursive: true, force: true });

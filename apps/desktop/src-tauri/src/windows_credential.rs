@@ -144,4 +144,47 @@ impl WindowsCredentialStore {
             Err("LOCAL_CREDENTIAL_DELETE_FAILED")
         }
     }
+
+    pub fn read_screen_preference(&self) -> Result<Option<String>, &'static str> {
+        let target = wide(&self.target);
+        let mut raw: *mut CREDENTIALW = null_mut();
+        // SAFETY: target is nul-terminated and raw is released by CredFree exactly once.
+        if unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut raw) } == 0 {
+            return if unsafe { GetLastError() } == ERROR_NOT_FOUND { Ok(None) } else { Err("SCREEN_PREFERENCE_READ_FAILED") };
+        }
+        if raw.is_null() { return Err("SCREEN_PREFERENCE_READ_FAILED"); }
+        // SAFETY: CredReadW returned a live allocation until CredFree below.
+        let credential = unsafe { &*raw };
+        let result = if credential.CredentialBlob.is_null() || !(4..=6).contains(&(credential.CredentialBlobSize as usize)) {
+            Err("SCREEN_PREFERENCE_INVALID")
+        } else {
+            // SAFETY: CredentialBlobSize is bounded while the allocation is live.
+            let bytes = unsafe { std::slice::from_raw_parts(credential.CredentialBlob, credential.CredentialBlobSize as usize) };
+            let value = std::str::from_utf8(bytes).map_err(|_| "SCREEN_PREFERENCE_INVALID")?;
+            match value { "system" | "light" | "dark" => Ok(Some(value.to_owned())), _ => Err("SCREEN_PREFERENCE_INVALID") }
+        };
+        // SAFETY: raw is exactly the allocation returned by CredReadW.
+        unsafe { CredFree(raw.cast()) };
+        result
+    }
+
+    pub fn write_screen_preference(&self, preference: &str) -> Result<(), &'static str> {
+        if !matches!(preference, "system" | "light" | "dark") { return Err("SCREEN_PREFERENCE_INVALID"); }
+        let mut target = wide(&self.target);
+        let mut username = wide("Daon Screen Preferences");
+        let mut value = preference.as_bytes().to_vec();
+        let credential = CREDENTIALW {
+            Type: CRED_TYPE_GENERIC, TargetName: target.as_mut_ptr(),
+            CredentialBlobSize: value.len() as u32, CredentialBlob: value.as_mut_ptr(),
+            Persist: CRED_PERSIST_LOCAL_MACHINE, UserName: username.as_mut_ptr(), ..CREDENTIALW::default()
+        };
+        // SAFETY: the buffers remain live through CredWriteW and value has been validated.
+        let written = unsafe { CredWriteW(&credential, 0) } != 0;
+        value.fill(0);
+        written.then_some(()).ok_or("SCREEN_PREFERENCE_WRITE_FAILED")
+    }
+
+    pub fn revoke_screen_preference(&self) -> Result<(), &'static str> {
+        self.revoke().map_err(|_| "SCREEN_PREFERENCE_DELETE_FAILED")
+    }
 }

@@ -33,7 +33,7 @@ class StudioReportServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = FakeRepository()
         self.service = StudioReportService(self.repository)
-        self.context = StudioReportContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1")
+        self.context = StudioReportContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
 
     def test_exact_request_creates_evidence_report_only(self) -> None:
         request = StudioReportCreateRequest(

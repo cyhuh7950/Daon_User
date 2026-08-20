@@ -6,6 +6,8 @@ export { AccountSecurityWorkspace } from "./account-security-pane.jsx";
 export { OperationsRecoveryWorkspace } from "./operations-recovery-pane.jsx";
 export { NotificationInboxWorkspace } from "./notification-inbox-pane.jsx";
 export { ProductWorkspaceShell } from "./product-workspace-shell.jsx";
+export { NotebookHome } from "./notebook-home.jsx";
+export { createNotebookContextWorkspaceAdapter, projectNotebookSelectedContext } from "./notebook-context-adapter.js";
 export { PRODUCT_WORKSPACE_STATES, createProductWorkspaceState } from "./product-workspace-model.js";
 export { ProductStudioPane } from "./product-studio-pane.jsx";
 export { OUTPUT_TYPES as PRODUCT_STUDIO_OUTPUT_TYPES, createProductStudioState } from "./product-studio-model.js";

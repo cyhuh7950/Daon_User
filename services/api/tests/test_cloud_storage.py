@@ -9,6 +9,7 @@ from daon_user_api.cloud_storage import (
     CloudAccessContext,
     CloudDatabaseError,
     PostgresCloudStore,
+    _EXPECTED_SCHEMA_REVISION,
     classify_database_error,
 )
 from daon_user_api.cloud_admin import server_version_supported
@@ -19,6 +20,9 @@ MIGRATION = ROOT / "services" / "api" / "migrations" / "versions" / "0001_cloud_
 
 
 class CloudStorageContractTests(unittest.TestCase):
+    def test_readiness_tracks_the_current_notebook_schema_revision(self) -> None:
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0020")
+
     def test_postgres_major_version_range_accepts_packaging_suffix(self) -> None:
         for value in ("15.13", "16.9 (Debian 16.9-1.pgdg12+1)", "17.5", "18.4"):
             self.assertTrue(server_version_supported(value), value)
@@ -80,7 +84,7 @@ class PostgresCloudIntegrationTests(unittest.TestCase):
     def test_readiness_requires_migration_and_vector(self) -> None:
         status = self.store.readiness()
         self.assertTrue(status.ready)
-        self.assertEqual(status.schema_revision, "0017")
+        self.assertEqual(status.schema_revision, "0020")
         self.assertEqual(status.vector_version, "0.8.2")
 
     def test_rls_blocks_cross_tenant_and_context_does_not_leak(self) -> None:
