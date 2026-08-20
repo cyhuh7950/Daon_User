@@ -12,7 +12,11 @@ def test_repository_uses_policy_canon_idempotency_audit_and_rls_transaction() ->
     assert "with self._store._transaction(cloud_context) as connection:" in source
     assert "FROM egress_policy_bindings AS binding" in source
     assert "JOIN egress_policy_versions AS policy" in source
-    assert "FOR UPDATE" in source
+    assert 'suffix = " FOR UPDATE OF binding" if for_update else ""' in source
+    assert 'suffix = " FOR UPDATE" if for_update else ""' not in source
+    assert "if current_row is None:" in source
+    assert "latest_row = self._select_current(" in source
+    assert 'raise EgressPolicyError("VERSION_CONFLICT", 409)' in source
     assert "pg_advisory_xact_lock" in source
     assert "INSERT INTO egress_policy_versions" in source
     assert "UPDATE egress_policy_bindings" in source
