@@ -1,6 +1,7 @@
 # Daon 지식·LLM 활용 가이드
 
 - Release: 1.0.0
+- 업데이트: 2026-08-20
 - 언어: 한국어(ko-KR)
 - 대상: 지식 관리자, 업무 사용자, 검토자, LLM 운영 담당자
 - 범위: 공개 원칙과 로그인 후 조직 전용 설정을 구분합니다.
@@ -42,8 +43,7 @@ Daon 지식과 Raw Source는 모두 Text, 문서, 웹, 표, 이미지, 음성, �
 3. 현재 업무에 필요한 역할을 가진 Deployment·Model을 선택합니다.
 4. 연결 시험은 Provider별 연결 계약만 확인합니다. 9개 Provider 모두에 같은 기능 시험을 반복하지 않습니다.
 5. 생성 기능 시험은 승인 원칙에 따라 Upstage·Groq·Mistral 중 대표 하나를 선택하고, 호환성 의심 시에만 두 번째를 사용합니다.
-
-![Provider 선택과 설정 상태](../../03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-b1-llm-settings-browser.png)
+6. 연결 시험 성공과 실제 질문·생성 성공은 구분합니다. 실제 호출은 조직 Egress 정책이 Provider 종류·목적지·데이터 분류·마스킹 조건을 허용해야 합니다.
 
 Offline Ollama는 이미 설치된 completion 모델의 exact name·digest·capability가 확인될 때만 후보로 표시합니다. Daon이 모델을 설치·삭제하지 않으며 Cloud 모델이나 embedding-only 모델을 오프라인 생성에 사용하지 않습니다.
 
@@ -53,8 +53,6 @@ Offline Ollama는 이미 설치된 completion 모델의 exact name·digest·capa
 2. producer/version, Source 또는 지식 Version, authority·quality, locator를 확인합니다.
 3. 질문에 사용한 Context 밖의 Citation은 거부됩니다.
 4. Citation이 없거나 `unverified`이면 결과를 최종 승인하지 않습니다.
-
-![혼합 Knowledge Context와 Citation](../../03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/foundation-b3-knowledge-context-browser.png)
 
 ### 3.4 품질·비용·지연 조정
 
@@ -88,4 +86,5 @@ Offline Ollama는 이미 설치된 completion 모델의 exact name·digest·capa
 - `LOCAL_MODEL_UNAVAILABLE`: Ollama 서비스와 설치된 completion 모델 상태를 운영상태에서 확인합니다. Daon 화면에서 설치를 시도하지 않습니다.
 - `MODEL_INPUT_CAPABILITY_UNAVAILABLE`: Source는 유지하고 지원 Model 또는 형식별 Representation 준비를 기다립니다.
 - `CITATION_RESPONSE_INVALID`: 결과를 승인하지 말고 질문 Context와 Citation 계보를 다시 확인합니다.
+- `EGRESS_POLICY_DENIED`: 조직 관리자가 외부전송 정책을 검토하고 필요한 범위만 명시적으로 승인합니다. 사용자가 Endpoint를 바꿔 우회하지 않습니다.
 - Provider 오류가 발생해도 다른 Provider로 자동 전환하지 않습니다. 필요한 경우 사용자가 설정에서 명시적으로 선택합니다.
