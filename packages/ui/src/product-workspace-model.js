@@ -43,7 +43,13 @@ export function projectQuestionFailureState(current, error) {
   const code = typeof error?.message === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(error.message)
     ? error.message
     : "QUESTION_FAILED";
-  return { ...current, status: "error", safeError: code, answer: null, answerIntent: null };
+  return {
+    ...current,
+    safeError: null,
+    conversationSafeError: code,
+    answer: null,
+    answerIntent: null,
+  };
 }
 
 const PRODUCT_WORKSPACE_ADAPTER_METHODS = Object.freeze([

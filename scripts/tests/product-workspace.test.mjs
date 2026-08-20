@@ -28,8 +28,9 @@ test("질문 실패는 로드된 Source·Studio 잠금을 보존하고 안전 �
 
   const failed = projectQuestionFailureState(current, new Error("TEXT_MODEL_NOT_SELECTED"));
 
-  assert.equal(failed.status, "error");
-  assert.equal(failed.safeError, "TEXT_MODEL_NOT_SELECTED");
+  assert.equal(failed.status, "ready");
+  assert.equal(failed.safeError, null);
+  assert.equal(failed.conversationSafeError, "TEXT_MODEL_NOT_SELECTED");
   assert.deepEqual(failed.sources, current.sources);
   assert.deepEqual(failed.selectedSource, current.selectedSource);
   assert.deepEqual(failed.studioLocks, current.studioLocks);

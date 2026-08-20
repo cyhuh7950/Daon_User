@@ -19,3 +19,30 @@ test("Notebook Home은 목록 상태·검색·정렬·보기·생성·설정 접
   assert.match(css, /:focus-visible/u);
   assert.match(exports, /NotebookHome/u);
 });
+
+test("Notebook Home 공통 설정 메뉴는 화면·라이선스·사용자 설명서 실제 화면으로 연결된다", async () => {
+  const [workspace, licensePane, manualPane, licensePage, manualPage] = await Promise.all([
+    read("apps/web/components/notebook-home-workspace.jsx"),
+    read("apps/web/components/license-settings-pane.jsx"),
+    read("apps/web/components/manual-settings-pane.jsx"),
+    read("apps/web/app/settings/license/page.jsx"),
+    read("apps/web/app/settings/manual/page.jsx"),
+  ]);
+  assert.match(workspace, /onOpenSetting=\{handleOpenSetting\}/u);
+  assert.match(workspace, /screen:\s*"\/settings\/screen"/u);
+  assert.match(workspace, /license:\s*"\/settings\/license"/u);
+  assert.match(workspace, /manual:\s*"\/settings\/manual"/u);
+  assert.match(licensePane, /getWorkspaceLicense/u);
+  assert.match(licensePane, /applyCurrentOrganizationLicenseWithStepUp/u);
+  assert.match(licensePane, /file\.size > 0/u);
+  assert.match(licensePane, /endsWith\("\.json"\)/u);
+  assert.match(licensePane, /file\.type === "application\/json"/u);
+  assert.match(manualPane, /getManualManifest/u);
+  assert.match(manualPane, /readManualDocument/u);
+  assert.match(manualPane, /downloadManualAsset/u);
+  assert.match(licensePage, /LicenseSettingsPane/u);
+  assert.match(manualPage, /ManualSettingsPane/u);
+  for (const source of [workspace, licensePane, manualPane]) {
+    assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_/u);
+  }
+});
