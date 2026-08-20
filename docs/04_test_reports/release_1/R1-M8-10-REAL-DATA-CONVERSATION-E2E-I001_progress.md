@@ -71,3 +71,15 @@
 - GREEN: Rust는 trim 전에 U+3000과 U+FF01..U+FF5E를 fail-close한다. fullwidth letter·punctuation·space는 Python/JS와 동일하게 거부하고 정상 ASCII `안녕하세요!`·`안녕하세요?`만 허용한다.
 - 공통 벡터 focused 결과: Python `1/1 PASS`, Node `1/1 PASS`, Rust `1/1 PASS`.
 - 이 Minor에서는 actual Provider/PostgreSQL/Windows를 재실행하지 않았으며 제품 actual 판정은 `PARTIAL / PRODUCT_E2E_NOT_RUN`으로 유지한다.
+
+## 2026-08-20 23:42 어울1 직접 결과관리 · 설정 연결과 사용자 설명서 배포
+
+- Subagent 자동 테스트 결과를 최종 제품 완료로 대신하지 않고 어울1이 실제 서버 화면까지 직접 대조했다.
+- 대화 실패가 Source 전체 오류로 투영되던 상태를 분리하고, Notebook 홈의 설정 메뉴를 화면 설정·라이선스·사용자 설명서 실제 Route에 연결했다. 관련 커밋은 `c036b46`이다.
+- Web runtime image에 `public` 자산이 빠져 `/manual/manifest.json`이 404였던 실제 배포 결함을 Dockerfile RED→GREEN으로 교정했다(`615dad0`). 실제 Reverse Proxy가 JSON에 `charset=UTF-8`을 붙이는 경계도 exact allowlist로 교정했다(`27ff06d`).
+- 사용자 설명서 3종에서 Phase D/E 준비 중 문구와 종료된 fixture/오류 화면 6개를 제거하고, 현재 로그인→Notebook 홈→명시 선택→3열 작업, 좁은 일반대화, Provider 연결 시험과 실제 생성의 차이, Egress 정책을 반영했다.
+- 최종 매뉴얼은 Markdown/DOCX/PDF 3종×3형식으로 재생성했다. DOCX/PDF 렌더 17페이지를 어울1이 전수 시각 검수했고 겹침·잘림·깨진 글자0, DOCX 접근성 high/medium/low 모두0, PDF page count `5/6/6`이다.
+- fresh Gate: Manual `7/7 PASS`, Web production build·TypeScript·12 route PASS, product boundary `391 files / violations0`, manifest bytes/SHA exact PASS.
+- 커밋 `689be84aeeda9655968badecc1ff2dd48ea50a95`를 원격 브랜치에 Push하고 ysna-server Daon 전용 Web만 재빌드·재기동했다. 서버 HEAD=동일 SHA, Web health=`healthy`이다.
+- 실제 `https://daon-user.sinsan.kr/settings/manual`에서 Release `1.0.0`, 업데이트 `2026-08-20`, 세 문서 목록, 최신 사용자 설명서 본문과 console warn/error0을 확인했다. PDF는 HTTP 200, `application/pdf`, `177756 bytes`였다.
+- 보호 dirty/untracked는 stage/restore/delete0, API·DB·공용 서비스 변경0이다. 제품 전체 Source→외부 Provider→Citation→Studio E2E는 외부전송 정책의 명시 승인 전까지 여전히 NOT_RUN이며 완료로 주장하지 않는다.
