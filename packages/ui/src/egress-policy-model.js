@@ -19,6 +19,9 @@ const INITIAL = Object.freeze({
 });
 
 export function egressPolicyReducer(state = INITIAL, action) {
+  if (action.type === "context_loading") return {
+    ...INITIAL, status: "loading", draft: createEgressPolicyDraft(),
+  };
   if (action.type === "loading") return { ...state, status: "loading", errorCode: null };
   if (action.type === "loaded") {
     const scopePolicy = action.data.editable_scope === "organization"

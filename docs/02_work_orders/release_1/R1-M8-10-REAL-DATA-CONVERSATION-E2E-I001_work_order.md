@@ -17,6 +17,7 @@
 6. 브라우저는 same-origin, Desktop은 승인 Native command만 사용한다. 내부 주소·Credential·정책 원문을 노출하지 않는다.
 7. actual DB/Browser/Provider Gate와 전체 회귀를 구분하고, 미실행 항목을 PASS로 선언하지 않는다.
 8. 보호 dirty를 restore/delete/stage하지 않고 commit/push/merge/deploy하지 않는다.
+9. 실제 Provider 호출 전 organization·workspace Egress Policy를 기존 API와 Step-up으로 각각 명시 저장한다. Web은 same-origin BFF만 사용하고 현재 비밀번호를 저장·로그·두 단계 사이에 보존하지 않으며, effective projection이 승인 범위와 exact 일치해야 다음 Gate로 진행한다.
 
 ## 결과 계약
 

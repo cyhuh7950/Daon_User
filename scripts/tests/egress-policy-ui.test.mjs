@@ -7,7 +7,9 @@ import {
 } from "../../packages/ui/src/egress-policy-model.js";
 import {
   getEffectiveEgressPolicy,
+  getOrganizationSettingsContext,
   saveOrganizationEgressPolicy,
+  saveWorkspaceEgressPolicy,
 } from "../../apps/web/lib/egress-policy-api.js";
 
 
@@ -27,6 +29,18 @@ test("organization editor may replace its own deny while workspace parent lock r
   const failed = egressPolicyReducer(drafted, { type: "failed", code: "VERSION_CONFLICT" });
   assert.equal(failed.effective.mode, "deny_external");
   assert.equal(failed.errorCode, "VERSION_CONFLICT");
+});
+
+test("context identity loading clears every previous editable policy state", () => {
+  const loaded = egressPolicyReducer(undefined, { type: "loaded", data: {
+    ...createEgressPolicyDraft({ mode: "allow_approved_external", allowed_provider_kinds: ["external_api"], allowed_destinations: ["api.upstage.ai"], classification: "internal", max_bytes: 1048576 }),
+    organization_policy: createEgressPolicyDraft(), workspace_policy: createEgressPolicyDraft(),
+    parent_locked: false, organization_etag: '"org:1"', workspace_etag: '"ws:1"', editable_scope: "organization",
+  } });
+  const drafted = egressPolicyReducer(loaded, { type: "drafted", draft: { ...loaded.draft, allowed_destinations: ["stale.example"] } });
+  const reset = egressPolicyReducer(drafted, { type: "context_loading" });
+  assert.equal(reset.status, "loading"); assert.equal(reset.effective, null);
+  assert.deepEqual(reset.draft, createEgressPolicyDraft()); assert.equal(reset.canSave, false); assert.equal(reset.errorCode, null);
 });
 
 
@@ -101,4 +115,58 @@ test("effective egress adapter는 exact read-only projection만 수용하고 내
     workspaceId: "workspace-1",
     fetchImpl: async () => Response.json({ data: { ...projection, internal_url: "http://internal.invalid" }, meta: { trace_id: "trace-1" } }),
   }), /EGRESS_POLICY_RESPONSE_INVALID/u);
+});
+
+test("workspace policy uses a separate Step-up and exact same-origin endpoint", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (String(url).endsWith("/session/step-up")) {
+      return Response.json({ data: { step_up_authorization: "step-up-secret" }, meta: {} });
+    }
+    return Response.json({ data: { scope_type: "workspace" }, meta: {} }, { status: 201 });
+  };
+  const sensitive = { currentPassword: "workspace-memory-only", stepUpAuthorization: null };
+  await saveWorkspaceEgressPolicy({
+    fetchImpl, workspaceId: "workspace-1", etag: '"egress:workspace:v1"',
+    idempotencyKey: "idem-egress-policy-workspace-0001",
+    draft: createEgressPolicyDraft({ mode: "deny_external" }), sensitive,
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, "/bff/api/session/step-up");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    action_group: "organization_security_or_connector_policy_change",
+    target_id: "workspace-1", password: "workspace-memory-only",
+  });
+  assert.equal(calls[1].url, "/bff/api/workspaces/workspace-1/egress-policy-versions");
+  assert.equal(calls[1].init.headers["if-match"], '"egress:workspace:v1"');
+  assert.equal("workspace_id" in JSON.parse(calls[1].init.body), false);
+  assert.equal(sensitive.currentPassword, "");
+  assert.equal(sensitive.stepUpAuthorization, null);
+  assert.ok(!JSON.stringify(calls[1]).includes("workspace-memory-only"));
+});
+
+test("aborted deferred Step-up clears sensitive values and sends no policy POST", async () => {
+  const controller = new AbortController(); const calls = []; let rejectStepUp;
+  const stepUp = new Promise((_, reject) => { rejectStepUp = reject; });
+  const fetchImpl = async (url) => { calls.push(String(url)); return stepUp; };
+  const sensitive = { currentPassword: "memory-only", stepUpAuthorization: "stale-token" };
+  const request = saveWorkspaceEgressPolicy({
+    fetchImpl, workspaceId: "workspace-old", etag: '"ws:old"', idempotencyKey: "idem-egress-policy-abort-0001",
+    draft: createEgressPolicyDraft(), sensitive, signal: controller.signal,
+  });
+  controller.abort(); const error = new Error("aborted"); error.name = "AbortError"; rejectStepUp(error);
+  await assert.rejects(request, /aborted/u);
+  assert.deepEqual(calls, ["/bff/api/session/step-up"]);
+  assert.equal(sensitive.currentPassword, ""); assert.equal(sensitive.stepUpAuthorization, null);
+});
+
+test("organization settings context GET forwards AbortSignal", async () => {
+  const controller = new AbortController(); let received;
+  const fetchImpl = async (_url, init) => {
+    received = init.signal;
+    return Response.json({ data: { tenant_id: "tenant-1", workspace_id: "workspace-1" }, meta: {} });
+  };
+  await getOrganizationSettingsContext({ fetchImpl, signal: controller.signal });
+  assert.equal(received, controller.signal);
 });

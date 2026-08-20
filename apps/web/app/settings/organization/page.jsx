@@ -3,9 +3,14 @@
 import { EgressPolicyPane } from "@daon-user/ui/egress-policy";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { getEffectiveEgressPolicy, getOrganizationSettingsContext, saveOrganizationEgressPolicy } from "../../../lib/egress-policy-api.js";
+import { getEffectiveEgressPolicy, getOrganizationSettingsContext, saveOrganizationEgressPolicy, saveWorkspaceEgressPolicy } from "../../../lib/egress-policy-api.js";
 
-const adapter = { loadContext: getOrganizationSettingsContext, load: getEffectiveEgressPolicy, save: saveOrganizationEgressPolicy };
+const adapter = {
+  loadContext: getOrganizationSettingsContext,
+  load: getEffectiveEgressPolicy,
+  saveOrganization: saveOrganizationEgressPolicy,
+  saveWorkspace: saveWorkspaceEgressPolicy,
+};
 function OrganizationSettingsContent() {
   const searchParams = useSearchParams();
   return <main className="organization-settings-page"><EgressPolicyPane

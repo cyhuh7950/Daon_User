@@ -13,6 +13,7 @@
 5. 근거 기반 응답은 Citation의 SourceVersion·EvidenceSpan·locator를 검증하고, 동일 Provider selection과 Knowledge Context가 RunSnapshot·Studio Output lineage에 유지되어야 한다.
 6. 9개 Provider 설정·선택 구조는 유지한다. 기능 actual Gate는 `UPSTAGE | GROQ | MISTRAL` 중 가용한 대표 1개로 수행하고, 연결 확인은 Provider별 독립 상태로 표시한다. 자동 fallback은 0이다.
 7. Browser는 same-origin BFF만 사용하며 내부 URL·Credential·Stack·SQLSTATE를 노출하지 않는다.
+8. 실제 외부 Provider Gate 전에 organization·workspace 두 scope의 versioned Egress Policy가 모두 승인 범위와 일치해야 한다. 설정 화면은 두 scope를 별도 단계로 표시하고 각 저장마다 기존 Step-up을 사용한다. 한 단계 성공을 전체 effective 성공으로 표시하지 않으며, 현재 비밀번호는 요청 완료·실패 후 즉시 비운다.
 
 ## Fixture 정리 계약
 
@@ -31,6 +32,7 @@
 5. 동일 Context로 Studio 산출물을 만들고 저장 Library에서 다시 읽는다.
 6. 오류 상태는 Source·Conversation·Studio별로 분리되며 재시도가 정상 영역을 지우지 않는다.
 7. 1920x1080 실제 Browser/Windows, same-origin Network, console 오류 0, Fixture cleanup 0 잔류를 검증한다.
+8. organization·workspace policy 적용 후 effective projection이 명시 승인값과 exact 일치할 때만 Provider 호출을 시작한다.
 
 ## 제외 범위
 

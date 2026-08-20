@@ -3,50 +3,132 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { createEgressPolicyDraft, egressPolicyReducer } from "./egress-policy-model.js";
 
-export function EgressPolicyPane({ organizationId, workspaceId, adapter }) {
+export function EgressPolicyPane(props) {
+  const identity = props.organizationId && props.workspaceId
+    ? JSON.stringify([props.organizationId, props.workspaceId]) : "session-resolved";
+  return <EgressPolicyPaneInner key={identity} {...props} />;
+}
+
+export function EgressPolicyPaneInner({ organizationId, workspaceId, adapter }) {
   const [state, dispatch] = useReducer(
     egressPolicyReducer, undefined, () => egressPolicyReducer(undefined, { type: "init" }),
   );
   const passwordRef = useRef(null);
   const [context, setContext] = useState({ organizationId, workspaceId });
-  async function refresh() {
+  const [activeScope, setActiveScope] = useState("organization");
+  const mountedRef = useRef(false);
+  const epochRef = useRef(0);
+  const abortRef = useRef(null);
+  const contextRef = useRef({ organizationId, workspaceId });
+  const scopeRef = useRef("organization");
+  function beginOperation() {
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    return { epoch: ++epochRef.current, signal: abortRef.current.signal };
+  }
+  function isCurrent(snapshot) {
+    return mountedRef.current && epochRef.current === snapshot.epoch
+      && scopeRef.current === snapshot.scope
+      && contextRef.current.organizationId === snapshot.context.organizationId
+      && contextRef.current.workspaceId === snapshot.context.workspaceId;
+  }
+  async function loadPolicy(initialContext, scope, operation) {
     dispatch({ type: "loading" });
     try {
-      let active = context;
+      let active = initialContext;
       if (!active.organizationId || !active.workspaceId) {
-        const resolved = await adapter.loadContext();
+        const resolved = await adapter.loadContext({ signal: operation.signal });
+        if (!mountedRef.current || epochRef.current !== operation.epoch || scopeRef.current !== scope) return;
         active = {
           organizationId: resolved.data.organization_id,
           workspaceId: resolved.data.workspace_id,
         };
+        contextRef.current = active;
         setContext(active);
       }
-      const view = await adapter.load({ workspaceId: active.workspaceId });
-      dispatch({ type: "loaded", data: { ...view.data, editable_scope: "organization", etag: view.etag } });
-    } catch (error) { dispatch({ type: "failed", code: error.message }); }
+      const snapshot = { epoch: operation.epoch, context: active, scope };
+      const view = await adapter.load({ workspaceId: active.workspaceId, signal: operation.signal });
+      if (!isCurrent(snapshot)) return;
+      dispatch({ type: "loaded", data: { ...view.data, editable_scope: scope, etag: view.etag } });
+    } catch (error) {
+      const snapshot = { epoch: operation.epoch, context: contextRef.current, scope };
+      if (error?.name !== "AbortError" && isCurrent(snapshot)) {
+        dispatch({ type: "failed", code: error.message });
+      }
+    }
   }
-  useEffect(() => { void refresh(); }, [workspaceId]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      epochRef.current += 1;
+      abortRef.current?.abort();
+    };
+  }, []);
+  useEffect(() => {
+    const nextContext = { organizationId, workspaceId };
+    contextRef.current = nextContext;
+    scopeRef.current = "organization";
+    setContext(nextContext);
+    setActiveScope("organization");
+    dispatch({ type: "context_loading" });
+    const operation = beginOperation();
+    void loadPolicy(nextContext, "organization", operation);
+    return () => operation.signal.aborted || abortRef.current?.abort();
+  }, [organizationId, workspaceId, adapter]);
+  function refresh() {
+    const operation = beginOperation();
+    void loadPolicy(contextRef.current, scopeRef.current, operation);
+  }
+  function selectScope(scope) {
+    if (state.status === "saving") return;
+    if (passwordRef.current) passwordRef.current.value = "";
+    beginOperation();
+    scopeRef.current = scope;
+    setActiveScope(scope);
+    dispatch({ type: "loaded", data: { ...state.effective, editable_scope: scope } });
+  }
   async function save(event) {
     event.preventDefault();
-    const sensitive = { currentPassword: passwordRef.current?.value || "", stepUpAuthorization: null };
+    const passwordElement = passwordRef.current;
+    const sensitive = { currentPassword: passwordElement?.value || "", stepUpAuthorization: null };
+    const operation = beginOperation();
+    const snapshot = { epoch: operation.epoch, context: { ...contextRef.current }, scope: scopeRef.current };
     dispatch({ type: "saving" });
     try {
-      await adapter.save({ organizationId: context.organizationId, workspaceId: context.workspaceId, etag: state.effective.organization_etag,
-        idempotencyKey: crypto.randomUUID(), draft: state.draft, sensitive });
-      if (passwordRef.current) passwordRef.current.value = "";
-      await refresh();
+      const savePolicy = snapshot.scope === "organization"
+        ? adapter.saveOrganization : adapter.saveWorkspace;
+      await savePolicy({
+        organizationId: snapshot.context.organizationId, workspaceId: snapshot.context.workspaceId,
+        etag: snapshot.scope === "organization"
+          ? state.effective.organization_etag : state.effective.workspace_etag,
+        idempotencyKey: crypto.randomUUID(), draft: state.draft, sensitive,
+        signal: operation.signal,
+      });
+      if (!isCurrent(snapshot)) return;
+      const view = await adapter.load({ workspaceId: snapshot.context.workspaceId, signal: operation.signal });
+      if (!isCurrent(snapshot)) return;
+      dispatch({ type: "loaded", data: { ...view.data, editable_scope: snapshot.scope, etag: view.etag } });
     } catch (error) {
-      if (passwordRef.current) passwordRef.current.value = "";
-      dispatch({ type: "failed", code: error.message });
+      if (error?.name !== "AbortError" && isCurrent(snapshot)) {
+        dispatch({ type: "failed", code: error.message });
+      }
+    } finally {
+      if (passwordElement) passwordElement.value = "";
     }
   }
   if (!state.effective && state.errorCode) return <section className="egress-policy-pane"><p role="alert">정책을 불러오지 못했습니다. ({state.errorCode})</p><button type="button" onClick={refresh}>다시 시도</button></section>;
   if (!state.effective) return <p role="status">Egress 정책을 불러오는 중입니다.</p>;
   return <section className="egress-policy-pane" aria-labelledby="egress-policy-title">
     <header><h1 id="egress-policy-title">외부 전송 정책</h1><button type="button" className="info-button" title="조직 정책은 Workspace보다 우선하며 완화할 수 없습니다." aria-label="외부 전송 정책 설명">i</button></header>
-    <p role="status">현재 정책: {state.effective.mode === "deny_external" ? "외부 전송 차단" : "승인된 외부 전송 허용"}</p>
+    <p role="status">최종 effective 정책: {state.effective.mode === "deny_external" ? "외부 전송 차단" : "승인된 외부 전송 허용"}</p>
     {state.effective.parent_locked ? <p className="policy-lock" role="note">조직 차단 정책이 적용되어 Workspace에서 완화할 수 없습니다.</p> : null}
-    <form onSubmit={save}>
+    <nav aria-label="정책 적용 단계">
+      <button type="button" disabled={state.status === "saving"} aria-pressed={activeScope === "organization"} onClick={() => selectScope("organization")}>1. 조직 정책</button>
+      <button type="button" disabled={state.status === "saving"} aria-pressed={activeScope === "workspace"} onClick={() => selectScope("workspace")}>2. Workspace 정책</button>
+    </nav>
+    <p>{activeScope === "organization" ? "조직 정책을 별도로 저장합니다." : "Workspace 정책을 별도로 저장합니다."}</p>
+    <form key={JSON.stringify([context.organizationId, context.workspaceId, activeScope])} onSubmit={save}>
       <label>정책 모드<select value={state.draft.mode} onChange={(event) => dispatch({ type: "drafted", draft: createEgressPolicyDraft({ ...state.draft, mode: event.target.value }) })}>
         <option value="deny_external">외부 전송 차단</option><option value="allow_approved_external" disabled={state.effective.parent_locked && state.effective.editable_scope !== "organization"}>승인된 외부 전송 허용</option>
       </select></label>

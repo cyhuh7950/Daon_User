@@ -83,3 +83,70 @@
 - 커밋 `689be84aeeda9655968badecc1ff2dd48ea50a95`를 원격 브랜치에 Push하고 ysna-server Daon 전용 Web만 재빌드·재기동했다. 서버 HEAD=동일 SHA, Web health=`healthy`이다.
 - 실제 `https://daon-user.sinsan.kr/settings/manual`에서 Release `1.0.0`, 업데이트 `2026-08-20`, 세 문서 목록, 최신 사용자 설명서 본문과 console warn/error0을 확인했다. PDF는 HTTP 200, `application/pdf`, `177756 bytes`였다.
 - 보호 dirty/untracked는 stage/restore/delete0, API·DB·공용 서비스 변경0이다. 제품 전체 Source→외부 Provider→Citation→Studio E2E는 외부전송 정책의 명시 승인 전까지 여전히 NOT_RUN이며 완료로 주장하지 않는다.
+
+## 2026-08-21 어울2 실제 제품 E2E 재개 · 착수/preflight
+
+- 신산님이 고지된 제한적 외부전송 범위의 실제 제품 Gate 진행을 승인했다. 대표 Provider는 `UPSTAGE` 하나로 고정하고 자동 fallback은 0으로 유지한다.
+- 정본 Root=`C:/Users/cyhuh/Desktop/D Driver/Project/Daon_User`, Branch=`codex/user-auth-screen-split`, origin=`git@github-cyhuh7950:cyhuh7950/Daon_User.git`, HEAD=`7ed4132522277e5332a01eb95ee375bb34f1c1eb`, staged=0이다.
+- 정본 SHA-256: AGENTS `aabb11177ea7541b62c0ad6e6ab2fd745fcd4aded72a25df98522fc8e41b47ea`; 설계 `28b8694bd4cd88b62a0c157e83c5b676909c0d07c12a05772a143b8c432b12c8`; 계획 `0e25248b094c603e3142a4640dfdeeaaba1841fc8a4b057126bbe1a04e35bac7`; Work Order `432610b5f1fc209b8524209475788664bc9f02f12cc95920a94665a3d374aae4`; Prompt `18dea75e88aa9d4d84e9e69d71c893b90bb2964318e44c0afdbfe4be730dfbc3`.
+- 로컬 dirty는 승인된 제품 commit 밖의 Mobile/model-connections 삭제, R1-M5·Windows recovery·기타 untracked 보호 자산뿐이다. restore/delete/stage/commit/push0을 유지한다.
+- ysna-server 배포 Root는 detached HEAD `689be84aeeda9655968badecc1ff2dd48ea50a95`, origin HTTPS, tracked dirty0이고 `backups/`, `secrets/` untracked 보호 자산이 있다. API/Web은 healthy, document-worker running, object-storage healthy다.
+- 다음: API image가 제품 commit과 일치하는지, Provider 설정 boolean·effective egress policy·제품 DB 상태를 secret-free read-only로 확인한다. 차이가 있을 때만 Daon 전용 서비스 갱신 또는 공식 policy version 적용을 수행한다.
+
+## 2026-08-21 어울2 실제 제품 E2E · 서버/정책 preflight
+
+- ysna-server API의 `runtime.py`, Question service/repository bytes는 배포 commit `689be84aeeda9655968badecc1ff2dd48ea50a95`와 일치했다. API `/health/live`, `/health/ready`, Web health는 정상이다. 최신 제품 API/Web을 다시 배포할 필요가 없어 배포 변경은 0이다.
+- 운영 DB read-only inventory는 대상 Workspace 1, Notebook 1, Source 0이다. 기존 사용자/운영 Source를 읽거나 삭제하지 않았다.
+- Provider projection은 `UPSTAGE / external_api / active`, text role=`solar-pro4`이다. GROQ/MISTRAL을 선택하거나 fallback하지 않았고, 이 단계의 Provider 호출은 0이다.
+- effective policy read-only 결과는 Workspace version 1 `deny_external / restricted / max_bytes=0 / masking=true / redaction=true / provider kinds=[] / destinations=[]`이다. 이는 이번에 승인된 `allow_approved_external / internal / max_bytes=1048576 / masking+redaction / api.upstage.ai exact` 범위와 다르므로 fail-close 상태가 정상 유지되고 있다.
+- 첫 정책 조회는 추정 테이블명 불일치, 두 번째는 PostgreSQL 문자열 결합 연산자 우선순위 때문에 실패했다. migration/repository 정본으로 실제 table/column을 확인한 뒤 JSON 필드를 subquery로 투영하여 read-only 조회를 성공시켰다. 각 실패의 DB write·외부 호출은 0이다.
+- 공식 Chrome 인증 세션에서 `/notebooks`와 선택 Notebook 3열을 실제 확인했다. Source 0, Library 0이며 설정의 LLM 화면은 UPSTAGE 활성·credential configured·connection unverified를 표시했다. Browser 요청은 `/bff/api/...` same-origin이었다.
+- 정식 `/settings/organization` 화면에는 정책 필드와 현재 비밀번호 Step-up 입력이 있으나 organization version 저장만 지원한다. 정책 합성 정본상 organization 또는 workspace 중 하나라도 deny이면 effective deny이며, 운영 DB의 workspace deny도 별도 활성 상태다. 기존 workspace policy API는 있으나 Web save adapter/UI는 없다.
+- 현재 blocker: 승인 policy를 실제 적용하려면 사용자 현재 비밀번호 Step-up과 organization/workspace 두 scope의 정식 저장 경계가 모두 필요하다. Credential을 읽거나 추측하지 않았고 임의 DB update·우회 endpoint·정책 write는 0이다. 기존 API/security 계약을 재사용하는 최소 Workspace policy UI 제공 여부를 어울1 판단 경계로 보고했다.
+
+## 2026-08-21 어울1 기술 판단 · 2단계 Policy UI 승인
+
+- 기존 공개 API·데이터·보안 계약 변경0인 내부 UI 조립으로 진행한다. `/settings/organization`에서 organization과 workspace policy를 별도 단계·별도 명시 저장하며 각 단계는 기존 Step-up을 사용한다.
+- 한 화면에 두 비밀번호를 보관하지 않고 활성 단계의 단일 uncontrolled ref만 사용한다. 요청 성공·실패 후 비밀번호와 Step-up authorization은 즉시 비우며, organization 성공을 workspace 성공으로 표시하지 않는다.
+- 양쪽 적용 후 effective projection이 승인 범위와 exact 일치하기 전에는 Provider 호출0을 유지한다. Browser는 same-origin BFF만 사용한다.
+
+## 2026-08-21 어울2 TDD · 2단계 Policy UI/Runtime
+
+- RED 1: Web adapter에 `saveWorkspaceEgressPolicy` export가 없어 focused Node가 module import 단계에서 실패했다.
+- RED 2: 기존 `POST /api/v1/workspaces/{id}/egress-policy-versions`가 DTO에 존재하지 않는 `body.workspace_id`를 접근해 AttributeError 500을 반환했다. 공개 DTO는 이미 extra-forbid이며 path `id`가 canonical scope이므로, 존재하지 않는 접근만 제거했다.
+- GREEN: Web은 기존 Step-up helper를 organization/workspace scope에 공용화하고 각각 `/bff/api/organizations/{id}/egress-policy-versions`, `/bff/api/workspaces/{id}/egress-policy-versions` 상대 경로를 사용한다. 비밀번호·Step-up은 `finally`에서 지운다.
+- GREEN: 설정 Pane은 `1. 조직 정책`과 `2. Workspace 정책`을 단일 활성 단계로 제공한다. DOM에는 현재 단계 비밀번호 입력 하나만 존재하고 단계 전환 시 즉시 비운다. 각 단계는 자신의 ETag와 저장 함수를 사용하며 최종 effective 상태를 별도로 표시한다.
+- focused 결과: Egress Web/BFF/React `6/6 PASS`, Runtime HTTP `1/1 PASS`. Runtime test는 Workspace endpoint의 201/scope_type과 기존 organization 권한 거부·write count를 함께 검증했다.
+- 변경 파일: 승인 설계/계획/Work Order/Progress, `services/api/src/daon_user_api/runtime.py`, Runtime test, `apps/web/lib/egress-policy-api.js`, 설정 page, `packages/ui/src/egress-policy-pane.jsx`, Web tests. 외부 정책 write·Provider 호출은 여전히 0이다.
+
+## 2026-08-21 어울2 배포 전 마감
+
+- fresh Egress 전체 API `10/10 PASS`; Web/BFF/React focused `6/6 PASS`; Web production build·TypeScript·12 routes·product boundary `391 files / violations0`; lint 3 files; OpenAPI `75 paths / 94 operations / 120 schemas / 31 errors` exact PASS다.
+- 확대 Node glob의 1 RED는 별도 과거 Issue `R1-M8-09-EGRESS-POLICY-C01` manifest가 현재 HEAD의 `question_egress.py` hash를 반영하지 못한 pre-existing Evidence 정합성이다. 현재 정책 UI/Runtime 기능 테스트 6건은 모두 GREEN이며, 과거 Evidence와 현재 변경 범위 밖 파일을 수정하지 않았다.
+- 보안 scan에서 Browser 절대주소·localhost0을 확인했다. `password`와 Step-up 표기는 정식 same-origin 요청 body 생성, 단일 password ref 및 `finally` clear 위치에만 존재하며 값·Credential·내부 URL 원문은 문서/Evidence/log에 0이다.
+- 어울1 지시에 따라 uncommitted source를 서버로 복사하거나 배포하지 않았다. 실제 policy write·Provider call·Source upload는 0이며, 현재 상태는 `PARTIAL / POLICY_UI_CODE_VERIFIED / POLICY_DEPLOY_AND_STEP_UP_PENDING / PRODUCT_E2E_NOT_RUN`이다.
+- 다음: 어울1이 diff와 테스트를 검토해 exact stage·commit·push 후 Daon 전용 API/Web만 배포한다. 배포 후에는 정식 UI의 현재 비밀번호 입력 직전 멈춰 사용자 Step-up을 요청하고, 양 scope effective 승인값을 확인한 뒤에만 실제 Provider/Source Gate를 재개한다.
+
+## 2026-08-21 독립 리뷰 재작업 1/2 · async context/Step-up exact
+
+- React RED 1: old Workspace load가 지연된 상태에서 props를 새 Workspace로 바꾸면 두 번째 load도 old Workspace ID를 사용했다. reverse resolve에서 이전 정책이 최신 DOM을 덮을 수 있었다.
+- React RED 2: save pending 중 조직·Workspace navigation control이 활성 상태였다. scope·draft·ETag가 분리될 경쟁 조건을 고정했다.
+- GREEN: organizationId/workspaceId/activeScope를 monotonic epoch와 exact snapshot에 결속했다. props·scope·unmount 변화는 epoch increment와 AbortSignal로 이전 load/save를 무효화하며, 각 await 뒤 최신 snapshot만 reducer/DOM을 갱신한다.
+- GREEN: 저장 중 두 scope navigation은 disabled다. context 변경으로 abort된 이전 save는 test adapter write0, 이전 `finally`는 keyed form의 새 password DOM을 지우지 않으며 stale success/catch/error/status도 최신 scope에 0이다. 조직↔Workspace 양방향 전환을 확인했다.
+- Runtime 보안 계약: organization/workspace 각각 기존 action group, exact target_id, operation, idempotency를 검증했다. ACL deny는 consume_step_up 0이며 wrong-target Step-up 실패는 safe `INVALID_REQUEST`, policy write0이다.
+- fresh 결과: Egress React/API/BFF `9/9 PASS`, Egress API `10/10 PASS`, lint 3 files, OpenAPI exact PASS, Web production build·TypeScript·12 routes·boundary `391/0` PASS. 외부 write·Provider call·deploy0이다.
+
+## 2026-08-21 독립 리뷰 재작업 2/2 · context safe reset
+
+- RED: context identity가 바뀌어도 reducer가 이전 `effective/draft/canSave`를 유지해 status=`ready`였다. 지연된 새 load 동안 이전 form/nav/password/정책 DOM이 상호작용 가능한 위험을 고정했다.
+- GREEN: prop context 변경 즉시 `context_loading`으로 effective/draft/canSave/error를 초기화하고 loading placeholder만 렌더한다. 새 load 성공 전 form/nav/password/submit/old policy text/interaction은 0이다. 같은 context의 scope 전환은 각 organization/workspace policy에서 draft를 새로 투영해 이전 draft를 폐기한다.
+- production adapter: Step-up response가 지연된 상태에서 context AbortSignal을 받으면 policy endpoint call0이며 sensitive password/token은 `finally` clear된다. 정책 POST가 이미 서버로 송신된 뒤에는 exact old snapshot write가 완료될 수 있고, client가 보증하는 것은 stale UI projection0이다. 서버의 ACL/ETag/Step-up/idempotency 검증은 그대로 유지한다.
+- focused Egress Node는 `11/11 PASS`다. 이전 epoch/Step-up exact·ACL-before-consume·wrong-target write0 테스트를 유지한다.
+
+## 2026-08-21 독립 리뷰 재작업 3 · first-commit identity
+
+- RED: 기존 Pane은 hook을 소유한 stateful component 자체여서 prop organization/workspace identity가 React key와 동기 결속되지 않았다. passive effect 전 첫 commit에서 이전 reducer/form이 재사용될 수 있었다. 별도 RED에서 settings context GET의 AbortSignal도 `undefined`였다.
+- GREEN: exported wrapper가 non-empty `[organizationId, workspaceId]`를 JSON tuple로 직렬화한 injective key로 stateful inner를 동기 remount한다. `("a:b", "c")`와 `("a", "b:c")`는 서로 다른 key임을 단위 테스트로 고정했다. prop 변경 render commit 순간 old reducer/password/form/nav/text가 재사용되지 않는다. empty props는 `session-resolved` key로 기존 session context resolution을 유지한다.
+- GREEN: `getOrganizationSettingsContext({signal})`은 same-origin `/bff/api/session` GET에 exact AbortSignal을 전달해 projection 차단뿐 아니라 read 자체도 취소한다.
+- 기존 monotonic epoch·AbortSignal·context_loading·Step-up exact 테스트는 유지했고 focused Egress Node는 `12/12 PASS`다.
+- fresh 종료 Gate: Egress API `10/10 PASS`, lint `4 files`, OpenAPI `75 paths / 94 operations / 120 schemas / 31 errors`, Web production build·TypeScript·12 routes·boundary `391/0` PASS. Evidence manifest `15 artifacts / mismatch0`, secret·internal URL scan0, `git diff --check` PASS, staged0이다.

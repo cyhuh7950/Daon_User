@@ -3724,8 +3724,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
-        if body.workspace_id not in {None, id}:
-            raise EgressPolicyError("EGRESS_POLICY_SCOPE_MISMATCH")
         return await create_egress_policy_version(
             scope_type="workspace", scope_id=id, workspace_id=id,
             body=body, request=request, if_match=if_match, idempotency_key=idempotency_key,
