@@ -16,9 +16,14 @@ from .object_queue import ObjectKeyPolicy, ObjectQueueError, ObjectStorageError
 
 
 class PostgresStudioWorkspaceRepository:
-    def __init__(self, cloud_store, object_storage=None) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, cloud_store, object_storage=None, creation_enforcer=None) -> None:  # type: ignore[no-untyped-def]
         self._cloud_store = cloud_store
         self._object_storage = object_storage
+        self._creation_enforcer = creation_enforcer
+
+    @property
+    def creation_license_authoritative(self) -> bool:
+        return self._creation_enforcer is not None
 
     @staticmethod
     def _policy_projection(connection, context: StudioContext, *, run_id: str | None = None) -> dict[str, object]:
@@ -248,6 +253,7 @@ class PostgresStudioWorkspaceRepository:
         if self._cloud_store is None:
             raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503)
         request_payload = {
+            "notebook_id": context.notebook_id,
             "output_type": request.output_type, "source_id": request.source_id,
             "source_version_ids": list(request.source_version_ids), "run_id": request.run_id,
             "run_result_id": request.run_result_id, "purpose": request.purpose, "audience": request.audience,
@@ -264,6 +270,30 @@ class PostgresStudioWorkspaceRepository:
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None:
                     return replay, True
+                if context.notebook_id is None:
+                    raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
+                source_count = connection.execute(
+                    "SELECT count(*) FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s "
+                    "AND notebook_id=%s AND binding_kind='source' AND version_id=ANY(%s)",
+                    (
+                        context.tenant_id, context.workspace_id, context.notebook_id,
+                        list(request.source_version_ids),
+                    ),
+                ).fetchone()
+                run_bound = connection.execute(
+                    "SELECT 1 FROM runs r JOIN notebook_bindings nb ON nb.tenant_id=r.tenant_id "
+                    "AND nb.workspace_id=r.workspace_id AND nb.binding_kind='conversation_thread' "
+                    "AND nb.record_id=r.conversation_id WHERE r.tenant_id=%s AND r.workspace_id=%s "
+                    "AND r.record_id=%s AND nb.notebook_id=%s",
+                    (context.tenant_id, context.workspace_id, request.run_id, context.notebook_id),
+                ).fetchone()
+                if source_count is None or int(source_count[0]) != len(set(request.source_version_ids)) or run_bound is None:
+                    raise StudioError("NOTEBOOK_SCOPE_MISMATCH", 409)
+                if self._creation_enforcer is not None:
+                    self._creation_enforcer(
+                        connection, context.tenant_id, "studio.generate",
+                        {"generation_runs": 1, "studio_outputs": 1},
+                    )
                 projection = self._policy_projection(connection, context, run_id=request.run_id)
                 if projection["review_condition"] != request.review_condition:
                     raise StudioError("POLICY_PROJECTION_MISMATCH", 409)
@@ -309,6 +339,24 @@ class PostgresStudioWorkspaceRepository:
                     citation_payload = dict(cast(Mapping[str, object], row[3]))
                     evidence_id = self._opaque("evidence-reference", *scope, str(row[0]))
                     self._insert(connection, context, "evidence_references", evidence_id, {"citation_id": str(row[0]), "source_version_id": str(row[1]), "evidence_span_id": str(row[2]), **citation_payload}, extra_columns=("output_version_id", "source_version_id", "evidence_span_id"), extra_values=(version_id, str(row[1]), str(row[2])))
+                connection.execute(
+                    "WITH inserted AS (INSERT INTO notebook_bindings "
+                    "(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) VALUES "
+                    "(%s,%s,%s,'generation_settings',%s,NULL,%s,now()),"
+                    "(%s,%s,%s,'studio_output',%s,NULL,%s,now()),"
+                    "(%s,%s,%s,'output_version',%s,NULL,%s,now()) ON CONFLICT DO NOTHING RETURNING 1) "
+                    "INSERT INTO notebook_activities (tenant_id,workspace_id,notebook_id,sequence,activity_kind,actor_id,occurred_at) "
+                    "SELECT %s,%s,%s,coalesce((SELECT max(sequence) FROM notebook_activities WHERE "
+                    "tenant_id=%s AND workspace_id=%s AND notebook_id=%s),0)+1,'context_bound',%s,now() "
+                    "WHERE EXISTS (SELECT 1 FROM inserted)",
+                    (
+                        context.tenant_id, context.workspace_id, context.notebook_id, settings_id, context.actor_id,
+                        context.tenant_id, context.workspace_id, context.notebook_id, output_id, context.actor_id,
+                        context.tenant_id, context.workspace_id, context.notebook_id, version_id, context.actor_id,
+                        context.tenant_id, context.workspace_id, context.notebook_id,
+                        context.tenant_id, context.workspace_id, context.notebook_id, context.actor_id,
+                    ),
+                )
                 result = {"studio_output_id": output_id, "output_version_id": version_id, "output_type": request.output_type, "title": request.purpose, "status": "draft", "content": content, "settings_snapshot_id": settings_id, "citations": citation_payloads}
                 self._finish(connection, context, operation, idempotency_key, fingerprint, result, "StudioOutput", output_id)
                 return result, False
@@ -323,9 +371,16 @@ class PostgresStudioWorkspaceRepository:
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.read")) as connection:
                 projection = self._policy_projection(connection, context)
+                if context.notebook_id is None:
+                    raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
                 rows = connection.execute(
-                    "SELECT so.record_id,so.canonical_json,ov.record_id,ov.state,ov.canonical_json FROM studio_outputs so JOIN LATERAL (SELECT record_id,state,canonical_json FROM output_versions WHERE tenant_id=so.tenant_id AND workspace_id=so.workspace_id AND studio_output_id=so.record_id ORDER BY content_version DESC LIMIT 1) ov ON true WHERE so.tenant_id=%s AND so.workspace_id=%s ORDER BY so.created_at DESC",
-                    (context.tenant_id, context.workspace_id),
+                    "SELECT so.record_id,so.canonical_json,ov.record_id,ov.state,ov.canonical_json FROM studio_outputs so "
+                    "JOIN notebook_bindings nb ON nb.tenant_id=so.tenant_id AND nb.workspace_id=so.workspace_id "
+                    "AND nb.binding_kind='studio_output' AND nb.record_id=so.record_id AND nb.notebook_id=%s "
+                    "JOIN LATERAL (SELECT record_id,state,canonical_json FROM output_versions WHERE tenant_id=so.tenant_id "
+                    "AND workspace_id=so.workspace_id AND studio_output_id=so.record_id ORDER BY content_version DESC LIMIT 1) ov ON true "
+                    "WHERE so.tenant_id=%s AND so.workspace_id=%s ORDER BY so.created_at DESC",
+                    (context.notebook_id, context.tenant_id, context.workspace_id),
                 ).fetchall()
         except CloudDatabaseError as error:
             raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503) from error
@@ -336,6 +391,8 @@ class PostgresStudioWorkspaceRepository:
             raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.read")) as connection:
+                if context.notebook_id is None:
+                    raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
                 rows = connection.execute(
                     "SELECT ov.record_id,ov.content_version,ov.previous_version_id,ov.state,ov.canonical_json,ov.generation_settings_snapshot_id,"
                     "COALESCE((SELECT jsonb_agg(er.canonical_json || jsonb_build_object('citation_id',er.canonical_json->>'citation_id','source_version_id',er.source_version_id,'evidence_span_id',er.evidence_span_id) ORDER BY er.record_id) FROM evidence_references er WHERE er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id),'[]'::jsonb),"
@@ -345,8 +402,11 @@ class PostgresStudioWorkspaceRepository:
                     "(SELECT record_id FROM deliveries WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
                     "(SELECT record_id FROM knowledge_registrations WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id AND state='registered' ORDER BY created_at DESC,record_id DESC LIMIT 1) "
                     "FROM output_versions ov JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id AND so.record_id=ov.studio_output_id "
-                    "WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s ORDER BY ov.content_version DESC,ov.record_id DESC",
-                    (context.tenant_id, context.workspace_id, output_id),
+                    "WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s "
+                    "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=ov.tenant_id "
+                    "AND nb.workspace_id=ov.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='studio_output' "
+                    "AND nb.record_id=ov.studio_output_id) ORDER BY ov.content_version DESC,ov.record_id DESC",
+                    (context.tenant_id, context.workspace_id, output_id, context.notebook_id),
                 ).fetchall()
                 if not rows:
                     raise StudioError("RESOURCE_UNAVAILABLE", 404)
@@ -397,9 +457,15 @@ class PostgresStudioWorkspaceRepository:
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("|".join(scope),))
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None: return replay, True
+                if context.notebook_id is None:
+                    raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
                 previous = connection.execute(
-                    "SELECT aggregate_id,content_version,generation_settings_snapshot_id,canonical_json,state FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND studio_output_id=%s AND record_id=%s",
-                    (context.tenant_id, context.workspace_id, output_id, revision["previous_version_id"]),
+                    "SELECT aggregate_id,content_version,generation_settings_snapshot_id,canonical_json,state FROM output_versions "
+                    "WHERE tenant_id=%s AND workspace_id=%s AND studio_output_id=%s AND record_id=%s "
+                    "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=output_versions.tenant_id "
+                    "AND nb.workspace_id=output_versions.workspace_id AND nb.notebook_id=%s "
+                    "AND nb.binding_kind='output_version' AND nb.record_id=output_versions.record_id)",
+                    (context.tenant_id, context.workspace_id, output_id, revision["previous_version_id"], context.notebook_id),
                 ).fetchone()
                 if previous is None: raise StudioError("RESOURCE_UNAVAILABLE", 404)
                 version_id = self._opaque("output-version", *scope)
@@ -464,6 +530,11 @@ class PostgresStudioWorkspaceRepository:
                     (context.tenant_id, context.workspace_id, version_id, str(previous[0]), next_version, revision["previous_version_id"], Jsonb(payload), text, hashlib.sha256(text.encode()).hexdigest(), context.actor_id, context.trace_id, output_id, settings_id),
                 )
                 self._transition(connection, context, "OutputVersion", version_id, 1, "draft", self._opaque("transition", *scope, "draft"))
+                connection.execute(
+                    "INSERT INTO notebook_bindings (tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) "
+                    "VALUES (%s,%s,%s,'output_version',%s,NULL,%s,now()) ON CONFLICT DO NOTHING",
+                    (context.tenant_id, context.workspace_id, context.notebook_id, version_id, context.actor_id),
+                )
                 for row in generated_citations:
                     evidence_id = self._opaque("evidence-reference", *scope, str(row[0]))
                     prior_payload = dict(cast(Mapping[str, object], row[3]))
@@ -485,7 +556,15 @@ class PostgresStudioWorkspaceRepository:
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("|".join(scope),))
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None: return replay, True
-                version = connection.execute("SELECT state,version FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s", (context.tenant_id, context.workspace_id, clean["output_version_id"])).fetchone()
+                if context.notebook_id is None:
+                    raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
+                version = connection.execute(
+                    "SELECT state,version FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s "
+                    "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=output_versions.tenant_id "
+                    "AND nb.workspace_id=output_versions.workspace_id AND nb.notebook_id=%s "
+                    "AND nb.binding_kind='output_version' AND nb.record_id=output_versions.record_id)",
+                    (context.tenant_id, context.workspace_id, clean["output_version_id"], context.notebook_id),
+                ).fetchone()
                 if version is None: raise StudioError("RESOURCE_UNAVAILABLE", 404)
                 if action in {"delivery", "knowledge_registration"} and str(version[0]) != "approved": raise StudioError("APPROVAL_REQUIRED", 409)
                 record_id = self._opaque(action.replace("_", "-"), *scope)
@@ -600,11 +679,12 @@ class PostgresStudioWorkspaceRepository:
 
     def export_output(self, context: StudioContext, output_id: str, version_id: str, format_name: str):
         if self._cloud_store is None: raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503)
+        if context.notebook_id is None: raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.export")) as connection:
                 row = connection.execute(
-                    "SELECT ov.canonical_json,ov.created_at,count(er.record_id),ov.state FROM output_versions ov JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id AND so.record_id=ov.studio_output_id LEFT JOIN evidence_references er ON er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s AND ov.record_id=%s GROUP BY ov.canonical_json,ov.created_at,ov.state",
-                    (context.tenant_id, context.workspace_id, output_id, version_id),
+                    "SELECT ov.canonical_json,ov.created_at,count(er.record_id),ov.state FROM output_versions ov JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id AND so.record_id=ov.studio_output_id LEFT JOIN evidence_references er ON er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s AND ov.record_id=%s AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=ov.tenant_id AND nb.workspace_id=ov.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='output_version' AND nb.record_id=ov.record_id) GROUP BY ov.canonical_json,ov.created_at,ov.state",
+                    (context.tenant_id, context.workspace_id, output_id, version_id, context.notebook_id),
                 ).fetchone()
                 if row is None: raise StudioError("RESOURCE_UNAVAILABLE", 404)
                 if str(row[3]) != "approved": raise StudioError("APPROVAL_REQUIRED", 409)

@@ -13,6 +13,7 @@ const REQUEST_HEADERS = new Set([
   "traceparent",
   "x-trace-id",
   "x-source-filename",
+  "x-notebook-id",
 ]);
 const RESPONSE_HEADERS = new Set([
   "cache-control",
@@ -59,7 +60,7 @@ const PROVIDER_CODES = new Set([
   "ANTHROPIC", "CEREBRAS", "GEMINI", "GROQ", "MISTRAL", "OLLAMA",
   "OPENAI", "OPENROUTER", "UPSTAGE",
 ]);
-const STUDIO_QUERY = new Set(["workspace_id"]);
+const STUDIO_QUERY = new Set(["workspace_id", "notebook_id"]);
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
 const GROUNDED_QUESTION_TIMEOUT_MS = 100_000;
 
@@ -124,6 +125,70 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (
+    segments.length === 4 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio"
+    && segments[3] === "reports"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/reports`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio"
+    && segments[3] === "outputs"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/outputs`, query: new Set(["notebook_id"]) }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks"
+    && SAFE_SEGMENT.test(segments[3]) && segments[4] === "context"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/context`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks"
+  ) {
+    return new Set(["GET", "POST"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3])
+  ) {
+    return new Set(["GET", "PATCH"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "license"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/license`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "organizations"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "license"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/organizations/${encodeURIComponent(segments[1])}/license`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "preferences" && segments[1] === "screen") {
+    return new Set(["GET", "PUT"]).has(method)
+      ? { path: "/api/v1/preferences/screen", query: null }
+      : { methodRejected: true };
+  }
   if (segments.length === 2 && segments[0] === "session" && segments[1] === "step-up") {
     return method === "POST" ? { path: "/api/v1/session/step-up", query: null } : { methodRejected: true };
   }
@@ -247,7 +312,7 @@ function routeFor(method, segments) {
     return method === "GET"
       ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`,
-          query: null,
+          query: new Set(["notebook_id"]),
         }
       : { methodRejected: true };
   }
@@ -261,7 +326,7 @@ function routeFor(method, segments) {
     return method === "GET"
       ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/processing-runs/${encodeURIComponent(segments[3])}`,
-          query: null,
+          query: new Set(["notebook_id"]),
         }
       : { methodRejected: true };
   }
@@ -272,7 +337,7 @@ function routeFor(method, segments) {
     && segments[2] === "sources"
   ) {
     if (method === "GET") {
-      return { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, query: null };
+      return { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, query: new Set(["notebook_id"]) };
     }
     return method === "POST" ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`,
@@ -366,6 +431,11 @@ function routeFor(method, segments) {
   if (segments.length === 1 && segments[0] === "session") {
     return method === "GET" ? { path: "/api/v1/session", query: null } : { methodRejected: true };
   }
+  if (segments.length === 2 && segments[0] === "session" && segments[1] === "logout") {
+    return method === "POST"
+      ? { path: "/api/v1/session/logout", query: null, currentSessionLogout: true }
+      : { methodRejected: true };
+  }
   if (segments.length === 1 && segments[0] === "access-decisions") {
     return method === "POST" ? { path: "/api/v1/access-decisions", query: null } : { methodRejected: true };
   }
@@ -444,7 +514,17 @@ function nativeRouteFor(method, segments, requestUrl) {
   if (!matched || matched.methodRejected) return matched;
 
   const incoming = new URL(requestUrl);
-  if (method === "GET" && segments.length === 1 && segments[0] === "backups") {
+  const notebookScopedRead = method === "GET" && (
+    (segments.length === 3 && segments[0] === "workspaces" && segments[2] === "sources")
+    || (segments.length === 4 && segments[0] === "workspaces" && segments[2] === "processing-runs")
+    || (segments.length === 5 && segments[0] === "workspaces" && segments[2] === "citations" && segments[4] === "content")
+    || (segments.length === 4 && segments[0] === "workspaces" && segments[2] === "studio" && segments[3] === "outputs")
+  );
+  if (notebookScopedRead) {
+    const entries = [...incoming.searchParams];
+    if (entries.length !== 1 || entries[0][0] !== "notebook_id" || !SAFE_SEGMENT.test(entries[0][1])) return null;
+    matched.query = new URLSearchParams([["notebook_id", entries[0][1]]]);
+  } else if (method === "GET" && segments.length === 1 && segments[0] === "backups") {
     const entries = [...incoming.searchParams];
     if (entries.length !== 1 || entries[0][0] !== "workspace_id" || !SAFE_SEGMENT.test(entries[0][1])) return null;
     matched.query = new URLSearchParams([["workspace_id", entries[0][1]]]);
@@ -542,6 +622,18 @@ function writeRequestIsSameOrigin(request, publicOrigin) {
   return !fetchSite || fetchSite === "same-origin";
 }
 
+function logoutRefererIsSameOrigin(request, publicOrigin) {
+  const referer = request.headers.get("referer");
+  if (!referer) return false;
+  try {
+    const expectedOrigin = publicOrigin?.origin ?? new URL(request.url).origin;
+    const parsed = new URL(referer);
+    return parsed.origin === expectedOrigin && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
 function createAbortScope(clientSignal, timeoutMs) {
   const controller = new AbortController();
   let cause = null;
@@ -617,6 +709,9 @@ export function createBffProxy({
     if (!writeRequestIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
     }
+    if (route.currentSessionLogout && !logoutRefererIsSameOrigin(request, publicOrigin)) {
+      return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
+    }
 
     const destination = new URL(route.path, baseUrl);
     if (route.query) {
@@ -638,6 +733,10 @@ export function createBffProxy({
     if (credential) headers.set("cookie", credential);
     headers.set("x-trace-id", trace);
     headers.set("x-daon-bff-transport", "internal");
+    if (route.currentSessionLogout) {
+      headers.set("x-daon-csrf-origin", publicOrigin?.origin ?? new URL(request.url).origin);
+      headers.set("x-daon-csrf-referer", request.headers.get("referer"));
+    }
 
     const init = { method: request.method, headers, redirect: "manual" };
     const abortScope = createAbortScope(

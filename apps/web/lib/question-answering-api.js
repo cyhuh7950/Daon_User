@@ -73,12 +73,16 @@ function knowledgeContextBody(value) {
   return { mode: value.mode, resources };
 }
 
-function questionSourceBody({ sourceId, sourceVersionId, knowledgeContext }) {
+function questionSourceBody({ sourceId, sourceVersionId, knowledgeContext, question }) {
   if (knowledgeContext) {
     if (sourceId || sourceVersionId) throw new Error("QUESTION_INPUT_INVALID");
     return { knowledge_context: knowledgeContextBody(knowledgeContext) };
   }
-  return { source_id: requiredId(sourceId), source_version_id: requiredId(sourceVersionId) };
+  if (sourceId || sourceVersionId) {
+    return { source_id: requiredId(sourceId), source_version_id: requiredId(sourceVersionId) };
+  }
+  if (isGeneralConversationIntent(question)) return {};
+  throw new Error("QUESTION_INPUT_INVALID");
 }
 
 function isGroundedAnswer(value) {
@@ -125,11 +129,12 @@ async function responseData(response) {
 
 export async function askGroundedQuestion(
   workspaceId,
-  { sourceId, sourceVersionId, knowledgeContext, question, stepUpAuthorizationId },
+  { notebookId, sourceId, sourceVersionId, knowledgeContext, question, stepUpAuthorizationId },
   { fetchImpl = fetch, idempotencyKey = crypto.randomUUID() } = {},
 ) {
   const workspace = requiredId(workspaceId);
-  const sourceBody = questionSourceBody({ sourceId, sourceVersionId, knowledgeContext });
+  const notebook = requiredId(notebookId);
+  const sourceBody = questionSourceBody({ sourceId, sourceVersionId, knowledgeContext, question });
   if (
     typeof question !== "string" || !question.trim()
     || question.length > 2_000 || !SAFE_ID.test(idempotencyKey)
@@ -145,7 +150,7 @@ export async function askGroundedQuestion(
         "Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify({
-        ...sourceBody, question: question.trim(),
+        notebook_id: notebook, ...sourceBody, question: question.trim(),
         ...(stepUpAuthorizationId ? { step_up_authorization_id: requiredId(stepUpAuthorizationId) } : {}),
       }),
     },
@@ -154,10 +159,11 @@ export async function askGroundedQuestion(
 }
 
 export async function authorizeGroundedQuestion(
-  workspaceId, { sourceId, sourceVersionId, knowledgeContext, question, password },
+  workspaceId, { notebookId, sourceId, sourceVersionId, knowledgeContext, question, password },
   { fetchImpl = fetch, idempotencyKey } = {},
 ) {
   const workspace = requiredId(workspaceId);
+  const notebook = requiredId(notebookId);
   if (!SAFE_ID.test(idempotencyKey || "") || typeof password !== "string" || !password) {
     throw new Error("QUESTION_AUTHORIZATION_INPUT_INVALID");
   }
@@ -166,7 +172,8 @@ export async function authorizeGroundedQuestion(
     { method: "POST", credentials: "same-origin", headers: {
       "Content-Type": "application/json", "Idempotency-Key": idempotencyKey,
     }, body: JSON.stringify({
-      ...questionSourceBody({ sourceId, sourceVersionId, knowledgeContext }),
+      notebook_id: notebook,
+      ...questionSourceBody({ sourceId, sourceVersionId, knowledgeContext, question }),
       question: question.trim(), password,
     }) },
   );
@@ -176,11 +183,13 @@ export async function authorizeGroundedQuestion(
   return payload.data;
 }
 
-export function citationContentUrl(workspaceId, citation) {
+export function citationContentUrl(workspaceId, citation, { notebookId } = {}) {
   const workspace = requiredId(workspaceId);
   const citationId = requiredId(citation?.citation_id);
+  const notebook = requiredId(notebookId);
   const page = Number(citation?.page);
   if (!Number.isSafeInteger(page) || page < 1) throw new Error("CITATION_INPUT_INVALID");
-  const base = `/bff/api/workspaces/${encodeURIComponent(workspace)}/citations/${encodeURIComponent(citationId)}/content`;
+  const base = `/bff/api/workspaces/${encodeURIComponent(workspace)}/citations/${encodeURIComponent(citationId)}/content?notebook_id=${encodeURIComponent(notebook)}`;
   return citation?.locator?.kind === "page" ? `${base}#page=${page}` : base;
 }
+import { isGeneralConversationIntent } from "../../../packages/ui/src/conversation-intent.js";

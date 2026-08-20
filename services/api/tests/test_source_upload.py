@@ -24,6 +24,7 @@ class PostgresSourceUploadServiceTests(unittest.TestCase):
         result = service.register_pdf(
             tenant_id="tenant-001",
             workspace_id="workspace-001",
+            notebook_id="notebook-001",
             actor_id="user-001",
             filename="fixture.pdf",
             content=b"%PDF-1.7\nfixture",
@@ -41,6 +42,10 @@ class PostgresSourceUploadServiceTests(unittest.TestCase):
         self.assertEqual(
             service._canon_store.register_uploaded_source.call_args.kwargs["digest_sha256"],  # type: ignore[attr-defined]
             result.digest_sha256,
+        )
+        self.assertEqual(
+            service._canon_store.register_uploaded_source.call_args.kwargs["notebook_id"],  # type: ignore[attr-defined]
+            "notebook-001",
         )
 
 

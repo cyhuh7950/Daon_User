@@ -92,6 +92,7 @@ Phase B 13개 메뉴가 완료된 현재 기준선에서 다음 세 메뉴를 �
 
 1. **설정 → 화면 설정**
    - 사용자 Preference Domain과 `system | light | dark` exact DTO를 먼저 고정한다.
+   - 권위 저장은 `0018 user_screen_preferences`의 tenant·actor scope와 FORCE RLS로 한정하며, Notebook 데이터 table/write path를 재사용하거나 추가하지 않는다.
    - Web same-origin Preference API와 Windows encrypted local projection을 분리하고 자동 Client 동기화는 하지 않는다.
    - OS Theme 변경, 초기 paint, Light/Dark token, reduced-motion, 화면 설정만 초기화, Notebook 데이터 write0을 검증한다.
    - 1920×1080 Light/Dark와 200% Zoom actual Browser/Desktop Gate를 수행한다.
@@ -122,11 +123,16 @@ Reference baseline은 NowNote `c3fdef73ef66dba2e7ff63f372cbd316fb5eb639`과 CGA 
 
 ### Phase E — 제품 조립과 로그인 최종 연결
 
-1. `Notebook 홈 → 선택 Notebook 3열 화면`을 먼저 연결하고 뒤로 가기·새로고침·직접 URL·Session 내 Workspace 전환을 검증한다.
-2. 독립 3열 Harness가 운영 Build·Route·Bundle에 포함되지 않음을 Boundary 검사로 고정한다.
-3. 마지막에 로그인 성공 Redirect를 `/notebooks` 홈으로 변경한다. 로그인 응답이 Workspace ID를 반환해도 임의 Notebook을 자동 선택하지 않는다.
-4. 비인증→로그인, 인증→Notebook 홈, Notebook 선택→3열, Session 만료→안전한 로그인 복귀를 actual Browser에서 검증한다.
-5. same-origin Network, Cookie/Token 비노출, ACL/RLS cross-workspace·cross-notebook read/write0, 로그아웃 후 Browser history 재진입 차단을 확인한다.
+1. `GET /api/v1/workspaces/{workspace_id}/notebooks/{notebook_id}/context`와 exact same-origin BFF를 추가하고, Source·Question·Studio read/write DTO에 canonical `notebook_id`를 필수로 결속한다. Context는 selected IDs와 현재 Conversation Thread의 safe answer/citations projection을 반환하며 별도 Conversation Route는 만들지 않는다. Question 성공 transaction은 Thread·answer/citations·Binding·Run/Audit을 원자 생성하고 replay duplicate0을 보장한다. 서버는 Tenant/Workspace/Notebook Binding membership을 검증하고 생성 Resource를 같은 Notebook에 원자 귀속한다. missing·invalid·mismatch와 cross-tenant/workspace/notebook은 fail-close하며 Workspace ID만으로 Notebook을 자동 선택하지 않는다.
+2. `Notebook 홈 → 선택 Notebook 3열 화면`을 먼저 연결하고 뒤로 가기·새로고침·직접 URL·Session 내 Workspace 전환을 검증한다.
+3. 독립 3열 Harness가 운영 Build·Route·Bundle에 포함되지 않음을 Boundary 검사로 고정한다.
+4. 마지막에 로그인 성공 Redirect를 `/notebooks` 홈으로 변경한다. 로그인 응답이 Workspace ID를 반환해도 임의 Notebook을 자동 선택하지 않는다.
+5. 비인증→로그인, 인증→Notebook 홈, Notebook 선택→3열, Session 만료→안전한 로그인 복귀를 actual Browser에서 검증한다.
+6. same-origin Network, Cookie/Token 비노출, ACL/RLS cross-workspace·cross-notebook read/write0, 로그아웃 후 Browser history 재진입 차단을 확인한다.
+7. Review1 Gate에서 Windows Native 7개 Source·Question·Studio transport의 exact Notebook scope와 rich Citation, Source/processing SQL-level Binding prefilter, Web exact projection을 검증한다.
+8. self logout outbox는 startup bounded recovery와 immutable DB guard를 갖추고, BFCache 보호 root는 `pagehide`에서 동기 은폐한 뒤 server Session 재검증 후에만 공개한다.
+9. disposable actual PostgreSQL DB/Role에서 exact non-skip test ID와 cleanup db0/role0을 secret-free Evidence로 결속한다.
+10. Windows production `main.jsx → DesktopShell`은 로그인 뒤 서버 권위 Notebook Home을 표시하고, 명시적으로 선택·재검증된 Notebook만 3열 Native Adapter에 전달한다. create/existing select/back/refresh/direct deep-link/history/workspace switch/expiry/logout을 실제 state machine과 Native wire로 검증하며 default·first·fixed Notebook 선택은 0이다.
 
 Phase E 통합 Gate 전까지 개발 검증은 로그인 조작을 요구하지 않는 독립 Harness를 사용한다. 하지만 해당 Harness PASS를 운영 인증 통합 PASS로 대체하지 않는다.
 
@@ -1325,3 +1331,9 @@ git commit -m "docs: record Windows Offline Studio verification"
 9. 로그인된 실제 Browser에서 기본·보고서 설정·LLM 설정·생성/완료 상태와 Source·질문·Studio 회귀, same-origin Network를 검증한다.
 
 이 완료 기록은 Task 1~8의 기존 산출물을 폐기하지 않는다. 이후에는 공통 모듈·공통 API를 먼저 검증하고 메뉴별 수직 기능으로 연결한다.
+
+---
+
+## 2026-08-20 Phase E Windows actual 후속 순서
+
+Phase E 코드 독립 검토는 `CODE_VERIFIED`로 종료했다. 다음 기능으로 이동하기 전에 별도 계획 `docs/superpowers/plans/2026-08-20-windows-webview-execution-recovery.md`를 수행한다. 순서는 실패 Ledger/성공 경로 대조 → 최소 Tauri Window/WebView smoke → 단일 root cause 교정 → 실제 Windows production flow → fresh 회귀·독립 검토다. 동일 실패 launch 반복과 기능 우회는 금지한다.

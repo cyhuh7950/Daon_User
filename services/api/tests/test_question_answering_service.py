@@ -12,6 +12,7 @@ from daon_user_api.question_answering_postgres import (
 )
 from daon_user_api.question_answering_service import (
     QuestionAdapterRegistry, QuestionAnsweringService, QuestionInputSource,
+    is_general_conversation_intent,
 )
 
 
@@ -41,6 +42,9 @@ class FakeRepository:
         self.completed = None
 
     def load_completed(self, context, run_id):  # type: ignore[no-untyped-def]
+        return self.completed
+
+    def load_completed_for_replay(self, context, run_id, request_fingerprint):  # type: ignore[no-untyped-def]
         return self.completed
 
     def load_ready_source(self, context, source_id, source_version_id):  # type: ignore[no-untyped-def]
@@ -92,6 +96,94 @@ class FakeEgress:
 
 
 class QuestionAnsweringServiceTests(unittest.TestCase):
+    def test_general_conversation_intent_is_exact_and_factual_suffix_fails_closed(self) -> None:
+        for value in ("안녕", "안녕하세요!", "안녕하세요?", "고마워", "감사합니다.", "Daon 사용법 알려줘"):
+            self.assertTrue(is_general_conversation_intent(value), value)
+        for value in (
+            "", "안녕, 삼성 매출 알려줘", "고마워. 이 문서를 요약해줘",
+            "2026년 매출은?", "이 Source 사용법을 근거로 알려줘",
+            "Ｄａｏｎ 사용법 알려줘", "안녕하세요！", "안녕하세요？", "안녕하세요　",
+        ):
+            self.assertFalse(is_general_conversation_intent(value), value)
+
+    def test_general_conversation_calls_selected_provider_without_source_or_citation(self) -> None:
+        class GeneralTransport(FakeTransport):
+            def post_json(self, **kwargs):  # type: ignore[no-untyped-def]
+                self.calls += 1
+                return {"choices": [{"message": {"content": json.dumps({
+                    "answer": "안녕하세요. 무엇을 도와드릴까요?",
+                }, ensure_ascii=False)}}]}
+
+        provider, repository, transport = FakeProviderSettings(), FakeRepository(), GeneralTransport()
+        service = QuestionAnsweringService(
+            provider, repository, FakeIndex(()), FakeCredential(), transport, FakeEgress(),
+        )
+
+        answer = service.ask(
+            QuestionContext(
+                "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1",
+                "notebook-cp3",
+            ),
+            source_id=None, source_version_id=None, question="안녕하세요!", run_id="run-general",
+        )
+
+        self.assertFalse(answer.insufficient)
+        self.assertEqual(answer.citations, ())
+        self.assertEqual(transport.calls, 1)
+        self.assertTrue(repository.persisted["provider_called"])
+        self.assertEqual(repository.persisted["context_mode"], "general_ungrounded")
+        self.assertEqual(repository.persisted["context_sources"], ())
+
+    def test_general_conversation_uses_the_exact_egress_transformed_payload(self) -> None:
+        class RecordingTransport(FakeTransport):
+            def __init__(self) -> None:
+                super().__init__()
+                self.payload = None
+
+            def post_json(self, **kwargs):  # type: ignore[no-untyped-def]
+                self.calls += 1
+                self.payload = kwargs["payload"]
+                return {"choices": [{"message": {"content": json.dumps({
+                    "answer": "안녕하세요.",
+                }, ensure_ascii=False)}}]}
+
+        class TransformingEgress(FakeEgress):
+            def __init__(self) -> None:
+                self.authorized_payload = None
+
+            def prepare_payload(self, context, provider_payload):  # type: ignore[no-untyped-def]
+                payload = json.loads(provider_payload)
+                payload["messages"][-1]["content"] = "[MASKED]"
+                return json.dumps(
+                    payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")
+
+            def authorize(self, context, **kwargs):  # type: ignore[no-untyped-def]
+                self.authorized_payload = kwargs["provider_payload"]
+                return super().authorize(context, **kwargs)
+
+        transport, egress = RecordingTransport(), TransformingEgress()
+        service = QuestionAnsweringService(
+            FakeProviderSettings(), FakeRepository(), FakeIndex(()), FakeCredential(),
+            transport, egress,
+        )
+
+        service.ask(
+            QuestionContext(
+                "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1",
+                "notebook-cp3",
+            ),
+            source_id=None, source_version_id=None, question="안녕하세요!", run_id="run-general",
+        )
+
+        self.assertEqual(transport.payload["messages"][-1]["content"], "[MASKED]")
+        self.assertEqual(
+            egress.authorized_payload,
+            json.dumps(
+                transport.payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8"),
+        )
+
     def test_mixed_context_searches_every_bound_source_and_persists_frozen_context(self) -> None:
         raw = IndexedEvidenceChunk(
             "chunk-raw", "source-raw", "version-raw", 1,

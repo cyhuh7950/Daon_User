@@ -29,7 +29,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
-from .audit import AuditEvent, AuditEventStore, AuditOutcome, AuditValidationError
+from .audit import (
+    ActorType, AuditEvent, AuditEventDraft, AuditEventStore, AuditOutcome,
+    AuditValidationError,
+)
 from .cloud_storage import PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .authorization import (
@@ -88,7 +91,7 @@ from .question_answering_postgres import (
 )
 from .question_answering_service import (
     QuestionAdapterRegistry, QuestionAnsweringError, QuestionAnsweringService,
-    QuestionInputSource,
+    QuestionInputSource, is_general_conversation_intent, question_request_fingerprint,
 )
 from .egress_policy import EgressPolicyService
 from .egress_policy import EgressPolicyContext, EgressPolicyError, EgressPolicyPayload
@@ -152,6 +155,23 @@ from .output_version_settings import (
     ReferenceOutputVersionSettingsRepository,
 )
 from .output_version_settings_postgres import PostgresOutputVersionSettingsRepository
+from .screen_preferences import (
+    ReferenceScreenPreferenceRepository,
+    ScreenPreferenceContext,
+    ScreenPreferenceError,
+    ScreenPreferenceService,
+)
+from .screen_preferences_postgres import PostgresScreenPreferenceRepository
+from .license import (
+    LicenseContext, LicenseError, LicenseService, ReferenceLicenseRepository,
+    RsaSha256LicenseVerifier, UnavailableLicenseVerifier, load_rsa_public_keys,
+)
+from .license_postgres import PostgresLicenseRepository, enforce_license_creation
+from .notebook import (
+    NotebookContext, NotebookError, NotebookHomeView, NotebookService,
+    ReferenceNotebookRepository,
+)
+from .notebook_postgres import PostgresNotebookRepository
 
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
@@ -184,6 +204,7 @@ class RuntimeSettings:
     object_secret_key_file: Path | None = None
     recovery_manifest_key_file: Path | None = None
     step_up_token_key_file: Path | None = None
+    license_public_keys_file: Path | None = None
     object_storage_secure: bool = True
     object_storage_provision_bucket: bool = False
     policy_version: str = "runtime-policy-v1"
@@ -298,6 +319,10 @@ class RuntimeSettings:
                 None if os.environ.get("DAON_STEP_UP_TOKEN_KEY_FILE") is None
                 else Path(os.environ["DAON_STEP_UP_TOKEN_KEY_FILE"])
             ),
+            license_public_keys_file=(
+                None if os.environ.get("DAON_LICENSE_PUBLIC_KEYS_FILE") is None
+                else Path(os.environ["DAON_LICENSE_PUBLIC_KEYS_FILE"])
+            ),
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
             trusted_proxy_ips=proxies,
@@ -372,6 +397,9 @@ class RuntimeDependencies:
     provider_settings_service: ProviderSettingsService | None = None
     operations_status_service: OperationsStatusService | None = None
     output_version_settings_service: OutputVersionSettingsService | None = None
+    screen_preference_service: ScreenPreferenceService | None = None
+    license_service: LicenseService | None = None
+    notebook_service: NotebookService | None = None
     source_upload_service: SourceUploadPort | None = None
     document_processing_service: DocumentProcessingSubmissionService | None = None
     question_answering_service: Any | None = None
@@ -516,6 +544,7 @@ class QuestionKnowledgeContextBody(BaseModel):
 
 class QuestionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    notebook_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
     source_id: str | None = None
     source_version_id: str | None = None
     knowledge_context: QuestionKnowledgeContextBody | None = None
@@ -527,13 +556,17 @@ class QuestionBody(BaseModel):
         legacy = self.source_id is not None or self.source_version_id is not None
         if legacy != (self.source_id is not None and self.source_version_id is not None):
             raise ValueError("QUESTION_CONTEXT_INVALID")
-        if legacy == (self.knowledge_context is not None):
+        has_context = legacy or self.knowledge_context is not None
+        if legacy and self.knowledge_context is not None:
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if not has_context and not is_general_conversation_intent(self.question):
             raise ValueError("QUESTION_CONTEXT_INVALID")
         return self
 
 
 class QuestionAuthorizationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    notebook_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
     source_id: str | None = None
     source_version_id: str | None = None
     knowledge_context: QuestionKnowledgeContextBody | None = None
@@ -545,13 +578,17 @@ class QuestionAuthorizationBody(BaseModel):
         legacy = self.source_id is not None or self.source_version_id is not None
         if legacy != (self.source_id is not None and self.source_version_id is not None):
             raise ValueError("QUESTION_CONTEXT_INVALID")
-        if legacy == (self.knowledge_context is not None):
+        has_context = legacy or self.knowledge_context is not None
+        if legacy and self.knowledge_context is not None:
+            raise ValueError("QUESTION_CONTEXT_INVALID")
+        if not has_context and not is_general_conversation_intent(self.question):
             raise ValueError("QUESTION_CONTEXT_INVALID")
         return self
 
 
 class StudioReportBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    notebook_id: str
     source_id: str
     source_version_id: str
     run_id: str
@@ -575,6 +612,7 @@ class StudioSettingsBody(BaseModel):
 class StudioGenerationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_id: str
+    notebook_id: str
     output_type: str
     source_id: str
     source_version_ids: list[str]
@@ -586,6 +624,7 @@ class StudioGenerationBody(BaseModel):
 class StudioRevisionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_id: str
+    notebook_id: str
     previous_version_id: str
     revision_type: str
     change_reason: str
@@ -596,6 +635,7 @@ class StudioRevisionBody(BaseModel):
 class StudioActionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_id: str
+    notebook_id: str
     output_version_id: str
     step_up_authorization: str | None = None
     review_request_id: str | None = None
@@ -745,6 +785,28 @@ class OutputVersionSettingsBody(BaseModel):
     expected_version: int
 
 
+class ScreenPreferenceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    theme: str
+
+
+class LicenseApplyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    document: dict[str, object]
+    step_up_authorization_id: str = Field(min_length=1, max_length=512)
+
+
+class NotebookCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=240)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class NotebookTitleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=240)
+
+
 def _trace_id(request: Request) -> str:
     traceparent = request.headers.get("traceparent", "").lower()
     matched = _TRACEPARENT.fullmatch(traceparent)
@@ -793,7 +855,10 @@ def _domain_error(error: IdentityError | AuthorizationError) -> tuple[int, str, 
         return 404, "RESOURCE_UNAVAILABLE", False
     if status == 403 and error.code == "ACTION_DENIED":
         return 403, "FORBIDDEN", False
-    safe_special = {"CURRENT_ACCESS_DENIED", "STEP_UP_REQUIRED", "VERSION_CONFLICT", "EMAIL_DELIVERY_UNAVAILABLE"}
+    safe_special = {
+        "CURRENT_ACCESS_DENIED", "STEP_UP_REQUIRED", "VERSION_CONFLICT",
+        "EMAIL_DELIVERY_UNAVAILABLE", "CSRF_VALIDATION_FAILED",
+    }
     return status, error.code if error.code in safe_special else "INVALID_REQUEST", status >= 500
 
 
@@ -900,6 +965,31 @@ def _credential(request: Request) -> tuple[str, ClientKind]:
             raise IdentityError("ACCESS_INVALID", 401)
         return value, ClientKind.NATIVE
     raise IdentityError("ACCESS_INVALID", 401)
+
+
+def _require_validated_web_csrf(request: Request, settings: RuntimeSettings) -> None:
+    if request.headers.get("x-daon-bff-transport") != "internal":
+        raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+    origin = request.headers.get("x-daon-csrf-origin")
+    referer = request.headers.get("x-daon-csrf-referer")
+    if not origin or not referer:
+        raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+    try:
+        parsed_origin = urlsplit(origin)
+        parsed_referer = urlsplit(referer)
+    except ValueError as error:
+        raise IdentityError("CSRF_VALIDATION_FAILED", 403) from error
+    if (
+        parsed_origin.scheme != "https" or not parsed_origin.netloc
+        or parsed_origin.path not in {"", "/"} or parsed_origin.query or parsed_origin.fragment
+        or (parsed_referer.scheme, parsed_referer.netloc)
+        != (parsed_origin.scheme, parsed_origin.netloc)
+    ):
+        raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+    if settings.public_gateway_url is not None:
+        expected = urlsplit(settings.public_gateway_url)
+        if (parsed_origin.scheme, parsed_origin.netloc) != (expected.scheme, expected.netloc):
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
 
 
 def _idempotency_key(value: str) -> str:
@@ -1034,21 +1124,32 @@ def _egress_policy_context(
 
 def _studio_context(
     principal: IdentityPrincipal, workspace_id: str, request: Request,
-    dependencies: RuntimeDependencies,
+    dependencies: RuntimeDependencies, notebook_id: str | None = None,
 ) -> StudioReportContext:
     return StudioReportContext(
         principal.tenant_id, workspace_id, principal.user_id, request.state.trace_id,
-        dependencies.settings.policy_version,
+        dependencies.settings.policy_version, notebook_id,
     )
 
 
 def _product_studio_context(
     principal: IdentityPrincipal, workspace_id: str, request: Request,
-    dependencies: RuntimeDependencies,
+    dependencies: RuntimeDependencies, notebook_id: str | None = None,
 ) -> StudioContext:
     return StudioContext(
         principal.tenant_id, workspace_id, principal.user_id, request.state.trace_id,
         dependencies.settings.policy_version,
+        notebook_id,
+    )
+
+
+def _license_context(
+    principal: IdentityPrincipal, workspace_id: str, request: Request,
+    dependencies: RuntimeDependencies,
+) -> LicenseContext:
+    return LicenseContext(
+        principal.tenant_id, workspace_id, principal.user_id,
+        request.state.trace_id, dependencies.settings.policy_version,
     )
 
 
@@ -1088,6 +1189,22 @@ def _resolve_knowledge_package_service(
     )
 
 
+def _requires_runtime_license_precheck(service: object) -> bool:
+    if type(service) is StudioWorkspaceService:
+        repository = getattr(service, "_repository", None)
+        return not (
+            type(repository) is PostgresStudioWorkspaceRepository
+            and repository.creation_license_authoritative
+        )
+    if type(service) is StudioReportService:
+        repository = getattr(service, "_repository", None)
+        return not (
+            type(repository) is PostgresStudioReportRepository
+            and repository.creation_license_authoritative
+        )
+    return True
+
+
 def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     notification_service = dependencies.notification_service or NotificationService(
         repository=ReferenceNotificationRepository(),
@@ -1125,6 +1242,64 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if dependencies.cloud_store is None
         else PostgresOutputVersionSettingsRepository(dependencies.cloud_store)
     )
+    screen_preference_service = dependencies.screen_preference_service or ScreenPreferenceService(
+        ReferenceScreenPreferenceRepository()
+        if dependencies.cloud_store is None
+        else PostgresScreenPreferenceRepository(dependencies.cloud_store)
+    )
+    if dependencies.license_service is not None:
+        license_service = dependencies.license_service
+    else:
+        license_repository = (
+            ReferenceLicenseRepository()
+            if dependencies.cloud_store is None
+            else PostgresLicenseRepository(dependencies.cloud_store)
+        )
+        if dependencies.settings.license_public_keys_file is None:
+            license_verifier = UnavailableLicenseVerifier()
+        else:
+            license_verifier = RsaSha256LicenseVerifier(
+                load_rsa_public_keys(dependencies.settings.license_public_keys_file)
+            )
+        usage_reader = (
+            (lambda _context: {})
+            if dependencies.cloud_store is None
+            else license_repository.usage
+        )
+        license_service = LicenseService(
+            license_repository, license_verifier, product_code="daon-user",
+            clock=lambda: datetime.now(timezone.utc), usage_reader=usage_reader,
+        )
+    license_enforcement_enabled = (
+        dependencies.license_service is not None
+        or dependencies.settings.profile == "production"
+        or dependencies.settings.license_public_keys_file is not None
+    )
+    if dependencies.notebook_service is not None:
+        notebook_service = dependencies.notebook_service
+    else:
+        notebook_repository = (
+            ReferenceNotebookRepository()
+            if dependencies.cloud_store is None
+            else PostgresNotebookRepository(
+                dependencies.cloud_store, creation_enforcer=enforce_license_creation,
+            )
+        )
+        notebook_service = NotebookService(
+            notebook_repository,
+            clock=lambda: datetime.now(timezone.utc),
+            require_create=(
+                None
+                if not license_enforcement_enabled
+                else lambda context: license_service.require_creation(
+                    LicenseContext(
+                        context.tenant_id, context.workspace_id, context.actor_id,
+                        context.trace_id, context.policy_version,
+                    ),
+                    "notebook.create", {"notebooks": 1},
+                )
+            ),
+        )
     egress_policy_service = dependencies.egress_policy_service
     if egress_policy_service is None and dependencies.cloud_store is not None:
         egress_policy_service = EgressPolicyService(
@@ -1152,12 +1327,18 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     studio_report_repository = dependencies.studio_report_repository
     studio_report_service = dependencies.studio_report_service
     if studio_report_repository is None and dependencies.cloud_store is not None:
-        studio_report_repository = PostgresStudioReportRepository(dependencies.cloud_store)
+        studio_report_repository = PostgresStudioReportRepository(
+            dependencies.cloud_store,
+            creation_enforcer=enforce_license_creation if license_enforcement_enabled else None,
+        )
     if studio_report_service is None and studio_report_repository is not None:
         studio_report_service = StudioReportService(studio_report_repository)
     studio_workspace_service = dependencies.studio_workspace_service
     if studio_workspace_service is None and dependencies.cloud_store is not None:
-        studio_workspace_service = StudioWorkspaceService(PostgresStudioWorkspaceRepository(dependencies.cloud_store, dependencies.object_storage))
+        studio_workspace_service = StudioWorkspaceService(PostgresStudioWorkspaceRepository(
+            dependencies.cloud_store, dependencies.object_storage,
+            creation_enforcer=enforce_license_creation if license_enforcement_enabled else None,
+        ))
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
@@ -1376,6 +1557,48 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             retryable=error.retryable,
         )
 
+    @app.exception_handler(ScreenPreferenceError)
+    async def screen_preference_error(
+        request: Request, error: ScreenPreferenceError,
+    ) -> JSONResponse:
+        public_codes = {"SCREEN_PREFERENCE_INVALID", "SCREEN_PREFERENCE_UNAVAILABLE"}
+        return _error_response(
+            error.status,
+            error.code if error.code in public_codes else "INVALID_REQUEST",
+            request.state.trace_id,
+            retryable=error.code == "SCREEN_PREFERENCE_UNAVAILABLE",
+        )
+
+    @app.exception_handler(LicenseError)
+    async def license_error(request: Request, error: LicenseError) -> JSONResponse:
+        public_codes = {
+            "LICENSE_NOT_CONFIGURED", "LICENSE_SIGNATURE_INVALID",
+            "LICENSE_SIGNING_KEY_UNAVAILABLE", "LICENSE_SCHEMA_UNSUPPORTED",
+            "LICENSE_PRODUCT_MISMATCH", "LICENSE_ORGANIZATION_MISMATCH",
+            "LICENSE_PERIOD_INVALID", "LICENSE_EXPIRED",
+            "LICENSE_RESOURCE_LIMIT_REACHED", "LICENSE_UNAVAILABLE",
+            "LICENSE_USAGE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED",
+            "IDEMPOTENCY_KEY_INVALID",
+        }
+        return _error_response(
+            error.status, error.code if error.code in public_codes else "LICENSE_DOCUMENT_INVALID",
+            request.state.trace_id,
+            retryable=error.code in {"LICENSE_UNAVAILABLE", "LICENSE_USAGE_UNAVAILABLE"},
+        )
+
+    @app.exception_handler(NotebookError)
+    async def notebook_error(request: Request, error: NotebookError) -> JSONResponse:
+        public_codes = {
+            "NOTEBOOK_NOT_FOUND", "NOTEBOOK_TITLE_INVALID", "NOTEBOOK_DESCRIPTION_INVALID",
+            "NOTEBOOK_ETAG_INVALID", "NOTEBOOK_ETAG_MISMATCH", "NOTEBOOK_UNAVAILABLE",
+            "LICENSE_NOT_CONFIGURED", "LICENSE_EXPIRED", "LICENSE_FEATURE_NOT_ALLOWED",
+            "LICENSE_RESOURCE_LIMIT_REACHED", "IDEMPOTENCY_KEY_INVALID", "IDEMPOTENCY_KEY_REUSED",
+        }
+        return _error_response(
+            error.status, error.code if error.code in public_codes else "INVALID_REQUEST",
+            request.state.trace_id, retryable=error.code == "NOTEBOOK_UNAVAILABLE",
+        )
+
     @app.exception_handler(EgressPolicyError)
     async def egress_policy_error(
         request: Request, error: EgressPolicyError,
@@ -1410,7 +1633,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         public_codes = {
             "QUESTION_SOURCE_UNAVAILABLE", "CITATION_CONTENT_UNAVAILABLE",
-            "QUESTION_DATABASE_UNAVAILABLE",
+            "QUESTION_DATABASE_UNAVAILABLE", "IDEMPOTENCY_KEY_REUSED",
         }
         return _error_response(
             error.status, error.code if error.code in public_codes else "QUESTION_FAILED",
@@ -1595,9 +1818,34 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id},
         }
 
-    @app.get("/api/v1/workspaces/{id}/sources")
-    async def list_workspace_sources(id: str, request: Request) -> JSONResponse:
+    @app.post("/api/v1/session/logout")
+    async def logout_current_web_session(request: Request) -> JSONResponse:
         _require_query_keys(request, frozenset())
+        _require_validated_web_csrf(request, dependencies.settings)
+        if await request.body():
+            raise HTTPException(status_code=400)
+        token, expected_kind = _credential(request)
+        if expected_kind is not ClientKind.WEB:
+            raise IdentityError("ACCESS_INVALID", 401)
+        result = dependencies.identity_service.revoke_current_web_session(
+            access_token=token, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        response = JSONResponse({
+            "data": {"status": "logged_out", "replayed": result.replayed},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+        response.delete_cookie(
+            WEB_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax",
+        )
+        response.headers["ETag"] = '"session:logged-out"'
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/sources")
+    async def list_workspace_sources(
+        id: str, request: Request, notebook_id: str = Query(),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset({"notebook_id"}))
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
@@ -1608,7 +1856,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise StudioReportError("STUDIO_SERVICE_UNAVAILABLE", status=503, retryable=True)
         sources = await asyncio.to_thread(
             studio_report_repository.list_sources,
-            _studio_context(principal, id, request, dependencies),
+            _studio_context(principal, id, request, dependencies, notebook_id),
+        )
+        selected = await asyncio.to_thread(
+            notebook_service.read_selected_context,
+            notebook_context(principal, id, request), notebook_id,
+        )
+        selected_sources = set(selected.sources)
+        sources = tuple(
+            source for source in sources
+            if (source.source_id, source.source_version_id) in selected_sources
         )
         content = {
             "data": {"sources": [_dataclass_json(source) for source in sources]},
@@ -1621,6 +1878,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         id: str,
         request: Request,
         source_filename: str = Header(alias="X-Source-Filename"),
+        notebook_id: str = Header(alias="X-Notebook-Id"),
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
@@ -1641,6 +1899,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise DocumentUnderstandingError(
                 "DOCUMENT_PROCESSING_UNAVAILABLE", status=503, retryable=True,
             )
+        await asyncio.to_thread(
+            notebook_service.get, notebook_context(principal, id, request), notebook_id,
+        )
         chunks: list[bytes] = []
         byte_size = 0
         async for chunk in request.stream():
@@ -1657,6 +1918,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             dependencies.source_upload_service.register_pdf,
             tenant_id=principal.tenant_id,
             workspace_id=id,
+            notebook_id=notebook_id,
             actor_id=principal.user_id,
             filename=source_filename,
             content=content,
@@ -1670,6 +1932,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 request.state.trace_id, dependencies.settings.policy_version,
             ),
             result.source_version_id,
+            notebook_id=notebook_id,
         )
         response_data = _dataclass_json(result)
         response_data.update({
@@ -1689,9 +1952,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/api/v1/workspaces/{id}/processing-runs/{processing_run_id}")
     async def get_document_processing_status(
-        id: str, processing_run_id: str, request: Request,
+        id: str, processing_run_id: str, request: Request, notebook_id: str = Query(),
     ) -> JSONResponse:
-        _require_query_keys(request, frozenset())
+        _require_query_keys(request, frozenset({"notebook_id"}))
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
@@ -1709,6 +1972,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 request.state.trace_id, dependencies.settings.policy_version,
             ),
             processing_run_id,
+            notebook_id=notebook_id,
+        )
+        await asyncio.to_thread(
+            notebook_service.require_selected_bindings,
+            notebook_context(principal, id, request), notebook_id,
+            (("source", status.source_id, status.source_version_id),),
         )
         return _json_with_etag(
             {
@@ -1721,17 +1990,21 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             ))),
         )
 
-    def _question_run_id(principal: IdentityPrincipal, workspace_id: str, key: str) -> str:
+    def _question_run_id(
+        principal: IdentityPrincipal, workspace_id: str, notebook_id: str, key: str,
+    ) -> str:
         return "run-" + hashlib.sha256(
-            f"{principal.tenant_id}|{workspace_id}|{principal.user_id}|{key}".encode("utf-8")
+            f"{principal.tenant_id}|{workspace_id}|{notebook_id}|{principal.user_id}|{key}".encode("utf-8")
         ).hexdigest()[:32]
 
     def _question_inputs(
         principal: IdentityPrincipal, workspace_id: str, request: Request,
         body: QuestionAuthorizationBody | QuestionBody,
-    ) -> tuple[str, tuple[QuestionInputSource, ...], str, str]:
+    ) -> tuple[str, tuple[QuestionInputSource, ...], str | None, str | None]:
         if body.knowledge_context is None:
             if body.source_id is None or body.source_version_id is None:
+                if is_general_conversation_intent(body.question):
+                    return "general_ungrounded", (), None, None
                 raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
             source = QuestionInputSource(
                 "raw_source", body.source_id, body.source_id, body.source_version_id,
@@ -1787,6 +2060,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "idempotency_key": idempotency_key,
         })).hexdigest()
 
+    def _question_result_response(answer: object, request: Request, workspace_id: str) -> JSONResponse:
+        stored = cast(Any, answer)
+        response = JSONResponse({
+            "data": {
+                "run_id": stored.run_id, "run_result_id": stored.run_result_id,
+                "answer": stored.answer, "insufficient": stored.insufficient,
+                "citations": [_dataclass_json(item) for item in stored.citations],
+            },
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": workspace_id},
+        })
+        response.headers["ETag"] = f'"run-result:{stored.run_result_id}"'
+        return response
+
     @app.post("/api/v1/workspaces/{id}/questions/authorization", status_code=201)
     async def authorize_grounded_question(
         id: str, body: QuestionAuthorizationBody, request: Request,
@@ -1806,9 +2092,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         context = QuestionContext(
             principal.tenant_id, id, principal.user_id,
             request.state.trace_id, dependencies.settings.policy_version,
+            body.notebook_id,
         )
         context_mode, context_sources, source_id, source_version_id = _question_inputs(
             principal, id, request, body,
+        )
+        await asyncio.to_thread(
+            notebook_service.require_selected_bindings,
+            notebook_context(principal, id, request), body.notebook_id,
+            required=tuple(
+                ("knowledge_context", item.context_item_id, None)
+                if item.origin == "daon_knowledge"
+                else ("source", item.source_id, item.source_version_id)
+                for item in context_sources
+            ),
         )
         prepared = await asyncio.to_thread(
             question_answering_service.prepare_authorization, context,
@@ -1826,7 +2123,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         }
         if grant.role not in approver_roles[effective.required_approver]:
             raise AuthorizationError("ACTION_DENIED", 403)
-        run_id = _question_run_id(principal, id, idempotency_key)
+        run_id = _question_run_id(principal, id, body.notebook_id, idempotency_key)
         request_fingerprint = _question_authorization_fingerprint(
             principal=principal, workspace_id=id, run_id=run_id, body=body,
             context_mode=context_mode, context_sources=context_sources,
@@ -1864,16 +2161,40 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise QuestionAnsweringError(
                 "QUESTION_SERVICE_UNAVAILABLE", status=503, retryable=True,
             )
-        run_id = _question_run_id(principal, id, idempotency_key)
+        run_id = _question_run_id(principal, id, body.notebook_id, idempotency_key)
+        question_context = QuestionContext(
+            principal.tenant_id, id, principal.user_id,
+            request.state.trace_id, dependencies.settings.policy_version,
+            body.notebook_id,
+        )
+        replay_fingerprint = question_request_fingerprint(
+            question_context, run_id=run_id, idempotency_key=idempotency_key,
+            request_payload=body.model_dump(
+                exclude={"step_up_authorization_id"}, exclude_none=True,
+            ),
+        )
+        replay = await asyncio.to_thread(
+            question_answering_service.replay, question_context,
+            run_id=run_id, request_fingerprint=replay_fingerprint,
+        )
+        if replay is not None:
+            return _question_result_response(replay, request, id)
         context_mode, context_sources, source_id, source_version_id = _question_inputs(
             principal, id, request, body,
         )
+        await asyncio.to_thread(
+            notebook_service.require_selected_bindings,
+            notebook_context(principal, id, request), body.notebook_id,
+            required=tuple(
+                ("knowledge_context", item.context_item_id, None)
+                if item.origin == "daon_knowledge"
+                else ("source", item.source_id, item.source_version_id)
+                for item in context_sources
+            ),
+        )
         approved_authorization = None
         if egress_policy_service is not None:
-            context = QuestionContext(
-                principal.tenant_id, id, principal.user_id,
-                request.state.trace_id, dependencies.settings.policy_version,
-            )
+            context = question_context
             prepared = await asyncio.to_thread(
                 question_answering_service.prepare_authorization, context,
                 source_id=source_id, source_version_id=source_version_id,
@@ -1914,22 +2235,15 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             QuestionContext(
                 principal.tenant_id, id, principal.user_id,
                 request.state.trace_id, dependencies.settings.policy_version,
+                body.notebook_id,
             ),
             source_id=source_id, source_version_id=source_version_id,
             question=body.question, run_id=run_id,
             approved_authorization=approved_authorization,
             context_mode=context_mode, context_sources=context_sources,
+            request_fingerprint=replay_fingerprint, replay_checked=True,
         )
-        response = JSONResponse({
-            "data": {
-                "run_id": answer.run_id, "run_result_id": answer.run_result_id,
-                "answer": answer.answer, "insufficient": answer.insufficient,
-                "citations": [_dataclass_json(item) for item in answer.citations],
-            },
-            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
-        })
-        response.headers["ETag"] = f'"run-result:{answer.run_result_id}"'
-        return response
+        return _question_result_response(answer, request, id)
 
     @app.post("/api/v1/studio-generation-requests", status_code=201)
     async def create_product_studio_generation(
@@ -1945,11 +2259,18 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         if studio_workspace_service is None:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        if license_enforcement_enabled and _requires_runtime_license_precheck(
+            studio_workspace_service,
+        ):
+            await asyncio.to_thread(
+                license_service.require_new_generation,
+                _license_context(principal, body.workspace_id, request, dependencies),
+            )
         if body.source_version_ids != body.settings.source_version_ids:
             raise StudioError("STUDIO_INPUT_INVALID")
         output, replayed = await asyncio.to_thread(
             studio_workspace_service.generate,
-            _product_studio_context(principal, body.workspace_id, request, dependencies),
+            _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id),
             StudioGenerationRequest(
                 body.output_type, body.source_id, tuple(body.source_version_ids), body.run_id,
                 body.run_result_id, body.settings.purpose, body.settings.audience,
@@ -1965,8 +2286,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return response
 
     @app.get("/api/v1/studio-outputs")
-    async def list_product_studio_outputs(request: Request, workspace_id: str = Query()) -> JSONResponse:
-        _require_query_keys(request, frozenset({"workspace_id"}))
+    async def list_product_studio_outputs(
+        request: Request, workspace_id: str = Query(), notebook_id: str = Query(),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset({"workspace_id", "notebook_id"}))
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=workspace_id, action=Action.VIEW,
@@ -1976,7 +2299,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
         projection = await asyncio.to_thread(
             studio_workspace_service.list_outputs,
-            _product_studio_context(principal, workspace_id, request, dependencies),
+            _product_studio_context(principal, workspace_id, request, dependencies, notebook_id),
         )
         if isinstance(projection, Mapping):
             data = {"outputs": _enum_json(projection.get("outputs", ())), "studio_locks": _enum_json(projection.get("studio_locks", ())) }
@@ -2002,8 +2325,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
         version, replayed = await asyncio.to_thread(
             studio_workspace_service.revise,
-            _product_studio_context(principal, body.workspace_id, request, dependencies), output_id,
-            body.model_dump(exclude={"workspace_id"}), idempotency_key,
+            _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id), output_id,
+            body.model_dump(exclude={"workspace_id", "notebook_id"}), idempotency_key,
         )
         response = JSONResponse({"data": _enum_json(version), "meta": {
             "trace_id": request.state.trace_id, "workspace_id": body.workspace_id, "replayed": replayed,
@@ -2013,9 +2336,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/api/v1/studio-outputs/{output_id}/versions")
     async def list_product_studio_versions(
-        output_id: str, request: Request, workspace_id: str = Query(),
+        output_id: str, request: Request, workspace_id: str = Query(), notebook_id: str = Query(),
     ) -> JSONResponse:
-        _require_query_keys(request, frozenset({"workspace_id"}))
+        _require_query_keys(request, frozenset({"workspace_id", "notebook_id"}))
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=workspace_id, action=Action.VIEW,
@@ -2025,7 +2348,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
         versions = await asyncio.to_thread(
             studio_workspace_service.list_versions,
-            _product_studio_context(principal, workspace_id, request, dependencies), output_id,
+            _product_studio_context(principal, workspace_id, request, dependencies, notebook_id), output_id,
         )
         return JSONResponse({"data": {"output_id": output_id, "versions": _enum_json(versions)}, "meta": {
             "trace_id": request.state.trace_id, "workspace_id": workspace_id,
@@ -2073,8 +2396,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
         result, replayed = await asyncio.to_thread(
             studio_workspace_service.action,
-            _product_studio_context(principal, body.workspace_id, request, dependencies), action_name,
-            {**body.model_dump(exclude={"workspace_id", "step_up_authorization"}, exclude_none=True),
+            _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id), action_name,
+            {**body.model_dump(exclude={"workspace_id", "notebook_id", "step_up_authorization"}, exclude_none=True),
              "step_up_verified": action_name in {"approval", "delivery", "knowledge_registration"}},
             idempotency_key,
         )
@@ -2087,9 +2410,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     @app.get("/api/v1/studio-outputs/{output_id}/versions/{version_id}/exports/{format_name}")
     async def download_product_studio_export(
         output_id: str, version_id: str, format_name: str, request: Request,
-        workspace_id: str = Query(),
+        workspace_id: str = Query(), notebook_id: str = Query(),
     ) -> Response:
-        _require_query_keys(request, frozenset({"workspace_id"}))
+        _require_query_keys(request, frozenset({"workspace_id", "notebook_id"}))
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=workspace_id, action=Action.DELIVER,
@@ -2099,7 +2422,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
         exported = await asyncio.to_thread(
             studio_workspace_service.export,
-            _product_studio_context(principal, workspace_id, request, dependencies),
+            _product_studio_context(principal, workspace_id, request, dependencies, notebook_id),
             output_id, version_id, format_name,
         )
         return Response(exported.content, media_type=exported.media_type, headers={
@@ -2123,9 +2446,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         if studio_report_service is None:
             raise StudioReportError("STUDIO_SERVICE_UNAVAILABLE", status=503, retryable=True)
+        if license_enforcement_enabled and _requires_runtime_license_precheck(
+            studio_report_service,
+        ):
+            await asyncio.to_thread(
+                license_service.require_new_generation,
+                _license_context(principal, id, request, dependencies),
+            )
         output, replayed = await asyncio.to_thread(
             studio_report_service.create,
-            _studio_context(principal, id, request, dependencies),
+            _studio_context(principal, id, request, dependencies, body.notebook_id),
             StudioReportCreateRequest(
                 body.source_id, body.source_version_id, body.run_id, body.run_result_id,
                 body.title, body.purpose,
@@ -2142,8 +2472,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return response
 
     @app.get("/api/v1/workspaces/{id}/studio/outputs")
-    async def list_studio_outputs(id: str, request: Request) -> JSONResponse:
-        _require_query_keys(request, frozenset())
+    async def list_studio_outputs(
+        id: str, request: Request, notebook_id: str = Query(),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset({"notebook_id"}))
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
@@ -2154,7 +2486,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise StudioReportError("STUDIO_SERVICE_UNAVAILABLE", status=503, retryable=True)
         outputs = await asyncio.to_thread(
             studio_report_service.list_outputs,
-            _studio_context(principal, id, request, dependencies),
+            _studio_context(principal, id, request, dependencies, notebook_id),
         )
         content = {
             "data": {"outputs": [_dataclass_json(output) for output in outputs]},
@@ -2164,9 +2496,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/api/v1/workspaces/{id}/citations/{citation_id}/content")
     async def get_citation_content(
-        id: str, citation_id: str, request: Request,
+        id: str, citation_id: str, request: Request, notebook_id: str = Query(),
     ) -> Response:
-        _require_query_keys(request, frozenset())
+        _require_query_keys(request, frozenset({"notebook_id"}))
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
@@ -2182,6 +2514,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             QuestionContext(
                 principal.tenant_id, id, principal.user_id,
                 request.state.trace_id, dependencies.settings.policy_version,
+                notebook_id,
             ),
             citation_id,
         )
@@ -2247,6 +2580,263 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             },
             "meta": {"trace_id": request.state.trace_id},
         }
+
+    def notebook_context(principal: IdentityPrincipal, workspace_id: str, request: Request) -> NotebookContext:
+        return NotebookContext(
+            principal.tenant_id, workspace_id, principal.user_id,
+            request.state.trace_id, dependencies.settings.policy_version,
+        )
+
+    def notebook_json(view: NotebookHomeView) -> dict[str, object]:
+        return {
+            "notebook_id": view.notebook_id, "title": view.title,
+            "source_count": view.source_count, "output_count": view.output_count,
+            "updated_at": view.updated_at, "status": view.status,
+        }
+
+    def notebook_context_json(selected) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        return {
+            "notebook_id": selected.notebook_id,
+            "sources": [
+                {"source_id": source_id, "source_version_id": version_id}
+                for source_id, version_id in selected.sources
+            ],
+            "knowledge_context_ids": list(selected.knowledge_context_ids),
+            "conversation_thread_ids": list(selected.conversation_thread_ids),
+            "studio_output_ids": list(selected.studio_output_ids),
+            "output_version_ids": list(selected.output_version_ids),
+            "generation_settings_ids": list(selected.generation_settings_ids),
+            "conversation": None if selected.conversation is None else {
+                "conversation_thread_id": selected.conversation.conversation_thread_id,
+                "answer": {
+                    "run_id": selected.conversation.run_id,
+                    "run_result_id": selected.conversation.run_result_id,
+                    "answer": selected.conversation.answer,
+                    "insufficient": selected.conversation.insufficient,
+                    "citations": [_dataclass_json(item) for item in selected.conversation.citations],
+                },
+            },
+        }
+
+    @app.post("/api/v1/workspaces/{id}/notebooks", status_code=201)
+    async def create_notebook(
+        id: str, body: NotebookCreateBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _egress_idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        view, replayed = await asyncio.to_thread(
+            notebook_service.create, notebook_context(principal, id, request),
+            title=body.title, description=body.description, idempotency_key=idempotency_key,
+        )
+        response = JSONResponse({
+            "data": notebook_json(view),
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id, "replayed": replayed},
+        }, status_code=200 if replayed else 201)
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/notebooks")
+    async def list_notebooks(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        views = await asyncio.to_thread(
+            notebook_service.list, notebook_context(principal, id, request),
+        )
+        content = {
+            "data": [notebook_json(view) for view in views],
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        }
+        return _json_with_etag(content, json.dumps(content["data"], sort_keys=True))
+
+    @app.get("/api/v1/workspaces/{id}/notebooks/{notebook_id}")
+    async def get_notebook(id: str, notebook_id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        view = await asyncio.to_thread(
+            notebook_service.get, notebook_context(principal, id, request), notebook_id,
+        )
+        response = JSONResponse({
+            "data": notebook_json(view),
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.patch("/api/v1/workspaces/{id}/notebooks/{notebook_id}")
+    async def update_notebook_title(
+        id: str, notebook_id: str, body: NotebookTitleBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        if_match: str = Header(alias="If-Match"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _egress_idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        view, replayed = await asyncio.to_thread(
+            notebook_service.update_title, notebook_context(principal, id, request), notebook_id,
+            title=body.title, expected_etag=if_match, idempotency_key=idempotency_key,
+        )
+        response = JSONResponse({
+            "data": notebook_json(view),
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id, "replayed": replayed},
+        })
+        response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/notebooks/{notebook_id}/context")
+    async def get_notebook_selected_context(
+        id: str, notebook_id: str, request: Request,
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        selected = await asyncio.to_thread(
+            notebook_service.read_selected_context,
+            notebook_context(principal, id, request), notebook_id,
+        )
+        content = {
+            "data": notebook_context_json(selected),
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        }
+        return _json_with_etag(content, json.dumps(content["data"], sort_keys=True))
+
+    @app.get("/api/v1/preferences/screen")
+    async def get_screen_preferences(request: Request) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        preferences = await asyncio.to_thread(
+            screen_preference_service.get,
+            ScreenPreferenceContext(principal.tenant_id, principal.user_id),
+        )
+        return {"data": preferences, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.put("/api/v1/preferences/screen")
+    async def put_screen_preferences(
+        body: ScreenPreferenceBody, request: Request,
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        preferences = await asyncio.to_thread(
+            screen_preference_service.save,
+            ScreenPreferenceContext(principal.tenant_id, principal.user_id),
+            body.model_dump(),
+        )
+        return {"data": preferences, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.get("/api/v1/workspaces/{id}/license")
+    async def get_product_license(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        can_apply = False
+        try:
+            dependencies.authorization_service.organization_admin_workspace(
+                principal=principal, trace_id=request.state.trace_id,
+                policy_version=dependencies.settings.policy_version,
+            )
+        except AuthorizationError as error:
+            if error.code != "ACTION_DENIED":
+                raise
+        else:
+            can_apply = True
+        view = await asyncio.to_thread(
+            license_service.get, _license_context(principal, id, request, dependencies),
+        )
+        content = {
+            "data": {**view, "can_apply": can_apply},
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        }
+        response = JSONResponse(content)
+        response.headers["ETag"] = '"license:' + hashlib.sha256(
+            canonical_json_bytes(content["data"])
+        ).hexdigest()[:32] + '"'
+        return response
+
+    @app.post("/api/v1/organizations/{id}/license", status_code=201)
+    async def apply_product_license(
+        id: str, body: LicenseApplyBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _egress_idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        principal = _principal(request, dependencies)
+        if id != principal.tenant_id:
+            raise AuthorizationError("ACCESS_DENIED", 403)
+        workspace_id = dependencies.authorization_service.organization_admin_workspace(
+            principal=principal, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        context = _license_context(principal, workspace_id, request, dependencies)
+        replay = await asyncio.to_thread(
+            license_service.replay, context, body.document, idempotency_key,
+        )
+        if replay is not None:
+            view, replayed = replay
+            claims_digest = hashlib.sha256(
+                canonical_json_bytes(body.document["claims"])
+            ).hexdigest()
+        else:
+            verified = await asyncio.to_thread(
+                license_service.verify_document, context, body.document,
+            )
+            dependencies.identity_service.consume_step_up(
+                step_up_authorization=body.step_up_authorization_id,
+                access_token=access_token,
+                action_group="organization_security_or_connector_policy_change",
+                target_id=id, policy_version=dependencies.settings.policy_version,
+                trace_id=request.state.trace_id,
+                operation="license.organization.apply", idempotency_key=idempotency_key,
+            )
+            view, replayed = await asyncio.to_thread(
+                license_service.apply, context, body.document, idempotency_key,
+            )
+            claims_digest = verified.claims_digest
+        if not replayed:
+            event_id = "license-" + hashlib.sha256(
+                f"{principal.tenant_id}|{principal.user_id}|{idempotency_key}".encode()
+            ).hexdigest()[:32]
+            dependencies.audit_store.append(AuditEventDraft(
+                event_id=event_id, occurred_at=datetime.now(timezone.utc),
+                actor_id=principal.user_id, actor_type=ActorType.USER,
+                tenant_id=principal.tenant_id, workspace_id=workspace_id,
+                action="license.organization.applied", target_type="organization_license",
+                target_id=id, outcome=AuditOutcome.SUCCEEDED,
+                trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+                after={
+                    "product": view["product"], "edition": view["edition"],
+                    "expires_at": view["expires_at"], "status": view["status"],
+                }, metadata={"reason_code": "LICENSE_APPLIED"},
+            ))
+        response = JSONResponse({
+            "data": {**view, "can_apply": True},
+            "meta": {"trace_id": request.state.trace_id, "replayed": replayed},
+        }, status_code=200 if replayed else 201)
+        response.headers["ETag"] = f'"license:{claims_digest[:32]}"'
+        return response
 
     @app.post("/api/v1/session/step-up", status_code=201)
     async def issue_step_up(
@@ -3539,6 +4129,11 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     object_queue_store: PostgresObjectQueueStore | None = None
     source_upload_service: PostgresSourceUploadService | None = None
     document_processing_service: DocumentProcessingSubmissionService | None = None
+    license_creation_enforcer = (
+        enforce_license_creation
+        if settings.profile == "production" or settings.license_public_keys_file is not None
+        else None
+    )
     if cloud_store is None:
         sync_service = SyncService(
             ReferenceSyncRepository(), ReferenceTransferPort(),
@@ -3550,7 +4145,9 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             transfer_port = UnavailableSyncTransferPort()
         else:
             assert settings.cloud_database_dsn is not None
-            object_queue_store = PostgresObjectQueueStore(settings.cloud_database_dsn)
+            object_queue_store = PostgresObjectQueueStore(
+                settings.cloud_database_dsn, creation_enforcer=license_creation_enforcer,
+            )
             transfer_port = ObjectQueueSyncTransferPort(ObjectQueueCoordinator(
                 object_queue_store, object_storage, id_factory=lambda: secrets.token_hex(16)
             ))
@@ -3582,7 +4179,9 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         source_upload_service = PostgresSourceUploadService(
             queue_store=object_queue_store,
             object_storage=object_storage,
-            canon_store=PostgresDataCanonStore(settings.cloud_database_dsn),
+            canon_store=PostgresDataCanonStore(
+                settings.cloud_database_dsn, creation_enforcer=license_creation_enforcer,
+            ),
         )
         document_processing_service = DocumentProcessingSubmissionService(
             PostgresDocumentProcessingRepository(cloud_store, object_storage)

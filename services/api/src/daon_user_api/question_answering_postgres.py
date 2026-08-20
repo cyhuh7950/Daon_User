@@ -36,12 +36,13 @@ class QuestionContext:
     actor_id: str
     trace_id: str
     policy_version: str
+    notebook_id: str | None = None
 
     def __post_init__(self) -> None:
         if any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value) for value in (
             self.tenant_id, self.workspace_id, self.actor_id,
             self.trace_id, self.policy_version,
-        )):
+        )) or (self.notebook_id is not None and not _SAFE_ID.fullmatch(self.notebook_id)):
             raise QuestionRepositoryError("QUESTION_CONTEXT_INVALID")
 
 
@@ -202,14 +203,26 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "question.read"),
             ) as connection:
+                notebook_clause = (
+                    " AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE "
+                    "nb.tenant_id=r.tenant_id AND nb.workspace_id=r.workspace_id "
+                    "AND nb.notebook_id=%s AND nb.binding_kind='conversation_thread' "
+                    "AND nb.record_id=r.conversation_id)"
+                    if context.notebook_id is not None else ""
+                )
+                params: tuple[object, ...] = (
+                    (run_id, context.notebook_id)
+                    if context.notebook_id is not None else (run_id,)
+                )
                 rows = connection.execute(
                     "SELECT rr.record_id,rr.canonical_json,c.record_id,c.canonical_json "
                     "FROM runs r JOIN run_results rr ON rr.tenant_id=r.tenant_id "
                     "AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id "
                     "LEFT JOIN citations c ON c.tenant_id=rr.tenant_id "
                     "AND c.workspace_id=rr.workspace_id AND c.run_result_id=rr.record_id "
-                    "WHERE r.record_id=%s AND r.state='completed' ORDER BY c.record_id",
-                    (run_id,),
+                    "WHERE r.record_id=%s AND r.state='completed'" + notebook_clause
+                    + " ORDER BY c.record_id",
+                    params,
                 ).fetchall()
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
@@ -248,6 +261,39 @@ class PostgresQuestionAnsweringRepository:
             )
         except (KeyError, TypeError, ValueError):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID", status=500) from None
+
+    def load_completed_for_replay(
+        self, context: QuestionContext, run_id: str, request_fingerprint: str,
+    ) -> StoredQuestionAnswer | None:
+        if not _SAFE_ID.fullmatch(run_id) or not re.fullmatch(r"sha256:[0-9a-f]{64}", request_fingerprint):
+            raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
+        try:
+            with self._cloud_store._transaction(
+                self._cloud_context(context, "question.read"),
+            ) as connection:
+                row = connection.execute(
+                    "SELECT r.canonical_json->>'request_fingerprint' FROM runs r "
+                    "WHERE r.record_id=%s AND r.state='completed' AND EXISTS ("
+                    "SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=r.tenant_id "
+                    "AND nb.workspace_id=r.workspace_id AND nb.notebook_id=%s "
+                    "AND nb.binding_kind='conversation_thread' AND nb.record_id=r.conversation_id)",
+                    (run_id, context.notebook_id),
+                ).fetchone()
+        except CloudDatabaseError as error:
+            raise QuestionRepositoryError(
+                "QUESTION_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable,
+            ) from None
+        if row is None:
+            return None
+        stored_fingerprint = row[0]
+        if not isinstance(stored_fingerprint, str):
+            raise QuestionRepositoryError("QUESTION_REPLAY_UNAVAILABLE", status=409)
+        if stored_fingerprint != request_fingerprint:
+            raise QuestionRepositoryError("IDEMPOTENCY_KEY_REUSED", status=409)
+        result = self.load_completed(context, run_id)
+        if result is None:
+            raise QuestionRepositoryError("QUESTION_RESULT_INVALID", status=500)
+        return result
 
     def load_ready_source(
         self, context: QuestionContext, source_id: str, source_version_id: str,
@@ -316,13 +362,24 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "citation.read"),
             ) as connection:
+                notebook_clause = (
+                    " AND EXISTS (SELECT 1 FROM run_results rr JOIN runs r ON "
+                    "r.tenant_id=rr.tenant_id AND r.workspace_id=rr.workspace_id "
+                    "AND r.record_id=rr.run_id JOIN notebook_bindings nb ON "
+                    "nb.tenant_id=r.tenant_id AND nb.workspace_id=r.workspace_id "
+                    "AND nb.binding_kind='conversation_thread' AND nb.record_id=r.conversation_id "
+                    "WHERE rr.tenant_id=c.tenant_id AND rr.workspace_id=c.workspace_id "
+                    "AND rr.record_id=c.run_result_id AND nb.notebook_id=%s)"
+                    if context.notebook_id is not None else ""
+                )
                 row = connection.execute(
                     "SELECT c.canonical_json->>'source_id',c.source_version_id,"
                     "c.canonical_json->>'page',es.canonical_json->>'page' "
                     "FROM citations c JOIN evidence_spans es ON "
                     "es.tenant_id=c.tenant_id AND es.workspace_id=c.workspace_id "
-                    "AND es.record_id=c.evidence_span_id WHERE c.record_id=%s",
-                    (citation_id,),
+                    "AND es.record_id=c.evidence_span_id WHERE c.record_id=%s" + notebook_clause,
+                    (citation_id, context.notebook_id)
+                    if context.notebook_id is not None else (citation_id,),
                 ).fetchone()
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
@@ -349,6 +406,16 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "citation.read"),
             ) as connection:
+                notebook_clause = (
+                    " AND EXISTS (SELECT 1 FROM run_results rr JOIN runs r ON "
+                    "r.tenant_id=rr.tenant_id AND r.workspace_id=rr.workspace_id "
+                    "AND r.record_id=rr.run_id JOIN notebook_bindings nb ON "
+                    "nb.tenant_id=r.tenant_id AND nb.workspace_id=r.workspace_id "
+                    "AND nb.binding_kind='conversation_thread' AND nb.record_id=r.conversation_id "
+                    "WHERE rr.tenant_id=c.tenant_id AND rr.workspace_id=c.workspace_id "
+                    "AND rr.record_id=c.run_result_id AND nb.notebook_id=%s)"
+                    if context.notebook_id is not None else ""
+                )
                 row = connection.execute(
                     "SELECT c.canonical_json->>'source_id',c.source_version_id,"
                     "c.canonical_json->>'page',es.canonical_json->>'page',"
@@ -366,8 +433,9 @@ class PostgresQuestionAnsweringRepository:
                     "AND iv.source_version_id=sv.record_id) AND NOT EXISTS ("
                     "SELECT 1 FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id "
                     "AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id "
-                    "AND newer.version>sv.version)",
-                    (citation_id,),
+                    "AND newer.version>sv.version)" + notebook_clause,
+                    (citation_id, context.notebook_id)
+                    if context.notebook_id is not None else (citation_id,),
                 ).fetchone()
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
@@ -409,29 +477,40 @@ class PostgresQuestionAnsweringRepository:
         ), {"kind": "page", "value": str(pdf_page)}
 
     def persist_completed(
-        self, context: QuestionContext, *, run_id: str, source_id: str,
-        source_version_id: str, question: str, selection: TextModelSelection,
+        self, context: QuestionContext, *, run_id: str, source_id: str | None,
+        source_version_id: str | None, question: str, selection: TextModelSelection,
         evidence: tuple[IndexedEvidenceChunk, ...], result: GroundedTextResult,
         provider_called: bool = True,
         egress_authorization: Mapping[str, object] | None = None,
         context_mode: str = "raw_only",
         context_sources: tuple[object, ...] | None = None,
+        request_fingerprint: str | None = None,
     ) -> StoredQuestionAnswer:
-        if not _SAFE_ID.fullmatch(run_id) or not question.strip():
+        if (
+            not _SAFE_ID.fullmatch(run_id) or not question.strip()
+            or request_fingerprint is not None
+            and not re.fullmatch(r"sha256:[0-9a-f]{64}", request_fingerprint)
+        ):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
         evidence_by_id = {item.chunk_id: item for item in evidence}
         if any(chunk_id not in evidence_by_id for chunk_id in result.cited_chunk_ids):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
 
         context_items = tuple(context_sources or ())
-        if not context_items:
+        general = context_mode == "general_ungrounded"
+        if general:
+            if context_items or source_id is not None or source_version_id is not None or evidence or result.cited_chunk_ids:
+                raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
+        elif not context_items:
+            if source_id is None or source_version_id is None:
+                raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
             context_items = (type("LegacyQuestionSource", (), {
                 "origin": "raw_source", "context_item_id": source_id,
                 "source_id": source_id, "source_version_id": source_version_id,
                 "digest_sha256": None,
             })(),)
         source_versions = [str(item.source_version_id) for item in context_items]
-        if context_mode not in {"raw_only", "daon_priority", "mixed"}:
+        if context_mode not in {"raw_only", "daon_priority", "mixed", "general_ungrounded"}:
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID")
         source_context = {
             (str(item.source_id), str(item.source_version_id)): item for item in context_items
@@ -461,6 +540,7 @@ class PostgresQuestionAnsweringRepository:
         attempt_id = self._opaque_id("attempt", run_id, selection.deployment_id)
         run_snapshot_id = self._opaque_id("run-snapshot", run_id)
         run_result_id = self._opaque_id("run-result", run_id)
+        conversation_id = self._opaque_id("conversation", run_id)
 
         citations = tuple(
             StoredCitation(
@@ -496,6 +576,35 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "question.execute"),
             ) as connection:
+                if context.notebook_id is not None:
+                    for item in context_items:
+                        binding_kind = (
+                            "knowledge_context"
+                            if str(item.origin) == "daon_knowledge" else "source"
+                        )
+                        record_id = (
+                            str(item.context_item_id)
+                            if binding_kind == "knowledge_context" else str(item.source_id)
+                        )
+                        version_id = (
+                            None if binding_kind == "knowledge_context"
+                            else str(item.source_version_id)
+                        )
+                        selected = connection.execute(
+                            "SELECT 1 FROM notebooks n WHERE n.tenant_id=%s AND n.workspace_id=%s "
+                            "AND n.notebook_id=%s AND EXISTS (SELECT 1 FROM notebook_bindings nb "
+                            "WHERE nb.tenant_id=n.tenant_id AND nb.workspace_id=n.workspace_id "
+                            "AND nb.notebook_id=n.notebook_id AND nb.binding_kind=%s "
+                            "AND nb.record_id=%s AND nb.version_id IS NOT DISTINCT FROM %s)",
+                            (
+                                context.tenant_id, context.workspace_id, context.notebook_id,
+                                binding_kind, record_id, version_id,
+                            ),
+                        ).fetchone()
+                        if selected is None:
+                            raise QuestionRepositoryError(
+                                "NOTEBOOK_SCOPE_MISMATCH", status=409,
+                            )
                 self._insert_canon(connection, context, "knowledge_scopes", scope_id, {
                     "source_version_ids": source_versions,
                     "mode": context_mode,
@@ -536,14 +645,19 @@ class PostgresQuestionAnsweringRepository:
                     "binding_version": selection.binding_version,
                     "candidate_order": [deployment_id], "role": "text",
                 })
+                self._insert_canon(connection, context, "conversations", conversation_id, {
+                    "current_run_id": run_id, "current_run_result_id": run_result_id,
+                })
                 self._insert_canon(connection, context, "runs", run_id, {
                     "question": question, "source_id": source_id,
                     "source_version_id": source_version_id, "context_mode": context_mode,
-                }, state="accepted")
+                    "request_fingerprint": request_fingerprint,
+                }, state="accepted", extra_columns=("conversation_id",),
+                    extra_values=(conversation_id,))
                 version = self._transition(connection, context, run_id, 1, "planning")
                 run_snapshot_payload: dict[str, object] = {
                     "source_version_ids": source_versions,
-                    "knowledge_scope_id": scope_id, "authority": ["source"],
+                    "knowledge_scope_id": scope_id, "authority": [] if general else ["source"],
                     "weights_requested": {}, "weights_effective": {}, "weight_clamps": [],
                     "ruleset_snapshot_ids": [], "routing_policy_version_id": routing_policy_id,
                     "candidate_order": [deployment_id], "data_area": "workspace",
@@ -554,8 +668,8 @@ class PostgresQuestionAnsweringRepository:
                     "user_policy_version": context.policy_version,
                     "organization_policy_version": context.policy_version,
                     "cost_limit": 0, "currency": "USD",
-                    "prompt_version": "cp3-grounded-question-v1",
-                    "tool_version": "document-index-v1",
+                    "prompt_version": "general-conversation-v1" if general else "cp3-grounded-question-v1",
+                    "tool_version": "provider-chat-v1" if general else "document-index-v1",
                 }
                 self._insert_canon(connection, context, "run_snapshots", run_snapshot_id,
                     run_snapshot_payload,
@@ -606,6 +720,25 @@ class PostgresQuestionAnsweringRepository:
                     }, extra_columns=("run_result_id", "source_version_id", "evidence_span_id"),
                         extra_values=(run_result_id, citation.source_version_id, citation.evidence_span_id))
                 self._transition(connection, context, run_id, version, "completed")
+                if context.notebook_id is not None:
+                    connection.execute(
+                        "WITH inserted AS (INSERT INTO notebook_bindings "
+                        "(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) "
+                        "VALUES (%s,%s,%s,'conversation_thread',%s,NULL,%s,%s) "
+                        "ON CONFLICT DO NOTHING RETURNING 1) "
+                        "INSERT INTO notebook_activities "
+                        "(tenant_id,workspace_id,notebook_id,sequence,activity_kind,actor_id,occurred_at) "
+                        "SELECT %s,%s,%s,coalesce((SELECT max(sequence) FROM notebook_activities "
+                        "WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s),0)+1,"
+                        "'context_bound',%s,%s FROM inserted",
+                        (
+                            context.tenant_id, context.workspace_id, context.notebook_id,
+                            conversation_id, context.actor_id, datetime.now(timezone.utc),
+                            context.tenant_id, context.workspace_id, context.notebook_id,
+                            context.tenant_id, context.workspace_id, context.notebook_id,
+                            context.actor_id, datetime.now(timezone.utc),
+                        ),
+                    )
                 connection.execute(
                     "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,"
                     "target_type,target_id,outcome,trace_id,policy_version,metadata) "

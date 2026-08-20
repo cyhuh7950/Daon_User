@@ -43,6 +43,7 @@ class SourceUploadPort(Protocol):
         *,
         tenant_id: str,
         workspace_id: str,
+        notebook_id: str,
         actor_id: str,
         filename: str,
         content: bytes,
@@ -82,6 +83,7 @@ class PostgresSourceUploadService:
         *,
         tenant_id: str,
         workspace_id: str,
+        notebook_id: str,
         actor_id: str,
         filename: str,
         content: bytes,
@@ -121,6 +123,7 @@ class PostgresSourceUploadService:
                 raise SourceUploadError(code, 503, retryable=record.status != "failed")
             self._canon_store.register_uploaded_source(
                 canon_context,
+                notebook_id=notebook_id,
                 source_id=source_id,
                 source_version_id=source_version_id,
                 object_id=submission.object_id,

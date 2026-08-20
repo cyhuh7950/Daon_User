@@ -13,6 +13,7 @@ test("question client posts only to same-origin BFF with bounded lineage input",
   const answer = await askGroundedQuestion(
     "workspace-cp3",
     {
+      notebookId: "notebook-cp3",
       sourceId: "source-cp3",
       sourceVersionId: "source-version-cp3",
       question: "What is the citation verification phrase?",
@@ -40,8 +41,8 @@ test("question client posts only to same-origin BFF with bounded lineage input",
 
 test("Citation URL is same-origin and opens the exact persisted page", () => {
   assert.equal(
-    citationContentUrl("workspace-cp3", { citation_id: "citation-cp3", page: 2, locator: { kind: "page", value: "2" } }),
-    "/bff/api/workspaces/workspace-cp3/citations/citation-cp3/content#page=2",
+    citationContentUrl("workspace-cp3", { citation_id: "citation-cp3", page: 2, locator: { kind: "page", value: "2" } }, { notebookId: "notebook-cp3" }),
+    "/bff/api/workspaces/workspace-cp3/citations/citation-cp3/content?notebook_id=notebook-cp3#page=2",
   );
 });
 

@@ -106,7 +106,16 @@ function installMinimalDom() {
     document,
     innerWidth: 1920,
     location: { pathname: "/" },
-    history: { pushState: (_state, _title, pathname) => { window.location.pathname = pathname; } },
+    history: {
+      pushState: (_state, _title, target) => {
+        if (String(target).startsWith("#")) window.location.hash = String(target);
+        else window.location.pathname = String(target);
+      },
+      replaceState: (_state, _title, target) => {
+        if (String(target).startsWith("#")) window.location.hash = String(target);
+        else window.location.pathname = String(target);
+      },
+    },
     localStorage: createStorage(),
     sessionStorage: createStorage(),
     addEventListener: (...args) => document.addEventListener(...args),
@@ -320,6 +329,14 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
         return polledSession;
       }
       if (command === "native_recovery_authorization_status") return { recovery_operations: operations };
+      if (command === "notebook_create") return { notebook_id: "notebook-empty", title: args.input.title, source_count: 0, output_count: 0, updated_at: "2026-08-11T01:00:00Z", status: "empty" };
+      if (command === "notebook_get") return { notebook_id: args.input.notebook_id, title: args.input.notebook_id === "notebook-empty" ? "새 Notebook" : `Notebook ${args.input.workspace_id}`, source_count: args.input.notebook_id === "notebook-empty" ? 0 : 1, output_count: 0, updated_at: "2026-08-11T01:00:00Z", status: args.input.notebook_id === "notebook-empty" ? "empty" : "active" };
+      if (command === "notebook_context") return {
+        notebook_id: args.input.notebook_id,
+        sources: args.input.notebook_id === "notebook-empty" ? [] : [{ source_id: `source-${args.input.workspace_id}`, source_version_id: `version-${args.input.workspace_id}` }],
+        knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null,
+      };
+      if (command === "notebook_list") return [{ notebook_id: "notebook-1", title: "Notebook", source_count: 1, output_count: 0, updated_at: "2026-08-11T01:00:00Z", status: "active" }];
       if (command === "workspace_list_sources" && args.input.workspace_id === "workspace-2") {
         return new Promise((resolve) => { resolveSessionTwoSources = resolve; });
       }
@@ -343,6 +360,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     const container = dom.document.createElement("div");
     dom.document.body.appendChild(container);
     root = createRoot(container);
+    window.location.hash = "#/notebooks";
     await act(async () => {
       root.render(createElement(StrictMode, null, createElement(DesktopShell, { nativeInvoke: invoke, sessionWatchOptions: { schedule: (poll) => { scheduledPoll = poll; return 1; }, cancel: () => {} } })));
     });
@@ -360,6 +378,24 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     await act(async () => { form.dispatchEvent(new MinimalEvent("submit")); });
     assert.equal(password.value, "");
     assert.ok(calls.includes("native_login"), `native_login 호출 필요: ${calls.join(",")}`);
+    assert.match(container.textContent, /지식에서 결과까지/u, "로그인 성공은 Notebook Home이어야 한다");
+    assert.equal(calls.includes("workspace_list_sources"), false, "사용자가 Notebook을 고르기 전에는 3열 조회가 없어야 한다");
+    const createOpener = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.includes("새 Notebook"))[0];
+    await act(async () => { createOpener.dispatchEvent(new MinimalEvent("click")); });
+    const createDialog = findElements(container, (node) => node.getAttribute("role") === "dialog")[0];
+    const createTitle = findElements(createDialog, (node) => node.tagName === "INPUT")[0];
+    createTitle.value = "새 Notebook";
+    const createTitleProps = Object.keys(createTitle).find((key) => key.startsWith("__reactProps$"));
+    await act(async () => { createTitle[createTitleProps].onChange({ currentTarget: createTitle, target: createTitle }); });
+    const createForm = findElements(createDialog, (node) => node.tagName === "FORM")[0] ?? createDialog;
+    const createFormProps = Object.keys(createForm).find((key) => key.startsWith("__reactProps$"));
+    await act(async () => { await createForm[createFormProps].onSubmit({ preventDefault() {} }); await Promise.resolve(); });
+    assert.ok(calls.includes("notebook_create"), "새 Notebook은 Native create를 호출해야 한다");
+    assert.match(container.textContent, /Raw Source0/u, "새 Notebook은 empty Context로 열려야 한다");
+    await act(async () => { buttonByText(container, "← Notebook 홈").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    const notebookCard = findElements(container, (node) => node.tagName === "BUTTON" && node.getAttribute("aria-label")?.endsWith("Notebook 열기"))[0];
+    assert.ok(notebookCard, "서버 목록의 Notebook 카드가 필요하다");
+    await act(async () => { notebookCard.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     assert.match(container.textContent, /인증됨 · user-1 · workspace-1/);
     assert.equal(buttonByText(container, "Workspace")?.getAttribute("aria-current"), "page");
     assert.doesNotMatch(container.textContent, /Evidence Hub/);
@@ -367,25 +403,28 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     assert.equal(shell.getAttribute("data-session-tree-key"), "session-1:5");
     assert.equal(calls.filter((command) => command === "recovery_cloud_list_backups").length, 0);
     assert.match(container.textContent, /workspace-1\.pdf/u);
-    const strictQuestion = findElements(container, (node) => node.tagName === "INPUT"
-      && (node.getAttribute("type") ?? node.type) !== "file"
-      && !["login-id", "password"].includes(node.getAttribute("name") ?? node.name)
-      && !node.getAttribute("maxlength"))[0];
+    const strictQuestionForm = findElements(container, (node) => node.tagName === "FORM"
+      && (node.getAttribute("class") ?? "").split(/\s+/u).includes("conversation-composer"))[0];
+    assert.ok(strictQuestionForm, "실제 대화 composer가 필요하다");
+    const strictQuestion = findElements(strictQuestionForm, (node) => node.tagName === "TEXTAREA")[0];
     strictQuestion.value = "근거는?";
     const strictQuestionProps = Object.keys(strictQuestion).find((key) => key.startsWith("__reactProps$"));
     assert.equal(strictQuestion.disabled, false);
     await act(async () => {
       strictQuestion[strictQuestionProps].onChange({ currentTarget: strictQuestion, target: strictQuestion });
     });
-    const strictQuestionForm = findElements(container, (node) => node.tagName === "FORM" && node.textContent.includes("질문 실행"))[0];
-    const strictQuestionFormProps = Object.keys(strictQuestionForm).find((key) => key.startsWith("__reactProps$"));
-    await act(async () => { await strictQuestionForm[strictQuestionFormProps].onSubmit({ preventDefault() {} }); });
-    assert.ok(calls.includes("workspace_ask_question"), `StrictMode 질문 Command 호출 필요: ${calls.join(",")}`);
+    const strictSubmit = findElements(strictQuestionForm, (node) => node.tagName === "BUTTON" && node.getAttribute("type") === "submit")[0];
+    assert.equal(strictSubmit.disabled, false, "질문 state가 실제 composer에 반영되어야 한다");
+    await act(async () => { strictQuestionForm.dispatchEvent(new MinimalEvent("submit")); await Promise.resolve(); });
+    assert.ok(calls.includes("workspace_ask_question"), `StrictMode 질문 Command 호출 필요: ${calls.join(",")} / ${container.textContent}`);
     assert.match(container.textContent, /StrictMode 질문 성공/u, "StrictMode effect 재실행 뒤에도 Session lifetime signal이 살아 있어야 한다");
     polledSession = { authenticated: true, session: sessionTwo };
     await act(async () => { await scheduledPoll(); await Promise.resolve(); });
     assert.equal(shell.getAttribute("data-session-tree-key"), "session-2:7");
     assert.doesNotMatch(container.textContent, /workspace-1\.pdf/u, "이전 Session Source가 재노출되면 안 된다");
+    assert.match(container.textContent, /지식에서 결과까지/u, "Workspace 전환은 이전 Notebook을 자동 선택하지 않아야 한다");
+    const workspaceTwoCard = findElements(container, (node) => node.tagName === "BUTTON" && node.getAttribute("aria-label")?.endsWith("Notebook 열기"))[0];
+    await act(async () => { workspaceTwoCard.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     assert.ok(resolveSessionTwoSources, "새 Session Source 조회가 시작되어야 한다");
     await act(async () => { resolveSessionTwoSources([{
       source_id: "source-workspace-2", source_version_id: "version-workspace-2", filename: "workspace-2.pdf",
@@ -455,7 +494,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     let authorizationCount = 0;
     let latePoll = null;
     const raceCalls = [];
-    const raceInvoke = async (command) => {
+    const raceInvoke = async (command, args) => {
       raceCalls.push(command);
       if (command === "native_session_status") return logoutStarted ? { authenticated: true, session } : { authenticated: false, session: null };
       if (command === "native_login") return { authenticated: true, session };
@@ -464,6 +503,11 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
         if (authorizationCount === 1) return { recovery_operations: operations };
         return new Promise((resolve) => { resolveLateAuthorization = resolve; });
       }
+      if (command === "notebook_get") return { notebook_id: args.input.notebook_id, title: "Notebook", source_count: 0, output_count: 0, updated_at: "2026-08-11T01:00:00Z", status: "empty" };
+      if (command === "notebook_context") return { notebook_id: args.input.notebook_id, sources: [], knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null };
+      if (command === "notebook_list") return [{ notebook_id: "notebook-1", title: "Notebook", source_count: 0, output_count: 0, updated_at: "2026-08-11T01:00:00Z", status: "empty" }];
+      if (command === "workspace_list_sources") return [];
+      if (command === "workspace_list_studio_outputs") return [];
       if (command === "native_logout") { logoutStarted = true; return new Promise((resolve) => { resolveLogout = resolve; }); }
       if (command === "recovery_cloud_list_backups") return { data: [], etag: null };
       if (command === "local_service_status") return { state: "ready", retryable: false, error_code: null };
@@ -472,12 +516,15 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     const raceContainer = dom.document.createElement("div");
     dom.document.body.appendChild(raceContainer);
     root = createRoot(raceContainer);
+    window.location.hash = "#/notebooks/notebook-1";
     await act(async () => { root.render(createElement(DesktopShell, { nativeInvoke: raceInvoke, sessionWatchOptions: { schedule: (poll) => { latePoll = poll; return 1; }, cancel: () => {} } })); });
     const raceLoginId = findElements(raceContainer, (node) => (node.getAttribute("name") ?? node.name) === "login-id")[0];
     const racePassword = findElements(raceContainer, (node) => (node.getAttribute("name") ?? node.name) === "password")[0];
     raceLoginId.value = "user-1";
     racePassword.value = "password-value";
     await act(async () => { findElements(raceContainer, (node) => node.tagName === "FORM")[0].dispatchEvent(new MinimalEvent("submit")); });
+    const raceNotebook = findElements(raceContainer, (node) => node.tagName === "BUTTON" && node.getAttribute("aria-label")?.endsWith("Notebook 열기"))[0];
+    await act(async () => { raceNotebook.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     const recoveryBeforeLogout = raceCalls.filter((command) => command.startsWith("recovery_")).length;
     await act(async () => { buttonByText(raceContainer, "Operations").dispatchEvent(new MinimalEvent("click")); });
     assert.ok(resolveLateAuthorization, "Operations 진입의 늦은 Authorization이 필요하다");
@@ -590,21 +637,21 @@ test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·un
     const uploadController = new AbortController();
     const upload = await adapter.uploadPdf(
       { name: "actual.pdf", type: "application/pdf" },
-      { signal: uploadController.signal }
+      { signal: uploadController.signal, notebookId: "notebook-1" }
     );
     const processingController = new AbortController();
-    const processing = await adapter.getProcessingStatus(upload.processing_run_id, { signal: processingController.signal });
-    const answer = await adapter.askQuestion({ sourceId: upload.source_id, sourceVersionId: upload.source_version_id, question: "근거는?" });
-    const citation = adapter.citationUrl(answer.citations[0]);
+    const processing = await adapter.getProcessingStatus(upload.processing_run_id, { signal: processingController.signal, notebookId: "notebook-1" });
+    const answer = await adapter.askQuestion({ sourceId: upload.source_id, sourceVersionId: upload.source_version_id, question: "근거는?", notebookId: "notebook-1" });
+    const citation = adapter.citationUrl(answer.citations[0], { notebookId: "notebook-1" });
     assert.deepEqual(calls.map((call) => call.url), [
       "/bff/api/workspaces/workspace-1/sources",
-      "/bff/api/workspaces/workspace-1/processing-runs/run-1",
+      "/bff/api/workspaces/workspace-1/processing-runs/run-1?notebook_id=notebook-1",
       "/bff/api/workspaces/workspace-1/questions"
     ]);
     assert.equal(processing.job_state, "completed");
     assert.equal(calls[0].signal, uploadController.signal, "actual upload fetch가 operation AbortSignal을 전달해야 한다");
     assert.equal(calls[1].signal, processingController.signal, "actual status fetch가 polling AbortSignal을 전달해야 한다");
-    assert.equal(citation, "/bff/api/workspaces/workspace-1/citations/citation-1/content#page=2");
+    assert.equal(citation, "/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1#page=2");
 
     const container = dom.document.createElement("div");
     dom.document.body.appendChild(container);
@@ -614,19 +661,22 @@ test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·un
     await act(async () => { root.unmount(); });
     root = createRoot(container);
     const failingAdapter = {
+      listSources: async () => [],
+      listKnowledgePackages: async () => [],
+      listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
       uploadPdf: async () => { throw new Error("PDF_UPLOAD_FAILED"); },
       getProcessingStatus: async () => { throw new Error("PROCESSING_STATUS_FAILED"); },
       askQuestion: async () => { throw new Error("QUESTION_FAILED"); },
       citationUrl: () => ""
     };
     await act(async () => { root.render(createElement(workspaceModule.ActualWorkspace, { workspaceId: "workspace-1", adapter: failingAdapter })); });
-    assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "loading").length, 1);
+    assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "empty").length, 1);
     const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
     assert.ok(fileInput, "실제 PDF 선택 input이 필요하다");
     fileInput.files = [{ name: "failure.pdf", type: "application/pdf" }];
     await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); });
     assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1);
-    assert.match(container.textContent, /PDF_UPLOAD_FAILED/);
+    assert.match(container.textContent, /Source를 불러오지 못했습니다/u);
   } finally {
     if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
     globalThis.fetch = priorFetch;
@@ -681,6 +731,9 @@ test("Web Processing은 queued→leased→processing→completed를 polling한 �
     let questionCalls = 0;
     const waits = [];
     const readyAdapter = {
+      listSources: async () => [],
+      listKnowledgePackages: async () => [],
+      listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
       uploadPdf: async () => uploadResult,
       getProcessingStatus: async () => processingStatuses[statusCalls++],
       askQuestion: async () => {
@@ -700,7 +753,7 @@ test("Web Processing은 queued→leased→processing→completed를 polling한 �
     assert.equal(statusCalls, 4);
     assert.deepEqual(waits, [17, 17, 17]);
     assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "ready").length, 1);
-    const questionInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) !== "file")[0];
+    const questionInput = findElements(container, (node) => node.tagName === "TEXTAREA")[0];
     assert.equal(questionInput.disabled, false);
     questionInput.value = "근거는?";
     const questionPropsKey = Object.keys(questionInput).find((key) => key.startsWith("__reactProps$"));
@@ -765,6 +818,9 @@ test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 
       let questionCalls = 0;
       let virtualNow = 0;
       const adapter = {
+        listSources: async () => [],
+        listKnowledgePackages: async () => [],
+        listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
         uploadPdf: async () => uploadResult,
         getProcessingStatus: async () => { statusCalls += 1; return scenario.status; },
         askQuestion: async () => { questionCalls += 1; throw new Error("QUESTION_SHOULD_NOT_RUN"); },
@@ -783,9 +839,9 @@ test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 
       assert.equal(statusCalls, scenario.expectedCalls, scenario.name);
       assert.equal(questionCalls, 0, scenario.name);
       assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1, scenario.name);
-      assert.match(container.textContent, new RegExp(scenario.expectedCode), scenario.name);
-      const questionInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) !== "file")[0];
-      assert.equal(questionInput.disabled, true, scenario.name);
+      assert.match(container.textContent, /Source를 불러오지 못했습니다/u, scenario.name);
+      const questionInput = findElements(container, (node) => node.tagName === "TEXTAREA")[0];
+      assert.equal(questionInput.disabled, false, scenario.name);
       await act(async () => { root.unmount(); });
       root = null;
     }
@@ -797,6 +853,9 @@ test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 
     let questionCalls = 0;
     let waitSignal;
     const adapter = {
+      listSources: async () => [],
+      listKnowledgePackages: async () => [],
+      listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
       uploadPdf: async () => uploadResult,
       getProcessingStatus: async (_runId, { signal } = {}) => { statusCalls += 1; assert.equal(signal?.aborted, false); return pendingStatus; },
       askQuestion: async () => { questionCalls += 1; throw new Error("QUESTION_SHOULD_NOT_RUN"); },
@@ -869,6 +928,9 @@ test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 1
     let statusCalls = 0;
     const waitSignals = [];
     const successAdapter = {
+      listSources: async () => [],
+      listKnowledgePackages: async () => [],
+      listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
       uploadPdf: async () => uploadResult,
       getProcessingStatus: async () => {
         statusCalls += 1;
@@ -908,6 +970,9 @@ test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 1
     let timeoutStatusCalls = 0;
     const statusSignals = [];
     const hangingAdapter = {
+      listSources: async () => [],
+      listKnowledgePackages: async () => [],
+      listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
       uploadPdf: async () => uploadResult,
       getProcessingStatus: async (_runId, { signal } = {}) => {
         timeoutStatusCalls += 1;
@@ -933,7 +998,7 @@ test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 1
     assert.ok(timeoutStatusCalls >= 2, "개별 status 10초 제한 뒤 전체 Deadline 전이면 재시도해야 한다");
     assert.ok(statusSignals.every((signal) => signal?.aborted), "각 status fetch의 request-local signal은 제한 시 중단되어야 한다");
     assert.equal(findElements(timeoutContainer, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1);
-    assert.match(timeoutContainer.textContent, /PROCESSING_TIMEOUT/);
+    assert.match(timeoutContainer.textContent, /Source를 불러오지 못했습니다/u);
   } finally {
     if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
     if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
@@ -1089,6 +1154,9 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
       dom.document.body.appendChild(container);
       root = createRoot(container);
       const adapter = {
+        listSources: async () => [],
+        listKnowledgePackages: async () => [],
+        listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
         uploadPdf: async () => uploadResult,
         getProcessingStatus: async () => processingStatus,
         askQuestion: async () => scenario.answer,
@@ -1098,7 +1166,7 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
       const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
       fileInput.files = [{ name: "ready.pdf", type: "application/pdf" }];
       await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
-      const questionInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) !== "file")[0];
+      const questionInput = findElements(container, (node) => node.tagName === "TEXTAREA")[0];
       questionInput.value = "근거는?";
       const questionPropsKey = Object.keys(questionInput).find((key) => key.startsWith("__reactProps$"));
       assert.ok(questionPropsKey, "실제 React question input props가 필요하다");
@@ -1116,7 +1184,7 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
       }
       assert.equal(renderError, null, `${scenario.name}는 render crash 없이 Safe state로 전환해야 한다`);
       assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === scenario.expected).length, 1, scenario.name);
-      if (scenario.expected === "error") assert.match(container.textContent, /QUESTION_RESPONSE_INVALID/, scenario.name);
+      if (scenario.expected === "error") assert.doesNotMatch(container.textContent, /근거 답변/u, scenario.name);
       else {
         assert.match(container.textContent, /근거 답변/);
         assert.equal(findElements(container, (node) => node.tagName === "A" && node.getAttribute("href") === scenario.url).length, 1);
@@ -1282,7 +1350,7 @@ test("Web AuthPane actual React는 로그인·가입 인증·비밀번호 재설
       await Promise.resolve();
     });
     assert.equal(inputNamed("password").value, "");
-    assert.deepEqual(redirects, ["/workspaces/workspace-login-1"]);
+    assert.deepEqual(redirects, ["/notebooks"]);
   } finally {
     if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
     globalThis.fetch = priorFetch;
@@ -1340,7 +1408,7 @@ test("Web Login actual React는 same-origin 성공 응답의 Workspace로 이동
       await Promise.resolve();
     });
     assert.equal(calls[0].url, "/bff/api/auth/login");
-    assert.deepEqual(redirects, ["/workspaces/workspace-login-1"]);
+    assert.deepEqual(redirects, ["/notebooks"]);
   } finally {
     if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
     globalThis.fetch = priorFetch;
@@ -1745,4 +1813,386 @@ test("PostCSS 보정 이력은 고정 Successor Blob으로, 현재 Checkout은 �
   assert.equal(vitePostcss.version, "8.5.23");
   assert.equal(nextPostcss.invalid, '"8.5.10" from node_modules/next');
   assert.equal(vitePostcss.invalid, '"8.5.10" from node_modules/next');
+});
+test("Native Source Question Studio는 canonical Notebook scope와 rich Citation exact shape를 wire에 결속한다", async () => {
+  const bridge = await readFile("apps/desktop/src-tauri/src/workspace_bridge.rs", "utf8");
+  const session = await readFile("apps/desktop/src-tauri/src/native_session.rs", "utf8");
+  assert.match(bridge, /pub notebook_id: String/u);
+  assert.match(session, /X-Notebook-Id/u);
+  assert.match(session, /notebook_id=/u);
+  assert.match(bridge, /pub origin: String/u);
+  assert.match(bridge, /pub context_item_id: String/u);
+  assert.match(bridge, /pub locator: WorkspaceCitationLocator/u);
+});
+
+test("Desktop Notebook async epoch는 Session·Workspace·Hash 전환 뒤 stale 응답 A-D를 렌더하지 않는다", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".phase-e-stale-react-"));
+  const dom = installMinimalDom();
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((next) => { resolve = next; });
+    return { promise, resolve };
+  };
+  const session = (suffix) => ({
+    user_id: `user-${suffix}`, tenant_id: `tenant-${suffix}`, workspace_id: `workspace-${suffix}`,
+    session_id: `session-${suffix}`, device_id: `device-${suffix}`, expires_at: "2026-08-20T23:59:59Z",
+  });
+  const view = (notebookId, title) => ({
+    notebook_id: notebookId, title, source_count: 0, output_count: 0,
+    updated_at: "2026-08-20T01:02:03Z", status: "empty",
+  });
+  const context = (notebookId, sourceId = null) => ({
+    notebook_id: notebookId,
+    sources: sourceId ? [{ source_id: sourceId, source_version_id: `version-${sourceId}` }] : [],
+    knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [],
+    generation_settings_ids: [], conversation: null,
+  });
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({
+      configFile: false, logLevel: "silent", root: repositoryRoot,
+      build: {
+        outDir: bundleRoot, emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/desktop/src/desktop-shell.jsx"), formats: ["es"], fileName: "desktop-shell-stale" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      },
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("desktop-shell-stale") && /\.(?:m?js)$/u.test(name));
+    const { DesktopShell } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?stale=${Date.now()}`);
+    const mount = async ({ invoke, hash = "#/notebooks" }) => {
+      const container = dom.document.createElement("div");
+      dom.document.body.appendChild(container);
+      let poll;
+      window.location.hash = hash;
+      root = createRoot(container);
+      await act(async () => {
+        root.render(createElement(DesktopShell, { nativeInvoke: invoke, sessionWatchOptions: { schedule: (next) => { poll = next; return 1; }, cancel: () => {} } }));
+        await Promise.resolve();
+      });
+      return { container, poll: () => poll() };
+    };
+    const unmount = async () => { await act(async () => { root.unmount(); }); root = null; };
+
+    // A. 이전 Workspace list가 늦게 끝나도 새 Session/Home을 덮지 않는다.
+    {
+      const oldList = deferred();
+      let status = { authenticated: true, session: session("old") };
+      const invoke = async (command, args) => {
+        if (command === "native_session_status") return status;
+        if (command === "native_recovery_authorization_status") return { recovery_operations: [] };
+        if (command === "notebook_list") return args.input.workspace_id === "workspace-old" ? oldList.promise : [view("notebook-new", "NEW WORKSPACE")];
+        throw new Error(`unexpected:${command}`);
+      };
+      const mountedCase = await mount({ invoke });
+      status = { authenticated: true, session: session("new") };
+      await act(async () => { await mountedCase.poll(); await Promise.resolve(); });
+      oldList.resolve([view("notebook-old", "OLD WORKSPACE")]);
+      await act(async () => { await oldList.promise; await Promise.resolve(); });
+      assert.match(mountedCase.container.textContent, /NEW WORKSPACE/u);
+      assert.doesNotMatch(mountedCase.container.textContent, /OLD WORKSPACE/u);
+      await unmount();
+    }
+
+    // B. 이전 get 뒤 context가 지연되어도 Workspace 전환 뒤 3열/Hash를 복원하지 않는다.
+    {
+      const oldContext = deferred();
+      let status = { authenticated: true, session: session("old") };
+      const invoke = async (command, args) => {
+        if (command === "native_session_status") return status;
+        if (command === "native_recovery_authorization_status") return { recovery_operations: [] };
+        if (command === "notebook_get") return view(args.input.notebook_id, "OLD SELECTED");
+        if (command === "notebook_context") return oldContext.promise;
+        if (command === "notebook_list") return [view("notebook-new", "NEW HOME")];
+        throw new Error(`unexpected:${command}`);
+      };
+      const mountedCase = await mount({ invoke, hash: "#/notebooks/notebook-old" });
+      status = { authenticated: true, session: session("new") };
+      await act(async () => { await mountedCase.poll(); await Promise.resolve(); });
+      oldContext.resolve(context("notebook-old", "old-source"));
+      await act(async () => { await oldContext.promise; await Promise.resolve(); });
+      assert.doesNotMatch(mountedCase.container.textContent, /OLD SELECTED|old-source/u);
+      assert.equal(window.location.hash, "#/notebooks");
+      await unmount();
+    }
+
+    // C. 이전 create가 Logout 뒤 완료되어도 카드와 선택 Hash를 만들지 않는다.
+    {
+      const oldCreate = deferred();
+      let status = { authenticated: true, session: session("old") };
+      const invoke = async (command) => {
+        if (command === "native_session_status") return status;
+        if (command === "native_recovery_authorization_status") return { recovery_operations: [] };
+        if (command === "notebook_list") return [];
+        if (command === "notebook_create") return oldCreate.promise;
+        if (command === "native_logout") { status = { authenticated: false, session: null }; return status; }
+        throw new Error(`unexpected:${command}`);
+      };
+      const mountedCase = await mount({ invoke });
+      await act(async () => { findElements(mountedCase.container, (node) => node.tagName === "BUTTON" && node.textContent.includes("새 Notebook"))[0].dispatchEvent(new MinimalEvent("click")); });
+      const dialog = findElements(mountedCase.container, (node) => node.getAttribute("role") === "dialog")[0];
+      const input = findElements(dialog, (node) => node.tagName === "INPUT")[0];
+      input.value = "OLD CREATED";
+      const inputProps = Object.keys(input).find((key) => key.startsWith("__reactProps$"));
+      await act(async () => { input[inputProps].onChange({ currentTarget: input, target: input }); });
+      const form = findElements(dialog, (node) => node.tagName === "FORM")[0];
+      const formProps = Object.keys(form).find((key) => key.startsWith("__reactProps$"));
+      let createPromise;
+      await act(async () => { createPromise = form[formProps].onSubmit({ preventDefault() {} }); await Promise.resolve(); });
+      await act(async () => { buttonByText(mountedCase.container, "⚙ 설정").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+      await act(async () => { buttonByText(mountedCase.container, "로그아웃").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+      oldCreate.resolve(view("notebook-old-created", "OLD CREATED"));
+      await act(async () => { await createPromise; await Promise.resolve(); });
+      assert.doesNotMatch(mountedCase.container.textContent, /OLD CREATED/u);
+      assert.notEqual(window.location.hash, "#/notebooks/notebook-old-created");
+      await unmount();
+    }
+
+    // D. popstate 응답 역순에서는 마지막 Target만 선택한다.
+    {
+      const oldContext = deferred();
+      const newGet = deferred();
+      const newContext = deferred();
+      const status = { authenticated: true, session: session("same") };
+      const invoke = async (command, args) => {
+        if (command === "native_session_status") return status;
+        if (command === "native_recovery_authorization_status") return { recovery_operations: [] };
+        if (command === "notebook_list") return [];
+        if (command === "notebook_get") return args.input.notebook_id === "notebook-old" ? view("notebook-old", "OLD TARGET") : newGet.promise;
+        if (command === "notebook_context") return args.input.notebook_id === "notebook-old" ? oldContext.promise : newContext.promise;
+        if (command === "workspace_list_sources" || command === "workspace_list_studio_outputs") return [];
+        throw new Error(`unexpected:${command}`);
+      };
+      const mountedCase = await mount({ invoke });
+      window.location.hash = "#/notebooks/notebook-old";
+      await act(async () => { window.dispatchEvent(new MinimalEvent("popstate")); await Promise.resolve(); });
+      window.location.hash = "#/notebooks/notebook-new";
+      await act(async () => { window.dispatchEvent(new MinimalEvent("popstate")); await Promise.resolve(); });
+      newGet.resolve(view("notebook-new", "NEW TARGET"));
+      await act(async () => { await newGet.promise; await Promise.resolve(); });
+      newContext.resolve(context("notebook-new"));
+      await act(async () => { await newContext.promise; await Promise.resolve(); });
+      oldContext.resolve(context("notebook-old", "old-source"));
+      await act(async () => { await oldContext.promise; await Promise.resolve(); });
+      assert.match(mountedCase.container.textContent, /NEW TARGET/u);
+      assert.doesNotMatch(mountedCase.container.textContent, /OLD TARGET|old-source/u);
+      assert.equal(window.location.hash, "#/notebooks/notebook-new");
+      await unmount();
+    }
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    dom.restore();
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
+});
+
+test("Desktop session revalidate epoch는 reverse status/context 응답 A-F를 latest-only로 적용한다", async (t) => {
+  const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const bundleRoot = await mkdtemp(path.join(repositoryRoot, ".phase-e-revalidate-react-"));
+  const dom = installMinimalDom();
+  const priorNodeEnv = process.env.NODE_ENV;
+  let root;
+  const deferred = () => {
+    let resolve;
+    let reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  const session = (suffix) => ({
+    user_id: `user-${suffix}`, tenant_id: `tenant-${suffix}`, workspace_id: `workspace-${suffix}`,
+    session_id: `session-${suffix}`, device_id: `device-${suffix}`, expires_at: "2026-08-20T23:59:59Z",
+  });
+  const view = (notebookId, title, sourceCount = 0) => ({
+    notebook_id: notebookId, title, source_count: sourceCount, output_count: 0,
+    updated_at: "2026-08-20T01:02:03Z", status: sourceCount ? "active" : "empty",
+  });
+  const emptyContext = (notebookId) => ({
+    notebook_id: notebookId, sources: [], knowledge_context_ids: [], conversation_thread_ids: [],
+    studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null,
+  });
+  const richContext = (notebookId) => ({
+    notebook_id: notebookId,
+    sources: [{ source_id: "source-old", source_version_id: "version-old" }],
+    knowledge_context_ids: [], conversation_thread_ids: ["thread-old"], studio_output_ids: ["output-old"],
+    output_version_ids: ["output-version-old"], generation_settings_ids: [],
+    conversation: {
+      conversation_thread_id: "thread-old",
+      answer: {
+        run_id: "run-old", run_result_id: "result-old", answer: "OLD ANSWER MUST NOT RENDER", insufficient: false,
+        citations: [{ citation_id: "citation-old", source_id: "source-old", source_version_id: "version-old", evidence_span_id: "span-old", page: 7, origin: "raw_source", context_item_id: "source-old", locator: { kind: "page", value: "7" } }],
+      },
+    },
+  });
+  try {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({
+      configFile: false, logLevel: "silent", root: repositoryRoot,
+      build: {
+        outDir: bundleRoot, emptyOutDir: false,
+        lib: { entry: path.join(repositoryRoot, "apps/desktop/src/desktop-shell.jsx"), formats: ["es"], fileName: "desktop-shell-revalidate" },
+        rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+      },
+    });
+    const bundleEntry = (await readdir(bundleRoot)).find((name) => name.startsWith("desktop-shell-revalidate") && /\.(?:m?js)$/u.test(name));
+    const { DesktopShell } = await import(`${pathToFileURL(path.join(bundleRoot, bundleEntry)).href}?revalidate=${Date.now()}`);
+    const mount = async (invoke) => {
+      const container = dom.document.createElement("div");
+      dom.document.body.appendChild(container);
+      let poll;
+      window.location.hash = "#/notebooks";
+      root = createRoot(container);
+      await act(async () => {
+        root.render(createElement(DesktopShell, { nativeInvoke: invoke, sessionWatchOptions: { schedule: (next) => { poll = next; return 1; }, cancel: () => {} } }));
+        await Promise.resolve();
+      });
+      return { container, poll: () => poll() };
+    };
+    const unmount = async () => { await act(async () => { root.unmount(); }); root = null; };
+    const dispatchRevalidate = async () => {
+      await act(async () => { window.dispatchEvent(new MinimalEvent("popstate")); await Promise.resolve(); });
+    };
+
+    await t.test("A old authenticated status는 newer unauthenticated 완료 뒤 identity를 복원하지 않는다", async () => {
+      const oldStatus = deferred();
+      const queue = [{ authenticated: true, session: session("old") }, oldStatus.promise, { authenticated: false, session: null }];
+      const invoke = async (command) => {
+        if (command === "native_session_status") return queue.shift();
+        if (command === "native_recovery_authorization_status") return { recovery_operations: [] };
+        if (command === "notebook_list") return [];
+        throw new Error(`unexpected:${command}`);
+      };
+      const mountedCase = await mount(invoke);
+      await dispatchRevalidate();
+      await dispatchRevalidate();
+      oldStatus.resolve({ authenticated: true, session: session("old") });
+      await act(async () => { await oldStatus.promise; await Promise.resolve(); });
+      assert.match(mountedCase.container.textContent, /Daon 사용자 프로그램/u);
+      assert.doesNotMatch(mountedCase.container.textContent, /user-old|OLD/u);
+      await unmount();
+    });
+
+    await t.test("B old unauthenticated status는 newer authenticated Session을 logout시키지 않는다", async () => {
+      const oldStatus = deferred();
+      const queue = [{ authenticated: true, session: session("old") }, oldStatus.promise, { authenticated: true, session: session("new") }];
+      const invoke = async (command, args) => {
+        if (command === "native_session_status") return queue.shift();
+        if (command === "native_recovery_authorization_status") return { recovery_operations: [] };
+        if (command === "notebook_list") return [view(`notebook-${args.input.workspace_id}`, "LATEST HOME")];
+        throw new Error(`unexpected:${command}`);
+      };
+      const mountedCase = await mount(invoke);
+      await dispatchRevalidate();
+      await dispatchRevalidate();
+      oldStatus.resolve({ authenticated: false, session: null });
+      await act(async () => { await oldStatus.promise; await Promise.resolve(); });
+      assert.match(mountedCase.container.textContent, /LATEST HOME/u);
+      assert.doesNotMatch(mountedCase.container.textContent, /Daon 사용자 프로그램/u);
+      await unmount();
+    });
+
+    await t.test("C old status rejection은 newer authenticated UI를 error/login으로 바꾸지 않는다", async () => {
+      const oldStatus = deferred();
+      const queue = [{ authenticated: true, session: session("old") }, oldStatus.promise, { authenticated: true, session: session("new") }];
+      const invoke = async (command, args) => {
+        if (command === "native_session_status") return queue.shift();
+        if (command === "native_recovery_authorization_status") return { recovery_operations: [] };
+        if (command === "notebook_list") return [view(`notebook-${args.input.workspace_id}`, "LATEST AUTHENTICATED")];
+        throw new Error(`unexpected:${command}`);
+      };
+      const mountedCase = await mount(invoke);
+      await dispatchRevalidate();
+      await dispatchRevalidate();
+      oldStatus.reject(new Error("OLD_STATUS_REJECTED"));
+      await act(async () => { await oldStatus.promise.catch(() => {}); await Promise.resolve(); });
+      assert.match(mountedCase.container.textContent, /LATEST AUTHENTICATED/u);
+      assert.doesNotMatch(mountedCase.container.textContent, /Daon 사용자 프로그램|NOTEBOOK_UNAVAILABLE/u);
+      await unmount();
+    });
+
+    const runRichContextRace = async ({ assertInteractionZero }) => {
+      const oldStatus = deferred();
+      const oldContext = deferred();
+      let status = { authenticated: true, session: session("old") };
+      let statusReads = 0;
+      let poll;
+      const workspaceCalls = [];
+      const invoke = async (command, args) => {
+        if (command === "native_session_status") {
+          statusReads += 1;
+          if (statusReads === 1) return status;
+          if (statusReads === 2) return oldStatus.promise;
+          return status;
+        }
+        if (command === "native_recovery_authorization_status") return { recovery_operations: [] };
+        if (command === "notebook_list") return [view("notebook-new", "LATEST WORKSPACE")];
+        if (command === "notebook_get") return view(args.input.notebook_id, "OLD RICH NOTEBOOK", 1);
+        if (command === "notebook_context") return oldContext.promise;
+        if (command.startsWith("workspace_")) { workspaceCalls.push(command); return []; }
+        throw new Error(`unexpected:${command}`);
+      };
+      const container = dom.document.createElement("div");
+      dom.document.body.appendChild(container);
+      window.location.hash = "#/notebooks";
+      root = createRoot(container);
+      await act(async () => {
+        root.render(createElement(DesktopShell, { nativeInvoke: invoke, sessionWatchOptions: { schedule: (next) => { poll = next; return 1; }, cancel: () => {} } }));
+        await Promise.resolve();
+      });
+      window.location.hash = "#/notebooks/notebook-old";
+      await dispatchRevalidate();
+      status = { authenticated: true, session: session("new") };
+      await act(async () => { await poll(); await Promise.resolve(); });
+      oldStatus.resolve({ authenticated: true, session: session("old") });
+      await act(async () => { await oldStatus.promise; await Promise.resolve(); });
+      oldContext.resolve(richContext("notebook-old"));
+      await act(async () => { await oldContext.promise; await Promise.resolve(); });
+      assert.match(container.textContent, /LATEST WORKSPACE/u);
+      assert.doesNotMatch(container.textContent, /OLD RICH NOTEBOOK|OLD ANSWER MUST NOT RENDER|citation-old|source-old/u);
+      assert.equal(window.location.hash, "#/notebooks");
+      if (assertInteractionZero) {
+        assert.equal(workspaceCalls.filter((command) => /ask_question|studio/u.test(command)).length, 0);
+        assert.equal(findElements(container, (node) => node.tagName === "TEXTAREA").length, 0);
+      }
+      await unmount();
+    };
+
+    await t.test("D old workspace status와 rich context 역순 완료는 old answer/citation/hash를 렌더하지 않는다", async () => {
+      await runRichContextRace({ assertInteractionZero: false });
+    });
+
+    await t.test("E stale rich context는 old Question/Studio interaction과 Native command를 만들지 않는다", async () => {
+      await runRichContextRace({ assertInteractionZero: true });
+    });
+
+    await t.test("F current valid Home 선택은 정상 3열 Context를 유지한다", async () => {
+      const current = { authenticated: true, session: session("valid") };
+      const invoke = async (command, args) => {
+        if (command === "native_session_status") return current;
+        if (command === "native_recovery_authorization_status") return { recovery_operations: [] };
+        if (command === "notebook_list") return [view("notebook-valid", "VALID NOTEBOOK", 1)];
+        if (command === "notebook_get") return view(args.input.notebook_id, "VALID NOTEBOOK", 1);
+        if (command === "notebook_context") return emptyContext(args.input.notebook_id);
+        if (command === "workspace_list_sources" || command === "workspace_list_studio_outputs") return [];
+        throw new Error(`unexpected:${command}`);
+      };
+      const mountedCase = await mount(invoke);
+      const card = findElements(mountedCase.container, (node) => node.tagName === "BUTTON" && node.getAttribute("aria-label")?.endsWith("Notebook 열기"))[0];
+      await act(async () => { card.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+      assert.match(mountedCase.container.textContent, /VALID NOTEBOOK|Source·지식·권위/u);
+      assert.equal(window.location.hash, "#/notebooks/notebook-valid");
+      await unmount();
+    });
+  } finally {
+    if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
+    dom.restore();
+    if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
+    await rm(bundleRoot, { recursive: true, force: true });
+  }
 });

@@ -29,15 +29,15 @@ const envelope = (data = answerData) => ({
 
 const request = (payload) => askGroundedQuestion(
   "workspace-1",
-  { sourceId: "source-1", sourceVersionId: "version-1", question: "근거는?" },
+  { notebookId: "notebook-1", sourceId: "source-1", sourceVersionId: "version-1", question: "근거는?" },
   { idempotencyKey: "question-1", fetchImpl: async () => Response.json(payload) }
 );
 
 test("Question API는 exact outer/data와 Citation Safe DTO만 반환한다", async () => {
   assert.deepEqual(await request(envelope()), answerData);
   assert.equal(
-    citationContentUrl("workspace-1", citation),
-    "/bff/api/workspaces/workspace-1/citations/citation-1/content#page=2"
+    citationContentUrl("workspace-1", citation, { notebookId: "notebook-1" }),
+    "/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1#page=2"
   );
 });
 
@@ -48,15 +48,15 @@ test("Daon Text Citation URL은 PDF page fragment를 강제하지 않는다", ()
       origin: "daon_knowledge",
       context_item_id: "knowledge-package-1",
       locator: { kind: "section", value: "span-1" },
-    }),
-    "/bff/api/workspaces/workspace-1/citations/citation-1/content",
+    }, { notebookId: "notebook-1" }),
+    "/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1",
   );
 });
 
 test("Question authorization은 same-origin exact body와 동일 Idempotency-Key만 사용한다", async () => {
   const calls = [];
   const data = await authorizeGroundedQuestion("workspace-1", {
-    sourceId: "source-1", sourceVersionId: "version-1", question: "근거는?", password: "memory-only",
+    notebookId: "notebook-1", sourceId: "source-1", sourceVersionId: "version-1", question: "근거는?", password: "memory-only",
   }, { idempotencyKey: "question-auth-0001", fetchImpl: async (url, init) => {
     calls.push({ url, init, body: JSON.parse(init.body) });
     return Response.json({ data: { step_up_authorization_id: "grant-1", expires_at: "2026-08-13T00:00:00Z", run_id: "run-1", request_fingerprint: `sha256:${"a".repeat(64)}` }, meta: { trace_id: "trace-1" } }, { status: 201 });
@@ -64,7 +64,7 @@ test("Question authorization은 same-origin exact body와 동일 Idempotency-Key
   assert.equal(data.step_up_authorization_id, "grant-1");
   assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/questions/authorization");
   assert.equal(calls[0].init.headers["Idempotency-Key"], "question-auth-0001");
-  assert.deepEqual(Object.keys(calls[0].body).sort(), ["password", "question", "source_id", "source_version_id"]);
+  assert.deepEqual(Object.keys(calls[0].body).sort(), ["notebook_id", "password", "question", "source_id", "source_version_id"]);
 });
 
 test("Question API는 승인 지식과 Raw Source를 하나의 exact Knowledge Context로 전송한다", async () => {
@@ -76,7 +76,7 @@ test("Question API는 승인 지식과 Raw Source를 하나의 exact Knowledge C
       { resourceKind: "source", resourceId: "source-1", versionId: "version-1" },
     ],
   };
-  await askGroundedQuestion("workspace-1", { knowledgeContext, question: "종합해줘" }, {
+  await askGroundedQuestion("workspace-1", { notebookId: "notebook-1", knowledgeContext, question: "종합해줘" }, {
     idempotencyKey: "question-mixed-0001",
     fetchImpl: async (url, init) => {
       calls.push({ url, body: JSON.parse(init.body) });
@@ -84,6 +84,7 @@ test("Question API는 승인 지식과 Raw Source를 하나의 exact Knowledge C
     },
   });
   assert.deepEqual(calls[0].body, {
+    notebook_id: "notebook-1",
     question: "종합해줘",
     knowledge_context: {
       mode: "mixed",
@@ -98,7 +99,7 @@ test("Question API는 승인 지식과 Raw Source를 하나의 exact Knowledge C
 test("Question API는 non-JSON gateway timeout과 upstream failure를 안전 오류로 보존한다", async () => {
   const execute = (status) => askGroundedQuestion(
     "workspace-1",
-    { sourceId: "source-1", sourceVersionId: "version-1", question: "근거는?" },
+    { notebookId: "notebook-1", sourceId: "source-1", sourceVersionId: "version-1", question: "근거는?" },
     {
       idempotencyKey: "question-gateway-error",
       fetchImpl: async () => new Response("<html>gateway</html>", {

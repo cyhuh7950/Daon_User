@@ -1,0 +1,64 @@
+{
+  "issue_id": "R1-M8-10-REAL-DATA-CONVERSATION-E2E-I001",
+  "status": "PARTIAL",
+  "classification": [
+    "CODE_VERIFIED",
+    "ACTUAL_POSTGRES_PASS",
+    "ACTUAL_PROVIDER_TRANSPORT_PASS",
+    "PRODUCT_E2E_NOT_RUN"
+  ],
+  "actual": {
+    "postgres_tests": 3,
+    "http_replay_current_side_effects": 0,
+    "fingerprint_mismatch_writes": 0,
+    "cross_notebook_replays": 0,
+    "provider": "UPSTAGE",
+    "provider_calls": 1,
+    "provider_http_status": 200,
+    "product_source_to_studio": "NOT_RUN",
+    "browser_1920x1080": "NOT_RUN",
+    "windows": "NOT_RUN",
+    "cleanup": {
+      "database": 0,
+      "role": 0,
+      "remote_temp": 0
+    }
+  },
+  "artifacts": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-REAL-DATA-CONVERSATION-E2E-I001/real-data-conversation-transcript.md",
+      "bytes": 2792,
+      "sha256": "92b95e0fdd5dfb9b637f4d81a1d72bad3234ea5f32dc9d501764ccc4659ee563"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M8-10-REAL-DATA-CONVERSATION-E2E-I001_progress.md",
+      "bytes": 10327,
+      "sha256": "e0d2461c491de021ea155c95b0b852795a4c0c5368c4ac248bfbfbf298a52ea8"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M8-10-REAL-DATA-CONVERSATION-E2E-I001_completion_report.md",
+      "bytes": 3236,
+      "sha256": "5fb3ffa21b2140ad9d626dd495a5dde685cdbb9d6cd1c09fa0fc6398ea9a6131"
+    },
+    {
+      "path": "packages/contracts/openapi/v1/openapi.json",
+      "bytes": 284544,
+      "sha256": "f7ad570e04ad5fb1cf2aec72c6e7bd28c8ffdb4c22e76ae508f625837371344b"
+    },
+    {
+      "path": "services/api/src/daon_user_api/question_answering_service.py",
+      "bytes": 18969,
+      "sha256": "dba9d19cec2ae4f0e68c68f29d7cdb111f829bdea29d5390a24f18bb9272265b"
+    },
+    {
+      "path": "packages/ui/src/conversation-intent.js",
+      "bytes": 814,
+      "sha256": "5f9f7f38b7053dc3b1a10cc29e2be28346497068a254672d70ee2362012af8c7"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/workspace_bridge.rs",
+      "bytes": 48966,
+      "sha256": "c8520aee599ae21f84198e53412b8b61e8fbd8f03ddca6cd6afec93b374d182a"
+    }
+  ]
+}

@@ -8,7 +8,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/auth/native/login",
+  "/api/v1/preferences/screen",
+  "/api/v1/workspaces/{id}/license",
+  "/api/v1/workspaces/{id}/notebooks",
+  "/api/v1/workspaces/{id}/notebooks/{notebook_id}",
+  "/api/v1/workspaces/{id}/notebooks/{notebook_id}/context",
+  "/api/v1/organizations/{id}/license",
   "/api/v1/session",
+  "/api/v1/session/logout",
   "/api/v1/session/step-up",
   "/api/v1/session/oidc/transactions",
   "/api/v1/session/oidc/callback",
@@ -90,7 +97,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/restore-requests/{id}/cancel"
 ]);
 
-const HTTP_METHODS = new Set(["get", "post", "patch", "delete"]);
+const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete"]);
 const COMMON_ERROR_STATUSES = ["400", "401", "403", "404", "409", "412", "500"];
 const REQUIRED_ERROR_CODES = [
   "COST_LIMIT_EXCEEDED",
@@ -304,7 +311,7 @@ function validateIdentityContract(document) {
     "OidcLoginStartRequest", "OidcLoginStart",
     "OidcCallbackRequest", "NativeRefreshRequest", "StepUpAuthorizationRequest",
     "StepUpAuthorization", "DeviceRevokeRequest", "DeviceRevocation",
-    "SessionRevokeRequest", "SessionRevocation"
+    "SessionRevokeRequest", "SessionRevocation", "CurrentSessionLogout"
   ]) {
     if (!isObject(schemas[name])) fail(`missing identity schema ${name}`);
   }
@@ -385,9 +392,17 @@ function validateIdentityContract(document) {
   if (schemas.SessionRevokeRequest?.properties?.step_up_authorization?.writeOnly !== true) {
     fail("Session revoke Step-up value must be writeOnly");
   }
+  const currentLogout = schemas.CurrentSessionLogout;
+  if (
+    currentLogout?.type !== "object" || currentLogout.additionalProperties !== false
+    || JSON.stringify(currentLogout.required) !== JSON.stringify(["status", "replayed"])
+    || currentLogout.properties?.status?.const !== "logged_out"
+    || currentLogout.properties?.replayed?.type !== "boolean"
+  ) fail("Current session logout must expose only the safe idempotent result");
   const requiredOperations = {
     "/api/v1/auth/native/login": ["post", "NativeCredentialSessionResponse"],
     "/api/v1/session": ["get", "IdentitySessionResponse"],
+    "/api/v1/session/logout": ["post", "CurrentSessionLogoutResponse"],
     "/api/v1/session/step-up": ["post", "StepUpAuthorizationResponse"],
     "/api/v1/session/oidc/transactions": ["post", "OidcLoginStartResponse"],
     "/api/v1/session/oidc/callback": ["post", "IdentitySessionResponse"],
@@ -407,6 +422,38 @@ function validateIdentityContract(document) {
   const callbackDescription = document.paths?.["/api/v1/session/oidc/callback"]?.post?.description ?? "";
   if (!callbackDescription.includes("same-origin") || !callbackDescription.includes("HTTPS")) {
     fail("OIDC callback must distinguish Web same-origin and Native HTTPS delivery");
+  }
+}
+
+function validateLicenseContract(document) {
+  const schemas = document.components?.schemas ?? {};
+  const view = schemas.LicenseView;
+  const required = [
+    "product", "edition", "license_id_hint", "issued_at", "expires_at", "status",
+    "features", "resources", "warning", "creation_allowed", "existing_read_allowed",
+    "existing_export_allowed", "can_apply"
+  ];
+  if (view?.type !== "object" || view.additionalProperties !== false) fail("LicenseView must be an exact safe projection");
+  for (const field of required) if (!(view?.required ?? []).includes(field)) fail(`LicenseView missing ${field}`);
+  for (const forbidden of ["signature", "claims", "claims_digest", "signing_key_id", "organization_id"]) {
+    if (forbidden in (view?.properties ?? {})) fail(`LicenseView exposes forbidden ${forbidden}`);
+  }
+  const apply = schemas.LicenseApplyRequest;
+  if (
+    apply?.type !== "object" || apply.additionalProperties !== false
+    || JSON.stringify(apply.required) !== JSON.stringify(["document", "step_up_authorization_id"])
+    || apply.properties?.document?.writeOnly !== true
+    || apply.properties?.step_up_authorization_id?.writeOnly !== true
+  ) fail("LicenseApplyRequest must keep signed document and Step-up writeOnly");
+  const operations = {
+    "/api/v1/workspaces/{id}/license": ["get", "LicenseResponse"],
+    "/api/v1/organizations/{id}/license": ["post", "LicenseResponse"]
+  };
+  for (const [apiPath, [method, responseName]] of Object.entries(operations)) {
+    const operation = document.paths?.[apiPath]?.[method];
+    if (!isObject(operation)) fail(`missing license operation ${method.toUpperCase()} ${apiPath}`);
+    const success = operation.responses?.[method === "post" ? "201" : "200"];
+    if (success?.$ref !== `#/components/responses/${responseName}`) fail(`license response mismatch ${apiPath}`);
   }
 }
 
@@ -469,6 +516,15 @@ export function validateOpenApiDocument(document) {
   for (const [apiPath, expectedMethods] of knowledgeMethods) {
     const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method)).sort();
     if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Knowledge Package method mismatch ${apiPath}`);
+  }
+  const notebookMethods = new Map([
+    ["/api/v1/workspaces/{id}/notebooks", ["get", "post"]],
+    ["/api/v1/workspaces/{id}/notebooks/{notebook_id}", ["get", "patch"]],
+    ["/api/v1/workspaces/{id}/notebooks/{notebook_id}/context", ["get"]],
+  ]);
+  for (const [apiPath, expectedMethods] of notebookMethods) {
+    const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method)).sort();
+    if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Notebook method mismatch ${apiPath}`);
   }
   const syncItem = document.components?.schemas?.SyncItemInput;
   if (
@@ -555,7 +611,8 @@ export function validateOpenApiDocument(document) {
       if (apiPath.includes("{id}") && !refs.has("#/components/parameters/ResourceId")) fail(`${operationId} missing opaque ResourceId`);
       const idempotencyExemptPosts = new Set([
         "/api/v1/auth/native/login",
-        "/api/v1/session/refresh"
+        "/api/v1/session/refresh",
+        "/api/v1/session/logout"
       ]);
       if (method === "post" && !idempotencyExemptPosts.has(apiPath) && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
       if ((method === "patch" || method === "delete") && !refs.has("#/components/parameters/IfMatch")) fail(`${operationId} missing If-Match`);
@@ -592,6 +649,7 @@ export function validateOpenApiDocument(document) {
   validateAuditContract(document);
   validateIdentityContract(document);
   validateAuthorizationContract(document);
+  validateLicenseContract(document);
 
   const eventOperation = document.paths["/api/v1/runs/{id}/events"]?.get;
   if (!parameterRefs(eventOperation).has("#/components/parameters/LastEventId")) fail("SSE missing Last-Event-ID reconnect cursor");

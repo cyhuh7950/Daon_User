@@ -14,7 +14,7 @@ from .data_canon import canonical_json_bytes
 from .egress_policy import EgressPolicyContext, EgressPolicyService
 from .question_answering import TextModelSelection
 from .question_answering_postgres import PostgresQuestionAnsweringRepository, QuestionContext
-from .question_answering_service import QuestionAnsweringError
+from .question_answering_service import QuestionAnsweringError, is_general_conversation_intent
 from .routing import CandidateDeployment, RoutingContext, route_single_model
 
 
@@ -53,7 +53,13 @@ class PostgresQuestionEgressAuthorizer:
             ]
             if len(user_messages) != 1 or not isinstance(user_messages[0].get("content"), str):
                 raise ValueError
-            grounded = json.loads(user_messages[0]["content"])
+            try:
+                grounded = json.loads(user_messages[0]["content"])
+            except json.JSONDecodeError:
+                if not is_general_conversation_intent(user_messages[0]["content"]):
+                    raise ValueError
+                user_messages[0]["content"] = "[MASKED]"
+                return canonical_json_bytes(payload)
             if (
                 not isinstance(grounded, dict)
                 or not isinstance(grounded.get("question"), str)
@@ -76,8 +82,8 @@ class PostgresQuestionEgressAuthorizer:
             raise QuestionAnsweringError("EGRESS_TRANSFORMATION_FAILED", status=403) from None
 
     def authorize(
-        self, context: QuestionContext, *, run_id: str, source_id: str,
-        source_version_id: str, selection: TextModelSelection, provider_payload: bytes,
+        self, context: QuestionContext, *, run_id: str, source_id: str | None,
+        source_version_id: str | None, selection: TextModelSelection, provider_payload: bytes,
         no_external_payload: bool = False,
         approved_authorization: Mapping[str, str] | None = None,
     ) -> Mapping[str, object]:

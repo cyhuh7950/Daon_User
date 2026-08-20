@@ -158,6 +158,16 @@ Critical 오류는 Popup 안에만 숨기지 않는다. 상단 상태가 `주의
 
 Notebook 홈은 `새 Notebook 만들기`, 최근·기존 Notebook 목록, 제목 검색, 최근 수정·제목 정렬, Grid/List 전환, 빈 상태와 안전 오류를 제공한다. Notebook Card는 제목, Source 수, 산출물 수, 최근 수정시각과 상태만 표시하며 내부 ID·Policy fingerprint·Provider secret을 노출하지 않는다. 새 Notebook 생성은 제목과 선택적 설명만 받아 empty Notebook을 만들고, 생성 성공 후 해당 Notebook의 3열 화면으로 이동한다. 삭제·공유·Template·추천 Notebook은 별도 승인 전 추가하지 않는다.
 
+Phase E 운영 조립에서는 `GET /api/v1/workspaces/{workspace_id}/notebooks/{notebook_id}/context`를 selected Context의 유일한 공개 읽기 계약으로 사용하고 Web은 exact same-origin BFF 경로만 호출한다. Source·Question·Studio의 모든 read/write는 canonical `notebook_id`를 요구한다. 서버는 Session의 Tenant, URL/Body의 Workspace와 Notebook, NotebookBinding의 대상 Resource가 모두 일치하는지 검증한 뒤에만 읽거나 생성하며, 생성된 Source·Question Thread·Studio Output·Output Version을 같은 Notebook에 원자적으로 결속한다. `notebook_id` 누락·invalid·URL/Body mismatch·다른 Tenant/Workspace/Notebook 대상은 fail-close하고 Workspace ID만으로 기본 Notebook을 선택하거나 생성하지 않는다. Desktop Adapter가 같은 기능을 호출할 때도 동일한 Context projection과 scope 계약을 사용한다.
+
+Context GET은 별도 Conversation 공개 Route를 만들지 않고 현재 선택 Thread의 safe answer/citations projection을 함께 반환한다. Thread가 없으면 canonical empty projection이다. Question 성공 transaction은 Conversation Thread, allowlisted answer/citations, NotebookBinding, Run/Audit을 원자 생성하며 동일 Idempotency replay는 Thread·Binding·Run·Audit을 중복 기록하지 않는다. Prompt 원문, Provider payload, 내부 URL·Stack·Token·Secret·SQL detail은 Context DTO에 포함하지 않고 Citation은 해당 Notebook에 결속된 Source/Version만 참조한다.
+
+Phase E Review1 보안 정합성은 모든 Client의 Notebook scope를 같은 wire 계약으로 고정한다. Windows Native의 Source list/processing/Citation/Studio list는 exact 단일 `notebook_id` query, Upload는 `X-Notebook-Id`, Question·Studio write는 body의 canonical `notebook_id`를 사용한다. Citation은 승인된 8필드와 exact locator만 허용하고 extra/internal field는 fail-close한다. Source 목록과 processing status Repository SQL은 `notebook_bindings`를 tenant/workspace/notebook/target exact로 선행 JOIN하여 storage/detail read 전에 unselected/cross-scope 결과를 0으로 만든다. Web Context와 logout 응답도 exact safe object로 재투영하며 원문 object를 spread하지 않는다.
+
+Phase E Review2에서 Windows production entry는 `<DesktopShell />`에 고정·외부 주입 Notebook ID를 요구하지 않는다. 인증된 Native Session 뒤 서버 권위 Notebook list/create/get/context를 사용하는 Notebook Home을 먼저 표시하고, 사용자가 선택해 서버가 재검증한 canonical `notebook_id`만 Windows Workspace Adapter에 전달한다. 첫 Notebook·Workspace 기반 자동선택, 고정 ID와 fixture prop은 운영 조립에서 금지한다. 선택은 Session·Workspace 변경, refresh/direct deep-link, back/forward마다 서버에서 재검증하며 invalid·cross-scope·expired는 Home 또는 Login으로 fail-close한다. Windows transport는 Browser BFF를 사용하지 않고 고정 Native HTTPS Gateway의 승인 Notebook API만 사용한다.
+
+보호 Route는 `pagehide` 시 protected root를 동기 `hidden`·`inert`·`aria-hidden`으로 전환하고, `pageshow.persisted`·`popstate` 뒤 서버 Session 재검증이 끝나기 전까지 해제하지 않는다. current-session self logout은 revoke와 immutable audit intent를 동일 SQLite transaction에 commit한다. bounded startup dispatcher가 pending intent를 중앙 Audit으로 idempotent projection하며, intent UPDATE·DELETE는 금지하고 `delivered_at`은 NULL에서 timestamp로 1회만 전이한다.
+
 ### 3.1.5 화면 설정
 
 화면 설정은 Notebook 데이터가 아니라 사용자별 공통 UI Preference다. Notebook 홈과 3열 화면에서 동일하게 적용한다.
@@ -168,6 +178,7 @@ Notebook 홈은 `새 Notebook 만들기`, 최근·기존 Notebook 목록, 제목
 - Theme는 Source·대화·산출물·Notebook 상태를 변경하지 않는다.
 - `화면 설정 초기화`는 Theme와 향후 승인된 화면 Preference만 초기화하며 Notebook·Source·대화·산출물은 삭제하지 않는다.
 - Web은 브라우저의 same-origin 사용자 Preference 저장 계약을 사용하고, Windows는 Local encrypted settings projection을 사용한다. 두 Client가 동기화할지는 별도 승인 전 자동 가정하지 않는다.
+- Web 권위 저장은 migration `0018`의 tenant·actor 범위 `user_screen_preferences` 한 테이블로 제한한다. Theme 외 Notebook·Source·대화·산출물 컬럼과 write path는 만들지 않으며, RLS/FORCE RLS는 tenant·actor exact scope만 허용한다.
 - Light/Dark 모두 1920×1080, 기본 12px Typography, WCAG AA 대비, keyboard Focus, `prefers-reduced-motion`을 만족해야 한다.
 
 ### 3.1.6 라이선스 설정과 사용자 설명서
@@ -566,3 +577,7 @@ Web BFF, Web Workspace Studio, Egress 정책값, 인증 모델과 공개 Sync �
 3. 이후 메뉴 하나를 선택해 Domain·DB/Repository·API/BFF·화면·운영 경고·actual Browser까지 완성한다.
 4. 현재 메뉴에 Critical·Important 미해결이 있거나 실제 Gate가 열려 있으면 다음 메뉴로 이동하지 않는다.
 5. 승인된 App Bar·3면 Workspace·Studio Tile·Library·Popup 시각 구조는 유지하고 기능 연결 때문에 화면 전체를 다시 설계하지 않는다.
+
+## 12. 2026-08-20 Windows WebView 실행환경 복구 분리
+
+Phase E 제품 코드는 독립 검토에서 `CODE_VERIFIED`다. 실제 Windows Gate의 미해결은 Native login 성공 뒤 Tauri 표시 창과 WebView2 child가 생성되지 않는 실행환경 경계이므로 기능 개발과 분리한다. 승인 정본은 `docs/superpowers/specs/2026-08-20-windows-webview-execution-recovery-design.md`이며, 공개 API·데이터·보안 계약을 바꾸지 않고 최소 Window/WebView smoke → root cause 최소 교정 → 실제 1920×1080 product flow 순으로 진행한다. 이 actual Gate 전에는 전체 Work Order를 `COMPLETED`로 승격하지 않는다.

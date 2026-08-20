@@ -44,21 +44,34 @@ class RecordingSourceUploadService:
 
 class RecordingDocumentSubmissionService:
     def __init__(self) -> None:
-        self.submissions: list[tuple[object, str]] = []
+        self.submissions: list[tuple[object, str, str]] = []
+        self.status_notebook_ids: list[str] = []
 
-    def submit(self, context, source_version_id: str):  # type: ignore[no-untyped-def]
-        self.submissions.append((context, source_version_id))
+    def submit(self, context, source_version_id: str, *, notebook_id: str):  # type: ignore[no-untyped-def]
+        self.submissions.append((context, source_version_id, notebook_id))
         return DocumentProcessingStatus(
             "run-001", "src-001", source_version_id,
             "vision_llm_understanding", "processing", "pending", None,
         )
 
-    def get_status(self, context, processing_run_id: str):  # type: ignore[no-untyped-def]
+    def get_status(self, context, processing_run_id: str, *, notebook_id: str):  # type: ignore[no-untyped-def]
+        self.status_notebook_ids.append(notebook_id)
         return DocumentProcessingStatus(
             processing_run_id, "src-001", "source-version-001",
             "vision_llm_understanding", "processing", "leased", None,
         )
 
+
+class ExistingNotebookService:
+    def get(self, context, notebook_id):  # type: ignore[no-untyped-def]
+        if notebook_id != "notebook-001":
+            raise AssertionError(notebook_id)
+        return object()
+
+    def require_selected_bindings(self, context, notebook_id, required):  # type: ignore[no-untyped-def]
+        if notebook_id != "notebook-001" or required != (("source", "src-001", "source-version-001"),):
+            raise AssertionError((notebook_id, required))
+        return object()
 
 class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -100,6 +113,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
             authorization_repository=self.authorization_repository,
             source_upload_service=self.uploads,
             document_processing_service=self.processing,
+            notebook_service=ExistingNotebookService(),  # type: ignore[arg-type]
         )
         self.app = create_app(self.dependencies)
         self.client = httpx.AsyncClient(
@@ -129,6 +143,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
             headers={
                 "Content-Type": "application/pdf",
                 "X-Source-Filename": "fixture.pdf",
+                "X-Notebook-Id": "notebook-001",
                 "Idempotency-Key": "upload-001",
             },
         )
@@ -144,6 +159,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 headers={
                     "Content-Type": "application/pdf",
                     "X-Source-Filename": "fixture.pdf",
+                    "X-Notebook-Id": "notebook-001",
                     "Idempotency-Key": "upload-001",
                     "X-Trace-Id": TRACE_ID,
                 },
@@ -157,16 +173,18 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         call = self.uploads.calls[0]
         self.assertEqual(call["tenant_id"], "tenant-001")
         self.assertEqual(call["workspace_id"], "workspace-001")
+        self.assertEqual(call["notebook_id"], "notebook-001")
         self.assertEqual(call["actor_id"], "user-001")
         self.assertEqual(call["filename"], "fixture.pdf")
-        context, source_version_id = self.processing.submissions[0]
+        context, source_version_id, notebook_id = self.processing.submissions[0]
         self.assertEqual(context.workspace_id, "workspace-001")
         self.assertEqual(source_version_id, "source-version-001")
+        self.assertEqual(notebook_id, "notebook-001")
 
     async def test_processing_status_requires_workspace_access_and_returns_safe_state(self) -> None:
         with self._authenticated():
             response = await self.client.get(
-                "/api/v1/workspaces/workspace-001/processing-runs/run-001",
+                "/api/v1/workspaces/workspace-001/processing-runs/run-001?notebook_id=notebook-001",
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
                 headers={"X-Trace-Id": TRACE_ID},
             )
@@ -176,6 +194,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.headers["etag"].startswith('"projection-'))
         self.assertNotIn("lease_owner", response.text)
         self.assertNotIn("credential", response.text.casefold())
+        self.assertEqual(self.processing.status_notebook_ids, ["notebook-001"])
 
     async def test_upload_rejects_mime_mismatch_and_corrupt_pdf_before_service(self) -> None:
         with self._authenticated():
@@ -186,6 +205,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 headers={
                     "Content-Type": "text/plain",
                     "X-Source-Filename": "fixture.pdf",
+                    "X-Notebook-Id": "notebook-001",
                     "Idempotency-Key": "upload-mime",
                 },
             )
@@ -196,6 +216,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 headers={
                     "Content-Type": "application/pdf",
                     "X-Source-Filename": "fixture.pdf",
+                    "X-Notebook-Id": "notebook-001",
                     "Idempotency-Key": "upload-corrupt",
                 },
             )

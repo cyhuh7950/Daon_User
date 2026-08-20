@@ -1,5 +1,5 @@
-import { AuthPane } from "../lib/auth-pane.jsx";
+import { AuthLanding } from "../components/auth-landing.jsx";
 
 export default function HomePage() {
-  return <AuthPane />;
+  return <AuthLanding />;
 }

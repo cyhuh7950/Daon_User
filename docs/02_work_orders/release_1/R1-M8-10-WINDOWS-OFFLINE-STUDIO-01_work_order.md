@@ -94,9 +94,17 @@ Task 5 RED에서 Cloud Knowledge Package bytes를 Local 암호화 저장소와 S
 
 종료 보고 형식은 다음과 같다.
 
+Phase E 추가 승인 계약은 selected Context 공개 GET과 exact same-origin BFF, Source·Question·Studio read/write의 필수 canonical `notebook_id`, Tenant/Workspace/Notebook Binding 검증과 생성 Resource의 동일 Notebook 원자 귀속이다. missing·invalid·mismatch와 cross-scope 접근·쓰기는 0이며 Workspace만으로 Notebook을 자동 선택하지 않는다. OpenAPI·Web·Desktop Adapter는 같은 exact 계약으로 동기화한다.
+
+Phase E Review1 보완 계약은 Windows Native 7 operation의 canonical Notebook wire scope와 승인 Citation 8필드, Source/processing Repository SQL-level Binding prefilter, Web exact safe projection, BFCache pre-validation synchronous conceal, SELF_LOGOUT outbox startup recovery·immutability를 포함한다. disposable PostgreSQL test ID/count와 db0/role0 cleanup은 secret-free Evidence로 남긴다.
+
+Phase E Review2 Critical은 production `main.jsx → DesktopShell`에 Notebook Home·선택 state가 없어 Adapter가 항상 unavailable인 누락을 닫는다. Native Session 뒤 서버 Notebook list/create/get/context를 사용하고, 사용자가 선택해 재검증한 Notebook만 3열에 전달한다. default/first/fixed ID 선택과 Browser BFF 호출은 0이며 history·deep-link·Workspace 전환·expiry/logout에서 재검증·fail-close한다.
+
 `status | issue_id | 수행 작업 | 생성·변경 결과 | RED/GREEN 및 전체 검증 | actual PG/Windows/UI/Network 증거 | 보호 상태 | 미해결 | 다음 판단`
 
 모든 actual Gate가 닫힌 경우에만 `COMPLETED`를 사용한다. 자동 테스트만 통과했거나 Groq·Upstage actual generation, Ollama installed-model connection, Windows·Sync Gate가 미실행이면 `INCOMPLETE` 또는 `BLOCKED`로 정직하게 분류한다.
+
+Phase E 코드 독립 검토 후 남은 Windows actual blocker는 `R1-M8-10-WINDOWS-WEBVIEW-RECOVERY-I001`로 분리한다. 해당 복구 Work Order는 제품 기능 재작업이 아니라 Window/WebView 실행환경 원인 규명과 실제 Gate만 소유한다. 이 복구 결과가 PASS하기 전에는 전체 Work Order의 Windows actual 완료를 주장하지 않는다.
 
 ## 2026-08-14 Web 최종 화면 재인계 예외
 

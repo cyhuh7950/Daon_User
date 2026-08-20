@@ -31,6 +31,42 @@ fn safe_text(value: &str, maximum: usize) -> bool {
     !value.is_empty() && value.chars().count() <= maximum && !value.contains('\0')
 }
 
+fn valid_license_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 20
+        || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T'
+        || bytes[13] != b':' || bytes[16] != b':' || bytes[19] != b'Z'
+        || bytes.iter().enumerate().any(|(index, byte)| {
+            !matches!(index, 4 | 7 | 10 | 13 | 16 | 19) && !byte.is_ascii_digit()
+        })
+    {
+        return false;
+    }
+    let number = |start: usize, end: usize| {
+        value[start..end].parse::<u32>().ok()
+    };
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        number(0, 4), number(5, 7), number(8, 10), number(11, 13),
+        number(14, 16), number(17, 19),
+    ) else { return false; };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => if leap { 29 } else { 28 },
+        _ => return false,
+    };
+    (1..=max_day).contains(&day) && hour < 24 && minute < 60 && second < 60
+}
+
+fn valid_license_feature(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if index == 0 { byte.is_ascii_lowercase() }
+            else { byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' }
+        })
+}
+
 fn valid_lower_hex(value: &str, length: usize) -> bool {
     value.len() == length
         && value
@@ -86,10 +122,12 @@ pub enum WorkspaceOperation {
     CitationContent,
     CreateReport,
     ListStudioOutputs,
+    GetLicense,
+    ApplyLicense,
 }
 
 impl WorkspaceOperation {
-    pub fn names_for_contract() -> [&'static str; 7] {
+    pub fn names_for_contract() -> [&'static str; 9] {
         [
             "list_sources",
             "upload_pdf",
@@ -98,6 +136,8 @@ impl WorkspaceOperation {
             "citation_content",
             "create_report",
             "list_studio_outputs",
+            "get_license",
+            "apply_license",
         ]
     }
 }
@@ -116,12 +156,14 @@ pub fn valid_pdf_upload_for_contract(filename: &str, mime_type: &str, bytes: &[u
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceListSourcesInput {
     pub workspace_id: String,
+    pub notebook_id: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceUploadPdfInput {
     pub workspace_id: String,
+    pub notebook_id: String,
     pub filename: String,
     pub mime_type: String,
     pub bytes: Vec<u8>,
@@ -131,6 +173,7 @@ pub struct WorkspaceUploadPdfInput {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceProcessingStatusInput {
     pub workspace_id: String,
+    pub notebook_id: String,
     pub processing_run_id: String,
 }
 
@@ -138,15 +181,45 @@ pub struct WorkspaceProcessingStatusInput {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceAskQuestionInput {
     pub workspace_id: String,
-    pub source_id: String,
-    pub source_version_id: String,
+    pub notebook_id: String,
+    pub source_id: Option<String>,
+    pub source_version_id: Option<String>,
     pub question: String,
+}
+
+fn general_conversation_intent(value: &str) -> bool {
+    if value
+        .chars()
+        .any(|character| character == '\u{3000}' || ('\u{ff01}'..='\u{ff5e}').contains(&character))
+    {
+        return false;
+    }
+    let normalized = value.trim().trim_end_matches(['.', '!', '?', '。'])
+        .trim().to_lowercase();
+    matches!(normalized.as_str(),
+        "안녕" | "안녕하세요" | "반가워" | "반갑습니다" | "고마워" | "고마워요" | "감사합니다"
+        | "도움말" | "daon 사용법 알려줘" | "daon 사용법을 알려줘" | "다온 사용법 알려줘"
+        | "다온 사용법을 알려줘" | "이 제품 사용법 알려줘" | "이 제품 사용법을 알려줘")
+}
+
+pub fn valid_workspace_question_input_for_contract(input: &WorkspaceAskQuestionInput) -> bool {
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id)
+        || !safe_text(input.question.trim(), 2_000)
+    {
+        return false;
+    }
+    match (&input.source_id, &input.source_version_id) {
+        (Some(source_id), Some(source_version_id)) => valid_id(source_id) && valid_id(source_version_id),
+        (None, None) => general_conversation_intent(&input.question),
+        _ => false,
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceCitationContentInput {
     pub workspace_id: String,
+    pub notebook_id: String,
     pub citation_id: String,
     pub page: u32,
 }
@@ -155,6 +228,7 @@ pub struct WorkspaceCitationContentInput {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceCreateReportInput {
     pub workspace_id: String,
+    pub notebook_id: String,
     pub source_id: String,
     pub source_version_id: String,
     pub run_id: String,
@@ -168,6 +242,115 @@ pub struct WorkspaceCreateReportInput {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceListStudioOutputsInput {
     pub workspace_id: String,
+    pub notebook_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceGetLicenseInput {
+    pub workspace_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceApplyLicenseInput {
+    pub workspace_id: String,
+    pub organization_id: String,
+    pub document: serde_json::Value,
+    pub password: String,
+    pub request_idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotebookWorkspaceInput {
+    pub workspace_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotebookSelectedInput {
+    pub workspace_id: String,
+    pub notebook_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotebookCreateInput {
+    pub workspace_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub request_idempotency_key: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotebookView {
+    pub notebook_id: String,
+    pub title: String,
+    pub source_count: u32,
+    pub output_count: u32,
+    pub updated_at: String,
+    pub status: String,
+}
+
+impl NotebookView {
+    fn valid(&self) -> bool {
+        valid_id(&self.notebook_id)
+            && safe_text(&self.title, 120)
+            && (20..=27).contains(&self.updated_at.len())
+            && self.updated_at.ends_with('Z')
+            && matches!(self.status.as_str(), "empty" | "active" | "attention")
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotebookSourceBinding {
+    pub source_id: String,
+    pub source_version_id: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotebookConversation {
+    pub conversation_thread_id: String,
+    pub answer: WorkspaceQuestionResult,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotebookContext {
+    pub notebook_id: String,
+    pub sources: Vec<NotebookSourceBinding>,
+    pub knowledge_context_ids: Vec<String>,
+    pub conversation_thread_ids: Vec<String>,
+    pub studio_output_ids: Vec<String>,
+    pub output_version_ids: Vec<String>,
+    pub generation_settings_ids: Vec<String>,
+    pub conversation: Option<NotebookConversation>,
+}
+
+fn valid_notebook_context(data: &NotebookContext, notebook_id: &str) -> bool {
+    let ids_valid = |values: &[String]| values.len() <= 1_000 && values.iter().all(|value| valid_id(value));
+    data.notebook_id == notebook_id
+        && data.sources.len() <= 1_000
+        && data.sources.iter().all(|source| valid_id(&source.source_id) && valid_id(&source.source_version_id))
+        && ids_valid(&data.knowledge_context_ids)
+        && ids_valid(&data.conversation_thread_ids)
+        && ids_valid(&data.studio_output_ids)
+        && ids_valid(&data.output_version_ids)
+        && ids_valid(&data.generation_settings_ids)
+        && match &data.conversation {
+            None => data.conversation_thread_ids.is_empty(),
+            Some(conversation) => data.conversation_thread_ids.first() == Some(&conversation.conversation_thread_id)
+                && valid_id(&conversation.conversation_thread_id)
+                && valid_id(&conversation.answer.run_id)
+                && valid_id(&conversation.answer.run_result_id)
+                && safe_text(&conversation.answer.answer, 8_000)
+                && conversation.answer.citations.len() <= 20
+                && conversation.answer.citations.iter().all(WorkspaceCitation::valid),
+        }
 }
 
 #[derive(Deserialize)]
@@ -297,6 +480,16 @@ pub struct WorkspaceCitation {
     pub source_version_id: String,
     pub evidence_span_id: String,
     pub page: u32,
+    pub origin: String,
+    pub context_item_id: String,
+    pub locator: WorkspaceCitationLocator,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceCitationLocator {
+    pub kind: String,
+    pub value: String,
 }
 
 impl WorkspaceCitation {
@@ -306,6 +499,10 @@ impl WorkspaceCitation {
             && valid_id(&self.source_version_id)
             && valid_id(&self.evidence_span_id)
             && self.page >= 1
+            && matches!(self.origin.as_str(), "raw_source" | "daon_knowledge")
+            && valid_id(&self.context_item_id)
+            && matches!(self.locator.kind.as_str(), "page" | "section")
+            && safe_text(&self.locator.value, 255)
     }
 }
 
@@ -348,6 +545,109 @@ impl WorkspaceStudioOutput {
             && (1..=20).contains(&self.citations.len())
             && self.citations.iter().all(WorkspaceCitation::valid)
     }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LicenseResourceProjection {
+    pub resource: String,
+    pub limit: u64,
+    pub used: u64,
+    pub remaining: u64,
+    pub status: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LicenseWarningProjection {
+    pub code: String,
+    pub action: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LicenseProjection {
+    pub product: String,
+    pub edition: Option<String>,
+    pub license_id_hint: Option<String>,
+    pub issued_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub status: String,
+    pub features: Vec<String>,
+    pub resources: Vec<LicenseResourceProjection>,
+    pub warning: Option<LicenseWarningProjection>,
+    pub creation_allowed: bool,
+    pub existing_read_allowed: bool,
+    pub existing_export_allowed: bool,
+    pub can_apply: bool,
+}
+
+impl LicenseProjection {
+    fn valid(&self) -> bool {
+        self.product == "daon-user"
+            && self.edition.as_deref().is_none_or(|value| safe_text(value, 128))
+            && self.license_id_hint.as_deref().is_none_or(|value| {
+                value.strip_prefix('…').is_some_and(|suffix| {
+                    suffix.chars().count() == 5 && suffix.chars().all(|item| !item.is_whitespace())
+                })
+            })
+            && self.issued_at.as_deref().is_none_or(valid_license_timestamp)
+            && self.expires_at.as_deref().is_none_or(valid_license_timestamp)
+            && matches!(self.status.as_str(), "not_configured" | "active" | "expiring_soon" | "expired" | "limit_reached")
+            && self.features.len() <= 64
+            && self.features.iter().all(|value| valid_license_feature(value))
+            && self.features.iter().enumerate().all(|(index, value)| {
+                !self.features[..index].contains(value)
+            })
+            && self.resources.len() <= 64
+            && self.resources.iter().all(|item| {
+                matches!(item.resource.as_str(), "users" | "notebooks" | "storage_bytes" | "generation_runs" | "source_versions" | "studio_outputs")
+                    && item.limit >= 1
+                    && item.remaining == item.limit.saturating_sub(item.used)
+                    && item.status == if item.used >= item.limit { "limit_reached" } else { "available" }
+            })
+            && self.warning.as_ref().is_none_or(|warning| {
+                matches!(warning.code.as_str(), "LICENSE_NOT_CONFIGURED" | "LICENSE_EXPIRED" | "LICENSE_RESOURCE_LIMIT_REACHED" | "LICENSE_EXPIRES_WITHIN_30_DAYS")
+                    && safe_text(&warning.action, 256)
+            })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LicenseMeta {
+    trace_id: String,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    replayed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LicenseEnvelope<T> {
+    data: T,
+    meta: LicenseMeta,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StepUpProjection {
+    step_up_authorization: String,
+    issued_at: String,
+    expires_at: String,
+}
+
+fn parse_license_envelope<T: DeserializeOwned>(response: NativeWorkspaceResponse) -> Result<(T, LicenseMeta), WorkspaceError> {
+    if response.content_type.as_deref().unwrap_or("").split(';').next() != Some("application/json") {
+        return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));
+    }
+    let envelope: LicenseEnvelope<T> = serde_json::from_slice(&response.body)
+        .map_err(|_| map_error("WORKSPACE_RESPONSE_REJECTED"))?;
+    if !valid_id(&envelope.meta.trace_id) {
+        return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));
+    }
+    Ok((envelope.data, envelope.meta))
 }
 
 #[derive(Deserialize)]
@@ -402,11 +702,89 @@ async fn execute(
 }
 
 #[tauri::command]
+pub async fn notebook_list(
+    input: NotebookWorkspaceInput,
+    session: tauri::State<'_, NativeSessionRuntime>,
+) -> Result<Vec<NotebookView>, WorkspaceError> {
+    if !valid_id(&input.workspace_id) { return Err(map_error("INVALID_REQUEST")); }
+    let data: Vec<NotebookView> = parse_json(
+        execute(&session, NativeWorkspaceOperation::ListNotebooks { workspace_id: input.workspace_id.clone() }).await?,
+        &input.workspace_id,
+        false,
+    )?;
+    if data.len() > 500 || !data.iter().all(NotebookView::valid) {
+        return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));
+    }
+    Ok(data)
+}
+
+#[tauri::command]
+pub async fn notebook_create(
+    input: NotebookCreateInput,
+    session: tauri::State<'_, NativeSessionRuntime>,
+) -> Result<NotebookView, WorkspaceError> {
+    let title = input.title.trim();
+    if !valid_id(&input.workspace_id) || !safe_text(title, 120)
+        || input.description.as_deref().is_some_and(|value| value.chars().count() > 1_000 || value.contains('\0'))
+        || !valid_idempotency_fingerprint(&input.request_idempotency_key)
+    { return Err(map_error("INVALID_REQUEST")); }
+    let body = serde_json::to_vec(&serde_json::json!({"title": title, "description": input.description}))
+        .map_err(|_| map_error("INVALID_REQUEST"))?;
+    let key = workspace_idempotency_key(
+        &format!("notebook:{}:{}", input.workspace_id, input.request_idempotency_key),
+        &body,
+    ).map_err(map_error)?;
+    let data: NotebookView = parse_json(
+        execute(&session, NativeWorkspaceOperation::CreateNotebook {
+            workspace_id: input.workspace_id.clone(), body: Zeroizing::new(body), idempotency_key: key,
+        }).await?,
+        &input.workspace_id,
+        true,
+    )?;
+    if !data.valid() { return Err(map_error("WORKSPACE_RESPONSE_REJECTED")); }
+    Ok(data)
+}
+
+#[tauri::command]
+pub async fn notebook_get(
+    input: NotebookSelectedInput,
+    session: tauri::State<'_, NativeSessionRuntime>,
+) -> Result<NotebookView, WorkspaceError> {
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id) { return Err(map_error("INVALID_REQUEST")); }
+    let data: NotebookView = parse_json(
+        execute(&session, NativeWorkspaceOperation::GetNotebook {
+            workspace_id: input.workspace_id.clone(), notebook_id: input.notebook_id,
+        }).await?,
+        &input.workspace_id,
+        false,
+    )?;
+    if !data.valid() { return Err(map_error("WORKSPACE_RESPONSE_REJECTED")); }
+    Ok(data)
+}
+
+#[tauri::command]
+pub async fn notebook_context(
+    input: NotebookSelectedInput,
+    session: tauri::State<'_, NativeSessionRuntime>,
+) -> Result<NotebookContext, WorkspaceError> {
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id) { return Err(map_error("INVALID_REQUEST")); }
+    let data: NotebookContext = parse_json(
+        execute(&session, NativeWorkspaceOperation::GetNotebookContext {
+            workspace_id: input.workspace_id.clone(), notebook_id: input.notebook_id.clone(),
+        }).await?,
+        &input.workspace_id,
+        false,
+    )?;
+    if !valid_notebook_context(&data, &input.notebook_id) { return Err(map_error("WORKSPACE_RESPONSE_REJECTED")); }
+    Ok(data)
+}
+
+#[tauri::command]
 pub async fn workspace_list_sources(
     input: WorkspaceListSourcesInput,
     session: tauri::State<'_, NativeSessionRuntime>,
 ) -> Result<Vec<WorkspaceSource>, WorkspaceError> {
-    if !valid_id(&input.workspace_id) {
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id) {
         return Err(map_error("INVALID_REQUEST"));
     }
     let data: SourceListData = parse_json(
@@ -414,6 +792,7 @@ pub async fn workspace_list_sources(
             &session,
             NativeWorkspaceOperation::ListSources {
                 workspace_id: input.workspace_id.clone(),
+                notebook_id: input.notebook_id,
             },
         )
         .await?,
@@ -431,7 +810,7 @@ pub async fn workspace_upload_pdf(
     mut input: WorkspaceUploadPdfInput,
     session: tauri::State<'_, NativeSessionRuntime>,
 ) -> Result<WorkspaceUploadResult, WorkspaceError> {
-    if !valid_id(&input.workspace_id)
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id)
         || !valid_pdf_upload_for_contract(&input.filename, &input.mime_type, &input.bytes)
     {
         input.bytes.zeroize();
@@ -445,6 +824,7 @@ pub async fn workspace_upload_pdf(
     let expected_byte_size = input.bytes.len() as u64;
     let operation = NativeWorkspaceOperation::UploadPdf {
         workspace_id: input.workspace_id.clone(),
+        notebook_id: input.notebook_id,
         filename: input.filename,
         bytes: Zeroizing::new(std::mem::take(&mut input.bytes)),
         idempotency_key: key,
@@ -465,7 +845,7 @@ pub async fn workspace_processing_status(
     input: WorkspaceProcessingStatusInput,
     session: tauri::State<'_, NativeSessionRuntime>,
 ) -> Result<WorkspaceProcessingStatus, WorkspaceError> {
-    if !valid_id(&input.workspace_id) || !valid_id(&input.processing_run_id) {
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id) || !valid_id(&input.processing_run_id) {
         return Err(map_error("INVALID_REQUEST"));
     }
     let data: WorkspaceProcessingStatus = parse_json(
@@ -473,6 +853,7 @@ pub async fn workspace_processing_status(
             &session,
             NativeWorkspaceOperation::ProcessingStatus {
                 workspace_id: input.workspace_id.clone(),
+                notebook_id: input.notebook_id,
                 processing_run_id: input.processing_run_id.clone(),
             },
         )
@@ -491,15 +872,17 @@ pub async fn workspace_ask_question(
     input: WorkspaceAskQuestionInput,
     session: tauri::State<'_, NativeSessionRuntime>,
 ) -> Result<WorkspaceQuestionResult, WorkspaceError> {
-    if !valid_id(&input.workspace_id)
-        || !valid_id(&input.source_id)
-        || !valid_id(&input.source_version_id)
-        || !safe_text(input.question.trim(), 2_000)
-    {
+    if !valid_workspace_question_input_for_contract(&input) {
         return Err(map_error("INVALID_REQUEST"));
     }
     let workspace_id = input.workspace_id.clone();
-    let body = serde_json::to_vec(&serde_json::json!({"source_id": input.source_id, "source_version_id": input.source_version_id, "question": input.question.trim()})).map_err(|_| map_error("INVALID_REQUEST"))?;
+    let notebook_id = input.notebook_id.clone();
+    let mut body_value = serde_json::json!({"notebook_id": notebook_id, "question": input.question.trim()});
+    if let (Some(source_id), Some(source_version_id)) = (input.source_id, input.source_version_id) {
+        body_value["source_id"] = serde_json::Value::String(source_id);
+        body_value["source_version_id"] = serde_json::Value::String(source_version_id);
+    }
+    let body = serde_json::to_vec(&body_value).map_err(|_| map_error("INVALID_REQUEST"))?;
     let key =
         workspace_idempotency_key(&format!("question:{workspace_id}"), &body).map_err(map_error)?;
     let data: WorkspaceQuestionResult = parse_json(
@@ -507,6 +890,7 @@ pub async fn workspace_ask_question(
             &session,
             NativeWorkspaceOperation::AskQuestion {
                 workspace_id: workspace_id.clone(),
+                notebook_id: input.notebook_id,
                 body: Zeroizing::new(body),
                 idempotency_key: key,
             },
@@ -531,13 +915,14 @@ pub async fn workspace_citation_content(
     input: WorkspaceCitationContentInput,
     session: tauri::State<'_, NativeSessionRuntime>,
 ) -> Result<WorkspaceCitationContent, WorkspaceError> {
-    if !valid_id(&input.workspace_id) || !valid_id(&input.citation_id) || input.page < 1 {
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id) || !valid_id(&input.citation_id) || input.page < 1 {
         return Err(map_error("INVALID_REQUEST"));
     }
     let response = execute(
         &session,
         NativeWorkspaceOperation::CitationContent {
             workspace_id: input.workspace_id,
+            notebook_id: input.notebook_id,
             citation_id: input.citation_id,
         },
     )
@@ -570,7 +955,7 @@ pub async fn workspace_create_report(
     input: WorkspaceCreateReportInput,
     session: tauri::State<'_, NativeSessionRuntime>,
 ) -> Result<WorkspaceStudioOutput, WorkspaceError> {
-    if !valid_id(&input.workspace_id)
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id)
         || !valid_id(&input.source_id)
         || !valid_id(&input.source_version_id)
         || !valid_id(&input.run_id)
@@ -582,7 +967,8 @@ pub async fn workspace_create_report(
         return Err(map_error("INVALID_REQUEST"));
     }
     let workspace_id = input.workspace_id.clone();
-    let body = serde_json::to_vec(&serde_json::json!({"source_id": input.source_id, "source_version_id": input.source_version_id, "run_id": input.run_id, "run_result_id": input.run_result_id, "title": input.title, "purpose": input.purpose})).map_err(|_| map_error("INVALID_REQUEST"))?;
+    let notebook_id = input.notebook_id.clone();
+    let body = serde_json::to_vec(&serde_json::json!({"notebook_id": notebook_id, "source_id": input.source_id, "source_version_id": input.source_version_id, "run_id": input.run_id, "run_result_id": input.run_result_id, "title": input.title, "purpose": input.purpose})).map_err(|_| map_error("INVALID_REQUEST"))?;
     let key = workspace_idempotency_key(
         &format!("studio:{workspace_id}:{}", input.request_idempotency_key),
         &body,
@@ -593,6 +979,7 @@ pub async fn workspace_create_report(
             &session,
             NativeWorkspaceOperation::CreateReport {
                 workspace_id: workspace_id.clone(),
+                notebook_id: input.notebook_id,
                 body: Zeroizing::new(body),
                 idempotency_key: key,
             },
@@ -612,7 +999,7 @@ pub async fn workspace_list_studio_outputs(
     input: WorkspaceListStudioOutputsInput,
     session: tauri::State<'_, NativeSessionRuntime>,
 ) -> Result<Vec<WorkspaceStudioOutput>, WorkspaceError> {
-    if !valid_id(&input.workspace_id) {
+    if !valid_id(&input.workspace_id) || !valid_id(&input.notebook_id) {
         return Err(map_error("INVALID_REQUEST"));
     }
     let data: StudioListData = parse_json(
@@ -620,6 +1007,7 @@ pub async fn workspace_list_studio_outputs(
             &session,
             NativeWorkspaceOperation::ListStudioOutputs {
                 workspace_id: input.workspace_id.clone(),
+                notebook_id: input.notebook_id,
             },
         )
         .await?,
@@ -630,6 +1018,81 @@ pub async fn workspace_list_studio_outputs(
         return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));
     }
     Ok(data.outputs)
+}
+
+#[tauri::command]
+pub async fn workspace_get_license(
+    input: WorkspaceGetLicenseInput,
+    session: tauri::State<'_, NativeSessionRuntime>,
+) -> Result<LicenseProjection, WorkspaceError> {
+    if !valid_id(&input.workspace_id) {
+        return Err(map_error("INVALID_REQUEST"));
+    }
+    let (data, meta): (LicenseProjection, LicenseMeta) = parse_license_envelope(
+        execute(&session, NativeWorkspaceOperation::GetLicense { workspace_id: input.workspace_id.clone() }).await?,
+    )?;
+    if meta.workspace_id.as_deref() != Some(input.workspace_id.as_str()) || meta.replayed.is_some() || !data.valid() {
+        return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));
+    }
+    Ok(data)
+}
+
+#[tauri::command]
+pub async fn workspace_apply_license(
+    mut input: WorkspaceApplyLicenseInput,
+    session: tauri::State<'_, NativeSessionRuntime>,
+) -> Result<LicenseProjection, WorkspaceError> {
+    if !valid_id(&input.workspace_id)
+        || !valid_id(&input.organization_id)
+        || !input.document.is_object()
+        || !(12..=1024).contains(&input.password.len())
+        || !valid_idempotency_fingerprint(&input.request_idempotency_key)
+    {
+        input.password.zeroize();
+        input.document = serde_json::Value::Null;
+        return Err(map_error("INVALID_REQUEST"));
+    }
+    let workspace_id = input.workspace_id.clone();
+    let organization_id = input.organization_id.clone();
+    let idempotency_key = Zeroizing::new(input.request_idempotency_key);
+    let mut password = Zeroizing::new(std::mem::take(&mut input.password));
+    let step_up_body = serde_json::to_vec(&serde_json::json!({
+        "action_group": "organization_security_or_connector_policy_change",
+        "target_id": organization_id,
+        "password": password.as_str(),
+    })).map_err(|_| map_error("INVALID_REQUEST"))?;
+    password.zeroize();
+    let (step_up, step_meta): (StepUpProjection, LicenseMeta) = parse_license_envelope(
+        execute(&session, NativeWorkspaceOperation::LicenseStepUp {
+            workspace_id: workspace_id.clone(),
+            body: Zeroizing::new(step_up_body),
+            idempotency_key: Zeroizing::new(idempotency_key.to_string()),
+        }).await?,
+    )?;
+    if step_meta.workspace_id.is_some() || step_meta.replayed.is_some()
+        || !safe_text(&step_up.step_up_authorization, 512)
+        || !safe_text(&step_up.issued_at, 64) || !safe_text(&step_up.expires_at, 64)
+    {
+        return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));
+    }
+    let step_up_authorization = Zeroizing::new(step_up.step_up_authorization);
+    let document = std::mem::take(&mut input.document);
+    let apply_body = serde_json::to_vec(&serde_json::json!({
+        "document": document,
+        "step_up_authorization_id": step_up_authorization.as_str(),
+    })).map_err(|_| map_error("INVALID_REQUEST"))?;
+    let (data, apply_meta): (LicenseProjection, LicenseMeta) = parse_license_envelope(
+        execute(&session, NativeWorkspaceOperation::ApplyLicense {
+            workspace_id,
+            organization_id,
+            body: Zeroizing::new(apply_body),
+            idempotency_key: Zeroizing::new(idempotency_key.to_string()),
+        }).await?,
+    )?;
+    if apply_meta.workspace_id.is_some() || apply_meta.replayed.is_none() || !data.valid() {
+        return Err(map_error("WORKSPACE_RESPONSE_REJECTED"));
+    }
+    Ok(data)
 }
 
 #[cfg(all(test, feature = "contract-test"))]
@@ -703,6 +1166,10 @@ mod tests {
             Box::pin(async move {
                 assert_eq!(access, b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
                 let kind = match operation {
+                    NativeWorkspaceOperation::ListNotebooks { .. } => "list_notebooks",
+                    NativeWorkspaceOperation::CreateNotebook { .. } => "create_notebook",
+                    NativeWorkspaceOperation::GetNotebook { .. } => "get_notebook",
+                    NativeWorkspaceOperation::GetNotebookContext { .. } => "get_notebook_context",
                     NativeWorkspaceOperation::ListSources { .. } => "list_sources",
                     NativeWorkspaceOperation::UploadPdf { .. } => "upload_pdf",
                     NativeWorkspaceOperation::ProcessingStatus { .. } => "processing_status",
@@ -710,6 +1177,9 @@ mod tests {
                     NativeWorkspaceOperation::CitationContent { .. } => "citation_content",
                     NativeWorkspaceOperation::CreateReport { .. } => "create_report",
                     NativeWorkspaceOperation::ListStudioOutputs { .. } => "list_studio_outputs",
+                    NativeWorkspaceOperation::GetLicense { .. } => "get_license",
+                    NativeWorkspaceOperation::LicenseStepUp { .. } => "license_step_up",
+                    NativeWorkspaceOperation::ApplyLicense { .. } => "apply_license",
                 };
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 self.kinds.lock().expect("contract kinds").push(kind);
@@ -751,6 +1221,7 @@ mod tests {
                 runtime(workspace_id, Arc::clone(&transport)).execute_workspace_once(
                     NativeWorkspaceOperation::ListSources {
                         workspace_id: "workspace-1".into(),
+                        notebook_id: "notebook-1".into(),
                     },
                 ),
             );
@@ -766,6 +1237,7 @@ mod tests {
             runtime(Some("workspace-1"), Arc::clone(&transport)).execute_workspace_once(
                 NativeWorkspaceOperation::ListSources {
                     workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
                 },
             ),
         )
@@ -857,5 +1329,52 @@ mod tests {
                 accepted
             );
         }
+    }
+
+    #[test]
+    fn license_projection_matches_openapi_enums_hints_timestamps_and_resource_invariants() {
+        let valid = LicenseProjection {
+            product: "daon-user".into(),
+            edition: Some("enterprise".into()),
+            license_id_hint: Some("…1-001".into()),
+            issued_at: Some("2026-08-14T08:00:00Z".into()),
+            expires_at: Some("2027-08-15T08:00:00Z".into()),
+            status: "active".into(),
+            features: vec!["citation".into()],
+            resources: vec![LicenseResourceProjection {
+                resource: "generation_runs".into(), limit: 100, used: 2,
+                remaining: 98, status: "available".into(),
+            }],
+            warning: None,
+            creation_allowed: true,
+            existing_read_allowed: true,
+            existing_export_allowed: true,
+            can_apply: true,
+        };
+        assert!(valid.valid());
+
+        let mut invalid_hint = valid.clone();
+        invalid_hint.license_id_hint = Some("not-masked".into());
+        assert!(!invalid_hint.valid());
+        let mut invalid_timestamp = valid.clone();
+        invalid_timestamp.issued_at = Some("2026/08/14".into());
+        assert!(!invalid_timestamp.valid());
+        let mut invalid_feature = valid.clone();
+        invalid_feature.features.push("citation".into());
+        assert!(!invalid_feature.valid());
+        let mut invalid_resource = valid.clone();
+        invalid_resource.resources[0].resource = "internal_cost".into();
+        assert!(!invalid_resource.valid());
+        let mut invalid_status = valid.clone();
+        invalid_status.resources[0].status = "warning".into();
+        assert!(!invalid_status.valid());
+        let mut invalid_remaining = valid.clone();
+        invalid_remaining.resources[0].remaining = 99;
+        assert!(!invalid_remaining.valid());
+        let mut invalid_warning = valid;
+        invalid_warning.warning = Some(LicenseWarningProjection {
+            code: "INTERNAL_DECISION".into(), action: "unsafe".into(),
+        });
+        assert!(!invalid_warning.valid());
     }
 }
