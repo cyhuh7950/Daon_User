@@ -70,7 +70,7 @@ class PostgresEgressPolicyRepository:
         connection: Connection[tuple[Any, ...]], context: EgressPolicyContext,
         scope_type: str, workspace_id: str | None, *, for_update: bool = False,
     ) -> tuple[Any, ...] | None:
-        suffix = " FOR UPDATE" if for_update else ""
+        suffix = " FOR UPDATE OF binding" if for_update else ""
         return connection.execute(
             "SELECT binding.tenant_id,binding.organization_id,binding.workspace_id,"
             "binding.scope_type,policy.policy_version_id,policy.policy_version,policy.state,"
@@ -140,9 +140,16 @@ class PostgresEgressPolicyRepository:
                     connection, str(result["policy_version_id"]), str(result["binding_id"]),
                 ))
 
-            current = self._view(self._select_current(
+            current_row = self._select_current(
                 connection, context, scope_type, workspace_id, for_update=True,
-            ))
+            )
+            if current_row is None:
+                latest_row = self._select_current(
+                    connection, context, scope_type, workspace_id,
+                )
+                if latest_row is not None and self._view(latest_row).etag != expected_etag:
+                    raise EgressPolicyError("VERSION_CONFLICT", 409)
+            current = self._view(current_row)
             if current.etag != expected_etag:
                 raise EgressPolicyError("VERSION_CONFLICT", 409)
 
