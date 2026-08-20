@@ -89,6 +89,16 @@ export function NotebookHomeWorkspace() {
     window.location.assign(`/notebooks/${encodeURIComponent(notebookId)}`);
   };
 
+  const handleOpenSetting = (settingId) => {
+    const routes = Object.freeze({
+      screen: "/settings/screen",
+      license: "/settings/license",
+      manual: "/settings/manual",
+    });
+    const route = routes[settingId];
+    if (route) window.location.assign(route);
+  };
+
   const handleLogout = async () => {
     if (logoutPending.current) return;
     logoutPending.current = true;
@@ -111,6 +121,7 @@ export function NotebookHomeWorkspace() {
     onReload={() => void load()}
     onCreate={handleCreate}
     onOpenNotebook={openNotebook}
+    onOpenSetting={handleOpenSetting}
     onLogout={() => void handleLogout()}
   /></div>;
 }
