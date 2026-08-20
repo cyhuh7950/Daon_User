@@ -714,7 +714,7 @@
     "/api/v1/workspaces/{id}/questions/authorization": {
       "post": {
         "operationId": "authorizeGroundedWorkspaceQuestion", "tags": ["Run", "Policy"],
-        "summary": "외부 Question Run 결속 추가 인증", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
+        "summary": "호환용 외부 Question Run 결속 추가 인증", "description": "관리자 설정 Step-up과 분리된 호환 API입니다. Product 질문 UI는 이 경로를 호출하지 않으며 유효 Session, EXTERNAL_LLM 권한과 effective Egress Policy를 질문 실행 시 검증합니다.", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationRequest" } } } },
         "responses": { "201": { "description": "Run/effective policy 결속 opaque authorization", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
@@ -5506,7 +5506,7 @@
       "GroundedQuestionRequest": {
         "type": "object",
         "additionalProperties": false,
-        "description": "A grounded question requires exactly one Source or Knowledge Context. A narrow general conversation greeting, thanks, or Daon product-help question may omit both; every other no-context question fails closed.",
+        "description": "A grounded question requires exactly one Source or Knowledge Context. A narrow general conversation greeting, thanks, or Daon product-help question may omit both; every other no-context question fails closed. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
         "required": ["notebook_id", "question"],
         "oneOf": [
           { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
@@ -5519,7 +5519,7 @@
           "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
           "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
           "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
-          "step_up_authorization_id": { "$ref": "#/components/schemas/OpaqueId" }
+          "step_up_authorization_id": { "allOf": [{ "$ref": "#/components/schemas/OpaqueId" }], "deprecated": true, "description": "Compatibility-only input. Product clients omit it; the ordinary question route does not consume per-question Step-up." }
         }
       },
       "GroundedQuestionAuthorizationRequest": {

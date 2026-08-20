@@ -182,9 +182,6 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     askQuestion: typeof baseAdapter.askQuestion === "function"
       ? (input, options) => baseAdapter.askQuestion({ ...input, notebookId: context.notebook_id }, options)
       : undefined,
-    authorizeQuestion: typeof baseAdapter.authorizeQuestion === "function"
-      ? (input, options) => baseAdapter.authorizeQuestion({ ...input, notebookId: context.notebook_id }, options)
-      : undefined,
     createGeneration: typeof baseAdapter.createGeneration === "function"
       ? (input, options) => baseAdapter.createGeneration(input, { ...options, notebookId: context.notebook_id })
       : undefined,

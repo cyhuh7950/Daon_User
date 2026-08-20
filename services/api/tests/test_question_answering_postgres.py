@@ -140,11 +140,22 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
             source_version_id="source-version-cp3",
             question="What is the citation verification phrase?",
             selection=selection, evidence=evidence, result=result,
+            egress_authorization={"frozen_routing_context": {
+                "classification": "internal", "destination": "api.upstage.ai",
+                "masking_required": True, "payload_bytes": 512,
+                "redaction_required": True,
+            }},
         )
 
         self.assertEqual(stored.run_id, "run-cp3")
         self.assertEqual(stored.citations[0].page, 2)
         self.assertEqual(stored.citations[0].locator, {"kind": "page", "value": "2"})
+        self.assertEqual(stored.provider_kind, "external_api")
+        self.assertEqual(stored.egress_scope, {
+            "classification": "internal", "destination": "api.upstage.ai",
+            "masking_required": True, "max_bytes": 512,
+            "redaction_required": True,
+        })
         sql = " ".join(self.cloud.connection.queries)
         for table in (
             "runs", "run_snapshots", "routing_decisions", "model_attempts",
@@ -248,6 +259,7 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
                 "source_id": "source-cp3", "source_version_id": "source-version-cp3",
                 "evidence_span_id": "span-page-2", "page": 2,
             },
+            "local_runtime", None,
         )]
 
         replay = self.repository.load_completed(self.context, "run-cp3")
@@ -262,9 +274,10 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
             "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1",
             "notebook-cp3",
         )
-        self.cloud.connection.replay_fingerprint_row = (fingerprint,)
+        self.cloud.connection.replay_fingerprint_row = (fingerprint, True)
         self.cloud.connection.completed_rows = [(
             "result-cp3", {"answer": "stored", "insufficient": False}, None, None,
+            "local_runtime", None,
         )]
 
         replay = self.repository.load_completed_for_replay(
@@ -284,8 +297,20 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
             "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1",
             "notebook-cp3",
         )
-        self.cloud.connection.replay_fingerprint_row = (None,)
+        self.cloud.connection.replay_fingerprint_row = (None, True)
         with self.assertRaisesRegex(QuestionRepositoryError, "QUESTION_REPLAY_UNAVAILABLE"):
+            self.repository.load_completed_for_replay(
+                self.context, "run-cp3", "sha256:" + "a" * 64,
+            )
+
+    def test_authoritative_replay_fails_closed_when_current_conversation_binding_is_missing(self) -> None:
+        self.context = QuestionContext(
+            "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1",
+            "notebook-cp3",
+        )
+        self.cloud.connection.replay_fingerprint_row = ("sha256:" + "a" * 64, False)
+
+        with self.assertRaisesRegex(QuestionRepositoryError, "NOTEBOOK_NOT_FOUND"):
             self.repository.load_completed_for_replay(
                 self.context, "run-cp3", "sha256:" + "a" * 64,
             )

@@ -129,7 +129,7 @@ async function responseData(response) {
 
 export async function askGroundedQuestion(
   workspaceId,
-  { notebookId, sourceId, sourceVersionId, knowledgeContext, question, stepUpAuthorizationId },
+  { notebookId, sourceId, sourceVersionId, knowledgeContext, question },
   { fetchImpl = fetch, idempotencyKey = crypto.randomUUID() } = {},
 ) {
   const workspace = requiredId(workspaceId);
@@ -151,7 +151,6 @@ export async function askGroundedQuestion(
       },
       body: JSON.stringify({
         notebook_id: notebook, ...sourceBody, question: question.trim(),
-        ...(stepUpAuthorizationId ? { step_up_authorization_id: requiredId(stepUpAuthorizationId) } : {}),
       }),
     },
   );

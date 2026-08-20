@@ -147,8 +147,10 @@ test("빈 Notebook은 좁은 일반대화만 실행하고 근거 미사용을 �
     const entry = (await readdir(output)).find((name) => name.startsWith("general-conversation") && /\.m?js$/u.test(name));
     const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?general=${Date.now()}`);
     const calls = [];
+    let authorizeCalls = 0;
     const effectAdapter = {
       ...adapter,
+      async authorizeQuestion() { authorizeCalls += 1; throw new Error("QUESTION_AUTHORIZATION_MUST_NOT_RUN"); },
       async listSources() { return []; },
       async listStudioOutputs() { return []; },
       async askQuestion(input) {
@@ -159,6 +161,8 @@ test("빈 Notebook은 좁은 일반대화만 실행하고 근거 미사용을 �
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
     reactRoot = createRoot(container);
     await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    assert.equal(findElements(container, (node) => node.tagName === "INPUT" && node.getAttribute("autocomplete") === "current-password").length, 0);
+    assert.doesNotMatch(container.textContent, /추가 인증|현재 비밀번호/u);
     const textarea = findElements(container, (node) => node.tagName === "TEXTAREA")[0];
     assert.equal(textarea.disabled, false);
     const textareaProps = textarea[Object.keys(textarea).find((key) => key.startsWith("__reactProps$"))];
@@ -172,18 +176,21 @@ test("빈 Notebook은 좁은 일반대화만 실행하고 근거 미사용을 �
     const form = findElements(container, (node) => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
     const formProps = form[Object.keys(form).find((key) => key.startsWith("__reactProps$"))];
     await act(async () => formProps.onSubmit({ preventDefault() {} }));
-    assert.deepEqual(calls, [{ knowledgeContext: null, question: "안녕하세요!", stepUpAuthorizationId: null }]);
+    assert.deepEqual(calls, [{ knowledgeContext: null, question: "안녕하세요!" }]);
+    assert.equal(authorizeCalls, 0);
     assert.match(container.textContent, /일반 대화 · 근거 미사용/u);
 
     await act(async () => reactRoot.unmount());
     reactRoot = null;
     const groundedContainer = dom.document.createElement("div"); dom.document.body.appendChild(groundedContainer);
+    const groundedCalls = [];
     const groundedAdapter = {
       ...effectAdapter,
       async listSources() {
         return [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }];
       },
-      async askQuestion() {
+      async askQuestion(input) {
+        groundedCalls.push(input);
         return { run_id: "run-grounded", run_result_id: "result-grounded", answer: "근거 부족 모양", insufficient: false, citations: [] };
       },
     };
@@ -196,6 +203,14 @@ test("빈 Notebook은 좁은 일반대화만 실행하고 근거 미사용을 �
     const groundedForm = findElements(groundedContainer, (node) => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
     const groundedFormProps = groundedForm[Object.keys(groundedForm).find((key) => key.startsWith("__reactProps$"))];
     await act(async () => groundedFormProps.onSubmit({ preventDefault() {} }));
+    assert.equal(authorizeCalls, 0);
+    assert.deepEqual(groundedCalls, [{
+      knowledgeContext: {
+        mode: "raw_only",
+        resources: [{ resourceKind: "source", resourceId: "source-1", versionId: "version-1" }],
+      },
+      question: "선택 Source를 근거로 답해줘",
+    }]);
     assert.doesNotMatch(groundedContainer.textContent, /일반 대화 · 근거 미사용/u);
 
     await act(async () => reactRoot.unmount());

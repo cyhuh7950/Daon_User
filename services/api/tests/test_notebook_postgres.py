@@ -9,7 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from threading import Barrier
+from threading import Barrier, Event, Lock
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,7 +25,6 @@ from daon_user_api.question_answering_postgres import (
     PostgresQuestionAnsweringRepository,
     QuestionContext,
     QuestionRepositoryError,
-    StoredQuestionAnswer,
 )
 from daon_user_api.document_index_postgres import IndexedEvidenceChunk
 from daon_user_api.studio_report import (
@@ -37,6 +37,17 @@ from daon_user_api.data_canon import CanonicalContext, CanonError, PostgresDataC
 from daon_user_api.document_processing import DocumentProcessingContext
 from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
 from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+from daon_user_api.egress_policy import EffectiveEgressPolicy
+from daon_user_api.provider_settings import (
+    ModelDeploymentView,
+    ProviderProfileView,
+    ProviderSettingsSnapshot,
+)
+from daon_user_api.question_answering_service import (
+    QuestionAnsweringError,
+    QuestionAnsweringService,
+)
+from daon_user_api.question_egress import PostgresQuestionEgressAuthorizer
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
 from daon_user_api.identity import ClientKind, IdentityPrincipal
@@ -46,6 +57,363 @@ from test_identity_support import POLICY_VERSION, create_service
 
 DSN = os.getenv("DAON_TEST_POSTGRES_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="DAON_TEST_POSTGRES_DSN is required")
+
+
+def test_actual_postgres_external_policy_exact_mismatch_has_zero_domain_write() -> None:
+    assert DSN is not None
+    store = PostgresCloudStore(DSN, min_size=1, max_size=2)
+    context = QuestionContext(
+        "tenant-egress-preflight", "workspace-egress-preflight", "user-egress-preflight",
+        "trace-egress-preflight", "policy-v1", "notebook-egress-preflight",
+    )
+    tables = (
+        "provider_profiles", "model_artifacts", "model_deployments", "routing_policy_versions",
+        "routing_decisions", "egress_decisions", "runs", "model_attempts", "audit_events",
+    )
+
+    class PolicyBoundary:
+        def get_effective(self, _context):  # type: ignore[no-untyped-def]
+            return EffectiveEgressPolicy(
+                "organization-policy", "organization-binding", "workspace-policy",
+                "workspace-binding", "allow_approved_external", ("external_api",),
+                ("api.groq.com",), "internal", 1_048_576, True, True,
+                "organization_admin", False, "sha256:" + "a" * 64,
+                '"effective"', '"organization"', '"workspace"', {}, {},
+            )
+
+    def counts() -> tuple[int, ...]:
+        with store._transaction(CloudAccessContext(
+            context.tenant_id, context.workspace_id, context.actor_id, "question.test",
+        )) as connection:
+            return tuple(int(connection.execute(
+                f"SELECT count(*) FROM {table} WHERE tenant_id=%s AND workspace_id=%s",
+                (context.tenant_id, context.workspace_id),
+            ).fetchone()[0]) for table in tables)
+
+    try:
+        store.seed_scope(CloudAccessContext(
+            context.tenant_id, context.workspace_id, context.actor_id, "question.test",
+        ))
+        before = counts()
+        authorizer = PostgresQuestionEgressAuthorizer(store, PolicyBoundary())  # type: ignore[arg-type]
+        payload = b'{"question":"masked"}'
+        with pytest.raises(QuestionAnsweringError) as denied:
+            authorizer.authorize(
+                context, run_id="run-egress-preflight", source_id=None,
+                source_version_id=None,
+                selection=TextModelSelection(
+                    "UPSTAGE", "https://api.upstage.ai/v1", "profile-upstage",
+                    "deployment-upstage", "solar-pro", 1, "external_api",
+                ),
+                provider_payload=payload,
+                approved_authorization={
+                    "policy_fingerprint": "sha256:" + "a" * 64,
+                    "provider_payload_fingerprint": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                    "provider_kind": "external_api", "deployment_id": "deployment-upstage",
+                },
+            )
+        assert (denied.value.code, denied.value.status) == ("EGRESS_POLICY_DENIED", 403)
+        assert counts() == before == (0,) * len(tables)
+    finally:
+        store.close()
+
+
+def test_actual_postgres_external_full_service_persists_complete_run_and_http_replays() -> None:
+    assert DSN is not None
+    store = PostgresCloudStore(DSN, min_size=1, max_size=2)
+    notebooks = PostgresNotebookRepository(store, creation_enforcer=enforce_license_creation)
+    licenses = PostgresLicenseRepository(store)
+    scope = NotebookContext(
+        "tenant-external-full", "workspace-external-full", "user-external-full",
+        "trace-external-full", "policy-v1",
+    )
+    now = datetime(2026, 8, 21, tzinfo=timezone.utc)
+
+    class ProviderSettings:
+        def snapshot(self, _context):  # type: ignore[no-untyped-def]
+            return ProviderSettingsSnapshot(
+                scope.workspace_id,
+                (ProviderProfileView(
+                    "profile-upstage", "UPSTAGE", "external_api",
+                    "https://api.upstage.ai/v1", True, True, 1,
+                ),),
+                (ModelDeploymentView(
+                    "deployment-upstage", "profile-upstage", "UPSTAGE", "solar-pro",
+                    ("text",), True, True, 1,
+                ),),
+                {"text": "deployment-upstage"}, 1,
+            )
+
+    class Credential:
+        def resolve(self, _provider_code: str) -> str:
+            return "test-only-secret"
+
+    class Transport:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.lock = Lock()
+            self.started = Event()
+            self.release = Event()
+            self.block = False
+
+        def post_json(self, **_kwargs):  # type: ignore[no-untyped-def]
+            with self.lock:
+                self.calls += 1
+            self.started.set()
+            if self.block:
+                assert self.release.wait(2), "transport release timeout"
+            return {"choices": [{"message": {"content": json.dumps({
+                "answer": "안녕하세요. 무엇을 도와드릴까요?",
+            }, ensure_ascii=False)}}]}
+
+    class EmptyIndex:
+        def search(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            return ()
+
+    class PolicyBoundary:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_effective(self, _context):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return EffectiveEgressPolicy(
+                "organization-policy", "organization-binding", "workspace-policy",
+                "workspace-binding", "allow_approved_external", ("external_api",),
+                ("api.upstage.ai",), "internal", 1_048_576, True, True,
+                "organization_admin", False, "sha256:" + "a" * 64,
+                '"effective"', '"organization"', '"workspace"', {}, {},
+            )
+
+    class BindingBoundary:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def require_selected_bindings(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+            self.calls += 1
+
+    class UnusedObjectStorage:
+        def get(self, _key: str) -> bytes:
+            raise AssertionError("general conversation must not read object storage")
+
+    try:
+        store.seed_scope(CloudAccessContext(
+            scope.tenant_id, scope.workspace_id, scope.actor_id, "question.full.test",
+        ))
+        licenses.apply(
+            LicenseContext(
+                scope.tenant_id, scope.workspace_id, scope.actor_id,
+                scope.trace_id, scope.policy_version,
+            ),
+            VerifiedLicense(
+                license_id="license-external-full-001", product="daon-user",
+                edition="enterprise", organization_id=scope.tenant_id,
+                issued_at=now - timedelta(days=1), expires_at=now + timedelta(days=365),
+                features=("notebook_management",), resource_limits=(("notebooks", 10),),
+                claims_digest="4" * 64, key_id="release-1",
+            ), idempotency_key="license-external-full-apply",
+            request_fingerprint="5" * 64,
+        )
+        notebook, _ = notebooks.create(
+            scope, title="External full", description=None,
+            idempotency_key="external-full-notebook-create",
+            request_fingerprint="6" * 64, now=now,
+        )
+        repository = PostgresQuestionAnsweringRepository(
+            store, UnusedObjectStorage(),  # type: ignore[arg-type]
+        )
+        policy = PolicyBoundary()
+        transport = Transport()
+        question_service = QuestionAnsweringService(
+            ProviderSettings(), repository, EmptyIndex(), Credential(), transport,
+            PostgresQuestionEgressAuthorizer(store, policy),  # type: ignore[arg-type]
+        )
+        binding = BindingBoundary()
+
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "identity.sqlite3"
+            audit = AuditEventStore()
+            identity, identity_repository, _, clock = create_service(db_path, audit_store=audit)
+            authorization_repository = SqliteAuthorizationRepository(db_path)
+            principal = IdentityPrincipal(
+                scope.actor_id, "session-external-full", "device-external-full", scope.tenant_id,
+            )
+            authorization_repository.bootstrap_workspace(
+                tenant_id=scope.tenant_id, workspace_id=scope.workspace_id,
+                owner_user_id=scope.actor_id, owner_role=Role.PERSONAL_OWNER,
+                workspace_kind="personal", data_area="cloud_sync",
+                cost_limit_cents=1000, now=clock(),
+            )
+            authorization = AuthorizationService(
+                repository=authorization_repository, audit_store=audit, clock=clock,
+                identity_service=identity,
+            )
+            dependencies = RuntimeDependencies(
+                settings=RuntimeSettings.for_test(
+                    database_path=db_path, policy_version=POLICY_VERSION,
+                ),
+                identity_service=identity, authorization_service=authorization,
+                audit_store=audit, identity_repository=identity_repository,
+                authorization_repository=authorization_repository,
+                question_answering_service=question_service,
+                notebook_service=binding,  # type: ignore[arg-type]
+                egress_policy_service=policy,  # type: ignore[arg-type]
+            )
+            body = {"notebook_id": notebook.notebook_id, "question": "안녕하세요!"}
+            with patch.object(identity, "describe_access", return_value=SimpleNamespace(
+                client_kind=ClientKind.WEB, principal=principal,
+            )):
+                with TestClient(create_app(dependencies)) as client:
+                    first = client.post(
+                        f"/api/v1/workspaces/{scope.workspace_id}/questions",
+                        cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                        headers={"Idempotency-Key": "question-external-full-0001"},
+                        json=body,
+                    )
+                    assert first.status_code == 200, first.text
+                    first_data = first.json()["data"]
+                    first_calls = transport.calls
+                    replay = client.post(
+                        f"/api/v1/workspaces/{scope.workspace_id}/questions",
+                        cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                        headers={"Idempotency-Key": "question-external-full-0001"},
+                        json=body,
+                    )
+                    assert replay.status_code == 200, replay.text
+                    assert replay.json()["data"] == first_data
+                    assert transport.calls == first_calls == 1
+
+            concurrent_run_id = "run-external-concurrent"
+            concurrent_fingerprint = "sha256:" + "d" * 64
+            prepared = question_service.prepare_authorization(
+                QuestionContext(
+                    scope.tenant_id, scope.workspace_id, scope.actor_id,
+                    scope.trace_id, scope.policy_version, notebook.notebook_id,
+                ), source_id=None, source_version_id=None, question="안녕하세요!",
+                context_mode="general_ungrounded", context_sources=(),
+            )
+            approval = {
+                "request_fingerprint": "sha256:" + "e" * 64,
+                "policy_fingerprint": "sha256:" + "a" * 64,
+                "provider_payload_fingerprint": "sha256:" + hashlib.sha256(
+                    prepared.provider_payload,
+                ).hexdigest(),
+                "provider_kind": "external_api",
+                "deployment_id": "deployment-upstage",
+            }
+            transport.block = True
+            transport.started.clear()
+            before_concurrent_calls = transport.calls
+
+            def ask_concurrently() -> object:
+                return question_service.ask(
+                    QuestionContext(
+                        scope.tenant_id, scope.workspace_id, scope.actor_id,
+                        scope.trace_id, scope.policy_version, notebook.notebook_id,
+                    ),
+                    source_id=None, source_version_id=None, question="안녕하세요!",
+                    run_id=concurrent_run_id, approved_authorization=approval,
+                    context_mode="general_ungrounded", context_sources=(),
+                    request_fingerprint=concurrent_fingerprint,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                owner = pool.submit(ask_concurrently)
+                assert transport.started.wait(2)
+                follower = pool.submit(ask_concurrently)
+                time.sleep(0.1)
+                transport.release.set()
+                owner_result = owner.result(timeout=3)
+                follower_result = follower.result(timeout=3)
+            assert owner_result == follower_result
+            assert transport.calls - before_concurrent_calls == 1
+
+            with store._transaction(CloudAccessContext(
+                scope.tenant_id, scope.workspace_id, scope.actor_id, "question.full.test",
+            )) as connection:
+                assert connection.execute(
+                    "SELECT count(*) FROM runs WHERE record_id=%s",
+                    (concurrent_run_id,),
+                ).fetchone()[0] == 1
+                assert connection.execute(
+                    "SELECT count(*) FROM run_results WHERE run_id=%s",
+                    (concurrent_run_id,),
+                ).fetchone()[0] == 1
+                assert connection.execute(
+                    "SELECT count(*) FROM egress_decisions WHERE run_id=%s",
+                    (concurrent_run_id,),
+                ).fetchone()[0] == 1
+                audit_counts = dict(connection.execute(
+                    "SELECT action,count(*) FROM audit_events WHERE target_id=%s "
+                    "GROUP BY action ORDER BY action",
+                    (concurrent_run_id,),
+                ).fetchall())
+                assert audit_counts == {
+                    "canon.transition": 5,
+                    "question.answer": 1,
+                    "question.egress.authorize": 1,
+                }
+
+            mixed_run_id = "run-external-concurrent-mismatch"
+            transport.started.clear()
+            transport.release.clear()
+            before_mixed_calls = transport.calls
+
+            def ask_mixed(fingerprint: str) -> object:
+                return question_service.ask(
+                    QuestionContext(
+                        scope.tenant_id, scope.workspace_id, scope.actor_id,
+                        scope.trace_id, scope.policy_version, notebook.notebook_id,
+                    ),
+                    source_id=None, source_version_id=None, question="안녕하세요!",
+                    run_id=mixed_run_id, approved_authorization=approval,
+                    context_mode="general_ungrounded", context_sources=(),
+                    request_fingerprint=fingerprint,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                mixed_owner = pool.submit(ask_mixed, "sha256:" + "1" * 64)
+                assert transport.started.wait(2)
+                mixed_follower = pool.submit(ask_mixed, "sha256:" + "2" * 64)
+                time.sleep(0.1)
+                transport.release.set()
+                mixed_owner.result(timeout=3)
+                with pytest.raises(QuestionAnsweringError) as mismatch:
+                    mixed_follower.result(timeout=3)
+            assert (mismatch.value.code, mismatch.value.status) == (
+                "IDEMPOTENCY_KEY_REUSED", 409,
+            )
+            assert transport.calls - before_mixed_calls == 1
+            with store._transaction(CloudAccessContext(
+                scope.tenant_id, scope.workspace_id, scope.actor_id, "question.full.test",
+            )) as connection:
+                assert connection.execute(
+                    "SELECT count(*) FROM runs WHERE record_id=%s", (mixed_run_id,),
+                ).fetchone()[0] == 1
+                assert connection.execute(
+                    "SELECT count(*) FROM run_results WHERE run_id=%s", (mixed_run_id,),
+                ).fetchone()[0] == 1
+                assert connection.execute(
+                    "SELECT count(*) FROM egress_decisions WHERE run_id=%s", (mixed_run_id,),
+                ).fetchone()[0] == 1
+                assert connection.execute(
+                    "SELECT count(*) FROM audit_events WHERE target_id=%s", (mixed_run_id,),
+                ).fetchone()[0] == 7
+
+            run_id = first_data["run_id"]
+            with store._transaction(CloudAccessContext(
+                scope.tenant_id, scope.workspace_id, scope.actor_id, "question.full.test",
+            )) as connection:
+                run = connection.execute(
+                    "SELECT canonical_json,conversation_id FROM runs WHERE record_id=%s",
+                    (run_id,),
+                ).fetchone()
+            assert run[0]["request_fingerprint"].startswith("sha256:")
+            assert run[0]["provider_kind"] == "external_api"
+            assert run[0]["egress_scope"]["destination"] == "api.upstage.ai"
+            assert isinstance(run[1], str) and run[1]
+            dependencies.close()
+    finally:
+        store.close()
 
 
 def test_actual_postgres_notebook_replay_scope_metadata_and_rls() -> None:
@@ -515,9 +883,19 @@ def test_actual_postgres_general_conversation_persists_selected_provider_lineage
             ), evidence=(), result=GroundedTextResult(
                 "안녕하세요. 무엇을 도와드릴까요?", (), False, {"total_tokens": 8},
             ), context_mode="general_ungrounded", context_sources=(),
+            request_fingerprint="sha256:" + "c" * 64,
+            egress_authorization={"frozen_routing_context": {
+                "classification": "internal", "destination": "api.upstage.ai",
+                "masking_required": True, "payload_bytes": 128,
+                "redaction_required": True,
+            }},
         )
         assert stored.citations == ()
         assert repository.load_completed(context, stored.run_id) == stored
+        assert stored.provider_kind == "external_api"
+        assert repository.load_completed_for_replay(
+            context, stored.run_id, "sha256:" + "c" * 64,
+        ) == stored
         selected = notebooks.read_selected_context(notebook_context, notebook.notebook_id)
         assert len(selected.conversation_thread_ids) == 1
         assert selected.conversation is not None
@@ -653,7 +1031,7 @@ def test_actual_postgres_source_registration_binds_only_after_canonical_commit()
         store.close()
 
 
-def test_actual_postgres_http_question_replay_precedes_current_binding_provider_and_policy() -> None:
+def test_actual_postgres_http_local_question_replay_revalidates_binding_before_provider_and_policy() -> None:
     assert DSN is not None
     store = PostgresCloudStore(DSN, min_size=1, max_size=2)
     notebooks = PostgresNotebookRepository(store, creation_enforcer=enforce_license_creation)
@@ -676,7 +1054,7 @@ def test_actual_postgres_http_question_replay_precedes_current_binding_provider_
         def require_selected_bindings(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
             self.calls += 1
             if self.blocked:
-                raise AssertionError("current binding must not run during replay")
+                raise AssertionError("current binding rejected")
 
     class EgressPolicyBoundary:
         def __init__(self) -> None:
@@ -737,7 +1115,7 @@ def test_actual_postgres_http_question_replay_precedes_current_binding_provider_
                 return SimpleNamespace(
                     selection=TextModelSelection(
                         "OLLAMA", "http://127.0.0.1", "profile-local",
-                        "deployment-local", "local-model", 1, "local_service",
+                        "deployment-local", "local-model", 1, "local_runtime",
                     ),
                     provider_payload={},
                 )
@@ -751,7 +1129,7 @@ def test_actual_postgres_http_question_replay_precedes_current_binding_provider_
                     source_version_id=None, question=kwargs["question"],
                     selection=TextModelSelection(
                         "OLLAMA", "http://127.0.0.1", "profile-local",
-                        "deployment-local", "local-model", 1, "local_service",
+                        "deployment-local", "local-model", 1, "local_runtime",
                     ),
                     evidence=(), result=GroundedTextResult(
                         "저장된 일반 대화", (), False, {"total_tokens": 4},
@@ -808,7 +1186,6 @@ def test_actual_postgres_http_question_replay_precedes_current_binding_provider_
                         binding_boundary.calls, question_boundary.prepare_calls,
                         question_boundary.ask_calls, policy_boundary.calls,
                     )
-                    binding_boundary.blocked = True
                     question_boundary.blocked = True
                     replay = client.post(
                         f"/api/v1/workspaces/{scope.workspace_id}/questions",
@@ -818,10 +1195,11 @@ def test_actual_postgres_http_question_replay_precedes_current_binding_provider_
                     )
                     assert replay.status_code == 200, replay.text
                     assert replay.json()["data"] == first_data
+                    assert binding_boundary.calls == first_counts[0] + 1
                     assert (
-                        binding_boundary.calls, question_boundary.prepare_calls,
-                        question_boundary.ask_calls, policy_boundary.calls,
-                    ) == first_counts
+                        question_boundary.prepare_calls, question_boundary.ask_calls,
+                        policy_boundary.calls,
+                    ) == first_counts[1:]
                     mismatch = client.post(
                         f"/api/v1/workspaces/{scope.workspace_id}/questions",
                         cookies={WEB_SESSION_COOKIE: "opaque-session"},
@@ -830,10 +1208,11 @@ def test_actual_postgres_http_question_replay_precedes_current_binding_provider_
                     )
                     assert mismatch.status_code == 409, mismatch.text
                     assert mismatch.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+                    assert binding_boundary.calls == first_counts[0] + 2
                     assert (
-                        binding_boundary.calls, question_boundary.prepare_calls,
-                        question_boundary.ask_calls, policy_boundary.calls,
-                    ) == first_counts
+                        question_boundary.prepare_calls, question_boundary.ask_calls,
+                        policy_boundary.calls,
+                    ) == first_counts[1:]
 
             run_id = first_data["run_id"]
             stored_fingerprint = None
@@ -845,12 +1224,16 @@ def test_actual_postgres_http_question_replay_precedes_current_binding_provider_
                     (run_id,),
                 ).fetchone()[0]
             assert isinstance(stored_fingerprint, str)
-            assert repository.load_completed_for_replay(
-                QuestionContext(
-                    scope.tenant_id, scope.workspace_id, scope.actor_id,
-                    scope.trace_id, scope.policy_version, other.notebook_id,
-                ), run_id, stored_fingerprint,
-            ) is None
+            with pytest.raises(QuestionRepositoryError) as missing_binding:
+                repository.load_completed_for_replay(
+                    QuestionContext(
+                        scope.tenant_id, scope.workspace_id, scope.actor_id,
+                        scope.trace_id, scope.policy_version, other.notebook_id,
+                    ), run_id, stored_fingerprint,
+                )
+            assert (missing_binding.value.code, missing_binding.value.status) == (
+                "NOTEBOOK_NOT_FOUND", 404,
+            )
             dependencies.close()
     finally:
         store.close()

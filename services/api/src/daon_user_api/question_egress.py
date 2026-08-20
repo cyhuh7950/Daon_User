@@ -11,7 +11,7 @@ from psycopg.types.json import Jsonb
 
 from .cloud_storage import PostgresCloudStore
 from .data_canon import canonical_json_bytes
-from .egress_policy import EgressPolicyContext, EgressPolicyService
+from .egress_policy import EffectiveEgressPolicy, EgressPolicyContext, EgressPolicyService
 from .question_answering import TextModelSelection
 from .question_answering_postgres import PostgresQuestionAnsweringRepository, QuestionContext
 from .question_answering_service import QuestionAnsweringError, is_general_conversation_intent
@@ -20,6 +20,30 @@ from .routing import CandidateDeployment, RoutingContext, route_single_model
 
 class _FrozenRunMismatch(RuntimeError):
     pass
+
+
+def external_question_policy_matches(
+    effective: EffectiveEgressPolicy | object, *, provider_kind: str,
+    destination: str, payload_bytes: int, classification: str,
+    masking_required: bool, redaction_required: bool,
+) -> bool:
+    allowed_kinds = getattr(effective, "allowed_provider_kinds", ())
+    allowed_destinations = getattr(effective, "allowed_destinations", ())
+    max_bytes = getattr(effective, "max_bytes", None)
+    return bool(
+        getattr(effective, "mode", None) == "allow_approved_external"
+        and isinstance(allowed_kinds, (tuple, list))
+        and provider_kind in allowed_kinds
+        and isinstance(allowed_destinations, (tuple, list))
+        and destination.casefold() in {
+            item.casefold() for item in allowed_destinations if isinstance(item, str)
+        }
+        and isinstance(max_bytes, int) and not isinstance(max_bytes, bool)
+        and 0 <= payload_bytes <= max_bytes
+        and getattr(effective, "classification", None) == classification
+        and getattr(effective, "masking_required", None) is masking_required
+        and getattr(effective, "redaction_required", None) is redaction_required
+    )
 
 
 class PostgresQuestionEgressAuthorizer:
@@ -86,6 +110,8 @@ class PostgresQuestionEgressAuthorizer:
         source_version_id: str | None, selection: TextModelSelection, provider_payload: bytes,
         no_external_payload: bool = False,
         approved_authorization: Mapping[str, str] | None = None,
+        question: str | None = None, context_mode: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> Mapping[str, object]:
         policy_context = EgressPolicyContext(
             context.tenant_id, context.tenant_id, context.workspace_id,
@@ -105,17 +131,16 @@ class PostgresQuestionEgressAuthorizer:
             approved_authorization.get("deployment_id") == selection.deployment_id,
         ))
         approver_unavailable = external and not approval_exact
-        policy_allowed = (
-            not external
-            or (
-                effective.mode == "allow_approved_external"
-                and provider_kind in effective.allowed_provider_kinds
-                and destination in {item.casefold() for item in effective.allowed_destinations}
-                and payload_bytes <= effective.max_bytes
-                and not transformation_unavailable
-                and not approver_unavailable
-            )
+        external_scope_allowed = external_question_policy_matches(
+            effective, provider_kind=provider_kind, destination=destination,
+            payload_bytes=payload_bytes, classification="internal",
+            masking_required=True, redaction_required=True,
         )
+        if external and (
+            not external_scope_allowed or transformation_unavailable or approver_unavailable
+        ):
+            raise QuestionAnsweringError("EGRESS_POLICY_DENIED", status=403)
+        policy_allowed = not external or external_scope_allowed
         routing = route_single_model(
             RoutingContext(
                 actor_id=context.actor_id, tenant_id=context.tenant_id,
@@ -154,6 +179,20 @@ class PostgresQuestionEgressAuthorizer:
             "approved_request_fingerprint": None if approved_authorization is None
             else approved_authorization.get("request_fingerprint"),
         }
+        if (
+            not isinstance(question, str) or not question.strip()
+            or context_mode not in {
+                "raw_only", "daon_priority", "mixed", "general_ungrounded",
+            }
+            or not isinstance(request_fingerprint, str)
+        ):
+            raise QuestionAnsweringError("QUESTION_RESULT_INVALID", status=400)
+        run_payload = PostgresQuestionAnsweringRepository._run_canonical_payload(
+            question=question, source_id=source_id,
+            source_version_id=source_version_id, context_mode=context_mode,
+            request_fingerprint=request_fingerprint, selection=selection,
+            frozen_scope=frozen,
+        )
         cloud_context = PostgresQuestionAnsweringRepository._cloud_context(context, "question.route")
         try:
             with self._cloud_store._transaction(cloud_context) as connection:
@@ -162,12 +201,14 @@ class PostgresQuestionEgressAuthorizer:
                     ("question-egress|" + context.tenant_id + "|" + context.workspace_id + "|" + run_id,),
                 )
                 existing = connection.execute(
-                    "SELECT canonical_json->'frozen_routing_context' FROM runs WHERE record_id=%s",
+                    "SELECT canonical_json FROM runs WHERE record_id=%s",
                     (run_id,),
                 ).fetchone()
-                if existing is not None and existing[0] != frozen:
-                    raise _FrozenRunMismatch
                 if existing is not None:
+                    if existing[0] != run_payload:
+                        raise QuestionAnsweringError(
+                            "IDEMPOTENCY_KEY_REUSED", status=409,
+                        )
                     replay = connection.execute(
                         "SELECT canonical_json->>'allowed',canonical_json->>'reason' "
                         "FROM egress_decisions WHERE record_id=%s AND run_id=%s",
@@ -183,7 +224,10 @@ class PostgresQuestionEgressAuthorizer:
                         "routing_policy_version_id": routing_policy_id,
                         "policy_fingerprint": effective.fingerprint,
                         "frozen_routing_context": frozen,
+                        "provider_owner": False,
                     }
+                conversation_id = self._id("conversation", run_id)
+                run_result_id = self._id("run-result", run_id)
                 PostgresQuestionAnsweringRepository._insert_canon(connection, context, "provider_profiles", provider_id, {
                     "configured_profile_id": selection.profile_id,
                     "provider_code": selection.provider_code,
@@ -203,11 +247,15 @@ class PostgresQuestionEgressAuthorizer:
                     "candidate_order": [deployment_id], "role": "text",
                     "egress_policy_fingerprint": effective.fingerprint,
                 })
-                PostgresQuestionAnsweringRepository._insert_canon(connection, context, "runs", run_id, {
-                    "question_fingerprint": "sha256:" + hashlib.sha256(payload_fingerprint.encode()).hexdigest(),
-                    "source_id": source_id, "source_version_id": source_version_id,
-                    "frozen_routing_context": frozen,
-                }, state="accepted")
+                PostgresQuestionAnsweringRepository._insert_canon(
+                    connection, context, "conversations", conversation_id,
+                    {"current_run_id": run_id, "current_run_result_id": run_result_id},
+                )
+                PostgresQuestionAnsweringRepository._insert_canon(
+                    connection, context, "runs", run_id,
+                    run_payload, state="accepted", extra_columns=("conversation_id",),
+                    extra_values=(conversation_id,),
+                )
                 PostgresQuestionAnsweringRepository._insert_canon(connection, context, "egress_decisions", egress_decision_id, {
                     "run_id": run_id, "provider_profile_id": provider_id,
                     "allowed": allowed, "reason": reason, "frozen_routing_context": frozen,
@@ -246,6 +294,7 @@ class PostgresQuestionEgressAuthorizer:
             "routing_policy_version_id": routing_policy_id,
             "policy_fingerprint": effective.fingerprint,
             "frozen_routing_context": frozen,
+            "provider_owner": True,
         }
 
     def _record_retry_denial(

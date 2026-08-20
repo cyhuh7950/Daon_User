@@ -478,7 +478,6 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
   const lifetimeControllerRef = useRef(null);
   const workspaceMountedRef = useRef(false);
   const citationUrlsRef = useRef(new Set());
-  const questionPasswordRef = useRef(null);
   const questionEpochRef = useRef(0);
   const modalRef = useRef(null);
   const modalOpenerRef = useRef(null);
@@ -688,19 +687,9 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
       const knowledgeContext = viewState.selectedSource || selectedKnowledgeId
         ? buildQuestionKnowledgeContext(viewState.selectedSource, selectedKnowledgeId)
         : null;
-      let stepUpAuthorizationId = null;
-      const password = questionPasswordRef.current?.value || "";
-      if (password && adapter.authorizeQuestion) {
-        const authorization = await adapter.authorizeQuestion(
-          { knowledgeContext, question: question.trim(), password },
-          { signal, idempotencyKey },
-        );
-        stepUpAuthorizationId = authorization.step_up_authorization_id;
-      }
       if (questionEpoch !== questionEpochRef.current || signal.aborted) return;
-      if (questionPasswordRef.current) questionPasswordRef.current.value = "";
       const answer = await adapter.askQuestion(
-        { knowledgeContext, question: question.trim(), stepUpAuthorizationId },
+        { knowledgeContext, question: question.trim() },
         { signal, idempotencyKey },
       );
       if (signal.aborted || questionEpoch !== questionEpochRef.current) return;
@@ -718,8 +707,6 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
         current,
         new Error(safeErrorCode(error, "QUESTION_FAILED")),
       ));
-    } finally {
-      if (questionPasswordRef.current) questionPasswordRef.current.value = "";
     }
   };
 
@@ -1072,7 +1059,6 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
             }}>Citation · {citation.locator.kind === "page" ? `${citation.page}쪽` : "지식 구간"}</a>
           ))}</div></div><form className="conversation-composer" onSubmit={askQuestion}>
             <label><span className="sr-only">질문</span><textarea rows="2" placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식에 대해 질문하세요" : "인사하거나 Daon 사용법을 물어보세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
-            <details className="composer-auth"><summary title="외부 Provider 정책이 요구할 때만 사용합니다.">추가 인증</summary><label>현재 비밀번호<input ref={questionPasswordRef} type="password" autoComplete="current-password" /></label></details>
             <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={!question.trim() || (!viewState.selectedSource && !selectedKnowledgeId && !generalConversationReady)}>↑</button>
           </form></div>}
         </SafePane>

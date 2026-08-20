@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, replace
 from typing import Mapping, Protocol
@@ -18,6 +19,9 @@ from .question_answering import (
     GeneralConversationRequest, GroundedQuestionRequest, GroundedTextResult, TextGenerationTransport,
     OllamaTextGenerationAdapter, OpenAICompatibleTextGenerationAdapter,
     resolve_text_model_selection,
+)
+from .question_answering_postgres import (
+    PostgresQuestionAnsweringRepository, QuestionContext, StoredQuestionAnswer,
 )
 
 
@@ -55,11 +59,6 @@ def question_request_fingerprint(
         "idempotency_key": idempotency_key,
         "request": dict(request_payload),
     })).hexdigest()
-from .question_answering_postgres import (
-    PostgresQuestionAnsweringRepository, QuestionContext, StoredQuestionAnswer,
-)
-
-
 class CredentialResolver(Protocol):
     def resolve(self, provider_code: str) -> str: ...
 
@@ -170,6 +169,8 @@ class QuestionAnsweringService:
         document_index: DocumentIndexPort, credential_resolver: CredentialResolver,
         transport: TextGenerationTransport, egress: QuestionEgressPort,
         *, adapter_registry: QuestionAdapterRegistry | None = None,
+        concurrent_wait_seconds: float = 2.0,
+        concurrent_poll_seconds: float = 0.02,
     ) -> None:
         self._provider_settings = provider_settings
         self._repository = repository
@@ -178,6 +179,30 @@ class QuestionAnsweringService:
         self._transport = transport
         self._egress = egress
         self._adapter_registry = adapter_registry or QuestionAdapterRegistry()
+        self._concurrent_wait_seconds = max(0.0, concurrent_wait_seconds)
+        self._concurrent_poll_seconds = max(0.001, concurrent_poll_seconds)
+
+    def _wait_for_provider_owner(
+        self, context: QuestionContext, run_id: str, request_fingerprint: str,
+    ) -> StoredQuestionAnswer:
+        deadline = time.monotonic() + self._concurrent_wait_seconds
+        while True:
+            completed = self._repository.load_completed(context, run_id)
+            if completed is not None:
+                replay = self._repository.load_completed_for_replay(
+                    context, run_id, request_fingerprint,
+                )
+                if replay is None:
+                    raise QuestionAnsweringError(
+                        "QUESTION_RESULT_INVALID", status=500,
+                    )
+                return replay
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise QuestionAnsweringError(
+                    "QUESTION_NEW_RUN_REQUIRED", status=409, retryable=True,
+                )
+            time.sleep(min(self._concurrent_poll_seconds, remaining))
 
     @staticmethod
     def _context_sources(
@@ -314,7 +339,13 @@ class QuestionAnsweringService:
                 context, run_id=run_id, source_id=None, source_version_id=None,
                 selection=selection, provider_payload=frozen_bytes,
                 approved_authorization=approved_authorization,
+                question=question, context_mode="general_ungrounded",
+                request_fingerprint=request_fingerprint,
             )
+            if egress_authorization.get("provider_owner") is False:
+                return self._wait_for_provider_owner(
+                    context, run_id, request_fingerprint,
+                )
             try:
                 generated = self._adapter_registry.generate_general(prepared)
             except (ValueError, DocumentUnderstandingError) as error:
@@ -336,7 +367,13 @@ class QuestionAnsweringService:
                 source_version_id=source_version_id, selection=selection,
                 provider_payload=b"", no_external_payload=True,
                 approved_authorization=approved_authorization,
+                question=question, context_mode=context_mode,
+                request_fingerprint=request_fingerprint,
             )
+            if egress_authorization.get("provider_owner") is False:
+                return self._wait_for_provider_owner(
+                    context, run_id, request_fingerprint,
+                )
             return self._repository.persist_completed(
                 context, run_id=run_id, source_id=source_id,
                 source_version_id=source_version_id, question=question,
@@ -370,7 +407,13 @@ class QuestionAnsweringService:
             source_version_id=source_version_id, selection=selection,
             provider_payload=frozen_bytes,
             approved_authorization=approved_authorization,
+            question=question, context_mode=context_mode,
+            request_fingerprint=request_fingerprint,
         )
+        if egress_authorization.get("provider_owner") is False:
+            return self._wait_for_provider_owner(
+                context, run_id, request_fingerprint,
+            )
         try:
             generated = self._adapter_registry.generate_prepared(prepared)
         except (ValueError, DocumentUnderstandingError) as error:
