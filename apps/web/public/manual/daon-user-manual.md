@@ -1,13 +1,14 @@
 # Daon 사용자 설명서
 
 - Release: 1.0.0
+- 업데이트: 2026-08-20
 - 언어: 한국어(ko-KR)
 - 대상: Daon 일반 사용자, 검토자, 승인자, 조직 관리자
 - 범위: 공개 안내와 로그인 후 조직 전용 절차를 분리합니다.
 
 ## 1. 목적
 
-현재 Release에서 실제 구현·검증된 Workspace 화면, 권한, 상태, Version, 검토·승인·Export 절차를 한 곳에서 찾도록 합니다. 준비 중인 Notebook 홈과 로그인 최종 연결은 완료 기능으로 설명하지 않습니다.
+현재 Release에서 실제 구현된 로그인, Notebook 홈, 선택한 Notebook의 3열 Workspace, 설정, 권한, 상태, Version, 검토·승인·Export 절차를 한 곳에서 찾도록 합니다. 아직 실제 제품 E2E로 검증하지 않은 항목은 완료 기능으로 설명하지 않습니다.
 
 ## 2. 접근 경로
 
@@ -23,7 +24,11 @@ Source 원문, 질문·답변, Citation 상세, Studio 산출물, Provider 설�
 
 ### 3.1 Notebook 홈
 
-Notebook 홈, 새 Notebook, 최근·기존 Notebook, 검색·정렬·Grid/List 전환은 **Phase D 준비 중**입니다. 현재는 선택된 Test Notebook의 3열 작업 화면만 독립 검증합니다. 로그인 성공 후 Notebook 홈으로 이동하는 연결은 Phase E에서 마지막으로 구현합니다.
+1. 로그인 성공 후 Notebook 홈으로 이동합니다.
+2. `새 Notebook`에서 제목과 선택 설명을 입력하거나 기존 Notebook 카드를 선택합니다.
+3. 검색·최근 수정/제목 정렬·Grid/List 전환으로 Notebook을 찾습니다.
+4. 새 Notebook은 빈 3열 화면으로, 기존 Notebook은 저장된 Source·대화·산출물 Context를 서버에서 재검증한 뒤 3열 화면으로 엽니다.
+5. 로그아웃·Session 만료·Workspace 변경 시 이전 Notebook 화면은 즉시 숨기고 재검증합니다.
 
 ### 3.2 선택한 Notebook의 3열 화면
 
@@ -31,8 +36,6 @@ Notebook 홈, 새 Notebook, 최근·기존 Notebook, 검색·정렬·Grid/List �
 2. 가운데 `대화·실행`에서 질문하고 답변의 Citation을 검토합니다.
 3. 오른쪽 `업무 Studio`에서 산출물 유형과 저장된 Library를 관리합니다.
 4. 초안을 편집할 때 가운데 영역이 Editor로 전환되지만 왼쪽 Source와 오른쪽 Studio 위치는 유지됩니다.
-
-![선택 Notebook의 3열 Workspace](../../03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/web-final-ui/05-workspace-light-1920x1080.png)
 
 ### 3.3 설정
 
@@ -45,7 +48,7 @@ Notebook 홈, 새 Notebook, 최근·기존 Notebook, 검색·정렬·Grid/List �
 - `라이선스`: Edition, 안전한 License ID 일부, 기간, 기능, 한도·사용량·잔여와 경고를 확인합니다.
 - `사용자 설명서`: 문서 Hub를 엽니다.
 
-![LLM 설정 화면](../../03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/web-final-ui/03-llm-settings-1920x1080.png)
+Notebook 홈의 `설정` 메뉴에서도 `화면 설정`, `라이선스`, `사용자 설명서`로 이동할 수 있습니다.
 
 ### 3.4 화면 설정
 
@@ -86,11 +89,13 @@ Notebook 홈, 새 Notebook, 최근·기존 Notebook, 검색·정렬·Grid/List �
 
 ## 5. 제한·오류 대응
 
-- Notebook 홈/생성/기존 Notebook 재진입은 준비 중입니다.
 - 추가 Studio 6종은 disabled `준비 중` 상태입니다.
+- Source가 없을 때는 좁은 일반 대화만 허용합니다. 사실 질문은 Source 또는 승인 지식 Context를 먼저 선택합니다.
+- Provider 연결 시험 성공은 외부전송 정책 승인이나 Source 기반 생성 성공을 의미하지 않습니다.
 - `CURRENT_ACCESS_DENIED`: 현재 역할 또는 Workspace 범위를 확인합니다. 우회하지 않습니다.
 - `SYNC_APPROVAL_REQUIRED`: Preview와 선택 항목을 다시 확인하고 필요한 Step-up을 수행합니다.
 - `SYNC_VERSION_CONFLICT`: 자동 덮어쓰지 말고 충돌 화면에서 명시적으로 선택합니다.
 - `LICENSE_UNAVAILABLE`: 다시 불러오고 계속 실패하면 조직 관리자에게 Safe code만 전달합니다.
 - `LICENSE_DOCUMENT_INVALID`: 조직 관리자는 서명된 문서 형식과 크기를 확인합니다. 일반 사용자는 적용을 시도하지 않습니다.
+- `EGRESS_POLICY_DENIED`: 조직의 허용 Provider·목적지·데이터 분류·마스킹 조건을 확인합니다. 내부 주소를 직접 입력해 우회하지 않습니다.
 - 다운로드 실패 시 다른 내부 경로를 직접 조합하지 말고 Hub의 allowlisted DOCX/PDF Action으로 다시 시도합니다.
