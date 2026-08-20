@@ -2575,7 +2575,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 "device_id": principal.device_id,
                 "client_kind": view.client_kind.value,
                 "delivery": "same_origin_secure_cookie" if view.client_kind is ClientKind.WEB else "native_https_opaque_bearer",
-                "expires_at": view.expires_at.isoformat(),
+                "expires_at": view.expires_at.isoformat().replace("+00:00", "Z"),
                 "recovery_operations": recovery_operations,
             },
             "meta": {"trace_id": request.state.trace_id},

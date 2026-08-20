@@ -479,6 +479,8 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(web.json()["data"]["delivery"], "same_origin_secure_cookie")
         self.assertEqual(native.json()["data"]["delivery"], "native_https_opaque_bearer")
         self.assertEqual(web.json()["data"]["user_id"], native.json()["data"]["user_id"])
+        self.assertRegex(web.json()["data"]["expires_at"], r"Z$")
+        self.assertRegex(native.json()["data"]["expires_at"], r"Z$")
         joined = f"{web.text}{native.text}"
         self.assertNotIn(self.web.access_token, joined)
         self.assertNotIn(self.native.access_token, joined)
