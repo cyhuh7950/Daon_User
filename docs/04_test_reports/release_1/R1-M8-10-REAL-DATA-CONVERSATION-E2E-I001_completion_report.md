@@ -9,7 +9,7 @@
 - 좁은 일반대화 allowlist만 Source 없이 선택 Provider를 호출하며, 그 밖의 질의는 grounded context를 계속 요구한다.
 - 기존 Question DTO·route·Provider selection·egress/Step-up·Notebook scope를 보존했다.
 - 일반대화에도 egress payload 변환 결과와 승인 bytes 및 실제 Provider transport bytes를 exact 일치시켰다.
-- 완료된 Question의 scoped request digest를 run과 함께 불변 저장하고, exact HTTP replay를 binding·Provider·egress·Step-up보다 먼저 반환한다. mismatch·legacy·cross-notebook은 fail-close한다.
+- 완료된 Question의 scoped request digest와 Provider/egress scope를 run과 함께 불변 저장한다. exact HTTP replay도 current Notebook Binding을 재검증하며 external 저장 결과는 current `EXTERNAL_LLM`과 exact effective Policy를 확인한 뒤 반환한다. mismatch·legacy·cross-notebook은 fail-close한다.
 - Source·Knowledge·Conversation·Studio 로드 실패는 서로의 ready 상태를 덮지 않으며 UI는 일반대화를 `근거 미사용`으로 구분한다.
 - `근거 미사용`은 응답 모양이 아니라 최신 요청의 local intent provenance로만 표시하며 stale/reload 응답에서 추론하지 않는다.
 - actual PostgreSQL에서 일반대화 lineage와 grounded Citation→Studio 저장을 검증했고, 대표 Upstage transport를 서버 내부에서 1회 확인했다.
@@ -25,14 +25,20 @@
 
 ## 테스트 결과
 
-- API focused `36 passed` + actual PostgreSQL `3 passed`
-- Node related `87/87 passed`
+- Latest focused API `52 passed` + actual PostgreSQL `22 passed`; 전체 API `488 passed, 42 skipped, 137 subtests passed`
+- Latest affected Node `25/25 passed` (기존 broader related `87/87` 근거 유지)
 - Rust Native wire `3/3 passed`
 - 최종 Unicode 공통 벡터 focused: Python `1/1`, Node `1/1`, Rust `1/1` passed; fullwidth letter·`！`·`？`·U+3000은 fail-close, ASCII `!/?`는 허용
 - Web build/boundary PASS, Desktop build PASS, lint PASS, OpenAPI verifier PASS
 - actual Provider Upstage bounded 1회: HTTP 200/schema valid/secret echo0
-- actual PG HTTP replay: current binding/provider/policy side effect0, mismatch write0, cross-notebook replay0
+- actual PG HTTP replay: current Binding 재검증, provider/prepare/ask/domain write0, mismatch write0, cross-notebook 결과 반환0
+- actual PG external preflight: Provider·목적지·payload bytes·분류·masking·redaction mismatch에서 Provider/Profile/Model/Run/Egress/Audit 9-table write0
+- actual PG external full service: authorizer와 완료 저장의 단일 canonical Run helper, 최초 HTTP 200, transport1, replay200/provider0, 완전 Conversation/replay metadata
 - 최종 Minor에서는 actual Provider/PostgreSQL/Windows 재실행0이며 기존 actual 판정은 변경하지 않았다.
+- I004 REWORK2에서는 fresh actual PostgreSQL `22/22`, focused `52/52`, API full `488 passed/42 skipped`, Node `25/25`를 재실행했다. 실제 운영 Provider 호출은 0이며 test-only transport 결과를 제품 actual로 과장하지 않는다.
+- I004 REWORK3에서는 same-key 2-connection 최초 요청을 fresh actual PostgreSQL에서 검증해 Provider transport1, Run1, Result1, Egress1, exact Audit7을 확인했다. follower는 bounded replay만 수행하고 owner 미완료 same-key는 retryable fail-close/provider0이며 새 key로만 복구한다. selected Gate `4/4`, cleanup db0/role0이다.
+- I004 REWORK3 fresh 회귀는 focused API `38/38`, 전체 API `489 passed/42 skipped/137 subtests`, Node `27/27`, OpenAPI exact, Ruff PASS다.
+- I004 REWORK4에서는 same run/wire/frozen의 다른 fingerprint follower를 409/result0/additional write0으로 차단했다. actual PostgreSQL은 Provider1, Run1/Result1/Egress1/Audit7, selected 4/4, cleanup db0/role0이며 fresh API39/39·full490/42 skip·Node27/27·OpenAPI·Ruff PASS다.
 
 ## 미해결
 

@@ -105,7 +105,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual(self.service.calls, [])
 
-    async def test_completed_question_replay_precedes_binding_and_current_domain_state(self) -> None:
+    async def test_completed_local_question_replay_revalidates_binding_before_domain_state(self) -> None:
         body = {
             "notebook_id": "notebook-cp3",
             "source_id": "source-cp3", "source_version_id": "source-version-cp3",
@@ -121,6 +121,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         persisted = StoredQuestionAnswer(
             first.json()["data"]["run_id"], first.json()["data"]["run_result_id"],
             first.json()["data"]["answer"], False, (),
+            provider_kind="local_runtime",
         )
         self.service.replay_answer = persisted
         self.service.calls.clear()
@@ -135,7 +136,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(replay.status_code, 200, replay.text)
         self.assertEqual(replay.json()["data"]["run_result_id"], persisted.run_result_id)
-        self.assertEqual(self.notebooks.required, [])
+        self.assertEqual(len(self.notebooks.required), 1)
         self.assertEqual(self.service.calls, [])
         self.assertEqual(len(self.service.replay_calls), 2)
 

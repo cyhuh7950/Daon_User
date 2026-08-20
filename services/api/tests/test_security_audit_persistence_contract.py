@@ -39,12 +39,11 @@ class SecurityAuditPersistenceContractTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS step_up_idempotency", identity_source)
         self.assertIn("CREATE TABLE IF NOT EXISTS step_up_consumptions", identity_source)
 
-    def test_all_runtime_sensitive_mutations_bind_step_up_to_idempotency(self) -> None:
+    def test_admin_sensitive_mutations_bind_step_up_but_questions_use_session_policy(self) -> None:
         source = (ROOT / "services/api/src/daon_user_api/runtime.py").read_text(
             encoding="utf-8"
         )
         for operation in (
-            "question.external_transfer",
             "studio.{action_name}",
             "knowledge.offline_copy",
             "sync.approve",
@@ -56,6 +55,14 @@ class SecurityAuditPersistenceContractTests(unittest.TestCase):
             "recovery.restore_execute",
         ):
             self.assertIn(f'operation=f"{operation}"' if "{" in operation else f'operation="{operation}"', source)
+        question_route = source.split(
+            '@app.post("/api/v1/workspaces/{id}/questions")', 1,
+        )[1].split(
+            '@app.post("/api/v1/studio-generation-requests"', 1,
+        )[0]
+        self.assertNotIn('operation="question.external_transfer"', question_route)
+        self.assertNotIn("consume_step_up(", question_route)
+        self.assertIn("requested_permissions=(Permission.EXTERNAL_LLM,)", question_route)
 
 
 if __name__ == "__main__":

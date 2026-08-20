@@ -96,7 +96,7 @@ from .question_answering_service import (
 from .egress_policy import EgressPolicyService
 from .egress_policy import EgressPolicyContext, EgressPolicyError, EgressPolicyPayload
 from .egress_policy_postgres import PostgresEgressPolicyRepository
-from .question_egress import PostgresQuestionEgressAuthorizer
+from .question_egress import PostgresQuestionEgressAuthorizer, external_question_policy_matches
 from .studio_report import (
     StudioReportContext, StudioReportCreateRequest, StudioReportError, StudioReportService,
 )
@@ -2060,6 +2060,43 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "idempotency_key": idempotency_key,
         })).hexdigest()
 
+    def _require_external_question_policy(
+        effective: object, *, provider_kind: str, destination: str,
+        payload_bytes: int, classification: str,
+        masking_required: bool, redaction_required: bool,
+    ) -> None:
+        if not external_question_policy_matches(
+            effective, provider_kind=provider_kind, destination=destination,
+            payload_bytes=payload_bytes, classification=classification,
+            masking_required=masking_required, redaction_required=redaction_required,
+        ):
+            raise EgressPolicyError("EGRESS_POLICY_DENIED", 403)
+
+    def _question_replay_external_scope(answer: object) -> tuple[str, int, str, bool, bool]:
+        scope = getattr(answer, "egress_scope", None)
+        if not isinstance(scope, Mapping) or set(scope) != {
+            "classification", "destination", "masking_required", "max_bytes",
+            "redaction_required",
+        }:
+            raise QuestionAnsweringError("QUESTION_REPLAY_UNAVAILABLE", status=409)
+        destination = scope.get("destination")
+        payload_bytes = scope.get("max_bytes")
+        classification = scope.get("classification")
+        masking_required = scope.get("masking_required")
+        redaction_required = scope.get("redaction_required")
+        if (
+            not isinstance(destination, str) or not destination
+            or not isinstance(payload_bytes, int) or isinstance(payload_bytes, bool)
+            or payload_bytes < 0 or not isinstance(classification, str)
+            or not isinstance(masking_required, bool)
+            or not isinstance(redaction_required, bool)
+        ):
+            raise QuestionAnsweringError("QUESTION_REPLAY_UNAVAILABLE", status=409)
+        return (
+            destination, payload_bytes, classification,
+            masking_required, redaction_required,
+        )
+
     def _question_result_response(answer: object, request: Request, workspace_id: str) -> JSONResponse:
         stored = cast(Any, answer)
         response = JSONResponse({
@@ -2173,12 +2210,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 exclude={"step_up_authorization_id"}, exclude_none=True,
             ),
         )
-        replay = await asyncio.to_thread(
-            question_answering_service.replay, question_context,
-            run_id=run_id, request_fingerprint=replay_fingerprint,
-        )
-        if replay is not None:
-            return _question_result_response(replay, request, id)
         context_mode, context_sources, source_id, source_version_id = _question_inputs(
             principal, id, request, body,
         )
@@ -2192,6 +2223,38 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 for item in context_sources
             ),
         )
+        replay = await asyncio.to_thread(
+            question_answering_service.replay, question_context,
+            run_id=run_id, request_fingerprint=replay_fingerprint,
+        )
+        if replay is not None:
+            replay_provider_kind = getattr(replay, "provider_kind", None)
+            if replay_provider_kind not in {"external_api", "server_internal", "local_runtime"}:
+                raise QuestionAnsweringError("QUESTION_REPLAY_UNAVAILABLE", status=409)
+            if replay_provider_kind == "external_api":
+                dependencies.authorization_service.authorize_action(
+                    principal=principal, workspace_id=id, action=Action.VIEW,
+                    requested_permissions=(Permission.EXTERNAL_LLM,),
+                    trace_id=request.state.trace_id,
+                    policy_version=dependencies.settings.policy_version,
+                )
+                if egress_policy_service is None:
+                    raise EgressPolicyError("EGRESS_POLICY_UNAVAILABLE", 503)
+                effective = egress_policy_service.get_effective(
+                    _egress_policy_context(principal, id, request, dependencies)
+                )
+                (
+                    replay_destination, replay_payload_bytes, replay_classification,
+                    replay_masking, replay_redaction,
+                ) = _question_replay_external_scope(replay)
+                _require_external_question_policy(
+                    effective, provider_kind="external_api",
+                    destination=replay_destination, payload_bytes=replay_payload_bytes,
+                    classification=replay_classification,
+                    masking_required=replay_masking,
+                    redaction_required=replay_redaction,
+                )
+            return _question_result_response(replay, request, id)
         approved_authorization = None
         if egress_policy_service is not None:
             context = question_context
@@ -2201,35 +2264,39 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 question=body.question, context_mode=context_mode, context_sources=context_sources,
             )
             if cast(Any, prepared).selection.provider_kind == "external_api":
+                dependencies.authorization_service.authorize_action(
+                    principal=principal, workspace_id=id, action=Action.VIEW,
+                    requested_permissions=(Permission.EXTERNAL_LLM,),
+                    trace_id=request.state.trace_id,
+                    policy_version=dependencies.settings.policy_version,
+                )
                 effective = egress_policy_service.get_effective(
                     _egress_policy_context(principal, id, request, dependencies)
                 )
-                if effective.mode == "allow_approved_external":
-                    if body.step_up_authorization_id is None:
-                        raise QuestionAnsweringError("STEP_UP_REQUIRED", status=403)
-                    request_fingerprint = _question_authorization_fingerprint(
-                        principal=principal, workspace_id=id, run_id=run_id, body=body,
-                        context_mode=context_mode, context_sources=context_sources,
-                        prepared=prepared, policy_fingerprint=effective.fingerprint,
-                        idempotency_key=idempotency_key,
-                    )
-                    access_token, _ = _credential(request)
-                    dependencies.identity_service.consume_step_up(
-                        step_up_authorization=body.step_up_authorization_id,
-                        access_token=access_token, action_group="external_transfer",
-                        target_id=run_id, policy_version=request_fingerprint,
-                        trace_id=request.state.trace_id,
-                        operation="question.external_transfer", idempotency_key=idempotency_key,
-                    )
-                    approved_authorization = {
-                        "request_fingerprint": request_fingerprint,
-                        "policy_fingerprint": effective.fingerprint,
-                        "provider_payload_fingerprint": "sha256:" + hashlib.sha256(
-                            cast(Any, prepared).provider_payload,
-                        ).hexdigest(),
-                        "provider_kind": cast(Any, prepared).selection.provider_kind,
-                        "deployment_id": cast(Any, prepared).selection.deployment_id,
-                    }
+                destination = (
+                    urlsplit(cast(Any, prepared).selection.base_url).hostname or ""
+                ).casefold()
+                _require_external_question_policy(
+                    effective, provider_kind="external_api", destination=destination,
+                    payload_bytes=len(cast(Any, prepared).provider_payload),
+                    classification="internal", masking_required=True,
+                    redaction_required=True,
+                )
+                request_fingerprint = _question_authorization_fingerprint(
+                    principal=principal, workspace_id=id, run_id=run_id, body=body,
+                    context_mode=context_mode, context_sources=context_sources,
+                    prepared=prepared, policy_fingerprint=effective.fingerprint,
+                    idempotency_key=idempotency_key,
+                )
+                approved_authorization = {
+                    "request_fingerprint": request_fingerprint,
+                    "policy_fingerprint": effective.fingerprint,
+                    "provider_payload_fingerprint": "sha256:" + hashlib.sha256(
+                        cast(Any, prepared).provider_payload,
+                    ).hexdigest(),
+                    "provider_kind": cast(Any, prepared).selection.provider_kind,
+                    "deployment_id": cast(Any, prepared).selection.deployment_id,
+                }
         answer = await asyncio.to_thread(
             question_answering_service.ask,
             QuestionContext(

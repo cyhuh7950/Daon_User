@@ -76,7 +76,10 @@ test("Question API는 승인 지식과 Raw Source를 하나의 exact Knowledge C
       { resourceKind: "source", resourceId: "source-1", versionId: "version-1" },
     ],
   };
-  await askGroundedQuestion("workspace-1", { notebookId: "notebook-1", knowledgeContext, question: "종합해줘" }, {
+  await askGroundedQuestion("workspace-1", {
+    notebookId: "notebook-1", knowledgeContext, question: "종합해줘",
+    stepUpAuthorizationId: "legacy-client-value-must-not-be-sent",
+  }, {
     idempotencyKey: "question-mixed-0001",
     fetchImpl: async (url, init) => {
       calls.push({ url, body: JSON.parse(init.body) });
@@ -94,6 +97,7 @@ test("Question API는 승인 지식과 Raw Source를 하나의 exact Knowledge C
       ],
     },
   });
+  assert.equal("step_up_authorization_id" in calls[0].body, false);
 });
 
 test("Question API는 non-JSON gateway timeout과 upstream failure를 안전 오류로 보존한다", async () => {

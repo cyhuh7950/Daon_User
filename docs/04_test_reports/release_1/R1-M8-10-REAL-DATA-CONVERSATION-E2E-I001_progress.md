@@ -59,6 +59,12 @@
 - Runtime은 `_question_inputs`·binding·Provider·egress·Step-up 전에 authoritative replay를 1회 호출한다. miss 이후 Service에는 `replay_checked=True`와 같은 digest를 전달해 이중 조회0, persist도 동일 digest를 사용한다.
 - actual PG HTTP 첫 시도: 동일 replay/current side effect0는 통과했으나 mismatch 409가 safe allowlist 누락으로 `QUESTION_FAILED`로 축약되어 exact code RED였다. DB/role cleanup0 후 QuestionRepository safe allowlist에 기존 공통 `IDEMPOTENCY_KEY_REUSED` 1항목만 추가했다.
 - actual PG HTTP 최종: 새 disposable DB/role fresh `0001→0020`, general lineage·grounded Citation/Studio·실제 FastAPI replay `3/3 PASS (8.82s)`. 동일 replay는 binding/provider/policy/ask side effect0, mismatch write0, cross-notebook replay0. cleanup DB0/role0.
+
+### 2026-08-21 I004 REWORK1 current replay 보안 계약으로 교정
+
+- 위 2026-08-20 `binding/provider/policy 이전 replay`와 `current binding side effect0` 문구는 당시 승인 계약의 역사 기록이며 현재 판정으로 사용하지 않는다. 독립 검토에서 권한·Policy 철회 후 저장 결과가 노출될 수 있음을 확인해 current 계약을 교정했다.
+- current Runtime은 replay 전에 요청 Source/Knowledge Binding을, repository는 conversation Binding을 재검증한다. 저장 Run의 canonical `provider_kind`/egress scope가 external이면 current `EXTERNAL_LLM` 및 Provider·목적지·payload bytes·`internal` 분류·masking·redaction exact effective Policy를 모두 재검증한다. local/server는 VIEW+Binding만 확인한다.
+- external 신규 요청도 동일 exact 정책 검증을 PostgreSQL authorizer transaction 전에 수행한다. actual PostgreSQL fresh `0001→0020`, `21/21 PASS`, external mismatch domain 9-table write0, external replay metadata와 local HTTP replay Binding 재검증을 확인했고 DB0/role0으로 정리했다.
 - UI RED: grounded 요청의 `{insufficient:false,citations:[]}` 응답도 answer 모양만으로 `일반 대화 · 근거 미사용`을 표시했다.
 - UI GREEN: 요청 시점의 local `answerIntent`와 monotonic question epoch를 결속했다. 최신 general 요청만 label을 표시하며 grounded no-citation label0, workspace/source/knowledge/unmount 후 stale response의 answer/label0이다. reload된 서버 answer는 공개 provenance가 없으므로 shape로 label을 추론하지 않는다. 공개 DTO 변경0.
 - Unicode RED→GREEN: Python/JS NFKC가 fullwidth `Ｄａｏｎ`을 일반대화로 승인했지만 dependency 없는 Rust는 거부했다. 승인안대로 NFKC 변환이 원문과 다른 입력을 Python/JS도 exact fail-close하여 3언어 동일 negative로 고정했다.
@@ -150,3 +156,22 @@
 - GREEN: `getOrganizationSettingsContext({signal})`은 same-origin `/bff/api/session` GET에 exact AbortSignal을 전달해 projection 차단뿐 아니라 read 자체도 취소한다.
 - 기존 monotonic epoch·AbortSignal·context_loading·Step-up exact 테스트는 유지했고 focused Egress Node는 `12/12 PASS`다.
 - fresh 종료 Gate: Egress API `10/10 PASS`, lint `4 files`, OpenAPI `75 paths / 94 operations / 120 schemas / 31 errors`, Web production build·TypeScript·12 routes·boundary `391/0` PASS. Evidence manifest `15 artifacts / mismatch0`, secret·internal URL scan0, `git diff --check` PASS, staged0이다.
+## 2026-08-21 I004 REWORK2 — external immutable Run 재검증
+
+- actual PostgreSQL RED에서 authorizer의 불완전 Run 선삽입으로 최초 외부 요청 성공 후 동일 HTTP replay가 404임을 확인했다.
+- authorizer와 완료 저장을 repository의 단일 canonical Run payload helper에 결속하고, authorizer가 Provider 호출 전에 결정론적 Conversation과 완전한 replay metadata를 최초 생성하도록 교정했다.
+- fresh PostgreSQL `22/22`(transport1, replay200/provider0, db0/role0), focused API `52/52`, 전체 API `488 passed/42 skipped/137 subtests`, Node `25/25`, OpenAPI exact, Ruff PASS다. 운영 Provider·정책 write·배포는 0이다.
+
+## 2026-08-21 I004 REWORK3 — concurrent Provider owner
+
+- 동일 idempotency key 동시 최초 요청 RED에서 transport2와 중복 transition 오류를 재현했다. durable egress decision creator 하나만 internal Provider owner가 되고 follower는 bounded completed replay만 수행하도록 교정했다.
+- owner 미완료 timeout은 same-key 소유권 탈취 없이 retryable internal 409/provider0이며 새 idempotency key만 새 Run으로 복구한다. 자동 TTL takeover는 구현하지 않았다.
+- fresh actual PostgreSQL `4/4`: transport1, Run1, Result1, Egress1, Audit `canon.transition5 + egress1 + answer1`, cleanup db0/role0. 운영 Provider·정책 write·배포0이다.
+- fresh 회귀는 focused API `38/38`, 전체 API `489 passed/42 skipped/137 subtests`, Node `27/27`, OpenAPI exact, Ruff PASS다.
+- 첫 focused/전체 회귀는 각각 과거 파일 selector와 isolated `cryptography` 누락으로 collection 전에 종료됐고, 현재 파일/dependency를 명시한 fresh 실행으로 복구했다. 제품 write0이다.
+
+## 2026-08-21 I004 REWORK4 — in-flight fingerprint exact
+
+- actual RED에서 same run/wire/frozen + 다른 request fingerprint follower가 owner 결과를 받은 결함을 재현했다.
+- stored complete canonical exact 비교와 완료 후 fingerprint-aware replay로 교정했다. mismatch follower는 409, Provider 추가 호출0, 결과0, 추가 write0이다.
+- fresh actual PostgreSQL 4/4, focused API39/39, full API490 passed/42 skipped/137 subtests, Node27/27, OpenAPI·Ruff PASS, cleanup db0/role0이다.

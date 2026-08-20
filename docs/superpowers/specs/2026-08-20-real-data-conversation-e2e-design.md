@@ -14,6 +14,11 @@
 6. 9개 Provider 설정·선택 구조는 유지한다. 기능 actual Gate는 `UPSTAGE | GROQ | MISTRAL` 중 가용한 대표 1개로 수행하고, 연결 확인은 Provider별 독립 상태로 표시한다. 자동 fallback은 0이다.
 7. Browser는 same-origin BFF만 사용하며 내부 URL·Credential·Stack·SQLSTATE를 노출하지 않는다.
 8. 실제 외부 Provider Gate 전에 organization·workspace 두 scope의 versioned Egress Policy가 모두 승인 범위와 일치해야 한다. 설정 화면은 두 scope를 별도 단계로 표시하고 각 저장마다 기존 Step-up을 사용한다. 한 단계 성공을 전체 effective 성공으로 표시하지 않으며, 현재 비밀번호는 요청 완료·실패 후 즉시 비운다.
+9. Step-up은 organization·workspace 정책 변경, License 등 관리자 설정 작업에서만 사용한다. 로그인 Session이 유효하고 선택 Workspace의 `EXTERNAL_LLM` 권한과 effective Egress Policy가 허용이면 일반·근거 질문과 Studio 사용 중 비밀번호를 다시 요구하지 않는다. 서버는 사용 시점마다 Session·Workspace·Notebook scope, Provider·목적지·분류·마스킹·redaction을 재검증한다.
+10. 완료된 질문의 동일 Idempotency replay도 저장 결과에 대한 현재 접근이다. 서버는 저장 Run의 canonical Provider 종류와 외부전송 범위를 사용해 현재 Notebook 선택 Binding을 다시 확인하고, 외부 Provider 결과이면 현재 `EXTERNAL_LLM` 권한과 effective Policy의 Provider·목적지·payload 크기·`internal` 분류·마스킹·redaction을 모두 재검증한 뒤에만 저장 결과를 반환한다. 새 외부 질문도 같은 exact 정책 검증을 Provider·Run·Egress·Audit 도메인 기록 전에 수행한다.
+11. 외부전송 authorizer와 완료 저장은 동일한 canonical Run payload 생성기를 사용한다. Provider 호출 전 authorizer가 결정론적 Conversation과 `request_fingerprint`·`provider_kind`·`egress_scope`·`conversation_id`를 포함한 완전한 immutable Run을 최초 생성하고, 완료 저장은 동일 payload를 idempotent하게 재사용한다. 불완전 선삽입이나 충돌 무시로 replay metadata를 유실하지 않는다.
+12. 동일 idempotency key의 동시 최초 외부 요청은 authorizer의 PostgreSQL advisory transaction lock과 durable egress decision으로 단일 Provider owner를 정한다. 신규 decision 생성자만 Provider를 호출하고 follower는 bounded completed replay를 기다린다. owner 미완료·장애 시 같은 key는 Provider를 탈취하지 않고 retryable fail-close하며, 새 idempotency key만 새 Run으로 재시도한다.
+13. advisory lock 뒤 existing Run은 frozen scope만이 아니라 question·context mode·Source IDs·request fingerprint를 포함한 완전한 canonical payload가 현재 요청과 exact 일치해야 follower가 된다. 불일치는 `IDEMPOTENCY_KEY_REUSED`로 write0 차단하고, 완료 follower도 fingerprint-aware authoritative replay로만 결과를 반환한다.
 
 ## Fixture 정리 계약
 

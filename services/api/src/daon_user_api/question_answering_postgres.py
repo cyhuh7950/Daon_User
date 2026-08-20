@@ -90,6 +90,8 @@ class StoredQuestionAnswer:
     answer: str
     insufficient: bool
     citations: tuple[StoredCitation, ...]
+    provider_kind: str | None = None
+    egress_scope: Mapping[str, object] | None = None
 
 
 class PostgresQuestionAnsweringRepository:
@@ -112,6 +114,39 @@ class PostgresQuestionAnsweringRepository:
     def _snapshot(payload: Mapping[str, object]) -> tuple[str, str]:
         text = canonical_json_bytes(payload).decode("utf-8")
         return text, hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _replay_egress_scope(
+        selection: TextModelSelection, frozen_scope: object,
+    ) -> Mapping[str, object] | None:
+        if selection.provider_kind != "external_api" or not isinstance(frozen_scope, Mapping):
+            return None
+        return {
+            "classification": frozen_scope.get("classification"),
+            "destination": frozen_scope.get("destination"),
+            "masking_required": frozen_scope.get("masking_required"),
+            "max_bytes": frozen_scope.get("payload_bytes"),
+            "redaction_required": frozen_scope.get("redaction_required"),
+        }
+
+    @staticmethod
+    def _run_canonical_payload(
+        *, question: str, source_id: str | None, source_version_id: str | None,
+        context_mode: str, request_fingerprint: str | None,
+        selection: TextModelSelection, frozen_scope: object,
+    ) -> Mapping[str, object]:
+        return {
+            "question": question,
+            "source_id": source_id,
+            "source_version_id": source_version_id,
+            "context_mode": context_mode,
+            "request_fingerprint": request_fingerprint,
+            "provider_kind": selection.provider_kind,
+            "egress_scope": PostgresQuestionAnsweringRepository._replay_egress_scope(
+                selection, frozen_scope,
+            ),
+            "frozen_routing_context": frozen_scope,
+        }
 
     @staticmethod
     def _insert_canon(
@@ -215,7 +250,8 @@ class PostgresQuestionAnsweringRepository:
                     if context.notebook_id is not None else (run_id,)
                 )
                 rows = connection.execute(
-                    "SELECT rr.record_id,rr.canonical_json,c.record_id,c.canonical_json "
+                    "SELECT rr.record_id,rr.canonical_json,c.record_id,c.canonical_json,"
+                    "r.canonical_json->>'provider_kind',r.canonical_json->'egress_scope' "
                     "FROM runs r JOIN run_results rr ON rr.tenant_id=r.tenant_id "
                     "AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id "
                     "LEFT JOIN citations c ON c.tenant_id=rr.tenant_id "
@@ -258,6 +294,8 @@ class PostgresQuestionAnsweringRepository:
             return StoredQuestionAnswer(
                 run_id, str(rows[0][0]), str(result_payload["answer"]),
                 bool(result_payload["insufficient"]), citations,
+                str(rows[0][4]) if rows[0][4] is not None else None,
+                cast(Mapping[str, object], rows[0][5]) if rows[0][5] is not None else None,
             )
         except (KeyError, TypeError, ValueError):
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID", status=500) from None
@@ -272,12 +310,12 @@ class PostgresQuestionAnsweringRepository:
                 self._cloud_context(context, "question.read"),
             ) as connection:
                 row = connection.execute(
-                    "SELECT r.canonical_json->>'request_fingerprint' FROM runs r "
-                    "WHERE r.record_id=%s AND r.state='completed' AND EXISTS ("
+                    "SELECT r.canonical_json->>'request_fingerprint',EXISTS ("
                     "SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=r.tenant_id "
                     "AND nb.workspace_id=r.workspace_id AND nb.notebook_id=%s "
-                    "AND nb.binding_kind='conversation_thread' AND nb.record_id=r.conversation_id)",
-                    (run_id, context.notebook_id),
+                    "AND nb.binding_kind='conversation_thread' AND nb.record_id=r.conversation_id) "
+                    "FROM runs r WHERE r.record_id=%s AND r.state='completed'",
+                    (context.notebook_id, run_id),
                 ).fetchone()
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
@@ -285,6 +323,8 @@ class PostgresQuestionAnsweringRepository:
             ) from None
         if row is None:
             return None
+        if row[1] is not True:
+            raise QuestionRepositoryError("NOTEBOOK_NOT_FOUND", status=404)
         stored_fingerprint = row[0]
         if not isinstance(stored_fingerprint, str):
             raise QuestionRepositoryError("QUESTION_REPLAY_UNAVAILABLE", status=409)
@@ -293,6 +333,10 @@ class PostgresQuestionAnsweringRepository:
         result = self.load_completed(context, run_id)
         if result is None:
             raise QuestionRepositoryError("QUESTION_RESULT_INVALID", status=500)
+        if result.provider_kind not in {"external_api", "server_internal", "local_runtime"}:
+            raise QuestionRepositoryError("QUESTION_REPLAY_UNAVAILABLE", status=409)
+        if result.provider_kind == "external_api" and not isinstance(result.egress_scope, Mapping):
+            raise QuestionRepositoryError("QUESTION_REPLAY_UNAVAILABLE", status=409)
         return result
 
     def load_ready_source(
@@ -648,11 +692,15 @@ class PostgresQuestionAnsweringRepository:
                 self._insert_canon(connection, context, "conversations", conversation_id, {
                     "current_run_id": run_id, "current_run_result_id": run_result_id,
                 })
-                self._insert_canon(connection, context, "runs", run_id, {
-                    "question": question, "source_id": source_id,
-                    "source_version_id": source_version_id, "context_mode": context_mode,
-                    "request_fingerprint": request_fingerprint,
-                }, state="accepted", extra_columns=("conversation_id",),
+                frozen_scope = authorization.get("frozen_routing_context")
+                replay_egress_scope = self._replay_egress_scope(selection, frozen_scope)
+                self._insert_canon(connection, context, "runs", run_id,
+                    self._run_canonical_payload(
+                        question=question, source_id=source_id,
+                        source_version_id=source_version_id, context_mode=context_mode,
+                        request_fingerprint=request_fingerprint, selection=selection,
+                        frozen_scope=frozen_scope,
+                    ), state="accepted", extra_columns=("conversation_id",),
                     extra_values=(conversation_id,))
                 version = self._transition(connection, context, run_id, 1, "planning")
                 run_snapshot_payload: dict[str, object] = {
@@ -763,4 +811,5 @@ class PostgresQuestionAnsweringRepository:
             ) from None
         return StoredQuestionAnswer(
             run_id, run_result_id, result.answer, result.insufficient, citations,
+            selection.provider_kind, replay_egress_scope,
         )

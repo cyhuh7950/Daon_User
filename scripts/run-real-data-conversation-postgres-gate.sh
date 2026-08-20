@@ -40,8 +40,9 @@ export DAON_TEST_POSTGRES_DSN="postgresql://$gate_role:$(printf %s "$gate_passwo
 
 echo REAL_CONVERSATION_GATE_ACTUAL_TEST
 PYTHONPATH=src:tests "$uv_bin" run --isolated --with pytest==9.0.3 --with 'psycopg[binary,pool]==3.3.4' python -m pytest \
+  tests/test_notebook_postgres.py::test_actual_postgres_external_full_service_persists_complete_run_and_http_replays \
   tests/test_notebook_postgres.py::test_actual_postgres_general_conversation_persists_selected_provider_lineage_without_source \
   tests/test_notebook_postgres.py::test_actual_postgres_question_result_is_bound_to_selected_notebook_atomically \
-  tests/test_notebook_postgres.py::test_actual_postgres_http_question_replay_precedes_current_binding_provider_and_policy \
+  tests/test_notebook_postgres.py::test_actual_postgres_http_local_question_replay_revalidates_binding_before_provider_and_policy \
   --no-header -vv
-echo "REAL_CONVERSATION_GATE_ASSERTIONS expected_tests=3 skipped=0 general_source_storage_reads=0 general_citations=0 general_provider_attempts=1 grounded_citation=1 studio_replay=1 cross_notebook_write=0 http_replay_current_side_effects=0 fingerprint_mismatch_write=0 cross_notebook_replay=0"
+echo "REAL_CONVERSATION_GATE_ASSERTIONS expected_tests=4 skipped=0 external_same_key_concurrent_transport=1 external_run=1 external_result=1 external_egress=1 external_audit_canon=5 external_audit_egress=1 external_audit_answer=1 mixed_fingerprint_conflict=1 mixed_fingerprint_provider_calls=1 mixed_fingerprint_mismatch_writes=0 owner_timeout_provider=0 general_source_storage_reads=0 general_citations=0 general_provider_attempts=1 grounded_citation=1 studio_replay=1 cross_notebook_write=0 http_replay_current_side_effects=0 fingerprint_mismatch_write=0 cross_notebook_replay=0"

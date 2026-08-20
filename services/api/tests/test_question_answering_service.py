@@ -8,10 +8,11 @@ from daon_user_api.provider_settings import (
     ModelDeploymentView, ProviderProfileView, ProviderSettingsSnapshot,
 )
 from daon_user_api.question_answering_postgres import (
-    QuestionContext, ReadyQuestionSource, StoredCitation, StoredQuestionAnswer,
+    QuestionContext, QuestionRepositoryError, ReadyQuestionSource, StoredCitation,
+    StoredQuestionAnswer,
 )
 from daon_user_api.question_answering_service import (
-    QuestionAdapterRegistry, QuestionAnsweringService, QuestionInputSource,
+    QuestionAdapterRegistry, QuestionAnsweringError, QuestionAnsweringService, QuestionInputSource,
     is_general_conversation_intent,
 )
 
@@ -133,6 +134,91 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
         self.assertTrue(repository.persisted["provider_called"])
         self.assertEqual(repository.persisted["context_mode"], "general_ungrounded")
         self.assertEqual(repository.persisted["context_sources"], ())
+
+    def test_non_owner_never_calls_provider_and_timeout_requires_safe_new_run(self) -> None:
+        class FollowerEgress(FakeEgress):
+            def authorize(self, context, **kwargs):  # type: ignore[no-untyped-def]
+                del context, kwargs
+                return {"provider_owner": False}
+
+        class GeneralTransport(FakeTransport):
+            def post_json(self, **kwargs):  # type: ignore[no-untyped-def]
+                self.calls += 1
+                return {"choices": [{"message": {"content": json.dumps({
+                    "answer": "새 Run에서 복구되었습니다.",
+                }, ensure_ascii=False)}}]}
+
+        context = QuestionContext(
+            "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1",
+            "notebook-cp3",
+        )
+        transport = GeneralTransport()
+        follower = QuestionAnsweringService(
+            FakeProviderSettings(), FakeRepository(), FakeIndex(()), FakeCredential(),
+            transport, FollowerEgress(), concurrent_wait_seconds=0,
+        )
+        with self.assertRaises(QuestionAnsweringError) as blocked:
+            follower.ask(
+                context, source_id=None, source_version_id=None, question="안녕하세요!",
+                run_id="run-poisoned-owner",
+            )
+        self.assertEqual(blocked.exception.code, "QUESTION_NEW_RUN_REQUIRED")
+        self.assertEqual(blocked.exception.status, 409)
+        self.assertTrue(blocked.exception.retryable)
+        self.assertEqual(transport.calls, 0)
+
+        recovered = QuestionAnsweringService(
+            FakeProviderSettings(), FakeRepository(), FakeIndex(()), FakeCredential(),
+            transport, FakeEgress(),
+        ).ask(
+            context, source_id=None, source_version_id=None, question="안녕하세요!",
+            run_id="run-recovered-with-new-idempotency",
+        )
+        self.assertEqual(recovered.answer, "새 Run에서 복구되었습니다.")
+        self.assertEqual(transport.calls, 1)
+
+    def test_non_owner_completed_result_uses_fingerprint_authoritative_replay(self) -> None:
+        class FollowerEgress(FakeEgress):
+            def authorize(self, context, **kwargs):  # type: ignore[no-untyped-def]
+                del context, kwargs
+                return {"provider_owner": False}
+
+        class CompletedRepository(FakeRepository):
+            def __init__(self) -> None:
+                super().__init__()
+                self.completed = StoredQuestionAnswer(
+                    "run-follower", "result-follower", "stored", False, (),
+                )
+                self.replay_fingerprints: list[str] = []
+
+            def load_completed_for_replay(
+                self, context, run_id, request_fingerprint,  # type: ignore[no-untyped-def]
+            ):
+                del context, run_id
+                self.replay_fingerprints.append(request_fingerprint)
+                raise QuestionRepositoryError("IDEMPOTENCY_KEY_REUSED", status=409)
+
+        repository = CompletedRepository()
+        transport = FakeTransport()
+        service = QuestionAnsweringService(
+            FakeProviderSettings(), repository, FakeIndex(()), FakeCredential(),
+            transport, FollowerEgress(),
+        )
+        fingerprint = "sha256:" + "f" * 64
+        with self.assertRaises(QuestionRepositoryError) as mismatch:
+            service.ask(
+                QuestionContext(
+                    "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3",
+                    "policy-v1", "notebook-cp3",
+                ),
+                source_id=None, source_version_id=None, question="안녕하세요!",
+                run_id="run-follower", request_fingerprint=fingerprint,
+            )
+        self.assertEqual((mismatch.exception.code, mismatch.exception.status), (
+            "IDEMPOTENCY_KEY_REUSED", 409,
+        ))
+        self.assertEqual(repository.replay_fingerprints, [fingerprint])
+        self.assertEqual(transport.calls, 0)
 
     def test_general_conversation_uses_the_exact_egress_transformed_payload(self) -> None:
         class RecordingTransport(FakeTransport):

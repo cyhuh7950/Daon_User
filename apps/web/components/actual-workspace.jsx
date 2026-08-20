@@ -4,7 +4,7 @@ import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-mod
 import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, uploadPdfSource } from "../lib/source-upload-api.js";
-import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
+import { askGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
 import { createGroundedReport, createStudioGeneration, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceKnowledgePackages, listWorkspaceSources, saveWorkspaceOutputVersionSettings } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
@@ -29,7 +29,6 @@ export function createWebProductWorkspaceAdapter(workspaceId) {
     uploadPdf: (file, options) => uploadPdfSource(workspaceId, file, options),
     getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, options),
     askQuestion: (input, options) => askGroundedQuestion(workspaceId, input, options),
-    authorizeQuestion: (input, options) => authorizeGroundedQuestion(workspaceId, input, options),
     citationUrl: (citation, options) => citationContentUrl(workspaceId, citation, options),
     createReport: (input, options) => createGroundedReport(workspaceId, input, options),
     listStudioOutputs: (options) => listStudioOutputs(workspaceId, options),

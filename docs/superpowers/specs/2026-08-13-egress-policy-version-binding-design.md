@@ -43,9 +43,9 @@ Effective policy는 Organization과 Workspace Binding을 모두 조회한다. �
 
 ## 오류·보안
 
-`allow_approved_external` Question은 optional `step_up_authorization_id`를 입력받되 외부 전송에서만 필수다. 서버는 현재 Membership Role이 effective `required_approver` 임계 이상인지 확인하고, exact actor·`external_transfer`·`run_id`·effective policy fingerprint에 결속된 단기 Step-upAuthorization을 전송 직전에 1회 consume한다. internal/deny 요청은 기존 DTO 의미를 유지한다. Routing은 ProviderProfile Canon의 `external_api|server_internal|local_runtime` 값을 그대로 사용해 `route_single_model()`을 실제 호출하고 Decision에 결과를 고정한다.
+`allow_approved_external` Question은 호환 DTO의 optional `step_up_authorization_id`를 유지하지만 Product UI는 전송하지 않고 ordinary Question route는 이를 consume하지 않는다. 서버는 유효 로그인 Session, 현재 Membership의 `EXTERNAL_LLM` permission, tenant/workspace/notebook scope와 effective Policy를 매 요청 재검증하고, Provider·목적지·classification·masking·redaction을 전송 직전에 결속한다. Step-up은 Policy 변경과 License 등 관리자 설정에만 유지한다. internal/deny 요청은 기존 DTO 의미를 유지한다. Routing은 ProviderProfile Canon의 `external_api|server_internal|local_runtime` 값을 그대로 사용해 `route_single_model()`을 실제 호출하고 Decision에 결과를 고정한다.
 
-Question authorization preflight는 `POST /api/v1/workspaces/{workspace_id}/questions/authorization`이다. source/version/question/current password와 실제 Question POST가 재사용할 Idempotency-Key로 서버가 principal, current Provider/Policy, deterministic Run과 prepared wire payload fingerprint를 계산한다. local credential 재인증 뒤 opaque authorization ID·expiry·run/request fingerprint만 응답하며 password·Cookie·원문은 저장·Audit·응답하지 않는다. Question POST는 같은 key/payload/authorization을 재계산해 exact match 후 1회 consume한다. mismatch·expiry·reuse·wrong actor/workspace는 transport와 Result 0으로 닫는다.
+Question authorization preflight `POST /api/v1/workspaces/{workspace_id}/questions/authorization`은 기존 Client 호환을 위해 유지하지만 Product 질문 UI에서는 사용하지 않는다. ordinary Question POST는 Session principal, current Provider/Policy, deterministic Run과 prepared wire payload fingerprint를 계산하고 effective Policy와 exact 결속한 뒤 전송한다. 호환 authorization 응답의 password·Cookie·원문은 저장·Audit·응답하지 않는 기존 보안 경계를 유지한다.
 
 - 누락/비활성/stale/scope mismatch: `EGRESS_POLICY_UNAVAILABLE` 또는 `EGRESS_POLICY_STALE`, 외부 호출·Run 결과 쓰기 0건.
 - 상위 deny 완화: `EGRESS_POLICY_DENIED`.

@@ -24,7 +24,7 @@ class Policy:
         del context
         return EffectiveEgressPolicy(
             "op", "ob", "wp", "wb", "allow_approved_external",
-            ("external_api",), ("provider.example",), "restricted", 4096,
+            ("external_api",), ("provider.example",), "internal", 4096,
             True, True, "organization_admin", False, "sha256:" + "a" * 64,
             '"effective"', '"organization"', '"workspace"', {}, {},
         )
@@ -153,8 +153,12 @@ class _ConcurrentConnection:
 
 class _Transaction:
     def __init__(self, connection, events): self.connection, self.events = connection, events
-    def __enter__(self): self.events.append("enter"); return self.connection
-    def __exit__(self, *_args): self.events.append("exit"); return False
+    def __enter__(self):
+        self.events.append("enter")
+        return self.connection
+    def __exit__(self, *_args):
+        self.events.append("exit")
+        return False
 
 
 class _Cloud:
@@ -164,12 +168,12 @@ class _Cloud:
         return _Transaction(self.connection, self.events)
 
 
-def test_concurrent_retry_locks_then_rereads_and_audits_only_after_transaction_exit() -> None:
+def test_concurrent_mismatched_canonical_fails_without_retry_audit_write() -> None:
     events: list[str] = []
     authorizer = PostgresQuestionEgressAuthorizer.__new__(PostgresQuestionEgressAuthorizer)
     authorizer._policy_service = Policy()
     authorizer._cloud_store = _Cloud(events, {"different": True})
-    with pytest.raises(QuestionAnsweringError, match="QUESTION_NEW_RUN_REQUIRED"):
+    with pytest.raises(QuestionAnsweringError, match="IDEMPOTENCY_KEY_REUSED"):
         authorizer.authorize(
             QuestionContext("tenant", "workspace", "actor", "trace", "policy"),
             run_id="run-1", source_id="source", source_version_id="version",
@@ -182,6 +186,8 @@ def test_concurrent_retry_locks_then_rereads_and_audits_only_after_transaction_e
                 "provider_payload_fingerprint": "sha256:" + __import__("hashlib").sha256(b"{}").hexdigest(),
                 "provider_kind": "external_api", "deployment_id": "deployment",
             },
+            question="안녕하세요!", context_mode="general_ungrounded",
+            request_fingerprint="sha256:" + "b" * 64,
         )
     assert events[:4] == ["enter", "lock", "reread", "exit"]
-    assert events[4:] == ["enter", "audit", "exit"]
+    assert events[4:] == []

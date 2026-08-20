@@ -10,8 +10,24 @@
     "PRODUCT_E2E_NOT_RUN"
   ],
   "actual": {
-    "postgres_tests": 3,
-    "http_replay_current_side_effects": 0,
+    "postgres_tests": 22,
+    "external_full_service_http_status": 200,
+    "external_full_service_transport_calls": 1,
+    "external_full_service_replay_status": 200,
+    "external_full_service_replay_provider_calls": 0,
+    "external_concurrent_selected_tests": 4,
+    "external_concurrent_provider_calls": 1,
+    "external_concurrent_runs": 1,
+    "external_concurrent_results": 1,
+    "external_concurrent_egress_decisions": 1,
+    "external_concurrent_audit_events": 7,
+    "external_owner_timeout_provider_calls": 0,
+    "external_inflight_mixed_fingerprint_status": 409,
+    "external_inflight_mixed_fingerprint_results": 0,
+    "external_inflight_mixed_fingerprint_additional_writes": 0,
+    "http_replay_binding_revalidations": 1,
+    "http_replay_provider_domain_writes": 0,
+    "external_policy_mismatch_domain_writes": 0,
     "fingerprint_mismatch_writes": 0,
     "cross_notebook_replays": 0,
     "provider": "UPSTAGE",
@@ -29,28 +45,28 @@
   "artifacts": [
     {
       "path": "docs/03_evidence/release_1/R1-M8-10-REAL-DATA-CONVERSATION-E2E-I001/real-data-conversation-transcript.md",
-      "bytes": 6413,
-      "sha256": "3f44db08eebbb75c6d7cf920990146b4cd84fa8e73f18201d238884a2d4009a2"
+      "bytes": 9351,
+      "sha256": "0a4c3e1efd5f0168ff059e6d11623732967e63a20e334fbae4db3626706b29f1"
     },
     {
       "path": "docs/04_test_reports/release_1/R1-M8-10-REAL-DATA-CONVERSATION-E2E-I001_progress.md",
-      "bytes": 24585,
-      "sha256": "6056128e132c130448783c27e3a32a935a736cd416ee43d38aea4d2ebcf02a5e"
+      "bytes": 27939,
+      "sha256": "a0a968ee992c9a83dd6d60d6699483c94ca8897e0e97af0ffd932e41940e6407"
     },
     {
       "path": "docs/04_test_reports/release_1/R1-M8-10-REAL-DATA-CONVERSATION-E2E-I001_completion_report.md",
-      "bytes": 5660,
-      "sha256": "eb3db59b5d953add69cd8093f2758ef56c7ca5dcbc3d698b9cd0aef7a27c32a0"
+      "bytes": 7316,
+      "sha256": "cff75a1177c46ff665947c028e5659bb1eab95c8cc764361d7800da67caef3f5"
     },
     {
       "path": "packages/contracts/openapi/v1/openapi.json",
-      "bytes": 284544,
-      "sha256": "f7ad570e04ad5fb1cf2aec72c6e7bd28c8ffdb4c22e76ae508f625837371344b"
+      "bytes": 285112,
+      "sha256": "2810231467042cbcd64ec41208f36f3f591ad4f0a5e2674c8a86c0a4aa91c3d4"
     },
     {
       "path": "services/api/src/daon_user_api/question_answering_service.py",
-      "bytes": 18969,
-      "sha256": "dba9d19cec2ae4f0e68c68f29d7cdb111f829bdea29d5390a24f18bb9272265b"
+      "bytes": 21140,
+      "sha256": "877a02e31d323b1aeb8eec0e8a3e29e02c9e46f4c06e9dbb4246b9ea48c311cb"
     },
     {
       "path": "packages/ui/src/conversation-intent.js",
@@ -64,8 +80,8 @@
     },
     {
       "path": "services/api/src/daon_user_api/runtime.py",
-      "bytes": 189264,
-      "sha256": "f51985316d4d65e4a6cc14247a96db41c23711b911cd465c2c82f264d071e508"
+      "bytes": 192755,
+      "sha256": "982549efd53e52c583d1caae7f1d65802c63df2848aca6603b95ae6bec3719d2"
     },
     {
       "path": "apps/web/lib/egress-policy-api.js",
@@ -89,8 +105,8 @@
     },
     {
       "path": "services/api/tests/test_egress_policy_runtime_http.py",
-      "bytes": 10192,
-      "sha256": "938db4375d455777743afb6e375783698beb970d700bdb1e288003f1e8026acd"
+      "bytes": 19539,
+      "sha256": "9528609b042934e6a9be8c2ace4b95ce234b6945ce7e086018c791422f42261c"
     },
     {
       "path": "scripts/tests/egress-policy-ui.test.mjs",
@@ -101,6 +117,41 @@
       "path": "scripts/tests/egress-policy-click.test.mjs",
       "bytes": 15139,
       "sha256": "6d2977446d609b3eaa68ac47725c52b5229a1979afdeb441057254251f7ce002"
+    },
+    {
+      "path": "services/api/src/daon_user_api/question_answering_postgres.py",
+      "bytes": 43699,
+      "sha256": "10252a68027803c4c7c21413ace10abe40ccbfbfaeb46aa1aecfb82a66867aed"
+    },
+    {
+      "path": "services/api/src/daon_user_api/question_egress.py",
+      "bytes": 17192,
+      "sha256": "b4aedf01e1b2af55a701e2f9cdbf49a8ca002f3bafaa3fe88fa95b9ed92d5d7d"
+    },
+    {
+      "path": "services/api/tests/test_notebook_postgres.py",
+      "bytes": 67398,
+      "sha256": "82afccfd78367e4769f25fc7db9cb98a53b82e287b757236e1a2dbd3d6afe01e"
+    },
+    {
+      "path": "docs/04_test_reports/release_1/R1-M8-10-EXTERNAL-TRANSFER-PERSONAL-OWNER-I004_progress.md",
+      "bytes": 13479,
+      "sha256": "d4c2768e5349f4f8230e55b757e6652de27a3a5d40a27d27cd4106f80cb7608d"
+    },
+    {
+      "path": "services/api/tests/test_question_answering_service.py",
+      "bytes": 20248,
+      "sha256": "fb3dfbe103686a66d6473d68b73b68ea7e493c9e3e77d0d8480feefc16aaea12"
+    },
+    {
+      "path": "scripts/run-real-data-conversation-postgres-gate.sh",
+      "bytes": 3378,
+      "sha256": "bc50d2c243afd11bedace2b1d5143e3ba9608b6e8b6cfa4e5feec6c790b00565"
+    },
+    {
+      "path": "services/api/tests/test_question_egress_transform.py",
+      "bytes": 7882,
+      "sha256": "a6a6ad4213cbba7e78722f2925b2d55265bf8a57598715103061b102346a3c51"
     }
   ]
 }

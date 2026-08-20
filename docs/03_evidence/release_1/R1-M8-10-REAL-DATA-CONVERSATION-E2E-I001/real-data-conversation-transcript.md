@@ -8,10 +8,12 @@
 
 - 환경: WSL `local-postgres`, 고유 disposable DB/Role
 - Migration: fresh `0001 → 0020`
-- Tests: `3 passed`, skipped `0`
+- Tests: latest full Gate `22 passed`, skipped `0`
 - 일반 대화: Source/Object storage read `0`, Citation `0`, selected Provider attempt `1`, Run·Conversation·Notebook binding `1`
 - grounded 흐름: selected Notebook Source binding, Citation `1`, Studio 저장·동일 key replay, 다른 Notebook write `0`
-- HTTP authoritative replay: 동일 replay의 current binding/provider/policy/ask `0`, fingerprint mismatch write `0`, cross-notebook replay `0`
+- HTTP authoritative replay(2026-08-21 current 계약): 동일 replay도 current Notebook Binding을 재검증한다. external 저장 결과는 current `EXTERNAL_LLM`과 exact effective Policy를 추가 확인하며 provider/prepare/ask/domain write `0`; local/server 저장 결과는 VIEW+Binding만 확인한다. fingerprint mismatch write `0`, cross-notebook 결과 반환 `0`이다.
+- External preflight actual PostgreSQL: Provider kind·목적지·payload bytes·`internal` 분류·masking·redaction 불일치에서 Provider/Profile/Model/Run/Egress/Audit 9개 table write `0`.
+- External full service actual PostgreSQL: authorizer가 완료 저장과 동일 canonical helper로 Conversation FK·request fingerprint·Provider kind·egress scope를 가진 immutable Run을 최초 생성한다. 최초 HTTP `200`, stub transport `1`, 동일 replay `200`, Provider 재호출 `0`; 불완전 선삽입 회귀 `0`.
 - Cleanup: disposable DB `0`, Role `0`
 
 ## 대표 Provider transport compatibility
@@ -28,8 +30,8 @@
 
 ## 계약·자동 회귀
 
-- API focused: `36 passed`, 실제 PostgreSQL tests `3 passed` 별도
-- Node related: `87/87 passed`
+- Latest focused API: `52 passed`, 전체 API `488 passed / 42 skipped / 137 subtests`, 실제 PostgreSQL tests `22 passed` 별도
+- Latest affected Node: `25/25 passed` (기존 broader related `87/87` 근거 유지)
 - Rust Native wire: `3/3 passed`
 - Web production build: PASS; product UI boundary `349 files`, violations `0`
 - Desktop production build: PASS
@@ -80,3 +82,24 @@
 - Empty props의 session-resolved context 경로 유지. Session GET AbortSignal 전달 PASS.
 - Egress Node focused `12/12 PASS`; 공개 계약·외부 write `0`.
 - Fresh 종료 회귀: API `10/10`, lint `4 files`, OpenAPI exact, Web build·TypeScript·12 routes·boundary `391/0`, manifest `15/mismatch0`, secret·internal URL0, staged0.
+
+### I004 REWORK2 immutable Run Gate
+
+- RED: 외부 full service 최초 성공 뒤 replay `404`; authorizer 선삽입 Run의 Conversation/replay canonical metadata 유실을 actual PostgreSQL에서 재현했다.
+- GREEN: fresh PostgreSQL `22/22`, focused API `52/52`, full API `488 passed / 42 skipped / 137 subtests`, Node `25/25`, OpenAPI exact, Ruff PASS.
+- 운영 Provider 호출·정책 write·배포는 `0`; 이 Gate의 transport는 test-only stub이며 기존 제품 E2E `NOT_RUN` 판정은 유지한다.
+
+### I004 REWORK3 concurrent owner Gate
+
+- RED: same-key 동시 최초 요청이 Provider transport `2`와 중복 transition 실패를 만들었다.
+- GREEN actual PostgreSQL 2-connection: Provider transport `1`, Run `1`, Result `1`, Egress decision `1`, Audit `canon.transition=5`, `question.egress.authorize=1`, `question.answer=1`.
+- follower는 owner 완료를 bounded poll하여 같은 결과를 반환한다. owner 미완료 timeout은 same-key Provider 재호출 `0`의 retryable internal 409이며, 새 idempotency key만 새 Run으로 복구한다.
+- Fresh selected Gate `4/4`, cleanup database `0`, role `0`. 실제 운영 Provider 호출·정책 write·배포 `0`.
+- Fresh regression: focused API `38/38`, full API `489 passed / 42 skipped / 137 subtests`, Node `27/27`, OpenAPI exact, Ruff PASS.
+
+### I004 REWORK4 in-flight fingerprint Gate
+
+- RED: same run/wire/frozen의 다른 request fingerprint follower가 owner 결과를 반환했다.
+- GREEN actual PostgreSQL: owner Provider transport `1`; mismatch follower `IDEMPOTENCY_KEY_REUSED` 409, result `0`, additional domain/audit write `0`; final Run/Result/Egress `1/1/1`, Audit `7`.
+- 완료 follower는 completed 확인 뒤 fingerprint-aware authoritative replay를 통과해야만 반환한다. owner timeout same-key 409/provider0과 새 key recovery 계약은 유지한다.
+- Fresh selected PG `4/4`, focused API `39/39`, full API `490 passed / 42 skipped / 137 subtests`, Node `27/27`, OpenAPI/Ruff PASS, cleanup db0/role0. 운영 Provider·배포0.
