@@ -149,10 +149,11 @@ test("DOCX/PDF 다운로드는 caller duck manifest를 Network 전에 다시 검
 });
 
 test("Workspace 설정은 검색·Web 읽기·Release·DOCX/PDF 다운로드 Hub를 제공한다", async () => {
-  const [shell, actual, css] = await Promise.all([
+  const [shell, actual, css, dockerfile] = await Promise.all([
     read("packages/ui/src/product-workspace-shell.jsx"),
     read("apps/web/components/actual-workspace.jsx"),
     read("packages/ui/src/workspace.css"),
+    read("apps/web/Dockerfile"),
   ]);
   assert.match(shell, /사용자 설명서/u);
   assert.match(shell, /manualSearch/u);
@@ -163,4 +164,5 @@ test("Workspace 설정은 검색·Web 읽기·Release·DOCX/PDF 다운로드 Hub
   assert.match(actual, /readManualDocument/u);
   assert.match(actual, /downloadManualAsset/u);
   assert.match(css, /manual-hub/u);
+  assert.match(dockerfile, /COPY --from=builder \/app\/apps\/web\/public \.\/apps\/web\/public/u);
 });
