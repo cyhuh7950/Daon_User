@@ -62,6 +62,7 @@ test("Manual Hub client는 allowlisted same-origin manifest만 읽고 bytes/hash
   const document = await api.readManualDocument("daon-getting-started", { fetchImpl, manifest: projected });
   assert.equal(document.text, markdownText);
   assert.deepEqual(requests, ["/manual/manifest.json", "/manual/daon-getting-started.md"]);
+  await api.getManualManifest({ fetchImpl: async () => new Response(JSON.stringify(safeManifest), { headers: { "Content-Type": "application/json; charset=UTF-8" } }) });
 
   for (const bad of [
     { ...safeManifest, release_version: "../1.0.0" },

@@ -74,7 +74,9 @@ async function sha256(bytes) {
 }
 
 function exactContentType(response, expected) {
-  return (response.headers.get("content-type") ?? "").toLowerCase() === expected.toLowerCase();
+  const actual = (response.headers.get("content-type") ?? "").toLowerCase();
+  if (expected === "application/json") return /^application\/json(?:;\s*charset=utf-8)?$/u.test(actual);
+  return actual === expected.toLowerCase();
 }
 
 async function fetchAsset(documentId, kind, { fetchImpl, manifest, signal }) {
