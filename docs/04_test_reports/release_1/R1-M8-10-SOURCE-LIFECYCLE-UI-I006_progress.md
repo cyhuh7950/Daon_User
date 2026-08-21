@@ -397,3 +397,11 @@
 2026-08-22 노트북 영구 삭제 구현 착수: issue_id=R1-M8-10-NOTEBOOK-DELETE-I001. 신산님이 영구 삭제 설계를 승인했다. 현재 정본 저장소/브랜치/HEAD와 기존 dirty 변경을 확인했으며, 기존 변경은 보존한다. Task 1~5(데이터 모델·서비스·worker·BFF·Home UI)를 구현하고 Task 6 배포는 제외한다. 다음 단계: 스키마 계약 테스트와 삭제 요청 모델 구현.
 2026-08-22 노트북 삭제 구현 중간검증: Task 1 스키마 migration `0023_notebook_deletion.py`, Task 2 Reference/Postgres 삭제 요청·상태조회 서비스와 FastAPI DELETE/상태조회 route, Task 4 same-origin BFF/client, Task 5 Home 삭제 확인 UI를 구현했다. Task 3 worker는 현재 요청 처리 경계와 ObjectStoragePort.delete까지 추가했으나 실제 DB 의존성 역순 정리·공유 객체 판정·worker startup/resume wiring은 미완료다. 검증: `uv run --project services/api pytest services/api/tests/test_notebook_deletion_schema.py services/api/tests/test_notebook_deletion_service.py -q` 3 passed; 기존 notebook tests 11 passed/10 skipped; Web build/TypeScript/경계 검사 통과(scannedFiles=394); Python compileall 통과; Reference deletion smoke PASS. 다음: Task 3 cleanup worker 완성 및 focused API/UI contract tests 보강. 배포는 하지 않는다.
 2026-08-22 worker 계약 테스트 추가: `NotebookDeletionWorker.process/resume_pending`의 scoped request 처리와 재개 계약을 `test_notebook_deletion_worker.py`로 검증했다(4 focused tests total PASS). 실제 Postgres 삭제 정리와 runtime worker 등록은 아직 남아 있어 COMPLETED로 판정하지 않는다. 추가 커밋 `58b56a6`; 배포 없음.
+
+2026-08-22 Task 3 실제 저장소 연결 보완:
+- 시각/상태: 2026-08-22 04:14 KST / IN_PROGRESS.
+- 변경: `0023_notebook_deletion.py`에 tenant/workspace/notebook 범위를 강제하는 `SECURITY DEFINER delete_notebook_scope`를 추가하고, immutable Notebook 테이블의 직접 DELETE 권한은 열지 않은 채 함수 실행만 `daon_app`에 허용했다. Source의 다른 Notebook 바인딩·활성 legal hold·공유 object 참조를 먼저 검사하고, Notebook 종속 테이블을 역순으로 정리한다.
+- 변경: `PostgresNotebookDeletionStore`를 추가해 durable request를 `accepted → deleting → database → objects → completed/failed`로 갱신하고, 반환된 Object Storage key를 `ObjectStoragePort.delete`로 삭제하도록 연결했다. RuntimeDependencies에 store/worker를 등록하고 DELETE 접수 후 worker를 비동기 실행한다.
+- 검증: Python compileall PASS. focused deletion/schema/service/worker 및 기존 notebook tests = 15 passed, 10 skipped. 아직 실제 PostgreSQL migration 적용과 MinIO 실물 삭제는 실행하지 않아 운영 검증으로 주장하지 않는다.
+- 오류/복구: 없음. 기존 dirty/untracked 변경은 보존했다.
+- 다음: migration SQL 적용 가능성 정적 검토와 Postgres store contract test를 보완하고, diff/check 및 전체 관련 테스트를 재실행한다. Task 6 배포는 수행하지 않는다.
