@@ -50,7 +50,7 @@ test("Notebook context projector는 exact safe shape만 허용하고 empty conte
   ]) assert.throws(() => projectNotebookSelectedContext(invalid), /NOTEBOOK_CONTEXT_INVALID/u);
 });
 
-test("Notebook context Adapter는 bound Source·Knowledge·Conversation·Library만 전달하고 empty는 base 호출0이다", async () => {
+test("Notebook context Adapter는 Notebook API의 최신 Source 목록을 유지하고 empty도 업로드 후 재조회할 수 있다", async () => {
   const calls = [];
   const answer = { run_id: "run-bound", run_result_id: "result-bound", answer: "보존된 대화", insufficient: false, citations: [] };
   const base = {
@@ -66,7 +66,7 @@ test("Notebook context Adapter는 bound Source·Knowledge·Conversation·Library
     ]; },
   };
   const adapter = createNotebookContextWorkspaceAdapter(base, EXISTING_CONTEXT);
-  assert.deepEqual((await adapter.listSources()).map((item) => item.source_id), ["source-bound"]);
+  assert.deepEqual((await adapter.listSources()).map((item) => item.source_id), ["source-bound", "source-other"]);
   assert.deepEqual((await adapter.listKnowledgePackages()).map((item) => item.package_id), ["package-bound"]);
   assert.deepEqual(await adapter.loadNotebookConversation(), answer);
   assert.deepEqual((await adapter.listStudioOutputs()).map((item) => item.studio_output_id), ["studio-output-bound"]);
@@ -88,7 +88,7 @@ test("Notebook context Adapter는 bound Source·Knowledge·Conversation·Library
   assert.deepEqual(await empty.listKnowledgePackages(), []);
   assert.equal(await empty.loadNotebookConversation(), null);
   assert.deepEqual(await empty.listStudioOutputs(), []);
-  assert.equal(emptyCalls, 0);
+  assert.equal(emptyCalls, 1);
 });
 
 test("실제 ProductWorkspaceShell은 selected Notebook Adapter의 보존 Source·대화·Library를 행동 렌더한다", async () => {
