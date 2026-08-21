@@ -202,6 +202,7 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(listed.headers["etag"].startswith('"projection-'))
         self.assertEqual((fetched.status_code, fetched.headers["etag"]), (200, '"notebook:1"'))
         self.assertEqual(selected.status_code, 200)
+        self.assertEqual(selected.headers["etag"], '"notebook-binding:1"')
         self.assertEqual(selected.json()["data"], {
             "notebook_id": notebook["notebook_id"], "sources": [],
             "knowledge_context_ids": [], "conversation_thread_ids": [],
