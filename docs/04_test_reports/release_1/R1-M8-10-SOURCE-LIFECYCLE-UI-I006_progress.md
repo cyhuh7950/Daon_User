@@ -436,3 +436,9 @@
 - 테스트: `$env:PYTHONPATH='src'; uv run pytest tests/test_notebook_deletion_schema.py tests/test_notebook_deletion_service.py tests/test_notebook_deletion_worker.py -q` = 5 passed. 원격 SQL 함수 호출 및 fixture 잔여행 확인 PASS.
 - 미해결: fixture Object는 MinIO에 실제 업로드하지 않았으므로 물리 Object Storage 삭제는 검증하지 못했다. Worker startup의 privileged tenant-scoped DB claim 연결도 아직 구현되지 않았으며 `claim_pending_startup()`은 안전하게 빈 결과를 반환한다. Task 6 배포는 수행하지 않았다.
 - 다음: MinIO disposable object 업로드/삭제와 privileged startup claim 연결 가능성을 별도 검토하고, 불가 시 BLOCKED 근거와 현재 diff를 최종 보고한다.
+
+2026-08-22 Task 3 MinIO/startup claim 검증:
+- MinIO: ysna-server Daon 전용 MinIO bucket `daon-user`에 `fixture/delete-real.pdf` disposable object(29 B)를 실제 업로드하고 `mc stat`으로 존재를 확인했다. DB `delete_notebook_scope`가 반환한 동일 Object key를 삭제한 뒤 `mc stat`이 `Object does not exist`를 반환했다. 운영 API/Worker 재배포는 하지 않았으므로, 이번 검증은 DB 함수 반환 key와 Daon 전용 Object Storage 삭제 명령의 통합 증거이며 실제 새 Worker 이미지 실행 증거는 아니다.
+- Startup claim: pending `req-claim-fixture`를 생성한 뒤 `SET ROLE daon_app` 상태에서 `claim_notebook_deletion_startup()`을 실행했다. `FOR UPDATE SKIP LOCKED`로 tenant/workspace/actor/request를 반환하고 상태가 `accepted → deleting`, step이 `claimed`, attempts가 `0 → 1`로 변경됐다.
+- 오류/복구: claim fixture cleanup 중 `notebook_deletion_requests`가 Notebook을 FK로 참조해 Notebook 삭제를 차단하는 설계 충돌을 발견했다. 완료 상태를 상태 API에서 폴링해야 하므로 삭제 요청 행은 보존해야 한다. migration에서 해당 FK를 제거하고 원격 격리 DB에도 동일 constraint를 제거한 뒤 Notebook 삭제와 request completed 전환을 재검증했다.
+- 잔여: privileged claim 함수와 Postgres store 호출은 로컬 코드에 반영됐으나 운영 Worker 이미지에는 재배포하지 않았다. Task 6 배포 및 운영 브라우저 검증은 미수행이다.

@@ -14,6 +14,8 @@ def test_notebook_deletion_migration_is_scoped_and_immutable():
     assert "SECURITY DEFINER" in text
     assert "DELETE_SHARED_DATA_BLOCKED" in text
     assert "GRANT EXECUTE ON FUNCTION delete_notebook_scope" in text
+    assert "claim_notebook_deletion_startup" in text
+    assert "FOR UPDATE SKIP LOCKED" in text
     for table in (
         "document_processing_jobs", "knowledge_registrations", "evidence_references",
         "citations", "transcript_segments", "transcript_versions", "transcription_runs",

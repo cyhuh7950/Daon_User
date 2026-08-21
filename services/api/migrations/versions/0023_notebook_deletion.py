@@ -28,7 +28,6 @@ def upgrade() -> None:
         request_fingerprint text NOT NULL CHECK (request_fingerprint ~ '^[0-9a-f]{64}$'),
         UNIQUE (tenant_id,workspace_id,actor_id,idempotency_key),
         UNIQUE (tenant_id,workspace_id,request_id),
-        FOREIGN KEY (tenant_id,workspace_id,notebook_id) REFERENCES notebooks(tenant_id,workspace_id,notebook_id)
       );
       CREATE INDEX notebook_deletion_pending ON notebook_deletion_requests(tenant_id,workspace_id,state,requested_at);
       ALTER TABLE notebook_deletion_requests ENABLE ROW LEVEL SECURITY;
@@ -169,6 +168,29 @@ def upgrade() -> None:
       END $$;
       REVOKE ALL ON FUNCTION delete_notebook_scope(text,text,text) FROM PUBLIC;
       GRANT EXECUTE ON FUNCTION delete_notebook_scope(text,text,text) TO daon_app;
+      CREATE OR REPLACE FUNCTION claim_notebook_deletion_startup()
+      RETURNS TABLE(tenant_id text, workspace_id text, actor_id text, request_id text)
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+      BEGIN
+        RETURN QUERY
+        WITH candidates AS (
+          SELECT r.request_id, r.tenant_id, r.workspace_id, r.actor_id
+            FROM notebook_deletion_requests r
+           WHERE r.state IN ('accepted','deleting')
+           ORDER BY r.requested_at, r.request_id
+           FOR UPDATE SKIP LOCKED
+           LIMIT 32
+        )
+        UPDATE notebook_deletion_requests d
+           SET state='deleting', current_step='claimed', attempts=d.attempts+1
+          FROM candidates c
+         WHERE d.request_id=c.request_id
+           AND d.tenant_id=c.tenant_id
+           AND d.workspace_id=c.workspace_id
+        RETURNING c.tenant_id, c.workspace_id, c.actor_id, c.request_id;
+      END $$;
+      REVOKE ALL ON FUNCTION claim_notebook_deletion_startup() FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION claim_notebook_deletion_startup() TO daon_app;
     """)
 
 
