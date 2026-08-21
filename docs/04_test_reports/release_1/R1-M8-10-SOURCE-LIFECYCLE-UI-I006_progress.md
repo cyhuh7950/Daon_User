@@ -87,6 +87,34 @@
 - 보호 또는 다른 작업 범위로 명시 제외한다: `apps/mobile/**` 삭제 전체, `.stage-a-operations-react-*`, `.codex-temp`, Windows WebView recovery 파일·Evidence·Progress, M5/M5-07 문서·Evidence, R1-USER-PRODUCT-SEPARATION 문서·Evidence, model-connections 삭제/설정 파일, Native/Tauri 관련 테스트, 이전 Phase D/E 전용 문서·Evidence, 그리고 위 closure에 없는 모든 dirty/untracked. `services/api/migrations/versions/0005_retention_legal_hold.py`도 published baseline 보호를 위해 제외한다.
 - 현재 stage는 0이며 위 분류 기록만 추가했다. commit/push/deploy는 이 기록 시점에 수행하지 않았다. 실제 stage 직전 `git diff --name-only --cached`, 보호 제외 목록, manifest SHA를 다시 대조한다.
 
+## 2026-08-21 승인 SHA ysna-server 격리 배포 착수
+
+- 승인 SHA `edb401e`는 이미 push된 기준선이다. 배포 대상은 `/home/ubuntu/deploy/daon-user` 하위의 Daon 전용 경로이며, ARM64 `aarch64`를 확인했다.
+- 사전 read-only inventory: 기존 `daon_user-api`, `daon_user-web`, `daon_user-document-worker`, Daon object storage는 healthy/running; `shared-db`, `proxy-network`, `nginx-proxy-manager`, `daon2-*`는 공용/타 서비스로 변경 금지. 원격 기준 checkout은 `6b5d6fa`이며 보호 `backups/`, `secrets/` untracked만 존재했다.
+- 다음 순서: exact SHA checkout 및 대상 tree hash 확인 → Daon 전용 DB 논리 backup/사전 migration 확인 → 필요한 Daon API/Web/Worker만 build/recreate → migration apply/health/server smoke → 실패 시 기존 image/tag rollback. Oracle 운영 배포와 Provider/사용자 Source write는 0이다.
+
+- 배포 실행: 원격 build SSH 세션은 로컬 중단 시점에 출력이 끊겼으나 원격 build 프로세스는 완료되어 새 Daon 전용 이미지가 생성됐다(API `sha256:9717c44a56f7…`, Worker `sha256:192c3c1398c3…`, Web `sha256:59ad72235bb6…`). 중복 build는 실행하지 않았다.
+- migration/재생성: backup `791408 bytes`, SHA-256 `a89f9ca312208ceb6aec64b8e4a1687f1692a1458976662147a99e7ba8e0a946`; exact SHA worktree의 0021→0022를 적용해 DB `0022 (head)` 확인. `api`, `document-worker`, `web`만 `--no-deps --force-recreate`했고 object-storage/shared-db/proxy/타 서비스는 변경하지 않았다.
+- 서버 smoke: 새 API 내부 `/health/live=200`, `/health/ready=200`, Web HTTPS `/=200`(7349 bytes), 최근 3분 Daon API/Web/Worker error/traceback/fatal/exception 로그 0. 공개 `/health/ready=404`는 reverse proxy 비공개 경계로 내부 health와 분리 기록한다. Oracle 운영 배포·Provider/사용자 Source write는 0이다.
+- SSH 경계 복구: 기본 SSH 호출과 달리 승인된 `ssh -F C:\\Users\\cyhuh\\.ssh\\config ysna-server`로 `hostname=ysna-server`, `whoami=ubuntu`, exact SHA 및 API/Web healthy를 재확인했다. 이후 ysna-server 명령은 이 명시 config를 사용한다.
+
+## 2026-08-21 운영 Notebook Context 오류 read-only 1차 조사
+
+- 현상: 로그인 후 `/notebooks` 목록은 정상이나 Notebook 선택 시 Browser alert `NOTEBOOK_CONTEXT_INVALID`; 사용자 운영 데이터 변경·Provider 호출은 0이다.
+- 서버 증거: 승인 SSH config로 API/Web/Worker 최근 30분 logs에서 `NOTEBOOK_CONTEXT_INVALID`, `/context`, 4xx/5xx correlation row를 찾지 못했다. 새 API 내부 `/health/live=200`, `/health/ready=200`; Web HTTPS `/=200`이다.
+- DB read-only 집계: `notebooks=1`, `notebook_bindings=1`, migration `0022`; 원문 ID/사용자 정보는 출력하지 않았다. 현재 exact 사용자 요청의 HTTP status/response body는 Chrome Network correlation이 없어 미확정이다.
+- 코드 경계: `NotebookContext` 생성 실패는 tenant/workspace/actor/trace/policy 식별자 SAFE_ID 위반 시 서버 `NOTEBOOK_CONTEXT_INVALID`가 되고, BFF client는 Context response shape/ETag 불일치도 동일 safe code로 fail-close한다. 따라서 현재는 서버 4xx와 client projection invalid를 구분할 증거가 부족하며 수정/재배포하지 않는다. 다음은 동일 Chrome 요청의 Network status/response 또는 서버 correlation 확보이다.
+- 추가 Browser 증거: 사용자가 `/bff/api/.../context`를 직접 탐색할 때 Chrome이 `ERR_BLOCKED_BY_CLIENT`로 차단했다. 이는 확장/브라우저 차단과 Context fetch 실패의 연관 가능성은 있으나 제품 서버 원인으로 확정할 수 없다. 이 단계에서 앱 수정·재배포는 수행하지 않는다.
+
+## 2026-08-21 Context ETag 계약 교정 착수
+
+- 확정 원인: `runtime.py:get_notebook_selected_context`가 `_json_with_etag(content, json.dumps(content["data"], sort_keys=True))`로 projection hash ETag를 반환했지만 Web `notebook-api.js`는 Context에 exact `"notebook-binding:<version>"`만 허용한다. 따라서 HTTP 성공 응답도 client에서 `NOTEBOOK_CONTEXT_INVALID`로 fail-close했다.
+- RED: 실제 Context route 응답 ETag가 selected binding ETag가 아닌 projection hash인 기존 경계를 테스트로 고정한다. 최소 수정은 해당 route에서 `selected.etag`를 직접 response ETag로 설정하는 것이며 다른 `_json_with_etag` route는 변경하지 않는다.
+
+- RED 실행: `services/api/tests/test_runtime_http.py::RuntimeHttpTests::test_notebook_create_list_get_update_title_contract`에서 실제 응답 ETag가 `"projection-862ed9ad704a4f84317306cb"`로 반환되어 exact `"notebook-binding:1"` assertion이 실패했다.
+- GREEN 수정: `services/api/src/daon_user_api/runtime.py`의 Context route만 `JSONResponse(content)` 후 `response.headers["ETag"] = selected.etag`로 교정했다. 다른 `_json_with_etag` 경로는 변경하지 않았다.
+- GREEN 검증: focused runtime 1 passed; runtime HTTP 전체 `28 passed, 19 warnings, 2 subtests`; Node notebook/context/product tests `21 passed`; Web production build·TypeScript·boundary `392 files, violations=0, boundaryErrors=0`.
+
 ## 2026-08-21 작업 재개
 
 - 신산님 지시에 따라 중단 상태에서 재개했다. 기존 운영 Source 변경·커밋·푸시·배포는 계속 0으로 유지한다.

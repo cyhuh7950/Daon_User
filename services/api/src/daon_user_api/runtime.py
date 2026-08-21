@@ -2804,7 +2804,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "data": notebook_context_json(selected),
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
         }
-        return _json_with_etag(content, json.dumps(content["data"], sort_keys=True))
+        response = JSONResponse(content)
+        response.headers["ETag"] = selected.etag
+        return response
 
     @app.post("/api/v1/workspaces/{id}/notebooks/{notebook_id}/source-unbindings")
     async def unbind_notebook_source(
