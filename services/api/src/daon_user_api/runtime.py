@@ -1900,6 +1900,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset({"notebook_id"}))
         principal = _principal(request, dependencies)
+        if dependencies.settings.dev_auth_bypass:
+            return JSONResponse({
+                "data": {"sources": []},
+                "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+            })
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
             trace_id=request.state.trace_id,
