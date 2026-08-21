@@ -309,3 +309,14 @@
 - 운영 DB 직접 확인(슈퍼유저 read-only): `sv-dee8d8de5f1fa00619a995514df55ed3`의 processing run은 `completed`이나 understanding result가 `status=needs_review`, `conflict=UNDERSTANDING_PARSER_CONFLICT`로 저장되어 있었다. 원본은 보존되었고 워커 실패가 아니었다.
 - 배포: `9049678`을 ysna-server 격리 Compose에 반영하고 API·document-worker·Web를 재빌드/재기동했다. 컨테이너 health 및 `https://daon-user.sinsan.kr/notebooks` HTTP 200 확인.
 - 미실행: 브라우저 로컬 파일 선택은 자동화 세션에서 수행할 수 없어 수정된 Prompt의 실제 신규 PDF 재등록은 사용자 파일 선택이 필요하다. 기존 `needs_review` Source는 자동 재처리하지 않았다.
+
+## 2026-08-21T23:09:33+09:00 동일 PDF 재선택 Source 추가 오류 DIRECT_IMPLEMENTATION
+
+- 전환: 동일 오류가 3회 이상 반복되면 어울1이 직접 처리하라는 신산님 지시에 따라 개발 Subagent를 중지하고 `DIRECT_IMPLEMENTATION`으로 인수했다.
+- 운영 증거: Nginx access log의 마지막 성공 업로드는 `2026-08-21 13:11:15 UTC` `POST /bff/api/workspaces/.../sources` `202`이며, 이후 사용자 재시도 구간에는 Source 목록 `GET`만 있고 새 업로드 `POST`가 없었다. 따라서 현재 실패 경계는 API·DB·한국어 PDF 처리 전의 브라우저 입력이다.
+- 원인: `packages/ui/src/product-workspace-shell.jsx`의 PDF `input` 값이 업로드 후 초기화되지 않았다. 브라우저는 동일 파일을 다시 선택할 때 값이 같으면 `change`를 재발생시키지 않으므로 `uploadPdf`와 POST가 실행되지 않았다.
+- RED: 동일 파일을 두 번 선택하는 브라우저 동작을 모사한 회귀 테스트를 추가했다. 수정 전 `node --test scripts/tests/product-workspace.test.mjs`에서 두 번째 업로드 기대 `2` 대비 실제 `1`로 1 failed, 18 passed를 확인했다.
+- GREEN: 파일 객체를 먼저 보존한 직후 file input 값을 빈 문자열로 초기화하는 최소 변경을 적용했다. 성공·실패와 무관하게 다음 동일 파일 선택이 새 `change`를 발생시킬 수 있으며 기존 upload·polling·same-origin 계약은 변경하지 않았다.
+- 검증: `node --test scripts/tests/product-workspace.test.mjs scripts/tests/source-upload-api.test.mjs` = 30 passed, 0 failed. `npm run verify:product-ui-boundary` = 415 files, violations 0, boundaryErrors 0. `npm run build --prefix apps/web` = Next compile·TypeScript·12 pages PASS, Web boundary 392 files/violations 0. 관련 파일 `git diff --check` 오류 0(CRLF 안내만 존재).
+- 보호: API·DB·Provider·보안 정책·설정·의존성은 변경하지 않았고, 기존 dirty/untracked 및 관련 없는 Mobile/Windows 변경을 건드리지 않았다.
+- 다음: 관련 3개 파일만 검토·commit·push한 후 ysna-server Web만 재배포하고, 로그인 브라우저에서 동일 PDF 선택 시 새 POST와 처리 상태 전이를 확인한다.
