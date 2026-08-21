@@ -13,6 +13,31 @@ import {
 } from "../../apps/web/lib/egress-policy-api.js";
 
 
+test("loaded same policy is save-eligible while workspace parent deny blocks only relaxation", () => {
+  const organization = createEgressPolicyDraft({
+    mode: "allow_approved_external", allowed_provider_kinds: ["external_api"],
+    allowed_destinations: ["api.upstage.ai"], classification: "internal", max_bytes: 1048576,
+  });
+  const organizationLoaded = egressPolicyReducer(undefined, { type: "loaded", data: {
+    ...organization, organization_policy: organization, workspace_policy: createEgressPolicyDraft(),
+    parent_locked: false, editable_scope: "organization",
+  } });
+  assert.equal(organizationLoaded.canSave, true);
+
+  const lockedAllow = egressPolicyReducer(undefined, { type: "loaded", data: {
+    ...createEgressPolicyDraft(), organization_policy: createEgressPolicyDraft(),
+    workspace_policy: organization, parent_locked: true, editable_scope: "workspace",
+  } });
+  assert.equal(lockedAllow.canSave, false);
+  const lockedDeny = egressPolicyReducer(undefined, { type: "loaded", data: {
+    ...createEgressPolicyDraft(), organization_policy: createEgressPolicyDraft(),
+    workspace_policy: createEgressPolicyDraft(), parent_locked: true,
+    editable_scope: "workspace",
+  } });
+  assert.equal(lockedDeny.canSave, true);
+});
+
+
 test("organization editor may replace its own deny while workspace parent lock remains explicit", () => {
   const loaded = egressPolicyReducer(undefined, { type: "loaded", data: {
     mode: "deny_external", parent_locked: true, allowed_provider_kinds: [],

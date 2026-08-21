@@ -16,6 +16,7 @@ export function EgressPolicyPaneInner({ organizationId, workspaceId, adapter }) 
   const passwordRef = useRef(null);
   const [context, setContext] = useState({ organizationId, workspaceId });
   const [activeScope, setActiveScope] = useState("organization");
+  const [passwordPresent, setPasswordPresent] = useState(false);
   const mountedRef = useRef(false);
   const epochRef = useRef(0);
   const abortRef = useRef(null);
@@ -83,6 +84,7 @@ export function EgressPolicyPaneInner({ organizationId, workspaceId, adapter }) 
   function selectScope(scope) {
     if (state.status === "saving") return;
     if (passwordRef.current) passwordRef.current.value = "";
+    setPasswordPresent(false);
     beginOperation();
     scopeRef.current = scope;
     setActiveScope(scope);
@@ -91,7 +93,9 @@ export function EgressPolicyPaneInner({ organizationId, workspaceId, adapter }) 
   async function save(event) {
     event.preventDefault();
     const passwordElement = passwordRef.current;
-    const sensitive = { currentPassword: passwordElement?.value || "", stepUpAuthorization: null };
+    const currentPassword = passwordElement?.value || "";
+    if (!state.canSave || state.status === "saving" || !currentPassword) return;
+    const sensitive = { currentPassword, stepUpAuthorization: null };
     const operation = beginOperation();
     const snapshot = { epoch: operation.epoch, context: { ...contextRef.current }, scope: scopeRef.current };
     dispatch({ type: "saving" });
@@ -115,6 +119,7 @@ export function EgressPolicyPaneInner({ organizationId, workspaceId, adapter }) 
       }
     } finally {
       if (passwordElement) passwordElement.value = "";
+      setPasswordPresent(false);
     }
   }
   if (!state.effective && state.errorCode) return <section className="egress-policy-pane"><p role="alert">정책을 불러오지 못했습니다. ({state.errorCode})</p><button type="button" onClick={refresh}>다시 시도</button></section>;
@@ -139,8 +144,8 @@ export function EgressPolicyPaneInner({ organizationId, workspaceId, adapter }) 
       <label><input type="checkbox" checked={state.draft.masking_required} onChange={(event) => dispatch({ type: "drafted", draft: { ...state.draft, masking_required: event.target.checked } })} />마스킹 필수</label>
       <label><input type="checkbox" checked={state.draft.redaction_required} onChange={(event) => dispatch({ type: "drafted", draft: { ...state.draft, redaction_required: event.target.checked } })} />삭제 처리 필수</label>
       <label>필수 승인자<select value={state.draft.required_approver} onChange={(event) => dispatch({ type: "drafted", draft: { ...state.draft, required_approver: event.target.value } })}><option value="workspace_manager">Workspace 관리자</option><option value="organization_admin">조직 관리자</option></select></label>
-      <label>현재 비밀번호<input ref={passwordRef} type="password" autoComplete="current-password" required /></label>
-      <button type="submit" disabled={!state.canSave || state.status === "saving"}>정책 저장</button>
+      <label>현재 비밀번호<input ref={passwordRef} type="password" autoComplete="current-password" required onInput={(event) => setPasswordPresent(Boolean(event.currentTarget.value))} /></label>
+      <button type="submit" disabled={!state.canSave || !passwordPresent || state.status === "saving"}>정책 저장</button>
     </form>
     {state.errorCode ? <p role="alert">정책을 저장하지 못했습니다. ({state.errorCode})</p> : null}
   </section>;

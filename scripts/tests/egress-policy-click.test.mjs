@@ -27,11 +27,14 @@ test("정책 React는 조직과 Workspace를 별도 단계·별도 password로 e
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container); await act(async () => { reactRoot.render(createElement(EgressPolicyPane, { organizationId: "", workspaceId: "", adapter })); await Promise.resolve(); await Promise.resolve(); });
     assert.ok(buttonByText(container, "1. 조직 정책")); assert.ok(buttonByText(container, "2. Workspace 정책"));
     await act(async () => { buttonByText(container, "2. Workspace 정책").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    const saveButton = buttonByText(container, "정책 저장"); assert.equal(saveButton.disabled, true);
     const inputs = findElements(container, (node) => node.tagName === "INPUT"); const password = inputs.at(-1); password.value = "workspace-memory-only";
-    const mode = findElements(container, (node) => node.tagName === "SELECT")[0]; mode.value = "allow_approved_external"; await act(async () => mode.dispatchEvent(new MinimalEvent("change")));
+    await act(async () => password.dispatchEvent(new MinimalEvent("input")));
+    assert.equal(saveButton.disabled, false);
     const form = findElements(container, (node) => node.tagName === "FORM")[0]; await act(async () => { form.dispatchEvent(new MinimalEvent("submit")); await Promise.resolve(); await Promise.resolve(); });
     assert.deepEqual(calls[0], ["load", "workspace-1"]); assert.equal(calls[1][0], "save-workspace"); assert.equal(calls[1][1].workspaceId, "workspace-1"); assert.equal(calls[1][1].etag, '"ws:1"'); assert.equal(password.value, "");
     assert.equal(calls[1][1].sensitive.currentPassword, "");
+    assert.equal(buttonByText(container, "정책 저장").disabled, true);
     await act(async () => buttonByText(container, "1. 조직 정책").dispatchEvent(new MinimalEvent("click")));
     assert.match(container.textContent, /조직 정책을 별도로 저장합니다/u);
     await act(async () => buttonByText(container, "2. Workspace 정책").dispatchEvent(new MinimalEvent("click")));

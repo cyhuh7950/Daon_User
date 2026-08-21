@@ -18,6 +18,13 @@ const INITIAL = Object.freeze({
   canSave: false, errorCode: null,
 });
 
+function canSaveDraft(effective, draft) {
+  const parentDenied = effective?.parent_locked === true
+    && effective?.editable_scope !== "organization";
+  const triesToRelax = draft.mode === "allow_approved_external";
+  return !parentDenied || !triesToRelax;
+}
+
 export function egressPolicyReducer(state = INITIAL, action) {
   if (action.type === "context_loading") return {
     ...INITIAL, status: "loading", draft: createEgressPolicyDraft(),
@@ -27,18 +34,16 @@ export function egressPolicyReducer(state = INITIAL, action) {
     const scopePolicy = action.data.editable_scope === "organization"
       ? action.data.organization_policy
       : action.data.workspace_policy;
+    const draft = createEgressPolicyDraft(scopePolicy || action.data);
     return {
       status: "ready", effective: action.data,
-      draft: createEgressPolicyDraft(scopePolicy || action.data), canSave: false, errorCode: null,
+      draft, canSave: canSaveDraft(action.data, draft), errorCode: null,
     };
   }
   if (action.type === "drafted") {
-    const parentDenied = state.effective?.parent_locked === true
-      && state.effective?.editable_scope !== "organization";
-    const triesToRelax = action.draft.mode === "allow_approved_external";
     return {
       ...state, draft: action.draft,
-      canSave: !parentDenied || !triesToRelax, errorCode: null,
+      canSave: canSaveDraft(state.effective, action.draft), errorCode: null,
     };
   }
   if (action.type === "saving") return { ...state, status: "saving", errorCode: null };
