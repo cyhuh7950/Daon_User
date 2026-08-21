@@ -8,6 +8,7 @@ import asyncio
 import base64
 import binascii
 import json
+import logging
 import os
 import re
 import secrets
@@ -182,6 +183,23 @@ _TRACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _TRACEPARENT = re.compile(
     r"^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$"
 )
+
+_source_boundary_logger = logging.getLogger(__name__)
+
+
+def _source_boundary_event(
+    *, event: str, phase: str, trace_id: str, http_status: int,
+    safe_error_code: str | None = None, source_id_present: bool = False,
+    processing_run_id_present: bool = False, db_commit: bool = False,
+) -> None:
+    """Emit upload/processing diagnostics without source or credential values."""
+    _source_boundary_logger.info(
+        "source_boundary event=%s phase=%s trace_id=%s http_status=%d "
+        "safe_error_code=%s source_id_present=%s processing_run_id_present=%s "
+        "db_commit=%s",
+        event, phase, trace_id, http_status, safe_error_code or "none",
+        source_id_present, processing_run_id_present, db_commit,
+    )
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 _SOURCE_UPLOAD_PATH = re.compile(r"^/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/sources$")
 _PDF_FILENAME = re.compile(r"^[^/\\\x00-\x1f]{1,251}\.pdf$", re.IGNORECASE)
@@ -1927,25 +1945,49 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             SourceIngestor().register_file(source_filename, "application/pdf", content)
         except SourceRejected as error:
             raise SourceUploadError(str(error)) from None
-        result = await asyncio.to_thread(
-            dependencies.source_upload_service.register_pdf,
-            tenant_id=principal.tenant_id,
-            workspace_id=id,
-            notebook_id=notebook_id,
-            actor_id=principal.user_id,
-            filename=source_filename,
-            content=content,
-            idempotency_key=idempotency_key,
-            trace_id=request.state.trace_id,
+        try:
+            result = await asyncio.to_thread(
+                dependencies.source_upload_service.register_pdf,
+                tenant_id=principal.tenant_id,
+                workspace_id=id,
+                notebook_id=notebook_id,
+                actor_id=principal.user_id,
+                filename=source_filename,
+                content=content,
+                idempotency_key=idempotency_key,
+                trace_id=request.state.trace_id,
+            )
+        except SourceUploadError as error:
+            _source_boundary_event(
+                event="source_upload", phase="register", trace_id=request.state.trace_id,
+                http_status=error.status, safe_error_code=error.code,
+            )
+            raise
+        _source_boundary_event(
+            event="source_upload", phase="register", trace_id=request.state.trace_id,
+            http_status=202, source_id_present=bool(result.source_id), db_commit=True,
         )
-        processing = await asyncio.to_thread(
-            dependencies.document_processing_service.submit,
-            DocumentProcessingContext(
-                principal.tenant_id, id, principal.user_id,
-                request.state.trace_id, dependencies.settings.policy_version,
-            ),
-            result.source_version_id,
-            notebook_id=notebook_id,
+        try:
+            processing = await asyncio.to_thread(
+                dependencies.document_processing_service.submit,
+                DocumentProcessingContext(
+                    principal.tenant_id, id, principal.user_id,
+                    request.state.trace_id, dependencies.settings.policy_version,
+                ),
+                result.source_version_id,
+                notebook_id=notebook_id,
+            )
+        except DocumentUnderstandingError as error:
+            _source_boundary_event(
+                event="source_upload", phase="processing_submit", trace_id=request.state.trace_id,
+                http_status=error.status, safe_error_code=error.code,
+                source_id_present=bool(result.source_id), db_commit=True,
+            )
+            raise
+        _source_boundary_event(
+            event="source_upload", phase="processing_submit", trace_id=request.state.trace_id,
+            http_status=202, source_id_present=bool(result.source_id),
+            processing_run_id_present=bool(processing.processing_run_id), db_commit=True,
         )
         response_data = _dataclass_json(result)
         response_data.update({
@@ -1978,19 +2020,33 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             raise DocumentUnderstandingError(
                 "DOCUMENT_PROCESSING_UNAVAILABLE", status=503, retryable=True,
             )
-        status = await asyncio.to_thread(
-            dependencies.document_processing_service.get_status,
-            DocumentProcessingContext(
-                principal.tenant_id, id, principal.user_id,
-                request.state.trace_id, dependencies.settings.policy_version,
-            ),
-            processing_run_id,
-            notebook_id=notebook_id,
-        )
+        try:
+            status = await asyncio.to_thread(
+                dependencies.document_processing_service.get_status,
+                DocumentProcessingContext(
+                    principal.tenant_id, id, principal.user_id,
+                    request.state.trace_id, dependencies.settings.policy_version,
+                ),
+                processing_run_id,
+                notebook_id=notebook_id,
+            )
+        except DocumentUnderstandingError as error:
+            _source_boundary_event(
+                event="processing_status", phase="status", trace_id=request.state.trace_id,
+                http_status=error.status, safe_error_code=error.code,
+                processing_run_id_present=True,
+            )
+            raise
         await asyncio.to_thread(
             notebook_service.require_selected_bindings,
             notebook_context(principal, id, request), notebook_id,
             (("source", status.source_id, status.source_version_id),),
+        )
+        _source_boundary_event(
+            event="processing_status", phase="status", trace_id=request.state.trace_id,
+            http_status=200, source_id_present=bool(status.source_id),
+            processing_run_id_present=bool(status.processing_run_id), db_commit=False,
+            safe_error_code=status.safe_error_code,
         )
         return _json_with_etag(
             {
