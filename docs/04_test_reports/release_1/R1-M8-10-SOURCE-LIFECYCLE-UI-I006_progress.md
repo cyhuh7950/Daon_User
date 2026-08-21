@@ -331,3 +331,12 @@
 - GREEN: `UpstageDocumentUnderstandingAdapter`를 검증된 단일 PDF content payload로 최소 수정했다. Parser validation, evidence conflict fail-safe, 모델 선택, Provider credential 경계는 유지했다.
 - 검증: `$env:PYTHONPATH='services/api/src;services/api'; uv run pytest services/api/tests/test_document_understanding_adapter.py services/api/tests/test_document_processing.py services/api/tests/test_source_upload_runtime.py -q` = 17 passed, 4개 기존 httpx deprecation warning. `py_compile` 통과, 관련 파일 `git diff --check` 오류 0(CRLF 안내만 존재).
 - 다음: 어댑터·테스트·진행 기록만 commit/push하고 API·document-worker를 재배포한 뒤 동일 PDF를 다시 선택하여 `202 → processing → ready`와 Source 목록 복구를 실제 확인한다.
+
+## 2026-08-21T23:34:54+09:00 처리 완료 후 Source 목록 projection 복구
+
+- 운영 결과: 커밋 `d2042e1` 재배포 후 실제 동일 PDF 선택으로 생성된 최신 Run `pr-143b94c5f4f3c2463cbbbd711829c5f8`과 직전 Run `pr-b2b484c7b0460c223eaa19afe79676cb`가 모두 `completed`, Job `completed`, Source `ready`, 안전 오류 없음으로 종료됐다. Provider 계약 수정으로 실제 백엔드 등록·이해·색인이 완료됐다.
+- 추가 UI 결함: 백엔드는 ready인데 브라우저가 계속 `처리 중`을 표시하고, 임시 projection이 filename 없이 `sourceId`를 파일명처럼 노출했다. ready 분기에서 `processing`을 비우지 않고 `{sourceId, sourceVersionId}`만으로 임시 목록을 만든 것이 원인이다.
+- RED: 동일 파일 두 번 업로드 후 authoritative Source 목록이 총 3회(초기+각 완료 후) 조회되고 filename이 복구되며 처리 중 표시가 사라져야 한다는 회귀를 추가했다. 수정 전 `listSources` 실제 1회로 `1 failed, 18 passed`를 확인했다.
+- GREEN: ready 상태에서는 임시 Source DTO를 만들지 않고 processing 표시를 종료한 뒤 `loadRevision`을 증가시켜 same-origin Source 목록을 다시 조회하도록 최소 변경했다. 전체 filename·상태·Version은 서버 Safe DTO에서 다시 투영한다.
+- 검증: `node --test scripts/tests/product-workspace.test.mjs scripts/tests/source-upload-api.test.mjs` = 30 passed. `npm run verify:product-ui-boundary` = 415 files, violations 0. `npm run build --prefix apps/web` = compile·TypeScript·12 pages PASS, Web boundary 392 files/violations 0. 관련 `git diff --check` 오류 0(CRLF 안내만 존재).
+- 다음: UI·회귀 테스트·진행 기록만 commit/push하고 Web 재배포 후 브라우저를 새로고침하여 실제 ready Source filename과 처리 표시 종료를 확인한다.
