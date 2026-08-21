@@ -1328,7 +1328,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     else:
         notebook_repository = (
             ReferenceNotebookRepository()
-            if dependencies.cloud_store is None or dependencies.settings.dev_auth_bypass
+            if dependencies.cloud_store is None
             else PostgresNotebookRepository(
                 dependencies.cloud_store,
                 creation_enforcer=(
