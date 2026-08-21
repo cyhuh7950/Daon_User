@@ -151,19 +151,20 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.uploads.calls, [])
 
     async def test_authenticated_pdf_upload_passes_verified_scope_to_service(self) -> None:
-        with self._authenticated():
-            response = await self.client.post(
-                "/api/v1/workspaces/workspace-001/sources",
-                content=b"%PDF-1.7\nsmall fixture",
-                cookies={WEB_SESSION_COOKIE: "opaque-session"},
-                headers={
-                    "Content-Type": "application/pdf",
-                    "X-Source-Filename": "fixture.pdf",
-                    "X-Notebook-Id": "notebook-001",
-                    "Idempotency-Key": "upload-001",
-                    "X-Trace-Id": TRACE_ID,
-                },
-            )
+        with self.assertLogs("daon_user_api.runtime", level="INFO") as captured:
+            with self._authenticated():
+                response = await self.client.post(
+                    "/api/v1/workspaces/workspace-001/sources",
+                    content=b"%PDF-1.7\nsmall fixture",
+                    cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                    headers={
+                        "Content-Type": "application/pdf",
+                        "X-Source-Filename": "fixture.pdf",
+                        "X-Notebook-Id": "notebook-001",
+                        "Idempotency-Key": "upload-001",
+                        "X-Trace-Id": TRACE_ID,
+                    },
+                )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["data"]["source_id"], "src-001")
         self.assertEqual(response.json()["data"]["processing_run_id"], "run-001")
@@ -180,14 +181,19 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.workspace_id, "workspace-001")
         self.assertEqual(source_version_id, "source-version-001")
         self.assertEqual(notebook_id, "notebook-001")
+        self.assertTrue(any("source_upload" in line for line in captured.output))
+        self.assertTrue(any("processing_submit" in line for line in captured.output))
+        self.assertTrue(all("fixture.pdf" not in line for line in captured.output))
+        self.assertTrue(all("object_id" not in line for line in captured.output))
 
     async def test_processing_status_requires_workspace_access_and_returns_safe_state(self) -> None:
-        with self._authenticated():
-            response = await self.client.get(
-                "/api/v1/workspaces/workspace-001/processing-runs/run-001?notebook_id=notebook-001",
-                cookies={WEB_SESSION_COOKIE: "opaque-session"},
-                headers={"X-Trace-Id": TRACE_ID},
-            )
+        with self.assertLogs("daon_user_api.runtime", level="INFO") as captured:
+            with self._authenticated():
+                response = await self.client.get(
+                    "/api/v1/workspaces/workspace-001/processing-runs/run-001?notebook_id=notebook-001",
+                    cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                    headers={"X-Trace-Id": TRACE_ID},
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["job_state"], "leased")
@@ -195,6 +201,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("lease_owner", response.text)
         self.assertNotIn("credential", response.text.casefold())
         self.assertEqual(self.processing.status_notebook_ids, ["notebook-001"])
+        self.assertTrue(any("processing_status" in line for line in captured.output))
 
     async def test_upload_rejects_mime_mismatch_and_corrupt_pdf_before_service(self) -> None:
         with self._authenticated():

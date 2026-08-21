@@ -274,3 +274,25 @@
 - 서버 확인: API healthy, document-worker up, Web healthy, `https://daon-user.sinsan.kr/` = HTTP 200. 기동 직후 일시 502는 Web health-starting 상태였고 8초 후 정상화됐다. 최근 API/Web 로그에 ERROR/Traceback/Exception/FATAL 없음.
 - 브라우저 실제 확인: 로그인 세션에서 Notebook과 Source 1건이 로드되고 `안녕` 질문 실행이 성공했다. 기존 `근거가 부족하여 답변할 수 없습니다` 또는 대화 로드 오류는 재현되지 않았고, LLM 응답 `Hello! How can I assist you today?`와 `작업 상담 · Source 사용` 상태가 표시됐다.
 - 미실행: 실제 PDF file chooser를 통한 새 Source 업로드와 processing worker 202→processing→ready 전 구간, Studio 생성/Provider 설정 변경은 사용자 파일·추가 승인 없이는 실행하지 않았다.
+
+## 2026-08-21 NotebookLM Task 2 실제 PDF 업로드 재현
+
+- 실행: 로그인된 Chrome Workspace에서 저장소의 실제 PDF `apps/web/public/manual/daon-getting-started.pdf`를 file chooser로 선택했다. 브라우저에 `처리 중 · 잠시만 기다려 주세요`가 표시되어 업로드 핸들러가 시작된 것은 확인했다.
+- 결과: 약 30초 후 새 Source가 `ready`로 전환되지 않았고, `Source를 불러오지 못했습니다`가 표시됐다. 재시도 후 기존 Source 1건만 복구되고 새 Source는 목록에 나타나지 않았다.
+- 서버 관찰: 같은 시간대 API/document-worker 로그에 유용한 오류 라인이 출력되지 않았다. 따라서 현재는 upload accepted 이후 processing status 또는 selected-binding/list 경계에서 실패하는 상태이며, 원인 미확정이다.
+- 상태: `FAILURE_INVESTIGATION / BROWSER_UPLOAD_REPRODUCED`; 개발 Subagent가 API→worker→DB/object-storage 경계를 조사 중이다. 원인 확인 전 수정·재배포는 하지 않는다.
+
+## 2026-08-21 NotebookLM Task 2 Phase 1 upload/worker 경계 대조
+
+- 판정: `ROOT_CAUSE_NOT_YET_CLAIMED / DEPLOYMENT-DATABASE BASELINE CONFLICT`.
+- 코드 대조: upload POST는 same-origin BFF→runtime source register→processing submit 순서이며, worker는 `process_existing` 후 무조건 `index_result`를 호출한다. `PostgresDocumentIndex.index_result`는 결과 `status != "ready"` 또는 conflict 시 `DOCUMENT_INDEX_REQUIRES_READY_UNDERSTANDING`으로 종료한다. `complete()`는 결과 저장 및 ProcessingRun 완료를 수행하고 `needs_review`일 때만 Source를 needs_review로 전환한다. 이 경계는 과거 dead-letter 관측의 기술적 원인 후보이나, 현재 배포 DB에 대한 최신 관측과 먼저 결속해야 한다.
+- Read-only 원격 관측: `daon_user-api-1`와 `daon_user-document-worker-1`에서 동일한 안전 DB identity(`postgres`, `daon_app`, 동일 내부 DB 주소/포트)를 확인했고, 두 컨테이너 모두 `sources/source_versions/notebook_bindings/processing_runs/document_processing_jobs` 집계가 0이었다. 최근 API/worker 로그에는 source/upload/processing 오류 라인이 없었다.
+- 불일치: 앞서 확보된 `document_processing_jobs` dead-letter 1건(`DOCUMENT_INDEX_REQUIRES_READY_UNDERSTANDING`)은 현재 동일 DB baseline과 일치하지 않는다. 해당 관측은 다른 시점/배포 DB 상태로 분리하며 현재 업로드가 API DB에 commit됐다고 주장하지 않는다.
+- 조치: 제품 코드·운영 DB·object storage·Provider·browser 재실행은 하지 않았다. 다음은 실제 브라우저 요청의 status/safe code와 현재 배포 Web/BFF/API route 응답을 correlation-safe하게 대조해 upload POST accepted 여부, processing polling 대상, DB commit 경계를 확정하는 것이다. 그 전에는 retry 또는 worker 수정 금지.
+
+## 2026-08-21 Task 2 upload correlation diagnostics RED→GREEN
+
+- RED: `test_source_upload_runtime.py`에 upload register/processing submit/status 성공·실패 경계의 `source_boundary` safe event와 secret-free 필드 검증을 추가했으며 기존 runtime에는 이벤트가 없어 2 failed, 2 passed였다.
+- GREEN: `runtime.py`에 기존 `request.state.trace_id`를 사용하는 내부 logger를 추가하고 upload register, processing submit, processing status의 성공·도메인 실패 지점에만 `event/phase/trace_id/http_status/safe_error_code/source_id_present/processing_run_id_present/db_commit`을 기록한다. 파일 본문, filename, object/token/credential 원문은 기록하지 않는다. 공개 응답 DTO·상태 전이·운영 동작은 변경하지 않았다.
+- 검증: `$env:PYTHONPATH='services/api/src'; uv run pytest services/api/tests/test_source_upload_runtime.py -q` = 4 passed, 기존 httpx cookie deprecation warning 4건. 실제 운영 DB/Provider/재업로드는 실행하지 않았다.
+- 다음: 이 변경을 포함한 API/Web 배포는 어울1 승인 후 수행하고, 동일 브라우저 upload의 X-Trace-Id 기준으로 API access/log와 processing status 이벤트를 결속한다.
