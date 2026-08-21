@@ -266,7 +266,7 @@ class RuntimeSettings:
                 loopback = ipaddress.ip_address(self.bind_host).is_loopback
             except ValueError:
                 loopback = self.bind_host == "localhost"
-            if not loopback:
+            if not loopback and not (self.profile == "development" and self.dev_auth_bypass):
                 raise ValueError("PLAINTEXT_BIND_MUST_BE_LOOPBACK")
         else:
             if self.cloud_database_dsn is None:
