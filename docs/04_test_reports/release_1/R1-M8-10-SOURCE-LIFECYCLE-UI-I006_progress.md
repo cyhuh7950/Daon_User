@@ -115,8 +115,28 @@
 - GREEN 수정: `services/api/src/daon_user_api/runtime.py`의 Context route만 `JSONResponse(content)` 후 `response.headers["ETag"] = selected.etag`로 교정했다. 다른 `_json_with_etag` 경로는 변경하지 않았다.
 - GREEN 검증: focused runtime 1 passed; runtime HTTP 전체 `28 passed, 19 warnings, 2 subtests`; Node notebook/context/product tests `21 passed`; Web production build·TypeScript·boundary `392 files, violations=0, boundaryErrors=0`.
 
+## 2026-08-21 Context ETag fix commit/deploy
+
+- Stage는 수정 파일 3개(`runtime.py`, `test_runtime_http.py`, I006 Progress)만 포함했고 보호 dirty/untracked는 제외했다. `git diff --cached --check=0` 후 commit `ba52cca1e9213debee4bf09cd8908db513a7e7d6`, push `origin/codex/user-auth-screen-split` 성공.
+- ysna-server exact SHA worktree `/home/ubuntu/deploy/daon-user/deploy/r1-m8-10-source-lifecycle-ui-i006/ba52cca1e9213debee4bf09cd8908db513a7e7d6`를 생성하고 API image를 ARM64 build/recreate했다. API image digest `sha256:9580c67c84a5c803373b158c4a0ddf52dbeaf7c2d443f4161d94321e01186d43`; API healthy, internal live/ready `200`, DB migration `0022` 유지.
+- Web/Worker/object-storage/shared-db/proxy는 이번 ETag fix에서 변경하지 않았다. Chrome 동일 사용자 Notebook URL의 Context ETag/alert 소거는 현재 직접 Browser connector가 없어 미검증이며, 운영 Source 변경·Provider 호출은 0이다.
+
 ## 2026-08-21 작업 재개
 
 - 신산님 지시에 따라 중단 상태에서 재개했다. 기존 운영 Source 변경·커밋·푸시·배포는 계속 0으로 유지한다.
 - R2-M1 actual barrier 보완 결과는 어울2 보고와 progress 기록을 회수했으나, 독립 최종 검토 결과 수집은 재개 후 다시 확인한다.
 - 다음: 최신 diff와 R2-M1 evidence를 독립 검토하고, 정적/자동/실제 검증을 구분해 최종 판정한다.
+
+## 2026-08-21 실제 Chrome 재검증
+
+- Context ETag 원인을 수정한 배포 SHA `ba52cca1e9213debee4bf09cd8908db513a7e7d6`에서 로그인 후 동일 Notebook을 다시 열었다.
+- `NOTEBOOK_CONTEXT_INVALID`가 사라지고 Workspace가 정상 렌더링되었으며 Raw Source 1건과 Source 작업 메뉴가 표시되었다.
+- 작업 메뉴에서 `Notebook에서 제거`, `Source 삭제 요청`, `취소`가 모두 노출됨을 확인했고, 실제 제거·삭제 요청·파일 업로드는 실행하지 않았다.
+- Chrome viewport는 `1700x1002`로 확인되어 지정 기준 `1920x1080`과 일치하지 않는다. viewport capability가 제공되지 않아 1920x1080 강제 검증은 미실행으로 남긴다.
+
+## 2026-08-21 Source 목록 오류 재현·복구 확인
+
+- 사용자 화면의 `Source를 불러오지 못했습니다` 상태에서 실제 Chrome의 `다시 시도`를 실행하자 동일 세션·동일 Notebook에서 Raw Source 1건(`daon-knowledge-llm-guide.pdf`)이 즉시 표시되고 `Source 준비` 상태로 회복됐다.
+- 동일 URL을 재진입하는 5회 반복에서 모두 `Raw Source 목록` 1건과 `Source 준비`가 확인됐다. Source unbind/delete request/upload 및 Provider 호출은 실행하지 않았다.
+- ysna-server read-only 조사에서 API/Web 최근 로그에 Source endpoint 4xx/5xx, `SOURCE_LIST_INPUT_INVALID`, `SOURCE_LIST_RESPONSE_INVALID`, 예외 row가 없었고, route 응답 shape와 client exact 검증도 일치했다.
+- 현재 증거상 영구적인 Source API/DB 오류는 확인되지 않았으며, 최초 로드 시의 일시적 브라우저/BFF 요청 실패 가능성이 남아 있다. 최초 실패 요청의 HTTP status/response body를 직접 수집할 Network capability는 제공되지 않아 원인을 확정하지 않는다.
