@@ -108,16 +108,17 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
   if (bindingEtag !== undefined && (typeof bindingEtag !== "string" || !/^"notebook-binding:[1-9][0-9]*"$/u.test(bindingEtag))) {
     throw new Error("NOTEBOOK_CONTEXT_ADAPTER_INVALID");
   }
-  const sourceKeys = new Set(context.sources.map((item) => `${item.source_id}\u0000${item.source_version_id}`));
   const studioIds = new Set(context.studio_output_ids);
   const outputVersionIds = new Set(context.output_version_ids);
 
   const listSources = async (options) => {
-    if (!sourceKeys.size) return [];
     if (typeof baseAdapter.listSources !== "function") throw new Error("NOTEBOOK_CONTEXT_SOURCE_UNAVAILABLE");
     const values = await baseAdapter.listSources({ ...options, notebookId: context.notebook_id });
     if (!Array.isArray(values)) throw new Error("NOTEBOOK_CONTEXT_SOURCE_INVALID");
-    return values.filter((item) => sourceKeys.has(`${item?.source_id}\u0000${item?.source_version_id}`));
+    // The server endpoint is already scoped to this Notebook. Do not filter
+    // against the context snapshot: uploads and unbinds change the binding
+    // after the initial context response has been loaded.
+    return values;
   };
 
   const listKnowledgePackages = async (options) => {
@@ -174,7 +175,25 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     notebookContext: context,
     generationSettingsIds: [...context.generation_settings_ids],
     listSources,
-    listSourceDeletionRequests: async () => context.source_deletion_requests.map((item) => ({ ...item })),
+    listSourceDeletionRequests: typeof baseAdapter.listSourceDeletionRequests === "function"
+      ? (options) => baseAdapter.listSourceDeletionRequests({ ...options, notebookId: context.notebook_id })
+      : async () => context.source_deletion_requests.map((item) => ({ ...item })),
+    unbindSource: typeof baseAdapter.unbindSource === "function"
+      ? (source, options = {}) => baseAdapter.unbindSource(source, {
+        ...options,
+        notebookId: context.notebook_id,
+        bindingEtag: options.bindingEtag ?? context.bindingEtag,
+      })
+      : undefined,
+    requestSourceDeletion: typeof baseAdapter.requestSourceDeletion === "function"
+      ? (source, options) => baseAdapter.requestSourceDeletion(source, options)
+      : undefined,
+    getSourceDeletionRequest: typeof baseAdapter.getSourceDeletionRequest === "function"
+      ? (requestId, options) => baseAdapter.getSourceDeletionRequest(requestId, options)
+      : undefined,
+    cancelSourceDeletionRequest: typeof baseAdapter.cancelSourceDeletionRequest === "function"
+      ? (requestId, options) => baseAdapter.cancelSourceDeletionRequest(requestId, options)
+      : undefined,
     listKnowledgePackages,
     loadNotebookConversation,
     listStudioOutputs,

@@ -348,3 +348,11 @@
 - 원증상 판정: 동일 파일 재선택이 새 POST를 만들고, Provider 처리·Parser 검증·색인이 completed/ready로 종료되며, 처리 완료 후 목록이 자동 복구된다. `처리 중` 고착과 내부 Source ID 파일명 노출은 최종 화면에서 재현되지 않았다.
 - 잔여 데이터: 원인 조사 과정의 기존 `needs_review` 1건과 `failed` 1건, 실제 acceptance로 생성된 ready 2건이 운영 목록에 남아 있다. 실제 Source 데이터 삭제는 파괴적 작업이므로 자동 수행하지 않았다.
 - 상태: `FUNCTIONALLY VERIFIED / TEST SOURCE CLEANUP REQUIRES USER DECISION`.
+
+## 2026-08-21T23:50:00+09:00 Source lifecycle stale context 직접 인수
+
+- 전환: 동일 증상이 3회 이상 반복되어 Subagent를 사용하지 않고 어울1이 직접 수정한다.
+- 원인 확정: `createNotebookContextWorkspaceAdapter`가 초기 Notebook Context의 Source ID 집합으로 최신 `listSources` 응답을 다시 필터링해 업로드 후 새 Source를 숨겼다. 같은 Adapter가 `unbindSource`·`requestSourceDeletion`·`cancelSourceDeletionRequest`를 노출하지 않아 삭제 UI의 실제 API 호출도 실행되지 않았다.
+- 서버 대조: 운영 access log에서 Source 업로드 `202`, 처리 상태 `200`, Source 목록 `200`을 확인했고 API·worker·MinIO 최근 로그에는 오류가 없었다. MinIO 컨테이너는 healthy이며 이번 증상의 직접 원인이 아니다.
+- 조치: 서버가 `notebook_id`로 이미 범위를 제한하는 최신 Source 목록을 그대로 사용하고, Notebook Context Adapter가 Source lifecycle 메서드를 전달하도록 최소 수정했다. 기존 Context·Studio·Knowledge 필터는 유지한다.
+- 현재 상태: 로컬 회귀 테스트 `notebook-context-adapter.test.mjs` 3 passed. 아직 commit·배포·브라우저 삭제/추가 재검증 전이다.
