@@ -758,8 +758,8 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
         if (controller.signal.aborted) return;
         setProcessing(processingState);
         if (processingDisposition(processingState, submission) === "ready") {
-          const selectedSource = { sourceId: processingState.source_id, sourceVersionId: processingState.source_version_id };
-          setViewState({ ...createProductWorkspaceState({ status: "ready" }), sources: [selectedSource], selectedSource });
+          setProcessing(null);
+          setLoadRevision((current) => current + 1);
           return;
         }
         setViewState(createProductWorkspaceState({ status: "loading" }));

@@ -84,10 +84,22 @@ const sourceRetryPayload = {
 
 test("같은 PDF를 다시 선택해도 Source 업로드 change가 재실행된다", async () => {
   let uploadCalls = 0;
+  let listSourcesCalls = 0;
   const submissions = new Map();
   const workspace = await mountSourceRetryWorkspace({
     ...adapter,
-    async listSources() { return []; },
+    async listSources() {
+      listSourcesCalls += 1;
+      const latest = [...submissions.values()].at(-1);
+      return latest ? [{
+        source_id: latest.source_id,
+        source_version_id: latest.source_version_id,
+        filename: "same.pdf",
+        source_state: "ready",
+        processing_state: "completed",
+        job_state: "completed",
+      }] : [];
+    },
     async listStudioOutputs() { return []; },
     async uploadPdf() {
       uploadCalls += 1;
@@ -125,9 +137,13 @@ test("같은 PDF를 다시 선택해도 Source 업로드 change가 재실행된�
 
     await workspace.act(async () => { selectSameFile(); await Promise.resolve(); await Promise.resolve(); });
     await workspace.act(async () => { selectSameFile(); await Promise.resolve(); await Promise.resolve(); });
+    await workspace.act(async () => workspace.wait(50));
 
     assert.equal(uploadCalls, 2);
     assert.equal(fileInput.value, "");
+    assert.equal(listSourcesCalls, 3);
+    assert.match(workspace.container.textContent, /same\.pdf/u);
+    assert.doesNotMatch(workspace.container.textContent, /처리 중 · 잠시만 기다려 주세요/u);
   } finally {
     await workspace.cleanup();
   }
