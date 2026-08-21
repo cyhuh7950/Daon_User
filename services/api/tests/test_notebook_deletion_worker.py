@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from daon_user_api.notebook import NotebookContext, NotebookDeletionView
-from daon_user_api.notebook_deletion import NotebookDeletionWorker
+from daon_user_api.notebook_deletion import NotebookDeletionWorker, PostgresNotebookDeletionStore
 
 
 class FakeStore:
@@ -29,3 +29,10 @@ def test_worker_processes_scoped_request_and_resumes_pending():
     assert result.status == "completed"
     assert worker.resume_pending(context) == 1
     assert store.deleted == ["request-1", "request-1"]
+
+
+def test_startup_claim_contract_uses_scoped_skip_locked_query():
+    sql = PostgresNotebookDeletionStore.STARTUP_CLAIM_SQL
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "tenant_id" in sql and "workspace_id" in sql
+    assert "state IN ('accepted','deleting')" in sql
