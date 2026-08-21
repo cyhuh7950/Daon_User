@@ -409,3 +409,9 @@
 2026-08-22 Task 3 lineage cleanup 확장:
 - 상태: IN_PROGRESS. 전용 함수가 Source version의 document processing, knowledge registration, evidence/citation, transcript, processing, index 파생 행을 범위 조건과 FK 역순으로 정리하고, 더 이상 참조되지 않는 Source/Object record만 제거하도록 확장했다. Object key snapshot은 삭제 전에 반환해 Worker가 MinIO를 정리할 수 있다.
 - 검증: 아직 실제 DB migration/MinIO 통합 검증 전이며, SQL 정적 검사와 focused test를 재실행해야 한다. startup pending claim은 여전히 tenant-scoped DB claim 구현이 남아 있다.
+
+2026-08-22 통합 검증 환경 점검:
+- 시각/상태: 2026-08-22 / BLOCKED(환경).
+- 확인: 현재 공식 Windows 작업환경에 `docker`와 `psql` 실행 파일이 없고 `DAON_CLOUD_DATABASE_DSN`도 노출되지 않아 격리 PostgreSQL/MinIO를 기동하거나 접속할 수 없다. 따라서 migration 적용, 실제 FK 확인, Object Storage 삭제 통합검증을 추측으로 대체하지 않는다.
+- 조치: 대표 테이블 전체의 DELETE 순서가 migration 함수에 포함되도록 정적 계약 검사를 보강했다. startup 전체 tenant claim은 DB의 RLS 우회 전용 claim 함수와 실제 DB 권한 검증 없이는 안전하게 구현할 수 없어 보류한다.
+- 다음: PostgreSQL/MinIO가 제공되는 격리 실행환경에서 migration·권한·공유 보호·재시작 resume을 실행 검증한다. 배포는 하지 않는다.
