@@ -363,3 +363,4 @@
 - 서버 확인: API healthy, Web healthy, document-worker up, object-storage healthy, 공개 Notebook HTTP 200.
 - 검증: `node --test scripts/tests/notebook-context-adapter.test.mjs scripts/tests/product-workspace.test.mjs scripts/tests/source-upload-api.test.mjs` = 33 passed. Web build·TypeScript·product UI boundary 모두 통과.
 - 미실행: 현재 브라우저 자동화 탭이 연결되어 있지 않아 로그인 화면에서의 신규 PDF 선택과 실제 삭제 요청 클릭은 아직 재검증하지 않았다. 기존 Source 삭제는 수행하지 않았다.
+- 2026-08-22  개발 인증 우회 직접 조치: `RuntimeSettings.dev_auth_bypass` 및 `DAON_DEV_AUTH_BYPASS`를 추가하고, `test/development` 프로필에서만 세션 쿠키 없이 `dev-user/dev-tenant` 세션과 요청 workspace ACL을 자동 준비하도록 API를 수정했다. production 프로필에서는 우회가 실행되지 않는다. 사용자가 로그인하지 않아도 로컬 개발 화면의 소스 등록/삭제 API를 검증할 수 있도록 한 조치다. `runtime.py` compileall 통과. 전체 pytest는 현재 셸의 Python에 `psycopg_pool` 미설치로 수집 단계에서 중단되어 미실행으로 기록한다. 다음 단계는 로컬 개발 프로필에 `DAON_DEV_AUTH_BYPASS=true`를 적용한 뒤 API·Web를 재기동하고 실제 소스 등록/삭제를 검증하는 것이다.
