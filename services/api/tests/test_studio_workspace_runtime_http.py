@@ -25,7 +25,7 @@ class FakeStudioWorkspace:
         return {"studio_output_id": "output-1", "output_version_id": "version-1", "output_type": "evidence_report", "status": "draft", "title": "산출물", "content": {"body": "생성"}, "settings_snapshot_id": "settings-1", "citations": [{"citation_id": "citation-1"}]}, False
 
     def list_outputs(self, context):  # type: ignore[no-untyped-def]
-        return ({"studio_output_id": "output-1", "output_version_id": "version-1", "status": "draft", "title": "산출물"},)
+        return ({"studio_output_id": "output-1", "output_version_id": "version-1", "status": "draft", "title": "산출물", "source_version_ids": ["source-version-1"], "run_id": "run-1", "run_result_id": "result-1", "citations": [{"citation_id": "citation-1", "source_version_id": "source-version-1"}]},)
 
     def list_versions(self, context, output_id):  # type: ignore[no-untyped-def]
         self.calls.append(("list_versions", context, output_id))
@@ -101,6 +101,16 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             review = await self.client.post("/api/v1/reviews", cookies=cookies, headers={"Idempotency-Key": "review-key-000001"}, json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_version_id": "version-1"})
             exported = await self.client.get("/api/v1/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
         self.assertEqual([created.status_code, listed.status_code, versions.status_code, revised.status_code, review.status_code, exported.status_code], [201, 200, 200, 201, 201, 200])
+        created_lineage = created.json()["data"]["lineage"]
+        self.assertEqual(created_lineage["notebook_id"], "notebook-001")
+        self.assertEqual(created_lineage["source_version_ids"], ["source-version-1"])
+        self.assertEqual(created_lineage["artifact_type"], "evidence_report")
+        self.assertEqual(created_lineage["instruction"], "목적")
+        self.assertEqual(created_lineage["run_id"], "run-1")
+        self.assertFalse(created_lineage["verification_required"])
+        listed_lineage = listed.json()["data"]["outputs"][0]["lineage"]
+        self.assertEqual(listed_lineage["source_version_ids"], ["source-version-1"])
+        self.assertFalse(listed_lineage["verification_required"])
         self.assertEqual(versions.json()["data"]["versions"][0]["citations"][0]["origin"], "raw_source")
         for response in (created, revised, review): self.assertRegex(response.headers["etag"], r'^"studio-[^"]+"$')
         self.assertEqual(revised.json()["data"]["content"], "변경")
@@ -127,6 +137,19 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["error"]["code"], "POLICY_PROJECTION_UNAVAILABLE")
+
+    async def test_library_marks_unverifiable_output_without_source_lineage(self):
+        self.studio.list_outputs = lambda context: ({
+            "studio_output_id": "output-unverified", "output_version_id": "version-unverified",
+            "status": "draft", "title": "확인 필요", "output_type": "evidence_report",
+        },)
+        with self.authenticated():
+            response = await self.client.get(
+                "/api/v1/studio-outputs?workspace_id=workspace-001&notebook_id=notebook-001",
+                cookies={WEB_SESSION_COOKIE: "opaque"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["data"]["outputs"][0]["lineage"]["verification_required"])
 
     async def test_database_failure_remains_public_503(self):
         with self.authenticated(), patch.object(

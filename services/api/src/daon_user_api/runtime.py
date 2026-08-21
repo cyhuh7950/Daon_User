@@ -91,8 +91,9 @@ from .question_answering_postgres import (
 )
 from .question_answering_service import (
     QuestionAdapterRegistry, QuestionAnsweringError, QuestionAnsweringService,
-    QuestionInputSource, is_general_conversation_intent, question_request_fingerprint,
+    QuestionInputSource, question_request_fingerprint,
 )
+from .question_answering import classify_question_intent
 from .egress_policy import EgressPolicyService
 from .egress_policy import EgressPolicyContext, EgressPolicyError, EgressPolicyPayload
 from .egress_policy_postgres import PostgresEgressPolicyRepository
@@ -558,10 +559,7 @@ class QuestionBody(BaseModel):
         legacy = self.source_id is not None or self.source_version_id is not None
         if legacy != (self.source_id is not None and self.source_version_id is not None):
             raise ValueError("QUESTION_CONTEXT_INVALID")
-        has_context = legacy or self.knowledge_context is not None
         if legacy and self.knowledge_context is not None:
-            raise ValueError("QUESTION_CONTEXT_INVALID")
-        if not has_context and not is_general_conversation_intent(self.question):
             raise ValueError("QUESTION_CONTEXT_INVALID")
         return self
 
@@ -580,10 +578,7 @@ class QuestionAuthorizationBody(BaseModel):
         legacy = self.source_id is not None or self.source_version_id is not None
         if legacy != (self.source_id is not None and self.source_version_id is not None):
             raise ValueError("QUESTION_CONTEXT_INVALID")
-        has_context = legacy or self.knowledge_context is not None
         if legacy and self.knowledge_context is not None:
-            raise ValueError("QUESTION_CONTEXT_INVALID")
-        if not has_context and not is_general_conversation_intent(self.question):
             raise ValueError("QUESTION_CONTEXT_INVALID")
         return self
 
@@ -2021,9 +2016,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> tuple[str, tuple[QuestionInputSource, ...], str | None, str | None]:
         if body.knowledge_context is None:
             if body.source_id is None or body.source_version_id is None:
-                if is_general_conversation_intent(body.question):
-                    return "general_ungrounded", (), None, None
-                raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+                return "general_ungrounded", (), None, None
             source = QuestionInputSource(
                 "raw_source", body.source_id, body.source_id, body.source_version_id,
             )
@@ -2115,13 +2108,56 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             masking_required, redaction_required,
         )
 
-    def _question_result_response(answer: object, request: Request, workspace_id: str) -> JSONResponse:
+    _QUESTION_MODES = frozenset({
+        "work_support", "explicit_source_lookup", "source_backed_action", "approved_web_research",
+    })
+    _QUESTION_GROUNDINGS = frozenset({
+        "source_backed", "ungrounded", "source_evidence_unavailable", "web_backed",
+    })
+
+    def _question_metadata(
+        stored: object, *, question: str, context_mode: str,
+    ) -> dict[str, object]:
+        intent = classify_question_intent(question)
+        if intent not in _QUESTION_MODES:
+            raise QuestionAnsweringError("QUESTION_RESPONSE_INVALID", status=500)
+        has_source_context = context_mode != "general_ungrounded"
+        mode = intent
+        if has_source_context and intent == "work_support":
+            mode = "explicit_source_lookup"
+        citations = tuple(getattr(stored, "citations", ()))
+        insufficient = bool(getattr(stored, "insufficient", False))
+        if insufficient and has_source_context:
+            return {
+                "mode": mode,
+                "grounding": "source_evidence_unavailable",
+                "source_scope_summary": "선택한 Source 범위",
+                "mismatch": {
+                    "code": "SOURCE_SCOPE_MISMATCH",
+                    "detail": "질문과 선택한 Source의 범위가 일치하지 않습니다.",
+                },
+                "next_actions": ["다른 Source 선택", "Source 추가", "승인된 웹 조사 요청"],
+            }
+        return {
+            "mode": mode,
+            "grounding": "source_backed" if has_source_context and citations else "ungrounded",
+            "source_scope_summary": "선택한 Source 범위" if has_source_context else None,
+            "mismatch": None,
+            "next_actions": ["승인된 웹 조사 요청"] if intent == "approved_web_research" else [],
+        }
+
+    def _question_result_response(
+        answer: object, request: Request, workspace_id: str, *,
+        question: str, context_mode: str,
+    ) -> JSONResponse:
         stored = cast(Any, answer)
+        metadata = _question_metadata(stored, question=question, context_mode=context_mode)
         response = JSONResponse({
             "data": {
                 "run_id": stored.run_id, "run_result_id": stored.run_result_id,
                 "answer": stored.answer, "insufficient": stored.insufficient,
                 "citations": [_dataclass_json(item) for item in stored.citations],
+                **metadata,
             },
             "meta": {"trace_id": request.state.trace_id, "workspace_id": workspace_id},
         })
@@ -2272,7 +2308,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     masking_required=replay_masking,
                     redaction_required=replay_redaction,
                 )
-            return _question_result_response(replay, request, id)
+            return _question_result_response(
+                replay, request, id, question=body.question, context_mode=context_mode,
+            )
         approved_authorization = None
         if egress_policy_service is not None:
             context = question_context
@@ -2328,7 +2366,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             context_mode=context_mode, context_sources=context_sources,
             request_fingerprint=replay_fingerprint, replay_checked=True,
         )
-        return _question_result_response(answer, request, id)
+        return _question_result_response(
+            answer, request, id, question=body.question, context_mode=context_mode,
+        )
 
     @app.post("/api/v1/studio-generation-requests", status_code=201)
     async def create_product_studio_generation(
@@ -2364,7 +2404,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             ),
             idempotency_key,
         )
-        response = JSONResponse({"data": _enum_json(output), "meta": {
+        serialized_output = _enum_json(output)
+        if not isinstance(serialized_output, dict):
+            raise StudioError("STUDIO_RESULT_INVALID", 500)
+        output_projection = dict(serialized_output)
+        output_projection["lineage"] = {
+            "notebook_id": body.notebook_id,
+            "source_version_ids": list(body.source_version_ids),
+            "artifact_type": body.output_type,
+            "instruction": body.settings.purpose,
+            "run_id": body.run_id,
+            "citations": output_projection.get("citations", []),
+            "verification_required": False,
+        }
+        response = JSONResponse({"data": output_projection, "meta": {
             "trace_id": request.state.trace_id, "workspace_id": body.workspace_id, "replayed": replayed,
         }}, status_code=200 if replayed else 201)
         response.headers["ETag"] = f'"studio-version:{output["output_version_id"]}"'
@@ -2387,9 +2440,30 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             _product_studio_context(principal, workspace_id, request, dependencies, notebook_id),
         )
         if isinstance(projection, Mapping):
-            data = {"outputs": _enum_json(projection.get("outputs", ())), "studio_locks": _enum_json(projection.get("studio_locks", ())) }
+            outputs = _enum_json(projection.get("outputs", ()))
+            locks = _enum_json(projection.get("studio_locks", ()))
         else:
-            data = {"outputs": _enum_json(projection), "studio_locks": []}
+            outputs = _enum_json(projection)
+            locks = []
+        if isinstance(outputs, list):
+            for item in outputs:
+                if not isinstance(item, dict):
+                    continue
+                source_version_ids = item.get("source_version_ids", [])
+                citations = item.get("citations", [])
+                item["lineage"] = {
+                    "notebook_id": notebook_id,
+                    "source_version_ids": source_version_ids if isinstance(source_version_ids, list) else [],
+                    "artifact_type": item.get("output_type"),
+                    "instruction": item.get("purpose"),
+                    "run_id": item.get("run_id"),
+                    "citations": citations if isinstance(citations, list) else [],
+                    "verification_required": not (
+                        isinstance(source_version_ids, list) and bool(source_version_ids)
+                        and isinstance(citations, list) and bool(citations)
+                    ),
+                }
+        data = {"outputs": outputs, "studio_locks": locks}
         return JSONResponse({"data": data, "meta": {
             "trace_id": request.state.trace_id, "workspace_id": workspace_id,
         }})

@@ -5,7 +5,7 @@ import "@daon-user/design-tokens/tokens.css";
 import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState } from "./product-workspace-model.js";
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
-import { isGeneralConversationIntent } from "./conversation-intent.js";
+import { classifyConversationIntent } from "./conversation-intent.js";
 import "./workspace.css";
 
 const STATE_LABELS = Object.freeze({
@@ -294,7 +294,33 @@ function processingDisposition(status, submission) {
 }
 
 export function projectSafeQuestionAnswer(answer, workspaceId, citationUrl, selectedSource, selectedKnowledgeId = null) {
-  const validAnswer = hasExactKeys(answer, ["run_id", "run_result_id", "answer", "insufficient", "citations"])
+  const baseKeys = ["run_id", "run_result_id", "answer", "insufficient", "citations"];
+  const metadataKeys = ["mode", "grounding", "source_scope_summary", "mismatch", "next_actions"];
+  const legacyShape = hasExactKeys(answer, baseKeys);
+  const enrichedShape = hasExactKeys(answer, [...baseKeys, ...metadataKeys]);
+  const validMetadata = !enrichedShape || (
+    ["work_support", "explicit_source_lookup", "source_backed_action", "approved_web_research"].includes(answer.mode)
+    && ["source_backed", "ungrounded", "source_evidence_unavailable", "web_backed"].includes(answer.grounding)
+    && (answer.source_scope_summary === null || (
+      typeof answer.source_scope_summary === "string"
+      && answer.source_scope_summary.length <= 1_000
+      && !/[\u0000-\u001f\u007f]/u.test(answer.source_scope_summary)
+    ))
+    && (answer.mismatch === null || (
+      hasExactKeys(answer.mismatch, ["code", "detail"])
+      && answer.mismatch.code === "SOURCE_SCOPE_MISMATCH"
+      && typeof answer.mismatch.detail === "string"
+      && answer.mismatch.detail.length >= 1
+      && answer.mismatch.detail.length <= 1_000
+    ))
+    && Array.isArray(answer.next_actions)
+    && answer.next_actions.length <= 4
+    && answer.next_actions.every((item) => typeof item === "string" && item.length >= 1 && item.length <= 120)
+    && (answer.grounding !== "source_evidence_unavailable" || (
+      answer.mismatch !== null && answer.next_actions.length > 0
+    ))
+  );
+  const validAnswer = (legacyShape || enrichedShape) && validMetadata
     && isSafeDtoId(answer.run_id)
     && isSafeDtoId(answer.run_result_id)
     && typeof answer.answer === "string"
@@ -580,13 +606,14 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
       } else {
         sourceSafeError = safeErrorCode(sourceResult.reason, "SOURCE_LIST_FAILED");
       }
-      const selectedSource = projected.find((source) => source.ready) ?? null;
       setViewState((current) => ({
         ...current,
         status: sourceSafeError ? "error" : projected.length ? "ready" : "empty",
         safeError: sourceSafeError,
-        sources: projected,
-        selectedSource,
+        sources: sourceSafeError ? current.sources : projected,
+        selectedSource: sourceSafeError
+          ? current.selectedSource
+          : projected.find((source) => source.ready) ?? null,
       }));
 
       let projectedKnowledge = [];
@@ -810,8 +837,8 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
 
   const askQuestion = async (event) => {
     event.preventDefault();
-    const generalConversation = isGeneralConversationIntent(question);
-    if (!adapter || (!viewState.selectedSource && !selectedKnowledgeId && !generalConversation) || !question.trim()) return;
+    const conversationMode = classifyConversationIntent(question);
+    if (!adapter || !question.trim()) return;
     const questionEpoch = ++questionEpochRef.current;
     try {
       if (!workspaceMountedRef.current) return;
@@ -835,7 +862,9 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
       );
       setViewState((current) => ({
         ...current, answer: safeAnswer,
-        answerIntent: generalConversation ? "general_ungrounded" : "grounded",
+        answerIntent: conversationMode === "work_support"
+          ? (viewState.selectedSource || selectedKnowledgeId ? "work_support_source_backed" : "work_support_ungrounded")
+          : conversationMode,
       }));
       reportIdempotencyRef.current = null;
     } catch (error) {
@@ -879,7 +908,6 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
   };
 
   const reportReady = canCreateGroundedReport(viewState);
-  const generalConversationReady = isGeneralConversationIntent(question);
   const desktopEditor = typeof desktopOfflineStudio?.editor === "function"
     ? desktopOfflineStudio.editor(viewState)
     : desktopOfflineStudio?.editor;
@@ -1198,7 +1226,7 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
           </section>
           {viewState.status === "loading" ? <div className="pane-empty" role="status"><span className="state-spinner" aria-hidden="true" /><strong>Source를 불러오고 있습니다.</strong><small>현재 Workspace의 안전한 목록을 확인하는 중입니다.</small></div> : null}
           {viewState.status === "empty" ? <div className="pane-empty"><span aria-hidden="true">◇</span><strong>Source를 추가해 주세요.</strong><small>PDF를 등록하면 질문과 Studio 생성에 사용할 수 있습니다.</small></div> : null}
-          {viewState.status === "error" && !viewState.sources.length ? <div className="inline-alert" role="alert"><span>Source를 불러오지 못했습니다. 운영상태에서 연결을 확인해 주세요.</span><button type="button" onClick={() => { setViewState(createProductWorkspaceState({ status: "loading" })); setLoadRevision((current) => current + 1); }}>다시 시도</button></div> : null}
+          {viewState.status === "error" ? <div className="inline-alert" role="alert"><span>Source를 불러오지 못했습니다. 운영상태에서 연결을 확인해 주세요.</span><button type="button" onClick={() => { setViewState((current) => ({ ...current, status: "loading", safeError: null })); setLoadRevision((current) => current + 1); }}>다시 시도</button></div> : null}
           {sourceAction ? <section className="source-action-dialog" role="dialog" aria-modal="true" aria-label="Source 작업 확인">
             <strong>{sourceAction.filename ?? sourceAction.sourceId}</strong>
             {sourceAction.deletionRequest ? <p role="status">{sourceAction.deletionRequest.data.state === "cancelled"
@@ -1221,8 +1249,10 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
           {desktopEditor ? desktopEditor : <div className="conversation-workspace"><div className="conversation-transcript" aria-live="polite">
           <div className="context-selection-status" role="status">질문 컨텍스트 · {selectedKnowledgeId ? "Daon 승인 지식" : ""}{selectedKnowledgeId && viewState.selectedSource ? " + " : ""}{viewState.selectedSource ? "Raw Source" : ""}</div>
           {viewState.answer ? <article className="assistant-message"><div className="assistant-avatar" aria-hidden="true">D</div><div><span className="message-author">Daon</span><p>{viewState.answer.answer}</p></div></article> : <div className="conversation-empty"><span className="conversation-orbit" aria-hidden="true">✦</span><h3>Source에 대해 무엇이든 물어보세요.</h3><p>선택한 Source의 근거와 Citation을 사용해 답합니다.</p></div>}
-          {viewState.answerIntent === "general_ungrounded"
-            ? <div className="context-selection-status" role="status">일반 대화 · 근거 미사용</div> : null}
+          {viewState.answerIntent === "general_ungrounded" || viewState.answerIntent === "work_support_ungrounded"
+            ? <div className="context-selection-status" role="status">작업 상담 · 근거 미사용</div> : null}
+          {viewState.answerIntent === "work_support_source_backed"
+            ? <div className="context-selection-status" role="status">작업 상담 · Source 사용</div> : null}
           {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">대화를 불러오지 못했습니다. 다시 시도해 주세요.</div> : null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
@@ -1237,8 +1267,8 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
               });
             }}>Citation · {citation.locator.kind === "page" ? `${citation.page}쪽` : "지식 구간"}</a>
           ))}</div></div><form className="conversation-composer" onSubmit={askQuestion}>
-            <label><span className="sr-only">질문</span><textarea rows="2" placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식에 대해 질문하세요" : "인사하거나 Daon 사용법을 물어보세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
-            <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={!question.trim() || (!viewState.selectedSource && !selectedKnowledgeId && !generalConversationReady)}>↑</button>
+            <label><span className="sr-only">질문</span><textarea rows="2" placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "선택한 Source와 작업 맥락을 바탕으로 무엇이든 물어보세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
+            <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={!question.trim()}>↑</button>
           </form></div>}
         </SafePane>
         <SafePane id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">

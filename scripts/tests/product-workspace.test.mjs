@@ -11,6 +11,7 @@ import {
   canCreateGroundedReport,
   projectQuestionFailureState,
 } from "../../packages/ui/src/product-workspace-model.js";
+import { classifyConversationIntent, buildSourceScopeMismatch } from "../../packages/ui/src/conversation-intent.js";
 
 const adapter = Object.freeze({
   listSources() {}, uploadPdf() {}, getProcessingStatus() {}, askQuestion() {},
@@ -22,6 +23,25 @@ const deferred = () => {
   const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
   return { promise, resolve, reject };
 };
+
+test("작업 상담과 명시 Source 확인은 서로 다른 conversation mode로 분류한다", () => {
+  assert.equal(classifyConversationIntent("다음 작업을 어떻게 진행할까?"), "work_support");
+  assert.equal(classifyConversationIntent("선택한 문서에서 보존 기간을 찾아줘"), "explicit_source_lookup");
+  assert.equal(classifyConversationIntent("이 자료로 보고서를 만들어줘"), "source_backed_action");
+  assert.equal(classifyConversationIntent("최신 정책을 웹에서 찾아줘"), "approved_web_research");
+});
+
+test("Source 범위 불일치는 단독 refusal이 아니라 구조화된 다음 행동을 반환한다", () => {
+  const result = buildSourceScopeMismatch({
+    sourceScopeSummary: "보존 정책과 문서 처리 절차",
+    mismatch: "질문은 최신 주가를 요구하지만 선택 Source에는 주가 정보가 없습니다.",
+  });
+  assert.deepEqual(result, {
+    source_scope_summary: "보존 정책과 문서 처리 절차",
+    mismatch: "질문은 최신 주가를 요구하지만 선택 Source에는 주가 정보가 없습니다.",
+    next_actions: ["다른 Source 선택", "Source 추가", "승인된 웹 조사 요청"],
+  });
+});
 
 async function mountSourceRetryWorkspace(effectAdapter, suffix) {
   const root = path.resolve(import.meta.dirname, "../..");
@@ -484,7 +504,41 @@ test("Source 로드는 다른 pane projection 오류와 stale 결과에서 독�
   }
 });
 
-test("빈 Notebook은 좁은 일반대화만 실행하고 근거 미사용을 표시한다", async () => {
+test("Source 재로드 오류는 기존 populated 목록을 빈 목록으로 덮지 않는다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-source-preserve-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { build } = await import("vite");
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: {
+      outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-preserve" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("source-preserve") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourcePreserve=${Date.now()}`);
+    const source = { source_id: "source-current", source_version_id: "version-current", filename: "current.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" };
+    const initialState = {
+      ...createProductWorkspaceState({ status: "ready" }),
+      sources: [{ sourceId: source.source_id, sourceVersionId: source.source_version_id, filename: source.filename, ready: true }],
+      selectedSource: { sourceId: source.source_id, sourceVersionId: source.source_version_id, filename: source.filename, ready: true },
+    };
+    const failedAdapter = { ...adapter, async listSources() { throw new Error("SOURCE_LIST_UNAVAILABLE"); }, async listStudioOutputs() { return []; } };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-current", adapter: failedAdapter, state: initialState })); await new Promise((resolve) => setTimeout(resolve, 350)); });
+    assert.match(container.textContent, /current\.pdf/u);
+    assert.match(container.textContent, /Source를 불러오지 못했습니다/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("빈 Notebook은 작업 상담을 실행하고 근거 미사용을 표시한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".workspace-general-conversation-react-"));
   const dom = installMinimalDom();
@@ -520,19 +574,16 @@ test("빈 Notebook은 좁은 일반대화만 실행하고 근거 미사용을 �
     const textarea = findElements(container, (node) => node.tagName === "TEXTAREA")[0];
     assert.equal(textarea.disabled, false);
     const textareaProps = textarea[Object.keys(textarea).find((key) => key.startsWith("__reactProps$"))];
-    textarea.value = "2026년 매출은?";
+    textarea.value = "다음 작업을 어떻게 진행할까?";
     await act(async () => textareaProps.onChange({ currentTarget: textarea, target: textarea }));
     const submit = findElements(container, (node) => node.tagName === "BUTTON" && node.getAttribute("aria-label") === "질문 실행")[0];
-    assert.equal(submit.disabled, true);
-    textarea.value = "안녕하세요!";
-    await act(async () => textareaProps.onChange({ currentTarget: textarea, target: textarea }));
     assert.equal(submit.disabled, false);
     const form = findElements(container, (node) => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
     const formProps = form[Object.keys(form).find((key) => key.startsWith("__reactProps$"))];
     await act(async () => formProps.onSubmit({ preventDefault() {} }));
-    assert.deepEqual(calls, [{ knowledgeContext: null, question: "안녕하세요!" }]);
+    assert.deepEqual(calls, [{ knowledgeContext: null, question: "다음 작업을 어떻게 진행할까?" }]);
     assert.equal(authorizeCalls, 0);
-    assert.match(container.textContent, /일반 대화 · 근거 미사용/u);
+    assert.match(container.textContent, /작업 상담 · 근거 미사용/u);
 
     await act(async () => reactRoot.unmount());
     reactRoot = null;
@@ -700,6 +751,24 @@ test("Product Studio 실제 React는 근거 충족 전 생성 비활성, 충족 
     assert.match(enabled, /결과 목적/);
     assert.match(enabled, /기존 보고서/);
     assert.doesNotMatch(enabled, /Prototype|Fixture|Delivery|Registration/);
+    const enrichedAnswer = projectSafeQuestionAnswer({
+      ...ready.answer,
+      mode: "explicit_source_lookup",
+      grounding: "source_backed",
+      source_scope_summary: "선택한 Source 범위",
+      mismatch: null,
+      next_actions: [],
+    }, "workspace-1", (citation) => `/bff/api/workspaces/workspace-1/citations/${citation.citation_id}/content#page=${citation.page}`, ready.selectedSource);
+    assert.equal(enrichedAnswer.mode, "explicit_source_lookup");
+    assert.equal(enrichedAnswer.grounding, "source_backed");
+    assert.throws(() => projectSafeQuestionAnswer({
+      ...ready.answer,
+      mode: "unknown_mode",
+      grounding: "source_backed",
+      source_scope_summary: null,
+      mismatch: null,
+      next_actions: [],
+    }, "workspace-1", (citation) => `/bff/api/workspaces/workspace-1/citations/${citation.citation_id}/content#page=${citation.page}`, ready.selectedSource), /QUESTION_RESPONSE_INVALID/);
     assert.throws(() => projectSafeQuestionAnswer(
       { ...ready.answer, citations: [{ ...ready.answer.citations[0], source_version_id: "version-other" }] },
       "workspace-1",

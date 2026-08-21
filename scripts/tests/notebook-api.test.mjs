@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createNotebook, getCurrentNotebookSession, getNotebook, getNotebookContext, listNotebooks, updateNotebookTitle } from "../../apps/web/lib/notebook-api.js";
+import { listWorkspaceSources } from "../../apps/web/lib/product-workspace-api.js";
 
 const VIEW = Object.freeze({ notebook_id: "notebook-1", title: "Notebook", source_count: 0, output_count: 0, updated_at: "2026-08-16T01:02:03Z", status: "empty" });
 const META = Object.freeze({ trace_id: "trace-1", workspace_id: "workspace-1" });
@@ -110,14 +111,14 @@ test("Notebook selected Context는 exact same-origin projection만 수용한다"
   const data = {
     notebook_id: "notebook-1", sources: [{ source_id: "source-1", source_version_id: "source-version-1" }], knowledge_context_ids: [],
     conversation_thread_ids: ["thread-1"], studio_output_ids: [], output_version_ids: [],
-    generation_settings_ids: [], conversation: { conversation_thread_id: "thread-1", answer: {
+    generation_settings_ids: [], source_deletion_requests: [], conversation: { conversation_thread_id: "thread-1", answer: {
       run_id: "run-1", run_result_id: "result-1", answer: "근거 답변", insufficient: false, citations: [citation],
     } },
   };
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
-    return json({ data, meta: META });
+    return json({ data, meta: META }, { status: 200, headers: { ETag: '"notebook-binding:1"' } });
   };
   assert.deepEqual((await getNotebookContext("workspace-1", "notebook-1", { fetchImpl })).data, data);
   assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/notebooks/notebook-1/context");
@@ -128,7 +129,43 @@ test("Notebook selected Context는 exact same-origin projection만 수용한다"
     { ...data, conversation: { ...data.conversation, answer: { ...data.conversation.answer, citations: [{ ...citation, locator: { ...citation.locator, extra: true } }] } } },
   ]) {
     await assert.rejects(getNotebookContext("workspace-1", "notebook-1", {
-      fetchImpl: async () => json({ data: invalid, meta: META }),
+      fetchImpl: async () => json({ data: invalid, meta: META }, { status: 200, headers: { ETag: '"notebook-binding:1"' } }),
     }), /NOTEBOOK_CONTEXT_INVALID/u);
   }
+});
+
+test("Source 목록은 exact DTO를 유지하고 safe retryable을 보존한다", async () => {
+  const source = {
+    source_id: "source-1", source_version_id: "source-version-1", filename: "guide.pdf",
+    source_state: "ready", processing_state: "completed", job_state: "completed",
+  };
+  const payload = { data: { sources: [source] }, meta: META };
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return json(payload, { status: 200 });
+  };
+  assert.deepEqual(await listWorkspaceSources("workspace-1", { notebookId: "notebook-1", fetchImpl }), [source]);
+  assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/sources?notebook_id=notebook-1");
+  assert.equal(calls[0].init.credentials, "same-origin");
+
+  for (const retryable of [false, true]) {
+    let error;
+    try {
+      await listWorkspaceSources("workspace-1", {
+        notebookId: "notebook-1",
+        fetchImpl: async () => json({ error: { code: "SOURCE_LIST_UNAVAILABLE", retryable } }, { status: 503 }),
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.match(error?.message ?? "", /SOURCE_LIST_UNAVAILABLE/u);
+    assert.equal(error.retryable, retryable);
+  }
+  await assert.rejects(
+    () => listWorkspaceSources("workspace-1", {
+      notebookId: "notebook-1", fetchImpl: async () => json({ data: { sources: [] }, meta: { trace_id: "trace-1" } }, { status: 200 }),
+    }),
+    /SOURCE_LIST_RESPONSE_INVALID/u,
+  );
 });

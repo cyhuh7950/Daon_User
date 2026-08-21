@@ -241,8 +241,8 @@ class QuestionAnsweringService:
         context_mode: str = "raw_only",
         context_sources: tuple[QuestionInputSource, ...] | None = None,
     ) -> PreparedQuestionAuthorization:
-        general = is_general_conversation_intent(question)
-        if not general and (source_id is None or source_version_id is None):
+        general = is_general_conversation_intent(question) or (source_id is None and source_version_id is None)
+        if (source_id is None) != (source_version_id is None):
             raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
         sources = () if general and source_id is None else self._context_sources(
             source_id or "", source_version_id or "", context_sources,
@@ -299,9 +299,7 @@ class QuestionAnsweringService:
             )
             if replay is not None:
                 return replay
-        general = is_general_conversation_intent(question)
-        if not general and (source_id is None or source_version_id is None):
-            raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
+        general = is_general_conversation_intent(question) or (source_id is None and source_version_id is None)
         if general and ((source_id is None) != (source_version_id is None)):
             raise QuestionAnsweringError("QUESTION_CONTEXT_INVALID")
         sources = () if general and source_id is None else self._context_sources(
@@ -362,28 +360,48 @@ class QuestionAnsweringService:
             )
         evidence = self._search_context(context, sources, question)
         if not evidence:
+            try:
+                prepared = self._adapter_registry.prepare_general(
+                    snapshot, question, context.trace_id,
+                    self._credential_resolver, self._transport,
+                )
+            except (ValueError, DocumentUnderstandingError) as error:
+                raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
+                raise QuestionAnsweringError(
+                    raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED",
+                    status=503 if raw_code.startswith("TEXT_PROVIDER_") else 502,
+                ) from None
+            frozen_bytes = canonical_json_bytes(prepared.provider_payload)
+            transformer = getattr(self._egress, "prepare_payload", None)
+            if callable(transformer):
+                frozen_bytes = transformer(context, frozen_bytes)
+                prepared = replace(prepared, provider_payload=json.loads(frozen_bytes))
             egress_authorization = self._egress.authorize(
-                context, run_id=run_id, source_id=source_id,
-                source_version_id=source_version_id, selection=selection,
-                provider_payload=b"", no_external_payload=True,
+                context, run_id=run_id, source_id=None,
+                source_version_id=None, selection=selection,
+                provider_payload=frozen_bytes,
                 approved_authorization=approved_authorization,
-                question=question, context_mode=context_mode,
+                question=question, context_mode="general_ungrounded",
                 request_fingerprint=request_fingerprint,
             )
             if egress_authorization.get("provider_owner") is False:
                 return self._wait_for_provider_owner(
                     context, run_id, request_fingerprint,
                 )
+            try:
+                generated = self._adapter_registry.generate_general(prepared)
+            except (ValueError, DocumentUnderstandingError) as error:
+                raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
+                raise QuestionAnsweringError(
+                    raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED", status=502,
+                ) from None
             return self._repository.persist_completed(
-                context, run_id=run_id, source_id=source_id,
-                source_version_id=source_version_id, question=question,
-                selection=selection, evidence=(),
-                result=GroundedTextResult(
-                    "근거가 부족하여 답변할 수 없습니다.", (), True, {},
-                ),
-                provider_called=False,
+                context, run_id=run_id, source_id=None,
+                source_version_id=None, question=question,
+                selection=selection, evidence=(), result=generated,
+                provider_called=True,
                 egress_authorization=egress_authorization,
-                context_mode=context_mode, context_sources=sources,
+                context_mode="general_ungrounded", context_sources=(),
                 request_fingerprint=request_fingerprint,
             )
         try:

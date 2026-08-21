@@ -225,6 +225,26 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unauthenticated.status_code, 401)
         self.assertEqual(context_without_auth.status_code, 401)
 
+    async def test_source_upload_rejects_invalid_pdf_and_cross_scope_before_write(self) -> None:
+        auth = {
+            "cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}",
+            "Content-Type": "application/pdf", "X-Notebook-Id": "notebook-001",
+            "Idempotency-Key": "source-upload-invalid-0001",
+        }
+        invalid_type = await self.client.post(
+            "/api/v1/workspaces/workspace-001/sources",
+            headers={**auth, "X-Source-Filename": "notes.txt"}, content=b"not pdf",
+        )
+        self.assertEqual((invalid_type.status_code, invalid_type.json()["error"]["code"]), (400, "SOURCE_FILENAME_INVALID"))
+
+        cross_scope = await self.client.post(
+            "/api/v1/workspaces/workspace-foreign/sources",
+            headers={**auth, "X-Source-Filename": "guide.pdf", "X-Notebook-Id": "notebook-foreign"},
+            content=b"%PDF-1.4",
+        )
+        self.assertIn(cross_scope.status_code, {403, 404})
+        self.assertNotIn("stack", cross_scope.text.lower())
+
     async def test_live_ready_and_import_have_no_listener_side_effect(self) -> None:
         live = await self.client.get("/health/live")
         ready = await self.client.get("/health/ready")

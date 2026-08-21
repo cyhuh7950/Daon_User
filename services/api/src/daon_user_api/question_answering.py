@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Mapping, Protocol, cast
 from urllib.parse import urlsplit
@@ -14,6 +15,24 @@ from .provider_settings import ProviderSettingsSnapshot
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+_SOURCE_LOOKUP_PATTERN = re.compile(r"(?:선택한|이|해당)\s*(?:source|문서|자료).*(?:있어|찾아|알려|확인)", re.IGNORECASE)
+_SOURCE_ACTION_PATTERN = re.compile(r"(?:이\s*자료|선택한\s*(?:source|문서)).*(?:보고서|표|체크리스트|정리|작성|만들)", re.IGNORECASE)
+_WEB_RESEARCH_PATTERN = re.compile(r"(?:최신|웹|인터넷|검색).*(?:찾아|알려|조사|검색)", re.IGNORECASE)
+
+
+def classify_question_intent(value: str) -> str:
+    if not isinstance(value, str):
+        return "work_support"
+    normalized = unicodedata.normalize("NFKC", value).strip()
+    if not normalized or normalized != value:
+        return "work_support"
+    if _WEB_RESEARCH_PATTERN.search(normalized):
+        return "approved_web_research"
+    if _SOURCE_ACTION_PATTERN.search(normalized):
+        return "source_backed_action"
+    if _SOURCE_LOOKUP_PATTERN.search(normalized):
+        return "explicit_source_lookup"
+    return "work_support"
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,8 +188,13 @@ class OpenAICompatibleTextGenerationAdapter:
                 "model": selection.model_id,
                 "messages": [
                     {"role": "system", "content": (
-                        "Answer only from the supplied evidence JSON. Return insufficient=true "
-                        "when it does not support an answer. Cite only supplied chunk_id values."
+                        "First explain the supplied Source scope briefly. Answer questions inside that scope "
+                        "only from the supplied evidence JSON and cite only supplied chunk_id values. "
+                        "If the question is outside the Source scope, explain the mismatch and the Source scope "
+                        "without refusing with a generic insufficient message; return insufficient=true and "
+                        "cited_chunk_ids=[] for that case. Do not invent facts. If current external information "
+                        "is requested, suggest a web search and wait for explicit user approval. "
+                        "Studio outputs must use supplied Source evidence only."
                     )},
                     {"role": "user", "content": json.dumps(
                         {"question": request.question, "evidence": evidence},
@@ -227,8 +251,8 @@ class OpenAICompatibleTextGenerationAdapter:
             "model": selection.model_id,
             "messages": [
                 {"role": "system", "content": (
-                    "Respond briefly to the greeting, thanks, or Daon product-help request. "
-                    "Do not claim to use sources or provide factual document analysis."
+                    "Answer the user's question naturally and briefly without claiming to use Sources. "
+                    "For current external information, suggest a web search and wait for explicit user approval."
                 )},
                 {"role": "user", "content": request.question},
             ],
@@ -356,8 +380,8 @@ class OllamaTextGenerationAdapter:
             "format": OpenAICompatibleTextGenerationAdapter._GENERAL_SCHEMA["json_schema"]["schema"],
             "messages": [
                 {"role": "system", "content": (
-                    "Respond briefly to the greeting, thanks, or Daon product-help request. "
-                    "Do not claim to use sources."
+                    "Answer the user's question naturally and briefly without claiming to use Sources. "
+                    "For current external information, suggest a web search and wait for explicit user approval."
                 )},
                 {"role": "user", "content": request.question},
             ],

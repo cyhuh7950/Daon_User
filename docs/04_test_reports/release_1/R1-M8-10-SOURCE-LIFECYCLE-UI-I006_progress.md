@@ -155,3 +155,106 @@
 - `fa86729`를 `origin/codex/user-auth-screen-split`에 push했다. 변경은 브라우저 표준 transient fetch `TypeError` 1회 재시도와 3개 focused UI 테스트이며, 보호 dirty/untracked 파일은 stage하지 않았다.
 - ysna-server 격리 worktree에서 Web 이미지를 재빌드·재생성했다. Web production build/TypeScript/boundary가 통과했고 boundary는 `414 files`, violations `0`, boundaryErrors `0`이었다. API/DB/object-storage/shared-db/proxy는 재생성하지 않았다.
 - 배포 후 Web health `healthy`, HTTPS `/` `200`, 최근 Web error/exception/fatal 로그 0. 로그인된 동일 Chrome Notebook을 재진입해 `Raw Source 목록` 1건과 Source 정상 상태를 확인했으며 Source 변경·삭제·업로드·Provider 호출은 0이다.
+## 2026-08-21 — NotebookLM형 재설계·작업계획 재작성
+
+- 시각: 2026-08-21 (KST)
+- 단계: 설계 재정의 및 실행계획 작성
+- 상태: 설계/계획 완료, 코드 수정 전
+- 변경 파일: `docs/superpowers/specs/2026-08-21-notebooklm-workspace-redesign-design.md`, `docs/superpowers/plans/2026-08-21-notebooklm-workspace-redesign.md`
+- 핵심 결정: Source 기능을 P0로 고정하고, 대화창은 작업 상담·명시 Source 확인·Source 기반 실행을 분리하며, 업무 Studio는 Source Evidence/Citation/Lineage를 보존하는 산출물 영역으로 정의함.
+- 검증: 기존 Source 설계·대화 라우팅·same-origin 계약과 공식 Gemini Notebook 문서를 검토함. 구현/브라우저/배포 검증은 아직 수행하지 않음.
+- 다음 작업: 신산님 승인 후 Task 1 Source 초기 목록 실패 원인과 상태 계약부터 RED→GREEN으로 실행.
+
+## 2026-08-21 Source 원인 조사 보완
+
+- 판정: Source 서버 장애로 확정하지 않음.
+- 판단 이유: 동일 Notebook Source GET이 최근 HTTP 200·응답 길이 374로 기록되고 API/프록시 4xx·5xx 로그가 없다. 현재 범위는 클라이언트의 exact 응답 검증 또는 상태 반영 실패이며, 인증 브라우저에서 200 응답 JSON과 `SOURCE_LIST_RESPONSE_INVALID` 발생 필드를 결속해야 한다.
+- 조치: Source 데이터·DB·Provider·업로드를 변경하지 않고 재설계 Task 1에 원인 결속을 선행 게이트로 반영했다.
+
+## 2026-08-21T20:03:51+09:00 NotebookLM Task 1 Source 상태 계약 재작업
+
+- 기준선: 공식 workspace `C:/Users/cyhuh/Desktop/D Driver/Project/Daon_User`, branch `codex/user-auth-screen-split`, HEAD `6735198cea71055d4946762f0249b7e65310e50c`, origin `git@github-cyhuh7950:cyhuh7950/Daon_User.git`. 보호 dirty/untracked는 유지했고 stage/commit/push/deploy는 0이다.
+- RED: 기존 `ProductWorkspaceShell` Source projection은 Source 재로드 실패 시 `projected=[]`를 `viewState.sources`에 기록하고, retry 버튼은 상태를 새 loading state로 교체해 기존 populated 목록을 지웠다. 인증 Chrome Network가 현재 연결되지 않아 운영 HTTP 200 response JSON의 실제 invalid field는 여전히 UNEXECUTED이며, 서버/프록시 access log에서 Source GET은 HTTP 200·응답 길이 374로 확인되어 4xx/5xx 재시도 확대 근거는 없다.
+- GREEN: `packages/ui/src/product-workspace-shell.jsx`에서 Source 오류 시 기존 `sources`·`selectedSource`를 보존하고, retry 시작 시 기존 목록을 유지하도록 최소 수정했다. Source error alert는 populated 목록이 있어도 표시해 오류와 stale 목록을 동시에 숨기지 않는다. `scripts/tests/product-workspace.test.mjs`에 populated state+reload error 보존 RED→GREEN을 추가했다.
+- DTO/오류 계약: `apps/web/lib/product-workspace-api.js`의 exact `{data:{sources},meta:{trace_id,workspace_id}}`와 same-origin 상대 경로는 변경하지 않았다. `scripts/tests/notebook-api.test.mjs`에 정상 Source DTO, empty payload, 503 retryable true/false 보존, malformed 200 `SOURCE_LIST_RESPONSE_INVALID` fail-close를 추가했다. contract/4xx/5xx에 대한 무조건 재시도는 추가하지 않았다.
+- 검증: `node --test scripts/tests/product-workspace.test.mjs scripts/tests/notebook-api.test.mjs` → 24 passed, 0 failed. 실제 인증 브라우저 Network/1920x1080은 연결 부재로 UNEXECUTED. Source upload/delete/unbind/DB/provider/Studio는 실행·변경하지 않았다.
+- 다음: 어울1이 최신 diff를 검토한 뒤 Web boundary/build 및 필요 시 인증 Chrome의 200 response JSON 필드 결속을 별도 판단한다.
+- 추가 검증: `node --test scripts/tests/product-workspace.test.mjs scripts/tests/notebook-api.test.mjs` → 24 passed, 0 failed; `npm run verify:product-ui-boundary` → 415 files, violations 0, boundaryErrors 0; `npm run build --prefix apps/web` → Next compile/TypeScript/static generation PASS, web boundary 392 files, violations 0, boundaryErrors 0.
+
+## 2026-08-21 NotebookLM Task 1 범위 정합성 재작업
+
+- 검토 조치: Task 3 질문 라우팅 변경(무조건 질문 허용, `general_ungrounded` 확대, placeholder/submit 조건 및 관련 임의 질문 테스트)은 이번 Task에서 제외하고 원래 동작으로 복구했다.
+- 유지: Source 오류 시 populated `sources`/`selectedSource` 보존, retry 중 기존 목록 보존, populated 목록에서도 Source 오류와 retry action 표시, Source exact DTO/error contract 테스트 및 본 Task 기록.
+- 재검증: focused Node `23 passed, 0 failed`; Product UI boundary `415 files, violations 0, boundaryErrors 0`; Web build/TypeScript 및 web boundary `392 files, violations 0, boundaryErrors 0`. stage/commit/push/deploy와 Source upload/DB/provider/Studio 변경은 0.
+
+## 2026-08-21 브라우저 검증 상태
+
+- 판정: `PARTIAL (CODE_PASS / BROWSER_AUTH_BLOCKED)`
+- 판단 이유: Chrome Workspace에서 Source 1건이 표시되는 정상 DOM은 확인했으나, 반복 reload 중 세션이 로그인 화면으로 전환되어 인증 Network와 초기 실패 재현을 완료하지 못했다.
+- 조치: 비밀번호 입력·인증 우회는 하지 않고 브라우저를 handoff 상태로 남겼다. 로그인 후 Source 초기 목록·retry를 재검증하고 Task 2 실제 PDF 추가를 시작한다.
+
+## 2026-08-21 구현 단계 인증 원칙 정정
+
+- 신산님 결정: 기능 구현과 자동·통합 테스트는 로그인 UI에 의존하지 않는다. 테스트 세션 주입/인증 경계 mock으로 기능을 먼저 완성하고, 로그인은 최종 브라우저 acceptance에서만 수행한다.
+- 조치: 이후 Subagent 작업지시에 위 원칙을 포함한다. 운영 인증·권한 코드는 제거하거나 완화하지 않는다.
+
+## 2026-08-21 NotebookLM Task 2 Source upload RED
+
+- 착수: 구현/자동 테스트는 로그인 UI 없이 test session/mock 경계를 사용하며 운영 인증·권한 코드는 유지한다. 허용 파일 범위는 `source-upload-api.js`, `product-workspace-shell.jsx`, `runtime.py`, upload/runtime tests, 본 progress로 제한했다.
+- 현재 코드 대조: Browser upload은 same-origin relative BFF와 PDF content type/header를 사용하고, runtime은 기존 accepted/processing DTO를 반환한다. 승인 Task의 `source_type/filename/status` 정규화 요구와 published OpenAPI의 기존 upload DTO가 다르므로 공개 DTO 확대는 보류한다.
+- RED: upload focused tests에 same-origin upload, invalid success response fail-close, HTTP safe code/retryable 보존을 추가했다. 기존 `uploadPdfSource`가 `fetchImpl` seam과 response validation/error retryable 보존을 제공하지 않아 `node --test scripts/tests/source-upload-api.test.mjs`가 7 pass/3 fail로 실패했다. 오류는 relative URL이 Node test에서 직접 fetch되어 `ERR_INVALID_URL`이 난 것이다.
+- 다음: `fetchImpl` 주입을 추가하고 기존 OpenAPI DTO를 exact 검증하며, safe error code/retryable을 보존하는 최소 client 수정 후 UI processing 상태·runtime invalid type/size/cross-scope 테스트를 진행한다. 업로드/DB/provider/운영 로그인은 실행하지 않았다.
+
+## 2026-08-21T20:19:10+09:00 NotebookLM Task 2 Source upload focused GREEN
+
+- 단계: 업로드 클라이언트 계약 및 런타임 경계 focused 검증.
+- 변경: `apps/web/lib/source-upload-api.js`, `scripts/tests/source-upload-api.test.mjs`, `services/api/tests/test_runtime_http.py`에 한정. 기존 Task 1 Source 상태 보존 변경은 유지했고, Task 3 질문 라우팅 변경은 추가하지 않았다.
+- 복구: 런타임 테스트 신규 메서드가 Notebook 계약 테스트 본문에 잘못 삽입되어 `NameError`가 발생했으나, 메서드 경계를 복원한 뒤 재실행했다.
+- 결과: `uv run --project services/api pytest services/api/tests/test_runtime_http.py -q` = 29 passed, 2 subtests passed (19 warnings); `node --test scripts/tests/source-upload-api.test.mjs` = 11 passed; `node --test scripts/tests/product-workspace.test.mjs scripts/tests/notebook-api.test.mjs` = 23 passed.
+- 판단: 브라우저 실제 인증 업로드와 정상 202→processing→ready 전 구간은 이 단계에서 실행하지 않았다. 기존 공개 OpenAPI 업로드 응답은 `source_type/filename`이 아니라 accepted processing DTO이므로 공개 DTO 확장은 보류하고 현재 계약을 exact 검증했다.
+- 다음: Web boundary/build와 diff-check를 실행하고 실제 브라우저/운영 데이터 변경 없이 미실행 범위를 보고한다.
+
+## 2026-08-21T20:21:30+09:00 NotebookLM Task 2 Source upload verification
+
+- 검증: `npm run verify:product-ui-boundary` = 415 files, violations 0, boundaryErrors 0. `npm run build --prefix apps/web` = Next compile, TypeScript, static generation PASS; Web boundary = 392 files, violations 0, boundaryErrors 0. `git diff --check`는 whitespace 오류 없이 종료했다.
+- 보호: 기존 Mobile/model-connections/Windows 및 이전 Issue dirty/untracked는 건드리지 않았고 stage/commit/push/deploy는 0이다.
+- 미실행: 실제 인증 브라우저의 PDF file chooser, 운영 Source 생성, 실제 processing worker의 accepted→processing→ready|failed 전환, DB/provider/Studio/삭제·unbind는 수행하지 않았다. 로그인 UI는 최종 acceptance 범위로 남긴다.
+- 공개계약 판단: 현재 서버·OpenAPI의 upload success DTO는 `source_id/source_version_id/object_id/digest_sha256/byte_size/status/replayed/processing_run_id/processing_state/job_state`이다. Task 지시의 `source_type/filename` 추가는 published DTO와 충돌하므로 이번 구현에서 확장하지 않았고 어울1 판단이 필요하다.
+- 상태: `CODE_FOCUSED_GREEN / BROWSER_UPLOAD_UNEXECUTED`; 다음은 어울1이 현재 exact DTO 유지 여부와 실제 브라우저 acceptance 시점을 판단한다.
+
+## 2026-08-21T20:25:00+09:00 NotebookLM Task 2 existing runtime upload evidence
+
+- 추가 검증: `uv run --project services/api pytest services/api/tests/test_source_upload_runtime.py -q` = 4 passed, 4 warnings. 로그인 UI 없이 기존 test session/mock 경계에서 authenticated PDF accepted, invalid MIME/corrupt PDF rejection, processing status scope/state를 검증했다.
+- 정적 대조: `apps/web/components/actual-workspace.jsx`가 `uploadPdfSource(workspaceId, file, notebookOptions(options))`를 Product Workspace adapter에 연결하고, `packages/ui/src/product-workspace-shell.jsx`가 `processing_run_id/source_id/source_version_id` lineage를 검증한 뒤 `getProcessingStatus`를 polling한다. `ready`는 `source_state=ready`, `processing_state=completed`, `job_state=completed`일 때만 selectable이며 failed/error는 safe code로 종료한다.
+- 변경: 이번 추가 검증에서는 코드 변경 없음. 실제 브라우저·운영 DB·Provider·Source 생성은 계속 미실행.
+
+## 2026-08-21T20:34:00+09:00 NotebookLM Task 3 Work-support routing RED→GREEN (부분)
+
+- 착수: 승인된 Task 3 범위로 작업상담/명시 Source 확인/Source 기반 실행/승인 Web Research 모드를 분리한다. Studio 생성·Provider policy·인증·same-origin 계약은 변경하지 않는다.
+- RED: `scripts/tests/product-workspace.test.mjs`에 4개 intent와 Source 범위 불일치 projection 테스트를 추가해 `conversation-intent.js` export 부재로 실패했다. 빈 Notebook 작업상담 질문은 기존 UI가 submit disabled로 막아 RED를 확인했다. Python `test_question_answering.py` classifier import도 부재로 collection 실패했다.
+- GREEN: `packages/ui/src/conversation-intent.js`에 NFKC fail-close 기반 `classifyConversationIntent` 및 구조화된 `buildSourceScopeMismatch`를 추가했고, `question_answering.py`에 동일 모드 classifier를 추가했다. ProductWorkspaceShell은 선택 Source 유무와 무관하게 질문 submit을 허용하고, `work_support_ungrounded`/`work_support_source_backed` 상태 표시와 작업상담 placeholder를 사용한다.
+- 검증: Node Product Workspace `18 passed`; Python question answering `8 passed, 3 subtests`; 실제 Provider 호출 0.
+- 공개 DTO 경계: 현재 runtime 질문 응답은 `run_id/run_result_id/answer/insufficient/citations`만 반환하며 설계의 `mode/grounding/source_scope_summary/mismatch/next_actions`가 없다. 이를 runtime에서 추가하면 기존 공개 질문 DTO 확장이므로, 어울1 판단 전 서버 response 변경은 보류한다. UI 내부 intent/scope helper는 공개 API를 변경하지 않는다.
+- 다음: 서버 응답 DTO 확장 여부 판단 후에만 runtime/API 테스트를 추가하고, 우선 관련 focused 회귀·build를 수행한다.
+
+## 2026-08-21T20:41:00+09:00 NotebookLM Task 3 focused regression
+
+- 결과: `$env:PYTHONPATH='src;tests'; uv run --project . pytest tests/test_question_answering.py tests/test_question_answering_service.py -q` = 19 passed, 3 subtests. Runtime HTTP question regression with explicit PYTHONPATH = 9 passed, 14 warnings. Node Product/Notebook/Source focused = 36 passed.
+- Web: `npm run build --prefix apps/web` = Next compile/TypeScript/static generation PASS; Web boundary 392 files, violations 0, boundaryErrors 0.
+- 보호: Studio prompt/generation, Provider call, authentication, DB schema, same-origin route는 변경하지 않았고 stage/commit/push/deploy 0이다.
+- 미해결: runtime 질문 응답에 설계 필드 `mode`, `grounding`, `source_scope_summary`, `mismatch`, `next_actions`를 추가하는 공개 DTO 확장은 어울1의 판단 전 보류 중이다. 실제 Provider/Browser acceptance도 미실행.
+
+## 2026-08-21 NotebookLM Task 3 공개 DTO 승인 후 완료
+
+- 판정: `CODE VERIFIED / BROWSER ACCEPTANCE PENDING`
+- 변경: 질문 응답에 `mode`, `grounding`, `source_scope_summary`, `mismatch`, `next_actions`를 additive projection으로 추가하고 허용 mode/grounding·malformed 응답 fail-close를 검증했다.
+- 보존: 기존 `run_id`, `run_result_id`, `answer`, `insufficient`, `citations`, Provider·Egress·Idempotency·RunSnapshot·same-origin 계약은 유지했다.
+- 검증: Python 38 passed·3 subtests, Node 36/36, Web build/TypeScript/12 pages PASS, boundary 392/415 violations 0, diff-check 오류 0.
+- 미실행: 실제 Provider 호출·운영 DB·로그인 브라우저 acceptance.
+## 2026-08-21 NotebookLM Task 4 Studio lineage TDD
+
+- 승인 범위와 기존 계약을 대조했다. `output_type`/`settings.purpose`가 각각 artifact type/instruction 역할을 하고, 기존 Studio generation 저장 payload가 notebook scope, source_version_ids, run 계보와 Citation을 보존하므로 새 route/migration 없이 runtime additive projection으로 구현했다.
+- RED: Studio generation/list HTTP 응답에 `lineage`와 `verification_required`가 없어 생성 lineage assertion이 실패했다(`1 failed, 4 passed`).
+- GREEN: `runtime.py`의 Studio 생성 응답과 Library 응답에 `{notebook_id, source_version_ids, artifact_type, instruction, run_id, citations, verification_required}` lineage를 추가했다. Source version/Citation이 없거나 불완전한 Library 산출물은 `verification_required=true`로 fail-safe 표시한다. 기존 정책 잠금, Egress, Provider, Run/Idempotency, Source/Conversation 코드는 변경하지 않았다.
+- 검증: Studio Runtime HTTP/Postgres `25 passed, 1 skipped`; 기존 경고 12건은 httpx cookie deprecation이다. 실제 Provider/browser/운영 DB write/Studio 생성은 실행하지 않았다.
+- 추가 검증: `node --test scripts/tests/product-studio.test.mjs` = 8 passed. Web production build·TypeScript·12 pages PASS; product boundary `392 files / violations0`, root boundary `415 files / violations0`; `git diff --check` 오류0(CRLF 경고만). staged/commit/push/deploy 0.
