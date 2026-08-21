@@ -404,10 +404,21 @@ class UpstageDocumentUnderstandingAdapter:
             api_key=self._api_key,
             payload={
                 "model": selection.semantic_model_id,
-                "messages": [{"role": "user", "content": [{
-                    "type": "image_url",
-                    "image_url": {"url": f"data:application/octet-stream;base64,{encoded}"},
-                }]}],
+                "messages": [{"role": "user", "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Extract the document title, summary, and key facts. "
+                            "Preserve the original language and wording of the source "
+                            "for every extracted fact; do not translate or paraphrase "
+                            "facts because parser evidence is checked against them."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:application/octet-stream;base64,{encoded}"},
+                    },
+                ]}],
                 "response_format": self._SCHEMA,
             },
             timeout_seconds=self._timeout_seconds,

@@ -296,3 +296,10 @@
 - GREEN: `runtime.py`에 기존 `request.state.trace_id`를 사용하는 내부 logger를 추가하고 upload register, processing submit, processing status의 성공·도메인 실패 지점에만 `event/phase/trace_id/http_status/safe_error_code/source_id_present/processing_run_id_present/db_commit`을 기록한다. 파일 본문, filename, object/token/credential 원문은 기록하지 않는다. 공개 응답 DTO·상태 전이·운영 동작은 변경하지 않았다.
 - 검증: `$env:PYTHONPATH='services/api/src'; uv run pytest services/api/tests/test_source_upload_runtime.py -q` = 4 passed, 기존 httpx cookie deprecation warning 4건. 실제 운영 DB/Provider/재업로드는 실행하지 않았다.
 - 다음: 이 변경을 포함한 API/Web 배포는 어울1 승인 후 수행하고, 동일 브라우저 upload의 X-Trace-Id 기준으로 API access/log와 processing status 이벤트를 결속한다.
+
+## 2026-08-21 Task 2 Korean PDF needs_review 오탐 수정
+
+- RED: 실제 DB의 `UNDERSTANDING_PARSER_CONFLICT`가 한국어 parser text와 영어 semantic key_facts의 표현 불일치에서 발생한 것으로 확인됐다. 의미 추출 payload에 원문 언어 보존 계약을 요구하는 테스트를 먼저 추가해 1 failed, 9 passed를 확인했다.
+- GREEN: `document_understanding_adapter.py`의 semantic extraction user prompt에 원문 언어·표현 보존, 번역·의역 금지, parser evidence 대조 목적을 명시했다. 기존 `_has_material_evidence_conflict` 안전 검증과 mismatch 시 needs_review 전이는 유지했다.
+- 검증: `$env:PYTHONPATH='services/api/src;services/api'; uv run pytest services/api/tests/test_document_understanding_adapter.py services/api/tests/test_document_processing.py services/api/tests/test_source_upload_runtime.py -q` = 17 passed, httpx deprecation warning 4건. Provider 호출·운영 DB·브라우저·배포는 실행하지 않았다.
+- 미해결: 이미 needs_review로 저장된 운영 Source는 prompt 변경만으로 자동 재처리되지 않는다. 재처리/상태복구는 기존 승인된 운영 절차와 별도 판단이 필요하다.

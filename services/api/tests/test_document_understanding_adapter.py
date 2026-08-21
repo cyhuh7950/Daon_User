@@ -146,8 +146,11 @@ class UpstageDocumentUnderstandingAdapterTests(unittest.TestCase):
         self.assertEqual(semantic_payload["model"], "information-extract")
         self.assertEqual(len(semantic_payload["messages"]), 1)  # type: ignore[arg-type]
         self.assertEqual(semantic_payload["messages"][0]["role"], "user")  # type: ignore[index]
-        self.assertEqual(len(semantic_payload["messages"][0]["content"]), 1)  # type: ignore[index]
-        image_url = semantic_payload["messages"][0]["content"][0]["image_url"]["url"]  # type: ignore[index]
+        self.assertEqual(len(semantic_payload["messages"][0]["content"]), 2)  # type: ignore[index]
+        prompt_part = semantic_payload["messages"][0]["content"][0]  # type: ignore[index]
+        self.assertEqual(prompt_part["type"], "text")
+        self.assertIn("original language", prompt_part["text"].lower())
+        image_url = semantic_payload["messages"][0]["content"][1]["image_url"]["url"]  # type: ignore[index]
         self.assertTrue(image_url.startswith("data:application/octet-stream;base64,"))
         self.assertTrue(semantic_payload["response_format"]["json_schema"]["strict"])  # type: ignore[index]
         self.assertNotIn("/chat/completions", transport.calls[0][1])
