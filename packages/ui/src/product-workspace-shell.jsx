@@ -713,6 +713,10 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
     const remainingMs = () => deadlineAt - pollOptions.now();
     setViewState(createProductWorkspaceState({ status: "loading" }));
     setProcessing(null);
+    // The upload endpoint registers the Source before asynchronous document
+    // processing starts. Keep that registration visible even if the optional
+    // processing/provider step later reaches a terminal failure.
+    let acceptedSubmission = false;
     try {
       const submission = await awaitAbortable(
         adapter.uploadPdf(file, { signal: controller.signal }),
@@ -721,6 +725,7 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
       if (!isSafeDtoId(submission?.processing_run_id) || !isSafeDtoId(submission?.source_id) || !isSafeDtoId(submission?.source_version_id)) {
         throw new Error("PDF_UPLOAD_RESPONSE_INVALID");
       }
+      acceptedSubmission = true;
       while (!controller.signal.aborted) {
         const remainingBeforeRequest = remainingMs();
         if (remainingBeforeRequest <= 0) {
@@ -773,6 +778,15 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
       }
     } catch (error) {
       if (controller.signal.aborted && !deadlineExpired) return;
+      if (acceptedSubmission) {
+        // Registration succeeded; reload the canonical Source list so the
+        // user can see the Source and its processing state instead of being
+        // told that the upload itself failed.
+        setProcessing(null);
+        setViewState(createProductWorkspaceState({ status: "loading" }));
+        setLoadRevision((current) => current + 1);
+        return;
+      }
       setViewState(createProductWorkspaceState({
         status: "error",
         safeError: deadlineExpired ? "PROCESSING_TIMEOUT" : safeErrorCode(error, "PDF_UPLOAD_FAILED")
