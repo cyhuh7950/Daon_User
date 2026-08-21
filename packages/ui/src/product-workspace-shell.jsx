@@ -696,8 +696,10 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
   }, []);
 
   const uploadPdf = async (event) => {
-    const file = event.currentTarget.files?.[0];
+    const fileInput = event.currentTarget;
+    const file = fileInput.files?.[0];
     if (!adapter || !file) return;
+    fileInput.value = "";
     pollControllerRef.current?.abort();
     const controller = new AbortController();
     pollControllerRef.current = controller;

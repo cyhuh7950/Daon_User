@@ -82,6 +82,57 @@ const sourceRetryPayload = {
   source_state: "ready", processing_state: "completed", job_state: "completed",
 };
 
+test("같은 PDF를 다시 선택해도 Source 업로드 change가 재실행된다", async () => {
+  let uploadCalls = 0;
+  const submissions = new Map();
+  const workspace = await mountSourceRetryWorkspace({
+    ...adapter,
+    async listSources() { return []; },
+    async listStudioOutputs() { return []; },
+    async uploadPdf() {
+      uploadCalls += 1;
+      const submission = {
+        processing_run_id: `processing-${uploadCalls}`,
+        source_id: `source-${uploadCalls}`,
+        source_version_id: `version-${uploadCalls}`,
+      };
+      submissions.set(submission.processing_run_id, submission);
+      return submission;
+    },
+    async getProcessingStatus(processingRunId) {
+      const submission = submissions.get(processingRunId);
+      return {
+        ...submission,
+        processing_state: "completed",
+        source_state: "ready",
+        job_state: "completed",
+        safe_error_code: null,
+      };
+    },
+  }, "same-file");
+  try {
+    const fileInput = findElements(workspace.container, (node) => (
+      node.tagName === "INPUT" && node.getAttribute?.("accept") === "application/pdf"
+    ))[0];
+    const sameFile = { name: "same.pdf", type: "application/pdf", size: 4 };
+    const selectSameFile = () => {
+      const browserValue = "C:\\fakepath\\same.pdf";
+      if (fileInput.value === browserValue) return;
+      fileInput.value = browserValue;
+      Object.defineProperty(fileInput, "files", { configurable: true, value: [sameFile] });
+      fileInput.dispatchEvent(new MinimalEvent("change"));
+    };
+
+    await workspace.act(async () => { selectSameFile(); await Promise.resolve(); await Promise.resolve(); });
+    await workspace.act(async () => { selectSameFile(); await Promise.resolve(); await Promise.resolve(); });
+
+    assert.equal(uploadCalls, 2);
+    assert.equal(fileInput.value, "");
+  } finally {
+    await workspace.cleanup();
+  }
+});
+
 test("Source transient fetch TypeError는 bounded 1회 retry 후 정상 복구한다", async () => {
   let calls = 0;
   const workspace = await mountSourceRetryWorkspace({
