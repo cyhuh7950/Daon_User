@@ -23,6 +23,110 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
+async function mountSourceRetryWorkspace(effectAdapter, suffix) {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, `.workspace-source-retry-${suffix}-`));
+  const dom = installMinimalDom();
+  const { build } = await import("vite");
+  const { createElement, act } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  await build({ configFile: false, logLevel: "silent", root, build: {
+    outDir: output, emptyOutDir: false,
+    lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-retry" },
+    rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+  } });
+  const entry = (await readdir(output)).find((name) => name.startsWith("source-retry") && /\.m?js$/u.test(name));
+  const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourceRetry=${Date.now()}`);
+  const container = dom.document.createElement("div");
+  dom.document.body.appendChild(container);
+  const reactRoot = createRoot(container);
+  await act(async () => {
+    reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  return {
+    container,
+    act,
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    cleanup: async () => {
+      await act(async () => reactRoot.unmount());
+      dom.restore();
+      await rm(output, { recursive: true, force: true });
+    },
+  };
+}
+
+const sourceRetryPayload = {
+  source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf",
+  source_state: "ready", processing_state: "completed", job_state: "completed",
+};
+
+test("Source transient fetch TypeError는 bounded 1회 retry 후 정상 복구한다", async () => {
+  let calls = 0;
+  const workspace = await mountSourceRetryWorkspace({
+    ...adapter,
+    async listSources() {
+      calls += 1;
+      if (calls === 1) throw new TypeError("Failed to fetch");
+      return [sourceRetryPayload];
+    },
+    async listStudioOutputs() { return []; },
+  }, "transient");
+  try {
+    await workspace.act(async () => workspace.wait(350));
+    assert.equal(calls, 2);
+    assert.match(workspace.container.textContent, /ready\.pdf/u);
+    assert.doesNotMatch(workspace.container.textContent, /Source를 불러오지 못했습니다/u);
+  } finally {
+    await workspace.cleanup();
+  }
+});
+
+test("Source retry 대기 중 AbortError는 재호출하지 않는다", async () => {
+  let calls = 0;
+  let observedSignal;
+  const workspace = await mountSourceRetryWorkspace({
+    ...adapter,
+    async listSources({ signal }) {
+      calls += 1;
+      observedSignal = signal;
+      await new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+      });
+      return [sourceRetryPayload];
+    },
+    async listStudioOutputs() { return []; },
+  }, "abort");
+  try {
+    assert.equal(calls, 1);
+    assert.equal(observedSignal.aborted, false);
+  } finally {
+    await workspace.cleanup();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(calls, 1);
+  }
+});
+
+test("Source contract 오류는 retry하지 않고 1회 호출로 안전 오류를 유지한다", async () => {
+  let calls = 0;
+  const workspace = await mountSourceRetryWorkspace({
+    ...adapter,
+    async listSources() {
+      calls += 1;
+      throw new Error("SOURCE_LIST_RESPONSE_INVALID");
+    },
+    async listStudioOutputs() { return []; },
+  }, "contract");
+  try {
+    await workspace.act(async () => workspace.wait(350));
+    assert.equal(calls, 1);
+    assert.match(workspace.container.textContent, /Source를 불러오지 못했습니다/u);
+  } finally {
+    await workspace.cleanup();
+  }
+});
+
 test("질문 실패는 로드된 Source·Studio 잠금을 보존하고 안전 오류만 투영한다", () => {
   const current = {
     ...createProductWorkspaceState({ status: "ready" }),

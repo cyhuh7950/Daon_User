@@ -121,6 +121,15 @@
 - ysna-server exact SHA worktree `/home/ubuntu/deploy/daon-user/deploy/r1-m8-10-source-lifecycle-ui-i006/ba52cca1e9213debee4bf09cd8908db513a7e7d6`를 생성하고 API image를 ARM64 build/recreate했다. API image digest `sha256:9580c67c84a5c803373b158c4a0ddf52dbeaf7c2d443f4161d94321e01186d43`; API healthy, internal live/ready `200`, DB migration `0022` 유지.
 - Web/Worker/object-storage/shared-db/proxy는 이번 ETag fix에서 변경하지 않았다. Chrome 동일 사용자 Notebook URL의 Context ETag/alert 소거는 현재 직접 Browser connector가 없어 미검증이며, 운영 Source 변경·Provider 호출은 0이다.
 
+## 2026-08-21 Source 초기 일시 실패 retry 보완 착수
+
+- 승인 범위: transient fetch/network `TypeError`만 기존 250ms bounded 1회 재시도에 추가한다. `AbortError`, 4xx/auth, response contract 오류는 재시도하지 않는다. 기존 epoch/Abort 경계와 Source/Knowledge/Conversation/Studio 상태 분리는 유지한다.
+- RED 계획: ProductWorkspaceShell 실제 React deferred adapter로 transient retry 성공, abort 중 retry 0, non-retryable 오류 호출 1회를 고정한다. 기존 보호 파일은 수정하지 않는다.
+
+- GREEN 구현: `packages/ui/src/product-workspace-shell.jsx`에 browser 표준 transient fetch 메시지(`Failed to fetch`, `NetworkError when attempting to fetch resource`, `Load failed`)를 판별하는 내부 predicate를 추가하고 기존 250ms 1회 retry 조건에만 결합했다. AbortError, 4xx/auth 및 contract error는 기존대로 즉시 fail-close한다.
+- UI focused RED→GREEN: `scripts/tests/product-workspace.test.mjs`에 transient retry 성공, abort retry 0, non-retryable contract 1회 호출 3건을 추가했다. 전체 ProductWorkspace/Notebook/Source retention Node focused `27 passed`이며 React act warning 0이다.
+- Web 검증: Next production build·TypeScript PASS, boundary `392 files`, violations `0`, boundaryErrors `0`. 아직 commit/push/deploy는 하지 않았으며 다음은 diff/staged/보호 dirty 확인 후 승인된 좁은 배포 판단이다.
+
 ## 2026-08-21 작업 재개
 
 - 신산님 지시에 따라 중단 상태에서 재개했다. 기존 운영 Source 변경·커밋·푸시·배포는 계속 0으로 유지한다.
