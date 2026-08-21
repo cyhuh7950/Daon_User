@@ -14,6 +14,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from daon_user_api.cloud_storage import CloudAccessContext, PostgresCloudStore
 from daon_user_api.notebook import NotebookContext, NotebookError
@@ -49,6 +50,9 @@ from daon_user_api.question_answering_service import (
 )
 from daon_user_api.question_egress import PostgresQuestionEgressAuthorizer
 from daon_user_api.audit import AuditEventStore
+from daon_user_api.retention import DerivativeInput, RetentionContext, RetentionError
+from daon_user_api.retention_inventory_postgres import PostgresRetentionInventoryProvider
+from daon_user_api.retention_request_postgres import PostgresRetentionRequestService
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
 from daon_user_api.identity import ClientKind, IdentityPrincipal
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
@@ -516,6 +520,14 @@ def _seed_context_targets(store: PostgresCloudStore, context: NotebookContext, n
             (common[0], common[1], digest, common[2], common[3], common[4]),
         )
         connection.execute(
+            "INSERT INTO sources (tenant_id,workspace_id,record_id,aggregate_id,digest_sha256,created_by,trace_id,created_at) VALUES (%s,%s,'source-ctx-2','source-ctx-2',%s,%s,%s,%s)",
+            (common[0], common[1], digest, common[2], common[3], common[4]),
+        )
+        connection.execute(
+            "INSERT INTO source_versions (tenant_id,workspace_id,record_id,aggregate_id,digest_sha256,source_id,created_by,trace_id,created_at) VALUES (%s,%s,'source-version-ctx-2','source-version-ctx-2',%s,'source-ctx-2',%s,%s,%s)",
+            (common[0], common[1], digest, common[2], common[3], common[4]),
+        )
+        connection.execute(
             "INSERT INTO evidence_spans (tenant_id,workspace_id,record_id,aggregate_id,digest_sha256,source_version_id,created_by,trace_id,created_at) VALUES (%s,%s,'span-question-context','span-question-context',%s,'source-version-ctx-1',%s,%s,%s)",
             (common[0], common[1], digest, common[2], common[3], common[4]),
         )
@@ -591,6 +603,7 @@ def test_actual_postgres_notebook_context_bind_read_scope_and_empty() -> None:
         _seed_context_targets(store, context, now)
         targets = (
             ("source", "source-ctx-1", "source-version-ctx-1"),
+            ("source", "source-ctx-2", "source-version-ctx-2"),
             ("knowledge_context", "scope-snapshot-ctx-1", None),
             ("conversation_thread", "conversation-ctx-1", None),
             ("studio_output", "studio-output-ctx-1", None),
@@ -601,12 +614,54 @@ def test_actual_postgres_notebook_context_bind_read_scope_and_empty() -> None:
             assert repository.bind_verified(context, existing.notebook_id, binding_kind=kind, record_id=record_id, version_id=version_id, now=now) is False
         assert repository.bind_verified(context, existing.notebook_id, binding_kind="source", record_id="source-ctx-1", version_id="source-version-ctx-1", now=now) is True
         selected = repository.read_selected_context(context, existing.notebook_id)
-        assert selected.sources == (("source-ctx-1", "source-version-ctx-1"),)
+        assert selected.sources == (
+            ("source-ctx-1", "source-version-ctx-1"),
+            ("source-ctx-2", "source-version-ctx-2"),
+        )
         assert selected.knowledge_context_ids == ("scope-snapshot-ctx-1",)
         assert selected.conversation_thread_ids == ("conversation-ctx-1",)
         assert selected.studio_output_ids == ("studio-output-ctx-1",)
         assert selected.output_version_ids == ("output-version-ctx-1",)
         assert selected.generation_settings_ids == ("generation-settings-ctx-1",)
+        barrier = Barrier(2)
+        def unbind(index: int):  # type: ignore[no-untyped-def]
+            source_number = 1 if index == 6 else 2
+            barrier.wait()
+            try:
+                return repository.unbind_source(
+                    context, existing.notebook_id,
+                    source_id=f"source-ctx-{source_number}", source_version_id=f"source-version-ctx-{source_number}",
+                    expected_etag=selected.etag,
+                    idempotency_key=f"notebook-context-unbind-{index}",
+                    request_fingerprint=str(index) * 64, now=now,
+                )
+            except NotebookError as error:
+                return error
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(unbind, (6, 7)))
+        successes = [item for item in outcomes if not isinstance(item, NotebookError)]
+        failures = [item for item in outcomes if isinstance(item, NotebookError)]
+        assert len(successes) == 1 and len(failures) == 1, [
+            (item.code, item.status) if isinstance(item, NotebookError) else (item[0].status, item[1])
+            for item in outcomes
+        ]
+        assert (failures[0].code, failures[0].status) == ("NOTEBOOK_BINDING_ETAG_MISMATCH", 412)
+        winner, replayed = successes[0]
+        assert replayed is False and winner.status == "unbound"
+        winner_index = 6 if winner.etag == '"notebook-binding:2"' and not isinstance(outcomes[0], NotebookError) else 7
+        replay, repeated = repository.unbind_source(
+            context, existing.notebook_id,
+            source_id=winner.source_id, source_version_id=winner.source_version_id,
+            expected_etag=selected.etag,
+            idempotency_key=f"notebook-context-unbind-{winner_index}",
+            request_fingerprint=str(winner_index) * 64, now=now,
+        )
+        assert repeated is True and replay == winner
+        remaining = repository.read_selected_context(context, existing.notebook_id).sources
+        assert len(remaining) == 1 and remaining[0][0] != winner.source_id
+        with store._transaction(CloudAccessContext(context.tenant_id, context.workspace_id, context.actor_id, "notebook.test")) as connection:
+            assert connection.execute("SELECT count(*) FROM notebook_source_unbindings WHERE notebook_id=%s", (existing.notebook_id,)).fetchone()[0] == 1
+            assert connection.execute("SELECT count(*) FROM audit_events WHERE action='notebook.source_unbound' AND target_id=%s", (existing.notebook_id,)).fetchone()[0] == 1
         evidence_path = os.getenv("DAON_NOTEBOOK_CONTEXT_EVIDENCE_PATH")
         if evidence_path:
             Path(evidence_path).write_text(json.dumps({
@@ -983,12 +1038,506 @@ def test_actual_postgres_source_registration_binds_only_after_canonical_commit()
         assert projection.sources == ((
             "source-phase-e-actual", "source-version-phase-e-actual",
         ),)
+        with store._transaction(CloudAccessContext(
+            context.tenant_id, context.workspace_id, context.actor_id, "retention.trigger.setup",
+        )) as connection:
+            connection.execute(
+                "INSERT INTO sync_operations (tenant_id,workspace_id,operation_id,actor_id,target_area,state,version,preview_digest,policy_version,idempotency_key,request_fingerprint,trace_id,state_document,created_at,updated_at) "
+                "VALUES (%s,%s,'retention-trigger-sync',%s,'cloud_sync','preview',1,%s,%s,'retention-trigger-sync-key',%s,%s,%s,%s,%s)",
+                (context.tenant_id, context.workspace_id, context.actor_id, "7" * 64,
+                 context.policy_version, "8" * 64, context.trace_id, Jsonb({}), now, now),
+            )
+
+        source_lock_key = (
+            f"retention-source|{context.tenant_id}|{context.workspace_id}|source-phase-e-actual"
+        )
+
+        def set_scope(connection) -> None:  # type: ignore[no-untyped-def]
+            connection.execute("SELECT set_config('app.tenant_id',%s,true)", (context.tenant_id,))
+            connection.execute("SELECT set_config('app.workspace_id',%s,true)", (context.workspace_id,))
+            connection.execute("SELECT set_config('app.actor_id',%s,true)", (context.actor_id,))
+            connection.execute("SELECT set_config('app.capability','retention.inventory.read',true)")
+
+        def insert_inventory_mutation(connection, kind: str, suffix: str) -> None:  # type: ignore[no-untyped-def]
+            if kind == "source_version":
+                aggregate_id = connection.execute(
+                    "SELECT aggregate_id FROM source_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id='source-version-phase-e-actual'",
+                    (context.tenant_id, context.workspace_id),
+                ).fetchone()[0]
+                connection.execute(
+                    "INSERT INTO source_versions (tenant_id,workspace_id,record_id,aggregate_id,version,previous_version_id,canonical_json,canonical_text,digest_sha256,source_id,object_id,created_by,trace_id,created_at) "
+                    "VALUES (%s,%s,%s,%s,2,'source-version-phase-e-actual',%s,%s,%s,'source-phase-e-actual','object-source-context',%s,%s,%s)",
+                    (context.tenant_id, context.workspace_id, f"retention-trigger-sv-{suffix}",
+                     aggregate_id, Jsonb({"source_id": "source-phase-e-actual", "version": 2}),
+                     '{"source_id":"source-phase-e-actual","version":2}',
+                     hashlib.sha256(b'{"source_id":"source-phase-e-actual","version":2}').hexdigest(),
+                     context.actor_id, context.trace_id, now),
+                )
+            elif kind == "index":
+                connection.execute(
+                    "INSERT INTO index_versions (tenant_id,workspace_id,record_id,aggregate_id,canonical_json,canonical_text,digest_sha256,source_version_id,created_by,trace_id,created_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,'source-version-phase-e-actual',%s,%s,%s)",
+                    (context.tenant_id, context.workspace_id, f"retention-trigger-index-{suffix}",
+                     f"retention-trigger-index-{suffix}", Jsonb({"source_version_id": "source-version-phase-e-actual"}),
+                     '{"source_version_id":"source-version-phase-e-actual"}',
+                     hashlib.sha256(b'{"source_version_id":"source-version-phase-e-actual"}').hexdigest(),
+                     context.actor_id, context.trace_id, now),
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO sync_preview_items (tenant_id,workspace_id,operation_id,item_id,source_version_id,local_object_id,object_digest,byte_size,content_type,created_at) "
+                    "VALUES (%s,%s,'retention-trigger-sync',%s,'source-version-phase-e-actual','object-source-context',%s,27,'application/pdf',%s)",
+                    (context.tenant_id, context.workspace_id,
+                     f"retention-trigger-sync-{suffix}", "b" * 64, now),
+                )
+
+        for mutation_kind in ("source_version", "index", "sync"):
+            mutation_locked = Event()
+            release_mutation = Event()
+
+            def hold_mutation_lock(kind: str = mutation_kind) -> None:
+                with store._pool.connection() as raw_connection:
+                    with raw_connection.transaction():
+                        set_scope(raw_connection)
+                        insert_inventory_mutation(raw_connection, kind, "mutation-first")
+                        mutation_locked.set()
+                        assert release_mutation.wait(timeout=5)
+                        raise RuntimeError("rollback trigger probe")
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                mutation_future = executor.submit(hold_mutation_lock)
+                if not mutation_locked.wait(timeout=5):
+                    mutation_future.result(timeout=1)
+                    raise AssertionError(f"{mutation_kind} mutation did not acquire Source lock")
+                with store._pool.connection() as probe_connection:
+                    with probe_connection.transaction():
+                        set_scope(probe_connection)
+                        acquired = probe_connection.execute(
+                            "SELECT pg_try_advisory_xact_lock(hashtextextended(%s,0))",
+                            (source_lock_key,),
+                        ).fetchone()[0]
+                        assert acquired is False
+                release_mutation.set()
+                with pytest.raises(RuntimeError, match="rollback trigger probe"):
+                    mutation_future.result(timeout=5)
+
+            request_locked = Event()
+            release_request = Event()
+
+            def hold_request_lock() -> None:
+                with store._pool.connection() as raw_connection:
+                    with raw_connection.transaction():
+                        set_scope(raw_connection)
+                        raw_connection.execute(
+                            "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                            (source_lock_key,),
+                        )
+                        request_locked.set()
+                        assert release_request.wait(timeout=5)
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                request_future = executor.submit(hold_request_lock)
+                assert request_locked.wait(timeout=5)
+                with store._pool.connection() as probe_connection:
+                    with probe_connection.transaction():
+                        set_scope(probe_connection)
+                        probe_connection.execute("SET LOCAL lock_timeout='100ms'")
+                        try:
+                            acquired = probe_connection.execute(
+                                "SELECT pg_try_advisory_xact_lock(hashtextextended(%s,0))",
+                                (source_lock_key,),
+                            ).fetchone()[0]
+                        except Exception as error:
+                            acquired = False if getattr(error, "sqlstate", None) == "55P03" else None
+                        assert acquired is False
+                release_request.set()
+                request_future.result(timeout=5)
+
+        service_context = RetentionContext(
+            context.tenant_id, context.workspace_id, context.actor_id,
+            context.trace_id, context.policy_version,
+        )
+        for mutation_kind in ("source_version", "index", "sync"):
+            inventory_started = Event()
+            release_inventory = Event()
+
+            class BlockingInventory:
+                def read_in_transaction(self, connection, inventory_context, source_id):  # type: ignore[no-untyped-def]
+                    inventory_started.set()
+                    assert release_inventory.wait(timeout=10)
+                    return PostgresRetentionInventoryProvider(store).read_in_transaction(
+                        connection, inventory_context, source_id,
+                    )
+
+            blocking_service = PostgresRetentionRequestService(
+                store, BlockingInventory(), clock=lambda: now,
+            )
+            create_result = {}
+
+            def create_with_real_service() -> None:
+                create_result["view"] = blocking_service.create_request(
+                    service_context, source_id="source-phase-e-actual", inventory=None,
+                    idempotency_key=f"retention-barrier-create-{mutation_kind}", if_match="*",
+                )
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                create_future = executor.submit(create_with_real_service)
+                assert inventory_started.wait(timeout=10)
+                with store._pool.connection() as mutation_connection:
+                    with mutation_connection.transaction():
+                        set_scope(mutation_connection)
+                        mutation_connection.execute("SET LOCAL lock_timeout='100ms'")
+                        try:
+                            insert_inventory_mutation(
+                                mutation_connection, mutation_kind, "service-blocked",
+                            )
+                            raise AssertionError("service-held Source lock was bypassed")
+                        except Exception as error:
+                            assert getattr(error, "sqlstate", None) == "55P03"
+                release_inventory.set()
+                create_future.result(timeout=10)
+            assert create_result["view"].state == "grace_period"
+            with store._pool.connection() as mutation_connection:
+                with mutation_connection.transaction():
+                    set_scope(mutation_connection)
+                    insert_inventory_mutation(
+                        mutation_connection, mutation_kind, "service-after-release",
+                    )
+            cancelled_barrier = blocking_service.cancel(
+                service_context, create_result["view"].request_id,
+                expected_version=1,
+                idempotency_key=f"retention-barrier-cancel-{mutation_kind}",
+            )
+            assert cancelled_barrier.state == "cancelled"
+        inventory = PostgresRetentionInventoryProvider(store)(
+            RetentionContext(
+                context.tenant_id, context.workspace_id, context.actor_id,
+                context.trace_id, context.policy_version,
+            ),
+            "source-phase-e-actual",
+        )
+        assert tuple(item.kind for item in inventory) == (
+            "original_content", "index", "preview", "cache",
+            "known_local_copy", "sync_reference",
+        )
+        assert tuple(item.disposition for item in inventory) == (
+            "present", "not_present", "not_applicable", "not_applicable",
+            "verification_pending", "not_present",
+        )
+        assert inventory[0].reference_id == "object-source-context"
+        assert inventory[4].acknowledgement_required is True
+        with pytest.raises(RetentionError, match="DELETION_INVENTORY_INVALID"):
+            PostgresRetentionInventoryProvider(store)(
+                RetentionContext(
+                    foreign.tenant_id, foreign.workspace_id, foreign.actor_id,
+                    foreign.trace_id, foreign.policy_version,
+                ),
+                "source-phase-e-actual",
+            )
+        retention_context = RetentionContext(
+            context.tenant_id, context.workspace_id, context.actor_id,
+            context.trace_id, context.policy_version,
+        )
+        admin_retention_context = RetentionContext(
+            context.tenant_id, context.workspace_id, context.actor_id,
+            context.trace_id, context.policy_version, organization_admin=True,
+        )
+        hold_store = PostgresCloudStore(DSN, min_size=1, max_size=2)
+        hold_service = PostgresRetentionRequestService(
+            hold_store, PostgresRetentionInventoryProvider(hold_store), clock=lambda: now,
+        )
+        hold = hold_service.apply_legal_hold(
+            admin_retention_context, source_id="source-phase-e-actual", expected_version=1,
+            idempotency_key="retention-durable-hold-0001", step_up_verified=True,
+        )
+        hold_store.close()
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "retention-identity.sqlite3"
+            audit = AuditEventStore()
+            identity, identity_repository, _, clock = create_service(db_path, audit_store=audit)
+            authorization_repository = SqliteAuthorizationRepository(db_path)
+            principal = IdentityPrincipal(
+                context.actor_id, "session-retention-http", "device-retention-http", context.tenant_id,
+            )
+            authorization_repository.bootstrap_workspace(
+                tenant_id=context.tenant_id, workspace_id=context.workspace_id,
+                owner_user_id=context.actor_id, owner_role=Role.ORGANIZATION_ADMIN,
+                workspace_kind="organization", data_area="cloud_sync",
+                cost_limit_cents=1000, now=clock(),
+            )
+            authorization = AuthorizationService(
+                repository=authorization_repository, audit_store=audit, clock=clock,
+                identity_service=identity,
+            )
+            runtime_store = PostgresCloudStore(DSN, min_size=1, max_size=2)
+            dependencies = RuntimeDependencies(
+                settings=RuntimeSettings.for_test(database_path=db_path, policy_version=POLICY_VERSION),
+                identity_service=identity, authorization_service=authorization,
+                audit_store=audit, identity_repository=identity_repository,
+                authorization_repository=authorization_repository, cloud_store=runtime_store,
+            )
+            with patch.object(identity, "describe_access", return_value=SimpleNamespace(
+                client_kind=ClientKind.WEB, principal=principal,
+            )):
+                with TestClient(create_app(dependencies)) as client:
+                    created_response = client.post(
+                        "/api/v1/sources/source-phase-e-actual/deletion-requests",
+                        cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                        headers={"Idempotency-Key": "retention-durable-create-0001", "If-Match": "*"},
+                        json={},
+                    )
+                    assert created_response.status_code == 201, created_response.text
+                    fetched_response = client.get(
+                        f"/api/v1/deletion-requests/{created_response.json()['data']['request_id']}",
+                        cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                    )
+                    assert fetched_response.status_code == 200
+                    requested_id = created_response.json()["data"]["request_id"]
+        restart_store = PostgresCloudStore(DSN, min_size=1, max_size=2)
+        restarted = PostgresRetentionRequestService(
+            restart_store, PostgresRetentionInventoryProvider(restart_store), clock=lambda: now,
+        )
+        requested = restarted.get_request(retention_context, requested_id)
+        assert requested.state == "blocked_by_hold" and requested.version == 1
+        assert restarted.locate_workspace(context.tenant_id, requested.request_id) == context.workspace_id
+        assert notebooks.read_selected_context(context, selected.notebook_id).sources == ()
+        blocked_report_repository = PostgresStudioReportRepository(store)
+        assert blocked_report_repository.list_sources(StudioReportContext(
+            context.tenant_id, context.workspace_id, context.actor_id,
+            context.trace_id, context.policy_version, selected.notebook_id,
+        )) == ()
+        with pytest.raises(RetentionError, match="DELETION_REQUEST_ACTIVE"):
+            restarted.create_request(
+                retention_context,
+                source_id="source-phase-e-actual",
+                inventory=None,
+                idempotency_key="retention-durable-create-other",
+                if_match="*",
+            )
+        released = restarted.release_legal_hold(
+            admin_retention_context, hold.hold_id, expected_version=1,
+            idempotency_key="retention-durable-release-0001", step_up_verified=True,
+        )
+        assert released.state == "released" and released.version == 2
+        requested = restarted.get_request(retention_context, requested_id)
+        assert requested.state == "grace_period" and requested.version == 2
+        cancelled = restarted.cancel(
+            retention_context, requested.request_id, expected_version=2,
+            idempotency_key="retention-durable-cancel-0001",
+        )
+        assert cancelled.state == "cancelled" and cancelled.version == 3
+        assert notebooks.read_selected_context(context, selected.notebook_id).sources == (
+            ("source-phase-e-actual", "source-version-phase-e-actual"),
+        )
+        assert restarted.cancel(
+            retention_context, requested.request_id, expected_version=2,
+            idempotency_key="retention-durable-cancel-0001",
+        ) == cancelled
+
+        race_hold = restarted.apply_legal_hold(
+            admin_retention_context, source_id="source-phase-e-actual", expected_version=1,
+            idempotency_key="retention-race-hold-0001", step_up_verified=True,
+        )
+        race_start = Barrier(2)
+
+        def release_race_hold() -> object:
+            race_start.wait(timeout=5)
+            return restarted.release_legal_hold(
+                admin_retention_context, race_hold.hold_id, expected_version=1,
+                idempotency_key="retention-race-release-0001", step_up_verified=True,
+            )
+
+        def create_race_request() -> object:
+            race_start.wait(timeout=5)
+            return restarted.create_request(
+                retention_context, source_id="source-phase-e-actual", inventory=None,
+                idempotency_key="retention-race-create-0001", if_match="*",
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            release_future = executor.submit(release_race_hold)
+            create_future = executor.submit(create_race_request)
+            released_race_hold = release_future.result(timeout=10)
+            created_race_request = create_future.result(timeout=10)
+        assert released_race_hold.state == "released"
+        race_request = restarted.get_request(
+            retention_context, created_race_request.request_id,
+        )
+        assert race_request.state == "grace_period"
+
+        cancel_hold = restarted.apply_legal_hold(
+            admin_retention_context, source_id="source-phase-e-actual",
+            expected_version=race_request.version,
+            idempotency_key="retention-race-cancel-hold-prepare", step_up_verified=True,
+        )
+        assert restarted.release_legal_hold(
+            admin_retention_context, cancel_hold.hold_id, expected_version=1,
+            idempotency_key="retention-race-cancel-release-prepare", step_up_verified=True,
+        ).state == "released"
+        race_request = restarted.get_request(retention_context, race_request.request_id)
+        hold_cancel_start = Barrier(2)
+
+        def apply_hold_during_cancel() -> tuple[str, object]:
+            hold_cancel_start.wait(timeout=5)
+            try:
+                return "hold", restarted.apply_legal_hold(
+                    admin_retention_context, source_id="source-phase-e-actual",
+                    expected_version=race_request.version,
+                    idempotency_key="retention-race-cancel-hold-0001", step_up_verified=True,
+                )
+            except RetentionError as error:
+                return "hold_error", error
+
+        def cancel_during_hold() -> tuple[str, object]:
+            hold_cancel_start.wait(timeout=5)
+            try:
+                return "cancel", restarted.cancel(
+                    retention_context, race_request.request_id,
+                    expected_version=race_request.version,
+                    idempotency_key="retention-race-blocked-cancel-0001",
+                )
+            except RetentionError as error:
+                return "cancel_error", error
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            hold_future = executor.submit(apply_hold_during_cancel)
+            cancel_future = executor.submit(cancel_during_hold)
+            hold_cancel_results = (
+                hold_future.result(timeout=10), cancel_future.result(timeout=10),
+            )
+        assert all(
+            not (label.endswith("_error") and getattr(value, "status_code", 0) == 503)
+            for label, value in hold_cancel_results
+        )
+        current_race_request = restarted.get_request(retention_context, race_request.request_id)
+        assert current_race_request.state in {"blocked_by_hold", "cancelled"}
+        active_cancel_hold = next(
+            (value for label, value in hold_cancel_results if label == "hold"), None,
+        )
+        if active_cancel_hold is not None:
+            assert restarted.release_legal_hold(
+                admin_retention_context, active_cancel_hold.hold_id, expected_version=1,
+                idempotency_key="retention-race-cancel-release-0001", step_up_verified=True,
+            ).state == "released"
+        current_race_request = restarted.get_request(retention_context, race_request.request_id)
+        if current_race_request.state != "cancelled":
+            assert restarted.cancel(
+                retention_context, current_race_request.request_id,
+                expected_version=current_race_request.version,
+                idempotency_key="retention-race-blocked-cancel-final",
+            ).state == "cancelled"
+        canon.register_uploaded_source(
+            CanonicalContext(
+                context.tenant_id, context.workspace_id, context.actor_id,
+                "source.create", context.trace_id,
+            ), notebook_id=selected.notebook_id,
+            source_id="fixture-source-purge", source_version_id="fixture-version-purge",
+            object_id="object-source-context", filename="fixture-purge.pdf",
+            digest_sha256=digest, byte_size=27, created_at=now,
+        )
+        class FixtureInventory:
+            @staticmethod
+            def read_in_transaction(connection, inventory_context, source_id):  # type: ignore[no-untyped-def]
+                del connection, inventory_context, source_id
+                return tuple(DerivativeInput(
+                    kind, f"fixture-{kind}-purge", acknowledgement_required=kind == "known_local_copy",
+                ) for kind in ("original_content", "index", "preview", "cache", "known_local_copy", "sync_reference"))
+        fixture_service = PostgresRetentionRequestService(
+            restart_store, FixtureInventory(), clock=lambda: now - timedelta(days=31), fixture_purge=True,
+        )
+        fixture_request = fixture_service.create_request(
+            retention_context, source_id="fixture-source-purge", inventory=None,
+            idempotency_key="retention-fixture-create-0001", if_match="*",
+        )
+        with restart_store._transaction(CloudAccessContext(
+            context.tenant_id, context.workspace_id, context.actor_id, "retention.fixture.complete",
+        )) as connection:
+            connection.execute("SELECT set_config('app.retention_transition','allowed',true)")
+            connection.execute(
+                "UPDATE deletion_cleanup_items SET state='completed',attempt_count=attempt_count+1,evidence_kind='key_destroyed' "
+                "WHERE tenant_id=%s AND workspace_id=%s AND request_id=%s",
+                (context.tenant_id, context.workspace_id, fixture_request.request_id),
+            )
+        purge_service = PostgresRetentionRequestService(
+            restart_store, FixtureInventory(), clock=lambda: now, fixture_purge=True,
+        )
+        hold_purge_start = Barrier(2)
+
+        def hold_during_purge() -> tuple[str, object]:
+            hold_purge_start.wait(timeout=5)
+            try:
+                return "hold", purge_service.apply_legal_hold(
+                    admin_retention_context, source_id="fixture-source-purge", expected_version=1,
+                    idempotency_key="retention-fixture-hold-race", step_up_verified=True,
+                )
+            except RetentionError as error:
+                return "hold_error", error
+
+        def purge_during_hold() -> tuple[str, object]:
+            hold_purge_start.wait(timeout=5)
+            try:
+                return "purge", purge_service.purge(
+                    admin_retention_context, fixture_request.request_id, expected_version=1,
+                    idempotency_key="retention-fixture-purge-race", step_up_verified=True,
+                )
+            except RetentionError as error:
+                return "purge_error", error
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            hold_purge_future = executor.submit(hold_during_purge)
+            purge_hold_future = executor.submit(purge_during_hold)
+            hold_purge_results = (
+                hold_purge_future.result(timeout=10), purge_hold_future.result(timeout=10),
+            )
+        assert sum(label in {"hold", "purge"} for label, _ in hold_purge_results) == 1
+        assert all(
+            not (label.endswith("_error") and getattr(value, "status_code", 0) == 503)
+            for label, value in hold_purge_results
+        )
+        winning_purge = next(
+            (value for label, value in hold_purge_results if label == "purge"), None,
+        )
+        if winning_purge is None:
+            winning_hold = next(value for label, value in hold_purge_results if label == "hold")
+            assert purge_service.release_legal_hold(
+                admin_retention_context, winning_hold.hold_id, expected_version=1,
+                idempotency_key="retention-fixture-release-race", step_up_verified=True,
+            ).state == "released"
+            fixture_current = purge_service.get_request(retention_context, fixture_request.request_id)
+            winning_purge = purge_service.purge(
+                admin_retention_context, fixture_request.request_id,
+                expected_version=fixture_current.version,
+                idempotency_key="retention-fixture-purge-after-release", step_up_verified=True,
+            )
+        purged = winning_purge
+        assert purged.state == "purged" and purged.version in {3, 5}
+        assert purge_service.get_request(retention_context, fixture_request.request_id) == purged
+        with pytest.raises(RetentionError, match="DELETION_REQUEST_UNAVAILABLE"):
+            restarted.get_request(RetentionContext(
+                foreign.tenant_id, foreign.workspace_id, foreign.actor_id,
+                foreign.trace_id, foreign.policy_version,
+            ), requested.request_id)
+        with store._transaction(CloudAccessContext(context.tenant_id, context.workspace_id, context.actor_id, "retention.test")) as connection:
+            assert connection.execute("SELECT count(*) FROM deletion_requests WHERE request_id=%s", (requested.request_id,)).fetchone()[0] == 1
+            assert connection.execute("SELECT count(*) FROM deletion_cleanup_items WHERE request_id=%s", (requested.request_id,)).fetchone()[0] == 6
+            lifecycle_audit = dict(connection.execute(
+                "SELECT action,count(*) FROM audit_events WHERE target_id='source-phase-e-actual' "
+                "AND action IN ('deletion.requested','deletion.cancelled','legal_hold.applied','legal_hold.released') "
+                "GROUP BY action",
+            ).fetchall())
+            assert lifecycle_audit == {
+                "deletion.requested": 5,
+                "deletion.cancelled": 5,
+                "legal_hold.applied": 4,
+                "legal_hold.released": 4,
+            }
+        restart_store.close()
         report_repository = PostgresStudioReportRepository(store)
         selected_sources = report_repository.list_sources(StudioReportContext(
             context.tenant_id, context.workspace_id, context.actor_id,
             context.trace_id, context.policy_version, selected.notebook_id,
         ))
-        assert tuple(item.source_id for item in selected_sources) == ("source-phase-e-actual",)
+        assert selected_sources == ()
         assert report_repository.list_sources(StudioReportContext(
             context.tenant_id, context.workspace_id, context.actor_id,
             context.trace_id, context.policy_version, "notebook-unselected",

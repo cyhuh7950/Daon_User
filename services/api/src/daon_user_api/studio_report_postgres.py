@@ -109,6 +109,11 @@ class PostgresStudioReportRepository:
                     "AND sv.source_id=s.record_id JOIN notebook_bindings nb ON nb.tenant_id=sv.tenant_id "
                     "AND nb.workspace_id=sv.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='source' "
                     "AND nb.record_id=s.record_id AND nb.version_id=sv.record_id "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=nb.tenant_id "
+                    "AND u.workspace_id=nb.workspace_id AND u.notebook_id=nb.notebook_id "
+                    "AND u.source_id=nb.record_id AND u.source_version_id=nb.version_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=s.tenant_id "
+                    "AND dr.workspace_id=s.workspace_id AND dr.source_id=s.record_id AND dr.source_active=false) "
                     "LEFT JOIN LATERAL (SELECT state,record_id FROM processing_runs "
                     "WHERE tenant_id=sv.tenant_id AND workspace_id=sv.workspace_id "
                     "AND source_version_id=sv.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1) pr ON true "
@@ -168,12 +173,17 @@ class PostgresStudioReportRepository:
                     "source_binding.tenant_id=r.tenant_id AND source_binding.workspace_id=r.workspace_id "
                     "AND source_binding.notebook_id=%s AND source_binding.binding_kind='source' "
                     "AND source_binding.record_id=%s AND source_binding.version_id=%s) "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=r.tenant_id "
+                    "AND u.workspace_id=r.workspace_id AND u.notebook_id=%s AND u.source_id=%s AND u.source_version_id=%s) "
+                    "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=s.tenant_id "
+                    "AND dr.workspace_id=s.workspace_id AND dr.source_id=s.record_id AND dr.source_active=false) "
                     "AND EXISTS (SELECT 1 FROM notebook_bindings thread_binding WHERE "
                     "thread_binding.tenant_id=r.tenant_id AND thread_binding.workspace_id=r.workspace_id "
                     "AND thread_binding.notebook_id=%s AND thread_binding.binding_kind='conversation_thread' "
                     "AND thread_binding.record_id=r.conversation_id)",
                     (request.source_version_id, request.source_id, request.run_id, request.run_result_id,
                      request.source_id, request.source_version_id,
+                     context.notebook_id, request.source_id, request.source_version_id,
                      context.notebook_id, request.source_id, request.source_version_id,
                      context.notebook_id),
                 ).fetchone()

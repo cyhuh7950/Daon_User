@@ -62,12 +62,15 @@ class DerivativeInput:
     kind: str
     reference_id: str
     acknowledgement_required: bool = False
+    disposition: str = "present"
 
     def __post_init__(self) -> None:
         if self.kind not in _KINDS:
             raise RetentionError("RETENTION_DERIVATIVE_INVALID", 400)
         _safe(self.reference_id)
         if self.acknowledgement_required != (self.kind == "known_local_copy"):
+            raise RetentionError("RETENTION_DERIVATIVE_INVALID", 400)
+        if self.disposition not in {"present", "not_present", "not_applicable", "verification_pending"}:
             raise RetentionError("RETENTION_DERIVATIVE_INVALID", 400)
 
 
@@ -183,11 +186,13 @@ class RetentionService:
         clock: Callable[[], datetime],
         grace_period: timedelta = timedelta(days=30),
         fixture_prefix: str = "fixture-",
+        inventory_provider: Callable[[RetentionContext, str], tuple[DerivativeInput, ...]] | None = None,
     ) -> None:
         self._repository = repository
         self._cleanup = cleanup_port
         self._clock = clock
         self._grace_period = grace_period
+        self._inventory_provider = inventory_provider
         self._fixture_prefix = fixture_prefix
 
     @staticmethod
@@ -287,12 +292,16 @@ class RetentionService:
         context: RetentionContext,
         *,
         source_id: str,
-        inventory: tuple[DerivativeInput, ...],
+        inventory: tuple[DerivativeInput, ...] | None,
         idempotency_key: str,
         if_match: str,
     ) -> DeletionRequestView:
         self._write(idempotency_key, if_match)
         _safe(source_id)
+        if inventory is None:
+            if self._inventory_provider is None:
+                raise RetentionError("DELETION_INVENTORY_INVALID", 400)
+            inventory = self._inventory_provider(context, source_id)
         if if_match != "*" or not inventory:
             raise RetentionError("DELETION_REQUEST_INVALID", 400)
         by_reference = {item.reference_id: item for item in inventory}
@@ -317,7 +326,11 @@ class RetentionService:
             request = _DeletionRequest(
                 self._id("deletion"), context, source_id, now,
                 now + self._grace_period,
-                {ref: _CleanupItem(item) for ref, item in by_reference.items()},
+                {ref: _CleanupItem(
+                    item,
+                    state="completed" if item.disposition in {"not_present", "not_applicable"} else "pending",
+                    evidence=item.disposition,
+                ) for ref, item in by_reference.items()},
             )
             if any(
                 hold.context.tenant_id == context.tenant_id

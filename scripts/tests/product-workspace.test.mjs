@@ -75,6 +75,117 @@ test("근거 보고서는 Raw·Daon 혼합 Context의 sufficient Citation 답변
   assert.equal(canCreateGroundedReport({ ...daonOnly, answer: { ...daonOnly.answer, citations: [{ ...daonOnly.answer.citations[0], source_version_id: "" }] } }), false);
 });
 
+test("Source 작업은 Notebook 연결 해제와 30일 삭제 요청·취소를 분리한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-source-actions-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { build } = await import("vite");
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: {
+      outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-actions" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("source-actions") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourceActions=${Date.now()}`);
+    const calls = [];
+    const effectAdapter = {
+      ...adapter,
+      bindingEtag: '"notebook-binding:1"',
+      async listSources() { return [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }]; },
+      async listStudioOutputs() { return []; },
+      async unbindSource(source, options) { calls.push(["unbind", source.sourceId, options.bindingEtag]); },
+      async requestSourceDeletion(source) { calls.push(["request", source.sourceId]); return { data: { request_id: "request-1", source_id: source.sourceId, state: "grace_period" }, etag: '"deletion:request-1:1"' }; },
+      async cancelSourceDeletionRequest(requestId, options) { calls.push(["cancel", requestId, options.etag]); return { data: { request_id: requestId, source_id: "source-1", state: "cancelled" }, etag: '"deletion:request-1:2"' }; },
+    };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    const action = findElements(container, (node) => node.tagName === "BUTTON" && /ready\.pdf 작업/u.test(node.getAttribute?.("aria-label") ?? ""))[0];
+    await act(async () => action.dispatchEvent(new MinimalEvent("click")));
+    assert.match(container.textContent, /원본 Source는 보존/u);
+    const deletion = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "Source 삭제 요청")[0];
+    await act(async () => deletion.dispatchEvent(new MinimalEvent("click")));
+    const confirm = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 확인")[0];
+    await act(async () => { confirm.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(calls, [["request", "source-1"]]);
+    assert.match(container.textContent, /30일 유예/u);
+    const cancel = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소")[0];
+    await act(async () => { cancel.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(calls, [["request", "source-1"], ["cancel", "request-1", '"deletion:request-1:1"']]);
+    assert.match(container.textContent, /원본 Source는 보존/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("새로고침 뒤 active 삭제 요청을 복원하고 취소 동작을 제공한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-source-deletion-restore-"));
+  const dom = installMinimalDom(); let reactRoot;
+  try {
+    const { build } = await import("vite");
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "deletion-restore" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] } } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("deletion-restore") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?restore=${Date.now()}`);
+    const calls = [];
+    const effectAdapter = { ...adapter, async listSources() { return []; }, async listStudioOutputs() { return []; },
+      async listSourceDeletionRequests() { return [{ request_id: "request-1", source_id: "source-1", state: "grace_period", version: 2, grace_until: "2026-09-20T00:00:00Z", legal_hold_active: false }]; },
+      async cancelSourceDeletionRequest(requestId, options) { calls.push([requestId, options.etag]); return { data: { request_id: requestId, source_id: "source-1", state: "cancelled" }, etag: '"deletion:request-1:3"' }; } };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    const action = findElements(container, (node) => node.tagName === "BUTTON" && /source-1 삭제 요청 상태/u.test(node.getAttribute?.("aria-label") ?? ""))[0];
+    assert.ok(action); await act(async () => action.dispatchEvent(new MinimalEvent("click")));
+    assert.match(container.textContent, /30일 유예/u);
+    const cancel = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소")[0];
+    await act(async () => { cancel.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(calls, [["request-1", '"deletion:request-1:2"']]);
+  } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
+});
+
+test("Source lifecycle pending 응답은 Adapter·Notebook 전환 즉시 폐기된다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-source-lifecycle-epoch-"));
+  const dom = installMinimalDom(); let reactRoot;
+  try {
+    const { build } = await import("vite"); const { createElement, act } = await import("react"); const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "lifecycle-epoch" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] } } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("lifecycle-epoch") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?epoch=${Date.now()}`);
+    const pending = deferred(); const calls = [];
+    const oldAdapter = { ...adapter, notebookContext: { notebook_id: "notebook-old" },
+      async listSources() { return [{ source_id: "source-old", source_version_id: "version-old", filename: "old.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }]; },
+      async listStudioOutputs() { return []; }, async requestSourceDeletion() { calls.push("old-request"); return pending.promise; } };
+    const newAdapter = { ...adapter, notebookContext: { notebook_id: "notebook-new" }, async listSources() { return []; }, async listStudioOutputs() { return []; },
+      async listSourceDeletionRequests() { return [{ request_id: "request-new", source_id: "source-new", state: "grace_period", version: 1, grace_until: "2026-09-20T00:00:00Z", legal_hold_active: false }]; },
+      async cancelSourceDeletionRequest() { calls.push("new-cancel"); return { data: { request_id: "request-new", source_id: "source-new", state: "cancelled" }, etag: '"deletion:request-new:2"' }; } };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-old", adapter: oldAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => findElements(container, (node) => node.tagName === "BUTTON" && /old\.pdf 작업/u.test(node.getAttribute?.("aria-label") ?? ""))[0].dispatchEvent(new MinimalEvent("click")));
+    await act(async () => findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "Source 삭제 요청")[0].dispatchEvent(new MinimalEvent("click")));
+    await act(async () => findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 확인")[0].dispatchEvent(new MinimalEvent("click")));
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-new", adapter: newAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    assert.doesNotMatch(container.textContent, /old\.pdf|요청을 처리하지 못/u);
+    pending.resolve({ data: { request_id: "request-old", source_id: "source-old", state: "grace_period" }, etag: '"deletion:request-old:1"' });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    assert.doesNotMatch(container.textContent, /old\.pdf|request-old/u);
+    const action = findElements(container, (node) => node.tagName === "BUTTON" && /source-new 삭제 요청 상태/u.test(node.getAttribute?.("aria-label") ?? ""))[0];
+    await act(async () => action.dispatchEvent(new MinimalEvent("click")));
+    await act(async () => { findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소")[0].dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(calls, ["old-request", "new-cancel"]);
+  } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
+});
+
 test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 경고로 투영한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".workspace-studio-unavailable-react-"));
@@ -187,6 +298,82 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     delayedKnowledge.resolve([]);
     delayedStudio.resolve([]);
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    await act(async () => reactRoot.unmount());
+    reactRoot = null;
+    let cloudOverallStatus = "ready";
+    const splitStatusContainer = dom.document.createElement("div"); dom.document.body.appendChild(splitStatusContainer);
+    const splitStatusAdapter = {
+      ...adapter,
+      async listSources() { throw new Error("SOURCE_LIST_FAILED"); },
+      async listStudioOutputs() { return []; },
+      async getOperationsStatus() { return { overall_status: cloudOverallStatus, components: [] }; },
+    };
+    reactRoot = createRoot(splitStatusContainer);
+    await act(async () => {
+      reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: splitStatusAdapter }));
+      await Promise.resolve(); await Promise.resolve();
+    });
+    assert.match(splitStatusContainer.textContent, /Source 확인 필요/u);
+    assert.match(splitStatusContainer.textContent, /Cloud 미확인/u);
+    assert.doesNotMatch(splitStatusContainer.textContent, /주의 · Cloud/u);
+    const operationsButton = findElements(splitStatusContainer, (node) => node.tagName === "BUTTON" && node.textContent === "운영상태")[0];
+    await act(async () => { operationsButton.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); await Promise.resolve(); });
+    assert.match(splitStatusContainer.textContent, /Cloud 정상/u);
+    assert.match(splitStatusContainer.textContent, /Source 확인 필요/u);
+    cloudOverallStatus = "error";
+    const closeButton = findElements(splitStatusContainer, (node) => node.tagName === "BUTTON" && node.getAttribute?.("aria-label") === "닫기")[0];
+    await act(async () => { closeButton.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    await act(async () => { operationsButton.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); await Promise.resolve(); });
+    assert.match(splitStatusContainer.textContent, /Cloud 주의/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("Source 로드는 다른 pane projection 오류와 stale 결과에서 독립적이다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-source-ownership-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { build } = await import("vite");
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: {
+      outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "source-ownership" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("source-ownership") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?sourceOwnership=${Date.now()}`);
+    const source = { source_id: "source-current", source_version_id: "version-current", filename: "current.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" };
+    const projectionFailureAdapter = {
+      ...adapter,
+      async listSources() { return [source]; },
+      async listKnowledgePackages() { return { invalid: true }; },
+      async listStudioOutputs() { return { outputs: null, studioLocks: [{ lock_type: "ruleset" }] }; },
+      async loadNotebookConversation() { throw new Error("CONVERSATION_UNAVAILABLE"); },
+    };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => {
+      reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-current", adapter: projectionFailureAdapter }));
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+    assert.match(container.textContent, /current\.pdf/u);
+    assert.doesNotMatch(container.textContent, /Source를 불러오지 못했습니다/u);
+    assert.match(container.textContent, /지식을 불러오지 못했습니다/u);
+
+    const oldSource = deferred();
+    const oldAdapter = { ...adapter, async listSources() { return oldSource.promise; }, async listStudioOutputs() { return []; } };
+    const newAdapter = { ...adapter, async listSources() { return [source]; }, async listStudioOutputs() { return []; } };
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-old", adapter: oldAdapter })); await Promise.resolve(); });
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-current", adapter: newAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { oldSource.reject(new Error("OLD_SOURCE_FAILED")); await Promise.resolve(); await Promise.resolve(); });
+    assert.match(container.textContent, /current\.pdf/u);
+    assert.doesNotMatch(container.textContent, /OLD_SOURCE_FAILED|Source를 불러오지 못했습니다/u);
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     dom.restore(); await rm(output, { recursive: true, force: true });

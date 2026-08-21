@@ -5,11 +5,12 @@ import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, uploadPdfSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
-import { createGroundedReport, createStudioGeneration, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceKnowledgePackages, listWorkspaceSources, saveWorkspaceOutputVersionSettings } from "../lib/product-workspace-api.js";
+import { createGroundedReport, createStudioGeneration, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceKnowledgePackages, listWorkspaceSources, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
 import { downloadManualAsset, getManualManifest, readManualDocument } from "../lib/manual-api.js";
+import { cancelSourceDeletionRequest, getSourceDeletionRequest, requestSourceDeletion } from "../lib/source-retention-api.js";
 
 export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
   const notebookOptions = (options = {}) => (notebookId
@@ -20,6 +21,10 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     : input);
   return Object.freeze({
     listSources: (options) => listWorkspaceSources(workspaceId, notebookOptions(options)),
+    unbindSource: (source, options = {}) => unbindWorkspaceSource(workspaceId, source, { ...notebookOptions(options), etag: options.etag ?? options.bindingEtag }),
+    requestSourceDeletion: (source, options) => requestSourceDeletion(source.sourceId, options),
+    getSourceDeletionRequest,
+    cancelSourceDeletionRequest,
     listKnowledgePackages: (options) => listWorkspaceKnowledgePackages(workspaceId, options),
     getOperationsStatus: (options) => getWorkspaceOperationsStatus(workspaceId, options),
     getOutputVersionSettings: (options) => getWorkspaceOutputVersionSettings(workspaceId, options),

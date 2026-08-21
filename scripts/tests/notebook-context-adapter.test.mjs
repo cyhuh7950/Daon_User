@@ -20,6 +20,7 @@ const EXISTING_CONTEXT = Object.freeze({
   studio_output_ids: Object.freeze(["studio-output-bound"]),
   output_version_ids: Object.freeze(["output-version-bound"]),
   generation_settings_ids: Object.freeze(["generation-settings-bound"]),
+  source_deletion_requests: Object.freeze([]),
 });
 
 async function bundle(output) {
@@ -72,10 +73,16 @@ test("Notebook context Adapter는 bound Source·Knowledge·Conversation·Library
   assert.deepEqual(adapter.generationSettingsIds, ["generation-settings-bound"]);
   assert.deepEqual(calls, ["sources", "knowledge:scope-snapshot-bound", "packages", "outputs"]);
 
+  const inputWithBinding = { ...EXISTING_CONTEXT };
+  Object.defineProperty(inputWithBinding, "bindingEtag", { enumerable: false, value: '"notebook-binding:2"' });
+  const bindingAware = createNotebookContextWorkspaceAdapter(base, inputWithBinding);
+  assert.equal(bindingAware.bindingEtag, '"notebook-binding:2"');
+  assert.equal(Object.keys(bindingAware).includes("bindingEtag"), false);
+
   let emptyCalls = 0;
   const empty = createNotebookContextWorkspaceAdapter(new Proxy({}, { get: () => async () => { emptyCalls += 1; return []; } }), {
     notebook_id: "notebook-empty", sources: [], knowledge_context_ids: [], conversation_thread_ids: [],
-    studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null,
+    studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], source_deletion_requests: [], conversation: null,
   });
   assert.deepEqual(await empty.listSources(), []);
   assert.deepEqual(await empty.listKnowledgePackages(), []);

@@ -218,7 +218,9 @@ class PostgresQuestionAnsweringRepository:
                     "AND iv.source_version_id=sv.record_id) AND NOT EXISTS ("
                     "SELECT 1 FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id "
                     "AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id "
-                    "AND newer.version>sv.version)",
+                    "AND newer.version>sv.version) AND NOT EXISTS (SELECT 1 FROM deletion_requests dr "
+                    "WHERE dr.tenant_id=s.tenant_id AND dr.workspace_id=s.workspace_id "
+                    "AND dr.source_id=s.record_id AND dr.source_active=false)",
                     (source_id, source_version_id),
                 ).fetchone()
         except CloudDatabaseError as error:
@@ -256,7 +258,12 @@ class PostgresQuestionAnsweringRepository:
                     "AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id "
                     "LEFT JOIN citations c ON c.tenant_id=rr.tenant_id "
                     "AND c.workspace_id=rr.workspace_id AND c.run_result_id=rr.record_id "
-                    "WHERE r.record_id=%s AND r.state='completed'" + notebook_clause
+                    "WHERE r.record_id=%s AND r.state='completed' AND NOT EXISTS (SELECT 1 FROM citations blocked_citation "
+                    "JOIN deletion_requests dr ON dr.tenant_id=blocked_citation.tenant_id "
+                    "AND dr.workspace_id=blocked_citation.workspace_id "
+                    "AND dr.source_id=blocked_citation.canonical_json->>'source_id' AND dr.source_active=false "
+                    "WHERE blocked_citation.tenant_id=rr.tenant_id AND blocked_citation.workspace_id=rr.workspace_id "
+                    "AND blocked_citation.run_result_id=rr.record_id)" + notebook_clause
                     + " ORDER BY c.record_id",
                     params,
                 ).fetchall()
@@ -359,7 +366,9 @@ class PostgresQuestionAnsweringRepository:
                     "AND iv.source_version_id=sv.record_id) AND NOT EXISTS ("
                     "SELECT 1 FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id "
                     "AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id "
-                    "AND newer.version>sv.version)",
+                    "AND newer.version>sv.version) AND NOT EXISTS (SELECT 1 FROM deletion_requests dr "
+                    "WHERE dr.tenant_id=s.tenant_id AND dr.workspace_id=s.workspace_id "
+                    "AND dr.source_id=s.record_id AND dr.source_active=false)",
                     (source_id, source_version_id),
                 ).fetchone()
         except CloudDatabaseError as error:
@@ -421,7 +430,10 @@ class PostgresQuestionAnsweringRepository:
                     "c.canonical_json->>'page',es.canonical_json->>'page' "
                     "FROM citations c JOIN evidence_spans es ON "
                     "es.tenant_id=c.tenant_id AND es.workspace_id=c.workspace_id "
-                    "AND es.record_id=c.evidence_span_id WHERE c.record_id=%s" + notebook_clause,
+                    "AND es.record_id=c.evidence_span_id WHERE c.record_id=%s "
+                    "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=c.tenant_id "
+                    "AND dr.workspace_id=c.workspace_id AND dr.source_id=c.canonical_json->>'source_id' "
+                    "AND dr.source_active=false)" + notebook_clause,
                     (citation_id, context.notebook_id)
                     if context.notebook_id is not None else (citation_id,),
                 ).fetchone()
@@ -477,7 +489,9 @@ class PostgresQuestionAnsweringRepository:
                     "AND iv.source_version_id=sv.record_id) AND NOT EXISTS ("
                     "SELECT 1 FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id "
                     "AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id "
-                    "AND newer.version>sv.version)" + notebook_clause,
+                    "AND newer.version>sv.version) AND NOT EXISTS (SELECT 1 FROM deletion_requests dr "
+                    "WHERE dr.tenant_id=s.tenant_id AND dr.workspace_id=s.workspace_id "
+                    "AND dr.source_id=s.record_id AND dr.source_active=false)" + notebook_clause,
                     (citation_id, context.notebook_id)
                     if context.notebook_id is not None else (citation_id,),
                 ).fetchone()
