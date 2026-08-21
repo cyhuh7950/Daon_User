@@ -28,9 +28,10 @@ class NotebookDeletionResult:
 
 
 class NotebookDeletionWorker:
-    def __init__(self, store: NotebookDeletionStore, *, object_delete: Callable[[str], None] | None = None) -> None:
+    def __init__(self, store: NotebookDeletionStore, *, object_delete: Callable[[str], None] | None = None, startup_context_factory: Callable[[str, str, str, str], NotebookContext] | None = None) -> None:
         self._store = store
         self._object_delete = object_delete
+        self._startup_context_factory = startup_context_factory
 
     def process(self, context: NotebookContext, request_id: str) -> NotebookDeletionResult:
         try:
@@ -49,11 +50,16 @@ class NotebookDeletionWorker:
         return count
 
     def resume_startup(self) -> int:
-        """Optional lifecycle hook; deployment workers may inject a scoped resumer."""
-        resume = getattr(self._store, "resume_startup", None)
-        if not callable(resume):
+        """Claim pending scopes with SKIP LOCKED when deployment supplies a context factory."""
+        claim = getattr(self._store, "claim_pending_startup", None)
+        if not callable(claim) or self._startup_context_factory is None:
             return 0
-        return int(resume())
+        count = 0
+        for tenant_id, workspace_id, actor_id, request_id in claim():
+            context = self._startup_context_factory(tenant_id, workspace_id, actor_id, request_id)
+            self.process(context, request_id)
+            count += 1
+        return count
 
 
 class PostgresNotebookDeletionStore:
@@ -62,6 +68,23 @@ class PostgresNotebookDeletionStore:
     def __init__(self, store: PostgresCloudStore, object_storage: ObjectStoragePort | None = None) -> None:
         self._store = store
         self._object_storage = object_storage
+
+    STARTUP_CLAIM_SQL = (
+        "WITH candidates AS ("
+        " SELECT request_id,tenant_id,workspace_id,actor_id FROM notebook_deletion_requests"
+        " WHERE state IN ('accepted','deleting') ORDER BY requested_at,request_id"
+        " FOR UPDATE SKIP LOCKED LIMIT 32)"
+        " UPDATE notebook_deletion_requests d SET state='deleting',current_step='claimed',attempts=d.attempts+1"
+        " FROM candidates c WHERE d.request_id=c.request_id AND d.tenant_id=c.tenant_id AND d.workspace_id=c.workspace_id"
+        " RETURNING c.tenant_id,c.workspace_id,c.actor_id,c.request_id"
+    )
+
+    def claim_pending_startup(self) -> tuple[tuple[str, str, str, str], ...]:
+        """Contract for the privileged worker connection; production wiring supplies RLS-safe access."""
+        # The API process deliberately has no unscoped connection. A worker
+        # process with the approved privileged claim connection overrides this
+        # method; returning no rows keeps API startup safe until then.
+        return ()
 
     @staticmethod
     def _access(context: NotebookContext) -> CloudAccessContext:
