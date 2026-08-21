@@ -448,3 +448,10 @@
 - 확인: Daon API/Web/Object Storage 컨테이너는 실행 중이며 MinIO image에는 `mc`와 `curl`이 존재한다. PostgreSQL `alembic_version=0006`, `notebook_deletion_requests` 및 `delete_notebook_scope`는 존재하지 않는다.
 - 판정: WSL-server는 현재 Notebook 삭제 migration 0023을 적용할 수 있는 기준선(0022)이 아니다. 선행 migration 상태와 데이터 계약이 달라 승인 없이 migration/fixture 생성/MinIO 삭제를 수행하지 않았다. ysna-server 검증 결과를 WSL 검증으로 재사용하지 않는다.
 - blocker/재개 조건: WSL Daon DB를 0022 기준선까지 안전하게 정렬하고 백업·rollback 계획을 승인받은 뒤에만 0023 적용 및 disposable fixture 통합검증을 수행할 수 있다. 현재 WSL 범위의 MinIO/startup claim 실제 검증은 BLOCKED.
+
+2026-08-22 ysna 격리 배포 및 통합 확인:
+- Git: 삭제 구현 feature branch `codex/user-auth-screen-split`을 origin에 push했고, ysna-server checkout을 `ccd2d4a`로 전환했다. master/Oracle/공용 컨테이너는 변경하지 않았다.
+- DB 사전 조치: `shared-db:/tmp/daon-delete-pre-deploy-ccd2d4a.dump` 백업 생성(929084 bytes). 기존 `alembic_version=0022`와 0023 삭제 테이블을 보존했고, claim 함수 보정 및 삭제 요청-Notebook FK 제거를 적용했다.
+- 배포: production Compose `deploy/daon-user/compose.yaml`에서 API/Document Worker/Web만 `--build` 재기동했다. Object Storage 컨테이너/볼륨은 재생성하지 않았다.
+- 결과: API `healthy`, Document Worker `Running`, Web `healthy`, Object Storage `healthy`; Web `/` 및 `/notebooks` HTTP 200. Web build/TypeScript/product boundary 검사 통과(`scannedFiles=416`, violations 0). API startup 로그 정상.
+- 미실행: 인증된 브라우저에서 Notebook 삭제 클릭 E2E는 현재 자동화 브라우저 연결 여부 확인 후 별도 수행한다. 운영 도메인 master 배포는 수행하지 않는다.
