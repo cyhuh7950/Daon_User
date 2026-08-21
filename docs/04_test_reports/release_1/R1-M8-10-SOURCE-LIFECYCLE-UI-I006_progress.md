@@ -426,3 +426,13 @@
 - DB `alembic_version=0022`; `notebook_deletion_requests`와 `delete_notebook_scope`는 아직 존재하지 않는다. migration 미적용 상태이며 배포 승인 없이 적용하지 않았다.
 - 실제 FK 조회 결과 `processing_runs`, `understanding_results`, `extraction_evidence`, `transcription_runs`, `transcript_versions`, `evidence_spans`, `index_versions`, `citations`, `evidence_references`, `knowledge_registrations`, `document_processing_jobs`, `sync_target_versions`, `object_outbox_events`, `source_versions` self-FK가 확인됐다. 이를 반영해 migration에 `sync_target_versions` 삭제와 `previous_version_id` 역순 루프를 추가했다.
 - 상태: 실제 통합 삭제는 migration 적용 및 별도 승인 없이는 실행할 수 없어 BLOCKED. 공용 DB/컨테이너 변경 및 배포 없음.
+
+2026-08-22 Task 3 원격 격리 DB 검증:
+- 시각/상태: 2026-08-22 KST / IN_PROGRESS → PARTIAL_VERIFIED.
+- 사전 조치: `ysna-server`의 Daon 격리 DB(`shared-db`, database `postgres`)에 `/tmp/daon-delete-pre-0023.dump` 백업을 생성했다. 기존 `alembic_version=0022`는 변경하지 않았다.
+- 적용: `0023_notebook_deletion.py`의 `notebook_deletion_requests` 테이블과 `SECURITY DEFINER delete_notebook_scope` 함수를 적용했다. 운영 API 이미지/Compose는 재배포하지 않았다. DB collation 경고(2.41 생성/2.36 제공)는 기존 환경 경고로 기록한다.
+- 실제 검증: disposable Notebook/Source/SourceVersion/Object fixture를 만들고, 동일 Source를 다른 Notebook이 참조하는 경우 `DELETE_SHARED_DATA_BLOCKED`를 확인했다. 공유 binding을 제거한 뒤 실제 함수 호출은 Source/SourceVersion/Notebook/Object DB 행을 모두 0건으로 정리하고 Object key `fixture/delete.pdf`를 반환했다.
+- 오류/복구: 첫 함수 실행에서 RETURNS TABLE 출력 변수와 `source_version_id` 조건의 모호성 오류가 발생했다. DELETE 대상을 모두 별칭으로 한정하고 Source/Object immutable USER trigger를 함수 내 삭제 구간에서 일시 비활성화·종료 시 복구한 뒤 함수를 재적용하여 재검증에 성공했다.
+- 테스트: `$env:PYTHONPATH='src'; uv run pytest tests/test_notebook_deletion_schema.py tests/test_notebook_deletion_service.py tests/test_notebook_deletion_worker.py -q` = 5 passed. 원격 SQL 함수 호출 및 fixture 잔여행 확인 PASS.
+- 미해결: fixture Object는 MinIO에 실제 업로드하지 않았으므로 물리 Object Storage 삭제는 검증하지 못했다. Worker startup의 privileged tenant-scoped DB claim 연결도 아직 구현되지 않았으며 `claim_pending_startup()`은 안전하게 빈 결과를 반환한다. Task 6 배포는 수행하지 않았다.
+- 다음: MinIO disposable object 업로드/삭제와 privileged startup claim 연결 가능성을 별도 검토하고, 불가 시 BLOCKED 근거와 현재 diff를 최종 보고한다.
