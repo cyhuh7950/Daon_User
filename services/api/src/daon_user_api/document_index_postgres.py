@@ -104,6 +104,7 @@ class PostgresDocumentIndex:
             raise DocumentUnderstandingError("PAGE_EVIDENCE_UNAVAILABLE", status=409)
 
         chunks: list[dict[str, object]] = []
+        all_facts_located = True
         for ordinal, fact in enumerate(result.semantic.key_facts, start=1):
             normalized_fact = self._normalized(fact)
             page = next((
@@ -111,7 +112,8 @@ class PostgresDocumentIndex:
                 if normalized_fact in self._normalized(page_text)
             ), None)
             if page is None:
-                raise DocumentUnderstandingError("PAGE_EVIDENCE_UNAVAILABLE", status=409)
+                all_facts_located = False
+                break
             chunk_id = self._opaque_id("chunk", result.source_version_id, str(ordinal), fact)
             evidence_span_id = self._opaque_id("span", chunk_id, str(page))
             chunks.append({
@@ -121,7 +123,26 @@ class PostgresDocumentIndex:
                 "page": page,
                 "text": fact,
                 "evidence_span_id": evidence_span_id,
+                "evidence_kind": "parser_page_validated_semantic_fact",
             })
+        strategy = "vision_llm_facts_with_parser_page_validation"
+        if not all_facts_located:
+            strategy = "vision_llm_facts_with_parser_page_fallback"
+            chunks = []
+            for page, page_text in page_texts:
+                chunk_id = self._opaque_id(
+                    "chunk", result.source_version_id, "parser-page", str(page), page_text,
+                )
+                evidence_span_id = self._opaque_id("span", chunk_id, str(page))
+                chunks.append({
+                    "chunk_id": chunk_id,
+                    "source_id": result.source_id,
+                    "source_version_id": result.source_version_id,
+                    "page": page,
+                    "text": page_text,
+                    "evidence_span_id": evidence_span_id,
+                    "evidence_kind": "parser_page_grounded_fallback",
+                })
         if not chunks:
             raise DocumentUnderstandingError("DOCUMENT_SEMANTIC_CHUNKS_EMPTY", status=409)
 
@@ -151,7 +172,7 @@ class PostgresDocumentIndex:
                     "source_id": result.source_id,
                     "source_version_id": result.source_version_id,
                     "understanding_result_id": understanding_result_id,
-                    "strategy": "vision_llm_facts_with_parser_page_validation",
+                    "strategy": strategy,
                     "chunks": chunks,
                     "lineage": dict(result.lineage),
                 }
@@ -178,7 +199,7 @@ class PostgresDocumentIndex:
                         "understanding_result_id": understanding_result_id,
                         "page": chunk["page"],
                         "text": chunk["text"],
-                        "kind": "parser_page_validated_semantic_fact",
+                        "kind": chunk["evidence_kind"],
                     }
                     evidence_text, evidence_digest = self._snapshot(evidence_payload)
                     connection.execute(
