@@ -42,6 +42,10 @@ def upgrade() -> None:
       CREATE OR REPLACE FUNCTION delete_notebook_scope(p_tenant_id text, p_workspace_id text, p_notebook_id text)
       RETURNS TABLE(source_id text, source_version_id text, object_id text, object_key text)
       LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+      DECLARE
+        v_source_ids text[];
+        v_source_versions text[];
+        v_object_ids text[];
       BEGIN
         IF p_tenant_id IS NULL OR p_workspace_id IS NULL OR p_notebook_id IS NULL THEN
           RAISE EXCEPTION 'NOTEBOOK_SCOPE_INVALID' USING ERRCODE='22023';
@@ -92,10 +96,41 @@ def upgrade() -> None:
           THEN
             RAISE EXCEPTION 'DELETE_SHARED_DATA_BLOCKED' USING ERRCODE='55000';
         END IF;
+        SELECT coalesce(array_agg(DISTINCT b.record_id), ARRAY[]::text[]),
+               coalesce(array_agg(DISTINCT b.version_id), ARRAY[]::text[])
+          INTO v_source_ids, v_source_versions
+          FROM notebook_bindings b
+         WHERE b.tenant_id=p_tenant_id AND b.workspace_id=p_workspace_id
+           AND b.notebook_id=p_notebook_id AND b.binding_kind='source';
+        SELECT coalesce(array_agg(DISTINCT sv.object_id) FILTER (WHERE sv.object_id IS NOT NULL), ARRAY[]::text[])
+          INTO v_object_ids
+          FROM source_versions sv
+         WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id
+           AND sv.record_id=ANY(v_source_versions);
         RETURN QUERY SELECT b.record_id, b.version_id, sv.object_id, o.object_key
           FROM notebook_bindings b LEFT JOIN source_versions sv ON sv.tenant_id=b.tenant_id AND sv.workspace_id=b.workspace_id AND sv.record_id=b.version_id
           LEFT JOIN object_records o ON o.tenant_id=sv.tenant_id AND o.workspace_id=sv.workspace_id AND o.object_id=sv.object_id
           WHERE b.tenant_id=p_tenant_id AND b.workspace_id=p_workspace_id AND b.notebook_id=p_notebook_id AND b.binding_kind='source';
+        DELETE FROM document_processing_jobs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
+        DELETE FROM knowledge_registrations WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND registered_source_version_id=ANY(v_source_versions);
+        DELETE FROM evidence_references WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
+        DELETE FROM citations WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
+        DELETE FROM transcript_segments WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND transcript_version_id IN (SELECT record_id FROM transcript_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions));
+        DELETE FROM transcript_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
+        DELETE FROM transcription_runs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
+        DELETE FROM extraction_evidence WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
+        DELETE FROM understanding_results WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
+        DELETE FROM processing_runs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
+        DELETE FROM index_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
+        DELETE FROM source_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND record_id=ANY(v_source_versions);
+        DELETE FROM sources WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND record_id=ANY(v_source_ids)
+          AND NOT EXISTS (SELECT 1 FROM source_versions sv WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.source_id=sources.record_id);
+        DELETE FROM durable_jobs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND event_id IN
+          (SELECT event_id FROM object_outbox_events WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND object_id=ANY(v_object_ids));
+        DELETE FROM object_outbox_events WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND object_id=ANY(v_object_ids);
+        DELETE FROM object_records WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND object_id=ANY(v_object_ids)
+          AND NOT EXISTS (SELECT 1 FROM source_versions sv WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.object_id=object_records.object_id)
+          AND NOT EXISTS (SELECT 1 FROM index_versions iv WHERE iv.tenant_id=p_tenant_id AND iv.workspace_id=p_workspace_id AND iv.object_id=object_records.object_id);
         ALTER TABLE notebook_source_unbindings DISABLE TRIGGER USER;
         ALTER TABLE notebook_source_unbinding_idempotency DISABLE TRIGGER USER;
         ALTER TABLE notebook_idempotency DISABLE TRIGGER USER;
