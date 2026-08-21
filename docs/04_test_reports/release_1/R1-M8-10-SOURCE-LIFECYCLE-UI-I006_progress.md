@@ -415,3 +415,8 @@
 - 확인: 현재 공식 Windows 작업환경에 `docker`와 `psql` 실행 파일이 없고 `DAON_CLOUD_DATABASE_DSN`도 노출되지 않아 격리 PostgreSQL/MinIO를 기동하거나 접속할 수 없다. 따라서 migration 적용, 실제 FK 확인, Object Storage 삭제 통합검증을 추측으로 대체하지 않는다.
 - 조치: 대표 테이블 전체의 DELETE 순서가 migration 함수에 포함되도록 정적 계약 검사를 보강했다. startup 전체 tenant claim은 DB의 RLS 우회 전용 claim 함수와 실제 DB 권한 검증 없이는 안전하게 구현할 수 없어 보류한다.
 - 다음: PostgreSQL/MinIO가 제공되는 격리 실행환경에서 migration·권한·공유 보호·재시작 resume을 실행 검증한다. 배포는 하지 않는다.
+
+2026-08-22 startup claim 계약 보완:
+- 변경: Worker에 `FOR UPDATE SKIP LOCKED` 기반 accepted/deleting 요청 claim SQL 계약과 tenant/workspace/request 반환 형식을 추가하고, lifecycle hook에서 주입된 scoped context factory로 재개하도록 연결했다.
+- 검증: startup claim contract를 포함한 focused tests 5 passed, compileall PASS. API 프로세스에는 무범위 DB 연결을 열지 않아 실제 claim은 privileged worker DB 연결 주입 전까지 빈 결과로 안전하게 대기한다.
+- 미해결: 실제 PostgreSQL/MinIO 통합 검증과 privileged claim 연결은 환경 blocker로 남아 있다. 배포하지 않는다.
