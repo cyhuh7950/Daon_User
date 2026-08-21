@@ -356,3 +356,10 @@
 - 서버 대조: 운영 access log에서 Source 업로드 `202`, 처리 상태 `200`, Source 목록 `200`을 확인했고 API·worker·MinIO 최근 로그에는 오류가 없었다. MinIO 컨테이너는 healthy이며 이번 증상의 직접 원인이 아니다.
 - 조치: 서버가 `notebook_id`로 이미 범위를 제한하는 최신 Source 목록을 그대로 사용하고, Notebook Context Adapter가 Source lifecycle 메서드를 전달하도록 최소 수정했다. 기존 Context·Studio·Knowledge 필터는 유지한다.
 - 현재 상태: 로컬 회귀 테스트 `notebook-context-adapter.test.mjs` 3 passed. 아직 commit·배포·브라우저 삭제/추가 재검증 전이다.
+
+## 2026-08-22T00:05:00+09:00 Source lifecycle 수정 배포
+
+- 커밋/배포: `58cf714`를 `origin/codex/user-auth-screen-split`에 push하고 ysna-server 격리 worktree에서 API·document-worker·Web를 재빌드·재기동했다. 기존 MinIO 컨테이너와 볼륨은 재생성하거나 삭제하지 않았다.
+- 서버 확인: API healthy, Web healthy, document-worker up, object-storage healthy, 공개 Notebook HTTP 200.
+- 검증: `node --test scripts/tests/notebook-context-adapter.test.mjs scripts/tests/product-workspace.test.mjs scripts/tests/source-upload-api.test.mjs` = 33 passed. Web build·TypeScript·product UI boundary 모두 통과.
+- 미실행: 현재 브라우저 자동화 탭이 연결되어 있지 않아 로그인 화면에서의 신규 PDF 선택과 실제 삭제 요청 클릭은 아직 재검증하지 않았다. 기존 Source 삭제는 수행하지 않았다.
