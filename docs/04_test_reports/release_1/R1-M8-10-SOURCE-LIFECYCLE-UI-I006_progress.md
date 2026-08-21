@@ -267,3 +267,10 @@
 - 검증: `node --test scripts/tests/question-answering-api.test.mjs scripts/tests/product-workspace.test.mjs scripts/tests/notebook-api.test.mjs` = 39 passed, 0 failed; 개발 Subagent 보고 기준 Web build/TypeScript/12 pages 및 boundary 392/415 violations 0, `git diff --check` 오류 0.
 - 운영 재현: 수정 전 배포본에서 Source 1건은 표시됐으나 `안녕` 실행 시 “대화를 불러오지 못했습니다”가 재현됐다. 수정본은 아직 재배포 전이다.
 - 다음: 수정본을 검토·commit·push하고 ysna-server에 API/Web/worker를 재배포한 뒤 로그인 세션에서 `안녕` 실제 브라우저 acceptance를 재실행한다.
+
+## 2026-08-21 NotebookLM Task 3 재배포 및 브라우저 acceptance
+
+- 커밋/배포: `6f61e1a` (`fix: accept enriched work-support answers in web client`)를 `origin/codex/user-auth-screen-split`에 push하고, ysna-server 격리 worktree에서 API/document-worker/Web 이미지를 재빌드·재생성했다. 기존 object-storage는 변경하지 않았다.
+- 서버 확인: API healthy, document-worker up, Web healthy, `https://daon-user.sinsan.kr/` = HTTP 200. 기동 직후 일시 502는 Web health-starting 상태였고 8초 후 정상화됐다. 최근 API/Web 로그에 ERROR/Traceback/Exception/FATAL 없음.
+- 브라우저 실제 확인: 로그인 세션에서 Notebook과 Source 1건이 로드되고 `안녕` 질문 실행이 성공했다. 기존 `근거가 부족하여 답변할 수 없습니다` 또는 대화 로드 오류는 재현되지 않았고, LLM 응답 `Hello! How can I assist you today?`와 `작업 상담 · Source 사용` 상태가 표시됐다.
+- 미실행: 실제 PDF file chooser를 통한 새 Source 업로드와 processing worker 202→processing→ready 전 구간, Studio 생성/Provider 설정 변경은 사용자 파일·추가 승인 없이는 실행하지 않았다.
