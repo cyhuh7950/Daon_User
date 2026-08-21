@@ -9,6 +9,7 @@ const SAFE_CREATE_ERRORS = new Set([
   "NOTEBOOK_UNAVAILABLE", "NOTEBOOK_TITLE_INVALID", "IDEMPOTENCY_KEY_REUSED",
   "LICENSE_REQUIRED", "LICENSE_EXPIRED", "LICENSE_RESOURCE_LIMIT_REACHED",
 ]);
+const SAFE_DELETE_ERRORS = new Set(["NOTEBOOK_TITLE_CONFIRMATION_MISMATCH", "NOTEBOOK_ETAG_MISMATCH", "NOTEBOOK_DELETION_IN_PROGRESS", "DELETE_SHARED_DATA_BLOCKED", "RETENTION_HOLD"]);
 const safeText = (value) => typeof value === "string" ? value : "";
 
 function SettingsMenu({ onOpenSetting, onLogout }) {
@@ -62,15 +63,23 @@ function CreateDialog({ onClose, onCreate }) {
   </div>;
 }
 
-function NotebookCard({ notebook, viewMode, onOpenNotebook }) {
-  return <button className={`notebook-card notebook-card-${viewMode}`} type="button" onClick={() => onOpenNotebook?.({ notebookId: notebook.notebook_id, mode: "existing" })} aria-label={`${safeText(notebook.title)} Notebook 열기`}>
+function DeleteDialog({ notebook, onClose, onDelete }) {
+  const [title, setTitle] = useState(""); const [error, setError] = useState(null); const [pending, setPending] = useState(false);
+  const submit = async (event) => { event.preventDefault(); if (title !== notebook.title || pending) return; setPending(true); setError(null); try { await onDelete(notebook, title); onClose(); } catch (e) { setError(SAFE_DELETE_ERRORS.has(e?.message) ? e.message : "NOTEBOOK_DELETE_FAILED"); setPending(false); } };
+  return <div className="notebook-dialog-backdrop"><form className="notebook-dialog" role="dialog" aria-modal="true" onSubmit={submit}><div className="notebook-dialog-heading"><h2>노트북 삭제</h2><button type="button" aria-label="닫기" onClick={onClose}>×</button></div><p>삭제할 노트북: <strong>{notebook.title}</strong></p><label>삭제를 확인하려면 제목을 입력하세요<input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} /></label>{error && <p className="notebook-dialog-error" role="alert">{error}</p>}<div className="notebook-dialog-actions"><button type="button" onClick={onClose}>취소</button><button className="primary" disabled={title !== notebook.title || pending} type="submit">{pending ? "삭제 중…" : "영구 삭제"}</button></div></form></div>;
+}
+
+function NotebookCard({ notebook, viewMode, onOpenNotebook, onDelete }) {
+  const [menu, setMenu] = useState(false); const [deleting, setDeleting] = useState(false);
+  return <div className={`notebook-card notebook-card-${viewMode}`}>
+    <button className="notebook-card-main" type="button" onClick={() => onOpenNotebook?.({ notebookId: notebook.notebook_id, mode: "existing" })} aria-label={`${safeText(notebook.title)} Notebook 열기`}>
     <span className="notebook-card-art" aria-hidden="true"><span>✦</span></span>
     <span className="notebook-card-body"><strong>{safeText(notebook.title)}</strong><span>Source {notebook.source_count} · 산출물 {notebook.output_count}</span><span>{new Date(notebook.updated_at).toLocaleString("ko-KR")} · {STATUS_LABEL[notebook.status] ?? "확인 필요"}</span></span>
     <span className="notebook-card-arrow" aria-hidden="true">›</span>
-  </button>;
+    </button><button type="button" className="notebook-card-menu-button" aria-label={`${safeText(notebook.title)} 메뉴`} aria-expanded={menu} onClick={() => setMenu((v) => !v)}>⋮</button>{menu && <div className="notebook-card-menu" role="menu"><button role="menuitem" type="button" onClick={() => { setMenu(false); setDeleting(true); }}>노트북 삭제</button></div>}{deleting && <DeleteDialog notebook={notebook} onClose={() => setDeleting(false)} onDelete={onDelete} />}</div>;
 }
 
-export function NotebookHome({ state = "ready", notebooks = [], errorCode = null, onReload, onCreate, onOpenNotebook, onOpenSetting, onLogout }) {
+export function NotebookHome({ state = "ready", notebooks = [], errorCode = null, onReload, onCreate, onDelete, onOpenNotebook, onOpenSetting, onLogout }) {
   const surfaceRef = useRef(null);
   const createOpenerRef = useRef(null);
   const [search, setSearch] = useState("");
@@ -110,7 +119,7 @@ export function NotebookHome({ state = "ready", notebooks = [], errorCode = null
       {state === "error" && <div id="notebook-home-error" className="notebook-state notebook-error" role="alert"><strong>Notebook을 불러오지 못했습니다.</strong><span>{safeText(errorCode) || "NOTEBOOK_UNAVAILABLE"}</span><button type="button" onClick={onReload}>다시 시도</button></div>}
       {state === "ready" && notebooks.length === 0 && <div id="notebook-home-empty" className="notebook-state"><span className="notebook-empty-symbol" aria-hidden="true">＋</span><strong>첫 Notebook을 만들어 보세요</strong><span>제목과 선택 설명만 입력하면 빈 작업 공간이 열립니다.</span><button type="button" onClick={(event) => { createOpenerRef.current = event.currentTarget; setCreating(true); }}>새 Notebook</button></div>}
       {state === "ready" && notebooks.length > 0 && <><p className="notebook-result-count" aria-live="polite">Notebook {visible.length}개</p><div className={`notebook-collection ${viewMode}`}>
-        {visible.map((notebook) => <NotebookCard key={notebook.notebook_id} notebook={notebook} viewMode={viewMode} onOpenNotebook={onOpenNotebook} />)}
+        {visible.map((notebook) => <NotebookCard key={notebook.notebook_id} notebook={notebook} viewMode={viewMode} onOpenNotebook={onOpenNotebook} onDelete={onDelete} />)}
         {visible.length === 0 && <div className="notebook-state"><strong>검색 결과가 없습니다.</strong><span>다른 제목으로 검색해 보세요.</span></div>}
       </div></>}
     </section></div>

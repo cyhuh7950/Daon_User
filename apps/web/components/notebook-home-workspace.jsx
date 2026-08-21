@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NotebookHome } from "@daon-user/ui/notebook-home";
-import { createNotebook, getCurrentNotebookSession, listNotebooks } from "../lib/notebook-api.js";
+import { createNotebook, getCurrentNotebookSession, listNotebooks, requestNotebookDeletion, getNotebookDeletion } from "../lib/notebook-api.js";
 import { logoutCurrentSession } from "../lib/auth-api.js";
 import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-route-guard.js";
 
@@ -85,6 +85,20 @@ export function NotebookHomeWorkspace() {
     return result.data;
   };
 
+  const handleDelete = async (notebook, titleConfirmation) => {
+    if (!workspaceId) throw new Error("NOTEBOOK_UNAVAILABLE");
+    const result = await requestNotebookDeletion(workspaceId, notebook.notebook_id, titleConfirmation, {
+      idempotencyKey: `notebook-delete-${crypto.randomUUID()}`, etag: notebook.etag,
+    });
+    let current = result.data;
+    while (current.status === "accepted" || current.status === "deleting") {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      current = (await getNotebookDeletion(workspaceId, notebook.notebook_id, current.deletion_request_id)).data;
+    }
+    if (current.status !== "completed") throw new Error(current.safe_error_code || "NOTEBOOK_DELETE_FAILED");
+    setNotebooks((items) => items.filter((item) => item.notebook_id !== notebook.notebook_id));
+  };
+
   const openNotebook = ({ notebookId }) => {
     window.location.assign(`/notebooks/${encodeURIComponent(notebookId)}`);
   };
@@ -120,6 +134,7 @@ export function NotebookHomeWorkspace() {
     errorCode={errorCode}
     onReload={() => void load()}
     onCreate={handleCreate}
+    onDelete={handleDelete}
     onOpenNotebook={openNotebook}
     onOpenSetting={handleOpenSetting}
     onLogout={() => void handleLogout()}
