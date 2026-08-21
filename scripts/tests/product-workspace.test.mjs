@@ -158,6 +158,33 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     assert.equal(transientLoads, 2);
     assert.match(transientContainer.textContent, /Source를 추가해 주세요/u);
     assert.doesNotMatch(transientContainer.textContent, /Source를 불러오지 못했습니다/u);
+
+    await act(async () => reactRoot.unmount());
+    reactRoot = null;
+    const delayedKnowledge = deferred();
+    const delayedStudio = deferred();
+    const emptyContextContainer = dom.document.createElement("div"); dom.document.body.appendChild(emptyContextContainer);
+    const emptyContextAdapter = {
+      ...adapter,
+      notebookContext: { notebook_id: "notebook-empty", sources: [] },
+      async listSources() { return []; },
+      async listKnowledgePackages() { return delayedKnowledge.promise; },
+      async listStudioOutputs() { return delayedStudio.promise; },
+    };
+    reactRoot = createRoot(emptyContextContainer);
+    await act(async () => {
+      reactRoot.render(createElement(ProductWorkspaceShell, {
+        workspaceId: "workspace-1",
+        adapter: emptyContextAdapter,
+        state: createProductWorkspaceState({ status: "error", safeError: "SOURCE_LIST_FAILED" }),
+      }));
+      await Promise.resolve(); await Promise.resolve();
+    });
+    assert.match(emptyContextContainer.textContent, /Source를 추가해 주세요/u);
+    assert.doesNotMatch(emptyContextContainer.textContent, /Source를 불러오지 못했습니다/u);
+    delayedKnowledge.resolve([]);
+    delayedStudio.resolve([]);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     dom.restore(); await rm(output, { recursive: true, force: true });
