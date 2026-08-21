@@ -236,6 +236,7 @@ class RuntimeSettings:
     max_header_bytes: int = 16_384
     request_timeout_seconds: float = 30.0
     drain_timeout_seconds: float = 10.0
+    dev_auth_bypass: bool = False
 
     def __post_init__(self) -> None:
         if self.profile not in {"test", "development", "production"}:
@@ -350,6 +351,7 @@ class RuntimeSettings:
             source_upload_max_bytes=int(
                 os.environ.get("DAON_SOURCE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024))
             ),
+            dev_auth_bypass=os.environ.get("DAON_DEV_AUTH_BYPASS", "false").lower() == "true",
         )
 
 
@@ -1174,6 +1176,23 @@ def _license_context(
 
 
 def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityPrincipal:
+    if dependencies.settings.dev_auth_bypass and dependencies.settings.profile in {"test", "development"}:
+        principal = IdentityPrincipal(
+            user_id="dev-user", session_id="dev-session", device_id="dev-device", tenant_id="dev-tenant",
+        )
+        workspace_match = re.search(r"/workspaces/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})", request.url.path)
+        if workspace_match:
+            dependencies.authorization_repository.bootstrap_workspace(
+                tenant_id=principal.tenant_id,
+                workspace_id=workspace_match.group(1),
+                owner_user_id=principal.user_id,
+                owner_role=Role.PERSONAL_OWNER,
+                workspace_kind="personal",
+                data_area="cloud_sync",
+                cost_limit_cents=1000,
+                now=datetime.now(timezone.utc),
+            )
+        return principal
     token, expected_kind = _credential(request)
     view = dependencies.identity_service.describe_access(
         token,
@@ -2748,6 +2767,31 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.get("/api/v1/session")
     async def session(request: Request) -> dict[str, object]:
+        if dependencies.settings.dev_auth_bypass and dependencies.settings.profile in {"test", "development"}:
+            principal = IdentityPrincipal(
+                user_id="dev-user", session_id="dev-session", device_id="dev-device", tenant_id="dev-tenant",
+            )
+            workspace_id = dependencies.authorization_repository.primary_workspace_id(principal.tenant_id) or "dev-workspace"
+            dependencies.authorization_repository.bootstrap_workspace(
+                tenant_id=principal.tenant_id,
+                workspace_id=workspace_id,
+                owner_user_id=principal.user_id,
+                owner_role=Role.PERSONAL_OWNER,
+                workspace_kind="personal",
+                data_area="cloud_sync",
+                cost_limit_cents=1000,
+                now=datetime.now(timezone.utc),
+            )
+            return {
+                "data": {
+                    "user_id": principal.user_id, "tenant_id": principal.tenant_id,
+                    "workspace_id": workspace_id, "session_id": principal.session_id,
+                    "device_id": principal.device_id, "client_kind": ClientKind.WEB.value,
+                    "delivery": "development_bypass", "expires_at": "2099-01-01T00:00:00Z",
+                    "recovery_operations": [],
+                },
+                "meta": {"trace_id": request.state.trace_id},
+            }
         token, expected_kind = _credential(request)
         view = dependencies.identity_service.describe_access(
             token, trace_id=request.state.trace_id,
