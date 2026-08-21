@@ -185,8 +185,17 @@ function routeFor(method, segments) {
     segments.length === 4 && segments[0] === "workspaces"
     && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3])
   ) {
-    return new Set(["GET", "PATCH"]).has(method)
+    return new Set(["GET", "PATCH", "DELETE"]).has(method)
       ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 6 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3])
+    && segments[4] === "deletion-requests" && SAFE_SEGMENT.test(segments[5])
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/deletion-requests/${encodeURIComponent(segments[5])}`, query: null }
       : { methodRejected: true };
   }
   if (

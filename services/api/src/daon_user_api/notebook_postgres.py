@@ -14,6 +14,7 @@ from .notebook import (
     NotebookConversationCitation,
     NotebookConversationView,
     NotebookContext,
+    NotebookDeletionView,
     NotebookError,
     NotebookHomeView,
     NotebookSelectedContext,
@@ -82,6 +83,40 @@ class PostgresNotebookRepository:
         if result is None:
             raise NotebookError("NOTEBOOK_STATE_INVALID", 503)
         return self._view(result)
+
+    @staticmethod
+    def _deletion_view(row) -> NotebookDeletionView:  # type: ignore[no-untyped-def]
+        return NotebookDeletionView(str(row[0]), str(row[1]), str(row[2]), str(row[3]), int(row[4]), None if row[5] is None else str(row[5]), row[6], row[7])
+
+    def request_deletion(self, context: NotebookContext, notebook_id: str, *, title_confirmation: str, expected_etag: str, idempotency_key: str, request_fingerprint: str, now) -> tuple[NotebookDeletionView, bool]:  # type: ignore[no-untyped-def]
+        try:
+            with self._store._transaction(self._context(context)) as connection:
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (f"notebook-delete|{context.tenant_id}|{context.workspace_id}|{notebook_id}",))
+                replay = connection.execute("SELECT request_fingerprint,request_id,notebook_id,state,current_step,attempts,safe_error_code,requested_at,completed_at FROM notebook_deletion_requests WHERE tenant_id=%s AND workspace_id=%s AND actor_id=%s AND idempotency_key=%s", (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key)).fetchone()
+                if replay is not None:
+                    if str(replay[0]) != request_fingerprint: raise NotebookError("IDEMPOTENCY_KEY_REUSED", 409)
+                    return self._deletion_view(replay[1:]), True
+                row = connection.execute("SELECT m.version,m.title FROM notebooks n JOIN notebook_metadata_versions m ON m.tenant_id=n.tenant_id AND m.workspace_id=n.workspace_id AND m.notebook_id=n.notebook_id AND m.is_current=true WHERE n.tenant_id=%s AND n.workspace_id=%s AND n.notebook_id=%s", (context.tenant_id, context.workspace_id, notebook_id)).fetchone()
+                if row is None: raise NotebookError("NOTEBOOK_NOT_FOUND", 404)
+                if str(row[1]) != title_confirmation: raise NotebookError("NOTEBOOK_TITLE_CONFIRMATION_MISMATCH", 409)
+                if expected_etag != f'"notebook:{int(row[0])}"': raise NotebookError("NOTEBOOK_ETAG_MISMATCH", 412)
+                active = connection.execute("SELECT 1 FROM notebook_deletion_requests WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s AND state IN ('accepted','deleting')", (context.tenant_id, context.workspace_id, notebook_id)).fetchone()
+                if active is not None: raise NotebookError("NOTEBOOK_DELETION_IN_PROGRESS", 409)
+                request_id = "notebook-deletion-" + hashlib.sha256(f"{context.tenant_id}|{context.workspace_id}|{notebook_id}|{idempotency_key}".encode()).hexdigest()[:32]
+                inserted = connection.execute("INSERT INTO notebook_deletion_requests (request_id,tenant_id,workspace_id,notebook_id,actor_id,title_fingerprint,state,current_step,attempts,safe_error_code,requested_at,idempotency_key,expected_version,request_fingerprint) VALUES (%s,%s,%s,%s,%s,%s,'accepted','accepted',0,NULL,%s,%s,%s,%s) RETURNING request_id,notebook_id,state,current_step,attempts,safe_error_code,requested_at,completed_at", (request_id, context.tenant_id, context.workspace_id, notebook_id, context.actor_id, hashlib.sha256(title_confirmation.encode()).hexdigest(), now, idempotency_key, int(row[0]), request_fingerprint)).fetchone()
+                connection.execute("INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,after_value,metadata) VALUES (%s,%s,%s,%s,'notebook.deletion_requested','notebook',%s,'succeeded',%s,%s,%s,%s)", ("notebook-audit-" + hashlib.sha256(request_id.encode()).hexdigest()[:24], context.tenant_id, context.workspace_id, context.actor_id, notebook_id, context.trace_id, context.policy_version, Jsonb({"request_id": request_id}), Jsonb({"reason_code": "NOTEBOOK_DELETION_REQUESTED"})))
+                return self._deletion_view(inserted), False
+        except NotebookError: raise
+        except CloudDatabaseError as error: raise NotebookError("NOTEBOOK_UNAVAILABLE", 503) from error
+
+    def get_deletion(self, context: NotebookContext, notebook_id: str, request_id: str) -> NotebookDeletionView:
+        try:
+            with self._store._transaction(self._context(context)) as connection:
+                row = connection.execute("SELECT request_id,notebook_id,state,current_step,attempts,safe_error_code,requested_at,completed_at FROM notebook_deletion_requests WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s AND request_id=%s", (context.tenant_id, context.workspace_id, notebook_id, request_id)).fetchone()
+                if row is None: raise NotebookError("NOTEBOOK_DELETION_NOT_FOUND", 404)
+                return self._deletion_view(row)
+        except NotebookError: raise
+        except CloudDatabaseError as error: raise NotebookError("NOTEBOOK_UNAVAILABLE", 503) from error
 
     def create(self, context: NotebookContext, *, title: str, description: str | None, idempotency_key: str, request_fingerprint: str, now) -> tuple[NotebookHomeView, bool]:  # type: ignore[no-untyped-def]
         try:

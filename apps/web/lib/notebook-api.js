@@ -4,6 +4,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const VIEW_KEYS = Object.freeze(["notebook_id", "title", "source_count", "output_count", "updated_at", "status"]);
 const META_KEYS = Object.freeze(["trace_id", "workspace_id", "replayed"]);
 const STATUSES = Object.freeze(["empty", "active", "attention"]);
+const DELETION_STATUSES = Object.freeze(["accepted", "deleting", "completed", "failed"]);
 const CONTEXT_KEYS = Object.freeze([
   "notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids",
   "studio_output_ids", "output_version_ids", "generation_settings_ids",
@@ -30,6 +31,11 @@ function timestamp(value) {
 
 function validEtag(value) {
   return typeof value === "string" && /^"notebook:[1-9][0-9]*"$/u.test(value);
+}
+
+function validDeletion(value) {
+  return exact(value, ["request_id", "notebook_id", "status"], ["current_step", "attempts", "safe_error_code", "requested_at", "completed_at"])
+    && safeId(value.request_id) && safeId(value.notebook_id) && DELETION_STATUSES.includes(value.status);
 }
 
 function validView(value) {
@@ -178,4 +184,29 @@ export async function updateNotebookTitle(workspaceId, notebookId, title, { fetc
   if (!safeId(notebookId) || typeof title !== "string" || typeof etag !== "string") throw new Error("NOTEBOOK_INPUT_INVALID");
   const response = await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}`, { ...writeOptions("PATCH", { title }, idempotencyKey, etag), signal });
   return decode(response, { requireEtag: true });
+}
+
+export async function requestNotebookDeletion(workspaceId, notebookId, title, { fetchImpl = fetch, signal, idempotencyKey, etag } = {}) {
+  if (!safeId(notebookId) || typeof title !== "string" || !title.trim() || typeof etag !== "string" || !safeId(idempotencyKey) || idempotencyKey.length < 16 || !validEtag(etag)) throw new Error("NOTEBOOK_INPUT_INVALID");
+  const response = await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}`, {
+    method: "DELETE", credentials: "same-origin", cache: "no-store", signal,
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey, "If-Match": etag },
+    body: JSON.stringify({ title_confirmation: title }),
+  });
+  let payload;
+  try { payload = await response.json(); } catch { throw new Error("NOTEBOOK_RESPONSE_INVALID"); }
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "NOTEBOOK_UNAVAILABLE");
+  if (!exact(payload, ["data", "meta"]) || !exact(payload.data, ["deletion_request_id", "status"])
+      || !safeId(payload.data.deletion_request_id) || !DELETION_STATUSES.includes(payload.data.status)) throw new Error("NOTEBOOK_RESPONSE_INVALID");
+  return payload;
+}
+
+export async function getNotebookDeletion(workspaceId, notebookId, requestId, { fetchImpl = fetch, signal } = {}) {
+  if (!safeId(notebookId) || !safeId(requestId)) throw new Error("NOTEBOOK_INPUT_INVALID");
+  const response = await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/deletion-requests/${encodeURIComponent(requestId)}`, { method: "GET", credentials: "same-origin", cache: "no-store", signal });
+  let payload;
+  try { payload = await response.json(); } catch { throw new Error("NOTEBOOK_RESPONSE_INVALID"); }
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "NOTEBOOK_UNAVAILABLE");
+  if (!exact(payload, ["data", "meta"]) || !validDeletion(payload.data)) throw new Error("NOTEBOOK_RESPONSE_INVALID");
+  return payload;
 }

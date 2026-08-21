@@ -124,6 +124,18 @@ class NotebookSourceDeletionView:
 
 
 @dataclass(frozen=True, slots=True)
+class NotebookDeletionView:
+    request_id: str
+    notebook_id: str
+    state: str
+    current_step: str
+    attempts: int
+    safe_error_code: str | None
+    requested_at: datetime
+    completed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class NotebookSelectedContext:
     notebook_id: str
     sources: tuple[tuple[str, str], ...]
@@ -178,6 +190,13 @@ class NotebookRepository(Protocol):
         source_version_id: str, expected_etag: str, idempotency_key: str,
         request_fingerprint: str, now: datetime,
     ) -> tuple[NotebookBindingChangeView, bool]: ...
+    def request_deletion(
+        self, context: NotebookContext, notebook_id: str, *, title_confirmation: str,
+        expected_etag: str, idempotency_key: str, request_fingerprint: str, now: datetime,
+    ) -> tuple[NotebookDeletionView, bool]: ...
+    def get_deletion(
+        self, context: NotebookContext, notebook_id: str, request_id: str,
+    ) -> NotebookDeletionView: ...
 
 
 def _canonical_text(value: object, *, field: str, minimum: int, maximum: int) -> str:
@@ -314,6 +333,32 @@ class NotebookService:
             idempotency_key=key, request_fingerprint=fingerprint, now=self._clock(),
         )
 
+    def request_deletion(
+        self, context: NotebookContext, notebook_id: object, *, title_confirmation: object,
+        expected_etag: object, idempotency_key: object,
+    ) -> tuple[NotebookDeletionView, bool]:
+        notebook = _binding(notebook_id, field="NOTEBOOK_ID")
+        title = _canonical_text(title_confirmation, field="TITLE_CONFIRMATION", minimum=1, maximum=120)
+        if not isinstance(expected_etag, str) or re.fullmatch(r'"notebook:[1-9][0-9]*"', expected_etag) is None:
+            raise NotebookError("NOTEBOOK_ETAG_INVALID")
+        key = _key(idempotency_key)
+        fingerprint = _fingerprint({
+            "tenant_id": context.tenant_id, "workspace_id": context.workspace_id,
+            "actor_id": context.actor_id, "notebook_id": notebook,
+            "title_confirmation": title, "expected_etag": expected_etag,
+        })
+        return self._repository.request_deletion(
+            context, notebook, title_confirmation=title, expected_etag=expected_etag,
+            idempotency_key=key, request_fingerprint=fingerprint, now=self._clock(),
+        )
+
+    def get_deletion(
+        self, context: NotebookContext, notebook_id: object, request_id: object,
+    ) -> NotebookDeletionView:
+        notebook = _binding(notebook_id, field="NOTEBOOK_ID")
+        request = _binding(request_id, field="REQUEST_ID")
+        return self._repository.get_deletion(context, notebook, request)
+
     def bind_verified(
         self, context: NotebookContext, notebook_id: object, *, binding_kind: object,
         record_id: object, version_id: object = None,
@@ -389,6 +434,8 @@ class ReferenceNotebookRepository:
         self._activities: dict[tuple[str, str, str], list[NotebookActivity]] = {}
         self._binding_terminations: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
         self._unbind_idempotency: dict[tuple[str, str, str, str], tuple[str, NotebookBindingChangeView]] = {}
+        self._deletions: dict[tuple[str, str, str], tuple[str, NotebookDeletionView]] = {}
+        self._deletion_idempotency: dict[tuple[str, str, str, str], tuple[str, NotebookDeletionView]] = {}
 
     @staticmethod
     def _scope(context: NotebookContext, notebook_id: str) -> tuple[str, str, str]:
@@ -516,3 +563,37 @@ class ReferenceNotebookRepository:
             self._unbind_idempotency[idem_scope] = (request_fingerprint, view)
             self._activities[scope].append(NotebookActivity(context.tenant_id, context.workspace_id, notebook_id, "context_unbound", now, context.actor_id))
             return view, False
+
+    def request_deletion(self, context: NotebookContext, notebook_id: str, *, title_confirmation: str, expected_etag: str, idempotency_key: str, request_fingerprint: str, now: datetime) -> tuple[NotebookDeletionView, bool]:
+        scope = self._scope(context, notebook_id)
+        idem_scope = (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key)
+        with self._lock:
+            replay = self._deletion_idempotency.get(idem_scope)
+            if replay is not None:
+                if replay[0] != request_fingerprint:
+                    raise NotebookError("IDEMPOTENCY_KEY_REUSED", 409)
+                return replay[1], True
+            if scope not in self._notebooks:
+                raise NotebookError("NOTEBOOK_NOT_FOUND", 404)
+            current = self._metadata[scope][-1]
+            if current.title != title_confirmation:
+                raise NotebookError("NOTEBOOK_TITLE_CONFIRMATION_MISMATCH", 409)
+            if expected_etag != f'"notebook:{current.version}"':
+                raise NotebookError("NOTEBOOK_ETAG_MISMATCH", 412)
+            if scope in self._deletions and self._deletions[scope][1].state in {"accepted", "deleting"}:
+                raise NotebookError("NOTEBOOK_DELETION_IN_PROGRESS", 409)
+            request_id = "notebook-deletion-" + hashlib.sha256(f"{context.tenant_id}|{context.workspace_id}|{notebook_id}|{idempotency_key}".encode()).hexdigest()[:32]
+            view = NotebookDeletionView(request_id, notebook_id, "accepted", "accepted", 0, None, now, None)
+            self._deletions[scope] = (request_fingerprint, view)
+            self._deletion_idempotency[idem_scope] = (request_fingerprint, view)
+            return view, False
+
+    def get_deletion(self, context: NotebookContext, notebook_id: str, request_id: str) -> NotebookDeletionView:
+        scope = self._scope(context, notebook_id)
+        with self._lock:
+            if scope not in self._notebooks:
+                raise NotebookError("NOTEBOOK_NOT_FOUND", 404)
+            item = self._deletions.get(scope)
+            if item is None or item[1].request_id != request_id:
+                raise NotebookError("NOTEBOOK_DELETION_NOT_FOUND", 404)
+            return item[1]

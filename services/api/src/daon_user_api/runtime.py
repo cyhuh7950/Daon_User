@@ -173,6 +173,7 @@ from .license import (
 from .license_postgres import PostgresLicenseRepository, enforce_license_creation
 from .notebook import (
     NotebookContext, NotebookError, NotebookHomeView, NotebookService,
+    NotebookDeletionView,
     ReferenceNotebookRepository,
 )
 from .notebook_postgres import PostgresNotebookRepository
@@ -821,6 +822,11 @@ class NotebookCreateBody(BaseModel):
 class NotebookTitleBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=240)
+
+
+class NotebookDeletionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title_confirmation: str = Field(min_length=1, max_length=240)
 
 
 class NotebookSourceUnbindBody(BaseModel):
@@ -1644,6 +1650,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         public_codes = {
             "NOTEBOOK_NOT_FOUND", "NOTEBOOK_TITLE_INVALID", "NOTEBOOK_DESCRIPTION_INVALID",
             "NOTEBOOK_ETAG_INVALID", "NOTEBOOK_ETAG_MISMATCH", "NOTEBOOK_UNAVAILABLE",
+            "NOTEBOOK_TITLE_CONFIRMATION_MISMATCH", "NOTEBOOK_DELETION_IN_PROGRESS",
+            "NOTEBOOK_DELETION_NOT_FOUND", "DELETE_SHARED_DATA_BLOCKED", "RETENTION_HOLD",
             "LICENSE_NOT_CONFIGURED", "LICENSE_EXPIRED", "LICENSE_FEATURE_NOT_ALLOWED",
             "LICENSE_RESOURCE_LIMIT_REACHED", "IDEMPOTENCY_KEY_INVALID", "IDEMPOTENCY_KEY_REUSED",
         }
@@ -2858,6 +2866,15 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "updated_at": view.updated_at, "status": view.status,
         }
 
+    def notebook_deletion_json(view: NotebookDeletionView) -> dict[str, object]:
+        return {
+            "request_id": view.request_id, "notebook_id": view.notebook_id,
+            "status": view.state, "current_step": view.current_step,
+            "attempts": view.attempts, "safe_error_code": view.safe_error_code,
+            "requested_at": view.requested_at.isoformat().replace("+00:00", "Z"),
+            "completed_at": view.completed_at.isoformat().replace("+00:00", "Z") if view.completed_at else None,
+        }
+
     def notebook_context_json(selected) -> dict[str, object]:  # type: ignore[no-untyped-def]
         return {
             "notebook_id": selected.notebook_id,
@@ -2964,6 +2981,47 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         })
         response.headers["ETag"] = view.etag
         return response
+
+    @app.delete("/api/v1/workspaces/{id}/notebooks/{notebook_id}", status_code=202)
+    async def request_notebook_deletion(
+        id: str, notebook_id: str, body: NotebookDeletionBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        if_match: str = Header(alias="If-Match"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _egress_idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        view, replayed = await asyncio.to_thread(
+            notebook_service.request_deletion, notebook_context(principal, id, request), notebook_id,
+            title_confirmation=body.title_confirmation, expected_etag=if_match,
+            idempotency_key=idempotency_key,
+        )
+        return JSONResponse({
+            "data": {"deletion_request_id": view.request_id, "status": view.state},
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id, "replayed": replayed},
+        }, status_code=200 if replayed else 202)
+
+    @app.get("/api/v1/workspaces/{id}/notebooks/{notebook_id}/deletion-requests/{request_id}")
+    async def get_notebook_deletion(
+        id: str, notebook_id: str, request_id: str, request: Request,
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        view = await asyncio.to_thread(
+            notebook_service.get_deletion, notebook_context(principal, id, request), notebook_id, request_id,
+        )
+        return JSONResponse({
+            "data": notebook_deletion_json(view),
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        })
 
     @app.get("/api/v1/workspaces/{id}/notebooks/{notebook_id}/context")
     async def get_notebook_selected_context(

@@ -79,6 +79,7 @@ class ObjectStoragePort(Protocol):
     ) -> StoredObject: ...
 
     def get(self, key: str) -> bytes: ...
+    def delete(self, key: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +325,14 @@ class MinioObjectStorageAdapter:
             if response is not None:
                 response.close()
                 response.release_conn()
+
+    def delete(self, key: str) -> None:
+        if not isinstance(key, str) or not key or not key.isascii():
+            raise ObjectStorageError("OBJECT_KEY_INVALID", retryable=False)
+        try:
+            self._client.remove_object(self._bucket, key)
+        except Exception as error:
+            raise self._safe_error(error) from None
 
 
 @dataclass(frozen=True, slots=True)
