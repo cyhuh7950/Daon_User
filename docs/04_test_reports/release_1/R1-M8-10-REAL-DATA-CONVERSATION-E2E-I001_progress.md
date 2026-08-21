@@ -175,3 +175,19 @@
 - actual RED에서 same run/wire/frozen + 다른 request fingerprint follower가 owner 결과를 받은 결함을 재현했다.
 - stored complete canonical exact 비교와 완료 후 fingerprint-aware replay로 교정했다. mismatch follower는 409, Provider 추가 호출0, 결과0, 추가 write0이다.
 - fresh actual PostgreSQL 4/4, focused API39/39, full API490 passed/42 skipped/137 subtests, Node27/27, OpenAPI·Ruff PASS, cleanup db0/role0이다.
+
+## 2026-08-21 09:29 KST — 운영 제품 E2E 읽기 전용 사전점검
+
+- 실제 로그인된 `https://daon-user.sinsan.kr` 제품 화면에서 선택 Notebook `notebook-1c67a1adb2bd6a132f57ca429ceef091`을 읽기 전용으로 확인했다. 현재 Daon 승인 지식 0, Raw Source 0, 저장된 Studio 산출물 0이며 질문 실행은 비활성 상태다.
+- 조직 및 Workspace effective 정책은 모두 `승인된 외부 전송 허용`이다. exact 값은 mode `allow_approved_external`, provider kind `external_api`, destinations `api.upstage.ai,api.groq.com,api.mistral.ai`, classification `internal`, max bytes `1048576`, masking/redaction enabled, required approver `organization_admin`이다.
+- LLM 설정은 UPSTAGE가 활성·Credential 설정됨·연결 미확인이고, GROQ/MISTRAL을 포함한 나머지는 비활성이다. Endpoint/Credential 원문은 읽거나 기록하지 않았다.
+- Source upload, 정책/DB write, 연결 시험, 질문, Studio 생성, 외부 Provider 호출은 모두 0이다. Browser console warn/error도 0이었다.
+- 실제 E2E의 다음 경계는 non-sensitive PDF Source 등록이다. 후보는 공개 제품 문서 `docs/manual/dist/daon-knowledge-llm-guide.pdf`(172473 bytes, SHA256 `BC3560C70E225FF7BA1F01AF4DDE72A4975EE1DDE6487605EE1CCCD2D9528259`)다. 업로드 및 UPSTAGE 전송 직전 사용자에게 대상 도메인, 파일, 일반대화/근거질문 문구와 bounded Source excerpt 전송 범위를 명시해 승인을 받아야 한다.
+
+## 2026-08-21 운영 Source 목록 `SOURCE_LIST_INPUT_INVALID` TDD 복구
+
+- 운영상태 Provider/API/Storage/Queue는 모두 정상인 반면, 선택 Notebook의 Source GET만 `SOURCE_LIST_INPUT_INVALID`로 실패했다. 원인은 `ProductWorkspaceShell`이 `adapter.listSources({signal})`을 호출할 때 선택 Notebook ID를 넘기지 않고, Web 기본 Adapter도 Workspace ID만 보유해 `listWorkspaceSources`의 notebook scope 입력 검증에서 차단된 것이다.
+- RED: 실제 Web Adapter focused React test에서 선택 Notebook으로 factory를 구성하고 `listSources()`를 호출하면 `SOURCE_LIST_INPUT_INVALID`가 발생했다(`0/1`).
+- GREEN: `createWebProductWorkspaceAdapter(workspaceId, notebookId)`가 선택 Notebook ID를 immutable closure로 보유하고 Source list/upload/processing/question/Citation/Studio read-write 옵션에 canonical scope를 결속한다. `NotebookProductWorkspace`는 검증된 Context의 `notebook_id`만 factory와 `ActualWorkspace`에 전달하며, 공개 route/DTO 변경은 0이다.
+- 검증: Web Adapter focused React `1/1 PASS`; Source·Context·Question·Studio·BFF 회귀 `27/27 PASS`; 제품 파일 lint `2 files PASS`; Web production build·TypeScript·12 static pages·boundary `391 files / violations0 PASS`다. 전체 test file lint는 과거 contract fixture의 내부 URL 문자열 4건 때문에 실패했으며 이번 변경과 무관해 제품 파일 lint로 분리했다.
+- 실제 PDF upload, DB write, Provider call, connection test는 계속 0이다. 배포 전 상태이며 운영 화면은 현재 배포본이므로 수정 적용 전까지 Source GET 실패가 유지된다.

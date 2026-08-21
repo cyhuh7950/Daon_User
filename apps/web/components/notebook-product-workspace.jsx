@@ -84,7 +84,7 @@ export function NotebookProductWorkspace({ notebookId }) {
 
   const adapter = useMemo(() => view.state === "ready"
     ? createNotebookContextWorkspaceAdapter(
-      createWebProductWorkspaceAdapter(view.workspaceId), view.context,
+      createWebProductWorkspaceAdapter(view.workspaceId, view.context.notebook_id), view.context,
     )
     : null, [view]);
 
@@ -107,6 +107,6 @@ export function NotebookProductWorkspace({ notebookId }) {
   </main>;
   return <div ref={protectedRoot} hidden={!sessionValidated} inert={!sessionValidated}
     aria-hidden={!sessionValidated ? "true" : undefined} data-session-validated={sessionValidated ? "true" : "false"}>
-    <ActualWorkspace workspaceId={view.workspaceId} adapter={adapter} onLogout={() => void handleLogout()} />
+    <ActualWorkspace workspaceId={view.workspaceId} notebookId={view.context.notebook_id} adapter={adapter} onLogout={() => void handleLogout()} />
   </div>;
 }

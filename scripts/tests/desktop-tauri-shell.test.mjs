@@ -627,30 +627,34 @@ test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·un
 
     const calls = [];
     globalThis.fetch = async (url, init = {}) => {
-      calls.push({ url, method: init.method ?? "GET", signal: init.signal });
+      calls.push({ url, method: init.method ?? "GET", signal: init.signal, body: init.body });
+      if ((init.method ?? "GET") === "GET" && String(url).includes("/sources?notebook_id=")) return Response.json({ data: { sources: [] }, meta: { trace_id: "trace-source-list-1", workspace_id: "workspace-1" } });
       if (String(url).endsWith("/sources")) return Response.json({ data: { source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32), digest_sha256: "b".repeat(64), byte_size: 128, status: "accepted", replayed: false, processing_run_id: "run-1", processing_state: "queued", job_state: "queued" }, meta: { trace_id: "trace-upload-1", workspace_id: "workspace-1" } }, { status: 202 });
       if (String(url).includes("/processing-runs/")) return Response.json({ data: { processing_run_id: "run-1", source_id: "source-1", source_version_id: "version-1", processing_state: "completed", source_state: "ready", job_state: "completed", safe_error_code: null }, meta: { trace_id: "trace-processing-1", workspace_id: "workspace-1" } });
       if (String(url).endsWith("/questions")) return Response.json({ data: { run_id: "answer-run-1", run_result_id: "answer-result-1", answer: "근거 답변", insufficient: false, citations: [{ citation_id: "citation-1", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-1", page: 2, origin: "raw_source", context_item_id: "source-1", locator: { kind: "page", value: "2" } }] }, meta: { trace_id: "trace-question-1", workspace_id: "workspace-1" } });
       throw new Error(`unexpected:${url}`);
     };
-    const adapter = workspaceModule.createWebProductWorkspaceAdapter("workspace-1");
+    const adapter = workspaceModule.createWebProductWorkspaceAdapter("workspace-1", "notebook-1");
+    assert.deepEqual(await adapter.listSources(), []);
     const uploadController = new AbortController();
     const upload = await adapter.uploadPdf(
       { name: "actual.pdf", type: "application/pdf" },
-      { signal: uploadController.signal, notebookId: "notebook-1" }
+      { signal: uploadController.signal }
     );
     const processingController = new AbortController();
-    const processing = await adapter.getProcessingStatus(upload.processing_run_id, { signal: processingController.signal, notebookId: "notebook-1" });
-    const answer = await adapter.askQuestion({ sourceId: upload.source_id, sourceVersionId: upload.source_version_id, question: "근거는?", notebookId: "notebook-1" });
-    const citation = adapter.citationUrl(answer.citations[0], { notebookId: "notebook-1" });
+    const processing = await adapter.getProcessingStatus(upload.processing_run_id, { signal: processingController.signal });
+    const answer = await adapter.askQuestion({ sourceId: upload.source_id, sourceVersionId: upload.source_version_id, question: "근거는?" });
+    const citation = adapter.citationUrl(answer.citations[0]);
     assert.deepEqual(calls.map((call) => call.url), [
+      "/bff/api/workspaces/workspace-1/sources?notebook_id=notebook-1",
       "/bff/api/workspaces/workspace-1/sources",
       "/bff/api/workspaces/workspace-1/processing-runs/run-1?notebook_id=notebook-1",
       "/bff/api/workspaces/workspace-1/questions"
     ]);
+    assert.equal(JSON.parse(calls[3].body).notebook_id, "notebook-1");
     assert.equal(processing.job_state, "completed");
-    assert.equal(calls[0].signal, uploadController.signal, "actual upload fetch가 operation AbortSignal을 전달해야 한다");
-    assert.equal(calls[1].signal, processingController.signal, "actual status fetch가 polling AbortSignal을 전달해야 한다");
+    assert.equal(calls[1].signal, uploadController.signal, "actual upload fetch가 operation AbortSignal을 전달해야 한다");
+    assert.equal(calls[2].signal, processingController.signal, "actual status fetch가 polling AbortSignal을 전달해야 한다");
     assert.equal(citation, "/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1#page=2");
 
     const container = dom.document.createElement("div");

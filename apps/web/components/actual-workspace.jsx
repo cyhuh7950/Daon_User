@@ -11,9 +11,15 @@ import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
 import { downloadManualAsset, getManualManifest, readManualDocument } from "../lib/manual-api.js";
 
-export function createWebProductWorkspaceAdapter(workspaceId) {
+export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
+  const notebookOptions = (options = {}) => (notebookId
+    ? { ...options, notebookId }
+    : options);
+  const notebookInput = (input = {}) => (notebookId
+    ? { ...input, notebookId }
+    : input);
   return Object.freeze({
-    listSources: (options) => listWorkspaceSources(workspaceId, options),
+    listSources: (options) => listWorkspaceSources(workspaceId, notebookOptions(options)),
     listKnowledgePackages: (options) => listWorkspaceKnowledgePackages(workspaceId, options),
     getOperationsStatus: (options) => getWorkspaceOperationsStatus(workspaceId, options),
     getOutputVersionSettings: (options) => getWorkspaceOutputVersionSettings(workspaceId, options),
@@ -26,24 +32,24 @@ export function createWebProductWorkspaceAdapter(workspaceId) {
     getManualManifest,
     readManual: (documentId, manifest, options) => readManualDocument(documentId, { ...options, manifest }),
     downloadManual: (documentId, format, manifest, options) => downloadManualAsset(documentId, format, { ...options, manifest }),
-    uploadPdf: (file, options) => uploadPdfSource(workspaceId, file, options),
-    getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, options),
-    askQuestion: (input, options) => askGroundedQuestion(workspaceId, input, options),
-    citationUrl: (citation, options) => citationContentUrl(workspaceId, citation, options),
-    createReport: (input, options) => createGroundedReport(workspaceId, input, options),
-    listStudioOutputs: (options) => listStudioOutputs(workspaceId, options),
-    listProductStudioOutputs: (options) => listProductStudioOutputs(workspaceId, options),
-    createGeneration: (input, options) => createStudioGeneration(workspaceId, input, options),
-    createStudioVersion: (outputId, input, options) => createStudioVersion(workspaceId, outputId, input, options),
-    listStudioVersions: (outputId, options) => listStudioVersions(workspaceId, outputId, options),
-    createStudioAction: (action, input, options) => createStudioAction(workspaceId, action, input, options),
+    uploadPdf: (file, options) => uploadPdfSource(workspaceId, file, notebookOptions(options)),
+    getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, notebookOptions(options)),
+    askQuestion: (input, options) => askGroundedQuestion(workspaceId, notebookInput(input), options),
+    citationUrl: (citation, options) => citationContentUrl(workspaceId, citation, notebookOptions(options)),
+    createReport: (input, options) => createGroundedReport(workspaceId, input, notebookOptions(options)),
+    listStudioOutputs: (options) => listStudioOutputs(workspaceId, notebookOptions(options)),
+    listProductStudioOutputs: (options) => listProductStudioOutputs(workspaceId, notebookOptions(options)),
+    createGeneration: (input, options) => createStudioGeneration(workspaceId, input, notebookOptions(options)),
+    createStudioVersion: (outputId, input, options) => createStudioVersion(workspaceId, outputId, input, notebookOptions(options)),
+    listStudioVersions: (outputId, options) => listStudioVersions(workspaceId, outputId, notebookOptions(options)),
+    createStudioAction: (action, input, options) => createStudioAction(workspaceId, action, input, notebookOptions(options)),
     issueStudioStepUp,
-    downloadStudioExport: (outputId, versionId, format, options) => downloadStudioExport(workspaceId, outputId, versionId, format, options),
+    downloadStudioExport: (outputId, versionId, format, options) => downloadStudioExport(workspaceId, outputId, versionId, format, notebookOptions(options)),
   });
 }
 
-export function ActualWorkspace({ workspaceId, adapter, processingPollOptions, onLogout }) {
-  const activeAdapter = workspaceId ? (adapter ?? createWebProductWorkspaceAdapter(workspaceId)) : null;
+export function ActualWorkspace({ workspaceId, notebookId, adapter, processingPollOptions, onLogout }) {
+  const activeAdapter = workspaceId ? (adapter ?? createWebProductWorkspaceAdapter(workspaceId, notebookId)) : null;
   return (
     <ProductWorkspaceShell
       workspaceId={workspaceId}
