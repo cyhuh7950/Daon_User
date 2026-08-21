@@ -169,6 +169,15 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (
+    segments.length === 5 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks"
+    && SAFE_SEGMENT.test(segments[3]) && segments[4] === "source-unbindings"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/source-unbindings`, query: null }
+      : { methodRejected: true };
+  }
+  if (
     segments.length === 3 && segments[0] === "workspaces"
     && SAFE_SEGMENT.test(segments[1]) && segments[2] === "license"
   ) {
