@@ -442,3 +442,9 @@
 - Startup claim: pending `req-claim-fixture`를 생성한 뒤 `SET ROLE daon_app` 상태에서 `claim_notebook_deletion_startup()`을 실행했다. `FOR UPDATE SKIP LOCKED`로 tenant/workspace/actor/request를 반환하고 상태가 `accepted → deleting`, step이 `claimed`, attempts가 `0 → 1`로 변경됐다.
 - 오류/복구: claim fixture cleanup 중 `notebook_deletion_requests`가 Notebook을 FK로 참조해 Notebook 삭제를 차단하는 설계 충돌을 발견했다. 완료 상태를 상태 API에서 폴링해야 하므로 삭제 요청 행은 보존해야 한다. migration에서 해당 FK를 제거하고 원격 격리 DB에도 동일 constraint를 제거한 뒤 Notebook 삭제와 request completed 전환을 재검증했다.
 - 잔여: privileged claim 함수와 Postgres store 호출은 로컬 코드에 반영됐으나 운영 Worker 이미지에는 재배포하지 않았다. Task 6 배포 및 운영 브라우저 검증은 미수행이다.
+
+2026-08-22 WSL-server 별도 환경 점검:
+- 대상: `WSL-server`(172.27.253.53, user `daon`)의 Daon 전용 Compose만 읽기 확인. API는 `DAON_RUNTIME_PROFILE=production`, DB는 `local-postgres:5432/postgres`, Object Storage는 전용 `daon_user-object-storage-1`/bucket `daon-user`다.
+- 확인: Daon API/Web/Object Storage 컨테이너는 실행 중이며 MinIO image에는 `mc`와 `curl`이 존재한다. PostgreSQL `alembic_version=0006`, `notebook_deletion_requests` 및 `delete_notebook_scope`는 존재하지 않는다.
+- 판정: WSL-server는 현재 Notebook 삭제 migration 0023을 적용할 수 있는 기준선(0022)이 아니다. 선행 migration 상태와 데이터 계약이 달라 승인 없이 migration/fixture 생성/MinIO 삭제를 수행하지 않았다. ysna-server 검증 결과를 WSL 검증으로 재사용하지 않는다.
+- blocker/재개 조건: WSL Daon DB를 0022 기준선까지 안전하게 정렬하고 백업·rollback 계획을 승인받은 뒤에만 0023 적용 및 disposable fixture 통합검증을 수행할 수 있다. 현재 WSL 범위의 MinIO/startup claim 실제 검증은 BLOCKED.
