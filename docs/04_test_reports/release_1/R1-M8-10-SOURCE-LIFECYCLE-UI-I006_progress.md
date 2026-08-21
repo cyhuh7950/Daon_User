@@ -303,3 +303,9 @@
 - GREEN: `document_understanding_adapter.py`의 semantic extraction user prompt에 원문 언어·표현 보존, 번역·의역 금지, parser evidence 대조 목적을 명시했다. 기존 `_has_material_evidence_conflict` 안전 검증과 mismatch 시 needs_review 전이는 유지했다.
 - 검증: `$env:PYTHONPATH='services/api/src;services/api'; uv run pytest services/api/tests/test_document_understanding_adapter.py services/api/tests/test_document_processing.py services/api/tests/test_source_upload_runtime.py -q` = 17 passed, httpx deprecation warning 4건. Provider 호출·운영 DB·브라우저·배포는 실행하지 않았다.
 - 미해결: 이미 needs_review로 저장된 운영 Source는 prompt 변경만으로 자동 재처리되지 않는다. 재처리/상태복구는 기존 승인된 운영 절차와 별도 판단이 필요하다.
+
+## 2026-08-21 Task 2 배포·운영 원인 확인
+
+- 운영 DB 직접 확인(슈퍼유저 read-only): `sv-dee8d8de5f1fa00619a995514df55ed3`의 processing run은 `completed`이나 understanding result가 `status=needs_review`, `conflict=UNDERSTANDING_PARSER_CONFLICT`로 저장되어 있었다. 원본은 보존되었고 워커 실패가 아니었다.
+- 배포: `9049678`을 ysna-server 격리 Compose에 반영하고 API·document-worker·Web를 재빌드/재기동했다. 컨테이너 health 및 `https://daon-user.sinsan.kr/notebooks` HTTP 200 확인.
+- 미실행: 브라우저 로컬 파일 선택은 자동화 세션에서 수행할 수 없어 수정된 Prompt의 실제 신규 PDF 재등록은 사용자 파일 선택이 필요하다. 기존 `needs_review` Source는 자동 재처리하지 않았다.
