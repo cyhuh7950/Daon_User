@@ -80,11 +80,19 @@ class PostgresNotebookDeletionStore:
     )
 
     def claim_pending_startup(self) -> tuple[tuple[str, str, str, str], ...]:
-        """Contract for the privileged worker connection; production wiring supplies RLS-safe access."""
-        # The API process deliberately has no unscoped connection. A worker
-        # process with the approved privileged claim connection overrides this
-        # method; returning no rows keeps API startup safe until then.
-        return ()
+        """Claim a bounded batch through the migration-owned privileged function."""
+        context = CloudAccessContext(
+            "startup-claim", "startup-claim", "startup-worker", "notebook.delete",
+        )
+        try:
+            with self._store._transaction(context) as connection:
+                rows = connection.execute(
+                    "SELECT tenant_id,workspace_id,actor_id,request_id "
+                    "FROM claim_notebook_deletion_startup()",
+                ).fetchall()
+            return tuple((str(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows)
+        except CloudDatabaseError as error:
+            raise NotebookError("NOTEBOOK_UNAVAILABLE", 503) from error
 
     @staticmethod
     def _access(context: NotebookContext) -> CloudAccessContext:
