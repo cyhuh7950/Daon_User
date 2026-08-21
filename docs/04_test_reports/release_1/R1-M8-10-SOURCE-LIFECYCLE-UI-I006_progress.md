@@ -149,3 +149,9 @@
 - 동일 URL을 재진입하는 5회 반복에서 모두 `Raw Source 목록` 1건과 `Source 준비`가 확인됐다. Source unbind/delete request/upload 및 Provider 호출은 실행하지 않았다.
 - ysna-server read-only 조사에서 API/Web 최근 로그에 Source endpoint 4xx/5xx, `SOURCE_LIST_INPUT_INVALID`, `SOURCE_LIST_RESPONSE_INVALID`, 예외 row가 없었고, route 응답 shape와 client exact 검증도 일치했다.
 - 현재 증거상 영구적인 Source API/DB 오류는 확인되지 않았으며, 최초 로드 시의 일시적 브라우저/BFF 요청 실패 가능성이 남아 있다. 최초 실패 요청의 HTTP status/response body를 직접 수집할 Network capability는 제공되지 않아 원인을 확정하지 않는다.
+
+## 2026-08-21 transient Source retry 배포·재검증
+
+- `fa86729`를 `origin/codex/user-auth-screen-split`에 push했다. 변경은 브라우저 표준 transient fetch `TypeError` 1회 재시도와 3개 focused UI 테스트이며, 보호 dirty/untracked 파일은 stage하지 않았다.
+- ysna-server 격리 worktree에서 Web 이미지를 재빌드·재생성했다. Web production build/TypeScript/boundary가 통과했고 boundary는 `414 files`, violations `0`, boundaryErrors `0`이었다. API/DB/object-storage/shared-db/proxy는 재생성하지 않았다.
+- 배포 후 Web health `healthy`, HTTPS `/` `200`, 최근 Web error/exception/fatal 로그 0. 로그인된 동일 Chrome Notebook을 재진입해 `Raw Source 목록` 1건과 Source 정상 상태를 확인했으며 Source 변경·삭제·업로드·Provider 호출은 0이다.
