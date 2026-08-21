@@ -420,3 +420,9 @@
 - 변경: Worker에 `FOR UPDATE SKIP LOCKED` 기반 accepted/deleting 요청 claim SQL 계약과 tenant/workspace/request 반환 형식을 추가하고, lifecycle hook에서 주입된 scoped context factory로 재개하도록 연결했다.
 - 검증: startup claim contract를 포함한 focused tests 5 passed, compileall PASS. API 프로세스에는 무범위 DB 연결을 열지 않아 실제 claim은 privileged worker DB 연결 주입 전까지 빈 결과로 안전하게 대기한다.
 - 미해결: 실제 PostgreSQL/MinIO 통합 검증과 privileged claim 연결은 환경 blocker로 남아 있다. 배포하지 않는다.
+
+2026-08-22 격리 서버 스키마 점검:
+- `ysna-server`에서 Daon 전용 API/Web/Document Worker/Object Storage와 공용 `shared-db` 컨테이너의 상태만 읽기 확인했다. API DSN은 `daon_app@shared-db/postgres`, Object Storage는 Daon 전용 MinIO bucket/volume이다.
+- DB `alembic_version=0022`; `notebook_deletion_requests`와 `delete_notebook_scope`는 아직 존재하지 않는다. migration 미적용 상태이며 배포 승인 없이 적용하지 않았다.
+- 실제 FK 조회 결과 `processing_runs`, `understanding_results`, `extraction_evidence`, `transcription_runs`, `transcript_versions`, `evidence_spans`, `index_versions`, `citations`, `evidence_references`, `knowledge_registrations`, `document_processing_jobs`, `sync_target_versions`, `object_outbox_events`, `source_versions` self-FK가 확인됐다. 이를 반영해 migration에 `sync_target_versions` 삭제와 `previous_version_id` 역순 루프를 추가했다.
+- 상태: 실제 통합 삭제는 migration 적용 및 별도 승인 없이는 실행할 수 없어 BLOCKED. 공용 DB/컨테이너 변경 및 배포 없음.

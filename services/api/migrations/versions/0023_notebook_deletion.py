@@ -122,7 +122,15 @@ def upgrade() -> None:
         DELETE FROM understanding_results WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
         DELETE FROM processing_runs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
         DELETE FROM index_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM source_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND record_id=ANY(v_source_versions);
+        DELETE FROM sync_target_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND object_id=ANY(v_object_ids);
+        WHILE EXISTS (SELECT 1 FROM source_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND record_id=ANY(v_source_versions)) LOOP
+          DELETE FROM source_versions sv
+           WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.record_id=ANY(v_source_versions)
+             AND NOT EXISTS (SELECT 1 FROM source_versions child WHERE child.tenant_id=sv.tenant_id AND child.workspace_id=sv.workspace_id AND child.previous_version_id=sv.record_id);
+          IF NOT FOUND THEN
+            RAISE EXCEPTION 'SOURCE_VERSION_DEPENDENCY_BLOCKED' USING ERRCODE='55000';
+          END IF;
+        END LOOP;
         DELETE FROM sources WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND record_id=ANY(v_source_ids)
           AND NOT EXISTS (SELECT 1 FROM source_versions sv WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.source_id=sources.record_id);
         DELETE FROM durable_jobs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND event_id IN
