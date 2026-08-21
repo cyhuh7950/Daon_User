@@ -368,3 +368,25 @@
 - 2026-08-22  공개 재배포 완료: API는 `development` 프로필과 `DAON_DEV_AUTH_BYPASS=true`, Web BFF는 `production` 프로필을 유지하도록 배포했다. `GET https://daon-user.sinsan.kr/bff/api/session` 무쿠키 호출이 `200`으로 반환되고 `dev-user/dev-tenant/dev-workspace` 세션이 생성되는 것을 확인했다. 최초 Web까지 development로 전환했을 때 `GATEWAY_CONFIGURATION_INVALID` 503이 발생했으나 Web production/API development로 분리해 복구했다. 브라우저는 새로고침하면 로그인 없이 세션을 받는다.
 - 2026-08-22  `SESSION_RESPONSE_INVALID` 조치 완료: Web의 `validSession`이 허용하는 `delivery=same_origin_secure_cookie`로 개발 세션 응답을 맞추고 `bca46c2`로 재배포했다. 공개 `GET /bff/api/session` 무쿠키 호출이 200이며 Web 검증 계약과 일치하는 응답을 확인했다.
 - 2026-08-22  Notebook 생성 오류 조치: 개발 가상 Tenant가 운영 PostgreSQL RLS에 존재하지 않아 `LICENSE_NOT_CONFIGURED`와 `NOTEBOOK_UNAVAILABLE`이 발생했다. 개발 우회에서는 Reference Notebook 저장소와 no-op 라이선스 생성 검사기를 사용하도록 수정하고 `84dfed6`로 재배포했다. API 직접 검증에서 Notebook 생성 `201`을 확인했다.
+- 2026-08-22  Source 목록 오류 최종 확인: API·BFF의 세션, Notebook, Context, Sources 응답을 무쿠키로 각각 `200` 및 계약 형태로 확인했다. 브라우저 탭은 이전 Web 번들을 유지해 빨간 오류를 표시하고 있었고, 실제 운영 Notebook 탭을 새로고침한 뒤 `Source 없음 · Cloud 미확인`과 `Raw Source 0`이 정상 표시되어 오류 alert가 사라졌다. Source/MinIO 장애가 아니라 배포 후 브라우저의 stale bundle이 원인이었다. 추가·삭제 기능은 Source 없음 화면에서 다음 실제 PDF 선택으로 검증을 이어간다.
+- 2026-08-22  재검증: 운영 Notebook 탭에서 `다시 시도`를 실행해 오류 alert가 사라지는 것을 확인했고, 새로고침 5회 반복 모두 `Source 없음` 정상 상태를 확인했다. 현재 배포된 Source 목록 경로는 정상이다.
+- 2026-08-22  사용자 탭 재시도: 신산님이 열어 둔 동일 Notebook 탭에서 `다시 시도`를 직접 실행했다. 현재 DOM은 `Source 없음 · Raw Source 0`이며 오류 alert가 제거된 상태다.
+## 2026-08-22 직접 인수 수정 — 저장소 불일치 원인 확인
+
+- 시각: 2026-08-22 (KST)
+- 단계: 직접 구현 / 원인 수정
+- 상태: IN_PROGRESS
+- 원인: 개발 인증 우회 상태에서 Notebook은 `ReferenceNotebookRepository`(프로세스 메모리), Source 업로드 canonical 등록은 `PostgresDataCanonStore`를 사용하고 있었다. PostgreSQL `notebooks` 테이블에 현재 브라우저 Notebook이 없어 업로드가 `SOURCE_CANON_UNAVAILABLE`(내부 `NOTEBOOK_NOT_FOUND`)로 실패했다.
+- 직접 재현: 실제 PDF를 브라우저 파일 선택으로 업로드하고 same-origin BFF 요청을 확인한 결과 HTTP 503 `SOURCE_CANON_UNAVAILABLE`.
+- 조치: `runtime.py`에서 cloud store가 존재하는 개발 환경도 `PostgresNotebookRepository`를 사용하도록 변경. 이제 Notebook과 Source canonical이 동일한 PostgreSQL 저장소를 사용한다.
+- 다음: API 테스트·빌드 후 개발 프로필 재배포, 새 Notebook 생성과 실제 PDF 업로드/목록 조회를 순서대로 검증한다.
+- 2026-08-22 직접 수정 검증: `05f4d3f`에서 개발 환경도 `PostgresNotebookRepository`를 사용하도록 변경하고 개발 격리 서버에 재배포했다. API/Web/Worker 컨테이너가 Healthy/Running이며 Web Build와 TypeScript가 통과했다. 무쿠키 same-origin API에서 새 Notebook 생성 `201`, 실제 PDF 업로드 `202` (`source_id=src-ecc1ade504fd9a1f1a02b9d471fec089`)를 확인했다.
+- 2026-08-22 목록 보정: 개발 Source 목록의 임시 빈 배열 반환을 제거한 `1cd9a3a`를 재배포했다. `GET /bff/api/workspaces/dev-workspace/sources?notebook_id=notebook-d6e0ff99af64e70fcbf29fdd94492dac`가 `200`으로 실제 Source를 반환했다. Source 등록·목록은 해결됐고, 현재 `processing_state=failed/job_state=dead_letter`는 Provider 미설정에 따른 문서 처리 단계의 별도 문제이며 업로드 저장 실패가 아니다.
+- 2026-08-22 호환성 확인: 이전 개발 메모리 저장소에서만 존재하던 브라우저 URL `notebook-7a1566b078cfb48be24ce1e64f0b9108`은 PostgreSQL 전환 후 `NOTEBOOK_NOT_FOUND`가 된다. 이는 재시작 시 사라지는 임시 Notebook의 후속 상태이며, `/notebooks`에서 새 PostgreSQL Notebook을 선택해야 한다. 새 Notebook 생성·업로드·목록은 실제 API로 검증했다.
+- 2026-08-22 제거 오류 원인: `Notebook에서 제거` 백엔드 경로는 존재했지만 Web BFF의 `routeFor`에 `/workspaces/{workspace}/notebooks/{notebook}/source-unbindings` 매핑이 없어 브라우저 요청이 404 `RESOURCE_UNAVAILABLE`로 끝났다. `ced1fdc`에서 바인딩 해제 경로를 추가하고 재배포했으며, 실제 same-origin 요청이 `200` 및 `status=unbound`, ETag `"notebook-binding:2"`를 반환했다.
+- 2026-08-22 삭제 요청 경로 보완: `Source 삭제 요청`, 조회, 취소에 필요한 세 BFF 경로도 함께 추가한 `8c12a6f`를 재배포했다. Web Build/TypeScript 및 제품 경계 검사 `ok=true`를 확인했고 API/Web/Worker는 Running 상태다.
+- 2026-08-22 운영 인증 경계 복구 승인: 신산님 승인에 따라 공개 Compose의 API를 `DAON_RUNTIME_PROFILE=production`으로 전환하고 `DAON_DEV_AUTH_BYPASS`를 제거했다. 커밋 `6d3ad0e`를 push하고 API·document-worker·Web를 재빌드·재기동했다. 서버 컨테이너 환경에서 `DAON_RUNTIME_PROFILE=production`을 확인했고, 무쿠키 `/bff/api/session`은 `401`로 반환되어 더 이상 모든 요청이 `dev-workspace`로 강제되지 않는다. 실제 로그인 세션에서 Workspace/Provider 설정과 Source 등록 재검증이 필요하다.
+- 2026-08-22 직접 재현 및 원인 확정: 실제 PDF 등록 요청은 HTTP `202 Accepted`로 Source canonical 등록에 성공했지만, 처리 상태가 `failed/dead_letter/UNDERSTANDING_MODEL_NOT_SELECTED`로 종료됐다. 기존 UI는 `accepted` 이후 처리 실패를 `PDF_UPLOAD_FAILED`로 표시하고 Source 목록을 다시 읽지 않아, 등록된 Source도 사용자에게 보이지 않는 구조였다. 등록 요청 자체와 처리 단계 실패를 혼동한 것이 현재 증상의 원인이다.
+- 2026-08-22 직접 수정: `product-workspace-shell.jsx`에서 업로드 응답이 유효하면 `acceptedSubmission`을 기록하고, 이후 처리/provider 단계가 실패하거나 timeout이어도 canonical Source 목록을 다시 읽도록 수정했다. 이제 등록 성공 Source는 `failed` 처리 상태라도 목록에 표시되며 업로드 자체 실패로 오인되지 않는다.
+- 2026-08-22 로컬 검증: `npm run verify:product-ui-boundary` 통과(`ok=true`, violations 0), `npm run build --workspace @daon-user/web` 통과(Next build/TypeScript/boundary). 운영 API 직접 재현은 POST PDF `202`, processing status `200` with `UNDERSTANDING_MODEL_NOT_SELECTED`, sources list `200` with registered Source를 확인했다. Web 재배포 후 브라우저 PDF 선택 재검증이 남아 있다.
+2026-08-22 노트북 식별성 점검: 상세 화면은 GET Notebook 결과의 title을 버리고 공통 헤더에 `Workspace`만 표시해 노트북 구분이 불가능했다. `notebook-product-workspace.jsx`에서 검증된 Notebook DTO를 보존하고 `actual-workspace.jsx`·`product-workspace-shell.jsx`로 전달해 헤더에 실제 제목을 표시하도록 수정했다. `npm run verify:product-ui-boundary` 통과(415개 파일, 위반 0), `npm run build --workspace @daon-user/web` 통과(컴파일·TypeScript·정적 생성·경계검증). Notebook DELETE API는 현재 백엔드가 제공하지 않으며 notebooks 테이블이 immutable 설계라 직접 삭제 기능을 임의로 추가하지 않았다.

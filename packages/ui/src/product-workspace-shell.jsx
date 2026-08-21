@@ -475,7 +475,7 @@ function workspaceAdapterKey(adapter) {
   return WORKSPACE_ADAPTER_KEYS.get(adapter);
 }
 
-function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, onLogout = null }) {
+function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, onLogout = null }) {
   const [viewState, setViewState] = useState(() => normalizeProductWorkspaceState(state));
   const [processing, setProcessing] = useState(null);
   const [question, setQuestion] = useState("");
@@ -1176,7 +1176,7 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
     <main className="adaptive-workspace" data-product-workspace-state={viewState.status} data-workspace-id={workspaceId ?? ""}>
       <div className="workspace-surface" inert={modalView ? true : undefined} aria-hidden={modalView ? "true" : undefined}>
       <header className="workspace-header workspace-app-bar">
-        <div className="workspace-brand"><span className="daon-mark" aria-hidden="true">D</span><div><p className="eyebrow">DAON WORKSPACE</p><h1>Workspace</h1></div></div>
+        <div className="workspace-brand"><span className="daon-mark" aria-hidden="true">D</span><div><p className="eyebrow">DAON WORKSPACE · NOTEBOOK</p><h1>{notebookTitle || "Workspace"}</h1></div></div>
         <div className="workspace-app-actions">
           <span className={`workspace-status status-${viewState.status}`} role="status" data-cloud-status={operationsStatus?.overall_status ?? "unknown"}><span className="status-dot" aria-hidden="true" />{sourceCompactState}<span className="status-connection"> · {cloudCompactState}</span></span>
           <button type="button" onClick={(event) => openModal("operations", event.currentTarget)}>운영상태</button>
