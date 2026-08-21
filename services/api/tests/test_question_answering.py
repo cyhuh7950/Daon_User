@@ -13,6 +13,7 @@ from daon_user_api.question_answering import (
     GroundedQuestionRequest,
     OpenAICompatibleTextGenerationAdapter,
     UpstageTextGenerationAdapter,
+    classify_question_intent,
     resolve_text_model_selection,
 )
 
@@ -65,6 +66,12 @@ class RecordingTransport:
 
 
 class QuestionAnsweringContractTests(unittest.TestCase):
+    def test_work_support_and_source_modes_are_classified_without_refusal(self) -> None:
+        self.assertEqual(classify_question_intent("다음 작업을 어떻게 진행할까?"), "work_support")
+        self.assertEqual(classify_question_intent("선택한 문서에서 보존 기간을 찾아줘"), "explicit_source_lookup")
+        self.assertEqual(classify_question_intent("이 자료로 보고서를 만들어줘"), "source_backed_action")
+        self.assertEqual(classify_question_intent("최신 정책을 웹에서 찾아줘"), "approved_web_research")
+
     def test_groq_mistral_and_upstage_share_grounded_openai_compatible_contract(self) -> None:
         evidence = (IndexedEvidenceChunk(
             "chunk-page-2", "source-cp3", "source-version-cp3", 2,
@@ -136,6 +143,22 @@ class QuestionAnsweringContractTests(unittest.TestCase):
         self.assertNotIn("source-version-cp3", result.answer)
         self.assertEqual(result.cited_chunk_ids, ("chunk-page-2",))
         self.assertEqual(result.answer, "The phrase is ORANGE-COMPASS-42.")
+
+    def test_grounded_prompt_explains_source_scope_and_handles_out_of_scope_without_refusal(self) -> None:
+        evidence = (IndexedEvidenceChunk(
+            "chunk-page-2", "source-cp3", "source-version-cp3", 2,
+            "Daon 보존 정책은 30일입니다.", "span-page-2", 1.0,
+        ),)
+
+        payload = UpstageTextGenerationAdapter.provider_payload(
+            GroundedQuestionRequest("최신 주식 가격은?", evidence, "trace-cp3"),
+            resolve_text_model_selection(text_snapshot()),
+        )
+        system_prompt = payload["messages"][0]["content"]
+        self.assertIn("source scope", system_prompt.lower())
+        self.assertIn("outside", system_prompt.lower())
+        self.assertIn("web search", system_prompt.lower())
+        self.assertIn("approval", system_prompt.lower())
 
     def test_adapter_rejects_provider_citation_outside_retrieved_chunks(self) -> None:
         transport = RecordingTransport()
