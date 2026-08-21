@@ -200,3 +200,9 @@
 - GREEN: Source list client는 safe `code`와 boolean `retryable`만 non-enumerable Error metadata로 보존한다. Shell은 `retryable=true`인 Source GET만 250ms 뒤 정확히 1회 자동 재시도한다. non-retryable/입력/권한 오류는 자동 재시도하지 않고 기존 수동 `다시 시도`를 유지하며, AbortSignal이 취소되면 재요청0이다.
 - 검증: deferred actual React Adapter가 최초 pending→retryable reject→자동 retry empty로 복구하고 오류 DOM 0임을 확인했다. focused `2/2 PASS`, Source·Context·Question·Studio·BFF React 회귀 `28/28 PASS`, API Source/Studio HTTP `3/3 PASS`; UI 제품 lint `3 files PASS`; Web production build·TypeScript·12 pages·boundary `391/0 PASS`. `product-workspace-api.js` 단독 workspace lint는 이 변경과 무관한 기존 `INTERNAL_VALUE` 차단 정규식의 URL 패턴을 검출해 분리 기록했다.
 - 운영 upload/DB write/Provider call은 0이다. 운영 적용 전이므로 actual reload 재검증은 commit/push/Daon Web 배포 뒤 수행해야 한다.
+## 2026-08-21 운영 빈 Context의 이전 Source 오류 잔류 TDD 복구
+
+- 실제 운영에서 Notebook Context GET은 `200`, Source binding은 `0`인데 이전 Source 오류 화면이 남고 수동 재시도 뒤 정상 empty로 복구되는 현상을 재현했다. Source HTTP 실패가 아니라 `ProductWorkspaceShell`이 새 empty Context를 확인한 뒤에도 다른 초기 비동기 결과를 기다리는 동안 이전 `error` state를 유지하는 UI 상태 결함으로 분리했다.
+- RED: 기존 `SOURCE_LIST_FAILED` state + `notebookContext.sources=[]` + Knowledge/Studio 응답 지연 조건에서 `Source를 불러오지 못했습니다`가 계속 노출됐다(`0/1`).
+- GREEN: 로드 effect 시작 시 authoritative Notebook Context의 Source가 empty이면 canonical `empty` state로 즉시 reset한다. API/BFF/데이터 계약과 자동 retry 횟수는 변경하지 않았다.
+- fresh 검증: focused React `1/1`, Notebook Context/Product Workspace `11/11`, Web production build·TypeScript·boundary PASS. 별도 Desktop 모놀리스의 기존 보호 기준선 3건과 Web package의 미정의 `lint` script는 본 변경과 분리했다.
