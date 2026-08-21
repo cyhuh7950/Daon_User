@@ -46,6 +46,27 @@ function isGroundedCitation(value) {
     && (value.locator.kind !== "page" || value.locator.value === String(value.page));
 }
 
+function isQuestionResponseMetadata(value) {
+  const modeOk = ["work_support", "explicit_source_lookup", "source_backed_action", "approved_web_research"].includes(value.mode);
+  const groundingOk = ["source_backed", "ungrounded", "source_evidence_unavailable", "web_backed"].includes(value.grounding);
+  const summaryOk = value.source_scope_summary === null
+    || typeof value.source_scope_summary === "string"
+      && value.source_scope_summary.length <= 1_000
+      && !/[\u0000-\u001f\u007f]/u.test(value.source_scope_summary);
+  const mismatchOk = value.mismatch === null || (
+    hasExactKeys(value.mismatch, ["code", "detail"])
+    && value.mismatch.code === "SOURCE_SCOPE_MISMATCH"
+    && typeof value.mismatch.detail === "string"
+    && value.mismatch.detail.length >= 1
+    && value.mismatch.detail.length <= 1_000
+  );
+  const actionsOk = Array.isArray(value.next_actions)
+    && value.next_actions.length <= 4
+    && value.next_actions.every((item) => typeof item === "string" && item.length >= 1 && item.length <= 120);
+  return modeOk && groundingOk && summaryOk && mismatchOk && actionsOk
+    && (value.grounding !== "source_evidence_unavailable" || value.mismatch !== null && value.next_actions.length > 0);
+}
+
 function knowledgeContextBody(value) {
   if (!isRecord(value) || !["raw_only", "daon_priority", "mixed"].includes(value.mode)) {
     throw new Error("QUESTION_INPUT_INVALID");
@@ -86,7 +107,12 @@ function questionSourceBody({ sourceId, sourceVersionId, knowledgeContext, quest
 }
 
 function isGroundedAnswer(value) {
-  return hasExactKeys(value, ["run_id", "run_result_id", "answer", "insufficient", "citations"])
+  const baseKeys = ["run_id", "run_result_id", "answer", "insufficient", "citations"];
+  const metadataKeys = ["mode", "grounding", "source_scope_summary", "mismatch", "next_actions"];
+  const legacyShape = hasExactKeys(value, baseKeys);
+  const enrichedShape = hasExactKeys(value, [...baseKeys, ...metadataKeys]);
+  return (legacyShape || enrichedShape)
+    && (!enrichedShape || isQuestionResponseMetadata(value))
     && isSafeId(value.run_id)
     && isSafeId(value.run_result_id)
     && typeof value.answer === "string"
