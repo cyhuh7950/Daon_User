@@ -73,6 +73,23 @@ test("Source 목록은 Canon 밖의 unknown state를 계속 거부한다", async
   );
 });
 
+test("Source 목록은 서버의 safe retryable 판정만 Error에 보존한다", async () => {
+  for (const retryable of [true, false]) {
+    await assert.rejects(
+      listWorkspaceSources("workspace-1", {
+        notebookId: "notebook-1",
+        fetchImpl: async () => Response.json({
+          error: {
+            code: "STUDIO_DATABASE_UNAVAILABLE", message: "요청을 처리하지 못했습니다.",
+            retryable, user_action: "잠시 후 다시 시도하세요.", trace_id: "trace-source-retry-1",
+          },
+        }, { status: 503 }),
+      }),
+      (error) => error?.message === "STUDIO_DATABASE_UNAVAILABLE" && error?.retryable === retryable,
+    );
+  }
+});
+
 const knowledgePackage = Object.freeze({
   package_id: "knowledge-package-1",
   producer: "daon2_5",

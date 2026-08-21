@@ -497,8 +497,23 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
     if (!adapter || typeof adapter.listSources !== "function" || !workspaceId) return undefined;
     questionEpochRef.current += 1;
     const controller = new AbortController();
+    const listSources = async () => {
+      try {
+        return await adapter.listSources({ signal: controller.signal });
+      } catch (error) {
+        if (error?.retryable !== true || controller.signal.aborted) throw error;
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, 250);
+          controller.signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new Error("REQUEST_ABORTED"));
+          }, { once: true });
+        });
+        return adapter.listSources({ signal: controller.signal });
+      }
+    };
     Promise.allSettled([
-      adapter.listSources({ signal: controller.signal }),
+      listSources(),
       (typeof adapter.listKnowledgePackages === "function"
         ? adapter.listKnowledgePackages({ signal: controller.signal })
         : Promise.resolve([])),
