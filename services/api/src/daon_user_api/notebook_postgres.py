@@ -10,12 +10,14 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .notebook import (
     NotebookBinding,
+    NotebookBindingChangeView,
     NotebookConversationCitation,
     NotebookConversationView,
     NotebookContext,
     NotebookError,
     NotebookHomeView,
     NotebookSelectedContext,
+    NotebookSourceDeletionView,
     _selected_context,
 )
 
@@ -224,7 +226,15 @@ class PostgresNotebookRepository:
                     raise NotebookError("NOTEBOOK_NOT_FOUND", 404)
                 rows = connection.execute(
                     "SELECT binding_kind,record_id,version_id FROM notebook_bindings "
-                    "WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s ORDER BY binding_kind,created_at,record_id",
+                    "WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s "
+                    "AND NOT (binding_kind='source' AND EXISTS (SELECT 1 FROM notebook_source_unbindings u "
+                    "WHERE u.tenant_id=notebook_bindings.tenant_id AND u.workspace_id=notebook_bindings.workspace_id "
+                    "AND u.notebook_id=notebook_bindings.notebook_id AND u.source_id=notebook_bindings.record_id "
+                    "AND u.source_version_id=notebook_bindings.version_id)) "
+                    "AND NOT (binding_kind='source' AND EXISTS (SELECT 1 FROM deletion_requests dr "
+                    "WHERE dr.tenant_id=notebook_bindings.tenant_id AND dr.workspace_id=notebook_bindings.workspace_id "
+                    "AND dr.source_id=notebook_bindings.record_id AND dr.source_active=false)) "
+                    "ORDER BY binding_kind,created_at,record_id",
                     (context.tenant_id, context.workspace_id, notebook_id),
                 ).fetchall()
                 conversation_rows = connection.execute(
@@ -242,7 +252,29 @@ class PostgresNotebookRepository:
                     "AND newer.workspace_id=nb.workspace_id AND newer.notebook_id=nb.notebook_id "
                     "AND newer.binding_kind='conversation_thread' AND (newer.created_at>nb.created_at "
                     "OR (newer.created_at=nb.created_at AND newer.record_id>nb.record_id))) "
+                    "AND NOT EXISTS (SELECT 1 FROM citations blocked_citation JOIN deletion_requests dr ON "
+                    "dr.tenant_id=blocked_citation.tenant_id AND dr.workspace_id=blocked_citation.workspace_id "
+                    "AND dr.source_id=blocked_citation.canonical_json->>'source_id' AND dr.source_active=false "
+                    "WHERE blocked_citation.tenant_id=rr.tenant_id AND blocked_citation.workspace_id=rr.workspace_id "
+                    "AND blocked_citation.run_result_id=rr.record_id) "
                     "ORDER BY c.record_id",
+                    (context.tenant_id, context.workspace_id, notebook_id),
+                ).fetchall()
+                binding_version = 1 + int(connection.execute(
+                    "SELECT count(*) FROM notebook_source_unbindings WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s",
+                    (context.tenant_id, context.workspace_id, notebook_id),
+                ).fetchone()[0])
+                deletion_rows = connection.execute(
+                    "SELECT dr.request_id,dr.source_id,dr.state,dr.version,dr.grace_until,"
+                    "EXISTS (SELECT 1 FROM legal_holds h WHERE h.tenant_id=dr.tenant_id "
+                    "AND h.workspace_id=dr.workspace_id AND h.source_id=dr.source_id AND h.state='active') "
+                    "FROM deletion_requests dr WHERE dr.tenant_id=%s AND dr.workspace_id=%s "
+                    "AND dr.source_active=false AND EXISTS (SELECT 1 FROM notebook_bindings b "
+                    "WHERE b.tenant_id=dr.tenant_id AND b.workspace_id=dr.workspace_id "
+                    "AND b.notebook_id=%s AND b.binding_kind='source' AND b.record_id=dr.source_id "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=b.tenant_id "
+                    "AND u.workspace_id=b.workspace_id AND u.notebook_id=b.notebook_id "
+                    "AND u.source_id=b.record_id AND u.source_version_id=b.version_id)) ORDER BY dr.request_id",
                     (context.tenant_id, context.workspace_id, notebook_id),
                 ).fetchall()
             bindings = tuple(NotebookBinding(
@@ -270,7 +302,81 @@ class PostgresNotebookRepository:
                     str(conversation_rows[0][2]), str(result_payload["answer"]),
                     bool(result_payload["insufficient"]), citations,
                 )
-            return _selected_context(notebook_id, bindings, conversation)
+            selected = _selected_context(notebook_id, bindings, conversation, binding_version)
+            return NotebookSelectedContext(
+                notebook_id=selected.notebook_id, sources=selected.sources,
+                knowledge_context_ids=selected.knowledge_context_ids,
+                conversation_thread_ids=selected.conversation_thread_ids,
+                studio_output_ids=selected.studio_output_ids,
+                output_version_ids=selected.output_version_ids,
+                generation_settings_ids=selected.generation_settings_ids,
+                source_deletion_requests=tuple(NotebookSourceDeletionView(
+                    str(row[0]), str(row[1]), str(row[2]), int(row[3]), row[4], bool(row[5]),
+                ) for row in deletion_rows),
+                conversation=selected.conversation, etag=selected.etag,
+            )
+        except NotebookError:
+            raise
+        except CloudDatabaseError as error:
+            raise NotebookError("NOTEBOOK_UNAVAILABLE", 503) from error
+
+    def unbind_source(self, context: NotebookContext, notebook_id: str, *, source_id: str, source_version_id: str, expected_etag: str, idempotency_key: str, request_fingerprint: str, now) -> tuple[NotebookBindingChangeView, bool]:  # type: ignore[no-untyped-def]
+        try:
+            with self._store._transaction(self._context(context)) as connection:
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (f"unbind|{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{idempotency_key}",))
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (f"unbind-notebook|{context.tenant_id}|{context.workspace_id}|{notebook_id}",))
+                replay = connection.execute(
+                    "SELECT request_fingerprint,notebook_id,source_id,source_version_id,binding_version FROM notebook_source_unbinding_idempotency "
+                    "WHERE tenant_id=%s AND workspace_id=%s AND actor_id=%s AND idempotency_key=%s",
+                    (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key),
+                ).fetchone()
+                if replay is not None:
+                    if str(replay[0]) != request_fingerprint:
+                        raise NotebookError("IDEMPOTENCY_KEY_REUSED", 409)
+                    return NotebookBindingChangeView(str(replay[1]), str(replay[2]), str(replay[3]), "unbound", f'"notebook-binding:{int(replay[4])}"'), True
+                notebook = connection.execute(
+                    "SELECT 1 FROM notebooks WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s",
+                    (context.tenant_id, context.workspace_id, notebook_id),
+                ).fetchone()
+                if notebook is None:
+                    raise NotebookError("NOTEBOOK_NOT_FOUND", 404)
+                current_version = 1 + int(connection.execute(
+                    "SELECT count(*) FROM notebook_source_unbindings WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s",
+                    (context.tenant_id, context.workspace_id, notebook_id),
+                ).fetchone()[0])
+                if expected_etag != f'"notebook-binding:{current_version}"':
+                    raise NotebookError("NOTEBOOK_BINDING_ETAG_MISMATCH", 412)
+                binding = connection.execute(
+                    "SELECT 1 FROM notebook_bindings b WHERE b.tenant_id=%s AND b.workspace_id=%s AND b.notebook_id=%s "
+                    "AND b.binding_kind='source' AND b.record_id=%s AND b.version_id=%s "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=b.tenant_id AND u.workspace_id=b.workspace_id "
+                    "AND u.notebook_id=b.notebook_id AND u.source_id=b.record_id AND u.source_version_id=b.version_id)",
+                    (context.tenant_id, context.workspace_id, notebook_id, source_id, source_version_id),
+                ).fetchone()
+                if binding is None:
+                    raise NotebookError("NOTEBOOK_BINDING_NOT_FOUND", 404)
+                next_version = current_version + 1
+                connection.execute(
+                    "INSERT INTO notebook_source_unbindings (tenant_id,workspace_id,notebook_id,source_id,source_version_id,binding_version,actor_id,occurred_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (context.tenant_id, context.workspace_id, notebook_id, source_id, source_version_id, next_version, context.actor_id, now),
+                )
+                sequence = int(connection.execute(
+                    "SELECT coalesce(max(sequence),0)+1 FROM notebook_activities WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s",
+                    (context.tenant_id, context.workspace_id, notebook_id),
+                ).fetchone()[0])
+                connection.execute(
+                    "INSERT INTO notebook_activities (tenant_id,workspace_id,notebook_id,sequence,activity_kind,actor_id,occurred_at) VALUES (%s,%s,%s,%s,'context_unbound',%s,%s)",
+                    (context.tenant_id, context.workspace_id, notebook_id, sequence, context.actor_id, now),
+                )
+                connection.execute(
+                    "INSERT INTO notebook_source_unbinding_idempotency (tenant_id,workspace_id,actor_id,idempotency_key,request_fingerprint,notebook_id,source_id,source_version_id,binding_version,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key, request_fingerprint, notebook_id, source_id, source_version_id, next_version, now),
+                )
+                connection.execute(
+                    "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,after_value,metadata) VALUES (%s,%s,%s,%s,'notebook.source_unbound','notebook',%s,'succeeded',%s,%s,%s,%s)",
+                    ("notebook-audit-" + hashlib.sha256(f"unbind|{context.tenant_id}|{context.actor_id}|{idempotency_key}".encode()).hexdigest()[:24], context.tenant_id, context.workspace_id, context.actor_id, notebook_id, context.trace_id, context.policy_version, Jsonb({"binding_version": next_version}), Jsonb({"reason_code": "NOTEBOOK_SOURCE_UNBOUND"})),
+                )
+                return NotebookBindingChangeView(notebook_id, source_id, source_version_id, "unbound", f'"notebook-binding:{next_version}"'), False
         except NotebookError:
             raise
         except CloudDatabaseError as error:

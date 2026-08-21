@@ -436,7 +436,15 @@ export async function openNativeCitation(event, { adapter, citation, signal, reg
   return true;
 }
 
-export function ProductWorkspaceShell({ workspaceId, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, onLogout = null }) {
+const WORKSPACE_ADAPTER_KEYS = new WeakMap();
+let workspaceAdapterSequence = 0;
+function workspaceAdapterKey(adapter) {
+  if (!adapter || (typeof adapter !== "object" && typeof adapter !== "function")) return "none";
+  if (!WORKSPACE_ADAPTER_KEYS.has(adapter)) WORKSPACE_ADAPTER_KEYS.set(adapter, `adapter-${++workspaceAdapterSequence}`);
+  return WORKSPACE_ADAPTER_KEYS.get(adapter);
+}
+
+function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, onLogout = null }) {
   const [viewState, setViewState] = useState(() => normalizeProductWorkspaceState(state));
   const [processing, setProcessing] = useState(null);
   const [question, setQuestion] = useState("");
@@ -473,12 +481,18 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
   const [manualSearch, setManualSearch] = useState("");
   const [manualPending, setManualPending] = useState(false);
   const [manualSafeError, setManualSafeError] = useState(null);
+  const [sourceAction, setSourceAction] = useState(null);
+  const [sourceActionKind, setSourceActionKind] = useState("unbind");
+  const [sourceActionPending, setSourceActionPending] = useState(false);
+  const [sourceActionSafeError, setSourceActionSafeError] = useState(null);
+  const [sourceDeletionRequests, setSourceDeletionRequests] = useState([]);
   const pollControllerRef = useRef(null);
   const reportIdempotencyRef = useRef(null);
   const lifetimeControllerRef = useRef(null);
   const workspaceMountedRef = useRef(false);
   const citationUrlsRef = useRef(new Set());
   const questionEpochRef = useRef(0);
+  const workspaceLoadEpochRef = useRef(0);
   const modalRef = useRef(null);
   const modalOpenerRef = useRef(null);
   const settingsButtonRef = useRef(null);
@@ -496,7 +510,10 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
   useEffect(() => {
     if (!adapter || typeof adapter.listSources !== "function" || !workspaceId) return undefined;
     questionEpochRef.current += 1;
+    const loadEpoch = workspaceLoadEpochRef.current + 1;
+    workspaceLoadEpochRef.current = loadEpoch;
     const controller = new AbortController();
+    const isCurrent = () => !controller.signal.aborted && workspaceLoadEpochRef.current === loadEpoch;
     const sourceContextEmpty = Array.isArray(adapter.notebookContext?.sources)
       && adapter.notebookContext.sources.length === 0;
     if (sourceContextEmpty) {
@@ -530,62 +547,103 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
       (typeof adapter.loadNotebookConversation === "function"
         ? adapter.loadNotebookConversation({ signal: controller.signal })
         : Promise.resolve(null)),
-    ]).then(([sourceResult, knowledgeResult, studioResult, conversationResult]) => {
-      if (controller.signal.aborted) return;
-      const sources = sourceResult.status === "fulfilled" ? sourceResult.value : [];
-      const projected = sources.map((source) => ({
-        sourceId: source.source_id,
-        sourceVersionId: source.source_version_id,
-        filename: source.filename,
-        sourceState: source.source_state,
-        processingState: source.processing_state,
-        jobState: source.job_state,
-        ready: source.source_state === "ready"
-          && source.processing_state === "completed"
-          && source.job_state === "completed"
-      }));
+      (typeof adapter.listSourceDeletionRequests === "function"
+        ? adapter.listSourceDeletionRequests({ signal: controller.signal })
+        : Promise.resolve([])),
+    ]).then(([sourceResult, knowledgeResult, studioResult, conversationResult, deletionResult]) => {
+      if (!isCurrent()) return;
+
+      let projected = [];
+      let sourceSafeError = null;
+      if (sourceResult.status === "fulfilled") {
+        try {
+          if (!Array.isArray(sourceResult.value)) throw new Error("SOURCE_LIST_RESPONSE_INVALID");
+          projected = sourceResult.value.map((source) => ({
+            sourceId: source.source_id,
+            sourceVersionId: source.source_version_id,
+            filename: source.filename,
+            sourceState: source.source_state,
+            processingState: source.processing_state,
+            jobState: source.job_state,
+            ready: source.source_state === "ready"
+              && source.processing_state === "completed"
+              && source.job_state === "completed"
+          }));
+        } catch (error) {
+          sourceSafeError = safeErrorCode(error, "SOURCE_LIST_FAILED");
+        }
+      } else {
+        sourceSafeError = safeErrorCode(sourceResult.reason, "SOURCE_LIST_FAILED");
+      }
       const selectedSource = projected.find((source) => source.ready) ?? null;
-      const projectedKnowledge = knowledgeResult.status === "fulfilled"
-        ? knowledgeResult.value.map((item) => ({
-          packageId: item.package_id,
-          producerLabel: KNOWLEDGE_PRODUCER_LABELS[item.producer] ?? "Daon",
-          producerVersion: item.producer_version,
-          authorityLabel: item.authority === "approved" ? "승인" : "검증 필요",
-          registrationLabel: item.registration_state === "registered" ? "등록됨" : "등록 확인 필요",
-        }))
-        : [];
+      setViewState((current) => ({
+        ...current,
+        status: sourceSafeError ? "error" : projected.length ? "ready" : "empty",
+        safeError: sourceSafeError,
+        sources: projected,
+        selectedSource,
+      }));
+
+      let projectedKnowledge = [];
+      let nextKnowledgeError = null;
+      if (knowledgeResult.status === "fulfilled") {
+        try {
+          if (!Array.isArray(knowledgeResult.value)) throw new Error("KNOWLEDGE_PACKAGE_LIST_INVALID");
+          projectedKnowledge = knowledgeResult.value.map((item) => ({
+            packageId: item.package_id,
+            producerLabel: KNOWLEDGE_PRODUCER_LABELS[item.producer] ?? "Daon",
+            producerVersion: item.producer_version,
+            authorityLabel: item.authority === "approved" ? "승인" : "검증 필요",
+            registrationLabel: item.registration_state === "registered" ? "등록됨" : "등록 확인 필요",
+          }));
+        } catch (error) {
+          nextKnowledgeError = safeErrorCode(error, "KNOWLEDGE_PACKAGE_LIST_FAILED");
+        }
+      } else {
+        nextKnowledgeError = safeErrorCode(knowledgeResult.reason, "KNOWLEDGE_PACKAGE_LIST_FAILED");
+      }
       setKnowledgePackages(projectedKnowledge);
       setSelectedKnowledgeId((current) => projectedKnowledge.some((item) => item.packageId === current) ? current : null);
-      setKnowledgeSafeError(knowledgeResult.status === "fulfilled"
-        ? null
-        : safeErrorCode(knowledgeResult.reason, "KNOWLEDGE_PACKAGE_LIST_FAILED"));
-      const studioValue = studioResult.status === "fulfilled" ? studioResult.value : [];
-      const studioOutputs = Array.isArray(studioValue) ? studioValue : studioValue?.outputs ?? [];
-      const studioLocks = Array.isArray(studioValue?.studioLocks) ? studioValue.studioLocks : [];
-      setViewState({
-        ...createProductWorkspaceState({
-          status: sourceResult.status === "rejected"
-            ? "error" : projected.length || projectedKnowledge.length ? "ready" : "empty",
-          safeError: sourceResult.status === "fulfilled"
-            ? null : safeErrorCode(sourceResult.reason, "SOURCE_LIST_FAILED"),
-        }),
-        sources: projected, selectedSource, studioOutputs, studioLocks,
+      setKnowledgeSafeError(nextKnowledgeError);
+
+      if (deletionResult.status === "fulfilled" && Array.isArray(deletionResult.value)) {
+        setSourceDeletionRequests(deletionResult.value);
+      } else {
+        setSourceDeletionRequests([]);
+      }
+
+      let studioOutputs = [];
+      let studioLocks = [];
+      let studioSafeError = null;
+      if (studioResult.status === "fulfilled") {
+        try {
+          const studioValue = studioResult.value;
+          studioOutputs = Array.isArray(studioValue) ? studioValue : studioValue?.outputs ?? [];
+          studioLocks = Array.isArray(studioValue?.studioLocks) ? studioValue.studioLocks : [];
+          if (!Array.isArray(studioOutputs)) throw new Error("STUDIO_LIST_RESPONSE_INVALID");
+        } catch (error) {
+          studioOutputs = [];
+          studioLocks = [];
+          studioSafeError = safeErrorCode(error, "STUDIO_LIST_FAILED");
+        }
+      } else {
+        studioSafeError = safeErrorCode(studioResult.reason, "STUDIO_LIST_FAILED");
+      }
+      setViewState((current) => ({
+        ...current,
+        studioOutputs,
+        studioLocks,
+        studioStatus: studioSafeError ? "unavailable" : "ready",
+        studioSafeError,
         answer: conversationResult.status === "fulfilled" ? conversationResult.value : null,
         conversationSafeError: conversationResult.status === "fulfilled"
           ? null : safeErrorCode(conversationResult.reason, "CONVERSATION_LIST_FAILED"),
-        studioStatus: studioResult.status === "fulfilled" ? "ready" : "unavailable",
-        studioSafeError: studioResult.status === "fulfilled"
-          ? null
-          : safeErrorCode(studioResult.reason, "STUDIO_LIST_FAILED"),
-      });
-    }).catch((error) => {
-      if (!controller.signal.aborted) {
-        setKnowledgePackages([]);
-        setSelectedKnowledgeId(null);
-        setViewState(createProductWorkspaceState({ status: "error", safeError: safeErrorCode(error, "SOURCE_LIST_FAILED") }));
-      }
+      }));
     });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (workspaceLoadEpochRef.current === loadEpoch) workspaceLoadEpochRef.current += 1;
+    };
   }, [adapter, workspaceId, loadRevision]);
 
   useEffect(() => {
@@ -688,6 +746,60 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
     } finally {
       clearTimeout(deadlineTimer);
       if (pollControllerRef.current === controller) pollControllerRef.current = null;
+    }
+  };
+
+  const confirmSourceUnbind = async () => {
+    if (!sourceAction || typeof adapter?.unbindSource !== "function" || sourceActionPending) return;
+    setSourceActionPending(true);
+    setSourceActionSafeError(null);
+    try {
+      await adapter.unbindSource(sourceAction, {
+        bindingEtag: adapter.bindingEtag,
+        idempotencyKey: crypto.randomUUID(),
+        signal: lifetimeControllerRef.current?.signal,
+      });
+      setSourceAction(null);
+      setLoadRevision((current) => current + 1);
+    } catch (error) {
+      setSourceActionSafeError(safeErrorCode(error, "SOURCE_UNBIND_FAILED"));
+    } finally {
+      setSourceActionPending(false);
+    }
+  };
+
+  const confirmSourceDeletionRequest = async () => {
+    if (!sourceAction || typeof adapter?.requestSourceDeletion !== "function" || sourceActionPending) return;
+    setSourceActionPending(true);
+    setSourceActionSafeError(null);
+    try {
+      const result = await adapter.requestSourceDeletion(sourceAction, { idempotencyKey: crypto.randomUUID(), signal: lifetimeControllerRef.current?.signal });
+      setSourceAction({ ...sourceAction, deletionRequest: result });
+      setLoadRevision((current) => current + 1);
+    } catch (error) {
+      setSourceActionSafeError(safeErrorCode(error, "DELETION_REQUEST_FAILED"));
+    } finally {
+      setSourceActionPending(false);
+    }
+  };
+
+  const confirmSourceDeletionCancel = async () => {
+    const request = sourceAction?.deletionRequest;
+    if (!request || typeof adapter?.cancelSourceDeletionRequest !== "function" || sourceActionPending) return;
+    setSourceActionPending(true);
+    setSourceActionSafeError(null);
+    try {
+      const result = await adapter.cancelSourceDeletionRequest(request.data.request_id, {
+        etag: request.etag,
+        idempotencyKey: crypto.randomUUID(),
+        signal: lifetimeControllerRef.current?.signal,
+      });
+      setSourceAction({ ...sourceAction, deletionRequest: result });
+      setLoadRevision((current) => current + 1);
+    } catch (error) {
+      setSourceActionSafeError(safeErrorCode(error, "DELETION_CANCEL_FAILED"));
+    } finally {
+      setSourceActionPending(false);
     }
   };
 
@@ -1001,7 +1113,15 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
     setOutputCloseGuard(false);
     queueMicrotask(() => modalOpenerRef.current?.focus?.());
   };
-  const compactState = viewState.status === "ready" ? "준비" : viewState.status === "loading" ? "확인 중" : viewState.status === "error" ? "주의" : "연결 필요";
+  const sourceCompactState = viewState.status === "ready" ? "Source 준비"
+    : viewState.status === "loading" ? "Source 확인 중"
+      : viewState.status === "error" ? "Source 확인 필요"
+        : viewState.status === "empty" ? "Source 없음" : "Source 연결 필요";
+  const cloudCompactState = operationsPending ? "Cloud 확인 중"
+    : operationsSafeError ? "Cloud 확인 필요"
+      : operationsStatus?.overall_status === "ready" ? "Cloud 정상"
+        : operationsStatus?.overall_status === "warning" ? "Cloud 확인 필요"
+          : operationsStatus?.overall_status === "error" ? "Cloud 주의" : "Cloud 미확인";
 
   return (
     <main className="adaptive-workspace" data-product-workspace-state={viewState.status} data-workspace-id={workspaceId ?? ""}>
@@ -1009,7 +1129,7 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
       <header className="workspace-header workspace-app-bar">
         <div className="workspace-brand"><span className="daon-mark" aria-hidden="true">D</span><div><p className="eyebrow">DAON WORKSPACE</p><h1>Workspace</h1></div></div>
         <div className="workspace-app-actions">
-          <span className={`workspace-status status-${viewState.status}`} role="status"><span className="status-dot" aria-hidden="true" />{compactState}<span className="status-connection"> · Cloud</span></span>
+          <span className={`workspace-status status-${viewState.status}`} role="status" data-cloud-status={operationsStatus?.overall_status ?? "unknown"}><span className="status-dot" aria-hidden="true" />{sourceCompactState}<span className="status-connection"> · {cloudCompactState}</span></span>
           <button type="button" onClick={(event) => openModal("operations", event.currentTarget)}>운영상태</button>
           <div className="settings-menu-anchor">
             <button ref={settingsButtonRef} type="button" aria-haspopup="menu" aria-expanded={settingsMenuOpen} onClick={() => setSettingsMenuOpen((open) => !open)}>설정</button>
@@ -1050,6 +1170,23 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
                 <button type="button" aria-pressed={viewState.selectedSource?.sourceVersionId === source.sourceVersionId} onClick={() => selectSource(source)} disabled={!source.ready}>
                   <span className="source-file-icon" aria-hidden="true">PDF</span><span className="source-row-copy"><strong>{source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {SOURCE_STATE_LABELS[source.sourceState] ?? "상태 확인 필요"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
                 </button>
+                <button type="button" className="source-action-trigger" title="Source 작업" aria-label={`${source.filename ?? source.sourceId} 작업`} onClick={() => { setSourceAction(source); setSourceActionKind("unbind"); setSourceActionSafeError(null); }}>⋮</button>
+              </li>
+            ))}
+          </ul>
+          <ul className="source-list" aria-label="삭제 요청 Source 목록">
+            {sourceDeletionRequests.map((request) => (
+              <li className="source-list-row" key={request.request_id}>
+                <button type="button" disabled>
+                  <span className="source-file-icon" aria-hidden="true">PDF</span><span className="source-row-copy"><strong>{request.source_id}</strong><small>삭제 요청 · {request.state} · {request.grace_until}</small></span>
+                </button>
+                <button type="button" className="source-action-trigger" title="삭제 요청 상태" aria-label={`${request.source_id} 삭제 요청 상태`} onClick={() => {
+                  setSourceAction({ sourceId: request.source_id, filename: request.source_id, deletionRequest: {
+                    data: { request_id: request.request_id, source_id: request.source_id, state: request.state },
+                    etag: `"deletion:${request.request_id}:${request.version}"`,
+                  } });
+                  setSourceActionSafeError(null);
+                }}>⋮</button>
               </li>
             ))}
           </ul>
@@ -1057,6 +1194,23 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
           {viewState.status === "loading" ? <div className="pane-empty" role="status"><span className="state-spinner" aria-hidden="true" /><strong>Source를 불러오고 있습니다.</strong><small>현재 Workspace의 안전한 목록을 확인하는 중입니다.</small></div> : null}
           {viewState.status === "empty" ? <div className="pane-empty"><span aria-hidden="true">◇</span><strong>Source를 추가해 주세요.</strong><small>PDF를 등록하면 질문과 Studio 생성에 사용할 수 있습니다.</small></div> : null}
           {viewState.status === "error" && !viewState.sources.length ? <div className="inline-alert" role="alert"><span>Source를 불러오지 못했습니다. 운영상태에서 연결을 확인해 주세요.</span><button type="button" onClick={() => { setViewState(createProductWorkspaceState({ status: "loading" })); setLoadRevision((current) => current + 1); }}>다시 시도</button></div> : null}
+          {sourceAction ? <section className="source-action-dialog" role="dialog" aria-modal="true" aria-label="Source 작업 확인">
+            <strong>{sourceAction.filename ?? sourceAction.sourceId}</strong>
+            {sourceAction.deletionRequest ? <p role="status">{sourceAction.deletionRequest.data.state === "cancelled"
+              ? "삭제 요청이 취소되었습니다. 원본 Source는 보존됩니다."
+              : "삭제 요청이 접수되었습니다. 30일 유예 중이며 Legal Hold가 있으면 삭제보다 우선합니다."}</p>
+              : sourceActionKind === "unbind" ? <p>Notebook에서 제거하면 원본 Source는 보존되고 이 Notebook의 질문과 Studio에서만 제외됩니다.</p>
+                : <p>Source 삭제 요청은 원본을 즉시 비활성화하고 30일 유예를 시작합니다. Legal Hold가 있으면 영구 삭제되지 않습니다.</p>}
+            {sourceActionSafeError ? <div role="alert">요청을 처리하지 못했습니다. 다시 확인해 주세요.</div> : null}
+            <div>{sourceAction.deletionRequest?.data.state !== "cancelled"
+              ? sourceAction.deletionRequest
+                ? <button type="button" disabled={sourceActionPending} onClick={() => void confirmSourceDeletionCancel()}>삭제 요청 취소</button>
+                : sourceActionKind === "unbind"
+              ? <><button type="button" disabled={sourceActionPending} onClick={() => void confirmSourceUnbind()}>Notebook에서 제거</button><button type="button" className="danger" disabled={sourceActionPending} onClick={() => setSourceActionKind("deletion")}>Source 삭제 요청</button></>
+              : <button type="button" className="danger" disabled={sourceActionPending} onClick={() => void confirmSourceDeletionRequest()}>삭제 요청 확인</button>
+              : null}
+              <button type="button" disabled={sourceActionPending} onClick={() => setSourceAction(null)}>{sourceAction.deletionRequest ? "닫기" : "취소"}</button></div>
+          </section> : null}
         </SafePane>
         <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
           {desktopEditor ? desktopEditor : <div className="conversation-workspace"><div className="conversation-transcript" aria-live="polite">
@@ -1229,4 +1383,13 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
       </div> : null}
     </main>
   );
+}
+
+export function ProductWorkspaceShell(props) {
+  const identity = JSON.stringify([
+    props.workspaceId ?? null,
+    props.adapter?.notebookContext?.notebook_id ?? null,
+    workspaceAdapterKey(props.adapter),
+  ]);
+  return <ProductWorkspaceShellInner key={identity} {...props} />;
 }

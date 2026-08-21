@@ -232,6 +232,21 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/notebooks/{notebook_id}/source-unbindings": {
+      "post": {
+        "operationId": "unbindWorkspaceNotebookSource", "tags": ["Workspace"],
+        "summary": "원본을 보존하고 Notebook Source 연결 해제", "x-implementation-owner": "R1-M8-10-SOURCE-LIFECYCLE-UI-I006",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "notebook_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookSourceUnbindRequest" } } } },
+        "responses": {
+          "200": { "description": "Source binding ended or replayed", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookSourceUnbindEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
     "/api/v1/organizations/{id}/license": {
       "post": {
         "operationId": "applyOrganizationLicense",
@@ -6797,8 +6812,9 @@
         }
       },
       "DeletionCreateRequest": {
-        "type": "object", "additionalProperties": false, "required": ["inventory"],
-        "properties": { "inventory": { "type": "array", "minItems": 6, "maxItems": 100, "items": { "$ref": "#/components/schemas/RetentionDerivativeInput" } } }
+        "type": "object", "additionalProperties": false,
+        "description": "Derivative inventory는 서버가 current Source 정본에서 산출합니다.",
+        "properties": {}
       },
       "SensitiveRetentionRequest": {
         "type": "object", "additionalProperties": false, "required": ["step_up_authorization_id"],
@@ -7010,6 +7026,18 @@
         "type": "object", "additionalProperties": false, "required": ["title"],
         "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 } }
       },
+      "NotebookSourceUnbindRequest": {
+        "type": "object", "additionalProperties": false, "required": ["source_id", "source_version_id"],
+        "properties": { "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" } }
+      },
+      "NotebookSourceUnbindProjection": {
+        "type": "object", "additionalProperties": false, "required": ["notebook_id", "source_id", "source_version_id", "status"],
+        "properties": { "notebook_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "status": { "type": "string", "enum": ["unbound"] } }
+      },
+      "NotebookSourceUnbindEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "$ref": "#/components/schemas/NotebookSourceUnbindProjection" }, "meta": { "$ref": "#/components/schemas/NotebookMeta" } }
+      },
       "NotebookMeta": {
         "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"],
         "properties": {
@@ -7034,7 +7062,7 @@
       },
       "NotebookSelectedContext": {
         "type": "object", "additionalProperties": false,
-        "required": ["notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids", "studio_output_ids", "output_version_ids", "generation_settings_ids", "conversation"],
+        "required": ["notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids", "studio_output_ids", "output_version_ids", "generation_settings_ids", "source_deletion_requests", "conversation"],
         "properties": {
           "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
           "sources": { "type": "array", "maxItems": 1000, "items": { "type": "object", "additionalProperties": false, "required": ["source_id", "source_version_id"], "properties": { "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" } } } },
@@ -7043,6 +7071,7 @@
           "studio_output_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "output_version_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "generation_settings_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "source_deletion_requests": { "type": "array", "maxItems": 1000, "items": { "type": "object", "additionalProperties": false, "required": ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"], "properties": { "request_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "state": { "type": "string", "enum": ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"] }, "version": { "type": "integer", "minimum": 1 }, "grace_until": { "type": "string", "format": "date-time" }, "legal_hold_active": { "type": "boolean" } } } },
           "conversation": {
             "oneOf": [
               { "type": "null" },

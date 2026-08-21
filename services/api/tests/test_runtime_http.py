@@ -206,6 +206,7 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             "notebook_id": notebook["notebook_id"], "sources": [],
             "knowledge_context_ids": [], "conversation_thread_ids": [],
             "studio_output_ids": [], "output_version_ids": [], "generation_settings_ids": [],
+            "source_deletion_requests": [],
             "conversation": None,
         })
         self.assertEqual((updated.status_code, updated.json()["data"]["title"], updated.headers["etag"]), (200, "전략 노트 2", '"notebook:2"'))

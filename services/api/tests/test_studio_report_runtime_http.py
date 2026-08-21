@@ -47,7 +47,10 @@ class FakeNotebook:
     def read_selected_context(self, _context, notebook_id):  # type: ignore[no-untyped-def]
         if notebook_id != "notebook-001":
             raise AssertionError(notebook_id)
-        return type("Selected", (), {"sources": (("source-1", "source-version-1"),)})()
+        return type("Selected", (), {
+            "sources": (("source-1", "source-version-1"),),
+            "etag": '"notebook-binding:1"',
+        })()
 
 
 class StudioRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):

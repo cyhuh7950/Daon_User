@@ -274,7 +274,11 @@ class PostgresStudioWorkspaceRepository:
                     raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
                 source_count = connection.execute(
                     "SELECT count(*) FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s "
-                    "AND notebook_id=%s AND binding_kind='source' AND version_id=ANY(%s)",
+                    "AND notebook_id=%s AND binding_kind='source' AND version_id=ANY(%s) "
+                    "AND NOT EXISTS (SELECT 1 FROM source_versions sv JOIN deletion_requests dr "
+                    "ON dr.tenant_id=sv.tenant_id AND dr.workspace_id=sv.workspace_id AND dr.source_id=sv.source_id "
+                    "WHERE sv.tenant_id=notebook_bindings.tenant_id AND sv.workspace_id=notebook_bindings.workspace_id "
+                    "AND sv.record_id=notebook_bindings.version_id AND dr.source_active=false)",
                     (
                         context.tenant_id, context.workspace_id, context.notebook_id,
                         list(request.source_version_ids),
@@ -379,7 +383,11 @@ class PostgresStudioWorkspaceRepository:
                     "AND nb.binding_kind='studio_output' AND nb.record_id=so.record_id AND nb.notebook_id=%s "
                     "JOIN LATERAL (SELECT record_id,state,canonical_json FROM output_versions WHERE tenant_id=so.tenant_id "
                     "AND workspace_id=so.workspace_id AND studio_output_id=so.record_id ORDER BY content_version DESC LIMIT 1) ov ON true "
-                    "WHERE so.tenant_id=%s AND so.workspace_id=%s ORDER BY so.created_at DESC",
+                    "WHERE so.tenant_id=%s AND so.workspace_id=%s AND NOT EXISTS (SELECT 1 FROM evidence_references er "
+                    "JOIN source_versions sv ON sv.tenant_id=er.tenant_id AND sv.workspace_id=er.workspace_id AND sv.record_id=er.source_version_id "
+                    "JOIN deletion_requests dr ON dr.tenant_id=sv.tenant_id AND dr.workspace_id=sv.workspace_id AND dr.source_id=sv.source_id "
+                    "WHERE er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id AND dr.source_active=false) "
+                    "ORDER BY so.created_at DESC",
                     (context.notebook_id, context.tenant_id, context.workspace_id),
                 ).fetchall()
         except CloudDatabaseError as error:
@@ -405,7 +413,11 @@ class PostgresStudioWorkspaceRepository:
                     "WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s "
                     "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=ov.tenant_id "
                     "AND nb.workspace_id=ov.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='studio_output' "
-                    "AND nb.record_id=ov.studio_output_id) ORDER BY ov.content_version DESC,ov.record_id DESC",
+                    "AND nb.record_id=ov.studio_output_id) AND NOT EXISTS (SELECT 1 FROM evidence_references blocked_er "
+                    "JOIN source_versions blocked_sv ON blocked_sv.tenant_id=blocked_er.tenant_id AND blocked_sv.workspace_id=blocked_er.workspace_id AND blocked_sv.record_id=blocked_er.source_version_id "
+                    "JOIN deletion_requests blocked_dr ON blocked_dr.tenant_id=blocked_sv.tenant_id AND blocked_dr.workspace_id=blocked_sv.workspace_id AND blocked_dr.source_id=blocked_sv.source_id "
+                    "WHERE blocked_er.tenant_id=ov.tenant_id AND blocked_er.workspace_id=ov.workspace_id AND blocked_er.output_version_id=ov.record_id AND blocked_dr.source_active=false) "
+                    "ORDER BY ov.content_version DESC,ov.record_id DESC",
                     (context.tenant_id, context.workspace_id, output_id, context.notebook_id),
                 ).fetchall()
                 if not rows:
@@ -464,7 +476,12 @@ class PostgresStudioWorkspaceRepository:
                     "WHERE tenant_id=%s AND workspace_id=%s AND studio_output_id=%s AND record_id=%s "
                     "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=output_versions.tenant_id "
                     "AND nb.workspace_id=output_versions.workspace_id AND nb.notebook_id=%s "
-                    "AND nb.binding_kind='output_version' AND nb.record_id=output_versions.record_id)",
+                    "AND nb.binding_kind='output_version' AND nb.record_id=output_versions.record_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM evidence_references er JOIN source_versions sv "
+                    "ON sv.tenant_id=er.tenant_id AND sv.workspace_id=er.workspace_id AND sv.record_id=er.source_version_id "
+                    "JOIN deletion_requests dr ON dr.tenant_id=sv.tenant_id AND dr.workspace_id=sv.workspace_id AND dr.source_id=sv.source_id "
+                    "WHERE er.tenant_id=output_versions.tenant_id AND er.workspace_id=output_versions.workspace_id "
+                    "AND er.output_version_id=output_versions.record_id AND dr.source_active=false)",
                     (context.tenant_id, context.workspace_id, output_id, revision["previous_version_id"], context.notebook_id),
                 ).fetchone()
                 if previous is None: raise StudioError("RESOURCE_UNAVAILABLE", 404)
@@ -562,7 +579,12 @@ class PostgresStudioWorkspaceRepository:
                     "SELECT state,version FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s "
                     "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=output_versions.tenant_id "
                     "AND nb.workspace_id=output_versions.workspace_id AND nb.notebook_id=%s "
-                    "AND nb.binding_kind='output_version' AND nb.record_id=output_versions.record_id)",
+                    "AND nb.binding_kind='output_version' AND nb.record_id=output_versions.record_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM evidence_references er JOIN source_versions sv "
+                    "ON sv.tenant_id=er.tenant_id AND sv.workspace_id=er.workspace_id AND sv.record_id=er.source_version_id "
+                    "JOIN deletion_requests dr ON dr.tenant_id=sv.tenant_id AND dr.workspace_id=sv.workspace_id AND dr.source_id=sv.source_id "
+                    "WHERE er.tenant_id=output_versions.tenant_id AND er.workspace_id=output_versions.workspace_id "
+                    "AND er.output_version_id=output_versions.record_id AND dr.source_active=false)",
                     (context.tenant_id, context.workspace_id, clean["output_version_id"], context.notebook_id),
                 ).fetchone()
                 if version is None: raise StudioError("RESOURCE_UNAVAILABLE", 404)
@@ -683,7 +705,7 @@ class PostgresStudioWorkspaceRepository:
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.export")) as connection:
                 row = connection.execute(
-                    "SELECT ov.canonical_json,ov.created_at,count(er.record_id),ov.state FROM output_versions ov JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id AND so.record_id=ov.studio_output_id LEFT JOIN evidence_references er ON er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s AND ov.record_id=%s AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=ov.tenant_id AND nb.workspace_id=ov.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='output_version' AND nb.record_id=ov.record_id) GROUP BY ov.canonical_json,ov.created_at,ov.state",
+                    "SELECT ov.canonical_json,ov.created_at,count(er.record_id),ov.state FROM output_versions ov JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id AND so.record_id=ov.studio_output_id LEFT JOIN evidence_references er ON er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s AND ov.record_id=%s AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=ov.tenant_id AND nb.workspace_id=ov.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='output_version' AND nb.record_id=ov.record_id) AND NOT EXISTS (SELECT 1 FROM evidence_references blocked_er JOIN source_versions blocked_sv ON blocked_sv.tenant_id=blocked_er.tenant_id AND blocked_sv.workspace_id=blocked_er.workspace_id AND blocked_sv.record_id=blocked_er.source_version_id JOIN deletion_requests blocked_dr ON blocked_dr.tenant_id=blocked_sv.tenant_id AND blocked_dr.workspace_id=blocked_sv.workspace_id AND blocked_dr.source_id=blocked_sv.source_id WHERE blocked_er.tenant_id=ov.tenant_id AND blocked_er.workspace_id=ov.workspace_id AND blocked_er.output_version_id=ov.record_id AND blocked_dr.source_active=false) GROUP BY ov.canonical_json,ov.created_at,ov.state",
                     (context.tenant_id, context.workspace_id, output_id, version_id, context.notebook_id),
                 ).fetchone()
                 if row is None: raise StudioError("RESOURCE_UNAVAILABLE", 404)

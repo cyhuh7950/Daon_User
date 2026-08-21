@@ -143,6 +143,8 @@ from .provider_settings import (
     ReferenceProviderSettingsRepository,
     ServerCredentialPresenceResolver,
 )
+from .retention_inventory_postgres import PostgresRetentionInventoryProvider
+from .retention_request_postgres import PostgresRetentionRequestService
 from .operations_status import OperationsStatusContext, OperationsStatusService
 from .operations_status_postgres import (
     OperationsStatusError,
@@ -708,7 +710,6 @@ class RetentionDerivativeBody(BaseModel):
 
 class DeletionCreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    inventory: list[RetentionDerivativeBody]
 
 
 class SensitiveRetentionBody(BaseModel):
@@ -805,6 +806,12 @@ class NotebookCreateBody(BaseModel):
 class NotebookTitleBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=240)
+
+
+class NotebookSourceUnbindBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str = Field(min_length=1, max_length=128)
+    source_version_id: str = Field(min_length=1, max_length=128)
 
 
 def _trace_id(request: Request) -> str:
@@ -1219,9 +1226,17 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     knowledge_package_service = _resolve_knowledge_package_service(
         dependencies.knowledge_package_service, dependencies.cloud_store,
     )
-    retention_service = dependencies.retention_service or RetentionService(
-        ReferenceRetentionRepository(), ReferenceCleanupPort(),
-        clock=lambda: datetime.now(timezone.utc),
+    retention_service = (
+        PostgresRetentionRequestService(
+            dependencies.cloud_store,
+            PostgresRetentionInventoryProvider(dependencies.cloud_store),
+            clock=lambda: datetime.now(timezone.utc),
+        )
+        if dependencies.cloud_store is not None
+        else dependencies.retention_service or RetentionService(
+            ReferenceRetentionRepository(), ReferenceCleanupPort(),
+            clock=lambda: datetime.now(timezone.utc),
+        )
     )
     recovery_service = dependencies.recovery_service or UnavailableRecoveryService()
     provider_settings_service = dependencies.provider_settings_service or ProviderSettingsService(
@@ -1232,6 +1247,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ),
         ServerCredentialPresenceResolver(),
     )
+    retention_request_service = retention_service
     operations_status_service = dependencies.operations_status_service
     if operations_status_service is None and dependencies.cloud_store is not None:
         operations_status_service = OperationsStatusService(
@@ -1871,7 +1887,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "data": {"sources": [_dataclass_json(source) for source in sources]},
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
         }
-        return _json_with_etag(content, json.dumps(content["data"], sort_keys=True))
+        response = JSONResponse(content)
+        response.headers["ETag"] = selected.etag
+        return response
 
     @app.post("/api/v1/workspaces/{id}/sources", status_code=202)
     async def upload_pdf_source(
@@ -2673,6 +2691,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "studio_output_ids": list(selected.studio_output_ids),
             "output_version_ids": list(selected.output_version_ids),
             "generation_settings_ids": list(selected.generation_settings_ids),
+            "source_deletion_requests": [_dataclass_json(item) for item in selected.source_deletion_requests],
             "conversation": None if selected.conversation is None else {
                 "conversation_thread_id": selected.conversation.conversation_thread_id,
                 "answer": {
@@ -2786,6 +2805,34 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
         }
         return _json_with_etag(content, json.dumps(content["data"], sort_keys=True))
+
+    @app.post("/api/v1/workspaces/{id}/notebooks/{notebook_id}/source-unbindings")
+    async def unbind_notebook_source(
+        id: str, notebook_id: str, body: NotebookSourceUnbindBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        if_match: str = Header(alias="If-Match"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _egress_idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        view, replayed = await asyncio.to_thread(
+            notebook_service.unbind_source, notebook_context(principal, id, request), notebook_id,
+            source_id=body.source_id, source_version_id=body.source_version_id,
+            expected_etag=if_match, idempotency_key=idempotency_key,
+        )
+        response = JSONResponse({
+            "data": {
+                "notebook_id": view.notebook_id, "source_id": view.source_id,
+                "source_version_id": view.source_version_id, "status": view.status,
+            },
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id, "replayed": replayed},
+        })
+        response.headers["ETag"] = view.etag
+        return response
 
     @app.get("/api/v1/preferences/screen")
     async def get_screen_preferences(request: Request) -> dict[str, object]:
@@ -3357,16 +3404,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _require_query_keys(request, frozenset())
         _idempotency_key(idempotency_key)
         principal = _principal(request, dependencies)
-        workspace_id = retention_service.locate_source_workspace(principal.tenant_id, id)
+        workspace_id = retention_request_service.locate_source_workspace(principal.tenant_id, id)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=workspace_id, action=Action.EDIT,
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
-        view = retention_service.create_request(
+        view = retention_request_service.create_request(
             _retention_context(principal, workspace_id, request, dependencies),
             source_id=id,
-            inventory=tuple(DerivativeInput(**item.model_dump()) for item in body.inventory),
+            inventory=None,
             idempotency_key=idempotency_key, if_match=if_match,
         )
         response = JSONResponse(
@@ -3380,13 +3427,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def get_deletion_request(id: str, request: Request) -> JSONResponse:
         _require_query_keys(request, frozenset())
         principal = _principal(request, dependencies)
-        workspace_id = retention_service.locate_workspace(principal.tenant_id, id)
+        workspace_id = retention_request_service.locate_workspace(principal.tenant_id, id)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=workspace_id, action=Action.VIEW,
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
-        view = retention_service.get_request(
+        view = retention_request_service.get_request(
             _retention_context(principal, workspace_id, request, dependencies), id
         )
         response = JSONResponse({
@@ -3404,13 +3451,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _require_query_keys(request, frozenset())
         _idempotency_key(idempotency_key)
         principal = _principal(request, dependencies)
-        workspace_id = retention_service.locate_workspace(principal.tenant_id, id)
+        workspace_id = retention_request_service.locate_workspace(principal.tenant_id, id)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=workspace_id, action=Action.EDIT,
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
-        view = retention_service.cancel(
+        view = retention_request_service.cancel(
             _retention_context(principal, workspace_id, request, dependencies), id,
             expected_version=_retention_expected_version(if_match, id, "deletion"),
             idempotency_key=idempotency_key,
@@ -4265,6 +4312,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         retention_service=RetentionService(
             ReferenceRetentionRepository(), ReferenceCleanupPort(),
             clock=lambda: datetime.now(timezone.utc),
+            inventory_provider=None if cloud_store is None else PostgresRetentionInventoryProvider(cloud_store),
         ),
         recovery_service=recovery_service,
         object_queue_store=object_queue_store,

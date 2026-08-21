@@ -237,6 +237,11 @@ class PostgresDocumentProcessingRepository:
                     "nb.workspace_id=sv.workspace_id AND nb.notebook_id=%s "
                     "AND nb.binding_kind='source' AND nb.record_id=sv.source_id "
                     "AND nb.version_id=sv.record_id "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=nb.tenant_id "
+                    "AND u.workspace_id=nb.workspace_id AND u.notebook_id=nb.notebook_id "
+                    "AND u.source_id=nb.record_id AND u.source_version_id=nb.version_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=s.tenant_id "
+                    "AND dr.workspace_id=s.workspace_id AND dr.source_id=s.record_id AND dr.source_active=false) "
                     "LEFT JOIN document_processing_jobs job ON job.tenant_id=pr.tenant_id AND "
                     "job.workspace_id=pr.workspace_id AND job.processing_run_id=pr.record_id "
                     "WHERE pr.record_id=%s",

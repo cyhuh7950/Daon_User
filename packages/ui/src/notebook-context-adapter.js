@@ -2,6 +2,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const CONTEXT_KEYS = Object.freeze([
   "notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids",
   "studio_output_ids", "output_version_ids", "generation_settings_ids",
+  "source_deletion_requests",
   "conversation",
 ]);
 
@@ -57,6 +58,13 @@ export function projectNotebookSelectedContext(value) {
     && safeIds(value.studio_output_ids)
     && safeIds(value.output_version_ids)
     && safeIds(value.generation_settings_ids)
+    && Array.isArray(value.source_deletion_requests) && value.source_deletion_requests.length <= 1_000
+    && value.source_deletion_requests.every((item) => exact(item, ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"])
+      && safeId(item.request_id) && safeId(item.source_id)
+      && ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"].includes(item.state)
+      && Number.isSafeInteger(item.version) && item.version >= 1
+      && typeof item.grace_until === "string" && Number.isFinite(Date.parse(item.grace_until))
+      && typeof item.legal_hold_active === "boolean")
     && conversationValid
     && ((value.conversation === null) === (value.conversation_thread_ids.length === 0));
   if (!valid) throw new Error("NOTEBOOK_CONTEXT_INVALID");
@@ -68,6 +76,7 @@ export function projectNotebookSelectedContext(value) {
     studio_output_ids: Object.freeze([...value.studio_output_ids]),
     output_version_ids: Object.freeze([...value.output_version_ids]),
     generation_settings_ids: Object.freeze([...value.generation_settings_ids]),
+    source_deletion_requests: Object.freeze(value.source_deletion_requests.map((item) => Object.freeze({ ...item }))),
     conversation: value.conversation === null ? null : Object.freeze({
       conversation_thread_id: value.conversation.conversation_thread_id,
       answer: Object.freeze({
@@ -95,6 +104,10 @@ function validConversation(value, expectedId) {
 export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext) {
   if (!baseAdapter || typeof baseAdapter !== "object") throw new Error("NOTEBOOK_CONTEXT_ADAPTER_INVALID");
   const context = projectNotebookSelectedContext(inputContext);
+  const bindingEtag = inputContext?.bindingEtag;
+  if (bindingEtag !== undefined && (typeof bindingEtag !== "string" || !/^"notebook-binding:[1-9][0-9]*"$/u.test(bindingEtag))) {
+    throw new Error("NOTEBOOK_CONTEXT_ADAPTER_INVALID");
+  }
   const sourceKeys = new Set(context.sources.map((item) => `${item.source_id}\u0000${item.source_version_id}`));
   const studioIds = new Set(context.studio_output_ids);
   const outputVersionIds = new Set(context.output_version_ids);
@@ -156,11 +169,12 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     return { outputs: filterOutputs(value.outputs), studioLocks: [...value.studioLocks] };
   };
 
-  return Object.freeze({
+  const adapter = {
     ...baseAdapter,
     notebookContext: context,
     generationSettingsIds: [...context.generation_settings_ids],
     listSources,
+    listSourceDeletionRequests: async () => context.source_deletion_requests.map((item) => ({ ...item })),
     listKnowledgePackages,
     loadNotebookConversation,
     listStudioOutputs,
@@ -197,5 +211,7 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     downloadStudioExport: typeof baseAdapter.downloadStudioExport === "function"
       ? (outputId, versionId, format, options) => baseAdapter.downloadStudioExport(outputId, versionId, format, { ...options, notebookId: context.notebook_id })
       : undefined,
-  });
+  };
+  if (bindingEtag !== undefined) Object.defineProperty(adapter, "bindingEtag", { enumerable: false, value: bindingEtag });
+  return Object.freeze(adapter);
 }

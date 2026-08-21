@@ -62,6 +62,15 @@ class NotebookBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class NotebookBindingChangeView:
+    notebook_id: str
+    source_id: str
+    source_version_id: str
+    status: str
+    etag: str
+
+
+@dataclass(frozen=True, slots=True)
 class NotebookActivity:
     tenant_id: str
     workspace_id: str
@@ -105,6 +114,16 @@ class NotebookConversationView:
 
 
 @dataclass(frozen=True, slots=True)
+class NotebookSourceDeletionView:
+    request_id: str
+    source_id: str
+    state: str
+    version: int
+    grace_until: datetime
+    legal_hold_active: bool
+
+
+@dataclass(frozen=True, slots=True)
 class NotebookSelectedContext:
     notebook_id: str
     sources: tuple[tuple[str, str], ...]
@@ -113,7 +132,9 @@ class NotebookSelectedContext:
     studio_output_ids: tuple[str, ...]
     output_version_ids: tuple[str, ...]
     generation_settings_ids: tuple[str, ...]
+    source_deletion_requests: tuple[NotebookSourceDeletionView, ...] = ()
     conversation: NotebookConversationView | None = None
+    etag: str = '"notebook-binding:1"'
 
     @property
     def is_empty(self) -> bool:
@@ -152,6 +173,11 @@ class NotebookRepository(Protocol):
     def read_selected_context(
         self, context: NotebookContext, notebook_id: str,
     ) -> NotebookSelectedContext: ...
+    def unbind_source(
+        self, context: NotebookContext, notebook_id: str, *, source_id: str,
+        source_version_id: str, expected_etag: str, idempotency_key: str,
+        request_fingerprint: str, now: datetime,
+    ) -> tuple[NotebookBindingChangeView, bool]: ...
 
 
 def _canonical_text(value: object, *, field: str, minimum: int, maximum: int) -> str:
@@ -210,6 +236,7 @@ def _binding_values(
 def _selected_context(
     notebook_id: str, bindings: tuple[NotebookBinding, ...],
     conversation: NotebookConversationView | None = None,
+    binding_version: int = 1,
 ) -> NotebookSelectedContext:
     def records(kind: str) -> tuple[str, ...]:
         return tuple(sorted(item.record_id for item in bindings if item.binding_kind == kind))
@@ -227,7 +254,7 @@ def _selected_context(
         studio_output_ids=records("studio_output"),
         output_version_ids=records("output_version"),
         generation_settings_ids=records("generation_settings"),
-        conversation=conversation,
+        conversation=conversation, etag=f'"notebook-binding:{binding_version}"',
     )
 
 
@@ -304,6 +331,27 @@ class NotebookService:
         notebook = _binding(notebook_id, field="NOTEBOOK_ID")
         return self._repository.read_selected_context(context, notebook)
 
+    def unbind_source(
+        self, context: NotebookContext, notebook_id: object, *, source_id: object,
+        source_version_id: object, expected_etag: object, idempotency_key: object,
+    ) -> tuple[NotebookBindingChangeView, bool]:
+        notebook = _binding(notebook_id, field="NOTEBOOK_ID")
+        source = _binding(source_id, field="RECORD_ID")
+        version = _binding(source_version_id, field="VERSION_ID")
+        if not isinstance(expected_etag, str) or re.fullmatch(r'"notebook-binding:[1-9][0-9]*"', expected_etag) is None:
+            raise NotebookError("NOTEBOOK_BINDING_ETAG_INVALID")
+        key = _key(idempotency_key)
+        fingerprint = _fingerprint({
+            "tenant_id": context.tenant_id, "workspace_id": context.workspace_id,
+            "notebook_id": notebook, "source_id": source, "source_version_id": version,
+            "expected_etag": expected_etag,
+        })
+        return self._repository.unbind_source(
+            context, notebook, source_id=source, source_version_id=version,
+            expected_etag=expected_etag, idempotency_key=key,
+            request_fingerprint=fingerprint, now=self._clock(),
+        )
+
     def require_selected_bindings(
         self, context: NotebookContext, notebook_id: object,
         required: tuple[tuple[object, object, object], ...],
@@ -339,6 +387,8 @@ class ReferenceNotebookRepository:
         self._binding_targets = frozenset(binding_targets or set())
         self._bindings: dict[tuple[str, str, str], list[NotebookBinding]] = {}
         self._activities: dict[tuple[str, str, str], list[NotebookActivity]] = {}
+        self._binding_terminations: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
+        self._unbind_idempotency: dict[tuple[str, str, str, str], tuple[str, NotebookBindingChangeView]] = {}
 
     @staticmethod
     def _scope(context: NotebookContext, notebook_id: str) -> tuple[str, str, str]:
@@ -370,6 +420,7 @@ class ReferenceNotebookRepository:
                 context.tenant_id, context.workspace_id, notebook_id,
                 "created", now, context.actor_id,
             )]
+            self._binding_terminations[scope] = set()
             view = self._view(notebook, metadata)
             self._idempotency[idem_scope] = (request_fingerprint, view)
             return view, False
@@ -438,5 +489,30 @@ class ReferenceNotebookRepository:
         with self._lock:
             if scope not in self._notebooks:
                 raise NotebookError("NOTEBOOK_NOT_FOUND", 404)
-            bindings = tuple(self._bindings[scope])
+            ended = self._binding_terminations[scope]
+            bindings = tuple(item for item in self._bindings[scope] if (item.record_id, item.version_id or "") not in ended)
         return _selected_context(notebook_id, bindings)
+
+    def unbind_source(self, context: NotebookContext, notebook_id: str, *, source_id: str, source_version_id: str, expected_etag: str, idempotency_key: str, request_fingerprint: str, now: datetime) -> tuple[NotebookBindingChangeView, bool]:
+        scope = self._scope(context, notebook_id)
+        idem_scope = (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key)
+        with self._lock:
+            replay = self._unbind_idempotency.get(idem_scope)
+            if replay is not None:
+                if replay[0] != request_fingerprint:
+                    raise NotebookError("IDEMPOTENCY_KEY_REUSED", 409)
+                return replay[1], True
+            if scope not in self._notebooks:
+                raise NotebookError("NOTEBOOK_NOT_FOUND", 404)
+            target = (source_id, source_version_id)
+            active = any(item.binding_kind == "source" and (item.record_id, item.version_id) == target for item in self._bindings[scope]) and target not in self._binding_terminations[scope]
+            if not active:
+                raise NotebookError("NOTEBOOK_BINDING_NOT_FOUND", 404)
+            current_version = 1 + len(self._binding_terminations[scope])
+            if expected_etag != f'"notebook-binding:{current_version}"':
+                raise NotebookError("NOTEBOOK_BINDING_ETAG_MISMATCH", 412)
+            self._binding_terminations[scope].add(target)
+            view = NotebookBindingChangeView(notebook_id, source_id, source_version_id, "unbound", f'"notebook-binding:{current_version + 1}"')
+            self._unbind_idempotency[idem_scope] = (request_fingerprint, view)
+            self._activities[scope].append(NotebookActivity(context.tenant_id, context.workspace_id, notebook_id, "context_unbound", now, context.actor_id))
+            return view, False

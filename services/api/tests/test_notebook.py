@@ -139,6 +139,43 @@ def test_notebook_binding_rejects_unverified_target_and_cross_notebook_scope() -
             _context(), notebook.notebook_id, binding_kind="source",
             record_id="source-1", version_id="source-version-other",
         )
+
+
+def test_notebook_source_unbind_is_append_only_idempotent_and_immediately_unselected() -> None:
+    service = NotebookService(
+        ReferenceNotebookRepository(binding_targets={("source", "source-1", "source-version-1")}),
+        clock=lambda: NOW,
+    )
+    notebook, _ = service.create(
+        _context(), title="Notebook", description=None,
+        idempotency_key="notebook-unbind-create-0001",
+    )
+    service.bind_verified(
+        _context(), notebook.notebook_id, binding_kind="source",
+        record_id="source-1", version_id="source-version-1",
+    )
+    view, replayed = service.unbind_source(
+        _context(), notebook.notebook_id, source_id="source-1",
+        source_version_id="source-version-1", expected_etag='"notebook-binding:1"',
+        idempotency_key="notebook-unbind-source-0001",
+    )
+    assert replayed is False
+    assert view.status == "unbound"
+    assert view.etag == '"notebook-binding:2"'
+    assert service.read_selected_context(_context(), notebook.notebook_id).sources == ()
+    replay, replayed = service.unbind_source(
+        _context(), notebook.notebook_id, source_id="source-1",
+        source_version_id="source-version-1", expected_etag='"notebook-binding:1"',
+        idempotency_key="notebook-unbind-source-0001",
+    )
+    assert replayed is True
+    assert replay == view
+    with pytest.raises(NotebookError, match="IDEMPOTENCY_KEY_REUSED"):
+        service.unbind_source(
+            _context(), notebook.notebook_id, source_id="source-other",
+            source_version_id="source-version-1", expected_etag='"notebook-binding:1"',
+            idempotency_key="notebook-unbind-source-0001",
+        )
     with pytest.raises(NotebookError, match="NOTEBOOK_NOT_FOUND"):
         service.bind_verified(
             _context("workspace-002"), notebook.notebook_id, binding_kind="source",

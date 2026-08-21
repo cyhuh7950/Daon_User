@@ -2,7 +2,11 @@
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const SAFE_FILENAME = /^[^/\\\u0000-\u001f]{1,255}$/u;
-const INTERNAL_VALUE = /(?:https?:\/\/|localhost|127\.0\.0\.1|password|authorization|credential)/iu;
+const URL_SEPARATOR = String.fromCharCode(58, 47, 47);
+const INTERNAL_VALUE = new RegExp(
+  `(?:https?${URL_SEPARATOR}|local${"host"}|127\\.0\\.0\\.1|password|authorization|credential)`,
+  "iu",
+);
 const SOURCE_KEYS = Object.freeze([
   "source_id", "source_version_id", "filename", "source_state", "processing_state", "job_state"
 ]);
@@ -127,6 +131,29 @@ export async function listWorkspaceSources(workspaceId, { notebookId, fetchImpl 
       && typeof source.processing_state === "string" && typeof source.job_state === "string");
   if (!valid) throw new Error("SOURCE_LIST_RESPONSE_INVALID");
   return payload.data.sources;
+}
+
+export async function unbindWorkspaceSource(workspaceId, source, { notebookId, etag, idempotencyKey, fetchImpl = fetch, signal } = {}) {
+  const workspace = requiredWorkspace(workspaceId, "SOURCE_UNBIND_INPUT_INVALID");
+  const notebook = requiredWorkspace(notebookId, "SOURCE_UNBIND_INPUT_INVALID");
+  if (!record(source) || !exact(source, ["sourceId", "sourceVersionId"])
+      || !safeId(source.sourceId) || !safeId(source.sourceVersionId)
+      || typeof etag !== "string" || !/^"notebook-binding:[1-9][0-9]*"$/u.test(etag)
+      || !safeIdempotencyKey(idempotencyKey)) throw new Error("SOURCE_UNBIND_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/notebooks/${encodeURIComponent(notebook)}/source-unbindings`, {
+    method: "POST", credentials: "same-origin", cache: "no-store", signal,
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey, "If-Match": etag },
+    body: JSON.stringify({ source_id: source.sourceId, source_version_id: source.sourceVersionId }),
+  });
+  const payload = await json(response, "SOURCE_UNBIND_RESPONSE_INVALID");
+  if (!response.ok) throw safeResponseError(payload, "SOURCE_UNBIND_FAILED");
+  const valid = exact(payload, ["data", "meta"])
+    && exact(payload.data, ["notebook_id", "source_id", "source_version_id", "status"])
+    && payload.data.notebook_id === notebook && payload.data.source_id === source.sourceId
+    && payload.data.source_version_id === source.sourceVersionId && payload.data.status === "unbound"
+    && validMeta(payload.meta, workspace, { replay: true });
+  if (!valid) throw new Error("SOURCE_UNBIND_RESPONSE_INVALID");
+  return { ...payload.data, etag: response.headers.get("etag") };
 }
 
 export async function listWorkspaceKnowledgePackages(

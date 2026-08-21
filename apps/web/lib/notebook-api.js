@@ -7,6 +7,7 @@ const STATUSES = Object.freeze(["empty", "active", "attention"]);
 const CONTEXT_KEYS = Object.freeze([
   "notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids",
   "studio_output_ids", "output_version_ids", "generation_settings_ids",
+  "source_deletion_requests",
   "conversation",
 ]);
 const SESSION_KEYS = Object.freeze([
@@ -90,6 +91,12 @@ function validContext(value, notebookId) {
     && idList(value.knowledge_context_ids) && idList(value.conversation_thread_ids)
     && idList(value.studio_output_ids) && idList(value.output_version_ids)
     && idList(value.generation_settings_ids) && conversationValid
+    && Array.isArray(value.source_deletion_requests) && value.source_deletion_requests.length <= 1_000
+    && value.source_deletion_requests.every((item) => exact(item, ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"])
+      && safeId(item.request_id) && safeId(item.source_id)
+      && ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"].includes(item.state)
+      && Number.isSafeInteger(item.version) && item.version >= 1 && timestamp(item.grace_until)
+      && typeof item.legal_hold_active === "boolean")
     && ((value.conversation === null) === (value.conversation_thread_ids.length === 0));
 }
 
@@ -154,6 +161,9 @@ export async function getNotebookContext(workspaceId, notebookId, { fetchImpl = 
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "NOTEBOOK_UNAVAILABLE");
   if (!exact(payload, ["data", "meta"]) || !validContext(payload.data, notebookId)
       || !validMeta(payload.meta)) throw new Error("NOTEBOOK_CONTEXT_INVALID");
+  const bindingEtag = response.headers.get("etag");
+  if (typeof bindingEtag !== "string" || !/^"notebook-binding:[1-9][0-9]*"$/u.test(bindingEtag)) throw new Error("NOTEBOOK_CONTEXT_INVALID");
+  Object.defineProperty(payload.data, "bindingEtag", { enumerable: false, value: bindingEtag });
   return payload;
 }
 
