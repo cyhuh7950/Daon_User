@@ -93,7 +93,7 @@ def upgrade() -> None:
                 AND other_binding.notebook_id=p_notebook_id
                 AND other_binding.version_id=other.record_id
             )
-          THEN
+          ) THEN
             RAISE EXCEPTION 'DELETE_SHARED_DATA_BLOCKED' USING ERRCODE='55000';
         END IF;
         SELECT coalesce(array_agg(DISTINCT b.record_id), ARRAY[]::text[]),
@@ -111,18 +111,21 @@ def upgrade() -> None:
           FROM notebook_bindings b LEFT JOIN source_versions sv ON sv.tenant_id=b.tenant_id AND sv.workspace_id=b.workspace_id AND sv.record_id=b.version_id
           LEFT JOIN object_records o ON o.tenant_id=sv.tenant_id AND o.workspace_id=sv.workspace_id AND o.object_id=sv.object_id
           WHERE b.tenant_id=p_tenant_id AND b.workspace_id=p_workspace_id AND b.notebook_id=p_notebook_id AND b.binding_kind='source';
-        DELETE FROM document_processing_jobs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM knowledge_registrations WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND registered_source_version_id=ANY(v_source_versions);
-        DELETE FROM evidence_references WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM citations WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM transcript_segments WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND transcript_version_id IN (SELECT record_id FROM transcript_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions));
-        DELETE FROM transcript_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM transcription_runs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM extraction_evidence WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM understanding_results WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM processing_runs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM index_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND source_version_id=ANY(v_source_versions);
-        DELETE FROM sync_target_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND object_id=ANY(v_object_ids);
+        ALTER TABLE sources DISABLE TRIGGER USER;
+        ALTER TABLE source_versions DISABLE TRIGGER USER;
+        ALTER TABLE object_records DISABLE TRIGGER USER;
+        DELETE FROM document_processing_jobs d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM knowledge_registrations d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.registered_source_version_id=ANY(v_source_versions);
+        DELETE FROM evidence_references d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM citations d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM transcript_segments d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.transcript_version_id IN (SELECT t.record_id FROM transcript_versions t WHERE t.tenant_id=p_tenant_id AND t.workspace_id=p_workspace_id AND t.source_version_id=ANY(v_source_versions));
+        DELETE FROM transcript_versions d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM transcription_runs d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM extraction_evidence d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM understanding_results d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM processing_runs d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM index_versions d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM sync_target_versions d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.object_id=ANY(v_object_ids);
         WHILE EXISTS (SELECT 1 FROM source_versions WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND record_id=ANY(v_source_versions)) LOOP
           DELETE FROM source_versions sv
            WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.record_id=ANY(v_source_versions)
@@ -131,14 +134,14 @@ def upgrade() -> None:
             RAISE EXCEPTION 'SOURCE_VERSION_DEPENDENCY_BLOCKED' USING ERRCODE='55000';
           END IF;
         END LOOP;
-        DELETE FROM sources WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND record_id=ANY(v_source_ids)
-          AND NOT EXISTS (SELECT 1 FROM source_versions sv WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.source_id=sources.record_id);
-        DELETE FROM durable_jobs WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND event_id IN
-          (SELECT event_id FROM object_outbox_events WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND object_id=ANY(v_object_ids));
-        DELETE FROM object_outbox_events WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND object_id=ANY(v_object_ids);
-        DELETE FROM object_records WHERE tenant_id=p_tenant_id AND workspace_id=p_workspace_id AND object_id=ANY(v_object_ids)
-          AND NOT EXISTS (SELECT 1 FROM source_versions sv WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.object_id=object_records.object_id)
-          AND NOT EXISTS (SELECT 1 FROM index_versions iv WHERE iv.tenant_id=p_tenant_id AND iv.workspace_id=p_workspace_id AND iv.object_id=object_records.object_id);
+        DELETE FROM sources d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.record_id=ANY(v_source_ids)
+          AND NOT EXISTS (SELECT 1 FROM source_versions sv WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.source_id=d.record_id);
+        DELETE FROM durable_jobs d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.event_id IN
+          (SELECT e.event_id FROM object_outbox_events e WHERE e.tenant_id=p_tenant_id AND e.workspace_id=p_workspace_id AND e.object_id=ANY(v_object_ids));
+        DELETE FROM object_outbox_events d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.object_id=ANY(v_object_ids);
+        DELETE FROM object_records d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.object_id=ANY(v_object_ids)
+          AND NOT EXISTS (SELECT 1 FROM source_versions sv WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.object_id=d.object_id)
+          AND NOT EXISTS (SELECT 1 FROM index_versions iv WHERE iv.tenant_id=p_tenant_id AND iv.workspace_id=p_workspace_id AND iv.object_id=d.object_id);
         ALTER TABLE notebook_source_unbindings DISABLE TRIGGER USER;
         ALTER TABLE notebook_source_unbinding_idempotency DISABLE TRIGGER USER;
         ALTER TABLE notebook_idempotency DISABLE TRIGGER USER;
@@ -160,6 +163,9 @@ def upgrade() -> None:
         ALTER TABLE notebook_bindings ENABLE TRIGGER USER;
         ALTER TABLE notebook_metadata_versions ENABLE TRIGGER USER;
         ALTER TABLE notebooks ENABLE TRIGGER USER;
+        ALTER TABLE sources ENABLE TRIGGER USER;
+        ALTER TABLE source_versions ENABLE TRIGGER USER;
+        ALTER TABLE object_records ENABLE TRIGGER USER;
       END $$;
       REVOKE ALL ON FUNCTION delete_notebook_scope(text,text,text) FROM PUBLIC;
       GRANT EXECUTE ON FUNCTION delete_notebook_scope(text,text,text) TO daon_app;
