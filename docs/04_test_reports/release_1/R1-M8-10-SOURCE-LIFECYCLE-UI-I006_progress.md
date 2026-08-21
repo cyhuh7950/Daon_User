@@ -455,3 +455,5 @@
 - 배포: production Compose `deploy/daon-user/compose.yaml`에서 API/Document Worker/Web만 `--build` 재기동했다. Object Storage 컨테이너/볼륨은 재생성하지 않았다.
 - 결과: API `healthy`, Document Worker `Running`, Web `healthy`, Object Storage `healthy`; Web `/` 및 `/notebooks` HTTP 200. Web build/TypeScript/product boundary 검사 통과(`scannedFiles=416`, violations 0). API startup 로그 정상.
 - 미실행: 인증된 브라우저에서 Notebook 삭제 클릭 E2E는 현재 자동화 브라우저 연결 여부 확인 후 별도 수행한다. 운영 도메인 master 배포는 수행하지 않는다.
+- API smoke: 공개 무쿠키 `/bff/api/session`은 `401`, 공개 `/notebooks`는 `200`을 반환했다. production 인증 경계가 유지된다.
+- 브라우저 E2E blocker: 현재 Node 자동화 모듈의 Playwright import가 `The requested module './index.js' does not provide an export named 'default'`로 초기화되지 않아 인증된 브라우저 클릭 E2E를 수행하지 못했다. 코드/배포 오류로 단정하지 않으며, 브라우저 연결 도구 복구 후 재검증 조건으로 남긴다.
