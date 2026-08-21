@@ -320,3 +320,14 @@
 - 검증: `node --test scripts/tests/product-workspace.test.mjs scripts/tests/source-upload-api.test.mjs` = 30 passed, 0 failed. `npm run verify:product-ui-boundary` = 415 files, violations 0, boundaryErrors 0. `npm run build --prefix apps/web` = Next compile·TypeScript·12 pages PASS, Web boundary 392 files/violations 0. 관련 파일 `git diff --check` 오류 0(CRLF 안내만 존재).
 - 보호: API·DB·Provider·보안 정책·설정·의존성은 변경하지 않았고, 기존 dirty/untracked 및 관련 없는 Mobile/Windows 변경을 건드리지 않았다.
 - 다음: 관련 3개 파일만 검토·commit·push한 후 ysna-server Web만 재배포하고, 로그인 브라우저에서 동일 PDF 선택 시 새 POST와 처리 상태 전이를 확인한다.
+
+## 2026-08-21T23:28:40+09:00 실제 업로드 후 Upstage 최신 계약 거절 수정
+
+- 브라우저 acceptance: 배포 커밋 `e45c423`에서 실제 `daon-getting-started.pdf`를 선택했다. file input 값은 즉시 빈 문자열로 초기화되어 동일 파일 재선택 수정이 실제 배포 화면에 반영됐고, 운영 access log에 `POST /bff/api/workspaces/.../sources` `202`와 processing status `GET` `200`이 새로 기록됐다.
+- 추가 오류: 새 Processing Run `pr-4680387d79e00fc7b963577b776962ae`는 `failed`, Job은 `dead_letter`, `last_safe_error_code=UNDERSTANDING_PROVIDER_REJECTED`였다. 이는 Source 입력 오류가 해결된 뒤 드러난 별도 Provider 계약 오류다.
+- 확정 원인: 자격증명을 출력하지 않는 일회성 동일 요청에서 Upstage가 HTTP 400 `body.messages.0 content should contain a single item`을 반환했다. 기존 어댑터가 한 메시지에 `text`와 PDF `image_url` 두 항목을 보내 최신 Universal Information Extraction 계약을 위반했다.
+- 대안 검증: PDF `image_url` 한 항목만 전송하고 MIME을 `application/pdf`로 명시하며, 원문 언어 보존·번역/의역 금지 지시를 JSON Schema 각 필드 description으로 이동한 동일 공급자 요청은 HTTP 200으로 승인됐다. 진단용 임시 파일은 서버·컨테이너·로컬에서 모두 제거했다.
+- RED: 최신 단일 content 계약과 schema 지시 보존을 요구하도록 adapter 테스트를 변경한 뒤 `1 failed, 9 passed`를 확인했다(기존 실제 content 길이 2).
+- GREEN: `UpstageDocumentUnderstandingAdapter`를 검증된 단일 PDF content payload로 최소 수정했다. Parser validation, evidence conflict fail-safe, 모델 선택, Provider credential 경계는 유지했다.
+- 검증: `$env:PYTHONPATH='services/api/src;services/api'; uv run pytest services/api/tests/test_document_understanding_adapter.py services/api/tests/test_document_processing.py services/api/tests/test_source_upload_runtime.py -q` = 17 passed, 4개 기존 httpx deprecation warning. `py_compile` 통과, 관련 파일 `git diff --check` 오류 0(CRLF 안내만 존재).
+- 다음: 어댑터·테스트·진행 기록만 commit/push하고 API·document-worker를 재배포한 뒤 동일 PDF를 다시 선택하여 `202 → processing → ready`와 Source 목록 복구를 실제 확인한다.

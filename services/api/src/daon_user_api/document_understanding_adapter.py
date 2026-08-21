@@ -302,11 +302,20 @@ class UpstageDocumentUnderstandingAdapter:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Document title"},
-                    "summary": {"type": "string", "description": "Semantic summary"},
+                    "title": {
+                        "type": "string",
+                        "description": "Document title in the original source language; do not translate",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Summary in the original source language; do not translate",
+                    },
                     "key_facts": {
                         "type": "array", "items": {"type": "string"},
-                        "description": "Key facts supported by the original document",
+                        "description": (
+                            "Key facts using the original source language and wording; "
+                            "do not translate or paraphrase"
+                        ),
                     },
                 },
                 "required": ["title", "summary", "key_facts"],
@@ -406,17 +415,8 @@ class UpstageDocumentUnderstandingAdapter:
                 "model": selection.semantic_model_id,
                 "messages": [{"role": "user", "content": [
                     {
-                        "type": "text",
-                        "text": (
-                            "Extract the document title, summary, and key facts. "
-                            "Preserve the original language and wording of the source "
-                            "for every extracted fact; do not translate or paraphrase "
-                            "facts because parser evidence is checked against them."
-                        ),
-                    },
-                    {
                         "type": "image_url",
-                        "image_url": {"url": f"data:application/octet-stream;base64,{encoded}"},
+                        "image_url": {"url": f"data:application/pdf;base64,{encoded}"},
                     },
                 ]}],
                 "response_format": self._SCHEMA,
