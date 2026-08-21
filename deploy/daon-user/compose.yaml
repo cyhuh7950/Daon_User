@@ -6,8 +6,7 @@ services:
       context: ../..
       dockerfile: services/api/Dockerfile
     environment:
-      DAON_RUNTIME_PROFILE: development
-      DAON_DEV_AUTH_BYPASS: "true"
+      DAON_RUNTIME_PROFILE: production
       DAON_API_BIND_HOST: 0.0.0.0
       DAON_API_PORT: 8000
       DAON_API_DATABASE_PATH: /var/lib/daon-user/runtime.sqlite3
