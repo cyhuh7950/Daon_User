@@ -238,6 +238,11 @@ function isTransientSourceFetchError(error) {
   return /^(?:Failed to fetch|NetworkError when attempting to fetch resource\.?|Load failed)$/u.test(error.message);
 }
 
+function isRetryableSourceLoadError(error) {
+  if (error?.retryable === true || isTransientSourceFetchError(error)) return true;
+  return new Set(["SOURCE_LIST_FAILED", "RESOURCE_UNAVAILABLE", "WORKSPACE_REQUEST_FAILED"]).has(error?.message);
+}
+
 function normalizeProcessingPollOptions(options) {
   return {
     deadlineMs: Number.isSafeInteger(options?.deadlineMs) && options.deadlineMs >= 1 && options.deadlineMs <= 150_000
@@ -554,7 +559,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       try {
         return await adapter.listSources({ signal: controller.signal });
       } catch (error) {
-        if ((error?.retryable !== true && !isTransientSourceFetchError(error)) || controller.signal.aborted) throw error;
+        if (!isRetryableSourceLoadError(error) || controller.signal.aborted) throw error;
         await new Promise((resolve, reject) => {
           const timer = setTimeout(resolve, 250);
           controller.signal.addEventListener("abort", () => {
