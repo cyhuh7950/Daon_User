@@ -497,7 +497,9 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
     if (!adapter || typeof adapter.listSources !== "function" || !workspaceId) return undefined;
     questionEpochRef.current += 1;
     const controller = new AbortController();
-    if (Array.isArray(adapter.notebookContext?.sources) && adapter.notebookContext.sources.length === 0) {
+    const sourceContextEmpty = Array.isArray(adapter.notebookContext?.sources)
+      && adapter.notebookContext.sources.length === 0;
+    if (sourceContextEmpty) {
       setViewState(createProductWorkspaceState({ status: "empty" }));
     }
     const listSources = async () => {
@@ -516,7 +518,7 @@ export function ProductWorkspaceShell({ workspaceId, state = createProductWorksp
       }
     };
     Promise.allSettled([
-      listSources(),
+      sourceContextEmpty ? Promise.resolve([]) : listSources(),
       (typeof adapter.listKnowledgePackages === "function"
         ? adapter.listKnowledgePackages({ signal: controller.signal })
         : Promise.resolve([])),
