@@ -233,6 +233,11 @@ function awaitAbortable(promise, signal) {
   });
 }
 
+function isTransientSourceFetchError(error) {
+  if (error?.name !== "TypeError" || typeof error.message !== "string") return false;
+  return /^(?:Failed to fetch|NetworkError when attempting to fetch resource\.?|Load failed)$/u.test(error.message);
+}
+
 function normalizeProcessingPollOptions(options) {
   return {
     deadlineMs: Number.isSafeInteger(options?.deadlineMs) && options.deadlineMs >= 1 && options.deadlineMs <= 150_000
@@ -523,7 +528,7 @@ function ProductWorkspaceShellInner({ workspaceId, state = createProductWorkspac
       try {
         return await adapter.listSources({ signal: controller.signal });
       } catch (error) {
-        if (error?.retryable !== true || controller.signal.aborted) throw error;
+        if ((error?.retryable !== true && !isTransientSourceFetchError(error)) || controller.signal.aborted) throw error;
         await new Promise((resolve, reject) => {
           const timer = setTimeout(resolve, 250);
           controller.signal.addEventListener("abort", () => {
