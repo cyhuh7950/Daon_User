@@ -16,6 +16,12 @@ const adapter = Object.freeze({
   listSources() {}, uploadPdf() {}, getProcessingStatus() {}, askQuestion() {},
   citationUrl() {}, createReport() {}, listStudioOutputs() {},
 });
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+};
 
 test("질문 실패는 로드된 Source·Studio 잠금을 보존하고 안전 오류만 투영한다", () => {
   const current = {
@@ -124,6 +130,34 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     assert.equal(sourceLoads, 2);
     assert.match(retryContainer.textContent, /retried\.pdf/u);
     assert.doesNotMatch(retryContainer.textContent, /internal\.invalid|stack/u);
+
+    await act(async () => reactRoot.unmount());
+    reactRoot = null;
+    let transientLoads = 0;
+    const initialSourceLoad = deferred();
+    const transientAdapter = {
+      ...adapter,
+      async listSources() {
+        transientLoads += 1;
+        if (transientLoads === 1) return initialSourceLoad.promise;
+        return [];
+      },
+      async listStudioOutputs() { return []; },
+    };
+    const transientContainer = dom.document.createElement("div"); dom.document.body.appendChild(transientContainer);
+    reactRoot = createRoot(transientContainer);
+    await act(async () => {
+      reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: transientAdapter }));
+      await Promise.resolve(); await Promise.resolve();
+    });
+    assert.equal(transientLoads, 1);
+    const initialError = new Error("STUDIO_DATABASE_UNAVAILABLE");
+    initialError.retryable = true;
+    await act(async () => { initialSourceLoad.reject(initialError); await Promise.resolve(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    assert.equal(transientLoads, 2);
+    assert.match(transientContainer.textContent, /Source를 추가해 주세요/u);
+    assert.doesNotMatch(transientContainer.textContent, /Source를 불러오지 못했습니다/u);
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     dom.restore(); await rm(output, { recursive: true, force: true });

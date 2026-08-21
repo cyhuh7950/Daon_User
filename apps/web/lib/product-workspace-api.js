@@ -99,6 +99,14 @@ async function json(response, fallback) {
   }
 }
 
+function safeResponseError(payload, fallback) {
+  const error = new Error(typeof payload?.error?.code === "string" ? payload.error.code : fallback);
+  Object.defineProperty(error, "retryable", {
+    configurable: false, enumerable: false, value: payload?.error?.retryable === true, writable: false,
+  });
+  return error;
+}
+
 export async function listWorkspaceSources(workspaceId, { notebookId, fetchImpl = fetch, signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "SOURCE_LIST_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "SOURCE_LIST_INPUT_INVALID");
@@ -106,7 +114,7 @@ export async function listWorkspaceSources(workspaceId, { notebookId, fetchImpl 
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
   const payload = await json(response, "SOURCE_LIST_RESPONSE_INVALID");
-  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "SOURCE_LIST_FAILED");
+  if (!response.ok) throw safeResponseError(payload, "SOURCE_LIST_FAILED");
   const valid = exact(payload, ["data", "meta"])
     && exact(payload.data, ["sources"])
     && Array.isArray(payload.data.sources)

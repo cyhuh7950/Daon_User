@@ -191,3 +191,12 @@
 - GREEN: `createWebProductWorkspaceAdapter(workspaceId, notebookId)`가 선택 Notebook ID를 immutable closure로 보유하고 Source list/upload/processing/question/Citation/Studio read-write 옵션에 canonical scope를 결속한다. `NotebookProductWorkspace`는 검증된 Context의 `notebook_id`만 factory와 `ActualWorkspace`에 전달하며, 공개 route/DTO 변경은 0이다.
 - 검증: Web Adapter focused React `1/1 PASS`; Source·Context·Question·Studio·BFF 회귀 `27/27 PASS`; 제품 파일 lint `2 files PASS`; Web production build·TypeScript·12 static pages·boundary `391 files / violations0 PASS`다. 전체 test file lint는 과거 contract fixture의 내부 URL 문자열 4건 때문에 실패했으며 이번 변경과 무관해 제품 파일 lint로 분리했다.
 - 실제 PDF upload, DB write, Provider call, connection test는 계속 0이다. 배포 전 상태이며 운영 화면은 현재 배포본이므로 수정 적용 전까지 Source GET 실패가 유지된다.
+
+## 2026-08-21 운영 Source 초기 로드 간헐 실패 TDD
+
+- 운영 exact Notebook URL에서 최초 Source load가 오류가 된 뒤 동일 화면의 수동 `다시 시도`는 약 1.2초 내 정상 empty로 회복됐다. Daon Web/API container는 healthy이고 운영 배포 HEAD는 notebook scope fix `287d95536c7286d391f0d44bfb4a6ace7c9ec9c5`와 일치했다. 최근 Web/API container log에는 Source 오류 상세이 남지 않아 최초 upstream safe code 자체는 로그로 재구성하지 못했다.
+- 코드 대조에서 Context 준비 전 Shell mount 또는 stale adapter 결과가 최신 상태를 덮는 경로는 확인되지 않았다. `NotebookProductWorkspace`는 session→Notebook→Context 검증 뒤 Shell을 mount하고, Shell effect는 adapter/workspace 변경 시 이전 AbortController를 취소한다. 관련 stale response 회귀도 GREEN이다.
+- 실제 제품 결함은 Source API error envelope의 `retryable` 판정을 Web client가 버리고, Shell이 retryable 최초 GET도 즉시 영구 오류 UI로 확정한 것이다. RED는 safe retryable 보존 실패와 최초 retryable 실패 후 호출 수 1을 각각 고정했다(`0/2`).
+- GREEN: Source list client는 safe `code`와 boolean `retryable`만 non-enumerable Error metadata로 보존한다. Shell은 `retryable=true`인 Source GET만 250ms 뒤 정확히 1회 자동 재시도한다. non-retryable/입력/권한 오류는 자동 재시도하지 않고 기존 수동 `다시 시도`를 유지하며, AbortSignal이 취소되면 재요청0이다.
+- 검증: deferred actual React Adapter가 최초 pending→retryable reject→자동 retry empty로 복구하고 오류 DOM 0임을 확인했다. focused `2/2 PASS`, Source·Context·Question·Studio·BFF React 회귀 `28/28 PASS`, API Source/Studio HTTP `3/3 PASS`; UI 제품 lint `3 files PASS`; Web production build·TypeScript·12 pages·boundary `391/0 PASS`. `product-workspace-api.js` 단독 workspace lint는 이 변경과 무관한 기존 `INTERNAL_VALUE` 차단 정규식의 URL 패턴을 검출해 분리 기록했다.
+- 운영 upload/DB write/Provider call은 0이다. 운영 적용 전이므로 actual reload 재검증은 commit/push/Daon Web 배포 뒤 수행해야 한다.
