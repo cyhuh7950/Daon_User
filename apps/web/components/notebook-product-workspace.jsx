@@ -14,7 +14,7 @@ export function NotebookProductWorkspace({ notebookId }) {
   const logoutPending = useRef(false);
   const protectedRoot = useRef(null);
   const [sessionValidated, setSessionValidated] = useState(false);
-  const [view, setView] = useState({ state: "loading", workspaceId: null, context: null, error: null });
+  const [view, setView] = useState({ state: "loading", workspaceId: null, notebook: null, context: null, error: null });
 
   const conceal = useCallback(() => {
     concealProtectedRoute(protectedRoot.current);
@@ -35,10 +35,10 @@ export function NotebookProductWorkspace({ notebookId }) {
     setView((current) => ({ ...current, state: "loading", error: null }));
     try {
       const session = await getCurrentNotebookSession({ signal });
-      await getNotebook(session.workspace_id, notebookId, { signal });
+      const notebook = await getNotebook(session.workspace_id, notebookId, { signal });
       const selected = await getNotebookContext(session.workspace_id, notebookId, { signal });
       if (!signal?.aborted) setView({
-        state: "ready", workspaceId: session.workspace_id, context: selected.data, error: null,
+        state: "ready", workspaceId: session.workspace_id, notebook: notebook.data, context: selected.data, error: null,
       });
       if (!signal?.aborted) reveal();
     } catch (error) {
@@ -48,7 +48,7 @@ export function NotebookProductWorkspace({ notebookId }) {
         return;
       }
       setView({
-        state: "error", workspaceId: null, context: null,
+        state: "error", workspaceId: null, notebook: null, context: null,
         error: SAFE_ERRORS.has(error?.message) ? error.message : "NOTEBOOK_UNAVAILABLE",
       });
       reveal();
@@ -107,6 +107,6 @@ export function NotebookProductWorkspace({ notebookId }) {
   </main>;
   return <div ref={protectedRoot} hidden={!sessionValidated} inert={!sessionValidated}
     aria-hidden={!sessionValidated ? "true" : undefined} data-session-validated={sessionValidated ? "true" : "false"}>
-    <ActualWorkspace workspaceId={view.workspaceId} notebookId={view.context.notebook_id} adapter={adapter} onLogout={() => void handleLogout()} />
+    <ActualWorkspace workspaceId={view.workspaceId} notebookId={view.context.notebook_id} notebookTitle={view.notebook?.title} adapter={adapter} onLogout={() => void handleLogout()} />
   </div>;
 }
