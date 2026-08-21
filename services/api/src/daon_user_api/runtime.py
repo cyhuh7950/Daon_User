@@ -95,6 +95,7 @@ from .question_answering_service import (
     QuestionInputSource, question_request_fingerprint,
 )
 from .question_answering import classify_question_intent
+from .notebook_deletion import NotebookDeletionStore, NotebookDeletionWorker, PostgresNotebookDeletionStore
 from .egress_policy import EgressPolicyService
 from .egress_policy import EgressPolicyContext, EgressPolicyError, EgressPolicyPayload
 from .egress_policy_postgres import PostgresEgressPolicyRepository
@@ -424,6 +425,8 @@ class RuntimeDependencies:
     screen_preference_service: ScreenPreferenceService | None = None
     license_service: LicenseService | None = None
     notebook_service: NotebookService | None = None
+    notebook_deletion_store: NotebookDeletionStore | None = None
+    notebook_deletion_worker: NotebookDeletionWorker | None = None
     source_upload_service: SourceUploadPort | None = None
     document_processing_service: DocumentProcessingSubmissionService | None = None
     question_answering_service: Any | None = None
@@ -1400,6 +1403,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ))
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Resume durable deletion requests after the process is ready. The
+        # request path also schedules newly accepted work; this hook is kept
+        # injectable so deployment workers can provide tenant-scoped contexts.
+        resume = getattr(dependencies.notebook_deletion_worker, "resume_startup", None)
+        if callable(resume):
+            await asyncio.to_thread(resume)
         yield
         dependencies.close()
 
@@ -3000,6 +3009,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             title_confirmation=body.title_confirmation, expected_etag=if_match,
             idempotency_key=idempotency_key,
         )
+        if not replayed and dependencies.notebook_deletion_worker is not None:
+            deletion_context = notebook_context(principal, id, request)
+            asyncio.create_task(asyncio.to_thread(
+                dependencies.notebook_deletion_worker.process,
+                deletion_context, view.request_id,
+            ))
         return JSONResponse({
             "data": {"deletion_request_id": view.request_id, "status": view.state},
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id, "replayed": replayed},
@@ -4557,4 +4572,12 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         object_queue_store=object_queue_store,
         source_upload_service=source_upload_service,
         document_processing_service=document_processing_service,
+        notebook_deletion_store=(
+            None if cloud_store is None else PostgresNotebookDeletionStore(cloud_store, object_storage)
+        ),
+        notebook_deletion_worker=(
+            None if cloud_store is None else NotebookDeletionWorker(
+                PostgresNotebookDeletionStore(cloud_store, object_storage)
+            )
+        ),
     )

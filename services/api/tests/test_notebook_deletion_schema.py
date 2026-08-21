@@ -10,3 +10,7 @@ def test_notebook_deletion_migration_is_scoped_and_immutable():
     assert "ROW LEVEL SECURITY" in text
     assert "GRANT SELECT,INSERT,UPDATE" in text
     assert "DELETE ON notebooks" not in text
+    assert "delete_notebook_scope" in text
+    assert "SECURITY DEFINER" in text
+    assert "DELETE_SHARED_DATA_BLOCKED" in text
+    assert "GRANT EXECUTE ON FUNCTION delete_notebook_scope" in text
