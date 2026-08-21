@@ -22,6 +22,15 @@ const answerData = Object.freeze({
   citations: [citation]
 });
 
+const enrichedAnswerData = Object.freeze({
+  ...answerData,
+  mode: "explicit_source_lookup",
+  grounding: "source_backed",
+  source_scope_summary: "선택한 Source 범위",
+  mismatch: null,
+  next_actions: [],
+});
+
 const envelope = (data = answerData) => ({
   data,
   meta: { trace_id: "trace-1", workspace_id: "workspace-1" }
@@ -39,6 +48,10 @@ test("Question API는 exact outer/data와 Citation Safe DTO만 반환한다", as
     citationContentUrl("workspace-1", citation, { notebookId: "notebook-1" }),
     "/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1#page=2"
   );
+});
+
+test("Question API는 승인된 작업지원 메타데이터를 additive로 수용한다", async () => {
+  assert.deepEqual(await request(envelope(enrichedAnswerData)), enrichedAnswerData);
 });
 
 test("Daon Text Citation URL은 PDF page fragment를 강제하지 않는다", () => {
@@ -121,6 +134,11 @@ for (const [name, payload] of [
   ["invalid citation page", envelope({ ...answerData, citations: [{ ...citation, page: 0 }] })],
   ["invalid citation locator", envelope({ ...answerData, citations: [{ ...citation, locator: { kind: "page", value: "3" } }] })],
   ["unknown data field", envelope({ ...answerData, unexpected: true })],
+  ["invalid conversation mode", envelope({ ...enrichedAnswerData, mode: "unknown_mode" })],
+  ["mismatch without next action", envelope({
+    ...enrichedAnswerData, grounding: "source_evidence_unavailable",
+    mismatch: { code: "SOURCE_SCOPE_MISMATCH", detail: "범위 불일치" }, next_actions: [],
+  })],
   ["unknown outer field", { ...envelope(), unexpected: true }]
 ]) {
   test(`Question API는 ${name} 응답을 QUESTION_RESPONSE_INVALID로 거부한다`, async () => {

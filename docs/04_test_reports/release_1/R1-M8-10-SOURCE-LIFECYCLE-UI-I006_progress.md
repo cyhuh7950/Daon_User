@@ -258,3 +258,12 @@
 - GREEN: `runtime.py`의 Studio 생성 응답과 Library 응답에 `{notebook_id, source_version_ids, artifact_type, instruction, run_id, citations, verification_required}` lineage를 추가했다. Source version/Citation이 없거나 불완전한 Library 산출물은 `verification_required=true`로 fail-safe 표시한다. 기존 정책 잠금, Egress, Provider, Run/Idempotency, Source/Conversation 코드는 변경하지 않았다.
 - 검증: Studio Runtime HTTP/Postgres `25 passed, 1 skipped`; 기존 경고 12건은 httpx cookie deprecation이다. 실제 Provider/browser/운영 DB write/Studio 생성은 실행하지 않았다.
 - 추가 검증: `node --test scripts/tests/product-studio.test.mjs` = 8 passed. Web production build·TypeScript·12 pages PASS; product boundary `392 files / violations0`, root boundary `415 files / violations0`; `git diff --check` 오류0(CRLF 경고만). staged/commit/push/deploy 0.
+
+## 2026-08-21 NotebookLM Task 3 browser regression 재작업
+
+- 판정: `CODE VERIFIED / DEPLOYMENT REQUIRED`
+- 원인: 서버 질문 응답에 추가된 작업지원 메타데이터를 브라우저 `question-answering-api.js`의 기존 exact DTO 검증기가 거부해 실제 `안녕` 실행이 `QUESTION_RESPONSE_INVALID`로 종료됐다.
+- 조치: 기존 필수 응답과 새 enriched 응답을 모두 fail-close 검증하도록 클라이언트 계약을 additive 호환 수정했다. 허용된 mode/grounding/mismatch/next_actions만 수용하고 malformed·unknown field는 계속 거부한다.
+- 검증: `node --test scripts/tests/question-answering-api.test.mjs scripts/tests/product-workspace.test.mjs scripts/tests/notebook-api.test.mjs` = 39 passed, 0 failed; 개발 Subagent 보고 기준 Web build/TypeScript/12 pages 및 boundary 392/415 violations 0, `git diff --check` 오류 0.
+- 운영 재현: 수정 전 배포본에서 Source 1건은 표시됐으나 `안녕` 실행 시 “대화를 불러오지 못했습니다”가 재현됐다. 수정본은 아직 재배포 전이다.
+- 다음: 수정본을 검토·commit·push하고 ysna-server에 API/Web/worker를 재배포한 뒤 로그인 세션에서 `안녕` 실제 브라우저 acceptance를 재실행한다.
