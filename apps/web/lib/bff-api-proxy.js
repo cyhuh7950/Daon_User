@@ -153,6 +153,27 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (
+    segments.length === 3 && segments[0] === "sources"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "deletion-requests"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/sources/${encodeURIComponent(segments[1])}/deletion-requests`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "deletion-requests" && SAFE_SEGMENT.test(segments[1])) {
+    return method === "GET"
+      ? { path: `/api/v1/deletion-requests/${encodeURIComponent(segments[1])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "deletion-requests"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "cancel"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/deletion-requests/${encodeURIComponent(segments[1])}/cancel`, query: null }
+      : { methodRejected: true };
+  }
+  if (
     segments.length === 3 && segments[0] === "workspaces"
     && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks"
   ) {
