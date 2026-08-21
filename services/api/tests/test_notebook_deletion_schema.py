@@ -19,5 +19,7 @@ def test_notebook_deletion_migration_is_scoped_and_immutable():
         "citations", "transcript_segments", "transcript_versions", "transcription_runs",
         "extraction_evidence", "understanding_results", "processing_runs", "index_versions",
         "source_versions", "sources", "object_outbox_events", "object_records",
+        "sync_target_versions",
     ):
         assert f"DELETE FROM {table}" in text
+    assert "previous_version_id" in text
