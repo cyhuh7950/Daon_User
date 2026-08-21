@@ -340,3 +340,11 @@
 - GREEN: ready 상태에서는 임시 Source DTO를 만들지 않고 processing 표시를 종료한 뒤 `loadRevision`을 증가시켜 same-origin Source 목록을 다시 조회하도록 최소 변경했다. 전체 filename·상태·Version은 서버 Safe DTO에서 다시 투영한다.
 - 검증: `node --test scripts/tests/product-workspace.test.mjs scripts/tests/source-upload-api.test.mjs` = 30 passed. `npm run verify:product-ui-boundary` = 415 files, violations 0. `npm run build --prefix apps/web` = compile·TypeScript·12 pages PASS, Web boundary 392 files/violations 0. 관련 `git diff --check` 오류 0(CRLF 안내만 존재).
 - 다음: UI·회귀 테스트·진행 기록만 commit/push하고 Web 재배포 후 브라우저를 새로고침하여 실제 ready Source filename과 처리 표시 종료를 확인한다.
+
+## 2026-08-21T23:37:52+09:00 최종 운영 브라우저 acceptance
+
+- 배포: `93bcf9f`를 ysna-server 격리 Compose에 반영했다. checkout HEAD가 `93bcf9f2d7acae848f9566b86c6972826851c1c7`이며 API·Web healthy, document-worker up, 공개 Notebook HTTP 200을 확인했다.
+- 실제 화면: 로그인된 운영 Notebook 새로고침 후 Raw Source 5건이 authoritative 목록으로 표시됐다. 신규 실제 PDF Version `sv-14d46da23494e8bd8f42102e09a7bcae`, `sv-88b606e8ab8c92293a457ddf02fed4f9` 모두 원래 filename `daon-getting-started.pdf`와 `사용 가능` 상태로 표시됐다.
+- 원증상 판정: 동일 파일 재선택이 새 POST를 만들고, Provider 처리·Parser 검증·색인이 completed/ready로 종료되며, 처리 완료 후 목록이 자동 복구된다. `처리 중` 고착과 내부 Source ID 파일명 노출은 최종 화면에서 재현되지 않았다.
+- 잔여 데이터: 원인 조사 과정의 기존 `needs_review` 1건과 `failed` 1건, 실제 acceptance로 생성된 ready 2건이 운영 목록에 남아 있다. 실제 Source 데이터 삭제는 파괴적 작업이므로 자동 수행하지 않았다.
+- 상태: `FUNCTIONALLY VERIFIED / TEST SOURCE CLEANUP REQUIRES USER DECISION`.
