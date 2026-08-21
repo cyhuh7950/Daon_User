@@ -163,11 +163,12 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     reactRoot = null;
     const delayedKnowledge = deferred();
     const delayedStudio = deferred();
+    let emptyContextSourceLoads = 0;
     const emptyContextContainer = dom.document.createElement("div"); dom.document.body.appendChild(emptyContextContainer);
     const emptyContextAdapter = {
       ...adapter,
       notebookContext: { notebook_id: "notebook-empty", sources: [] },
-      async listSources() { return []; },
+      async listSources() { emptyContextSourceLoads += 1; throw new Error("STALE_SOURCE_LIST_FAILED"); },
       async listKnowledgePackages() { return delayedKnowledge.promise; },
       async listStudioOutputs() { return delayedStudio.promise; },
     };
@@ -182,6 +183,7 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     });
     assert.match(emptyContextContainer.textContent, /Source를 추가해 주세요/u);
     assert.doesNotMatch(emptyContextContainer.textContent, /Source를 불러오지 못했습니다/u);
+    assert.equal(emptyContextSourceLoads, 0);
     delayedKnowledge.resolve([]);
     delayedStudio.resolve([]);
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });

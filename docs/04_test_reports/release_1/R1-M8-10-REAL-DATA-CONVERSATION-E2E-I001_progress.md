@@ -206,3 +206,4 @@
 - RED: 기존 `SOURCE_LIST_FAILED` state + `notebookContext.sources=[]` + Knowledge/Studio 응답 지연 조건에서 `Source를 불러오지 못했습니다`가 계속 노출됐다(`0/1`).
 - GREEN: 로드 effect 시작 시 authoritative Notebook Context의 Source가 empty이면 canonical `empty` state로 즉시 reset한다. API/BFF/데이터 계약과 자동 retry 횟수는 변경하지 않았다.
 - fresh 검증: focused React `1/1`, Notebook Context/Product Workspace `11/11`, Web production build·TypeScript·boundary PASS. 별도 Desktop 모놀리스의 기존 보호 기준선 3건과 Web package의 미정의 `lint` script는 본 변경과 분리했다.
+- 배포 후 재현에서 empty reset 뒤에도 Shell이 `listSources()`를 1회 호출해 stale reject가 다시 error를 만들 수 있는 경로를 확인했다. 추가 RED는 authoritative `sources=[]`에서 호출 기대0/실제1을 고정했다. GREEN은 empty Context이면 Source 호출 자체를 생략하고 canonical empty를 유지한다. focused `1/1`, 관련 `11/11`, Web build·TypeScript·boundary를 다시 통과했다.
