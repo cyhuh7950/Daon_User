@@ -64,3 +64,13 @@
 - Context 변경은 이전 policy DOM과 interaction을 즉시 0으로 만들고 새 load 성공 후에만 복구한다. Step-up 대기 중 abort는 policy POST0·sensitive clear를 보증한다. 이미 송신된 POST의 old snapshot write는 완료될 수 있으므로 write0으로 과장하지 않으며, stale UI projection0만 보증한다.
 - Prop organization/workspace identity는 keyed wrapper가 stateful inner와 동기 결속하므로 passive effect 전 첫 commit에서도 이전 reducer/form/password/nav/text가 재사용되지 않는다. Empty props session-resolution은 유지하고 session GET에도 AbortSignal을 전달한다.
 - REWORK3 fresh Gate는 focused Node `12/12`, API `10/10`, lint `4 files`, OpenAPI exact, Web build·TypeScript·12 routes·boundary `391/0` PASS다.
+
+## 2026-08-23 실제 제품 Gate 보완 판정
+
+`VERIFIED_ON_YSNA / ORACLE_DEPLOYMENT_PENDING`
+
+- YSNA 운영 유사 환경에서 실제 로그인 Notebook의 Raw Source PDF를 선택하고 일반이 아닌 근거 질문을 실행했다. Source 답변과 Notebook-scoped Citation 2·3·4쪽이 브라우저에 표시됐다.
+- 같은 질문 Run을 사용한 근거 기반 보고서(PDF)를 실제 생성했다. 최초 실패 원인은 routing decision의 configured deployment ID와 내부 model record ID 불일치였으며, `c65070b`에서 두 식별자를 모두 조회하고 실제 record ID를 lineage에 보존하도록 수정했다.
+- API·studio-worker 재빌드·재기동 후 재시도 Job은 `completed`, `studio_outputs`에 `output-5c517909e8f548add11eec71924821ee`가 저장됐고, 새로고침 후 Library 3개가 표시됐다.
+- 단위 회귀 `21 passed, 1 skipped`. 따라서 계획 8의 대표 Provider Source→질문→Citation→Studio 저장 수직 경계는 YSNA에서 확인했다.
+- Oracle 운영 배포, 다른 Studio 유형, 장기 Provider 안정성은 별도 Gate이므로 이 보고서에서 완료로 주장하지 않는다.
