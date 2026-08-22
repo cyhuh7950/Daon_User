@@ -129,6 +129,7 @@ def upgrade() -> None:
         ALTER TABLE sync_target_versions DISABLE TRIGGER USER;
         ALTER TABLE durable_jobs DISABLE TRIGGER USER;
         ALTER TABLE object_outbox_events DISABLE TRIGGER USER;
+        ALTER TABLE job_attempts DISABLE TRIGGER USER;
         DELETE FROM document_processing_job_attempts d
          WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id
            AND d.job_id IN (
@@ -165,6 +166,11 @@ def upgrade() -> None:
         DELETE FROM object_records d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.object_id=ANY(v_object_ids)
           AND NOT EXISTS (SELECT 1 FROM source_versions sv WHERE sv.tenant_id=p_tenant_id AND sv.workspace_id=p_workspace_id AND sv.object_id=d.object_id)
           AND NOT EXISTS (SELECT 1 FROM index_versions iv WHERE iv.tenant_id=p_tenant_id AND iv.workspace_id=p_workspace_id AND iv.object_id=d.object_id);
+        DELETE FROM job_attempts d
+         WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id
+           AND d.job_id IN (SELECT j.job_id FROM durable_jobs j JOIN object_outbox_events e
+                              ON e.tenant_id=j.tenant_id AND e.workspace_id=j.workspace_id AND e.event_id=j.event_id
+                             WHERE j.tenant_id=p_tenant_id AND j.workspace_id=p_workspace_id AND e.object_id=ANY(v_object_ids));
         ALTER TABLE notebook_source_unbindings DISABLE TRIGGER USER;
         ALTER TABLE notebook_source_unbinding_idempotency DISABLE TRIGGER USER;
         ALTER TABLE notebook_idempotency DISABLE TRIGGER USER;
@@ -205,6 +211,7 @@ def upgrade() -> None:
         ALTER TABLE sync_target_versions ENABLE TRIGGER USER;
         ALTER TABLE durable_jobs ENABLE TRIGGER USER;
         ALTER TABLE object_outbox_events ENABLE TRIGGER USER;
+        ALTER TABLE job_attempts ENABLE TRIGGER USER;
       END $$;
       REVOKE ALL ON FUNCTION delete_notebook_scope(text,text,text) FROM PUBLIC;
       GRANT EXECUTE ON FUNCTION delete_notebook_scope(text,text,text) TO daon_app;
