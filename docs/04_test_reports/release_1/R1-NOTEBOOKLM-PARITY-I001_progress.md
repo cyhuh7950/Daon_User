@@ -184,3 +184,13 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 변경: `deploy/daon-user/compose.yaml`의 `studio-worker`에 `proxy-network`를 추가해 `DAON_CLOUD_DATABASE_DSN`의 `shared-db` 접근 경로를 `document-worker`와 동일하게 맞췄다. 기존 `daon_user` 네트워크는 유지했다.
 - 검증: worker 모듈 import smoke 통과. DSN 미설정 startup은 `STUDIO_WORKER_DATABASE_REQUIRED`로 즉시 안전 실패했다. `git diff --check` 통과.
 - 미실행: 현재 Codex 환경에 Docker CLI가 없고 WSL 호출도 `E_ACCESSDENIED`로 차단되어 `docker compose config`, migration 전/후 실제 DB, worker 컨테이너 기동은 실행하지 못했다.
+
+### Task 5 ysna-server 배포·마이그레이션 검증
+
+- 배포: `b15ec55` 기준 API·document-worker·studio-worker·web 이미지를 ysna-server에서 재빌드·기동했다. Web Next 빌드/TypeScript 및 `verify-product-ui-boundary`는 `violations: []`로 통과했다.
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, MinIO `healthy`, 공개 `/notebooks` HTTP 200. 운영 API 환경은 `DAON_RUNTIME_PROFILE=production`이며 개발 인증 우회값은 설정되지 않았다.
+- 초기 오류: studio-worker가 `DATABASE_UNAVAILABLE`로 재시작했다. 원인 조사 결과 `0023` DB 마이그레이션이 아직 적용되지 않았고, 실제 worker ID `daon_user-studio-worker`의 `_`가 DB 함수 검증식에 허용되지 않아 `STUDIO_JOB_CLAIM_INVALID`도 발생했다.
+- 조치: `0023_notebook_deletion.py`의 기존 테이블 재개 가능성을 보장하도록 `CREATE TABLE/INDEX IF NOT EXISTS` 및 정책 재생성을 적용했고, worker ID를 검증 가능한 `studio-worker-1`로 고정했다. 기존 `notebook_deletion_requests` 4건과 테이블 구조는 보존했다.
+- 마이그레이션: 전용 ephemeral `daon_user-api` 컨테이너로 ysna-server `shared-db`에 `0022→0023→0024`를 적용했다. 최종 `alembic_version=0024`, `studio_generation_jobs` 테이블과 `claim_studio_generation_job` 함수가 확인됐다.
+- 최종 런타임: `studio-worker`가 `running`, RestartCount `0`으로 안정화됐고 API/Web/기존 worker/MinIO도 정상 상태를 유지한다.
+- 미실행: 로그인된 브라우저에서 실제 Studio 카드 클릭·polling·Library 결과 확인, provider가 연결된 실제 생성 완료, audio/video provider 연결은 아직 검증하지 않았다. 따라서 Task 5는 서버 배포·마이그레이션 단계까지 완료됐지만 운영 기능 전체 완료로 판정하지 않는다.
