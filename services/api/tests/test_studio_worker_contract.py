@@ -12,6 +12,8 @@ class StudioWorkerContractTests(unittest.TestCase):
         migration = (Path(__file__).parents[1] / "migrations/versions/0028_studio_generation_lease_state.py").read_text(encoding="utf-8")
         self.assertIn("state IN ('leased','generating')", migration)
         self.assertIn("studio_generation_jobs_lease_state_check", migration)
+        cleanup = (Path(__file__).parents[1] / "migrations/versions/0029_studio_generation_legacy_lease_constraint.py").read_text(encoding="utf-8")
+        self.assertIn("DROP CONSTRAINT IF EXISTS studio_generation_jobs_check", cleanup)
 
     def request(self, output_type: str) -> StudioGenerationRequest:
         formats = {"slides": "json", "infographic": "json", "flashcards": "json", "quiz": "json", "audio": "json", "video": "json"}
