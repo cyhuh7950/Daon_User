@@ -51,12 +51,36 @@ test("Product Studio는 11개 실제 산출물과 생성 전 확인을 강제한
   assert.equal(canSubmitGeneration(state), true);
   assert.deepEqual(createStudioGenerationInput(state), {
     workspace_id: null, output_type: "evidence_report", source_id: "source-1",
+    source_only: false,
     source_version_ids: ["source-version-1"], run_id: "run-1", run_result_id: "result-1",
     settings: {
       purpose: "의사 결정", audience: "운영 책임자", source_version_ids: ["source-version-1"],
       language: "ko",
       ruleset_version_id: null, length: "standard", structure: "summary-body-conclusion",
       output_format: "docx", review_condition: "review_required",
+    },
+  });
+});
+
+test("질문 실행 없이 선택한 Source Version만으로 Studio 생성 입력을 만든다", () => {
+  const sources = [
+    { sourceId: "source-1", sourceVersionId: "source-version-1", filename: "guide.pdf", ready: true },
+    { sourceId: "source-2", sourceVersionId: "source-version-2", filename: "unavailable.pdf", ready: false },
+  ];
+  let state = createProductStudioState({ workspaceId: "workspace-1", sources, selectedSourceVersionIds: ["source-version-1"] });
+  state = selectOutputType(state, "evidence_report");
+  state = updateGenerationSettings(state, {
+    purpose: "업무 결정", audience: "운영 담당자", sourceVersionIds: ["source-version-1"],
+    length: "short", structure: "executive-summary", outputFormat: "pdf", reviewCondition: "review_required",
+  });
+  state = confirmGenerationSettings(state);
+  assert.equal(canSubmitGeneration(state), true);
+  assert.deepEqual(createStudioGenerationInput(state), {
+    workspace_id: "workspace-1", output_type: "evidence_report", source_only: true,
+    source_id: "source-1", source_version_ids: ["source-version-1"], run_id: null, run_result_id: null,
+    settings: {
+      purpose: "업무 결정", audience: "운영 담당자", language: "ko", source_version_ids: ["source-version-1"],
+      ruleset_version_id: null, length: "short", structure: "executive-summary", output_format: "pdf", review_condition: "review_required",
     },
   });
 });

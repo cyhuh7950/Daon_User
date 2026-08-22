@@ -43,6 +43,18 @@ class NotebookLmStudioOutputsTests(unittest.TestCase):
             self.assertIn(collection, payload)
             self.assertGreaterEqual(len(payload[collection]), 1)
 
+    def test_source_only_request_accepts_source_versions_without_run(self) -> None:
+        request = StudioGenerationRequest(
+            output_type="evidence_report", source_id="source-1", source_version_ids=("source-version-1",),
+            run_id=None, run_result_id=None, purpose="작업 결과", audience="운영 담당자",
+            ruleset_version_id=None, length="standard", structure="summary-body", output_format="docx",
+            review_condition="review_required", source_only=True,
+        )
+        payload = build_structured_output(request, "원본 Source에서 확인한 내용", [{
+            "citation_id": "source-version-1", "source_version_id": "source-version-1", "evidence_span_id": "span-1",
+        }], "generation-1")
+        self.assertEqual(payload["summary"], "작업 결과")
+
     def test_audio_and_video_fail_closed_without_provider(self) -> None:
         for output_type in ("audio", "video"):
             with self.assertRaisesRegex(StudioError, "STUDIO_OUTPUT_UNAVAILABLE"):

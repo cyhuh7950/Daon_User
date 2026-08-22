@@ -23,11 +23,14 @@ function cloneLocks(locks) {
   }));
 }
 
-export function createProductStudioState({ workspaceId = null, grounded = null, locks = [], outputs = [], status = "ready", safeError = null } = {}) {
+export function createProductStudioState({ workspaceId = null, grounded = null, sources = [], selectedSourceVersionIds = [], locks = [], outputs = [], status = "ready", safeError = null } = {}) {
   const groundedVersions = grounded?.sourceVersionIds ?? (grounded?.sourceVersionId ? [grounded.sourceVersionId] : []);
+  const sourceVersions = Array.isArray(selectedSourceVersionIds) && selectedSourceVersionIds.length
+    ? selectedSourceVersionIds
+    : groundedVersions;
   return {
-    status, workspaceId, grounded, locks: cloneLocks(locks), selectedOutputType: null,
-    settings: groundedVersions.length ? { sourceVersionIds: [...groundedVersions] } : {}, settingsConfirmed: false, settingsSnapshot: null,
+    status, workspaceId, grounded, sources: Array.isArray(sources) ? sources : [], locks: cloneLocks(locks), selectedOutputType: null,
+    settings: sourceVersions.length ? { sourceVersionIds: [...sourceVersions] } : {}, settingsConfirmed: false, settingsSnapshot: null,
     outputs: Array.isArray(outputs) ? outputs : [], selectedOutputId: null, pending: false, safeError,
   };
 }
@@ -36,7 +39,9 @@ export function selectOutputType(state, outputType) {
   if (!OUTPUT_TYPE_IDS.has(outputType)) throw new Error("STUDIO_OUTPUT_TYPE_INVALID");
   return {
     ...state, selectedOutputType: outputType,
-    settings: state.grounded?.sourceVersionIds?.length
+    settings: state.settings?.sourceVersionIds?.length
+      ? { language: "ko", sourceVersionIds: [...state.settings.sourceVersionIds] }
+      : state.grounded?.sourceVersionIds?.length
       ? { language: "ko", sourceVersionIds: [...state.grounded.sourceVersionIds] }
       : state.grounded?.sourceVersionId ? { language: "ko", sourceVersionIds: [state.grounded.sourceVersionId] } : { language: "ko" },
     settingsConfirmed: false, settingsSnapshot: null,
@@ -55,15 +60,18 @@ export function updateGenerationSettings(state, patch) {
 }
 
 function completeSettings(state) {
-  if (!state?.grounded || !state.selectedOutputType) return false;
+  if (!state?.selectedOutputType) return false;
   if (!REQUIRED_SETTINGS.every((field) => {
     const value = state.settings[field];
     return Array.isArray(value) ? value.length > 0 : typeof value === "string" && value.trim().length > 0;
   })) return false;
   const type = OUTPUT_TYPES.find((item) => item.id === state.selectedOutputType);
-  const groundedVersions = state.grounded.sourceVersionIds ?? [state.grounded.sourceVersionId];
+  const groundedVersions = state.grounded
+    ? (state.grounded.sourceVersionIds ?? [state.grounded.sourceVersionId])
+    : (Array.isArray(state.sources) ? state.sources.filter((source) => source.ready).map((source) => source.sourceVersionId) : []);
   return type.formats.includes(state.settings.outputFormat)
-    && groundedVersions.every((versionId) => state.settings.sourceVersionIds.includes(versionId));
+    && state.settings.sourceVersionIds.every((versionId) => groundedVersions.includes(versionId))
+    && state.settings.sourceVersionIds.length > 0;
 }
 
 export function confirmGenerationSettings(state) {
@@ -80,10 +88,11 @@ export function createStudioGenerationInput(state) {
   return {
     workspace_id: state.workspaceId,
     output_type: state.selectedOutputType,
-    source_id: state.grounded.sourceId,
+    source_only: !state.grounded,
+    source_id: state.grounded?.sourceId ?? state.sources.find((source) => source.sourceVersionId === state.settingsSnapshot.sourceVersionIds[0])?.sourceId ?? null,
     source_version_ids: [...state.settingsSnapshot.sourceVersionIds],
-    run_id: state.grounded.runId,
-    run_result_id: state.grounded.runResultId,
+    run_id: state.grounded?.runId ?? null,
+    run_result_id: state.grounded?.runResultId ?? null,
     settings: {
       purpose: state.settingsSnapshot.purpose,
       audience: state.settingsSnapshot.audience,
