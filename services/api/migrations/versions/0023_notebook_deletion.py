@@ -113,6 +113,13 @@ def upgrade() -> None:
         ALTER TABLE sources DISABLE TRIGGER USER;
         ALTER TABLE source_versions DISABLE TRIGGER USER;
         ALTER TABLE object_records DISABLE TRIGGER USER;
+        DELETE FROM document_processing_job_attempts d
+         WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id
+           AND d.job_id IN (
+             SELECT j.job_id FROM document_processing_jobs j
+              WHERE j.tenant_id=p_tenant_id AND j.workspace_id=p_workspace_id
+                AND j.source_version_id=ANY(v_source_versions)
+           );
         DELETE FROM document_processing_jobs d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
         DELETE FROM knowledge_registrations d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.registered_source_version_id=ANY(v_source_versions);
         DELETE FROM evidence_references d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);

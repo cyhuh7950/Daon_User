@@ -17,7 +17,7 @@ def test_notebook_deletion_migration_is_scoped_and_immutable():
     assert "claim_notebook_deletion_startup" in text
     assert "FOR UPDATE SKIP LOCKED" in text
     for table in (
-        "document_processing_jobs", "knowledge_registrations", "evidence_references",
+        "document_processing_job_attempts", "document_processing_jobs", "knowledge_registrations", "evidence_references",
         "citations", "transcript_segments", "transcript_versions", "transcription_runs",
         "extraction_evidence", "understanding_results", "processing_runs", "index_versions",
         "source_versions", "sources", "object_outbox_events", "object_records",
@@ -25,3 +25,4 @@ def test_notebook_deletion_migration_is_scoped_and_immutable():
     ):
         assert f"DELETE FROM {table}" in text
     assert "previous_version_id" in text
+    assert text.index("DELETE FROM document_processing_job_attempts") < text.index("DELETE FROM document_processing_jobs")
