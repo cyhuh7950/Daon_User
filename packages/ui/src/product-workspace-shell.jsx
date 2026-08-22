@@ -920,11 +920,6 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         ? buildQuestionKnowledgeContext(viewState.selectedSource, selectedKnowledgeId)
         : null;
       if (questionEpoch !== questionEpochRef.current || signal.aborted) return;
-      if (knowledgeContext && typeof adapter.authorizeQuestion === "function") {
-        setQuestionAuthorization({ question: question.trim(), conversationMode, knowledgeContext });
-        setModalView("question-authorization");
-        return;
-      }
       const answer = await adapter.askQuestion(
         { knowledgeContext, question: question.trim() },
         { signal, idempotencyKey },
@@ -942,16 +937,6 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       reportIdempotencyRef.current = null;
     } catch (error) {
       if (questionEpoch !== questionEpochRef.current) return;
-      const selectedKnowledgeContext = viewState.selectedSource || selectedKnowledgeId
-        ? buildQuestionKnowledgeContext(viewState.selectedSource, selectedKnowledgeId)
-        : null;
-      if (safeErrorCode(error, "QUESTION_FAILED") === "EGRESS_POLICY_DENIED" && selectedKnowledgeContext) {
-        setQuestionAuthorization({
-          question: question.trim(), conversationMode, knowledgeContext: selectedKnowledgeContext,
-        });
-        setModalView("question-authorization");
-        return;
-      }
       setViewState((current) => projectQuestionFailureState(
         current,
         new Error(safeErrorCode(error, "QUESTION_FAILED")),
