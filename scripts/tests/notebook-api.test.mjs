@@ -4,7 +4,7 @@ import test from "node:test";
 import { createNotebook, getCurrentNotebookSession, getNotebook, getNotebookContext, listNotebooks, updateNotebookTitle } from "../../apps/web/lib/notebook-api.js";
 import { listWorkspaceSources } from "../../apps/web/lib/product-workspace-api.js";
 
-const VIEW = Object.freeze({ notebook_id: "notebook-1", title: "Notebook", source_count: 0, output_count: 0, updated_at: "2026-08-16T01:02:03Z", status: "empty" });
+const VIEW = Object.freeze({ notebook_id: "notebook-1", title: "Notebook", source_count: 0, output_count: 0, updated_at: "2026-08-16T01:02:03Z", status: "empty", etag: '"notebook:1"' });
 const META = Object.freeze({ trace_id: "trace-1", workspace_id: "workspace-1" });
 const json = (body, init = {}) => Response.json(body, init);
 
@@ -27,6 +27,13 @@ test("Notebook client는 same-origin 경로와 exact write headers만 사용한�
   ]);
   assert.equal(captured[1].headers["Idempotency-Key"], "notebook-create-0001");
   assert.equal(captured[3].headers["If-Match"], '"notebook:1"');
+});
+
+test("Notebook 목록은 각 항목의 etag를 보존해 삭제 If-Match에 사용할 수 있다", async () => {
+  const response = await listNotebooks("workspace-1", {
+    fetchImpl: async () => json({ data: [VIEW], meta: META }, { headers: { ETag: '"notebooks:1"' } }),
+  });
+  assert.equal(response.data[0].etag, '"notebook:1"');
 });
 
 test("Notebook client는 create/get/update 응답 ETag를 server exact validator로 제한한다", async () => {

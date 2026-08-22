@@ -21,7 +21,7 @@ test("OpenAPI는 Notebook create/list/get/update-title exact 계약만 공개한
   assert.equal(item.patch.parameters.some((entry) => entry.$ref === "#/components/parameters/IfMatch"), true);
   assert.equal(item.patch.parameters.some((entry) => entry.$ref === "#/components/parameters/IdempotencyKey"), true);
   const projection = contract.components.schemas.NotebookHomeProjection;
-  assert.deepEqual(projection.required, ["notebook_id", "title", "source_count", "output_count", "updated_at", "status"]);
+  assert.deepEqual(projection.required, ["notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"]);
   assert.equal(projection.additionalProperties, false);
   for (const excluded of ["description", "tenant_id", "workspace_id", "policy", "provider", "fingerprint"]) {
     assert.equal(Object.hasOwn(projection.properties, excluded), false);
