@@ -86,6 +86,10 @@ function safeText(value, minimum, maximum) {
   return typeof value === "string" && value.length >= minimum && value.length <= maximum && !INTERNAL_VALUE.test(value);
 }
 
+function safeConnectorErrorCode(value) {
+  return value === null || (typeof value === "string" && /^[A-Z][A-Z0-9_]{2,127}$/u.test(value));
+}
+
 function validMeta(meta, workspaceId, { replay = false } = {}) {
   const keys = replay ? ["trace_id", "workspace_id", "replayed"] : ["trace_id", "workspace_id"];
   return exact(meta, keys) && safeId(meta.trace_id) && meta.workspace_id === workspaceId
@@ -154,23 +158,7 @@ function validConnector(value) {
     && value.source_count >= 0 && value.source_count <= 100_000
     && safeText(value.endpoint_label, 1, 160)
     && (value.last_checked_at === null || safeText(value.last_checked_at, 1, 64))
-    && (value.error_code === null || safeText(value.error_code, 1, 128));
-}
-
-function connectorInvalidFieldCode(value) {
-  if (!record(value)) return "CONNECTOR_RESPONSE_ITEM_NOT_OBJECT";
-  if (!exact(value, CONNECTOR_KEYS)) return "CONNECTOR_RESPONSE_ITEM_KEYS_INVALID";
-  const checks = [
-    ["CONNECTOR_ID", safeId(value.connector_id)],
-    ["KIND", CONNECTOR_KINDS.includes(value.kind)],
-    ["NAME", safeText(value.name, 1, 160)],
-    ["STATUS", CONNECTOR_STATUSES.includes(value.status)],
-    ["SOURCE_COUNT", Number.isSafeInteger(value.source_count) && value.source_count >= 0 && value.source_count <= 100_000],
-    ["ENDPOINT_LABEL", safeText(value.endpoint_label, 1, 160)],
-    ["LAST_CHECKED_AT", value.last_checked_at === null || safeText(value.last_checked_at, 1, 64)],
-    ["ERROR_CODE", value.error_code === null || safeText(value.error_code, 1, 128)],
-  ];
-  return checks.find(([, valid]) => !valid)?.[0] ?? "UNKNOWN";
+    && safeConnectorErrorCode(value.error_code);
 }
 
 async function connectorRequest(workspaceId, path, options = {}) {
@@ -188,21 +176,11 @@ export async function listWorkspaceConnectors(workspaceId, { fetchImpl = fetch, 
   const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors`, {
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    throw new Error("CONNECTOR_RESPONSE_CONTENT_TYPE_INVALID");
-  }
   const payload = await json(response, "CONNECTOR_RESPONSE_INVALID");
   if (!response.ok) throw safeResponseError(payload, "CONNECTOR_LIST_FAILED");
-  if (!exact(payload, ["data", "meta"])) throw new Error("CONNECTOR_RESPONSE_SHAPE_INVALID");
-  if (!exact(payload.data, ["connectors"]) || !Array.isArray(payload.data.connectors)) {
-    throw new Error("CONNECTOR_RESPONSE_DATA_INVALID");
-  }
-  if (!validMeta(payload.meta, workspace)) throw new Error("CONNECTOR_RESPONSE_META_INVALID");
-  const invalidIndex = payload.data.connectors.findIndex((item) => !validConnector(item));
-  if (invalidIndex !== -1) {
-    throw new Error(`CONNECTOR_RESPONSE_ITEM_INVALID_${invalidIndex}_${connectorInvalidFieldCode(payload.data.connectors[invalidIndex])}`);
-  }
+  if (!exact(payload, ["data", "meta"]) || !exact(payload.data, ["connectors"])
+      || !Array.isArray(payload.data.connectors) || !payload.data.connectors.every(validConnector)
+      || !validMeta(payload.meta, workspace)) throw new Error("CONNECTOR_RESPONSE_INVALID");
   return payload.data.connectors;
 }
 
