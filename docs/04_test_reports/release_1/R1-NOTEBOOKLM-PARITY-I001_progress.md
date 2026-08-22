@@ -465,3 +465,11 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: test_question_egress_transform.py 6 passed; question_answering_service.py 및 question_answering_runtime_http.py 23 passed.
 - 미검증: 실제 YSNA 브라우저/provider 응답과 외부 전송 payload는 아직 재검증하지 않았다.
 
+## 2026-08-23T00:32:00+09:00 일반 상담 YSNA 재검증
+- 상태: `VERIFIED_ON_YSNA`
+- 배포: 커밋 `5b6dda3`를 YSNA 격리 환경에 반영하고 API·document-worker·studio-worker·Web을 재빌드·재기동했다. Web production build 및 product UI boundary 검사가 통과했다.
+- 브라우저: 로그인된 Notebook에서 Raw Source 선택을 해제한 뒤 `안녕`을 전송했다. 응답이 `안녕하세요! 오늘 어떤 도움이 필요하신가요?`로 표시되고 `masked prompt` 문구가 재현되지 않았다.
+- Library: 동일 화면에서 저장된 산출물 2건이 계속 표시됐다.
+- 판정: Source 미선택 일반 상담이 실제 질문 원문을 LLM에 전달하고 일반 답변을 받는 흐름을 YSNA에서 확인했다. Source 기반 질문의 근거 마스킹 계약은 유지했다.
+- 미검증: Source 기반 한국어 질문의 실제 Citation과 Studio 새 산출물 생성 클릭은 이번 단계에서 추가 실행하지 않았다.
+
