@@ -703,9 +703,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         studioLocks,
         studioStatus: studioSafeError ? "unavailable" : "ready",
         studioSafeError,
+        // Previous conversation history is optional.  A stale or unavailable
+        // history record must never block a new question in the selected
+        // Notebook/Source context; the current question will create its own
+        // grounded run.  Keep the failure out of the blocking alert path.
         answer: conversationResult.status === "fulfilled" ? conversationResult.value : null,
-        conversationSafeError: conversationResult.status === "fulfilled"
-          ? null : safeErrorCode(conversationResult.reason, "CONVERSATION_LIST_FAILED"),
+        conversationSafeError: null,
       }));
     });
     return () => {
