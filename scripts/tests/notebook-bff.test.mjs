@@ -46,13 +46,15 @@ test("Notebook BFF는 collection/item exact method를 same-origin server route�
   ]);
 });
 
-test("Notebook BFF는 삭제와 cross-origin write를 upstream 전에 차단한다", async () => {
+test("Notebook BFF는 Notebook 삭제를 전달하고 cross-origin write만 upstream 전에 차단한다", async () => {
   const captured = [];
   const proxy = makeProxy(captured);
   const deleted = await proxy(new Request(`${ORIGIN}/bff/api/workspaces/workspace-1/notebooks/notebook-1`, { method: "DELETE", headers: { Cookie: COOKIE, Origin: ORIGIN } }), ["workspaces", "workspace-1", "notebooks", "notebook-1"]);
   const crossOrigin = await proxy(new Request(`${ORIGIN}/bff/api/workspaces/workspace-1/notebooks`, { method: "POST", headers: { Cookie: COOKIE, Origin: "https://evil.example", "Content-Type": "application/json", "Idempotency-Key": "notebook-create-0002" }, body: "{}" }), ["workspaces", "workspace-1", "notebooks"]);
-  assert.deepEqual([deleted.status, crossOrigin.status], [405, 403]);
-  assert.equal(captured.length, 0);
+  assert.deepEqual([deleted.status, crossOrigin.status], [200, 403]);
+  assert.deepEqual(captured.map(({ url, method }) => ({ url, method })), [
+    { url: "https://api.example.com/api/v1/workspaces/workspace-1/notebooks/notebook-1", method: "DELETE" },
+  ]);
 });
 
 test("Connector Source BFF는 목록·등록·재연결·해제·Source 목록을 API 계약으로 전달한다", async () => {
