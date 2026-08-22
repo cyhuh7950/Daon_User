@@ -10,7 +10,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute(r"""
-      CREATE TABLE notebook_deletion_requests (
+      CREATE TABLE IF NOT EXISTS notebook_deletion_requests (
         request_id text PRIMARY KEY CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
         tenant_id text NOT NULL,
         workspace_id text NOT NULL,
@@ -29,9 +29,10 @@ def upgrade() -> None:
         UNIQUE (tenant_id,workspace_id,actor_id,idempotency_key),
         UNIQUE (tenant_id,workspace_id,request_id)
       );
-      CREATE INDEX notebook_deletion_pending ON notebook_deletion_requests(tenant_id,workspace_id,state,requested_at);
+      CREATE INDEX IF NOT EXISTS notebook_deletion_pending ON notebook_deletion_requests(tenant_id,workspace_id,state,requested_at);
       ALTER TABLE notebook_deletion_requests ENABLE ROW LEVEL SECURITY;
       ALTER TABLE notebook_deletion_requests FORCE ROW LEVEL SECURITY;
+      DROP POLICY IF EXISTS notebook_deletion_scope ON notebook_deletion_requests;
       CREATE POLICY notebook_deletion_scope ON notebook_deletion_requests USING (
         tenant_id=nullif(current_setting('app.tenant_id',true),'') AND workspace_id=nullif(current_setting('app.workspace_id',true),'')
       ) WITH CHECK (
