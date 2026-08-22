@@ -223,3 +223,12 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 다음 조치: 변경을 커밋·푸시하고 ysna에 배포한 뒤 로그인 세션에서 Source 질문 승인·응답을 실제 검증한다.
 - 배포: `a967fb8`을 ysna-server `web` 및 의존 API 재기동으로 배포했고 이미지 빌드·TypeScript·UI boundary가 PASS했다.
 - 현재 예외: API 재기동으로 기존 브라우저 세션이 만료되어 실제 브라우저는 로그인 화면이다. 로그인 전 Source 승인창·응답 검증은 수행하지 않았다.
+
+## 2026-08-22 질문 전송 인증 제거
+
+- 상태: IMPLEMENTED_LOCAL / 배포 전
+- 조치: 최초 접속 로그인 이후 질문·외부 LLM 전송마다 요구하던 `Source 질문 승인` 모달과 `step_up_authorization` 소비를 제거했다. Provider API Key는 서버의 LLM 연결 설정에서 사용하고, 사용자 비밀번호는 전송 요청에 재사용하지 않는다.
+- 개발 프로필: `DAON_RUNTIME_PROFILE=development` + `DAON_DEV_AUTH_BYPASS=true`에서 세션 인증도 우회한다.
+- 검증: API `py_compile` PASS; workspace lint PASS; Product Workspace/Source Knowledge 테스트 39/39 PASS.
+- 미검증: ysna 재배포 후 실제 브라우저 Source 질문 성공은 아직 실행하지 않았다.
+- 다음 조치: 승인된 개발 프로필로 API/Web를 배포하고, Source 질문 1회 및 일반 질문 1회를 실제 브라우저에서 확인한다.

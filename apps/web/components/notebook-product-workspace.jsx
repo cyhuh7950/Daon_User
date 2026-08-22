@@ -38,7 +38,8 @@ export function NotebookProductWorkspace({ notebookId }) {
       const notebook = await getNotebook(session.workspace_id, notebookId, { signal });
       const selected = await getNotebookContext(session.workspace_id, notebookId, { signal });
       if (!signal?.aborted) setView({
-        state: "ready", workspaceId: session.workspace_id, notebook: notebook.data, context: selected.data, error: null,
+        state: "ready", workspaceId: session.workspace_id, notebook: notebook.data, context: selected.data,
+        error: null,
       });
       if (!signal?.aborted) reveal();
     } catch (error) {
