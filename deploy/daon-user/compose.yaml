@@ -125,7 +125,7 @@ services:
     command: ["python", "-m", "daon_user_api.studio_generation_worker"]
     environment:
       DAON_CLOUD_DATABASE_DSN: ${DAON_CLOUD_DATABASE_DSN:?cloud database DSN reference required}
-      DAON_STUDIO_WORKER_ID: ${COMPOSE_PROJECT_NAME}-studio-worker
+      DAON_STUDIO_WORKER_ID: studio-worker-1
       DAON_STUDIO_WORKER_LEASE_SECONDS: ${DAON_STUDIO_WORKER_LEASE_SECONDS-600}
       DAON_STUDIO_WORKER_POLL_SECONDS: ${DAON_STUDIO_WORKER_POLL_SECONDS-0.5}
     networks:
