@@ -2872,7 +2872,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return {
             "notebook_id": view.notebook_id, "title": view.title,
             "source_count": view.source_count, "output_count": view.output_count,
-            "updated_at": view.updated_at, "status": view.status,
+            "updated_at": view.updated_at, "status": view.status, "etag": view.etag,
         }
 
     def notebook_deletion_json(view: NotebookDeletionView) -> dict[str, object]:

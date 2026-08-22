@@ -1,7 +1,7 @@
 "use client";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
-const VIEW_KEYS = Object.freeze(["notebook_id", "title", "source_count", "output_count", "updated_at", "status"]);
+const VIEW_KEYS = Object.freeze(["notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"]);
 const META_KEYS = Object.freeze(["trace_id", "workspace_id", "replayed"]);
 const STATUSES = Object.freeze(["empty", "active", "attention"]);
 const DELETION_STATUSES = Object.freeze(["accepted", "deleting", "completed", "failed"]);
@@ -44,7 +44,7 @@ function validView(value) {
     && typeof value.title === "string" && value.title.length >= 1 && value.title.length <= 120
     && Number.isSafeInteger(value.source_count) && value.source_count >= 0
     && Number.isSafeInteger(value.output_count) && value.output_count >= 0
-    && timestamp(value.updated_at) && STATUSES.includes(value.status);
+    && timestamp(value.updated_at) && STATUSES.includes(value.status) && validEtag(value.etag);
 }
 
 function validMeta(value) {

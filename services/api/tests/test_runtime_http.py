@@ -175,7 +175,8 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(created.status_code, 201)
         notebook = created.json()["data"]
-        self.assertEqual(set(notebook), {"notebook_id", "title", "source_count", "output_count", "updated_at", "status"})
+        self.assertEqual(set(notebook), {"notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"})
+        self.assertRegex(notebook["etag"], r'^"notebook:[1-9][0-9]*"$')
         self.assertEqual((notebook["title"], notebook["source_count"], notebook["output_count"], notebook["status"]), ("전략 노트", 0, 0, "empty"))
         self.assertEqual(created.headers["etag"], '"notebook:1"')
 

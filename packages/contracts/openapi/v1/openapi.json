@@ -7005,14 +7005,15 @@
       },
       "NotebookHomeProjection": {
         "type": "object", "additionalProperties": false,
-        "required": ["notebook_id", "title", "source_count", "output_count", "updated_at", "status"],
+        "required": ["notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"],
         "properties": {
           "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
           "title": { "type": "string", "minLength": 1, "maxLength": 120 },
           "source_count": { "type": "integer", "minimum": 0 },
           "output_count": { "type": "integer", "minimum": 0 },
           "updated_at": { "type": "string", "format": "date-time" },
-          "status": { "type": "string", "enum": ["empty", "active", "attention"] }
+          "status": { "type": "string", "enum": ["empty", "active", "attention"] },
+          "etag": { "type": "string", "pattern": "^\\\"notebook:[1-9][0-9]*\\\"$" }
         }
       },
       "NotebookCreateRequest": {
