@@ -483,6 +483,17 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         self.assertEqual(result["outputs"], ())
         self.assertEqual(len(result["studio_locks"]), 6)
 
+    def test_list_outputs_uses_selected_lateral_columns_in_deletion_filter(self) -> None:
+        cloud = Cloud()
+        PostgresStudioWorkspaceRepository(cloud).list_outputs(
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
+        )
+        list_sql = next(sql for sql, _params in cloud.connection.statements if "FROM studio_outputs so" in sql)
+        self.assertIn("er.tenant_id=so.tenant_id", list_sql)
+        self.assertIn("er.workspace_id=so.workspace_id", list_sql)
+        self.assertNotIn("er.tenant_id=ov.tenant_id", list_sql)
+        self.assertNotIn("er.workspace_id=ov.workspace_id", list_sql)
+
     def test_policy_projection_fails_closed_for_missing_inactive_stale_or_wrong_scope(self) -> None:
         context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
         for index, patch in ((0, None), (1, {"active": False}), (2, {"current": False}), (3, {"workspace_id": "workspace-other"}), (4, {"workspace_policy_version_id": ""})):

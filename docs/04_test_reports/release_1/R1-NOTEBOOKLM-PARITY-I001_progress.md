@@ -294,3 +294,13 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: stale context에서 새 output을 보존하는 회귀 테스트를 추가했다. 관련 테스트 및 `git diff --check` 실행 결과는 작업 종료 보고에 기록한다.
 - 미해결: 실제 ysna 브라우저 Library 표시 및 재배포 검증은 미실행. 이번 adapter 변경은 커밋·푸시 전이다.
 - 다음 조치: main agent가 관련 diff 검토 후 커밋·푸시 및 ysna 재배포·브라우저 검증을 판단한다.
+
+## 2026-08-22 ysna Library generic 오류 원인 및 최소 수정
+
+- 상태: IMPLEMENTED_LOCAL / 커밋·푸시 전
+- 판정: `GET /api/v1/studio-outputs`가 `studio_workspace_postgres.list_outputs`의 SQL 오류로 실패했다. LATERAL `ov` 서브쿼리는 `record_id/state/canonical_json`만 선택하는데 바깥 `NOT EXISTS` 절이 존재하지 않는 `ov.tenant_id`·`ov.workspace_id`를 참조해 PostgreSQL이 `column ov.tenant_id does not exist`로 거부한다. BFF는 `/bff/api/studio-outputs?workspace_id=...&notebook_id=...`를 same-origin으로 전달하므로 BFF query shape가 원인이 아니다.
+- 근거: ysna DB에 `studio_outputs=2`, `output_versions=2`, `notebook_bindings(binding_kind=studio_output)=2`가 존재하고 job/output 저장은 완료됐지만 목록 경로만 실패했다. 배포 API/Web 컨테이너 로그에는 요청이 남지 않아 DB/SQL 경로와 코드 대조로 원인을 확정했다.
+- 조치: 삭제 보류 필터의 tenant/workspace 비교를 이미 선택 가능한 `so.tenant_id`·`so.workspace_id`로 변경해 SQL 오류를 제거했다. 기존 Notebook binding 및 source deletion 필터는 유지했다.
+- 검증: `services/api/tests/test_studio_workspace_postgres.py` 21 passed, 1 skipped; SQL 회귀 테스트 추가; `git diff --check` PASS.
+- 미해결: ysna 재배포 후 실제 목록 API·브라우저 Library 표시 검증은 미실행. 이번 수정은 커밋·푸시 전이다.
+- 다음 조치: main agent가 diff 검토 후 커밋·푸시와 ysna 재배포·브라우저 재검증을 판단한다.

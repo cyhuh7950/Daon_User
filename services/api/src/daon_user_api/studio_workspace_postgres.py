@@ -480,7 +480,7 @@ class PostgresStudioWorkspaceRepository:
                     "WHERE so.tenant_id=%s AND so.workspace_id=%s AND NOT EXISTS (SELECT 1 FROM evidence_references er "
                     "JOIN source_versions sv ON sv.tenant_id=er.tenant_id AND sv.workspace_id=er.workspace_id AND sv.record_id=er.source_version_id "
                     "JOIN deletion_requests dr ON dr.tenant_id=sv.tenant_id AND dr.workspace_id=sv.workspace_id AND dr.source_id=sv.source_id "
-                    "WHERE er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id AND dr.source_active=false) "
+                    "WHERE er.tenant_id=so.tenant_id AND er.workspace_id=so.workspace_id AND er.output_version_id=ov.record_id AND dr.source_active=false) "
                     "ORDER BY so.created_at DESC",
                     (context.notebook_id, context.tenant_id, context.workspace_id),
                 ).fetchall()
