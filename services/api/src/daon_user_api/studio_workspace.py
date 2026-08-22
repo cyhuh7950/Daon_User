@@ -156,6 +156,7 @@ class StudioGenerationRequest:
     structure: str
     output_format: str
     review_condition: str
+    language: str = "ko"
 
     def __post_init__(self) -> None:
         if self.output_type not in OUTPUT_TYPES or self.output_format not in FORMATS.get(self.output_type, ()):
@@ -166,6 +167,8 @@ class StudioGenerationRequest:
             raise StudioError("STUDIO_INPUT_INVALID")
         if self.ruleset_version_id is not None:
             _identifier(self.ruleset_version_id)
+        if self.language not in {"ko", "en"}:
+            raise StudioError("STUDIO_INPUT_INVALID")
         for value in (self.purpose, self.audience, self.length, self.structure, self.review_condition):
             _required(value)
 
@@ -214,7 +217,7 @@ class StudioWorkspaceService:
             raise StudioError("CHANGE_REASON_REQUIRED")
         if revision.get("revision_type") == "settings_change":
             settings = revision.get("settings")
-            required = {"purpose", "audience", "source_version_ids", "ruleset_version_id", "length", "structure", "output_format", "review_condition"}
+            required = {"purpose", "audience", "language", "source_version_ids", "ruleset_version_id", "length", "structure", "output_format", "review_condition"}
             if not isinstance(settings, Mapping) or set(settings) != required:
                 raise StudioError("STUDIO_SETTINGS_INCOMPLETE")
         return self._repository.create_version(context, output_id, revision, idempotency_key)

@@ -251,3 +251,14 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 미검증: 전원 종료 후 재접속을 포함한 실제 브라우저 수동 검증.
 - 배포: commit `da635f1`을 origin에 push하고 ysna-server의 API/Web를 재빌드·재기동했다. 두 컨테이너 모두 `healthy` 확인.
 - 미검증: 브라우저 캐시를 갱신한 뒤 전원 종료·재접속과 명시적 로그아웃 폐기를 실제 수동 검증해야 한다.
+
+## 2026-08-22 Studio 생성 설정 보완
+
+- 상태: IMPLEMENTED_LOCAL / 서버·브라우저 미배포
+- 담당: 어울2 (Task5)
+- 확인: 카드 11종은 모두 실제 설정 화면으로 진입하고, 설정 확인 후 비동기 generation job 접수·상태 polling·완료 Library 반영 경로를 사용한다. Source 계보는 기존 grounded Source Version Snapshot을 그대로 사용한다.
+- 보완: 생성 설정에 `출력 언어`(한국어/English)를 추가하고 UI 입력, same-origin API 요청, job payload, settings snapshot, 재생성 settings 계약에 보존되도록 연결했다. 기존 카드 배치와 audio/video `unavailable` 정책은 변경하지 않았다.
+- 변경 파일: `packages/ui/src/product-studio-model.js`, `packages/ui/src/product-studio-pane.jsx`, `services/api/src/daon_user_api/runtime.py`, `services/api/src/daon_user_api/studio_workspace.py`, `services/api/src/daon_user_api/studio_workspace_postgres.py`, `scripts/tests/product-studio.test.mjs`
+- 검증: `node --test scripts/tests/product-studio.test.mjs` 8/8 PASS; API Studio async 관련 pytest 12/12 PASS.
+- 미검증: 로그인 브라우저에서 실제 카드 클릭·언어 선택·job polling·Library 반영, ysna Docker 재배포, provider가 연결된 실제 생성 결과. 현재 Source 질문 승인 흐름과 외부 provider 상태는 별도 BLOCKED 항목을 유지한다.
+- 다음 조치: 관련 diff 검토 후 commit/push하고, ysna 배포·로그인 브라우저 통합 검증 여부를 main agent가 판단한다.
