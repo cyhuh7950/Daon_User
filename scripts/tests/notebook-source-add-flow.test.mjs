@@ -43,4 +43,5 @@ test("연결형 Source는 실제 same-origin Adapter 계약으로 연결된다",
   assert.doesNotMatch(api, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/u);
   assert.match(shell, /연결형 Source/);
   assert.match(shell, /사용 불가/);
+  assert.match(shell, /연결형 Source를 불러오지 못했습니다\. \(\{connectorSafeError\}\)/);
 });
