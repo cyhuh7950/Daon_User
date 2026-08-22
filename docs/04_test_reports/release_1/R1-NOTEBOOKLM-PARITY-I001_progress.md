@@ -438,3 +438,13 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 판단: 이 변경은 기존 승인 작업의 즉시 등록·삭제 UI/API 범위를 넘어 데이터 모델과 영속화 계약을 확장한다. 승인 없이 임의 구현하지 않는다.
 - 대기 조건: Connector 영속화 설계와 작업계획 확장 승인 후 구현·YSNA 재시작 복구 검증을 진행한다. 실제 국가법령정보센터 호출은 별도 자격증명 설정 후 검증한다.
 
+## 2026-08-22 Connector Postgres 영속화 구현
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 승인: Connector 등록 정보와 Workspace 바인딩의 Postgres 영속화, API 재시작 복구, Workspace 격리를 설계서·작업계획서에 반영하고 승인받았다.
+- 조치: `workspace_connectors` migration/repository를 추가하고 목록·등록·재연결·해제·삭제·Source 조회 경계를 Postgres 저장소와 연결했다. 최초 Workspace에만 기본 Connector를 seed하여 사용자가 삭제한 MCP가 API 재시작 후 되살아나지 않도록 했다.
+- 변경: `services/api/migrations/versions/0026_connector_persistence.py`, `services/api/src/daon_user_api/connector_postgres.py`, `services/api/src/daon_user_api/runtime.py`, `services/api/tests/test_connector_postgres.py`
+- 검증: Connector 영속화·MCP 계약 테스트 `6 passed`; 전체 관련 API 회귀 묶음 `66 passed, 1 skipped`; Python compile 및 `git diff --check` 통과. 커밋·푸시 `73ae51f`.
+- 미검증: YSNA migration 적용, API 재시작 후 등록 복구·삭제 유지, 브라우저 재검증은 아직 실행하지 않았다. 운영 DB 변경은 수행하지 않았다.
+- 다음 조치: YSNA 격리 환경에서 migration 적용 후 API/Web 재배포·재시작 복구를 검증하고, 실제 운영 배포는 최종 승인 전 수행하지 않는다.
+
