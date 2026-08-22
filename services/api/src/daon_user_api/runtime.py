@@ -959,7 +959,11 @@ def _enum_json(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, datetime):
-        return value.isoformat()
+        # Web DTO timestamps use the canonical UTC `Z` form.  In particular,
+        # notebook context deletion views carry `grace_until`; emitting
+        # `+00:00` made the browser's strict context contract reject an
+        # otherwise valid notebook and surface NOTEBOOK_CONTEXT_INVALID.
+        return value.isoformat().replace("+00:00", "Z")
     if is_dataclass(value) and not isinstance(value, type):
         return _dataclass_json(value)
     if isinstance(value, Mapping):
