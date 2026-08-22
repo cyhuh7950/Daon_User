@@ -475,6 +475,14 @@
 - 커밋/배포: `88a32eb` push 후 ysna-server에 checkout 및 `docker compose --env-file .env -f deploy/daon-user/compose.yaml up -d --build api document-worker web` 완료. 원격 HEAD `88a32eb1`; API healthy, Worker Running, Web healthy, Object Storage healthy; 내부·공개 `/notebooks` HTTP 200.
 - API smoke: 공개 무쿠키 `/bff/api/session`은 `401 AUTHENTICATION_REQUIRED`로 정상 인증 경계를 확인했다. 인증된 삭제 요청 API의 실제 `If-Match` 성공 smoke는 브라우저 세션/쿠키를 도구에서 읽을 수 없어 미실행이다.
 - 다음 단계: 인증된 세션에서 Notebook 목록 응답의 각 항목 `etag`를 확인하고 동일 값을 DELETE `If-Match`로 전달하는 실제 삭제 요청을 재검증한다.
+
+2026-08-22 Source 포함 Notebook 삭제 재현 및 직접 인수 보정:
+- 실제 ysna DB의 `notebook-1c67a1adb2bd6a132f57ca429ceef091`에 대해 `BEGIN; delete_notebook_scope(...); ROLLBACK`으로 재현했다.
+- 순차 원인: `document_processing_job_attempts` FK → canonical immutable trigger → `evidence_spans` FK → `job_attempts` FK. Subagent 수정 커밋 `9a0b21c`, `d2c298e`, `102b4d6`를 검토했고, 마지막 `job_attempts` 삭제 순서가 `durable_jobs` 뒤에 있어 직접 인수했다.
+- 직접 수정 커밋 `fe0ffe5`: `job_attempts`를 `durable_jobs`보다 먼저 삭제하도록 순서를 보정하고 schema 계약 테스트를 추가했다. focused deletion tests `5 passed`.
+- ysna 배포: 원격 HEAD `fe0ffe57`, API/Web/Worker/Object Storage 정상(`healthy/Running`), 공개 `/notebooks` HTTP 200. DB 백업 `/tmp/daon-delete-pre-fe0ffe5.dump` 생성 후 삭제 함수를 재적용했다.
+- 실제 DB 재검증: Source 5건 및 처리 하위 fixture가 있는 Notebook scope에서 함수가 5개 반환 후 `ROLLBACK` 성공. 실제 사용자 데이터는 삭제하지 않았다.
+- 브라우저 인증 세션에서의 실제 DELETE 클릭은 아직 미실행이다. 사용자가 새로고침 후 Source가 연결된 `Daon 실제 기능 검증` Notebook에서 재검증해야 한다.
 ## 2026-08-22 — processing job attempts FK 삭제 순서 보정
 
 - 원인: ysna 실제 DB에서 `document_processing_jobs` 삭제 시 하위 `document_processing_job_attempts` FK 위반이 발생했다. Source 없는 Notebook은 통과하고 Source/processing job이 있는 Notebook만 실패한 원인이었다.
@@ -484,3 +492,11 @@
 - 실제 DB fixture: disposable Notebook/Source/SourceVersion/ProcessingRun/Job/Attempt/Binding을 transaction 안에서 생성하고 `delete_notebook_scope`를 호출했다. 결과 source row 반환, `attempts_remaining=0`, `jobs_remaining=0`, `ROLLBACK`으로 fixture 정리 완료. FK 오류와 audit trigger 오류 없이 통과했다.
 - API smoke: 공개 무쿠키 session은 기존대로 401 인증 경계를 유지한다. 인증 세션의 DELETE HTTP 클릭 E2E는 브라우저 세션 도구 제한으로 별도 미실행이며, DB 함수 직접 fixture 검증으로 핵심 cleanup 경로를 확인했다.
 - 다음 단계: 부모 에이전트가 최종 판정한다. 운영 master/Oracle 배포는 하지 않았다.
+
+## 2026-08-22 Source 목록 재현 및 RED 착수
+
+- 상태: IN_PROGRESS. 실제 ysna `postgres`에서 `tenant-F3_oXuYj8BZKenTNAxd1V6dv/workspace-be846e417dc13c1ec9f866ff/notebook-1c67a1adb2bd6a132f57ca429ceef091`의 Source binding 5건과 동일 `list_sources` SQL 결과 5건을 확인했다. DB Source/SourceVersion 정본 부재가 아니라 UI/API 경로를 분리해 조사한다.
+- 확인: `notebook-9e77a181f244b50258fd465a214d2a58`는 실제 Source binding 0건이므로 빈 목록이 정상이다. 반면 `notebook-1c67a1adb2bd6a132f57ca429ceef091`는 5건이다. 두 노트북/세션이 혼용되면 Source 0으로 보일 수 있다.
+- 의심 원인: UI `ProductWorkspaceShell`이 `adapter.notebookContext.sources.length===0`이면 canonical `listSources` 호출을 생략한다. 업로드 후 Context가 빈 배열로 유지되는 경우 실제 Source 목록을 다시 조회하지 않아 등록 Source가 화면에 반영되지 않는다. 기존 테스트가 이 생략을 고정하고 있어 회귀 테스트를 canonical list 호출 계약으로 바꾼 뒤 실패를 확인한다.
+- 명령/결과: ysna read-only `psql` exact list SQL은 5건, `daon_app` RLS context 동일 SQL도 5건. API access log는 최근 2시간 요청 기록이 없어 인증 브라우저 endpoint error는 아직 직접 재현하지 못했다.
+- 다음: empty Context에서도 Source list를 항상 호출하는 failing UI contract를 추가·확인하고 최소 수정한다. 기존 Source unbind/upload 계약과 same-origin BFF는 유지한다.
