@@ -466,3 +466,12 @@
 - 배포: `ssh ysna-server "cd /home/ubuntu/deploy/daon-user && git fetch origin codex/user-auth-screen-split && git checkout --detach 2e68d39 && docker compose --env-file .env -f deploy/daon-user/compose.yaml up -d --build api document-worker web"` 실행 완료. 원격 HEAD `2e68d39e` 확인. API `healthy`, Document Worker `Running`, Web `healthy`, Object Storage `healthy`; 내부 `/notebooks` 및 공개 `https://daon-user.sinsan.kr/notebooks` HTTP 200.
 - 브라우저: 확인 URL `https://daon-user.sinsan.kr/notebooks`. 인증된 삭제 클릭 E2E는 기존 Playwright 연결 blocker로 미실행이며, 화면 새로고침 후 레이아웃 확인이 필요하다.
 - 다음 단계: 부모 에이전트가 브라우저 세션에서 Notebook 삭제 모달의 카드 외부 렌더링을 확인한다.
+## 2026-08-22T09:27:12+09:00 — Notebook 목록 개별 ETag 보강
+
+- 판정: 완료. 목록 DTO가 개별 `etag`를 누락해 삭제 요청 클라이언트가 `NOTEBOOK_INPUT_INVALID`로 종료되던 결함을 수정했다.
+- 변경: `runtime.py`의 `notebook_json`에 `view.etag` 추가, Web `VIEW_KEYS`/`validView`에 개별 ETag 계약 추가, OpenAPI `NotebookHomeProjection` 갱신. 목록 삭제 If-Match 보존 테스트와 API exact projection 테스트를 추가·수정했다.
+- TDD/테스트: 누락 상태에서 목록 decode가 실패하는 failing test를 먼저 확인했다. 이후 `node --test scripts/tests/notebook-api.test.mjs scripts/tests/notebook-openapi.test.mjs scripts/tests/notebook-home-react.test.mjs scripts/tests/notebook-home-ui.test.mjs` → 14 passed. API `uv run pytest services/api/tests/test_runtime_http.py -q` → 29 passed, 19 warnings.
+- 빌드: `npm run build --workspace @daon-user/web` → Next/TypeScript 성공, product boundary `ok:true`, scannedFiles 394, violations 0.
+- 커밋/배포: `88a32eb` push 후 ysna-server에 checkout 및 `docker compose --env-file .env -f deploy/daon-user/compose.yaml up -d --build api document-worker web` 완료. 원격 HEAD `88a32eb1`; API healthy, Worker Running, Web healthy, Object Storage healthy; 내부·공개 `/notebooks` HTTP 200.
+- API smoke: 공개 무쿠키 `/bff/api/session`은 `401 AUTHENTICATION_REQUIRED`로 정상 인증 경계를 확인했다. 인증된 삭제 요청 API의 실제 `If-Match` 성공 smoke는 브라우저 세션/쿠키를 도구에서 읽을 수 없어 미실행이다.
+- 다음 단계: 인증된 세션에서 Notebook 목록 응답의 각 항목 `etag`를 확인하고 동일 값을 DELETE `If-Match`로 전달하는 실제 삭제 요청을 재검증한다.
