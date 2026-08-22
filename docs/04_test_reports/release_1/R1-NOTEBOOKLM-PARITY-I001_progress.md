@@ -146,3 +146,13 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
 - 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`; `DAON_DEV_AUTH_BYPASS`는 설정되지 않음.
 - 미완료: 로그인된 브라우저의 실제 일반 질문·Source 질문 클릭 검증, Connector 상태·Source binding의 Postgres 영속화, 국가법령정보센터 실제 API 호출/인증 검증, DB·MinIO 실물 정합성은 아직 수행하지 못했다.
+
+### Task 5 Studio 산출물 기능 정합화 착수·판정 (R1-NOTEBOOKLM-PARITY-I001-T5)
+
+- 착수: 2026-08-22, 공식 작업공간 `C:/Users/cyhuh/Desktop/D Driver/Project/Daon_User`, branch `codex/user-auth-screen-split`; 기존 dirty/untracked 변경은 보존하고 새 branch를 생성하지 않음.
+- 확인: 현재 Studio 생성 API는 `POST /api/v1/studio-generation-requests`에서 Postgres 트랜잭션 안에서 `runs`의 기존 답변·Citation을 동기적으로 읽고 `studio_outputs`/`output_versions`를 즉시 생성한다. 별도 Studio 생성 작업 큐·worker·상태 조회 계약은 확인되지 않았다.
+- 확인 명령: `Get-ChildItem services/api/src/daon_user_api,services/api/migrations/versions -File | Select-String -Pattern 'studio_generation|generation_requests|studio_outputs'` 결과는 기존 동기 `studio_workspace_postgres.py` 및 API 계약뿐이며, Studio 전용 queue/worker 계약은 없음.
+- 판정: `BLOCKED`. 승인 Task 5는 11개 Studio 기능을 기존 백그라운드 작업과 Library에 연결하고 provider/job 미연결 시 unavailable을 반환해야 한다. 현재 허용 파일 범위만으로는 백그라운드 생성 job/worker·상태 API를 추가할 수 없고, 현재 동기 생성 경로를 UI에서 11개 카드에 매핑하면 실제 provider 결과가 아닌 동기/가짜 완료를 만들 위험이 있다.
+- 영향: `studio_workspace.py`, `studio_export.py`, `report_generation.py`, `studio-workflow-pane.jsx`, `product-workspace-shell.jsx`만 수정하여 진행하면 백그라운드·unavailable 계약을 충족하지 못한다. 공개 API/runtime·DB/worker 계약과 최소 테스트 범위 확장이 필요하다.
+- 미변경: 위 BLOCKED 판단으로 Task 5 관련 코드를 수정하거나 mock/fake 결과를 만들지 않았다.
+- 다음 판단 필요: 어울1이 Studio 생성 작업용 기존 공통 job/worker 계약을 지정하거나, runtime·DB migration·worker·BFF 공개 계약 확장을 승인해야 Task 5 구현을 재개할 수 있다.
