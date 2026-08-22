@@ -91,6 +91,20 @@ test("Notebook context Adapter는 Notebook API의 최신 Source 목록을 유지
   assert.equal(emptyCalls, 1);
 });
 
+test("대화가 없거나 여러 thread인 Notebook도 Source 질문 컨텍스트를 차단하지 않는다", async () => {
+  const base = {
+    listSources: async () => [{ source_id: "source-bound", source_version_id: "source-version-bound" }],
+  };
+  for (const context of [
+    { ...EXISTING_CONTEXT, conversation_thread_ids: ["conversation-bound", "conversation-next"], conversation: null },
+    { ...EXISTING_CONTEXT, conversation_thread_ids: ["conversation-bound", "conversation-next"] },
+  ]) {
+    const adapter = createNotebookContextWorkspaceAdapter(base, context);
+    assert.deepEqual(await adapter.listSources(), [{ source_id: "source-bound", source_version_id: "source-version-bound" }]);
+    assert.equal(await adapter.loadNotebookConversation(), null);
+  }
+});
+
 test("Product Studio 목록은 초기 Notebook context가 오래되어도 API의 notebook 범위 결과를 보존한다", async () => {
   const base = {
     listProductStudioOutputs: async (options) => {

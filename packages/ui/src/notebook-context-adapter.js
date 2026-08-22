@@ -45,7 +45,9 @@ function projectCitation(value) {
 
 export function projectNotebookSelectedContext(value) {
   const conversationValid = value?.conversation === null || (
-    validConversation(value?.conversation, value?.conversation_thread_ids?.[0])
+    Array.isArray(value?.conversation_thread_ids)
+    && value.conversation_thread_ids.length > 0
+    && validConversation(value?.conversation, value?.conversation_thread_ids?.[0])
   );
   const valid = exact(value, CONTEXT_KEYS)
     && safeId(value.notebook_id)
@@ -66,7 +68,7 @@ export function projectNotebookSelectedContext(value) {
       && typeof item.grace_until === "string" && Number.isFinite(Date.parse(item.grace_until))
       && typeof item.legal_hold_active === "boolean")
     && conversationValid
-    && ((value.conversation === null) === (value.conversation_thread_ids.length === 0));
+    && (value.conversation === null || value.conversation_thread_ids.length > 0);
   if (!valid) throw new Error("NOTEBOOK_CONTEXT_INVALID");
   return Object.freeze({
     notebook_id: value.notebook_id,
@@ -138,10 +140,7 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
   };
 
   const loadNotebookConversation = async (options) => {
-    if (!context.conversation_thread_ids.length) return null;
-    if (context.conversation_thread_ids.length !== 1 || context.conversation === null) {
-      throw new Error("NOTEBOOK_CONTEXT_CONVERSATION_UNAVAILABLE");
-    }
+    if (context.conversation === null || context.conversation_thread_ids.length !== 1) return null;
     return context.conversation.answer;
   };
 
