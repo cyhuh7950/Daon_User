@@ -75,3 +75,19 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
 - 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`.
 - 미완료: 로그인된 브라우저의 실제 Source 등록/삭제 클릭과 DB·MinIO 실물 정합성 검증은 아직 수행하지 못했다. 웹사이트·Drive Connector도 아직 구현 전이다.
+
+### Task 3 MCP·Daon 승인 지식 Connector 계약
+
+- 착수/환경: 2026-08-22, 공식 작업공간과 기존 `codex/user-auth-screen-split` branch에서 진행. 기존 dirty 변경은 보존하고 새 branch는 생성하지 않음.
+- 단계 완료: `mcp_connector.py`에 공통 Connector·ConnectorSource·ConnectorView·Registry 계약을 추가했다. 등록·목록·재연결·해제와 unavailable 상태 전이를 정의했으며, Connector 장애나 원본 소실 시 Source를 삭제하지 않고 `unavailable`로 투영한다.
+- 단계 완료: 국가법령정보센터 `open.law.go.kr` 샘플 Connector를 서버 전용 메타데이터로 추가했다. API key가 없으면 연결된 것으로 가장하지 않고 unavailable로 표시한다. Daon 승인 지식도 `as_connector()`로 동일한 연결형 Source 계약에 노출한다.
+- 단계 완료: runtime에 workspace Connector 목록·등록·재연결·해제·Connector Source 목록 API를 추가했다. 인증정보는 서버 환경변수에서만 읽으며 브라우저에는 same-origin BFF 경로만 제공한다.
+- 단계 완료: API client에 Connector 응답 검증과 same-origin 목록/등록/재연결/해제 호출을 추가하고, 기존 Source pane 배치를 유지하면서 연결형 Source 목록과 unavailable 상태를 표시하도록 UI를 연결했다.
+- 테스트: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_mcp_connector.py tests/test_approved_knowledge_connector.py -q` → `7 passed`. Python compileall 및 `node --check apps/web/lib/product-workspace-api.js` 통과.
+- 미해결: Connector 상태·Source binding의 Postgres 영속화와 국가법령정보센터 실제 API 호출/인증 검증, 로그인 브라우저 클릭 검증은 통합 단계에서 수행해야 한다. 이번 구현은 upstream을 mock으로 완료 처리하지 않고 자격증명 부재를 unavailable로 표시한다.
+
+### Task 3 Adapter 보완
+
+- 보완: `apps/web/components/actual-workspace.jsx`의 실제 Web Adapter에 `listConnectors`와 `reconnectConnector`를 product-workspace-api same-origin 함수로 연결했다. 외부 주소·mock 호출은 추가하지 않았다.
+- 보완: Source 추가 정적 계약 테스트에 Adapter 함수 연결, BFF 상대 경로, 연결형 Source의 `사용 불가` 표시를 추가했다.
+- 테스트: `node --test scripts/tests/notebook-source-add-flow.test.mjs` → `4 passed`; `node --check apps/web/lib/product-workspace-api.js` 통과. JSX 파일은 Node 단독 syntax-check 대상이 아니므로 Next 빌드에서 검증해야 한다.

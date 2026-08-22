@@ -5,7 +5,7 @@ import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, uploadSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
-import { createGroundedReport, createStudioGeneration, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceKnowledgePackages, listWorkspaceSources, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
+import { createGroundedReport, createStudioGeneration, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
@@ -26,6 +26,8 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     getSourceDeletionRequest,
     cancelSourceDeletionRequest,
     listKnowledgePackages: (options) => listWorkspaceKnowledgePackages(workspaceId, options),
+    listConnectors: (options) => listWorkspaceConnectors(workspaceId, options),
+    reconnectConnector: (connectorId, options) => reconnectWorkspaceConnector(workspaceId, connectorId, options),
     getOperationsStatus: (options) => getWorkspaceOperationsStatus(workspaceId, options),
     getOutputVersionSettings: (options) => getWorkspaceOutputVersionSettings(workspaceId, options),
     saveOutputVersionSettings: (settings, options) => saveWorkspaceOutputVersionSettings(workspaceId, settings, options),
