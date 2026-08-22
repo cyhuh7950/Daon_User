@@ -457,3 +457,12 @@
 - 미실행: 인증된 브라우저에서 Notebook 삭제 클릭 E2E는 현재 자동화 브라우저 연결 여부 확인 후 별도 수행한다. 운영 도메인 master 배포는 수행하지 않는다.
 - API smoke: 공개 무쿠키 `/bff/api/session`은 `401`, 공개 `/notebooks`는 `200`을 반환했다. production 인증 경계가 유지된다.
 - 브라우저 E2E blocker: 현재 Node 자동화 모듈의 Playwright import가 `The requested module './index.js' does not provide an export named 'default'`로 초기화되지 않아 인증된 브라우저 클릭 E2E를 수행하지 못했다. 코드/배포 오류로 단정하지 않으며, 브라우저 연결 도구 복구 후 재검증 조건으로 남긴다.
+## 2026-08-22T09:14:37+09:00 — Notebook 삭제 모달 레이아웃 수정 검증
+
+- 상태: 구현 및 로컬 검증 완료. `DeleteDialog`를 `NotebookCard` 내부에서 제거하고 `NotebookHome` 레벨에서 collection 바깥에 렌더링하도록 상태를 상향했다. 기존 생성 dialog, backdrop, 접근성 속성, 삭제 동작은 유지했다.
+- 변경 파일: `packages/ui/src/notebook-home.jsx`, `scripts/tests/notebook-home-ui.test.mjs` (계약 테스트는 구현 전에 실패를 확인한 뒤 수정 후 통과). 이 기록 파일은 현재 단계 기록을 위해 갱신한다.
+- 명령/결과: `node --test scripts/tests/notebook-home-react.test.mjs scripts/tests/notebook-home-ui.test.mjs scripts/tests/phase-e-product-assembly.test.mjs` → 13 passed. `npm run build --workspace @daon-user/web` → Next build/TypeScript 성공, UI boundary `ok:true`, scannedFiles 394, violations 0.
+- 오류/복구: 없음.
+- 배포: `ssh ysna-server "cd /home/ubuntu/deploy/daon-user && git fetch origin codex/user-auth-screen-split && git checkout --detach 2e68d39 && docker compose --env-file .env -f deploy/daon-user/compose.yaml up -d --build api document-worker web"` 실행 완료. 원격 HEAD `2e68d39e` 확인. API `healthy`, Document Worker `Running`, Web `healthy`, Object Storage `healthy`; 내부 `/notebooks` 및 공개 `https://daon-user.sinsan.kr/notebooks` HTTP 200.
+- 브라우저: 확인 URL `https://daon-user.sinsan.kr/notebooks`. 인증된 삭제 클릭 E2E는 기존 Playwright 연결 blocker로 미실행이며, 화면 새로고침 후 레이아웃 확인이 필요하다.
+- 다음 단계: 부모 에이전트가 브라우저 세션에서 Notebook 삭제 모달의 카드 외부 렌더링을 확인한다.
