@@ -495,3 +495,10 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 참고 오류: 동일 검증 중 Upstage가 간헐적으로 `TEXT_GENERATION_RESPONSE_INVALID`/`TEXT_PROVIDER_UNAVAILABLE`을 반환한 시도가 있었으나, 재시도에서 정상 답변과 Citation이 생성됐다. 제공자 일시 응답 변동은 미해결 위험으로 기록한다.
 - 미검증: Studio 새 산출물 생성 버튼은 외부 상태를 생성하므로 아직 클릭하지 않았다. Oracle 운영 배포도 수행하지 않았다.
 
+## 2026-08-23T02:25:00+09:00 Studio originating model lineage 수정·YSNA 재검증
+- 상태: `VERIFIED_ON_YSNA`
+- 원인: 질문 실행의 routing decision에서 `selected_deployment_id`가 내부 `model_deployments.record_id`가 아니라 설정의 `configured_deployment_id`로 기록되어, Studio worker가 originating model을 찾지 못하고 `ORIGINATING_RUN_MODEL_UNAVAILABLE`로 실패했다.
+- 조치: Studio 저장소가 두 식별자 형식을 모두 조회하고 실제 `model_deployments.record_id`를 lineage에 저장하도록 수정했다. API와 studio-worker 이미지를 YSNA에서 재빌드·재기동했다. 커밋 `c65070b`.
+- 검증: API 단위 계약 `21 passed, 1 skipped`. 로그인 브라우저에서 동일 Source의 근거 기반 보고서를 생성했고, DB `studio_generation_jobs`가 `completed`, `studio_outputs`에 `output-5c517909e8f548add11eec71924821ee`가 생성됐다. 새로고침 후 Library가 3개 산출물을 표시했다.
+- 미검증: 다른 Studio 유형(슬라이드·오디오 등)과 Oracle 운영 배포는 아직 실행하지 않았다. Upstage 간헐 응답 변동 위험은 기존 기록과 동일하다.
+
