@@ -11,7 +11,7 @@ const SOURCE_KEYS = Object.freeze([
   "source_id", "source_version_id", "filename", "source_state", "processing_state", "job_state"
 ]);
 const SOURCE_STATES = Object.freeze([
-  "registered", "security_check", "processing", "indexing", "ready", "waiting_model",
+  "registered", "security_check", "processing", "indexing", "ready", "unavailable", "waiting_model",
   "partial_understanding", "needs_review", "failed", "expired", "disabled", "deleting", "deleted",
 ]);
 const KNOWLEDGE_PACKAGE_KEYS = Object.freeze([

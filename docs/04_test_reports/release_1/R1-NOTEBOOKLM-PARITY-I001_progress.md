@@ -55,3 +55,14 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
 - 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`; `DAON_DEV_AUTH_BYPASS`는 설정되지 않음.
 - 미완료: 로그인된 브라우저에서 실제 PDF/비-PDF 등록·처리 완료·삭제와 DB/MinIO 실물 정합성은 아직 확인하지 못했다. 이 검증 전에는 Task 1을 최종 완료로 판정하지 않는다.
+
+### Task 2 UI Source 추가 구현 (R1-NOTEBOOKLM-PARITY-I001-T2)
+
+- 착수/환경: 2026-08-22, 공식 작업공간 `C:/Users/cyhuh/Desktop/D Driver/Project/Daon_User`, branch `codex/user-auth-screen-split`; 기존 dirty 변경은 보존하고 새 branch는 생성하지 않음.
+- 단계 완료: 기존 3면 배치를 유지하면서 Source 추가를 모달 흐름으로 확장했다. 파일 업로드(일반 MIME), 웹사이트, Drive, 복사한 텍스트 탭을 제공하고, 아직 Connector 계약이 없는 웹사이트·Drive는 mock/API 임의 주소 없이 `연결 준비 필요`로 표시한다.
+- 단계 완료: 업로드 클라이언트와 Notebook adapter를 generic `uploadSource` 계약으로 연결했다. 브라우저 요청은 기존 same-origin `/bff/api/workspaces/{workspaceId}/sources` 경로를 유지하고, notebook id는 adapter에서 전달한다. `uploadPdf` 호환 래퍼는 기존 호출부 회귀를 위해 유지했다.
+- 단계 완료: 등록 중 상태, 안전한 오류 코드, `unavailable` Source 상태 라벨을 UI에 반영했다. 붙여넣은 텍스트는 text Source로 등록 요청하며 서버 계약을 우회하지 않는다.
+- 변경 파일: `packages/ui/src/product-workspace-shell.jsx`, `packages/ui/src/notebook-context-adapter.js`, `packages/ui/src/workspace.css`, `apps/web/lib/source-upload-api.js`, `apps/web/components/actual-workspace.jsx`, `apps/web/lib/product-workspace-api.js`, `scripts/tests/notebook-source-add-flow.test.mjs`.
+- 오류/복구: 신규 테스트의 Unicode 정규식 문법 오류를 문자열 assertion으로 수정. 기존 Studio 오류 테스트가 자동 retry 대기 중 상태를 검사하던 문제를 확인하고 계약/list 실패는 즉시 UI 오류로 표시하며 일시적 transport 오류만 자동 retry하도록 분리했다.
+- 테스트: `node --test scripts/tests/notebook-source-add-flow.test.mjs scripts/tests/product-workspace.test.mjs` → `22 passed`. `git diff --check` → 공백 오류 없음(기존 dirty 파일의 줄바꿈 경고만 존재).
+- 미해결: 웹사이트·Drive 실제 Connector와 로그인 브라우저 E2E, ysna-server 재배포 및 DB/MinIO 실물 등록 검증은 상위 통합 단계에서 수행해야 한다. 이번 Task에서는 임의 mock을 넣지 않았다.

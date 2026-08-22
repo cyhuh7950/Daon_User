@@ -59,6 +59,7 @@ const SOURCE_STATE_LABELS = Object.freeze({
   failed: "처리 실패",
   expired: "만료됨",
   disabled: "사용 중지",
+  unavailable: "사용 불가",
   deleting: "삭제 중",
   deleted: "삭제됨",
 });
@@ -240,7 +241,9 @@ function isTransientSourceFetchError(error) {
 
 function isRetryableSourceLoadError(error) {
   if (error?.retryable === true || isTransientSourceFetchError(error)) return true;
-  return new Set(["SOURCE_LIST_FAILED", "RESOURCE_UNAVAILABLE", "WORKSPACE_REQUEST_FAILED"]).has(error?.message);
+  // Contract/list failures are surfaced immediately so the user can retry from
+  // the UI; only transient transport failures are retried automatically.
+  return new Set(["RESOURCE_UNAVAILABLE", "WORKSPACE_REQUEST_FAILED"]).has(error?.message);
 }
 
 function normalizeProcessingPollOptions(options) {
@@ -522,6 +525,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [sourceActionPending, setSourceActionPending] = useState(false);
   const [sourceActionSafeError, setSourceActionSafeError] = useState(null);
   const [sourceDeletionRequests, setSourceDeletionRequests] = useState([]);
+  const [sourceAddOpen, setSourceAddOpen] = useState(false);
+  const [sourceAddMode, setSourceAddMode] = useState("file");
+  const [sourceAddText, setSourceAddText] = useState("");
+  const [sourceAddError, setSourceAddError] = useState(null);
+  const [sourceAddPending, setSourceAddPending] = useState(false);
   const pollControllerRef = useRef(null);
   const reportIdempotencyRef = useRef(null);
   const lifetimeControllerRef = useRef(null);
@@ -576,7 +584,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       throw new Error("SOURCE_LIST_FAILED");
     };
     Promise.allSettled([
-      sourceContextEmpty ? Promise.resolve([]) : listSources(),
+      // The notebook context is a separate snapshot and may still be empty
+      // immediately after an upload. Always reload the canonical Source list
+      // so newly registered Sources are not hidden by that stale snapshot.
+      listSources(),
       (typeof adapter.listKnowledgePackages === "function"
         ? adapter.listKnowledgePackages({ signal: controller.signal })
         : Promise.resolve([])),
@@ -705,11 +716,13 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     };
   }, []);
 
-  const uploadPdf = async (event) => {
-    const fileInput = event.currentTarget;
-    const file = fileInput.files?.[0];
+  const uploadSource = async (eventOrFile) => {
+    const fileInput = eventOrFile?.currentTarget;
+    const file = fileInput?.files?.[0] ?? eventOrFile;
+    if (fileInput) fileInput.value = "";
     if (!adapter || !file) return;
-    fileInput.value = "";
+    setSourceAddPending(true);
+    setSourceAddError(null);
     pollControllerRef.current?.abort();
     const controller = new AbortController();
     pollControllerRef.current = controller;
@@ -729,11 +742,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     let acceptedSubmission = false;
     try {
       const submission = await awaitAbortable(
-        adapter.uploadPdf(file, { signal: controller.signal }),
+        (typeof adapter.uploadSource === "function" ? adapter.uploadSource(file, { signal: controller.signal }) : adapter.uploadPdf(file, { signal: controller.signal })),
         controller.signal
       );
       if (!isSafeDtoId(submission?.processing_run_id) || !isSafeDtoId(submission?.source_id) || !isSafeDtoId(submission?.source_version_id)) {
-        throw new Error("PDF_UPLOAD_RESPONSE_INVALID");
+        throw new Error("SOURCE_UPLOAD_RESPONSE_INVALID");
       }
       acceptedSubmission = true;
       while (!controller.signal.aborted) {
@@ -797,14 +810,25 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         setLoadRevision((current) => current + 1);
         return;
       }
+      const errorCode = deadlineExpired ? "PROCESSING_TIMEOUT" : safeErrorCode(error, "SOURCE_UPLOAD_FAILED");
+      setSourceAddError(errorCode);
       setViewState(createProductWorkspaceState({
         status: "error",
-        safeError: deadlineExpired ? "PROCESSING_TIMEOUT" : safeErrorCode(error, "PDF_UPLOAD_FAILED")
+        safeError: errorCode
       }));
     } finally {
       clearTimeout(deadlineTimer);
       if (pollControllerRef.current === controller) pollControllerRef.current = null;
+      setSourceAddPending(false);
     }
+  };
+
+  const submitPastedText = async () => {
+    const value = sourceAddText.trim();
+    if (!value) { setSourceAddError("EMPTY_SOURCE"); return; }
+    const file = new File([value], `pasted-text-${Date.now()}.txt`, { type: "text/plain" });
+    await uploadSource(file);
+    setSourceAddText("");
   };
 
   const confirmSourceUnbind = async () => {
@@ -1205,8 +1229,20 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         </div>
       </header>
       <div className="workspace-panes" data-layout="source-conversation-studio" aria-label="Workspace 3면">
-        <SafePane id="product-pane-sources" title="Source·지식·권위" description="PDF 등록과 처리 상태는 실제 same-origin 연결만 사용합니다.">
-          <label className="source-add-button"><span aria-hidden="true">＋</span>Source 추가<input type="file" accept="application/pdf" onChange={uploadPdf} disabled={!adapter} /></label>
+        <SafePane id="product-pane-sources" title="Source·지식·권위" description="NotebookLM처럼 파일·웹·Drive·복사 텍스트를 Source로 추가합니다.">
+          <button className="source-add-button" type="button" onClick={() => { setSourceAddOpen(true); setSourceAddError(null); }} disabled={!adapter}><span aria-hidden="true">＋</span>Source 추가</button>
+          <input className="source-legacy-input" type="file" accept="application/pdf" onChange={uploadSource} aria-hidden="true" tabIndex="-1" />
+          {sourceAddOpen ? <section className="source-action-dialog source-add-dialog" role="dialog" aria-modal="true" aria-label="Source 추가">
+            <header><strong>Source 추가</strong><button type="button" onClick={() => setSourceAddOpen(false)} disabled={sourceAddPending} aria-label="Source 추가 닫기">×</button></header>
+            <nav className="source-add-tabs" aria-label="Source 유형">
+              {[['file', '파일 업로드'], ['website', '웹사이트'], ['drive', 'Drive'], ['text', '복사한 텍스트']].map(([mode, label]) => <button key={mode} type="button" aria-pressed={sourceAddMode === mode} onClick={() => { setSourceAddMode(mode); setSourceAddError(null); }} disabled={sourceAddPending}>{label}</button>)}
+            </nav>
+            {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>PDF, 이미지, 문서, 오디오 등 지원 형식</small><input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.m4a,.wav,.mp3" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
+            {sourceAddMode === "text" ? <><textarea value={sourceAddText} onChange={(event) => setSourceAddText(event.target.value)} placeholder="복사한 텍스트를 붙여 넣으세요" disabled={sourceAddPending} /><button type="button" className="primary-button" onClick={() => void submitPastedText()} disabled={sourceAddPending || !sourceAddText.trim()}>{sourceAddPending ? "등록 중" : "텍스트 등록"}</button></> : null}
+            {sourceAddMode === "website" || sourceAddMode === "drive" ? <div className="source-add-unavailable" role="status"><strong>{sourceAddMode === "website" ? "웹사이트" : "Drive"} 연결 준비 필요</strong><small>외부 원본을 가져오는 Connector가 연결되면 이 흐름에서 등록할 수 있습니다.</small></div> : null}
+            {sourceAddPending ? <p className="source-inline-state" role="status">Source 등록·처리 중입니다.</p> : null}
+            {sourceAddError ? <div className="inline-alert compact" role="alert">Source를 등록하지 못했습니다. ({sourceAddError})</div> : null}
+          </section> : null}
           {processing ? <p className="source-inline-state" role="status">처리 중 · 잠시만 기다려 주세요.</p> : null}
           <section className="source-group" aria-labelledby="approved-knowledge-title">
             <div className="source-group-heading"><h3 id="approved-knowledge-title">Daon 승인 지식</h3><span>{knowledgePackages.length}</span></div>
@@ -1227,7 +1263,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             {viewState.sources.map((source) => (
               <li className="source-list-row" key={`${source.sourceId}:${source.sourceVersionId}`}>
                 <button type="button" aria-pressed={viewState.selectedSource?.sourceVersionId === source.sourceVersionId} onClick={() => selectSource(source)} disabled={!source.ready}>
-                  <span className="source-file-icon" aria-hidden="true">PDF</span><span className="source-row-copy"><strong>{source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {SOURCE_STATE_LABELS[source.sourceState] ?? "상태 확인 필요"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
+                  <span className="source-file-icon" aria-hidden="true">FILE</span><span className="source-row-copy"><strong>{source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {SOURCE_STATE_LABELS[source.sourceState] ?? "상태 확인 필요"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
                 </button>
                 <button type="button" className="source-action-trigger" title="Source 작업" aria-label={`${source.filename ?? source.sourceId} 작업`} onClick={() => { setSourceAction(source); setSourceActionKind("unbind"); setSourceActionSafeError(null); }}>⋮</button>
               </li>
@@ -1251,7 +1287,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           </ul>
           </section>
           {viewState.status === "loading" ? <div className="pane-empty" role="status"><span className="state-spinner" aria-hidden="true" /><strong>Source를 불러오고 있습니다.</strong><small>현재 Workspace의 안전한 목록을 확인하는 중입니다.</small></div> : null}
-          {viewState.status === "empty" ? <div className="pane-empty"><span aria-hidden="true">◇</span><strong>Source를 추가해 주세요.</strong><small>PDF를 등록하면 질문과 Studio 생성에 사용할 수 있습니다.</small></div> : null}
+          {viewState.status === "empty" ? <div className="pane-empty"><span aria-hidden="true">◇</span><strong>Source를 추가해 주세요.</strong><small>파일·웹사이트·Drive·복사한 텍스트를 등록하면 질문과 Studio 생성에 사용할 수 있습니다.</small></div> : null}
           {viewState.status === "error" ? <div className="inline-alert" role="alert"><span>Source를 불러오지 못했습니다. 운영상태에서 연결을 확인해 주세요.</span><button type="button" onClick={() => { setViewState((current) => ({ ...current, status: "loading", safeError: null })); setLoadRevision((current) => current + 1); }}>다시 시도</button></div> : null}
           {sourceAction ? <section className="source-action-dialog" role="dialog" aria-modal="true" aria-label="Source 작업 확인">
             <strong>{sourceAction.filename ?? sourceAction.sourceId}</strong>
