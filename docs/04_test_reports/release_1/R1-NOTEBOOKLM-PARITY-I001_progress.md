@@ -66,3 +66,12 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 오류/복구: 신규 테스트의 Unicode 정규식 문법 오류를 문자열 assertion으로 수정. 기존 Studio 오류 테스트가 자동 retry 대기 중 상태를 검사하던 문제를 확인하고 계약/list 실패는 즉시 UI 오류로 표시하며 일시적 transport 오류만 자동 retry하도록 분리했다.
 - 테스트: `node --test scripts/tests/notebook-source-add-flow.test.mjs scripts/tests/product-workspace.test.mjs` → `22 passed`. `git diff --check` → 공백 오류 없음(기존 dirty 파일의 줄바꿈 경고만 존재).
 - 미해결: 웹사이트·Drive 실제 Connector와 로그인 브라우저 E2E, ysna-server 재배포 및 DB/MinIO 실물 등록 검증은 상위 통합 단계에서 수행해야 한다. 이번 Task에서는 임의 mock을 넣지 않았다.
+
+### Task 2 ysna-server 배포 확인
+
+- 배포: `8ca9dcb` 기준 API·document-worker·web 이미지를 재빌드하고 재기동했다.
+- 빌드: Web Next.js/TypeScript 및 `verify-product-ui-boundary` 성공(`violations: []`).
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, 기존 MinIO `healthy`.
+- 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
+- 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`.
+- 미완료: 로그인된 브라우저의 실제 Source 등록/삭제 클릭과 DB·MinIO 실물 정합성 검증은 아직 수행하지 못했다. 웹사이트·Drive Connector도 아직 구현 전이다.
