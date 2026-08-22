@@ -846,6 +846,34 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     setSourceAddText("");
   };
 
+  const registerMcpConnector = async () => {
+    if (typeof adapter?.registerConnector !== "function" || sourceAddPending) return;
+    setSourceAddPending(true);
+    setSourceAddError(null);
+    try {
+      await adapter.registerConnector({ kind: "mcp", name: "국가법령정보센터" }, {
+        signal: lifetimeControllerRef.current?.signal,
+      });
+      setSourceAddOpen(false);
+      setLoadRevision((current) => current + 1);
+    } catch (error) {
+      setSourceAddError(safeErrorCode(error, "CONNECTOR_REGISTER_FAILED"));
+    } finally {
+      setSourceAddPending(false);
+    }
+  };
+
+  const unregisterMcpConnector = async (connector) => {
+    if (connector?.kind !== "mcp" || typeof adapter?.unregisterConnector !== "function") return;
+    if (!globalThis.confirm?.(`${connector.name} 연결을 즉시 삭제할까요? 외부 서버의 원본 데이터는 삭제되지 않습니다.`)) return;
+    try {
+      await adapter.unregisterConnector(connector.connector_id, { signal: lifetimeControllerRef.current?.signal });
+      setLoadRevision((current) => current + 1);
+    } catch (error) {
+      setConnectorSafeError(safeErrorCode(error, "CONNECTOR_DELETE_FAILED"));
+    }
+  };
+
   const confirmSourceUnbind = async () => {
     if (!sourceAction || typeof adapter?.unbindSource !== "function" || sourceActionPending) return;
     setSourceActionPending(true);
@@ -1253,10 +1281,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {sourceAddOpen ? <section className="source-action-dialog source-add-dialog" role="dialog" aria-modal="true" aria-label="Source 추가">
             <header><strong>Source 추가</strong><button type="button" onClick={() => setSourceAddOpen(false)} disabled={sourceAddPending} aria-label="Source 추가 닫기">×</button></header>
             <nav className="source-add-tabs" aria-label="Source 유형">
-              {[['file', '파일 업로드'], ['website', '웹사이트'], ['drive', 'Drive'], ['text', '복사한 텍스트']].map(([mode, label]) => <button key={mode} type="button" aria-pressed={sourceAddMode === mode} onClick={() => { setSourceAddMode(mode); setSourceAddError(null); }} disabled={sourceAddPending}>{label}</button>)}
+              {[['file', '파일 업로드'], ['website', '웹사이트'], ['drive', 'Drive'], ['text', '복사한 텍스트'], ['mcp', 'MCP 연결']].map(([mode, label]) => <button key={mode} type="button" aria-pressed={sourceAddMode === mode} onClick={() => { setSourceAddMode(mode); setSourceAddError(null); }} disabled={sourceAddPending}>{label}</button>)}
             </nav>
             {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>PDF, 이미지, 문서, 오디오 등 지원 형식</small><input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.m4a,.wav,.mp3" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
             {sourceAddMode === "text" ? <><textarea value={sourceAddText} onChange={(event) => setSourceAddText(event.target.value)} placeholder="복사한 텍스트를 붙여 넣으세요" disabled={sourceAddPending} /><button type="button" className="primary-button" onClick={() => void submitPastedText()} disabled={sourceAddPending || !sourceAddText.trim()}>{sourceAddPending ? "등록 중" : "텍스트 등록"}</button></> : null}
+            {sourceAddMode === "mcp" ? <div className="source-add-unavailable"><strong>국가법령정보센터 MCP</strong><small>연결을 등록하면 연결형 Source에서 상태를 확인하고 선택할 수 있습니다.</small><button type="button" className="primary-button" onClick={() => void registerMcpConnector()} disabled={sourceAddPending}>{sourceAddPending ? "등록 중" : "MCP 연결 등록"}</button></div> : null}
             {sourceAddMode === "website" || sourceAddMode === "drive" ? <div className="source-add-unavailable" role="status"><strong>{sourceAddMode === "website" ? "웹사이트" : "Drive"} 연결 준비 필요</strong><small>외부 원본을 가져오는 Connector가 연결되면 이 흐름에서 등록할 수 있습니다.</small></div> : null}
             {sourceAddPending ? <p className="source-inline-state" role="status">Source 등록·처리 중입니다.</p> : null}
             {sourceAddError ? <div className="inline-alert compact" role="alert">Source를 등록하지 못했습니다. ({sourceAddError})</div> : null}
@@ -1286,6 +1315,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                     <span className={`source-ready-dot ${connector.status === "connected" ? "is-ready" : ""}`} aria-hidden="true" />
                   </button>
                   {connector.status !== "connected" && typeof adapter?.reconnectConnector === "function" ? <button type="button" className="source-action-trigger" title="Connector 재연결" aria-label={`${connector.name} 재연결`} onClick={() => void adapter.reconnectConnector(connector.connector_id).then(() => setLoadRevision((current) => current + 1))}>↻</button> : null}
+                  {connector.kind === "mcp" && typeof adapter?.unregisterConnector === "function" ? <button type="button" className="source-action-trigger" title="MCP 연결 삭제" aria-label={`${connector.name} 연결 삭제`} onClick={() => void unregisterMcpConnector(connector)}>×</button> : null}
                 </li>
               ))}
             </ul>

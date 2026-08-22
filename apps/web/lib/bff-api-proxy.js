@@ -182,6 +182,15 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (
+    segments.length === 4 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "connectors"
+    && SAFE_SEGMENT.test(segments[3])
+  ) {
+    return method === "DELETE"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors/${encodeURIComponent(segments[3])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
     segments.length === 3 && segments[0] === "workspaces"
     && SAFE_SEGMENT.test(segments[1]) && segments[2] === "connectors"
   ) {

@@ -53,6 +53,16 @@ class ConnectorContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ConnectorError, "CONNECTOR_SOURCE_ID_INVALID"):
             connector_source_id("", "remote")
 
+    def test_mcp_can_be_unregistered_but_approved_knowledge_is_fixed(self) -> None:
+        mcp = create_open_law_connector(api_key="test-key")
+        approved = ApprovedKnowledgeConnector(token="secret", timeout_seconds=3, max_retries=1).as_connector()
+        registry = ConnectorRegistry((mcp, approved))
+        registry.unregister(mcp.connector_id)
+        with self.assertRaisesRegex(ConnectorError, "CONNECTOR_NOT_FOUND"):
+            registry.get(mcp.connector_id)
+        with self.assertRaisesRegex(ConnectorError, "CONNECTOR_FIXED"):
+            registry.unregister(approved.connector_id)
+
 
 if __name__ == "__main__":
     unittest.main()

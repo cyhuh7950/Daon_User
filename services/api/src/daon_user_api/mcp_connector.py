@@ -114,6 +114,20 @@ class ConnectorRegistry:
         connector.last_checked_at = _now()
         return connector.view()
 
+    def unregister(self, connector_id: str) -> None:
+        """Remove a user-owned MCP registration immediately.
+
+        The fixed Daon knowledge connector is never user-deletable. Removing
+        an MCP registration only removes this local binding; it cannot delete
+        anything from the remote MCP server.
+        """
+        connector = self.get(connector_id)
+        if connector.kind == "daon_approved_knowledge":
+            raise ConnectorError("CONNECTOR_FIXED")
+        if connector.kind != "mcp":
+            raise ConnectorError("CONNECTOR_KIND_UNSUPPORTED")
+        del self._connectors[connector_id]
+
     def sources(self, connector_id: str) -> tuple[ConnectorSource, ...]:
         connector = self.get(connector_id)
         if connector.status != "connected":
