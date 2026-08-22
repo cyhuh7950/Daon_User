@@ -5,7 +5,7 @@ export const OUTPUT_TYPES = Object.freeze([
   Object.freeze({ id: "knowledge_map", label: "지식 구조도", formats: ["json", "svg", "png", "pdf"] }),
   Object.freeze({ id: "business_draft", label: "업무 문서 초안", formats: ["docx", "pdf"] }),
   Object.freeze({ id: "slides", label: "슬라이드", formats: ["pdf", "json"] }),
-  Object.freeze({ id: "infographic", label: "인포그래픽", formats: ["svg", "png", "pdf"] }),
+  Object.freeze({ id: "infographic", label: "인포그래픽", formats: ["svg", "png", "pdf", "json"] }),
   Object.freeze({ id: "flashcards", label: "플래시카드", formats: ["json", "csv", "pdf"] }),
   Object.freeze({ id: "quiz", label: "퀴즈", formats: ["json", "csv", "pdf"] }),
   Object.freeze({ id: "audio", label: "AI 오디오", formats: ["json"] }),

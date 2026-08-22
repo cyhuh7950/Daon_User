@@ -18,6 +18,19 @@ MEDIA_TYPES = {
     "pdf": "application/pdf", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "csv": "text/csv; charset=utf-8", "json": "application/json", "svg": "image/svg+xml", "png": "image/png",
 }
+OUTPUT_FORMATS = {
+    "evidence_report": frozenset({"docx", "pdf"}),
+    "compliance_checklist": frozenset({"xlsx", "csv", "pdf"}),
+    "comparison_table": frozenset({"xlsx", "csv", "pdf"}),
+    "knowledge_map": frozenset({"json", "svg", "png", "pdf"}),
+    "business_draft": frozenset({"docx", "pdf"}),
+    "slides": frozenset({"pdf", "json"}),
+    "infographic": frozenset({"svg", "png", "pdf", "json"}),
+    "flashcards": frozenset({"json", "csv", "pdf"}),
+    "quiz": frozenset({"json", "csv", "pdf"}),
+    "audio": frozenset({"json"}),
+    "video": frozenset({"json"}),
+}
 
 
 class StudioExportError(ValueError):
@@ -180,6 +193,13 @@ def _png_graph(text: str, content: object) -> bytes:
 def export_studio_output(format_name: str, title: str, content: object, metadata: dict[str, str], *, output_type: str | None = None) -> StudioExport:
     if format_name not in MEDIA_TYPES:
         raise StudioExportError("EXPORT_FORMAT_UNSUPPORTED")
+    if output_type is not None:
+        if format_name not in OUTPUT_FORMATS.get(output_type, frozenset()):
+            raise StudioExportError("EXPORT_FORMAT_UNSUPPORTED")
+        if output_type in {"audio", "video"}:
+            # No media provider/encoder is configured. Never manufacture a
+            # downloadable placeholder that looks like a completed artifact.
+            raise StudioExportError("STUDIO_OUTPUT_UNAVAILABLE")
     encoded_content = json.dumps(content, ensure_ascii=False).encode("utf-8") if not isinstance(content, str) else content.encode("utf-8")
     if len(encoded_content) > MAX_EXPORT_BYTES:
         raise StudioExportError("EXPORT_TOO_LARGE")

@@ -21,7 +21,7 @@ FORMATS = {
     "comparison_table": frozenset({"xlsx", "csv", "pdf"}), "knowledge_map": frozenset({"json", "svg", "png", "pdf"}),
     "business_draft": frozenset({"docx", "pdf"}),
     "slides": frozenset({"pdf", "json"}),
-    "infographic": frozenset({"svg", "png", "pdf"}),
+    "infographic": frozenset({"svg", "png", "pdf", "json"}),
     "flashcards": frozenset({"json", "csv", "pdf"}),
     "quiz": frozenset({"json", "csv", "pdf"}),
     # Audio/video providers and binary encoders are not present in this runtime.

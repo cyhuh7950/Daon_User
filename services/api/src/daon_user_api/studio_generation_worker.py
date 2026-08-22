@@ -45,6 +45,9 @@ class StudioGenerationWorker:
         if job is None:
             return False
         try:
+            start = getattr(self._queue, "start", None)
+            if callable(start):
+                start(job)
             request_payload = dict(job.request_json)
             notebook_id = request_payload.pop("notebook_id", None)
             request_payload["source_version_ids"] = tuple(request_payload.get("source_version_ids", ()))
@@ -53,10 +56,23 @@ class StudioGenerationWorker:
             result, _ = self._repository.create_generation(context, request, job.idempotency_key)
             self._queue.finish(job, state="completed", studio_output_id=result.get("studio_output_id"), output_version_id=result.get("output_version_id"))
         except StudioError as error:
-            self._queue.finish(job, state="unavailable" if error.code == "STUDIO_OUTPUT_UNAVAILABLE" else "failed", error_code=error.code)
+            if error.code == "STUDIO_OUTPUT_UNAVAILABLE":
+                self._queue.finish(job, state="unavailable", error_code=error.code)
+            elif error.code in {"STUDIO_DATABASE_UNAVAILABLE", "OBJECT_STORAGE_UNAVAILABLE", "STUDIO_QUEUE_UNAVAILABLE", "PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"}:
+                retry = getattr(self._queue, "retry", None)
+                if callable(retry) and retry(job, error_code=error.code):
+                    return True
+                self._queue.finish(job, state="failed", error_code="STUDIO_DEAD_LETTER")
+            else:
+                self._queue.finish(job, state="failed", error_code=error.code)
         except Exception:
-            # Do not leave malformed/provider failures leased until expiry; expose only a safe code.
-            self._queue.finish(job, state="failed", error_code="STUDIO_JOB_PROCESSING_FAILED")
+            # Transient infrastructure failures are retried within the bounded
+            # queue attempt budget; malformed/provider failures become a safe
+            # terminal error and never remain leased indefinitely.
+            retry = getattr(self._queue, "retry", None)
+            if callable(retry) and retry(job, error_code="STUDIO_JOB_PROCESSING_FAILED"):
+                return True
+            self._queue.finish(job, state="failed", error_code="STUDIO_DEAD_LETTER")
         return True
 
     def run_forever(self, stop: threading.Event, *, poll_seconds: float = 0.5) -> None:
