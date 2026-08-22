@@ -519,3 +519,8 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: 구조화 Studio 9종과 Media 미지원 2종 생성 직후 120초 동안 10초 간격으로 API/document-worker/studio-worker/web/MinIO 상태를 관찰했다. 전 구간 API·Web healthy, Worker running, MinIO healthy였고 재시작·비정상 종료는 없었다.
 - 미검증: 장시간(수시간 이상) Provider 부하·soak과 실제 Export 파일 다운로드/Hash는 별도 범위로 남긴다.
 
+## 2026-08-23T05:30:00+09:00 로컬 계약·UI 회귀 재검증
+- 상태: `LOCAL_REGRESSION_PASS`
+- 검증: `PYTHONPATH=services/api/src uv run pytest services/api/tests/test_studio_api_contract.py services/api/tests/test_studio_worker_contract.py services/api/tests/test_studio_export_contract.py services/api/tests/test_notebooklm_studio_outputs.py -q` 결과 `13 passed`. `node --test scripts/tests/product-studio.test.mjs scripts/tests/product-studio-click.test.mjs scripts/tests/studio-workflow.test.mjs scripts/tests/studio-report-api.test.mjs` 결과 `36 passed`.
+- 미검증: 실제 Export 다운로드·파일 Hash는 산출물이 `검토 중`/`초안` 상태여서 UI `내보내기`가 비활성이다. 장시간 Provider 부하·soak과 Oracle 운영 배포도 미검증이다.
+
