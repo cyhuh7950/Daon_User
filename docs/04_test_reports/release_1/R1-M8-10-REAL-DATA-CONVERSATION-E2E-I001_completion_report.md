@@ -92,6 +92,7 @@
 - `제약·준수 점검표`는 실제 Provider 산출물과 Library 저장을 브라우저에서 확인했다(output version `output-version-63909d45745d513cf523e48e0cd6f107`).
 - 추가 실제 Provider 요청인 `비교·데이터 표`(`studio-job-b685b23cd1b85e26e027a6d28d6e491a`)와 `근거 기반 보고서`(`studio-job-c8b10bef0700d5ae4b46db7c05edf7fc`)는 운영 DB `studio_generation_jobs`에서 각각 `completed`, `safe_error_code=NULL`로 확인했다. 비동기 UI의 Library 갱신 및 다운로드/렌더링은 미검증이다.
 - YSNA Provider bounded soak `30/30` 성공: 모두 `UPSTAGE HTTP 200`, `schema=valid`, `citations=0`, `secret_echo=0`, 약 28초. 장시간·고부하 안정성은 미검증이다.
+- 후속 bounded soak `60/60`도 동일하게 `UPSTAGE HTTP 200`, `schema=valid`, `citations=0`, `secret_echo=0`으로 완료됐다. 단기 연속 호출 누적 성공은 확인했지만 시간 기반 장시간·동시성 고부하 안정성은 미검증이다.
 - 원격 SHA 불일치 원인은 ysna checkout의 stale `origin/master=1b652ec08`와 canonical `git ls-remote/fetch origin/master=632463f812ee17071a6bbbe6528a5dca2b24191a`의 ref 미갱신으로 확정했다. 운영 HEAD `c65070b...`는 canonical master의 조상이며 원격이 9개 커밋 앞섰다. stale Compose에는 `studio-worker`가 없어 checkout 시도는 재기동 없이 원복했다.
 
 ### 남은 미검증
