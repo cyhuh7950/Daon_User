@@ -12,11 +12,22 @@ from .knowledge_graph import KnowledgeGraph
 from .report_generation import ReportGenerator
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
-OUTPUT_TYPES = frozenset({"evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft"})
+OUTPUT_TYPES = frozenset({
+    "evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft",
+    "slides", "infographic", "flashcards", "quiz", "audio", "video",
+})
 FORMATS = {
     "evidence_report": frozenset({"docx", "pdf"}), "compliance_checklist": frozenset({"xlsx", "csv", "pdf"}),
     "comparison_table": frozenset({"xlsx", "csv", "pdf"}), "knowledge_map": frozenset({"json", "svg", "png", "pdf"}),
     "business_draft": frozenset({"docx", "pdf"}),
+    "slides": frozenset({"pdf", "json"}),
+    "infographic": frozenset({"svg", "png", "pdf"}),
+    "flashcards": frozenset({"json", "csv", "pdf"}),
+    "quiz": frozenset({"json", "csv", "pdf"}),
+    # Audio/video providers and binary encoders are not present in this runtime.
+    # They remain explicit contracts and fail closed instead of fabricating media.
+    "audio": frozenset({"json"}),
+    "video": frozenset({"json"}),
 }
 
 
@@ -59,6 +70,39 @@ def build_structured_output(
         nodes = [{"id": f"node-{index}", "label": item["citation_id"], "confidence": "verified", "evidence": f"page {item['page']}"} for index, item in enumerate(evidence, 1)]
         edges = [{"id": f"edge-{index}", "source": nodes[index - 1]["id"], "target": nodes[index]["id"], "condition": "근거 순서"} for index in range(1, len(nodes))]
         return asdict(KnowledgeGraph().build(nodes, edges))
+    if request.output_type == "slides":
+        return {
+            "title": request.purpose,
+            "slides": [
+                {"slide_number": 1, "title": "핵심 요약", "body": answer, "evidence": [f"{item['citation_id']} page {item['page']}" for item in evidence]},
+                *[
+                    {"slide_number": index + 2, "title": f"근거 {index}", "body": f"{item['citation_id']}에서 확인된 내용", "evidence": [f"{item['citation_id']} page {item['page']}"]}
+                    for index, item in enumerate(evidence)
+                ],
+            ],
+            "warnings": [],
+        }
+    if request.output_type == "infographic":
+        return {
+            "title": request.purpose,
+            "summary": answer,
+            "metrics": [{"label": f"근거 {index}", "value": item["citation_id"], "evidence": f"page {item['page']}"} for index, item in enumerate(evidence, 1)],
+            "warnings": [],
+        }
+    if request.output_type == "flashcards":
+        return {
+            "title": request.purpose,
+            "cards": [{"id": f"card-{index}", "question": f"{item['citation_id']}의 핵심 내용은 무엇인가요?", "answer": answer, "evidence": f"{item['citation_id']} page {item['page']}"} for index, item in enumerate(evidence, 1)],
+            "warnings": [],
+        }
+    if request.output_type == "quiz":
+        return {
+            "title": request.purpose,
+            "questions": [{"id": f"quiz-{index}", "question": f"{item['citation_id']}에 대한 설명으로 옳은 것은?", "options": [answer, "근거에서 확인되지 않음"], "answer_index": 0, "explanation": f"{item['citation_id']} page {item['page']}"} for index, item in enumerate(evidence, 1)],
+            "warnings": [],
+        }
+    if request.output_type in {"audio", "video"}:
+        raise StudioError("STUDIO_OUTPUT_UNAVAILABLE", 409)
     sections = [{"title": f"Section {index}", "body": answer, "evidence": [f"{item['citation_id']} page {item['page']}"]} for index, item in enumerate(evidence, 1)]
     return asdict(DocumentDraft().create(request.structure, sections, generation_request_id))
 

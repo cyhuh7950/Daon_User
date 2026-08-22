@@ -156,3 +156,14 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 영향: `studio_workspace.py`, `studio_export.py`, `report_generation.py`, `studio-workflow-pane.jsx`, `product-workspace-shell.jsx`만 수정하여 진행하면 백그라운드·unavailable 계약을 충족하지 못한다. 공개 API/runtime·DB/worker 계약과 최소 테스트 범위 확장이 필요하다.
 - 미변경: 위 BLOCKED 판단으로 Task 5 관련 코드를 수정하거나 mock/fake 결과를 만들지 않았다.
 - 다음 판단 필요: 어울1이 Studio 생성 작업용 기존 공통 job/worker 계약을 지정하거나, runtime·DB migration·worker·BFF 공개 계약 확장을 승인해야 Task 5 구현을 재개할 수 있다.
+
+### Task 5 계약 확장 재개·구현
+
+- 재개: 상위 승인에 따라 기존 Studio/Library 계약을 재사용하는 범위에서 구현을 재개했다. 별도 Studio worker·provider가 없는 상태에서 완료를 가장하지 않는 원칙은 유지한다.
+- 변경: Studio 출력 타입을 5종에서 11종(`evidence_report`, `compliance_checklist`, `comparison_table`, `knowledge_map`, `business_draft`, `slides`, `infographic`, `flashcards`, `quiz`, `audio`, `video`)으로 확장하고 생성 설정의 형식 검증을 맞췄다.
+- 변경: 슬라이드·인포그래픽·플래시카드·퀴즈는 기존 근거/Citation 기반 생성 결과 구조와 Library export 경로를 재사용한다. Source lineage와 생성 시각은 기존 `studio_outputs`/`output_versions` 저장 계약을 그대로 사용한다.
+- 변경: UI의 기존 Studio 카드 배치와 3열 화면은 유지하면서 11개 카드를 선택 가능하게 하고, 새 구조화 결과를 Library 상세 화면에서 표시한다. 브라우저 호출 경로는 기존 same-origin BFF를 유지한다.
+- 제한: 오디오·동영상은 연결된 provider·바이너리 인코더가 없으므로 `STUDIO_OUTPUT_UNAVAILABLE`(409)로 fail-closed 처리한다. 가짜 미디어나 완료 결과를 생성하지 않는다.
+- 변경 파일: `services/api/src/daon_user_api/studio_workspace.py`, `services/api/src/daon_user_api/studio_export.py`, `apps/web/lib/product-workspace-api.js`, `packages/ui/src/product-studio-model.js`, `packages/ui/src/product-studio-pane.jsx`, `services/api/tests/test_notebooklm_studio_outputs.py`.
+- 미해결/판단 필요: 별도 Studio 백그라운드 worker·job/status API는 기존 코드베이스에 계약이 없어 추가하지 않았다. 현재 지원 출력은 기존 동기 Postgres 트랜잭션을 사용한다. 진정한 비동기 생성과 오디오·동영상 provider 연결을 요구하면 별도 migration/worker/provider 설계 승인이 필요하다.
+- 검증: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_notebooklm_studio_outputs.py tests/test_studio_workspace_service.py tests/test_studio_export.py -q` → `13 passed`. `node --check apps/web/lib/product-workspace-api.js` 통과. `node --test scripts/tests/product-workspace.test.mjs` → `19 passed`. `npm run build --workspace @daon-user/web` → Next 빌드·TypeScript·`verify-product-ui-boundary` 성공(`violations: []`). 관련 diff `git diff --check` 통과.
