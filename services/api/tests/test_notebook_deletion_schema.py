@@ -34,6 +34,7 @@ def test_notebook_deletion_migration_is_scoped_and_immutable():
         "transcript_segments", "transcript_versions", "transcription_runs", "extraction_evidence",
         "understanding_results", "index_versions", "sync_target_versions", "durable_jobs",
         "object_outbox_events",
+        "job_attempts",
     ):
         assert f"ALTER TABLE {table} DISABLE TRIGGER USER" in text
         assert f"ALTER TABLE {table} ENABLE TRIGGER USER" in text
