@@ -1,5 +1,13 @@
 # R1-NOTEBOOKLM-PARITY-I001 진행 기록
 
+### 2026-08-22 — ysna 즉시 Source 삭제 DB 검증
+
+- **판정**: PASS (DB 함수·마이그레이션 검증), 브라우저 클릭 검증은 별도 수행 필요.
+- **조치**: `d083fa8` 배포 후 API 컨테이너에 `0025_source_immediate_deletion.py`를 적용했다. `alembic_version=0025`, `delete_source_scope(text,text,text)` 존재를 확인했다.
+- **검증**: ysna DB에 임시 Notebook/Source/Source Version/Binding을 생성하고 `delete_source_scope`를 호출했다. 결과 `SOURCE_REMAINING=0`, `NOTEBOOK_REMAINING=1`; Source만 즉시 삭제되고 Notebook은 유지됐다.
+- **미검증/주의**: 실제 브라우저에서 사용자 Source 삭제 버튼을 통한 API·MinIO 실물 삭제는 아직 검증하지 않았다. 기존 사용자 Source는 삭제하지 않았다.
+- **다음 조치**: 브라우저에서 새 임시 Source를 등록한 뒤 삭제하여 UI·API·Object Storage 정합성을 확인한다.
+
 ## 현재 상태
 
 - 단계: Task 1 구현·서버 배포 검증
