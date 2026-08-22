@@ -38,6 +38,7 @@ class Connection:
             return Result(({"frozen_routing_context": frozen, "source_id": "source-1", "source_version_id": "source-version-1"}, "egress-1", {"run_id": "run-1", "frozen_routing_context": frozen}, "routing-1", {"run_id": "run-1", "egress_decision_id": "egress-1", "selected_deployment_id": "deployment-record-1"}))
         if "FROM model_deployments md" in sql:
             return Result((
+                "deployment-record-1",
                 {"configured_profile_id": "provider-upstage", "provider_code": "UPSTAGE", "binding_version": 5},
                 {"configured_deployment_id": "deployment-text", "model_id": "solar-pro4", "binding_version": 5},
                 {"provider_code": "UPSTAGE", "model_id": "solar-pro4"},
