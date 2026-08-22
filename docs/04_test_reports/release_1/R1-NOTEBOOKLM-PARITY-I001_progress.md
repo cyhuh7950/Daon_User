@@ -369,3 +369,13 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 미검증: 수정본 ysna 재배포 및 동일 PDF 재업로드 브라우저 재검증은 아직 미실행.
 - 다음 조치: 변경 커밋·푸시 후 ysna API/worker를 재배포하고 브라우저에서 동일 PDF 재업로드가 오류 없이 기존 Source를 재사용하는지 확인한다.
 
+## 2026-08-22 Source 업로드 응답 계약 오류 추가 수정
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: replay 상태 전이 수정 후에도 브라우저가 `SOURCE_UPLOAD_RESPONSE_INVALID`를 표시했다. API가 `_dataclass_json(SourceUploadResult)`로 내부 필드 `content_type`·`deletion_policy`까지 응답했지만, 브라우저 업로드 계약은 명시된 10개 필드만 허용하는 exact-shape 검증을 수행하고 있었다.
+- 조치: 업로드 응답을 브라우저 계약 필드로 명시적으로 투영하고 내부 저장 정책 필드는 응답에서 제외했다.
+- 변경: `services/api/src/daon_user_api/runtime.py`, `services/api/tests/test_source_upload_runtime.py`
+- 검증: Source upload/runtime 및 processing 회귀 테스트 `14 passed`; 응답 키 exact-shape와 내부 필드 비노출 검증을 추가했다.
+- 미검증: 수정본 ysna 재배포 후 브라우저 동일 PDF 재등록·정상 Source 유지 및 테스트 Source 삭제는 미실행.
+- 다음 조치: 커밋·푸시 후 ysna API를 재배포하고 동일 PDF 재등록을 다시 검증한다.
+

@@ -1300,6 +1300,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             dependencies.cloud_store,
             PostgresRetentionInventoryProvider(dependencies.cloud_store),
             clock=lambda: datetime.now(timezone.utc),
+            object_storage=dependencies.object_storage,
         )
         if dependencies.cloud_store is not None
         else dependencies.retention_service or RetentionService(
@@ -2147,7 +2148,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             http_status=202, source_id_present=bool(result.source_id),
             processing_run_id_present=bool(processing.processing_run_id), db_commit=True,
         )
-        response_data = _dataclass_json(result)
+        # Keep the upload response aligned with the public browser contract.
+        # Internal storage metadata (content type and deletion policy) is not
+        # part of the upload DTO and must not make the client reject an
+        # otherwise successful registration as a malformed response.
+        response_data = {
+            "source_id": result.source_id,
+            "source_version_id": result.source_version_id,
+            "object_id": result.object_id,
+            "digest_sha256": result.digest_sha256,
+            "byte_size": result.byte_size,
+            "status": result.status,
+            "replayed": result.replayed,
+        }
         response_data.update({
             "processing_run_id": processing.processing_run_id,
             "processing_state": processing.processing_state,

@@ -169,6 +169,16 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["data"]["source_id"], "src-001")
         self.assertEqual(response.json()["data"]["processing_run_id"], "run-001")
         self.assertEqual(response.json()["data"]["processing_state"], "vision_llm_understanding")
+        self.assertEqual(
+            set(response.json()["data"]),
+            {
+                "source_id", "source_version_id", "object_id", "digest_sha256",
+                "byte_size", "status", "replayed", "processing_run_id",
+                "processing_state", "job_state",
+            },
+        )
+        self.assertNotIn("deletion_policy", response.json()["data"])
+        self.assertNotIn("content_type", response.json()["data"])
         self.assertEqual(response.headers["etag"], '"source:src-001:1"')
         self.assertNotIn("object_key", response.text)
         call = self.uploads.calls[0]
