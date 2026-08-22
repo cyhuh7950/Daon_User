@@ -306,10 +306,17 @@ class PostgresStudioWorkspaceRepository:
                         {"generation_runs": 1, "studio_outputs": 1},
                     )
                 projection = self._policy_projection(connection, context, run_id=None if request.source_only else request.run_id)
-                if projection["review_condition"] != request.review_condition:
-                    raise StudioError("POLICY_PROJECTION_MISMATCH", 409)
-                if projection["ruleset_version_id"] and projection["ruleset_version_id"] != request.ruleset_version_id:
-                    raise StudioError("POLICY_PROJECTION_MISMATCH", 409)
+                if request.source_only:
+                    # Source-only generation has no grounded run settings to compare.
+                    # Bind the current effective workspace policy into the immutable
+                    # snapshot; the grounded path keeps strict client/policy matching.
+                    request_payload["review_condition"] = projection["review_condition"]
+                    request_payload["ruleset_version_id"] = projection["ruleset_version_id"]
+                else:
+                    if projection["review_condition"] != request.review_condition:
+                        raise StudioError("POLICY_PROJECTION_MISMATCH", 409)
+                    if projection["ruleset_version_id"] and projection["ruleset_version_id"] != request.ruleset_version_id:
+                        raise StudioError("POLICY_PROJECTION_MISMATCH", 409)
                 lineage = None if request.source_only else connection.execute(
                     "SELECT rr.canonical_json,count(DISTINCT sv.record_id),bool_and(s.state='ready'),bool_or(s.record_id=%s) FROM runs r JOIN run_results rr ON rr.tenant_id=r.tenant_id AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id JOIN source_versions sv ON sv.tenant_id=r.tenant_id AND sv.workspace_id=r.workspace_id AND sv.record_id=ANY(%s) JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id WHERE r.record_id=%s AND rr.record_id=%s AND r.tenant_id=%s AND r.workspace_id=%s GROUP BY rr.canonical_json",
                     (request.source_id, list(request.source_version_ids), request.run_id, request.run_result_id,
