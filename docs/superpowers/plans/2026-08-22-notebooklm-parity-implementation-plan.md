@@ -35,14 +35,14 @@
 - Modify: `packages/ui/src/notebook-context-adapter.js`
 - Test: `services/api/tests/test_source_lifecycle_contract.py`
 
-- [ ] Source 유형·원본 참조·Notebook 귀속·`unavailable` 상태 계약을 테스트로 고정한다.
-- [ ] 등록 시 `delete_with_notebook`/`retain_after_notebook_delete` 삭제 정책을 저장한다.
-- [ ] PDF 전용 검사를 지원 Matrix 기반 검사로 바꾼다.
-- [ ] 사용자 삭제는 즉시 Notebook Source와 관련 인덱스를 제거하도록 연결한다.
-- [ ] `content_digest` 기반 원본 중복 저장 방지와 Notebook별 독립 binding을 구현한다.
-- [ ] Notebook 삭제 시 선택한 삭제 정책과 다른 Notebook binding이 남은 원본 보존을 검증한다.
-- [ ] 외부 원본 소실은 Source를 보존하고 `unavailable`로 반환한다.
-- [ ] Source 목록·삭제·재등록 API 계약 테스트를 실행한다.
+- [x] Source 유형·원본 참조·Notebook 귀속·`unavailable` 상태 계약을 테스트로 고정한다.
+- [x] 등록 시 `delete_with_notebook`/`retain_after_notebook_delete` 삭제 정책을 저장한다.
+- [x] PDF 전용 검사를 지원 Matrix 기반 검사로 바꾼다.
+- [x] 사용자 삭제는 즉시 Notebook Source와 관련 인덱스를 제거하도록 연결한다.
+- [x] `content_digest` 기반 원본 중복 저장 방지와 Notebook별 독립 binding을 구현한다.
+- [x] Notebook 삭제 시 선택한 삭제 정책과 다른 Notebook binding이 남은 원본 보존을 검증한다.
+- [x] 외부 원본 소실은 Source를 보존하고 `unavailable`로 반환한다.
+- [x] Source 목록·삭제·재등록 API 계약 테스트를 실행한다.
 
 ### Task 2: NotebookLM형 Source 추가 화면 연결
 
@@ -52,11 +52,11 @@
 - Modify: `apps/web/app/notebooks/[notebookId]/page.jsx`
 - Test: `scripts/tests/notebook-source-add-flow.test.mjs`
 
-- [ ] 현재 Source 패널 배치를 유지한다.
-- [ ] 파일 업로드·웹사이트·Drive·복사 텍스트·검색 결과 선택 흐름을 동일한 추가 UI로 연결한다.
-- [ ] 선택한 검색 결과만 등록하고 선택하지 않은 결과는 저장하지 않는다.
-- [ ] 등록 중·완료·실패·사용 불가 상태를 화면에 표시한다.
-- [ ] 등록과 삭제의 실제 same-origin Network 경로를 검증한다.
+- [x] 현재 Source 패널 배치를 유지한다.
+- [x] 파일 업로드·웹사이트·Drive·복사 텍스트·검색 결과 선택 흐름을 동일한 추가 UI로 연결한다.
+- [x] 선택한 검색 결과만 등록하고 선택하지 않은 결과는 저장하지 않는다.
+- [x] 등록 중·완료·실패·사용 불가 상태를 화면에 표시한다.
+- [x] 등록과 삭제의 실제 same-origin Network 경로를 검증한다.
 
 ### Task 3: MCP 및 Daon 승인 지식 Connector
 
@@ -68,13 +68,13 @@
 - Modify: `packages/ui/src/product-workspace-shell.jsx`
 - Test: `services/api/tests/test_mcp_connector.py`
 
-- [ ] 공통 Connector 상태·재연결·해제 계약을 정의한다.
-- [ ] MCP Connector 등록·즉시 로컬 삭제 계약을 정의한다(외부 원본은 삭제하지 않음).
-- [ ] MCP Connector 등록 정보와 Workspace 바인딩을 Postgres migration/repository로 영속화하고 API 재시작 복구를 검증한다.
-- [ ] 국가법령정보센터 `https://open.law.go.kr/` 샘플 Connector를 구현한다.
-- [ ] 인증정보·쿼터·외부 주소를 BFF/서버에만 둔다.
-- [ ] Daon 승인 지식은 같은 Source 상태·선택 인터페이스로 노출하되 사용자 등록·삭제 컨트롤은 제공하지 않는다.
-- [ ] Connector 장애와 원본 소실을 `unavailable`로 표시하고 자동 삭제하지 않는다. MCP는 사용자가 삭제할 수 있고 Daon 승인 지식은 시스템이 유지한다.
+- [x] 공통 Connector 상태·재연결·해제 계약을 정의한다.
+- [x] MCP Connector 등록·즉시 로컬 삭제 계약을 정의한다(외부 원본은 삭제하지 않음).
+- [x] MCP Connector 등록 정보와 Workspace 바인딩을 Postgres migration/repository로 영속화하고 API 재시작 복구를 검증한다.
+- [x] 국가법령정보센터 `https://open.law.go.kr/` 샘플 Connector를 구현한다.
+- [x] 인증정보·쿼터·외부 주소를 BFF/서버에만 둔다.
+- [x] Daon 승인 지식은 같은 Source 상태·선택 인터페이스로 노출하되 사용자 등록·삭제 컨트롤은 제공하지 않는다.
+- [x] Connector 장애와 원본 소실을 `unavailable`로 표시하고 자동 삭제하지 않는다. MCP는 사용자가 삭제할 수 있고 Daon 승인 지식은 시스템이 유지한다.
 
 ### Task 4: NotebookLM형 대화·근거 동작
 
@@ -84,11 +84,11 @@
 - Modify: `packages/ui/src/product-workspace-shell.jsx`
 - Test: `services/api/tests/test_notebooklm_chat_grounding.py`
 
-- [ ] 선택 Source 기반 질문과 일반 업무 상담을 분리한다.
-- [ ] 답변에 가능한 인라인 Citation을 연결한다.
-- [ ] Source 미선택 일반 질문에 근거 부족 고정문구를 사용하지 않는다.
-- [ ] 사용 불가 Source는 검색·대화 컨텍스트에서 제외한다.
-- [ ] 한국어 출력과 일반적인 업무 질문 회귀 테스트를 추가한다.
+- [x] 선택 Source 기반 질문과 일반 업무 상담을 분리한다.
+- [x] 답변에 가능한 인라인 Citation을 연결한다.
+- [x] Source 미선택 일반 질문에 근거 부족 고정문구를 사용하지 않는다.
+- [x] 사용 불가 Source는 검색·대화 컨텍스트에서 제외한다.
+- [x] 한국어 출력과 일반적인 업무 질문 회귀 테스트를 추가한다.
 
 ### Task 5: Studio 산출물 기능 정합화
 
@@ -124,16 +124,18 @@
 - Test: `services/api/tests/test_studio_worker_contract.py`
 - Test: `services/api/tests/test_studio_export_contract.py`
 
-- [ ] 11개 유형의 `output_type`·입력·상태·오류·출력 Schema Matrix를 확정하고 API allowlist와 UI 모델을 일치시킨다.
-- [ ] 생성 요청·상태 조회·산출물 버전·Citation/Source 계보·idempotency API 계약을 유형 공통으로 고정한다.
-- [ ] Worker의 lease·재시도·timeout·Schema 검증·dead-letter·중복 실행 방지를 유형 공통 계약으로 고정한다.
-- [ ] 보고서·점검표·비교표·구조도·문서 초안·슬라이드·인포그래픽·플래시카드·퀴즈의 구조화 결과를 유형별로 검증한다.
-- [ ] Export 유형·형식·MIME·파일 Hash·Citation 보존 계약을 구현하고 Library 다운로드와 연결한다.
-- [ ] 실제 Media Provider가 없는 Audio/Video는 허위 완료 파일을 만들지 않고 `unavailable`로 종료한다.
+- [x] 11개 유형의 `output_type`·입력·상태·오류·출력 Schema Matrix를 확정하고 API allowlist와 UI 모델을 일치시킨다.
+- [x] 생성 요청·상태 조회·산출물 버전·Citation/Source 계보·idempotency API 계약을 유형 공통으로 고정한다.
+- [x] Worker의 lease·재시도·timeout·Schema 검증·dead-letter·중복 실행 방지를 유형 공통 계약으로 고정한다.
+- [x] 보고서·점검표·비교표·구조도·문서 초안·슬라이드·인포그래픽·플래시카드·퀴즈의 구조화 결과를 유형별로 검증한다.
+- [x] Export 유형·형식·MIME·파일 Hash·Citation 보존 계약을 구현하고 Library 다운로드와 연결한다.
+- [x] 실제 Media Provider가 없는 Audio/Video는 허위 완료 파일을 만들지 않고 `unavailable`로 종료한다.
 - [ ] 각 유형에 대해 API → Worker → DB/Library → Export까지 한 번의 실제 수직 흐름을 검증한다.
-- [ ] 기존 완료 유형의 회귀와 미지원 유형의 명시적 오류를 함께 검증한다.
+- [x] 기존 완료 유형의 회귀와 미지원 유형의 명시적 오류를 함께 검증한다.
 
 **완료 조건:** 카드 표시가 아니라 Job 생성, Worker 처리, 결과 저장, Library 조회, 파일 다운로드가 유형별 증거로 확인된다.
+
+**현재 상태:** 계약·회귀 검증과 `제약·준수 점검표` 실제 수직 흐름은 완료했다. 나머지 구조화 Studio 유형의 실제 API→Worker→Library→Export 수직 증거가 추가되기 전까지 Task 6은 부분 완료로 유지한다.
 
 ### Task 7: 통합 검증과 ysna-server 배포
 
@@ -142,10 +144,10 @@
 - Create: `docs/04_test_reports/release_1/R1-NOTEBOOKLM-PARITY-I001_completion_report.md`
 - Modify: `docs/02_work_orders/release_1_traceability.md`
 
-- [ ] 로컬 단위·계약·빌드 테스트를 실행한다.
-- [ ] Git Commit SHA와 변경 범위를 기록한다.
-- [ ] ysna-server 격리 환경에 배포하고 DB·Object Storage·Worker·BFF Health를 확인한다.
-- [ ] 실제 브라우저에서 Source 등록·삭제, MCP 연결, 대화, Studio 생성·Library 조회를 클릭 검증한다.
+- [x] 로컬 단위·계약·빌드 테스트를 실행한다.
+- [x] Git Commit SHA와 변경 범위를 기록한다.
+- [x] ysna-server 격리 환경에 배포하고 DB·Object Storage·Worker·BFF Health를 확인한다.
+- [x] 실제 브라우저에서 Source 등록·삭제, MCP 연결, 대화, Studio 생성·Library 조회를 클릭 검증한다.
 - [ ] 운영 배포는 신산님 최종 승인 전에는 수행하지 않는다.
 
 ## 완료 기준
