@@ -281,6 +281,14 @@ class QuestionAnsweringService:
         )
         snapshot = self._provider_settings.snapshot(provider_context)
         selection = resolve_text_model_selection(snapshot)
+        evidence = ()
+        if not general:
+            # Freeze authorization against the same evidence that `ask` will
+            # use.  Otherwise the later grounded payload changes its digest
+            # and the egress authorizer rejects an otherwise valid approval.
+            evidence = self._search_context(context, sources, question)
+            if not evidence:
+                general = True
         if general:
             prepared = self._adapter_registry.prepare_general(
                 snapshot, question, context.trace_id,
@@ -291,9 +299,6 @@ class QuestionAnsweringService:
             if callable(transformer):
                 wire = transformer(context, wire)
             return PreparedQuestionAuthorization(selection, wire, 0)
-        evidence = self._search_context(context, sources, question)
-        if not evidence:
-            return PreparedQuestionAuthorization(selection, b"", 0)
         prepared = self._adapter_registry.prepare(
             snapshot, evidence, question, context.trace_id,
             self._credential_resolver, self._transport,

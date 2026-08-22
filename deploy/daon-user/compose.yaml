@@ -6,8 +6,7 @@ services:
       context: ../..
       dockerfile: services/api/Dockerfile
     environment:
-      DAON_RUNTIME_PROFILE: development
-      DAON_DEV_AUTH_BYPASS: "true"
+      DAON_RUNTIME_PROFILE: production
       DAON_API_BIND_HOST: 0.0.0.0
       DAON_API_PORT: 8000
       DAON_API_DATABASE_PATH: /var/lib/daon-user/runtime.sqlite3
@@ -143,8 +142,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3330
-      DAON_RUNTIME_PROFILE: development
-      DAON_DEV_AUTH_BYPASS: "true"
+      DAON_RUNTIME_PROFILE: production
       DAON_API_INTERNAL_URL: ${DAON_API_INTERNAL_URL:?server-side BFF API URL required}
       DAON_PUBLIC_GATEWAY_URL: ${DAON_PUBLIC_GATEWAY_URL:?public HTTPS gateway required}
     depends_on:
