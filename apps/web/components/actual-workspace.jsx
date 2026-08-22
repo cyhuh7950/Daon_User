@@ -4,7 +4,7 @@ import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-mod
 import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, uploadSource } from "../lib/source-upload-api.js";
-import { askGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
+import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
 import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
@@ -43,6 +43,7 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     uploadPdf: (file, options) => uploadSource(workspaceId, file, notebookOptions(options)),
     getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, notebookOptions(options)),
     askQuestion: (input, options) => askGroundedQuestion(workspaceId, notebookInput(input), options),
+    authorizeQuestion: (input, options) => authorizeGroundedQuestion(workspaceId, notebookInput(input), options),
     citationUrl: (citation, options) => citationContentUrl(workspaceId, citation, notebookOptions(options)),
     createReport: (input, options) => createGroundedReport(workspaceId, input, notebookOptions(options)),
     listStudioOutputs: (options) => listStudioOutputs(workspaceId, notebookOptions(options)),
