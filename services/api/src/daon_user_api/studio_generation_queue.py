@@ -82,6 +82,34 @@ class PostgresStudioGenerationQueue:
             ).fetchone()
         return None if row is None else self._from_row(row)
 
+    def start(self, job: StudioGenerationJob) -> None:
+        """Move a leased job into the observable generation state."""
+        with self._cloud_store._transaction(self._scope(job)) as connection:
+            result = connection.execute(
+                "UPDATE studio_generation_jobs SET state='generating' "
+                "WHERE tenant_id=%s AND workspace_id=%s AND job_id=%s "
+                "AND state='leased' AND version=%s RETURNING job_id",
+                (job.tenant_id, job.workspace_id, job.job_id, job.version),
+            ).fetchone()
+            if result is None:
+                raise StudioGenerationQueueError("STUDIO_JOB_LEASE_LOST", retryable=True)
+
+    def retry(self, job: StudioGenerationJob, *, error_code: str, delay_seconds: int = 5) -> bool:
+        """Requeue a transient failure, or report that the attempt budget is exhausted."""
+        if job.attempt >= 3:
+            return False
+        with self._cloud_store._transaction(self._scope(job)) as connection:
+            result = connection.execute(
+                "UPDATE studio_generation_jobs SET state='queued',lease_owner=NULL,lease_until=NULL,"
+                "safe_error_code=%s,next_attempt_at=now()+make_interval(secs=>%s),version=version+1 "
+                "WHERE tenant_id=%s AND workspace_id=%s AND job_id=%s "
+                "AND state IN ('leased','generating') AND version=%s RETURNING job_id",
+                (error_code, delay_seconds, job.tenant_id, job.workspace_id, job.job_id, job.version),
+            ).fetchone()
+            if result is None:
+                raise StudioGenerationQueueError("STUDIO_JOB_LEASE_LOST", retryable=True)
+        return True
+
     def _scope(self, job: StudioGenerationJob) -> CloudAccessContext:
         return CloudAccessContext(job.tenant_id, job.workspace_id, job.actor_id, "studio.create")
 
@@ -93,7 +121,7 @@ class PostgresStudioGenerationQueue:
             result = connection.execute(
                 "UPDATE studio_generation_jobs SET state=%s,lease_owner=NULL,lease_until=NULL,"
                 "safe_error_code=%s,studio_output_id=%s,output_version_id=%s,completed_at=now(),version=version+1 "
-                "WHERE tenant_id=%s AND workspace_id=%s AND job_id=%s AND state='leased' AND version=%s "
+                "WHERE tenant_id=%s AND workspace_id=%s AND job_id=%s AND state IN ('leased','generating') AND version=%s "
                 "RETURNING job_id",
                 (state, error_code, studio_output_id, output_version_id, job.tenant_id, job.workspace_id, job.job_id, job.version),
             ).fetchone()

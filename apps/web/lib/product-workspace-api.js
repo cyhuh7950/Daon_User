@@ -48,7 +48,7 @@ const OUTPUT_SETTING_FORMATS = Object.freeze({
   knowledge_map: Object.freeze(["json", "svg", "png", "pdf"]),
   business_draft: Object.freeze(["docx", "pdf"]),
   slides: Object.freeze(["pdf", "json"]),
-  infographic: Object.freeze(["svg", "png", "pdf"]),
+  infographic: Object.freeze(["svg", "png", "pdf", "json"]),
   flashcards: Object.freeze(["json", "csv", "pdf"]),
   quiz: Object.freeze(["json", "csv", "pdf"]),
   audio: Object.freeze(["json"]),
@@ -436,7 +436,14 @@ export async function listStudioOutputs(workspaceId, { notebookId, fetchImpl = f
   return payload.data.outputs;
 }
 
-const STUDIO_OUTPUT_TYPES = new Set(["evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft"]);
+// Keep this list aligned with packages/ui/src/product-studio-model.js and the
+// server Studio contract. Audio/video are intentionally accepted here so the
+// server can return the explicit STUDIO_OUTPUT_UNAVAILABLE result when no
+// media provider is configured; they must not be silently treated as success.
+const STUDIO_OUTPUT_TYPES = new Set([
+  "evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft",
+  "slides", "infographic", "flashcards", "quiz", "audio", "video",
+]);
 const STUDIO_ACTIONS = new Set(["reviews", "approval-requests", "approvals", "deliveries", "knowledge-registrations"]);
 
 export async function issueStudioStepUp(actionGroup, targetId, password, { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
@@ -476,7 +483,7 @@ export async function createStudioGeneration(workspaceId, request, { notebookId,
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_CREATE_FAILED");
-  if (!record(payload?.data) || !safeId(payload.data.job_id) || !["queued", "leased", "completed", "failed", "unavailable"].includes(payload.data.status)) throw new Error("STUDIO_RESPONSE_INVALID");
+  if (!record(payload?.data) || !safeId(payload.data.job_id) || !["queued", "leased", "generating", "completed", "failed", "unavailable"].includes(payload.data.status)) throw new Error("STUDIO_RESPONSE_INVALID");
   return payload.data;
 }
 
@@ -489,7 +496,7 @@ export async function getStudioGenerationJob(workspaceId, jobId, { notebookId, f
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_JOB_FAILED");
-  if (!record(payload?.data) || !safeId(payload.data.job_id) || !["queued", "leased", "completed", "failed", "unavailable"].includes(payload.data.status)) throw new Error("STUDIO_RESPONSE_INVALID");
+  if (!record(payload?.data) || !safeId(payload.data.job_id) || !["queued", "leased", "generating", "completed", "failed", "unavailable"].includes(payload.data.status)) throw new Error("STUDIO_RESPONSE_INVALID");
   return payload.data;
 }
 

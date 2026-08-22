@@ -379,7 +379,31 @@ class PostgresStudioWorkspaceRepository:
                 self._insert(connection, context, "studio_outputs", output_id, {"output_type": request.output_type, "title": request.purpose, "purpose": request.purpose}, extra_columns=("generation_request_id",), extra_values=(generation_id,))
                 citation_payloads = [{"citation_id": str(row[0]), "source_version_id": str(row[0]) if request.source_only else str(row[1]), "evidence_span_id": str(row[2]) if request.source_only else str(row[2]), **dict(cast(Mapping[str, object], row[3]))} for row in citations]
                 content = build_structured_output(request, answer, citation_payloads, generation_id)
-                version_payload = {**request_payload, "content": content, "previous_version_id": None, "revision_type": "initial", "change_reason": "initial_generation", "approval_required": True}
+                version_payload = {
+                    **request_payload,
+                    "content": content,
+                    "previous_version_id": None,
+                    "revision_type": "initial",
+                    "change_reason": "initial_generation",
+                    "approval_required": True,
+                    # Canonical, type-independent contract fields.  Keep the
+                    # original request payload for replay while exposing the
+                    # exact source scope used for this version.
+                    "source_lineage": {
+                        "tenant_id": context.tenant_id,
+                        "workspace_id": context.workspace_id,
+                        "notebook_id": context.notebook_id,
+                        "source_version_ids": list(request.source_version_ids),
+                        "run_id": request.run_id,
+                        "run_result_id": request.run_result_id,
+                    },
+                    "metadata": {
+                        "output_type": request.output_type,
+                        "language": request.language,
+                        "output_format": request.output_format,
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                }
                 self._insert(connection, context, "output_versions", version_id, version_payload, state="generating", extra_columns=("studio_output_id", "generation_settings_snapshot_id"), extra_values=(output_id, settings_id))
                 self._transition(connection, context, "OutputVersion", version_id, 1, "draft", self._opaque("transition", *scope, "draft"))
                 for row in citations:
