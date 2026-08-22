@@ -494,6 +494,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [modalView, setModalView] = useState(null);
   const [loadRevision, setLoadRevision] = useState(0);
   const [knowledgePackages, setKnowledgePackages] = useState([]);
+  const [connectors, setConnectors] = useState([]);
+  const [connectorSafeError, setConnectorSafeError] = useState(null);
   const [selectedKnowledgeId, setSelectedKnowledgeId] = useState(null);
   const [knowledgeSafeError, setKnowledgeSafeError] = useState(null);
   const [operationsStatus, setOperationsStatus] = useState(null);
@@ -591,6 +593,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       (typeof adapter.listKnowledgePackages === "function"
         ? adapter.listKnowledgePackages({ signal: controller.signal })
         : Promise.resolve([])),
+      (typeof adapter.listConnectors === "function"
+        ? adapter.listConnectors({ signal: controller.signal })
+        : Promise.resolve([])),
       (typeof adapter.listStudioOutputs === "function"
         ? (typeof adapter.listProductStudioOutputs === "function"
           ? adapter.listProductStudioOutputs({ signal: controller.signal })
@@ -602,7 +607,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       (typeof adapter.listSourceDeletionRequests === "function"
         ? adapter.listSourceDeletionRequests({ signal: controller.signal })
         : Promise.resolve([])),
-    ]).then(([sourceResult, knowledgeResult, studioResult, conversationResult, deletionResult]) => {
+    ]).then(([sourceResult, knowledgeResult, connectorResult, studioResult, conversationResult, deletionResult]) => {
       if (!isCurrent()) return;
 
       let projected = [];
@@ -658,6 +663,13 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       setKnowledgePackages(projectedKnowledge);
       setSelectedKnowledgeId((current) => projectedKnowledge.some((item) => item.packageId === current) ? current : null);
       setKnowledgeSafeError(nextKnowledgeError);
+      if (connectorResult.status === "fulfilled" && Array.isArray(connectorResult.value)) {
+        setConnectors(connectorResult.value);
+        setConnectorSafeError(null);
+      } else {
+        setConnectors([]);
+        setConnectorSafeError(safeErrorCode(connectorResult.reason, "CONNECTOR_LIST_FAILED"));
+      }
 
       if (deletionResult.status === "fulfilled" && Array.isArray(deletionResult.value)) {
         setSourceDeletionRequests(deletionResult.value);
@@ -1256,6 +1268,22 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               ))}
             </ul>
             {knowledgeSafeError ? <div className="inline-alert compact" role="alert">승인 지식을 불러오지 못했습니다.</div> : null}
+          </section>
+          <section className="source-group" aria-labelledby="connector-source-title">
+            <div className="source-group-heading"><h3 id="connector-source-title">연결형 Source</h3><span>{connectors.length}</span></div>
+            <ul className="source-list connector-list" aria-label="MCP 및 Daon 승인 지식 Connector 목록">
+              {connectors.map((connector) => (
+                <li className="source-list-row connector-list-row" key={connector.connector_id}>
+                  <button type="button" disabled={connector.status !== "connected"} title={connector.status === "connected" ? "연결형 Source 선택" : "사용 불가"}>
+                    <span className="source-file-icon knowledge-icon" aria-hidden="true">{connector.kind === "mcp" ? "M" : "K"}</span>
+                    <span className="source-row-copy"><strong>{connector.name}</strong><small>{connector.status === "connected" ? `Source ${connector.source_count}개 · ${connector.endpoint_label}` : "사용 불가"}</small></span>
+                    <span className={`source-ready-dot ${connector.status === "connected" ? "is-ready" : ""}`} aria-hidden="true" />
+                  </button>
+                  {connector.status !== "connected" && typeof adapter?.reconnectConnector === "function" ? <button type="button" className="source-action-trigger" title="Connector 재연결" aria-label={`${connector.name} 재연결`} onClick={() => void adapter.reconnectConnector(connector.connector_id).then(() => setLoadRevision((current) => current + 1))}>↻</button> : null}
+                </li>
+              ))}
+            </ul>
+            {connectorSafeError ? <div className="inline-alert compact" role="alert">연결형 Source를 불러오지 못했습니다.</div> : null}
           </section>
           <section className="source-group" aria-labelledby="raw-source-title">
           <div className="source-group-heading"><h3 id="raw-source-title">Raw Source</h3><span>{viewState.sources.length}</span></div>

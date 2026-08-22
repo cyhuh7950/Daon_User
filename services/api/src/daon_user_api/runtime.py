@@ -129,6 +129,8 @@ from .knowledge_package import (
     ReferenceKnowledgePackageRepository,
 )
 from .knowledge_package_postgres import PostgresKnowledgePackageService
+from .mcp_connector import ConnectorError, ConnectorRegistry, create_open_law_connector
+from .approved_knowledge_connector import ApprovedKnowledgeConnector
 from .retention import (
     DerivativeInput, ReferenceCleanupPort, ReferenceRetentionRepository,
     RetentionContext, RetentionError, RetentionService,
@@ -435,6 +437,7 @@ class RuntimeDependencies:
     studio_report_repository: Any | None = None
     studio_workspace_service: Any | None = None
     egress_policy_service: EgressPolicyService | None = None
+    connector_registry: ConnectorRegistry | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -836,6 +839,12 @@ class NotebookSourceUnbindBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str = Field(min_length=1, max_length=128)
     source_version_id: str = Field(min_length=1, max_length=128)
+
+
+class ConnectorRegisterBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=160)
 
 
 def _trace_id(request: Request) -> str:
@@ -1267,6 +1276,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     knowledge_package_service = _resolve_knowledge_package_service(
         dependencies.knowledge_package_service, dependencies.cloud_store,
     )
+    connector_registry = dependencies.connector_registry or ConnectorRegistry(
+        (
+            create_open_law_connector(api_key=os.environ.get("DAON_OPEN_LAW_API_KEY")),
+            ApprovedKnowledgeConnector(
+                token=os.environ.get("DAON_APPROVED_KNOWLEDGE_TOKEN"),
+                timeout_seconds=5,
+                max_retries=2,
+            ).as_connector(),
+        )
+    )
     retention_service = (
         PostgresRetentionRequestService(
             dependencies.cloud_store,
@@ -1539,6 +1558,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             error.code if error.code in safe_codes else "INVALID_REQUEST",
             request.state.trace_id,
         )
+
+    @app.exception_handler(ConnectorError)
+    async def connector_error(request: Request, error: ConnectorError) -> JSONResponse:
+        safe_codes = {
+            "CONNECTOR_NOT_FOUND", "CONNECTOR_KIND_UNSUPPORTED", "CONNECTOR_STATUS_INVALID",
+            "CONNECTOR_INPUT_INVALID", "CONNECTOR_SOURCE_ID_INVALID", "CONNECTOR_UNAVAILABLE",
+        }
+        return _error_response(404 if str(error) == "CONNECTOR_NOT_FOUND" else 409,
+                               str(error) if str(error) in safe_codes else "CONNECTOR_UNAVAILABLE",
+                               request.state.trace_id, retryable=str(error) == "CONNECTOR_UNAVAILABLE")
 
     @app.exception_handler(RetentionError)
     async def retention_error(request: Request, error: RetentionError) -> JSONResponse:
@@ -1948,6 +1977,75 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response = JSONResponse(content)
         response.headers["ETag"] = selected.etag
         return response
+
+    @app.get("/api/v1/workspaces/{id}/connectors")
+    async def list_connectors(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        return JSONResponse({"data": {"connectors": [_dataclass_json(item) for item in connector_registry.list()]},
+                             "meta": {"trace_id": request.state.trace_id, "workspace_id": id}})
+
+    @app.post("/api/v1/workspaces/{id}/connectors", status_code=201)
+    async def register_connector(id: str, body: ConnectorRegisterBody, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        if body.kind == "mcp" and body.name == "국가법령정보센터":
+            connector = create_open_law_connector(api_key=os.environ.get("DAON_OPEN_LAW_API_KEY"))
+        elif body.kind == "daon_approved_knowledge":
+            connector = ApprovedKnowledgeConnector(
+                token=os.environ.get("DAON_APPROVED_KNOWLEDGE_TOKEN"), timeout_seconds=5, max_retries=2,
+            ).as_connector()
+        else:
+            raise ConnectorError("CONNECTOR_KIND_UNSUPPORTED")
+        view = connector_registry.register(connector)
+        return JSONResponse({"data": _dataclass_json(view), "meta": {
+            "trace_id": request.state.trace_id, "workspace_id": id,
+        }}, status_code=201)
+
+    @app.post("/api/v1/workspaces/{id}/connectors/{connector_id}/reconnect")
+    async def reconnect_connector(id: str, connector_id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        view = connector_registry.reconnect(connector_id)
+        return JSONResponse({"data": _dataclass_json(view), "meta": {
+            "trace_id": request.state.trace_id, "workspace_id": id,
+        }})
+
+    @app.post("/api/v1/workspaces/{id}/connectors/{connector_id}/disconnect")
+    async def disconnect_connector(id: str, connector_id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        view = connector_registry.disconnect(connector_id)
+        return JSONResponse({"data": _dataclass_json(view), "meta": {
+            "trace_id": request.state.trace_id, "workspace_id": id,
+        }})
+
+    @app.get("/api/v1/workspaces/{id}/connectors/{connector_id}/sources")
+    async def list_connector_sources(id: str, connector_id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        return JSONResponse({"data": {"sources": [_dataclass_json(item) for item in connector_registry.sources(connector_id)]},
+                             "meta": {"trace_id": request.state.trace_id, "workspace_id": id}})
 
     @app.post("/api/v1/workspaces/{id}/sources", status_code=202)
     async def upload_pdf_source(

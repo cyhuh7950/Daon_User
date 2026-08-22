@@ -30,3 +30,17 @@ test("Notebook 컨텍스트 어댑터는 notebook 범위로 generic Source를 �
   assert.match(adapter, /uploadSource:/);
   assert.match(adapter, /notebookId: context\.notebook_id/);
 });
+
+test("연결형 Source는 실제 same-origin Adapter 계약으로 연결된다", async () => {
+  const workspace = await read("apps/web/components/actual-workspace.jsx");
+  const api = await read("apps/web/lib/product-workspace-api.js");
+  const shell = await read("packages/ui/src/product-workspace-shell.jsx");
+  assert.match(workspace, /listWorkspaceConnectors/);
+  assert.match(workspace, /reconnectWorkspaceConnector/);
+  assert.match(workspace, /listConnectors:/);
+  assert.match(workspace, /reconnectConnector:/);
+  assert.match(api, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspace\)\}\/connectors/);
+  assert.doesNotMatch(api, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/u);
+  assert.match(shell, /연결형 Source/);
+  assert.match(shell, /사용 불가/);
+});

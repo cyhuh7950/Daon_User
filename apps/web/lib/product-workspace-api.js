@@ -14,6 +14,11 @@ const SOURCE_STATES = Object.freeze([
   "registered", "security_check", "processing", "indexing", "ready", "unavailable", "waiting_model",
   "partial_understanding", "needs_review", "failed", "expired", "disabled", "deleting", "deleted",
 ]);
+const CONNECTOR_STATUSES = Object.freeze(["connected", "disconnected", "unavailable"]);
+const CONNECTOR_KINDS = Object.freeze(["mcp", "daon_approved_knowledge"]);
+const CONNECTOR_KEYS = Object.freeze([
+  "connector_id", "kind", "name", "status", "source_count", "endpoint_label", "last_checked_at", "error_code",
+]);
 const KNOWLEDGE_PACKAGE_KEYS = Object.freeze([
   "package_id", "producer", "producer_version", "knowledge_registration_id",
   "output_version_id", "authority", "registration_state", "review_state",
@@ -131,6 +136,74 @@ export async function listWorkspaceSources(workspaceId, { notebookId, fetchImpl 
       && typeof source.processing_state === "string" && typeof source.job_state === "string");
   if (!valid) throw new Error("SOURCE_LIST_RESPONSE_INVALID");
   return payload.data.sources;
+}
+
+function validConnector(value) {
+  return exact(value, CONNECTOR_KEYS) && safeId(value.connector_id)
+    && CONNECTOR_KINDS.includes(value.kind) && safeText(value.name, 1, 160)
+    && CONNECTOR_STATUSES.includes(value.status) && Number.isSafeInteger(value.source_count)
+    && value.source_count >= 0 && value.source_count <= 100_000
+    && safeText(value.endpoint_label, 1, 160)
+    && (value.last_checked_at === null || safeText(value.last_checked_at, 1, 64))
+    && (value.error_code === null || safeText(value.error_code, 1, 128));
+}
+
+async function connectorRequest(workspaceId, path, options = {}) {
+  const workspace = requiredWorkspace(workspaceId, "CONNECTOR_INPUT_INVALID");
+  const requestFetch = options.fetchImpl ?? fetch;
+  const response = await requestFetch(path, options.init);
+  const payload = await json(response, "CONNECTOR_RESPONSE_INVALID");
+  if (!response.ok) throw safeResponseError(payload, "CONNECTOR_REQUEST_FAILED");
+  if (!exact(payload, ["data", "meta"]) || !validMeta(payload.meta, workspace)) throw new Error("CONNECTOR_RESPONSE_INVALID");
+  return payload.data;
+}
+
+export async function listWorkspaceConnectors(workspaceId, { fetchImpl = fetch, signal } = {}) {
+  const workspace = requiredWorkspace(workspaceId, "CONNECTOR_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors`, {
+    method: "GET", credentials: "same-origin", cache: "no-store", signal,
+  });
+  const payload = await json(response, "CONNECTOR_RESPONSE_INVALID");
+  if (!response.ok) throw safeResponseError(payload, "CONNECTOR_LIST_FAILED");
+  if (!exact(payload, ["data", "meta"]) || !exact(payload.data, ["connectors"])
+      || !Array.isArray(payload.data.connectors) || !payload.data.connectors.every(validConnector)
+      || !validMeta(payload.meta, workspace)) throw new Error("CONNECTOR_RESPONSE_INVALID");
+  return payload.data.connectors;
+}
+
+export async function registerWorkspaceConnector(workspaceId, request, { fetchImpl = fetch, signal } = {}) {
+  const workspace = requiredWorkspace(workspaceId, "CONNECTOR_INPUT_INVALID");
+  if (!record(request) || !CONNECTOR_KINDS.includes(request.kind) || typeof request.name !== "string"
+      || !request.name.trim() || request.name.length > 160) throw new Error("CONNECTOR_INPUT_INVALID");
+  const data = await connectorRequest(workspace, `/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors`, {
+    fetchImpl,
+    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal,
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) },
+  });
+  if (!validConnector(data)) throw new Error("CONNECTOR_RESPONSE_INVALID");
+  return data;
+}
+
+export async function reconnectWorkspaceConnector(workspaceId, connectorId, { fetchImpl = fetch, signal } = {}) {
+  const workspace = requiredWorkspace(workspaceId, "CONNECTOR_INPUT_INVALID");
+  if (!safeId(connectorId)) throw new Error("CONNECTOR_INPUT_INVALID");
+  const data = await connectorRequest(workspace, `/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}/reconnect`, {
+    fetchImpl,
+    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal },
+  });
+  if (!validConnector(data)) throw new Error("CONNECTOR_RESPONSE_INVALID");
+  return data;
+}
+
+export async function disconnectWorkspaceConnector(workspaceId, connectorId, { fetchImpl = fetch, signal } = {}) {
+  const workspace = requiredWorkspace(workspaceId, "CONNECTOR_INPUT_INVALID");
+  if (!safeId(connectorId)) throw new Error("CONNECTOR_INPUT_INVALID");
+  const data = await connectorRequest(workspace, `/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}/disconnect`, {
+    fetchImpl,
+    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal },
+  });
+  if (!validConnector(data)) throw new Error("CONNECTOR_RESPONSE_INVALID");
+  return data;
 }
 
 export async function unbindWorkspaceSource(workspaceId, source, { notebookId, etag, idempotencyKey, fetchImpl = fetch, signal } = {}) {
