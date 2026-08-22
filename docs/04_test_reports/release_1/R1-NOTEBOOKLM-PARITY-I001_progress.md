@@ -262,3 +262,14 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: `node --test scripts/tests/product-studio.test.mjs` 8/8 PASS; API Studio async 관련 pytest 12/12 PASS.
 - 미검증: 로그인 브라우저에서 실제 카드 클릭·언어 선택·job polling·Library 반영, ysna Docker 재배포, provider가 연결된 실제 생성 결과. 현재 Source 질문 승인 흐름과 외부 provider 상태는 별도 BLOCKED 항목을 유지한다.
 - 다음 조치: 관련 diff 검토 후 commit/push하고, ysna 배포·로그인 브라우저 통합 검증 여부를 main agent가 판단한다.
+
+## 2026-08-22 Source-only Studio 생성 경로
+
+- 상태: IMPLEMENTED_LOCAL / 배포 전
+- 담당: 어울2 (R1-NOTEBOOKLM-PARITY-I001-T5-SOURCE-ONLY)
+- 조치: 질문 실행·Grounded run 없이 선택한 준비 완료 Source Version 목록만으로 Studio 생성 설정을 확정하고 기존 비동기 generation job에 접수하도록 연결했다. 서버는 Notebook/Workspace Source binding, Source 상태·삭제 요청, Evidence Span 계보를 확인하며, 근거가 없으면 완료를 가장하지 않고 `RESOURCE_UNAVAILABLE`로 거부한다.
+- 변경: 기존 질문 기반 요청은 유지하면서 `source_only`, nullable run/run_result 계약을 추가했고, Source-only 결과의 settings snapshot·evidence reference·생성 시각은 기존 Library 저장 경로를 재사용한다. UI 3열 카드 배치는 유지하고 생성 설정 화면에 사용 Source Version 선택을 추가했다.
+- 변경 파일: `apps/web/lib/product-workspace-api.js`, `packages/ui/src/product-studio-model.js`, `packages/ui/src/product-studio-pane.jsx`, `packages/ui/src/product-workspace-shell.jsx`, `services/api/src/daon_user_api/runtime.py`, `services/api/src/daon_user_api/studio_workspace.py`, `services/api/src/daon_user_api/studio_workspace_postgres.py`, `scripts/tests/product-studio.test.mjs`, `services/api/tests/test_notebooklm_studio_outputs.py`
+- 검증: Source-only UI/API 입력 테스트 9/9 PASS; API Studio·worker·runtime HTTP pytest 13/13 PASS; Web production build 및 UI boundary PASS; `git diff --check` 오류 없음.
+- 미검증: 실제 Postgres/worker에서 Source Version의 Evidence Span을 조회하는 Source-only 생성, 로그인 브라우저 클릭, ysna 배포·실제 provider 결과는 미검증. 오디오/동영상은 provider 미연결 `STUDIO_OUTPUT_UNAVAILABLE` 정책을 유지한다.
+- 다음 조치: 관련 파일만 commit/push한 뒤 main agent가 ysna 배포 및 실제 Source 선택→job→Library 통합 검증을 판단한다.

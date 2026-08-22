@@ -44,11 +44,13 @@ def build_structured_output(
         }
         for item in citations
     ]
+    model_reference = request.run_id or "source_only"
+    result_reference = request.run_result_id or generation_request_id
     citation_tuples = [(item["citation_id"], item["page"], item["page"]) for item in evidence]
     if request.output_type == "evidence_report":
         result = ReportGenerator().generate(
             request.output_format, request.purpose, answer, f"{request.purpose}에 대한 근거 기반 결론",
-            citation_tuples, generation_request_id, request.run_id,
+            citation_tuples, generation_request_id, model_reference,
         )
         return asdict(result)
     if request.output_type == "compliance_checklist":
@@ -58,14 +60,14 @@ def build_structured_output(
         } for index, item in enumerate(evidence, 1)]
         result = ComplianceChecker().check(
             items, request.ruleset_version_id or "ruleset-none", request.ruleset_version_id or "none",
-            generation_request_id, request.run_id,
+            generation_request_id, model_reference,
         )
         return asdict(result)
     if request.output_type == "comparison_table":
         baseline = {f"근거 {index}": item["citation_id"] for index, item in enumerate(evidence, 1)}
         current = {f"근거 {index}": answer for index, _item in enumerate(evidence, 1)}
         refs = {key: (f"{item['citation_id']} page {item['page']}", f"{item['citation_id']} page {item['page']}") for key, item in zip(baseline, evidence)}
-        return asdict(ComparisonTable().compare(baseline, current, "evidence", request.run_result_id, refs))
+        return asdict(ComparisonTable().compare(baseline, current, "evidence", result_reference, refs))
     if request.output_type == "knowledge_map":
         nodes = [{"id": f"node-{index}", "label": item["citation_id"], "confidence": "verified", "evidence": f"page {item['page']}"} for index, item in enumerate(evidence, 1)]
         edges = [{"id": f"edge-{index}", "source": nodes[index - 1]["id"], "target": nodes[index]["id"], "condition": "근거 순서"} for index in range(1, len(nodes))]
@@ -145,10 +147,10 @@ class StudioContext:
 @dataclass(frozen=True, slots=True)
 class StudioGenerationRequest:
     output_type: str
-    source_id: str
+    source_id: str | None
     source_version_ids: tuple[str, ...]
-    run_id: str
-    run_result_id: str
+    run_id: str | None
+    run_result_id: str | None
     purpose: str
     audience: str
     ruleset_version_id: str | None
@@ -157,12 +159,19 @@ class StudioGenerationRequest:
     output_format: str
     review_condition: str
     language: str = "ko"
+    source_only: bool = False
 
     def __post_init__(self) -> None:
         if self.output_type not in OUTPUT_TYPES or self.output_format not in FORMATS.get(self.output_type, ()):
             raise StudioError("STUDIO_INPUT_INVALID")
-        for value in (self.source_id, self.run_id, self.run_result_id, *self.source_version_ids):
+        for value in (*self.source_version_ids,):
             _identifier(value)
+        if self.source_only:
+            if self.source_id is not None:
+                _identifier(self.source_id)
+        else:
+            for value in (self.source_id, self.run_id, self.run_result_id):
+                _identifier(value)
         if not self.source_version_ids:
             raise StudioError("STUDIO_INPUT_INVALID")
         if self.ruleset_version_id is not None:

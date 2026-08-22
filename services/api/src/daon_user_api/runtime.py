@@ -642,10 +642,11 @@ class StudioGenerationBody(BaseModel):
     workspace_id: str
     notebook_id: str
     output_type: str
-    source_id: str
+    source_id: str | None = None
     source_version_ids: list[str]
-    run_id: str
-    run_result_id: str
+    run_id: str | None = None
+    run_result_id: str | None = None
+    source_only: bool = False
     settings: StudioSettingsBody
 
 
@@ -2628,6 +2629,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             )
         if body.source_version_ids != body.settings.source_version_ids:
             raise StudioError("STUDIO_INPUT_INVALID")
+        if body.source_only != (body.run_id is None and body.run_result_id is None):
+            raise StudioError("STUDIO_INPUT_INVALID")
+        if not body.source_only and (body.run_id is None or body.run_result_id is None):
+            raise StudioError("STUDIO_INPUT_INVALID")
         output, replayed = await asyncio.to_thread(
             studio_workspace_service.enqueue,
             _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id),
@@ -2636,6 +2641,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 body.run_result_id, body.settings.purpose, body.settings.audience,
                 body.settings.ruleset_version_id, body.settings.length, body.settings.structure,
                 body.settings.output_format, body.settings.review_condition, body.settings.language,
+                body.source_only,
             ),
             idempotency_key,
         )
@@ -2649,6 +2655,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "artifact_type": body.output_type,
             "instruction": body.settings.purpose,
             "run_id": body.run_id,
+            "source_only": body.source_only,
             "citations": output_projection.get("citations", []),
             "verification_required": False,
         }

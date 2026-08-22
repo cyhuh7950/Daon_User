@@ -290,6 +290,23 @@ export function ProductStudioPane({ state, adapter }) {
           {generationState === "idle" ? <span><strong>설정을 확인해 주세요.</strong><small>생성 전 목적과 검토 조건을 한 번 더 확인합니다.</small></span> : null}
         </div>
         <form className="studio-config-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+          <fieldset className="studio-source-selection">
+            <legend>사용 Source</legend>
+            {view.sources?.length ? view.sources.map((source) => <label key={`${source.sourceId}:${source.sourceVersionId}`}>
+              <input
+                type="checkbox"
+                checked={view.settings.sourceVersionIds?.includes(source.sourceVersionId) ?? false}
+                disabled={!source.ready || view.pending}
+                onChange={(event) => {
+                  const current = new Set(view.settings.sourceVersionIds ?? []);
+                  if (event.currentTarget.checked) current.add(source.sourceVersionId);
+                  else current.delete(source.sourceVersionId);
+                  setField("sourceVersionIds", [...current]);
+                }}
+              />
+              <span>{source.filename ?? source.sourceId}</span><small>Version {source.sourceVersionId}</small>
+            </label>) : <p className="inline-alert compact">사용 가능한 Source가 없습니다.</p>}
+          </fieldset>
           <div className="studio-form-grid">
             <label>목적<input placeholder="이 산출물로 해결할 업무" value={view.settings.purpose ?? ""} onChange={(event) => setField("purpose", event.currentTarget.value)} /></label>
             <label>독자<input placeholder="결과를 검토하거나 사용할 사람" value={view.settings.audience ?? ""} onChange={(event) => setField("audience", event.currentTarget.value)} /></label>

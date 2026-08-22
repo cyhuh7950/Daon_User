@@ -437,8 +437,12 @@ export async function issueStudioStepUp(actionGroup, targetId, password, { fetch
 }
 
 function validGeneration(request, workspaceId) {
-  return record(request) && STUDIO_OUTPUT_TYPES.has(request.output_type) && safeId(request.source_id)
-    && safeId(request.run_id) && safeId(request.run_result_id)
+  const sourceOnly = request?.source_only === true;
+  const runValid = sourceOnly
+    ? request.run_id == null && request.run_result_id == null
+    : safeId(request?.run_id) && safeId(request?.run_result_id);
+  return record(request) && STUDIO_OUTPUT_TYPES.has(request.output_type) && (sourceOnly ? (request.source_id == null || safeId(request.source_id)) : safeId(request.source_id))
+    && runValid
     && Array.isArray(request.source_version_ids) && request.source_version_ids.length > 0
     && request.source_version_ids.every(safeId) && record(request.settings)
     && request.settings.source_version_ids?.every?.(safeId)

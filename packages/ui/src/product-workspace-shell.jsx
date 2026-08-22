@@ -1373,6 +1373,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             adapter={adapter}
             state={createProductStudioState({
               workspaceId,
+              sources: viewState.sources,
+              selectedSourceVersionIds: viewState.selectedSource?.sourceVersionId
+                ? [viewState.selectedSource.sourceVersionId]
+                : viewState.sources.filter((source) => source.ready).map((source) => source.sourceVersionId),
               grounded: canCreateGroundedReport(viewState) ? {
                 sourceId: viewState.selectedSource?.sourceId ?? viewState.answer.citations[0].source_id,
                 sourceVersionId: viewState.selectedSource?.sourceVersionId ?? viewState.answer.citations[0].source_version_id,
@@ -1384,7 +1388,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               outputs: viewState.studioOutputs,
               status: viewState.studioStatus === "unavailable"
                 ? "unavailable"
-                : reportReady ? "ready" : "unavailable",
+                : reportReady || viewState.sources.some((source) => source.ready) ? "ready" : "unavailable",
               safeError: viewState.studioSafeError ?? null,
             })}
           />
