@@ -379,3 +379,13 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 미검증: 수정본 ysna 재배포 후 브라우저 동일 PDF 재등록·정상 Source 유지 및 테스트 Source 삭제는 미실행.
 - 다음 조치: 커밋·푸시 후 ysna API를 재배포하고 동일 PDF 재등록을 다시 검증한다.
 
+## 2026-08-22 Source 즉시 삭제 UI 계약 정렬
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: 백엔드는 Source 삭제를 즉시 `purged`로 처리했지만 UI가 이전 30일 유예 문구와 `삭제 요청 취소` 버튼을 계속 표시해 실제 정책과 화면이 불일치했다.
+- 조치: `purged` 응답은 `Source가 즉시 삭제되었습니다.`로 표시하고 취소 버튼을 숨겼다. 삭제 확인 전 안내도 즉시 제거·복구 불가 정책으로 변경했다. 기존 `cancelled` 및 레거시 상태는 안전한 일반 처리 문구로 유지했다.
+- 변경: `packages/ui/src/product-workspace-shell.jsx`, `scripts/tests/product-workspace.test.mjs`
+- 검증: Product Workspace 테스트 `20 passed`; Source/BFF/Product 통합 회귀 묶음 `28 passed`.
+- 미검증: 수정본 ysna Web 재배포 후 브라우저에서 재등록→즉시 삭제→완료 문구·취소 버튼 부재를 다시 확인해야 한다.
+- 다음 조치: 커밋·푸시 후 ysna Web을 재빌드·기동하고 동일 PDF를 재등록해 삭제 UI와 Source 목록을 검증한다.
+
