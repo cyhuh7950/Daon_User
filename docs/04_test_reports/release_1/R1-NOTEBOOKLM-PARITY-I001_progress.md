@@ -456,3 +456,12 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - DB 근거: 재시작 전후 `workspace_connectors`에 동일 Workspace의 MCP/Daon 행이 유지됐다.
 - 미검증: 이번 단계에서는 외부 상태 변경을 최소화하기 위해 브라우저에서 MCP를 삭제한 뒤 재시작하는 추가 클릭은 실행하지 않았다. 로컬 repository 회귀 테스트로 사용자 삭제 MCP의 기본값 재생성 방지는 검증했다.
 
+
+## 2026-08-23T00:15:58.5309444+09:00 일반 상담 원문 전달 보완 (R1-NOTEBOOKLM-PARITY-I001-T4)
+- 상태: IMPLEMENTED_LOCAL
+- 판정: egress transform이 masking/redaction 정책이 켜진 경우 Source JSON이 아닌 일반 질문을 [MASKED]로 바꿔 YSNA에서 masked prompt 응답을 유발했다.
+- 근거: 설계서 5절은 Source 미선택 일반 업무 질문을 일반 LLM 대화로 처리하도록 명시하며, Source 기반 payload만 근거·민감 내용을 마스킹해야 한다.
+- 조치: question_egress.py에서 일반 문자열 payload를 원문 유지하고, Source grounded JSON의 question/evidence 마스킹은 유지했다. 회귀 테스트를 실제 일반 질문 원문 전달 계약으로 갱신했다.
+- 검증: test_question_egress_transform.py 6 passed; question_answering_service.py 및 question_answering_runtime_http.py 23 passed.
+- 미검증: 실제 YSNA 브라우저/provider 응답과 외부 전송 payload는 아직 재검증하지 않았다.
+
