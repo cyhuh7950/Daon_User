@@ -265,7 +265,7 @@ class PostgresStudioWorkspaceRepository:
             "run_result_id": request.run_result_id, "purpose": request.purpose, "audience": request.audience,
             "ruleset_version_id": request.ruleset_version_id, "length": request.length,
             "structure": request.structure, "output_format": request.output_format,
-            "review_condition": request.review_condition,
+            "review_condition": request.review_condition, "language": request.language,
         }
         fingerprint = hashlib.sha256(canonical_json_bytes(request_payload)).hexdigest()
         operation = "studio.generation.create"
@@ -385,7 +385,7 @@ class PostgresStudioWorkspaceRepository:
             "source_version_ids": list(request.source_version_ids), "run_id": request.run_id,
             "run_result_id": request.run_result_id, "purpose": request.purpose, "audience": request.audience,
             "ruleset_version_id": request.ruleset_version_id, "length": request.length, "structure": request.structure,
-            "output_format": request.output_format, "review_condition": request.review_condition,
+            "output_format": request.output_format, "review_condition": request.review_condition, "language": request.language,
         }
         job_id = self._opaque("studio-job", context.tenant_id, context.workspace_id, context.actor_id, idempotency_key)
         try:
@@ -557,13 +557,13 @@ class PostgresStudioWorkspaceRepository:
                     previous_payload = dict(cast(Mapping[str, object], previous[3]))
                     supplied = revision.get("settings") if revision["revision_type"] == "settings_change" else None
                     effective = dict(cast(Mapping[str, object], supplied)) if isinstance(supplied, Mapping) else {
-                        key: previous_payload.get(key) for key in ("purpose", "audience", "source_version_ids", "ruleset_version_id", "length", "structure", "output_format", "review_condition")
+                        key: previous_payload.get(key) for key in ("purpose", "audience", "language", "source_version_ids", "ruleset_version_id", "length", "structure", "output_format", "review_condition")
                     }
                     generation_request = StudioGenerationRequest(
                         str(previous_payload["output_type"]), str(previous_payload["source_id"]), tuple(cast(list[str], effective["source_version_ids"])),
                         str(previous_payload["run_id"]), str(previous_payload["run_result_id"]), str(effective["purpose"]), str(effective["audience"]),
                         cast(str | None, effective.get("ruleset_version_id")), str(effective["length"]), str(effective["structure"]),
-                        str(effective["output_format"]), str(effective["review_condition"]),
+                        str(effective["output_format"]), str(effective["review_condition"]), str(effective.get("language") or "ko"),
                     )
                     projection = self._policy_projection(connection, context, run_id=generation_request.run_id)
                     if projection["review_condition"] != generation_request.review_condition or projection["ruleset_version_id"] != generation_request.ruleset_version_id:

@@ -32,9 +32,10 @@ test("Product Studio는 혼합 Context의 모든 Citation Source Version을 생�
   assert.deepEqual(createStudioGenerationInput(state).source_version_ids, mixed.sourceVersionIds);
 });
 
-test("Product Studio는 다섯 실제 산출물과 생성 전 확인을 강제한다", () => {
+test("Product Studio는 11개 실제 산출물과 생성 전 확인을 강제한다", () => {
   assert.deepEqual(OUTPUT_TYPES.map((item) => item.id), [
     "evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft",
+    "slides", "infographic", "flashcards", "quiz", "audio", "video",
   ]);
   let state = createProductStudioState({ grounded });
   state = selectOutputType(state, "evidence_report");
@@ -53,6 +54,7 @@ test("Product Studio는 다섯 실제 산출물과 생성 전 확인을 강제�
     source_version_ids: ["source-version-1"], run_id: "run-1", run_result_id: "result-1",
     settings: {
       purpose: "의사 결정", audience: "운영 책임자", source_version_ids: ["source-version-1"],
+      language: "ko",
       ruleset_version_id: null, length: "standard", structure: "summary-body-conclusion",
       output_format: "docx", review_condition: "review_required",
     },
@@ -152,11 +154,12 @@ test("Web Studio Adapter는 same-origin 공통 계약과 파일 bytes만 사용�
     calls.push({ url, method: init.method });
     if (String(url).includes("exports")) return new Response(Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d]), { headers: { "Content-Type": "application/pdf", "Content-Disposition": 'attachment; filename="studio-version-1.pdf"' } });
     if (init.method === "GET") return Response.json({ data: { outputs: [], studio_locks: [] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
-    return Response.json({ data: { studio_output_id: "output-1", output_version_id: "version-1", status: "draft" }, meta: { trace_id: "trace-1", workspace_id: "workspace-1", replayed: false } }, { status: 201 });
+    if (String(url).includes("studio-generation-requests")) return Response.json({ data: { job_id: "studio-job-1", status: "queued", output_type: "evidence_report" }, meta: { trace_id: "trace-1", workspace_id: "workspace-1", replayed: false } }, { status: 202 });
+    return Response.json({ data: { output_version_id: "version-2", status: "draft" }, meta: { trace_id: "trace-1", workspace_id: "workspace-1", replayed: false } }, { status: 201 });
   };
   await createStudioGeneration("workspace-1", {
     output_type: "evidence_report", source_id: "source-1", source_version_ids: ["source-version-1"],
-    run_id: "run-1", run_result_id: "result-1", settings: { purpose: "목적", audience: "독자", source_version_ids: ["source-version-1"], ruleset_version_id: null, length: "short", structure: "summary", output_format: "pdf", review_condition: "review_required" },
+    run_id: "run-1", run_result_id: "result-1", settings: { purpose: "목적", audience: "독자", language: "ko", source_version_ids: ["source-version-1"], ruleset_version_id: null, length: "short", structure: "summary", output_format: "pdf", review_condition: "review_required" },
   }, { notebookId: "notebook-1", fetchImpl, idempotencyKey: "generation-key-0001" });
   await listProductStudioOutputs("workspace-1", { notebookId: "notebook-1", fetchImpl });
   await createStudioVersion("workspace-1", "output-1", {

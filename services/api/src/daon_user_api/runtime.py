@@ -634,6 +634,7 @@ class StudioSettingsBody(BaseModel):
     structure: str
     output_format: str
     review_condition: str
+    language: str = "ko"
 
 
 class StudioGenerationBody(BaseModel):
@@ -2634,7 +2635,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 body.output_type, body.source_id, tuple(body.source_version_ids), body.run_id,
                 body.run_result_id, body.settings.purpose, body.settings.audience,
                 body.settings.ruleset_version_id, body.settings.length, body.settings.structure,
-                body.settings.output_format, body.settings.review_condition,
+                body.settings.output_format, body.settings.review_condition, body.settings.language,
             ),
             idempotency_key,
         )

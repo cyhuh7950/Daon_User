@@ -14,7 +14,7 @@ export const OUTPUT_TYPES = Object.freeze([
 
 const OUTPUT_TYPE_IDS = new Set(OUTPUT_TYPES.map((item) => item.id));
 const REQUIRED_SETTINGS = Object.freeze([
-  "purpose", "audience", "sourceVersionIds", "length", "structure", "outputFormat", "reviewCondition",
+  "purpose", "audience", "language", "sourceVersionIds", "length", "structure", "outputFormat", "reviewCondition",
 ]);
 
 function cloneLocks(locks) {
@@ -37,8 +37,8 @@ export function selectOutputType(state, outputType) {
   return {
     ...state, selectedOutputType: outputType,
     settings: state.grounded?.sourceVersionIds?.length
-      ? { sourceVersionIds: [...state.grounded.sourceVersionIds] }
-      : state.grounded?.sourceVersionId ? { sourceVersionIds: [state.grounded.sourceVersionId] } : {},
+      ? { language: "ko", sourceVersionIds: [...state.grounded.sourceVersionIds] }
+      : state.grounded?.sourceVersionId ? { language: "ko", sourceVersionIds: [state.grounded.sourceVersionId] } : { language: "ko" },
     settingsConfirmed: false, settingsSnapshot: null,
   };
 }
@@ -87,6 +87,7 @@ export function createStudioGenerationInput(state) {
     settings: {
       purpose: state.settingsSnapshot.purpose,
       audience: state.settingsSnapshot.audience,
+      language: state.settingsSnapshot.language,
       source_version_ids: [...state.settingsSnapshot.sourceVersionIds],
       ruleset_version_id: state.settingsSnapshot.rulesetVersionId ?? null,
       length: state.settingsSnapshot.length,

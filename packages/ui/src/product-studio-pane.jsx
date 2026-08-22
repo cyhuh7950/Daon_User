@@ -223,7 +223,7 @@ export function ProductStudioPane({ state, adapter }) {
         previous_version_id: selectedOutput.output_version_id, revision_type: revisionType,
         change_reason: changeReason, content: revisionContent,
         ...(revisionType === "settings_change" ? { settings: {
-          purpose: view.settings.purpose, audience: view.settings.audience,
+          purpose: view.settings.purpose, audience: view.settings.audience, language: view.settings.language ?? "ko",
           source_version_ids: view.settings.sourceVersionIds, ruleset_version_id: view.settings.rulesetVersionId ?? null,
           length: view.settings.length, structure: view.settings.structure, output_format: view.settings.outputFormat,
           review_condition: view.settings.reviewCondition,
@@ -293,6 +293,7 @@ export function ProductStudioPane({ state, adapter }) {
           <div className="studio-form-grid">
             <label>목적<input placeholder="이 산출물로 해결할 업무" value={view.settings.purpose ?? ""} onChange={(event) => setField("purpose", event.currentTarget.value)} /></label>
             <label>독자<input placeholder="결과를 검토하거나 사용할 사람" value={view.settings.audience ?? ""} onChange={(event) => setField("audience", event.currentTarget.value)} /></label>
+            <label>출력 언어<select value={view.settings.language ?? "ko"} onChange={(event) => setField("language", event.currentTarget.value)}><option value="ko">한국어</option><option value="en">English</option></select></label>
             <label>분량<select value={view.settings.length ?? ""} onChange={(event) => setField("length", event.currentTarget.value)}><option value="">선택</option><option value="short">짧게</option><option value="standard">표준</option><option value="long">상세</option></select></label>
             <label>구성<select value={view.settings.structure ?? ""} onChange={(event) => setField("structure", event.currentTarget.value)}><option value="">선택</option><option value="summary-body-conclusion">요약 · 본문 · 결론</option><option value="executive-summary">핵심 요약 중심</option><option value="letter">업무 문서형</option></select></label>
             <label>출력 형식<select value={view.settings.outputFormat ?? ""} onChange={(event) => setField("outputFormat", event.currentTarget.value)}><option value="">선택</option>{selected?.formats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label>
