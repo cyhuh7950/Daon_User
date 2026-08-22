@@ -4,7 +4,7 @@
 
 - 문서 구분: 요구사항 확정 후 신규 상세 설계안
 - 버전: 1.0-draft
-- 상태: 신산님 승인 대기
+- 상태: 신산님 승인됨 (API·Worker·Export 계약 확장 포함)
 - 대상: Daon 사용자형 Notebook
 - 기준: Google NotebookLM의 현재 사용자 흐름과 기능
 - 화면 기준: 현재 3면 Workspace와 Studio 카드 배치 유지
@@ -120,6 +120,40 @@ NotebookLM과의 차이는 Source 선택지에 다음 두 연결형 Source를 �
 - 동영상: Source 기반 Video Overview
 
 각 기능은 생성 전 선택 Source·출력 언어·형식·길이·사용자 지시를 설정할 수 있고, 생성은 백그라운드 작업으로 수행한다. 결과는 Library에 저장하며 열기·다운로드·삭제가 가능하다. 생성 결과에는 사용한 Source와 생성 시점의 근거 계보를 표시한다.
+
+### 6.1 API·Worker·Export 계약 별도 개발 범위
+
+Studio 카드를 화면에 표시하는 것과 실제 산출물을 생성·저장·다운로드하는 것은 별개의 기능이다. 현재 연결된 Studio 유형 외에 슬라이드·인포그래픽·플래시카드·퀴즈·AI 오디오·동영상 등을 추가하려면 API, Worker, Export 계층의 계약을 별도 개발 범위로 관리한다. 화면 카드만 허용 목록에 추가하고 하위 계약을 구현하지 않는 방식은 완료로 인정하지 않는다.
+
+#### API 계약
+
+- `POST /studio-generation-requests`는 `notebook_id`, `output_type`, 선택된 `source_version_ids`, 필요한 `grounded_run_id`, 출력 언어·형식·길이·사용자 지시, `idempotency_key`를 받는다.
+- 요청은 즉시 파일을 반환하지 않고 `job_id`, `status=queued`, `output_type`을 반환한다.
+- `GET /studio-generation-requests/{job_id}`는 `queued`, `leased`, `generating`, `completed`, `failed`, `unavailable` 상태와 안전한 오류 코드·재시도 가능 여부를 반환한다.
+- 완료된 결과는 산출물·버전·Citation·Source 계보를 조회할 수 있어야 하며, Notebook·Workspace·Tenant 범위를 넘겨 조회할 수 없다.
+- 동일 `idempotency_key`의 중복 요청은 새 작업을 만들지 않는다.
+- 지원하지 않는 유형·형식은 `OUTPUT_TYPE_NOT_SUPPORTED`, `EXPORT_FORMAT_UNSUPPORTED` 등 명시적인 계약 오류로 반환한다.
+
+#### Worker 계약
+
+- Worker는 `queued` Job을 lease한 뒤 선택된 Source와 Citation만 읽고 유형별 프롬프트·출력 Schema로 Provider를 호출한다.
+- Provider 응답은 유형별 구조화 결과로 검증한 뒤 표준 `content`, `citations`, `source_lineage`, `metadata` 구조로 저장한다.
+- Timeout, 재시도·Backoff, 중복 실행 방지, Schema 오류, Provider 미선택, Dead-letter 처리를 계약에 포함한다.
+- 유형별 최소 결과 계약을 둔다. 예를 들어 퀴즈는 문제·선택지·정답·해설·Citation, 슬라이드는 슬라이드 순서·제목·본문·Citation을 포함해야 한다.
+- Audio/Video는 실제 Media Provider가 연결되지 않은 경우 결과를 가장하지 않고 `unavailable`로 종료한다.
+
+#### Export 계약
+
+- 산출물 유형별 허용 형식과 MIME을 명시한다. 보고서·초안은 PDF/DOCX, 표·점검표는 XLSX/CSV/PDF, 구조도·인포그래픽은 SVG/PNG/PDF/JSON, 퀴즈·플래시카드는 JSON/CSV/PDF를 기본으로 한다.
+- Export API는 유형·형식 조합을 검증하고 파일명·Content-Type·크기·Hash·Object Storage 위치·다운로드 만료 정보를 반환한다.
+- PDF·문서·표·JSON 등 모든 형식에서 가능한 범위의 Citation과 생성 시점·Source 계보를 보존한다.
+- 실제 MP3/MP4 Provider와 미디어 저장소가 없는 Audio/Video는 다운로드 가능한 가짜 파일을 만들지 않고 `unavailable`로 표시한다.
+
+#### 공통 완료 조건
+
+- 하나의 Studio 유형이 API 요청 → Worker 생성 → DB/Library 저장 → Export/다운로드까지 실제로 연결되어야 한다.
+- API 계약 테스트, Worker 구조화 출력 테스트, Provider 모킹 테스트, DB 계보·Notebook 격리 테스트, Export 파일·MIME 검증, 브라우저 클릭 검증을 유형별로 기록한다.
+- UI에 카드가 보인다는 사실만으로는 해당 유형을 완료 처리하지 않는다.
 
 ## 7. 저장·삭제·오류 표시
 

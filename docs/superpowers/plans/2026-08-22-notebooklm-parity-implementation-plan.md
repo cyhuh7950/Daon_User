@@ -22,6 +22,7 @@
 - MCP 등록 정보·Workspace 바인딩은 Postgres에 영속화하여 API 재시작 후 복구한다. Connector는 Workspace별로 격리한다.
 - 브라우저 코드에는 API 절대주소·localhost·Docker 내부 주소를 넣지 않는다.
 - 구현 전 설계서와 본 계획의 신산님 승인이 필요하다.
+- 승인 상태: 신산님이 API·Worker·Export 계약 확장 및 계획 실행을 승인함.
 - 로컬 검증 → Git Push → ysna-server 배포·통합검증 → 운영 배포 승인 순서를 지킨다.
 
 ### Task 1: Source 계약과 수명주기 정합화
@@ -99,15 +100,42 @@
 - Modify: `packages/ui/src/product-workspace-shell.jsx`
 - Test: `services/api/tests/test_notebooklm_studio_outputs.py`
 
-- [x] 현재 카드 배치를 유지하면서 11개 Studio 기능의 기능·입력·출력 계약을 고정한다.
+- [x] 현재 카드 배치를 유지하면서 기존에 연결된 Studio 기능의 기능·입력·출력 계약을 고정한다.
 - [x] 생성 전 Source·언어·형식·길이·사용자 지시 설정을 받는다.
-- [x] Audio/Video를 제외한 9개 구조화 출력과 기존 업무 산출물을 백그라운드 작업으로 생성한다. Audio/Video는 provider 미연결 시 `unavailable`로 종료한다.
+- [x] 기존 연결 범위의 구조화 출력과 업무 산출물을 백그라운드 작업으로 생성한다. Audio/Video와 미연결 유형은 provider·계약 확장 전까지 완료로 간주하지 않는다.
 - [x] 생성 결과를 기존 Library 저장·열기·다운로드·삭제 계약에 연결한다.
 - [x] 결과물별 Source 계보와 생성 시각을 보존한다.
 
 비동기 구현 메모: 기존 공통 Studio 작업 큐 계약이 없어 `0024_studio_generation_jobs`, same-origin 상태 조회 API, `studio_generation_worker`를 최소 추가했다. 기존 동기 `create_generation`과 Library 저장 경로는 worker가 재사용하며, 완료를 가장하지 않는다.
 
-### Task 6: 통합 검증과 ysna-server 배포
+### Task 6: API·Worker·Export 계약 확장
+
+**목적:** 화면에 표시되는 11개 Studio 유형을 실제 생성·저장·다운로드 기능으로 확장한다. 기존 5개 연결 유형의 회귀를 막으면서, 미연결 유형은 계약 완료 전까지 `unavailable` 또는 명시적 미지원으로 처리한다.
+
+**Files:**
+- Modify: `apps/web/lib/product-workspace-api.js`
+- Modify: `packages/ui/src/product-studio-model.js`
+- Modify: `services/api/src/daon_user_api/runtime.py`
+- Modify: `services/api/src/daon_user_api/studio_workspace_postgres.py`
+- Modify: `services/api/src/daon_user_api/studio_export.py`
+- Modify: `services/api/src/daon_user_api/studio_generation_worker.py`
+- Modify/Create: 유형별 Studio Schema·Provider adapter·migration files
+- Test: `services/api/tests/test_studio_api_contract.py`
+- Test: `services/api/tests/test_studio_worker_contract.py`
+- Test: `services/api/tests/test_studio_export_contract.py`
+
+- [ ] 11개 유형의 `output_type`·입력·상태·오류·출력 Schema Matrix를 확정하고 API allowlist와 UI 모델을 일치시킨다.
+- [ ] 생성 요청·상태 조회·산출물 버전·Citation/Source 계보·idempotency API 계약을 유형 공통으로 고정한다.
+- [ ] Worker의 lease·재시도·timeout·Schema 검증·dead-letter·중복 실행 방지를 유형 공통 계약으로 고정한다.
+- [ ] 보고서·점검표·비교표·구조도·문서 초안·슬라이드·인포그래픽·플래시카드·퀴즈의 구조화 결과를 유형별로 검증한다.
+- [ ] Export 유형·형식·MIME·파일 Hash·Citation 보존 계약을 구현하고 Library 다운로드와 연결한다.
+- [ ] 실제 Media Provider가 없는 Audio/Video는 허위 완료 파일을 만들지 않고 `unavailable`로 종료한다.
+- [ ] 각 유형에 대해 API → Worker → DB/Library → Export까지 한 번의 실제 수직 흐름을 검증한다.
+- [ ] 기존 완료 유형의 회귀와 미지원 유형의 명시적 오류를 함께 검증한다.
+
+**완료 조건:** 카드 표시가 아니라 Job 생성, Worker 처리, 결과 저장, Library 조회, 파일 다운로드가 유형별 증거로 확인된다.
+
+### Task 7: 통합 검증과 ysna-server 배포
 
 **Files:**
 - Create: `docs/04_test_reports/release_1/R1-NOTEBOOKLM-PARITY-I001_progress.md`
@@ -127,5 +155,6 @@
 - Source 등록·삭제가 즉시 반영된다.
 - 원본 소실은 `사용 불가`로 표시되고 자동 삭제되지 않는다.
 - 대화가 Source 기반/일반 상담을 구분한다.
-- Studio 카드가 실제 산출물과 Library 결과로 연결된다.
+- 모든 계획 대상 Studio 유형이 API·Worker·DB/Library·Export 계약을 충족하거나, 미연결 유형은 `unavailable`로 명시된다.
+- Studio 결과의 Source 계보·Citation·생성 시각이 보존된다.
 - 로컬·ysna-server·브라우저 검증 증거가 모두 기록된다.
