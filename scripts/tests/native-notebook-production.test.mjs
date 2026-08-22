@@ -34,6 +34,19 @@ test("Native Notebook projection은 extra/cross-id를 fail-close한다", async (
   await assert.rejects(cross.context("workspace-1", "notebook-1"), /NOTEBOOK_CONTEXT_INVALID/u);
 });
 
+test("Native Notebook Context는 Source 삭제 요청과 다중 대화 thread를 shared projection과 동일하게 보존한다", async () => {
+  const context = {
+    ...CONTEXT,
+    conversation_thread_ids: ["thread-1", "thread-2"],
+    source_deletion_requests: [{
+      request_id: "request-1", source_id: "source-1", state: "cleanup_pending", version: 1,
+      grace_until: "2026-08-23T00:00:00Z", legal_hold_active: false,
+    }],
+  };
+  const bridge = createNativeNotebookBridge({ invoke: async () => context });
+  assert.deepEqual(await bridge.context("workspace-1", "notebook-1"), context);
+});
+
 test("production Desktop entry는 fixture notebook prop 없이 Home 선택 state를 소유한다", async () => {
   const [entry, shell] = await Promise.all([
     readFile(new URL("../../apps/desktop/src/main.jsx", import.meta.url), "utf8"),

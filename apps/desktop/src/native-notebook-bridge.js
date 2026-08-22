@@ -19,18 +19,19 @@ function projectView(value) {
 }
 
 function projectContext(value, notebookId) {
-  const keys = ["notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids", "studio_output_ids", "output_version_ids", "generation_settings_ids", "conversation"];
+  const keys = ["notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids", "studio_output_ids", "output_version_ids", "generation_settings_ids", "source_deletion_requests", "conversation"];
   const idList = (items) => Array.isArray(items) && items.length <= 1000 && items.every(id);
   if (!exact(value, keys) || value.notebook_id !== notebookId || !Array.isArray(value.sources)
       || !value.sources.every((item) => exact(item, ["source_id", "source_version_id"]) && id(item.source_id) && id(item.source_version_id))
       || !idList(value.knowledge_context_ids) || !idList(value.conversation_thread_ids)
-      || !idList(value.studio_output_ids) || !idList(value.output_version_ids) || !idList(value.generation_settings_ids)) {
+      || !idList(value.studio_output_ids) || !idList(value.output_version_ids) || !idList(value.generation_settings_ids)
+      || !Array.isArray(value.source_deletion_requests) || value.source_deletion_requests.length > 1000) {
     throw fail("NOTEBOOK_CONTEXT_INVALID");
   }
   if (value.conversation !== null) {
     if (!exact(value.conversation, ["conversation_thread_id", "answer"])
         || value.conversation.conversation_thread_id !== value.conversation_thread_ids[0]) throw fail("NOTEBOOK_CONTEXT_INVALID");
-  } else if (value.conversation_thread_ids.length !== 0) throw fail("NOTEBOOK_CONTEXT_INVALID");
+  }
   try { return projectNotebookSelectedContext(value); }
   catch { throw fail("NOTEBOOK_CONTEXT_INVALID"); }
 }
