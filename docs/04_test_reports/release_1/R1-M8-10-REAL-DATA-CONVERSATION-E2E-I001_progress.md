@@ -207,3 +207,48 @@
 - GREEN: 로드 effect 시작 시 authoritative Notebook Context의 Source가 empty이면 canonical `empty` state로 즉시 reset한다. API/BFF/데이터 계약과 자동 retry 횟수는 변경하지 않았다.
 - fresh 검증: focused React `1/1`, Notebook Context/Product Workspace `11/11`, Web production build·TypeScript·boundary PASS. 별도 Desktop 모놀리스의 기존 보호 기준선 3건과 Web package의 미정의 `lint` script는 본 변경과 분리했다.
 - 배포 후 재현에서 empty reset 뒤에도 Shell이 `listSources()`를 1회 호출해 stale reject가 다시 error를 만들 수 있는 경로를 확인했다. 추가 RED는 authoritative `sources=[]`에서 호출 기대0/실제1을 고정했다. GREEN은 empty Context이면 Source 호출 자체를 생략하고 canonical empty를 유지한다. focused `1/1`, 관련 `11/11`, Web build·TypeScript·boundary를 다시 통과했다.
+
+## 2026-08-21 질문 답변 범위·프롬프트 확장 TDD
+
+- 신산님 확정 요구사항을 추가 대조했다. 기존 grounded prompt는 supplied evidence만 답하고 `insufficient=true`를 반환하도록 되어 있었으며, general prompt는 greeting/product-help allowlist만 답하도록 제한되어 있었다. Egress masking도 plain general question을 같은 allowlist로 재검증했다.
+- RED: `test_question_answering.py::test_grounded_prompt_explains_source_scope_and_handles_out_of_scope_without_refusal`는 Source scope 설명·범위 밖 불일치 안내·웹 검색 승인 대기 지시가 없어 실패했다. `test_question_egress_transform.py::test_required_masking_accepts_any_general_question_wire`는 사실형 plain 질문을 `EGRESS_TRANSFORMATION_FAILED`로 차단했다. Web/HTTP arbitrary no-context RED는 앞 단계에서 이미 고정했다.
+- GREEN: 기존 DTO/route를 유지하면서 Web은 Source 선택과 질문 실행을 분리하고, API `QuestionBody`/input validation은 빈 Context를 allowlist 없이 허용한다. evidence가 없으면 선택 Source 여부와 무관하게 기존 Provider general payload 경로로 답변하며 `insufficient=false,citations=[]`를 저장한다. Egress는 JSON evidence payload와 구분되는 일반 plain 질문을 동일 masking 경계에서 처리한다.
+- Prompt GREEN: grounded Upstage/OpenAI-compatible prompt에 Source scope 우선 설명, 범위 내 evidence-only 답변, 범위 밖 불일치 안내(일반 거절문 금지·insufficient=true·Citation 없음), 최신 정보는 웹 검색 제안 후 명시 승인 대기, Studio Source evidence-only 지시를 추가했다. general prompt도 임의 질문 답변과 웹 검색 승인 대기를 명시했다.
+- focused GREEN: prompt `1/1`, egress `1/1`, service no-evidence `2/2`, runtime arbitrary/no-context `2/2`, Web arbitrary/Studio gate `2/2`가 통과했다. 다음은 전체 관련 회귀와 TypeScript/build/boundary이며 Provider·운영 DB·실제 Source write는 0이다.
+- 최종 관련 회귀: API question/egress `34 passed, 14 warnings, 3 subtests`; Node ProductWorkspace/Notebook/BFF/retention `28/28`; Python `compileall`·Ruff focused PASS; Web Next production build·TypeScript·12 static pages·boundary `392 files / violations0` PASS. 경고는 기존 httpx per-request cookie deprecation뿐이며 기능 실패가 아니다.
+- 변경 파일(이번 질문 범위): `packages/ui/src/product-workspace-shell.jsx`, `scripts/tests/product-workspace.test.mjs`, `services/api/src/daon_user_api/runtime.py`, `services/api/src/daon_user_api/question_answering.py`, `services/api/src/daon_user_api/question_answering_service.py`, `services/api/src/daon_user_api/question_egress.py`, 관련 API/Node 테스트 4개와 본 Progress. 기존 보호 dirty/untracked는 수정·stage하지 않았다.
+- 외부 Provider 호출, 운영 Source/PDF, DB write, 정책 변경, commit/push/deploy는 0이다. 실제 Provider/Browser E2E는 정책·사용자 데이터 경계상 별도 승인 없이는 실행하지 않았다.
+
+## 2026-08-21 질문 무근거 일반답변 요구사항 TDD RED
+
+- 신산님 확정 요구사항을 반영해 질문 라우팅을 대조했다. 현재 Web `askQuestion` guard와 `buildQuestionKnowledgeContext`는 Source/Knowledge가 없을 때 `isGeneralConversationIntent` allowlist만 허용하고, 서버 `QuestionBody`, `_question_inputs`, `QuestionAnsweringService`도 동일하게 사실형 빈 Context를 `QUESTION_CONTEXT_INVALID`로 차단한다.
+- 응답 DTO는 기존 `answer`, `insufficient`, `citations` shape로 일반 답변(`insufficient=false`, `citations=[]`)을 표현할 수 있고, Studio는 별도 `canCreateGroundedReport`의 Citation·insufficient gate를 유지하므로 새 공개 route/field는 필요하지 않다는 영향 판정을 기록했다.
+- RED Web: `scripts/tests/product-workspace.test.mjs`에 빈 Notebook 사실형 질문이 Provider adapter를 호출하고 근거 부족 문구를 표시하지 않는 테스트를 추가했다. `node --test ... --test-name-pattern="임의 질문은 일반 답변"` 결과 `15 passed, 1 failed`; 실제 `askQuestion` 호출이 0건으로 실패했다.
+- RED HTTP: `services/api/tests/test_question_answering_runtime_http.py`에 동일 계약의 HTTP 테스트를 추가했다. 기본 Python은 `psycopg_pool` 미설치로 collection 단계에서 중단되어 제품 RED까지 도달하지 못했으며, API 테스트용 승인 런타임/의존성 경계를 확인한 후 재실행한다. 제품 코드 변경은 아직 없다.
+
+## 2026-08-21 Task 3 공개 질문 응답 DTO 확장 TDD
+
+- 승인된 범위: 기존 `run_id`, `run_result_id`, `answer`, `insufficient`, `citations`를 유지하면서 `mode`, `grounding`, `source_scope_summary`, `mismatch`, `next_actions`를 추가했다. 허용 mode는 `work_support`, `explicit_source_lookup`, `source_backed_action`, `approved_web_research`로 고정했고, 외부 웹 호출·Provider 자동 fallback·Studio evidence gate는 변경하지 않았다.
+- RED: HTTP 질문 테스트에서 enriched metadata가 없어 일반/grounded/mismatch 응답 4건이 `KeyError: mode`로 실패했다. Web projection은 legacy 5-field 응답만 허용하는 상태였다.
+- GREEN: `runtime.py`에 질문 intent 기반 safe metadata projection을 추가했다. Source citation이 있으면 `source_backed`, 빈 Context는 `ungrounded`, Source 응답이 insufficient이면 `source_evidence_unavailable`와 `SOURCE_SCOPE_MISMATCH` 및 3개 다음 행동을 반환한다. Web `projectSafeQuestionAnswer`는 legacy 응답 또는 exact enriched DTO만 허용하고 mode/grounding/mismatch/next_actions allowlist를 검증한다.
+- 변경 파일: `services/api/src/daon_user_api/runtime.py`, `services/api/tests/test_question_answering_runtime_http.py`, `packages/ui/src/product-workspace-shell.jsx`, `scripts/tests/product-workspace.test.mjs`, 기존 Task 3의 `packages/ui/src/conversation-intent.js`, `services/api/src/daon_user_api/question_answering.py`, `services/api/tests/test_question_answering.py` 및 본 Progress. 보호 dirty/untracked는 수정·stage하지 않았다.
+- GREEN 검증: Runtime HTTP `12 passed`(19 warnings: 기존 httpx cookie deprecation), Python question/service `19 passed, 3 subtests`, Node ProductWorkspace `18 passed`. 추가 Web/Notebook/Source focused, production build, TypeScript, boundary, diff-check는 다음 단계다.
+- 실제 Provider/browser/운영 DB·Source write/Studio 생성 및 commit/push/deploy는 0이다.
+
+- 최종 관련 검증: Python question/egress/runtime HTTP `38 passed, 19 warnings, 3 subtests`, Python `compileall` PASS; Node ProductWorkspace/Notebook/Source upload `36/36 PASS`; Web production build·TypeScript·12 pages PASS; product boundary `392 files / violations0`, root boundary `415 files / violations0`; `git diff --check`는 CRLF 경고만 반환하고 오류0이다.
+- 실제 Provider/browser/운영 DB·Source upload/Studio 생성은 실행하지 않았고, 공개 응답 DTO 변경은 승인된 기존 `/questions` 응답의 additive fields 범위에 한정했다. staged/commit/push/deploy는 0이다.
+
+## 2026-08-21 Question client enriched DTO compatibility repair
+
+- 운영 브라우저의 `대화를 불러오지 못했습니다`는 서버가 추가한 `mode`, `grounding`, `source_scope_summary`, `mismatch`, `next_actions`를 Web `question-answering-api.js`의 구 exact 5-field validator가 거부한 DTO 불일치였다.
+- RED: `scripts/tests/question-answering-api.test.mjs`에 승인된 enriched response를 추가했고 기존 client가 `QUESTION_RESPONSE_INVALID`를 반환하는 것을 확인했다(`13 pass, 1 fail`).
+- GREEN: 기존 필수 답변/Citation 검증과 legacy response 호환은 유지하면서, 승인된 enriched 5-field shape만 allowlist·길이·mismatch/next_actions 조건으로 검증해 수용했다. unknown mode, empty mismatch actions, unknown fields는 계속 fail-close한다.
+- 검증: Question API/UI/real-data/Product/Notebook Node `47 passed`; Web production build·TypeScript·12 pages PASS; Web boundary `392/0`, root boundary `415/0`; `git diff --check` 오류0(CRLF 경고만). 실제 Provider/browser/운영 DB write/commit/push/deploy 0.
+
+## 2026-08-23T02:25:00+09:00 실제 Source 질문·Studio 저장 Gate
+
+- 실제 Source: YSNA 운영 유사 환경의 로그인 Notebook에서 `daon-knowledge-llm-guide.pdf`를 선택하고 `문서 제목은 무엇인가요?`를 실행했다. 답변과 Citation 2·3·4쪽 링크가 표시됐으며, Notebook-scoped same-origin Citation URL을 확인했다.
+- 실제 Studio: 같은 Source와 질문 Run으로 근거 기반 보고서(PDF, 표준, 요약·본문·결론, 검토 필수)를 생성했다. 최초 시도는 routing decision의 configured deployment ID와 내부 model record ID 불일치로 `ORIGINATING_RUN_MODEL_UNAVAILABLE`이었고, `c65070b`에서 두 식별자를 모두 조회하도록 수정했다.
+- 배포/재검증: YSNA API와 studio-worker를 `c65070b` 기준으로 재빌드·재기동했다. 재시도 Job `studio-job-7d4560a1f8ad8cd7184d9869aabfb8e0`은 `completed`, DB에 `output-5c517909e8f548add11eec71924821ee`가 생성됐으며 새로고침 후 Library가 3개 산출물을 표시했다.
+- 회귀: `services/api/tests/test_studio_workspace_postgres.py` `21 passed, 1 skipped`. 변경은 `studio_workspace_postgres.py`와 회귀 fixture에 한정했고 커밋·푸시 `c65070b`, 진행기록 커밋 `cfcdba6`이다.
+- 미검증: 다른 Studio 유형(슬라이드·오디오 등), 원격 Oracle 운영 배포, Upstage 간헐 응답 변동의 장기 안정성은 아직 확인하지 않았다. 이 범위는 PASS로 선언하지 않는다.
