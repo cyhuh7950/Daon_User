@@ -1384,7 +1384,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             ? <div className="context-selection-status" role="status">작업 상담 · 근거 미사용</div> : null}
           {viewState.answerIntent === "work_support_source_backed"
             ? <div className="context-selection-status" role="status">작업 상담 · Source 사용</div> : null}
-          {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">대화를 불러오지 못했습니다. 다시 시도해 주세요.</div> : null}
+          {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">대화를 불러오지 못했습니다. ({viewState.conversationSafeError}) 다시 시도해 주세요.</div> : null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
               void openNativeCitation(event, {
