@@ -6,15 +6,6 @@ import {
   mergeStudioVersion, selectOutputType, updateGenerationSettings,
 } from "./product-studio-model.js";
 
-const FUTURE_OUTPUT_TYPES = Object.freeze([
-  Object.freeze({ id: "slides", label: "슬라이드", phase: "Daon 2.5" }),
-  Object.freeze({ id: "infographic", label: "인포그래픽", phase: "Daon 2.5" }),
-  Object.freeze({ id: "flashcards", label: "플래시카드", phase: "Daon 2.5" }),
-  Object.freeze({ id: "quiz", label: "퀴즈", phase: "Daon 2.5" }),
-  Object.freeze({ id: "audio", label: "AI 오디오", phase: "Daon 3" }),
-  Object.freeze({ id: "video", label: "동영상", phase: "Daon 3" }),
-]);
-
 const TYPE_ICONS = Object.freeze({
   evidence_report: "document", compliance_checklist: "check", comparison_table: "table",
   knowledge_map: "map", business_draft: "draft", slides: "slides", infographic: "image",
@@ -24,7 +15,7 @@ const TYPE_ICONS = Object.freeze({
 function outputStatusLabel(status) {
   return ({
     draft: "초안", in_review: "검토 중", approved: "승인됨", delivered: "전달됨",
-    revision_requested: "수정 필요", generating: "생성 중", failed: "생성 실패",
+    revision_requested: "수정 필요", generating: "생성 중", failed: "생성 실패", unavailable: "사용 불가",
   })[status] ?? "저장됨";
 }
 
@@ -40,6 +31,7 @@ function safeStudioErrorMessage(code) {
     STUDIO_VERSION_FAILED: "새 버전을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.",
     STUDIO_ACTION_FAILED: "요청을 처리하지 못했습니다. 현재 상태를 확인해 주세요.",
     STUDIO_EXPORT_FAILED: "파일을 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    STUDIO_OUTPUT_UNAVAILABLE: "현재 연결된 provider에서 이 산출물을 지원하지 않습니다.",
   })[code] ?? "요청을 안전하게 완료하지 못했습니다. 운영상태에서 연결 상태를 확인해 주세요.";
 }
 
@@ -127,6 +119,43 @@ function StudioOutputContent({ output }) {
         </div>
       </article>)}</div>
       {Array.isArray(content.warnings) && content.warnings.length ? <p className="document-warning">확인 필요 · {content.warnings.join(", ")}</p> : null}
+    </section>;
+  }
+  if (output.output_type === "slides" && Array.isArray(content?.slides)) {
+    return <section className="studio-document-result" aria-label="슬라이드 결과">
+      <header><h4>슬라이드 결과</h4><span className="document-review-state">{outputStatusLabel(output.status)}</span></header>
+      <div className="document-section-list">{content.slides.map((slide, index) => <article key={slide?.slide_number ?? `slide-${index + 1}`}>
+        <span className="document-section-number">{String(slide?.slide_number ?? index + 1).padStart(2, "0")}</span>
+        <div><h5>{slide?.title || `슬라이드 ${index + 1}`}</h5><p>{slide?.body || "내용 없음"}</p>
+          <ul aria-label={`${slide?.title || `슬라이드 ${index + 1}`} 근거`}>{Array.isArray(slide?.evidence) && slide.evidence.length
+            ? slide.evidence.map((evidence) => <li key={evidence}>{evidence}</li>) : <li>근거 없음</li>}</ul>
+        </div>
+      </article>)}</div>
+    </section>;
+  }
+  if (output.output_type === "infographic" && Array.isArray(content?.metrics)) {
+    return <section className="studio-document-result" aria-label="인포그래픽 결과">
+      <header><h4>{content.title || "인포그래픽 결과"}</h4><span className="document-review-state">{outputStatusLabel(output.status)}</span></header>
+      <p>{content.summary || "요약 없음"}</p>
+      <div className="knowledge-node-grid">{content.metrics.map((metric, index) => <article key={`${metric?.label ?? "metric"}-${index + 1}`} className="knowledge-node-card">
+        <strong>{metric?.label || `지표 ${index + 1}`}</strong><span>{metric?.value ?? "—"}</span><small>{metric?.evidence || "근거 없음"}</small>
+      </article>)}</div>
+    </section>;
+  }
+  if (output.output_type === "flashcards" && Array.isArray(content?.cards)) {
+    return <section className="studio-document-result" aria-label="플래시카드 결과">
+      <header><h4>{content.title || "플래시카드 결과"}</h4><span className="document-review-state">{outputStatusLabel(output.status)}</span></header>
+      <div className="document-section-list">{content.cards.map((card, index) => <article key={card?.id ?? `card-${index + 1}`}>
+        <span className="document-section-number">{String(index + 1).padStart(2, "0")}</span><div><h5>{card?.question || `카드 ${index + 1}`}</h5><p>{card?.answer || "답변 없음"}</p><small>{card?.evidence || "근거 없음"}</small></div>
+      </article>)}</div>
+    </section>;
+  }
+  if (output.output_type === "quiz" && Array.isArray(content?.questions)) {
+    return <section className="studio-document-result" aria-label="퀴즈 결과">
+      <header><h4>{content.title || "퀴즈 결과"}</h4><span className="document-review-state">{outputStatusLabel(output.status)}</span></header>
+      <div className="document-section-list">{content.questions.map((question, index) => <article key={question?.id ?? `quiz-${index + 1}`}>
+        <span className="document-section-number">{String(index + 1).padStart(2, "0")}</span><div><h5>{question?.question || `문제 ${index + 1}`}</h5><ol>{(Array.isArray(question?.options) ? question.options : []).map((option, optionIndex) => <li key={`${question?.id ?? index}-${optionIndex}`}>{option}</li>)}</ol><p>{question?.explanation || "해설 없음"}</p></div>
+      </article>)}</div>
     </section>;
   }
   return <p className="studio-output-content">{studioContentText(content)}</p>;
@@ -233,7 +262,6 @@ export function ProductStudioPane({ state, adapter }) {
       {!view.selectedOutputType ? <div className="studio-home" data-studio-view="home">
         <div className="studio-type-tiles" data-columns="3" aria-label="산출물 유형">
           {OUTPUT_TYPES.map((type) => <button className={`studio-type-tile tile-${TYPE_ICONS[type.id]}`} key={type.id} type="button" onClick={() => setView(selectOutputType(view, type.id))}>{type.label}</button>)}
-          {FUTURE_OUTPUT_TYPES.map((type) => <button className={`studio-type-tile studio-type-future tile-${TYPE_ICONS[type.id]}`} key={type.id} type="button" disabled aria-label={`${type.label}, ${type.phase} 준비 중`}><span>{type.label}</span><small>{type.phase} · 준비 중</small></button>)}
         </div>
         <section className="studio-library" aria-labelledby="stored-studio-outputs"><div className="studio-section-heading"><div><span className="section-kicker">LIBRARY</span><h3 id="stored-studio-outputs">저장된 산출물</h3></div><span className="library-count">{view.outputs.length}</span></div>
           {view.outputs.length ? <ul>{view.outputs.map((output) => <li className="studio-library-row" key={output.studio_output_id}><span className={`library-type-icon tile-${TYPE_ICONS[output.output_type] ?? "document"}`} aria-hidden="true" /><span className="library-row-copy"><small className="library-output-type">{outputTypeLabel(output.output_type)}</small><button type="button" onClick={() => void openOutput(output)}>{output.title}</button><small>Source {output.source_count ?? output.source_version_ids?.length ?? 1} · Version {output.content_version ?? output.output_version_id ?? "-"}</small></span><span className={`output-status status-${output.status ?? "saved"}`}>{outputStatusLabel(output.status)}</span></li>)}</ul> : <div className="studio-empty"><span className="empty-icon" aria-hidden="true">◇</span><strong>아직 저장된 산출물이 없습니다.</strong><small>위 유형을 선택하면 근거가 결속된 산출물을 만들 수 있습니다.</small></div>}

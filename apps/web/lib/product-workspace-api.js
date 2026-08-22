@@ -37,14 +37,22 @@ const OPERATIONS_COMPONENT_KEYS = Object.freeze([
   "component_id", "status", "safe_code", "pending_count", "recovery_action",
 ]);
 const OUTPUT_SETTING_TYPES = Object.freeze([
-  "evidence_report", "compliance_checklist", "comparison_table", "knowledge_graph", "business_draft",
+  "evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "knowledge_graph", "business_draft",
+  "slides", "infographic", "flashcards", "quiz", "audio", "video",
 ]);
 const OUTPUT_SETTING_FORMATS = Object.freeze({
   evidence_report: Object.freeze(["pdf", "docx"]),
   compliance_checklist: Object.freeze(["xlsx", "csv", "pdf"]),
   comparison_table: Object.freeze(["xlsx", "csv", "pdf"]),
   knowledge_graph: Object.freeze(["json", "svg", "png"]),
+  knowledge_map: Object.freeze(["json", "svg", "png", "pdf"]),
   business_draft: Object.freeze(["docx", "pdf"]),
+  slides: Object.freeze(["pdf", "json"]),
+  infographic: Object.freeze(["svg", "png", "pdf"]),
+  flashcards: Object.freeze(["json", "csv", "pdf"]),
+  quiz: Object.freeze(["json", "csv", "pdf"]),
+  audio: Object.freeze(["json"]),
+  video: Object.freeze(["json"]),
 });
 
 function record(value) {
@@ -93,9 +101,10 @@ function validCitation(value) {
 function validOutput(value) {
   return exact(value, OUTPUT_KEYS)
     && safeId(value.studio_output_id) && safeId(value.output_version_id)
-    && value.output_type === "evidence_report" && value.status === "draft"
+    && STUDIO_OUTPUT_TYPES.has(value.output_type) && ["draft", "generating", "in_review", "approved", "delivered", "revision_requested", "failed", "unavailable"].includes(value.status)
     && safeText(value.title, 1, 200) && safeText(value.purpose, 1, 500)
-    && safeText(value.content, 1, 20_000) && safeId(value.run_id) && safeId(value.run_result_id)
+    && ((record(value.content) && JSON.stringify(value.content).length <= 20_000) || safeText(value.content, 1, 20_000))
+    && safeId(value.run_id) && safeId(value.run_result_id)
     && Array.isArray(value.citations) && value.citations.length >= 1
     && value.citations.length <= 20 && value.citations.every(validCitation);
 }

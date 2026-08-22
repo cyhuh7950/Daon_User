@@ -36,6 +36,7 @@ def _structured_rows(content: object) -> list[list[str]]:
     if not isinstance(content, Mapping):
         return [["내용", str(content)]]
     records = content.get("items") or content.get("rows") or content.get("sections")
+    records = records or content.get("slides") or content.get("metrics") or content.get("cards") or content.get("questions")
     if isinstance(records, (list, tuple)) and records:
         headers = list(dict.fromkeys(key for item in records if isinstance(item, Mapping) for key in item))
         return [headers, *[[json.dumps(item.get(key), ensure_ascii=False) if isinstance(item.get(key), (list, tuple, dict)) else str(item.get(key, "")) for key in headers] for item in records]]
