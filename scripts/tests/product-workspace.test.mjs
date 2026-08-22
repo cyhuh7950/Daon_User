@@ -406,7 +406,7 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     const questionInput = findElements(container, (node) => node.tagName === "TEXTAREA" && node.parentNode?.textContent.startsWith("질문"))[0];
     assert.equal(questionInput.disabled, false);
     assert.match(container.textContent, /불러오지 못했습니다/u);
-    assert.match(container.textContent, /대화를 불러오지 못했습니다/u);
+    assert.doesNotMatch(container.textContent, /대화를 불러오지 못했습니다/u);
     assert.doesNotMatch(container.textContent, /STUDIO_LIST_FAILED/u);
     assert.doesNotMatch(container.textContent, /internal\.invalid|stack/u);
 
