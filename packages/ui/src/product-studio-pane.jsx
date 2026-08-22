@@ -32,6 +32,7 @@ function safeStudioErrorMessage(code) {
     STUDIO_ACTION_FAILED: "요청을 처리하지 못했습니다. 현재 상태를 확인해 주세요.",
     STUDIO_EXPORT_FAILED: "파일을 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.",
     STUDIO_OUTPUT_UNAVAILABLE: "현재 연결된 provider에서 이 산출물을 지원하지 않습니다.",
+    STUDIO_CREATE_TIMEOUT: "산출물 생성이 지연되고 있습니다. Library에서 상태를 다시 확인해 주세요.",
   })[code] ?? "요청을 안전하게 완료하지 못했습니다. 운영상태에서 연결 상태를 확인해 주세요.";
 }
 
@@ -190,7 +191,21 @@ export function ProductStudioPane({ state, adapter }) {
     if (!adapter?.createGeneration || !canSubmitGeneration(view)) return;
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
-      const output = await adapter.createGeneration(createStudioGenerationInput(view));
+      const job = await adapter.createGeneration(createStudioGenerationInput(view));
+      let output = job;
+      if (job?.status !== "completed") {
+        if (typeof adapter.getGenerationJob !== "function") throw new Error("STUDIO_ASYNC_UNAVAILABLE");
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const currentJob = await adapter.getGenerationJob(job.job_id);
+          if (["queued", "leased"].includes(currentJob.status)) continue;
+          if (currentJob.status === "unavailable") throw new Error(currentJob.error_code ?? "STUDIO_OUTPUT_UNAVAILABLE");
+          if (currentJob.status !== "completed" || !currentJob.output) throw new Error(currentJob.error_code ?? "STUDIO_CREATE_FAILED");
+          output = { ...currentJob.output, studio_output_id: currentJob.studio_output_id, output_version_id: currentJob.output_version_id, status: "draft" };
+          break;
+        }
+        if (output === job) throw new Error("STUDIO_CREATE_TIMEOUT");
+      }
       setView((current) => ({ ...current, pending: false, outputs: [output, ...current.outputs], selectedOutputId: output.studio_output_id }));
     } catch (error) {
       setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_CREATE_FAILED" }));

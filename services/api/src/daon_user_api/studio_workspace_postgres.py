@@ -13,6 +13,7 @@ from .egress_policy import EgressPolicyPayload, resolve_effective_payload
 from .studio_export import export_studio_output
 from .studio_workspace import StudioContext, StudioError, StudioGenerationRequest, build_structured_output, FORMATS
 from .object_queue import ObjectKeyPolicy, ObjectQueueError, ObjectStorageError
+from .studio_generation_queue import PostgresStudioGenerationQueue, StudioGenerationQueueError
 
 
 class PostgresStudioWorkspaceRepository:
@@ -20,6 +21,11 @@ class PostgresStudioWorkspaceRepository:
         self._cloud_store = cloud_store
         self._object_storage = object_storage
         self._creation_enforcer = creation_enforcer
+        dsn = getattr(cloud_store, "_dsn", None)
+        self._generation_queue = (
+            PostgresStudioGenerationQueue(dsn, cloud_store)
+            if cloud_store is not None and isinstance(dsn, str) and dsn else None
+        )
 
     @property
     def creation_license_authoritative(self) -> bool:
@@ -368,6 +374,59 @@ class PostgresStudioWorkspaceRepository:
             raise
         except CloudDatabaseError as error:
             raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503) from error
+
+    def enqueue_generation(self, context: StudioContext, request: StudioGenerationRequest, idempotency_key: str):
+        if self._cloud_store is None:
+            raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503)
+        if context.notebook_id is None:
+            raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
+        payload = {
+            "notebook_id": context.notebook_id, "output_type": request.output_type, "source_id": request.source_id,
+            "source_version_ids": list(request.source_version_ids), "run_id": request.run_id,
+            "run_result_id": request.run_result_id, "purpose": request.purpose, "audience": request.audience,
+            "ruleset_version_id": request.ruleset_version_id, "length": request.length, "structure": request.structure,
+            "output_format": request.output_format, "review_condition": request.review_condition,
+        }
+        job_id = self._opaque("studio-job", context.tenant_id, context.workspace_id, context.actor_id, idempotency_key)
+        try:
+            with self._cloud_store._transaction(self._cloud(context, "studio.create")) as connection:
+                row = connection.execute(
+                    "SELECT job_id,state,studio_output_id,output_version_id,safe_error_code,created_at,completed_at "
+                    "FROM studio_generation_jobs WHERE tenant_id=%s AND workspace_id=%s AND actor_id=%s AND idempotency_key=%s",
+                    (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key),
+                ).fetchone()
+                if row is not None:
+                    return {"job_id": str(row[0]), "status": str(row[1]), "output_type": request.output_type,
+                            "studio_output_id": row[2], "output_version_id": row[3], "error_code": row[4],
+                            "created_at": row[5], "completed_at": row[6]}, True
+                connection.execute(
+                    "INSERT INTO studio_generation_jobs (tenant_id,workspace_id,job_id,actor_id,trace_id,policy_version,idempotency_key,request_json,state) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'queued')",
+                    (context.tenant_id, context.workspace_id, job_id, context.actor_id, context.trace_id,
+                     context.policy_version, idempotency_key, Jsonb(payload)),
+                )
+                return {"job_id": job_id, "status": "queued", "output_type": request.output_type,
+                        "title": request.purpose, "created_at": datetime.now(timezone.utc)}, False
+        except CloudDatabaseError as error:
+            raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503) from error
+
+    def get_generation_job(self, context: StudioContext, job_id: str):
+        try:
+            if self._generation_queue is None:
+                raise StudioGenerationQueueError("STUDIO_QUEUE_UNAVAILABLE", retryable=True)
+            job = self._generation_queue.get(self._cloud(context, "studio.read"), job_id)
+        except StudioGenerationQueueError as error:
+            raise StudioError(error.code, 404 if error.code == "STUDIO_JOB_NOT_FOUND" else 503) from error
+        result = {
+            "job_id": job.job_id, "status": job.state, "output_type": job.request_json.get("output_type"),
+            "title": job.request_json.get("purpose"), "studio_output_id": job.studio_output_id,
+            "output_version_id": job.output_version_id, "error_code": job.safe_error_code,
+            "created_at": job.created_at, "completed_at": job.completed_at,
+        }
+        if job.state == "completed" and job.studio_output_id:
+            versions = self.list_versions(context, job.studio_output_id)
+            result["output"] = versions[0] if versions else None
+        return result
 
     def list_outputs(self, context: StudioContext):
         if self._cloud_store is None:

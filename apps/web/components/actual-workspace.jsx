@@ -5,7 +5,7 @@ import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, uploadSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
-import { createGroundedReport, createStudioGeneration, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
+import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
@@ -48,6 +48,7 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     listStudioOutputs: (options) => listStudioOutputs(workspaceId, notebookOptions(options)),
     listProductStudioOutputs: (options) => listProductStudioOutputs(workspaceId, notebookOptions(options)),
     createGeneration: (input, options) => createStudioGeneration(workspaceId, input, notebookOptions(options)),
+    getGenerationJob: (jobId, options) => getStudioGenerationJob(workspaceId, jobId, notebookOptions(options)),
     createStudioVersion: (outputId, input, options) => createStudioVersion(workspaceId, outputId, input, notebookOptions(options)),
     listStudioVersions: (outputId, options) => listStudioVersions(workspaceId, outputId, notebookOptions(options)),
     createStudioAction: (action, input, options) => createStudioAction(workspaceId, action, input, notebookOptions(options)),

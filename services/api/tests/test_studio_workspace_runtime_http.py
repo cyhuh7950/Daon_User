@@ -24,6 +24,16 @@ class FakeStudioWorkspace:
         self.calls.append(("generate", context, request, key))
         return {"studio_output_id": "output-1", "output_version_id": "version-1", "output_type": "evidence_report", "status": "draft", "title": "산출물", "content": {"body": "생성"}, "settings_snapshot_id": "settings-1", "citations": [{"citation_id": "citation-1"}]}, False
 
+    def enqueue(self, context, request, key):  # type: ignore[no-untyped-def]
+        self.calls.append(("enqueue", context, request, key))
+        return {"job_id": "job-1", "status": "queued", "output_type": request.output_type, "title": request.purpose}, False
+
+    def generation_job(self, context, job_id):  # type: ignore[no-untyped-def]
+        self.calls.append(("generation_job", context, job_id))
+        return {"job_id": job_id, "status": "completed", "output_type": "evidence_report", "title": "산출물",
+                "studio_output_id": "output-1", "output_version_id": "version-1",
+                "output": self.list_versions(context, "output-1")[0]}
+
     def list_outputs(self, context):  # type: ignore[no-untyped-def]
         return ({"studio_output_id": "output-1", "output_version_id": "version-1", "status": "draft", "title": "산출물", "source_version_ids": ["source-version-1"], "run_id": "run-1", "run_result_id": "result-1", "citations": [{"citation_id": "citation-1", "source_version_id": "source-version-1"}]},)
 
@@ -95,12 +105,15 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         cookies = {WEB_SESSION_COOKIE: "opaque"}
         with self.authenticated():
             created = await self.client.post("/api/v1/studio-generation-requests", cookies=cookies, headers={"Idempotency-Key": "generation-key-0001", "X-Trace-Id": TRACE_ID}, json=generation)
+            job = await self.client.get("/api/v1/studio-generation-jobs/job-1?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
             listed = await self.client.get("/api/v1/studio-outputs?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
             versions = await self.client.get("/api/v1/studio-outputs/output-1/versions?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
             revised = await self.client.post("/api/v1/studio-outputs/output-1/versions", cookies=cookies, headers={"Idempotency-Key": "revision-key-00001"}, json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "previous_version_id": "version-1", "revision_type": "user_edit", "change_reason": "문구 정정", "content": "변경"})
             review = await self.client.post("/api/v1/reviews", cookies=cookies, headers={"Idempotency-Key": "review-key-000001"}, json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_version_id": "version-1"})
             exported = await self.client.get("/api/v1/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
-        self.assertEqual([created.status_code, listed.status_code, versions.status_code, revised.status_code, review.status_code, exported.status_code], [201, 200, 200, 201, 201, 200])
+        self.assertEqual([created.status_code, job.status_code, listed.status_code, versions.status_code, revised.status_code, review.status_code, exported.status_code], [201, 200, 200, 200, 201, 201, 200])
+        self.assertEqual(created.json()["data"]["status"], "queued")
+        self.assertEqual(job.json()["data"]["status"], "completed")
         created_lineage = created.json()["data"]["lineage"]
         self.assertEqual(created_lineage["notebook_id"], "notebook-001")
         self.assertEqual(created_lineage["source_version_ids"], ["source-version-1"])
