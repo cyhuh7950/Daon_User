@@ -313,3 +313,12 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 브라우저: 로그인 세션의 `Daon 실제 기능 검증` Notebook을 열고 화면을 새로 로드했다. `업무 Studio > 저장된 산출물`이 `2`로 표시되고 두 개의 `근거 기반 보고서`가 노출됐다. 기존 `요청을 안전하게 완료하지 못했습니다` Studio 오류는 재현되지 않았다.
 - 판정: Source-only Studio 생성 결과가 DB에 저장된 뒤 Notebook 목록 조회·Library 표시까지 정상화됐다.
 - 잔여: `연결형 Source` 목록은 별도 connector endpoint 오류로 계속 경고를 표시한다. 이번 SQL 수정 범위의 Studio 산출물 목록과는 별개이며, MCP/Daon 승인 지식 connector 작업에서 별도 처리한다.
+
+## 2026-08-22 대화 인증 제거·connector 회귀 검증
+
+- 상태: `VERIFIED_ON_YSNA`
+- 커밋: `99fe0e5` 기준 Web 재빌드·재기동 완료. API/Web 컨테이너 healthy 상태를 확인했다.
+- 로컬 검증: Source 추가·connector credential 오류코드·대화 UI 회귀 테스트 25/25 통과.
+- 브라우저: `Daon 실제 기능 검증` Notebook에서 연결형 Source 2건이 `사용 불가` 상태로 표시되고 connector 로드 오류 alert는 없었다. 이는 운영 환경에 connector 자격증명이 없음을 나타내며 로드 실패로 오인하지 않는다.
+- 브라우저: 일반 대화 화면에서 Raw Source 선택을 해제한 뒤 `Source 질문 승인` 모달이 나타나지 않음을 확인했다. 로그인 세션 외 질문별 비밀번호 재인증 UI는 제거된 상태다.
+- 미검증: 실제 외부 LLM 응답 성공은 운영 provider/egress 정책의 실제 연결 상태에 의존하므로 이번 확인에서는 외부 전송을 실행하지 않았다.
