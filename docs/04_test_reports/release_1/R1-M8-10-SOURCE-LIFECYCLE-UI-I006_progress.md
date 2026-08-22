@@ -493,6 +493,15 @@
 - API smoke: 공개 무쿠키 session은 기존대로 401 인증 경계를 유지한다. 인증 세션의 DELETE HTTP 클릭 E2E는 브라우저 세션 도구 제한으로 별도 미실행이며, DB 함수 직접 fixture 검증으로 핵심 cleanup 경로를 확인했다.
 - 다음 단계: 부모 에이전트가 최종 판정한다. 운영 master/Oracle 배포는 하지 않았다.
 
+## 2026-08-22 Source 등록·Notebook 제거·삭제 요청 상태 재분리
+
+- 사용자 캡처 기준 판정: `Source 삭제 요청`은 접수됨(삭제 유예 상태), `Notebook에서 제거`는 일반 오류로 종료, 새 Source 등록/목록은 `Source를 불러오지 못했습니다` 배너로 실패 표시됨. 세 기능을 하나의 성공/실패로 묶지 않는다.
+- 현재 ysna API 환경은 `DAON_RUNTIME_PROFILE=production`, `DAON_DEV_AUTH_BYPASS` 미설정이다. 따라서 dev-workspace 강제 라우팅은 현재 원인이 아니다.
+- 실제 DB에서 Source 5건 Notebook의 `delete_notebook_scope`를 `daon_app` 권한으로 `BEGIN/ROLLBACK` 실행해 5개 반환 및 롤백 성공을 확인했다. 삭제 함수/FK 순서 자체는 현재 기준선에서 통과한다.
+- 실제 감사기록에는 Source 삭제 요청 성공은 있으나 real workspace의 `notebook.source_unbound` 성공 기록은 없다. 브라우저의 Notebook 제거 요청이 서버에 도달했는지와 응답 코드(412/404/503)를 아직 직접 확보하지 못했다.
+- UI 코드에는 empty Context에서도 canonical Source 목록을 다시 조회하고, Context의 binding ETag를 어댑터에 보존하는 보정(커밋 `58cf714` 포함)이 이미 반영되어 있다. ysna Web 컨테이너는 이 기준선 이후 빌드로 재기동됐으므로, 현 캡처는 배포 전 화면 또는 인증 세션의 실제 Network 응답을 추가 확인해야 한다.
+- 다음 확인: 사용자가 Source가 5건인 `Daon 실제 기능 검증` Notebook에서 새로고침 후 제거를 재시도하고, 동시에 Network에서 `POST /bff/api/workspaces/<workspace>/notebooks/<notebook>/source-unbindings`의 status와 JSON error code를 확보한다. 그 결과에 따라 서버/ETag/세션 중 하나로 원인을 확정한다.
+
 ## 2026-08-22 Source 목록 재현 및 RED 착수
 
 - 상태: IN_PROGRESS. 실제 ysna `postgres`에서 `tenant-F3_oXuYj8BZKenTNAxd1V6dv/workspace-be846e417dc13c1ec9f866ff/notebook-1c67a1adb2bd6a132f57ca429ceef091`의 Source binding 5건과 동일 `list_sources` SQL 결과 5건을 확인했다. DB Source/SourceVersion 정본 부재가 아니라 UI/API 경로를 분리해 조사한다.
