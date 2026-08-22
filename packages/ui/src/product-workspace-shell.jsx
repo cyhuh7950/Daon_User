@@ -639,7 +639,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         sources: sourceSafeError ? current.sources : projected,
         selectedSource: sourceSafeError
           ? current.selectedSource
-          : projected.find((source) => source.ready) ?? null,
+          : projected.find((source) => source.ready
+            && source.sourceId === current.selectedSource?.sourceId
+            && source.sourceVersionId === current.selectedSource?.sourceVersionId)
+            ?? projected.find((source) => source.ready) ?? null,
       }));
 
       let projectedKnowledge = [];
@@ -943,7 +946,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     questionEpochRef.current += 1;
     reportIdempotencyRef.current = null;
     setViewState((current) => ({
-      ...current, selectedSource: source, answer: null, answerIntent: null,
+      ...current,
+      selectedSource: current.selectedSource?.sourceId === source.sourceId
+        && current.selectedSource?.sourceVersionId === source.sourceVersionId ? null : source,
+      answer: null, answerIntent: null,
     }));
   };
 
@@ -1337,8 +1343,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         </SafePane>
         <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
           {desktopEditor ? desktopEditor : <div className="conversation-workspace"><div className="conversation-transcript" aria-live="polite">
-          <div className="context-selection-status" role="status">질문 컨텍스트 · {selectedKnowledgeId ? "Daon 승인 지식" : ""}{selectedKnowledgeId && viewState.selectedSource ? " + " : ""}{viewState.selectedSource ? "Raw Source" : ""}</div>
-          {viewState.answer ? <article className="assistant-message"><div className="assistant-avatar" aria-hidden="true">D</div><div><span className="message-author">Daon</span><p>{viewState.answer.answer}</p></div></article> : <div className="conversation-empty"><span className="conversation-orbit" aria-hidden="true">✦</span><h3>Source에 대해 무엇이든 물어보세요.</h3><p>선택한 Source의 근거와 Citation을 사용해 답합니다.</p></div>}
+          <div className="context-selection-status" role="status">질문 컨텍스트 · {selectedKnowledgeId ? "Daon 승인 지식" : ""}{selectedKnowledgeId && viewState.selectedSource ? " + " : ""}{viewState.selectedSource ? "Raw Source" : !selectedKnowledgeId ? "일반 상담" : ""}</div>
+          {viewState.answer ? <article className="assistant-message"><div className="assistant-avatar" aria-hidden="true">D</div><div><span className="message-author">Daon</span><p>{viewState.answer.answer}</p></div></article> : <div className="conversation-empty"><span className="conversation-orbit" aria-hidden="true">✦</span><h3>{viewState.selectedSource || selectedKnowledgeId ? "Source에 대해 무엇이든 물어보세요." : "무엇이든 물어보세요."}</h3><p>{viewState.selectedSource || selectedKnowledgeId ? "선택한 Source의 근거와 Citation을 사용해 답합니다." : "작업 상담, 구현 방법 등 일반 질문에 답합니다."}</p></div>}
           {viewState.answerIntent === "general_ungrounded" || viewState.answerIntent === "work_support_ungrounded"
             ? <div className="context-selection-status" role="status">작업 상담 · 근거 미사용</div> : null}
           {viewState.answerIntent === "work_support_source_backed"
@@ -1357,7 +1363,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               });
             }}>Citation · {citation.locator.kind === "page" ? `${citation.page}쪽` : "지식 구간"}</a>
           ))}</div></div><form className="conversation-composer" onSubmit={askQuestion}>
-            <label><span className="sr-only">질문</span><textarea rows="2" placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "선택한 Source와 작업 맥락을 바탕으로 무엇이든 물어보세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
+            <label><span className="sr-only">질문</span><textarea rows="2" placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "작업 내용이나 궁금한 점을 질문하세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
             <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={!question.trim()}>↑</button>
           </form></div>}
         </SafePane>
