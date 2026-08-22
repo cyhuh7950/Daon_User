@@ -27,3 +27,4 @@ def test_notebook_deletion_migration_is_scoped_and_immutable():
     assert "previous_version_id" in text
     assert text.index("DELETE FROM document_processing_job_attempts") < text.index("DELETE FROM document_processing_jobs")
     assert "ALTER TABLE document_processing_job_attempts DISABLE TRIGGER USER" in text
+    assert "ALTER TABLE processing_runs DISABLE TRIGGER USER" in text
