@@ -524,3 +524,8 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: `PYTHONPATH=services/api/src uv run pytest services/api/tests/test_studio_api_contract.py services/api/tests/test_studio_worker_contract.py services/api/tests/test_studio_export_contract.py services/api/tests/test_notebooklm_studio_outputs.py -q` 결과 `13 passed`. `node --test scripts/tests/product-studio.test.mjs scripts/tests/product-studio-click.test.mjs scripts/tests/studio-workflow.test.mjs scripts/tests/studio-report-api.test.mjs` 결과 `36 passed`.
 - 미검증: 실제 Export 다운로드·파일 Hash는 산출물이 `검토 중`/`초안` 상태여서 UI `내보내기`가 비활성이다. 장시간 Provider 부하·soak과 Oracle 운영 배포도 미검증이다.
 
+## 2026-08-23T05:45:00+09:00 YSNA 실제 PDF 등록 재검증
+- 상태: `SOURCE_UPLOAD_PASS`
+- 검증: 로그인된 YSNA Notebook에서 파일 업로드 흐름으로 `daon-getting-started.pdf`를 등록했다. 처리 완료 후 Raw Source가 2개에서 3개로 증가했고, 새 항목 `Version sv-c1b8b305d12fbd9dc68e1378c251112b · 사용 가능`이 화면에 표시됐다.
+- 미검증: 실제 Source 삭제 클릭과 DB·MinIO 실물 삭제 정합성은 삭제 직전 확인이 필요한 외부 상태 변경이라 아직 실행하지 않았다. MCP 연결·삭제도 동일하게 미검증이다.
+
