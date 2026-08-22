@@ -487,3 +487,11 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 미검증: 현재 연결된 in-app 브라우저 탭은 재배포 직후 502 캐시/프록시 화면으로 전환되어 새 번들의 Source Citation 클릭 검증을 완료하지 못했다. YSNA 외부 `/notebooks`는 셸에서 HTTP 200이며 컨테이너는 healthy 상태다.
 - 다음 조치: 브라우저 탭이 정상 응답으로 복귀하면 Source 선택 → 한국어 질문 → 답변·Citation을 즉시 확인하고, 이어 Studio 새 산출물 생성까지 진행한다.
 
+## 2026-08-23T02:00:00+09:00 Source 질문 Citation 계약 수정·YSNA 재검증
+- 상태: `VERIFIED_ON_YSNA`
+- 원인: API가 반환하는 Citation URL은 Notebook 범위를 위해 `notebook_id` 쿼리를 포함하지만, UI 검증기가 쿼리 없는 URL을 기대해 정상적인 Source 답변을 `QUESTION_RESPONSE_INVALID`로 거부했다. 이전 오류 문구가 성공 후에도 남는 상태 정리 누락도 확인했다.
+- 조치: `packages/ui/src/product-workspace-shell.jsx`에서 adapter가 만든 Notebook-scoped Citation URL을 그대로 검증하도록 수정하고, 성공 답변 시 `conversationSafeError`를 초기화했다. 커밋 `4de9d3a`, `6ece91c`를 push 후 YSNA Web만 재빌드·재기동했다.
+- 검증: YSNA Web production build 및 product UI boundary 통과(`scannedFiles: 416`, `violations: []`, `boundaryErrors: []`). 로그인 브라우저에서 Raw Source 선택 후 `문서 제목은 무엇인가요?` 질문을 실행해 `작업 상담 · Source 사용`과 Citation 2·3·4쪽 링크를 확인했고, stale error alert가 더 이상 표시되지 않았다. API DB에도 Source 답변·Citation 생성이 확인됐다.
+- 참고 오류: 동일 검증 중 Upstage가 간헐적으로 `TEXT_GENERATION_RESPONSE_INVALID`/`TEXT_PROVIDER_UNAVAILABLE`을 반환한 시도가 있었으나, 재시도에서 정상 답변과 Citation이 생성됐다. 제공자 일시 응답 변동은 미해결 위험으로 기록한다.
+- 미검증: Studio 새 산출물 생성 버튼은 외부 상태를 생성하므로 아직 클릭하지 않았다. Oracle 운영 배포도 수행하지 않았다.
+
