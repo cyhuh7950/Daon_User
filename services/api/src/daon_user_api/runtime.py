@@ -2563,6 +2563,17 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     "provider_kind": cast(Any, prepared).selection.provider_kind,
                     "deployment_id": cast(Any, prepared).selection.deployment_id,
                 }
+                access_token, _ = _credential(request)
+                dependencies.identity_service.consume_step_up(
+                    step_up_authorization=body.step_up_authorization_id,
+                    access_token=access_token,
+                    action_group="external_transfer",
+                    target_id=run_id,
+                    policy_version=request_fingerprint,
+                    trace_id=request.state.trace_id,
+                    operation="question.external_transfer",
+                    idempotency_key=idempotency_key,
+                )
         answer = await asyncio.to_thread(
             question_answering_service.ask,
             QuestionContext(
