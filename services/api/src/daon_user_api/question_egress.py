@@ -14,7 +14,7 @@ from .data_canon import canonical_json_bytes
 from .egress_policy import EffectiveEgressPolicy, EgressPolicyContext, EgressPolicyService
 from .question_answering import TextModelSelection
 from .question_answering_postgres import PostgresQuestionAnsweringRepository, QuestionContext
-from .question_answering_service import QuestionAnsweringError, is_general_conversation_intent
+from .question_answering_service import QuestionAnsweringError
 from .routing import CandidateDeployment, RoutingContext, route_single_model
 
 
@@ -87,9 +87,9 @@ class PostgresQuestionEgressAuthorizer:
             try:
                 grounded = json.loads(user_messages[0]["content"])
             except json.JSONDecodeError:
-                if not is_general_conversation_intent(user_messages[0]["content"]):
-                    raise ValueError
-                user_messages[0]["content"] = "[MASKED]"
+                # A Source-free question is a normal LLM/work consultation.
+                # It has no Source evidence to redact, so preserve the actual
+                # user question. Grounded JSON below remains strictly masked.
                 return canonical_json_bytes(payload)
             if (
                 not isinstance(grounded, dict)
