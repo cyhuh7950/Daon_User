@@ -30,6 +30,7 @@ def test_notebook_deletion_migration_is_scoped_and_immutable():
     assert "ALTER TABLE processing_runs DISABLE TRIGGER USER" in text
     for table in (
         "document_processing_jobs", "knowledge_registrations", "evidence_references", "citations",
+        "evidence_spans",
         "transcript_segments", "transcript_versions", "transcription_runs", "extraction_evidence",
         "understanding_results", "index_versions", "sync_target_versions", "durable_jobs",
         "object_outbox_events",
