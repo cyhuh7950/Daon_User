@@ -16,27 +16,25 @@ test("일반대화 allowlist는 exact이며 사실 질의 suffix를 fail-close�
   }
 });
 
-test("Web Question은 일반대화만 context 없는 same-origin body를 허용한다", async () => {
+test("Web Question은 Source 미선택 임의 질문을 일반 상담 same-origin body로 전달한다", async () => {
   const calls = [];
   const answer = { run_id: "run-general", run_result_id: "result-general", answer: "안녕하세요.", insufficient: false, citations: [] };
-  await askGroundedQuestion("workspace-1", { notebookId: "notebook-1", question: "안녕하세요!" }, {
-    idempotencyKey: "question-general-0001",
-    fetchImpl: async (url, init) => {
-      calls.push({ url, body: JSON.parse(init.body) });
-      return Response.json({ data: answer, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
-    },
-  });
-  assert.deepEqual(calls, [{
+  for (const [index, question] of ["안녕하세요!", "다음 작업을 어떻게 진행하지?", "한국어로 답해줘", "이번 작업의 다음 단계를 정리해줘"].entries()) {
+    await askGroundedQuestion("workspace-1", { notebookId: "notebook-1", question }, {
+      idempotencyKey: `question-general-${String(index + 1).padStart(4, "0")}`,
+      fetchImpl: async (url, init) => {
+        calls.push({ url, body: JSON.parse(init.body) });
+        return Response.json({ data: answer, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
+      },
+    });
+  }
+  assert.deepEqual(calls, ["안녕하세요!", "다음 작업을 어떻게 진행하지?", "한국어로 답해줘", "이번 작업의 다음 단계를 정리해줘"].map((question) => ({
     url: "/bff/api/workspaces/workspace-1/questions",
-    body: { notebook_id: "notebook-1", question: "안녕하세요!" },
-  }]);
-  await assert.rejects(
-    askGroundedQuestion("workspace-1", { notebookId: "notebook-1", question: "2026년 매출은?" }),
-    { message: "QUESTION_INPUT_INVALID" },
-  );
+    body: { notebook_id: "notebook-1", question },
+  })));
 });
 
-test("Windows Question은 일반대화만 source 없는 Native body를 허용한다", async () => {
+test("Windows Question은 Source 미선택 임의 질문을 일반 상담 Native body로 전달한다", async () => {
   const calls = [];
   const adapter = createWindowsWorkspaceAdapter("workspace-1", {
     notebookId: "notebook-1",
@@ -45,17 +43,16 @@ test("Windows Question은 일반대화만 source 없는 Native body를 허용한
       return { run_id: "run-general", run_result_id: "result-general", answer: "안녕하세요.", insufficient: false, citations: [] };
     },
   });
-  await adapter.askQuestion({ knowledgeContext: null, question: "안녕하세요!" });
-  assert.deepEqual(calls[0], {
+  for (const question of ["안녕하세요!", "다음 작업을 어떻게 진행하지?", "한국어로 답해줘", "이번 작업의 다음 단계를 정리해줘"]) {
+    await adapter.askQuestion({ knowledgeContext: null, question });
+  }
+  assert.deepEqual(calls, ["안녕하세요!", "다음 작업을 어떻게 진행하지?", "한국어로 답해줘", "이번 작업의 다음 단계를 정리해줘"].map((question) => ({
     command: "workspace_ask_question",
-    args: { input: { workspace_id: "workspace-1", notebook_id: "notebook-1", question: "안녕하세요!" } },
-  });
-  await assert.rejects(adapter.askQuestion({ knowledgeContext: null, question: "2026년 매출은?" }), {
-    message: "QUESTION_INPUT_INVALID",
-  });
+    args: { input: { workspace_id: "workspace-1", notebook_id: "notebook-1", question } },
+  })));
 });
 
-test("OpenAPI Question 기존 DTO는 일반대화 no-context semantic branch를 exact 기술한다", () => {
+test("OpenAPI Question 기존 DTO는 일반 상담 no-context semantic branch를 exact 기술한다", () => {
   const request = contract.components.schemas.GroundedQuestionRequest;
   const authorization = contract.components.schemas.GroundedQuestionAuthorizationRequest;
   for (const schema of [request, authorization]) {
@@ -65,7 +62,7 @@ test("OpenAPI Question 기존 DTO는 일반대화 no-context semantic branch를 
         { required: ["source_id"] }, { required: ["source_version_id"] }, { required: ["knowledge_context"] },
       ] },
     });
-    assert.match(schema.description, /narrow general conversation/u);
+    assert.match(schema.description, /general (?:work-support\/LLM|업무)/u);
   }
 });
 

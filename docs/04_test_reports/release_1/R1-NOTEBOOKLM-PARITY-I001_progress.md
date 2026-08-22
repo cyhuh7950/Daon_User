@@ -114,3 +114,26 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 변경 파일: `services/api/src/daon_user_api/question_answering_service.py`, `packages/ui/src/product-workspace-shell.jsx`, `services/api/tests/test_notebooklm_chat_grounding.py`.
 - 테스트: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_notebooklm_chat_grounding.py tests/test_question_answering_service.py tests/test_question_answering_runtime_http.py -q` → `25 passed, 19 warnings`. 루트에서 `node --test scripts/tests/product-workspace.test.mjs scripts/tests/real-data-conversation-contract.test.mjs scripts/tests/question-answering-api.test.mjs` → `38 passed`.
 - 미해결/판단 필요: 현재 허용 파일 범위 밖인 `apps/web/lib/question-answering-api.js`가 Source 미선택 요청을 기존 exact 일반대화 문구로 제한한다. 따라서 UI에서 일반 질문을 생성해도 “인사·사용법” 이외 질문은 `QUESTION_INPUT_INVALID`가 될 수 있다. Task 4 요구사항을 완전히 충족하려면 이 클라이언트 계약과 관련 회귀 테스트/OpenAPI 설명을 함께 넓힐지 어울1의 판단이 필요하다.
+
+### Task 4 보완 착수 (R1-NOTEBOOKLM-PARITY-I001-T4)
+
+- 착수: 2026-08-22 12:49:06 KST, 상위 지시에 따라 Source 미선택 질문의 클라이언트 고정 allowlist 제한을 제거한다. 기존 dirty/untracked 변경은 보존한다.
+- 확인: `apps/web/lib/question-answering-api.js`와 Windows native adapter가 Source 미선택 질문을 `isGeneralConversationIntent`에 의존해 제한하고 있으며, OpenAPI 설명과 회귀 테스트도 narrow general conversation을 전제로 한다.
+- 진행 상태: Source·Knowledge Context가 제공된 경우의 기존 검증은 유지하고, 둘 다 없을 때 임의의 일반 업무 질문을 기존 일반 LLM 경로로 전달하는 최소 변경 및 Web/Desktop 회귀 테스트를 진행한다.
+
+### Task 4 보완 구현 완료·로컬 검증
+
+- 변경: `apps/web/lib/question-answering-api.js`의 Source 미선택 분기를 질문 문구 allowlist 없이 `{}`로 전송하도록 변경했다. Source 또는 Knowledge Context가 있으면 기존 exact 입력 검증을 그대로 유지한다.
+- 변경: `apps/desktop/src/windows-workspace-adapter.js`도 Source 미선택 질문을 임의의 일반 업무 질문으로 기존 Native 일반 상담 경로에 전달하도록 동일하게 맞췄다.
+- 변경: OpenAPI 설명에서 no-context 질문을 인사·제품 도움말로 제한하던 문구를 일반 업무 지원/LLM 경로로 정정했다. oneOf 구조와 응답 검증 계약은 변경하지 않았다.
+- 테스트: `node --test scripts/tests/real-data-conversation-contract.test.mjs scripts/tests/question-answering-api.test.mjs scripts/tests/product-workspace.test.mjs` → `38 passed`.
+- 회귀 테스트: Web/Desktop에서 `다음 작업을 어떻게 진행하지?`, `한국어로 답해줘`, 임의 업무 질문을 포함한 Source 미선택 요청이 각각 `source_id`·`knowledge_context` 없이 전송되는 것을 확인했다.
+- 다음: API 지정 테스트와 Web 빌드를 실행하고 변경 파일만 커밋·push한다. 브라우저·DB/MinIO 실물 검증은 통합 단계 미실행으로 유지한다.
+
+### Task 4 보완 검증·종료
+
+- 테스트 완료: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_notebooklm_chat_grounding.py tests/test_question_answering_service.py tests/test_question_answering_runtime_http.py -q` → `25 passed, 19 warnings`.
+- 테스트 완료: `node --test scripts/tests/real-data-conversation-contract.test.mjs scripts/tests/question-answering-api.test.mjs scripts/tests/product-workspace.test.mjs` → `38 passed`.
+- 빌드 완료: `npm run build --workspace @daon-user/web` → Next production build 성공, TypeScript 성공, `verify-product-ui-boundary` `violations: []`, `boundaryErrors: []`.
+- 정적 확인: `git diff --check` 통과. 기존 unrelated dirty/untracked 변경은 staging하지 않았다.
+- 미실행: 로그인 브라우저 실제 클릭, ysna-server 배포, DB/MinIO 실물 정합성은 이번 보완 범위에서 실행하지 않았다.
