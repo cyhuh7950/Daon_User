@@ -157,7 +157,6 @@ export function createWindowsWorkspaceAdapter(workspaceId, { invoke = nativeInvo
       if (typeof question !== "string" || !question.trim() || question.length > 2_000) return Promise.reject(fail("QUESTION_INPUT_INVALID"));
       const normalizedQuestion = question.trim();
       if (!id(sourceId) || !id(sourceVersionId)) {
-        if (!isGeneralConversationIntent(normalizedQuestion)) return Promise.reject(fail("QUESTION_INPUT_INVALID"));
         return call("workspace_ask_question", { workspace_id: workspaceId, notebook_id: notebookId, question: normalizedQuestion }, signal);
       }
       return call("workspace_ask_question", { workspace_id: workspaceId, notebook_id: notebookId, source_id: sourceId, source_version_id: sourceVersionId, question: normalizedQuestion }, signal);
@@ -193,4 +192,3 @@ export function createWindowsWorkspaceAdapter(workspaceId, { invoke = nativeInvo
   };
   return Object.freeze(adapter);
 }
-import { isGeneralConversationIntent } from "../../../packages/ui/src/conversation-intent.js";

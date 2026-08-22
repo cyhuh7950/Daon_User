@@ -5521,7 +5521,7 @@
       "GroundedQuestionRequest": {
         "type": "object",
         "additionalProperties": false,
-        "description": "A grounded question requires exactly one Source or Knowledge Context. A narrow general conversation greeting, thanks, or Daon product-help question may omit both; every other no-context question fails closed. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
+      "description": "A grounded question may include exactly one Source or Knowledge Context. When neither is provided, the question is handled by the ordinary general work-support/LLM path. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
         "required": ["notebook_id", "question"],
         "oneOf": [
           { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
@@ -5539,7 +5539,7 @@
       },
       "GroundedQuestionAuthorizationRequest": {
         "type": "object", "additionalProperties": false,
-        "description": "Authorization for a grounded question or a narrow general conversation greeting, thanks, or Daon product-help question. Other no-context questions fail closed.",
+      "description": "Authorization for a grounded question or a general work-support/LLM question without Source or Knowledge Context.",
         "required": ["notebook_id", "question", "password"],
         "oneOf": [
           { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },

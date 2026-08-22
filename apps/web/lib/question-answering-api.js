@@ -94,7 +94,7 @@ function knowledgeContextBody(value) {
   return { mode: value.mode, resources };
 }
 
-function questionSourceBody({ sourceId, sourceVersionId, knowledgeContext, question }) {
+function questionSourceBody({ sourceId, sourceVersionId, knowledgeContext }) {
   if (knowledgeContext) {
     if (sourceId || sourceVersionId) throw new Error("QUESTION_INPUT_INVALID");
     return { knowledge_context: knowledgeContextBody(knowledgeContext) };
@@ -102,8 +102,10 @@ function questionSourceBody({ sourceId, sourceVersionId, knowledgeContext, quest
   if (sourceId || sourceVersionId) {
     return { source_id: requiredId(sourceId), source_version_id: requiredId(sourceVersionId) };
   }
-  if (isGeneralConversationIntent(question)) return {};
-  throw new Error("QUESTION_INPUT_INVALID");
+  // Source 미선택 질문은 일반 업무 상담/LLM 경로로 전달한다. 질문의
+  // 의미를 클라이언트 allowlist로 판정하지 않고, 서버가 일반 상담과
+  // 선택된 Source grounding을 최종 분기한다.
+  return {};
 }
 
 function isGroundedAnswer(value) {
@@ -160,7 +162,7 @@ export async function askGroundedQuestion(
 ) {
   const workspace = requiredId(workspaceId);
   const notebook = requiredId(notebookId);
-  const sourceBody = questionSourceBody({ sourceId, sourceVersionId, knowledgeContext, question });
+  const sourceBody = questionSourceBody({ sourceId, sourceVersionId, knowledgeContext });
   if (
     typeof question !== "string" || !question.trim()
     || question.length > 2_000 || !SAFE_ID.test(idempotencyKey)
@@ -198,7 +200,7 @@ export async function authorizeGroundedQuestion(
       "Content-Type": "application/json", "Idempotency-Key": idempotencyKey,
     }, body: JSON.stringify({
       notebook_id: notebook,
-      ...questionSourceBody({ sourceId, sourceVersionId, knowledgeContext, question }),
+      ...questionSourceBody({ sourceId, sourceVersionId, knowledgeContext }),
       question: question.trim(), password,
     }) },
   );
