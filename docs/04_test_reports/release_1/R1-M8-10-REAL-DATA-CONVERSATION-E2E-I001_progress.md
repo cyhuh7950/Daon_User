@@ -278,3 +278,12 @@
 - 현재 잔여 미검증: 로그인 세션을 이용한 Oracle 브라우저 실제 Source 업로드→처리→질문→Citation→Studio 흐름의 재실행, 기타 Studio 유형의 실제 Provider 산출물, 장기 Provider 부하·soak, 원격 저장소 SHA 불일치 원인 조사. 운영 서비스 헬스와 공개 URL만 확인했으며 이 항목들을 완료로 과장하지 않는다.
 - 배포 후 기존 로그인 Notebook 브라우저를 same-origin 운영 URL에서 재확인했다. `Daon 실제 기능 검증` Notebook, Raw Source 1건(`daon-knowledge-llm-guide.pdf`, 사용 가능), 질문 답변과 Citation 2·3쪽, Library 산출물 3건이 DOM에 표시됐다. 연결형 Source 2건은 현재 `사용 불가`·재연결 UI로 표시되며, 이는 데이터 부재 상태를 숨기지 않는 현재 계약과 일치한다. 브라우저에서 새 파일 업로드나 삭제는 운영 데이터 변경이므로 이번 Gate에서는 수행하지 않았다.
 - Provider 호환성 probe를 YSNA에서 10회 연속 실행했다. 10/10 모두 `provider=UPSTAGE`, `http=200`, `schema=valid`, `citations=0`, `secret_echo=0`이었다. 이는 10회 단기 연속 안정성 증거이며, 장시간·부하 soak 시험의 대체가 아니다.
+
+## 2026-08-23 Oracle 실제 PDF·Studio·Provider·SHA 잔여 범위 재검증
+
+- 최신 Oracle 대상 `daon-user.sinsan.kr`의 로그인 Notebook `새로운 테스트`에서 실제 PDF `daon-user-manual.pdf`(Source version `sv-8e7dad93db27d5f4d8af25f4c986860f`)를 업로드했다. Source 목록은 `사용 가능`으로 표시됐고, 문서 제목 질문 답변과 Citation `1쪽`, `2쪽`이 브라우저 DOM에 표시됐다.
+- 같은 Source로 `제약·준수 점검표`를 실제 생성했다. Library에 `Daon 사용자 설명서 운영 절차 준수 점검`이 저장되고 output version `output-version-63909d45745d513cf523e48e0cd6f107`과 Source 1 lineage가 표시됐다.
+- 추가 Provider Studio 실제 생성 요청을 수행했다. `비교·데이터 표` Job `studio-job-b685b23cd1b85e26e027a6d28d6e491a`와 `근거 기반 보고서` Job `studio-job-c8b10bef0700d5ae4b46db7c05edf7fc`가 운영 DB의 `studio_generation_jobs`에서 각각 `completed`, `safe_error_code=NULL`로 확인됐다. 각 요청은 동일 PDF Source version과 실제 Run을 사용했다. 브라우저는 비동기 오류 알림을 잠시 유지해 Library 즉시 갱신은 확인하지 못했으므로 다운로드/렌더링은 미검증으로 분리한다.
+- Provider 단기 soak을 YSNA에서 비밀값 비노출 helper로 30회 연속 실행했다. `30/30` 모두 `provider=UPSTAGE`, `http=200`, `schema=valid`, `citations=0`, `secret_echo=0`이며 총 소요 약 28초였다. 이는 bounded soak 증거이며 장시간·고부하 시험을 대체하지 않는다.
+- 원격 SHA 불일치 원인을 read-only로 확정했다. ysna checkout의 로컬 `refs/heads/master`와 `refs/remotes/origin/master`는 stale `1b652ec08`을 가리켰지만, `git ls-remote origin refs/heads/master`와 새로 fetch한 로컬 `origin/master`는 `632463f812ee17071a6bbbe6528a5dca2b24191a`였다. 운영 HEAD `c65070bca4508e132afa45741c9b62386af94c2b`는 canonical master의 조상이며 `c65070b...origin/master`는 `0 9`로 원격이 9개 커밋 앞섰다. 즉 배포 checkout의 원격 추적 ref가 갱신되지 않은 것이 원인이다. stale 커밋으로의 checkout 시도는 `studio-worker`가 없는 Compose를 발견해 컨테이너 재기동 없이 원복했다.
+- 이번 단계에서 소스 코드·운영 DB·Object Storage를 변경하지 않았고, 원격 checkout ref 갱신·운영 재배포도 수행하지 않았다. 미검증은 Studio 다운로드/파일 렌더링, 전체 Studio 유형 행렬, 장시간 Provider 부하·soak, MCP/연결형 Source 실제 연결이다.

@@ -83,3 +83,19 @@
 - 배포 후 API/Web/object-storage healthy, document-worker/studio-worker running, API `DAON_RUNTIME_PROFILE=production`, 개발 인증 우회 변수 미설정, 공개 `/`·`/notebooks` HTTP 200을 확인했다. 기존 로그인 Notebook 브라우저에서도 Raw Source·답변·Citation·Library 산출물 표시를 재확인했다.
 - 원격 `origin/master`가 로컬에서 확인한 SHA와 다른 `1b652ec08`이었고 해당 Compose에 `studio-worker`가 없어 배포를 중단한 뒤 기존 검증 커밋으로 롤백했다. 컨테이너 변경 전에 되돌렸으며, 최종 운영 체크아웃은 `c65070b`다. 이 원격 저장소 SHA 불일치 원인은 별도 조사 대상이다.
 - 기타 Studio 유형은 로컬 계약/UI `27/27` PASS, Provider 호환성은 YSNA 10/10 연속 `HTTP 200/schema valid/secret_echo 0`이다. 실제 기타 Studio Provider 산출물과 장시간 부하·soak은 미검증으로 남긴다.
+
+## 2026-08-23 잔여 Oracle 검증 결과
+
+`PARTIAL / ORACLE_SOURCE_AND_PROVIDER_STUDIO_COMPLETED / BOUNDED_SOAK_PASS / SHA_MISMATCH_ROOT_CAUSE_IDENTIFIED`
+
+- 최신 Oracle 배포본에서 실제 PDF `daon-user-manual.pdf`를 새 Notebook에 업로드하고 `사용 가능` 상태를 확인했다. 문서 제목 질문은 Citation 1·2쪽과 함께 답변됐다.
+- `제약·준수 점검표`는 실제 Provider 산출물과 Library 저장을 브라우저에서 확인했다(output version `output-version-63909d45745d513cf523e48e0cd6f107`).
+- 추가 실제 Provider 요청인 `비교·데이터 표`(`studio-job-b685b23cd1b85e26e027a6d28d6e491a`)와 `근거 기반 보고서`(`studio-job-c8b10bef0700d5ae4b46db7c05edf7fc`)는 운영 DB `studio_generation_jobs`에서 각각 `completed`, `safe_error_code=NULL`로 확인했다. 비동기 UI의 Library 갱신 및 다운로드/렌더링은 미검증이다.
+- YSNA Provider bounded soak `30/30` 성공: 모두 `UPSTAGE HTTP 200`, `schema=valid`, `citations=0`, `secret_echo=0`, 약 28초. 장시간·고부하 안정성은 미검증이다.
+- 원격 SHA 불일치 원인은 ysna checkout의 stale `origin/master=1b652ec08`와 canonical `git ls-remote/fetch origin/master=632463f812ee17071a6bbbe6528a5dca2b24191a`의 ref 미갱신으로 확정했다. 운영 HEAD `c65070b...`는 canonical master의 조상이며 원격이 9개 커밋 앞섰다. stale Compose에는 `studio-worker`가 없어 checkout 시도는 재기동 없이 원복했다.
+
+### 남은 미검증
+
+- Studio 전체 유형 행렬의 브라우저 실제 생성·Library 갱신·파일 다운로드/렌더링
+- 장시간·고부하 Provider soak
+- MCP/연결형 Source의 실제 연결과 산출물 생성
