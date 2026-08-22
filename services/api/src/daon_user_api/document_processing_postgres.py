@@ -171,6 +171,11 @@ class PostgresDocumentProcessingRepository:
                 source_id, source_state, source_version = (
                     str(source_row[0]), str(source_row[1]), int(source_row[2])
                 )
+                # A digest replay can find a Source that was already fully
+                # processed.  Reusing that Source must be idempotent: do not
+                # try to transition a ready Source back into processing or
+                # restart its completed ProcessingRun.
+                replayed_completed = source_state == "ready" and str(row[0]) == "completed"
                 if source_state == "registered":
                     source_version = self._transition(
                         connection, context, entity_type="Source", aggregate_id=source_id,
@@ -190,9 +195,13 @@ class PostgresDocumentProcessingRepository:
                         expected_version=source_version, target_state="processing",
                         reason_code="DOCUMENT_PROCESSING_RESTARTED",
                     )
-                elif source_state != "processing":
+                elif source_state == "ready" and not replayed_completed:
                     raise DocumentUnderstandingError("SOURCE_PROCESSING_STATE_INVALID", status=409)
-                if str(row[0]) == "accepted" and int(row[1]) == 1:
+                elif source_state != "processing" and not replayed_completed:
+                    raise DocumentUnderstandingError("SOURCE_PROCESSING_STATE_INVALID", status=409)
+                if replayed_completed:
+                    pass
+                elif str(row[0]) == "accepted" and int(row[1]) == 1:
                     self._transition(
                         connection, context, entity_type="ProcessingRun",
                         aggregate_id=processing_run_id,

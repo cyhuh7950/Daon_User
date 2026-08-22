@@ -175,6 +175,18 @@ class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
 
         self.assertEqual(replay_run_id, first_run_id)
 
+    def test_async_start_reuses_completed_run_for_ready_digest_replay(self) -> None:
+        self.cloud.connection.states["Source"] = "ready"
+        self.cloud.connection.states["ProcessingRun"] = "completed"
+        run_id = self.repository.start(self.context, "source-version-cp3", enqueue=True)
+
+        self.assertTrue(run_id.startswith("pr-"))
+        self.assertEqual(self.cloud.connection.states["Source"], "ready")
+        self.assertEqual(self.cloud.connection.states["ProcessingRun"], "completed")
+        self.assertEqual(self.cloud.connection.inserts, [
+            "processing_runs", "document_processing_jobs",
+        ])
+
     def test_status_is_workspace_scoped_and_omits_worker_lease_identity(self) -> None:
         status = self.repository.get_status(self.context, "run-cp3", notebook_id="notebook-cp3")
 

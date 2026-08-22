@@ -359,3 +359,13 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 조치 계획: add scoped DB source cleanup function, invoke it from Postgres deletion service, delete returned object keys through existing ObjectStoragePort, persist terminal purged result without grace period, and update focused regression coverage.
 - 미검증: migration application, live PostgreSQL/MinIO and browser remain unexecuted.
 
+## 2026-08-22 Source digest replay upload 오류 수정
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: 실제 브라우저에서 동일 PDF를 재업로드했을 때 첫 등록은 이미 `ready`·처리완료였지만, 재등록 요청이 기존 Source를 digest로 재사용한 뒤 완료된 ProcessingRun을 다시 시작하려 하여 `SOURCE_PROCESSING_STATE_INVALID`가 반환됐다. DB에는 Source와 job이 정상 완료되어 있었으므로 저장소 장애가 아닌 replay 경로의 상태 전이 오류였다.
+- 조치: 완료된 ProcessingRun과 `ready` Source의 digest replay는 기존 계보를 그대로 재사용하고 Source를 다시 `processing`으로 전이하지 않도록 `PostgresDocumentProcessingRepository.start`를 보완했다.
+- 변경: `services/api/src/daon_user_api/document_processing_postgres.py`, `services/api/tests/test_document_processing_postgres.py`
+- 검증: `test_source_upload.py`, `test_source_upload_runtime.py`, `test_document_processing_postgres.py` 합계 `14 passed`; ready Source·completed run replay 회귀 테스트 포함.
+- 미검증: 수정본 ysna 재배포 및 동일 PDF 재업로드 브라우저 재검증은 아직 미실행.
+- 다음 조치: 변경 커밋·푸시 후 ysna API/worker를 재배포하고 브라우저에서 동일 PDF 재업로드가 오류 없이 기존 Source를 재사용하는지 확인한다.
+
