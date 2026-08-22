@@ -21,7 +21,8 @@ from .question_answering import (
     resolve_text_model_selection,
 )
 from .question_answering_postgres import (
-    PostgresQuestionAnsweringRepository, QuestionContext, StoredQuestionAnswer,
+    PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
+    StoredQuestionAnswer,
 )
 
 
@@ -235,6 +236,29 @@ class QuestionAnsweringService:
             key=lambda item: (-float(item.score), int(item.page), str(item.chunk_id)),
         )[:10])
 
+    def _ready_context_sources(
+        self, context: QuestionContext, sources: tuple[QuestionInputSource, ...],
+    ) -> tuple[QuestionInputSource, ...]:
+        """Keep unavailable sources visible to the caller, but never search them.
+
+        A stale browser selection can legitimately contain a source that became
+        unavailable after the list was loaded.  That source must not poison a
+        mixed context: only the ready subset is sent to retrieval and grounding.
+        Database failures and other repository errors still propagate.
+        """
+        ready: list[QuestionInputSource] = []
+        for item in sources:
+            try:
+                self._repository.load_ready_source(
+                    context, item.source_id, item.source_version_id,
+                )
+            except QuestionRepositoryError as error:
+                if error.code == "QUESTION_SOURCE_UNAVAILABLE":
+                    continue
+                raise
+            ready.append(item)
+        return tuple(ready)
+
     def prepare_authorization(
         self, context: QuestionContext, *, source_id: str | None,
         source_version_id: str | None, question: str,
@@ -247,6 +271,10 @@ class QuestionAnsweringService:
         sources = () if general and source_id is None else self._context_sources(
             source_id or "", source_version_id or "", context_sources,
         )
+        if not general:
+            sources = self._ready_context_sources(context, sources)
+            if not sources:
+                general = True
         provider_context = ProviderSettingsContext(
             context.tenant_id, context.workspace_id, context.actor_id,
             context.trace_id, context.policy_version,
@@ -305,6 +333,15 @@ class QuestionAnsweringService:
         sources = () if general and source_id is None else self._context_sources(
             source_id or "", source_version_id or "", context_sources,
         )
+        if not general:
+            sources = self._ready_context_sources(context, sources)
+            if not sources:
+                general = True
+                source_id = None
+                source_version_id = None
+            else:
+                source_id = sources[0].source_id
+                source_version_id = sources[0].source_version_id
         provider_context = ProviderSettingsContext(
             context.tenant_id, context.workspace_id, context.actor_id,
             context.trace_id, context.policy_version,

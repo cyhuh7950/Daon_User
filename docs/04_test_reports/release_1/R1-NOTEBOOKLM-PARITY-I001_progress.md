@@ -100,3 +100,17 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
 - 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`; `DAON_DEV_AUTH_BYPASS`는 설정되지 않음.
 - 미완료: Connector 상태·Source binding의 Postgres 영속화, 국가법령정보센터 실제 API 호출/인증 검증, 로그인된 브라우저의 실제 Connector·Source 클릭 검증, DB·MinIO 실물 정합성은 아직 수행하지 못했다. 이 검증 전에는 Task 3을 최종 완료로 판정하지 않는다.
+
+### Task 4 대화·근거 동작 착수 (R1-NOTEBOOKLM-PARITY-I001-T4)
+
+- 착수: 2026-08-22 12:41 KST, 공식 작업공간 `C:/Users/cyhuh/Desktop/D Driver/Project/Daon_User`, branch `codex/user-auth-screen-split`, HEAD `815764861a70944450d7a1e777d2fc833a13a418`; 기존 dirty 변경은 보존.
+- 현재 확인: Source 미선택 일반 상담과 한국어 응답 메타데이터는 기존 구현에 있으나, 선택 컨텍스트에 `사용 불가` Source가 포함되면 서버 검색 단계가 전체 질문을 실패시킬 수 있다.
+- 진행 상태: 사용 가능한 Source만 grounding 대상으로 필터링하고, 모두 unavailable이면 일반 LLM 상담 경로로 전환하는 최소 수정 및 회귀 테스트를 진행한다.
+
+### Task 4 구현·로컬 검증
+
+- 변경: `QuestionAnsweringService`가 선택 컨텍스트의 Source를 먼저 `load_ready_source`로 확인하고 `QUESTION_SOURCE_UNAVAILABLE`만 제외한다. 일부가 사용 가능하면 남은 Source만 검색·저장·Citation 범위에 사용하고, 모두 unavailable이면 `general_ungrounded` 일반 LLM 경로로 전환한다. DB 장애 등 다른 오류는 그대로 전파한다.
+- 변경: Workspace 대화 UI에서 ready Source를 다시 클릭하면 선택을 해제할 수 있도록 하고, Source 미선택 시 일반 상담 안내·입력 문구를 표시한다. 기존 첫 ready Source 자동 선택과 화면 배치는 유지했다.
+- 변경 파일: `services/api/src/daon_user_api/question_answering_service.py`, `packages/ui/src/product-workspace-shell.jsx`, `services/api/tests/test_notebooklm_chat_grounding.py`.
+- 테스트: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_notebooklm_chat_grounding.py tests/test_question_answering_service.py tests/test_question_answering_runtime_http.py -q` → `25 passed, 19 warnings`. 루트에서 `node --test scripts/tests/product-workspace.test.mjs scripts/tests/real-data-conversation-contract.test.mjs scripts/tests/question-answering-api.test.mjs` → `38 passed`.
+- 미해결/판단 필요: 현재 허용 파일 범위 밖인 `apps/web/lib/question-answering-api.js`가 Source 미선택 요청을 기존 exact 일반대화 문구로 제한한다. 따라서 UI에서 일반 질문을 생성해도 “인사·사용법” 이외 질문은 `QUESTION_INPUT_INVALID`가 될 수 있다. Task 4 요구사항을 완전히 충족하려면 이 클라이언트 계약과 관련 회귀 테스트/OpenAPI 설명을 함께 넓힐지 어울1의 판단이 필요하다.
