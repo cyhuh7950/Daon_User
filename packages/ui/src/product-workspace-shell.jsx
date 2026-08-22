@@ -492,9 +492,6 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [reportPending, setReportPending] = useState(false);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [modalView, setModalView] = useState(null);
-  const [questionAuthorization, setQuestionAuthorization] = useState(null);
-  const [questionAuthorizationPending, setQuestionAuthorizationPending] = useState(false);
-  const questionAuthorizationPasswordRef = useRef(null);
   const [loadRevision, setLoadRevision] = useState(0);
   const [knowledgePackages, setKnowledgePackages] = useState([]);
   const [connectors, setConnectors] = useState([]);
@@ -941,37 +938,6 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         current,
         new Error(safeErrorCode(error, "QUESTION_FAILED")),
       ));
-    }
-  };
-
-  const authorizeQuestion = async (event) => {
-    event.preventDefault();
-    const pending = questionAuthorization;
-    const password = questionAuthorizationPasswordRef.current?.value ?? "";
-    if (!pending || questionAuthorizationPending || typeof adapter?.authorizeQuestion !== "function" || !password) return;
-    setQuestionAuthorizationPending(true);
-    try {
-      const idempotencyKey = crypto.randomUUID();
-      const authorization = await adapter.authorizeQuestion(
-        { knowledgeContext: pending.knowledgeContext, question: pending.question, password },
-        { idempotencyKey, signal: lifetimeControllerRef.current?.signal },
-      );
-      const answer = await adapter.askQuestion(
-        { knowledgeContext: pending.knowledgeContext, question: pending.question },
-        { idempotencyKey, stepUpAuthorizationId: authorization.step_up_authorization_id, signal: lifetimeControllerRef.current?.signal },
-      );
-      setViewState((current) => ({
-        ...current,
-        answer: projectSafeQuestionAnswer(answer, workspaceId, adapter.citationUrl, viewState.selectedSource, selectedKnowledgeId),
-        answerIntent: pending.conversationMode === "work_support" ? "work_support_source_backed" : pending.conversationMode,
-      }));
-      setQuestionAuthorization(null);
-      setModalView(null);
-    } catch (error) {
-      setViewState((current) => projectQuestionFailureState(current, new Error(safeErrorCode(error, "QUESTION_AUTHORIZATION_FAILED"))));
-    } finally {
-      if (questionAuthorizationPasswordRef.current) questionAuthorizationPasswordRef.current.value = "";
-      setQuestionAuthorizationPending(false);
     }
   };
 
@@ -1445,13 +1411,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       </div>
       {modalView ? <div className="workspace-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
         <section ref={modalRef} className={`workspace-modal workspace-modal-${modalView}`} role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title" onKeyDown={(event) => trapDialogFocus(event, closeModal)}>
-          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-authorization" ? "Source 질문 승인" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" onClick={() => closeModal()} aria-label="닫기">×</button></header>
-          {modalView === "question-authorization" ? <form className="workspace-modal-content question-authorization" onSubmit={authorizeQuestion}>
-            <strong>Source 질문 승인</strong><p>선택한 Source를 외부 LLM에 전송하려면 현재 비밀번호로 일회성 승인이 필요합니다.</p>
-            <label><span>현재 비밀번호</span><input ref={questionAuthorizationPasswordRef} type="password" autoComplete="current-password" disabled={questionAuthorizationPending} /></label>
-            <small>비밀번호와 승인 토큰은 저장하지 않습니다.</small>
-            <button type="submit" disabled={questionAuthorizationPending}>{questionAuthorizationPending ? "승인·질문 실행 중" : "승인하고 질문"}</button>
-          </form> : modalView === "llm" ? <div className="workspace-modal-content">{providerSettings ?? <div className="modal-unavailable" role="status"><strong>Provider 설정 연결이 필요합니다.</strong><p>현재 Workspace에서는 설정 상태를 불러올 수 없습니다.</p><button type="button" disabled>연결 기능 준비 중</button></div>}</div> : modalView === "output-version" ? <div className="workspace-modal-content output-version-settings">
+          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" onClick={() => closeModal()} aria-label="닫기">×</button></header>
+          {modalView === "llm" ? <div className="workspace-modal-content">{providerSettings ?? <div className="modal-unavailable" role="status"><strong>Provider 설정 연결이 필요합니다.</strong><p>현재 Workspace에서는 설정 상태를 불러올 수 없습니다.</p><button type="button" disabled>연결 기능 준비 중</button></div>}</div> : modalView === "output-version" ? <div className="workspace-modal-content output-version-settings">
             {outputSettingsPending && !outputSettings ? <div className="modal-unavailable" role="status">출력 설정을 불러오고 있습니다.</div> : null}
             {outputSettingsSafeError ? <div className="modal-unavailable" role="alert"><strong>출력 설정을 처리하지 못했습니다.</strong><p>변경 내용은 저장되지 않았습니다.</p><button type="button" onClick={() => void loadOutputVersionSettings()}>다시 불러오기</button></div> : null}
             {outputSettings && outputDraft ? <form onSubmit={(event) => { event.preventDefault(); void saveOutputVersionSettings(); }}>

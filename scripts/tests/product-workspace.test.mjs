@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -29,6 +29,11 @@ test("작업 상담과 명시 Source 확인은 서로 다른 conversation mode�
   assert.equal(classifyConversationIntent("선택한 문서에서 보존 기간을 찾아줘"), "explicit_source_lookup");
   assert.equal(classifyConversationIntent("이 자료로 보고서를 만들어줘"), "source_backed_action");
   assert.equal(classifyConversationIntent("최신 정책을 웹에서 찾아줘"), "approved_web_research");
+});
+
+test("질문 실행 UI는 세션 인증 외 Source 질문 승인 modal을 노출하지 않는다", async () => {
+  const source = await readFile(new URL("../../packages/ui/src/product-workspace-shell.jsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /Source 질문 승인|question-authorization|authorizeQuestion/u);
 });
 
 test("Source 범위 불일치는 단독 refusal이 아니라 구조화된 다음 행동을 반환한다", () => {
