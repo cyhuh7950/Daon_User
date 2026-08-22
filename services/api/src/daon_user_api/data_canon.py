@@ -300,13 +300,18 @@ class PostgresDataCanonStore:
         digest_sha256: str,
         byte_size: int,
         created_at: datetime,
+        content_type: str = "application/pdf",
+        deletion_policy: str = "delete_with_notebook",
     ) -> None:
+        if deletion_policy not in {"delete_with_notebook", "retain_after_notebook_delete"}:
+            raise CanonError("CANON_SNAPSHOT_INVALID")
         payload: dict[str, object] = {
             "filename": filename,
-            "content_type": "application/pdf",
+            "content_type": content_type,
             "byte_size": byte_size,
             "object_id": object_id,
             "content_digest_sha256": digest_sha256,
+            "deletion_policy": deletion_policy,
         }
         snapshot_digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
         snapshot = CanonicalSnapshot(
@@ -394,6 +399,25 @@ class PostgresDataCanonStore:
                     context.actor_id, created_at,
                 ),
             )
+
+    def find_source_by_digest(
+        self, context: CanonicalContext, *, digest_sha256: str
+    ) -> tuple[str, str, str] | None:
+        """Return an existing canonical object so identical uploads store once."""
+        if not _DIGEST.fullmatch(digest_sha256):
+            raise CanonError("CANON_SNAPSHOT_INVALID")
+        with self._transaction(context) as connection:
+            row = connection.execute(
+                "SELECT sv.source_id, sv.record_id, sv.object_id "
+                "FROM source_versions sv "
+                "WHERE sv.tenant_id=%s AND sv.workspace_id=%s "
+                "AND sv.canonical_json->>'content_digest_sha256'=%s "
+                "ORDER BY sv.created_at ASC LIMIT 1",
+                (context.tenant_id, context.workspace_id, digest_sha256),
+            ).fetchone()
+        if row is None or any(value is None for value in row):
+            return None
+        return str(row[0]), str(row[1]), str(row[2])
 
     def transition(
         self,
