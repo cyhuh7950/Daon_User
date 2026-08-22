@@ -137,3 +137,12 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 빌드 완료: `npm run build --workspace @daon-user/web` → Next production build 성공, TypeScript 성공, `verify-product-ui-boundary` `violations: []`, `boundaryErrors: []`.
 - 정적 확인: `git diff --check` 통과. 기존 unrelated dirty/untracked 변경은 staging하지 않았다.
 - 미실행: 로그인 브라우저 실제 클릭, ysna-server 배포, DB/MinIO 실물 정합성은 이번 보완 범위에서 실행하지 않았다.
+
+### Task 4 ysna-server 배포 확인
+
+- 배포: `47f15ea` 기준 API·document-worker·web 이미지를 재빌드하고 재기동했다.
+- 빌드: API/worker 이미지와 Web Next.js 빌드 성공. TypeScript 및 `verify-product-ui-boundary` 성공(`violations: []`).
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, 기존 MinIO `healthy`.
+- 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
+- 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`; `DAON_DEV_AUTH_BYPASS`는 설정되지 않음.
+- 미완료: 로그인된 브라우저의 실제 일반 질문·Source 질문 클릭 검증, Connector 상태·Source binding의 Postgres 영속화, 국가법령정보센터 실제 API 호출/인증 검증, DB·MinIO 실물 정합성은 아직 수행하지 못했다.
