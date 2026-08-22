@@ -91,6 +91,14 @@ class FakeTransport:
         })}}]}
 
 
+class GeneralAnswerTransport(FakeTransport):
+    def post_json(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        return {"choices": [{"message": {"content": json.dumps({
+            "answer": "일반 답변입니다.",
+        }, ensure_ascii=False)}}]}
+
+
 class FakeEgress:
     def authorize(self, context, **kwargs):  # type: ignore[no-untyped-def]
         return {"egress_decision_id": "egress-test", "routing_decision_id": "routing-test"}
@@ -434,8 +442,8 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
         self.assertEqual(provider.calls, 1)
         self.assertEqual(transport.calls, 1)
 
-    def test_no_retrieved_evidence_returns_insufficient_without_provider_call(self) -> None:
-        provider, repository, transport = FakeProviderSettings(), FakeRepository(), FakeTransport()
+    def test_no_retrieved_evidence_falls_back_to_general_provider_answer(self) -> None:
+        provider, repository, transport = FakeProviderSettings(), FakeRepository(), GeneralAnswerTransport()
         service = QuestionAnsweringService(
             provider, repository, FakeIndex(()), FakeCredential(), transport, FakeEgress(),
         )
@@ -446,10 +454,27 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             question="unsupported?", run_id="run-cp3",
         )
 
-        self.assertTrue(answer.insufficient)
+        self.assertFalse(answer.insufficient)
         self.assertEqual(answer.citations, ())
-        self.assertEqual(transport.calls, 0)
-        self.assertFalse(repository.persisted["provider_called"])
+        self.assertEqual(transport.calls, 1)
+        self.assertTrue(repository.persisted["provider_called"])
+
+    def test_question_without_retrieved_evidence_falls_back_to_general_answer(self) -> None:
+        provider, repository, transport = FakeProviderSettings(), FakeRepository(), GeneralAnswerTransport()
+        service = QuestionAnsweringService(
+            provider, repository, FakeIndex(()), FakeCredential(), transport, FakeEgress(),
+        )
+
+        answer = service.ask(
+            QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+            source_id="source-cp3", source_version_id="source-version-cp3",
+            question="unsupported?", run_id="run-general-fallback",
+        )
+
+        self.assertFalse(answer.insufficient)
+        self.assertEqual(answer.citations, ())
+        self.assertEqual(transport.calls, 1)
+        self.assertTrue(repository.persisted["provider_called"])
 
 
 if __name__ == "__main__":

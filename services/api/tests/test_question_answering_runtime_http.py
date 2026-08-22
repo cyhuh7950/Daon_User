@@ -23,6 +23,7 @@ class FakeQuestionService:
         self.calls = []
         self.replay_calls = []
         self.replay_answer = None
+        self.insufficient_source = False
 
     def replay(self, context, *, run_id, request_fingerprint):  # type: ignore[no-untyped-def]
         self.replay_calls.append((context, run_id, request_fingerprint))
@@ -33,6 +34,10 @@ class FakeQuestionService:
         if kwargs["source_id"] is None:
             return StoredQuestionAnswer(
                 kwargs["run_id"], "result-general", "안녕하세요. 무엇을 도와드릴까요?", False, (),
+            )
+        if self.insufficient_source:
+            return StoredQuestionAnswer(
+                kwargs["run_id"], "result-insufficient", "선택한 Source 범위와 질문이 일치하지 않습니다.", True, (),
             )
         return StoredQuestionAnswer(
             kwargs["run_id"], "result-cp3", "ORANGE-COMPASS-42", False,
@@ -81,7 +86,25 @@ class FakeCitationContent:
 
 
 class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
-    async def test_general_conversation_allows_no_context_but_factual_question_fails_closed(self) -> None:
+    async def test_arbitrary_question_without_context_reaches_general_provider_answer(self) -> None:
+        with self._authenticated():
+            response = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-any-general-0001"},
+                json={"notebook_id": "notebook-cp3", "question": "2026년 매출은?"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["citations"], [])
+        self.assertFalse(response.json()["data"]["insufficient"])
+        self.assertEqual(response.json()["data"]["mode"], "work_support")
+        self.assertEqual(response.json()["data"]["grounding"], "ungrounded")
+        self.assertIsNone(response.json()["data"]["source_scope_summary"])
+        self.assertIsNone(response.json()["data"]["mismatch"])
+        self.assertEqual(response.json()["data"]["next_actions"], [])
+        self.assertEqual(self.service.calls[-1][1]["source_id"], None)
+
+    async def test_any_question_allows_no_context_and_returns_general_answer(self) -> None:
         with self._authenticated():
             response = await self.client.post(
                 "/api/v1/workspaces/workspace-001/questions",
@@ -96,14 +119,85 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
         self.service.calls.clear()
         with self._authenticated():
-            rejected = await self.client.post(
+            answer = await self.client.post(
                 "/api/v1/workspaces/workspace-001/questions",
                 cookies={WEB_SESSION_COOKIE: "opaque-session"},
                 headers={"Idempotency-Key": "question-general-0002"},
                 json={"notebook_id": "notebook-cp3", "question": "2026년 매출은?"},
             )
-        self.assertEqual(rejected.status_code, 400)
-        self.assertEqual(self.service.calls, [])
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(answer.json()["data"]["citations"], [])
+        self.assertFalse(answer.json()["data"]["insufficient"])
+        self.assertEqual(answer.json()["data"]["mode"], "work_support")
+        self.assertEqual(answer.json()["data"]["grounding"], "ungrounded")
+        self.assertIsNone(self.service.calls[-1][1]["source_id"])
+
+    async def test_source_scope_mismatch_is_structured_and_not_silent_refusal(self) -> None:
+        self.service.insufficient_source = True
+        with self._authenticated():
+            response = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-mismatch-0001"},
+                json={
+                    "notebook_id": "notebook-cp3", "source_id": "source-cp3",
+                    "source_version_id": "source-version-cp3",
+                    "question": "선택한 문서에 없는 최신 시장 소식은?",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()["data"]
+        self.assertEqual(data["mode"], "explicit_source_lookup")
+        self.assertEqual(data["grounding"], "source_evidence_unavailable")
+        self.assertEqual(data["source_scope_summary"], "선택한 Source 범위")
+        self.assertEqual(data["mismatch"]["code"], "SOURCE_SCOPE_MISMATCH")
+        self.assertTrue(data["next_actions"])
+        self.assertNotEqual(data["answer"], "근거가 부족하여 답변할 수 없습니다")
+
+    async def test_supported_modes_are_exactly_projected_for_context_free_questions(self) -> None:
+        cases = (
+            ("work_support", "다음 작업을 어떻게 진행할까?", "question-mode-work"),
+            ("source_backed_action", "이 자료로 보고서 만들어줘", "question-mode-action"),
+            ("approved_web_research", "최신 정보를 웹에서 검색해줘", "question-mode-web"),
+        )
+        for expected_mode, question, key in cases:
+            with self._authenticated():
+                response = await self.client.post(
+                    "/api/v1/workspaces/workspace-001/questions",
+                    cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                    headers={"Idempotency-Key": key},
+                    json={"notebook_id": "notebook-cp3", "question": question},
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            data = response.json()["data"]
+            self.assertEqual(data["mode"], expected_mode)
+            self.assertEqual(data["grounding"], "ungrounded")
+            self.assertIsNone(data["source_scope_summary"])
+            self.assertIsNone(data["mismatch"])
+            if expected_mode == "approved_web_research":
+                self.assertEqual(data["next_actions"], ["승인된 웹 조사 요청"])
+            else:
+                self.assertEqual(data["next_actions"], [])
+
+    async def test_grounded_response_exposes_source_backed_metadata(self) -> None:
+        with self._authenticated():
+            response = await self.client.post(
+                "/api/v1/workspaces/workspace-001/questions",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={"Idempotency-Key": "question-grounded-metadata-0001"},
+                json={
+                    "notebook_id": "notebook-cp3", "source_id": "source-cp3",
+                    "source_version_id": "source-version-cp3",
+                    "question": "What is the verified answer?",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()["data"]
+        self.assertEqual(data["mode"], "explicit_source_lookup")
+        self.assertEqual(data["grounding"], "source_backed")
+        self.assertEqual(data["source_scope_summary"], "선택한 Source 범위")
+        self.assertIsNone(data["mismatch"])
+        self.assertEqual(data["next_actions"], [])
 
     async def test_completed_local_question_replay_revalidates_binding_before_domain_state(self) -> None:
         body = {

@@ -334,7 +334,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
       if (command === "notebook_context") return {
         notebook_id: args.input.notebook_id,
         sources: args.input.notebook_id === "notebook-empty" ? [] : [{ source_id: `source-${args.input.workspace_id}`, source_version_id: `version-${args.input.workspace_id}` }],
-        knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null,
+        knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], source_deletion_requests: [], conversation: null,
       };
       if (command === "notebook_list") return [{ notebook_id: "notebook-1", title: "Notebook", source_count: 1, output_count: 0, updated_at: "2026-08-11T01:00:00Z", status: "active" }];
       if (command === "workspace_list_sources" && args.input.workspace_id === "workspace-2") {
@@ -504,7 +504,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
         return new Promise((resolve) => { resolveLateAuthorization = resolve; });
       }
       if (command === "notebook_get") return { notebook_id: args.input.notebook_id, title: "Notebook", source_count: 0, output_count: 0, updated_at: "2026-08-11T01:00:00Z", status: "empty" };
-      if (command === "notebook_context") return { notebook_id: args.input.notebook_id, sources: [], knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null };
+      if (command === "notebook_context") return { notebook_id: args.input.notebook_id, sources: [], knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], source_deletion_requests: [], conversation: null };
       if (command === "notebook_list") return [{ notebook_id: "notebook-1", title: "Notebook", source_count: 0, output_count: 0, updated_at: "2026-08-11T01:00:00Z", status: "empty" }];
       if (command === "workspace_list_sources") return [];
       if (command === "workspace_list_studio_outputs") return [];
@@ -1852,7 +1852,7 @@ test("Desktop Notebook async epoch는 Session·Workspace·Hash 전환 뒤 stale 
     notebook_id: notebookId,
     sources: sourceId ? [{ source_id: sourceId, source_version_id: `version-${sourceId}` }] : [],
     knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [],
-    generation_settings_ids: [], conversation: null,
+    generation_settings_ids: [], source_deletion_requests: [], conversation: null,
   });
   try {
     const { act, createElement } = await import("react");
@@ -2017,13 +2017,13 @@ test("Desktop session revalidate epoch는 reverse status/context 응답 A-F를 l
   });
   const emptyContext = (notebookId) => ({
     notebook_id: notebookId, sources: [], knowledge_context_ids: [], conversation_thread_ids: [],
-    studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null,
+    studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], source_deletion_requests: [], conversation: null,
   });
   const richContext = (notebookId) => ({
     notebook_id: notebookId,
     sources: [{ source_id: "source-old", source_version_id: "version-old" }],
     knowledge_context_ids: [], conversation_thread_ids: ["thread-old"], studio_output_ids: ["output-old"],
-    output_version_ids: ["output-version-old"], generation_settings_ids: [],
+    output_version_ids: ["output-version-old"], generation_settings_ids: [], source_deletion_requests: [],
     conversation: {
       conversation_thread_id: "thread-old",
       answer: {

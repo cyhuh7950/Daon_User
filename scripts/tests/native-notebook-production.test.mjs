@@ -5,7 +5,7 @@ import { createNativeNotebookBridge } from "../../apps/desktop/src/native-notebo
 import { concealProtectedDesktop, revealProtectedDesktop } from "../../apps/desktop/src/desktop-protected-route.js";
 
 const VIEW = { notebook_id: "notebook-1", title: "Notebook", source_count: 1, output_count: 0, updated_at: "2026-08-20T01:02:03Z", status: "active" };
-const CONTEXT = { notebook_id: "notebook-1", sources: [{ source_id: "source-1", source_version_id: "version-1" }], knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null };
+const CONTEXT = { notebook_id: "notebook-1", sources: [{ source_id: "source-1", source_version_id: "version-1" }], knowledge_context_ids: [], conversation_thread_ids: [], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], source_deletion_requests: [], conversation: null };
 
 test("Native Notebook Home은 명시 선택만 list/create/get/context exact command로 전송한다", async () => {
   const calls = [];
