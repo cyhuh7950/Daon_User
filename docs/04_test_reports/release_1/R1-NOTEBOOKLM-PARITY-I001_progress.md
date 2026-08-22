@@ -408,3 +408,11 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 미검증: ysna-server 재배포, 실제 브라우저에서 MCP 등록·삭제 클릭, 고정 Daon 삭제 거부의 실제 HTTP 호출은 아직 실행하지 않았다.
 - 다음 조치: 커밋·푸시 후 ysna API/Web을 재배포하고, 브라우저에서 `MCP 연결` 등록과 MCP 삭제를 확인한다. Daon 승인 지식에는 삭제 컨트롤이 없는지 확인한다.
 
+## 2026-08-22 연결형 Source YSNA 배포
+
+- 상태: `DEPLOYED / BROWSER_CLICK_PENDING`
+- 배포: `0b1a514`를 YSNA 격리 checkout에 반영하고 API·document-worker·Web을 재빌드했다. 첫 기동은 기존 compose 기본값 `DAON_OBJECT_STORAGE_SECURE=true`가 HTTP MinIO와 맞지 않아 API가 `OBJECT_STORAGE_UNAVAILABLE`로 unhealthy가 되었고, 기존 런타임 설정에 맞춰 `DAON_OBJECT_STORAGE_SECURE=false`로 재기동했다.
+- 검증: API, document-worker, studio-worker, object-storage, web이 모두 running이며 `/notebooks`는 HTTP 200이다. Web production build와 product UI boundary는 이미지 빌드 중 `violations: []`, `boundaryErrors: []`로 통과했다.
+- 미검증: 로그인 브라우저에서 MCP 등록·삭제 클릭, Daon 승인 지식 삭제 컨트롤 부재, 인증된 고정 Connector DELETE의 `CONNECTOR_FIXED` 실제 HTTP 응답은 아직 확인하지 못했다. 무인 DELETE는 CSRF 보호로 거부되어 데이터 변경은 발생하지 않았다.
+- 다음 조치: 로그인 세션이 연결된 브라우저에서 Source 추가 → MCP 연결 → 등록 후 MCP 행의 삭제를 클릭 검증하고, Daon 승인 지식 행에 삭제 버튼이 없는지 확인한다.
+
