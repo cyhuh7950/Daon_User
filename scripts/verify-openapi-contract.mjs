@@ -8,7 +8,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/auth/native/login",
+  "/api/v1/preferences/screen",
+  "/api/v1/workspaces/{id}/license",
+  "/api/v1/workspaces/{id}/notebooks",
+  "/api/v1/workspaces/{id}/notebooks/{notebook_id}",
+  "/api/v1/workspaces/{id}/notebooks/{notebook_id}/context",
+  "/api/v1/organizations/{id}/license",
   "/api/v1/session",
+  "/api/v1/session/logout",
   "/api/v1/session/step-up",
   "/api/v1/session/oidc/transactions",
   "/api/v1/session/oidc/callback",
@@ -23,6 +30,10 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/workspaces/{id}/knowledge-scope",
   "/api/v1/workspaces/{id}/weight-profile",
   "/api/v1/workspaces/{id}/model-policy",
+  "/api/v1/workspaces/{id}/egress-policy",
+  "/api/v1/workspaces/{id}/questions/authorization",
+  "/api/v1/organizations/{id}/egress-policy-versions",
+  "/api/v1/workspaces/{id}/egress-policy-versions",
   "/api/v1/workspaces/{id}/authorization/evaluations",
   "/api/v1/access-decisions",
   "/api/v1/rulesets",
@@ -45,12 +56,14 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/studio-generation-requests",
   "/api/v1/studio-outputs",
   "/api/v1/studio-outputs/{id}/versions",
+  "/api/v1/studio-outputs/{id}/versions/{version_id}/exports/{format_name}",
   "/api/v1/reviews",
   "/api/v1/approval-requests",
   "/api/v1/approvals",
   "/api/v1/deliveries",
   "/api/v1/knowledge-registrations",
   "/api/v1/model-profiles",
+  "/api/v1/model-profiles/{provider_code}/connection-check",
   "/api/v1/model-deployments",
   "/api/v1/model-routing/preview",
   "/api/v1/local-nodes",
@@ -60,6 +73,11 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/notifications",
   "/api/v1/notifications/{id}",
   "/api/v1/inbox",
+  "/api/v1/workspaces/{id}/knowledge-packages",
+  "/api/v1/workspaces/{id}/operations/status",
+  "/api/v1/workspaces/{id}/output-version-settings",
+  "/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies",
+  "/api/v1/offline-knowledge-copies/{copy_id}/content",
   "/api/v1/workspaces/{id}/sync-operations",
   "/api/v1/sync-operations/{id}",
   "/api/v1/sync-operations/{id}/approve",
@@ -79,7 +97,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/restore-requests/{id}/cancel"
 ]);
 
-const HTTP_METHODS = new Set(["get", "post", "patch", "delete"]);
+const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete"]);
 const COMMON_ERROR_STATUSES = ["400", "401", "403", "404", "409", "412", "500"];
 const REQUIRED_ERROR_CODES = [
   "COST_LIMIT_EXCEEDED",
@@ -293,7 +311,7 @@ function validateIdentityContract(document) {
     "OidcLoginStartRequest", "OidcLoginStart",
     "OidcCallbackRequest", "NativeRefreshRequest", "StepUpAuthorizationRequest",
     "StepUpAuthorization", "DeviceRevokeRequest", "DeviceRevocation",
-    "SessionRevokeRequest", "SessionRevocation"
+    "SessionRevokeRequest", "SessionRevocation", "CurrentSessionLogout"
   ]) {
     if (!isObject(schemas[name])) fail(`missing identity schema ${name}`);
   }
@@ -303,6 +321,12 @@ function validateIdentityContract(document) {
   if (schemas.StepUpAuthorizationRequest?.properties?.ttl_seconds?.maximum !== 600) {
     fail("Step-up TTL maximum must be 600 seconds");
   }
+  if (
+    !schemas.StepUpAuthorizationRequest?.required?.includes("password")
+    || schemas.StepUpAuthorizationRequest?.properties?.password?.writeOnly !== true
+    || schemas.StepUpAuthorizationRequest?.properties?.password?.minLength !== 12
+    || schemas.StepUpAuthorizationRequest?.properties?.password?.maxLength !== 1024
+  ) fail("Step-up must require an approved writeOnly reauthentication password");
   if (schemas.NativeRefreshRequest?.properties?.refresh_credential?.writeOnly !== true) {
     fail("Native refresh credential must be writeOnly");
   }
@@ -368,9 +392,17 @@ function validateIdentityContract(document) {
   if (schemas.SessionRevokeRequest?.properties?.step_up_authorization?.writeOnly !== true) {
     fail("Session revoke Step-up value must be writeOnly");
   }
+  const currentLogout = schemas.CurrentSessionLogout;
+  if (
+    currentLogout?.type !== "object" || currentLogout.additionalProperties !== false
+    || JSON.stringify(currentLogout.required) !== JSON.stringify(["status", "replayed"])
+    || currentLogout.properties?.status?.const !== "logged_out"
+    || currentLogout.properties?.replayed?.type !== "boolean"
+  ) fail("Current session logout must expose only the safe idempotent result");
   const requiredOperations = {
     "/api/v1/auth/native/login": ["post", "NativeCredentialSessionResponse"],
     "/api/v1/session": ["get", "IdentitySessionResponse"],
+    "/api/v1/session/logout": ["post", "CurrentSessionLogoutResponse"],
     "/api/v1/session/step-up": ["post", "StepUpAuthorizationResponse"],
     "/api/v1/session/oidc/transactions": ["post", "OidcLoginStartResponse"],
     "/api/v1/session/oidc/callback": ["post", "IdentitySessionResponse"],
@@ -390,6 +422,38 @@ function validateIdentityContract(document) {
   const callbackDescription = document.paths?.["/api/v1/session/oidc/callback"]?.post?.description ?? "";
   if (!callbackDescription.includes("same-origin") || !callbackDescription.includes("HTTPS")) {
     fail("OIDC callback must distinguish Web same-origin and Native HTTPS delivery");
+  }
+}
+
+function validateLicenseContract(document) {
+  const schemas = document.components?.schemas ?? {};
+  const view = schemas.LicenseView;
+  const required = [
+    "product", "edition", "license_id_hint", "issued_at", "expires_at", "status",
+    "features", "resources", "warning", "creation_allowed", "existing_read_allowed",
+    "existing_export_allowed", "can_apply"
+  ];
+  if (view?.type !== "object" || view.additionalProperties !== false) fail("LicenseView must be an exact safe projection");
+  for (const field of required) if (!(view?.required ?? []).includes(field)) fail(`LicenseView missing ${field}`);
+  for (const forbidden of ["signature", "claims", "claims_digest", "signing_key_id", "organization_id"]) {
+    if (forbidden in (view?.properties ?? {})) fail(`LicenseView exposes forbidden ${forbidden}`);
+  }
+  const apply = schemas.LicenseApplyRequest;
+  if (
+    apply?.type !== "object" || apply.additionalProperties !== false
+    || JSON.stringify(apply.required) !== JSON.stringify(["document", "step_up_authorization_id"])
+    || apply.properties?.document?.writeOnly !== true
+    || apply.properties?.step_up_authorization_id?.writeOnly !== true
+  ) fail("LicenseApplyRequest must keep signed document and Step-up writeOnly");
+  const operations = {
+    "/api/v1/workspaces/{id}/license": ["get", "LicenseResponse"],
+    "/api/v1/organizations/{id}/license": ["post", "LicenseResponse"]
+  };
+  for (const [apiPath, [method, responseName]] of Object.entries(operations)) {
+    const operation = document.paths?.[apiPath]?.[method];
+    if (!isObject(operation)) fail(`missing license operation ${method.toUpperCase()} ${apiPath}`);
+    const success = operation.responses?.[method === "post" ? "201" : "200"];
+    if (success?.$ref !== `#/components/responses/${responseName}`) fail(`license response mismatch ${apiPath}`);
   }
 }
 
@@ -418,6 +482,22 @@ export function validateOpenApiDocument(document) {
       field === "password" ? "native_local_login_input" : field
     ));
   }
+  const stepUpForScan = secretScanDocument.components?.schemas?.StepUpAuthorizationRequest;
+  if (isObject(stepUpForScan?.properties?.password)) {
+    stepUpForScan.properties.step_up_reauthentication_input = stepUpForScan.properties.password;
+    delete stepUpForScan.properties.password;
+  }
+  if (Array.isArray(stepUpForScan?.required)) {
+    stepUpForScan.required = stepUpForScan.required.map((field) => field === "password" ? "step_up_reauthentication_input" : field);
+  }
+  const questionAuthorizationForScan = secretScanDocument.components?.schemas?.GroundedQuestionAuthorizationRequest;
+  if (isObject(questionAuthorizationForScan?.properties?.password)) {
+    questionAuthorizationForScan.properties.question_reauthentication_input = questionAuthorizationForScan.properties.password;
+    delete questionAuthorizationForScan.properties.password;
+  }
+  if (Array.isArray(questionAuthorizationForScan?.required)) {
+    questionAuthorizationForScan.required = questionAuthorizationForScan.required.map((field) => field === "password" ? "question_reauthentication_input" : field);
+  }
   const serialized = JSON.stringify(secretScanDocument);
   for (const pattern of FORBIDDEN_SOURCE_TOKENS) if (pattern.test(serialized)) fail(`forbidden token ${pattern}`);
 
@@ -425,6 +505,86 @@ export function validateOpenApiDocument(document) {
   const actualPaths = Object.keys(document.paths);
   for (const requiredPath of REQUIRED_PATHS) if (!(requiredPath in document.paths)) fail(`required path missing ${requiredPath}`);
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
+  const knowledgeMethods = new Map([
+    ["/api/v1/workspaces/{id}/knowledge-packages", ["get"]],
+    ["/api/v1/workspaces/{id}/operations/status", ["get"]],
+    ["/api/v1/workspaces/{id}/output-version-settings", ["get", "patch"]],
+    ["/api/v1/workspaces/{id}/sync-operations", ["get", "post"]],
+    ["/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies", ["post"]],
+    ["/api/v1/offline-knowledge-copies/{copy_id}/content", ["get"]],
+  ]);
+  for (const [apiPath, expectedMethods] of knowledgeMethods) {
+    const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method)).sort();
+    if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Knowledge Package method mismatch ${apiPath}`);
+  }
+  const notebookMethods = new Map([
+    ["/api/v1/workspaces/{id}/notebooks", ["get", "post"]],
+    ["/api/v1/workspaces/{id}/notebooks/{notebook_id}", ["get", "patch"]],
+    ["/api/v1/workspaces/{id}/notebooks/{notebook_id}/context", ["get"]],
+  ]);
+  for (const [apiPath, expectedMethods] of notebookMethods) {
+    const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method)).sort();
+    if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Notebook method mismatch ${apiPath}`);
+  }
+  const syncItem = document.components?.schemas?.SyncItemInput;
+  if (
+    JSON.stringify(syncItem?.properties?.item_kind?.enum) !== JSON.stringify(["source_version", "output_version"])
+    || syncItem?.properties?.item_kind?.default !== "source_version"
+    || syncItem?.properties?.source_version_id?.type?.[1] !== "null"
+    || syncItem?.properties?.output_version_id?.type?.[1] !== "null"
+    || syncItem?.properties?.dependency_item_ids?.default?.length !== 0
+  ) fail("versioned Sync item schema mismatch");
+  if (document.components?.schemas?.OfflineKnowledgeCopyRequest?.additionalProperties !== false) {
+    fail("Offline Knowledge copy request must be exact");
+  }
+  const studioRuntimeMethods = new Map([
+    ["/api/v1/studio-generation-requests", ["post"]],
+    ["/api/v1/studio-outputs", ["get"]],
+    ["/api/v1/studio-outputs/{id}/versions", ["get", "post"]],
+    ["/api/v1/reviews", ["post"]], ["/api/v1/approval-requests", ["post"]],
+    ["/api/v1/approvals", ["post"]], ["/api/v1/deliveries", ["post"]],
+    ["/api/v1/knowledge-registrations", ["post"]],
+  ]);
+  for (const [apiPath, expectedMethods] of studioRuntimeMethods) {
+    const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method)).sort();
+    if (JSON.stringify(actualMethods) !== JSON.stringify(expectedMethods)) fail(`Studio Runtime method mismatch ${apiPath}`);
+  }
+  const studioRequestBodies = new Map([
+    ["/api/v1/studio-generation-requests", "#/components/requestBodies/StudioGeneration"],
+    ["/api/v1/studio-outputs/{id}/versions", "#/components/requestBodies/StudioRevision"],
+    ["/api/v1/reviews", "#/components/requestBodies/StudioAction"],
+    ["/api/v1/approval-requests", "#/components/requestBodies/StudioAction"],
+    ["/api/v1/approvals", "#/components/requestBodies/StudioAction"],
+    ["/api/v1/deliveries", "#/components/requestBodies/StudioAction"],
+    ["/api/v1/knowledge-registrations", "#/components/requestBodies/StudioAction"],
+  ]);
+  for (const [apiPath, expectedRef] of studioRequestBodies) {
+    if (document.paths[apiPath]?.post?.requestBody?.$ref !== expectedRef) fail(`Studio Runtime request mismatch ${apiPath}`);
+  }
+  const studioResponses = new Map([
+    ["/api/v1/studio-generation-requests", "#/components/responses/StudioGenerationMutationResponse"],
+    ["/api/v1/studio-outputs/{id}/versions", "#/components/responses/StudioVersionMutationResponse"],
+    ["/api/v1/reviews", "#/components/responses/StudioActionMutationResponse"],
+    ["/api/v1/approval-requests", "#/components/responses/StudioActionMutationResponse"],
+    ["/api/v1/approvals", "#/components/responses/StudioActionMutationResponse"],
+    ["/api/v1/deliveries", "#/components/responses/StudioActionMutationResponse"],
+    ["/api/v1/knowledge-registrations", "#/components/responses/StudioActionMutationResponse"],
+  ]);
+  for (const [apiPath, expectedRef] of studioResponses) {
+    for (const status of ["200", "201"]) {
+      if (document.paths[apiPath]?.post?.responses?.[status]?.$ref !== expectedRef) fail(`Studio Runtime response mismatch ${apiPath}`);
+    }
+  }
+  if (document.paths["/api/v1/studio-outputs/{id}/versions"]?.get?.responses?.["200"]?.$ref
+      !== "#/components/responses/StudioVersionHistoryResponse") {
+    fail("Studio Version history response mismatch");
+  }
+  const exportMedia = Object.keys(document.components?.responses?.StudioExportResponse?.content ?? {}).sort();
+  const requiredExportMedia = [
+    "application/json", "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "image/png", "image/svg+xml", "text/csv",
+  ].sort();
+  if (JSON.stringify(exportMedia) !== JSON.stringify(requiredExportMedia)) fail("Studio export media types mismatch Runtime");
 
   walk(document, (value) => {
     if (isObject(value) && "$ref" in value) resolveRef(document, value.$ref);
@@ -451,7 +611,8 @@ export function validateOpenApiDocument(document) {
       if (apiPath.includes("{id}") && !refs.has("#/components/parameters/ResourceId")) fail(`${operationId} missing opaque ResourceId`);
       const idempotencyExemptPosts = new Set([
         "/api/v1/auth/native/login",
-        "/api/v1/session/refresh"
+        "/api/v1/session/refresh",
+        "/api/v1/session/logout"
       ]);
       if (method === "post" && !idempotencyExemptPosts.has(apiPath) && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
       if ((method === "patch" || method === "delete") && !refs.has("#/components/parameters/IfMatch")) fail(`${operationId} missing If-Match`);
@@ -488,6 +649,7 @@ export function validateOpenApiDocument(document) {
   validateAuditContract(document);
   validateIdentityContract(document);
   validateAuthorizationContract(document);
+  validateLicenseContract(document);
 
   const eventOperation = document.paths["/api/v1/runs/{id}/events"]?.get;
   if (!parameterRefs(eventOperation).has("#/components/parameters/LastEventId")) fail("SSE missing Last-Event-ID reconnect cursor");
@@ -523,13 +685,35 @@ export function buildSummary(document) {
   };
 }
 
-export async function verifyOpenApiContract({ root, write = false } = {}) {
+const LEGACY_EVIDENCE_SUMMARY = Object.freeze({
+  schema_version: "1.0",
+  contract_version: "1.0.0",
+  canonical_sha256: "594AED28565CCDBA60F3A12565071F7EAE5239544D5632508BD612EA8D180E0A",
+  path_count: 75,
+  operation_count: 94,
+  schema_count: 120,
+  error_code_count: 31,
+});
+
+export function evidenceRelativePathForProfile(profile = "r1-m5-07") {
+  if (profile === "r1-m5-07") {
+    return "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json";
+  }
+  if (profile === "r1-m8-10") {
+    return "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/openapi-contract-summary.json";
+  }
+  fail(`unsupported evidence profile ${profile}`);
+}
+
+export async function verifyOpenApiContract({ root, write = false, evidenceProfile = "r1-m5-07" } = {}) {
   const repositoryRoot = root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const contractPath = path.join(repositoryRoot, "packages/contracts/openapi/v1/openapi.json");
-  const evidencePath = path.join(repositoryRoot, "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json");
+  const evidencePath = path.join(repositoryRoot, evidenceRelativePathForProfile(evidenceProfile));
   const document = JSON.parse(await readFile(contractPath, "utf8"));
   const summary = buildSummary(document);
-  const expected = `${JSON.stringify(summary, null, 2)}\n`;
+  const evidenceSummary = evidenceProfile === "r1-m5-07" ? LEGACY_EVIDENCE_SUMMARY : summary;
+  const expected = `${JSON.stringify(evidenceSummary, null, 2)}\n`;
+  if (write && evidenceProfile === "r1-m5-07") fail("legacy evidence is immutable");
   if (write) {
     await mkdir(path.dirname(evidencePath), { recursive: true });
     await writeFile(evidencePath, expected, "utf8");
@@ -537,14 +721,18 @@ export async function verifyOpenApiContract({ root, write = false } = {}) {
     const actual = (await readFile(evidencePath, "utf8")).replaceAll("\r\n", "\n");
     if (actual !== expected) fail("deterministic evidence does not match; run with --write");
   }
-  return summary;
+  return evidenceSummary;
 }
 
 async function main() {
   const args = process.argv.slice(2).filter((argument) => argument !== "--");
   const write = args.includes("--write");
   if (write && args.includes("--no-write")) fail("--write and --no-write are mutually exclusive");
-  const summary = await verifyOpenApiContract({ write });
+  const profileArgument = args.find((argument) => argument.startsWith("--evidence-profile="));
+  const evidenceProfile = profileArgument?.slice("--evidence-profile=".length) ?? "r1-m5-07";
+  const knownArguments = new Set(["--write", "--no-write", profileArgument].filter(Boolean));
+  if (args.some((argument) => !knownArguments.has(argument))) fail("unsupported command argument");
+  const summary = await verifyOpenApiContract({ write, evidenceProfile });
   console.log(`openapi contract verified: paths=${summary.path_count} operations=${summary.operation_count} schemas=${summary.schema_count} errors=${summary.error_code_count} sha256=${summary.canonical_sha256}`);
 }
 

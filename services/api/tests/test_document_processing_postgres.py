@@ -32,8 +32,10 @@ class FakeConnection:
         self.versions = {"ProcessingRun": 1, "Source": 1}
         self.source_version_id = "source-version-cp3"
         self.inserts: list[str] = []
+        self.statements: list[tuple[str, tuple[object, ...]]] = []
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
+        self.statements.append((sql, tuple(params)))
         if sql.startswith("SELECT sv.record_id"):
             return Cursor((
                 self.source_version_id, OBJECT_ID, {"filename": "contract.pdf"},
@@ -173,13 +175,32 @@ class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
 
         self.assertEqual(replay_run_id, first_run_id)
 
+    def test_async_start_reuses_completed_run_for_ready_digest_replay(self) -> None:
+        self.cloud.connection.states["Source"] = "ready"
+        self.cloud.connection.states["ProcessingRun"] = "completed"
+        run_id = self.repository.start(self.context, "source-version-cp3", enqueue=True)
+
+        self.assertTrue(run_id.startswith("pr-"))
+        self.assertEqual(self.cloud.connection.states["Source"], "ready")
+        self.assertEqual(self.cloud.connection.states["ProcessingRun"], "completed")
+        self.assertEqual(self.cloud.connection.inserts, [
+            "processing_runs", "document_processing_jobs",
+        ])
+
     def test_status_is_workspace_scoped_and_omits_worker_lease_identity(self) -> None:
-        status = self.repository.get_status(self.context, "run-cp3")
+        status = self.repository.get_status(self.context, "run-cp3", notebook_id="notebook-cp3")
 
         self.assertEqual(status.processing_run_id, "run-cp3")
         self.assertEqual(status.job_state, "leased")
         self.assertFalse(hasattr(status, "lease_owner"))
         self.assertEqual(self.cloud.capabilities, ["source.read"])
+        sql, params = next(
+            (sql, params) for sql, params in self.cloud.connection.statements
+            if sql.startswith("SELECT pr.record_id,sv.source_id,pr.source_version_id")
+        )
+        self.assertIn("JOIN notebook_bindings", sql)
+        self.assertIn("binding_kind='source'", sql)
+        self.assertEqual(params, ("notebook-cp3", "run-cp3"))
 
 
 if __name__ == "__main__":

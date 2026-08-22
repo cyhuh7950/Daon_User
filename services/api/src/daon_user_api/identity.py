@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import json
 import os
 import re
 import secrets
@@ -20,15 +22,18 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from threading import RLock
+from time import monotonic
 from typing import Callable, Iterator, Protocol
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
-from .audit import ActorType, AuditEventDraft, AuditOutcome
+from .audit import ActorType, AuditDuplicateEventError, AuditEventDraft, AuditOutcome
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
+SELF_LOGOUT_DISPATCH_LIMIT = 32
+SELF_LOGOUT_DISPATCH_SECONDS = 0.25
 PASSWORD_MIN_LENGTH = 12
 PASSWORD_HASHER = PasswordHasher()
 MAIL_REQUEST_COOLDOWN = timedelta(seconds=60)
@@ -36,9 +41,15 @@ MAIL_REQUEST_WINDOW = timedelta(hours=1)
 MAIL_REQUEST_MAX_PER_WINDOW = 3
 OIDC_TRANSACTION_TTL = timedelta(minutes=5)
 ACCESS_TTL = timedelta(hours=1)
+# Web sessions are persistent until explicit logout.  The database contract
+# keeps a non-null timestamp, so use the representable UTC maximum rather than
+# applying the short-lived native access-token TTL to browser sessions.
+WEB_SESSION_EXPIRY = datetime.max.replace(tzinfo=timezone.utc)
 REFRESH_TTL = timedelta(days=30)
 DEFAULT_STEP_UP_TTL_SECONDS = 300
 MAX_STEP_UP_TTL_SECONDS = 600
+STEP_UP_TOKEN_KEY_ID = "daon-step-up-hmac"
+STEP_UP_TOKEN_KEY_VERSION = 1
 MINIMUM_STEP_UP_ACTION_GROUPS = frozenset(
     {
         "external_transfer",
@@ -163,6 +174,11 @@ class DeviceRevocationEvent:
 @dataclass(frozen=True, slots=True)
 class SessionRevocationEvent:
     session_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentSessionLogoutEvent:
+    replayed: bool
 
 
 class EmailSender(Protocol):
@@ -356,6 +372,19 @@ class SqliteIdentityRepository:
           used_at TEXT,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS session_audit_outbox (
+          event_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES sessions(session_id),
+          action TEXT NOT NULL CHECK(action = 'identity.session.self_revoked'),
+          tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+          actor_id TEXT NOT NULL REFERENCES users(user_id),
+          occurred_at TEXT NOT NULL,
+          trace_id TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          delivered_at TEXT,
+          created_at TEXT NOT NULL,
+          UNIQUE(session_id, action)
+        );
         CREATE TABLE IF NOT EXISTS oidc_transactions (
           transaction_id TEXT PRIMARY KEY,
           state_digest TEXT NOT NULL UNIQUE,
@@ -391,8 +420,49 @@ class SqliteIdentityRepository:
           expires_at TEXT NOT NULL,
           used_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS step_up_idempotency (
+          tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+          actor_id TEXT NOT NULL REFERENCES users(user_id),
+          idempotency_key TEXT NOT NULL,
+          request_fingerprint TEXT NOT NULL,
+          step_up_id TEXT NOT NULL REFERENCES step_up_authorizations(step_up_id),
+          authorization_digest TEXT NOT NULL,
+          action_group TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          key_id TEXT NOT NULL,
+          key_version INTEGER NOT NULL,
+          issued_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, actor_id, idempotency_key)
+        );
+        CREATE TABLE IF NOT EXISTS step_up_consumptions (
+          tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+          actor_id TEXT NOT NULL REFERENCES users(user_id),
+          operation TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          request_fingerprint TEXT NOT NULL,
+          step_up_id TEXT NOT NULL REFERENCES step_up_authorizations(step_up_id),
+          consumed_at TEXT NOT NULL,
+          PRIMARY KEY (tenant_id, actor_id, operation, idempotency_key)
+        );
         """
         connection.executescript(schema)
+        connection.executescript(
+            """
+            CREATE TRIGGER IF NOT EXISTS session_audit_outbox_intent_immutable
+            BEFORE UPDATE OF event_id,session_id,action,tenant_id,actor_id,occurred_at,trace_id,policy_version,created_at
+            ON session_audit_outbox
+            BEGIN SELECT RAISE(ABORT, 'session_audit_outbox intent is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS session_audit_outbox_delivery_one_way
+            BEFORE UPDATE OF delivered_at ON session_audit_outbox
+            WHEN NOT (OLD.delivered_at IS NULL AND NEW.delivered_at IS NOT NULL)
+            BEGIN SELECT RAISE(ABORT, 'session_audit_outbox delivery is one-way'); END;
+            CREATE TRIGGER IF NOT EXISTS session_audit_outbox_delete_blocked
+            BEFORE DELETE ON session_audit_outbox
+            BEGIN SELECT RAISE(ABORT, 'session_audit_outbox delete is blocked'); END;
+            """
+        )
         columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(users)")}
         for name, definition in (
             ("login_id", "TEXT"), ("email", "TEXT"), ("password_digest", "TEXT"),
@@ -438,6 +508,39 @@ class SqliteIdentityRepository:
         with self._lock:
             if not self._closed:
                 self._closed = True
+
+    def pending_self_logout_audits(
+        self, session_id: str | None = None, *, limit: int = SELF_LOGOUT_DISPATCH_LIMIT,
+    ) -> tuple[sqlite3.Row, ...]:
+        bounded_limit = max(1, min(limit, SELF_LOGOUT_DISPATCH_LIMIT))
+        with self._lock:
+            self._ensure_open()
+            connection = self._connect()
+            try:
+                if session_id is None:
+                    rows = connection.execute(
+                        "SELECT event_id,session_id,tenant_id,actor_id,occurred_at,trace_id,policy_version "
+                        "FROM session_audit_outbox WHERE delivered_at IS NULL ORDER BY created_at,event_id LIMIT ?",
+                        (bounded_limit,),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT event_id,session_id,tenant_id,actor_id,occurred_at,trace_id,policy_version "
+                        "FROM session_audit_outbox WHERE session_id=? AND delivered_at IS NULL ORDER BY created_at,event_id LIMIT ?",
+                        (session_id, bounded_limit),
+                    ).fetchall()
+                return tuple(rows)
+            except sqlite3.Error as error:
+                raise IdentityError("PERSISTENCE_UNAVAILABLE", 503) from error
+            finally:
+                connection.close()
+
+    def mark_self_logout_audit_delivered(self, event_id: str, delivered_at: datetime) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "UPDATE session_audit_outbox SET delivered_at=? WHERE event_id=? AND delivered_at IS NULL",
+                (_iso(delivered_at), event_id),
+            )
 
     def schema_version(self) -> int:
         with self._lock:
@@ -563,6 +666,7 @@ class IdentityService:
         oidc_policies: tuple[OidcClientPolicy, ...],
         clock: Callable[[], datetime],
         email_sender: EmailSender | None = None,
+        step_up_token_key: bytes | None = None,
     ) -> None:
         self._repository = repository
         self._audit_store = audit_store
@@ -570,6 +674,8 @@ class IdentityService:
         self._lock = RLock()
         self._policies = tuple(oidc_policies)
         self._email_sender = email_sender or SmtpEmailSender.from_env()
+        self._step_up_token_key = step_up_token_key or b"daon-test-step-up-key-v1"
+        self.dispatch_pending_self_logout_audits()
 
     def _now(self) -> datetime:
         return _checked_utc(self._clock())
@@ -607,6 +713,43 @@ class IdentityService:
             self._audit_store.append(draft)  # type: ignore[attr-defined]
         except Exception as error:
             raise IdentityError("AUDIT_WRITE_FAILED", 503) from error
+
+    def dispatch_pending_self_logout_audits(self, session_id: str | None = None) -> None:
+        """Project a bounded batch of durable intents without delaying service startup."""
+        deadline = monotonic() + SELF_LOGOUT_DISPATCH_SECONDS
+        try:
+            pending = self._repository.pending_self_logout_audits(session_id)
+        except IdentityError:
+            return
+        for row in pending:
+            if monotonic() > deadline:
+                break
+            try:
+                draft = AuditEventDraft(
+                    event_id=str(row["event_id"]), occurred_at=_dt(str(row["occurred_at"])),
+                    actor_id=str(row["actor_id"]), actor_type=ActorType.USER,
+                    tenant_id=str(row["tenant_id"]), workspace_id=None,
+                    action="identity.session.self_revoked", target_type="session",
+                    target_id=str(row["session_id"]), outcome=AuditOutcome.SUCCEEDED,
+                    trace_id=str(row["trace_id"]), policy_version=str(row["policy_version"]),
+                    metadata={"reason_code": "USER_LOGOUT"},
+                )
+                self._audit_store.append(draft)  # type: ignore[attr-defined]
+            except AuditDuplicateEventError:
+                pass
+            except Exception:
+                continue
+            try:
+                self._repository.mark_self_logout_audit_delivered(
+                    str(row["event_id"]), self._now(),
+                )
+            except IdentityError:
+                # The immutable central event already exists; the deterministic event ID
+                # makes a later retry safe if delivery marking temporarily fails.
+                continue
+
+    def _project_self_logout_audit(self, session_id: str) -> None:
+        self.dispatch_pending_self_logout_audits(session_id)
 
     def _issue_token(self, connection: sqlite3.Connection, *, table: str, user_id: str,
                      now: datetime, ttl: timedelta) -> str:
@@ -714,7 +857,7 @@ class IdentityService:
                 raise IdentityError("AUTHENTICATION_REQUIRED", 401)
             tenant_id = str(tenant[0]); device_id, session_id, access = _id("dev"), _id("ses"), _opaque()
             connection.execute("INSERT INTO devices(device_id,tenant_id,user_id,platform,state,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (device_id, tenant_id, user_id, platform.value, "registered", _iso(now), _iso(now), _iso(now)))
-            connection.execute("INSERT INTO sessions(session_id,tenant_id,user_id,device_id,client_kind,access_digest,access_expires_at,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (session_id, tenant_id, user_id, device_id, "web", _digest(access), _iso(now + ACCESS_TTL), "active", _iso(now), _iso(now)))
+            connection.execute("INSERT INTO sessions(session_id,tenant_id,user_id,device_id,client_kind,access_digest,access_expires_at,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (session_id, tenant_id, user_id, device_id, "web", _digest(access), _iso(WEB_SESSION_EXPIRY), "active", _iso(now), _iso(now)))
             self._audit(action="identity.login.succeeded", outcome=AuditOutcome.SUCCEEDED, trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id, actor_id=user_id, target_type="session", target_id=session_id, metadata={"client_type": "web", "auth_method": "local"})
         return SessionCredentials(access, None, user_id, session_id, device_id, tenant_id, ClientKind.WEB, "web_session_cookie_boundary_m4_05")
 
@@ -963,7 +1106,7 @@ class IdentityService:
             raise IdentityError("ACCESS_INVALID", 401)
         if row["state"] != "active":
             raise IdentityError("SESSION_REVOKED", 401)
-        if _dt(str(row["access_expires_at"])) <= now:
+        if str(row["client_kind"]) != ClientKind.WEB.value and _dt(str(row["access_expires_at"])) <= now:
             raise IdentityError("ACCESS_EXPIRED", 401)
         connection.execute(
             "UPDATE devices SET last_seen_at = ?, updated_at = ? WHERE device_id = ?",
@@ -1126,17 +1269,158 @@ class IdentityService:
                         metadata={"action_group": action_group})
         return StepUpGrant(raw, now, expires)
 
-    def _consume_step_up(self, connection: sqlite3.Connection, *, raw: str | None,
-                         principal: sqlite3.Row, action_group: str, target_id: str,
-                         policy_version: str, trace_id: str, now: datetime) -> None:
+    def issue_step_up_after_reauthentication(
+        self, *, access_token: str, password: str, action_group: str, target_id: str,
+        policy_version: str, trace_id: str,
+        ttl_seconds: int = DEFAULT_STEP_UP_TTL_SECONDS,
+        idempotency_key: str | None = None,
+    ) -> StepUpGrant:
+        """Issue a step-up grant only after current local credentials are verified."""
+        secret = _password(password)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            principal = self._principal(connection, access_token, now)
+            if idempotency_key is not None:
+                _checked_text(idempotency_key)
+                if not 16 <= len(idempotency_key) <= 128:
+                    raise IdentityError("INVALID_INPUT")
+                fingerprint = hashlib.sha256(
+                    json.dumps([str(principal["tenant_id"]), str(principal["user_id"]), str(principal["session_id"]), action_group, target_id, policy_version, ttl_seconds], separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                existing = connection.execute(
+                    """SELECT replay.*, authorization.authorization_digest AS stored_authorization_digest,
+                              authorization.session_id AS stored_session_id,
+                              authorization.action_group AS stored_action_group,
+                              authorization.target_id AS stored_target_id,
+                              authorization.policy_version AS stored_policy_version
+                       FROM step_up_idempotency AS replay
+                       JOIN step_up_authorizations AS authorization
+                         ON authorization.step_up_id=replay.step_up_id
+                       WHERE replay.tenant_id=? AND replay.actor_id=? AND replay.idempotency_key=?""",
+                    (str(principal["tenant_id"]), str(principal["user_id"]), idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    if str(existing["request_fingerprint"]) != fingerprint:
+                        raise IdentityError("IDEMPOTENCY_KEY_REUSED", 409)
+                    if (
+                        str(existing["key_id"]) != STEP_UP_TOKEN_KEY_ID
+                        or int(existing["key_version"]) != STEP_UP_TOKEN_KEY_VERSION
+                    ):
+                        raise IdentityError("STEP_UP_TOKEN_KEY_VERSION_UNAVAILABLE", 503)
+                    raw = self._step_up_hmac(str(principal["tenant_id"]), str(principal["user_id"]), idempotency_key, fingerprint, str(existing["step_up_id"]))
+                    expected_binding = (
+                        _digest(raw),
+                        str(principal["session_id"]),
+                        action_group,
+                        target_id,
+                        policy_version,
+                    )
+                    stored_binding = (
+                        str(existing["authorization_digest"]),
+                        str(existing["stored_session_id"]),
+                        str(existing["stored_action_group"]),
+                        str(existing["stored_target_id"]),
+                        str(existing["stored_policy_version"]),
+                    )
+                    if (
+                        expected_binding != stored_binding
+                        or str(existing["stored_authorization_digest"])
+                        != str(existing["authorization_digest"])
+                    ):
+                        raise IdentityError("STEP_UP_REPLAY_INVALID", 503)
+                    return StepUpGrant(raw, _dt(str(existing["issued_at"])), _dt(str(existing["expires_at"])))
+            user = connection.execute(
+                "SELECT issuer,password_digest FROM users WHERE user_id=?",
+                (str(principal["user_id"]),),
+            ).fetchone()
+            if user is None or str(user["issuer"]) != "local" or user["password_digest"] is None:
+                raise IdentityError("STEP_UP_REAUTH_UNAVAILABLE", 403)
+            try:
+                PASSWORD_HASHER.verify(str(user["password_digest"]), secret)
+            except Exception as error:
+                raise IdentityError("STEP_UP_REAUTH_REQUIRED", 403) from error
+            expires = now + timedelta(seconds=ttl_seconds)
+            step_id = _id("sup")
+            raw = _opaque() if idempotency_key is None else self._step_up_hmac(str(principal["tenant_id"]), str(principal["user_id"]), idempotency_key, fingerprint, step_id)
+            connection.execute("""INSERT INTO step_up_authorizations(step_up_id,authorization_digest,tenant_id,actor_id,session_id,device_id,action_group,target_id,policy_version,issued_at,expires_at,used_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (step_id,_digest(raw),str(principal["tenant_id"]),str(principal["user_id"]),str(principal["session_id"]),str(principal["device_id"]),action_group,target_id,policy_version,_iso(now),_iso(expires),None))
+            if idempotency_key is not None:
+                connection.execute(
+                    """INSERT INTO step_up_idempotency
+                    (tenant_id,actor_id,idempotency_key,request_fingerprint,step_up_id,
+                     authorization_digest,action_group,target_id,policy_version,key_id,key_version,
+                     issued_at,expires_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        str(principal["tenant_id"]), str(principal["user_id"]),
+                        idempotency_key, fingerprint, step_id, _digest(raw), action_group,
+                        target_id, policy_version, STEP_UP_TOKEN_KEY_ID,
+                        STEP_UP_TOKEN_KEY_VERSION, _iso(now), _iso(expires),
+                    ),
+                )
+            self._audit(action="identity.step_up.issued", outcome=AuditOutcome.SUCCEEDED, trace_id=trace_id, policy_version=policy_version, tenant_id=str(principal["tenant_id"]), actor_id=str(principal["user_id"]), target_type="step_up", target_id=step_id, metadata={"action_group": action_group})
+            return StepUpGrant(raw, now, expires)
+
+    def _step_up_hmac(self, tenant_id: str, actor_id: str, idempotency_key: str, fingerprint: str, step_id: str) -> str:
+        material = "|".join(("daon-step-up-v1", tenant_id, actor_id, idempotency_key, fingerprint, step_id)).encode("utf-8")
+        return "sup_" + hmac.new(self._step_up_token_key, material, hashlib.sha256).hexdigest()
+
+    def _consume_step_up(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        raw: str | None,
+        principal: sqlite3.Row,
+        action_group: str,
+        target_id: str,
+        policy_version: str,
+        trace_id: str,
+        now: datetime,
+        operation: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> None:
         tenant_id, actor_id = str(principal["tenant_id"]), str(principal["user_id"])
+        if (operation is None) != (idempotency_key is None):
+            raise IdentityError("INVALID_INPUT")
+        if operation is not None and idempotency_key is not None:
+            operation = _checked_text(operation)
+            idempotency_key = _checked_text(idempotency_key)
+            if len(idempotency_key) > 128:
+                raise IdentityError("INVALID_INPUT")
         if raw is None:
             raise IdentityError("STEP_UP_REQUIRED", 403)
         _checked_text(raw, opaque=True)
         row = connection.execute("SELECT * FROM step_up_authorizations WHERE authorization_digest=?", (_digest(raw),)).fetchone()
         if row is None:
             raise IdentityError("STEP_UP_REQUIRED", 403)
+        consumption_fingerprint = hashlib.sha256(
+            json.dumps(
+                [
+                    str(row["step_up_id"]),
+                    actor_id,
+                    str(principal["session_id"]),
+                    str(principal["device_id"]),
+                    tenant_id,
+                    action_group,
+                    target_id,
+                    policy_version,
+                ],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         if row["used_at"] is not None:
+            if operation is not None and idempotency_key is not None:
+                replay = connection.execute(
+                    """SELECT request_fingerprint,step_up_id
+                       FROM step_up_consumptions
+                       WHERE tenant_id=? AND actor_id=? AND operation=? AND idempotency_key=?""",
+                    (tenant_id, actor_id, operation, idempotency_key),
+                ).fetchone()
+                if (
+                    replay is not None
+                    and str(replay["request_fingerprint"]) == consumption_fingerprint
+                    and str(replay["step_up_id"]) == str(row["step_up_id"])
+                ):
+                    return
             self._audit(action="identity.step_up.reuse_denied", outcome=AuditOutcome.DENIED,
                         trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id,
                         actor_id=actor_id, target_type="step_up", target_id=str(row["step_up_id"]),
@@ -1157,13 +1441,38 @@ class IdentityService:
                         metadata={"reason_code": "STEP_UP_BINDING_DENIED"})
             raise IdentityError("STEP_UP_BINDING_DENIED", 403)
         connection.execute("UPDATE step_up_authorizations SET used_at=? WHERE step_up_id=? AND used_at IS NULL", (_iso(now), str(row["step_up_id"])))
+        if operation is not None and idempotency_key is not None:
+            connection.execute(
+                """INSERT INTO step_up_consumptions
+                (tenant_id,actor_id,operation,idempotency_key,request_fingerprint,step_up_id,consumed_at)
+                VALUES (?,?,?,?,?,?,?)""",
+                (
+                    tenant_id,
+                    actor_id,
+                    operation,
+                    idempotency_key,
+                    consumption_fingerprint,
+                    str(row["step_up_id"]),
+                    _iso(now),
+                ),
+            )
         self._audit(action="identity.step_up.used", outcome=AuditOutcome.SUCCEEDED,
                     trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id,
                     actor_id=actor_id, target_type="step_up", target_id=str(row["step_up_id"]),
                     metadata={"action_group": action_group})
 
-    def consume_step_up(self, *, step_up_authorization: str | None, access_token: str,
-                        action_group: str, target_id: str, policy_version: str, trace_id: str) -> None:
+    def consume_step_up(
+        self,
+        *,
+        step_up_authorization: str | None,
+        access_token: str,
+        action_group: str,
+        target_id: str,
+        policy_version: str,
+        trace_id: str,
+        operation: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> None:
         action_group = _checked_text(action_group); target_id = _checked_text(target_id)
         _checked_text(policy_version); _checked_text(trace_id)
         now = self._now()
@@ -1171,7 +1480,8 @@ class IdentityService:
             principal = self._principal(connection, access_token, now)
             self._consume_step_up(connection, raw=step_up_authorization, principal=principal,
                                   action_group=action_group, target_id=target_id,
-                                  policy_version=policy_version, trace_id=trace_id, now=now)
+                                  policy_version=policy_version, trace_id=trace_id, now=now,
+                                  operation=operation, idempotency_key=idempotency_key)
 
     def trust_device(self, *, access_token: str, device_id: str, trace_id: str, policy_version: str) -> None:
         device_id = _checked_text(device_id); _checked_text(trace_id); _checked_text(policy_version)
@@ -1237,6 +1547,45 @@ class IdentityService:
                 metadata={"reason_code": "USER_REQUESTED"},
             )
         return SessionRevocationEvent(session_id)
+
+    def revoke_current_web_session(
+        self, *, access_token: str, policy_version: str, trace_id: str,
+    ) -> CurrentSessionLogoutEvent:
+        """Revoke only the web session bound to the presented cookie credential."""
+        _checked_text(policy_version); _checked_text(trace_id)
+        try:
+            checked_access = _checked_text(access_token, opaque=True)
+        except IdentityError as error:
+            raise IdentityError("ACCESS_INVALID", 401) from error
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM sessions WHERE access_digest = ?", (_digest(checked_access),)
+            ).fetchone()
+            if row is None or str(row["client_kind"]) != ClientKind.WEB.value:
+                raise IdentityError("ACCESS_INVALID", 401)
+            session_id = str(row["session_id"])
+            replayed = str(row["state"]) != "active" or _dt(str(row["access_expires_at"])) <= now
+            if not replayed:
+                connection.execute(
+                    "UPDATE sessions SET state='revoked',updated_at=? WHERE session_id=? AND state='active'",
+                    (_iso(now), session_id),
+                )
+                connection.execute(
+                    "UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id=?",
+                    (_iso(now), session_id),
+                )
+                event_id = "audit-self-logout-" + hashlib.sha256(
+                    f"SELF_LOGOUT\0{session_id}".encode("utf-8")
+                ).hexdigest()[:32]
+                connection.execute(
+                    "INSERT INTO session_audit_outbox(event_id,session_id,action,tenant_id,actor_id,occurred_at,trace_id,policy_version,delivered_at,created_at) "
+                    "VALUES (?,?, 'identity.session.self_revoked',?,?,?,?,?,?,?)",
+                    (event_id, session_id, str(row["tenant_id"]), str(row["user_id"]),
+                     _iso(now), trace_id, policy_version, None, _iso(now)),
+                )
+        self._project_self_logout_audit(session_id)
+        return CurrentSessionLogoutEvent(replayed=replayed)
 
     def revoke_device(self, *, access_token: str, device_id: str,
                       step_up_authorization: str | None, policy_version: str,

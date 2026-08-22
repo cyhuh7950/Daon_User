@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 from test_identity_support import (
@@ -76,6 +78,220 @@ def tenant_two_login(service):
 
 
 class IdentitySecurityC01Tests(unittest.TestCase):
+    def test_web_self_logout_revokes_only_current_session_and_replays_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service, _, audit, _ = create_service(Path(directory) / "identity.sqlite3")
+            start = service.begin_oidc_login(
+                issuer="https://login.example.com", client_id="daon-web",
+                audience="daon-user-api", redirect_uri="https://app.example.com/auth/callback",
+                client_kind=ClientKind.WEB, tenant_id="tenant-001",
+                trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+            )
+            provider = FakeVerifiedOidcProvider()
+            provider.expected_nonce = start.nonce
+            current = service.complete_oidc_login(
+                state=start.state, authorization_code=provider.authorization_code,
+                code_verifier=start.code_verifier, client_id="daon-web",
+                redirect_uri="https://app.example.com/auth/callback", provider=provider,
+                platform=DevicePlatform.WEB, trace_id=TRACE_ID,
+                policy_version=POLICY_VERSION,
+            )
+            other = native_login(service)
+
+            first = service.revoke_current_web_session(
+                access_token=current.access_token, trace_id="trace-self-logout-1",
+                policy_version=POLICY_VERSION,
+            )
+            replay = service.revoke_current_web_session(
+                access_token=current.access_token, trace_id="trace-self-logout-2",
+                policy_version=POLICY_VERSION,
+            )
+
+            self.assertFalse(first.replayed)
+            self.assertTrue(replay.replayed)
+            with self.assertRaises(IdentityError) as revoked:
+                service.validate_access(current.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            self.assertEqual(revoked.exception.code, "SESSION_REVOKED")
+            service.validate_access(other.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            self.assertEqual(event_actions(audit, "tenant-001").count("identity.session.self_revoked"), 1)
+
+    def test_web_self_logout_central_audit_failure_keeps_durable_intent_and_restart_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "identity.sqlite3"
+            controlled_audit = FailOnActionAuditStore()
+            service, _, _, clock = create_service(db_path, audit_store=controlled_audit)
+            start = service.begin_oidc_login(
+                issuer="https://login.example.com", client_id="daon-web",
+                audience="daon-user-api", redirect_uri="https://app.example.com/auth/callback",
+                client_kind=ClientKind.WEB, tenant_id="tenant-001",
+                trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+            )
+            provider = FakeVerifiedOidcProvider()
+            provider.expected_nonce = start.nonce
+            current = service.complete_oidc_login(
+                state=start.state, authorization_code=provider.authorization_code,
+                code_verifier=start.code_verifier, client_id="daon-web",
+                redirect_uri="https://app.example.com/auth/callback", provider=provider,
+                platform=DevicePlatform.WEB, trace_id=TRACE_ID,
+                policy_version=POLICY_VERSION,
+            )
+            controlled_audit.fail_actions.add("identity.session.self_revoked")
+            event = service.revoke_current_web_session(
+                access_token=current.access_token, trace_id="trace-self-logout-failed",
+                policy_version=POLICY_VERSION,
+            )
+            self.assertFalse(event.replayed)
+            with self.assertRaises(IdentityError) as revoked:
+                service.validate_access(current.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            self.assertEqual(revoked.exception.code, "SESSION_REVOKED")
+            connection = sqlite3.connect(db_path)
+            try:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM session_audit_outbox WHERE delivered_at IS NULL").fetchone()[0], 1)
+                columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(session_audit_outbox)")}
+                self.assertTrue(columns.isdisjoint({"access_digest", "cookie", "token", "credential", "password"}))
+                outbox_text = repr(connection.execute("SELECT * FROM session_audit_outbox").fetchall())
+                self.assertNotIn(current.access_token, outbox_text)
+                self.assertNotIn(hashlib.sha256(current.access_token.encode()).hexdigest(), outbox_text)
+            finally:
+                connection.close()
+            controlled_audit.fail_actions.clear()
+            restarted, _, _, _ = create_service(db_path, clock=clock, audit_store=controlled_audit)
+            self.assertEqual(event_actions(controlled_audit.backing, "tenant-001").count("identity.session.self_revoked"), 1)
+            connection = sqlite3.connect(db_path)
+            try:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM session_audit_outbox").fetchone()[0], 1)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM session_audit_outbox WHERE delivered_at IS NOT NULL").fetchone()[0], 1)
+            finally:
+                connection.close()
+
+    def test_web_self_logout_outbox_is_immutable_and_delivery_is_one_way(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "identity.sqlite3"
+            service, _, _, _ = create_service(db_path)
+            current = self._web_login(service)
+            service.revoke_current_web_session(
+                access_token=current.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+            )
+            connection = sqlite3.connect(db_path)
+            try:
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute("UPDATE session_audit_outbox SET trace_id='changed'")
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute("UPDATE session_audit_outbox SET delivered_at=NULL")
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute("DELETE FROM session_audit_outbox")
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM session_audit_outbox").fetchone()[0], 1)
+            finally:
+                connection.close()
+
+    def test_web_self_logout_dispatcher_is_bounded_concurrent_and_poison_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "identity.sqlite3"
+            controlled_audit = FailOnActionAuditStore()
+            service, _, _, clock = create_service(db_path, audit_store=controlled_audit)
+            current = self._web_login(service)
+            self._web_login(service)
+            controlled_audit.fail_actions.add("identity.session.self_revoked")
+            service.revoke_current_web_session(
+                access_token=current.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+            )
+            restarted, _, _, _ = create_service(db_path, clock=clock, audit_store=controlled_audit)
+            concurrent, _, _, _ = create_service(db_path, clock=clock, audit_store=controlled_audit)
+            controlled_audit.fail_actions.clear()
+            threads = [
+                threading.Thread(target=restarted.dispatch_pending_self_logout_audits),
+                threading.Thread(target=concurrent.dispatch_pending_self_logout_audits),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(event_actions(controlled_audit.backing, "tenant-001").count("identity.session.self_revoked"), 1)
+            connection = sqlite3.connect(db_path)
+            try:
+                session_id, tenant_id, actor_id = connection.execute(
+                    "SELECT session_id,tenant_id,user_id FROM sessions WHERE session_id<>? LIMIT 1",
+                    (current.session_id,),
+                ).fetchone()
+                connection.execute(
+                    "INSERT INTO session_audit_outbox(event_id,session_id,action,tenant_id,actor_id,occurred_at,trace_id,policy_version,delivered_at,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,NULL,?)",
+                    ("audit-poison", session_id, "identity.session.self_revoked", tenant_id, actor_id,
+                     "not-a-timestamp", TRACE_ID, POLICY_VERSION, "2026-08-20T00:00:00Z"),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            restarted.dispatch_pending_self_logout_audits()
+            connection = sqlite3.connect(db_path)
+            try:
+                self.assertEqual(connection.execute(
+                    "SELECT COUNT(*) FROM session_audit_outbox WHERE event_id='audit-poison' AND delivered_at IS NULL"
+                ).fetchone()[0], 1)
+            finally:
+                connection.close()
+
+    def test_web_self_logout_outbox_insert_failure_rolls_back_session_and_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "identity.sqlite3"
+            service, _, audit, _ = create_service(db_path)
+            current = self._web_login(service)
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute("CREATE TRIGGER fail_self_logout_outbox BEFORE INSERT ON session_audit_outbox BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+                connection.commit()
+            finally:
+                connection.close()
+            with self.assertRaises(IdentityError) as failed:
+                service.revoke_current_web_session(access_token=current.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            self.assertEqual(failed.exception.code, "PERSISTENCE_UNAVAILABLE")
+            service.validate_access(current.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            self.assertEqual(event_actions(audit, "tenant-001").count("identity.session.self_revoked"), 0)
+
+    def test_web_self_logout_commit_failure_has_session_outbox_and_central_write0(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "identity.sqlite3"
+            service, repository, audit, _ = create_service(db_path)
+            current = self._web_login(service)
+            original_transaction = repository.transaction
+
+            @contextmanager
+            def failing_transaction():
+                with original_transaction() as connection:
+                    yield connection
+                    raise sqlite3.OperationalError("forced pre-commit failure")
+
+            repository.transaction = failing_transaction  # type: ignore[method-assign]
+            with self.assertRaises(IdentityError) as failed:
+                service.revoke_current_web_session(access_token=current.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            self.assertEqual(failed.exception.code, "PERSISTENCE_UNAVAILABLE")
+            repository.transaction = original_transaction  # type: ignore[method-assign]
+            service.validate_access(current.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            connection = sqlite3.connect(db_path)
+            try:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM session_audit_outbox").fetchone()[0], 0)
+            finally:
+                connection.close()
+            self.assertEqual(event_actions(audit, "tenant-001").count("identity.session.self_revoked"), 0)
+
+    @staticmethod
+    def _web_login(service):
+        start = service.begin_oidc_login(
+            issuer="https://login.example.com", client_id="daon-web",
+            audience="daon-user-api", redirect_uri="https://app.example.com/auth/callback",
+            client_kind=ClientKind.WEB, tenant_id="tenant-001",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+        provider = FakeVerifiedOidcProvider()
+        provider.expected_nonce = start.nonce
+        return service.complete_oidc_login(
+            state=start.state, authorization_code=provider.authorization_code,
+            code_verifier=start.code_verifier, client_id="daon-web",
+            redirect_uri="https://app.example.com/auth/callback", provider=provider,
+            platform=DevicePlatform.WEB, trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+
     def test_session_revoke_requires_bound_step_up_and_revokes_access_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service, _, audit, _ = create_service(Path(directory) / "identity.sqlite3")

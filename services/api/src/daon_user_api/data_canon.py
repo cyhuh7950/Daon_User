@@ -10,7 +10,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from psycopg import Connection, Error
 from psycopg_pool import ConnectionPool, PoolTimeout
@@ -188,7 +188,10 @@ def _database_error(error: Error) -> CanonError:
 class PostgresDataCanonStore:
     """Repository port for canonical records; database constraints remain authoritative."""
 
-    def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 4) -> None:
+    def __init__(
+        self, dsn: str, *, min_size: int = 1, max_size: int = 4,
+        creation_enforcer: Callable[[Connection[tuple[Any, ...]], str, str, Mapping[str, int]], None] | None = None,
+    ) -> None:
         if not isinstance(dsn, str) or not dsn:
             raise CanonError("CANON_DATABASE_DSN_REQUIRED")
         self._open_lock = threading.Lock()
@@ -196,6 +199,7 @@ class PostgresDataCanonStore:
             conninfo=dsn, min_size=min_size, max_size=max_size,
             kwargs={"autocommit": False}, timeout=2.0, reconnect_timeout=5.0, open=False,
         )
+        self._creation_enforcer = creation_enforcer
 
     def _ensure_open(self) -> None:
         if not self._pool.closed:
@@ -263,6 +267,10 @@ class PostgresDataCanonStore:
         if object_id is not None and not isinstance(object_id, str):
             raise CanonError("CANON_SNAPSHOT_INVALID")
         with self._transaction(context) as connection:
+            if self._creation_enforcer is not None:
+                self._creation_enforcer(
+                    connection, context.tenant_id, "source.create", {"source_versions": 1},
+                )
             connection.execute(
                 "INSERT INTO source_versions "
                 "(tenant_id, workspace_id, record_id, aggregate_id, version, schema_version, "
@@ -284,6 +292,7 @@ class PostgresDataCanonStore:
         self,
         context: CanonicalContext,
         *,
+        notebook_id: str,
         source_id: str,
         source_version_id: str,
         object_id: str,
@@ -291,13 +300,18 @@ class PostgresDataCanonStore:
         digest_sha256: str,
         byte_size: int,
         created_at: datetime,
+        content_type: str = "application/pdf",
+        deletion_policy: str = "delete_with_notebook",
     ) -> None:
+        if deletion_policy not in {"delete_with_notebook", "retain_after_notebook_delete"}:
+            raise CanonError("CANON_SNAPSHOT_INVALID")
         payload: dict[str, object] = {
             "filename": filename,
-            "content_type": "application/pdf",
+            "content_type": content_type,
             "byte_size": byte_size,
             "object_id": object_id,
             "content_digest_sha256": digest_sha256,
+            "deletion_policy": deletion_policy,
         }
         snapshot_digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
         snapshot = CanonicalSnapshot(
@@ -305,6 +319,12 @@ class PostgresDataCanonStore:
         )
         payload_json = canonical_json_bytes(snapshot.payload).decode("utf-8")
         with self._transaction(context) as connection:
+            notebook = connection.execute(
+                "SELECT 1 FROM notebooks WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s",
+                (context.tenant_id, context.workspace_id, notebook_id),
+            ).fetchone()
+            if notebook is None:
+                raise CanonError("NOTEBOOK_NOT_FOUND")
             existing_source = connection.execute(
                 "SELECT record_id FROM sources WHERE record_id=%s", (source_id,)
             ).fetchone()
@@ -330,6 +350,10 @@ class PostgresDataCanonStore:
                 (source_version_id,),
             ).fetchone()
             if existing_version is None:
+                if self._creation_enforcer is not None:
+                    self._creation_enforcer(
+                        connection, context.tenant_id, "source.create", {"source_versions": 1},
+                    )
                 connection.execute(
                     "INSERT INTO source_versions "
                     "(tenant_id, workspace_id, record_id, aggregate_id, version, schema_version, "
@@ -359,6 +383,41 @@ class PostgresDataCanonStore:
                 != canonical_json_bytes(payload)
             ):
                 raise CanonError("CANON_SNAPSHOT_INVALID")
+            connection.execute(
+                "WITH inserted AS (INSERT INTO notebook_bindings "
+                "(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) "
+                "VALUES (%s,%s,%s,'source',%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING 1) "
+                "INSERT INTO notebook_activities "
+                "(tenant_id,workspace_id,notebook_id,sequence,activity_kind,actor_id,occurred_at) "
+                "SELECT %s,%s,%s,coalesce((SELECT max(sequence) FROM notebook_activities WHERE "
+                "tenant_id=%s AND workspace_id=%s AND notebook_id=%s),0)+1,'context_bound',%s,%s FROM inserted",
+                (
+                    context.tenant_id, context.workspace_id, notebook_id,
+                    source_id, source_version_id, context.actor_id, created_at,
+                    context.tenant_id, context.workspace_id, notebook_id,
+                    context.tenant_id, context.workspace_id, notebook_id,
+                    context.actor_id, created_at,
+                ),
+            )
+
+    def find_source_by_digest(
+        self, context: CanonicalContext, *, digest_sha256: str
+    ) -> tuple[str, str, str] | None:
+        """Return an existing canonical object so identical uploads store once."""
+        if not _DIGEST.fullmatch(digest_sha256):
+            raise CanonError("CANON_SNAPSHOT_INVALID")
+        with self._transaction(context) as connection:
+            row = connection.execute(
+                "SELECT sv.source_id, sv.record_id, sv.object_id "
+                "FROM source_versions sv "
+                "WHERE sv.tenant_id=%s AND sv.workspace_id=%s "
+                "AND sv.canonical_json->>'content_digest_sha256'=%s "
+                "ORDER BY sv.created_at ASC LIMIT 1",
+                (context.tenant_id, context.workspace_id, digest_sha256),
+            ).fetchone()
+        if row is None or any(value is None for value in row):
+            return None
+        return str(row[0]), str(row[1]), str(row[2])
 
     def transition(
         self,

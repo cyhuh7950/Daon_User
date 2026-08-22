@@ -32,6 +32,7 @@ from daon_user_api.runtime import (
     WEB_SESSION_COOKIE,
     RuntimeDependencies,
     RuntimeSettings,
+    request_timeout_for_path,
     build_dependencies,
     create_app,
 )
@@ -147,6 +148,117 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.dependencies.close()
         self.directory.cleanup()
 
+    async def test_screen_preferences_are_authenticated_user_scope_and_reset_to_system(self) -> None:
+        auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        initial = await self.client.get("/api/v1/preferences/screen", headers=auth)
+        saved = await self.client.put(
+            "/api/v1/preferences/screen", headers={**auth, "Content-Type": "application/json"},
+            json={"theme": "dark"},
+        )
+        reset = await self.client.put(
+            "/api/v1/preferences/screen", headers={**auth, "Content-Type": "application/json"},
+            json={"theme": "system"},
+        )
+        unauthenticated = await self.client.get("/api/v1/preferences/screen")
+        self.assertEqual(initial.json()["data"], {"theme": "system"})
+        self.assertEqual(saved.json()["data"], {"theme": "dark"})
+        self.assertEqual(reset.json()["data"], {"theme": "system"})
+        self.assertEqual((initial.status_code, saved.status_code, reset.status_code), (200, 200, 200))
+        self.assertEqual((unauthenticated.status_code, unauthenticated.json()["error"]["code"]), (401, "AUTHENTICATION_REQUIRED"))
+
+    async def test_notebook_create_list_get_update_title_contract(self) -> None:
+        auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        created = await self.client.post(
+            "/api/v1/workspaces/workspace-001/notebooks",
+            headers={**auth, "Content-Type": "application/json", "Idempotency-Key": "notebook-runtime-create-0001"},
+            json={"title": "  전략 노트  ", "description": "선택 설명"},
+        )
+        self.assertEqual(created.status_code, 201)
+        notebook = created.json()["data"]
+        self.assertEqual(set(notebook), {"notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"})
+        self.assertRegex(notebook["etag"], r'^"notebook:[1-9][0-9]*"$')
+        self.assertEqual((notebook["title"], notebook["source_count"], notebook["output_count"], notebook["status"]), ("전략 노트", 0, 0, "empty"))
+        self.assertEqual(created.headers["etag"], '"notebook:1"')
+
+        replay = await self.client.post(
+            "/api/v1/workspaces/workspace-001/notebooks",
+            headers={**auth, "Content-Type": "application/json", "Idempotency-Key": "notebook-runtime-create-0001"},
+            json={"title": "전략 노트", "description": "선택 설명"},
+        )
+        listed = await self.client.get("/api/v1/workspaces/workspace-001/notebooks", headers=auth)
+        fetched = await self.client.get(
+            f"/api/v1/workspaces/workspace-001/notebooks/{notebook['notebook_id']}", headers=auth,
+        )
+        selected = await self.client.get(
+            f"/api/v1/workspaces/workspace-001/notebooks/{notebook['notebook_id']}/context",
+            headers=auth,
+        )
+        updated = await self.client.patch(
+            f"/api/v1/workspaces/workspace-001/notebooks/{notebook['notebook_id']}",
+            headers={**auth, "Content-Type": "application/json", "Idempotency-Key": "notebook-runtime-title-0001", "If-Match": created.headers["etag"]},
+            json={"title": "전략 노트 2"},
+        )
+        self.assertEqual((replay.status_code, replay.json()["meta"]["replayed"]), (200, True))
+        self.assertEqual((listed.status_code, len(listed.json()["data"])), (200, 1))
+        self.assertTrue(listed.headers["etag"].startswith('"projection-'))
+        self.assertEqual((fetched.status_code, fetched.headers["etag"]), (200, '"notebook:1"'))
+        self.assertEqual(selected.status_code, 200)
+        self.assertEqual(selected.headers["etag"], '"notebook-binding:1"')
+        self.assertEqual(selected.json()["data"], {
+            "notebook_id": notebook["notebook_id"], "sources": [],
+            "knowledge_context_ids": [], "conversation_thread_ids": [],
+            "studio_output_ids": [], "output_version_ids": [], "generation_settings_ids": [],
+            "source_deletion_requests": [],
+            "conversation": None,
+        })
+        self.assertEqual((updated.status_code, updated.json()["data"]["title"], updated.headers["etag"]), (200, "전략 노트 2", '"notebook:2"'))
+
+        unknown = await self.client.post(
+            "/api/v1/workspaces/workspace-001/notebooks",
+            headers={**auth, "Content-Type": "application/json", "Idempotency-Key": "notebook-runtime-create-0002"},
+            json={"title": "노트", "unknown": True},
+        )
+        unauthenticated = await self.client.get("/api/v1/workspaces/workspace-001/notebooks")
+        context_without_auth = await self.client.get(
+            f"/api/v1/workspaces/workspace-001/notebooks/{notebook['notebook_id']}/context"
+        )
+        self.assertEqual((unknown.status_code, unknown.json()["error"]["code"]), (400, "INVALID_REQUEST"))
+        self.assertEqual(unauthenticated.status_code, 401)
+        self.assertEqual(context_without_auth.status_code, 401)
+
+    async def test_connector_list_contract_returns_safe_views(self) -> None:
+        auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        response = await self.client.get("/api/v1/workspaces/workspace-001/connectors", headers=auth)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(set(payload), {"data", "meta"})
+        self.assertEqual(set(payload["data"]), {"connectors"})
+        self.assertEqual(payload["meta"]["workspace_id"], "workspace-001")
+        self.assertEqual(
+            {item["connector_id"] for item in payload["data"]["connectors"]},
+            {"mcp-open-law-go-kr", "daon-approved-knowledge"},
+        )
+
+    async def test_source_upload_rejects_invalid_pdf_and_cross_scope_before_write(self) -> None:
+        auth = {
+            "cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}",
+            "Content-Type": "application/pdf", "X-Notebook-Id": "notebook-001",
+            "Idempotency-Key": "source-upload-invalid-0001",
+        }
+        invalid_type = await self.client.post(
+            "/api/v1/workspaces/workspace-001/sources",
+            headers={**auth, "X-Source-Filename": "notes.txt"}, content=b"not pdf",
+        )
+        self.assertEqual((invalid_type.status_code, invalid_type.json()["error"]["code"]), (400, "SOURCE_FILENAME_INVALID"))
+
+        cross_scope = await self.client.post(
+            "/api/v1/workspaces/workspace-foreign/sources",
+            headers={**auth, "X-Source-Filename": "guide.pdf", "X-Notebook-Id": "notebook-foreign"},
+            content=b"%PDF-1.4",
+        )
+        self.assertIn(cross_scope.status_code, {403, 404})
+        self.assertNotIn("stack", cross_scope.text.lower())
+
     async def test_live_ready_and_import_have_no_listener_side_effect(self) -> None:
         live = await self.client.get("/health/live")
         ready = await self.client.get("/health/ready")
@@ -260,6 +372,61 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["refresh_credential"])
         self.assertNotEqual(payload["refresh_credential"], self.native.refresh_token)
 
+    async def test_current_web_session_logout_is_csrf_bound_idempotent_and_clears_cookie(self) -> None:
+        headers = {
+            "Content-Type": "application/json",
+            "X-Daon-Bff-Transport": "internal",
+            "X-Daon-Csrf-Origin": "https://app.example.com",
+            "X-Daon-Csrf-Referer": "https://app.example.com/notebooks",
+        }
+        cookie = {WEB_SESSION_COOKIE: self.web.access_token}
+        rejected = await self.client.post(
+            "/api/v1/session/logout", headers={"Content-Type": "application/json"},
+            cookies=cookie,
+        )
+        first = await self.client.post(
+            "/api/v1/session/logout", headers=headers, cookies=cookie,
+        )
+        replay = await self.client.post(
+            "/api/v1/session/logout", headers=headers, cookies=cookie,
+        )
+        session = await self.client.get("/api/v1/session", cookies=cookie)
+
+        self.assertEqual((rejected.status_code, rejected.json()["error"]["code"]), (403, "CSRF_VALIDATION_FAILED"))
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["data"], {"status": "logged_out", "replayed": False})
+        self.assertEqual(replay.json()["data"], {"status": "logged_out", "replayed": True})
+        self.assertIn(f"{WEB_SESSION_COOKIE}=", first.headers["set-cookie"])
+        self.assertIn("Max-Age=0", first.headers["set-cookie"])
+        self.assertIn("HttpOnly", first.headers["set-cookie"])
+        self.assertIn("Secure", first.headers["set-cookie"])
+        self.assertIn("SameSite=lax", first.headers["set-cookie"])
+        self.assertEqual((session.status_code, session.json()["error"]["code"]), (401, "AUTHENTICATION_REQUIRED"))
+        events = self.audit.list(tenant_id=self.web.tenant_id, limit=200).items
+        self.assertEqual(sum(item.action == "identity.session.self_revoked" for item in events), 1)
+        self.assertNotIn(self.web.access_token, first.text + replay.text)
+
+    async def test_current_web_session_logout_rejects_referer_mismatch_and_input_fields(self) -> None:
+        base = {
+            "Content-Type": "application/json",
+            "X-Daon-Bff-Transport": "internal",
+            "X-Daon-Csrf-Origin": "https://app.example.com",
+        }
+        cookie = {WEB_SESSION_COOKIE: self.web.access_token}
+        mismatch = await self.client.post(
+            "/api/v1/session/logout",
+            headers={**base, "X-Daon-Csrf-Referer": "https://evil.example/notebooks"},
+            cookies=cookie,
+        )
+        input_attempt = await self.client.post(
+            "/api/v1/session/logout",
+            headers={**base, "X-Daon-Csrf-Referer": "https://app.example.com/notebooks"},
+            cookies=cookie, json={"session_id": self.web.session_id},
+        )
+        self.assertEqual((mismatch.status_code, mismatch.json()["error"]["code"]), (403, "CSRF_VALIDATION_FAILED"))
+        self.assertEqual((input_attempt.status_code, input_attempt.json()["error"]["code"]), (400, "INVALID_REQUEST"))
+        self.identity.validate_access(self.web.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+
     async def test_native_refresh_rejects_extra_invalid_expired_and_replayed_credentials(self) -> None:
         extra = await self.client.post(
             "/api/v1/session/refresh",
@@ -348,6 +515,8 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(web.json()["data"]["delivery"], "same_origin_secure_cookie")
         self.assertEqual(native.json()["data"]["delivery"], "native_https_opaque_bearer")
         self.assertEqual(web.json()["data"]["user_id"], native.json()["data"]["user_id"])
+        self.assertRegex(web.json()["data"]["expires_at"], r"Z$")
+        self.assertRegex(native.json()["data"]["expires_at"], r"Z$")
         joined = f"{web.text}{native.text}"
         self.assertNotIn(self.web.access_token, joined)
         self.assertNotIn(self.native.access_token, joined)
@@ -562,6 +731,11 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeSettingsTests(unittest.TestCase):
+    def test_grounded_question_only_gets_bounded_model_timeout(self) -> None:
+        settings = RuntimeSettings.for_test(database_path=Path("runtime.sqlite3"), policy_version="policy-v1")
+        self.assertEqual(request_timeout_for_path(settings, "/api/v1/workspaces/workspace-a/questions"), 95.0)
+        self.assertEqual(request_timeout_for_path(settings, "/api/v1/session"), 30.0)
+
     def test_object_storage_requires_complete_secret_references_and_build_is_lazy(self) -> None:
         with self.assertRaises(ValueError):
             RuntimeSettings(
@@ -614,13 +788,17 @@ class RuntimeSettingsTests(unittest.TestCase):
                 public_gateway_url="https://api.example.com",
                 trusted_proxy_ips=("10.0.0.1",),
             )
-        valid = RuntimeSettings(
-            profile="production", bind_host="0.0.0.0", port=8000,
-            public_gateway_url="https://api.example.com",
-            trusted_proxy_ips=("10.0.0.1",),
-            cloud_database_dsn="postgresql://app@database/daon",
-        )
-        self.assertEqual(valid.public_gateway_url, "https://api.example.com")
+        with tempfile.TemporaryDirectory() as directory:
+            step_up_key = Path(directory) / "step-up.key"
+            step_up_key.write_bytes(b"s" * 32)
+            valid = RuntimeSettings(
+                profile="production", bind_host="0.0.0.0", port=8000,
+                public_gateway_url="https://api.example.com",
+                trusted_proxy_ips=("10.0.0.1",),
+                cloud_database_dsn="postgresql://app@database/daon",
+                step_up_token_key_file=step_up_key,
+            )
+            self.assertEqual(valid.public_gateway_url, "https://api.example.com")
 
 
 if __name__ == "__main__":

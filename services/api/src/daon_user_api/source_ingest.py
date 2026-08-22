@@ -19,6 +19,21 @@ class SourceRecord:
     digest_sha256: str
     status: str
     flags: tuple[str, ...] = ()
+    notebook_id: str | None = None
+    content_type: str | None = None
+    deletion_policy: str = "delete_with_notebook"
+
+    def __post_init__(self) -> None:
+        if self.status not in {"accepted", "unavailable"}:
+            raise SourceRejected("INVALID_SOURCE_STATUS")
+        if self.deletion_policy not in {
+            "delete_with_notebook", "retain_after_notebook_delete"
+        }:
+            raise SourceRejected("INVALID_DELETION_POLICY")
+
+    @property
+    def usable(self) -> bool:
+        return self.status != "unavailable"
 
 
 class SourceIngestor:
@@ -54,6 +69,16 @@ class SourceIngestor:
             raise SourceRejected("UNSUPPORTED_FORMAT")
         return "." + name.rsplit(".", 1)[1]
 
+    @classmethod
+    def expected_mime_for_filename(cls, filename: str) -> str | None:
+        """Return the registered upload MIME for a safe supported filename."""
+        if not isinstance(filename, str) or any(char in filename for char in "/\\\x00"):
+            return None
+        try:
+            return cls._MIME_BY_EXTENSION.get(cls._extension(filename))
+        except SourceRejected:
+            return None
+
     @staticmethod
     def _signature_matches(extension: str, content: bytes) -> bool:
         if not content:
@@ -84,6 +109,8 @@ class SourceIngestor:
         corrupted: bool = False,
         compression_ratio: float | None = None,
         malware_signature: bool = False,
+        notebook_id: str | None = None,
+        deletion_policy: str = "delete_with_notebook",
     ) -> SourceRecord:
         extension = self._extension(filename)
         expected_mime = self._MIME_BY_EXTENSION.get(extension)
@@ -107,6 +134,24 @@ class SourceIngestor:
             version=1,
             digest_sha256=self._digest(content),
             status="accepted",
+            notebook_id=notebook_id,
+            content_type=declared_mime,
+            deletion_policy=deletion_policy,
+        )
+
+    @staticmethod
+    def unavailable(record: SourceRecord) -> SourceRecord:
+        """Keep a missing external source visible without making it usable."""
+        return SourceRecord(
+            source_id=record.source_id,
+            tenant_id=record.tenant_id,
+            version=record.version,
+            digest_sha256=record.digest_sha256,
+            status="unavailable",
+            flags=record.flags,
+            notebook_id=record.notebook_id,
+            content_type=record.content_type,
+            deletion_policy=record.deletion_policy,
         )
 
     def create_direct_input(self, tenant_id: str, text: str) -> SourceRecord:

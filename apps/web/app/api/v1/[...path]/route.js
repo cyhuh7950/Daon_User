@@ -2,7 +2,7 @@ import {
   BffConfigurationError,
   createBffSafeError,
   createBffTraceId,
-  createBffProxy,
+  createNativeBffProxy,
   parseInternalApiBase,
   parsePublicGatewayOrigin,
 } from "../../../../lib/bff-api-proxy.js";
@@ -24,9 +24,12 @@ async function handler(request, context) {
       process.env.DAON_API_INTERNAL_URL,
       process.env.DAON_RUNTIME_PROFILE ?? "production",
     );
-    const publicOrigin = parsePublicGatewayOrigin(process.env.DAON_PUBLIC_GATEWAY_URL);
+    const publicOrigin = parsePublicGatewayOrigin(
+      process.env.DAON_PUBLIC_GATEWAY_URL,
+      process.env.DAON_BFF_PROFILE ?? "production",
+    );
     const { path } = await context.params;
-    return createBffProxy({ baseUrl, publicOrigin })(request, path, trace);
+    return createNativeBffProxy({ baseUrl, publicOrigin })(request, path, trace);
   } catch (error) {
     const errorTrace = createBffTraceId();
     if (error instanceof BffConfigurationError) return configurationFailure(errorTrace);
@@ -37,4 +40,3 @@ async function handler(request, context) {
 export const dynamic = "force-dynamic";
 export const GET = handler;
 export const POST = handler;
-export const PATCH = handler;

@@ -10,7 +10,7 @@ MIGRATION = ROOT / "services" / "api" / "migrations" / "versions" / "0004_sync_c
 OPENAPI = ROOT / "packages" / "contracts" / "openapi" / "v1" / "openapi.json"
 
 SYNC_PATHS = {
-    "/api/v1/workspaces/{id}/sync-operations": {"post"},
+    "/api/v1/workspaces/{id}/sync-operations": {"get", "post"},
     "/api/v1/sync-operations/{id}": {"get"},
     "/api/v1/sync-operations/{id}/approve": {"post"},
     "/api/v1/sync-operations/{id}/transfer-batches": {"post"},

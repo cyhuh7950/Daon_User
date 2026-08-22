@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from typing import Mapping, cast
 
@@ -18,6 +19,9 @@ from .document_understanding_adapter import (
     DocumentUnderstandingResult,
 )
 from .object_queue import ObjectKeyPolicy, ObjectStorageError, ObjectStoragePort
+
+
+_SAFE_NOTEBOOK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 
 
 class PostgresDocumentProcessingRepository:
@@ -167,6 +171,11 @@ class PostgresDocumentProcessingRepository:
                 source_id, source_state, source_version = (
                     str(source_row[0]), str(source_row[1]), int(source_row[2])
                 )
+                # A digest replay can find a Source that was already fully
+                # processed.  Reusing that Source must be idempotent: do not
+                # try to transition a ready Source back into processing or
+                # restart its completed ProcessingRun.
+                replayed_completed = source_state == "ready" and str(row[0]) == "completed"
                 if source_state == "registered":
                     source_version = self._transition(
                         connection, context, entity_type="Source", aggregate_id=source_id,
@@ -186,9 +195,13 @@ class PostgresDocumentProcessingRepository:
                         expected_version=source_version, target_state="processing",
                         reason_code="DOCUMENT_PROCESSING_RESTARTED",
                     )
-                elif source_state != "processing":
+                elif source_state == "ready" and not replayed_completed:
                     raise DocumentUnderstandingError("SOURCE_PROCESSING_STATE_INVALID", status=409)
-                if str(row[0]) == "accepted" and int(row[1]) == 1:
+                elif source_state != "processing" and not replayed_completed:
+                    raise DocumentUnderstandingError("SOURCE_PROCESSING_STATE_INVALID", status=409)
+                if replayed_completed:
+                    pass
+                elif str(row[0]) == "accepted" and int(row[1]) == 1:
                     self._transition(
                         connection, context, entity_type="ProcessingRun",
                         aggregate_id=processing_run_id,
@@ -216,8 +229,10 @@ class PostgresDocumentProcessingRepository:
             raise self._database_error(error) from None
 
     def get_status(
-        self, context: DocumentProcessingContext, processing_run_id: str,
+        self, context: DocumentProcessingContext, processing_run_id: str, *, notebook_id: str,
     ) -> DocumentProcessingStatus:
+        if not isinstance(notebook_id, str) or _SAFE_NOTEBOOK_ID.fullmatch(notebook_id) is None:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.read")) as connection:
                 row = connection.execute(
@@ -227,10 +242,19 @@ class PostgresDocumentProcessingRepository:
                     "sv.workspace_id=pr.workspace_id AND sv.record_id=pr.source_version_id "
                     "JOIN sources s ON s.tenant_id=sv.tenant_id AND "
                     "s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
+                    "JOIN notebook_bindings nb ON nb.tenant_id=sv.tenant_id AND "
+                    "nb.workspace_id=sv.workspace_id AND nb.notebook_id=%s "
+                    "AND nb.binding_kind='source' AND nb.record_id=sv.source_id "
+                    "AND nb.version_id=sv.record_id "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=nb.tenant_id "
+                    "AND u.workspace_id=nb.workspace_id AND u.notebook_id=nb.notebook_id "
+                    "AND u.source_id=nb.record_id AND u.source_version_id=nb.version_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=s.tenant_id "
+                    "AND dr.workspace_id=s.workspace_id AND dr.source_id=s.record_id AND dr.source_active=false) "
                     "LEFT JOIN document_processing_jobs job ON job.tenant_id=pr.tenant_id AND "
                     "job.workspace_id=pr.workspace_id AND job.processing_run_id=pr.record_id "
                     "WHERE pr.record_id=%s",
-                    (processing_run_id,),
+                    (notebook_id, processing_run_id),
                 ).fetchone()
             if row is None:
                 raise DocumentUnderstandingError("PROCESSING_RUN_NOT_FOUND", status=404)

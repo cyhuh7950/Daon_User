@@ -1019,6 +1019,43 @@ class AuthorizationService:
             if not allowed:
                 raise AuthorizationError("ACTION_DENIED", 403)
 
+    def organization_admin_workspace(
+        self, *, principal: IdentityPrincipal, trace_id: str, policy_version: str,
+    ) -> str:
+        """Return the tenant role's server-selected workspace for tenant-scoped writes."""
+        with self._repository.transaction() as connection:
+            tenant_role = self._tenant_role(connection, principal)
+            role = None if tenant_role is None else Role(str(tenant_role["role"]))
+            workspace_kind = {
+                Role.PERSONAL_OWNER: "personal",
+                Role.ORGANIZATION_ADMIN: "organization",
+            }.get(role)
+            rows = () if workspace_kind is None else connection.execute(
+                "SELECT workspace_id FROM auth_workspaces "
+                "WHERE tenant_id=? AND workspace_kind=? "
+                "ORDER BY workspace_id LIMIT 2",
+                (principal.tenant_id, workspace_kind),
+            ).fetchall()
+            candidate_count = len(rows)
+            allowed = candidate_count == 1
+            role_code = "none" if role is None else role.value
+            self._audit(
+                action="authorization.organization_policy.allowed" if allowed
+                else "authorization.organization_policy.denied",
+                outcome=AuditOutcome.SUCCEEDED if allowed else AuditOutcome.DENIED,
+                principal=principal, trace_id=trace_id, policy_version=policy_version,
+                workspace_id=None, target_type="organization_policy",
+                target_id=principal.tenant_id,
+                metadata={
+                    "reason_code": role.value.upper() if allowed else "ACTION_DENIED",
+                    "role": role_code,
+                    "candidate_count": candidate_count,
+                },
+            )
+            if not allowed:
+                raise AuthorizationError("ACTION_DENIED", 403)
+            return str(rows[0][0])
+
     def set_membership(
         self, *, principal: IdentityPrincipal, workspace_id: str, user_id: str,
         role: Role, expected_version: int, trace_id: str, policy_version: str,

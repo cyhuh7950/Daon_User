@@ -147,11 +147,16 @@ class UpstageDocumentUnderstandingAdapterTests(unittest.TestCase):
         self.assertEqual(len(semantic_payload["messages"]), 1)  # type: ignore[arg-type]
         self.assertEqual(semantic_payload["messages"][0]["role"], "user")  # type: ignore[index]
         self.assertEqual(len(semantic_payload["messages"][0]["content"]), 1)  # type: ignore[index]
-        image_url = semantic_payload["messages"][0]["content"][0]["image_url"]["url"]  # type: ignore[index]
-        self.assertTrue(image_url.startswith("data:application/octet-stream;base64,"))
+        image_part = semantic_payload["messages"][0]["content"][0]  # type: ignore[index]
+        self.assertEqual(image_part["type"], "image_url")
+        image_url = image_part["image_url"]["url"]
+        self.assertTrue(image_url.startswith("data:application/pdf;base64,"))
         self.assertTrue(semantic_payload["response_format"]["json_schema"]["strict"])  # type: ignore[index]
+        schema_properties = semantic_payload["response_format"]["json_schema"]["schema"]["properties"]  # type: ignore[index]
+        self.assertIn("original source language", schema_properties["title"]["description"].lower())
+        self.assertIn("do not translate", schema_properties["summary"]["description"].lower())
+        self.assertIn("do not translate or paraphrase", schema_properties["key_facts"]["description"].lower())
         self.assertNotIn("/chat/completions", transport.calls[0][1])
-        self.assertNotIn("data:application/pdf", image_url)
         self.assertNotIn("document-parse", str(semantic_payload))
         self.assertEqual(
             transport.calls[1][1],

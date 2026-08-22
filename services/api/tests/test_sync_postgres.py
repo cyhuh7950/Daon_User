@@ -11,7 +11,7 @@ from daon_user_api.object_queue import (
     ObjectQueueCoordinator, ObjectStorageError, PostgresObjectQueueStore,
     StagedObject, StoredObject,
 )
-from daon_user_api.sync import SyncContext, SyncItemInput, TransferPayload
+from daon_user_api.sync import SyncContext, SyncItemInput, SyncItemKind, TargetVersion, TransferPayload
 from daon_user_api.sync_postgres import ObjectQueueSyncTransferPort, PostgresSyncService
 
 
@@ -39,6 +39,42 @@ class _Storage:
 
     def get(self, key: str) -> bytes:
         return self.objects[key][0]
+
+
+class _NoSourceCoordinator:
+    def submit(self, *_args, **_kwargs):
+        raise AssertionError("output import must not use source submission")
+
+
+class _OutputImporter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def import_bundle(self, context, item, content, idempotency_key, *, relation):
+        self.calls += 1
+        return TargetVersion(
+            "cloud-output-version", "cloud-output-object", item.item_id,
+            item.digest_sha256, None, relation,
+        )
+
+
+class ObjectQueueSyncTransferPortUnitTests(unittest.TestCase):
+    def test_output_item_is_dispatched_to_output_importer(self) -> None:
+        content = b"{}"
+        importer = _OutputImporter()
+        port = ObjectQueueSyncTransferPort(_NoSourceCoordinator(), output_importer=importer)
+        item = SyncItemInput(
+            "output-item", None, "local-output-object", hashlib.sha256(content).hexdigest(),
+            len(content), "application/vnd.daon.offline-studio-output+json", None, None,
+            item_kind=SyncItemKind.OUTPUT_VERSION, output_version_id="local-output-version",
+            dependency_item_ids=("source-item",),
+        )
+        target = port.transmit(
+            SyncContext("tenant", "workspace", "actor", "trace", "policy"),
+            item, content, "output-import-idem", relation="copy",
+        )
+        self.assertEqual(target.target_version_id, "cloud-output-version")
+        self.assertEqual(importer.calls, 1)
 
 
 @unittest.skipUnless(os.environ.get("DAON_TEST_POSTGRES_DSN"), "isolated PostgreSQL DSN required")
@@ -103,6 +139,9 @@ class PostgresSyncIntegrationTests(unittest.TestCase):
         )
         view = restarted.get_operation(self.context, operation.operation_id)
         self.assertEqual(view.state, "reindex_requested")
+        listed = restarted.list_operations(self.context)
+        self.assertEqual(tuple(item.operation_id for item in listed), (operation.operation_id,))
+        self.assertEqual(listed[0].item_ids, (item.item_id,))
         self.assertEqual((view.source_mutations, view.overwrite_count), (0, 0))
         with self.cloud._transaction(CloudAccessContext(
             self.context.tenant_id, self.context.workspace_id,

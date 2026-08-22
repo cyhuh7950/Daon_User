@@ -39,6 +39,7 @@ from .authorization import (
 )
 from .identity import (
     ClientKind,
+    CurrentSessionLogoutEvent,
     DevicePlatform,
     DeviceRevocationEvent,
     IdentityError,
@@ -67,6 +68,7 @@ __all__ = [
     "IntegrityCode",
     "IntegrityResult",
     "ClientKind",
+    "CurrentSessionLogoutEvent",
     "DevicePlatform",
     "DeviceRevocationEvent",
     "IdentityError",

@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "release_version": "1.0.0",
+  "released_at": "2026-08-20",
+  "language": "ko-KR",
+  "documents": [
+    {
+      "document_id": "daon-getting-started",
+      "title": "Daon Getting Started",
+      "summary": "Notebook의 첫 작업 흐름과 안전한 운영",
+      "auth_scope": "public_and_authenticated",
+      "version": "1.0.0",
+      "language": "ko-KR",
+      "assets": {
+        "markdown": {
+          "filename": "daon-getting-started.md",
+          "href": "/manual/daon-getting-started.md",
+          "bytes": 6399,
+          "sha256": "6787688f6b0ba16ecc616e829ddd8e71c734493312f78d35c034b4cac46f42ab",
+          "mime": "text/markdown; charset=utf-8"
+        },
+        "docx": {
+          "filename": "daon-getting-started.docx",
+          "href": "/manual/daon-getting-started.docx",
+          "bytes": 42438,
+          "sha256": "b3dd8fb224ecc88a065e35d0f2a910ce8e62824e1fa5006dbb7870e62b8cd61c",
+          "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        },
+        "pdf": {
+          "filename": "daon-getting-started.pdf",
+          "href": "/manual/daon-getting-started.pdf",
+          "bytes": 162104,
+          "sha256": "f3c1666d70fa2b6f7cd723f2d2934880e09a4eb7e705db5376e99b85adacf01b",
+          "mime": "application/pdf"
+        }
+      }
+    },
+    {
+      "document_id": "daon-user-manual",
+      "title": "Daon 사용자 설명서",
+      "summary": "Workspace 화면·설정·운영 절차",
+      "auth_scope": "public_and_authenticated",
+      "version": "1.0.0",
+      "language": "ko-KR",
+      "assets": {
+        "markdown": {
+          "filename": "daon-user-manual.md",
+          "href": "/manual/daon-user-manual.md",
+          "bytes": 6649,
+          "sha256": "e090f5513a0ae9f8d0386dd775550aa1cf4bc654e7a5cc4d2c24e22c11c5b597",
+          "mime": "text/markdown; charset=utf-8"
+        },
+        "docx": {
+          "filename": "daon-user-manual.docx",
+          "href": "/manual/daon-user-manual.docx",
+          "bytes": 42658,
+          "sha256": "7b5d0efcde9b328c9d0c54720d4dcb12e1fc628620a4f0e47d802fdc7638ee1f",
+          "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        },
+        "pdf": {
+          "filename": "daon-user-manual.pdf",
+          "href": "/manual/daon-user-manual.pdf",
+          "bytes": 177756,
+          "sha256": "b7f20eed6385a802d6269b83261969e088762a8ff134340540aa00990bf61d99",
+          "mime": "application/pdf"
+        }
+      }
+    },
+    {
+      "document_id": "daon-knowledge-llm-guide",
+      "title": "Daon 지식·LLM 활용 가이드",
+      "summary": "지식·Provider·Citation 품질 운영 기준",
+      "auth_scope": "public_and_authenticated",
+      "version": "1.0.0",
+      "language": "ko-KR",
+      "assets": {
+        "markdown": {
+          "filename": "daon-knowledge-llm-guide.md",
+          "href": "/manual/daon-knowledge-llm-guide.md",
+          "bytes": 6410,
+          "sha256": "f2cfc392faadf0d7b82c9d5fce7dae14e3f953d9e71677128ea84a3acb7fef6d",
+          "mime": "text/markdown; charset=utf-8"
+        },
+        "docx": {
+          "filename": "daon-knowledge-llm-guide.docx",
+          "href": "/manual/daon-knowledge-llm-guide.docx",
+          "bytes": 42492,
+          "sha256": "e4ccca3b108ccec80e2aecde6ca651e1cfcf6b844ce79148b4747ab04f046963",
+          "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        },
+        "pdf": {
+          "filename": "daon-knowledge-llm-guide.pdf",
+          "href": "/manual/daon-knowledge-llm-guide.pdf",
+          "bytes": 172473,
+          "sha256": "bc3560c70e225ff7ba1f01af4dde72a4975ee1dde6487605ee1cccd2d9528259",
+          "mime": "application/pdf"
+        }
+      }
+    }
+  ]
+}

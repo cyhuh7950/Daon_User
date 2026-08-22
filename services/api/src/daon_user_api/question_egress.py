@@ -1,0 +1,336 @@
+"""Pre-provider Question Run policy freeze and decision persistence."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from typing import Mapping
+from urllib.parse import urlsplit
+
+from psycopg.types.json import Jsonb
+
+from .cloud_storage import PostgresCloudStore
+from .data_canon import canonical_json_bytes
+from .egress_policy import EffectiveEgressPolicy, EgressPolicyContext, EgressPolicyService
+from .question_answering import TextModelSelection
+from .question_answering_postgres import PostgresQuestionAnsweringRepository, QuestionContext
+from .question_answering_service import QuestionAnsweringError
+from .routing import CandidateDeployment, RoutingContext, route_single_model
+
+
+class _FrozenRunMismatch(RuntimeError):
+    pass
+
+
+def external_question_policy_matches(
+    effective: EffectiveEgressPolicy | object, *, provider_kind: str,
+    destination: str, payload_bytes: int, classification: str,
+    masking_required: bool, redaction_required: bool,
+) -> bool:
+    allowed_kinds = getattr(effective, "allowed_provider_kinds", ())
+    allowed_destinations = getattr(effective, "allowed_destinations", ())
+    max_bytes = getattr(effective, "max_bytes", None)
+    return bool(
+        getattr(effective, "mode", None) == "allow_approved_external"
+        and isinstance(allowed_kinds, (tuple, list))
+        and provider_kind in allowed_kinds
+        and isinstance(allowed_destinations, (tuple, list))
+        and destination.casefold() in {
+            item.casefold() for item in allowed_destinations if isinstance(item, str)
+        }
+        and isinstance(max_bytes, int) and not isinstance(max_bytes, bool)
+        and 0 <= payload_bytes <= max_bytes
+        and getattr(effective, "classification", None) == classification
+        and getattr(effective, "masking_required", None) is masking_required
+        and getattr(effective, "redaction_required", None) is redaction_required
+    )
+
+
+class PostgresQuestionEgressAuthorizer:
+    def __init__(
+        self,
+        cloud_store: PostgresCloudStore,
+        policy_service: EgressPolicyService,
+        *,
+        development_auth_bypass: bool = False,
+    ) -> None:
+        self._cloud_store = cloud_store
+        self._policy_service = policy_service
+        self._development_auth_bypass = development_auth_bypass
+
+    @staticmethod
+    def _id(prefix: str, *values: str) -> str:
+        return PostgresQuestionAnsweringRepository._opaque_id(prefix, *values)
+
+    def prepare_payload(
+        self, context: QuestionContext, provider_payload: bytes,
+    ) -> bytes:
+        effective = self._policy_service.get_effective(EgressPolicyContext(
+            context.tenant_id, context.tenant_id, context.workspace_id,
+            context.actor_id, context.trace_id, context.policy_version,
+        ))
+        if not (effective.masking_required or effective.redaction_required):
+            return provider_payload
+        try:
+            payload = json.loads(provider_payload)
+            if not isinstance(payload, dict):
+                raise ValueError
+            messages = payload.get("messages")
+            if not isinstance(messages, list):
+                raise ValueError
+            user_messages = [
+                item for item in messages
+                if isinstance(item, dict) and item.get("role") == "user"
+            ]
+            if len(user_messages) != 1 or not isinstance(user_messages[0].get("content"), str):
+                raise ValueError
+            try:
+                grounded = json.loads(user_messages[0]["content"])
+            except json.JSONDecodeError:
+                # A Source-free question is a normal LLM/work consultation.
+                # It has no Source evidence to redact, so preserve the actual
+                # user question. Grounded JSON below remains strictly masked.
+                return canonical_json_bytes(payload)
+            if (
+                not isinstance(grounded, dict)
+                or not isinstance(grounded.get("question"), str)
+                or not isinstance(grounded.get("evidence"), list)
+                or not grounded["evidence"]
+            ):
+                raise ValueError
+            evidence = grounded["evidence"]
+            if any(
+                not isinstance(item, dict) or not isinstance(item.get("text"), str)
+                for item in evidence
+            ):
+                raise ValueError
+            # Preserve the query and evidence text for the provider.  The
+            # grounded payload is the only useful context the model receives;
+            # replacing the entire fields with a placeholder makes every
+            # Source question unanswerable.  Sensitive-data handling belongs
+            # to the document redaction pipeline, before indexing, rather
+            # than destroying the retrieval context at this boundary.
+            user_messages[0]["content"] = canonical_json_bytes(grounded).decode("utf-8")
+            return canonical_json_bytes(payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise QuestionAnsweringError("EGRESS_TRANSFORMATION_FAILED", status=403) from None
+
+    def authorize(
+        self, context: QuestionContext, *, run_id: str, source_id: str | None,
+        source_version_id: str | None, selection: TextModelSelection, provider_payload: bytes,
+        no_external_payload: bool = False,
+        approved_authorization: Mapping[str, str] | None = None,
+        question: str | None = None, context_mode: str | None = None,
+        request_fingerprint: str | None = None,
+    ) -> Mapping[str, object]:
+        policy_context = EgressPolicyContext(
+            context.tenant_id, context.tenant_id, context.workspace_id,
+            context.actor_id, context.trace_id, context.policy_version,
+        )
+        effective = self._policy_service.get_effective(policy_context)
+        destination = (urlsplit(selection.base_url).hostname or "").casefold()
+        provider_kind = selection.provider_kind
+        external = provider_kind == "external_api" and not no_external_payload
+        payload_bytes = len(provider_payload)
+        payload_fingerprint = "sha256:" + hashlib.sha256(provider_payload).hexdigest()
+        transformation_unavailable = False
+        development_auth_bypass = (
+            approved_authorization is not None
+            and approved_authorization.get("authorization_mode") == "development_auth_bypass"
+        )
+        approval_exact = development_auth_bypass or (
+            approved_authorization is not None and all((
+                approved_authorization.get("policy_fingerprint") == effective.fingerprint,
+                approved_authorization.get("provider_payload_fingerprint") == payload_fingerprint,
+                approved_authorization.get("provider_kind") == provider_kind,
+                approved_authorization.get("deployment_id") == selection.deployment_id,
+            ))
+        )
+        approver_unavailable = external and not approval_exact and not self._development_auth_bypass
+        external_scope_allowed = external_question_policy_matches(
+            effective, provider_kind=provider_kind, destination=destination,
+            payload_bytes=payload_bytes, classification="internal",
+            masking_required=True, redaction_required=True,
+        )
+        if external and (
+            not external_scope_allowed or transformation_unavailable or approver_unavailable
+        ):
+            raise QuestionAnsweringError("EGRESS_POLICY_DENIED", status=403)
+        policy_allowed = not external or external_scope_allowed
+        routing = route_single_model(
+            RoutingContext(
+                actor_id=context.actor_id, tenant_id=context.tenant_id,
+                workspace_id=context.workspace_id, mode="pinned", required_role="text",
+                data_realm="cloud_sync", external_egress_allowed=policy_allowed,
+                policy_version=effective.fingerprint, cost_limit=0.0,
+                estimated_cost=0.0, payload_bytes=payload_bytes,
+            ),
+            [CandidateDeployment(
+                deployment_id=selection.deployment_id,
+                artifact_digest=self._id("artifact-digest", selection.provider_code, selection.model_id),
+                role="text", data_realm="cloud_sync", health="ready",
+                provider_kind=provider_kind,
+            )],
+        )
+        allowed = policy_allowed and routing.status == "selected"
+        reason = (
+            "no_external_payload" if no_external_payload and allowed
+            else "approved_policy_binding" if allowed
+            else "egress_transformation_unavailable" if transformation_unavailable
+            else "egress_approval_required" if approver_unavailable
+            else routing.code or "effective_policy_denied"
+        )
+        provider_id = self._id("provider", selection.profile_id, str(selection.binding_version))
+        artifact_id = self._id("artifact", selection.provider_code, selection.model_id)
+        deployment_id = self._id("deployment", selection.deployment_id, str(selection.binding_version))
+        routing_policy_id = self._id("routing-policy", str(selection.binding_version), selection.deployment_id)
+        egress_decision_id = self._id("egress", run_id, effective.fingerprint, payload_fingerprint)
+        routing_decision_id = self._id("routing", run_id)
+        frozen = {
+            **effective.frozen_context(),
+            "payload_fingerprint": payload_fingerprint,
+            "payload_bytes": payload_bytes,
+            "provider_kind": provider_kind,
+            "destination": destination,
+            "approved_request_fingerprint": None if approved_authorization is None
+            else approved_authorization.get("request_fingerprint"),
+            "authorization_mode": "development_auth_bypass" if development_auth_bypass
+            else "step_up_approved" if approval_exact else "none",
+        }
+        if (
+            not isinstance(question, str) or not question.strip()
+            or context_mode not in {
+                "raw_only", "daon_priority", "mixed", "general_ungrounded",
+            }
+            or not isinstance(request_fingerprint, str)
+        ):
+            raise QuestionAnsweringError("QUESTION_RESULT_INVALID", status=400)
+        run_payload = PostgresQuestionAnsweringRepository._run_canonical_payload(
+            question=question, source_id=source_id,
+            source_version_id=source_version_id, context_mode=context_mode,
+            request_fingerprint=request_fingerprint, selection=selection,
+            frozen_scope=frozen,
+        )
+        cloud_context = PostgresQuestionAnsweringRepository._cloud_context(context, "question.route")
+        try:
+            with self._cloud_store._transaction(cloud_context) as connection:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                    ("question-egress|" + context.tenant_id + "|" + context.workspace_id + "|" + run_id,),
+                )
+                existing = connection.execute(
+                    "SELECT canonical_json FROM runs WHERE record_id=%s",
+                    (run_id,),
+                ).fetchone()
+                if existing is not None:
+                    if existing[0] != run_payload:
+                        raise QuestionAnsweringError(
+                            "IDEMPOTENCY_KEY_REUSED", status=409,
+                        )
+                    replay = connection.execute(
+                        "SELECT canonical_json->>'allowed',canonical_json->>'reason' "
+                        "FROM egress_decisions WHERE record_id=%s AND run_id=%s",
+                        (egress_decision_id, run_id),
+                    ).fetchone()
+                    if replay is None:
+                        raise _FrozenRunMismatch
+                    if str(replay[0]).casefold() != "true":
+                        raise QuestionAnsweringError("EGRESS_POLICY_DENIED", status=403)
+                    return {
+                        "egress_decision_id": egress_decision_id,
+                        "routing_decision_id": routing_decision_id,
+                        "routing_policy_version_id": routing_policy_id,
+                        "policy_fingerprint": effective.fingerprint,
+                        "frozen_routing_context": frozen,
+                        "provider_owner": False,
+                    }
+                conversation_id = self._id("conversation", run_id)
+                run_result_id = self._id("run-result", run_id)
+                PostgresQuestionAnsweringRepository._insert_canon(connection, context, "provider_profiles", provider_id, {
+                    "configured_profile_id": selection.profile_id,
+                    "provider_code": selection.provider_code,
+                    "binding_version": selection.binding_version,
+                })
+                PostgresQuestionAnsweringRepository._insert_canon(connection, context, "model_artifacts", artifact_id, {
+                    "provider_code": selection.provider_code, "model_id": selection.model_id,
+                })
+                PostgresQuestionAnsweringRepository._insert_canon(connection, context, "model_deployments", deployment_id, {
+                    "configured_deployment_id": selection.deployment_id,
+                    "model_id": selection.model_id, "role": "text",
+                    "binding_version": selection.binding_version,
+                }, extra_columns=("provider_profile_id", "model_artifact_id"),
+                    extra_values=(provider_id, artifact_id))
+                PostgresQuestionAnsweringRepository._insert_canon(connection, context, "routing_policy_versions", routing_policy_id, {
+                    "binding_version": selection.binding_version,
+                    "candidate_order": [deployment_id], "role": "text",
+                    "egress_policy_fingerprint": effective.fingerprint,
+                })
+                PostgresQuestionAnsweringRepository._insert_canon(
+                    connection, context, "conversations", conversation_id,
+                    {"current_run_id": run_id, "current_run_result_id": run_result_id},
+                )
+                PostgresQuestionAnsweringRepository._insert_canon(
+                    connection, context, "runs", run_id,
+                    run_payload, state="accepted", extra_columns=("conversation_id",),
+                    extra_values=(conversation_id,),
+                )
+                PostgresQuestionAnsweringRepository._insert_canon(connection, context, "egress_decisions", egress_decision_id, {
+                    "run_id": run_id, "provider_profile_id": provider_id,
+                    "allowed": allowed, "reason": reason, "frozen_routing_context": frozen,
+                }, extra_columns=("run_id", "provider_profile_id"), extra_values=(run_id, provider_id))
+                PostgresQuestionAnsweringRepository._insert_canon(connection, context, "routing_decisions", routing_decision_id, {
+                    "run_id": run_id, "candidate_order": [deployment_id], "reason": reason,
+                    "egress_decision_id": egress_decision_id,
+                    "routing_status": routing.status, "routing_code": routing.code,
+                    "selected_deployment_id": routing.deployment_id,
+                }, extra_columns=("run_id", "routing_policy_version_id", "egress_decision_id"),
+                    extra_values=(run_id, routing_policy_id, egress_decision_id))
+                connection.execute(
+                    "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,"
+                    "target_type,target_id,outcome,trace_id,policy_version,metadata) "
+                    "VALUES (%s,%s,%s,%s,'question.egress.authorize','Run',%s,%s,%s,%s,%s)",
+                    (
+                        self._id("audit-egress", run_id, egress_decision_id), context.tenant_id,
+                        context.workspace_id, context.actor_id, run_id,
+                        "succeeded" if allowed else "denied", context.trace_id, context.policy_version,
+                        Jsonb({
+                            "egress_decision_id": egress_decision_id,
+                            "routing_decision_id": routing_decision_id,
+                            "policy_fingerprint": effective.fingerprint,
+                            "safe_reason": reason,
+                        }),
+                    ),
+                )
+        except _FrozenRunMismatch:
+            self._record_retry_denial(context, run_id, effective.fingerprint)
+            raise QuestionAnsweringError("QUESTION_NEW_RUN_REQUIRED", status=409)
+        if not allowed:
+            raise QuestionAnsweringError("EGRESS_POLICY_DENIED", status=403)
+        return {
+            "egress_decision_id": egress_decision_id,
+            "routing_decision_id": routing_decision_id,
+            "routing_policy_version_id": routing_policy_id,
+            "policy_fingerprint": effective.fingerprint,
+            "frozen_routing_context": frozen,
+            "provider_owner": True,
+        }
+
+    def _record_retry_denial(
+        self, context: QuestionContext, run_id: str, policy_fingerprint: str,
+    ) -> None:
+        cloud_context = PostgresQuestionAnsweringRepository._cloud_context(
+            context, "question.route",
+        )
+        with self._cloud_store._transaction(cloud_context) as connection:
+            connection.execute(
+                "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,"
+                "target_type,target_id,outcome,trace_id,policy_version,metadata) "
+                "VALUES (%s,%s,%s,%s,'question.egress.retry_denied','Run',%s,'denied',%s,%s,%s) "
+                "ON CONFLICT (event_id) DO NOTHING",
+                (
+                    self._id("audit-egress-retry", run_id, policy_fingerprint),
+                    context.tenant_id, context.workspace_id, context.actor_id, run_id,
+                    context.trace_id, context.policy_version,
+                    Jsonb({"safe_error_code": "QUESTION_NEW_RUN_REQUIRED"}),
+                ),
+            )

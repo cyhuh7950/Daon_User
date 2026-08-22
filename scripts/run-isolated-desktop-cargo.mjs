@@ -185,7 +185,7 @@ async function main() {
           "local-service-lifecycle-host"
         ]
     : isTest
-      ? ["test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "--locked", "--features", "contract-test", "--lib", "--test", "local_service_contract", "--test", "native_session_contract", "--test", "recovery_bridge_contract"]
+      ? ["test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "--locked", "--features", "contract-test", "--lib", "--test", "local_service_contract", "--test", "native_session_contract", "--test", "recovery_bridge_contract", "--test", "workspace_bridge_contract", "--test", "offline_studio_bridge_contract", "--test", "offline_sync_bridge_contract"]
       : ["check", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "--locked"];
   const prefix = path.join(
     os.tmpdir(),

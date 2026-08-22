@@ -74,7 +74,7 @@ class IdentityOidcTests(unittest.TestCase):
             self.assertEqual(principal.user_id, credentials.user_id)
             actions = {event.action for event in audit.list(tenant_id="tenant-001").items}
             self.assertTrue({"identity.login.started", "identity.login.succeeded"}.issubset(actions))
-            self.assertEqual(restarted_repository.schema_version(), 1)
+            self.assertEqual(restarted_repository.schema_version(), 3)
             self.assertEqual(restarted_repository.foreign_keys_enabled(), 1)
             self.assertEqual(restarted_repository.journal_mode().casefold(), "wal")
 

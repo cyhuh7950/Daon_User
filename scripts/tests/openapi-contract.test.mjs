@@ -7,6 +7,7 @@ import {
   REQUIRED_PATHS,
   buildSummary,
   canonicalizeDocument,
+  evidenceRelativePathForProfile,
   validateOpenApiDocument
 } from "../verify-openapi-contract.mjs";
 
@@ -69,6 +70,44 @@ test("Native Refresh 공개 계약은 단일 opaque credential과 Idempotency �
   assert.equal(request.properties.refresh_credential.example, undefined);
 });
 
+test("Knowledge Package 세 경계와 versioned Sync item은 exact 계약이다", async () => {
+  const document = await loadContract();
+  assert.deepEqual(Object.keys(document.paths["/api/v1/workspaces/{id}/knowledge-packages"]), ["get"]);
+  assert.deepEqual(Object.keys(document.paths["/api/v1/workspaces/{id}/operations/status"]), ["get"]);
+  assert.deepEqual(Object.keys(document.paths["/api/v1/workspaces/{id}/output-version-settings"]), ["get", "patch"]);
+  assert.deepEqual(Object.keys(document.paths["/api/v1/workspaces/{id}/sync-operations"]), ["get", "post"]);
+  assert.ok(document.components.schemas.SyncOperation.required.includes("item_ids"));
+  const outputSettings = document.components.schemas.OutputVersionSettings;
+  assert.deepEqual(outputSettings.required, ["workspace_id", "default_formats", "version_save_mode", "version"]);
+  assert.equal(outputSettings.properties.version_save_mode.const, "append_only");
+  assert.deepEqual(document.components.schemas.OutputVersionSettingsRequest.required, ["default_formats", "expected_version"]);
+  const operationsSchema = document.components.schemas.OperationsStatus;
+  assert.deepEqual(operationsSchema.required, ["workspace_id", "overall_status", "checked_at", "components"]);
+  assert.deepEqual(operationsSchema.properties.components.items.required, ["component_id", "status", "safe_code", "pending_count", "recovery_action"]);
+  assert.deepEqual(Object.keys(document.paths["/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies"]), ["post"]);
+  assert.deepEqual(
+    document.components.schemas.KnowledgePackage.required,
+    [
+      "package_id", "producer", "producer_version", "knowledge_registration_id",
+      "output_version_id", "authority", "registration_state", "review_state",
+      "digest_sha256", "byte_size", "content_type", "effective_at", "expires_at",
+    ],
+  );
+  assert.equal(document.components.schemas.KnowledgePackage.properties.registration_state.const, "registered");
+  assert.equal(document.components.schemas.KnowledgePackage.properties.review_state.const, "approved");
+  assert.deepEqual(Object.keys(document.paths["/api/v1/offline-knowledge-copies/{copy_id}/content"]), ["get"]);
+  assert.deepEqual(document.components.schemas.SyncItemInput.properties.item_kind.enum, ["source_version", "output_version"]);
+  const invalid = clone(document);
+  invalid.components.schemas.SyncItemInput.properties.item_kind.default = "output_version";
+  assert.throws(() => validateOpenApiDocument(invalid), /versioned Sync item schema mismatch/);
+});
+
+test("OpenAPI evidence profile은 보호 baseline과 R1-M8 exact 경로만 허용한다", () => {
+  assert.equal(evidenceRelativePathForProfile(), "docs/03_evidence/release_1/R1-M5-07/openapi-contract-summary.json");
+  assert.equal(evidenceRelativePathForProfile("r1-m8-10"), "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/openapi-contract-summary.json");
+  assert.throws(() => evidenceRelativePathForProfile("../../outside"), /unsupported evidence profile/);
+});
+
 test("사용자 Studio 보고서 수직 Route는 exact 요청·응답 계약을 고정한다", async () => {
   const document = await loadContract();
   const create = document.paths["/api/v1/workspaces/{id}/studio/reports"].post;
@@ -78,13 +117,45 @@ test("사용자 Studio 보고서 수직 Route는 exact 요청·응답 계약을 
   assert.equal(list.responses["200"].$ref, "#/components/responses/StudioOutputListResponse");
   const request = document.components.schemas.StudioReportCreateRequest;
   assert.equal(request.additionalProperties, false);
-  assert.deepEqual(request.required, ["source_id", "source_version_id", "run_id", "run_result_id", "title", "purpose"]);
+  assert.deepEqual(request.required, ["notebook_id", "source_id", "source_version_id", "run_id", "run_result_id", "title", "purpose"]);
+  assert.equal(list.parameters.some((parameter) => parameter.name === "notebook_id" && parameter.in === "query" && parameter.required === true), true);
   const output = document.components.schemas.StudioOutputProjection;
   assert.equal(output.additionalProperties, false);
   assert.equal(output.properties.output_type.const, "evidence_report");
   assert.equal(output.properties.status.const, "draft");
   assert.equal(document.components.parameters.IdempotencyKey.schema.minLength, 16);
   assert.equal(document.components.parameters.IdempotencyKey.schema.maxLength, 128);
+});
+
+test("Product Studio Version 상세는 Citation과 lifecycle 재진입 계약을 공개한다", async () => {
+  const document = await loadContract();
+  const operation = document.paths["/api/v1/studio-outputs/{id}/versions"].get;
+  assert.equal(operation.operationId, "listStudioOutputVersions");
+  assert.equal(operation.responses["200"].$ref, "#/components/responses/StudioVersionHistoryResponse");
+  const version = document.components.schemas.StudioVersionProjection;
+  assert.equal(version.additionalProperties, false);
+  assert.deepEqual(version.required, [
+    "output_version_id", "content_version", "previous_version_id", "status", "content",
+    "revision_type", "change_reason", "settings_snapshot_id", "citations", "review_request_id",
+    "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format",
+  ]);
+  assert.deepEqual(document.components.schemas.StudioCitationProjection.properties.origin.enum, ["raw_source", "daon_knowledge"]);
+  assert.deepEqual(document.components.schemas.StudioCitationLocator.properties.kind.enum, ["page", "section"]);
+});
+
+test("Provider 연결 확인은 비밀·Endpoint 없는 안전 상태 계약이다", async () => {
+  const document = await loadContract();
+  const operation = document.paths["/api/v1/model-profiles/{provider_code}/connection-check"].get;
+  assert.equal(operation.requestBody, undefined);
+  assert.equal(operation.parameters.find((item) => item.name === "workspace_id").in, "query");
+  assert.equal(operation.responses["200"].content["application/json"].schema.$ref, "#/components/schemas/ProviderConnectionStatusEnvelope");
+  const status = document.components.schemas.ProviderConnectionStatus;
+  assert.equal(status.additionalProperties, false);
+  assert.deepEqual(status.required, ["provider_code", "status", "checked_at"]);
+  assert.deepEqual(status.properties.status.enum, ["ready"]);
+  for (const forbidden of ["credential", "api_key", "secret", "base_url", "endpoint", "response_body"]) {
+    assert.equal(status.properties[forbidden], undefined, forbidden);
+  }
 });
 
 test("Session Safe Projection은 Recovery 최소 권한만 exact enum 배열로 공개한다", async () => {
@@ -247,4 +318,49 @@ test("Notification·Inbox 공개 계약은 ACL·Cursor·ETag·멱등성 경계�
   }
   assert.equal(document.components.schemas.Notification.properties.title.description.includes("Plain text"), true);
   assert.equal(document.components.schemas.InboxItem.description.includes("read-only projection"), true);
+});
+
+test("Product Studio OpenAPI는 Runtime method·exact body·7 media type 불일치를 거부한다", async () => {
+  const document = clone(await loadContract());
+  document.paths["/api/v1/reviews"].get = structuredClone(document.paths["/api/v1/studio-outputs"].get);
+  assert.throws(() => validateOpenApiDocument(document), /Studio Runtime method mismatch/);
+  delete document.paths["/api/v1/reviews"].get;
+  const bodyMismatch = clone(await loadContract());
+  bodyMismatch.paths["/api/v1/approvals"].post.requestBody.$ref = "#/components/requestBodies/ResourceMutation";
+  assert.throws(() => validateOpenApiDocument(bodyMismatch), /Studio Runtime request mismatch/);
+  const mediaMismatch = clone(await loadContract());
+  delete mediaMismatch.components.responses.StudioExportResponse.content["image/png"];
+  assert.throws(() => validateOpenApiDocument(mediaMismatch), /Studio export media types mismatch/);
+  for (const [apiPath, response] of [
+    ["/api/v1/studio-generation-requests", "#/components/responses/StudioGenerationMutationResponse"],
+    ["/api/v1/studio-outputs/{id}/versions", "#/components/responses/StudioVersionMutationResponse"],
+    ["/api/v1/reviews", "#/components/responses/StudioActionMutationResponse"],
+  ]) {
+    assert.equal(document.paths[apiPath].post.responses["201"].$ref, response);
+    assert.equal(document.paths[apiPath].post.responses["200"].$ref, response);
+  }
+  const responseMismatch = structuredClone(document);
+  responseMismatch.paths["/api/v1/reviews"].post.responses["201"].$ref = "#/components/responses/CreatedResponse";
+  assert.throws(() => validateOpenApiDocument(responseMismatch), /Studio Runtime response mismatch/);
+  assert.ok(document.components.schemas.StudioRevisionRequest.properties.settings.$ref.endsWith("/StudioGenerationSettings"));
+  assert.ok(document.components.schemas.StudioVersionMutationEnvelope.properties.data.required.includes("content"));
+  assert.deepEqual(document.components.schemas.StudioVersionMutationEnvelope.properties.data.properties.content.oneOf, [
+    { type: "string" }, { type: "object" },
+  ]);
+  for (const responseName of ["StudioGenerationMutationResponse", "StudioVersionMutationResponse", "StudioActionMutationResponse"]) {
+    assert.equal(document.components.responses[responseName].headers.ETag.$ref, "#/components/headers/ETag");
+  }
+});
+
+test("Question Citation 계약은 원본 페이지와 Daon 지식 구간을 같은 locator로 표현한다", async () => {
+  const document = await loadContract();
+  const citation = document.components.schemas.GroundedCitation;
+  assert.ok(citation.required.includes("locator"));
+  assert.equal(citation.properties.locator.$ref, "#/components/schemas/CitationLocator");
+  assert.deepEqual(document.components.schemas.CitationLocator.required, ["kind", "value"]);
+  assert.deepEqual(document.components.schemas.CitationLocator.properties.kind.enum, ["page", "section"]);
+  const response = document.paths["/api/v1/workspaces/{id}/citations/{citation_id}/content"].get.responses["200"];
+  assert.ok(response.content["application/pdf"]);
+  assert.ok(response.content["text/plain"]);
+  assert.equal(response.headers["X-Citation-Locator-Kind"].schema.enum.join(","), "page,section");
 });

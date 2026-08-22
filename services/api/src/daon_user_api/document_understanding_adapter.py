@@ -254,6 +254,15 @@ class UrlLibDocumentUnderstandingTransport:
         )
         return self._request(request, timeout_seconds)
 
+    def post_json_no_auth(
+        self, *, url: str, payload: dict[str, object], timeout_seconds: float,
+    ) -> dict[str, object]:
+        request = urllib.request.Request(
+            url, data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        return self._request(request, timeout_seconds)
+
     def post_multipart(
         self, *, url: str, api_key: str, fields: dict[str, str], filename: str,
         content: bytes, timeout_seconds: float,
@@ -293,11 +302,20 @@ class UpstageDocumentUnderstandingAdapter:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Document title"},
-                    "summary": {"type": "string", "description": "Semantic summary"},
+                    "title": {
+                        "type": "string",
+                        "description": "Document title in the original source language; do not translate",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Summary in the original source language; do not translate",
+                    },
                     "key_facts": {
                         "type": "array", "items": {"type": "string"},
-                        "description": "Key facts supported by the original document",
+                        "description": (
+                            "Key facts using the original source language and wording; "
+                            "do not translate or paraphrase"
+                        ),
                     },
                 },
                 "required": ["title", "summary", "key_facts"],
@@ -395,10 +413,12 @@ class UpstageDocumentUnderstandingAdapter:
             api_key=self._api_key,
             payload={
                 "model": selection.semantic_model_id,
-                "messages": [{"role": "user", "content": [{
-                    "type": "image_url",
-                    "image_url": {"url": f"data:application/octet-stream;base64,{encoded}"},
-                }]}],
+                "messages": [{"role": "user", "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:application/pdf;base64,{encoded}"},
+                    },
+                ]}],
                 "response_format": self._SCHEMA,
             },
             timeout_seconds=self._timeout_seconds,

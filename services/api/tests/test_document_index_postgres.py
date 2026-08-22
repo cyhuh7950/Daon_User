@@ -84,6 +84,23 @@ def ready_result() -> DocumentUnderstandingResult:
     )
 
 
+def paraphrased_ready_result() -> DocumentUnderstandingResult:
+    result = ready_result()
+    return DocumentUnderstandingResult(
+        result.source_id, result.source_version_id, result.status,
+        result.substates, result.semantic,
+        ParserValidation(
+            "이 계약의 유효 기간은 총 12 개월입니다. 해지는 최소 삼십 일 전에 알려야 합니다.",
+            "", "", (1, 2),
+            (
+                (1, "이 계약의 유효 기간은 총 12 개월입니다."),
+                (2, "해지는 최소 삼십 일 전에 알려야 합니다."),
+            ),
+        ),
+        result.lineage,
+    )
+
+
 class PostgresDocumentIndexTests(unittest.TestCase):
     def setUp(self) -> None:
         self.context = DocumentProcessingContext(
@@ -125,6 +142,26 @@ class PostgresDocumentIndexTests(unittest.TestCase):
         self.assertEqual(results[0].page, 2)
         self.assertTrue(results[0].evidence_span_id.startswith("span-"))
         self.assertEqual(wrong_version, ())
+
+    def test_ready_paraphrase_uses_parser_page_text_as_grounded_fallback(self) -> None:
+        self.index.index_result(self.context, paraphrased_ready_result())
+
+        self.assertEqual(self.cloud.connection.source_state, "ready")
+        self.assertEqual(
+            [chunk["page"] for chunk in self.cloud.connection.index_payload["chunks"]],
+            [1, 2],
+        )
+        self.assertEqual(
+            [chunk["text"] for chunk in self.cloud.connection.index_payload["chunks"]],
+            [
+                "이 계약의 유효 기간은 총 12 개월입니다.",
+                "해지는 최소 삼십 일 전에 알려야 합니다.",
+            ],
+        )
+        self.assertEqual(
+            self.cloud.connection.index_payload["strategy"],
+            "vision_llm_facts_with_parser_page_fallback",
+        )
 
     def test_needs_review_or_unlocated_fact_never_creates_ready_index(self) -> None:
         conflict = ready_result()

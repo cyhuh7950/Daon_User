@@ -8,6 +8,7 @@ import re
 import struct
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from collections.abc import Callable, Mapping
@@ -45,8 +46,9 @@ _FLOAT32_MAX: Final = 3.4028234663852886e38
 _WRAP_ALGORITHM: Final = "AES-256-GCM+HKDF-SHA256"
 _CANON_ENTITY_TYPES: Final = frozenset({
     "Source", "SourceVersion", "ProcessingRun", "Run", "RunSnapshot", "RunResult",
-    "EvidenceSpan", "Citation", "StudioOutput", "OutputVersion",
-    "PendingOperationReference",
+    "IndexVersion", "EvidenceSpan", "Citation", "StudioOutput", "OutputVersion",
+    "PendingOperationReference", "GenerationRequest", "GenerationSettingsSnapshot",
+    "ScopeSnapshot", "ProviderSettingsSnapshot",
 })
 _CANON_FORBIDDEN_FIELDS: Final = frozenset({
     "organization_policy", "approval", "approval_request", "provider_secret",
@@ -73,6 +75,15 @@ class LocalCanonicalEnvelope:
 
 
 @dataclass(frozen=True, slots=True)
+class RawSourceCanonicalInput:
+    entity_type: str
+    entity_id: str
+    aggregate_id: str
+    payload: Mapping[str, object]
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class LocalSyncQueueState:
     operation_id: str
     version: int
@@ -82,6 +93,17 @@ class LocalSyncQueueState:
     conflict_id: str | None
     queued_at: str
     previous_version: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class LocalKnowledgeCopy:
+    copy_id: str
+    package_id: str
+    object_id: str
+    content_digest_sha256: str
+    manifest_digest_sha256: str
+    state: str
+    version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +145,7 @@ _CONTENT_TYPES: Final[dict[str, tuple[int, Callable[[bytes], bool]]]] = {
     "application/pdf": (2, lambda value: value.startswith(b"%PDF-")),
     "image/png": (3, lambda value: value.startswith(b"\x89PNG\r\n\x1a\n")),
     "image/jpeg": (4, lambda value: value.startswith(b"\xff\xd8\xff")),
+    "application/vnd.daon.knowledge-package+json": (5, _valid_utf8_text),
 }
 _CONTENT_TYPES_BY_ID: Final = {value[0]: name for name, value in _CONTENT_TYPES.items()}
 
@@ -788,6 +811,311 @@ class LocalEncryptedStore:
                 payload, str(row[7]),
             )
 
+    def list_canonical_envelopes(
+        self, workspace_id: str, area: str, entity_type: str | None = None
+    ) -> tuple[LocalCanonicalEnvelope, ...]:
+        """Return immutable local Canon in append order for restart projections."""
+        with self._operation_lock:
+            _scope(workspace_id, area)
+            if entity_type is not None and entity_type not in _CANON_ENTITY_TYPES:
+                raise _fail("LOCAL_CANON_SNAPSHOT_INVALID")
+            statement = (
+                "SELECT entity_type,entity_id,aggregate_id,version,schema_version,digest_sha256,"
+                "created_at,previous_version_id,payload_json,data_area FROM canonical_envelopes "
+                "WHERE workspace_id = ? AND area = ?"
+            )
+            parameters: tuple[object, ...] = (workspace_id, area)
+            if entity_type is not None:
+                statement += " AND entity_type = ?"
+                parameters += (entity_type,)
+            rows = self._db().execute(statement + " ORDER BY rowid", parameters).fetchall()
+            envelopes: list[LocalCanonicalEnvelope] = []
+            for row in rows:
+                payload = json.loads(str(row[8]))
+                if not isinstance(payload, dict):
+                    raise _fail("LOCAL_CIPHERTEXT_CORRUPT")
+                envelopes.append(LocalCanonicalEnvelope(
+                    str(row[0]), str(row[1]), str(row[2]), int(row[3]), int(row[4]),
+                    str(row[5]), str(row[6]), None if row[7] is None else str(row[7]),
+                    payload, str(row[9]),
+                ))
+            return tuple(envelopes)
+
+    def list_canonical_types(self, workspace_id: str, area: str) -> tuple[str, ...]:
+        return tuple(
+            envelope.entity_type
+            for envelope in self.list_canonical_envelopes(workspace_id, area)
+        )
+
+    @staticmethod
+    def _knowledge_manifest_digest(manifest: Mapping[str, object]) -> str:
+        try:
+            encoded = json.dumps(
+                dict(manifest), sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise _fail("LOCAL_KNOWLEDGE_COPY_INVALID") from error
+        return hashlib.sha256(encoded).hexdigest()
+
+    def import_knowledge_copy(
+        self,
+        *,
+        manifest: Mapping[str, object],
+        manifest_digest_sha256: str,
+        canonical_package: bytes,
+        idempotency_key: str,
+    ) -> LocalKnowledgeCopy:
+        """Atomically expose only canonical, digest-bound encrypted Knowledge copies."""
+        with self._operation_lock:
+            workspace_id = manifest.get("workspace_id")
+            copy_id = manifest.get("copy_id")
+            package_id = manifest.get("package_id")
+            schema_version = manifest.get("schema_version")
+            content_digest = manifest.get("content_digest_sha256")
+            required_text = (
+                "producer_product", "producer_version", "knowledge_registration_id",
+                "output_version_id", "authority", "registration_state", "review_state",
+                "effective_at", "expires_at",
+            )
+            if (
+                not isinstance(workspace_id, str)
+                or not isinstance(copy_id, str) or not _CANON_ID.fullmatch(copy_id)
+                or not isinstance(package_id, str) or not _CANON_ID.fullmatch(package_id)
+                or not isinstance(content_digest, str) or not _DIGEST.fullmatch(content_digest)
+                or not _DIGEST.fullmatch(manifest_digest_sha256)
+                or not _CANON_ID.fullmatch(idempotency_key)
+                or any(not isinstance(manifest.get(key), str) for key in required_text)
+                or not isinstance(schema_version, int) or isinstance(schema_version, bool)
+                or schema_version < 1
+                or not _UTC_TIMESTAMP.fullmatch(str(manifest.get("expires_at", "")))
+                or not _UTC_TIMESTAMP.fullmatch(str(manifest.get("effective_at", "")))
+                or manifest.get("registration_state") != "registered"
+                or manifest.get("review_state") != "approved"
+                or manifest.get("authority") != "approved"
+                or not isinstance(canonical_package, bytes)
+                or not canonical_package or len(canonical_package) > 12 * 1024 * 1024
+            ):
+                raise _fail("LOCAL_KNOWLEDGE_COPY_INVALID")
+            try:
+                effective_at = datetime.fromisoformat(
+                    str(manifest["effective_at"]).replace("Z", "+00:00")
+                )
+                expires_at = datetime.fromisoformat(
+                    str(manifest["expires_at"]).replace("Z", "+00:00")
+                )
+            except ValueError as error:
+                raise _fail("LOCAL_KNOWLEDGE_COPY_INVALID") from error
+            if effective_at >= expires_at:
+                raise _fail("LOCAL_KNOWLEDGE_COPY_INVALID")
+            _scope(workspace_id, "artifact")
+            if hashlib.sha256(canonical_package).hexdigest() != content_digest:
+                raise _fail("LOCAL_KNOWLEDGE_COPY_DIGEST_MISMATCH")
+            try:
+                parsed = json.loads(canonical_package)
+                canonical = json.dumps(
+                    parsed, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False, allow_nan=False,
+                ).encode("utf-8")
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+                raise _fail("LOCAL_KNOWLEDGE_COPY_INVALID") from error
+            if canonical != canonical_package or not isinstance(parsed, dict):
+                raise _fail("LOCAL_KNOWLEDGE_COPY_INVALID")
+            if self._knowledge_manifest_digest(manifest) != manifest_digest_sha256:
+                raise _fail("LOCAL_KNOWLEDGE_COPY_DIGEST_MISMATCH")
+
+            existing = self.list_canonical_envelopes(workspace_id, "artifact", "ScopeSnapshot")
+            replay = [item for item in existing if item.payload.get("idempotency_key") == idempotency_key]
+            if replay:
+                prior = replay[-1]
+                if (
+                    prior.aggregate_id != copy_id
+                    or prior.payload.get("manifest_digest_sha256") != manifest_digest_sha256
+                    or prior.payload.get("content_digest_sha256") != content_digest
+                ):
+                    raise _fail("LOCAL_KNOWLEDGE_COPY_IDEMPOTENCY_CONFLICT")
+                return LocalKnowledgeCopy(
+                    copy_id, package_id, str(prior.payload["object_id"]), content_digest,
+                    manifest_digest_sha256, str(prior.payload["state"]), prior.version,
+                )
+            if any(item.aggregate_id == copy_id for item in existing):
+                raise _fail("LOCAL_KNOWLEDGE_COPY_IMMUTABLE")
+
+            object_id = self._put_file(
+                workspace_id, "artifact", canonical_package,
+                content_type="application/vnd.daon.knowledge-package+json",
+            )
+            created_at = _utc_now()
+            payload: dict[str, object] = {
+                **dict(manifest), "object_id": object_id, "state": "approved",
+                "idempotency_key": idempotency_key,
+                "manifest_digest_sha256": manifest_digest_sha256,
+            }
+            normalized, encoded = self._canonical_payload(payload)
+            envelope_digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            try:
+                self.put_canonical_envelope(
+                    workspace_id, "artifact", entity_type="ScopeSnapshot",
+                    entity_id=f"{copy_id}:1", aggregate_id=copy_id, version=1,
+                    schema_version=schema_version,
+                    digest_sha256=envelope_digest, created_at=created_at,
+                    previous_version_id=None, payload=normalized,
+                )
+            except LocalStorageError:
+                self._remove_object_after_failed_import(workspace_id, object_id)
+                raise
+            return LocalKnowledgeCopy(
+                copy_id, package_id, object_id, content_digest, manifest_digest_sha256,
+                "approved", 1,
+            )
+
+    def _remove_object_after_failed_import(self, workspace_id: str, object_id: str) -> None:
+        database = self._db()
+        row = database.execute(
+            "SELECT blob_name FROM local_objects WHERE workspace_id = ? AND area = 'artifact' "
+            "AND object_id = ?", (workspace_id, object_id),
+        ).fetchone()
+        database.execute(
+            "DELETE FROM local_objects WHERE workspace_id = ? AND area = 'artifact' "
+            "AND object_id = ?", (workspace_id, object_id),
+        )
+        database.commit()
+        if row is not None:
+            try:
+                delete_file(self._root, self._area_directory(workspace_id, "artifact") / str(row[0]))
+            except (FileNotFoundError, OSError):
+                pass
+
+    def put_raw_source_bundle(
+        self, workspace_id: str, plaintext: bytes, *, content_type: str,
+        build_envelopes: Callable[[str], tuple[RawSourceCanonicalInput, ...]],
+    ) -> str:
+        """Commit one encrypted raw object and its immutable Canon projection."""
+        with self._operation_lock:
+            _scope(workspace_id, "source")
+            object_id = self._put_file(
+                workspace_id, "source", plaintext, content_type=content_type
+            )
+            allowed = {"SourceVersion", "IndexVersion", "EvidenceSpan"}
+            prepared: list[tuple[RawSourceCanonicalInput, str, str]] = []
+            try:
+                envelopes = build_envelopes(object_id)
+                for envelope in envelopes:
+                    if (
+                        envelope.entity_type not in allowed
+                        or not _CANON_ID.fullmatch(envelope.entity_id)
+                        or not _CANON_ID.fullmatch(envelope.aggregate_id)
+                        or not _UTC_TIMESTAMP.fullmatch(envelope.created_at)
+                    ):
+                        raise _fail("LOCAL_CANON_SNAPSHOT_INVALID")
+                    normalized, encoded = self._canonical_payload(envelope.payload)
+                    prepared.append((envelope, json.dumps(
+                        normalized, sort_keys=True, separators=(",", ":"),
+                        ensure_ascii=False, allow_nan=False,
+                    ), hashlib.sha256(encoded.encode("utf-8")).hexdigest()))
+                database = self._db()
+                database.execute("BEGIN")
+                for envelope, encoded, digest in prepared:
+                    database.execute(
+                        "INSERT INTO canonical_envelopes "
+                        "(workspace_id,area,entity_type,entity_id,aggregate_id,version,"
+                        "schema_version,digest_sha256,created_at,previous_version_id,"
+                        "payload_json,data_area) VALUES (?,?,?,?,?,1,1,?,?,NULL,?,'local_private')",
+                        (
+                            workspace_id, "source", envelope.entity_type,
+                            envelope.entity_id, envelope.aggregate_id, digest,
+                            envelope.created_at, encoded,
+                        ),
+                    )
+                database.commit()
+                return object_id
+            except (LocalStorageError, sqlite.DatabaseError, ValueError, TypeError) as error:
+                self._db().rollback()
+                row = self._db().execute(
+                    "SELECT blob_name FROM local_objects WHERE workspace_id = ? "
+                    "AND area = 'source' AND object_id = ?", (workspace_id, object_id),
+                ).fetchone()
+                self._db().execute(
+                    "DELETE FROM local_objects WHERE workspace_id = ? AND area = 'source' "
+                    "AND object_id = ?", (workspace_id, object_id),
+                )
+                self._db().commit()
+                try:
+                    if row is not None:
+                        delete_file(
+                            self._root,
+                            self._area_directory(workspace_id, "source") / str(row[0]),
+                        )
+                except (FileNotFoundError, OSError):
+                    pass
+                if isinstance(error, LocalStorageError):
+                    raise
+                raise _fail("LOCAL_CANON_IMMUTABLE") from error
+
+    def refresh_knowledge_copy(
+        self, workspace_id: str, copy_id: str, *, state: str, recorded_at: str,
+    ) -> LocalKnowledgeCopy:
+        with self._operation_lock:
+            _scope(workspace_id, "artifact")
+            if (
+                not _CANON_ID.fullmatch(copy_id)
+                or state not in {"approved", "revoked", "expired"}
+                or not _UTC_TIMESTAMP.fullmatch(recorded_at)
+            ):
+                raise _fail("LOCAL_KNOWLEDGE_COPY_INVALID")
+            try:
+                owner = self.find_canonical_workspace("artifact", "ScopeSnapshot", copy_id)
+            except LocalStorageError as error:
+                raise _fail("LOCAL_KNOWLEDGE_COPY_NOT_FOUND") from error
+            if owner != workspace_id:
+                raise _fail("LOCAL_KNOWLEDGE_COPY_NOT_FOUND")
+            prior = [
+                item for item in self.list_canonical_envelopes(
+                    workspace_id, "artifact", "ScopeSnapshot"
+                ) if item.aggregate_id == copy_id
+            ][-1]
+            if prior.payload.get("state") == state:
+                return LocalKnowledgeCopy(
+                    copy_id, str(prior.payload["package_id"]), str(prior.payload["object_id"]),
+                    str(prior.payload["content_digest_sha256"]),
+                    str(prior.payload["manifest_digest_sha256"]), state, prior.version,
+                )
+            payload = {**prior.payload, "state": state, "recorded_at": recorded_at}
+            normalized, encoded = self._canonical_payload(payload)
+            version = prior.version + 1
+            self.put_canonical_envelope(
+                workspace_id, "artifact", entity_type="ScopeSnapshot",
+                entity_id=f"{copy_id}:{version}", aggregate_id=copy_id, version=version,
+                schema_version=prior.schema_version,
+                digest_sha256=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+                created_at=recorded_at, previous_version_id=prior.entity_id,
+                payload=normalized,
+            )
+            return LocalKnowledgeCopy(
+                copy_id, str(payload["package_id"]), str(payload["object_id"]),
+                str(payload["content_digest_sha256"]),
+                str(payload["manifest_digest_sha256"]), state, version,
+            )
+
+    def find_canonical_workspace(
+        self, area: str, entity_type: str, aggregate_id: str
+    ) -> str:
+        """Resolve one opaque aggregate to its workspace without exposing a broad listing."""
+        with self._operation_lock:
+            if (
+                area not in _AREAS or entity_type not in _CANON_ENTITY_TYPES
+                or not _CANON_ID.fullmatch(aggregate_id)
+            ):
+                raise _fail("LOCAL_CANON_SNAPSHOT_INVALID")
+            rows = self._db().execute(
+                "SELECT DISTINCT workspace_id FROM canonical_envelopes "
+                "WHERE area = ? AND entity_type = ? AND aggregate_id = ? LIMIT 2",
+                (area, entity_type, aggregate_id),
+            ).fetchall()
+            if len(rows) != 1:
+                raise _fail("LOCAL_CANON_NOT_FOUND")
+            return str(rows[0][0])
+
     def execute_canonical_mutation_for_test(
         self, statement: str, parameters: tuple[object, ...]
     ) -> None:
@@ -831,6 +1159,24 @@ class LocalEncryptedStore:
             ):
                 raise _fail("LOCAL_SYNC_QUEUE_INVALID")
             database = self._db()
+            owners = database.execute(
+                "SELECT DISTINCT workspace_id FROM sync_queue_states WHERE operation_id = ? LIMIT 2",
+                (operation_id,),
+            ).fetchall()
+            if owners and owners != [(workspace_id,)]:
+                raise _fail("LOCAL_SYNC_QUEUE_NOT_FOUND")
+            replay = database.execute(
+                "SELECT approval_state, manifest_digest, batch_cursor, conflict_id, queued_at, "
+                "previous_version FROM sync_queue_states WHERE workspace_id = ? "
+                "AND operation_id = ? AND version = ?",
+                (workspace_id, operation_id, version),
+            ).fetchone()
+            if replay is not None:
+                if replay[:4] == (
+                    approval_state, manifest_digest, batch_cursor, conflict_id,
+                ) and replay[5] == previous_version:
+                    return
+                raise _fail("LOCAL_SYNC_QUEUE_IMMUTABLE")
             if previous_version is not None:
                 prior = database.execute(
                     "SELECT version FROM sync_queue_states WHERE workspace_id = ? "
@@ -877,6 +1223,19 @@ class LocalEncryptedStore:
                 None if row[4] is None else str(row[4]), str(row[5]),
                 None if row[6] is None else int(row[6]),
             )
+
+    def get_sync_queue_state_global(self, operation_id: str) -> LocalSyncQueueState:
+        """Resolve an opaque operation without accepting a caller-controlled workspace."""
+        with self._operation_lock:
+            if not _CANON_ID.fullmatch(operation_id):
+                raise _fail("LOCAL_SYNC_QUEUE_INVALID")
+            rows = self._db().execute(
+                "SELECT DISTINCT workspace_id FROM sync_queue_states WHERE operation_id = ? LIMIT 2",
+                (operation_id,),
+            ).fetchall()
+            if len(rows) != 1:
+                raise _fail("LOCAL_SYNC_QUEUE_NOT_FOUND")
+            return self.get_sync_queue_state(str(rows[0][0]), operation_id)
 
     def list_resumable_sync_operations(self, workspace_id: str) -> list[str]:
         with self._operation_lock:
