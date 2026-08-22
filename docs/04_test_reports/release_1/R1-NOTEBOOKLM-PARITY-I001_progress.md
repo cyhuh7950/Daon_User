@@ -15,6 +15,12 @@
 - **검증**: `deletion_requests` 상태는 `purged=4`, 해당 Source 레코드는 0건이며, 브라우저 새로고침 후 `삭제 요청 Source 목록`은 빈 목록으로 확인됐다. 기존 정상 Source와 Notebook은 삭제하지 않았다.
 - **미검증/주의**: 새 파일 업로드 후 UI에서 삭제하는 브라우저 클릭 E2E는 파일 업로드·삭제의 외부 상태 변경이므로 별도 사용자 승인 없이 실행하지 않았다.
 
+### 2026-08-22 — 로컬 회귀 테스트
+
+- **판정**: PASS.
+- **검증**: API 계약 16건(`source_lifecycle`, `source_immediate_deletion`, `mcp_connector`, `notebooklm_chat_grounding`, `notebooklm_studio_outputs`) 및 Web Notebook/Connector/Source/Chat 회귀 28건이 모두 통과했다.
+- **보완**: 즉시 Notebook 삭제 계약에 맞춰 BFF 회귀 테스트가 DELETE를 upstream으로 전달하고 cross-origin write만 차단하도록 갱신했다(`006dc0c`).
+
 ## 현재 상태
 
 - 단계: Task 1 구현·서버 배포 검증
