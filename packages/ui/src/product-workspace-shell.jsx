@@ -961,6 +961,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       );
       setViewState((current) => ({
         ...current, answer: safeAnswer,
+        conversationSafeError: null,
         answerIntent: conversationMode === "work_support"
           ? (viewState.selectedSource || selectedKnowledgeId ? "work_support_source_backed" : "work_support_ungrounded")
           : conversationMode,
