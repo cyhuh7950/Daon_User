@@ -253,3 +253,10 @@
 - 회귀: `services/api/tests/test_studio_workspace_postgres.py` `21 passed, 1 skipped`. 변경은 `studio_workspace_postgres.py`와 회귀 fixture에 한정했고 커밋·푸시 `c65070b`, 진행기록 커밋 `cfcdba6`이다.
 - 미검증: 다른 Studio 유형(슬라이드·오디오 등), 원격 Oracle 운영 배포, Upstage 간헐 응답 변동의 장기 안정성은 아직 확인하지 않았다. 이 범위는 PASS로 선언하지 않는다.
 - 후속 회귀: Studio·질문·egress·runtime HTTP 묶음 `50 passed, 1 skipped, 19 warnings`로 재실행했다. 경고는 기존 httpx per-request cookie deprecation이며 기능 실패가 아니다.
+
+## 2026-08-23 목표 실행 검증 및 독립 검토
+
+- 제품 Node 회귀 `58 passed, 0 failed`, `npm run verify:product-ui-boundary`는 `417 files / violations 0`, OpenAPI 계약 검증 명령은 exit 0으로 완료했다. Web production build는 TypeScript·12 static pages 생성까지 도달했다.
+- 독립 검토자는 `c65070b`의 configured deployment ID→실제 `model_deployments.record_id` lineage 보정, Source 질문·Citation·Studio PDF 저장·Library 표시 증거를 계획 Task 5와 대조해 조건부 승인했다. 검토 결과 `REVIEW_COMPLETE`이며 API Studio 회귀는 `21 passed, 1 skipped`다.
+- Desktop Rust 계약 테스트는 `npm run verify:desktop-rust-unit`을 실행했으나 저장소의 기존 `apps/desktop/src-tauri/gen` 경로가 존재해 안전 래퍼가 실행을 거부했다(`DESKTOP_CARGO_CHILD_ERROR refusing to run while the desktop Tauri gen path already exists`). 기존 경로는削除하지 않았으며 Rust 결과는 미검증으로 분리한다.
+- 전체 작업트리에는 기존 보호 dirty/untracked 변경이 126건 존재한다. 다른 작업의 파일은 수정·stage·복구하지 않았다. Oracle 운영 배포, 기타 Studio 유형, 장기 Provider 안정성, 전체 Source/MCP 브라우저 통합은 여전히 미검증이다.
