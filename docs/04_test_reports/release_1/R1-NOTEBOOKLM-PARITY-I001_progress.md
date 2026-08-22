@@ -473,3 +473,8 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 판정: Source 미선택 일반 상담이 실제 질문 원문을 LLM에 전달하고 일반 답변을 받는 흐름을 YSNA에서 확인했다. Source 기반 질문의 근거 마스킹 계약은 유지했다.
 - 미검증: Source 기반 한국어 질문의 실제 Citation과 Studio 새 산출물 생성 클릭은 이번 단계에서 추가 실행하지 않았다.
 
+## 2026-08-23T00:38:00+09:00 NotebookLM parity 관련 회귀 묶음
+- 상태: `PASS_LOCAL`
+- 검증: Source lifecycle/immediate deletion, MCP/Connector persistence, NotebookLM chat grounding/egress, Studio outputs 관련 테스트 `24 passed`.
+- 미검증: Source 기반 한국어 질문의 실제 Citation과 Studio 새 산출물 생성 클릭은 브라우저에서 아직 실행하지 않았다.
+
