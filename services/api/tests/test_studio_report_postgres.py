@@ -4,8 +4,11 @@ import unittest
 import json
 
 from daon_user_api.cloud_storage import CloudDatabaseError
-from daon_user_api.studio_report import StudioReportContext, StudioReportCreateRequest, StudioReportError
+from daon_user_api.studio_report import (
+    StudioReportContext, StudioReportCreateRequest, StudioReportError, StudioReportService,
+)
 from daon_user_api.studio_report_postgres import PostgresStudioReportRepository
+from daon_user_api.license import LicenseError
 
 
 class FakeResult:
@@ -108,8 +111,18 @@ class FakeCloud:
 
 
 class StudioReportPostgresTests(unittest.TestCase):
+    def test_transactional_license_capability_requires_postgres_enforcer(self) -> None:
+        cloud = FakeCloud(FakeConnection())
+        plain = StudioReportService(PostgresStudioReportRepository(cloud))
+        enforced = StudioReportService(PostgresStudioReportRepository(
+            cloud, creation_enforcer=lambda *_args: None,
+        ))
+
+        self.assertFalse(plain.creation_license_authoritative)
+        self.assertTrue(enforced.creation_license_authoritative)
+
     def setUp(self) -> None:
-        self.context = StudioReportContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1")
+        self.context = StudioReportContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
         self.request = StudioReportCreateRequest(
             "source-1", "source-version-1", "run-1", "result-1", "승인 검토 보고서", "근거 기반 요약",
         )
@@ -132,6 +145,23 @@ class StudioReportPostgresTests(unittest.TestCase):
             self.assertIn(f"INSERT INTO {table}", sql)
         self.assertIn("solar-pro4", str(connection.statements))
 
+    def test_report_enforces_generation_and_output_quota_in_the_same_transaction(self) -> None:
+        connection = FakeConnection()
+        cloud = FakeCloud(connection)
+        calls = []
+        def deny(active_connection, tenant_id, action, increments):
+            calls.append((active_connection, tenant_id, action, increments))
+            raise LicenseError("LICENSE_RESOURCE_LIMIT_REACHED", 409)
+        with self.assertRaisesRegex(LicenseError, "LICENSE_RESOURCE_LIMIT_REACHED"):
+            PostgresStudioReportRepository(
+                cloud, creation_enforcer=deny,
+            ).create_report(self.context, self.request, "report-license-limit-01")
+        self.assertEqual(calls, [(connection, "tenant-1", "studio.generate", {
+            "generation_runs": 1, "studio_outputs": 1,
+        })])
+        self.assertTrue(cloud.rolled_back)
+        self.assertFalse(any("INSERT INTO" in sql for sql, _ in connection.statements))
+
     def test_zero_citations_and_insufficient_are_evidence_required(self) -> None:
         for connection in [FakeConnection(citations=False), FakeConnection(insufficient=True)]:
             with self.assertRaisesRegex(StudioReportError, "EVIDENCE_REQUIRED"):
@@ -150,6 +180,9 @@ class StudioReportPostgresTests(unittest.TestCase):
         self.assertNotIn("object_queue", sql)
         self.assertIn("tenant_id=sv.tenant_id", sql)
         self.assertIn("workspace_id=sv.workspace_id", sql)
+        self.assertIn("JOIN notebook_bindings", sql)
+        self.assertIn("binding_kind='source'", sql)
+        self.assertEqual(connection.statements[0][1], ("notebook-1",))
 
     def test_source_list_never_combines_processing_and_job_state_from_different_runs(self) -> None:
         connection = SourceLineageConnection()
@@ -160,6 +193,7 @@ class StudioReportPostgresTests(unittest.TestCase):
 
     def test_idempotency_replay_has_zero_generation_transition_insert_audit_or_provider_side_effects(self) -> None:
         replay = ({
+            "notebook_id": self.context.notebook_id,
             "source_id": self.request.source_id, "source_version_id": self.request.source_version_id,
             "run_id": self.request.run_id, "run_result_id": self.request.run_result_id,
             "title": self.request.title, "purpose": self.request.purpose,
@@ -237,8 +271,8 @@ class StudioReportPostgresTests(unittest.TestCase):
         repository = PostgresStudioReportRepository(FakeCloud(connection))
         contexts = (
             self.context,
-            StudioReportContext("tenant-1", "workspace-1", "actor-2", "trace-2", "policy-1"),
-            StudioReportContext("tenant-1", "workspace-2", "actor-1", "trace-3", "policy-1"),
+            StudioReportContext("tenant-1", "workspace-1", "actor-2", "trace-2", "policy-1", "notebook-1"),
+            StudioReportContext("tenant-1", "workspace-2", "actor-1", "trace-3", "policy-1", "notebook-2"),
         )
         outputs = [
             repository.create_report(context, self.request, "shared-scope-key-01")[0]

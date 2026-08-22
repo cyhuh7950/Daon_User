@@ -1,6 +1,10 @@
 const MAX_REQUEST_BYTES = 65_536;
 const MAX_SOURCE_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_NATIVE_RESPONSE_BYTES = 128 * 1024;
+const MAX_NATIVE_RECOVERY_RESPONSE_BYTES = 1024 * 1024;
 const MAX_SESSION_COOKIE_BYTES = 4_096;
+const MIN_NATIVE_BEARER_BYTES = 16;
+const MAX_NATIVE_BEARER_BYTES = 4_096;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUEST_HEADERS = new Set([
   "content-type",
@@ -9,6 +13,7 @@ const REQUEST_HEADERS = new Set([
   "traceparent",
   "x-trace-id",
   "x-source-filename",
+  "x-notebook-id",
 ]);
 const RESPONSE_HEADERS = new Set([
   "cache-control",
@@ -18,6 +23,18 @@ const RESPONSE_HEADERS = new Set([
   "retry-after",
   "set-cookie",
   "x-trace-id",
+  "x-citation-locator-kind",
+  "x-citation-page",
+  "x-content-type-options",
+]);
+const NATIVE_RESPONSE_HEADERS = new Set([
+  "cache-control",
+  "content-disposition",
+  "content-type",
+  "etag",
+  "retry-after",
+  "x-trace-id",
+  "x-citation-locator-kind",
   "x-citation-page",
 ]);
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -39,7 +56,13 @@ const NOTIFICATION_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 const INBOX_QUERY = new Set(["cursor", "filter", "limit", "search"]);
 const BACKUP_QUERY = new Set(["workspace_id"]);
 const MODEL_SETTINGS_QUERY = new Set(["workspace_id"]);
+const PROVIDER_CODES = new Set([
+  "ANTHROPIC", "CEREBRAS", "GEMINI", "GROQ", "MISTRAL", "OLLAMA",
+  "OPENAI", "OPENROUTER", "UPSTAGE",
+]);
+const STUDIO_QUERY = new Set(["workspace_id", "notebook_id"]);
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
+const GROUNDED_QUESTION_TIMEOUT_MS = 100_000;
 
 export class BffConfigurationError extends Error {
   constructor(code) {
@@ -77,15 +100,19 @@ export function parseInternalApiBase(rawValue, profile = "production") {
   return parsed;
 }
 
-export function parsePublicGatewayOrigin(rawValue) {
+export function parsePublicGatewayOrigin(rawValue, profile = "production") {
   let parsed;
   try {
     parsed = new URL(rawValue);
   } catch {
     throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_INVALID");
   }
+  const localTestHttp = profile === "local_test"
+    && parsed.protocol === "http:"
+    && new Set(["localhost", "127.0.0.1"]).has(parsed.hostname)
+    && parsed.port !== "";
   if (
-    parsed.protocol !== "https:"
+    (profile === "local_test" ? !localTestHttp : parsed.protocol !== "https:")
     || parsed.pathname !== "/"
     || parsed.search
     || parsed.hash
@@ -99,13 +126,253 @@ export function parsePublicGatewayOrigin(rawValue) {
 
 function routeFor(method, segments) {
   if (
+    segments.length === 4 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio"
+    && segments[3] === "reports"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/reports`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio"
+    && segments[3] === "outputs"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/outputs`, query: new Set(["notebook_id"]) }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks"
+    && SAFE_SEGMENT.test(segments[3]) && segments[4] === "context"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/context`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "sources"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "deletion-requests"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/sources/${encodeURIComponent(segments[1])}/deletion-requests`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "deletion-requests" && SAFE_SEGMENT.test(segments[1])) {
+    return method === "GET"
+      ? { path: `/api/v1/deletion-requests/${encodeURIComponent(segments[1])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "deletion-requests"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "cancel"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/deletion-requests/${encodeURIComponent(segments[1])}/cancel`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks"
+  ) {
+    return new Set(["GET", "POST"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "connectors"
+    && SAFE_SEGMENT.test(segments[3])
+  ) {
+    return method === "DELETE"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors/${encodeURIComponent(segments[3])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "connectors"
+  ) {
+    return new Set(["GET", "POST"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "connectors"
+    && SAFE_SEGMENT.test(segments[3]) && new Set(["reconnect", "disconnect"]).has(segments[4])
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors/${encodeURIComponent(segments[3])}/${segments[4]}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "connectors"
+    && SAFE_SEGMENT.test(segments[3]) && segments[4] === "sources"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors/${encodeURIComponent(segments[3])}/sources`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3])
+  ) {
+    return new Set(["GET", "PATCH", "DELETE"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 6 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3])
+    && segments[4] === "deletion-requests" && SAFE_SEGMENT.test(segments[5])
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/deletion-requests/${encodeURIComponent(segments[5])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks"
+    && SAFE_SEGMENT.test(segments[3]) && segments[4] === "source-unbindings"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/source-unbindings`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "license"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/license`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "organizations"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "license"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/organizations/${encodeURIComponent(segments[1])}/license`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "preferences" && segments[1] === "screen") {
+    return new Set(["GET", "PUT"]).has(method)
+      ? { path: "/api/v1/preferences/screen", query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "session" && segments[1] === "step-up") {
+    return method === "POST" ? { path: "/api/v1/session/step-up", query: null } : { methodRejected: true };
+  }
+  if (segments.length === 1 && new Set([
+    "studio-generation-requests", "studio-outputs", "reviews", "approval-requests",
+    "approvals", "deliveries", "knowledge-registrations",
+  ]).has(segments[0])) {
+    if (method === "GET" && segments[0] === "studio-outputs") return { path: `/api/v1/${segments[0]}`, query: STUDIO_QUERY };
+    return method === "POST" && segments[0] !== "studio-outputs"
+      ? { path: `/api/v1/${segments[0]}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "studio-outputs" && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "versions"
+  ) {
+    if (method === "POST") return { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions`, query: null };
+    return method === "GET"
+      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions`, query: STUDIO_QUERY }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 6 && segments[0] === "studio-outputs" && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "versions" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "exports"
+    && new Set(["docx", "pdf", "xlsx", "csv", "json", "svg", "png"]).has(segments[5])
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions/${encodeURIComponent(segments[3])}/exports/${segments[5]}`, query: STUDIO_QUERY }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "questions"
+    && segments[3] === "authorization"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions/authorization`, query: null, groundedQuestion: true }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "operations"
+    && segments[3] === "status"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/operations/status`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "output-version-settings"
+  ) {
+    return new Set(["GET", "PATCH"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/output-version-settings`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "sync-operations"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sync-operations`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "sync-operations"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "approve"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/sync-operations/${encodeURIComponent(segments[1])}/approve`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "egress-policy"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/egress-policy`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && new Set(["organizations", "workspaces"]).has(segments[0])
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "egress-policy-versions"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/${segments[0]}/${encodeURIComponent(segments[1])}/egress-policy-versions`, query: null }
+      : { methodRejected: true };
+  }
+  if (
     segments.length === 3
     && segments[0] === "workspaces"
     && SAFE_SEGMENT.test(segments[1])
     && segments[2] === "questions"
   ) {
     return method === "POST"
-      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, query: null }
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, query: null, groundedQuestion: true }
       : { methodRejected: true };
   }
   if (
@@ -119,7 +386,7 @@ function routeFor(method, segments) {
     return method === "GET"
       ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`,
-          query: null,
+          query: new Set(["notebook_id"]),
         }
       : { methodRejected: true };
   }
@@ -133,7 +400,7 @@ function routeFor(method, segments) {
     return method === "GET"
       ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/processing-runs/${encodeURIComponent(segments[3])}`,
-          query: null,
+          query: new Set(["notebook_id"]),
         }
       : { methodRejected: true };
   }
@@ -143,18 +410,40 @@ function routeFor(method, segments) {
     && SAFE_SEGMENT.test(segments[1])
     && segments[2] === "sources"
   ) {
-    return method === "POST"
-      ? {
+    if (method === "GET") {
+      return { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, query: new Set(["notebook_id"]) };
+    }
+    return method === "POST" ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`,
           query: null,
           maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES,
         }
       : { methodRejected: true };
   }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "knowledge-packages"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/knowledge-packages`, query: null }
+      : { methodRejected: true };
+  }
   if (segments.length === 1 && new Set(["model-profiles", "model-deployments"]).has(segments[0])) {
     if (method === "GET") return { path: `/api/v1/${segments[0]}`, query: MODEL_SETTINGS_QUERY };
     return method === "POST"
       ? { path: `/api/v1/${segments[0]}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "model-profiles"
+    && PROVIDER_CODES.has(segments[1])
+    && segments[2] === "connection-check"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/model-profiles/${segments[1]}/connection-check`, query: MODEL_SETTINGS_QUERY }
       : { methodRejected: true };
   }
   if (
@@ -216,6 +505,11 @@ function routeFor(method, segments) {
   if (segments.length === 1 && segments[0] === "session") {
     return method === "GET" ? { path: "/api/v1/session", query: null } : { methodRejected: true };
   }
+  if (segments.length === 2 && segments[0] === "session" && segments[1] === "logout") {
+    return method === "POST"
+      ? { path: "/api/v1/session/logout", query: null, currentSessionLogout: true }
+      : { methodRejected: true };
+  }
   if (segments.length === 1 && segments[0] === "access-decisions") {
     return method === "POST" ? { path: "/api/v1/access-decisions", query: null } : { methodRejected: true };
   }
@@ -249,6 +543,93 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   return null;
+}
+
+function nativeRouteFor(method, segments, requestUrl) {
+  const route = (path, options = {}) => ({ path, protected: true, ...options });
+  let matched = null;
+  if (segments.length === 3 && segments[0] === "auth" && segments[1] === "native" && segments[2] === "login") {
+    matched = method === "POST" ? route("/api/v1/auth/native/login", { protected: false, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 2 && segments[0] === "session" && segments[1] === "refresh") {
+    matched = method === "POST" ? route("/api/v1/session/refresh", { protected: false, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 1 && segments[0] === "session") {
+    matched = method === "GET" ? route("/api/v1/session") : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "sources") {
+    matched = new Set(["GET", "POST"]).has(method)
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaType: "application/pdf" } : {})
+      : { methodRejected: true };
+  } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs" && SAFE_SEGMENT.test(segments[3])) {
+    matched = method === "GET"
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/processing-runs/${encodeURIComponent(segments[3])}`)
+      : { methodRejected: true };
+  } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "questions" && segments[3] === "authorization") {
+    matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions/authorization`, { requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "questions") {
+    matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, { requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "citations" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "content") {
+    matched = method === "GET"
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { expectsPdf: true, maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
+      : { methodRejected: true };
+  } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "reports") {
+    matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/reports`, { requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "outputs") {
+    matched = method === "GET" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/outputs`) : { methodRejected: true };
+  } else if (segments.length === 1 && segments[0] === "backups") {
+    matched = new Set(["GET", "POST"]).has(method) ? route("/api/v1/backups", { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, ...(method === "POST" ? { requestMediaType: "application/json" } : {}) }) : { methodRejected: true };
+  } else if (segments.length === 2 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1])) {
+    matched = method === "GET" ? route(`/api/v1/backups/${encodeURIComponent(segments[1])}`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES }) : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "backups" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "restore-previews") {
+    matched = method === "POST" ? route(`/api/v1/backups/${encodeURIComponent(segments[1])}/restore-previews`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 2 && segments[0] === "restore-requests" && SAFE_SEGMENT.test(segments[1])) {
+    matched = method === "GET" ? route(`/api/v1/restore-requests/${encodeURIComponent(segments[1])}`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES }) : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "restore-requests" && SAFE_SEGMENT.test(segments[1]) && RESTORE_ACTIONS.has(segments[2])) {
+    matched = method === "POST" ? route(`/api/v1/restore-requests/${encodeURIComponent(segments[1])}/${segments[2]}`, { maxResponseBytes: MAX_NATIVE_RECOVERY_RESPONSE_BYTES, requestMediaType: "application/json" }) : { methodRejected: true };
+  }
+  if (!matched || matched.methodRejected) return matched;
+
+  const incoming = new URL(requestUrl);
+  const notebookScopedRead = method === "GET" && (
+    (segments.length === 3 && segments[0] === "workspaces" && segments[2] === "sources")
+    || (segments.length === 4 && segments[0] === "workspaces" && segments[2] === "processing-runs")
+    || (segments.length === 5 && segments[0] === "workspaces" && segments[2] === "citations" && segments[4] === "content")
+    || (segments.length === 4 && segments[0] === "workspaces" && segments[2] === "studio" && segments[3] === "outputs")
+  );
+  if (notebookScopedRead) {
+    const entries = [...incoming.searchParams];
+    if (entries.length !== 1 || entries[0][0] !== "notebook_id" || !SAFE_SEGMENT.test(entries[0][1])) return null;
+    matched.query = new URLSearchParams([["notebook_id", entries[0][1]]]);
+  } else if (method === "GET" && segments.length === 1 && segments[0] === "backups") {
+    const entries = [...incoming.searchParams];
+    if (entries.length !== 1 || entries[0][0] !== "workspace_id" || !SAFE_SEGMENT.test(entries[0][1])) return null;
+    matched.query = new URLSearchParams([["workspace_id", entries[0][1]]]);
+  } else if (incoming.search) {
+    return null;
+  }
+  return matched;
+}
+
+function nativeBearer(request) {
+  const raw = request.headers.get("authorization");
+  const match = raw?.match(/^Bearer ([^\x00-\x20\x7f,]+)$/);
+  if (!match) return null;
+  const bytes = Buffer.byteLength(match[1], "utf8");
+  return bytes >= MIN_NATIVE_BEARER_BYTES && bytes <= MAX_NATIVE_BEARER_BYTES ? match[1] : null;
+}
+
+function nativeSensitiveBodyValues(body) {
+  try {
+    const parsed = JSON.parse(Buffer.from(body).toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    return ["password", "access_credential", "refresh_credential"]
+      .map((key) => parsed[key])
+      .filter((value) => typeof value === "string" && value.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function exactMediaType(rawValue) {
+  return rawValue?.split(";", 1)[0].trim().toLowerCase() ?? "";
 }
 
 export function createBffTraceId(request) {
@@ -315,6 +696,18 @@ function writeRequestIsSameOrigin(request, publicOrigin) {
   return !fetchSite || fetchSite === "same-origin";
 }
 
+function logoutRefererIsSameOrigin(request, publicOrigin) {
+  const referer = request.headers.get("referer");
+  if (!referer) return false;
+  try {
+    const expectedOrigin = publicOrigin?.origin ?? new URL(request.url).origin;
+    const parsed = new URL(referer);
+    return parsed.origin === expectedOrigin && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
 function createAbortScope(clientSignal, timeoutMs) {
   const controller = new AbortController();
   let cause = null;
@@ -372,7 +765,10 @@ function cancellationError(scope, trace) {
   return null;
 }
 
-export function createBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000 }) {
+export function createBffProxy({
+  baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000,
+  questionTimeoutMs = GROUNDED_QUESTION_TIMEOUT_MS,
+}) {
   if (!(baseUrl instanceof URL)) {
     throw new BffConfigurationError("BFF_INTERNAL_API_URL_REQUIRED");
   }
@@ -385,6 +781,9 @@ export function createBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeo
     if (!route) return createBffSafeError(404, "RESOURCE_UNAVAILABLE", trace);
     if (route.methodRejected) return createBffSafeError(405, "METHOD_NOT_ALLOWED", trace);
     if (!writeRequestIsSameOrigin(request, publicOrigin)) {
+      return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
+    }
+    if (route.currentSessionLogout && !logoutRefererIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
     }
 
@@ -408,9 +807,16 @@ export function createBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeo
     if (credential) headers.set("cookie", credential);
     headers.set("x-trace-id", trace);
     headers.set("x-daon-bff-transport", "internal");
+    if (route.currentSessionLogout) {
+      headers.set("x-daon-csrf-origin", publicOrigin?.origin ?? new URL(request.url).origin);
+      headers.set("x-daon-csrf-referer", request.headers.get("referer"));
+    }
 
     const init = { method: request.method, headers, redirect: "manual" };
-    const abortScope = createAbortScope(request.signal, timeoutMs);
+    const abortScope = createAbortScope(
+      request.signal,
+      route.groundedQuestion ? questionTimeoutMs : timeoutMs,
+    );
     try {
       if (abortScope.signal.aborted) return cancellationError(abortScope, trace);
       if (request.method !== "GET" && request.method !== "HEAD") {
@@ -459,6 +865,115 @@ export function createBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeo
             ?? createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
         }
       }
+      return new Response(body, { status: upstream.status, headers: responseHeaders });
+    } finally {
+      abortScope.cleanup();
+    }
+  };
+}
+
+export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000 }) {
+  if (!(baseUrl instanceof URL)) throw new BffConfigurationError("BFF_INTERNAL_API_URL_REQUIRED");
+  if (publicOrigin !== undefined && !(publicOrigin instanceof URL)) {
+    throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_REQUIRED");
+  }
+  return async function nativeProxy(request, pathSegments, providedTrace) {
+    const trace = providedTrace ?? createBffTraceId(request);
+    const route = nativeRouteFor(request.method, pathSegments, request.url);
+    if (!route) return createBffSafeError(404, "RESOURCE_UNAVAILABLE", trace);
+    if (route.methodRejected) return createBffSafeError(405, "METHOD_NOT_ALLOWED", trace);
+    if (request.headers.has("cookie")) return createBffSafeError(400, "COOKIE_NOT_ALLOWED", trace);
+
+    const bearer = route.protected ? nativeBearer(request) : null;
+    if (route.protected && !bearer) return createBffSafeError(401, "AUTHENTICATION_REQUIRED", trace);
+    const destination = new URL(route.path, baseUrl);
+    if (route.query) destination.search = route.query.toString();
+    const headers = new Headers();
+    for (const [key, value] of request.headers) {
+      if (REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
+    }
+    if (bearer) headers.set("authorization", `Bearer ${bearer}`);
+    headers.set("x-trace-id", trace);
+    headers.set("x-daon-bff-transport", "internal");
+
+    const init = { method: request.method, headers, redirect: "manual" };
+    const sensitiveValues = bearer ? [bearer] : [];
+    const abortScope = createAbortScope(request.signal, timeoutMs);
+    try {
+      if (abortScope.signal.aborted) return cancellationError(abortScope, trace);
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        let body;
+        try {
+          body = await waitWithAbort(request.arrayBuffer(), abortScope.signal);
+        } catch {
+          return cancellationError(abortScope, trace) ?? createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
+        }
+        if (body.byteLength > (route.maxRequestBytes ?? MAX_REQUEST_BYTES)) {
+          return createBffSafeError(413, "REQUEST_TOO_LARGE", trace);
+        }
+        sensitiveValues.push(...nativeSensitiveBodyValues(body));
+        if (body.byteLength > 0 && exactMediaType(request.headers.get("content-type")) !== route.requestMediaType) {
+          return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
+        }
+        init.body = body;
+      }
+
+      let upstream;
+      try {
+        upstream = await waitWithAbort(fetchImpl(destination, { ...init, signal: abortScope.signal }), abortScope.signal);
+      } catch {
+        return cancellationError(abortScope, trace) ?? createBffSafeError(503, "GATEWAY_UNAVAILABLE", trace, true);
+      }
+      if (upstream.status >= 300 && upstream.status < 400) {
+        return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      }
+      if (upstream.headers.has("set-cookie")) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      for (const [key, value] of upstream.headers) {
+        if (
+          NATIVE_RESPONSE_HEADERS.has(key.toLowerCase())
+          && (value.includes(baseUrl.origin) || sensitiveValues.some((sensitive) => value.includes(sensitive)))
+        ) {
+          return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        }
+      }
+      const transferEncoding = upstream.headers.get("transfer-encoding");
+      const rawLength = upstream.headers.get("content-length");
+      if (transferEncoding && rawLength) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      if (transferEncoding && transferEncoding.toLowerCase() !== "chunked") {
+        return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      }
+      const declaredLength = rawLength === null || /^\d+$/u.test(rawLength) ? Number(rawLength) : Number.NaN;
+      const maxResponseBytes = route.maxResponseBytes ?? MAX_NATIVE_RESPONSE_BYTES;
+      if (!Number.isFinite(declaredLength) || declaredLength > maxResponseBytes) {
+        return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+      }
+
+      let body = null;
+      if (upstream.status !== 204) {
+        const contentType = upstream.headers.get("content-type")?.toLowerCase() ?? "";
+        const expectedType = route.expectsPdf ? "application/pdf" : "application/json";
+        if (exactMediaType(contentType) !== expectedType) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        try {
+          body = await waitWithAbort(upstream.arrayBuffer(), abortScope.signal, () => upstream.body?.cancel());
+        } catch {
+          return cancellationError(abortScope, trace) ?? createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
+        if (body.byteLength > maxResponseBytes || (rawLength !== null && body.byteLength !== declaredLength)) {
+          return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        }
+        const textBody = Buffer.from(body).toString("utf8");
+        if (textBody.includes(baseUrl.origin) || sensitiveValues.some((value) => textBody.includes(value))) {
+          return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        }
+      }
+
+      const responseHeaders = new Headers();
+      for (const [key, value] of upstream.headers) {
+        if (NATIVE_RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders.set(key, value);
+      }
+      responseHeaders.set("Content-Length", String(body?.byteLength ?? 0));
+      responseHeaders.set("Cache-Control", "no-store");
+      if (!responseHeaders.has("x-trace-id")) responseHeaders.set("x-trace-id", trace);
       return new Response(body, { status: upstream.status, headers: responseHeaders });
     } finally {
       abortScope.cleanup();

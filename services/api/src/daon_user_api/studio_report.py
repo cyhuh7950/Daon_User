@@ -49,10 +49,13 @@ class StudioReportContext:
     actor_id: str
     trace_id: str
     policy_version: str
+    notebook_id: str | None = None
 
     def __post_init__(self) -> None:
         for value in (self.tenant_id, self.workspace_id, self.actor_id, self.trace_id, self.policy_version):
             _id(value)
+        if self.notebook_id is not None:
+            _id(self.notebook_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +116,10 @@ class StudioReportRepository(Protocol):
 class StudioReportService:
     def __init__(self, repository: StudioReportRepository) -> None:
         self._repository = repository
+
+    @property
+    def creation_license_authoritative(self) -> bool:
+        return getattr(self._repository, "creation_license_authoritative", False) is True
 
     def create(self, context: StudioReportContext, request: StudioReportCreateRequest,
                idempotency_key: str) -> tuple[StudioOutputProjection, bool]:

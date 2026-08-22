@@ -105,6 +105,176 @@
         }
       }
     },
+    "/api/v1/preferences/screen": {
+      "get": {
+        "operationId": "getScreenPreferences",
+        "tags": ["Preferences"],
+        "summary": "사용자 화면 설정 조회",
+        "x-implementation-owner": "R1-M8-10",
+        "responses": {"200": {"$ref": "#/components/responses/SuccessResponse"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "500": {"$ref": "#/components/responses/SafeFailure"}}
+      },
+      "put": {
+        "operationId": "saveScreenPreferences",
+        "tags": ["Preferences"],
+        "summary": "사용자 화면 설정 저장",
+        "x-implementation-owner": "R1-M8-10",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["theme"], "properties": {"theme": {"type": "string", "enum": ["system", "light", "dark"]}}}}}},
+        "responses": {"200": {"$ref": "#/components/responses/SuccessResponse"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "500": {"$ref": "#/components/responses/SafeFailure"}}
+      }
+    },
+    "/api/v1/session/logout": {
+      "post": {
+        "operationId": "logoutCurrentWebSession",
+        "tags": ["Identity"],
+        "summary": "현재 Web Session만 안전하게 로그아웃",
+        "x-implementation-owner": "R1-M8-10-PHASE-E",
+        "responses": {
+          "200": {"$ref": "#/components/responses/CurrentSessionLogoutResponse"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "412": {"$ref": "#/components/responses/PreconditionFailed"},
+          "431": {"$ref": "#/components/responses/RequestHeaderFieldsTooLarge"},
+          "500": {"$ref": "#/components/responses/SafeFailure"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"},
+          "504": {"$ref": "#/components/responses/RequestTimeout"}
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/license": {
+      "get": {
+        "operationId": "getWorkspaceLicense",
+        "tags": ["License"],
+        "summary": "Workspace 제품 라이선스 안전 조회",
+        "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/LicenseResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/notebooks": {
+      "get": {
+        "operationId": "listWorkspaceNotebooks", "tags": ["Workspace"],
+        "summary": "Workspace Notebook 홈 목록", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": {
+          "200": { "description": "Safe Notebook Home list", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookListEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      },
+      "post": {
+        "operationId": "createWorkspaceNotebook", "tags": ["Workspace"],
+        "summary": "빈 Notebook 생성", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookCreateRequest" } } } },
+        "responses": {
+          "201": { "description": "Notebook created", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookEnvelope" } } } },
+          "200": { "description": "Notebook create replay", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/notebooks/{notebook_id}": {
+      "get": {
+        "operationId": "getWorkspaceNotebook", "tags": ["Workspace"],
+        "summary": "Notebook 안전 조회", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "notebook_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }],
+        "responses": {
+          "200": { "description": "Safe Notebook", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      },
+      "patch": {
+        "operationId": "updateWorkspaceNotebookTitle", "tags": ["Workspace"],
+        "summary": "Notebook 제목 새 Metadata Version 저장", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "notebook_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookTitleRequest" } } } },
+        "responses": {
+          "200": { "description": "Notebook title saved", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/notebooks/{notebook_id}/context": {
+      "get": {
+        "operationId": "getWorkspaceNotebookContext", "tags": ["Workspace"],
+        "summary": "선택 Notebook Context 안전 조회", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "notebook_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }],
+        "responses": {
+          "200": { "description": "Selected Notebook Context", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookContextEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/notebooks/{notebook_id}/source-unbindings": {
+      "post": {
+        "operationId": "unbindWorkspaceNotebookSource", "tags": ["Workspace"],
+        "summary": "원본을 보존하고 Notebook Source 연결 해제", "x-implementation-owner": "R1-M8-10-SOURCE-LIFECYCLE-UI-I006",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "notebook_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookSourceUnbindRequest" } } } },
+        "responses": {
+          "200": { "description": "Source binding ended or replayed", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotebookSourceUnbindEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/organizations/{id}/license": {
+      "post": {
+        "operationId": "applyOrganizationLicense",
+        "tags": ["License"],
+        "summary": "Step-up 승인된 서명 라이선스 적용",
+        "x-implementation-owner": "R1-M8-10",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LicenseApplyRequest" } } }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/LicenseResponse" },
+          "200": { "$ref": "#/components/responses/LicenseResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
     "/api/v1/session/step-up": {
       "post": {
         "operationId": "createStepUpAuthorization",
@@ -234,18 +404,10 @@
           }
         },
         "parameters": [
-          {
-            "$ref": "#/components/parameters/Cursor"
-          },
-          {
-            "$ref": "#/components/parameters/Limit"
-          },
-          {
-            "$ref": "#/components/parameters/Filter"
-          },
-          {
-            "$ref": "#/components/parameters/Search"
-          }
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Filter" },
+          { "$ref": "#/components/parameters/Search" }
         ],
         "x-list-operation": true
       },
@@ -426,7 +588,8 @@
           }
         },
         "parameters": [
-          { "$ref": "#/components/parameters/ResourceId" }
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
         ]
       },
       "post": {
@@ -502,6 +665,12 @@
               "pattern": "^[^/\\\\\\u0000-\\u001f]{1,251}\\.pdf$",
               "maxLength": 255
             }
+          },
+          {
+            "name": "X-Notebook-Id",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/OpaqueId" }
           }
         ],
         "requestBody": {
@@ -530,7 +699,8 @@
             "in": "path",
             "required": true,
             "schema": { "$ref": "#/components/schemas/OpaqueId" }
-          }
+          },
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
         ],
         "responses": {
           "200": {
@@ -554,6 +724,15 @@
           "503": { "$ref": "#/components/responses/ServiceUnavailable" },
           "500": { "$ref": "#/components/responses/SafeFailure" }
         }
+      }
+    },
+    "/api/v1/workspaces/{id}/questions/authorization": {
+      "post": {
+        "operationId": "authorizeGroundedWorkspaceQuestion", "tags": ["Run", "Policy"],
+        "summary": "호환용 외부 Question Run 결속 추가 인증", "description": "관리자 설정 Step-up과 분리된 호환 API입니다. Product 질문 UI는 이 경로를 호출하지 않으며 유효 Session, EXTERNAL_LLM 권한과 effective Egress Policy를 질문 실행 시 검증합니다.", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationRequest" } } } },
+        "responses": { "201": { "description": "Run/effective policy 결속 opaque authorization", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GroundedQuestionAuthorizationEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } }
       }
     },
     "/api/v1/workspaces/{id}/questions": {
@@ -633,7 +812,10 @@
         "tags": ["Studio", "Citation"],
         "summary": "저장된 근거 기반 보고서 목록 조회",
         "x-implementation-owner": "R1-USER-PRODUCT-SEPARATION-STAGE-B-01",
-        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
+        ],
         "responses": {
           "200": { "$ref": "#/components/responses/StudioOutputListResponse" },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -650,29 +832,34 @@
     },
     "/api/v1/workspaces/{id}/citations/{citation_id}/content": {
       "get": {
-        "operationId": "getCurrentCitationPdfContent",
+        "operationId": "getCurrentCitationContent",
         "tags": ["Citation", "Source"],
-        "summary": "현재 SourceVersion Citation PDF 원문 조회",
+        "summary": "현재 Evidence Resource Citation 원문 조회",
         "x-implementation-owner": "CP3-QUESTION-CITATION-004",
         "parameters": [
           { "$ref": "#/components/parameters/ResourceId" },
           {
             "name": "citation_id", "in": "path", "required": true,
             "schema": { "$ref": "#/components/schemas/OpaqueId" }
-          }
+          },
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
         ],
         "responses": {
           "200": {
-            "description": "권한과 현재 lineage를 재검증한 inline PDF",
+            "description": "권한과 현재 lineage를 재검증한 형식 중립 inline Citation",
             "headers": {
               "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
               "ETag": { "$ref": "#/components/headers/ETag" },
               "X-Citation-Page": {
                 "schema": { "type": "integer", "minimum": 1 }
+              },
+              "X-Citation-Locator-Kind": {
+                "schema": { "type": "string", "enum": ["page", "section"] }
               }
             },
             "content": {
-              "application/pdf": { "schema": { "type": "string", "format": "binary" } }
+              "application/pdf": { "schema": { "type": "string", "format": "binary" } },
+              "text/plain": { "schema": { "type": "string", "maxLength": 1048576 } }
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -1880,7 +2067,7 @@
       }
     },
     "/api/v1/studio-generation-requests": {
-      "get": {
+      "x-unimplemented-get": {
         "operationId": "listStudioGenerationRequests",
         "tags": [
           "Studio"
@@ -1937,8 +2124,11 @@
         "summary": "Studio 생성 요청 제출",
         "x-implementation-owner": "R1-M8-01",
         "responses": {
+          "200": {
+            "$ref": "#/components/responses/StudioGenerationMutationResponse"
+          },
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "$ref": "#/components/responses/StudioGenerationMutationResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -1968,7 +2158,7 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "$ref": "#/components/requestBodies/StudioGeneration"
         }
       }
     },
@@ -2007,20 +2197,9 @@
           }
         },
         "parameters": [
-          {
-            "$ref": "#/components/parameters/Cursor"
-          },
-          {
-            "$ref": "#/components/parameters/Limit"
-          },
-          {
-            "$ref": "#/components/parameters/Filter"
-          },
-          {
-            "$ref": "#/components/parameters/Search"
-          }
-        ],
-        "x-list-operation": true
+          { "name": "workspace_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
+        ]
       }
     },
     "/api/v1/studio-outputs/{id}/versions": {
@@ -2033,7 +2212,7 @@
         "x-implementation-owner": "R1-M8-01",
         "responses": {
           "200": {
-            "$ref": "#/components/responses/ListSuccessResponse"
+            "$ref": "#/components/responses/StudioVersionHistoryResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2062,19 +2241,14 @@
             "$ref": "#/components/parameters/ResourceId"
           },
           {
-            "$ref": "#/components/parameters/Cursor"
+            "name": "workspace_id", "in": "query", "required": true,
+            "schema": { "$ref": "#/components/schemas/OpaqueId" }
           },
           {
-            "$ref": "#/components/parameters/Limit"
-          },
-          {
-            "$ref": "#/components/parameters/Filter"
-          },
-          {
-            "$ref": "#/components/parameters/Search"
+            "name": "notebook_id", "in": "query", "required": true,
+            "schema": { "$ref": "#/components/schemas/OpaqueId" }
           }
-        ],
-        "x-list-operation": true
+        ]
       },
       "post": {
         "operationId": "createStudioOutputVersion",
@@ -2084,8 +2258,11 @@
         "summary": "산출물 새 Version 생성",
         "x-implementation-owner": "R1-M8-01",
         "responses": {
+          "200": {
+            "$ref": "#/components/responses/StudioVersionMutationResponse"
+          },
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "$ref": "#/components/responses/StudioVersionMutationResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2118,12 +2295,12 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "$ref": "#/components/requestBodies/StudioRevision"
         }
       }
     },
     "/api/v1/reviews": {
-      "get": {
+      "x-unimplemented-get": {
         "operationId": "listReviews",
         "tags": [
           "Review"
@@ -2180,8 +2357,11 @@
         "summary": "검토 요청 생성",
         "x-implementation-owner": "R1-M8-07",
         "responses": {
+          "200": {
+            "$ref": "#/components/responses/StudioActionMutationResponse"
+          },
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "$ref": "#/components/responses/StudioActionMutationResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2211,12 +2391,12 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "$ref": "#/components/requestBodies/StudioAction"
         }
       }
     },
     "/api/v1/approval-requests": {
-      "get": {
+      "x-unimplemented-get": {
         "operationId": "listApprovalRequests",
         "tags": [
           "Approval"
@@ -2273,8 +2453,9 @@
         "summary": "승인 요청 생성",
         "x-implementation-owner": "R1-M8-07",
         "responses": {
+          "200": { "$ref": "#/components/responses/StudioActionMutationResponse" },
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "$ref": "#/components/responses/StudioActionMutationResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2304,12 +2485,12 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "$ref": "#/components/requestBodies/StudioAction"
         }
       }
     },
     "/api/v1/approvals": {
-      "get": {
+      "x-unimplemented-get": {
         "operationId": "listApprovals",
         "tags": [
           "Approval"
@@ -2366,8 +2547,9 @@
         "summary": "승인 또는 반려 판정 기록",
         "x-implementation-owner": "R1-M8-07",
         "responses": {
+          "200": { "$ref": "#/components/responses/StudioActionMutationResponse" },
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "$ref": "#/components/responses/StudioActionMutationResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2397,12 +2579,12 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "$ref": "#/components/requestBodies/StudioAction"
         }
       }
     },
     "/api/v1/deliveries": {
-      "get": {
+      "x-unimplemented-get": {
         "operationId": "listDeliveries",
         "tags": [
           "Delivery"
@@ -2459,8 +2641,9 @@
         "summary": "승인된 산출물 전달",
         "x-implementation-owner": "R1-M8-07",
         "responses": {
+          "200": { "$ref": "#/components/responses/StudioActionMutationResponse" },
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "$ref": "#/components/responses/StudioActionMutationResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2490,12 +2673,12 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "$ref": "#/components/requestBodies/StudioAction"
         }
       }
     },
     "/api/v1/knowledge-registrations": {
-      "get": {
+      "x-unimplemented-get": {
         "operationId": "listKnowledgeRegistrations",
         "tags": [
           "Knowledge"
@@ -2552,8 +2735,9 @@
         "summary": "생산 지식 등록 요청 생성",
         "x-implementation-owner": "R1-M8-08",
         "responses": {
+          "200": { "$ref": "#/components/responses/StudioActionMutationResponse" },
           "201": {
-            "$ref": "#/components/responses/CreatedResponse"
+            "$ref": "#/components/responses/StudioActionMutationResponse"
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
@@ -2583,7 +2767,32 @@
           }
         ],
         "requestBody": {
-          "$ref": "#/components/requestBodies/ResourceMutation"
+          "$ref": "#/components/requestBodies/StudioAction"
+        }
+      }
+    },
+    "/api/v1/studio-outputs/{id}/versions/{version_id}/exports/{format_name}": {
+      "get": {
+        "operationId": "downloadStudioOutputVersionExport",
+        "tags": ["Studio"],
+        "summary": "승인된 Studio 산출물 Version의 실제 파일 다운로드",
+        "x-implementation-owner": "R1-M8-09",
+        "parameters": [
+          { "$ref": "#/components/parameters/ResourceId" },
+          { "name": "version_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "format_name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["docx", "pdf", "xlsx", "csv", "json", "svg", "png"] } },
+          { "name": "workspace_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/StudioExportResponse" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" }
         }
       }
     },
@@ -2671,6 +2880,33 @@
         "requestBody": {
           "required": true,
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderProfileMutation" } } }
+        }
+      }
+    },
+    "/api/v1/model-profiles/{provider_code}/connection-check": {
+      "get": {
+        "operationId": "checkModelProviderConnection",
+        "tags": ["Model"],
+        "summary": "Model Provider 서버 연결 확인",
+        "x-implementation-owner": "R1-M8-10-FOUNDATION-A3",
+        "parameters": [
+          { "name": "provider_code", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ProviderCode" } },
+          { "name": "workspace_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "안전 연결 상태",
+            "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderConnectionStatusEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
     },
@@ -3546,7 +3782,81 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/operations/status": {
+      "get": {
+        "operationId": "getWorkspaceOperationsStatus", "tags": ["Operations"],
+        "summary": "Workspace Provider API Storage Sync Queue 안전 운영상태", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": {
+          "200": {
+            "description": "Workspace operations status",
+            "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OperationsStatusEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "412": { "$ref": "#/components/responses/PreconditionFailed" },
+          "500": { "$ref": "#/components/responses/SafeFailure" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/output-version-settings": {
+      "get": {
+        "operationId": "getWorkspaceOutputVersionSettings", "tags": ["Studio"],
+        "summary": "Workspace 출력 기본 형식과 append-only Version 정책 조회", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": {
+          "200": { "description": "Workspace output and version settings", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OutputVersionSettingsEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      },
+      "patch": {
+        "operationId": "saveWorkspaceOutputVersionSettings", "tags": ["Studio"],
+        "summary": "Workspace 출력 기본 형식 저장", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OutputVersionSettingsRequest" } } } },
+        "responses": {
+          "200": { "description": "Saved Workspace output and version settings", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OutputVersionSettingsEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/knowledge-packages": {
+      "get": {
+        "operationId": "listKnowledgePackages", "tags": ["Knowledge"],
+        "summary": "승인된 Daon Knowledge Package 목록", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": { "200": { "$ref": "#/components/responses/KnowledgePackageListResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/workspaces/{id}/knowledge-packages/{package_id}/offline-copies": {
+      "post": {
+        "operationId": "createOfflineKnowledgeCopy", "tags": ["Knowledge"],
+        "summary": "Step-up 승인된 Knowledge Package 오프라인 copy 생성", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "name": "package_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OfflineKnowledgeCopyRequest" } } } },
+        "responses": { "201": { "$ref": "#/components/responses/OfflineKnowledgeCopyResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/offline-knowledge-copies/{copy_id}/content": {
+      "get": {
+        "operationId": "readOfflineKnowledgeCopyContent", "tags": ["Knowledge"],
+        "summary": "Native Client 전용 bounded Knowledge Package content", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "name": "copy_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }, { "name": "X-Daon-Workspace-Id", "in": "header", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }],
+        "responses": { "200": { "description": "Encrypted local provisioning bytes", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/octet-stream": { "schema": { "type": "string", "contentEncoding": "binary" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
     "/api/v1/workspaces/{id}/sync-operations": {
+      "get": {
+        "operationId": "listWorkspaceSyncOperations", "tags": ["Sync"],
+        "summary": "현재 Workspace의 동기화 Preview와 승인 상태 목록", "x-implementation-owner": "R1-M8-10",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": { "200": { "description": "현재 접근 가능한 Sync Operation 목록", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SyncOperationListEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      },
       "post": {
         "operationId": "createSyncOperationPreview", "tags": ["Sync"],
         "summary": "Local-private에서 Cloud-sync로 복사할 항목 Preview 생성",
@@ -3707,6 +4017,32 @@
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RestoreExecuteRequest" } } } },
         "responses": { "200": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/workspaces/{id}/egress-policy": {
+      "get": {
+        "operationId": "getWorkspaceEffectiveEgressPolicy", "tags": ["Policy"],
+        "summary": "Workspace effective Egress 정책 조회", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": { "200": { "$ref": "#/components/responses/EgressPolicyResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/organizations/{id}/egress-policy-versions": {
+      "post": {
+        "operationId": "createOrganizationEgressPolicyVersion", "tags": ["Policy"],
+        "summary": "Organization Egress 정책 불변 Version 생성 및 활성화", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrganizationEgressPolicyVersionRequest" } } } },
+        "responses": { "201": { "$ref": "#/components/responses/EgressPolicyResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/workspaces/{id}/egress-policy-versions": {
+      "post": {
+        "operationId": "createWorkspaceEgressPolicyVersion", "tags": ["Policy"],
+        "summary": "Workspace Egress 정책 불변 Version 생성 및 활성화", "x-implementation-owner": "R1-M8-09-EGRESS-POLICY-C01",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceEgressPolicyVersionRequest" } } } },
+        "responses": { "201": { "$ref": "#/components/responses/EgressPolicyResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/SafeFailure" } }
       }
     },
     "/api/v1/restore-requests/{id}/cancel": {
@@ -3894,6 +4230,9 @@
       }
     },
     "requestBodies": {
+      "StudioGeneration": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioGenerationRequest" } } } },
+      "StudioRevision": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioRevisionRequest" } } } },
+      "StudioAction": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioActionRequest" } } } },
       "ResourceMutation": {
         "required": true,
         "description": "후속 소유 Work Order가 구체화하는 Versioned Resource 변경 입력",
@@ -3907,6 +4246,19 @@
       }
     },
     "responses": {
+      "LicenseResponse": {
+        "description": "서명 원문과 내부 판정정보가 제거된 라이선스 안전 projection",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LicenseEnvelope" } } }
+      },
+      "EgressPolicyResponse": {
+        "description": "Versioned Egress 정책 또는 effective projection",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EgressPolicyEnvelope" } } }
+      },
       "SuccessResponse": {
         "description": "Versioned Resource 성공",
         "headers": {
@@ -4027,6 +4379,26 @@
           }
         }
       },
+      "StudioVersionHistoryResponse": {
+        "description": "Studio 산출물 Version, Citation, 검토와 승인 연결의 재진입 Projection",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioVersionHistoryEnvelope" } } }
+      },
+      "StudioGenerationMutationResponse": {
+        "description": "Studio 생성 또는 멱등 재생의 exact data/meta 응답",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioGenerationMutationEnvelope" } } }
+      },
+      "StudioVersionMutationResponse": {
+        "description": "Studio 새 Version 또는 멱등 재생의 exact data/meta 응답",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioVersionMutationEnvelope" } } }
+      },
+      "StudioActionMutationResponse": {
+        "description": "Studio lifecycle action 또는 멱등 재생의 exact data/meta 응답",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioActionMutationEnvelope" } } }
+      },
       "WorkspaceSourceListResponse": {
         "description": "Workspace의 실제 Source 최신 버전 목록",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
@@ -4041,6 +4413,25 @@
         "description": "저장된 근거 기반 보고서 목록",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StudioOutputListEnvelope" } } }
+      },
+      "StudioExportResponse": {
+        "description": "현재 권한으로 재검증한 실제 Studio 파일 bytes",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" },
+          "Content-Disposition": { "schema": { "type": "string" } },
+          "X-Content-Type-Options": { "schema": { "type": "string", "enum": ["nosniff"] } },
+          "Cache-Control": { "schema": { "type": "string", "enum": ["no-store"] } }
+        },
+        "content": {
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { "schema": { "type": "string", "format": "binary", "maxLength": 8388608 } },
+          "application/pdf": { "schema": { "type": "string", "format": "binary", "maxLength": 8388608 } },
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { "schema": { "type": "string", "format": "binary", "maxLength": 8388608 } },
+          "text/csv": { "schema": { "type": "string", "format": "binary", "maxLength": 8388608 } },
+          "application/json": { "schema": { "type": "string", "format": "binary", "maxLength": 8388608 } },
+          "image/svg+xml": { "schema": { "type": "string", "format": "binary", "maxLength": 8388608 } },
+          "image/png": { "schema": { "type": "string", "format": "binary", "maxLength": 8388608 } }
+        }
       },
       "ServiceUnavailable": {
         "description": "일시적인 저장소 또는 처리 기반 사용 불가",
@@ -4316,6 +4707,25 @@
           }
         }
       },
+      "CurrentSessionLogoutResponse": {
+        "description": "현재 Web Session 철회 및 Secure Cookie 만료",
+        "headers": {
+          "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" },
+          "ETag": { "$ref": "#/components/headers/ETag" },
+          "Set-Cookie": { "description": "HttpOnly Secure SameSite Session cookie 만료", "schema": { "type": "string", "writeOnly": true } }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentSessionLogoutEnvelope" } } }
+      },
+      "KnowledgePackageListResponse": {
+        "description": "현재 접근 가능한 승인 Knowledge Package",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": { "data": { "type": "object", "additionalProperties": false, "required": ["items"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/KnowledgePackage" } } } }, "meta": { "type": "object", "additionalProperties": true } } } } }
+      },
+      "OfflineKnowledgeCopyResponse": {
+        "description": "승인된 오프라인 copy grant",
+        "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
+        "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": { "data": { "type": "object", "additionalProperties": true }, "meta": { "type": "object", "additionalProperties": true } } } } }
+      },
       "SyncOperationResponse": {
         "description": "Sync Operation 상태와 불변 승인·Batch·Conflict Projection",
         "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } },
@@ -4353,6 +4763,65 @@
       }
     },
     "schemas": {
+      "EgressPolicyPayload": {
+        "type": "object", "additionalProperties": false,
+        "required": ["mode", "allowed_provider_kinds", "allowed_destinations", "classification", "max_bytes", "masking_required", "redaction_required", "required_approver"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["deny_external", "allow_approved_external"] },
+          "allowed_provider_kinds": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "enum": ["external_api", "server_internal", "local_runtime"] } },
+          "allowed_destinations": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 253 } },
+          "classification": { "type": "string", "enum": ["public", "internal", "confidential", "restricted"] },
+          "max_bytes": { "type": "integer", "minimum": 0, "maximum": 104857600 },
+          "masking_required": { "type": "boolean" },
+          "redaction_required": { "type": "boolean" },
+          "required_approver": { "type": "string", "enum": ["workspace_manager", "organization_admin"] }
+        }
+      },
+      "OrganizationEgressPolicyVersionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["mode", "allowed_provider_kinds", "allowed_destinations", "classification", "max_bytes", "masking_required", "redaction_required", "required_approver", "step_up_authorization_id"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["deny_external", "allow_approved_external"] },
+          "allowed_provider_kinds": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "enum": ["external_api", "server_internal", "local_runtime"] } },
+          "allowed_destinations": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 253 } },
+          "classification": { "type": "string", "enum": ["public", "internal", "confidential", "restricted"] },
+          "max_bytes": { "type": "integer", "minimum": 0, "maximum": 104857600 },
+          "masking_required": { "type": "boolean" },
+          "redaction_required": { "type": "boolean" },
+          "required_approver": { "type": "string", "enum": ["workspace_manager", "organization_admin"] },
+          "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true }
+        }
+      },
+      "WorkspaceEgressPolicyVersionRequest": { "$ref": "#/components/schemas/OrganizationEgressPolicyVersionRequest" },
+      "EgressPolicyVersionView": {
+        "type": "object", "additionalProperties": false,
+        "required": ["scope_type", "policy_version_id", "policy_version", "binding_id", "binding_version", "mode", "allowed_provider_kinds", "allowed_destinations", "classification", "max_bytes", "masking_required", "redaction_required", "required_approver"],
+        "properties": {
+          "scope_type": { "type": "string", "enum": ["organization", "workspace"] },
+          "policy_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "policy_version": { "type": "integer", "minimum": 1 },
+          "binding_id": { "$ref": "#/components/schemas/OpaqueId" }, "binding_version": { "type": "integer", "minimum": 1 },
+          "mode": { "type": "string", "enum": ["deny_external", "allow_approved_external"] },
+          "allowed_provider_kinds": { "type": "array", "items": { "type": "string", "enum": ["external_api", "server_internal", "local_runtime"] } },
+          "allowed_destinations": { "type": "array", "items": { "type": "string" } }, "classification": { "type": "string" },
+          "max_bytes": { "type": "integer" }, "masking_required": { "type": "boolean" }, "redaction_required": { "type": "boolean" }, "required_approver": { "type": "string" }
+        }
+      },
+      "EffectiveEgressPolicyProjection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["organization_policy_version_id", "organization_binding_id", "workspace_policy_version_id", "workspace_binding_id", "mode", "allowed_provider_kinds", "allowed_destinations", "classification", "max_bytes", "masking_required", "redaction_required", "required_approver", "fingerprint", "parent_locked", "organization_etag", "workspace_etag", "organization_policy", "workspace_policy"],
+        "properties": {
+          "organization_policy_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "organization_binding_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "workspace_policy_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_binding_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "mode": { "type": "string" }, "allowed_provider_kinds": { "type": "array", "items": { "type": "string" } }, "allowed_destinations": { "type": "array", "items": { "type": "string" } },
+          "classification": { "type": "string" }, "max_bytes": { "type": "integer" }, "masking_required": { "type": "boolean" }, "redaction_required": { "type": "boolean" }, "required_approver": { "type": "string" },
+          "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "parent_locked": { "type": "boolean" }, "organization_etag": { "type": "string" }, "workspace_etag": { "type": "string" },
+          "organization_policy": { "$ref": "#/components/schemas/EgressPolicyPayload" }, "workspace_policy": { "$ref": "#/components/schemas/EgressPolicyPayload" }
+        }
+      },
+      "EgressPolicyEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "oneOf": [{ "$ref": "#/components/schemas/EffectiveEgressPolicyProjection" }, { "$ref": "#/components/schemas/EgressPolicyVersionView" }] }, "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } } }
+      },
       "OpaqueId": {
         "type": "string",
         "minLength": 1,
@@ -4392,6 +4861,33 @@
           "base_url": { "type": "string", "maxLength": 2048 },
           "active": { "type": "boolean" },
           "expected_version": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "ProviderConnectionStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider_code", "status", "checked_at"],
+        "properties": {
+          "provider_code": { "$ref": "#/components/schemas/ProviderCode" },
+          "status": { "type": "string", "enum": ["ready"] },
+          "checked_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ProviderConnectionStatusEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/ProviderConnectionStatus" },
+          "meta": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["trace_id", "workspace_id"],
+            "properties": {
+              "trace_id": { "$ref": "#/components/schemas/OpaqueId" },
+              "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }
+            }
+          }
         }
       },
       "ModelDeployment": {
@@ -4730,6 +5226,117 @@
           }
         }
       },
+      "StudioMutationMeta": {
+        "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id", "replayed"],
+        "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "replayed": { "type": "boolean" } }
+      },
+      "StudioCitationLocator": {
+        "type": "object", "additionalProperties": false, "required": ["kind", "value"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["page", "section"] },
+          "value": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      },
+      "StudioCitationProjection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["citation_id", "source_version_id", "evidence_span_id", "origin", "locator"],
+        "properties": {
+          "citation_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "evidence_span_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "origin": { "type": "string", "enum": ["raw_source", "daon_knowledge"] },
+          "locator": { "$ref": "#/components/schemas/StudioCitationLocator" }
+        }
+      },
+      "StudioVersionProjection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["output_version_id", "content_version", "previous_version_id", "status", "content", "revision_type", "change_reason", "settings_snapshot_id", "citations", "review_request_id", "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format"],
+        "properties": {
+          "output_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "content_version": { "type": "integer", "minimum": 1 },
+          "previous_version_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "status": { "type": "string", "enum": ["draft", "review_requested", "in_review", "approved", "revision_requested", "delivered"] },
+          "content": { "oneOf": [{ "type": "string" }, { "type": "object" }] },
+          "revision_type": { "type": "string", "enum": ["initial", "user_edit", "ai_regeneration", "settings_change"] },
+          "change_reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "settings_snapshot_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "citations": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/components/schemas/StudioCitationProjection" } },
+          "review_request_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "approval_request_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "approval_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "delivery_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "knowledge_registration_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "output_format": { "type": "string", "enum": ["docx", "pdf", "xlsx", "csv", "json", "svg", "png"] }
+        }
+      },
+      "StudioVersionHistoryEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["output_id", "versions"], "properties": {
+            "output_id": { "$ref": "#/components/schemas/OpaqueId" },
+            "versions": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/components/schemas/StudioVersionProjection" } }
+          } },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"], "properties": {
+            "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }
+          } }
+        }
+      },
+      "StudioGenerationMutationEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["studio_output_id", "output_version_id", "output_type", "title", "status", "content", "settings_snapshot_id", "citations"], "properties": {
+            "studio_output_id": { "$ref": "#/components/schemas/OpaqueId" }, "output_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "output_type": { "type": "string", "enum": ["evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft"] }, "title": { "type": "string" }, "status": { "type": "string", "const": "draft" }, "content": { "type": "object" }, "settings_snapshot_id": { "$ref": "#/components/schemas/OpaqueId" }, "citations": { "type": "array", "items": { "type": "object" } }
+          } },
+          "meta": { "$ref": "#/components/schemas/StudioMutationMeta" }
+        }
+      },
+      "StudioVersionMutationEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["output_version_id", "previous_version_id", "status", "content", "revision_type", "change_reason", "approval_required", "settings_snapshot_id", "generation_request_id", "resubmission_of_rejected_version"], "properties": {
+            "output_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "previous_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "status": { "type": "string", "const": "draft" }, "content": { "oneOf": [{ "type": "string" }, { "type": "object" }] }, "revision_type": { "type": "string", "enum": ["user_edit", "ai_regeneration", "settings_change"] }, "change_reason": { "type": "string" }, "approval_required": { "type": "boolean", "const": true }, "settings_snapshot_id": { "$ref": "#/components/schemas/OpaqueId" }, "generation_request_id": { "type": ["string", "null"] }, "resubmission_of_rejected_version": { "type": "boolean" }
+          } },
+          "meta": { "$ref": "#/components/schemas/StudioMutationMeta" }
+        }
+      },
+      "StudioActionMutationEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["record_id", "action", "status", "output_version_id"], "properties": {
+            "record_id": { "$ref": "#/components/schemas/OpaqueId" }, "action": { "type": "string", "enum": ["review", "approval_request", "approval", "delivery", "knowledge_registration"] }, "status": { "type": "string", "enum": ["accepted", "registered"] }, "output_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "registered_source_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "searchable": { "type": "boolean" }
+          } },
+          "meta": { "$ref": "#/components/schemas/StudioMutationMeta" }
+        }
+      },
+      "StudioGenerationSettings": {
+        "type": "object", "additionalProperties": false,
+        "required": ["purpose", "audience", "source_version_ids", "length", "structure", "output_format", "review_condition"],
+        "properties": {
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 500 }, "audience": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "source_version_ids": { "type": "array", "minItems": 1, "maxItems": 1000, "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "ruleset_version_id": { "oneOf": [{ "$ref": "#/components/schemas/OpaqueId" }, { "type": "null" }] },
+          "length": { "type": "string", "minLength": 1, "maxLength": 500 }, "structure": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "output_format": { "type": "string", "enum": ["docx", "pdf", "xlsx", "csv", "json", "svg", "png"] },
+          "review_condition": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      },
+      "StudioGenerationRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspace_id", "notebook_id", "output_type", "source_id", "source_version_ids", "run_id", "run_result_id", "settings"],
+        "properties": {
+          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "notebook_id": { "$ref": "#/components/schemas/OpaqueId" }, "output_type": { "type": "string", "enum": ["evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft"] },
+          "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_ids": { "type": "array", "minItems": 1, "maxItems": 1000, "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "run_id": { "$ref": "#/components/schemas/OpaqueId" }, "run_result_id": { "$ref": "#/components/schemas/OpaqueId" }, "settings": { "$ref": "#/components/schemas/StudioGenerationSettings" }
+        }
+      },
+      "StudioRevisionRequest": {
+        "type": "object", "additionalProperties": false, "required": ["workspace_id", "notebook_id", "previous_version_id", "revision_type", "change_reason", "content"],
+        "properties": { "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "notebook_id": { "$ref": "#/components/schemas/OpaqueId" }, "previous_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "revision_type": { "type": "string", "enum": ["user_edit", "ai_regeneration", "settings_change"] }, "change_reason": { "type": "string", "minLength": 1, "maxLength": 500 }, "content": { "type": "string", "minLength": 1, "maxLength": 8388608 }, "settings": { "$ref": "#/components/schemas/StudioGenerationSettings" } }
+      },
+      "StudioActionRequest": {
+        "type": "object", "additionalProperties": false, "required": ["workspace_id", "notebook_id", "output_version_id"],
+        "properties": { "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "notebook_id": { "$ref": "#/components/schemas/OpaqueId" }, "output_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "step_up_authorization": { "type": ["string", "null"], "minLength": 40, "maxLength": 512, "writeOnly": true }, "review_request_id": { "type": ["string", "null"] }, "approval_request_id": { "type": ["string", "null"] }, "approval_id": { "type": ["string", "null"] }, "decision": { "type": ["string", "null"], "enum": ["approved", "rejected", null] }, "recipient": { "type": ["string", "null"] }, "explicit": { "type": ["boolean", "null"] } }
+      },
       "ResourceMutation": {
         "type": "object",
         "additionalProperties": false,
@@ -4774,8 +5381,9 @@
       },
       "StudioReportCreateRequest": {
         "type": "object", "additionalProperties": false,
-        "required": ["source_id", "source_version_id", "run_id", "run_result_id", "title", "purpose"],
+        "required": ["notebook_id", "source_id", "source_version_id", "run_id", "run_result_id", "title", "purpose"],
         "properties": {
+          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
           "run_id": { "$ref": "#/components/schemas/OpaqueId" },
@@ -4893,26 +5501,91 @@
           }
         }
       },
+      "QuestionEvidenceResource": {
+        "type": "object", "additionalProperties": false,
+        "required": ["resource_kind", "resource_id"],
+        "properties": {
+          "resource_kind": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "resource_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "version_id": { "$ref": "#/components/schemas/OpaqueId" }
+        }
+      },
+      "QuestionKnowledgeContext": {
+        "type": "object", "additionalProperties": false,
+        "required": ["mode", "resources"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["daon_priority", "mixed", "raw_only"] },
+          "resources": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/components/schemas/QuestionEvidenceResource" } }
+        }
+      },
       "GroundedQuestionRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["source_id", "source_version_id", "question"],
+      "description": "A grounded question may include exactly one Source or Knowledge Context. When neither is provided, the question is handled by the ordinary general work-support/LLM path. Ordinary product use is authorized by the current session, EXTERNAL_LLM permission, and effective Egress Policy without per-question reauthentication.",
+        "required": ["notebook_id", "question"],
+        "oneOf": [
+          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
+          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } },
+          { "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }, { "required": ["knowledge_context"] }] } }
+        ],
         "properties": {
+          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "question": { "type": "string", "minLength": 1, "maxLength": 2000 }
+          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
+          "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "step_up_authorization_id": { "allOf": [{ "$ref": "#/components/schemas/OpaqueId" }], "deprecated": true, "description": "Compatibility-only input. Product clients omit it; the ordinary question route does not consume per-question Step-up." }
+        }
+      },
+      "GroundedQuestionAuthorizationRequest": {
+        "type": "object", "additionalProperties": false,
+      "description": "Authorization for a grounded question or a general work-support/LLM question without Source or Knowledge Context.",
+        "required": ["notebook_id", "question", "password"],
+        "oneOf": [
+          { "required": ["source_id", "source_version_id"], "not": { "required": ["knowledge_context"] } },
+          { "required": ["knowledge_context"], "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }] } },
+          { "not": { "anyOf": [{ "required": ["source_id"] }, { "required": ["source_version_id"] }, { "required": ["knowledge_context"] }] } }
+        ],
+        "properties": {
+          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "knowledge_context": { "$ref": "#/components/schemas/QuestionKnowledgeContext" },
+          "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "password": { "type": "string", "minLength": 1, "maxLength": 1024, "writeOnly": true }
+        }
+      },
+      "GroundedQuestionAuthorizationEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["step_up_authorization_id", "expires_at", "run_id", "request_fingerprint"], "properties": {
+            "step_up_authorization_id": { "$ref": "#/components/schemas/OpaqueId" }, "expires_at": { "type": "string", "format": "date-time" }, "run_id": { "$ref": "#/components/schemas/OpaqueId" }, "request_fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          } },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
         }
       },
       "GroundedCitation": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page"],
+        "required": ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page", "origin", "context_item_id", "locator"],
         "properties": {
           "citation_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_id": { "$ref": "#/components/schemas/OpaqueId" },
           "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
           "evidence_span_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "page": { "type": "integer", "minimum": 1 }
+          "page": { "type": "integer", "minimum": 1 },
+          "origin": { "type": "string", "enum": ["raw_source", "daon_knowledge"] },
+          "context_item_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "locator": { "$ref": "#/components/schemas/CitationLocator" }
+        }
+      },
+      "CitationLocator": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "value"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["page", "section"] },
+          "value": { "type": "string", "minLength": 1, "maxLength": 255 }
         }
       },
       "GroundedAnswer": {
@@ -5839,7 +6512,8 @@
         "additionalProperties": false,
         "required": [
           "action_group",
-          "target_id"
+          "target_id",
+          "password"
         ],
         "properties": {
           "action_group": {
@@ -5849,6 +6523,12 @@
           },
           "target_id": {
             "$ref": "#/components/schemas/OpaqueId"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 1024,
+            "writeOnly": true
           },
           "ttl_seconds": {
             "type": "integer",
@@ -6014,10 +6694,13 @@
       },
       "SyncItemInput": {
         "type": "object", "additionalProperties": false,
-        "required": ["item_id", "source_version_id", "local_object_id", "digest_sha256", "byte_size", "content_type"],
+        "required": ["item_id", "local_object_id", "digest_sha256", "byte_size", "content_type"],
         "properties": {
           "item_id": { "$ref": "#/components/schemas/OpaqueId" },
-          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "item_kind": { "type": "string", "enum": ["source_version", "output_version"], "default": "source_version" },
+          "source_version_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+          "output_version_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+          "dependency_item_ids": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" }, "default": [] },
           "local_object_id": { "$ref": "#/components/schemas/OpaqueId" },
           "digest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
           "byte_size": { "type": "integer", "minimum": 0 },
@@ -6025,6 +6708,35 @@
           "base_cloud_version_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
           "base_cloud_digest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
         }
+      },
+      "CurrentSessionLogout": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "replayed"],
+        "properties": {
+          "status": {"type": "string", "const": "logged_out"},
+          "replayed": {"type": "boolean"}
+        }
+      },
+      "CurrentSessionLogoutEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "meta"],
+        "properties": {
+          "data": {"$ref": "#/components/schemas/CurrentSessionLogout"},
+          "meta": {"type": "object", "additionalProperties": true}
+        }
+      },
+      "KnowledgePackage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["package_id", "producer", "producer_version", "knowledge_registration_id", "output_version_id", "authority", "registration_state", "review_state", "digest_sha256", "byte_size", "content_type", "effective_at", "expires_at"],
+        "properties": {
+          "package_id": { "$ref": "#/components/schemas/OpaqueId" }, "producer": { "type": "string", "enum": ["daon2", "daon2_5", "daon3"] }, "producer_version": { "type": "string" }, "knowledge_registration_id": { "$ref": "#/components/schemas/OpaqueId" }, "output_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "authority": { "type": "string", "const": "approved" }, "registration_state": { "type": "string", "const": "registered" }, "review_state": { "type": "string", "const": "approved" }, "digest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "byte_size": { "type": "integer", "minimum": 1, "maximum": 8388608 }, "content_type": { "type": "string" }, "effective_at": { "type": "string", "format": "date-time" }, "expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "OfflineKnowledgeCopyRequest": {
+        "type": "object", "additionalProperties": false, "required": ["device_id", "step_up_authorization_id"],
+        "properties": { "device_id": { "$ref": "#/components/schemas/OpaqueId" }, "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true } }
       },
       "SyncCreateRequest": {
         "type": "object", "additionalProperties": false,
@@ -6067,12 +6779,13 @@
       },
       "SyncOperation": {
         "type": "object", "additionalProperties": false,
-        "required": ["operation_id", "tenant_id", "workspace_id", "actor_id", "target_area", "state", "version", "manifest_digest", "approved_item_ids", "completed_item_ids", "batches", "conflicts", "target_versions", "reindex_state", "source_mutations", "overwrite_count"],
+        "required": ["operation_id", "tenant_id", "workspace_id", "actor_id", "target_area", "state", "version", "manifest_digest", "item_ids", "approved_item_ids", "completed_item_ids", "batches", "conflicts", "target_versions", "reindex_state", "source_mutations", "overwrite_count"],
         "properties": {
           "operation_id": { "$ref": "#/components/schemas/OpaqueId" }, "tenant_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "actor_id": { "$ref": "#/components/schemas/OpaqueId" },
           "target_area": { "type": "string", "const": "cloud_sync" },
           "state": { "type": "string", "enum": ["awaiting_approval", "approved", "transferring", "conflict", "reindex_requested", "failed", "cancelled"] },
           "version": { "type": "integer", "minimum": 1 }, "manifest_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "item_ids": { "type": "array", "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "approved_item_ids": { "type": "array", "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "completed_item_ids": { "type": "array", "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "batches": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
@@ -6099,8 +6812,9 @@
         }
       },
       "DeletionCreateRequest": {
-        "type": "object", "additionalProperties": false, "required": ["inventory"],
-        "properties": { "inventory": { "type": "array", "minItems": 6, "maxItems": 100, "items": { "$ref": "#/components/schemas/RetentionDerivativeInput" } } }
+        "type": "object", "additionalProperties": false,
+        "description": "Derivative inventory는 서버가 current Source 정본에서 산출합니다.",
+        "properties": {}
       },
       "SensitiveRetentionRequest": {
         "type": "object", "additionalProperties": false, "required": ["step_up_authorization_id"],
@@ -6159,6 +6873,220 @@
           "preview_version": { "type": "integer", "minimum": 1 },
           "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true }
         }
+      },
+      "LicenseResourceUsage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["resource", "limit", "used", "remaining", "status"],
+        "properties": {
+          "resource": { "type": "string", "enum": ["users", "notebooks", "storage_bytes", "generation_runs", "source_versions", "studio_outputs"] },
+          "limit": { "type": "integer", "minimum": 1 },
+          "used": { "type": "integer", "minimum": 0 },
+          "remaining": { "type": "integer", "minimum": 0 },
+          "status": { "type": "string", "enum": ["available", "limit_reached"] }
+        }
+      },
+      "LicenseWarning": {
+        "type": "object", "additionalProperties": false,
+        "required": ["code", "action"],
+        "properties": {
+          "code": { "type": "string", "enum": ["LICENSE_NOT_CONFIGURED", "LICENSE_EXPIRED", "LICENSE_RESOURCE_LIMIT_REACHED", "LICENSE_EXPIRES_WITHIN_30_DAYS"] },
+          "action": { "type": "string", "minLength": 1, "maxLength": 256 }
+        }
+      },
+      "LicenseView": {
+        "type": "object", "additionalProperties": false,
+        "required": ["product", "edition", "license_id_hint", "issued_at", "expires_at", "status", "features", "resources", "warning", "creation_allowed", "existing_read_allowed", "existing_export_allowed", "can_apply"],
+        "properties": {
+          "product": { "type": "string", "const": "daon-user" },
+          "edition": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 128 }, { "type": "null" }] },
+          "license_id_hint": { "oneOf": [{ "type": "string", "pattern": "^…[^\\s]{5}$" }, { "type": "null" }] },
+          "issued_at": { "oneOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+          "expires_at": { "oneOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+          "status": { "type": "string", "enum": ["not_configured", "active", "expiring_soon", "expired", "limit_reached"] },
+          "features": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" } },
+          "resources": { "type": "array", "maxItems": 64, "items": { "$ref": "#/components/schemas/LicenseResourceUsage" } },
+          "warning": { "oneOf": [{ "$ref": "#/components/schemas/LicenseWarning" }, { "type": "null" }] },
+          "creation_allowed": { "type": "boolean" },
+          "existing_read_allowed": { "type": "boolean" },
+          "existing_export_allowed": { "type": "boolean" },
+          "can_apply": { "type": "boolean" }
+        }
+      },
+      "LicenseApplyRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["document", "step_up_authorization_id"],
+        "properties": {
+          "document": { "type": "object", "additionalProperties": true, "writeOnly": true },
+          "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true }
+        }
+      },
+      "LicenseEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/LicenseView" },
+          "meta": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "OperationsStatus": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspace_id", "overall_status", "checked_at", "components"],
+        "properties": {
+          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "overall_status": { "type": "string", "enum": ["ready", "warning", "error"] },
+          "checked_at": { "type": "string", "format": "date-time" },
+          "components": {
+            "type": "array", "minItems": 5, "maxItems": 5,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["component_id", "status", "safe_code", "pending_count", "recovery_action"],
+              "properties": {
+                "component_id": { "type": "string", "enum": ["provider", "api", "storage", "sync", "queue"] },
+                "status": { "type": "string", "enum": ["ready", "warning", "error"] },
+                "safe_code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$" },
+                "pending_count": { "type": "integer", "minimum": 0 },
+                "recovery_action": { "type": "string", "enum": ["none", "open_llm_settings", "open_sync_settings", "refresh_status"] }
+              }
+            }
+          }
+        }
+      },
+      "SyncOperationListEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["operations"], "properties": { "operations": { "type": "array", "maxItems": 200, "items": { "$ref": "#/components/schemas/SyncOperation" } } } },
+          "meta": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "OperationsStatusEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/OperationsStatus" },
+          "meta": {
+            "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"],
+            "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" } }
+          }
+        }
+      },
+      "OutputFormatDefaults": {
+        "type": "object", "additionalProperties": false,
+        "required": ["evidence_report", "compliance_checklist", "comparison_table", "knowledge_graph", "business_draft"],
+        "properties": {
+          "evidence_report": { "type": "string", "enum": ["pdf", "docx"] },
+          "compliance_checklist": { "type": "string", "enum": ["xlsx", "csv", "pdf"] },
+          "comparison_table": { "type": "string", "enum": ["xlsx", "csv", "pdf"] },
+          "knowledge_graph": { "type": "string", "enum": ["json", "svg", "png"] },
+          "business_draft": { "type": "string", "enum": ["docx", "pdf"] }
+        }
+      },
+      "OutputVersionSettings": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspace_id", "default_formats", "version_save_mode", "version"],
+        "properties": {
+          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "default_formats": { "$ref": "#/components/schemas/OutputFormatDefaults" },
+          "version_save_mode": { "type": "string", "const": "append_only" },
+          "version": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "OutputVersionSettingsRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["default_formats", "expected_version"],
+        "properties": {
+          "default_formats": { "$ref": "#/components/schemas/OutputFormatDefaults" },
+          "expected_version": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "OutputVersionSettingsEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/OutputVersionSettings" },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
+        }
+      },
+      "NotebookHomeProjection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"],
+        "properties": {
+          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "source_count": { "type": "integer", "minimum": 0 },
+          "output_count": { "type": "integer", "minimum": 0 },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "status": { "type": "string", "enum": ["empty", "active", "attention"] },
+          "etag": { "type": "string", "pattern": "^\\\"notebook:[1-9][0-9]*\\\"$" }
+        }
+      },
+      "NotebookCreateRequest": {
+        "type": "object", "additionalProperties": false, "required": ["title"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "description": { "type": ["string", "null"], "maxLength": 500 }
+        }
+      },
+      "NotebookTitleRequest": {
+        "type": "object", "additionalProperties": false, "required": ["title"],
+        "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 120 } }
+      },
+      "NotebookSourceUnbindRequest": {
+        "type": "object", "additionalProperties": false, "required": ["source_id", "source_version_id"],
+        "properties": { "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" } }
+      },
+      "NotebookSourceUnbindProjection": {
+        "type": "object", "additionalProperties": false, "required": ["notebook_id", "source_id", "source_version_id", "status"],
+        "properties": { "notebook_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "status": { "type": "string", "enum": ["unbound"] } }
+      },
+      "NotebookSourceUnbindEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "$ref": "#/components/schemas/NotebookSourceUnbindProjection" }, "meta": { "$ref": "#/components/schemas/NotebookMeta" } }
+      },
+      "NotebookMeta": {
+        "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"],
+        "properties": {
+          "trace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "replayed": { "type": "boolean" }
+        }
+      },
+      "NotebookEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/NotebookHomeProjection" },
+          "meta": { "$ref": "#/components/schemas/NotebookMeta" }
+        }
+      },
+      "NotebookListEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "array", "maxItems": 500, "items": { "$ref": "#/components/schemas/NotebookHomeProjection" } },
+          "meta": { "$ref": "#/components/schemas/NotebookMeta" }
+        }
+      },
+      "NotebookSelectedContext": {
+        "type": "object", "additionalProperties": false,
+        "required": ["notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids", "studio_output_ids", "output_version_ids", "generation_settings_ids", "source_deletion_requests", "conversation"],
+        "properties": {
+          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "sources": { "type": "array", "maxItems": 1000, "items": { "type": "object", "additionalProperties": false, "required": ["source_id", "source_version_id"], "properties": { "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" } } } },
+          "knowledge_context_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "conversation_thread_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "studio_output_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "output_version_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "generation_settings_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
+          "source_deletion_requests": { "type": "array", "maxItems": 1000, "items": { "type": "object", "additionalProperties": false, "required": ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"], "properties": { "request_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "state": { "type": "string", "enum": ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"] }, "version": { "type": "integer", "minimum": 1 }, "grace_until": { "type": "string", "format": "date-time" }, "legal_hold_active": { "type": "boolean" } } } },
+          "conversation": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "object", "additionalProperties": false, "required": ["conversation_thread_id", "answer"], "properties": {
+                "conversation_thread_id": { "$ref": "#/components/schemas/OpaqueId" },
+                "answer": { "$ref": "#/components/schemas/GroundedAnswer" }
+              } }
+            ]
+          }
+        }
+      },
+      "NotebookContextEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "$ref": "#/components/schemas/NotebookSelectedContext" }, "meta": { "$ref": "#/components/schemas/NotebookMeta" } }
       },
       "RecoveryEnvelope": {
         "type": "object", "additionalProperties": false, "required": ["data", "meta"],

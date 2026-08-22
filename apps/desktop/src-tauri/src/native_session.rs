@@ -1,25 +1,26 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fmt,
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc,
     },
 };
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(windows)]
 use std::ptr::null_mut;
 
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{ERROR_NOT_FOUND, GetLastError};
+use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
 #[cfg(windows)]
 use windows_sys::Win32::Security::Credentials::{
-    CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree, CredReadW,
-    CredWriteW,
+    CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
+    CRED_TYPE_GENERIC,
 };
 
 pub const NATIVE_SESSION_CREDENTIAL_TARGET: &str = "DaonUser/NativeSession/v1";
@@ -38,9 +39,21 @@ const MAX_SAFE_ID_BYTES: usize = 256;
 pub const CONNECT_TIMEOUT_SECONDS: u64 = 5;
 pub const REQUEST_TIMEOUT_SECONDS: u64 = 20;
 pub const MAX_RESPONSE_BYTES: usize = 128 * 1024;
+pub(crate) const MAX_WORKSPACE_PDF_BYTES: usize = 25 * 1024 * 1024;
 
 fn wipe_text(value: &mut String) {
     value.zeroize();
+}
+
+pub(crate) fn workspace_idempotency_key(
+    scope: &str,
+    payload: &[u8],
+) -> Result<Zeroizing<String>, &'static str> {
+    let mut digest = Sha256::new();
+    digest.update(scope.as_bytes());
+    digest.update([0]);
+    digest.update(payload);
+    Ok(Zeroizing::new(format!("native-{:x}", digest.finalize())))
 }
 
 #[cfg(feature = "contract-test")]
@@ -97,6 +110,10 @@ pub struct NativeSessionProjection {
 }
 
 impl NativeSessionProjection {
+    pub(crate) fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
     pub fn new(
         user_id: String,
         tenant_id: String,
@@ -523,6 +540,491 @@ impl Drop for NativeHttpResponse {
         if let Some(audit) = &self.drop_audit {
             audit.fetch_add(1, Ordering::AcqRel);
         }
+    }
+}
+
+pub(crate) enum NativeWorkspaceOperation {
+    ListNotebooks {
+        workspace_id: String,
+    },
+    CreateNotebook {
+        workspace_id: String,
+        body: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
+    },
+    GetNotebook {
+        workspace_id: String,
+        notebook_id: String,
+    },
+    GetNotebookContext {
+        workspace_id: String,
+        notebook_id: String,
+    },
+    ListSources {
+        workspace_id: String,
+        notebook_id: String,
+    },
+    UploadPdf {
+        workspace_id: String,
+        notebook_id: String,
+        filename: String,
+        bytes: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
+    },
+    ProcessingStatus {
+        workspace_id: String,
+        notebook_id: String,
+        processing_run_id: String,
+    },
+    AskQuestion {
+        workspace_id: String,
+        notebook_id: String,
+        body: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
+    },
+    CitationContent {
+        workspace_id: String,
+        notebook_id: String,
+        citation_id: String,
+    },
+    CreateReport {
+        workspace_id: String,
+        notebook_id: String,
+        body: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
+    },
+    ListStudioOutputs {
+        workspace_id: String,
+        notebook_id: String,
+    },
+    GetLicense {
+        workspace_id: String,
+    },
+    LicenseStepUp {
+        workspace_id: String,
+        body: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
+    },
+    ApplyLicense {
+        workspace_id: String,
+        organization_id: String,
+        body: Zeroizing<Vec<u8>>,
+        idempotency_key: Zeroizing<String>,
+    },
+}
+
+impl NativeWorkspaceOperation {
+    fn safe_scope_id(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 256
+            && value.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_alphanumeric()
+                    || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+            })
+    }
+
+    fn scope_valid(&self) -> bool {
+        Self::safe_scope_id(self.workspace_id())
+            && match self {
+                Self::GetNotebook { notebook_id, .. }
+                | Self::GetNotebookContext { notebook_id, .. }
+                | Self::ListSources { notebook_id, .. }
+                | Self::UploadPdf { notebook_id, .. }
+                | Self::ProcessingStatus { notebook_id, .. }
+                | Self::AskQuestion { notebook_id, .. }
+                | Self::CitationContent { notebook_id, .. }
+                | Self::CreateReport { notebook_id, .. }
+                | Self::ListStudioOutputs { notebook_id, .. } => Self::safe_scope_id(notebook_id),
+                _ => true,
+            }
+    }
+
+    pub(crate) fn workspace_id(&self) -> &str {
+        match self {
+            Self::ListNotebooks { workspace_id }
+            | Self::CreateNotebook { workspace_id, .. }
+            | Self::GetNotebook { workspace_id, .. }
+            | Self::GetNotebookContext { workspace_id, .. }
+            | Self::ListSources { workspace_id, .. }
+            | Self::UploadPdf { workspace_id, .. }
+            | Self::ProcessingStatus { workspace_id, .. }
+            | Self::AskQuestion { workspace_id, .. }
+            | Self::CitationContent { workspace_id, .. }
+            | Self::CreateReport { workspace_id, .. }
+            | Self::ListStudioOutputs { workspace_id, .. }
+            | Self::GetLicense { workspace_id }
+            | Self::LicenseStepUp { workspace_id, .. }
+            | Self::ApplyLicense { workspace_id, .. } => workspace_id,
+        }
+    }
+
+    fn method_path(&self) -> (&'static str, String) {
+        match self {
+            Self::ListNotebooks { workspace_id } => {
+                ("GET", format!("/api/v1/workspaces/{workspace_id}/notebooks"))
+            }
+            Self::CreateNotebook { workspace_id, .. } => {
+                ("POST", format!("/api/v1/workspaces/{workspace_id}/notebooks"))
+            }
+            Self::GetNotebook { workspace_id, notebook_id } => (
+                "GET",
+                format!("/api/v1/workspaces/{workspace_id}/notebooks/{notebook_id}"),
+            ),
+            Self::GetNotebookContext { workspace_id, notebook_id } => (
+                "GET",
+                format!("/api/v1/workspaces/{workspace_id}/notebooks/{notebook_id}/context"),
+            ),
+            Self::ListSources { workspace_id, notebook_id } => {
+                ("GET", format!("/api/v1/workspaces/{workspace_id}/sources?notebook_id={notebook_id}"))
+            }
+            Self::UploadPdf { workspace_id, .. } => {
+                ("POST", format!("/api/v1/workspaces/{workspace_id}/sources"))
+            }
+            Self::ProcessingStatus {
+                workspace_id,
+                notebook_id,
+                processing_run_id,
+            } => (
+                "GET",
+                format!("/api/v1/workspaces/{workspace_id}/processing-runs/{processing_run_id}?notebook_id={notebook_id}"),
+            ),
+            Self::AskQuestion { workspace_id, .. } => (
+                "POST",
+                format!("/api/v1/workspaces/{workspace_id}/questions"),
+            ),
+            Self::CitationContent {
+                workspace_id,
+                notebook_id,
+                citation_id,
+            } => (
+                "GET",
+                format!("/api/v1/workspaces/{workspace_id}/citations/{citation_id}/content?notebook_id={notebook_id}"),
+            ),
+            Self::CreateReport { workspace_id, .. } => (
+                "POST",
+                format!("/api/v1/workspaces/{workspace_id}/studio/reports"),
+            ),
+            Self::ListStudioOutputs { workspace_id, notebook_id } => (
+                "GET",
+                format!("/api/v1/workspaces/{workspace_id}/studio/outputs?notebook_id={notebook_id}"),
+            ),
+            Self::GetLicense { workspace_id } => (
+                "GET",
+                format!("/api/v1/workspaces/{workspace_id}/license"),
+            ),
+            Self::LicenseStepUp { .. } => ("POST", "/api/v1/session/step-up".to_owned()),
+            Self::ApplyLicense { organization_id, .. } => (
+                "POST",
+                format!("/api/v1/organizations/{organization_id}/license"),
+            ),
+        }
+    }
+
+    fn expected_status(&self, status: u16) -> bool {
+        match self {
+            Self::CreateNotebook { .. } => status == 200 || status == 201,
+            Self::UploadPdf { .. } => status == 202,
+            Self::CreateReport { .. } => status == 200 || status == 201,
+            Self::LicenseStepUp { .. } => status == 201,
+            Self::ApplyLicense { .. } => status == 200 || status == 201,
+            _ => status == 200,
+        }
+    }
+
+    fn expects_pdf(&self) -> bool {
+        matches!(self, Self::CitationContent { .. })
+    }
+}
+
+impl fmt::Debug for NativeWorkspaceOperation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ListNotebooks { .. } => "NativeWorkspaceOperation::ListNotebooks",
+            Self::CreateNotebook { .. } => "NativeWorkspaceOperation::CreateNotebook([redacted])",
+            Self::GetNotebook { .. } => "NativeWorkspaceOperation::GetNotebook",
+            Self::GetNotebookContext { .. } => "NativeWorkspaceOperation::GetNotebookContext",
+            Self::ListSources { .. } => "NativeWorkspaceOperation::ListSources",
+            Self::UploadPdf { .. } => "NativeWorkspaceOperation::UploadPdf([redacted])",
+            Self::ProcessingStatus { .. } => "NativeWorkspaceOperation::ProcessingStatus",
+            Self::AskQuestion { .. } => "NativeWorkspaceOperation::AskQuestion([redacted])",
+            Self::CitationContent { .. } => "NativeWorkspaceOperation::CitationContent",
+            Self::CreateReport { .. } => "NativeWorkspaceOperation::CreateReport([redacted])",
+            Self::ListStudioOutputs { .. } => "NativeWorkspaceOperation::ListStudioOutputs",
+            Self::GetLicense { .. } => "NativeWorkspaceOperation::GetLicense",
+            Self::LicenseStepUp { .. } => "NativeWorkspaceOperation::LicenseStepUp([redacted])",
+            Self::ApplyLicense { .. } => "NativeWorkspaceOperation::ApplyLicense([redacted])",
+        })
+    }
+}
+
+pub(crate) struct NativeWorkspaceResponse {
+    pub(crate) status: u16,
+    pub(crate) content_type: Option<String>,
+    pub(crate) citation_page: Option<u32>,
+    pub(crate) body: Zeroizing<Vec<u8>>,
+}
+
+pub(crate) trait NativeWorkspaceTransport: Send + Sync {
+    fn execute<'a>(
+        &'a self,
+        access: &'a [u8],
+        operation: NativeWorkspaceOperation,
+    ) -> Pin<Box<dyn Future<Output = Result<NativeWorkspaceResponse, &'static str>> + Send + 'a>>;
+}
+
+struct WorkspaceWireBuffer(Zeroizing<Vec<u8>>);
+
+impl AsRef<[u8]> for WorkspaceWireBuffer {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl Drop for WorkspaceWireBuffer {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+struct WorkspaceAuthorizationBuffer(Zeroizing<Vec<u8>>);
+
+impl AsRef<[u8]> for WorkspaceAuthorizationBuffer {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl Drop for WorkspaceAuthorizationBuffer {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+pub(crate) struct NativeWorkspaceClient {
+    client: reqwest::Client,
+    gateway: String,
+}
+
+impl NativeWorkspaceClient {
+    fn status_error(status: u16) -> &'static str {
+        match status {
+            400 | 415 => "INVALID_REQUEST",
+            401 => "AUTHENTICATION_REQUIRED",
+            403 => "FORBIDDEN",
+            404 | 503 => "RESOURCE_UNAVAILABLE",
+            409 => "CONFLICT",
+            413 => "REQUEST_TOO_LARGE",
+            504 => "WORKSPACE_REQUEST_FAILED",
+            _ => "WORKSPACE_RESPONSE_REJECTED",
+        }
+    }
+
+    fn fixed() -> Result<Self, &'static str> {
+        let client = reqwest::Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
+            .build()
+            .map_err(|_| "WORKSPACE_REQUEST_FAILED")?;
+        Ok(Self {
+            client,
+            gateway: PUBLIC_GATEWAY.to_owned(),
+        })
+    }
+
+    #[cfg(feature = "contract-test")]
+    pub(crate) fn for_contract_test(
+        gateway: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Self, &'static str> {
+        if !gateway.starts_with("http://127.0.0.1:") || gateway.contains(['\r', '\n', '?', '#']) {
+            return Err("WORKSPACE_REQUEST_FAILED");
+        }
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(timeout)
+            .timeout(timeout)
+            .build()
+            .map_err(|_| "WORKSPACE_REQUEST_FAILED")?;
+        Ok(Self {
+            client,
+            gateway: gateway.to_owned(),
+        })
+    }
+}
+
+impl NativeWorkspaceTransport for NativeWorkspaceClient {
+    fn execute<'a>(
+        &'a self,
+        access: &'a [u8],
+        mut operation: NativeWorkspaceOperation,
+    ) -> Pin<Box<dyn Future<Output = Result<NativeWorkspaceResponse, &'static str>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if !operation.scope_valid() {
+                return Err("INVALID_REQUEST");
+            }
+            let (method, path) = operation.method_path();
+            if path.contains("//") || path.contains(['#', '\r', '\n']) || path.matches('?').count() > 1 {
+                return Err("WORKSPACE_REQUEST_FAILED");
+            }
+            let endpoint = format!("{}{}", self.gateway, path);
+            let method = reqwest::Method::from_bytes(method.as_bytes())
+                .map_err(|_| "WORKSPACE_REQUEST_FAILED")?;
+            let mut authorization = Zeroizing::new(b"Bearer ".to_vec());
+            authorization.extend_from_slice(access);
+            let authorization_owner =
+                WorkspaceAuthorizationBuffer(Zeroizing::new(std::mem::take(&mut *authorization)));
+            let mut authorization_header = reqwest::header::HeaderValue::from_maybe_shared(
+                bytes::Bytes::from_owner(authorization_owner),
+            )
+            .map_err(|_| "AUTHENTICATION_REQUIRED")?;
+            authorization_header.set_sensitive(true);
+            let mut request = self
+                .client
+                .request(method, endpoint)
+                .header(reqwest::header::AUTHORIZATION, authorization_header)
+                .header(
+                    reqwest::header::ACCEPT,
+                    if operation.expects_pdf() {
+                        "application/pdf"
+                    } else {
+                        "application/json"
+                    },
+                );
+            match &mut operation {
+                NativeWorkspaceOperation::UploadPdf {
+                    notebook_id,
+                    filename,
+                    bytes,
+                    idempotency_key,
+                    ..
+                } => {
+                    let wire = WorkspaceWireBuffer(Zeroizing::new(std::mem::take(&mut **bytes)));
+                    request = request
+                        .header(reqwest::header::CONTENT_TYPE, "application/pdf")
+                        .header("X-Source-Filename", filename.as_str())
+                        .header("X-Notebook-Id", notebook_id.as_str())
+                        .header("Idempotency-Key", idempotency_key.as_str())
+                        .body(reqwest::Body::from(bytes::Bytes::from_owner(wire)));
+                }
+                NativeWorkspaceOperation::AskQuestion {
+                    body,
+                    idempotency_key,
+                    ..
+                }
+                | NativeWorkspaceOperation::CreateReport {
+                    body,
+                    idempotency_key,
+                    ..
+                }
+                | NativeWorkspaceOperation::LicenseStepUp {
+                    body,
+                    idempotency_key,
+                    ..
+                }
+                | NativeWorkspaceOperation::ApplyLicense {
+                    body,
+                    idempotency_key,
+                    ..
+                } => {
+                    let wire = WorkspaceWireBuffer(Zeroizing::new(std::mem::take(&mut **body)));
+                    request = request
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .header("Idempotency-Key", idempotency_key.as_str())
+                        .body(reqwest::Body::from(bytes::Bytes::from_owner(wire)));
+                }
+                NativeWorkspaceOperation::CreateNotebook {
+                    body,
+                    idempotency_key,
+                    ..
+                } => {
+                    let wire = WorkspaceWireBuffer(Zeroizing::new(std::mem::take(&mut **body)));
+                    request = request
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .header("Idempotency-Key", idempotency_key.as_str())
+                        .body(reqwest::Body::from(bytes::Bytes::from_owner(wire)));
+                }
+                _ => {}
+            }
+            let mut response = request
+                .send()
+                .await
+                .map_err(|_| "WORKSPACE_REQUEST_FAILED")?;
+            let status = response.status().as_u16();
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let content_length = response
+                .headers()
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<usize>().ok());
+            let citation_page = response
+                .headers()
+                .get("X-Citation-Page")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u32>().ok());
+            let maximum = if operation.expects_pdf() {
+                MAX_WORKSPACE_PDF_BYTES
+            } else {
+                MAX_RESPONSE_BYTES
+            };
+            let expected_type = if operation.expects_pdf() {
+                "application/pdf"
+            } else {
+                "application/json"
+            };
+            if !operation.expected_status(status)
+                || response.headers().contains_key(reqwest::header::SET_COOKIE)
+                || content_type
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .split(';')
+                    .next()
+                    != Some(expected_type)
+                || content_length.is_some_and(|length| length > maximum)
+            {
+                return Err(Self::status_error(status));
+            }
+            let mut body = Zeroizing::new(Vec::new());
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| "WORKSPACE_RESPONSE_REJECTED")?
+            {
+                if body.len().saturating_add(chunk.len()) > maximum {
+                    return Err("WORKSPACE_RESPONSE_REJECTED");
+                }
+                body.extend_from_slice(&chunk);
+            }
+            if operation.expects_pdf() && (body.len() < 5 || &body[..5] != b"%PDF-") {
+                return Err("WORKSPACE_RESPONSE_REJECTED");
+            }
+            if !operation.expects_pdf() {
+                let mut bearer = Zeroizing::new(b"Bearer ".to_vec());
+                bearer.extend_from_slice(access);
+                let reflects = |needle: &[u8]| {
+                    !needle.is_empty()
+                        && body
+                            .windows(needle.len())
+                            .any(|candidate| candidate == needle)
+                };
+                if reflects(access) || reflects(&bearer) || reflects(PUBLIC_GATEWAY.as_bytes()) {
+                    return Err("WORKSPACE_RESPONSE_REJECTED");
+                }
+            }
+            Ok(NativeWorkspaceResponse {
+                status,
+                content_type,
+                citation_page,
+                body,
+            })
+        })
     }
 }
 
@@ -1179,6 +1681,7 @@ impl Drop for SecretResponseBuffer {
 pub struct NativeSessionRuntime {
     client: Arc<dyn NativeIdentityTransportPort>,
     vault: Arc<dyn NativeSessionVaultPort>,
+    workspace_client: Arc<dyn NativeWorkspaceTransport>,
     transition_gate: tokio::sync::Mutex<()>,
     generation: AtomicU64,
     revoke_pending: AtomicBool,
@@ -1191,6 +1694,9 @@ impl NativeSessionRuntime {
                 NativeIdentityClient::fixed().expect("fixed Native public gateway must build"),
             ),
             vault: Arc::new(NativeSessionVault::for_app()),
+            workspace_client: Arc::new(
+                NativeWorkspaceClient::fixed().expect("fixed Native Workspace gateway must build"),
+            ),
             transition_gate: tokio::sync::Mutex::new(()),
             generation: AtomicU64::new(0),
             revoke_pending: AtomicBool::new(false),
@@ -1206,6 +1712,9 @@ impl NativeSessionRuntime {
         Self {
             client,
             vault,
+            workspace_client: Arc::new(
+                NativeWorkspaceClient::fixed().expect("fixed Native Workspace gateway must build"),
+            ),
             transition_gate: tokio::sync::Mutex::new(()),
             generation: AtomicU64::new(0),
             revoke_pending: AtomicBool::new(false),
@@ -1325,6 +1834,93 @@ impl NativeSessionRuntime {
         Ok(crate::recovery_bridge::CloudRecoveryExchange { response, canaries })
     }
 
+    pub(crate) async fn execute_offline_sync_once(
+        &self,
+        transport: &dyn crate::offline_sync_bridge::OfflineCloudTransport,
+        request: crate::offline_sync_bridge::OfflineCloudRequest,
+    ) -> Result<crate::offline_sync_bridge::OfflineCloudResponse, &'static str> {
+        if self.revoke_pending.load(Ordering::Acquire) {
+            return Err("AUTHENTICATION_REQUIRED");
+        }
+        let credentials = self
+            .vault_read()
+            .await
+            .map_err(|_| "AUTHENTICATION_REQUIRED")?
+            .ok_or("AUTHENTICATION_REQUIRED")?;
+        transport.execute(&credentials.access.0, request).await
+    }
+
+    pub(crate) async fn execute_workspace_once(
+        &self,
+        operation: NativeWorkspaceOperation,
+    ) -> Result<NativeWorkspaceResponse, &'static str> {
+        if self.revoke_pending.load(Ordering::Acquire) {
+            return Err("AUTHENTICATION_REQUIRED");
+        }
+        let credentials = self
+            .vault_read()
+            .await
+            .map_err(|_| "AUTHENTICATION_REQUIRED")?
+            .ok_or("AUTHENTICATION_REQUIRED")?;
+        if credentials.projection().workspace_id() != operation.workspace_id() {
+            return Err("AUTHENTICATION_REQUIRED");
+        }
+        let response = self
+            .workspace_client
+            .execute(&credentials.access.0, operation)
+            .await?;
+        let reflects = |needle: &[u8]| {
+            !needle.is_empty()
+                && response
+                    .body
+                    .windows(needle.len())
+                    .any(|candidate| candidate == needle)
+        };
+        if reflects(&credentials.access.0) || reflects(&credentials.refresh.0) {
+            return Err("WORKSPACE_RESPONSE_REJECTED");
+        }
+        Ok(response)
+    }
+
+    #[cfg(feature = "contract-test")]
+    pub(crate) fn for_workspace_contract_test(
+        vault: Arc<dyn NativeSessionVaultPort>,
+        client: Arc<dyn NativeIdentityTransportPort>,
+        workspace_client: Arc<dyn NativeWorkspaceTransport>,
+    ) -> Self {
+        Self {
+            client,
+            vault,
+            workspace_client,
+            transition_gate: tokio::sync::Mutex::new(()),
+            generation: AtomicU64::new(0),
+            revoke_pending: AtomicBool::new(false),
+        }
+    }
+
+    #[cfg(feature = "contract-test")]
+    pub(crate) fn for_loopback_contract_test(
+        gateway: &str,
+        credential_target: &str,
+    ) -> Result<Self, NativeSessionError> {
+        let vault = NativeSessionVault::new(credential_target.to_owned())
+            .map_err(|_| NativeSessionError::authentication_required())?;
+        let identity = NativeIdentityClient::for_contract_test(
+            gateway,
+            std::time::Duration::from_secs(5),
+        )?;
+        let workspace = NativeWorkspaceClient::for_contract_test(
+            gateway,
+            std::time::Duration::from_secs(5),
+        )
+        .map_err(|_| NativeSessionError::authentication_required())?;
+        Ok(Self::for_workspace_contract_test(
+            Arc::new(vault),
+            Arc::new(identity),
+            Arc::new(workspace),
+        ))
+    }
+
     async fn vault_read(&self) -> Result<Option<NativeSessionCredentials>, NativeSessionError> {
         let vault = Arc::clone(&self.vault);
         tauri::async_runtime::spawn_blocking(move || vault.read())
@@ -1369,5 +1965,285 @@ impl NativeSessionRuntime {
             self.revoke_pending.store(true, Ordering::Release);
         }
         Err(NativeSessionError::authentication_required())
+    }
+}
+
+#[cfg(all(test, feature = "contract-test"))]
+mod workspace_transport_tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    fn list_operation() -> NativeWorkspaceOperation {
+        NativeWorkspaceOperation::ListSources {
+            workspace_id: "workspace-1".into(),
+            notebook_id: "notebook-1".into(),
+        }
+    }
+
+    fn block_on<T>(future: impl Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(future)
+    }
+
+    fn server(response: Vec<u8>, delay: Duration) -> (String, mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = format!("http://{}", listener.local_addr().expect("address"));
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("read timeout");
+            let mut request = vec![0_u8; 16 * 1024];
+            let read = stream.read(&mut request).unwrap_or(0);
+            request.truncate(read);
+            tx.send(request).ok();
+            thread::sleep(delay);
+            let _ = stream.write_all(&response);
+        });
+        (address, rx)
+    }
+
+    #[test]
+    fn workspace_operation_method_and_path_are_fixed() {
+        let cases = [
+            (
+                NativeWorkspaceOperation::ListSources {
+                    workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
+                },
+                "GET",
+                "/api/v1/workspaces/workspace-1/sources?notebook_id=notebook-1",
+            ),
+            (
+                NativeWorkspaceOperation::UploadPdf {
+                    workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
+                    filename: "guide.pdf".into(),
+                    bytes: Zeroizing::new(b"%PDF-".to_vec()),
+                    idempotency_key: Zeroizing::new("native-0123456789abcdef".into()),
+                },
+                "POST",
+                "/api/v1/workspaces/workspace-1/sources",
+            ),
+            (
+                NativeWorkspaceOperation::ProcessingStatus {
+                    workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
+                    processing_run_id: "run-1".into(),
+                },
+                "GET",
+                "/api/v1/workspaces/workspace-1/processing-runs/run-1?notebook_id=notebook-1",
+            ),
+            (
+                NativeWorkspaceOperation::AskQuestion {
+                    workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
+                    body: Zeroizing::new(Vec::new()),
+                    idempotency_key: Zeroizing::new("native-0123456789abcdef".into()),
+                },
+                "POST",
+                "/api/v1/workspaces/workspace-1/questions",
+            ),
+            (
+                NativeWorkspaceOperation::CitationContent {
+                    workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
+                    citation_id: "citation-1".into(),
+                },
+                "GET",
+                "/api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1",
+            ),
+            (
+                NativeWorkspaceOperation::CreateReport {
+                    workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
+                    body: Zeroizing::new(Vec::new()),
+                    idempotency_key: Zeroizing::new("native-0123456789abcdef".into()),
+                },
+                "POST",
+                "/api/v1/workspaces/workspace-1/studio/reports",
+            ),
+            (
+                NativeWorkspaceOperation::ListStudioOutputs {
+                    workspace_id: "workspace-1".into(),
+                    notebook_id: "notebook-1".into(),
+                },
+                "GET",
+                "/api/v1/workspaces/workspace-1/studio/outputs?notebook_id=notebook-1",
+            ),
+        ];
+        for (operation, method, path) in cases {
+            assert_eq!(operation.method_path(), (method, path.into()));
+        }
+    }
+
+    #[test]
+    fn workspace_idempotency_key_is_stable_and_fingerprint_bound() {
+        let first = workspace_idempotency_key("studio:workspace-1:report-000000000001", b"body")
+            .expect("first key");
+        let replay = workspace_idempotency_key("studio:workspace-1:report-000000000001", b"body")
+            .expect("replay key");
+        let changed = workspace_idempotency_key("studio:workspace-1:report-000000000002", b"body")
+            .expect("changed key");
+        assert_eq!(first.as_str(), replay.as_str());
+        assert_ne!(first.as_str(), changed.as_str());
+        assert!((16..=128).contains(&first.len()));
+    }
+
+    #[test]
+    fn actual_workspace_transport_preserves_status_and_citation_page() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nX-Citation-Page: 7\r\nContent-Length: 5\r\n\r\n%PDF-".to_vec();
+        let (gateway, request) = server(response, Duration::ZERO);
+        let client = NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(100))
+            .expect("client");
+        let result = block_on(client.execute(
+            b"a-credential-that-is-at-least-forty-bytes-long",
+            NativeWorkspaceOperation::CitationContent {
+                workspace_id: "workspace-1".into(),
+                notebook_id: "notebook-1".into(),
+                citation_id: "citation-1".into(),
+            },
+        ))
+        .expect("citation response");
+        assert_eq!(result.status, 200);
+        assert_eq!(result.citation_page, Some(7));
+        assert!(
+            String::from_utf8_lossy(&request.recv().expect("request")).starts_with(
+                "GET /api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1 HTTP/1.1"
+            )
+        );
+    }
+
+    #[test]
+    fn actual_workspace_write_preserves_status_body_and_idempotency_header() {
+        let response = b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".to_vec();
+        let (gateway, request) = server(response, Duration::ZERO);
+        let client = NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(100))
+            .expect("client");
+        let result = block_on(client.execute(
+            b"a-credential-that-is-at-least-forty-bytes-long",
+            NativeWorkspaceOperation::CreateReport {
+                workspace_id: "workspace-1".into(),
+                notebook_id: "notebook-1".into(),
+                body: Zeroizing::new(b"{}".to_vec()),
+                idempotency_key: Zeroizing::new("native-0123456789abcdef".into()),
+            },
+        ))
+        .expect("write response");
+        assert_eq!(result.status, 201);
+        let wire = String::from_utf8_lossy(&request.recv().expect("request")).to_ascii_lowercase();
+        assert!(wire.starts_with("post /api/v1/workspaces/workspace-1/studio/reports http/1.1"));
+        assert!(wire.contains("idempotency-key: native-0123456789abcdef"));
+        assert!(wire.ends_with("\r\n\r\n{}"));
+    }
+
+    #[test]
+    fn actual_workspace_transport_wires_notebook_home_and_all_seven_workspace_operations() {
+        let cases: Vec<(NativeWorkspaceOperation, u16, &str, Option<&str>)> = vec![
+            (NativeWorkspaceOperation::ListNotebooks { workspace_id: "workspace-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/notebooks HTTP/1.1", None),
+            (NativeWorkspaceOperation::CreateNotebook { workspace_id: "workspace-1".into(), body: Zeroizing::new(br#"{"title":"Notebook"}"#.to_vec()), idempotency_key: Zeroizing::new("native-0123456789abcdef".into()) }, 201, "POST /api/v1/workspaces/workspace-1/notebooks HTTP/1.1", Some("\"title\":\"notebook\"")),
+            (NativeWorkspaceOperation::GetNotebook { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/notebooks/notebook-1 HTTP/1.1", None),
+            (NativeWorkspaceOperation::GetNotebookContext { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/notebooks/notebook-1/context HTTP/1.1", None),
+            (NativeWorkspaceOperation::ListSources { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/sources?notebook_id=notebook-1 HTTP/1.1", None),
+            (NativeWorkspaceOperation::UploadPdf { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), filename: "guide.pdf".into(), bytes: Zeroizing::new(b"%PDF-".to_vec()), idempotency_key: Zeroizing::new("native-0123456789abcdef".into()) }, 202, "POST /api/v1/workspaces/workspace-1/sources HTTP/1.1", Some("x-notebook-id: notebook-1")),
+            (NativeWorkspaceOperation::ProcessingStatus { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), processing_run_id: "run-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/processing-runs/run-1?notebook_id=notebook-1 HTTP/1.1", None),
+            (NativeWorkspaceOperation::AskQuestion { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), body: Zeroizing::new(br#"{"notebook_id":"notebook-1"}"#.to_vec()), idempotency_key: Zeroizing::new("native-0123456789abcdef".into()) }, 200, "POST /api/v1/workspaces/workspace-1/questions HTTP/1.1", Some("\"notebook_id\":\"notebook-1\"")),
+            (NativeWorkspaceOperation::CitationContent { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), citation_id: "citation-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1 HTTP/1.1", None),
+            (NativeWorkspaceOperation::CreateReport { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into(), body: Zeroizing::new(br#"{"notebook_id":"notebook-1"}"#.to_vec()), idempotency_key: Zeroizing::new("native-0123456789abcdef".into()) }, 201, "POST /api/v1/workspaces/workspace-1/studio/reports HTTP/1.1", Some("\"notebook_id\":\"notebook-1\"")),
+            (NativeWorkspaceOperation::ListStudioOutputs { workspace_id: "workspace-1".into(), notebook_id: "notebook-1".into() }, 200, "GET /api/v1/workspaces/workspace-1/studio/outputs?notebook_id=notebook-1 HTTP/1.1", None),
+        ];
+        for (operation, status, request_line, required_wire) in cases {
+            let response = if operation.expects_pdf() {
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nX-Citation-Page: 1\r\nContent-Length: 5\r\n\r\n%PDF-".to_vec()
+            } else {
+                format!("HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}").into_bytes()
+            };
+            let (gateway, request) = server(response, Duration::ZERO);
+            let client = NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(200)).expect("client");
+            block_on(client.execute(b"a-credential-that-is-at-least-forty-bytes-long", operation)).expect("transport");
+            let wire = String::from_utf8_lossy(&request.recv_timeout(Duration::from_secs(1)).expect("request")).to_ascii_lowercase();
+            assert!(wire.starts_with(&request_line.to_ascii_lowercase()), "{wire}");
+            if let Some(fragment) = required_wire {
+                assert!(wire.contains(fragment), "{wire}");
+            }
+        }
+    }
+
+    #[test]
+    fn actual_workspace_transport_rejects_invalid_notebook_before_network() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let gateway = format!("http://{}", listener.local_addr().expect("address"));
+        let client = NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(100)).expect("client");
+        assert_eq!(block_on(client.execute(
+            b"a-credential-that-is-at-least-forty-bytes-long",
+            NativeWorkspaceOperation::ListSources { workspace_id: "workspace-1".into(), notebook_id: "../other".into() },
+        )).err(), Some("INVALID_REQUEST"));
+        assert!(listener.accept().is_err());
+    }
+
+    #[test]
+    fn actual_workspace_transport_never_follows_redirect() {
+        let destination = TcpListener::bind("127.0.0.1:0").expect("destination");
+        destination.set_nonblocking(true).expect("nonblocking");
+        let location = format!(
+            "http://{}",
+            destination.local_addr().expect("destination address")
+        );
+        let response = format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+        )
+        .into_bytes();
+        let (gateway, request) = server(response, Duration::ZERO);
+        let client = NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(100))
+            .expect("client");
+        assert_eq!(
+            block_on(client.execute(
+                b"a-credential-that-is-at-least-forty-bytes-long",
+                list_operation()
+            ))
+            .err(),
+            Some("WORKSPACE_RESPONSE_REJECTED")
+        );
+        let request_bytes = request
+            .recv_timeout(Duration::from_secs(1))
+            .expect("request");
+        let wire = String::from_utf8_lossy(&request_bytes);
+        assert!(wire.starts_with("GET /api/v1/workspaces/workspace-1/sources?notebook_id=notebook-1 HTTP/1.1"));
+        assert!(wire
+            .to_ascii_lowercase()
+            .contains("authorization: bearer a-credential-that-is-at-least-forty-bytes-long"));
+        thread::sleep(Duration::from_millis(20));
+        assert!(destination.accept().is_err());
+    }
+
+    #[test]
+    fn actual_workspace_transport_rejects_oversize_truncation_and_timeout() {
+        let fixtures = [
+            (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 131073\r\n\r\n".to_vec(), Duration::ZERO),
+            (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{}".to_vec(), Duration::ZERO),
+            (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".to_vec(), Duration::from_millis(100)),
+        ];
+        for (response, delay) in fixtures {
+            let (gateway, _) = server(response, delay);
+            let client =
+                NativeWorkspaceClient::for_contract_test(&gateway, Duration::from_millis(30))
+                    .expect("client");
+            assert!(block_on(client.execute(
+                b"a-credential-that-is-at-least-forty-bytes-long",
+                list_operation()
+            ))
+            .is_err());
+        }
     }
 }

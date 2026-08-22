@@ -1,10 +1,25 @@
-import { AccountSecurityWorkspace } from "@daon-user/ui";
-import navigation from "@daon-user/contracts/navigation.json";
-import screens from "@daon-user/contracts/screens.json";
+"use client";
 
-const route = navigation.routes.find((item) => item.route_id === "organization_settings");
-const screen = screens.screens.find((item) => item.screen_id === "organization_settings");
+import { EgressPolicyPane } from "@daon-user/ui/egress-policy";
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
+import { getEffectiveEgressPolicy, getOrganizationSettingsContext, saveOrganizationEgressPolicy, saveWorkspaceEgressPolicy } from "../../../lib/egress-policy-api.js";
 
-export default function OrganizationSettingsPrototypePage() {
-  return <AccountSecurityWorkspace initialScreen="organization" routeId={route.route_id} screenId={screen.screen_id} />;
+const adapter = {
+  loadContext: getOrganizationSettingsContext,
+  load: getEffectiveEgressPolicy,
+  saveOrganization: saveOrganizationEgressPolicy,
+  saveWorkspace: saveWorkspaceEgressPolicy,
+};
+function OrganizationSettingsContent() {
+  const searchParams = useSearchParams();
+  return <main className="organization-settings-page"><EgressPolicyPane
+    organizationId={searchParams.get("organization_id") || ""}
+    workspaceId={searchParams.get("workspace_id") || ""} adapter={adapter} /></main>;
+}
+
+export default function OrganizationSettingsPage() {
+  return <Suspense fallback={<p role="status">조직 설정을 불러오는 중입니다.</p>}>
+    <OrganizationSettingsContent />
+  </Suspense>;
 }

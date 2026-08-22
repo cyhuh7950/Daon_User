@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "issue_id": "R1-M8-10-WINDOWS-OFFLINE-STUDIO-01-I001",
+  "local_service": { "passed": 166, "skipped": 2, "coverage_percent": 84.93 },
+  "api": { "passed": 388, "skipped": 28, "subtests_passed": 137 },
+  "foundation_a3": { "focused_passed": 28, "runtime_provider_passed": 8, "postgres_actual_passed": 1 },
+  "foundation_a4": { "focused_passed": 44, "actual_encrypted_mixed_context_passed": 1 },
+  "foundation_a5": { "focused_passed": 54, "skipped": 1, "subtests_passed": 3, "actual_upstage_generation_passed": 1 },
+  "foundation_a6": { "node_passed": 68, "failed": 0, "web_build": "pass", "web_boundary_violations": 0 },
+  "node_task3c": { "focused_passed": 26, "actual_dom_passed": 1, "failed": 0 },
+  "guarded_rust_task3c": {
+    "check": "pass",
+    "lib_passed": 30,
+    "local_service_contract_passed": 5,
+    "native_session_passed": 22,
+    "offline_studio_passed": 3,
+    "offline_sync_passed": 7,
+    "recovery_passed": 44,
+    "workspace_passed": 2,
+    "failed": 0,
+    "elapsed_seconds": 154.6
+  },
+  "openapi": {
+    "default_sha256": "594AED28565CCDBA60F3A12565071F7EAE5239544D5632508BD612EA8D180E0A",
+    "r1_m8_10_sha256": "AA8880B82C791F9D7C6180F2A85BF1A4D4A1A3F47462F26B8D515BAA7D0FE948"
+  },
+  "desktop_build": "pass",
+  "desktop_installer_build": "pass_isolated_nsis",
+  "web_build": "pass",
+  "desktop_boundary": { "scanned_files": 29, "violations": 0 },
+  "web_boundary": { "scanned_files": 269, "violations": 0 }
+}

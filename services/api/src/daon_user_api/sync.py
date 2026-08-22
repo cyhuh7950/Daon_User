@@ -32,6 +32,11 @@ class ConflictResolutionChoice(str, Enum):
     KEEP_BOTH = "keep_both"
 
 
+class SyncItemKind(str, Enum):
+    SOURCE_VERSION = "source_version"
+    OUTPUT_VERSION = "output_version"
+
+
 @dataclass(frozen=True, slots=True)
 class SyncContext:
     tenant_id: str
@@ -52,18 +57,50 @@ class SyncContext:
 @dataclass(frozen=True, slots=True)
 class SyncItemInput:
     item_id: str
-    source_version_id: str
+    source_version_id: str | None
     local_object_id: str
     digest_sha256: str
     byte_size: int
     content_type: str
     base_cloud_version_id: str | None
     base_cloud_digest: str | None
+    item_kind: SyncItemKind = SyncItemKind.SOURCE_VERSION
+    output_version_id: str | None = None
+    dependency_item_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        try:
+            kind = SyncItemKind(self.item_kind)
+        except (TypeError, ValueError):
+            raise SyncError("SYNC_ITEM_INVALID", 400) from None
+        object.__setattr__(self, "item_kind", kind)
+        source_valid = (
+            isinstance(self.source_version_id, str)
+            and _SAFE_ID.fullmatch(self.source_version_id) is not None
+        )
+        output_valid = (
+            isinstance(self.output_version_id, str)
+            and _SAFE_ID.fullmatch(self.output_version_id) is not None
+        )
+        dependencies_valid = (
+            isinstance(self.dependency_item_ids, tuple)
+            and tuple(sorted(set(self.dependency_item_ids))) == self.dependency_item_ids
+            and all(isinstance(value, str) and _SAFE_ID.fullmatch(value)
+                    for value in self.dependency_item_ids)
+        )
+        version_contract_valid = (
+            kind is SyncItemKind.SOURCE_VERSION
+            and source_valid and not output_valid and not self.dependency_item_ids
+        ) or (
+            kind is SyncItemKind.OUTPUT_VERSION
+            and output_valid and not source_valid and bool(self.dependency_item_ids)
+            and self.content_type == "application/vnd.daon.offline-studio-output+json"
+        )
         if (
             any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value)
-                for value in (self.item_id, self.source_version_id, self.local_object_id))
+                for value in (self.item_id, self.local_object_id))
+            or not version_contract_valid
+            or not dependencies_valid
             or not isinstance(self.digest_sha256, str)
             or not _DIGEST.fullmatch(self.digest_sha256)
             or not isinstance(self.byte_size, int)
@@ -82,6 +119,16 @@ class SyncItemInput:
             )
         ):
             raise SyncError("SYNC_ITEM_INVALID", 400)
+
+    @property
+    def version_id(self) -> str:
+        value = (
+            self.source_version_id
+            if self.item_kind is SyncItemKind.SOURCE_VERSION
+            else self.output_version_id
+        )
+        assert value is not None
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +201,7 @@ class SyncOperationView:
     reindex_state: str | None
     source_mutations: int
     overwrite_count: int
+    item_ids: tuple[str, ...] = ()
 
     @property
     def etag(self) -> str:
@@ -294,6 +342,7 @@ class SyncService:
                 item.base_version_id, item.base_digest, item.state,
             ) for item in operation.conflicts),
             tuple(operation.target_versions), operation.reindex_state, 0, 0,
+            tuple(sorted(operation.items)),
         )
 
     def create_operation(
@@ -320,7 +369,8 @@ class SyncService:
                     raise SyncError("IDEMPOTENCY_KEY_REUSED")
                 return self._view(self._operation(context, str(replay[1])))
             manifest = hashlib.sha256("|".join(
-                f"{item.item_id}:{item.source_version_id}:{item.digest_sha256}"
+                f"{item.item_id}:{item.item_kind.value}:{item.version_id}:"
+                f"{','.join(item.dependency_item_ids)}:{item.digest_sha256}"
                 for item in sorted(items, key=lambda value: value.item_id)
             ).encode()).hexdigest()
             operation = _Operation(self._id("sync"), context, target_area, by_id, manifest)
@@ -332,6 +382,17 @@ class SyncService:
     def get_operation(self, context: SyncContext, operation_id: str) -> SyncOperationView:
         with self._repository.lock:
             return self._view(self._operation(context, operation_id))
+
+    def list_operations(self, context: SyncContext) -> tuple[SyncOperationView, ...]:
+        with self._repository.lock:
+            operations = (
+                operation for operation in self._repository.operations.values()
+                if operation.context.tenant_id == context.tenant_id
+                and operation.context.workspace_id == context.workspace_id
+            )
+            return tuple(self._view(operation) for operation in sorted(
+                operations, key=lambda item: item.operation_id, reverse=True,
+            ))
 
     def locate_workspace(self, tenant_id: str, operation_id: str) -> str:
         with self._repository.lock:
@@ -368,6 +429,13 @@ class SyncService:
             approved = tuple(dict.fromkeys(approved_item_ids))
             if not approved or any(item_id not in operation.items for item_id in approved):
                 raise SyncError("SYNC_SCOPE_EXPANSION_DENIED", 403)
+            approved_set = set(approved)
+            if any(
+                dependency not in approved_set
+                for item_id in approved
+                for dependency in operation.items[item_id].dependency_item_ids
+            ):
+                raise SyncError("SYNC_DEPENDENCY_REQUIRED", 409)
             operation.approved_item_ids = approved
             operation.approval_snapshot_id = self._id("sync-approval")
             operation.state = "approved"
@@ -422,11 +490,16 @@ class SyncService:
                 if payload.item_id in operation.completed_item_ids:
                     continue
                 item = operation.items[payload.item_id]
+                if any(
+                    dependency not in operation.completed_item_ids
+                    for dependency in item.dependency_item_ids
+                ):
+                    raise SyncError("SYNC_DEPENDENCY_REQUIRED", 409)
                 current = (payload.current_cloud_version_id, payload.current_cloud_digest)
                 base = (item.base_cloud_version_id, item.base_cloud_digest)
                 if current != base:
                     conflict = _Conflict(
-                        self._id("sync-conflict"), item.item_id, item.source_version_id,
+                        self._id("sync-conflict"), item.item_id, item.version_id,
                         item.digest_sha256, payload.current_cloud_version_id,
                         payload.current_cloud_digest, item.base_cloud_version_id,
                         item.base_cloud_digest,

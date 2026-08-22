@@ -9,6 +9,8 @@ import re
 from threading import RLock
 from typing import Mapping, Protocol, cast
 from urllib.parse import urlsplit
+import urllib.error
+import urllib.request
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 
@@ -31,6 +33,16 @@ _CREDENTIAL_ENV = {
     "OPENROUTER": "OPENROUTER_API_KEY",
     "ANTHROPIC": "ANTHROPIC_API_KEY",
     "OLLAMA": "OLLAMA_BASE_URL",
+}
+_PROVIDER_BASE_URLS = {
+    "CEREBRAS": "https://api.cerebras.ai/v1",
+    "GROQ": "https://api.groq.com/openai/v1",
+    "MISTRAL": "https://api.mistral.ai/v1",
+    "OPENAI": "https://api.openai.com/v1",
+    "UPSTAGE": "https://api.upstage.ai/v1",
+    "GEMINI": "https://generativelanguage.googleapis.com/v1beta",
+    "OPENROUTER": "https://openrouter.ai/api/v1",
+    "ANTHROPIC": "https://api.anthropic.com/v1",
 }
 
 
@@ -96,8 +108,21 @@ class ProviderSettingsSnapshot:
     binding_version: int
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderConnectionStatus:
+    provider_code: str
+    status: str
+    checked_at: str
+
+    def __post_init__(self) -> None:
+        _validate_provider(self.provider_code)
+        if self.status not in {"ready", "unconfigured", "unavailable"}:
+            raise ProviderSettingsError("PROVIDER_CONNECTION_STATUS_INVALID")
+
+
 class CredentialPresenceResolver:
     def configured(self, provider_code: str) -> bool: ...
+    def resolve(self, provider_code: str) -> str | None: ...
 
 
 class ServerCredentialPresenceResolver:
@@ -106,6 +131,62 @@ class ServerCredentialPresenceResolver:
     def configured(self, provider_code: str) -> bool:
         name = _CREDENTIAL_ENV.get(provider_code)
         return bool(name and os.environ.get(name, "").strip())
+
+    def resolve(self, provider_code: str) -> str | None:
+        name = _CREDENTIAL_ENV.get(provider_code)
+        value = os.environ.get(name, "").strip() if name else ""
+        return value or None
+
+
+class ProviderConnectionChecker(Protocol):
+    def check(self, profile: ProviderProfileView, credential: str | None) -> ProviderConnectionStatus: ...
+
+
+class ProviderConnectionTransport(Protocol):
+    def get_status(self, url: str, headers: Mapping[str, str], timeout_seconds: float) -> int: ...
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+class UrllibProviderConnectionTransport:
+    def get_status(self, url: str, headers: Mapping[str, str], timeout_seconds: float) -> int:
+        request = urllib.request.Request(url, headers=dict(headers), method="GET")
+        opener = urllib.request.build_opener(_NoRedirectHandler())
+        with opener.open(request, timeout=timeout_seconds) as response:
+            return int(response.status)
+
+
+class HttpProviderConnectionChecker:
+    """Server-only bounded readiness probe. Response bodies and credentials never leave this port."""
+
+    def __init__(self, transport: ProviderConnectionTransport | None = None) -> None:
+        self._transport = transport or UrllibProviderConnectionTransport()
+
+    @staticmethod
+    def _request(profile: ProviderProfileView, credential: str | None) -> tuple[str, dict[str, str]]:
+        base = profile.base_url.rstrip("/")
+        if profile.provider_code == "OLLAMA":
+            return f"{base}/api/tags", {}
+        if profile.provider_code == "GEMINI":
+            return f"{base}/models", {"x-goog-api-key": credential or ""}
+        if profile.provider_code == "ANTHROPIC":
+            return f"{base}/models", {"x-api-key": credential or "", "anthropic-version": "2023-06-01"}
+        return f"{base}/models", {"authorization": f"Bearer {credential or ''}"}
+
+    def check(self, profile: ProviderProfileView, credential: str | None) -> ProviderConnectionStatus:
+        url, headers = self._request(profile, credential)
+        try:
+            if self._transport.get_status(url, headers, 5.0) != 200:
+                raise ProviderSettingsError("PROVIDER_CONNECTION_UNAVAILABLE", 503, retryable=True)
+        except ProviderSettingsError:
+            raise
+        except (urllib.error.URLError, OSError, ValueError):
+            raise ProviderSettingsError("PROVIDER_CONNECTION_UNAVAILABLE", 503, retryable=True) from None
+        checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return ProviderConnectionStatus(profile.provider_code, "ready", checked_at)
 
 
 class ProviderSettingsRepository(Protocol):
@@ -134,7 +215,14 @@ def _validate_base_url(provider_code: str, value: str) -> str:
     if (parsed.scheme not in allowed_schemes or not parsed.hostname or parsed.username is not None
             or parsed.password is not None or parsed.query or parsed.fragment):
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
-    return value.rstrip("/")
+    normalized = value.rstrip("/")
+    if provider_code == "OLLAMA":
+        configured = os.environ.get("OLLAMA_BASE_URL", "").strip().rstrip("/")
+        if not configured or normalized != configured:
+            raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
+    elif normalized != _PROVIDER_BASE_URLS[provider_code]:
+        raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
+    return normalized
 
 
 def _validate_deployment(deployment_id: str, model_id: str, roles: tuple[str, ...]) -> None:
@@ -327,9 +415,11 @@ class PostgresProviderSettingsRepository:
 
 class ProviderSettingsService:
     def __init__(self, repository: ProviderSettingsRepository,
-                 credential_resolver: CredentialPresenceResolver) -> None:
+                 credential_resolver: CredentialPresenceResolver,
+                 connection_checker: ProviderConnectionChecker | None = None) -> None:
         self._repository = repository
         self._credentials = credential_resolver
+        self._connection_checker = connection_checker or HttpProviderConnectionChecker()
 
     def snapshot(self, context: ProviderSettingsContext) -> ProviderSettingsSnapshot:
         stored = {item.provider_code: item for item in self._repository.list_profiles(context)}
@@ -364,6 +454,19 @@ class ProviderSettingsService:
             stored.profile_id, stored.provider_code, stored.provider_kind, stored.base_url,
             stored.active, self._credentials.configured(code), stored.version,
         )
+
+    def check_connection(self, context: ProviderSettingsContext, provider_code: str) -> ProviderConnectionStatus:
+        code = _validate_provider(provider_code)
+        profiles = {item.provider_code: item for item in self._repository.list_profiles(context)}
+        profile = profiles.get(code)
+        if profile is None:
+            raise ProviderSettingsError("PROVIDER_PROFILE_REQUIRED", 409)
+        if not profile.active:
+            raise ProviderSettingsError("PROVIDER_PROFILE_INACTIVE", 409)
+        credential = self._credentials.resolve(code)
+        if code != "OLLAMA" and credential is None:
+            raise ProviderSettingsError("PROVIDER_CREDENTIAL_REQUIRED", 409)
+        return self._connection_checker.check(profile, credential)
 
     def save_deployment(self, context: ProviderSettingsContext, *, deployment_id: str,
                         provider_code: str, model_id: str, roles: tuple[str, ...], active: bool,

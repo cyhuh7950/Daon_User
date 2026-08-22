@@ -1,0 +1,114 @@
+{
+  "schema_version": "daon.manual-evidence.v1",
+  "issue_id": "R1-M8-10-WINDOWS-OFFLINE-STUDIO-01-I001",
+  "phase": "PHASE_C_MENU_3_MANUAL",
+  "release_version": "1.0.0",
+  "source_revision": "2d4c59e1c761ec12848dcfac8c2f04078dcbb47b",
+  "browser_viewport": {
+    "width": 1920,
+    "height": 1080,
+    "device_scale_factor": 1
+  },
+  "document_pages": {
+    "docx_total": 18,
+    "pdf_total": 18,
+    "per_document": 6
+  },
+  "accessibility": {
+    "documents": 3,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "network": {
+    "same_origin_relative_only": true,
+    "captured_requests": 11,
+    "unique_request_paths": 4
+  },
+  "cleanup": {
+    "listeners": 0,
+    "owned_processes": 0
+  },
+  "files": [
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/actual-transcript.md",
+      "bytes": 4824,
+      "sha256": "1580c07e0bae818c8972bbcd7b6949f6c03801671cbda5b25a1cba00ac7bf612"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/browser-network.jsonl",
+      "bytes": 857,
+      "sha256": "918bf4f84dd83b344b82030e04e04367c26674af4cb5a65e85398b6c9dcd8c1d"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/01-manual-hub-list-1920x1080.png",
+      "bytes": 94884,
+      "sha256": "916129294155d3ee617a26f98bff79f99ffbab015831e1219c94285362a75ba0"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/02-manual-hub-read-1920x1080.png",
+      "bytes": 122354,
+      "sha256": "890e38ed0cec0e83d5374286216824334adf770996a3a7f3d2646fdbb3532b70"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/03-manual-download-1920x1080.png",
+      "bytes": 94866,
+      "sha256": "ae7da4ec04a8a9c83bee2b772e7c9c1dbe8dc47c33554b87a5b915acd747f696"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/04-docx-getting-started-cover.png",
+      "bytes": 55738,
+      "sha256": "745df15471c0faac1b6484715600fba9992d9beeba7f5f2bf460ab8b75e079d5"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/05-docx-user-manual-page4.png",
+      "bytes": 298912,
+      "sha256": "d0ddf75507b7df3d750838481a85541d75c30e21268cb0326a2a83dac756f76f"
+    },
+    {
+      "path": "docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/06-pdf-knowledge-guide-page5.png",
+      "bytes": 317587,
+      "sha256": "2f361237c1af5351248c3e393b6e80443a01603d7861b7a9dd25348133861cf3"
+    },
+    {
+      "path": "docs/manual/release-manifest.json",
+      "bytes": 3785,
+      "sha256": "9bb6864f64d579eab0ce3fb61b306d0be29fecd48ccc12163d96c9d37ec574e4"
+    },
+    {
+      "path": "apps/web/public/manual/manifest.json",
+      "bytes": 3785,
+      "sha256": "9bb6864f64d579eab0ce3fb61b306d0be29fecd48ccc12163d96c9d37ec574e4"
+    },
+    {
+      "path": "docs/manual/dist/daon-getting-started.docx",
+      "bytes": 124515,
+      "sha256": "e26e201459dcdc7c2e2a5dd8b4a752e69deb95b8105f49e6050b09891f65e248"
+    },
+    {
+      "path": "docs/manual/dist/daon-getting-started.pdf",
+      "bytes": 333636,
+      "sha256": "8ebe47673a69fd05458dba3709437b0986ed923861014286790d7c2096054333"
+    },
+    {
+      "path": "docs/manual/dist/daon-user-manual.docx",
+      "bytes": 158674,
+      "sha256": "78df97436f75941a7ce6f8af50e5080b9491768e9044039d87e39ee6e9db883c"
+    },
+    {
+      "path": "docs/manual/dist/daon-user-manual.pdf",
+      "bytes": 376225,
+      "sha256": "aa7a8a51567c508eebe9211259331ac120146234eea1a96f72b3373b59aad24a"
+    },
+    {
+      "path": "docs/manual/dist/daon-knowledge-llm-guide.docx",
+      "bytes": 138722,
+      "sha256": "b7f38974a363dcb32b213e137923522973cae40f5577560f6b372f0d38a9c9b9"
+    },
+    {
+      "path": "docs/manual/dist/daon-knowledge-llm-guide.pdf",
+      "bytes": 316048,
+      "sha256": "c328dccfa0bcc3326a633ad1089739f0f007da950110802fa78240f20c87c6ed"
+    }
+  ]
+}

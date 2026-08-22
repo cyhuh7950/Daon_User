@@ -82,7 +82,7 @@ class DocumentProcessingRepository(Protocol):
     ) -> None: ...
 
     def get_status(
-        self, context: DocumentProcessingContext, processing_run_id: str,
+        self, context: DocumentProcessingContext, processing_run_id: str, *, notebook_id: str,
     ) -> DocumentProcessingStatus: ...
 
 
@@ -91,17 +91,21 @@ class DocumentProcessingSubmissionService:
         self._repository = repository
 
     def submit(
-        self, context: DocumentProcessingContext, source_version_id: str,
+        self, context: DocumentProcessingContext, source_version_id: str, *, notebook_id: str,
     ) -> DocumentProcessingStatus:
+        if not isinstance(notebook_id, str) or _SAFE_ID.fullmatch(notebook_id) is None:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
         processing_run_id = self._repository.start(
             context, source_version_id, enqueue=True,
         )
-        return self._repository.get_status(context, processing_run_id)
+        return self._repository.get_status(context, processing_run_id, notebook_id=notebook_id)
 
     def get_status(
-        self, context: DocumentProcessingContext, processing_run_id: str,
+        self, context: DocumentProcessingContext, processing_run_id: str, *, notebook_id: str,
     ) -> DocumentProcessingStatus:
-        return self._repository.get_status(context, processing_run_id)
+        if not isinstance(notebook_id, str) or _SAFE_ID.fullmatch(notebook_id) is None:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+        return self._repository.get_status(context, processing_run_id, notebook_id=notebook_id)
 
 
 class ProviderSnapshotPort(Protocol):

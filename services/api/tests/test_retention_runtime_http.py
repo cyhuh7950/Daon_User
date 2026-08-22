@@ -15,11 +15,13 @@ from daon_user_api.authorization import (
 )
 from daon_user_api.identity import ClientKind, DevicePlatform
 from daon_user_api.retention import (
+    DerivativeInput,
     ReferenceCleanupPort,
     ReferenceRetentionRepository,
     RetentionContext,
     RetentionService,
 )
+from daon_user_api.retention_request_postgres import PostgresRetentionRequestService
 from daon_user_api.runtime import (
     WEB_SESSION_COOKIE,
     RuntimeDependencies,
@@ -35,6 +37,39 @@ from test_identity_support import (
 
 
 class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+
+    def test_inventory_mutations_and_requests_share_exact_source_lock(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        migration = (root / "migrations/versions/0022_retention_request_runtime.py").read_text(
+            encoding="utf-8",
+        )
+        repository = (root / "src/daon_user_api/retention_request_postgres.py").read_text(
+            encoding="utf-8",
+        )
+        lock_prefix = "retention-source|"
+        self.assertIn(lock_prefix, repository)
+        self.assertIn(lock_prefix, migration)
+        for trigger in (
+            "source_versions_retention_inventory_lock",
+            "index_versions_retention_inventory_lock",
+            "sync_preview_retention_inventory_lock",
+        ):
+            self.assertEqual(migration.count(f"CREATE TRIGGER {trigger}"), 1)
+        for operation in (
+            "def create_request", "def cancel", "def apply_legal_hold",
+            "def release_legal_hold", "def purge",
+        ):
+            start = repository.index(operation)
+            end = repository.find("\n    def ", start + len(operation))
+            section = repository[start:] if end < 0 else repository[start:end]
+            self.assertIn("self._lock_source(connection, context,", section)
+
+    def test_cloud_retention_repository_owns_request_hold_release_and_purge(self):
+        for operation in (
+            "create_request", "get_request", "cancel", "apply_legal_hold",
+            "release_legal_hold", "purge", "locate_hold_workspace", "source_etag",
+        ):
+            self.assertTrue(callable(getattr(PostgresRetentionRequestService, operation, None)), operation)
     async def asyncSetUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
         self.db_path = Path(self.directory.name) / "runtime.sqlite3"
@@ -69,6 +104,7 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.retention = RetentionService(
             ReferenceRetentionRepository(), ReferenceCleanupPort(), clock=self.clock,
+            inventory_provider=lambda _context, _source_id: tuple(DerivativeInput(**item) for item in self.inventory),
         )
         self.context = RetentionContext(
             self.credentials.tenant_id, "workspace-retention-http",
@@ -119,11 +155,11 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         create_headers = {"Idempotency-Key": "idem-http-create", "If-Match": "*"}
         created = await self.client.post(
             f"/api/v1/sources/{self.source_id}/deletion-requests",
-            headers=create_headers, json={"inventory": self.inventory},
+            headers=create_headers, json={},
         )
         replay = await self.client.post(
             f"/api/v1/sources/{self.source_id}/deletion-requests",
-            headers=create_headers, json={"inventory": self.inventory},
+            headers=create_headers, json={},
         )
         self.assertEqual((created.status_code, replay.status_code), (201, 201))
         request_id = created.json()["data"]["request_id"]
@@ -186,12 +222,12 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         missing = await self.client.post(
             "/api/v1/sources/fixture-source-missing/deletion-requests",
             headers={"Idempotency-Key": "idem-safe-missing", "If-Match": "*"},
-            json={"inventory": self.inventory},
+                json={},
         )
         created = await self.client.post(
             f"/api/v1/sources/{self.source_id}/deletion-requests",
             headers={"Idempotency-Key": "idem-safe-create", "If-Match": "*"},
-            json={"inventory": self.inventory},
+            json={},
         )
         self.assertEqual(created.status_code, 201)
         request_id = created.json()["data"]["request_id"]
@@ -217,7 +253,7 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(results, {
             "unavailable": (404, "RESOURCE_UNAVAILABLE"),
-            "idempotency": (409, "INVALID_REQUEST"),
+            "idempotency": (400, "INVALID_REQUEST"),
             "version": (409, "INVALID_REQUEST"),
         })
         self.assertTrue({code for _, code in results.values()}.issubset(safe_codes))

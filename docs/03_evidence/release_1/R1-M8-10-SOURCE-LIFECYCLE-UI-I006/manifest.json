@@ -1,0 +1,24 @@
+{
+  "issue_id": "R1-M8-10-SOURCE-LIFECYCLE-UI-I006",
+  "status": "CODE_VERIFIED_BROWSER_ACTUAL_PENDING",
+  "generated_at": "2026-08-21T16:38:55.8778842+09:00",
+  "gates": {
+    "api_full": {"passed": 493, "skipped": 42, "subtests_passed": 137},
+    "actual_postgresql": {"passed": 10, "database_remaining": 0, "role_remaining": 0},
+    "node_focused": {"passed": 23, "failed": 0},
+    "openapi": {"paths": 75, "operations": 94, "schemas": 120, "errors": 31, "contract_sha256": "594AED28565CCDBA60F3A12565071F7EAE5239544D5632508BD612EA8D180E0A"},
+    "web_build": {"passed": true, "boundary_violations": 0, "boundary_errors": 0},
+    "browser_actual_1920x1080": {"passed": false, "status": "NOT_RUN"}
+  },
+  "artifacts": [
+    {"path": "packages/contracts/openapi/v1/openapi.json", "bytes": 288363, "sha256": "3C0ABDD3F77C90C18D5FADB63A4F3D154589F7B3DDCE75C2920735E0B76FD89B"},
+    {"path": "services/api/migrations/versions/0021_notebook_source_unbinding.py", "bytes": 4203, "sha256": "8202FAAFDDF6004047A2EC63BBE72CE6BF7D265584252EEB48A6E8602CE5691D"},
+    {"path": "services/api/migrations/versions/0022_retention_request_runtime.py", "bytes": 12488, "sha256": "212AE6D16B188AC9B633A4753154ADBE20A75394260C7386CDE95E8E28151B47"},
+    {"path": "services/api/src/daon_user_api/retention_request_postgres.py", "bytes": 30337, "sha256": "381D6F3596273AA82B1D9834112A9F6D6837AFF18C2CC7593C8F3E90B258FC60"},
+    {"path": "apps/web/lib/source-retention-api.js", "bytes": 4584, "sha256": "787C33125F4ED0FF307A6033B60184A55F6FA112F17A061CB304D07FA1055401"},
+    {"path": "packages/ui/src/product-workspace-shell.jsx", "bytes": 83888, "sha256": "AA1220AA080370B9ACCABF2A71011939B725D0E7066BF20ED680C8F45CEFEC56"}
+  ],
+  "external_writes": 0,
+  "provider_calls": 0,
+  "production_source_mutations": 0
+}

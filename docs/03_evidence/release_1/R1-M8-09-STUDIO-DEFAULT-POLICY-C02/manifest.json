@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "work_order_id": "R1-M8-09-STUDIO-DEFAULT-POLICY-C02",
+  "issue_id": "R1-M8-09-STUDIO-DEFAULT-POLICY-C02-I001",
+  "attempt_no": 1,
+  "start_head": "f8ed4e4acf360c3d21848df2c1b8bbb6ec5b8a26",
+  "result_branch": "codex/user-auth-screen-split",
+  "source_hashes": {
+    "agents": "AABB11177EA7541B62C0AD6E6AB2FD745FCD4ADED72A25DF98522FC8E41B47EA",
+    "design": "4D83CEA03F7C84412596F21499C982715D780A482619497E71A1217BA2D230FA",
+    "plan": "50CA9564C66010C319BF3EB368AD9BD91237AC9E09206EF1D4B25DA93CE49973",
+    "work_order": "9AD6A9389F4B719518EBC06456BC00382D3E90DB72196BBDD71C22E669D172D5",
+    "prompt": "B66A4422CEEA9092030DAF716C85657A4A928D1B1640A4AD7B9E62F6FFB96670"
+  },
+  "artifact_hashes": {
+    "services/api/migrations/versions/0013_studio_workspace_default_policy.py": "019ECC6999C54AFCE82663CD0068D7D784E32D18C66B0B23EFD1918D336AF812",
+    "services/api/src/daon_user_api/runtime.py": "471852CEF138F9F1115D7DDCB5DCF9F651346B7C37D0457B70869156FE10B197",
+    "services/api/src/daon_user_api/studio_workspace_postgres.py": "E65A9CB47A73D59D82EB4EAB8E2D1B7C109A6DA020F3A8F4D8EA1C12BC88F596",
+    "services/api/tests/test_studio_workspace_default_policy_migration.py": "7115D23D76698C1EDE10CD9632DA7E216D6DD40C2092CC21FBBE86F889E897DB",
+    "services/api/tests/test_studio_workspace_postgres.py": "05D35516B90BB143629906A9FDB5B0A2D8085EF6F5BD7AAA171A35D5EB1AD693",
+    "services/api/tests/test_studio_workspace_runtime_http.py": "7769DA6A507C14BDB40E07E9521B8F222399D7F6F612EDDDD6E16F3D18378088",
+    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py": "2C7EAEDD4B58425938A8E02935A23784959833C11C9DDA7FA0640EAFB4848291",
+    "docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/ysna-deployment-gate-evidence.md": "465404E2C1FBBD97ADC92DF4F818C1AEB11CF9B30962A4C859A307A17800264A",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_progress.md": "E6969DD0FD9412FEBA7AF136859459399A2BF90288AEA3EBAF91EB4ED54055B7",
+    "docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_completion_report.md": "A7086DA68E056307C7F1163CD18C2B6A9F1F57F94490E0FB16DD97E9BB35D2E6"
+  },
+  "checks": [
+    {"name": "migration_contract", "result": "7 passed; pre-GREEN RED 1 failed, 6 passed"},
+    {"name": "task4_red", "result": "actual psycopg SQLSTATE42P18; unit 1 failed, 10 passed, 1 skipped"},
+    {"name": "studio_egress_related", "result": "17 passed, 1 skipped"},
+    {"name": "api_all", "result": "361 passed, 26 skipped, 134 subtests passed"},
+    {"name": "node_contracts", "result": "61 passed"},
+    {"name": "openapi", "result": "paths=75 operations=94 schemas=120 errors=31"},
+    {"name": "web_build_typescript", "result": "PASS"},
+    {"name": "product_ui_boundary", "result": "scanned=281 violations=0 boundaryErrors=0"},
+    {"name": "actual_postgres", "result": "PASS PG15.18 0001-0013 app-role RLS product-projection SQLSTATE0 outputs0 locks6 cross-tenant0 plus migration downgrade reapply regressions"},
+    {"name": "disposable_cleanup", "result": "remaining=0 local-postgres-running=true"},
+    {"name": "ysna_deployment", "result": "PASS f8ed4e4 current0013 API+worker only healthy root200 BFF401 safe-error0 common-resources-invariant"},
+    {"name": "production_canon", "result": "PASS legacy-v1=1 compat-v2=1 weight-v2-FK=1 rulesets=5/5/5 RLS-own1-cross0 target-sources5 outputs0"},
+    {"name": "task4_api_deployment", "result": "PASS sha=38756b7 API-image=92efb1f API-container=2822df0 healthy current0013 migration-run0 root200 BFF401 safe-error0 oneoff0 common-invariant"},
+    {"name": "production_browser", "result": "PASS authenticated same-origin sources200 studio-outputs200 Source5 ready1 outputs0 locks6 safe-errors0 internalURL-SQLSTATE-stack-secret0 console-errors0"},
+    {"name": "diff_check", "result": "PASS"},
+    {"name": "staged_files", "result": "0"}
+  ],
+  "known_limits": [
+    "Deployment evidence, Progress, Completion and Manifest updates were created after target commit and require a separate documentation commit."
+  ],
+  "result": "COMPLETED"
+}

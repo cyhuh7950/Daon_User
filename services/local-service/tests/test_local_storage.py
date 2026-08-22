@@ -150,3 +150,24 @@ def test_parallel_file_and_vector_operations_share_one_private_connection_lock(
     assert len(store.list_object_ids(WORKSPACE_A, "source")) == 17
     assert not hasattr(store, "connection")
     store.close()
+
+
+def test_offline_studio_canon_types_are_exactly_allowlisted(tmp_path: Path) -> None:
+    store = LocalEncryptedStore.open(tmp_path, os.urandom(32))
+    for index, entity_type in enumerate(
+        ("ScopeSnapshot", "GenerationRequest", "GenerationSettingsSnapshot"), start=1
+    ):
+        payload = {"kind": entity_type}
+        encoded = __import__("json").dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        store.put_canonical_envelope(
+            WORKSPACE_A, "artifact", entity_type=entity_type,
+            entity_id=f"offline-{index}", aggregate_id=f"offline-{index}", version=1,
+            schema_version=1, digest_sha256=__import__("hashlib").sha256(encoded.encode()).hexdigest(),
+            created_at="2026-08-14T03:00:00Z", previous_version_id=None, payload=payload,
+        )
+    assert store.list_canonical_types(WORKSPACE_A, "artifact") == (
+        "ScopeSnapshot", "GenerationRequest", "GenerationSettingsSnapshot"
+    )
+    store.close()

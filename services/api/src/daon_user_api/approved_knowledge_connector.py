@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .mcp_connector import Connector, ConnectorSource
+
 
 class ConnectorError(ValueError):
     pass
@@ -62,3 +64,25 @@ class ApprovedKnowledgeConnector:
         if not self._token:
             raise ConnectorError("PERMISSION_REQUIRED")
         self.status = "connected"
+
+    def as_connector(self) -> Connector:
+        """Expose approved knowledge through the common Source connector contract."""
+        return Connector(
+            connector_id="daon-approved-knowledge",
+            kind="daon_approved_knowledge",
+            name="Daon 승인 지식",
+            endpoint_label="Daon Knowledge",
+            reconnect=lambda: bool(self._token),
+            sources=[
+                ConnectorSource(
+                    source_id=f"daon-approved-knowledge:{item.knowledge_id}",
+                    connector_id="daon-approved-knowledge",
+                    title=item.knowledge_id,
+                    source_state="ready" if self._valid(item) else "unavailable",
+                    usable=self._valid(item),
+                )
+                for item in self._items.values()
+            ],
+            status="connected" if self.status == "connected" else "disconnected",
+            error_code=None if self.status == "connected" else "CONNECTOR_DISCONNECTED",
+        )

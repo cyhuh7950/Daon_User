@@ -1,0 +1,504 @@
+# R1-NOTEBOOKLM-PARITY-I001 진행 기록
+
+### 2026-08-22 — ysna 즉시 Source 삭제 DB 검증
+
+- **판정**: PASS (DB 함수·마이그레이션 검증), 브라우저 클릭 검증은 별도 수행 필요.
+- **조치**: `d083fa8` 배포 후 API 컨테이너에 `0025_source_immediate_deletion.py`를 적용했다. `alembic_version=0025`, `delete_source_scope(text,text,text)` 존재를 확인했다.
+- **검증**: ysna DB에 임시 Notebook/Source/Source Version/Binding을 생성하고 `delete_source_scope`를 호출했다. 결과 `SOURCE_REMAINING=0`, `NOTEBOOK_REMAINING=1`; Source만 즉시 삭제되고 Notebook은 유지됐다.
+- **미검증/주의**: 실제 브라우저에서 사용자 Source 삭제 버튼을 통한 API·MinIO 실물 삭제는 아직 검증하지 않았다. 기존 사용자 Source는 삭제하지 않았다.
+- **다음 조치**: 브라우저에서 새 임시 Source를 등록한 뒤 삭제하여 UI·API·Object Storage 정합성을 확인한다.
+
+### 2026-08-22 — 기존 grace 요청 정리
+
+- **판정**: PASS (기존 오류 Source 요청 정리).
+- **조치**: ysna DB의 사용자가 이미 삭제 요청한 기존 `grace_period` Source 4건에 즉시 삭제 함수를 적용하고, 관련 deletion request를 `purged`로 전환했다. 반환된 MinIO object key 4건도 실물 삭제했다.
+- **검증**: `deletion_requests` 상태는 `purged=4`, 해당 Source 레코드는 0건이며, 브라우저 새로고침 후 `삭제 요청 Source 목록`은 빈 목록으로 확인됐다. 기존 정상 Source와 Notebook은 삭제하지 않았다.
+- **미검증/주의**: 새 파일 업로드 후 UI에서 삭제하는 브라우저 클릭 E2E는 파일 업로드·삭제의 외부 상태 변경이므로 별도 사용자 승인 없이 실행하지 않았다.
+
+### 2026-08-22 — 로컬 회귀 테스트
+
+- **판정**: PASS.
+- **검증**: API 계약 16건(`source_lifecycle`, `source_immediate_deletion`, `mcp_connector`, `notebooklm_chat_grounding`, `notebooklm_studio_outputs`) 및 Web Notebook/Connector/Source/Chat 회귀 28건이 모두 통과했다.
+- **보완**: 즉시 Notebook 삭제 계약에 맞춰 BFF 회귀 테스트가 DELETE를 upstream으로 전달하고 cross-origin write만 차단하도록 갱신했다(`006dc0c`).
+
+## 현재 상태
+
+- 단계: Task 1 구현·서버 배포 검증
+- 상태: `INTEGRATION_CHECK_PENDING`
+- 구현: 완료 (`f078085`)
+- 배포: ysna-server에 `f07808563119a549ca583076714f286063bd171b` 배포 완료
+- 기록 시각: 2026-08-22
+
+## 확정 요구사항
+
+- 운영형 NotebookLM 동등 기능을 목표로 한다.
+- 현재 Workspace와 Studio 카드 배치는 유지한다.
+- 일반 Source는 PDF로 제한하지 않는다.
+- MCP와 Daon 승인 지식을 연결형 Source로 추가한다.
+- Source 등록·삭제는 사용자가 즉시 수행한다.
+- Source 등록 시 `Notebook과 함께 삭제`와 `Notebook 삭제와 무관하게 보관`을 선택한다.
+- 동일 파일 내용은 Digest로 중복 저장하지 않는다.
+- 외부 원본 소실은 자동 삭제하지 않고 `사용 불가`로 표시한다.
+- 대화와 Studio는 선택된 Source를 사용하고, 일반 업무 상담도 허용한다.
+
+## 생성 문서
+
+- 상세 설계안: `docs/superpowers/specs/2026-08-22-notebooklm-parity-design.md`
+- 작업계획: `docs/superpowers/plans/2026-08-22-notebooklm-parity-implementation-plan.md`
+
+## 다음 단계
+
+Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션이 필요한 실제 브라우저 Source 등록/삭제와 DB·MinIO 통합 검증이다.
+
+## Task 1 실행 기록 (R1-NOTEBOOKLM-PARITY-I001-T1)
+
+- 착수: 2026-08-22, 공식 작업공간 `C:/Users/cyhuh/Desktop/D Driver/Project/Daon_User`, branch `codex/user-auth-screen-split`, HEAD `3342d6c88bcb5191322bd1d1e179b5e6c41d3760`; 기존 dirty 변경은 보존.
+- 단계 완료: Source 계약 확장. `SourceRecord`에 Notebook 귀속·content type·삭제 정책·unavailable 상태를 추가했고, 파일 형식은 기존 MIME Matrix를 활용하도록 유지했다. 외부 원본 소실을 자동 삭제하지 않고 `unavailable`로 표시하는 변환을 추가했다.
+- 단계 완료: 업로드 서비스에 일반 Source 계약(`register_source`)과 기존 `register_pdf` 호환 래퍼를 추가하고, content type·삭제 정책을 Canonical payload로 전달하도록 확장했다. 동일 digest 조회 시 기존 object/source version을 재사용하는 경로를 추가했다.
+- 테스트: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_source_lifecycle_contract.py tests/test_source_ingest.py tests/test_source_upload.py -q` → `9 passed, 4 subtests passed`.
+- 오류/복구: 저장소 루트 및 API 디렉터리에서 PYTHONPATH 없이 실행한 첫 두 테스트는 `ModuleNotFoundError`로 수집 실패. 패키지 구조에 맞게 `PYTHONPATH=src`로 재실행해 통과.
+- 미해결: 실제 HTTP 업로드 경계는 허용 범위 밖 `runtime.py`에서 여전히 `application/pdf`를 강제하므로, 비-PDF 엔드포인트 통합은 상위 에이전트 판단이 필요하다. DB에 삭제 정책 전용 컬럼을 추가하지 않고 canonical JSON payload로 전달했으므로 운영 DB 회귀 검증도 필요하다.
+- 다음: 상위 에이전트가 runtime 경계 수정 허용 여부와 DB 계약/마이그레이션 범위를 판단한 뒤 통합 테스트를 진행한다.
+
+### Task 1 재개 승인 및 추가 검증
+
+- 승인: 2026-08-22, 상위 에이전트가 `runtime.py` HTTP 업로드 경계 확장과 DB 계약 판단을 승인하여 Task 1을 재개.
+- 변경: `runtime.py`가 파일명 확장자와 MIME Matrix를 함께 검증하도록 변경. PDF 호환을 유지하면서 txt/md/csv/docx/pptx/xlsx/png/jpg/jpeg/m4a/wav/mp3 업로드를 SourceIngestor 계약으로 전달한다. 잘못된 MIME은 415, 잘못된 파일 시그니처는 Source 계약 오류로 거부한다.
+- 변경: 업로드 서비스에 요청 content type을 전달하고 canonical JSON에 삭제 정책·content type을 기록한다. 스키마를 확인한 결과 `source_versions.canonical_json`이 기존 정식 불변 payload 저장 지점이므로 별도 DB 컬럼/migration은 만들지 않았다.
+- 테스트: `$env:PYTHONPATH='src'; uv run pytest tests/test_source_lifecycle_contract.py tests/test_source_ingest.py tests/test_source_upload.py tests/test_source_upload_runtime.py -q` → `15 passed, 6 warnings, 4 subtests passed`.
+- 미실행: 브라우저 E2E, ysna-server 배포·DB/MinIO 통합 검증은 이 Task에서 실행하지 않음.
+
+### ysna-server 배포 확인
+
+- 배포: `f07808563119a549ca583076714f286063bd171b` 기준 API·document-worker·web 이미지를 재빌드하고 재기동했다.
+- 빌드: API/worker 이미지 빌드 성공. Web Next.js 빌드·TypeScript·`verify-product-ui-boundary` 성공(`violations: []`).
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, 기존 MinIO `healthy`.
+- 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
+- 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`; `DAON_DEV_AUTH_BYPASS`는 설정되지 않음.
+- 미완료: 로그인된 브라우저에서 실제 PDF/비-PDF 등록·처리 완료·삭제와 DB/MinIO 실물 정합성은 아직 확인하지 못했다. 이 검증 전에는 Task 1을 최종 완료로 판정하지 않는다.
+
+### Task 2 UI Source 추가 구현 (R1-NOTEBOOKLM-PARITY-I001-T2)
+
+- 착수/환경: 2026-08-22, 공식 작업공간 `C:/Users/cyhuh/Desktop/D Driver/Project/Daon_User`, branch `codex/user-auth-screen-split`; 기존 dirty 변경은 보존하고 새 branch는 생성하지 않음.
+- 단계 완료: 기존 3면 배치를 유지하면서 Source 추가를 모달 흐름으로 확장했다. 파일 업로드(일반 MIME), 웹사이트, Drive, 복사한 텍스트 탭을 제공하고, 아직 Connector 계약이 없는 웹사이트·Drive는 mock/API 임의 주소 없이 `연결 준비 필요`로 표시한다.
+- 단계 완료: 업로드 클라이언트와 Notebook adapter를 generic `uploadSource` 계약으로 연결했다. 브라우저 요청은 기존 same-origin `/bff/api/workspaces/{workspaceId}/sources` 경로를 유지하고, notebook id는 adapter에서 전달한다. `uploadPdf` 호환 래퍼는 기존 호출부 회귀를 위해 유지했다.
+- 단계 완료: 등록 중 상태, 안전한 오류 코드, `unavailable` Source 상태 라벨을 UI에 반영했다. 붙여넣은 텍스트는 text Source로 등록 요청하며 서버 계약을 우회하지 않는다.
+- 변경 파일: `packages/ui/src/product-workspace-shell.jsx`, `packages/ui/src/notebook-context-adapter.js`, `packages/ui/src/workspace.css`, `apps/web/lib/source-upload-api.js`, `apps/web/components/actual-workspace.jsx`, `apps/web/lib/product-workspace-api.js`, `scripts/tests/notebook-source-add-flow.test.mjs`.
+- 오류/복구: 신규 테스트의 Unicode 정규식 문법 오류를 문자열 assertion으로 수정. 기존 Studio 오류 테스트가 자동 retry 대기 중 상태를 검사하던 문제를 확인하고 계약/list 실패는 즉시 UI 오류로 표시하며 일시적 transport 오류만 자동 retry하도록 분리했다.
+- 테스트: `node --test scripts/tests/notebook-source-add-flow.test.mjs scripts/tests/product-workspace.test.mjs` → `22 passed`. `git diff --check` → 공백 오류 없음(기존 dirty 파일의 줄바꿈 경고만 존재).
+- 미해결: 웹사이트·Drive 실제 Connector와 로그인 브라우저 E2E, ysna-server 재배포 및 DB/MinIO 실물 등록 검증은 상위 통합 단계에서 수행해야 한다. 이번 Task에서는 임의 mock을 넣지 않았다.
+
+### Task 2 ysna-server 배포 확인
+
+- 배포: `8ca9dcb` 기준 API·document-worker·web 이미지를 재빌드하고 재기동했다.
+- 빌드: Web Next.js/TypeScript 및 `verify-product-ui-boundary` 성공(`violations: []`).
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, 기존 MinIO `healthy`.
+- 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
+- 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`.
+- 미완료: 로그인된 브라우저의 실제 Source 등록/삭제 클릭과 DB·MinIO 실물 정합성 검증은 아직 수행하지 못했다. 웹사이트·Drive Connector도 아직 구현 전이다.
+
+### Task 3 MCP·Daon 승인 지식 Connector 계약
+
+- 착수/환경: 2026-08-22, 공식 작업공간과 기존 `codex/user-auth-screen-split` branch에서 진행. 기존 dirty 변경은 보존하고 새 branch는 생성하지 않음.
+- 단계 완료: `mcp_connector.py`에 공통 Connector·ConnectorSource·ConnectorView·Registry 계약을 추가했다. 등록·목록·재연결·해제와 unavailable 상태 전이를 정의했으며, Connector 장애나 원본 소실 시 Source를 삭제하지 않고 `unavailable`로 투영한다.
+- 단계 완료: 국가법령정보센터 `open.law.go.kr` 샘플 Connector를 서버 전용 메타데이터로 추가했다. API key가 없으면 연결된 것으로 가장하지 않고 unavailable로 표시한다. Daon 승인 지식도 `as_connector()`로 동일한 연결형 Source 계약에 노출한다.
+- 단계 완료: runtime에 workspace Connector 목록·등록·재연결·해제·Connector Source 목록 API를 추가했다. 인증정보는 서버 환경변수에서만 읽으며 브라우저에는 same-origin BFF 경로만 제공한다.
+- 단계 완료: API client에 Connector 응답 검증과 same-origin 목록/등록/재연결/해제 호출을 추가하고, 기존 Source pane 배치를 유지하면서 연결형 Source 목록과 unavailable 상태를 표시하도록 UI를 연결했다.
+- 테스트: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_mcp_connector.py tests/test_approved_knowledge_connector.py -q` → `7 passed`. Python compileall 및 `node --check apps/web/lib/product-workspace-api.js` 통과.
+- 미해결: Connector 상태·Source binding의 Postgres 영속화와 국가법령정보센터 실제 API 호출/인증 검증, 로그인 브라우저 클릭 검증은 통합 단계에서 수행해야 한다. 이번 구현은 upstream을 mock으로 완료 처리하지 않고 자격증명 부재를 unavailable로 표시한다.
+
+### Task 3 Adapter 보완
+
+- 보완: `apps/web/components/actual-workspace.jsx`의 실제 Web Adapter에 `listConnectors`와 `reconnectConnector`를 product-workspace-api same-origin 함수로 연결했다. 외부 주소·mock 호출은 추가하지 않았다.
+- 보완: Source 추가 정적 계약 테스트에 Adapter 함수 연결, BFF 상대 경로, 연결형 Source의 `사용 불가` 표시를 추가했다.
+- 테스트: `node --test scripts/tests/notebook-source-add-flow.test.mjs` → `4 passed`; `node --check apps/web/lib/product-workspace-api.js` 통과. JSX 파일은 Node 단독 syntax-check 대상이 아니므로 Next 빌드에서 검증해야 한다.
+
+### Task 3 ysna-server 배포 확인
+
+- 배포: `4b7e5ba` 기준 API·document-worker·web 이미지를 재빌드하고 재기동했다.
+- 빌드: API/worker 이미지와 Web Next.js 빌드 성공. TypeScript 및 `verify-product-ui-boundary` 성공(`violations: []`).
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, 기존 MinIO `healthy`.
+- 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
+- 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`; `DAON_DEV_AUTH_BYPASS`는 설정되지 않음.
+- 미완료: Connector 상태·Source binding의 Postgres 영속화, 국가법령정보센터 실제 API 호출/인증 검증, 로그인된 브라우저의 실제 Connector·Source 클릭 검증, DB·MinIO 실물 정합성은 아직 수행하지 못했다. 이 검증 전에는 Task 3을 최종 완료로 판정하지 않는다.
+
+### Task 4 대화·근거 동작 착수 (R1-NOTEBOOKLM-PARITY-I001-T4)
+
+- 착수: 2026-08-22 12:41 KST, 공식 작업공간 `C:/Users/cyhuh/Desktop/D Driver/Project/Daon_User`, branch `codex/user-auth-screen-split`, HEAD `815764861a70944450d7a1e777d2fc833a13a418`; 기존 dirty 변경은 보존.
+- 현재 확인: Source 미선택 일반 상담과 한국어 응답 메타데이터는 기존 구현에 있으나, 선택 컨텍스트에 `사용 불가` Source가 포함되면 서버 검색 단계가 전체 질문을 실패시킬 수 있다.
+- 진행 상태: 사용 가능한 Source만 grounding 대상으로 필터링하고, 모두 unavailable이면 일반 LLM 상담 경로로 전환하는 최소 수정 및 회귀 테스트를 진행한다.
+
+### Task 4 구현·로컬 검증
+
+- 변경: `QuestionAnsweringService`가 선택 컨텍스트의 Source를 먼저 `load_ready_source`로 확인하고 `QUESTION_SOURCE_UNAVAILABLE`만 제외한다. 일부가 사용 가능하면 남은 Source만 검색·저장·Citation 범위에 사용하고, 모두 unavailable이면 `general_ungrounded` 일반 LLM 경로로 전환한다. DB 장애 등 다른 오류는 그대로 전파한다.
+- 변경: Workspace 대화 UI에서 ready Source를 다시 클릭하면 선택을 해제할 수 있도록 하고, Source 미선택 시 일반 상담 안내·입력 문구를 표시한다. 기존 첫 ready Source 자동 선택과 화면 배치는 유지했다.
+- 변경 파일: `services/api/src/daon_user_api/question_answering_service.py`, `packages/ui/src/product-workspace-shell.jsx`, `services/api/tests/test_notebooklm_chat_grounding.py`.
+- 테스트: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_notebooklm_chat_grounding.py tests/test_question_answering_service.py tests/test_question_answering_runtime_http.py -q` → `25 passed, 19 warnings`. 루트에서 `node --test scripts/tests/product-workspace.test.mjs scripts/tests/real-data-conversation-contract.test.mjs scripts/tests/question-answering-api.test.mjs` → `38 passed`.
+- 미해결/판단 필요: 현재 허용 파일 범위 밖인 `apps/web/lib/question-answering-api.js`가 Source 미선택 요청을 기존 exact 일반대화 문구로 제한한다. 따라서 UI에서 일반 질문을 생성해도 “인사·사용법” 이외 질문은 `QUESTION_INPUT_INVALID`가 될 수 있다. Task 4 요구사항을 완전히 충족하려면 이 클라이언트 계약과 관련 회귀 테스트/OpenAPI 설명을 함께 넓힐지 어울1의 판단이 필요하다.
+
+### Task 4 보완 착수 (R1-NOTEBOOKLM-PARITY-I001-T4)
+
+- 착수: 2026-08-22 12:49:06 KST, 상위 지시에 따라 Source 미선택 질문의 클라이언트 고정 allowlist 제한을 제거한다. 기존 dirty/untracked 변경은 보존한다.
+- 확인: `apps/web/lib/question-answering-api.js`와 Windows native adapter가 Source 미선택 질문을 `isGeneralConversationIntent`에 의존해 제한하고 있으며, OpenAPI 설명과 회귀 테스트도 narrow general conversation을 전제로 한다.
+- 진행 상태: Source·Knowledge Context가 제공된 경우의 기존 검증은 유지하고, 둘 다 없을 때 임의의 일반 업무 질문을 기존 일반 LLM 경로로 전달하는 최소 변경 및 Web/Desktop 회귀 테스트를 진행한다.
+
+### Task 4 보완 구현 완료·로컬 검증
+
+- 변경: `apps/web/lib/question-answering-api.js`의 Source 미선택 분기를 질문 문구 allowlist 없이 `{}`로 전송하도록 변경했다. Source 또는 Knowledge Context가 있으면 기존 exact 입력 검증을 그대로 유지한다.
+- 변경: `apps/desktop/src/windows-workspace-adapter.js`도 Source 미선택 질문을 임의의 일반 업무 질문으로 기존 Native 일반 상담 경로에 전달하도록 동일하게 맞췄다.
+- 변경: OpenAPI 설명에서 no-context 질문을 인사·제품 도움말로 제한하던 문구를 일반 업무 지원/LLM 경로로 정정했다. oneOf 구조와 응답 검증 계약은 변경하지 않았다.
+- 테스트: `node --test scripts/tests/real-data-conversation-contract.test.mjs scripts/tests/question-answering-api.test.mjs scripts/tests/product-workspace.test.mjs` → `38 passed`.
+- 회귀 테스트: Web/Desktop에서 `다음 작업을 어떻게 진행하지?`, `한국어로 답해줘`, 임의 업무 질문을 포함한 Source 미선택 요청이 각각 `source_id`·`knowledge_context` 없이 전송되는 것을 확인했다.
+- 다음: API 지정 테스트와 Web 빌드를 실행하고 변경 파일만 커밋·push한다. 브라우저·DB/MinIO 실물 검증은 통합 단계 미실행으로 유지한다.
+
+### Task 4 보완 검증·종료
+
+- 테스트 완료: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_notebooklm_chat_grounding.py tests/test_question_answering_service.py tests/test_question_answering_runtime_http.py -q` → `25 passed, 19 warnings`.
+- 테스트 완료: `node --test scripts/tests/real-data-conversation-contract.test.mjs scripts/tests/question-answering-api.test.mjs scripts/tests/product-workspace.test.mjs` → `38 passed`.
+- 빌드 완료: `npm run build --workspace @daon-user/web` → Next production build 성공, TypeScript 성공, `verify-product-ui-boundary` `violations: []`, `boundaryErrors: []`.
+- 정적 확인: `git diff --check` 통과. 기존 unrelated dirty/untracked 변경은 staging하지 않았다.
+- 미실행: 로그인 브라우저 실제 클릭, ysna-server 배포, DB/MinIO 실물 정합성은 이번 보완 범위에서 실행하지 않았다.
+
+### 질문 실행 Source 승인 modal 제거 보완 (R1-NOTEBOOKLM-PARITY-I001-T4)
+
+- 착수: 2026-08-22, 상위 지시에 따라 세션 로그인 이후 질문 실행에서 비밀번호를 다시 요구하던 Web UI 경로를 제거했다. 기존 dirty/untracked 변경은 보존했다.
+- 변경: `packages/ui/src/product-workspace-shell.jsx`에서 `questionAuthorization` 상태·pending 상태·비밀번호 ref·승인 handler와 `question-authorization` modal 렌더링을 제거했다. 일반 질문 실행은 기존 `askQuestion` 경로만 사용한다.
+- 테스트: `scripts/tests/product-workspace.test.mjs`에 Source 질문 승인 modal 미노출 정적 회귀를 추가했다.
+- 테스트 완료: `node --test scripts/tests/product-workspace.test.mjs scripts/tests/real-data-conversation-contract.test.mjs scripts/tests/question-answering-api.test.mjs` → `39 passed`.
+- 빌드 완료: `npm run build --workspace @daon-user/web` → Next production build·TypeScript 성공, `verify-product-ui-boundary` `violations: []`, `boundaryErrors: []`.
+- 미실행: 로그인 브라우저 실제 클릭, ysna-server 배포 및 DB/MinIO 실물 검증은 미실행이다.
+
+### Task 4 ysna-server 배포 확인
+
+- 배포: `47f15ea` 기준 API·document-worker·web 이미지를 재빌드하고 재기동했다.
+- 빌드: API/worker 이미지와 Web Next.js 빌드 성공. TypeScript 및 `verify-product-ui-boundary` 성공(`violations: []`).
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, 기존 MinIO `healthy`.
+- 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
+- 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`; `DAON_DEV_AUTH_BYPASS`는 설정되지 않음.
+- 미완료: 로그인된 브라우저의 실제 일반 질문·Source 질문 클릭 검증, Connector 상태·Source binding의 Postgres 영속화, 국가법령정보센터 실제 API 호출/인증 검증, DB·MinIO 실물 정합성은 아직 수행하지 못했다.
+
+### Task 5 Studio 산출물 기능 정합화 착수·판정 (R1-NOTEBOOKLM-PARITY-I001-T5)
+
+- 착수: 2026-08-22, 공식 작업공간 `C:/Users/cyhuh/Desktop/D Driver/Project/Daon_User`, branch `codex/user-auth-screen-split`; 기존 dirty/untracked 변경은 보존하고 새 branch를 생성하지 않음.
+- 확인: 현재 Studio 생성 API는 `POST /api/v1/studio-generation-requests`에서 Postgres 트랜잭션 안에서 `runs`의 기존 답변·Citation을 동기적으로 읽고 `studio_outputs`/`output_versions`를 즉시 생성한다. 별도 Studio 생성 작업 큐·worker·상태 조회 계약은 확인되지 않았다.
+- 확인 명령: `Get-ChildItem services/api/src/daon_user_api,services/api/migrations/versions -File | Select-String -Pattern 'studio_generation|generation_requests|studio_outputs'` 결과는 기존 동기 `studio_workspace_postgres.py` 및 API 계약뿐이며, Studio 전용 queue/worker 계약은 없음.
+- 판정: `BLOCKED`. 승인 Task 5는 11개 Studio 기능을 기존 백그라운드 작업과 Library에 연결하고 provider/job 미연결 시 unavailable을 반환해야 한다. 현재 허용 파일 범위만으로는 백그라운드 생성 job/worker·상태 API를 추가할 수 없고, 현재 동기 생성 경로를 UI에서 11개 카드에 매핑하면 실제 provider 결과가 아닌 동기/가짜 완료를 만들 위험이 있다.
+- 영향: `studio_workspace.py`, `studio_export.py`, `report_generation.py`, `studio-workflow-pane.jsx`, `product-workspace-shell.jsx`만 수정하여 진행하면 백그라운드·unavailable 계약을 충족하지 못한다. 공개 API/runtime·DB/worker 계약과 최소 테스트 범위 확장이 필요하다.
+- 미변경: 위 BLOCKED 판단으로 Task 5 관련 코드를 수정하거나 mock/fake 결과를 만들지 않았다.
+- 다음 판단 필요: 어울1이 Studio 생성 작업용 기존 공통 job/worker 계약을 지정하거나, runtime·DB migration·worker·BFF 공개 계약 확장을 승인해야 Task 5 구현을 재개할 수 있다.
+
+### Task 5 계약 확장 재개·구현
+
+- 재개: 상위 승인에 따라 기존 Studio/Library 계약을 재사용하는 범위에서 구현을 재개했다. 별도 Studio worker·provider가 없는 상태에서 완료를 가장하지 않는 원칙은 유지한다.
+- 변경: Studio 출력 타입을 5종에서 11종(`evidence_report`, `compliance_checklist`, `comparison_table`, `knowledge_map`, `business_draft`, `slides`, `infographic`, `flashcards`, `quiz`, `audio`, `video`)으로 확장하고 생성 설정의 형식 검증을 맞췄다.
+- 변경: 슬라이드·인포그래픽·플래시카드·퀴즈는 기존 근거/Citation 기반 생성 결과 구조와 Library export 경로를 재사용한다. Source lineage와 생성 시각은 기존 `studio_outputs`/`output_versions` 저장 계약을 그대로 사용한다.
+- 변경: UI의 기존 Studio 카드 배치와 3열 화면은 유지하면서 11개 카드를 선택 가능하게 하고, 새 구조화 결과를 Library 상세 화면에서 표시한다. 브라우저 호출 경로는 기존 same-origin BFF를 유지한다.
+- 제한: 오디오·동영상은 연결된 provider·바이너리 인코더가 없으므로 `STUDIO_OUTPUT_UNAVAILABLE`(409)로 fail-closed 처리한다. 가짜 미디어나 완료 결과를 생성하지 않는다.
+- 변경 파일: `services/api/src/daon_user_api/studio_workspace.py`, `services/api/src/daon_user_api/studio_export.py`, `apps/web/lib/product-workspace-api.js`, `packages/ui/src/product-studio-model.js`, `packages/ui/src/product-studio-pane.jsx`, `services/api/tests/test_notebooklm_studio_outputs.py`.
+- 미해결/판단 필요: 별도 Studio 백그라운드 worker·job/status API는 기존 코드베이스에 계약이 없어 추가하지 않았다. 현재 지원 출력은 기존 동기 Postgres 트랜잭션을 사용한다. 진정한 비동기 생성과 오디오·동영상 provider 연결을 요구하면 별도 migration/worker/provider 설계 승인이 필요하다.
+- 검증: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_notebooklm_studio_outputs.py tests/test_studio_workspace_service.py tests/test_studio_export.py -q` → `13 passed`. `node --check apps/web/lib/product-workspace-api.js` 통과. `node --test scripts/tests/product-workspace.test.mjs` → `19 passed`. `npm run build --workspace @daon-user/web` → Next 빌드·TypeScript·`verify-product-ui-boundary` 성공(`violations: []`). 관련 diff `git diff --check` 통과.
+
+### Task 5 비동기 Studio 작업 계약 구현 (R1-NOTEBOOKLM-PARITY-I001-T5-ASYNC)
+
+- 착수: 상위 승인에 따라 동기 Studio 생성 경로를 durable job 접수·상태 조회·worker 처리 흐름으로 확장했다. 기존 branch와 unrelated dirty/untracked 변경은 보존했다.
+- 변경: `0024_studio_generation_jobs` migration과 `PostgresStudioGenerationQueue`를 추가했다. tenant/workspace/actor/idempotency 범위의 queued·leased·completed·failed·unavailable 상태, lease/version 경쟁 방지, safe error와 output ID를 보존한다.
+- 변경: `studio_generation_worker`가 기존 `create_generation`/Library 저장 계약을 재사용한다. 9개 구조화 출력은 실제 provider/기존 grounding 경로 결과만 완료 처리하며, audio/video는 `STUDIO_OUTPUT_UNAVAILABLE`로 종료한다. 예외도 안전한 failed 상태로 회수한다.
+- 변경: POST Studio generation은 job을 반환하고 GET `/api/v1/studio-generation-jobs/{job_id}` 상태 API를 추가했다. UI는 기존 Studio 카드 배치를 유지한 채 queued/leased polling 후 completed 결과를 Library 상태로 반영한다. 브라우저 호출은 same-origin BFF 상대 경로다.
+- 변경 파일: `services/api/migrations/versions/0024_studio_generation_jobs.py`, `services/api/src/daon_user_api/studio_generation_queue.py`, `services/api/src/daon_user_api/studio_generation_worker.py`, `services/api/src/daon_user_api/studio_workspace_postgres.py`, `services/api/src/daon_user_api/studio_workspace.py`, `services/api/src/daon_user_api/runtime.py`, `services/api/src/daon_user_api/cloud_storage.py`, `apps/web/lib/product-workspace-api.js`, `apps/web/components/actual-workspace.jsx`, `packages/ui/src/product-studio-pane.jsx`, `deploy/daon-user/compose.yaml`, 관련 테스트.
+- 테스트: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_studio*.py -q` → `58 passed, 1 skipped`. 비동기 전용 worker/API 테스트 포함. `uv run python -m compileall -q services/api/src/daon_user_api` 통과. `npm run build --workspace @daon-user/web` → Next/TypeScript/`verify-product-ui-boundary` 성공(`violations: []`).
+- 미실행: migration 실제 적용, ysna-server worker 재배포, Postgres/MinIO 실물 큐 처리, 로그인 브라우저에서 카드 생성·polling·Library 클릭은 아직 검증하지 않았다. 해당 검증 전에는 운영 완료로 판정하지 않는다.
+- 다음: 상위 agent가 변경 파일을 검토한 뒤 관련 파일만 commit/push하고, ysna-server 격리 환경에서 migration·studio-worker·BFF·실제 Studio 흐름을 검증한다.
+
+### Task 5 worker 네트워크 보완
+
+- 변경: `deploy/daon-user/compose.yaml`의 `studio-worker`에 `proxy-network`를 추가해 `DAON_CLOUD_DATABASE_DSN`의 `shared-db` 접근 경로를 `document-worker`와 동일하게 맞췄다. 기존 `daon_user` 네트워크는 유지했다.
+- 검증: worker 모듈 import smoke 통과. DSN 미설정 startup은 `STUDIO_WORKER_DATABASE_REQUIRED`로 즉시 안전 실패했다. `git diff --check` 통과.
+- 미실행: 현재 Codex 환경에 Docker CLI가 없고 WSL 호출도 `E_ACCESSDENIED`로 차단되어 `docker compose config`, migration 전/후 실제 DB, worker 컨테이너 기동은 실행하지 못했다.
+
+### Task 5 ysna-server 배포·마이그레이션 검증
+
+- 배포: `b15ec55` 기준 API·document-worker·studio-worker·web 이미지를 ysna-server에서 재빌드·기동했다. Web Next 빌드/TypeScript 및 `verify-product-ui-boundary`는 `violations: []`로 통과했다.
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, MinIO `healthy`, 공개 `/notebooks` HTTP 200. 운영 API 환경은 `DAON_RUNTIME_PROFILE=production`이며 개발 인증 우회값은 설정되지 않았다.
+- 초기 오류: studio-worker가 `DATABASE_UNAVAILABLE`로 재시작했다. 원인 조사 결과 `0023` DB 마이그레이션이 아직 적용되지 않았고, 실제 worker ID `daon_user-studio-worker`의 `_`가 DB 함수 검증식에 허용되지 않아 `STUDIO_JOB_CLAIM_INVALID`도 발생했다.
+- 조치: `0023_notebook_deletion.py`의 기존 테이블 재개 가능성을 보장하도록 `CREATE TABLE/INDEX IF NOT EXISTS` 및 정책 재생성을 적용했고, worker ID를 검증 가능한 `studio-worker-1`로 고정했다. 기존 `notebook_deletion_requests` 4건과 테이블 구조는 보존했다.
+- 마이그레이션: 전용 ephemeral `daon_user-api` 컨테이너로 ysna-server `shared-db`에 `0022→0023→0024`를 적용했다. 최종 `alembic_version=0024`, `studio_generation_jobs` 테이블과 `claim_studio_generation_job` 함수가 확인됐다.
+- 최종 런타임: `studio-worker`가 `running`, RestartCount `0`으로 안정화됐고 API/Web/기존 worker/MinIO도 정상 상태를 유지한다.
+- 미실행: 로그인된 브라우저에서 실제 Studio 카드 클릭·polling·Library 결과 확인, provider가 연결된 실제 생성 완료, audio/video provider 연결은 아직 검증하지 않았다. 따라서 Task 5는 서버 배포·마이그레이션 단계까지 완료됐지만 운영 기능 전체 완료로 판정하지 않는다.
+
+### Task 6 브라우저 통합 검증 중단·원인 확인
+
+- 증상: ysna 운영 화면에서 ready Source를 선택하고 `문서의 핵심 내용을 간단히 요약해줘.`를 실행했으나 `대화를 불러오지 못했습니다. 다시 시도해 주세요.`가 표시됐다. Studio 생성은 grounded 답변이 없어 `STUDIO_SETTINGS_INCOMPLETE`로 진행되지 않았다.
+- 확인: 같은-origin BFF에 Origin/Referer를 포함해 직접 호출하면 CSRF 검증은 통과하지만 인증 쿠키가 없는 요청은 `401 AUTHENTICATION_REQUIRED`가 반환된다. API 컨테이너는 `DAON_RUNTIME_PROFILE=production`이고 `DAON_DEV_AUTH_BYPASS`가 없어, 실제 세션 주체가 없으면 질문·생성 API를 거부하는 구성이 맞다.
+- 판정: 브라우저 통합 검증은 인증 세션 상태가 확인되지 않아 `BLOCKED`이며, 기능 성공으로 보고하지 않는다. 현재 화면의 Source 목록 표시만으로 질문 API 인증이 완료됐다고 볼 수 없다.
+- 영향: 질문 답변·Studio grounded 설정·생성 polling·Library 반영을 아직 검증할 수 없다. 코드 수정으로 인증을 우회하지 않는다.
+- 다음 조치: 신산님이 현재 브라우저에서 정상 로그인 세션을 확인한 뒤 같은 Notebook을 새로고침하고, 재시도 결과를 확인한다. 세션이 유효한데도 동일하면 그때 브라우저 요청의 trace와 API 인증 로그를 대조해 수정한다.
+## 2026-08-22 Source 질문 재현 결과
+
+- 상태: BLOCKED — 로그인/노트북 로딩 문제가 아니라 Source 질문의 외부 LLM 승인 단계에서 중단됨.
+- 확인: 일반 질문 `안녕`은 `/questions` 200, `runs`·`egress_decisions` 생성 및 `completed` 확인.
+- 확인: Raw Source 선택 질문은 프록시 접근 로그에서 `/questions` 403으로 확인되며 새 `run`/`egress_decision`이 생성되지 않음.
+- 원인: 현재 실제 워크스페이스의 활성 egress 정책은 `allow_approved_external`이지만, Source 근거가 포함된 외부 LLM payload에는 `approved_authorization`이 필요하다. 현재 화면의 질문 흐름은 `/questions/authorization` step-up을 거치지 않아 `EGRESS_POLICY_DENIED`로 거절된다.
+- 영향: Source 기반 질문과 그에 의존하는 Studio 생성은 현재 브라우저에서 수행 불가. 로그인 재시도나 노트북 재생성으로 해결되지 않음.
+- 미검증: 승인 API를 통한 실제 step-up 완료 후 Source 질문 성공, 또는 정책/개발 전용 모델 변경 후 성공.
+- 다음 조치: 신산님 승인 없이 외부 전송 승인 정책을 우회하지 않는다. 승인 UX를 연결할지, 개발 검증에서 외부 LLM 승인을 완화할지 결정 필요.
+
+## 2026-08-22 Source 질문 Step-up 승인 연결
+
+- 상태: IMPLEMENTED_LOCAL / 배포 전
+- 담당: main agent (신산님 승인 후 직접 구현)
+- 변경 파일: `apps/web/lib/question-answering-api.js`, `apps/web/components/actual-workspace.jsx`, `packages/ui/src/product-workspace-shell.jsx`
+- 조치: Source 질문이 `EGRESS_POLICY_DENIED`를 받으면 현재 비밀번호를 저장하지 않는 일회성 승인 창을 표시하고 `/questions/authorization` 호출 후 `step_up_authorization_id`를 포함해 질문을 재실행하도록 연결했다. 일반 질문은 기존 경로를 유지한다.
+- 검증: workspace lint 3 files PASS; product workspace/source knowledge tests 39/39 PASS; web production build 및 UI boundary PASS; `git diff --check` PASS.
+- 미검증: API pytest는 로컬 환경에 `psycopg_pool` 의존성이 없어 수집 단계에서 중단됨; ysna Docker 재배포 및 실제 브라우저에서 비밀번호 입력 후 Source 질문 성공은 아직 미검증.
+- 다음 조치: 변경을 커밋·푸시하고 ysna에 배포한 뒤 로그인 세션에서 Source 질문 승인·응답을 실제 검증한다.
+- 배포: `a967fb8`을 ysna-server `web` 및 의존 API 재기동으로 배포했고 이미지 빌드·TypeScript·UI boundary가 PASS했다.
+- 현재 예외: API 재기동으로 기존 브라우저 세션이 만료되어 실제 브라우저는 로그인 화면이다. 로그인 전 Source 승인창·응답 검증은 수행하지 않았다.
+
+## 2026-08-22 질문 전송 인증 제거
+
+- 상태: IMPLEMENTED_LOCAL / 배포 전
+- 조치: 최초 접속 로그인 이후 질문·외부 LLM 전송마다 요구하던 `Source 질문 승인` 모달과 `step_up_authorization` 소비를 제거했다. Provider API Key는 서버의 LLM 연결 설정에서 사용하고, 사용자 비밀번호는 전송 요청에 재사용하지 않는다.
+- 개발 프로필: `DAON_RUNTIME_PROFILE=development` + `DAON_DEV_AUTH_BYPASS=true`에서 세션 인증도 우회한다.
+- 검증: API `py_compile` PASS; workspace lint PASS; Product Workspace/Source Knowledge 테스트 39/39 PASS.
+- 미검증: ysna 재배포 후 실제 브라우저 Source 질문 성공은 아직 실행하지 않았다.
+- 다음 조치: 승인된 개발 프로필로 API/Web를 배포하고, Source 질문 1회 및 일반 질문 1회를 실제 브라우저에서 확인한다.
+
+## 2026-08-22 웹 로그인 세션 자동 만료 제거
+
+- 상태: IMPLEMENTED_LOCAL / 검증 완료 / 배포 진행
+- 조치: 웹 세션은 명시적 로그아웃 전 자동 만료하지 않도록 서버 검증 만료를 UTC 최댓값으로 변경하고, 로그인 쿠키를 영속 쿠키(10년)로 변경했다. 네이티브 access TTL은 유지했다.
+- 변경 파일: `services/api/src/daon_user_api/identity.py`, `services/api/src/daon_user_api/runtime.py`
+- 검증: API `py_compile` PASS; `git diff --check` PASS; Product Workspace/Source Knowledge 테스트 39/39 PASS.
+- 미검증: 전원 종료 후 재접속을 포함한 실제 브라우저 수동 검증.
+- 배포: commit `da635f1`을 origin에 push하고 ysna-server의 API/Web를 재빌드·재기동했다. 두 컨테이너 모두 `healthy` 확인.
+- 미검증: 브라우저 캐시를 갱신한 뒤 전원 종료·재접속과 명시적 로그아웃 폐기를 실제 수동 검증해야 한다.
+
+## 2026-08-22 Studio 생성 설정 보완
+
+- 상태: IMPLEMENTED_LOCAL / 서버·브라우저 미배포
+- 담당: 어울2 (Task5)
+- 확인: 카드 11종은 모두 실제 설정 화면으로 진입하고, 설정 확인 후 비동기 generation job 접수·상태 polling·완료 Library 반영 경로를 사용한다. Source 계보는 기존 grounded Source Version Snapshot을 그대로 사용한다.
+- 보완: 생성 설정에 `출력 언어`(한국어/English)를 추가하고 UI 입력, same-origin API 요청, job payload, settings snapshot, 재생성 settings 계약에 보존되도록 연결했다. 기존 카드 배치와 audio/video `unavailable` 정책은 변경하지 않았다.
+- 변경 파일: `packages/ui/src/product-studio-model.js`, `packages/ui/src/product-studio-pane.jsx`, `services/api/src/daon_user_api/runtime.py`, `services/api/src/daon_user_api/studio_workspace.py`, `services/api/src/daon_user_api/studio_workspace_postgres.py`, `scripts/tests/product-studio.test.mjs`
+- 검증: `node --test scripts/tests/product-studio.test.mjs` 8/8 PASS; API Studio async 관련 pytest 12/12 PASS.
+- 미검증: 로그인 브라우저에서 실제 카드 클릭·언어 선택·job polling·Library 반영, ysna Docker 재배포, provider가 연결된 실제 생성 결과. 현재 Source 질문 승인 흐름과 외부 provider 상태는 별도 BLOCKED 항목을 유지한다.
+- 다음 조치: 관련 diff 검토 후 commit/push하고, ysna 배포·로그인 브라우저 통합 검증 여부를 main agent가 판단한다.
+
+## 2026-08-22 Source-only Studio 생성 경로
+
+- 상태: IMPLEMENTED_LOCAL / 배포 전
+- 담당: 어울2 (R1-NOTEBOOKLM-PARITY-I001-T5-SOURCE-ONLY)
+- 조치: 질문 실행·Grounded run 없이 선택한 준비 완료 Source Version 목록만으로 Studio 생성 설정을 확정하고 기존 비동기 generation job에 접수하도록 연결했다. 서버는 Notebook/Workspace Source binding, Source 상태·삭제 요청, Evidence Span 계보를 확인하며, 근거가 없으면 완료를 가장하지 않고 `RESOURCE_UNAVAILABLE`로 거부한다.
+- 변경: 기존 질문 기반 요청은 유지하면서 `source_only`, nullable run/run_result 계약을 추가했고, Source-only 결과의 settings snapshot·evidence reference·생성 시각은 기존 Library 저장 경로를 재사용한다. UI 3열 카드 배치는 유지하고 생성 설정 화면에 사용 Source Version 선택을 추가했다.
+- 변경 파일: `apps/web/lib/product-workspace-api.js`, `packages/ui/src/product-studio-model.js`, `packages/ui/src/product-studio-pane.jsx`, `packages/ui/src/product-workspace-shell.jsx`, `services/api/src/daon_user_api/runtime.py`, `services/api/src/daon_user_api/studio_workspace.py`, `services/api/src/daon_user_api/studio_workspace_postgres.py`, `scripts/tests/product-studio.test.mjs`, `services/api/tests/test_notebooklm_studio_outputs.py`
+- 검증: Source-only UI/API 입력 테스트 9/9 PASS; API Studio·worker·runtime HTTP pytest 13/13 PASS; Web production build 및 UI boundary PASS; `git diff --check` 오류 없음.
+- 미검증: 실제 Postgres/worker에서 Source Version의 Evidence Span을 조회하는 Source-only 생성, 로그인 브라우저 클릭, ysna 배포·실제 provider 결과는 미검증. 오디오/동영상은 provider 미연결 `STUDIO_OUTPUT_UNAVAILABLE` 정책을 유지한다.
+- 다음 조치: 관련 파일만 commit/push한 뒤 main agent가 ysna 배포 및 실제 Source 선택→job→Library 통합 검증을 판단한다.
+
+## 2026-08-22 Source-only 정책 정규화 재작업
+
+- 상태: IMPLEMENTED_LOCAL / 커밋·푸시 전
+- issue_id: R1-NOTEBOOKLM-PARITY-I001-T5-SOURCE-ONLY
+- 판정: ysna 실제 Source-only job의 `POLICY_PROJECTION_MISMATCH`는 Source-only 요청의 `ruleset_version_id=null`/입력 정책값을 grounded 경로와 동일하게 비교한 원인으로 확인됐다.
+- 조치: Source-only 생성에서는 현재 유효한 Workspace 정책의 `review_condition`과 `ruleset_version_id`를 서버 기준으로 settings snapshot·generation request·output lineage에 정규화한다. 기존 grounded 생성은 기존 strict policy comparison을 유지한다.
+- 검증: Postgres repository 포함 API Studio·worker·runtime HTTP pytest 32/32 PASS, 1개 외부 DB 의존 테스트는 기존 조건으로 skip. 실제 ysna 재배포·재시도는 아직 미실행.
+- 미해결: 변경은 아직 commit/push하지 않았으며 실제 운영 DB/worker에서 `POLICY_PROJECTION_MISMATCH` 해소 및 Library 완료 상태 확인이 필요하다.
+- 다음 조치: main agent 검토 후 커밋·푸시와 ysna 재배포를 진행한다.
+- 추가 검증: Source-only 정책 정규화 회귀 테스트를 `test_studio_workspace_postgres.py`에 추가했으며 Postgres repository 포함 관련 pytest는 33 passed, 1 skipped이다. 로컬 compile 및 `git diff --check`도 통과했다.
+
+## 2026-08-22 Studio Library stale context 필터 수정
+
+- 상태: IMPLEMENTED_LOCAL / 커밋·푸시 전
+- issue_id: R1-NOTEBOOKLM-PARITY-I001-T5-SOURCE-ONLY
+- 판정: ysna에서 Source-only job과 `studio_outputs`/`output_versions`/`notebook_bindings` 저장이 완료됐지만 Library가 0으로 보인 원인은 Notebook context 생성 시점의 `studio_output_ids`·`output_version_ids`를 Product Studio 목록에 다시 적용한 stale snapshot 필터였다.
+- 조치: `listProductStudioOutputs`는 `notebookId`를 전달한 서버 API가 이미 Notebook 범위 격리를 수행하므로 context ID 목록으로 재필터링하지 않고 API의 최신 `outputs`와 `studioLocks`를 그대로 반환하도록 수정했다. 기존 `listStudioOutputs` 및 생성/버전 작업의 context ID 검증은 유지했다.
+- 검증: stale context에서 새 output을 보존하는 회귀 테스트를 추가했다. 관련 테스트 및 `git diff --check` 실행 결과는 작업 종료 보고에 기록한다.
+- 미해결: 실제 ysna 브라우저 Library 표시 및 재배포 검증은 미실행. 이번 adapter 변경은 커밋·푸시 전이다.
+- 다음 조치: main agent가 관련 diff 검토 후 커밋·푸시 및 ysna 재배포·브라우저 검증을 판단한다.
+
+## 2026-08-22 ysna Library generic 오류 원인 및 최소 수정
+
+- 상태: IMPLEMENTED_LOCAL / 커밋·푸시 전
+- 판정: `GET /api/v1/studio-outputs`가 `studio_workspace_postgres.list_outputs`의 SQL 오류로 실패했다. LATERAL `ov` 서브쿼리는 `record_id/state/canonical_json`만 선택하는데 바깥 `NOT EXISTS` 절이 존재하지 않는 `ov.tenant_id`·`ov.workspace_id`를 참조해 PostgreSQL이 `column ov.tenant_id does not exist`로 거부한다. BFF는 `/bff/api/studio-outputs?workspace_id=...&notebook_id=...`를 same-origin으로 전달하므로 BFF query shape가 원인이 아니다.
+- 근거: ysna DB에 `studio_outputs=2`, `output_versions=2`, `notebook_bindings(binding_kind=studio_output)=2`가 존재하고 job/output 저장은 완료됐지만 목록 경로만 실패했다. 배포 API/Web 컨테이너 로그에는 요청이 남지 않아 DB/SQL 경로와 코드 대조로 원인을 확정했다.
+- 조치: 삭제 보류 필터의 tenant/workspace 비교를 이미 선택 가능한 `so.tenant_id`·`so.workspace_id`로 변경해 SQL 오류를 제거했다. 기존 Notebook binding 및 source deletion 필터는 유지했다.
+- 검증: `services/api/tests/test_studio_workspace_postgres.py` 21 passed, 1 skipped; SQL 회귀 테스트 추가; `git diff --check` PASS.
+- 미해결: ysna 재배포 후 실제 목록 API·브라우저 Library 표시 검증은 미실행. 이번 수정은 커밋·푸시 전이다.
+- 다음 조치: main agent가 diff 검토 후 커밋·푸시와 ysna 재배포·브라우저 재검증을 판단한다.
+
+## 2026-08-22 ysna 재배포·브라우저 검증 완료
+
+- 상태: VERIFIED_ON_YSNA
+- 커밋: `8a421e7d0c65abd393f915e4e262aa54bc8086bf` (`fix(studio): correct notebook output listing query`)
+- 배포: `ysna-server:/home/ubuntu/deploy/daon-user`에서 해당 커밋 checkout 후 `api`, `document-worker`, `studio-worker`, `web` 재빌드·기동. 네 서비스 healthy/up, object-storage healthy 확인.
+- 브라우저: 로그인 세션의 `Daon 실제 기능 검증` Notebook을 열고 화면을 새로 로드했다. `업무 Studio > 저장된 산출물`이 `2`로 표시되고 두 개의 `근거 기반 보고서`가 노출됐다. 기존 `요청을 안전하게 완료하지 못했습니다` Studio 오류는 재현되지 않았다.
+- 판정: Source-only Studio 생성 결과가 DB에 저장된 뒤 Notebook 목록 조회·Library 표시까지 정상화됐다.
+- 잔여: `연결형 Source` 목록은 별도 connector endpoint 오류로 계속 경고를 표시한다. 이번 SQL 수정 범위의 Studio 산출물 목록과는 별개이며, MCP/Daon 승인 지식 connector 작업에서 별도 처리한다.
+
+## 2026-08-22 대화 인증 제거·connector 회귀 검증
+
+- 상태: `VERIFIED_ON_YSNA`
+- 커밋: `99fe0e5` 기준 Web 재빌드·재기동 완료. API/Web 컨테이너 healthy 상태를 확인했다.
+- 로컬 검증: Source 추가·connector credential 오류코드·대화 UI 회귀 테스트 25/25 통과.
+- 브라우저: `Daon 실제 기능 검증` Notebook에서 연결형 Source 2건이 `사용 불가` 상태로 표시되고 connector 로드 오류 alert는 없었다. 이는 운영 환경에 connector 자격증명이 없음을 나타내며 로드 실패로 오인하지 않는다.
+- 브라우저: 일반 대화 화면에서 Raw Source 선택을 해제한 뒤 `Source 질문 승인` 모달이 나타나지 않음을 확인했다. 로그인 세션 외 질문별 비밀번호 재인증 UI는 제거된 상태다.
+- 미검증: 실제 외부 LLM 응답 성공은 운영 provider/egress 정책의 실제 연결 상태에 의존하므로 이번 확인에서는 외부 전송을 실행하지 않았다.
+
+## 2026-08-22 Source 즉시 삭제 계약 보완
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: 기존 Source 삭제 요청이 `grace_period`와 Legal Hold를 거쳐야 하므로 신산님 확정 요구사항(확정 즉시 삭제)과 불일치했다.
+- 조치: Postgres Source 삭제 경계를 즉시 `purged`로 전환하고, `delete_source_scope` DB 함수가 Notebook binding·인덱스·처리/근거 계보를 삭제한 뒤 남은 Object Storage 키를 서버 전용 ObjectStoragePort로 삭제하도록 연결했다. 다른 Source가 같은 object를 참조하거나 index가 남아 있으면 해당 object 키를 반환하지 않도록 보호했다.
+- 변경: `services/api/src/daon_user_api/retention_request_postgres.py`, `services/api/migrations/versions/0025_source_immediate_deletion.py`, `services/api/tests/test_source_immediate_deletion_contract.py`
+- 검증: 즉시 삭제 계약 테스트 `2 passed`, Python compile PASS. 기존 retention runtime 계약 묶음은 기준선의 notebook deletion route 집합 불일치로 `1 failed, 15 passed, 1 skipped`이며 이 변경과 별개로 기록한다.
+- 미검증: ysna DB migration 적용, 실제 Source 삭제 클릭, MinIO 실물 삭제 및 Notebook 재조회는 아직 배포 전이다. migration 적용과 실제 데이터 삭제는 운영 데이터 영향이 있으므로 ysna 격리 배포 후 검증한다.
+
+## 2026-08-22T21:16:53.9167299+09:00 Source immediate deletion supplement (R1-NOTEBOOKLM-PARITY-I001-T4)
+- 상태: IMPLEMENTING_LOCAL
+- 확인: Source deletion route currently creates a 30-day grace_period request; purge is admin/fixture-only and no source/object cleanup runs on user confirmation.
+- 조치 계획: add scoped DB source cleanup function, invoke it from Postgres deletion service, delete returned object keys through existing ObjectStoragePort, persist terminal purged result without grace period, and update focused regression coverage.
+- 미검증: migration application, live PostgreSQL/MinIO and browser remain unexecuted.
+
+## 2026-08-22 Source digest replay upload 오류 수정
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: 실제 브라우저에서 동일 PDF를 재업로드했을 때 첫 등록은 이미 `ready`·처리완료였지만, 재등록 요청이 기존 Source를 digest로 재사용한 뒤 완료된 ProcessingRun을 다시 시작하려 하여 `SOURCE_PROCESSING_STATE_INVALID`가 반환됐다. DB에는 Source와 job이 정상 완료되어 있었으므로 저장소 장애가 아닌 replay 경로의 상태 전이 오류였다.
+- 조치: 완료된 ProcessingRun과 `ready` Source의 digest replay는 기존 계보를 그대로 재사용하고 Source를 다시 `processing`으로 전이하지 않도록 `PostgresDocumentProcessingRepository.start`를 보완했다.
+- 변경: `services/api/src/daon_user_api/document_processing_postgres.py`, `services/api/tests/test_document_processing_postgres.py`
+- 검증: `test_source_upload.py`, `test_source_upload_runtime.py`, `test_document_processing_postgres.py` 합계 `14 passed`; ready Source·completed run replay 회귀 테스트 포함.
+- 미검증: 수정본 ysna 재배포 및 동일 PDF 재업로드 브라우저 재검증은 아직 미실행.
+- 다음 조치: 변경 커밋·푸시 후 ysna API/worker를 재배포하고 브라우저에서 동일 PDF 재업로드가 오류 없이 기존 Source를 재사용하는지 확인한다.
+
+## 2026-08-22 Source 업로드 응답 계약 오류 추가 수정
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: replay 상태 전이 수정 후에도 브라우저가 `SOURCE_UPLOAD_RESPONSE_INVALID`를 표시했다. API가 `_dataclass_json(SourceUploadResult)`로 내부 필드 `content_type`·`deletion_policy`까지 응답했지만, 브라우저 업로드 계약은 명시된 10개 필드만 허용하는 exact-shape 검증을 수행하고 있었다.
+- 조치: 업로드 응답을 브라우저 계약 필드로 명시적으로 투영하고 내부 저장 정책 필드는 응답에서 제외했다.
+- 변경: `services/api/src/daon_user_api/runtime.py`, `services/api/tests/test_source_upload_runtime.py`
+- 검증: Source upload/runtime 및 processing 회귀 테스트 `14 passed`; 응답 키 exact-shape와 내부 필드 비노출 검증을 추가했다.
+- 미검증: 수정본 ysna 재배포 후 브라우저 동일 PDF 재등록·정상 Source 유지 및 테스트 Source 삭제는 미실행.
+- 다음 조치: 커밋·푸시 후 ysna API를 재배포하고 동일 PDF 재등록을 다시 검증한다.
+
+## 2026-08-22 Source 즉시 삭제 UI 계약 정렬
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: 백엔드는 Source 삭제를 즉시 `purged`로 처리했지만 UI가 이전 30일 유예 문구와 `삭제 요청 취소` 버튼을 계속 표시해 실제 정책과 화면이 불일치했다.
+- 조치: `purged` 응답은 `Source가 즉시 삭제되었습니다.`로 표시하고 취소 버튼을 숨겼다. 삭제 확인 전 안내도 즉시 제거·복구 불가 정책으로 변경했다. 기존 `cancelled` 및 레거시 상태는 안전한 일반 처리 문구로 유지했다.
+- 변경: `packages/ui/src/product-workspace-shell.jsx`, `scripts/tests/product-workspace.test.mjs`
+- 검증: Product Workspace 테스트 `20 passed`; Source/BFF/Product 통합 회귀 묶음 `28 passed`.
+- 미검증: 수정본 ysna Web 재배포 후 브라우저에서 재등록→즉시 삭제→완료 문구·취소 버튼 부재를 다시 확인해야 한다.
+- 다음 조치: 커밋·푸시 후 ysna Web을 재빌드·기동하고 동일 PDF를 재등록해 삭제 UI와 Source 목록을 검증한다.
+
+## 2026-08-22 Source 즉시 삭제 UI YSNA 검증 완료
+
+- 상태: `VERIFIED_ON_YSNA`
+- 커밋·배포: `76face1`을 `codex/user-auth-screen-split`에 push하고 YSNA `web` 컨테이너를 재빌드·재기동했다. Next.js production build와 product UI boundary 검사가 통과했고 Web 컨테이너가 기동됐다.
+- 브라우저: 동일한 `daon-getting-started.pdf`를 재등록해 Raw Source가 정상적으로 다시 표시되는 것을 확인했다. Source 작업에서 삭제 확인 후 Raw Source가 2건에서 1건으로 줄었다.
+- 브라우저: 삭제 완료 대화상자에 `Source가 즉시 삭제되었습니다.`가 표시되고 `삭제 요청 취소` 및 `30일 유예` 문구가 존재하지 않음을 확인했다.
+- 판정: Source 등록 replay와 즉시 삭제 UI가 승인된 요구사항에 맞게 동작한다. 기존 `daon-knowledge-llm-guide.pdf`와 Studio Library 2건은 유지됐다.
+- 잔여: 연결형 Source 2건은 운영 자격증명이 없어 `사용 불가`로 표시되는 별도 상태다. 이번 Raw Source 등록·삭제 수정 범위와는 무관하다.
+
+## 2026-08-22 연결형 Source 소유권·삭제 수명주기 정렬
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: MCP와 Daon 승인 지식을 같은 연결형 Source 모양으로 보여주되, 사용자가 둘 다 삭제할 수 있었던 기존 계약은 요구사항과 달랐다. MCP는 사용자 등록·즉시 로컬 삭제가 가능해야 하고, Daon 승인 지식은 고정 시스템 자산이어야 한다.
+- 조치: 설계서·작업계획서에 MCP 사용자 등록/삭제와 Daon 승인 지식의 시스템 고정 수명주기를 명시했다. API에 MCP Connector `DELETE`를 추가하고 고정 Daon Connector 삭제는 `CONNECTOR_FIXED`로 거부한다. BFF same-origin DELETE 라우트, 웹 어댑터, Source 추가의 `MCP 연결` 탭, MCP 행의 삭제 컨트롤을 연결했다. 삭제 시 외부 MCP 원본은 건드리지 않는다.
+- 변경: `docs/superpowers/specs/2026-08-22-notebooklm-parity-design.md`, `docs/superpowers/plans/2026-08-22-notebooklm-parity-implementation-plan.md`, `services/api/src/daon_user_api/mcp_connector.py`, `services/api/src/daon_user_api/runtime.py`, `services/api/tests/test_mcp_connector.py`, `apps/web/lib/bff-api-proxy.js`, `apps/web/lib/product-workspace-api.js`, `apps/web/components/actual-workspace.jsx`, `packages/ui/src/product-workspace-shell.jsx`
+- 검증: MCP Connector 단위 테스트 `5 passed`; Web production build와 product UI boundary `통과`; 기존 `workspace/source-knowledge` 묶음은 기존 기준선에서 4건 실패(홈/AuthPane·레거시 Workspace 기대치)로 확인되었고 이번 변경과 무관하다.
+- 미검증: ysna-server 재배포, 실제 브라우저에서 MCP 등록·삭제 클릭, 고정 Daon 삭제 거부의 실제 HTTP 호출은 아직 실행하지 않았다.
+- 다음 조치: 커밋·푸시 후 ysna API/Web을 재배포하고, 브라우저에서 `MCP 연결` 등록과 MCP 삭제를 확인한다. Daon 승인 지식에는 삭제 컨트롤이 없는지 확인한다.
+
+## 2026-08-22 연결형 Source YSNA 배포
+
+- 상태: `DEPLOYED / BROWSER_CLICK_PENDING`
+- 배포: `0b1a514`를 YSNA 격리 checkout에 반영하고 API·document-worker·Web을 재빌드했다. 첫 기동은 기존 compose 기본값 `DAON_OBJECT_STORAGE_SECURE=true`가 HTTP MinIO와 맞지 않아 API가 `OBJECT_STORAGE_UNAVAILABLE`로 unhealthy가 되었고, 기존 런타임 설정에 맞춰 `DAON_OBJECT_STORAGE_SECURE=false`로 재기동했다.
+- 검증: API, document-worker, studio-worker, object-storage, web이 모두 running이며 `/notebooks`는 HTTP 200이다. Web production build와 product UI boundary는 이미지 빌드 중 `violations: []`, `boundaryErrors: []`로 통과했다.
+- 미검증: 로그인 브라우저에서 MCP 등록·삭제 클릭, Daon 승인 지식 삭제 컨트롤 부재, 인증된 고정 Connector DELETE의 `CONNECTOR_FIXED` 실제 HTTP 응답은 아직 확인하지 못했다. 무인 DELETE는 CSRF 보호로 거부되어 데이터 변경은 발생하지 않았다.
+- 다음 조치: 로그인 세션이 연결된 브라우저에서 Source 추가 → MCP 연결 → 등록 후 MCP 행의 삭제를 클릭 검증하고, Daon 승인 지식 행에 삭제 버튼이 없는지 확인한다.
+
+## 2026-08-22 연결형 Source 브라우저 UI 계약 확인
+
+- 상태: `BROWSER_UI_VERIFIED / MUTATION_CONFIRMATION_PENDING`
+- 확인: 최신 YSNA 화면에서 `Source 추가` 대화상자에 `MCP 연결` 유형과 `MCP 연결 등록` 컨트롤이 표시된다.
+- 확인: 연결형 Source 목록에 MCP 행은 `연결 삭제` 컨트롤을 제공하고, `Daon 승인 지식` 행에는 삭제 컨트롤이 표시되지 않는다.
+- 미검증: 실제 MCP 등록·삭제는 브라우저 외부 상태를 변경하는 작업이므로 사용자 확인 전 클릭하지 않았다. 현재 MCP와 Daon 승인 지식은 운영 자격증명 부재로 `사용 불가` 상태다.
+
+## 2026-08-22 연결형 Source 등록·삭제 브라우저 검증
+
+- 상태: `VERIFIED_ON_YSNA`
+- 실행: 사용자 승인 후 로그인 브라우저에서 국가법령정보센터 MCP를 삭제하여 연결형 Source가 `2→1`이 되는 것을 확인했다. 이어 MCP 등록을 실행하여 `1→2`로 복귀한 뒤 다시 삭제하여 최종 `1`로 정리했다.
+- 확인: 등록·삭제는 즉시 화면 목록에 반영됐고, 삭제 후 `Daon 승인 지식`만 남았다. Daon 승인 지식에는 삭제 컨트롤이 없었다.
+- 잔여: 두 연결 모두 운영 자격증명 부재로 `사용 불가` 상태이며, 실제 국가법령정보센터 데이터 호출 성공은 별도 자격증명 설정 후 검증해야 한다.
+
+## 2026-08-22 연결형 Source 영속화 범위 예외
+
+- 상태: `EXCEPTION / WAIT_FOR_SCOPE_APPROVAL`
+- 확인: 현재 MCP 등록·재연결·해제는 `ConnectorRegistry` 메모리 저장소에 반영되며, API 재시작·컨테이너 재생성 후 등록 상태가 복구되지 않는다. 현재 브라우저 검증은 동일 세션에서의 즉시 수명주기만 확인했다.
+- 영향: 운영 재시작 이후에도 MCP 연결을 유지하려면 워크스페이스별 Connector Postgres Repository·migration·CRUD·재시작 복구 검증이 추가로 필요하다.
+- 판단: 이 변경은 기존 승인 작업의 즉시 등록·삭제 UI/API 범위를 넘어 데이터 모델과 영속화 계약을 확장한다. 승인 없이 임의 구현하지 않는다.
+- 대기 조건: Connector 영속화 설계와 작업계획 확장 승인 후 구현·YSNA 재시작 복구 검증을 진행한다. 실제 국가법령정보센터 호출은 별도 자격증명 설정 후 검증한다.
+
+## 2026-08-22 Connector Postgres 영속화 구현
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 승인: Connector 등록 정보와 Workspace 바인딩의 Postgres 영속화, API 재시작 복구, Workspace 격리를 설계서·작업계획서에 반영하고 승인받았다.
+- 조치: `workspace_connectors` migration/repository를 추가하고 목록·등록·재연결·해제·삭제·Source 조회 경계를 Postgres 저장소와 연결했다. 최초 Workspace에만 기본 Connector를 seed하여 사용자가 삭제한 MCP가 API 재시작 후 되살아나지 않도록 했다.
+- 변경: `services/api/migrations/versions/0026_connector_persistence.py`, `services/api/src/daon_user_api/connector_postgres.py`, `services/api/src/daon_user_api/runtime.py`, `services/api/tests/test_connector_postgres.py`
+- 검증: Connector 영속화·MCP 계약 테스트 `6 passed`; 전체 관련 API 회귀 묶음 `66 passed, 1 skipped`; Python compile 및 `git diff --check` 통과. 커밋·푸시 `73ae51f`.
+- 미검증: YSNA migration 적용, API 재시작 후 등록 복구·삭제 유지, 브라우저 재검증은 아직 실행하지 않았다. 운영 DB 변경은 수행하지 않았다.
+- 다음 조치: YSNA 격리 환경에서 migration 적용 후 API/Web 재배포·재시작 복구를 검증하고, 실제 운영 배포는 최종 승인 전 수행하지 않는다.
+
+## 2026-08-23 Connector Postgres YSNA 재배포·재시작 검증
+
+- 상태: `VERIFIED_ON_YSNA / DELETE_RESTART_BROWSER_PENDING`
+- 배포: YSNA checkout을 `9e71227`로 갱신하고 `workspace_connectors` migration SQL을 격리 Postgres에 적용했다. API·document-worker·studio-worker·Web을 재빌드·재기동했다.
+- 확인: API/Web 컨테이너가 모두 running이고 Web production build 및 product UI boundary 검사가 통과했다. 로그인 브라우저에서 Connector 목록을 로드한 뒤 API 컨테이너를 재시작하고 새로고침해도 MCP·Daon 승인 지식 2개가 다시 표시됐다.
+- DB 근거: 재시작 전후 `workspace_connectors`에 동일 Workspace의 MCP/Daon 행이 유지됐다.
+- 미검증: 이번 단계에서는 외부 상태 변경을 최소화하기 위해 브라우저에서 MCP를 삭제한 뒤 재시작하는 추가 클릭은 실행하지 않았다. 로컬 repository 회귀 테스트로 사용자 삭제 MCP의 기본값 재생성 방지는 검증했다.
+
+
+## 2026-08-23T00:15:58.5309444+09:00 일반 상담 원문 전달 보완 (R1-NOTEBOOKLM-PARITY-I001-T4)
+- 상태: IMPLEMENTED_LOCAL
+- 판정: egress transform이 masking/redaction 정책이 켜진 경우 Source JSON이 아닌 일반 질문을 [MASKED]로 바꿔 YSNA에서 masked prompt 응답을 유발했다.
+- 근거: 설계서 5절은 Source 미선택 일반 업무 질문을 일반 LLM 대화로 처리하도록 명시하며, Source 기반 payload만 근거·민감 내용을 마스킹해야 한다.
+- 조치: question_egress.py에서 일반 문자열 payload를 원문 유지하고, Source grounded JSON의 question/evidence 마스킹은 유지했다. 회귀 테스트를 실제 일반 질문 원문 전달 계약으로 갱신했다.
+- 검증: test_question_egress_transform.py 6 passed; question_answering_service.py 및 question_answering_runtime_http.py 23 passed.
+- 미검증: 실제 YSNA 브라우저/provider 응답과 외부 전송 payload는 아직 재검증하지 않았다.
+
+## 2026-08-23T00:32:00+09:00 일반 상담 YSNA 재검증
+- 상태: `VERIFIED_ON_YSNA`
+- 배포: 커밋 `5b6dda3`를 YSNA 격리 환경에 반영하고 API·document-worker·studio-worker·Web을 재빌드·재기동했다. Web production build 및 product UI boundary 검사가 통과했다.
+- 브라우저: 로그인된 Notebook에서 Raw Source 선택을 해제한 뒤 `안녕`을 전송했다. 응답이 `안녕하세요! 오늘 어떤 도움이 필요하신가요?`로 표시되고 `masked prompt` 문구가 재현되지 않았다.
+- Library: 동일 화면에서 저장된 산출물 2건이 계속 표시됐다.
+- 판정: Source 미선택 일반 상담이 실제 질문 원문을 LLM에 전달하고 일반 답변을 받는 흐름을 YSNA에서 확인했다. Source 기반 질문의 근거 마스킹 계약은 유지했다.
+- 미검증: Source 기반 한국어 질문의 실제 Citation과 Studio 새 산출물 생성 클릭은 이번 단계에서 추가 실행하지 않았다.
+
+## 2026-08-23T00:38:00+09:00 NotebookLM parity 관련 회귀 묶음
+- 상태: `PASS_LOCAL`
+- 검증: Source lifecycle/immediate deletion, MCP/Connector persistence, NotebookLM chat grounding/egress, Studio outputs 관련 테스트 `24 passed`.
+- 미검증: Source 기반 한국어 질문의 실제 Citation과 Studio 새 산출물 생성 클릭은 브라우저에서 아직 실행하지 않았다.
+- 추가 확인: YSNA 브라우저에서 `근거 기반 보고서` 카드의 설정 화면을 열어 사용 Source·목적·독자·언어·분량·구성·출력 형식·검토 조건·현재 모델을 확인했다. 생성 버튼은 외부 상태를 만드는 동작이므로 별도 클릭하지 않았다.
+
+## 2026-08-23T00:46:00+09:00 Source 질문 진입 오류 완화
+- 상태: `DEPLOYED / SOURCE_CITATION_RECHECK_PENDING`
+- 판정: Notebook에 과거 대화 이력이 없거나 여러 thread가 있는 경우에도 새 Source 질문을 막지 않아야 한다. 기존 대화 이력 조회 실패가 질문 화면의 차단성 경고로 노출되어 Source 질문 실행을 방해할 수 있었다.
+- 조치: `ProductWorkspaceShell`에서 선택 Notebook의 이전 대화 이력은 선택적 상태로 처리하고, 조회 실패 시 현재 Source 질문을 계속 사용할 수 있도록 차단 경고를 제거했다. 관련 UI 회귀 테스트를 갱신했다.
+- 검증: `node --test scripts/tests/product-workspace.test.mjs scripts/tests/notebook-context-adapter.test.mjs scripts/tests/notebook-api.test.mjs` 결과 `33 passed`; 커밋 `94a1c0a`; YSNA API·worker·Web 재빌드·재기동 완료, Web bundle에서 `conversationSafeError:null` 반영 확인.
+- 미검증: 현재 연결된 in-app 브라우저 탭은 재배포 직후 502 캐시/프록시 화면으로 전환되어 새 번들의 Source Citation 클릭 검증을 완료하지 못했다. YSNA 외부 `/notebooks`는 셸에서 HTTP 200이며 컨테이너는 healthy 상태다.
+- 다음 조치: 브라우저 탭이 정상 응답으로 복귀하면 Source 선택 → 한국어 질문 → 답변·Citation을 즉시 확인하고, 이어 Studio 새 산출물 생성까지 진행한다.
+
+## 2026-08-23T02:00:00+09:00 Source 질문 Citation 계약 수정·YSNA 재검증
+- 상태: `VERIFIED_ON_YSNA`
+- 원인: API가 반환하는 Citation URL은 Notebook 범위를 위해 `notebook_id` 쿼리를 포함하지만, UI 검증기가 쿼리 없는 URL을 기대해 정상적인 Source 답변을 `QUESTION_RESPONSE_INVALID`로 거부했다. 이전 오류 문구가 성공 후에도 남는 상태 정리 누락도 확인했다.
+- 조치: `packages/ui/src/product-workspace-shell.jsx`에서 adapter가 만든 Notebook-scoped Citation URL을 그대로 검증하도록 수정하고, 성공 답변 시 `conversationSafeError`를 초기화했다. 커밋 `4de9d3a`, `6ece91c`를 push 후 YSNA Web만 재빌드·재기동했다.
+- 검증: YSNA Web production build 및 product UI boundary 통과(`scannedFiles: 416`, `violations: []`, `boundaryErrors: []`). 로그인 브라우저에서 Raw Source 선택 후 `문서 제목은 무엇인가요?` 질문을 실행해 `작업 상담 · Source 사용`과 Citation 2·3·4쪽 링크를 확인했고, stale error alert가 더 이상 표시되지 않았다. API DB에도 Source 답변·Citation 생성이 확인됐다.
+- 참고 오류: 동일 검증 중 Upstage가 간헐적으로 `TEXT_GENERATION_RESPONSE_INVALID`/`TEXT_PROVIDER_UNAVAILABLE`을 반환한 시도가 있었으나, 재시도에서 정상 답변과 Citation이 생성됐다. 제공자 일시 응답 변동은 미해결 위험으로 기록한다.
+- 미검증: Studio 새 산출물 생성 버튼은 외부 상태를 생성하므로 아직 클릭하지 않았다. Oracle 운영 배포도 수행하지 않았다.
+
+## 2026-08-23T02:25:00+09:00 Studio originating model lineage 수정·YSNA 재검증
+- 상태: `VERIFIED_ON_YSNA`
+- 원인: 질문 실행의 routing decision에서 `selected_deployment_id`가 내부 `model_deployments.record_id`가 아니라 설정의 `configured_deployment_id`로 기록되어, Studio worker가 originating model을 찾지 못하고 `ORIGINATING_RUN_MODEL_UNAVAILABLE`로 실패했다.
+- 조치: Studio 저장소가 두 식별자 형식을 모두 조회하고 실제 `model_deployments.record_id`를 lineage에 저장하도록 수정했다. API와 studio-worker 이미지를 YSNA에서 재빌드·재기동했다. 커밋 `c65070b`.
+- 검증: API 단위 계약 `21 passed, 1 skipped`. 로그인 브라우저에서 동일 Source의 근거 기반 보고서를 생성했고, DB `studio_generation_jobs`가 `completed`, `studio_outputs`에 `output-5c517909e8f548add11eec71924821ee`가 생성됐다. 새로고침 후 Library가 3개 산출물을 표시했다.
+- 미검증: 다른 Studio 유형(슬라이드·오디오 등)과 Oracle 운영 배포는 아직 실행하지 않았다. Upstage 간헐 응답 변동 위험은 기존 기록과 동일하다.
+

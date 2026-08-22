@@ -79,6 +79,7 @@ class ObjectStoragePort(Protocol):
     ) -> StoredObject: ...
 
     def get(self, key: str) -> bytes: ...
+    def delete(self, key: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +326,14 @@ class MinioObjectStorageAdapter:
                 response.close()
                 response.release_conn()
 
+    def delete(self, key: str) -> None:
+        if not isinstance(key, str) or not key or not key.isascii():
+            raise ObjectStorageError("OBJECT_KEY_INVALID", retryable=False)
+        try:
+            self._client.remove_object(self._bucket, key)
+        except Exception as error:
+            raise self._safe_error(error) from None
+
 
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
@@ -356,7 +365,10 @@ class RetryPolicy:
 class PostgresObjectQueueStore:
     """Workspace-scoped durable queue. Callers provide a server-verified scope."""
 
-    def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 6) -> None:
+    def __init__(
+        self, dsn: str, *, min_size: int = 1, max_size: int = 6,
+        creation_enforcer: Callable[[Connection[tuple[Any, ...]], str, str, Mapping[str, int]], None] | None = None,
+    ) -> None:
         if not isinstance(dsn, str) or not dsn:
             raise ValueError("CLOUD_DATABASE_DSN_REQUIRED")
         self._pool = ConnectionPool[tuple[Any, ...]](
@@ -369,6 +381,7 @@ class PostgresObjectQueueStore:
             open=False,
         )
         self._open_lock = threading.Lock()
+        self._creation_enforcer = creation_enforcer
 
     def _ensure_open(self) -> None:
         if not self._pool.closed:
@@ -507,6 +520,11 @@ class PostgresObjectQueueStore:
                 replay_object_id = str(replay[0])
                 return ObjectSubmission(
                     replay_object_id, f"job-{replay_object_id}", f"outbox-{replay_object_id}", True
+                )
+            if area == "source" and self._creation_enforcer is not None:
+                self._creation_enforcer(
+                    connection, context.tenant_id, "source.create",
+                    {"storage_bytes": staged.byte_size},
                 )
             connection.execute(
                 "INSERT INTO object_records "

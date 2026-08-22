@@ -1,0 +1,287 @@
+# Studio Workspace Default Policy Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 기존·신규 Workspace에 보수적인 Studio 기본 정책 Canon 6종을 원자적으로 보장하고 운영 Studio 목록을 정상화한다.
+
+**Architecture:** Alembic `0013`이 기존 Workspace를 idempotent backfill하고 `workspaces AFTER INSERT` Trigger로 신규 Workspace를 같은 PostgreSQL transaction에서 초기화한다. Runtime과 Repository는 기존 fail-close Projection을 유지하며 정책 누락과 실제 DB 장애의 Safe Error를 구분한다. 운영에서 확인된 psycopg extended-protocol JSONB bind 타입 오류는 Repository의 해당 `workspace_id` 인자에만 `::text`를 명시해 해소한다.
+
+**Tech Stack:** Python 3.12+, Alembic, PostgreSQL 15/18, psycopg 3, FastAPI, pytest 9, Node 24, Next.js 16.
+
+## Global Constraints
+
+- 승인 설계 `docs/superpowers/specs/2026-08-13-studio-workspace-default-policy-design.md`의 값과 rollback 계약을 그대로 사용한다.
+- `0012` Egress Organization/Workspace `deny_external` Binding을 변경하거나 완화하지 않는다.
+- 브라우저 코드는 same-origin `/bff/api/...`만 사용한다.
+- 기존 Run·RunSnapshot·EgressDecision·RoutingDecision·Source·Output을 소급 수정하지 않는다.
+- 승인된 legacy Question KnowledgeScope v1만 동일 aggregate v2로 append하며 v1은 변경하지 않는다.
+- immutable Canon UPDATE/DELETE 금지. Downgrade의 `0013` 소유 행 제거만 예외이며 결정론 ID와 `created_by`를 함께 검증한다.
+- 한 시점에 한 Writer만 수정한다. 보호 dirty와 관련 없는 파일을 stage·restore·삭제하지 않는다.
+- commit·push·ysna-server 배포는 어울1의 검토와 승인된 Gate에서만 수행한다.
+
+---
+
+### Task 1: Migration 0013 기본 Canon과 신규 Workspace Trigger
+
+**Files:**
+- Create: `services/api/migrations/versions/0013_studio_workspace_default_policy.py`
+- Create: `services/api/tests/test_studio_workspace_default_policy_migration.py`
+- Create: `docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py`
+
+**Interfaces:**
+- Consumes: `0003` Canon schema·digest Trigger·RLS, `0012` Egress Binding.
+- Produces: `ensure_studio_workspace_defaults(text,text)` DB function과 `studio_workspace_defaults_after_insert` Trigger.
+
+- [ ] **Step 1: 정적 Migration RED 작성**
+
+다음 동작을 실제 migration module import와 source contract로 검증한다.
+
+```python
+def test_0013_declares_backfill_trigger_and_owned_rollback():
+    assert revision == "0013"
+    assert down_revision == "0012"
+    assert "ensure_studio_workspace_defaults" in sql
+    assert "AFTER INSERT ON workspaces" in sql
+    assert "migration:0013" in sql
+
+def test_0013_keeps_egress_and_existing_lineage_unchanged():
+    assert "UPDATE egress_" not in sql
+    assert "UPDATE runs" not in sql
+    assert "UPDATE source" not in sql
+```
+
+- [ ] **Step 2: RED 확인**
+
+Run:
+
+```powershell
+uv run --isolated --with pytest==9.0.3 pytest services/api/tests/test_studio_workspace_default_policy_migration.py -q
+```
+
+Expected: migration module 부재로 FAIL.
+
+- [ ] **Step 3: Migration 최소 구현**
+
+`ensure_studio_workspace_defaults(p_tenant_id text, p_workspace_id text)`는 아래 결정론 ID를 사용한다.
+
+```text
+"studio-default:workspace-policy:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:knowledge-scope:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:weight-profile:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:ruleset-reference:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:ruleset-snapshot:" || md5(p_tenant_id || '|' || p_workspace_id)
+"studio-default:ruleset-binding:" || md5(p_tenant_id || '|' || p_workspace_id)
+```
+
+Canonical payload는 key 정렬·공백 없는 JSON text로 고정하며, entity별 정렬된 key/value는 다음과 같다.
+
+```text
+WorkspacePolicy: active=true, authority_policy="workspace_admin", current=true, data_area="cloud_sync", version=1, workspace_id=p_workspace_id
+KnowledgeScope: active=true, current=true, scope="workspace", version=1, workspace_id=p_workspace_id
+WeightProfile: active=true, current=true, profile="trusted-source-v2", version=1, workspace_id=p_workspace_id
+RuleSetReference: active=true, current=true, name="default-review-required", version=1, workspace_id=p_workspace_id
+RuleSetVersionSnapshot: active=true, current=true, review_condition="review_required", rules=[], version=1, workspace_id=p_workspace_id
+RuleSetBinding: active=true, current=true, review_condition="review_required", ruleset_version_id=v_ruleset_snapshot_id, version=1, workspace_id=p_workspace_id
+```
+
+각 insert는 `canonical_json`, 위와 exact한 `canonical_text`, `sha256(convert_to(text,'UTF8'))`, `created_by='migration:0013'`, 결정론 trace를 사용한다. 기존 유효 최신 Canon이 있으면 해당 종류는 생성하지 않는다. WeightProfile은 기존 최신 유효 KnowledgeScope가 있으면 그 ID를 참조한다. RuleSet 3종은 `0013` 전용 세트를 완성하되 기존 RuleSet을 변경하지 않는다.
+
+최신 KnowledgeScope가 invalid이면 일반 default insert 전에 아래 exact legacy 계약을 검사한다.
+
+```text
+max version row count = 1
+version=1, previous_version_id=null, aggregate_id=record_id
+canonical keys exactly {mode,source_version_ids}
+mode=single_source
+source_version_ids = one non-empty string
+record_id = "scope-" + first32(sha256(source_version_id UTF-8))
+same tenant/workspace source_versions.record_id exists
+```
+
+모두 일치할 때에만 같은 aggregate에 결정론 v2를 append한다.
+
+v2의 정렬된 key/value는 `active=true, current=true, mode="single_source", scope="workspace", source_version_ids=[v_legacy_source_version_id], version=2, workspace_id=p_workspace_id`로 고정한다.
+
+v2는 `previous_version_id=v_legacy_scope_id`, `version=2`, `created_by=migration:0013`을 사용한다. record ID는 `"studio-compat:knowledge-scope-v2:" || md5(p_tenant_id || '|' || p_workspace_id || '|' || v_legacy_scope_id)`다. 동일 ID 충돌은 canonical text·digest·aggregate·previous version·SourceVersion 결속이 모두 exact일 때만 idempotent로 인정한다. 유사 legacy 행이나 충돌은 `STUDIO_DEFAULT_POLICY_LATEST_INVALID` 또는 `STUDIO_DEFAULT_POLICY_ID_CONFLICT` SQLSTATE 55000으로 전체 rollback한다.
+
+Trigger는 다음 경계로 설치한다.
+
+```sql
+CREATE TRIGGER studio_workspace_defaults_after_insert
+AFTER INSERT ON workspaces
+FOR EACH ROW EXECUTE FUNCTION initialize_studio_workspace_defaults();
+```
+
+Trigger 함수는 SECURITY INVOKER 기본값을 유지하고 `NEW.tenant_id`, `NEW.workspace_id`만 전달한다. Upgrade는 기존 `workspaces`를 순회해 helper를 호출한 뒤 Trigger를 설치한다.
+
+Downgrade는 Trigger→Trigger 함수→helper 순으로 제거하고, 결정론 ID와 `created_by='migration:0013'`가 모두 일치하는 행만 FK 역순으로 삭제한다. 삭제 직전에는 `0013` 소유 행이 기존 Run/RuleEvaluation 등 `0013` 비소유 계보에서 참조되는지 검사한다. 참조가 있으면 `STUDIO_DEFAULT_POLICY_ROLLBACK_BLOCKED`로 전체 transaction을 fail-close하며 계보를 끊지 않는다. 참조가 없을 때에만 migration role이 `workspace_policies`, `knowledge_scopes`, `weight_profiles`, `ruleset_references`, `ruleset_version_snapshots`, `ruleset_bindings`의 각 `_immutable` Trigger를 잠시 비활성화하고, 소유 행 삭제 후 반드시 다시 활성화한다. 다른 Canon 행·Trigger·공통 검증 함수는 변경하지 않는다.
+
+- [ ] **Step 4: 실제 PostgreSQL Gate 작성·실행**
+
+`actual-postgres-gate.py`는 disposable DB를 받는 `DAON_DB_MIGRATION_DSN`만 소비하고 비밀을 출력하지 않는다. 아래를 실제 SQL로 검증한다.
+
+```text
+fresh 0001→0013
+기존 Workspace 전체누락/부분누락/완전구성
+exact legacy Question Scope v1→v2 append, helper 2회 idempotency
+legacy v2를 참조하는 비소유 계보가 없을 때 downgrade 후 v1만 보존, reapply 동일 v2
+wrong key/ID/mode/source-version legacy 행은 revision 0012와 기존 행을 보존한 채 fail-close
+신규 Workspace INSERT 즉시 6 Canon
+digest/FK/immutable/RLS/cross-tenant
+0013→0012 시 소유 행만 제거
+0013 비소유 계보가 소유 행을 참조하면 downgrade 전체 rollback
+0012→0013 reapply 결정론 일치
+```
+
+- [ ] **Step 5: GREEN·회귀 확인**
+
+```powershell
+uv run --isolated --with pytest==9.0.3 pytest services/api/tests/test_studio_workspace_default_policy_migration.py -q
+uv run --isolated --with pytest==9.0.3 --with alembic==1.18.5 --with "psycopg[binary]==3.3.4" docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py
+```
+
+Expected: 모든 Gate PASS, disposable DB 정리 확인.
+
+---
+
+### Task 2: Studio 정책 Projection과 Safe Error 정합성
+
+**Files:**
+- Modify: `services/api/src/daon_user_api/runtime.py`
+- Modify: `services/api/tests/test_studio_workspace_postgres.py`
+- Modify: `services/api/tests/test_studio_workspace_runtime_http.py`
+
+**Interfaces:**
+- Consumes: Task 1의 6 Canon과 기존 `PostgresStudioWorkspaceRepository._policy_projection()`.
+- Produces: 정책 누락 409 `POLICY_PROJECTION_UNAVAILABLE`, 실제 DB 장애 503 `STUDIO_DATABASE_UNAVAILABLE`, 정상 목록 `{outputs, studio_locks}`.
+
+- [ ] **Step 1: Runtime/Repository 행동 RED 작성**
+
+```python
+def test_missing_default_policy_is_public_fail_closed_409():
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "POLICY_PROJECTION_UNAVAILABLE"
+
+def test_default_policy_returns_empty_outputs_and_six_locks():
+    assert response.status_code == 200
+    assert response.json()["data"]["outputs"] == []
+    assert len(response.json()["data"]["studio_locks"]) == 6
+```
+
+실제 DB pool 오류 fixture는 503 `STUDIO_DATABASE_UNAVAILABLE`을 계속 검증한다.
+
+- [ ] **Step 2: RED 확인**
+
+```powershell
+uv run --isolated --with pytest==9.0.3 --with argon2-cffi --with httpx pytest services/api/tests/test_studio_workspace_postgres.py services/api/tests/test_studio_workspace_runtime_http.py -q
+```
+
+Expected: 정책 오류가 공개 allowlist에 없어 `INVALID_REQUEST`로 투영되는 테스트 FAIL.
+
+- [ ] **Step 3: 최소 GREEN**
+
+`runtime.py`의 `StudioError` public code에 아래만 추가한다.
+
+```python
+"POLICY_PROJECTION_UNAVAILABLE",
+```
+
+Repository SQL·필수값·fail-close 로직은 변경하지 않는다. 정상 기본값 fixture는 Task 1의 exact payload를 사용한다.
+
+- [ ] **Step 4: 관련 회귀**
+
+```powershell
+uv run --isolated --with pytest==9.0.3 --with argon2-cffi --with httpx pytest services/api/tests/test_studio_workspace_postgres.py services/api/tests/test_studio_workspace_runtime_http.py services/api/tests/test_egress_policy_runtime_http.py -q
+uv run --isolated --with pytest==9.0.3 --with argon2-cffi --with httpx pytest services/api/tests -q
+```
+
+---
+
+### Task 3: 전체 계약·배포 증거
+
+**Files:**
+- Create: `docs/02_work_orders/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_work_order.md`
+- Create: `docs/02_work_orders/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_prompt.md`
+- Create: `docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_progress.md`
+- Create: `docs/04_test_reports/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02_completion_report.md`
+- Create: `docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/manifest.json`
+
+**Interfaces:**
+- Consumes: Tasks 1·2의 migration/runtime artifacts.
+- Produces: 검증 가능한 Evidence와 ysna-server 배포 Gate.
+
+- [ ] **Step 1: 전체 자동 검증**
+
+```powershell
+uv run --isolated --with pytest==9.0.3 --with argon2-cffi --with httpx pytest services/api/tests -q
+node --test scripts/tests/source-upload-api.test.mjs scripts/tests/product-workspace.test.mjs scripts/tests/product-studio.test.mjs scripts/tests/api-bff-runtime.test.mjs scripts/tests/openapi-contract.test.mjs
+node scripts/verify-openapi-contract.mjs
+npm run build --workspace @daon-user/web
+npm run verify:product-ui-boundary
+git diff --check
+git diff --cached --name-only
+```
+
+- [ ] **Step 2: 독립 검토**
+
+Migration ownership, Trigger transaction, RLS, downgrade, 정책 오류, 보호 dirty와 테스트 증거를 최신 diff로 검토한다. Critical/Important가 있으면 같은 issue로 재작업한다.
+
+- [ ] **Step 3: commit·push·ysna 배포**
+
+어울1 승인 경계에서만 수행한다. 서버 사전 backup·restore-list, exact commit checkout, API image rollback tag, migration `0012→0013`, API만 필요 시 recreate한다. Web 변경이 없으면 Web를 recreate하지 않는다.
+
+- [ ] **Step 4: 운영 Browser Gate**
+
+로그인 세션에서 아래를 확인한다.
+
+```text
+Source 목록 5건 유지
+STUDIO_DATABASE_UNAVAILABLE 0
+POLICY_PROJECTION_UNAVAILABLE 0
+저장 산출물 empty 정상 표시
+Studio 잠금 6종 표시
+내부 URL/stack/secret 0
+```
+
+서버에서 current migration `0013`, backfill counts, RLS, API health/log, 공용 컨테이너 ID 불변과 rollback 자원을 기록한다.
+
+---
+
+### Task 4: 운영 Projection JSONB bind 타입 정합성
+
+**Files:**
+- Modify: `services/api/src/daon_user_api/studio_workspace_postgres.py`
+- Modify: `services/api/tests/test_studio_workspace_postgres.py`
+- Modify: `docs/03_evidence/release_1/R1-M8-09-STUDIO-DEFAULT-POLICY-C02/actual-postgres-gate.py`
+- Modify: Task 3의 Evidence·Progress·Completion·Manifest
+
+**Interfaces:**
+- Consumes: current `0013` 기본 Canon, product `_policy_projection()`, psycopg 3 extended protocol, `daon_app` RLS context.
+- Produces: 공개 응답·정책값·SQL 순서 변경 없이 정상 Studio 목록 `{outputs: [], studio_locks: 6}`.
+
+- [ ] **Step 1: RED 고정**
+
+운영 재현과 동일하게 product Repository SQL을 실제 PostgreSQL에서 parameter bind로 실행한다. 수정 전에는 `jsonb_build_object(..., 'workspace_id', %s, ...)`의 bind가 SQLSTATE `42P18`로 실패해야 한다. 단위 계약도 JSONB `workspace_id` 인자가 명시적 text bind가 아니면 실패하도록 추가한다.
+
+- [ ] **Step 2: 최소 GREEN**
+
+`studio_workspace_postgres.py`의 Projection JSONB 객체 안 `workspace_id` bind 한 곳만 아래처럼 변경한다.
+
+```diff
+- 'workspace_id', %s,
++ 'workspace_id', %s::text,
+```
+
+다른 parameter, query, 정책 선택, 응답 DTO, Runtime, Migration과 Web는 변경하지 않는다.
+
+- [ ] **Step 3: 실제 PostgreSQL·회귀**
+
+disposable PostgreSQL 15 또는 18에서 Migration `0001→0013` 후 product Repository를 app role/RLS context와 실제 psycopg extended protocol로 실행한다. SQLSTATE `42P18` 0, `outputs=[]`, locks 6, cross-tenant 0을 확인한다. focused와 전체 API를 재실행하고 disposable DB를 exact 삭제한다.
+
+- [ ] **Step 4: 독립 검토·commit·push·API-only 재배포**
+
+Critical/Important 0을 확인한 뒤 허용 파일만 commit·push한다. ysna-server는 backup과 API rollback image를 확인하고 exact commit을 checkout해 API image·API container만 교체한다. Migration은 이미 `0013`이므로 새 upgrade나 Web·worker·공용 서비스 재생성을 하지 않는다.
+
+- [ ] **Step 5: 운영 Browser Gate**
+
+기존 로그인 세션의 same-origin Workspace를 reload해 Source 5 유지, `STUDIO_DATABASE_UNAVAILABLE` 0, `POLICY_PROJECTION_UNAVAILABLE` 0, 저장 산출물 empty, Studio locks 6을 확인한다. 내부 URL·SQLSTATE·stack·secret 노출 0과 API safe log error 0을 기록한다.

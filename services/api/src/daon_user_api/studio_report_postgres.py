@@ -22,11 +22,17 @@ class PostgresStudioReportRepository:
     def __init__(
         self, cloud_store: PostgresCloudStore,
         generation_provider: Callable[[StudioReportCreateRequest, str], str] | None = None,
+        creation_enforcer=None,
     ) -> None:
         self._cloud_store = cloud_store
         self._generation_provider = generation_provider or (
             lambda request, answer: compose_grounded_report_content(request.title, answer)
         )
+        self._creation_enforcer = creation_enforcer
+
+    @property
+    def creation_license_authoritative(self) -> bool:
+        return self._creation_enforcer is not None
 
     @staticmethod
     def _cloud(context: StudioReportContext, capability: str) -> CloudAccessContext:
@@ -92,13 +98,23 @@ class PostgresStudioReportRepository:
             raise StudioReportError("STUDIO_RESULT_INVALID", status=500) from None
 
     def list_sources(self, context: StudioReportContext) -> tuple[WorkspaceSourceProjection, ...]:
+        if context.notebook_id is None:
+            raise StudioReportError("NOTEBOOK_SCOPE_REQUIRED", status=400)
         try:
             with self._cloud_store._transaction(self._cloud(context, "source.read")) as connection:
                 rows = connection.execute(
                     "SELECT s.record_id,sv.record_id,sv.canonical_json->>'filename',s.state,"
                     "COALESCE(pr.state,'accepted'),COALESCE(oq.state,'pending') FROM sources s "
                     "JOIN source_versions sv ON sv.tenant_id=s.tenant_id AND sv.workspace_id=s.workspace_id "
-                    "AND sv.source_id=s.record_id LEFT JOIN LATERAL (SELECT state,record_id FROM processing_runs "
+                    "AND sv.source_id=s.record_id JOIN notebook_bindings nb ON nb.tenant_id=sv.tenant_id "
+                    "AND nb.workspace_id=sv.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='source' "
+                    "AND nb.record_id=s.record_id AND nb.version_id=sv.record_id "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=nb.tenant_id "
+                    "AND u.workspace_id=nb.workspace_id AND u.notebook_id=nb.notebook_id "
+                    "AND u.source_id=nb.record_id AND u.source_version_id=nb.version_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=s.tenant_id "
+                    "AND dr.workspace_id=s.workspace_id AND dr.source_id=s.record_id AND dr.source_active=false) "
+                    "LEFT JOIN LATERAL (SELECT state,record_id FROM processing_runs "
                     "WHERE tenant_id=sv.tenant_id AND workspace_id=sv.workspace_id "
                     "AND source_version_id=sv.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1) pr ON true "
                     "LEFT JOIN LATERAL (SELECT state FROM document_processing_jobs "
@@ -106,7 +122,8 @@ class PostgresStudioReportRepository:
                     "AND processing_run_id=pr.record_id "
                     "ORDER BY created_at DESC LIMIT 1) oq ON true WHERE NOT EXISTS (SELECT 1 FROM source_versions newer "
                     "WHERE newer.tenant_id=sv.tenant_id AND newer.workspace_id=sv.workspace_id "
-                    "AND newer.source_id=sv.source_id AND newer.version>sv.version) ORDER BY s.created_at, s.record_id"
+                    "AND newer.source_id=sv.source_id AND newer.version>sv.version) ORDER BY s.created_at, s.record_id",
+                    (context.notebook_id,),
                 ).fetchall()
         except CloudDatabaseError as error:
             raise StudioReportError("STUDIO_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable) from None
@@ -115,6 +132,7 @@ class PostgresStudioReportRepository:
     def create_report(self, context: StudioReportContext, request: StudioReportCreateRequest,
                       idempotency_key: str) -> tuple[StudioOutputProjection, bool]:
         fingerprint = hashlib.sha256(canonical_json_bytes({
+            "notebook_id": context.notebook_id,
             "source_id": request.source_id, "source_version_id": request.source_version_id,
             "run_id": request.run_id, "run_result_id": request.run_result_id,
             "title": request.title, "purpose": request.purpose,
@@ -136,6 +154,13 @@ class PostgresStudioReportRepository:
                     if str(replay[0]) != fingerprint:
                         raise StudioReportError("IDEMPOTENCY_CONFLICT", status=409)
                     return self._projection(cast(Mapping[str, object], replay[1])), True
+                if context.notebook_id is None:
+                    raise StudioReportError("NOTEBOOK_SCOPE_REQUIRED", status=400)
+                if self._creation_enforcer is not None:
+                    self._creation_enforcer(
+                        connection, context.tenant_id, "studio.generate",
+                        {"generation_runs": 1, "studio_outputs": 1},
+                    )
                 lineage = connection.execute(
                     "SELECT r.canonical_json,rr.canonical_json,s.state FROM runs r JOIN run_results rr ON "
                     "rr.tenant_id=r.tenant_id AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id "
@@ -143,9 +168,24 @@ class PostgresStudioReportRepository:
                     "AND sv.record_id=%s JOIN sources s ON s.tenant_id=sv.tenant_id "
                     "AND s.workspace_id=sv.workspace_id AND s.record_id=%s AND sv.source_id=s.record_id "
                     "WHERE r.record_id=%s AND rr.record_id=%s "
-                    "AND r.canonical_json->>'source_id'=%s AND r.canonical_json->>'source_version_id'=%s",
+                    "AND r.canonical_json->>'source_id'=%s AND r.canonical_json->>'source_version_id'=%s "
+                    "AND EXISTS (SELECT 1 FROM notebook_bindings source_binding WHERE "
+                    "source_binding.tenant_id=r.tenant_id AND source_binding.workspace_id=r.workspace_id "
+                    "AND source_binding.notebook_id=%s AND source_binding.binding_kind='source' "
+                    "AND source_binding.record_id=%s AND source_binding.version_id=%s) "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=r.tenant_id "
+                    "AND u.workspace_id=r.workspace_id AND u.notebook_id=%s AND u.source_id=%s AND u.source_version_id=%s) "
+                    "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=s.tenant_id "
+                    "AND dr.workspace_id=s.workspace_id AND dr.source_id=s.record_id AND dr.source_active=false) "
+                    "AND EXISTS (SELECT 1 FROM notebook_bindings thread_binding WHERE "
+                    "thread_binding.tenant_id=r.tenant_id AND thread_binding.workspace_id=r.workspace_id "
+                    "AND thread_binding.notebook_id=%s AND thread_binding.binding_kind='conversation_thread' "
+                    "AND thread_binding.record_id=r.conversation_id)",
                     (request.source_version_id, request.source_id, request.run_id, request.run_result_id,
-                     request.source_id, request.source_version_id),
+                     request.source_id, request.source_version_id,
+                     context.notebook_id, request.source_id, request.source_version_id,
+                     context.notebook_id, request.source_id, request.source_version_id,
+                     context.notebook_id),
                 ).fetchone()
                 if lineage is None or str(lineage[2]) != "ready":
                     raise StudioReportError("RESOURCE_UNAVAILABLE", status=404)
@@ -211,6 +251,21 @@ class PostgresStudioReportRepository:
                         "evidence_span_id": citation.evidence_span_id, "page": citation.page,
                     }, extra_columns=("output_version_id", "source_version_id", "evidence_span_id"),
                         extra_values=(version_id, citation.source_version_id, citation.evidence_span_id))
+                connection.execute(
+                    "INSERT INTO notebook_bindings "
+                    "(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) VALUES "
+                    "(%s,%s,%s,'generation_settings',%s,NULL,%s,now()),"
+                    "(%s,%s,%s,'studio_output',%s,NULL,%s,now()),"
+                    "(%s,%s,%s,'output_version',%s,NULL,%s,now())",
+                    (
+                        context.tenant_id, context.workspace_id, context.notebook_id,
+                        settings_id, context.actor_id,
+                        context.tenant_id, context.workspace_id, context.notebook_id,
+                        output_id, context.actor_id,
+                        context.tenant_id, context.workspace_id, context.notebook_id,
+                        version_id, context.actor_id,
+                    ),
+                )
                 output = StudioOutputProjection(
                     output_id, version_id, "evidence_report", request.title, request.purpose,
                     "draft", content, request.run_id, request.run_result_id, citations,
@@ -242,6 +297,8 @@ class PostgresStudioReportRepository:
             raise StudioReportError("STUDIO_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable) from None
 
     def list_outputs(self, context: StudioReportContext) -> tuple[StudioOutputProjection, ...]:
+        if context.notebook_id is None:
+            raise StudioReportError("NOTEBOOK_SCOPE_REQUIRED", status=400)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.read")) as connection:
                 rows = connection.execute(
@@ -250,7 +307,11 @@ class PostgresStudioReportRepository:
                     "AND so.record_id=ov.studio_output_id LEFT JOIN evidence_references er ON "
                     "er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id "
                     "AND er.output_version_id=ov.record_id WHERE so.canonical_json->>'output_type'='evidence_report' "
+                    "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=so.tenant_id "
+                    "AND nb.workspace_id=so.workspace_id AND nb.notebook_id=%s "
+                    "AND nb.binding_kind='studio_output' AND nb.record_id=so.record_id) "
                     "ORDER BY so.created_at,so.record_id,er.record_id"
+                    , (context.notebook_id,),
                 ).fetchall()
         except CloudDatabaseError as error:
             raise StudioReportError("STUDIO_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable) from None

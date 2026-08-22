@@ -174,3 +174,46 @@ test("quality gate activates all Local Service source capabilities", async () =>
   assert.match(tool, /UV_CACHE_DIR/);
   assert.match(tool, /pip_audit/);
 });
+
+test("offline Studio adapter uses only nine exact Tauri commands", async () => {
+  const source = await read("apps/desktop/src/offline-studio-adapter.js");
+  assert.doesNotMatch(
+    source,
+    /fetch\s*\(|XMLHttpRequest|WebSocket|localhost|127\.0\.0\.1|NEXT_PUBLIC_/i
+  );
+  const { createOfflineStudioAdapter } = await import(
+    "../../apps/desktop/src/offline-studio-adapter.js"
+  );
+  const calls = [];
+  const adapter = createOfflineStudioAdapter({
+    invoke: async (command, args) => { calls.push([command, structuredClone(args)]); return { ok: true }; }
+  });
+  const rawBytes = new TextEncoder().encode("trusted evidence");
+  await adapter.listModels("workspace-1");
+  await adapter.listRawSources("workspace-1");
+  await adapter.importRawSource({
+    workspace_id: "workspace-1",
+    filename: "evidence.txt",
+    content_type: "text/plain",
+    bytes: rawBytes,
+    idempotency_key: "raw-source-1",
+  });
+  await adapter.prepareContext({ workspace_id: "workspace-1" });
+  await adapter.confirmSettings({ workspace_id: "workspace-1" });
+  await adapter.generateDraft({ workspace_id: "workspace-1" });
+  await adapter.getDraft({ workspace_id: "workspace-1", draft_id: "draft-1" });
+  await adapter.appendEdit({ draft_id: "draft-1" });
+  await adapter.queueSync({ draft_id: "draft-1" });
+  assert.deepEqual(calls.map(([command]) => command), [
+    "offline_studio_list_models", "offline_studio_list_raw_sources",
+    "offline_studio_import_raw_source", "offline_studio_prepare_context",
+    "offline_studio_confirm_settings", "offline_studio_generate_draft",
+    "offline_studio_get_draft", "offline_studio_append_edit", "offline_studio_queue_sync"
+  ]);
+  const imported = calls[2][1].request;
+  assert.equal(imported.filename, "evidence.txt");
+  assert.match(imported.content_digest_sha256, /^[0-9a-f]{64}$/u);
+  assert.equal(Object.hasOwn(imported, "bytes"), false);
+  assert.deepEqual([...rawBytes], Array(rawBytes.length).fill(0));
+  assert.equal(Object.isFrozen(adapter), true);
+});

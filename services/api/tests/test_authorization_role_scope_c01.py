@@ -103,6 +103,110 @@ class AuthorizationRoleScopeC01Tests(unittest.TestCase):
                 )
             self.assertEqual(corrupt_denied.exception.code, "ACTION_DENIED")
 
+    def test_tenant_policy_workspace_selection_accepts_each_tenant_owner_role(self) -> None:
+        cases = (
+            ("personal", Role.PERSONAL_OWNER, "workspace-personal"),
+            ("organization", Role.ORGANIZATION_ADMIN, "workspace-organization"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for index, (workspace_kind, owner_role, workspace_id) in enumerate(cases):
+                owner = principal(f"owner-{index}", f"tenant-{index}")
+                repository = SqliteAuthorizationRepository(Path(directory) / f"auth-{index}.sqlite3")
+                audit = AuditEventStore()
+                repository.bootstrap_workspace(
+                    tenant_id=owner.tenant_id, workspace_id=workspace_id,
+                    owner_user_id=owner.user_id, owner_role=owner_role,
+                    workspace_kind=workspace_kind, data_area="local_private",
+                    cost_limit_cents=0, now=FixedClock()(),
+                )
+                service = AuthorizationService(
+                    repository=repository, audit_store=audit, clock=FixedClock(),
+                    identity_service=FakeIdentityBoundary(owner),
+                )
+
+                selected = service.organization_admin_workspace(
+                    principal=owner, trace_id=f"trace-{index}", policy_version=POLICY_VERSION,
+                )
+
+                self.assertEqual(selected, workspace_id)
+                event = audit.list(tenant_id=owner.tenant_id, limit=10).items[-1]
+                self.assertEqual(event.action, "authorization.organization_policy.allowed")
+                self.assertEqual(event.metadata["role"], owner_role.value)
+
+    def test_tenant_policy_workspace_selection_denies_missing_multiple_and_cross_tenant(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            def make_service(label: str, tenant_id: str, workspace_kind: str, role: Role):
+                owner = principal(f"owner-{label}", tenant_id)
+                repository = SqliteAuthorizationRepository(Path(directory) / f"{label}.sqlite3")
+                audit = AuditEventStore()
+                repository.bootstrap_workspace(
+                    tenant_id=tenant_id, workspace_id=f"workspace-{label}-1",
+                    owner_user_id=owner.user_id, owner_role=role,
+                    workspace_kind=workspace_kind, data_area="local_private",
+                    cost_limit_cents=0, now=FixedClock()(),
+                )
+                service = AuthorizationService(
+                    repository=repository, audit_store=audit, clock=FixedClock(),
+                    identity_service=FakeIdentityBoundary(owner),
+                )
+                return service, repository, audit, owner
+
+            multiple, multiple_repository, multiple_audit, multiple_owner = make_service(
+                "multiple", "tenant-multiple", "personal", Role.PERSONAL_OWNER,
+            )
+            multiple_repository.bootstrap_workspace(
+                tenant_id=multiple_owner.tenant_id, workspace_id="workspace-multiple-2",
+                owner_user_id=multiple_owner.user_id, owner_role=Role.PERSONAL_OWNER,
+                workspace_kind="personal", data_area="local_private",
+                cost_limit_cents=0, now=FixedClock()(),
+            )
+
+            missing, missing_repository, missing_audit, missing_owner = make_service(
+                "missing", "tenant-missing", "organization", Role.ORGANIZATION_ADMIN,
+            )
+            with missing_repository.transaction() as connection:
+                connection.execute(
+                    "UPDATE auth_workspaces SET workspace_kind='personal' WHERE tenant_id=?",
+                    (missing_owner.tenant_id,),
+                )
+
+            cross, cross_repository, cross_audit, cross_owner = make_service(
+                "cross", "tenant-cross", "personal", Role.PERSONAL_OWNER,
+            )
+            with cross_repository.transaction() as connection:
+                connection.execute(
+                    "UPDATE auth_workspaces SET workspace_kind='organization' WHERE tenant_id=?",
+                    (cross_owner.tenant_id,),
+                )
+            cross_repository.bootstrap_workspace(
+                tenant_id="tenant-other", workspace_id="workspace-other",
+                owner_user_id="owner-other", owner_role=Role.PERSONAL_OWNER,
+                workspace_kind="personal", data_area="local_private",
+                cost_limit_cents=0, now=FixedClock()(),
+            )
+
+            for service, audit, owner, expected_count, expected_role in (
+                (multiple, multiple_audit, multiple_owner, 2, Role.PERSONAL_OWNER),
+                (missing, missing_audit, missing_owner, 0, Role.ORGANIZATION_ADMIN),
+                (cross, cross_audit, cross_owner, 0, Role.PERSONAL_OWNER),
+            ):
+                with self.assertRaises(AuthorizationError) as denied:
+                    service.organization_admin_workspace(
+                        principal=owner, trace_id=f"trace-{owner.user_id}",
+                        policy_version=POLICY_VERSION,
+                    )
+                self.assertEqual(denied.exception.code, "ACTION_DENIED")
+                event = audit.list(tenant_id=owner.tenant_id, limit=10).items[-1]
+                self.assertEqual(event.action, "authorization.organization_policy.denied")
+                self.assertEqual(
+                    dict(event.metadata),
+                    {
+                        "candidate_count": expected_count,
+                        "reason_code": "ACTION_DENIED",
+                        "role": expected_role.value,
+                    },
+                )
+
     def test_tenant_role_version_conflict_and_audit_failure_are_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             owner = principal("owner")

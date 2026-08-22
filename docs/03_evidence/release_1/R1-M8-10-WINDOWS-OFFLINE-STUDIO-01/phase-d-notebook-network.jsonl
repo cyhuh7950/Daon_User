@@ -1,0 +1,3 @@
+{"method":"GET","path":"/bff/api/workspaces/workspace-notebook-evidence/notebooks","host":"127.0.0.1:4210"}
+{"method":"GET","path":"/bff/api/workspaces/workspace-notebook-evidence/notebooks","host":"127.0.0.1:4210"}
+{"method":"POST","path":"/bff/api/workspaces/workspace-notebook-evidence/notebooks","host":"127.0.0.1:4210"}

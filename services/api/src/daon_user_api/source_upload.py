@@ -35,6 +35,8 @@ class SourceUploadResult:
     byte_size: int
     status: str
     replayed: bool
+    content_type: str = "application/pdf"
+    deletion_policy: str = "delete_with_notebook"
 
 
 class SourceUploadPort(Protocol):
@@ -43,16 +45,19 @@ class SourceUploadPort(Protocol):
         *,
         tenant_id: str,
         workspace_id: str,
+        notebook_id: str,
         actor_id: str,
         filename: str,
         content: bytes,
         idempotency_key: str,
         trace_id: str,
+        content_type: str = "application/pdf",
+        deletion_policy: str = "delete_with_notebook",
     ) -> SourceUploadResult: ...
 
 
 class PostgresSourceUploadService:
-    """Promote one validated PDF and atomically reconcile its canonical records."""
+    """Promote one validated Source and atomically reconcile its canonical records."""
 
     def __init__(
         self,
@@ -82,12 +87,44 @@ class PostgresSourceUploadService:
         *,
         tenant_id: str,
         workspace_id: str,
+        notebook_id: str,
         actor_id: str,
         filename: str,
         content: bytes,
         idempotency_key: str,
         trace_id: str,
+        content_type: str = "application/pdf",
+        deletion_policy: str = "delete_with_notebook",
     ) -> SourceUploadResult:
+        return self.register_source(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            notebook_id=notebook_id,
+            actor_id=actor_id,
+            filename=filename,
+            content=content,
+            idempotency_key=idempotency_key,
+            trace_id=trace_id,
+            content_type=content_type,
+            deletion_policy=deletion_policy,
+        )
+
+    def register_source(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: str,
+        notebook_id: str,
+        actor_id: str,
+        filename: str,
+        content: bytes,
+        idempotency_key: str,
+        trace_id: str,
+        content_type: str,
+        deletion_policy: str = "delete_with_notebook",
+    ) -> SourceUploadResult:
+        if deletion_policy not in {"delete_with_notebook", "retain_after_notebook_delete"}:
+            raise SourceUploadError("INVALID_DELETION_POLICY")
         scope_text = f"{tenant_id}|{workspace_id}|{actor_id}"
         object_id = self._opaque_id(scope_text, idempotency_key)
         source_id = f"src-{object_id}"
@@ -100,12 +137,43 @@ class PostgresSourceUploadService:
             tenant_id, workspace_id, actor_id, "source.write", trace_id
         )
         try:
+            find_existing = getattr(self._canon_store, "find_source_by_digest", None)
+            existing = (
+                find_existing(canon_context, digest_sha256=digest)
+                if callable(find_existing) else None
+            )
+            if isinstance(existing, tuple) and len(existing) == 3:
+                existing_source_id, existing_version_id, existing_object_id = existing
+                self._canon_store.register_uploaded_source(
+                    canon_context,
+                    notebook_id=notebook_id,
+                    source_id=existing_source_id,
+                    source_version_id=existing_version_id,
+                    object_id=existing_object_id,
+                    filename=filename,
+                    digest_sha256=digest,
+                    byte_size=len(content),
+                    content_type=content_type,
+                    deletion_policy=deletion_policy,
+                    created_at=datetime.now(timezone.utc),
+                )
+                return SourceUploadResult(
+                    source_id=existing_source_id,
+                    source_version_id=existing_version_id,
+                    object_id=existing_object_id,
+                    digest_sha256=digest,
+                    byte_size=len(content),
+                    status="accepted",
+                    replayed=True,
+                    content_type=content_type,
+                    deletion_policy=deletion_policy,
+                )
             self._queue_store.seed_scope(cloud_context)
             submission = self._coordinator.submit(
                 cloud_context,
                 area="source",
                 content=content,
-                content_type="application/pdf",
+                content_type=content_type,
                 idempotency_key=idempotency_key,
                 trace_id=trace_id,
                 object_id=object_id,
@@ -121,12 +189,15 @@ class PostgresSourceUploadService:
                 raise SourceUploadError(code, 503, retryable=record.status != "failed")
             self._canon_store.register_uploaded_source(
                 canon_context,
+                notebook_id=notebook_id,
                 source_id=source_id,
                 source_version_id=source_version_id,
                 object_id=submission.object_id,
                 filename=filename,
                 digest_sha256=digest,
                 byte_size=len(content),
+                content_type=content_type,
+                deletion_policy=deletion_policy,
                 created_at=datetime.now(timezone.utc),
             )
         except SourceUploadError:
@@ -152,4 +223,6 @@ class PostgresSourceUploadService:
             byte_size=len(content),
             status="accepted",
             replayed=submission.replayed,
+            content_type=content_type,
+            deletion_policy=deletion_policy,
         )

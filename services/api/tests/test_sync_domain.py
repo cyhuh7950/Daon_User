@@ -11,6 +11,7 @@ from daon_user_api.sync import (
     SyncContext,
     SyncError,
     SyncItemInput,
+    SyncItemKind,
     SyncService,
     TransferPayload,
 )
@@ -56,6 +57,12 @@ class SyncDomainTests(unittest.TestCase):
     def test_unapproved_transfer_scope_expansion_and_cross_scope_are_denied(self) -> None:
         operation = self._create()
         self.assertEqual((operation.state, operation.version), ("awaiting_approval", 1))
+        self.assertEqual(operation.item_ids, ("item-a", "item-b"))
+        self.assertEqual(
+            tuple(item.operation_id for item in self.service.list_operations(self.context)),
+            (operation.operation_id,),
+        )
+        self.assertEqual(self.service.list_operations(self.foreign), ())
         with self.assertRaisesRegex(SyncError, "STEP_UP_REQUIRED"):
             self.service.approve(
                 self.context, operation_id=operation.operation_id,
@@ -179,6 +186,81 @@ class SyncDomainTests(unittest.TestCase):
                 )
                 final = service.get_operation(self.context, operation.operation_id)
                 self.assertEqual((final.source_mutations, final.overwrite_count), (0, 0))
+
+    def test_output_item_requires_exact_version_and_sorted_source_dependencies(self) -> None:
+        output = SyncItemInput(
+            "item-output-1", None, "object-output-1", "a" * 64, 12,
+            "application/vnd.daon.offline-studio-output+json", None, None,
+            item_kind=SyncItemKind.OUTPUT_VERSION,
+            output_version_id="local-output-version-1",
+            dependency_item_ids=("item-source-1",),
+        )
+        self.assertEqual(output.version_id, "local-output-version-1")
+        legacy = SyncItemInput(
+            "item-source-1", "source-version-1", "object-source-1", "b" * 64,
+            12, "application/pdf", None, None,
+        )
+        self.assertIs(legacy.item_kind, SyncItemKind.SOURCE_VERSION)
+
+    def test_output_dependencies_must_be_sorted_unique_and_approved(self) -> None:
+        with self.assertRaisesRegex(SyncError, "SYNC_ITEM_INVALID"):
+            SyncItemInput(
+                "item-output-1", None, "object-output-1", "a" * 64, 12,
+                "application/vnd.daon.offline-studio-output+json", None, None,
+                item_kind=SyncItemKind.OUTPUT_VERSION,
+                output_version_id="local-output-version-1",
+                dependency_item_ids=("item-source-2", "item-source-1"),
+            )
+
+    def test_output_transfer_requires_approved_completed_source_dependency(self) -> None:
+        source = SyncItemInput(
+            "item-source-1", "source-version-1", "object-source-1",
+            hashlib.sha256(b"source").hexdigest(), 6, "text/plain", None, None,
+        )
+        output = SyncItemInput(
+            "item-output-1", None, "object-output-1",
+            hashlib.sha256(b"output").hexdigest(), 6,
+            "application/vnd.daon.offline-studio-output+json", None, None,
+            item_kind=SyncItemKind.OUTPUT_VERSION,
+            output_version_id="local-output-version-1",
+            dependency_item_ids=(source.item_id,),
+        )
+        operation = self.service.create_operation(
+            self.context, target_area="cloud_sync", items=(source, output),
+            idempotency_key="create-output-dependency", if_match="*",
+        )
+        with self.assertRaisesRegex(SyncError, "SYNC_DEPENDENCY_REQUIRED"):
+            self.service.approve(
+                self.context, operation_id=operation.operation_id,
+                approved_item_ids=(output.item_id,), step_up_authorization_id="step-output",
+                expected_version=1, idempotency_key="approve-output-only",
+                approval_verified=True,
+            )
+        approved = self.service.approve(
+            self.context, operation_id=operation.operation_id,
+            approved_item_ids=(source.item_id, output.item_id),
+            step_up_authorization_id="step-output", expected_version=1,
+            idempotency_key="approve-output-with-source", approval_verified=True,
+        )
+        with self.assertRaisesRegex(SyncError, "SYNC_DEPENDENCY_REQUIRED"):
+            self.service.transfer_batch(
+                self.context, operation_id=operation.operation_id,
+                expected_version=approved.version, idempotency_key="output-before-source",
+                cursor=None, payloads=(TransferPayload(output.item_id, b"output", None, None),),
+            )
+        source_batch = self.service.transfer_batch(
+            self.context, operation_id=operation.operation_id,
+            expected_version=approved.version, idempotency_key="source-first",
+            cursor=None, payloads=(TransferPayload(source.item_id, b"source", None, None),),
+        )
+        current = self.service.get_operation(self.context, operation.operation_id)
+        output_batch = self.service.transfer_batch(
+            self.context, operation_id=operation.operation_id,
+            expected_version=current.version, idempotency_key="output-after-source",
+            cursor=source_batch.next_cursor,
+            payloads=(TransferPayload(output.item_id, b"output", None, None),),
+        )
+        self.assertEqual(output_batch.transferred_item_ids, (output.item_id,))
 
 
 if __name__ == "__main__":

@@ -43,6 +43,16 @@ class FakeSources:
         ),)
 
 
+class FakeNotebook:
+    def read_selected_context(self, _context, notebook_id):  # type: ignore[no-untyped-def]
+        if notebook_id != "notebook-001":
+            raise AssertionError(notebook_id)
+        return type("Selected", (), {
+            "sources": (("source-1", "source-version-1"),),
+            "etag": '"notebook-binding:1"',
+        })()
+
+
 class StudioRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -66,6 +76,7 @@ class StudioRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             identity_service=identity, authorization_service=authorization, audit_store=audit,
             identity_repository=identity_repository, authorization_repository=authorization_repository,
             studio_report_service=self.studio, studio_report_repository=FakeSources(),
+            notebook_service=FakeNotebook(),
         )
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(self.dependencies)), base_url="http://127.0.0.1")
 
@@ -81,17 +92,18 @@ class StudioRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_source_list_and_studio_routes_return_exact_safe_projection(self):
         with self._authenticated():
-            sources = await self.client.get("/api/v1/workspaces/workspace-001/sources", cookies={WEB_SESSION_COOKIE: "opaque"})
+            sources = await self.client.get("/api/v1/workspaces/workspace-001/sources?notebook_id=notebook-001", cookies={WEB_SESSION_COOKIE: "opaque"})
             created = await self.client.post(
                 "/api/v1/workspaces/workspace-001/studio/reports",
                 cookies={WEB_SESSION_COOKIE: "opaque"},
                 headers={"Idempotency-Key": "report-key-00001", "X-Trace-Id": TRACE_ID},
                 json={
+                    "notebook_id": "notebook-001",
                     "source_id": "source-1", "source_version_id": "source-version-1", "run_id": "run-1",
                     "run_result_id": "result-1", "title": "승인 검토 보고서", "purpose": "근거 기반 요약",
                 },
             )
-            listed = await self.client.get("/api/v1/workspaces/workspace-001/studio/outputs", cookies={WEB_SESSION_COOKIE: "opaque"})
+            listed = await self.client.get("/api/v1/workspaces/workspace-001/studio/outputs?notebook_id=notebook-001", cookies={WEB_SESSION_COOKIE: "opaque"})
         self.assertEqual(sources.status_code, 200)
         self.assertIn("etag", sources.headers)
         self.assertEqual(created.status_code, 201)
@@ -103,6 +115,7 @@ class StudioRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_studio_report_idempotency_key_rejects_15_and_accepts_16_characters(self):
         body = {
+            "notebook_id": "notebook-001",
             "source_id": "source-1", "source_version_id": "source-version-1", "run_id": "run-1",
             "run_result_id": "result-1", "title": "승인 검토 보고서", "purpose": "근거 기반 요약",
         }
@@ -121,6 +134,7 @@ class StudioRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_studio_report_negative_http_paths_are_safe_and_do_not_invoke_on_rejection(self):
         body = {
+            "notebook_id": "notebook-001",
             "source_id": "source-1", "source_version_id": "source-version-1", "run_id": "run-1",
             "run_result_id": "result-1", "title": "승인 검토 보고서", "purpose": "근거 기반 요약",
         }

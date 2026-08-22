@@ -1,0 +1,61 @@
+.desktop-shell[data-visual-system="notebook-violet"] {
+  --workspace-canvas: #f6f5f9;
+  --workspace-surface: #fff;
+  --workspace-surface-raised: #fbfaff;
+  --workspace-border: #ddd9e8;
+  --workspace-text: #211d2d;
+  --workspace-muted: #6f687c;
+  --workspace-accent: #6952d9;
+  --workspace-accent-strong: #5139bf;
+  --workspace-danger: #b42318;
+  --workspace-radius: 13px;
+  --workspace-shadow: 0 8px 24px rgb(37 28 70 / 8%);
+  --workspace-motion: 180ms;
+  background: var(--workspace-canvas);
+  color: var(--workspace-text);
+}
+
+.desktop-shell[data-visual-system="notebook-violet"][data-theme="dark"] {
+  --workspace-canvas: #17151d;
+  --workspace-surface: #24212d;
+  --workspace-surface-raised: #2b2736;
+  --workspace-border: #4c465b;
+  --workspace-text: #f6f2ff;
+  --workspace-muted: #c1b9ce;
+  --workspace-accent: #b7a8ff;
+  --workspace-accent-strong: #d2c8ff;
+  --workspace-danger: #ffb4aa;
+  --workspace-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+}
+
+.desktop-shell[data-visual-system="notebook-violet"][data-theme="light"] {
+  --workspace-canvas: #f6f5f9;
+  --workspace-surface: #fff;
+  --workspace-surface-raised: #fbfaff;
+  --workspace-border: #ddd9e8;
+  --workspace-text: #211d2d;
+  --workspace-muted: #6f687c;
+  --workspace-accent: #6952d9;
+  --workspace-accent-strong: #5139bf;
+  --workspace-danger: #b42318;
+  --workspace-shadow: 0 8px 24px rgb(37 28 70 / 8%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .desktop-shell[data-visual-system="notebook-violet"] {
+    --workspace-canvas: #17151d;
+    --workspace-surface: #24212d;
+    --workspace-surface-raised: #2b2736;
+    --workspace-border: #4c465b;
+    --workspace-text: #f6f2ff;
+    --workspace-muted: #c1b9ce;
+    --workspace-accent: #b7a8ff;
+    --workspace-accent-strong: #d2c8ff;
+    --workspace-danger: #ffb4aa;
+    --workspace-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desktop-shell[data-visual-system="notebook-violet"] { --workspace-motion: 0ms; }
+}
