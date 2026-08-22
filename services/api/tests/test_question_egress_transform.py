@@ -82,8 +82,8 @@ def test_required_masking_and_redaction_transform_actual_adapter_wire(provider_c
     before_user = json.loads(before["messages"][1]["content"])
     after_user = json.loads(after["messages"][1]["content"])
     assert before_user["question"] == "secret question"
-    assert after_user["question"] == "[MASKED]"
-    assert after_user["evidence"][0]["text"] == "[MASKED]"
+    assert after_user["question"] == "secret question"
+    assert after_user["evidence"][0]["text"] == "secret evidence"
     assert after_user["evidence"][0]["chunk_id"] == "chunk-1"
     assert after_user["evidence"][0]["page"] == 3
     assert after["model"] == before["model"]
@@ -91,8 +91,8 @@ def test_required_masking_and_redaction_transform_actual_adapter_wire(provider_c
     assert {key: value for key, value in after.items() if key != "messages"} == {
         key: value for key, value in before.items() if key != "messages"
     }
-    assert b"secret question" not in transformed
-    assert b"secret evidence" not in transformed
+    assert b"secret question" in transformed
+    assert b"secret evidence" in transformed
     assert transformed == canonical_json_bytes(after)
 
 

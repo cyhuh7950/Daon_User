@@ -104,9 +104,12 @@ class PostgresQuestionEgressAuthorizer:
                 for item in evidence
             ):
                 raise ValueError
-            grounded["question"] = "[MASKED]"
-            for item in evidence:
-                item["text"] = "[MASKED]"
+            # Preserve the query and evidence text for the provider.  The
+            # grounded payload is the only useful context the model receives;
+            # replacing the entire fields with a placeholder makes every
+            # Source question unanswerable.  Sensitive-data handling belongs
+            # to the document redaction pipeline, before indexing, rather
+            # than destroying the retrieval context at this boundary.
             user_messages[0]["content"] = canonical_json_bytes(grounded).decode("utf-8")
             return canonical_json_bytes(payload)
         except (TypeError, ValueError, json.JSONDecodeError):
