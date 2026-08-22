@@ -599,7 +599,9 @@ class QuestionAuthorizationBody(BaseModel):
     source_version_id: str | None = None
     knowledge_context: QuestionKnowledgeContextBody | None = None
     question: str
-    password: str
+    # Development auth bypass does not require a password.  Production still
+    # enforces re-authentication immediately before issuing step-up below.
+    password: str | None = None
 
     @model_validator(mode="after")
     def validate_source_contract(self) -> "QuestionAuthorizationBody":
@@ -1407,6 +1409,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             PostgresQuestionEgressAuthorizer(
                 dependencies.cloud_store,
                 cast(EgressPolicyService, egress_policy_service),
+                development_auth_bypass=(
+                    dependencies.settings.dev_auth_bypass
+                    and dependencies.settings.profile in {"test", "development"}
+                ),
             ),
             adapter_registry=QuestionAdapterRegistry(),
         )
@@ -2432,10 +2438,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             prepared=prepared, policy_fingerprint=effective.fingerprint,
             idempotency_key=idempotency_key,
         )
-        if dependencies.settings.dev_auth_bypass and dependencies.settings.profile in {"test", "development"}:
+        development_auth_bypass = (
+            dependencies.settings.dev_auth_bypass
+            and dependencies.settings.profile in {"test", "development"}
+        )
+        if development_auth_bypass:
             step_up_authorization_id = f"dev-bypass:{run_id}"
             expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         else:
+            if not body.password:
+                raise IdentityError("REAUTHENTICATION_REQUIRED", 401)
             access_token, _ = _credential(request)
             step_up = dependencies.identity_service.issue_step_up_after_reauthentication(
                 access_token=access_token, password=body.password,
@@ -2570,6 +2582,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     "provider_kind": cast(Any, prepared).selection.provider_kind,
                     "deployment_id": cast(Any, prepared).selection.deployment_id,
                 }
+                if (
+                    dependencies.settings.dev_auth_bypass
+                    and dependencies.settings.profile in {"test", "development"}
+                ):
+                    approved_authorization["authorization_mode"] = "development_auth_bypass"
         answer = await asyncio.to_thread(
             question_answering_service.ask,
             QuestionContext(

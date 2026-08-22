@@ -47,9 +47,16 @@ def external_question_policy_matches(
 
 
 class PostgresQuestionEgressAuthorizer:
-    def __init__(self, cloud_store: PostgresCloudStore, policy_service: EgressPolicyService) -> None:
+    def __init__(
+        self,
+        cloud_store: PostgresCloudStore,
+        policy_service: EgressPolicyService,
+        *,
+        development_auth_bypass: bool = False,
+    ) -> None:
         self._cloud_store = cloud_store
         self._policy_service = policy_service
+        self._development_auth_bypass = development_auth_bypass
 
     @staticmethod
     def _id(prefix: str, *values: str) -> str:
@@ -124,13 +131,19 @@ class PostgresQuestionEgressAuthorizer:
         payload_bytes = len(provider_payload)
         payload_fingerprint = "sha256:" + hashlib.sha256(provider_payload).hexdigest()
         transformation_unavailable = False
-        approval_exact = approved_authorization is not None and all((
-            approved_authorization.get("policy_fingerprint") == effective.fingerprint,
-            approved_authorization.get("provider_payload_fingerprint") == payload_fingerprint,
-            approved_authorization.get("provider_kind") == provider_kind,
-            approved_authorization.get("deployment_id") == selection.deployment_id,
-        ))
-        approver_unavailable = external and not approval_exact
+        development_auth_bypass = (
+            approved_authorization is not None
+            and approved_authorization.get("authorization_mode") == "development_auth_bypass"
+        )
+        approval_exact = development_auth_bypass or (
+            approved_authorization is not None and all((
+                approved_authorization.get("policy_fingerprint") == effective.fingerprint,
+                approved_authorization.get("provider_payload_fingerprint") == payload_fingerprint,
+                approved_authorization.get("provider_kind") == provider_kind,
+                approved_authorization.get("deployment_id") == selection.deployment_id,
+            ))
+        )
+        approver_unavailable = external and not approval_exact and not self._development_auth_bypass
         external_scope_allowed = external_question_policy_matches(
             effective, provider_kind=provider_kind, destination=destination,
             payload_bytes=payload_bytes, classification="internal",
@@ -178,6 +191,8 @@ class PostgresQuestionEgressAuthorizer:
             "destination": destination,
             "approved_request_fingerprint": None if approved_authorization is None
             else approved_authorization.get("request_fingerprint"),
+            "authorization_mode": "development_auth_bypass" if development_auth_bypass
+            else "step_up_approved" if approval_exact else "none",
         }
         if (
             not isinstance(question, str) or not question.strip()
