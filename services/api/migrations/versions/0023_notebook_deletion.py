@@ -119,6 +119,7 @@ def upgrade() -> None:
         ALTER TABLE knowledge_registrations DISABLE TRIGGER USER;
         ALTER TABLE evidence_references DISABLE TRIGGER USER;
         ALTER TABLE citations DISABLE TRIGGER USER;
+        ALTER TABLE evidence_spans DISABLE TRIGGER USER;
         ALTER TABLE transcript_segments DISABLE TRIGGER USER;
         ALTER TABLE transcript_versions DISABLE TRIGGER USER;
         ALTER TABLE transcription_runs DISABLE TRIGGER USER;
@@ -139,6 +140,7 @@ def upgrade() -> None:
         DELETE FROM knowledge_registrations d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.registered_source_version_id=ANY(v_source_versions);
         DELETE FROM evidence_references d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
         DELETE FROM citations d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
+        DELETE FROM evidence_spans d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
         DELETE FROM transcript_segments d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.transcript_version_id IN (SELECT t.record_id FROM transcript_versions t WHERE t.tenant_id=p_tenant_id AND t.workspace_id=p_workspace_id AND t.source_version_id=ANY(v_source_versions));
         DELETE FROM transcript_versions d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
         DELETE FROM transcription_runs d WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id AND d.source_version_id=ANY(v_source_versions);
@@ -193,6 +195,7 @@ def upgrade() -> None:
         ALTER TABLE knowledge_registrations ENABLE TRIGGER USER;
         ALTER TABLE evidence_references ENABLE TRIGGER USER;
         ALTER TABLE citations ENABLE TRIGGER USER;
+        ALTER TABLE evidence_spans ENABLE TRIGGER USER;
         ALTER TABLE transcript_segments ENABLE TRIGGER USER;
         ALTER TABLE transcript_versions ENABLE TRIGGER USER;
         ALTER TABLE transcription_runs ENABLE TRIGGER USER;
