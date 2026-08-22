@@ -3,7 +3,7 @@
 import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-model";
 import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
-import { getDocumentProcessingStatus, uploadPdfSource } from "../lib/source-upload-api.js";
+import { getDocumentProcessingStatus, uploadSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
 import { createGroundedReport, createStudioGeneration, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceKnowledgePackages, listWorkspaceSources, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
@@ -37,7 +37,8 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     getManualManifest,
     readManual: (documentId, manifest, options) => readManualDocument(documentId, { ...options, manifest }),
     downloadManual: (documentId, format, manifest, options) => downloadManualAsset(documentId, format, { ...options, manifest }),
-    uploadPdf: (file, options) => uploadPdfSource(workspaceId, file, notebookOptions(options)),
+    uploadSource: (file, options) => uploadSource(workspaceId, file, notebookOptions(options)),
+    uploadPdf: (file, options) => uploadSource(workspaceId, file, notebookOptions(options)),
     getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, notebookOptions(options)),
     askQuestion: (input, options) => askGroundedQuestion(workspaceId, notebookInput(input), options),
     citationUrl: (citation, options) => citationContentUrl(workspaceId, citation, notebookOptions(options)),

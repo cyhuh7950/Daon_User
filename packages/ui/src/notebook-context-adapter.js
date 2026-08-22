@@ -203,9 +203,16 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     createReport: typeof baseAdapter.createReport === "function"
       ? (input, options) => baseAdapter.createReport(input, { ...options, notebookId: context.notebook_id })
       : undefined,
-    uploadPdf: typeof baseAdapter.uploadPdf === "function"
-      ? (file, options) => baseAdapter.uploadPdf(file, { ...options, notebookId: context.notebook_id })
-      : undefined,
+    uploadSource: typeof baseAdapter.uploadSource === "function"
+      ? (file, options) => baseAdapter.uploadSource(file, { ...options, notebookId: context.notebook_id })
+      : typeof baseAdapter.uploadPdf === "function"
+        ? (file, options) => baseAdapter.uploadPdf(file, { ...options, notebookId: context.notebook_id })
+        : undefined,
+    uploadPdf: typeof baseAdapter.uploadSource === "function"
+      ? (file, options) => baseAdapter.uploadSource(file, { ...options, notebookId: context.notebook_id })
+      : typeof baseAdapter.uploadPdf === "function"
+        ? (file, options) => baseAdapter.uploadPdf(file, { ...options, notebookId: context.notebook_id })
+        : undefined,
     getProcessingStatus: typeof baseAdapter.getProcessingStatus === "function"
       ? (processingRunId, options) => baseAdapter.getProcessingStatus(processingRunId, { ...options, notebookId: context.notebook_id })
       : undefined,
