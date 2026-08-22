@@ -8,6 +8,13 @@
 - **미검증/주의**: 실제 브라우저에서 사용자 Source 삭제 버튼을 통한 API·MinIO 실물 삭제는 아직 검증하지 않았다. 기존 사용자 Source는 삭제하지 않았다.
 - **다음 조치**: 브라우저에서 새 임시 Source를 등록한 뒤 삭제하여 UI·API·Object Storage 정합성을 확인한다.
 
+### 2026-08-22 — 기존 grace 요청 정리
+
+- **판정**: PASS (기존 오류 Source 요청 정리).
+- **조치**: ysna DB의 사용자가 이미 삭제 요청한 기존 `grace_period` Source 4건에 즉시 삭제 함수를 적용하고, 관련 deletion request를 `purged`로 전환했다. 반환된 MinIO object key 4건도 실물 삭제했다.
+- **검증**: `deletion_requests` 상태는 `purged=4`, 해당 Source 레코드는 0건이며, 브라우저 새로고침 후 `삭제 요청 Source 목록`은 빈 목록으로 확인됐다. 기존 정상 Source와 Notebook은 삭제하지 않았다.
+- **미검증/주의**: 새 파일 업로드 후 UI에서 삭제하는 브라우저 클릭 E2E는 파일 업로드·삭제의 외부 상태 변경이므로 별도 사용자 승인 없이 실행하지 않았다.
+
 ## 현재 상태
 
 - 단계: Task 1 구현·서버 배포 검증
