@@ -477,4 +477,5 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 상태: `PASS_LOCAL`
 - 검증: Source lifecycle/immediate deletion, MCP/Connector persistence, NotebookLM chat grounding/egress, Studio outputs 관련 테스트 `24 passed`.
 - 미검증: Source 기반 한국어 질문의 실제 Citation과 Studio 새 산출물 생성 클릭은 브라우저에서 아직 실행하지 않았다.
+- 추가 확인: YSNA 브라우저에서 `근거 기반 보고서` 카드의 설정 화면을 열어 사용 Source·목적·독자·언어·분량·구성·출력 형식·검토 조건·현재 모델을 확인했다. 생성 버튼은 외부 상태를 만드는 동작이므로 별도 클릭하지 않았다.
 
