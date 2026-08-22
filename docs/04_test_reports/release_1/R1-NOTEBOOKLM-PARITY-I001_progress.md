@@ -389,3 +389,12 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 미검증: 수정본 ysna Web 재배포 후 브라우저에서 재등록→즉시 삭제→완료 문구·취소 버튼 부재를 다시 확인해야 한다.
 - 다음 조치: 커밋·푸시 후 ysna Web을 재빌드·기동하고 동일 PDF를 재등록해 삭제 UI와 Source 목록을 검증한다.
 
+## 2026-08-22 Source 즉시 삭제 UI YSNA 검증 완료
+
+- 상태: `VERIFIED_ON_YSNA`
+- 커밋·배포: `76face1`을 `codex/user-auth-screen-split`에 push하고 YSNA `web` 컨테이너를 재빌드·재기동했다. Next.js production build와 product UI boundary 검사가 통과했고 Web 컨테이너가 기동됐다.
+- 브라우저: 동일한 `daon-getting-started.pdf`를 재등록해 Raw Source가 정상적으로 다시 표시되는 것을 확인했다. Source 작업에서 삭제 확인 후 Raw Source가 2건에서 1건으로 줄었다.
+- 브라우저: 삭제 완료 대화상자에 `Source가 즉시 삭제되었습니다.`가 표시되고 `삭제 요청 취소` 및 `30일 유예` 문구가 존재하지 않음을 확인했다.
+- 판정: Source 등록 replay와 즉시 삭제 UI가 승인된 요구사항에 맞게 동작한다. 기존 `daon-knowledge-llm-guide.pdf`와 Studio Library 2건은 유지됐다.
+- 잔여: 연결형 Source 2건은 운영 자격증명이 없어 `사용 불가`로 표시되는 별도 상태다. 이번 Raw Source 등록·삭제 수정 범위와는 무관하다.
+
