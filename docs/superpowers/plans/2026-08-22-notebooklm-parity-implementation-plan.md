@@ -147,7 +147,9 @@
 - [x] 로컬 단위·계약·빌드 테스트를 실행한다.
 - [x] Git Commit SHA와 변경 범위를 기록한다.
 - [x] ysna-server 격리 환경에 배포하고 DB·Object Storage·Worker·BFF Health를 확인한다.
-- [x] 실제 브라우저에서 Source 등록·삭제, MCP 연결, 대화, Studio 생성·Library 조회를 클릭 검증한다.
+- [ ] 실제 브라우저에서 Source 등록·삭제, MCP 연결, 대화, Studio 생성·Library 조회를 클릭 검증한다.
+- [x] 실제 브라우저에서 대화와 Studio 생성·Library 조회를 클릭 검증한다.
+- [ ] 실제 Source 등록·삭제와 MCP 연결·삭제 클릭 검증을 완료한다.
 - [ ] 운영 배포는 신산님 최종 승인 전에는 수행하지 않는다.
 
 ## 완료 기준
