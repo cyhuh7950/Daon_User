@@ -43,5 +43,21 @@ test("연결형 Source는 실제 same-origin Adapter 계약으로 연결된다",
   assert.doesNotMatch(api, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/u);
   assert.match(shell, /연결형 Source/);
   assert.match(shell, /사용 불가/);
-  assert.match(shell, /연결형 Source를 불러오지 못했습니다\. \(\{connectorSafeError\}\)/);
+  assert.match(shell, /연결형 Source를 불러오지 못했습니다/);
+});
+
+test("Connector 오류코드는 민감정보 문자열 검증에 걸리지 않는다", async () => {
+  const { listWorkspaceConnectors } = await import("../../apps/web/lib/product-workspace-api.js");
+  const connector = {
+    connector_id: "mcp-open-law-go-kr", kind: "mcp", name: "국가법령정보센터",
+    status: "unavailable", source_count: 0, endpoint_label: "open.law.go.kr",
+    last_checked_at: null, error_code: "CONNECTOR_CREDENTIAL_REQUIRED",
+  };
+  const result = await listWorkspaceConnectors("workspace-001", {
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: { connectors: [connector] },
+      meta: { trace_id: "trace-001", workspace_id: "workspace-001" },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  assert.equal(result[0].error_code, "CONNECTOR_CREDENTIAL_REQUIRED");
 });

@@ -1289,7 +1289,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                 </li>
               ))}
             </ul>
-            {connectorSafeError ? <div className="inline-alert compact" role="alert">연결형 Source를 불러오지 못했습니다. ({connectorSafeError})</div> : null}
+            {connectorSafeError ? <div className="inline-alert compact" role="alert">연결형 Source를 불러오지 못했습니다.</div> : null}
           </section>
           <section className="source-group" aria-labelledby="raw-source-title">
           <div className="source-group-heading"><h3 id="raw-source-title">Raw Source</h3><span>{viewState.sources.length}</span></div>
