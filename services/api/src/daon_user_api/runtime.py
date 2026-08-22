@@ -204,7 +204,7 @@ def _source_boundary_event(
     )
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 _SOURCE_UPLOAD_PATH = re.compile(r"^/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/sources$")
-_PDF_FILENAME = re.compile(r"^[^/\\\x00-\x1f]{1,251}\.pdf$", re.IGNORECASE)
+_SOURCE_FILENAME = re.compile(r"^[^/\\\x00-\x1f]{1,251}$")
 _QUESTION_REQUEST_TIMEOUT_SECONDS = 95.0
 
 
@@ -1456,8 +1456,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 is_source_upload = (
                     request.method == "POST" and _SOURCE_UPLOAD_PATH.fullmatch(request.url.path) is not None
                 )
-                expected_type = "application/pdf" if is_source_upload else "application/json"
-                if content_type != expected_type:
+                if is_source_upload:
+                    filename = request.headers.get("x-source-filename", "")
+                    expected_type = SourceIngestor.expected_mime_for_filename(filename)
+                    if expected_type is None or content_type != expected_type:
+                        return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
+                elif content_type != "application/json":
                     return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
                 declared = request.headers.get("content-length")
                 if declared is not None:
@@ -1955,7 +1959,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         _idempotency_key(idempotency_key)
-        if _PDF_FILENAME.fullmatch(source_filename) is None:
+        if _SOURCE_FILENAME.fullmatch(source_filename) is None:
             raise SourceUploadError("SOURCE_FILENAME_INVALID")
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
@@ -1982,8 +1986,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 raise SourceUploadError("REQUEST_TOO_LARGE", 413)
             chunks.append(chunk)
         content = b"".join(chunks)
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         try:
-            SourceIngestor().register_file(source_filename, "application/pdf", content)
+            SourceIngestor().register_file(source_filename, content_type, content)
         except SourceRejected as error:
             raise SourceUploadError(str(error)) from None
         try:
@@ -1997,6 +2002,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 content=content,
                 idempotency_key=idempotency_key,
                 trace_id=request.state.trace_id,
+                content_type=content_type,
             )
         except SourceUploadError as error:
             _source_boundary_event(

@@ -186,6 +186,42 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all("fixture.pdf" not in line for line in captured.output))
         self.assertTrue(all("object_id" not in line for line in captured.output))
 
+    async def test_authenticated_text_upload_uses_filename_mime_matrix(self) -> None:
+        with self._authenticated():
+            response = await self.client.post(
+                "/api/v1/workspaces/workspace-001/sources",
+                content=b"plain source text",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={
+                    "Content-Type": "text/plain",
+                    "X-Source-Filename": "notes.txt",
+                    "X-Notebook-Id": "notebook-001",
+                    "Idempotency-Key": "upload-text-001",
+                    "X-Trace-Id": TRACE_ID,
+                },
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(self.uploads.calls[0]["filename"], "notes.txt")
+        self.assertEqual(self.uploads.calls[0]["content_type"], "text/plain")
+
+    async def test_upload_rejects_supported_extension_with_wrong_content_type(self) -> None:
+        with self._authenticated():
+            response = await self.client.post(
+                "/api/v1/workspaces/workspace-001/sources",
+                content=b"plain source text",
+                cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                headers={
+                    "Content-Type": "application/pdf",
+                    "X-Source-Filename": "notes.txt",
+                    "X-Notebook-Id": "notebook-001",
+                    "Idempotency-Key": "upload-text-mime-mismatch",
+                },
+            )
+
+        self.assertEqual(response.status_code, 415)
+        self.assertEqual(self.uploads.calls, [])
+
     async def test_processing_status_requires_workspace_access_and_returns_safe_state(self) -> None:
         with self.assertLogs("daon_user_api.runtime", level="INFO") as captured:
             with self._authenticated():
