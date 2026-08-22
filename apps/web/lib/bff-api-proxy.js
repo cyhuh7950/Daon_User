@@ -182,6 +182,32 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (
+    segments.length === 3 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "connectors"
+  ) {
+    return new Set(["GET", "POST"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "connectors"
+    && SAFE_SEGMENT.test(segments[3]) && new Set(["reconnect", "disconnect"]).has(segments[4])
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors/${encodeURIComponent(segments[3])}/${segments[4]}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5 && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1]) && segments[2] === "connectors"
+    && SAFE_SEGMENT.test(segments[3]) && segments[4] === "sources"
+  ) {
+    return method === "GET"
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors/${encodeURIComponent(segments[3])}/sources`, query: null }
+      : { methodRejected: true };
+  }
+  if (
     segments.length === 4 && segments[0] === "workspaces"
     && SAFE_SEGMENT.test(segments[1]) && segments[2] === "notebooks" && SAFE_SEGMENT.test(segments[3])
   ) {
