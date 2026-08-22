@@ -260,3 +260,10 @@
 - 독립 검토자는 `c65070b`의 configured deployment ID→실제 `model_deployments.record_id` lineage 보정, Source 질문·Citation·Studio PDF 저장·Library 표시 증거를 계획 Task 5와 대조해 조건부 승인했다. 검토 결과 `REVIEW_COMPLETE`이며 API Studio 회귀는 `21 passed, 1 skipped`다.
 - Desktop Rust 계약 테스트는 `npm run verify:desktop-rust-unit`을 실행했으나 저장소의 기존 `apps/desktop/src-tauri/gen` 경로가 존재해 안전 래퍼가 실행을 거부했다(`DESKTOP_CARGO_CHILD_ERROR refusing to run while the desktop Tauri gen path already exists`). 기존 경로는削除하지 않았으며 Rust 결과는 미검증으로 분리한다.
 - 전체 작업트리에는 기존 보호 dirty/untracked 변경이 126건 존재한다. 다른 작업의 파일은 수정·stage·복구하지 않았다. Oracle 운영 배포, 기타 Studio 유형, 장기 Provider 안정성, 전체 Source/MCP 브라우저 통합은 여전히 미검증이다.
+
+## 2026-08-23 후속 잔여 범위 검증
+
+- 기타 Studio 유형의 로컬 계약·UI·Library 회귀를 `product-studio.test.mjs`, `product-studio-click.test.mjs`, `offline-studio-ui.test.mjs`, `real-data-conversation-contract.test.mjs`로 실행해 `27 passed, 0 failed`를 확인했다. 이는 실제 Provider 산출물 생성이 아닌 계약·렌더링 검증이다.
+- YSNA 운영 유사 환경의 API/Web/document-worker/studio-worker/object-storage 컨테이너는 모두 실행 중이며 API 환경은 `DAON_RUNTIME_PROFILE=production`, 개발 인증 우회 변수 없음이다.
+- 비밀값을 출력하지 않는 `run-remote-provider-compatibility.py`를 YSNA에서 3회 실행했다. 매회 설정된 Provider는 UPSTAGE/GROQ/MISTRAL로 확인됐고, 선택된 UPSTAGE probe가 `HTTP 200`, `schema=valid`, `secret_echo=0`, `citations=0`을 3회 연속 반환했다. 장기 안정성 전체를 보증하는 부하·장시간 시험은 아니며 단기 연속 호환성 증거로만 기록한다.
+- Oracle 운영 배포는 외부 운영 변경 권한이 필요한 미실행 항목으로 남겼다. 운영 배포 승인 전에는 Oracle 상태를 변경하지 않는다.
