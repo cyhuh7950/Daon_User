@@ -202,3 +202,22 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 판정: 브라우저 통합 검증은 인증 세션 상태가 확인되지 않아 `BLOCKED`이며, 기능 성공으로 보고하지 않는다. 현재 화면의 Source 목록 표시만으로 질문 API 인증이 완료됐다고 볼 수 없다.
 - 영향: 질문 답변·Studio grounded 설정·생성 polling·Library 반영을 아직 검증할 수 없다. 코드 수정으로 인증을 우회하지 않는다.
 - 다음 조치: 신산님이 현재 브라우저에서 정상 로그인 세션을 확인한 뒤 같은 Notebook을 새로고침하고, 재시도 결과를 확인한다. 세션이 유효한데도 동일하면 그때 브라우저 요청의 trace와 API 인증 로그를 대조해 수정한다.
+## 2026-08-22 Source 질문 재현 결과
+
+- 상태: BLOCKED — 로그인/노트북 로딩 문제가 아니라 Source 질문의 외부 LLM 승인 단계에서 중단됨.
+- 확인: 일반 질문 `안녕`은 `/questions` 200, `runs`·`egress_decisions` 생성 및 `completed` 확인.
+- 확인: Raw Source 선택 질문은 프록시 접근 로그에서 `/questions` 403으로 확인되며 새 `run`/`egress_decision`이 생성되지 않음.
+- 원인: 현재 실제 워크스페이스의 활성 egress 정책은 `allow_approved_external`이지만, Source 근거가 포함된 외부 LLM payload에는 `approved_authorization`이 필요하다. 현재 화면의 질문 흐름은 `/questions/authorization` step-up을 거치지 않아 `EGRESS_POLICY_DENIED`로 거절된다.
+- 영향: Source 기반 질문과 그에 의존하는 Studio 생성은 현재 브라우저에서 수행 불가. 로그인 재시도나 노트북 재생성으로 해결되지 않음.
+- 미검증: 승인 API를 통한 실제 step-up 완료 후 Source 질문 성공, 또는 정책/개발 전용 모델 변경 후 성공.
+- 다음 조치: 신산님 승인 없이 외부 전송 승인 정책을 우회하지 않는다. 승인 UX를 연결할지, 개발 검증에서 외부 LLM 승인을 완화할지 결정 필요.
+
+## 2026-08-22 Source 질문 Step-up 승인 연결
+
+- 상태: IMPLEMENTED_LOCAL / 배포 전
+- 담당: main agent (신산님 승인 후 직접 구현)
+- 변경 파일: `apps/web/lib/question-answering-api.js`, `apps/web/components/actual-workspace.jsx`, `packages/ui/src/product-workspace-shell.jsx`
+- 조치: Source 질문이 `EGRESS_POLICY_DENIED`를 받으면 현재 비밀번호를 저장하지 않는 일회성 승인 창을 표시하고 `/questions/authorization` 호출 후 `step_up_authorization_id`를 포함해 질문을 재실행하도록 연결했다. 일반 질문은 기존 경로를 유지한다.
+- 검증: workspace lint 3 files PASS; product workspace/source knowledge tests 39/39 PASS; web production build 및 UI boundary PASS; `git diff --check` PASS.
+- 미검증: API pytest는 로컬 환경에 `psycopg_pool` 의존성이 없어 수집 단계에서 중단됨; ysna Docker 재배포 및 실제 브라우저에서 비밀번호 입력 후 Source 질문 성공은 아직 미검증.
+- 다음 조치: 변경을 커밋·푸시하고 ysna에 배포한 뒤 로그인 세션에서 Source 질문 승인·응답을 실제 검증한다.
