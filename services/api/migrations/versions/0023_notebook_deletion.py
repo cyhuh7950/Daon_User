@@ -114,7 +114,20 @@ def upgrade() -> None:
         ALTER TABLE source_versions DISABLE TRIGGER USER;
         ALTER TABLE object_records DISABLE TRIGGER USER;
         ALTER TABLE document_processing_job_attempts DISABLE TRIGGER USER;
+        ALTER TABLE document_processing_jobs DISABLE TRIGGER USER;
         ALTER TABLE processing_runs DISABLE TRIGGER USER;
+        ALTER TABLE knowledge_registrations DISABLE TRIGGER USER;
+        ALTER TABLE evidence_references DISABLE TRIGGER USER;
+        ALTER TABLE citations DISABLE TRIGGER USER;
+        ALTER TABLE transcript_segments DISABLE TRIGGER USER;
+        ALTER TABLE transcript_versions DISABLE TRIGGER USER;
+        ALTER TABLE transcription_runs DISABLE TRIGGER USER;
+        ALTER TABLE extraction_evidence DISABLE TRIGGER USER;
+        ALTER TABLE understanding_results DISABLE TRIGGER USER;
+        ALTER TABLE index_versions DISABLE TRIGGER USER;
+        ALTER TABLE sync_target_versions DISABLE TRIGGER USER;
+        ALTER TABLE durable_jobs DISABLE TRIGGER USER;
+        ALTER TABLE object_outbox_events DISABLE TRIGGER USER;
         DELETE FROM document_processing_job_attempts d
          WHERE d.tenant_id=p_tenant_id AND d.workspace_id=p_workspace_id
            AND d.job_id IN (
@@ -175,7 +188,20 @@ def upgrade() -> None:
         ALTER TABLE source_versions ENABLE TRIGGER USER;
         ALTER TABLE object_records ENABLE TRIGGER USER;
         ALTER TABLE document_processing_job_attempts ENABLE TRIGGER USER;
+        ALTER TABLE document_processing_jobs ENABLE TRIGGER USER;
         ALTER TABLE processing_runs ENABLE TRIGGER USER;
+        ALTER TABLE knowledge_registrations ENABLE TRIGGER USER;
+        ALTER TABLE evidence_references ENABLE TRIGGER USER;
+        ALTER TABLE citations ENABLE TRIGGER USER;
+        ALTER TABLE transcript_segments ENABLE TRIGGER USER;
+        ALTER TABLE transcript_versions ENABLE TRIGGER USER;
+        ALTER TABLE transcription_runs ENABLE TRIGGER USER;
+        ALTER TABLE extraction_evidence ENABLE TRIGGER USER;
+        ALTER TABLE understanding_results ENABLE TRIGGER USER;
+        ALTER TABLE index_versions ENABLE TRIGGER USER;
+        ALTER TABLE sync_target_versions ENABLE TRIGGER USER;
+        ALTER TABLE durable_jobs ENABLE TRIGGER USER;
+        ALTER TABLE object_outbox_events ENABLE TRIGGER USER;
       END $$;
       REVOKE ALL ON FUNCTION delete_notebook_scope(text,text,text) FROM PUBLIC;
       GRANT EXECUTE ON FUNCTION delete_notebook_scope(text,text,text) TO daon_app;
