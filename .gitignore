@@ -18,6 +18,8 @@ build/
 target/
 apps/desktop/src-tauri/binaries/
 apps/desktop/src-tauri/gen/
+apps/mobile/android/.gradle/
+apps/mobile/android/app/.cxx/
 __pycache__/
 .pytest_cache/
 *.py[cod]
