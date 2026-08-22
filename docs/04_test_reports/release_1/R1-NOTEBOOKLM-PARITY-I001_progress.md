@@ -284,3 +284,13 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 미해결: 변경은 아직 commit/push하지 않았으며 실제 운영 DB/worker에서 `POLICY_PROJECTION_MISMATCH` 해소 및 Library 완료 상태 확인이 필요하다.
 - 다음 조치: main agent 검토 후 커밋·푸시와 ysna 재배포를 진행한다.
 - 추가 검증: Source-only 정책 정규화 회귀 테스트를 `test_studio_workspace_postgres.py`에 추가했으며 Postgres repository 포함 관련 pytest는 33 passed, 1 skipped이다. 로컬 compile 및 `git diff --check`도 통과했다.
+
+## 2026-08-22 Studio Library stale context 필터 수정
+
+- 상태: IMPLEMENTED_LOCAL / 커밋·푸시 전
+- issue_id: R1-NOTEBOOKLM-PARITY-I001-T5-SOURCE-ONLY
+- 판정: ysna에서 Source-only job과 `studio_outputs`/`output_versions`/`notebook_bindings` 저장이 완료됐지만 Library가 0으로 보인 원인은 Notebook context 생성 시점의 `studio_output_ids`·`output_version_ids`를 Product Studio 목록에 다시 적용한 stale snapshot 필터였다.
+- 조치: `listProductStudioOutputs`는 `notebookId`를 전달한 서버 API가 이미 Notebook 범위 격리를 수행하므로 context ID 목록으로 재필터링하지 않고 API의 최신 `outputs`와 `studioLocks`를 그대로 반환하도록 수정했다. 기존 `listStudioOutputs` 및 생성/버전 작업의 context ID 검증은 유지했다.
+- 검증: stale context에서 새 output을 보존하는 회귀 테스트를 추가했다. 관련 테스트 및 `git diff --check` 실행 결과는 작업 종료 보고에 기록한다.
+- 미해결: 실제 ysna 브라우저 Library 표시 및 재배포 검증은 미실행. 이번 adapter 변경은 커밋·푸시 전이다.
+- 다음 조치: main agent가 관련 diff 검토 후 커밋·푸시 및 ysna 재배포·브라우저 검증을 판단한다.
