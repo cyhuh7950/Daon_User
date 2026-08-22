@@ -252,3 +252,4 @@
 - 배포/재검증: YSNA API와 studio-worker를 `c65070b` 기준으로 재빌드·재기동했다. 재시도 Job `studio-job-7d4560a1f8ad8cd7184d9869aabfb8e0`은 `completed`, DB에 `output-5c517909e8f548add11eec71924821ee`가 생성됐으며 새로고침 후 Library가 3개 산출물을 표시했다.
 - 회귀: `services/api/tests/test_studio_workspace_postgres.py` `21 passed, 1 skipped`. 변경은 `studio_workspace_postgres.py`와 회귀 fixture에 한정했고 커밋·푸시 `c65070b`, 진행기록 커밋 `cfcdba6`이다.
 - 미검증: 다른 Studio 유형(슬라이드·오디오 등), 원격 Oracle 운영 배포, Upstage 간헐 응답 변동의 장기 안정성은 아직 확인하지 않았다. 이 범위는 PASS로 선언하지 않는다.
+- 후속 회귀: Studio·질문·egress·runtime HTTP 묶음 `50 passed, 1 skipped, 19 warnings`로 재실행했다. 경고는 기존 httpx per-request cookie deprecation이며 기능 실패가 아니다.
