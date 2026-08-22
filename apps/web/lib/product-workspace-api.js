@@ -172,6 +172,10 @@ export async function listWorkspaceConnectors(workspaceId, { fetchImpl = fetch, 
   const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors`, {
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    throw new Error("CONNECTOR_RESPONSE_CONTENT_TYPE_INVALID");
+  }
   const payload = await json(response, "CONNECTOR_RESPONSE_INVALID");
   if (!response.ok) throw safeResponseError(payload, "CONNECTOR_LIST_FAILED");
   if (!exact(payload, ["data", "meta"])) throw new Error("CONNECTOR_RESPONSE_SHAPE_INVALID");
