@@ -273,3 +273,14 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: Source-only UI/API 입력 테스트 9/9 PASS; API Studio·worker·runtime HTTP pytest 13/13 PASS; Web production build 및 UI boundary PASS; `git diff --check` 오류 없음.
 - 미검증: 실제 Postgres/worker에서 Source Version의 Evidence Span을 조회하는 Source-only 생성, 로그인 브라우저 클릭, ysna 배포·실제 provider 결과는 미검증. 오디오/동영상은 provider 미연결 `STUDIO_OUTPUT_UNAVAILABLE` 정책을 유지한다.
 - 다음 조치: 관련 파일만 commit/push한 뒤 main agent가 ysna 배포 및 실제 Source 선택→job→Library 통합 검증을 판단한다.
+
+## 2026-08-22 Source-only 정책 정규화 재작업
+
+- 상태: IMPLEMENTED_LOCAL / 커밋·푸시 전
+- issue_id: R1-NOTEBOOKLM-PARITY-I001-T5-SOURCE-ONLY
+- 판정: ysna 실제 Source-only job의 `POLICY_PROJECTION_MISMATCH`는 Source-only 요청의 `ruleset_version_id=null`/입력 정책값을 grounded 경로와 동일하게 비교한 원인으로 확인됐다.
+- 조치: Source-only 생성에서는 현재 유효한 Workspace 정책의 `review_condition`과 `ruleset_version_id`를 서버 기준으로 settings snapshot·generation request·output lineage에 정규화한다. 기존 grounded 생성은 기존 strict policy comparison을 유지한다.
+- 검증: Postgres repository 포함 API Studio·worker·runtime HTTP pytest 32/32 PASS, 1개 외부 DB 의존 테스트는 기존 조건으로 skip. 실제 ysna 재배포·재시도는 아직 미실행.
+- 미해결: 변경은 아직 commit/push하지 않았으며 실제 운영 DB/worker에서 `POLICY_PROJECTION_MISMATCH` 해소 및 Library 완료 상태 확인이 필요하다.
+- 다음 조치: main agent 검토 후 커밋·푸시와 ysna 재배포를 진행한다.
+- 추가 검증: Source-only 정책 정규화 회귀 테스트를 `test_studio_workspace_postgres.py`에 추가했으며 Postgres repository 포함 관련 pytest는 33 passed, 1 skipped이다. 로컬 compile 및 `git diff --check`도 통과했다.

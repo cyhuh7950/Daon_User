@@ -78,6 +78,16 @@ class MixedContextConnection(Connection):
         return super().execute(sql, params)
 
 
+class SourceOnlyConnection(Connection):
+    def execute(self, sql, params=()):
+        if "FROM source_versions sv JOIN sources s" in sql:
+            self.statements.append((sql, params))
+            return Result(rows=(
+                ("source-version-1", "source-1", "span-1", {"text": "Source 원문", "page": 1}, {"filename": "guide.pdf"}),
+            ))
+        return super().execute(sql, params)
+
+
 class VersionHistoryConnection(Connection):
     def execute(self, sql, params=()):
         self.statements.append((sql, params))
@@ -283,6 +293,23 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         self.assertFalse(replayed)
         self.assertEqual({item["source_version_id"] for item in output["citations"]}, {"source-version-daon", "source-version-1"})
         self.assertEqual("혼합 근거 답변", output["content"]["body"])
+
+    def test_source_only_normalizes_workspace_policy_without_grounded_run(self) -> None:
+        cloud = Cloud(); cloud.connection = SourceOnlyConnection()
+        request = StudioGenerationRequest(
+            output_type="evidence_report", source_id="source-1", source_version_ids=("source-version-1",),
+            run_id=None, run_result_id=None, purpose="Source 보고", audience="운영자", ruleset_version_id=None,
+            length="short", structure="summary", output_format="pdf", review_condition="review_required",
+            source_only=True,
+        )
+        output, replayed = PostgresStudioWorkspaceRepository(cloud).create_generation(
+            StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1"),
+            request, "source-only-policy-key-0001",
+        )
+        self.assertFalse(replayed)
+        self.assertEqual(output["content"]["body"], "Source 원문")
+        settings = next(params for sql, params in cloud.connection.statements if sql.startswith("INSERT INTO generation_settings_snapshots"))
+        self.assertIn("ruleset-v3", str(settings))
 
     def test_version_history_restores_citations_and_lifecycle_links(self) -> None:
         cloud = Cloud(); cloud.connection = VersionHistoryConnection()
