@@ -27,7 +27,7 @@ def upgrade() -> None:
         expected_version bigint NOT NULL CHECK (expected_version > 0),
         request_fingerprint text NOT NULL CHECK (request_fingerprint ~ '^[0-9a-f]{64}$'),
         UNIQUE (tenant_id,workspace_id,actor_id,idempotency_key),
-        UNIQUE (tenant_id,workspace_id,request_id),
+        UNIQUE (tenant_id,workspace_id,request_id)
       );
       CREATE INDEX notebook_deletion_pending ON notebook_deletion_requests(tenant_id,workspace_id,state,requested_at);
       ALTER TABLE notebook_deletion_requests ENABLE ROW LEVEL SECURITY;
