@@ -479,3 +479,11 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 미검증: Source 기반 한국어 질문의 실제 Citation과 Studio 새 산출물 생성 클릭은 브라우저에서 아직 실행하지 않았다.
 - 추가 확인: YSNA 브라우저에서 `근거 기반 보고서` 카드의 설정 화면을 열어 사용 Source·목적·독자·언어·분량·구성·출력 형식·검토 조건·현재 모델을 확인했다. 생성 버튼은 외부 상태를 만드는 동작이므로 별도 클릭하지 않았다.
 
+## 2026-08-23T00:46:00+09:00 Source 질문 진입 오류 완화
+- 상태: `DEPLOYED / SOURCE_CITATION_RECHECK_PENDING`
+- 판정: Notebook에 과거 대화 이력이 없거나 여러 thread가 있는 경우에도 새 Source 질문을 막지 않아야 한다. 기존 대화 이력 조회 실패가 질문 화면의 차단성 경고로 노출되어 Source 질문 실행을 방해할 수 있었다.
+- 조치: `ProductWorkspaceShell`에서 선택 Notebook의 이전 대화 이력은 선택적 상태로 처리하고, 조회 실패 시 현재 Source 질문을 계속 사용할 수 있도록 차단 경고를 제거했다. 관련 UI 회귀 테스트를 갱신했다.
+- 검증: `node --test scripts/tests/product-workspace.test.mjs scripts/tests/notebook-context-adapter.test.mjs scripts/tests/notebook-api.test.mjs` 결과 `33 passed`; 커밋 `94a1c0a`; YSNA API·worker·Web 재빌드·재기동 완료, Web bundle에서 `conversationSafeError:null` 반영 확인.
+- 미검증: 현재 연결된 in-app 브라우저 탭은 재배포 직후 502 캐시/프록시 화면으로 전환되어 새 번들의 Source Citation 클릭 검증을 완료하지 못했다. YSNA 외부 `/notebooks`는 셸에서 HTTP 200이며 컨테이너는 healthy 상태다.
+- 다음 조치: 브라우저 탭이 정상 응답으로 복귀하면 Source 선택 → 한국어 질문 → 답변·Citation을 즉시 확인하고, 이어 Studio 새 산출물 생성까지 진행한다.
+
