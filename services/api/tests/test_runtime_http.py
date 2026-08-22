@@ -226,6 +226,19 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unauthenticated.status_code, 401)
         self.assertEqual(context_without_auth.status_code, 401)
 
+    async def test_connector_list_contract_returns_safe_views(self) -> None:
+        auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
+        response = await self.client.get("/api/v1/workspaces/workspace-001/connectors", headers=auth)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(set(payload), {"data", "meta"})
+        self.assertEqual(set(payload["data"]), {"connectors"})
+        self.assertEqual(payload["meta"]["workspace_id"], "workspace-001")
+        self.assertEqual(
+            {item["connector_id"] for item in payload["data"]["connectors"]},
+            {"mcp-open-law-go-kr", "daon-approved-knowledge"},
+        )
+
     async def test_source_upload_rejects_invalid_pdf_and_cross_scope_before_write(self) -> None:
         auth = {
             "cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}",
