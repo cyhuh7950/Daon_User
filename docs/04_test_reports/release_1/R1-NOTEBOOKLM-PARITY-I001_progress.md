@@ -221,3 +221,5 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: workspace lint 3 files PASS; product workspace/source knowledge tests 39/39 PASS; web production build 및 UI boundary PASS; `git diff --check` PASS.
 - 미검증: API pytest는 로컬 환경에 `psycopg_pool` 의존성이 없어 수집 단계에서 중단됨; ysna Docker 재배포 및 실제 브라우저에서 비밀번호 입력 후 Source 질문 성공은 아직 미검증.
 - 다음 조치: 변경을 커밋·푸시하고 ysna에 배포한 뒤 로그인 세션에서 Source 질문 승인·응답을 실제 검증한다.
+- 배포: `a967fb8`을 ysna-server `web` 및 의존 API 재기동으로 배포했고 이미지 빌드·TypeScript·UI boundary가 PASS했다.
+- 현재 예외: API 재기동으로 기존 브라우저 세션이 만료되어 실제 브라우저는 로그인 화면이다. 로그인 전 Source 승인창·응답 검증은 수행하지 않았다.
