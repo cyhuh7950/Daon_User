@@ -91,3 +91,12 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 보완: `apps/web/components/actual-workspace.jsx`의 실제 Web Adapter에 `listConnectors`와 `reconnectConnector`를 product-workspace-api same-origin 함수로 연결했다. 외부 주소·mock 호출은 추가하지 않았다.
 - 보완: Source 추가 정적 계약 테스트에 Adapter 함수 연결, BFF 상대 경로, 연결형 Source의 `사용 불가` 표시를 추가했다.
 - 테스트: `node --test scripts/tests/notebook-source-add-flow.test.mjs` → `4 passed`; `node --check apps/web/lib/product-workspace-api.js` 통과. JSX 파일은 Node 단독 syntax-check 대상이 아니므로 Next 빌드에서 검증해야 한다.
+
+### Task 3 ysna-server 배포 확인
+
+- 배포: `4b7e5ba` 기준 API·document-worker·web 이미지를 재빌드하고 재기동했다.
+- 빌드: API/worker 이미지와 Web Next.js 빌드 성공. TypeScript 및 `verify-product-ui-boundary` 성공(`violations: []`).
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, 기존 MinIO `healthy`.
+- 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
+- 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`; `DAON_DEV_AUTH_BYPASS`는 설정되지 않음.
+- 미완료: Connector 상태·Source binding의 Postgres 영속화, 국가법령정보센터 실제 API 호출/인증 검증, 로그인된 브라우저의 실제 Connector·Source 클릭 검증, DB·MinIO 실물 정합성은 아직 수행하지 못했다. 이 검증 전에는 Task 3을 최종 완료로 판정하지 않는다.
