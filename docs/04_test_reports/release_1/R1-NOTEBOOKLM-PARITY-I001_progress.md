@@ -514,3 +514,8 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: 구조화 Studio 9종을 실제 YSNA 브라우저에서 각각 생성해 모두 DB `completed`, attempt 1과 Library 항목을 확인했다. AI 오디오 `studio-job-2326cc5bc661b30955c8f42064e54766`, 동영상 `studio-job-f2790ecc44c7b0125238bf840b7d66bb`는 `unavailable / STUDIO_OUTPUT_UNAVAILABLE`로 종료됐다.
 - 미검증: draft 승인/검토 후 Export 다운로드와 파일 Hash, 장시간 Provider soak, Oracle 운영 배포.
 
+## 2026-08-23T05:03:00+09:00 YSNA 안정성 관찰
+- 상태: `BOUNDED_SOAK_PASS`
+- 검증: 구조화 Studio 9종과 Media 미지원 2종 생성 직후 120초 동안 10초 간격으로 API/document-worker/studio-worker/web/MinIO 상태를 관찰했다. 전 구간 API·Web healthy, Worker running, MinIO healthy였고 재시작·비정상 종료는 없었다.
+- 미검증: 장시간(수시간 이상) Provider 부하·soak과 실제 Export 파일 다운로드/Hash는 별도 범위로 남긴다.
+
