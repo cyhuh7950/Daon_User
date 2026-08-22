@@ -174,9 +174,12 @@ export async function listWorkspaceConnectors(workspaceId, { fetchImpl = fetch, 
   });
   const payload = await json(response, "CONNECTOR_RESPONSE_INVALID");
   if (!response.ok) throw safeResponseError(payload, "CONNECTOR_LIST_FAILED");
-  if (!exact(payload, ["data", "meta"]) || !exact(payload.data, ["connectors"])
-      || !Array.isArray(payload.data.connectors) || !payload.data.connectors.every(validConnector)
-      || !validMeta(payload.meta, workspace)) throw new Error("CONNECTOR_RESPONSE_INVALID");
+  if (!exact(payload, ["data", "meta"])) throw new Error("CONNECTOR_RESPONSE_SHAPE_INVALID");
+  if (!exact(payload.data, ["connectors"]) || !Array.isArray(payload.data.connectors)) {
+    throw new Error("CONNECTOR_RESPONSE_DATA_INVALID");
+  }
+  if (!validMeta(payload.meta, workspace)) throw new Error("CONNECTOR_RESPONSE_META_INVALID");
+  if (!payload.data.connectors.every(validConnector)) throw new Error("CONNECTOR_RESPONSE_ITEM_INVALID");
   return payload.data.connectors;
 }
 
