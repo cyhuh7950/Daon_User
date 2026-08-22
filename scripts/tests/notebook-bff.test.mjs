@@ -54,3 +54,34 @@ test("Notebook BFF는 삭제와 cross-origin write를 upstream 전에 차단한�
   assert.deepEqual([deleted.status, crossOrigin.status], [405, 403]);
   assert.equal(captured.length, 0);
 });
+
+test("Connector Source BFF는 목록·등록·재연결·해제·Source 목록을 API 계약으로 전달한다", async () => {
+  const captured = [];
+  const proxy = makeProxy(captured);
+  const requests = [
+    ["GET", ["workspaces", "workspace-1", "connectors"]],
+    ["POST", ["workspaces", "workspace-1", "connectors"]],
+    ["POST", ["workspaces", "workspace-1", "connectors", "mcp-open-law-go-kr", "reconnect"]],
+    ["POST", ["workspaces", "workspace-1", "connectors", "mcp-open-law-go-kr", "disconnect"]],
+    ["GET", ["workspaces", "workspace-1", "connectors", "mcp-open-law-go-kr", "sources"]],
+  ];
+  const responses = [];
+  for (const [method, path] of requests) {
+    const response = await proxy(new Request(`${ORIGIN}/bff/api/${path.join("/")}`, {
+      method,
+      headers: method === "POST"
+        ? { Cookie: COOKIE, Origin: ORIGIN, "Content-Type": "application/json", "Idempotency-Key": `connector-${responses.length + 1}` }
+        : { Cookie: COOKIE },
+      body: method === "POST" ? "{}" : undefined,
+    }), path);
+    responses.push(response.status);
+  }
+  assert.deepEqual(responses, [200, 200, 200, 200, 200]);
+  assert.deepEqual(captured.map(({ url, method }) => ({ url, method })), [
+    { url: "https://api.example.com/api/v1/workspaces/workspace-1/connectors", method: "GET" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-1/connectors", method: "POST" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-1/connectors/mcp-open-law-go-kr/reconnect", method: "POST" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-1/connectors/mcp-open-law-go-kr/disconnect", method: "POST" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-1/connectors/mcp-open-law-go-kr/sources", method: "GET" },
+  ]);
+});
