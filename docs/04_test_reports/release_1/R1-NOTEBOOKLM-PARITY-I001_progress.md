@@ -304,3 +304,12 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: `services/api/tests/test_studio_workspace_postgres.py` 21 passed, 1 skipped; SQL 회귀 테스트 추가; `git diff --check` PASS.
 - 미해결: ysna 재배포 후 실제 목록 API·브라우저 Library 표시 검증은 미실행. 이번 수정은 커밋·푸시 전이다.
 - 다음 조치: main agent가 diff 검토 후 커밋·푸시와 ysna 재배포·브라우저 재검증을 판단한다.
+
+## 2026-08-22 ysna 재배포·브라우저 검증 완료
+
+- 상태: VERIFIED_ON_YSNA
+- 커밋: `8a421e7d0c65abd393f915e4e262aa54bc8086bf` (`fix(studio): correct notebook output listing query`)
+- 배포: `ysna-server:/home/ubuntu/deploy/daon-user`에서 해당 커밋 checkout 후 `api`, `document-worker`, `studio-worker`, `web` 재빌드·기동. 네 서비스 healthy/up, object-storage healthy 확인.
+- 브라우저: 로그인 세션의 `Daon 실제 기능 검증` Notebook을 열고 화면을 새로 로드했다. `업무 Studio > 저장된 산출물`이 `2`로 표시되고 두 개의 `근거 기반 보고서`가 노출됐다. 기존 `요청을 안전하게 완료하지 못했습니다` Studio 오류는 재현되지 않았다.
+- 판정: Source-only Studio 생성 결과가 DB에 저장된 뒤 Notebook 목록 조회·Library 표시까지 정상화됐다.
+- 잔여: `연결형 Source` 목록은 별도 connector endpoint 오류로 계속 경고를 표시한다. 이번 SQL 수정 범위의 Studio 산출물 목록과는 별개이며, MCP/Daon 승인 지식 connector 작업에서 별도 처리한다.
