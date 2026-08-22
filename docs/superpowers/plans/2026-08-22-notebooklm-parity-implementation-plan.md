@@ -19,6 +19,7 @@
 - Source 등록 시 `Notebook과 함께 삭제`와 `Notebook 삭제와 무관하게 보관`을 선택한다.
 - 동일한 파일 내용은 Digest로 중복 저장하지 않는다.
 - MCP와 Daon 승인 지식은 연결형 Source UI를 공유하되 수명주기는 분리한다. MCP는 사용자 등록·즉시 삭제, Daon 승인 지식은 시스템 고정이다.
+- MCP 등록 정보·Workspace 바인딩은 Postgres에 영속화하여 API 재시작 후 복구한다. Connector는 Workspace별로 격리한다.
 - 브라우저 코드에는 API 절대주소·localhost·Docker 내부 주소를 넣지 않는다.
 - 구현 전 설계서와 본 계획의 신산님 승인이 필요하다.
 - 로컬 검증 → Git Push → ysna-server 배포·통합검증 → 운영 배포 승인 순서를 지킨다.
@@ -68,6 +69,7 @@
 
 - [ ] 공통 Connector 상태·재연결·해제 계약을 정의한다.
 - [ ] MCP Connector 등록·즉시 로컬 삭제 계약을 정의한다(외부 원본은 삭제하지 않음).
+- [ ] MCP Connector 등록 정보와 Workspace 바인딩을 Postgres migration/repository로 영속화하고 API 재시작 복구를 검증한다.
 - [ ] 국가법령정보센터 `https://open.law.go.kr/` 샘플 Connector를 구현한다.
 - [ ] 인증정보·쿼터·외부 주소를 BFF/서버에만 둔다.
 - [ ] Daon 승인 지식은 같은 Source 상태·선택 인터페이스로 노출하되 사용자 등록·삭제 컨트롤은 제공하지 않는다.

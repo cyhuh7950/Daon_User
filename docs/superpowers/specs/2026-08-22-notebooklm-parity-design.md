@@ -87,6 +87,8 @@ NotebookLM과의 차이는 Source 선택지에 다음 두 연결형 Source를 �
 
 - 서버 이름, 제공자, 연결 상태, 마지막 확인 시각 표시
 - MCP는 등록·재연결·연결 해제·즉시 삭제를 제공한다. Daon 승인 지식은 시스템이 관리하며 재연결·상태만 제공한다.
+- MCP 등록 정보와 Notebook별 연결 바인딩은 Postgres에 영속화한다. API 재시작·컨테이너 재생성 후에도 동일 Workspace에서 등록 상태와 `사용 불가` 상태를 복구한다.
+- Connector 영속화 레코드는 Workspace 소유권으로 격리하고, MCP 삭제는 해당 Workspace의 로컬 바인딩과 등록 정보만 즉시 제거한다.
 - Notebook에서 사용할 Resource/도구 선택
 - 장애·권한 만료 시 `사용 불가` 표시
 - 연결 해제는 현재 Notebook의 사용 연결만 제거
