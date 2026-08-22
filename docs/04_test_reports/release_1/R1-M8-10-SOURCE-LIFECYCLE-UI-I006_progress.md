@@ -475,3 +475,12 @@
 - 커밋/배포: `88a32eb` push 후 ysna-server에 checkout 및 `docker compose --env-file .env -f deploy/daon-user/compose.yaml up -d --build api document-worker web` 완료. 원격 HEAD `88a32eb1`; API healthy, Worker Running, Web healthy, Object Storage healthy; 내부·공개 `/notebooks` HTTP 200.
 - API smoke: 공개 무쿠키 `/bff/api/session`은 `401 AUTHENTICATION_REQUIRED`로 정상 인증 경계를 확인했다. 인증된 삭제 요청 API의 실제 `If-Match` 성공 smoke는 브라우저 세션/쿠키를 도구에서 읽을 수 없어 미실행이다.
 - 다음 단계: 인증된 세션에서 Notebook 목록 응답의 각 항목 `etag`를 확인하고 동일 값을 DELETE `If-Match`로 전달하는 실제 삭제 요청을 재검증한다.
+## 2026-08-22 — processing job attempts FK 삭제 순서 보정
+
+- 원인: ysna 실제 DB에서 `document_processing_jobs` 삭제 시 하위 `document_processing_job_attempts` FK 위반이 발생했다. Source 없는 Notebook은 통과하고 Source/processing job이 있는 Notebook만 실패한 원인이었다.
+- 수정: migration 0023의 `delete_notebook_scope`에서 attempts를 `job_id`/source-version 범위로 먼저 삭제한 뒤 jobs를 삭제하도록 변경했다. attempts 및 processing_runs의 immutable/audit trigger도 함수 범위에서 일시 비활성화 후 반드시 복구한다.
+- 테스트: 회귀 schema assertion을 먼저 추가해 기존 migration에서 실패 확인 후 수정했다. focused deletion tests `5 passed`.
+- ysna 조치: 백업 `/tmp/daon-delete-pre-attempts-88a32eb.dump`(937101 bytes) 생성. feature SHA `550149c` push 및 ysna checkout/rebuild 완료. API/Worker/Web 컨테이너 정상, Web build product boundary `scannedFiles=416`, violations 0. DB 함수는 migration 0023 함수 정의를 재적용했다.
+- 실제 DB fixture: disposable Notebook/Source/SourceVersion/ProcessingRun/Job/Attempt/Binding을 transaction 안에서 생성하고 `delete_notebook_scope`를 호출했다. 결과 source row 반환, `attempts_remaining=0`, `jobs_remaining=0`, `ROLLBACK`으로 fixture 정리 완료. FK 오류와 audit trigger 오류 없이 통과했다.
+- API smoke: 공개 무쿠키 session은 기존대로 401 인증 경계를 유지한다. 인증 세션의 DELETE HTTP 클릭 E2E는 브라우저 세션 도구 제한으로 별도 미실행이며, DB 함수 직접 fixture 검증으로 핵심 cleanup 경로를 확인했다.
+- 다음 단계: 부모 에이전트가 최종 판정한다. 운영 master/Oracle 배포는 하지 않았다.
