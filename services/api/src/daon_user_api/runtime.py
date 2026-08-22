@@ -2414,8 +2414,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if cast(Any, prepared).selection.provider_kind != "external_api":
             raise QuestionAnsweringError("QUESTION_EXTERNAL_AUTHORIZATION_NOT_REQUIRED", status=409)
         approver_roles = {
-            "workspace_manager": {Role.WORKSPACE_ADMIN, Role.ORGANIZATION_ADMIN},
-            "organization_admin": {Role.ORGANIZATION_ADMIN},
+            # A personal workspace has no organization/workspace-admin
+            # membership; its owner is the only valid approver for its own
+            # external-transfer step-up.
+            "workspace_manager": {
+                Role.PERSONAL_OWNER, Role.WORKSPACE_ADMIN, Role.ORGANIZATION_ADMIN,
+            },
+            "organization_admin": {Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN},
         }
         if grant.role not in approver_roles[effective.required_approver]:
             raise AuthorizationError("ACTION_DENIED", 403)
