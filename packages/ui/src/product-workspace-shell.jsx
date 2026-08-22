@@ -1325,13 +1325,15 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {viewState.status === "error" ? <div className="inline-alert" role="alert"><span>Source를 불러오지 못했습니다. 운영상태에서 연결을 확인해 주세요.</span><button type="button" onClick={() => { setViewState((current) => ({ ...current, status: "loading", safeError: null })); setLoadRevision((current) => current + 1); }}>다시 시도</button></div> : null}
           {sourceAction ? <section className="source-action-dialog" role="dialog" aria-modal="true" aria-label="Source 작업 확인">
             <strong>{sourceAction.filename ?? sourceAction.sourceId}</strong>
-            {sourceAction.deletionRequest ? <p role="status">{sourceAction.deletionRequest.data.state === "cancelled"
-              ? "삭제 요청이 취소되었습니다. 원본 Source는 보존됩니다."
-              : "삭제 요청이 접수되었습니다. 30일 유예 중이며 Legal Hold가 있으면 삭제보다 우선합니다."}</p>
+            {sourceAction.deletionRequest ? <p role="status">{sourceAction.deletionRequest.data.state === "purged"
+              ? "Source가 즉시 삭제되었습니다."
+              : sourceAction.deletionRequest.data.state === "cancelled"
+                ? "삭제 요청이 취소되었습니다. 원본 Source는 보존됩니다."
+                : "Source 삭제가 처리되었습니다."}</p>
               : sourceActionKind === "unbind" ? <p>Notebook에서 제거하면 원본 Source는 보존되고 이 Notebook의 질문과 Studio에서만 제외됩니다.</p>
-                : <p>Source 삭제 요청은 원본을 즉시 비활성화하고 30일 유예를 시작합니다. Legal Hold가 있으면 영구 삭제되지 않습니다.</p>}
+                : <p>Source 삭제는 원본과 이 Notebook의 연결을 즉시 제거합니다. 삭제 후 복구할 수 없습니다.</p>}
             {sourceActionSafeError ? <div role="alert">요청을 처리하지 못했습니다. 다시 확인해 주세요.</div> : null}
-            <div>{sourceAction.deletionRequest?.data.state !== "cancelled"
+            <div>{sourceAction.deletionRequest?.data.state !== "cancelled" && sourceAction.deletionRequest?.data.state !== "purged"
               ? sourceAction.deletionRequest
                 ? <button type="button" disabled={sourceActionPending} onClick={() => void confirmSourceDeletionCancel()}>삭제 요청 취소</button>
                 : sourceActionKind === "unbind"

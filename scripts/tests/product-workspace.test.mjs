@@ -271,7 +271,7 @@ test("근거 보고서는 Raw·Daon 혼합 Context의 sufficient Citation 답변
   assert.equal(canCreateGroundedReport({ ...daonOnly, answer: { ...daonOnly.answer, citations: [{ ...daonOnly.answer.citations[0], source_version_id: "" }] } }), false);
 });
 
-test("Source 작업은 Notebook 연결 해제와 30일 삭제 요청·취소를 분리한다", async () => {
+test("Source 작업은 Notebook 연결 해제와 즉시 삭제를 분리한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".workspace-source-actions-react-"));
   const dom = installMinimalDom();
@@ -294,8 +294,7 @@ test("Source 작업은 Notebook 연결 해제와 30일 삭제 요청·취소를 
       async listSources() { return [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }]; },
       async listStudioOutputs() { return []; },
       async unbindSource(source, options) { calls.push(["unbind", source.sourceId, options.bindingEtag]); },
-      async requestSourceDeletion(source) { calls.push(["request", source.sourceId]); return { data: { request_id: "request-1", source_id: source.sourceId, state: "grace_period" }, etag: '"deletion:request-1:1"' }; },
-      async cancelSourceDeletionRequest(requestId, options) { calls.push(["cancel", requestId, options.etag]); return { data: { request_id: requestId, source_id: "source-1", state: "cancelled" }, etag: '"deletion:request-1:2"' }; },
+      async requestSourceDeletion(source) { calls.push(["request", source.sourceId]); return { data: { request_id: "request-1", source_id: source.sourceId, state: "purged" }, etag: '"deletion:request-1:1"' }; },
     };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
     reactRoot = createRoot(container);
@@ -308,18 +307,16 @@ test("Source 작업은 Notebook 연결 해제와 30일 삭제 요청·취소를 
     const confirm = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 확인")[0];
     await act(async () => { confirm.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     assert.deepEqual(calls, [["request", "source-1"]]);
-    assert.match(container.textContent, /30일 유예/u);
-    const cancel = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소")[0];
-    await act(async () => { cancel.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
-    assert.deepEqual(calls, [["request", "source-1"], ["cancel", "request-1", '"deletion:request-1:1"']]);
-    assert.match(container.textContent, /원본 Source는 보존/u);
+    assert.match(container.textContent, /Source가 즉시 삭제되었습니다/u);
+    assert.equal(findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소").length, 0);
+    assert.deepEqual(calls, [["request", "source-1"]]);
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     dom.restore(); await rm(output, { recursive: true, force: true });
   }
 });
 
-test("새로고침 뒤 active 삭제 요청을 복원하고 취소 동작을 제공한다", async () => {
+test("새로고침 뒤 완료된 즉시 삭제 상태를 복원하고 취소 동작을 제공하지 않는다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".workspace-source-deletion-restore-"));
   const dom = installMinimalDom(); let reactRoot;
@@ -334,16 +331,14 @@ test("새로고침 뒤 active 삭제 요청을 복원하고 취소 동작을 제
     const { ProductWorkspaceShell } = await import(`${pathToFileURL(path.join(output, entry)).href}?restore=${Date.now()}`);
     const calls = [];
     const effectAdapter = { ...adapter, async listSources() { return []; }, async listStudioOutputs() { return []; },
-      async listSourceDeletionRequests() { return [{ request_id: "request-1", source_id: "source-1", state: "grace_period", version: 2, grace_until: "2026-09-20T00:00:00Z", legal_hold_active: false }]; },
-      async cancelSourceDeletionRequest(requestId, options) { calls.push([requestId, options.etag]); return { data: { request_id: requestId, source_id: "source-1", state: "cancelled" }, etag: '"deletion:request-1:3"' }; } };
+      async listSourceDeletionRequests() { return [{ request_id: "request-1", source_id: "source-1", state: "purged", version: 2, grace_until: "2026-09-20T00:00:00Z", legal_hold_active: false }]; } };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
     await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
     const action = findElements(container, (node) => node.tagName === "BUTTON" && /source-1 삭제 요청 상태/u.test(node.getAttribute?.("aria-label") ?? ""))[0];
     assert.ok(action); await act(async () => action.dispatchEvent(new MinimalEvent("click")));
-    assert.match(container.textContent, /30일 유예/u);
-    const cancel = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소")[0];
-    await act(async () => { cancel.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
-    assert.deepEqual(calls, [["request-1", '"deletion:request-1:2"']]);
+    assert.match(container.textContent, /Source가 즉시 삭제되었습니다/u);
+    assert.equal(findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소").length, 0);
+    assert.deepEqual(calls, []);
   } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
 });
 
@@ -475,7 +470,10 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
     const emptyContextAdapter = {
       ...adapter,
       notebookContext: { notebook_id: "notebook-empty", sources: [] },
-      async listSources() { emptyContextSourceLoads += 1; throw new Error("STALE_SOURCE_LIST_FAILED"); },
+      async listSources() {
+        emptyContextSourceLoads += 1;
+        return [{ source_id: "source-after-upload", source_version_id: "version-after-upload", filename: "after-upload.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }];
+      },
       async listKnowledgePackages() { return delayedKnowledge.promise; },
       async listStudioOutputs() { return delayedStudio.promise; },
     };
@@ -488,12 +486,11 @@ test("Studio 목록 실패는 ready Source 질문을 보존하고 별도 안전 
       }));
       await Promise.resolve(); await Promise.resolve();
     });
-    assert.match(emptyContextContainer.textContent, /Source를 추가해 주세요/u);
-    assert.doesNotMatch(emptyContextContainer.textContent, /Source를 불러오지 못했습니다/u);
-    assert.equal(emptyContextSourceLoads, 0);
+    assert.equal(emptyContextSourceLoads, 1);
     delayedKnowledge.resolve([]);
     delayedStudio.resolve([]);
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    assert.match(emptyContextContainer.textContent, /after-upload\.pdf/u);
 
     await act(async () => reactRoot.unmount());
     reactRoot = null;
