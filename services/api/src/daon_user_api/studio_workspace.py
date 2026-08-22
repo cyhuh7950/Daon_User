@@ -191,6 +191,20 @@ class StudioWorkspaceService:
         _identifier(idempotency_key)
         return self._repository.create_generation(context, request, idempotency_key)
 
+    def enqueue(self, context: StudioContext, request: StudioGenerationRequest, idempotency_key: str):
+        _identifier(idempotency_key)
+        enqueue = getattr(self._repository, "enqueue_generation", None)
+        if not callable(enqueue):
+            raise StudioError("STUDIO_ASYNC_UNAVAILABLE", 503)
+        return enqueue(context, request, idempotency_key)
+
+    def generation_job(self, context: StudioContext, job_id: str):
+        _identifier(job_id)
+        get_job = getattr(self._repository, "get_generation_job", None)
+        if not callable(get_job):
+            raise StudioError("STUDIO_ASYNC_UNAVAILABLE", 503)
+        return get_job(context, job_id)
+
     def revise(self, context: StudioContext, output_id: str, revision: Mapping[str, object], idempotency_key: str):
         _identifier(output_id); _identifier(idempotency_key)
         if revision.get("revision_type") not in {"user_edit", "ai_regeneration", "settings_change"}:

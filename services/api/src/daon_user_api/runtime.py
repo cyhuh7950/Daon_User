@@ -2595,7 +2595,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if body.source_version_ids != body.settings.source_version_ids:
             raise StudioError("STUDIO_INPUT_INVALID")
         output, replayed = await asyncio.to_thread(
-            studio_workspace_service.generate,
+            studio_workspace_service.enqueue,
             _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id),
             StudioGenerationRequest(
                 body.output_type, body.source_id, tuple(body.source_version_ids), body.run_id,
@@ -2621,8 +2621,36 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response = JSONResponse({"data": output_projection, "meta": {
             "trace_id": request.state.trace_id, "workspace_id": body.workspace_id, "replayed": replayed,
         }}, status_code=200 if replayed else 201)
-        response.headers["ETag"] = f'"studio-version:{output["output_version_id"]}"'
+        response.headers["ETag"] = f'"studio-job:{output["job_id"]}"'
         return response
+
+    @app.get("/api/v1/studio-generation-jobs/{job_id}")
+    async def get_product_studio_generation_job(
+        job_id: str, request: Request, workspace_id: str = Query(), notebook_id: str = Query(),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset({"workspace_id", "notebook_id"}))
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=workspace_id, action=Action.VIEW,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        if studio_workspace_service is None:
+            raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        job = await asyncio.to_thread(
+            studio_workspace_service.generation_job,
+            _product_studio_context(principal, workspace_id, request, dependencies, notebook_id), job_id,
+        )
+        data = _enum_json(job)
+        if not isinstance(data, dict):
+            raise StudioError("STUDIO_RESULT_INVALID", 500)
+        data["lineage"] = {
+            "notebook_id": notebook_id, "source_version_ids": data.get("output", {}).get("source_version_ids", []) if isinstance(data.get("output"), dict) else [],
+            "artifact_type": data.get("output_type"), "instruction": data.get("title"),
+            "run_id": data.get("output", {}).get("run_id") if isinstance(data.get("output"), dict) else None,
+            "citations": data.get("output", {}).get("citations", []) if isinstance(data.get("output"), dict) else [],
+            "verification_required": data.get("status") != "completed",
+        }
+        return JSONResponse({"data": data, "meta": {"trace_id": request.state.trace_id, "workspace_id": workspace_id}})
 
     @app.get("/api/v1/studio-outputs")
     async def list_product_studio_outputs(

@@ -96,11 +96,13 @@
 - Modify: `packages/ui/src/product-workspace-shell.jsx`
 - Test: `services/api/tests/test_notebooklm_studio_outputs.py`
 
-- [ ] 현재 카드 배치를 유지하면서 11개 Studio 기능의 기능·입력·출력 계약을 고정한다.
-- [ ] 생성 전 Source·언어·형식·길이·사용자 지시 설정을 받는다.
-- [ ] Audio/Video/Slide/Infographic/Flashcards/Quiz와 기존 업무 산출물을 백그라운드 작업으로 생성한다.
-- [ ] 생성 결과를 Library에 저장하고 열기·다운로드·삭제한다.
-- [ ] 결과물별 Source 계보와 생성 시각을 보존한다.
+- [x] 현재 카드 배치를 유지하면서 11개 Studio 기능의 기능·입력·출력 계약을 고정한다.
+- [x] 생성 전 Source·언어·형식·길이·사용자 지시 설정을 받는다.
+- [x] Audio/Video를 제외한 9개 구조화 출력과 기존 업무 산출물을 백그라운드 작업으로 생성한다. Audio/Video는 provider 미연결 시 `unavailable`로 종료한다.
+- [x] 생성 결과를 기존 Library 저장·열기·다운로드·삭제 계약에 연결한다.
+- [x] 결과물별 Source 계보와 생성 시각을 보존한다.
+
+비동기 구현 메모: 기존 공통 Studio 작업 큐 계약이 없어 `0024_studio_generation_jobs`, same-origin 상태 조회 API, `studio_generation_worker`를 최소 추가했다. 기존 동기 `create_generation`과 Library 저장 경로는 worker가 재사용하며, 완료를 가장하지 않는다.
 
 ### Task 6: 통합 검증과 ysna-server 배포
 

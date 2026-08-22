@@ -456,7 +456,20 @@ export async function createStudioGeneration(workspaceId, request, { notebookId,
   });
   const payload = await json(response, "STUDIO_RESPONSE_INVALID");
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_CREATE_FAILED");
-  if (!record(payload?.data) || !safeId(payload.data.studio_output_id) || !safeId(payload.data.output_version_id)) throw new Error("STUDIO_RESPONSE_INVALID");
+  if (!record(payload?.data) || !safeId(payload.data.job_id) || !["queued", "leased", "completed", "failed", "unavailable"].includes(payload.data.status)) throw new Error("STUDIO_RESPONSE_INVALID");
+  return payload.data;
+}
+
+export async function getStudioGenerationJob(workspaceId, jobId, { notebookId, fetchImpl = fetch, signal } = {}) {
+  const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
+  const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
+  if (!safeId(jobId)) throw new Error("STUDIO_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/studio-generation-jobs/${encodeURIComponent(jobId)}?workspace_id=${encodeURIComponent(workspace)}&notebook_id=${encodeURIComponent(notebook)}`, {
+    method: "GET", credentials: "same-origin", cache: "no-store", signal,
+  });
+  const payload = await json(response, "STUDIO_RESPONSE_INVALID");
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STUDIO_JOB_FAILED");
+  if (!record(payload?.data) || !safeId(payload.data.job_id) || !["queued", "leased", "completed", "failed", "unavailable"].includes(payload.data.status)) throw new Error("STUDIO_RESPONSE_INVALID");
   return payload.data;
 }
 
