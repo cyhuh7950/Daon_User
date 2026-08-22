@@ -130,6 +130,7 @@ from .knowledge_package import (
 )
 from .knowledge_package_postgres import PostgresKnowledgePackageService
 from .mcp_connector import ConnectorError, ConnectorRegistry, create_open_law_connector
+from .connector_postgres import PostgresConnectorRepository
 from .approved_knowledge_connector import ApprovedKnowledgeConnector
 from .retention import (
     DerivativeInput, ReferenceCleanupPort, ReferenceRetentionRepository,
@@ -439,6 +440,7 @@ class RuntimeDependencies:
     studio_workspace_service: Any | None = None
     egress_policy_service: EgressPolicyService | None = None
     connector_registry: ConnectorRegistry | None = None
+    connector_repository: PostgresConnectorRepository | None = None
     state: RuntimeState = field(default_factory=RuntimeState)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -1295,6 +1297,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             ).as_connector(),
         )
     )
+    connector_repository = dependencies.connector_repository or (
+        PostgresConnectorRepository(dependencies.cloud_store) if dependencies.cloud_store is not None else None
+    )
     retention_service = (
         PostgresRetentionRequestService(
             dependencies.cloud_store,
@@ -2000,7 +2005,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             principal=principal, workspace_id=id, action=Action.VIEW,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        return JSONResponse({"data": {"connectors": [_dataclass_json(item) for item in connector_registry.list()]},
+        connectors = (
+            connector_repository.list(principal.tenant_id, id, principal.user_id, connector_registry.list())
+            if connector_repository is not None else connector_registry.list()
+        )
+        return JSONResponse({"data": {"connectors": [_dataclass_json(item) for item in connectors]},
                              "meta": {"trace_id": request.state.trace_id, "workspace_id": id}})
 
     @app.post("/api/v1/workspaces/{id}/connectors", status_code=201)
@@ -2020,6 +2029,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         else:
             raise ConnectorError("CONNECTOR_KIND_UNSUPPORTED")
         view = connector_registry.register(connector)
+        if connector_repository is not None:
+            connector_repository.register(principal.tenant_id, id, principal.user_id, view)
         return JSONResponse({"data": _dataclass_json(view), "meta": {
             "trace_id": request.state.trace_id, "workspace_id": id,
         }}, status_code=201)
@@ -2033,6 +2044,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
         view = connector_registry.reconnect(connector_id)
+        if connector_repository is not None:
+            view = connector_repository.set_status(principal.tenant_id, id, principal.user_id, connector_id, status=view.status, error_code=view.error_code)
         return JSONResponse({"data": _dataclass_json(view), "meta": {
             "trace_id": request.state.trace_id, "workspace_id": id,
         }})
@@ -2046,6 +2059,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
         view = connector_registry.disconnect(connector_id)
+        if connector_repository is not None:
+            view = connector_repository.set_status(principal.tenant_id, id, principal.user_id, connector_id, status=view.status, error_code=view.error_code)
         return JSONResponse({"data": _dataclass_json(view), "meta": {
             "trace_id": request.state.trace_id, "workspace_id": id,
         }})
@@ -2058,7 +2073,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             principal=principal, workspace_id=id, action=Action.EDIT,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        connector_registry.unregister(connector_id)
+        connector = connector_registry.get(connector_id)
+        if connector_repository is not None:
+            if connector.kind == "daon_approved_knowledge":
+                raise ConnectorError("CONNECTOR_FIXED")
+            connector_repository.unregister(principal.tenant_id, id, principal.user_id, connector_id)
+        else:
+            connector_registry.unregister(connector_id)
         return Response(status_code=204)
 
     @app.get("/api/v1/workspaces/{id}/connectors/{connector_id}/sources")
@@ -2069,7 +2090,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             principal=principal, workspace_id=id, action=Action.VIEW,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        return JSONResponse({"data": {"sources": [_dataclass_json(item) for item in connector_registry.sources(connector_id)]},
+        sources = (
+            connector_repository.sources(principal.tenant_id, id, principal.user_id, connector_id)
+            if connector_repository is not None else connector_registry.sources(connector_id)
+        )
+        return JSONResponse({"data": {"sources": [_dataclass_json(item) for item in sources]},
                              "meta": {"trace_id": request.state.trace_id, "workspace_id": id}})
 
     @app.post("/api/v1/workspaces/{id}/sources", status_code=202)
