@@ -157,6 +157,22 @@ function validConnector(value) {
     && (value.error_code === null || safeText(value.error_code, 1, 128));
 }
 
+function connectorInvalidFieldCode(value) {
+  if (!record(value)) return "CONNECTOR_RESPONSE_ITEM_NOT_OBJECT";
+  if (!exact(value, CONNECTOR_KEYS)) return "CONNECTOR_RESPONSE_ITEM_KEYS_INVALID";
+  const checks = [
+    ["CONNECTOR_ID", safeId(value.connector_id)],
+    ["KIND", CONNECTOR_KINDS.includes(value.kind)],
+    ["NAME", safeText(value.name, 1, 160)],
+    ["STATUS", CONNECTOR_STATUSES.includes(value.status)],
+    ["SOURCE_COUNT", Number.isSafeInteger(value.source_count) && value.source_count >= 0 && value.source_count <= 100_000],
+    ["ENDPOINT_LABEL", safeText(value.endpoint_label, 1, 160)],
+    ["LAST_CHECKED_AT", value.last_checked_at === null || safeText(value.last_checked_at, 1, 64)],
+    ["ERROR_CODE", value.error_code === null || safeText(value.error_code, 1, 128)],
+  ];
+  return checks.find(([, valid]) => !valid)?.[0] ?? "UNKNOWN";
+}
+
 async function connectorRequest(workspaceId, path, options = {}) {
   const workspace = requiredWorkspace(workspaceId, "CONNECTOR_INPUT_INVALID");
   const requestFetch = options.fetchImpl ?? fetch;
@@ -183,7 +199,10 @@ export async function listWorkspaceConnectors(workspaceId, { fetchImpl = fetch, 
     throw new Error("CONNECTOR_RESPONSE_DATA_INVALID");
   }
   if (!validMeta(payload.meta, workspace)) throw new Error("CONNECTOR_RESPONSE_META_INVALID");
-  if (!payload.data.connectors.every(validConnector)) throw new Error("CONNECTOR_RESPONSE_ITEM_INVALID");
+  const invalidIndex = payload.data.connectors.findIndex((item) => !validConnector(item));
+  if (invalidIndex !== -1) {
+    throw new Error(`CONNECTOR_RESPONSE_ITEM_INVALID_${invalidIndex}_${connectorInvalidFieldCode(payload.data.connectors[invalidIndex])}`);
+  }
   return payload.data.connectors;
 }
 
