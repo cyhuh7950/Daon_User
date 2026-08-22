@@ -240,4 +240,5 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 변경 파일: `services/api/src/daon_user_api/identity.py`, `services/api/src/daon_user_api/runtime.py`
 - 검증: API `py_compile` PASS; `git diff --check` PASS; Product Workspace/Source Knowledge 테스트 39/39 PASS.
 - 미검증: 전원 종료 후 재접속을 포함한 실제 브라우저 수동 검증.
-- 다음 조치: 커밋·푸시 후 ysna 재배포하고 브라우저에서 로그인 유지 및 로그아웃 폐기를 확인한다.
+- 배포: commit `da635f1`을 origin에 push하고 ysna-server의 API/Web를 재빌드·재기동했다. 두 컨테이너 모두 `healthy` 확인.
+- 미검증: 브라우저 캐시를 갱신한 뒤 전원 종료·재접속과 명시적 로그아웃 폐기를 실제 수동 검증해야 한다.
