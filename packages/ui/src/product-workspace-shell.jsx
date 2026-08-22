@@ -921,6 +921,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         ? buildQuestionKnowledgeContext(viewState.selectedSource, selectedKnowledgeId)
         : null;
       if (questionEpoch !== questionEpochRef.current || signal.aborted) return;
+      if (knowledgeContext && typeof adapter.authorizeQuestion === "function") {
+        setQuestionAuthorization({ question: question.trim(), conversationMode, knowledgeContext });
+        setModalView("question-authorization");
+        return;
+      }
       const answer = await adapter.askQuestion(
         { knowledgeContext, question: question.trim() },
         { signal, idempotencyKey },
