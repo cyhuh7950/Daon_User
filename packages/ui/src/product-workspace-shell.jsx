@@ -371,7 +371,10 @@ export function projectSafeQuestionAnswer(answer, workspaceId, citationUrl, sele
     } catch {
       throw new Error("QUESTION_RESPONSE_INVALID");
     }
-    const expectedBase = `/bff/api/workspaces/${encodeURIComponent(workspaceId)}/citations/${encodeURIComponent(citation.citation_id)}/content`;
+    // Citation content is notebook-scoped on the BFF contract. The adapter
+    // already includes notebook_id in the generated URL; validate the exact
+    // same URL here so a valid grounded response is not rejected client-side.
+    const expectedBase = `${citationUrl(citation).split("#", 1)[0]}`;
     const expectedUrl = citation.locator.kind === "page" ? `${expectedBase}#page=${citation.page}` : expectedBase;
     const expectedNativeUrl = `#/citations/${encodeURIComponent(citation.citation_id)}?page=${citation.page}`;
     if (contentUrl !== expectedUrl && contentUrl !== expectedNativeUrl) throw new Error("QUESTION_RESPONSE_INVALID");
