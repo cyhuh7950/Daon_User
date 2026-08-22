@@ -194,3 +194,11 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 마이그레이션: 전용 ephemeral `daon_user-api` 컨테이너로 ysna-server `shared-db`에 `0022→0023→0024`를 적용했다. 최종 `alembic_version=0024`, `studio_generation_jobs` 테이블과 `claim_studio_generation_job` 함수가 확인됐다.
 - 최종 런타임: `studio-worker`가 `running`, RestartCount `0`으로 안정화됐고 API/Web/기존 worker/MinIO도 정상 상태를 유지한다.
 - 미실행: 로그인된 브라우저에서 실제 Studio 카드 클릭·polling·Library 결과 확인, provider가 연결된 실제 생성 완료, audio/video provider 연결은 아직 검증하지 않았다. 따라서 Task 5는 서버 배포·마이그레이션 단계까지 완료됐지만 운영 기능 전체 완료로 판정하지 않는다.
+
+### Task 6 브라우저 통합 검증 중단·원인 확인
+
+- 증상: ysna 운영 화면에서 ready Source를 선택하고 `문서의 핵심 내용을 간단히 요약해줘.`를 실행했으나 `대화를 불러오지 못했습니다. 다시 시도해 주세요.`가 표시됐다. Studio 생성은 grounded 답변이 없어 `STUDIO_SETTINGS_INCOMPLETE`로 진행되지 않았다.
+- 확인: 같은-origin BFF에 Origin/Referer를 포함해 직접 호출하면 CSRF 검증은 통과하지만 인증 쿠키가 없는 요청은 `401 AUTHENTICATION_REQUIRED`가 반환된다. API 컨테이너는 `DAON_RUNTIME_PROFILE=production`이고 `DAON_DEV_AUTH_BYPASS`가 없어, 실제 세션 주체가 없으면 질문·생성 API를 거부하는 구성이 맞다.
+- 판정: 브라우저 통합 검증은 인증 세션 상태가 확인되지 않아 `BLOCKED`이며, 기능 성공으로 보고하지 않는다. 현재 화면의 Source 목록 표시만으로 질문 API 인증이 완료됐다고 볼 수 없다.
+- 영향: 질문 답변·Studio grounded 설정·생성 polling·Library 반영을 아직 검증할 수 없다. 코드 수정으로 인증을 우회하지 않는다.
+- 다음 조치: 신산님이 현재 브라우저에서 정상 로그인 세션을 확인한 뒤 같은 Notebook을 새로고침하고, 재시도 결과를 확인한다. 세션이 유효한데도 동일하면 그때 브라우저 요청의 trace와 API 인증 로그를 대조해 수정한다.
