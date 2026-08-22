@@ -129,6 +129,15 @@ test("Notebook selected Context는 exact same-origin projection만 수용한다"
   };
   assert.deepEqual((await getNotebookContext("workspace-1", "notebook-1", { fetchImpl })).data, data);
   assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/notebooks/notebook-1/context");
+  for (const availableContext of [
+    { ...data, conversation_thread_ids: ["thread-1", "thread-2"], conversation: null },
+    { ...data, conversation_thread_ids: ["thread-1", "thread-2"] },
+  ]) {
+    const response = await getNotebookContext("workspace-1", "notebook-1", {
+      fetchImpl: async () => json({ data: availableContext, meta: META }, { status: 200, headers: { ETag: '"notebook-binding:1"' } }),
+    });
+    assert.deepEqual(response.data, availableContext);
+  }
   for (const invalid of [
     { ...data, secret: "blocked" }, { ...data, notebook_id: "../other" },
     { ...data, conversation: { ...data.conversation, answer: { ...data.conversation.answer, internal_url: "https://internal.invalid" } } },

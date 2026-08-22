@@ -79,7 +79,9 @@ function validContext(value, notebookId) {
   const idList = (items) => Array.isArray(items) && items.length <= 1_000
     && new Set(items).size === items.length && items.every(safeId);
   const conversationValid = value?.conversation === null || (
-    exact(value?.conversation, ["conversation_thread_id", "answer"])
+    Array.isArray(value?.conversation_thread_ids)
+    && value.conversation_thread_ids.length > 0
+    && exact(value?.conversation, ["conversation_thread_id", "answer"])
     && value.conversation.conversation_thread_id === value.conversation_thread_ids[0]
     && exact(value.conversation.answer, ["run_id", "run_result_id", "answer", "insufficient", "citations"])
     && safeId(value.conversation.answer.run_id) && safeId(value.conversation.answer.run_result_id)
@@ -103,7 +105,7 @@ function validContext(value, notebookId) {
       && ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"].includes(item.state)
       && Number.isSafeInteger(item.version) && item.version >= 1 && timestamp(item.grace_until)
       && typeof item.legal_hold_active === "boolean")
-    && ((value.conversation === null) === (value.conversation_thread_ids.length === 0));
+    && (value.conversation === null || value.conversation_thread_ids.length > 0);
 }
 
 async function decode(response, { list = false, requireEtag = false } = {}) {
