@@ -46,3 +46,11 @@ test("Notebook Home 공통 설정 메뉴는 화면·라이선스·사용자 설�
     assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_/u);
   }
 });
+
+test("Notebook 삭제 dialog는 카드 레이아웃 바깥의 Home 레벨에서 렌더링된다", async () => {
+  const component = await read("packages/ui/src/notebook-home.jsx");
+  const card = component.slice(component.indexOf("function NotebookCard"), component.indexOf("export function NotebookHome"));
+  assert.doesNotMatch(card, /DeleteDialog/u);
+  assert.match(component, /deletingNotebook/u);
+  assert.match(component, /<DeleteDialog notebook=\{deletingNotebook\}/u);
+});
