@@ -5,7 +5,7 @@ import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, uploadSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
-import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
+import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, registerWorkspaceConnector, unregisterWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
@@ -27,7 +27,9 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     cancelSourceDeletionRequest,
     listKnowledgePackages: (options) => listWorkspaceKnowledgePackages(workspaceId, options),
     listConnectors: (options) => listWorkspaceConnectors(workspaceId, options),
+    registerConnector: (input, options) => registerWorkspaceConnector(workspaceId, input, options),
     reconnectConnector: (connectorId, options) => reconnectWorkspaceConnector(workspaceId, connectorId, options),
+    unregisterConnector: (connectorId, options) => unregisterWorkspaceConnector(workspaceId, connectorId, options),
     getOperationsStatus: (options) => getWorkspaceOperationsStatus(workspaceId, options),
     getOutputVersionSettings: (options) => getWorkspaceOutputVersionSettings(workspaceId, options),
     saveOutputVersionSettings: (settings, options) => saveWorkspaceOutputVersionSettings(workspaceId, settings, options),

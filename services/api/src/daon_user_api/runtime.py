@@ -1577,7 +1577,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def connector_error(request: Request, error: ConnectorError) -> JSONResponse:
         safe_codes = {
             "CONNECTOR_NOT_FOUND", "CONNECTOR_KIND_UNSUPPORTED", "CONNECTOR_STATUS_INVALID",
-            "CONNECTOR_INPUT_INVALID", "CONNECTOR_SOURCE_ID_INVALID", "CONNECTOR_UNAVAILABLE",
+            "CONNECTOR_INPUT_INVALID", "CONNECTOR_SOURCE_ID_INVALID", "CONNECTOR_UNAVAILABLE", "CONNECTOR_FIXED",
         }
         return _error_response(404 if str(error) == "CONNECTOR_NOT_FOUND" else 409,
                                str(error) if str(error) in safe_codes else "CONNECTOR_UNAVAILABLE",
@@ -2049,6 +2049,17 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return JSONResponse({"data": _dataclass_json(view), "meta": {
             "trace_id": request.state.trace_id, "workspace_id": id,
         }})
+
+    @app.delete("/api/v1/workspaces/{id}/connectors/{connector_id}", status_code=204)
+    async def unregister_connector(id: str, connector_id: str, request: Request) -> Response:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        connector_registry.unregister(connector_id)
+        return Response(status_code=204)
 
     @app.get("/api/v1/workspaces/{id}/connectors/{connector_id}/sources")
     async def list_connector_sources(id: str, connector_id: str, request: Request) -> JSONResponse:

@@ -398,3 +398,13 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 판정: Source 등록 replay와 즉시 삭제 UI가 승인된 요구사항에 맞게 동작한다. 기존 `daon-knowledge-llm-guide.pdf`와 Studio Library 2건은 유지됐다.
 - 잔여: 연결형 Source 2건은 운영 자격증명이 없어 `사용 불가`로 표시되는 별도 상태다. 이번 Raw Source 등록·삭제 수정 범위와는 무관하다.
 
+## 2026-08-22 연결형 Source 소유권·삭제 수명주기 정렬
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: MCP와 Daon 승인 지식을 같은 연결형 Source 모양으로 보여주되, 사용자가 둘 다 삭제할 수 있었던 기존 계약은 요구사항과 달랐다. MCP는 사용자 등록·즉시 로컬 삭제가 가능해야 하고, Daon 승인 지식은 고정 시스템 자산이어야 한다.
+- 조치: 설계서·작업계획서에 MCP 사용자 등록/삭제와 Daon 승인 지식의 시스템 고정 수명주기를 명시했다. API에 MCP Connector `DELETE`를 추가하고 고정 Daon Connector 삭제는 `CONNECTOR_FIXED`로 거부한다. BFF same-origin DELETE 라우트, 웹 어댑터, Source 추가의 `MCP 연결` 탭, MCP 행의 삭제 컨트롤을 연결했다. 삭제 시 외부 MCP 원본은 건드리지 않는다.
+- 변경: `docs/superpowers/specs/2026-08-22-notebooklm-parity-design.md`, `docs/superpowers/plans/2026-08-22-notebooklm-parity-implementation-plan.md`, `services/api/src/daon_user_api/mcp_connector.py`, `services/api/src/daon_user_api/runtime.py`, `services/api/tests/test_mcp_connector.py`, `apps/web/lib/bff-api-proxy.js`, `apps/web/lib/product-workspace-api.js`, `apps/web/components/actual-workspace.jsx`, `packages/ui/src/product-workspace-shell.jsx`
+- 검증: MCP Connector 단위 테스트 `5 passed`; Web production build와 product UI boundary `통과`; 기존 `workspace/source-knowledge` 묶음은 기존 기준선에서 4건 실패(홈/AuthPane·레거시 Workspace 기대치)로 확인되었고 이번 변경과 무관하다.
+- 미검증: ysna-server 재배포, 실제 브라우저에서 MCP 등록·삭제 클릭, 고정 Daon 삭제 거부의 실제 HTTP 호출은 아직 실행하지 않았다.
+- 다음 조치: 커밋·푸시 후 ysna API/Web을 재배포하고, 브라우저에서 `MCP 연결` 등록과 MCP 삭제를 확인한다. Daon 승인 지식에는 삭제 컨트롤이 없는지 확인한다.
+

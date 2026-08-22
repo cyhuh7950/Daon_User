@@ -219,6 +219,18 @@ export async function disconnectWorkspaceConnector(workspaceId, connectorId, { f
   return data;
 }
 
+export async function unregisterWorkspaceConnector(workspaceId, connectorId, { fetchImpl = fetch, signal } = {}) {
+  const workspace = requiredWorkspace(workspaceId, "CONNECTOR_INPUT_INVALID");
+  if (!safeId(connectorId)) throw new Error("CONNECTOR_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}`, {
+    method: "DELETE", credentials: "same-origin", cache: "no-store", signal,
+  });
+  if (!response.ok) {
+    const payload = await json(response, "CONNECTOR_DELETE_FAILED");
+    throw safeResponseError(payload, "CONNECTOR_DELETE_FAILED");
+  }
+}
+
 export async function unbindWorkspaceSource(workspaceId, source, { notebookId, etag, idempotencyKey, fetchImpl = fetch, signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "SOURCE_UNBIND_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "SOURCE_UNBIND_INPUT_INVALID");

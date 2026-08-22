@@ -18,7 +18,7 @@
 - 외부 원본 소실은 자동 삭제하지 않고 `사용 불가`로 표시한다.
 - Source 등록 시 `Notebook과 함께 삭제`와 `Notebook 삭제와 무관하게 보관`을 선택한다.
 - 동일한 파일 내용은 Digest로 중복 저장하지 않는다.
-- MCP와 Daon 승인 지식은 연결형 Source로 구현한다.
+- MCP와 Daon 승인 지식은 연결형 Source UI를 공유하되 수명주기는 분리한다. MCP는 사용자 등록·즉시 삭제, Daon 승인 지식은 시스템 고정이다.
 - 브라우저 코드에는 API 절대주소·localhost·Docker 내부 주소를 넣지 않는다.
 - 구현 전 설계서와 본 계획의 신산님 승인이 필요하다.
 - 로컬 검증 → Git Push → ysna-server 배포·통합검증 → 운영 배포 승인 순서를 지킨다.
@@ -66,11 +66,12 @@
 - Modify: `packages/ui/src/product-workspace-shell.jsx`
 - Test: `services/api/tests/test_mcp_connector.py`
 
-- [ ] 공통 Connector 등록·상태·재연결·해제 계약을 정의한다.
+- [ ] 공통 Connector 상태·재연결·해제 계약을 정의한다.
+- [ ] MCP Connector 등록·즉시 로컬 삭제 계약을 정의한다(외부 원본은 삭제하지 않음).
 - [ ] 국가법령정보센터 `https://open.law.go.kr/` 샘플 Connector를 구현한다.
 - [ ] 인증정보·쿼터·외부 주소를 BFF/서버에만 둔다.
-- [ ] Daon 승인 지식도 같은 Source 선택 인터페이스로 노출한다.
-- [ ] Connector 장애와 원본 소실을 `unavailable`로 표시하고 자동 삭제하지 않는다.
+- [ ] Daon 승인 지식은 같은 Source 상태·선택 인터페이스로 노출하되 사용자 등록·삭제 컨트롤은 제공하지 않는다.
+- [ ] Connector 장애와 원본 소실을 `unavailable`로 표시하고 자동 삭제하지 않는다. MCP는 사용자가 삭제할 수 있고 Daon 승인 지식은 시스템이 유지한다.
 
 ### Task 4: NotebookLM형 대화·근거 동작
 
@@ -120,7 +121,7 @@
 ## 완료 기준
 
 - NotebookLM Source 추가 흐름과 지원 유형이 동작한다.
-- MCP·Daon 승인 지식이 연결형 Source로 동작한다.
+- MCP는 사용자 등록·즉시 삭제가 가능하고, Daon 승인 지식은 고정 연결형 Source로 동작한다.
 - Source 등록·삭제가 즉시 반영된다.
 - 원본 소실은 `사용 불가`로 표시되고 자동 삭제되지 않는다.
 - 대화가 Source 기반/일반 상담을 구분한다.
