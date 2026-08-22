@@ -2,10 +2,10 @@
 
 ## 현재 상태
 
-- 단계: 요구사항 반영 설계·작업계획 작성
-- 상태: `AWAITING_APPROVAL`
-- 구현: 시작하지 않음
-- 배포: 수행하지 않음
+- 단계: Task 1 구현·서버 배포 검증
+- 상태: `INTEGRATION_CHECK_PENDING`
+- 구현: 완료 (`f078085`)
+- 배포: ysna-server에 `f07808563119a549ca583076714f286063bd171b` 배포 완료
 - 기록 시각: 2026-08-22
 
 ## 확정 요구사항
@@ -27,7 +27,7 @@
 
 ## 다음 단계
 
-신산님이 설계서와 작업계획서를 승인하면, 승인된 계획의 Task 1부터 Subagent 작업을 시작한다. 승인 전에는 코드 수정·테스트·배포를 하지 않는다.
+Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션이 필요한 실제 브라우저 Source 등록/삭제와 DB·MinIO 통합 검증이다.
 
 ## Task 1 실행 기록 (R1-NOTEBOOKLM-PARITY-I001-T1)
 
@@ -46,3 +46,12 @@
 - 변경: 업로드 서비스에 요청 content type을 전달하고 canonical JSON에 삭제 정책·content type을 기록한다. 스키마를 확인한 결과 `source_versions.canonical_json`이 기존 정식 불변 payload 저장 지점이므로 별도 DB 컬럼/migration은 만들지 않았다.
 - 테스트: `$env:PYTHONPATH='src'; uv run pytest tests/test_source_lifecycle_contract.py tests/test_source_ingest.py tests/test_source_upload.py tests/test_source_upload_runtime.py -q` → `15 passed, 6 warnings, 4 subtests passed`.
 - 미실행: 브라우저 E2E, ysna-server 배포·DB/MinIO 통합 검증은 이 Task에서 실행하지 않음.
+
+### ysna-server 배포 확인
+
+- 배포: `f07808563119a549ca583076714f286063bd171b` 기준 API·document-worker·web 이미지를 재빌드하고 재기동했다.
+- 빌드: API/worker 이미지 빌드 성공. Web Next.js 빌드·TypeScript·`verify-product-ui-boundary` 성공(`violations: []`).
+- 런타임: API `healthy`, Web `healthy`, document-worker 실행 중, 기존 MinIO `healthy`.
+- 공개 확인: `https://daon-user.sinsan.kr/notebooks` → HTTP 200.
+- 프로필 확인: API 컨테이너 `DAON_RUNTIME_PROFILE=production`; `DAON_DEV_AUTH_BYPASS`는 설정되지 않음.
+- 미완료: 로그인된 브라우저에서 실제 PDF/비-PDF 등록·처리 완료·삭제와 DB/MinIO 실물 정합성은 아직 확인하지 못했다. 이 검증 전에는 Task 1을 최종 완료로 판정하지 않는다.
