@@ -509,3 +509,8 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 오류·복구: `generating` 상태 전환을 막던 legacy lease constraint 때문에 첫 시도가 3회 dead-letter 되었고 `0028` 제약 확장·`0029` legacy 제약 제거로 복구했다. 로컬 관련 테스트 10 passed.
 - 미검증: 모든 구조화 Studio 유형의 실제 수직 흐름, draft 승인 후 Export 다운로드·Hash, Provider soak, Oracle 운영 배포. YSNA `refs/remotes/origin/master` stale 문제는 조사만 완료했으며 ref 갱신·재배포는 수행하지 않았다.
 
+## 2026-08-23T04:20:00+09:00 Studio 전체 유형 실제 Job 검증
+- 상태: `PARTIAL_VERIFIED`
+- 검증: 구조화 Studio 9종을 실제 YSNA 브라우저에서 각각 생성해 모두 DB `completed`, attempt 1과 Library 항목을 확인했다. AI 오디오 `studio-job-2326cc5bc661b30955c8f42064e54766`, 동영상 `studio-job-f2790ecc44c7b0125238bf840b7d66bb`는 `unavailable / STUDIO_OUTPUT_UNAVAILABLE`로 종료됐다.
+- 미검증: draft 승인/검토 후 Export 다운로드와 파일 Hash, 장시간 Provider soak, Oracle 운영 배포.
+
