@@ -112,23 +112,28 @@ class PostgresStudioWorkspaceRepository:
             if not isinstance(selected_deployment_id, str) or not selected_deployment_id:
                 raise StudioError("ORIGINATING_RUN_MODEL_UNAVAILABLE", 409)
             model_row = connection.execute(
-                "SELECT pp.canonical_json,md.canonical_json,ma.canonical_json "
+                "SELECT md.record_id,pp.canonical_json,md.canonical_json,ma.canonical_json "
                 "FROM model_deployments md "
                 "JOIN provider_profiles pp ON pp.tenant_id=md.tenant_id "
                 "AND pp.workspace_id=md.workspace_id AND pp.record_id=md.provider_profile_id "
                 "JOIN model_artifacts ma ON ma.tenant_id=md.tenant_id "
                 "AND ma.workspace_id=md.workspace_id AND ma.record_id=md.model_artifact_id "
-                "WHERE md.tenant_id=%s AND md.workspace_id=%s AND md.record_id=%s",
-                (context.tenant_id, context.workspace_id, selected_deployment_id),
+                "WHERE md.tenant_id=%s AND md.workspace_id=%s "
+                "AND (md.record_id=%s OR md.canonical_json->>'configured_deployment_id'=%s)",
+                (context.tenant_id, context.workspace_id, selected_deployment_id, selected_deployment_id),
             ).fetchone()
             if (
-                model_row is None or len(model_row) != 3
-                or any(not isinstance(item, Mapping) for item in model_row)
+                model_row is None or len(model_row) != 4
+                or not isinstance(model_row[0], str)
+                or any(not isinstance(item, Mapping) for item in model_row[1:])
             ):
                 raise StudioError("ORIGINATING_RUN_MODEL_UNAVAILABLE", 409)
-            profile_payload = cast(Mapping[str, object], model_row[0])
-            deployment_payload = cast(Mapping[str, object], model_row[1])
-            artifact_payload = cast(Mapping[str, object], model_row[2])
+            model_record_id, profile_payload, deployment_payload, artifact_payload = model_row
+            if not isinstance(model_record_id, str) or not model_record_id:
+                raise StudioError("ORIGINATING_RUN_MODEL_UNAVAILABLE", 409)
+            profile_payload = cast(Mapping[str, object], profile_payload)
+            deployment_payload = cast(Mapping[str, object], deployment_payload)
+            artifact_payload = cast(Mapping[str, object], artifact_payload)
             provider_code = profile_payload.get("provider_code")
             model_id = deployment_payload.get("model_id")
             binding_version = deployment_payload.get("binding_version")
@@ -150,7 +155,7 @@ class PostgresStudioWorkspaceRepository:
                 ),
                 "profile_id": profile_payload["configured_profile_id"],
                 "deployment_id": deployment_payload["configured_deployment_id"],
-                "deployment_record_id": selected_deployment_id,
+                "deployment_record_id": model_record_id,
                 "model_id": model_id,
                 "binding_version": binding_version,
                 "routing_decision_id": str(routing_id),
