@@ -156,7 +156,6 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     return Array.isArray(values) ? filterOutputs(values) : { ...values, outputs: filterOutputs(values?.outputs) };
   };
   const listProductStudioOutputs = async (options) => {
-    if (!studioIds.size && !outputVersionIds.size) return { outputs: [], studioLocks: [] };
     if (typeof baseAdapter.listProductStudioOutputs !== "function") {
       throw new Error("NOTEBOOK_CONTEXT_OUTPUT_UNAVAILABLE");
     }
@@ -167,7 +166,10 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
         || !Array.isArray(value.outputs) || !Array.isArray(value.studioLocks)) {
       throw new Error("NOTEBOOK_CONTEXT_OUTPUT_INVALID");
     }
-    return { outputs: filterOutputs(value.outputs), studioLocks: [...value.studioLocks] };
+    // The API query is already scoped by notebookId. Do not filter against
+    // studioIds/outputVersionIds from the context snapshot: a generation can
+    // complete after this context was loaded, so that snapshot may be stale.
+    return { outputs: [...value.outputs], studioLocks: [...value.studioLocks] };
   };
 
   const adapter = {

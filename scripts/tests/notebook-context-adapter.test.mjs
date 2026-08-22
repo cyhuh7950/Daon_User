@@ -91,6 +91,23 @@ test("Notebook context Adapter는 Notebook API의 최신 Source 목록을 유지
   assert.equal(emptyCalls, 1);
 });
 
+test("Product Studio 목록은 초기 Notebook context가 오래되어도 API의 notebook 범위 결과를 보존한다", async () => {
+  const base = {
+    listProductStudioOutputs: async (options) => {
+      assert.equal(options.notebookId, "notebook-existing");
+      return {
+        outputs: [{ studio_output_id: "studio-output-new", output_version_id: "output-version-new" }],
+        studioLocks: [],
+      };
+    },
+  };
+  const adapter = createNotebookContextWorkspaceAdapter(base, EXISTING_CONTEXT);
+  assert.deepEqual(await adapter.listProductStudioOutputs(), {
+    outputs: [{ studio_output_id: "studio-output-new", output_version_id: "output-version-new" }],
+    studioLocks: [],
+  });
+});
+
 test("실제 ProductWorkspaceShell은 selected Notebook Adapter의 보존 Source·대화·Library를 행동 렌더한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".notebook-context-shell-"));
