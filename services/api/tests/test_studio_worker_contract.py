@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from daon_user_api.studio_workspace import StudioError, build_structured_output
 from daon_user_api.studio_workspace import StudioGenerationRequest
 
 
 class StudioWorkerContractTests(unittest.TestCase):
+    def test_generating_state_keeps_the_claim_lease(self) -> None:
+        migration = (Path(__file__).parents[1] / "migrations/versions/0028_studio_generation_lease_state.py").read_text(encoding="utf-8")
+        self.assertIn("state IN ('leased','generating')", migration)
+        self.assertIn("studio_generation_jobs_lease_state_check", migration)
+
     def request(self, output_type: str) -> StudioGenerationRequest:
         formats = {"slides": "json", "infographic": "json", "flashcards": "json", "quiz": "json", "audio": "json", "video": "json"}
         return StudioGenerationRequest(

@@ -19,4 +19,4 @@ class StudioExportContractTests(unittest.TestCase):
             self.assertGreater(len(result.content), 20)
             self.assertEqual(result.checksum_sha256, hashlib.sha256(result.content).hexdigest())
             if format_name == "json":
-        self.assertIn(output_type.encode(), result.content)
+                self.assertIn(output_type.encode(), result.content)
