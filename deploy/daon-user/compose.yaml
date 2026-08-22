@@ -130,6 +130,7 @@ services:
       DAON_STUDIO_WORKER_POLL_SECONDS: ${DAON_STUDIO_WORKER_POLL_SECONDS-0.5}
     networks:
       - daon_user
+      - proxy-network
     healthcheck:
       disable: true
     restart: unless-stopped

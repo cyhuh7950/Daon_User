@@ -178,3 +178,9 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 테스트: `services/api`에서 `$env:PYTHONPATH='src'; uv run pytest tests/test_studio*.py -q` → `58 passed, 1 skipped`. 비동기 전용 worker/API 테스트 포함. `uv run python -m compileall -q services/api/src/daon_user_api` 통과. `npm run build --workspace @daon-user/web` → Next/TypeScript/`verify-product-ui-boundary` 성공(`violations: []`).
 - 미실행: migration 실제 적용, ysna-server worker 재배포, Postgres/MinIO 실물 큐 처리, 로그인 브라우저에서 카드 생성·polling·Library 클릭은 아직 검증하지 않았다. 해당 검증 전에는 운영 완료로 판정하지 않는다.
 - 다음: 상위 agent가 변경 파일을 검토한 뒤 관련 파일만 commit/push하고, ysna-server 격리 환경에서 migration·studio-worker·BFF·실제 Studio 흐름을 검증한다.
+
+### Task 5 worker 네트워크 보완
+
+- 변경: `deploy/daon-user/compose.yaml`의 `studio-worker`에 `proxy-network`를 추가해 `DAON_CLOUD_DATABASE_DSN`의 `shared-db` 접근 경로를 `document-worker`와 동일하게 맞췄다. 기존 `daon_user` 네트워크는 유지했다.
+- 검증: worker 모듈 import smoke 통과. DSN 미설정 startup은 `STUDIO_WORKER_DATABASE_REQUIRED`로 즉시 안전 실패했다. `git diff --check` 통과.
+- 미실행: 현재 Codex 환경에 Docker CLI가 없고 WSL 호출도 `E_ACCESSDENIED`로 차단되어 `docker compose config`, migration 전/후 실제 DB, worker 컨테이너 기동은 실행하지 못했다.
