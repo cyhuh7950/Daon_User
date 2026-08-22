@@ -74,3 +74,12 @@
 - API·studio-worker 재빌드·재기동 후 재시도 Job은 `completed`, `studio_outputs`에 `output-5c517909e8f548add11eec71924821ee`가 저장됐고, 새로고침 후 Library 3개가 표시됐다.
 - 단위 회귀 `21 passed, 1 skipped`. 따라서 계획 8의 대표 Provider Source→질문→Citation→Studio 저장 수직 경계는 YSNA에서 확인했다.
 - Oracle 운영 배포, 다른 Studio 유형, 장기 Provider 안정성은 별도 Gate이므로 이 보고서에서 완료로 주장하지 않는다.
+
+## 2026-08-23 Oracle 운영 배포 후 판정
+
+`VERIFIED_ON_YSNA_AND_ORACLE / LIMITED_PROVIDER_STABILITY / BROWSER_RECHECK_PASS`
+
+- 신산님 승인에 따라 DNS `daon-user.sinsan.kr` 대상 `ysna-server`의 `daon_user` Compose 스택을 `c65070bca4508e132afa45741c9b62386af94c2b` 기준으로 재빌드·재기동했다. `api`, `document-worker`, `studio-worker`, `web` 이미지 빌드가 통과했고, object-storage는 기존 healthy 인스턴스를 유지했다.
+- 배포 후 API/Web/object-storage healthy, document-worker/studio-worker running, API `DAON_RUNTIME_PROFILE=production`, 개발 인증 우회 변수 미설정, 공개 `/`·`/notebooks` HTTP 200을 확인했다. 기존 로그인 Notebook 브라우저에서도 Raw Source·답변·Citation·Library 산출물 표시를 재확인했다.
+- 원격 `origin/master`가 로컬에서 확인한 SHA와 다른 `1b652ec08`이었고 해당 Compose에 `studio-worker`가 없어 배포를 중단한 뒤 기존 검증 커밋으로 롤백했다. 컨테이너 변경 전에 되돌렸으며, 최종 운영 체크아웃은 `c65070b`다. 이 원격 저장소 SHA 불일치 원인은 별도 조사 대상이다.
+- 기타 Studio 유형은 로컬 계약/UI `27/27` PASS, Provider 호환성은 YSNA 10/10 연속 `HTTP 200/schema valid/secret_echo 0`이다. 실제 기타 Studio Provider 산출물과 장시간 부하·soak은 미검증으로 남긴다.

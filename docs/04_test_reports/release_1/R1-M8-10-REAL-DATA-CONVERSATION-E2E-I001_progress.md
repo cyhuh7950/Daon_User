@@ -267,3 +267,14 @@
 - YSNA 운영 유사 환경의 API/Web/document-worker/studio-worker/object-storage 컨테이너는 모두 실행 중이며 API 환경은 `DAON_RUNTIME_PROFILE=production`, 개발 인증 우회 변수 없음이다.
 - 비밀값을 출력하지 않는 `run-remote-provider-compatibility.py`를 YSNA에서 3회 실행했다. 매회 설정된 Provider는 UPSTAGE/GROQ/MISTRAL로 확인됐고, 선택된 UPSTAGE probe가 `HTTP 200`, `schema=valid`, `secret_echo=0`, `citations=0`을 3회 연속 반환했다. 장기 안정성 전체를 보증하는 부하·장시간 시험은 아니며 단기 연속 호환성 증거로만 기록한다.
 - Oracle 운영 배포는 외부 운영 변경 권한이 필요한 미실행 항목으로 남겼다. 운영 배포 승인 전에는 Oracle 상태를 변경하지 않는다.
+
+## 2026-08-23 Oracle 운영 배포 및 잔여 범위 검증
+
+- 신산님이 운영 배포를 승인했다. 운영 대상은 DNS `daon-user.sinsan.kr`이 연결된 `ysna-server`의 `daon_user` Compose 스택으로 확정했다. 별도 `daon-server` 배포 루트는 존재하지 않았다.
+- 배포 전 원격 체크아웃은 `c65070bca4508e132afa45741c9b62386af94c2b`였고, 해당 커밋은 현재 검증된 Studio model-deployment lineage 보정 커밋이다. 원격 `git fetch origin master` 후 원격 저장소의 `origin/master`가 로컬에서 확인한 SHA와 다른 `1b652ec08`을 가리켰으며, 그 커밋의 Compose에는 현재 운영에 필요한 `studio-worker` 서비스가 없어 배포를 중단하고 기존 `c65070b`로 즉시 되돌렸다. 이 과정에서 컨테이너 재기동은 발생하지 않았다. 원격 저장소 SHA 불일치는 예외로 남긴다.
+- `c65070b`에서 `api`, `document-worker`, `studio-worker`, `web` 이미지를 재빌드하고 해당 4개 서비스를 재기동했다. `object-storage`는 기존 healthy 컨테이너를 유지했다. 빌드 중 Web Next production build·TypeScript·12 static pages·product boundary `416 files / violations 0`이 통과했다.
+- 배포 후 `api`, `web`, `object-storage`는 healthy, `document-worker`·`studio-worker`는 running 상태이며 API 환경은 `DAON_RUNTIME_PROFILE=production`, `DAON_DEV_AUTH_BYPASS` 미설정이다. 공개 `https://daon-user.sinsan.kr/`와 `/notebooks`는 각각 HTTP 200을 반환했다. 원격 HEAD는 `c65070b`이며 기존 untracked `backups/`, 배포자료, 문서, secrets는 보존했다.
+- 기타 Studio 유형은 `27 passed, 0 failed` 로컬 계약·UI·Library 검증을 유지한다. 이는 실제 Provider 산출물 생성 검증이 아니다. Provider 안정성은 YSNA 단기 호환성 3회 연속 `HTTP 200/schema valid/secret_echo 0` 증거까지만이며 장기 부하·soak 시험은 미검증이다.
+- 현재 잔여 미검증: 로그인 세션을 이용한 Oracle 브라우저 실제 Source 업로드→처리→질문→Citation→Studio 흐름의 재실행, 기타 Studio 유형의 실제 Provider 산출물, 장기 Provider 부하·soak, 원격 저장소 SHA 불일치 원인 조사. 운영 서비스 헬스와 공개 URL만 확인했으며 이 항목들을 완료로 과장하지 않는다.
+- 배포 후 기존 로그인 Notebook 브라우저를 same-origin 운영 URL에서 재확인했다. `Daon 실제 기능 검증` Notebook, Raw Source 1건(`daon-knowledge-llm-guide.pdf`, 사용 가능), 질문 답변과 Citation 2·3쪽, Library 산출물 3건이 DOM에 표시됐다. 연결형 Source 2건은 현재 `사용 불가`·재연결 UI로 표시되며, 이는 데이터 부재 상태를 숨기지 않는 현재 계약과 일치한다. 브라우저에서 새 파일 업로드나 삭제는 운영 데이터 변경이므로 이번 Gate에서는 수행하지 않았다.
+- Provider 호환성 probe를 YSNA에서 10회 연속 실행했다. 10/10 모두 `provider=UPSTAGE`, `http=200`, `schema=valid`, `citations=0`, `secret_echo=0`이었다. 이는 10회 단기 연속 안정성 증거이며, 장시간·부하 soak 시험의 대체가 아니다.
