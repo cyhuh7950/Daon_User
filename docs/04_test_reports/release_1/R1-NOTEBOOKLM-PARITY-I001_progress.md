@@ -448,3 +448,11 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 미검증: YSNA migration 적용, API 재시작 후 등록 복구·삭제 유지, 브라우저 재검증은 아직 실행하지 않았다. 운영 DB 변경은 수행하지 않았다.
 - 다음 조치: YSNA 격리 환경에서 migration 적용 후 API/Web 재배포·재시작 복구를 검증하고, 실제 운영 배포는 최종 승인 전 수행하지 않는다.
 
+## 2026-08-23 Connector Postgres YSNA 재배포·재시작 검증
+
+- 상태: `VERIFIED_ON_YSNA / DELETE_RESTART_BROWSER_PENDING`
+- 배포: YSNA checkout을 `9e71227`로 갱신하고 `workspace_connectors` migration SQL을 격리 Postgres에 적용했다. API·document-worker·studio-worker·Web을 재빌드·재기동했다.
+- 확인: API/Web 컨테이너가 모두 running이고 Web production build 및 product UI boundary 검사가 통과했다. 로그인 브라우저에서 Connector 목록을 로드한 뒤 API 컨테이너를 재시작하고 새로고침해도 MCP·Daon 승인 지식 2개가 다시 표시됐다.
+- DB 근거: 재시작 전후 `workspace_connectors`에 동일 Workspace의 MCP/Daon 행이 유지됐다.
+- 미검증: 이번 단계에서는 외부 상태 변경을 최소화하기 위해 브라우저에서 MCP를 삭제한 뒤 재시작하는 추가 클릭은 실행하지 않았다. 로컬 repository 회귀 테스트로 사용자 삭제 MCP의 기본값 재생성 방지는 검증했다.
+
