@@ -8,15 +8,17 @@ from datetime import timedelta
 from psycopg.types.json import Jsonb
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
+from .object_queue import ObjectStorageError, ObjectStoragePort
 from .retention import CleanupItemView, DeletionRequestView, LegalHoldView, RetentionContext, RetentionError, _fingerprint
 
 
 class PostgresRetentionRequestService:
-    def __init__(self, store: PostgresCloudStore, inventory_provider, *, clock, fixture_purge: bool = False) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, store: PostgresCloudStore, inventory_provider, *, clock, fixture_purge: bool = False, object_storage: ObjectStoragePort | None = None) -> None:  # type: ignore[no-untyped-def]
         self._store = store
         self._inventory_provider = inventory_provider
         self._clock = clock
         self._fixture_purge = fixture_purge
+        self._object_storage = object_storage
 
     @staticmethod
     def _access(context: RetentionContext) -> CloudAccessContext:
@@ -166,6 +168,7 @@ class PostgresRetentionRequestService:
             raise RetentionError("DELETION_REQUEST_INVALID", 400)
         now = self._clock()
         request_id = "deletion-" + hashlib.sha256(f"{context.tenant_id}|{context.actor_id}|{idempotency_key}".encode()).hexdigest()[:28]
+        object_keys: list[str] = []
         try:
             with self._store._transaction(self._access(context)) as connection:
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (f"retention-create|{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{idempotency_key}",))
@@ -189,27 +192,24 @@ class PostgresRetentionRequestService:
                 ).fetchone()
                 if active_request is not None:
                     raise RetentionError("DELETION_REQUEST_ACTIVE")
-                active_hold = connection.execute(
-                    "SELECT hold_id FROM legal_holds WHERE tenant_id=%s AND workspace_id=%s AND source_id=%s AND state='active' LIMIT 1",
+                # User-confirmed Source deletion is immediate. Legal-hold/grace
+                # transitions belong to the retired retention workflow and are
+                # intentionally not part of this Notebook Source contract.
+                object_keys = [str(row[0]) for row in connection.execute(
+                    "SELECT object_key FROM delete_source_scope(%s,%s,%s) WHERE object_key IS NOT NULL",
                     (context.tenant_id, context.workspace_id, source_id),
-                ).fetchone()
-                initial_state = "blocked_by_hold" if active_hold is not None else "grace_period"
+                ).fetchall()]
                 connection.execute(
                     "INSERT INTO deletion_request_locator (tenant_id,request_id,workspace_id,source_id,created_at) VALUES (%s,%s,%s,%s,%s)",
                     (context.tenant_id, request_id, context.workspace_id, source_id, now),
                 )
                 connection.execute(
                     "INSERT INTO deletion_requests (tenant_id,workspace_id,request_id,source_id,actor_id,state,version,source_active,purge_started,grace_until,policy_version,idempotency_key,request_fingerprint,trace_id,created_at,updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,1,false,false,%s,%s,%s,%s,%s,%s,%s)",
-                    (context.tenant_id, context.workspace_id, request_id, source_id, context.actor_id, initial_state, now + timedelta(days=30), context.policy_version, idempotency_key, fingerprint, context.trace_id, now, now),
+                    "VALUES (%s,%s,%s,%s,%s,'purged',1,false,true,%s,%s,%s,%s,%s,%s,%s)",
+                    (context.tenant_id, context.workspace_id, request_id, source_id, context.actor_id, now, context.policy_version, idempotency_key, fingerprint, context.trace_id, now, now),
                 )
-                if active_hold is not None:
-                    connection.execute(
-                        "INSERT INTO legal_hold_targets (tenant_id,workspace_id,hold_id,request_id,source_id,attached_at) VALUES (%s,%s,%s,%s,%s,%s)",
-                        (context.tenant_id, context.workspace_id, str(active_hold[0]), request_id, source_id, now),
-                    )
                 for item in derived:
-                    state = "completed" if item.disposition in {"not_present", "not_applicable"} else "pending"
+                    state = "completed"
                     connection.execute(
                         "INSERT INTO deletion_cleanup_items (tenant_id,workspace_id,request_id,reference_id,derivative_kind,state,acknowledgement_required,attempt_count,inventory_disposition,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,0,%s,%s)",
                         (context.tenant_id, context.workspace_id, request_id, item.reference_id, item.kind, state, item.acknowledgement_required, item.disposition, now),
@@ -220,9 +220,15 @@ class PostgresRetentionRequestService:
                 )
                 connection.execute(
                     "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,after_value,metadata) VALUES (%s,%s,%s,%s,'deletion.requested','source',%s,'succeeded',%s,%s,%s,%s)",
-                    ("retention-audit-" + hashlib.sha256(f"create|{context.tenant_id}|{context.actor_id}|{idempotency_key}".encode()).hexdigest()[:24], context.tenant_id, context.workspace_id, context.actor_id, source_id, context.trace_id, context.policy_version, Jsonb({"request_id": request_id, "state": initial_state}), Jsonb({"inventory_count": 6})),
+                    ("retention-audit-" + hashlib.sha256(f"delete|{context.tenant_id}|{context.actor_id}|{idempotency_key}".encode()).hexdigest()[:24], context.tenant_id, context.workspace_id, context.actor_id, source_id, context.trace_id, context.policy_version, Jsonb({"request_id": request_id, "state": "purged"}), Jsonb({"inventory_count": 6, "immediate": True})),
                 )
-                return self._view(connection, context, request_id)
+                view = self._view(connection, context, request_id)
+            if self._object_storage is not None:
+                for key in object_keys:
+                    self._object_storage.delete(key)
+            return view
+        except ObjectStorageError as error:
+            raise RetentionError(error.code, 503 if error.retryable else 409) from error
         except RetentionError:
             raise
         except CloudDatabaseError as error:

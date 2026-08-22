@@ -322,3 +322,19 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 브라우저: `Daon 실제 기능 검증` Notebook에서 연결형 Source 2건이 `사용 불가` 상태로 표시되고 connector 로드 오류 alert는 없었다. 이는 운영 환경에 connector 자격증명이 없음을 나타내며 로드 실패로 오인하지 않는다.
 - 브라우저: 일반 대화 화면에서 Raw Source 선택을 해제한 뒤 `Source 질문 승인` 모달이 나타나지 않음을 확인했다. 로그인 세션 외 질문별 비밀번호 재인증 UI는 제거된 상태다.
 - 미검증: 실제 외부 LLM 응답 성공은 운영 provider/egress 정책의 실제 연결 상태에 의존하므로 이번 확인에서는 외부 전송을 실행하지 않았다.
+
+## 2026-08-22 Source 즉시 삭제 계약 보완
+
+- 상태: `IMPLEMENTED_LOCAL / DEPLOY_PENDING`
+- 판정: 기존 Source 삭제 요청이 `grace_period`와 Legal Hold를 거쳐야 하므로 신산님 확정 요구사항(확정 즉시 삭제)과 불일치했다.
+- 조치: Postgres Source 삭제 경계를 즉시 `purged`로 전환하고, `delete_source_scope` DB 함수가 Notebook binding·인덱스·처리/근거 계보를 삭제한 뒤 남은 Object Storage 키를 서버 전용 ObjectStoragePort로 삭제하도록 연결했다. 다른 Source가 같은 object를 참조하거나 index가 남아 있으면 해당 object 키를 반환하지 않도록 보호했다.
+- 변경: `services/api/src/daon_user_api/retention_request_postgres.py`, `services/api/migrations/versions/0025_source_immediate_deletion.py`, `services/api/tests/test_source_immediate_deletion_contract.py`
+- 검증: 즉시 삭제 계약 테스트 `2 passed`, Python compile PASS. 기존 retention runtime 계약 묶음은 기준선의 notebook deletion route 집합 불일치로 `1 failed, 15 passed, 1 skipped`이며 이 변경과 별개로 기록한다.
+- 미검증: ysna DB migration 적용, 실제 Source 삭제 클릭, MinIO 실물 삭제 및 Notebook 재조회는 아직 배포 전이다. migration 적용과 실제 데이터 삭제는 운영 데이터 영향이 있으므로 ysna 격리 배포 후 검증한다.
+
+## 2026-08-22T21:16:53.9167299+09:00 Source immediate deletion supplement (R1-NOTEBOOKLM-PARITY-I001-T4)
+- 상태: IMPLEMENTING_LOCAL
+- 확인: Source deletion route currently creates a 30-day grace_period request; purge is admin/fixture-only and no source/object cleanup runs on user confirmation.
+- 조치 계획: add scoped DB source cleanup function, invoke it from Postgres deletion service, delete returned object keys through existing ObjectStoragePort, persist terminal purged result without grace period, and update focused regression coverage.
+- 미검증: migration application, live PostgreSQL/MinIO and browser remain unexecuted.
+
