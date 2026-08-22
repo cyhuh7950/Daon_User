@@ -41,6 +41,10 @@ MAIL_REQUEST_WINDOW = timedelta(hours=1)
 MAIL_REQUEST_MAX_PER_WINDOW = 3
 OIDC_TRANSACTION_TTL = timedelta(minutes=5)
 ACCESS_TTL = timedelta(hours=1)
+# Web sessions are persistent until explicit logout.  The database contract
+# keeps a non-null timestamp, so use the representable UTC maximum rather than
+# applying the short-lived native access-token TTL to browser sessions.
+WEB_SESSION_EXPIRY = datetime.max.replace(tzinfo=timezone.utc)
 REFRESH_TTL = timedelta(days=30)
 DEFAULT_STEP_UP_TTL_SECONDS = 300
 MAX_STEP_UP_TTL_SECONDS = 600
@@ -853,7 +857,7 @@ class IdentityService:
                 raise IdentityError("AUTHENTICATION_REQUIRED", 401)
             tenant_id = str(tenant[0]); device_id, session_id, access = _id("dev"), _id("ses"), _opaque()
             connection.execute("INSERT INTO devices(device_id,tenant_id,user_id,platform,state,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (device_id, tenant_id, user_id, platform.value, "registered", _iso(now), _iso(now), _iso(now)))
-            connection.execute("INSERT INTO sessions(session_id,tenant_id,user_id,device_id,client_kind,access_digest,access_expires_at,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (session_id, tenant_id, user_id, device_id, "web", _digest(access), _iso(now + ACCESS_TTL), "active", _iso(now), _iso(now)))
+            connection.execute("INSERT INTO sessions(session_id,tenant_id,user_id,device_id,client_kind,access_digest,access_expires_at,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (session_id, tenant_id, user_id, device_id, "web", _digest(access), _iso(WEB_SESSION_EXPIRY), "active", _iso(now), _iso(now)))
             self._audit(action="identity.login.succeeded", outcome=AuditOutcome.SUCCEEDED, trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id, actor_id=user_id, target_type="session", target_id=session_id, metadata={"client_type": "web", "auth_method": "local"})
         return SessionCredentials(access, None, user_id, session_id, device_id, tenant_id, ClientKind.WEB, "web_session_cookie_boundary_m4_05")
 
@@ -1102,7 +1106,7 @@ class IdentityService:
             raise IdentityError("ACCESS_INVALID", 401)
         if row["state"] != "active":
             raise IdentityError("SESSION_REVOKED", 401)
-        if _dt(str(row["access_expires_at"])) <= now:
+        if str(row["client_kind"]) != ClientKind.WEB.value and _dt(str(row["access_expires_at"])) <= now:
             raise IdentityError("ACCESS_EXPIRED", 401)
         connection.execute(
             "UPDATE devices SET last_seen_at = ?, updated_at = ? WHERE device_id = ?",

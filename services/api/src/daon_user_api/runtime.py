@@ -183,6 +183,7 @@ from .notebook_postgres import PostgresNotebookRepository
 
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
+WEB_SESSION_COOKIE_MAX_AGE = 10 * 365 * 24 * 60 * 60
 _TRACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _TRACEPARENT = re.compile(
     r"^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$"
@@ -1848,7 +1849,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             now=datetime.now(timezone.utc),
         )
         response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id, "workspace_id": workspace_id}, "meta": {"trace_id": request.state.trace_id}})
-        response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=3600, httponly=True, secure=True, samesite="lax", path="/")
+        response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=WEB_SESSION_COOKIE_MAX_AGE, httponly=True, secure=True, samesite="lax", path="/")
         return response
 
     @app.post("/api/v1/auth/native/login")

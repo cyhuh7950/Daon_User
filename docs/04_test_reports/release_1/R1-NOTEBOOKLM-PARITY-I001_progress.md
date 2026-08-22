@@ -232,3 +232,12 @@ Task 1 구현·빌드·서버 기동은 완료했다. 다음은 로그인 세션
 - 검증: API `py_compile` PASS; workspace lint PASS; Product Workspace/Source Knowledge 테스트 39/39 PASS.
 - 미검증: ysna 재배포 후 실제 브라우저 Source 질문 성공은 아직 실행하지 않았다.
 - 다음 조치: 승인된 개발 프로필로 API/Web를 배포하고, Source 질문 1회 및 일반 질문 1회를 실제 브라우저에서 확인한다.
+
+## 2026-08-22 웹 로그인 세션 자동 만료 제거
+
+- 상태: IMPLEMENTED_LOCAL / 검증 완료 / 배포 진행
+- 조치: 웹 세션은 명시적 로그아웃 전 자동 만료하지 않도록 서버 검증 만료를 UTC 최댓값으로 변경하고, 로그인 쿠키를 영속 쿠키(10년)로 변경했다. 네이티브 access TTL은 유지했다.
+- 변경 파일: `services/api/src/daon_user_api/identity.py`, `services/api/src/daon_user_api/runtime.py`
+- 검증: API `py_compile` PASS; `git diff --check` PASS; Product Workspace/Source Knowledge 테스트 39/39 PASS.
+- 미검증: 전원 종료 후 재접속을 포함한 실제 브라우저 수동 검증.
+- 다음 조치: 커밋·푸시 후 ysna 재배포하고 브라우저에서 로그인 유지 및 로그아웃 폐기를 확인한다.
