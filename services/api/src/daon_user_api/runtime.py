@@ -2852,31 +2852,17 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "review": Action.REVIEW, "approval_request": Action.EDIT, "approval": Action.APPROVE,
             "delivery": Action.DELIVER, "knowledge_registration": Action.KNOWLEDGE_REGISTER,
         }[action_name]
-        access_token, _ = _credential(request)
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=body.workspace_id, action=permission_action,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        if action_name in {"approval", "delivery", "knowledge_registration"}:
-            step_up_group = {
-                "approval": "final_approval_or_knowledge_registration",
-                "delivery": "external_transfer",
-                "knowledge_registration": "final_approval_or_knowledge_registration",
-            }[action_name]
-            dependencies.identity_service.consume_step_up(
-                step_up_authorization=body.step_up_authorization, access_token=access_token,
-                action_group=step_up_group, target_id=body.output_version_id,
-                policy_version=dependencies.settings.policy_version, trace_id=request.state.trace_id,
-                operation=f"studio.{action_name}", idempotency_key=idempotency_key,
-            )
         if studio_workspace_service is None:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
         result, replayed = await asyncio.to_thread(
             studio_workspace_service.action,
             _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id), action_name,
-            {**body.model_dump(exclude={"workspace_id", "notebook_id", "step_up_authorization"}, exclude_none=True),
-             "step_up_verified": action_name in {"approval", "delivery", "knowledge_registration"}},
+            body.model_dump(exclude={"workspace_id", "notebook_id", "step_up_authorization"}, exclude_none=True),
             idempotency_key,
         )
         response = JSONResponse({"data": _enum_json(result), "meta": {

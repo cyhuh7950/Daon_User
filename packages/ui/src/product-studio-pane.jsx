@@ -166,7 +166,6 @@ export function ProductStudioPane({ state, adapter }) {
   const [view, setView] = useState(state);
   const [revisionContent, setRevisionContent] = useState("");
   const [changeReason, setChangeReason] = useState("");
-  const [stepUpPassword, setStepUpPassword] = useState("");
   const selected = OUTPUT_TYPES.find((item) => item.id === view.selectedOutputType);
   const selectedOutput = view.outputs.find((output) => output.studio_output_id === view.selectedOutputId) ?? null;
   const generationState = view.pending ? "pending" : view.safeError ? "failed" : selectedOutput ? "completed" : "idle";
@@ -240,13 +239,7 @@ export function ProductStudioPane({ state, adapter }) {
     if (!selectedOutput || !adapter?.createStudioAction) return;
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
-      const stepUpGroup = { approvals: "final_approval_or_knowledge_registration", deliveries: "external_transfer", "knowledge-registrations": "final_approval_or_knowledge_registration" }[action];
-      const currentPassword = stepUpPassword;
-      if (stepUpGroup) setStepUpPassword("");
-      const step_up_authorization = stepUpGroup
-        ? await adapter.issueStudioStepUp(stepUpGroup, selectedOutput.output_version_id, currentPassword)
-        : undefined;
-      const result = await adapter.createStudioAction(action, { output_version_id: selectedOutput.output_version_id, ...payload, ...(step_up_authorization ? { step_up_authorization } : {}) });
+      const result = await adapter.createStudioAction(action, { output_version_id: selectedOutput.output_version_id, ...payload });
       const linkField = { reviews: "review_request_id", "approval-requests": "approval_request_id", approvals: "approval_id" }[action];
       const lifecycleStatus = {
         reviews: "in_review", "approval-requests": "in_review",
@@ -332,14 +325,13 @@ export function ProductStudioPane({ state, adapter }) {
         <button type="button" disabled={view.pending || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("user_edit")}>편집 새 Version</button>
         <button type="button" disabled={view.pending || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("ai_regeneration")}>AI 재생성 새 Version</button>
         <button type="button" disabled={view.pending || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("settings_change")}>설정 변경 새 Version</button>
-        <label>추가 인증 비밀번호<input type="password" autoComplete="current-password" value={stepUpPassword} onChange={(event) => setStepUpPassword(event.currentTarget.value)} /></label>
         <button type="button" disabled={view.pending} onClick={() => void act("reviews")}>검토 요청</button>
         <button type="button" disabled={view.pending || !selectedOutput.review_request_id} onClick={() => void act("approval-requests", { review_request_id: selectedOutput.review_request_id })}>승인 요청</button>
-        <button type="button" disabled={view.pending || !selectedOutput.approval_request_id || !stepUpPassword} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "approved" })}>승인</button>
-        <button type="button" disabled={view.pending || !selectedOutput.approval_request_id || !stepUpPassword} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "rejected" })}>수정 요청</button>
+        <button type="button" disabled={view.pending || !selectedOutput.approval_request_id} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "approved" })}>승인</button>
+        <button type="button" disabled={view.pending || !selectedOutput.approval_request_id} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "rejected" })}>수정 요청</button>
         <button type="button" disabled={view.pending || selectedOutput.status !== "approved"} onClick={() => void download()}>내보내기</button>
-        <button type="button" disabled={view.pending || selectedOutput.status !== "approved" || !selectedOutput.approval_id || !stepUpPassword} onClick={() => void act("deliveries", { approval_id: selectedOutput.approval_id, recipient: "workspace_recipient" })}>전달</button>
-        <button type="button" disabled={view.pending || selectedOutput.status !== "approved" || !stepUpPassword} onClick={() => void act("knowledge-registrations", { explicit: true })}>생산 지식 등록</button>
+        <button type="button" disabled={view.pending || selectedOutput.status !== "approved" || !selectedOutput.approval_id} onClick={() => void act("deliveries", { approval_id: selectedOutput.approval_id, recipient: "workspace_recipient" })}>전달</button>
+        <button type="button" disabled={view.pending || selectedOutput.status !== "approved"} onClick={() => void act("knowledge-registrations", { explicit: true })}>생산 지식 등록</button>
       </section> : null}
     </div>
   );

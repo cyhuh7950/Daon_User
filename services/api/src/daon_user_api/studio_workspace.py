@@ -248,9 +248,6 @@ class StudioWorkspaceService:
             raise StudioError("DELIVERY_RECIPIENT_REQUIRED")
         if action == "knowledge_registration" and payload.get("explicit") is not True:
             raise StudioError("KNOWLEDGE_REGISTRATION_CONFIRMATION_REQUIRED")
-        if action in {"approval", "delivery", "knowledge_registration"}:
-            if payload.get("step_up_verified") is not True:
-                raise StudioError("STEP_UP_REQUIRED", 403)
         return self._repository.record_action(context, action, payload, idempotency_key)
 
     def list_outputs(self, context: StudioContext):

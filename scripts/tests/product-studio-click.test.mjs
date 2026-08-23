@@ -16,8 +16,10 @@ test("실제 React click은 저장 구조 산출물을 선택하고 검토·승�
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container); await act(async () => { reactRoot.render(createElement(ProductStudioPane, { state, adapter })); });
     await act(async () => { buttonByText(container, "반려 보고서").dispatchEvent(new MinimalEvent("click")); });
     assert.match(container.textContent, /반려/);
+    assert.doesNotMatch(container.textContent, /추가 인증 비밀번호/);
     await act(async () => { buttonByText(container, "검토 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); }); await act(async () => { buttonByText(container, "승인 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
-    assert.deepEqual(calls.map((item) => item[0]), ["reviews", "approval-requests"]);
+    await act(async () => { buttonByText(container, "승인").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(calls.map((item) => item[0]), ["reviews", "approval-requests", "approvals"]);
   } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
 });
 
