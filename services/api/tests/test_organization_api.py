@@ -63,3 +63,22 @@ def test_organization_admin_can_create_and_revoke_invitation(tmp_path: Path) -> 
         assert revoked.status_code == 200
         assert revoked.json()["data"]["state"] == "revoked"
     repo.close(); auth.close()
+
+
+def test_user_can_submit_join_request_with_invitation_code_only(tmp_path: Path) -> None:
+    principal = IdentityPrincipal("member", "session", "device", "tenant-personal")
+    app, repo, auth = _app(tmp_path, principal)
+    repo.create_invitation(
+        tenant_id="tenant-a", created_by="admin", code="AAAAA-TEST-2026",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1), max_uses=1,
+        now=datetime.now(timezone.utc),
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/organization/join-requests",
+            json={"invitation_code": "AAAAA-TEST-2026"},
+            headers={"Idempotency-Key": "join-code-only-0001"},
+        )
+        assert created.status_code == 202
+        assert created.json()["data"]["tenant_id"] == "tenant-a"
+    repo.close(); auth.close()

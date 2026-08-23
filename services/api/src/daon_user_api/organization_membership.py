@@ -322,6 +322,38 @@ class SqliteOrganizationRepository:
             row = connection.execute("SELECT * FROM organization_join_requests WHERE request_id=?", (request_id,)).fetchone()
         return self._join(row)
 
+    def create_join_request_by_invitation(self, *, user_id: str, invitation_code: str, now: datetime) -> OrganizationJoinRequest:
+        """Create a pending join request by resolving an active invitation code.
+
+        The plaintext code is never persisted. Resolving the tenant here keeps
+        the user-facing onboarding flow from requiring an internal tenant ID.
+        """
+        user_id = _id(user_id)
+        code = _text(invitation_code, "INVALID_INVITATION_CODE")
+        timestamp = _iso(now)
+        request_id = _new_id("joinreq")
+        with self.transaction() as connection:
+            invitation = connection.execute(
+                "SELECT * FROM invitation_codes WHERE code_digest=?",
+                (_digest(code),),
+            ).fetchone()
+            if (
+                invitation is None
+                or invitation["state"] != InvitationState.ACTIVE.value
+                or _parse(invitation["expires_at"]) <= _utc(now)
+                or int(invitation["used_count"]) >= int(invitation["max_uses"])
+            ):
+                raise OrganizationWorkflowError("INVITATION_INVALID", 400)
+            connection.execute(
+                "INSERT INTO organization_join_requests VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (request_id, str(invitation["tenant_id"]), user_id, str(invitation["invitation_id"]),
+                 RequestState.PENDING.value, None, None, 1, timestamp, timestamp),
+            )
+            row = connection.execute(
+                "SELECT * FROM organization_join_requests WHERE request_id=?", (request_id,)
+            ).fetchone()
+        return self._join(row)
+
     def decide_join_request(self, *, request_id: str, actor_id: str, approved: bool, expected_version: int, reason: str | None, role: str, now: datetime) -> OrganizationJoinRequest:
         request_id = _id(request_id); actor_id = _id(actor_id); role = _text(role, "INVALID_ROLE"); timestamp = _iso(now)
         if not isinstance(expected_version, int) or expected_version < 1: raise OrganizationWorkflowError("INVALID_VERSION")

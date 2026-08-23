@@ -92,6 +92,19 @@ class OrganizationMembershipRepositoryTests(unittest.TestCase):
             self.assertEqual(member.state, MembershipState.SUSPENDED)
             self.assertEqual(member.version, 2)
 
+    def test_join_request_can_resolve_tenant_from_invitation_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteOrganizationRepository(Path(directory) / "org.sqlite3")
+            repository.create_invitation(
+                tenant_id="tenant-code", created_by="admin-code", code="AAAAA-TEST-2026",
+                expires_at=self.now + timedelta(days=1), max_uses=1, now=self.now,
+            )
+            request = repository.create_join_request_by_invitation(
+                user_id="user-code", invitation_code="AAAAA-TEST-2026", now=self.now,
+            )
+            self.assertEqual(request.tenant_id, "tenant-code")
+            self.assertEqual(request.invitation_id is not None, True)
+
     def test_state_and_role_changes_emit_audit_contracts(self) -> None:
         events = []
         with tempfile.TemporaryDirectory() as directory:

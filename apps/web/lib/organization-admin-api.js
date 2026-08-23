@@ -40,6 +40,9 @@ export function getOrganizationSession(options = {}) {
 export const listCreationRequests = (options) => call("/creation-requests", options);
 export const decideCreationRequest = (requestId, body, options = {}) => call(`/creation-requests/${encodeURIComponent(requestId)}/decision`, { ...options, method: "POST", body, mutation: true });
 export const listJoinRequests = (tenantId, options = {}) => call(`/join-requests${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ""}`, options);
+export const submitJoinRequest = (invitationCode, options = {}) => call("/join-requests", {
+  ...options, method: "POST", body: { invitation_code: invitationCode }, mutation: true,
+});
 export const decideJoinRequest = (requestId, body, options = {}) => call(`/join-requests/${encodeURIComponent(requestId)}/decision`, { ...options, method: "POST", body, mutation: true });
 export const createInvitation = (tenantId, body, options = {}) => call(`/tenants/${encodeURIComponent(tenantId)}/invitations`, { ...options, method: "POST", body, mutation: true });
 export const revokeInvitation = (tenantId, invitationId, options = {}) => call(`/tenants/${encodeURIComponent(tenantId)}/invitations/${encodeURIComponent(invitationId)}`, { ...options, method: "DELETE", mutation: true });

@@ -38,7 +38,7 @@ class DecisionBody(BaseModel):
 
 class JoinBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    tenant_id: str = Field(min_length=1, max_length=160)
+    tenant_id: str | None = Field(default=None, min_length=1, max_length=160)
     invitation_code: str | None = Field(default=None, min_length=1, max_length=160)
 
 
@@ -149,12 +149,19 @@ class OrganizationApi:
         @router.post("/api/v1/organization/join-requests", status_code=202)
         async def join(body: JoinBody, request: Request) -> dict[str, Any]:
             actor = principal(request)
+            if body.tenant_id is None and body.invitation_code is None:
+                raise OrganizationWorkflowError("INVITATION_REQUIRED", 400)
             key, fingerprint, replay = mutation(request, actor, "organization.join.create", body.model_dump())
             if replay is not None:
                 return response(request, replay)
-            item = self.repository.create_join_request(
-                tenant_id=body.tenant_id, user_id=actor.user_id, invitation_code=body.invitation_code, now=self.now(),
-            )
+            if body.tenant_id is None:
+                item = self.repository.create_join_request_by_invitation(
+                    user_id=actor.user_id, invitation_code=body.invitation_code or "", now=self.now(),
+                )
+            else:
+                item = self.repository.create_join_request(
+                    tenant_id=body.tenant_id, user_id=actor.user_id, invitation_code=body.invitation_code, now=self.now(),
+                )
             record(actor, "organization.join.create", key, fingerprint, item)
             return response(request, item)
 
