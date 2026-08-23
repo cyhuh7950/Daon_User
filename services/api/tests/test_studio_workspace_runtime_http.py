@@ -131,11 +131,16 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(exported.headers["x-content-type-options"], "nosniff")
         self.assertEqual(exported.headers["cache-control"], "no-store")
 
-    async def test_sensitive_action_without_exact_step_up_writes_zero(self):
-        with self.authenticated(), patch.object(self.identity, "consume_step_up", side_effect=IdentityError("STEP_UP_REQUIRED", 403)):
-            rejected = await self.client.post("/api/v1/deliveries", cookies={WEB_SESSION_COOKIE: "opaque"}, headers={"Idempotency-Key": "delivery-key-0001"}, json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_version_id": "version-1"})
-        self.assertEqual((rejected.status_code, rejected.json()["error"]["code"]), (403, "STEP_UP_REQUIRED"))
-        self.assertFalse(any(call[0] == "delivery" for call in self.studio.calls))
+    async def test_sensitive_action_uses_login_session_without_step_up(self):
+        with self.authenticated(), patch.object(self.identity, "consume_step_up") as consume:
+            delivered = await self.client.post(
+                "/api/v1/deliveries", cookies={WEB_SESSION_COOKIE: "opaque"},
+                headers={"Idempotency-Key": "delivery-key-0001"},
+                json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_version_id": "version-1", "approval_id": "approval-1", "recipient": "workspace-recipient"},
+            )
+        self.assertEqual(delivered.status_code, 201)
+        self.assertFalse(consume.called)
+        self.assertTrue(any(call[0] == "delivery" for call in self.studio.calls))
 
     async def test_missing_default_policy_is_public_fail_closed_409(self):
         with self.authenticated(), patch.object(

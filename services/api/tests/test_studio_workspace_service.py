@@ -80,20 +80,17 @@ class StudioWorkspaceServiceTests(unittest.TestCase):
         }, "revision-key-0002")
         self.assertEqual(version["previous_version_id"], "version-1")
 
-    def test_sensitive_actions_require_exact_step_up(self) -> None:
+    def test_sensitive_actions_follow_login_session_without_step_up(self) -> None:
         payloads = {
             "approval": {"approval_request_id": "approval-request-1", "decision": "approved"},
             "delivery": {"approval_id": "approval-1", "recipient": "customer-1"},
             "knowledge_registration": {"explicit": True},
         }
-        for action, required in payloads.items():
-            with self.assertRaisesRegex(StudioError, "STEP_UP_REQUIRED"):
-                self.service.action(self.context, action, {"output_version_id": "version-1", **required}, "action-key-0001")
+        for index, (action, required) in enumerate(payloads.items(), start=1):
             result, _ = self.service.action(self.context, action, {
                 "output_version_id": "version-1",
-                "step_up_verified": True,
                 **required,
-            }, "action-key-0002")
+            }, f"action-key-000{index}")
             self.assertEqual(result["status"], "accepted")
 
     def test_linked_actions_reject_missing_canon_relationships(self) -> None:
@@ -102,7 +99,7 @@ class StudioWorkspaceServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(StudioError, "APPROVAL_DECISION_INVALID"):
             self.service.action(self.context, "approval", {
                 "output_version_id": "version-1", "approval_request_id": "approval-request-1",
-                "decision": "auto", "step_up_verified": True,
+                "decision": "auto",
             }, "action-key-0004")
 
 
