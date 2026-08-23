@@ -13,7 +13,11 @@ from daon_user_api.document_understanding_adapter import (
     ParserValidation,
     SemanticUnderstanding,
 )
-from tests.test_document_understanding_adapter import provider_snapshot
+try:
+    from tests.test_document_understanding_adapter import provider_snapshot
+except ModuleNotFoundError:
+    # unittest discovery adds the test directory itself to sys.path.
+    from test_document_understanding_adapter import provider_snapshot
 
 
 PDF = b"%PDF-1.4\n% processing fixture\n%%EOF\n"

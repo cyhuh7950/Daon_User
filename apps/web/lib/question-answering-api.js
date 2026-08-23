@@ -220,4 +220,4 @@ export function citationContentUrl(workspaceId, citation, { notebookId } = {}) {
   const base = `/bff/api/workspaces/${encodeURIComponent(workspace)}/citations/${encodeURIComponent(citationId)}/content?notebook_id=${encodeURIComponent(notebook)}`;
   return citation?.locator?.kind === "page" ? `${base}#page=${page}` : base;
 }
-import { isGeneralConversationIntent } from "../../../packages/ui/src/conversation-intent.js";
+import { isGeneralConversationIntent } from "@daon-user/ui/conversation-intent";

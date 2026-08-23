@@ -585,6 +585,16 @@ class SqliteIdentityRepository:
     def _ensure_tenant(self, connection: sqlite3.Connection, tenant_id: str) -> None:
         connection.execute("INSERT OR IGNORE INTO tenants(tenant_id) VALUES (?)", (tenant_id,))
 
+    def _seed_minimum_step_up_actions(
+        self, connection: sqlite3.Connection, tenant_id: str,
+    ) -> None:
+        """Keep the tenant's mandatory step-up policy atomic with membership creation."""
+        for action in MINIMUM_STEP_UP_ACTION_GROUPS:
+            connection.execute(
+                "INSERT OR IGNORE INTO tenant_step_up_actions(tenant_id, action_group, is_mandatory) VALUES (?, ?, 1)",
+                (tenant_id, action),
+            )
+
     def add_tenant_membership(self, *, tenant_id: str, user_id: str, role: str) -> None:
         """Provision an approved organization membership idempotently."""
         tenant_id = _checked_text(tenant_id)
@@ -600,11 +610,7 @@ class SqliteIdentityRepository:
                 "ON CONFLICT(tenant_id,user_id) DO UPDATE SET role=excluded.role",
                 (tenant_id, user_id, role),
             )
-        for action in MINIMUM_STEP_UP_ACTION_GROUPS:
-            connection.execute(
-                "INSERT OR IGNORE INTO tenant_step_up_actions(tenant_id, action_group, is_mandatory) VALUES (?, ?, 1)",
-                (tenant_id, action),
-            )
+            self._seed_minimum_step_up_actions(connection, tenant_id)
 
     def required_step_up_actions(self, tenant_id: str) -> frozenset[str]:
         checked = _checked_text(tenant_id)
@@ -821,6 +827,7 @@ class IdentityService:
             )
             self._repository._ensure_tenant(connection, tenant_id)
             connection.execute("INSERT INTO memberships(tenant_id,user_id,role) VALUES (?,?,?)", (tenant_id, user_id, "personal_owner"))
+            self._repository._seed_minimum_step_up_actions(connection, tenant_id)
             token = self._issue_token(connection, table="email_verification_tokens", user_id=user_id, now=now, ttl=timedelta(hours=24))
             self._email_sender.send(recipient=address, subject="Daon 이메일 인증", body=f"Daon 이메일 인증 토큰: {token}\n24시간 내 인증하세요.")
             self._audit(action="identity.signup.accepted", outcome=AuditOutcome.SUCCEEDED, trace_id=trace_id,
@@ -1095,6 +1102,7 @@ class IdentityService:
                 "INSERT OR IGNORE INTO memberships(tenant_id,user_id,role) VALUES (?,?,?)",
                 (tenant_id, user_id, "member"),
             )
+            self._repository._seed_minimum_step_up_actions(connection, tenant_id)
             device_id, session_id = _id("dev"), _id("ses")
             access = _opaque()
             connection.execute(

@@ -35,7 +35,7 @@ def test_output_version_settings_defaults_are_type_specific_and_append_only() ->
 
 def test_output_version_settings_rejects_unsupported_type_format_pair() -> None:
     service = OutputVersionSettingsService(Repository())
-    invalid = {**DEFAULT_OUTPUT_FORMATS, "knowledge_graph": "docx"}
+    invalid = {**DEFAULT_OUTPUT_FORMATS, "knowledge_map": "docx"}
     with pytest.raises(OutputVersionSettingsError, match="OUTPUT_VERSION_SETTINGS_INVALID"):
         service.save(
             OutputVersionSettingsContext("tenant-1", "workspace-1", "actor-1"),

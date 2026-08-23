@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
-const PANE_PATH = "packages/ui/src/production-bound-evidence-pane.jsx";
+const PANE_PATH = "apps/evidence-hub/src/evidence-hub.jsx";
 const pane = fs.readFileSync(PANE_PATH, "utf8");
-const model = await import("../../packages/ui/src/production-bound-evidence-model.js");
+const model = await import("../../apps/evidence-hub/src/evidence-hub-model.js");
 
 test("server와 browser 첫 hydration render는 같은 기본 reducer state로 시작한다", () => {
   assert.match(
     pane,
-    /useReducer\(\s*transitionProductionBoundEvidence,\s*undefined,\s*createProductionBoundEvidenceState\s*\)/
+    /useReducer\(transitionProductionBoundEvidence, undefined, createProductionBoundEvidenceState\)/
   );
   const reducerLine = pane.split("\n").find((line) => line.includes("useReducer("));
   assert.doesNotMatch(reducerLine, /window|sessionStorage|restoreState/);

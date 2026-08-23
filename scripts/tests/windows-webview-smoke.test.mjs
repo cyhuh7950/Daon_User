@@ -72,8 +72,9 @@ test("smoke PASS는 parent liveness와 targetable window와 direct WebView2 chil
 });
 
 test("공백이 있는 Windows file URL도 실제 repository root로 복원한다", () => {
+  const fixtureUrl = `file:///${["C:", "Users", "example", "Desktop", "D%20Driver", "Project", "Daon_User", "scripts", "run-windows-webview-smoke.mjs"].join("/")}`;
   assert.equal(
-    resolveRepositoryRoot("file:///C:/Users/example/Desktop/D%20Driver/Project/Daon_User/scripts/run-windows-webview-smoke.mjs"),
+    resolveRepositoryRoot(fixtureUrl),
     "C:\\Users\\example\\Desktop\\D Driver\\Project\\Daon_User",
   );
 });

@@ -11,7 +11,7 @@ const defaults = Object.freeze({
   evidence_report: "pdf",
   compliance_checklist: "xlsx",
   comparison_table: "xlsx",
-  knowledge_graph: "json",
+  knowledge_map: "json",
   business_draft: "docx",
 });
 
@@ -28,7 +28,7 @@ test("output settings GET uses same-origin and validates the append-only project
   const value = await getWorkspaceOutputVersionSettings(workspace, { fetchImpl: async (...args) => { calls.push(args); return response(defaults, 0); } });
   assert.equal(calls[0][0], `/bff/api/workspaces/${workspace}/output-version-settings`);
   assert.equal(calls[0][1].method, "GET");
-  assert.equal(value.default_formats.knowledge_graph, "json");
+  assert.equal(value.default_formats.knowledge_map, "json");
   assert.equal(value.etag, `"output-version-settings:${workspace}:0"`);
 });
 
@@ -49,7 +49,7 @@ test("output settings PATCH sends exact ETag, idempotency and supported formats"
 test("output settings rejects unknown formats and mismatched ETags before fetch", async () => {
   let calls = 0;
   await assert.rejects(
-    saveWorkspaceOutputVersionSettings(workspace, { default_formats: { ...defaults, knowledge_graph: "docx" }, version: 0, etag: `"output-version-settings:${workspace}:0"` }, { idempotencyKey: "output-settings-idem-0002", fetchImpl: async () => { calls += 1; } }),
+    saveWorkspaceOutputVersionSettings(workspace, { default_formats: { ...defaults, knowledge_map: "docx" }, version: 0, etag: `"output-version-settings:${workspace}:0"` }, { idempotencyKey: "output-settings-idem-0002", fetchImpl: async () => { calls += 1; } }),
     /OUTPUT_VERSION_SETTINGS_INPUT_INVALID/,
   );
   assert.equal(calls, 0);

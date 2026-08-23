@@ -37,22 +37,14 @@ const OPERATIONS_COMPONENT_KEYS = Object.freeze([
   "component_id", "status", "safe_code", "pending_count", "recovery_action",
 ]);
 const OUTPUT_SETTING_TYPES = Object.freeze([
-  "evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "knowledge_graph", "business_draft",
-  "slides", "infographic", "flashcards", "quiz", "audio", "video",
+  "evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft",
 ]);
 const OUTPUT_SETTING_FORMATS = Object.freeze({
   evidence_report: Object.freeze(["pdf", "docx"]),
   compliance_checklist: Object.freeze(["xlsx", "csv", "pdf"]),
   comparison_table: Object.freeze(["xlsx", "csv", "pdf"]),
-  knowledge_graph: Object.freeze(["json", "svg", "png"]),
   knowledge_map: Object.freeze(["json", "svg", "png", "pdf"]),
   business_draft: Object.freeze(["docx", "pdf"]),
-  slides: Object.freeze(["pdf", "json"]),
-  infographic: Object.freeze(["svg", "png", "pdf", "json"]),
-  flashcards: Object.freeze(["json", "csv", "pdf"]),
-  quiz: Object.freeze(["json", "csv", "pdf"]),
-  audio: Object.freeze(["json"]),
-  video: Object.freeze(["json"]),
 });
 
 function record(value) {

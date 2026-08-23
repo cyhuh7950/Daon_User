@@ -12,14 +12,14 @@ OUTPUT_FORMATS = {
     "evidence_report": frozenset({"pdf", "docx"}),
     "compliance_checklist": frozenset({"xlsx", "csv", "pdf"}),
     "comparison_table": frozenset({"xlsx", "csv", "pdf"}),
-    "knowledge_graph": frozenset({"json", "svg", "png"}),
+    "knowledge_map": frozenset({"json", "svg", "png", "pdf"}),
     "business_draft": frozenset({"docx", "pdf"}),
 }
 DEFAULT_OUTPUT_FORMATS = {
     "evidence_report": "pdf",
     "compliance_checklist": "xlsx",
     "comparison_table": "xlsx",
-    "knowledge_graph": "json",
+    "knowledge_map": "json",
     "business_draft": "docx",
 }
 

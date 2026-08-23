@@ -18,7 +18,7 @@ def upgrade() -> None:
           updated_by text NOT NULL, updated_at timestamptz NOT NULL,
           PRIMARY KEY (tenant_id,workspace_id),
           FOREIGN KEY (tenant_id,workspace_id) REFERENCES workspaces(tenant_id,workspace_id),
-          CHECK (jsonb_typeof(default_formats)='object' AND default_formats ?& ARRAY['evidence_report','compliance_checklist','comparison_table','knowledge_graph','business_draft'])
+          CHECK (jsonb_typeof(default_formats)='object' AND default_formats ?& ARRAY['evidence_report','compliance_checklist','comparison_table','knowledge_map','business_draft'])
         );
         CREATE TABLE workspace_output_version_settings_idempotency (
           tenant_id text NOT NULL, workspace_id text NOT NULL, actor_id text NOT NULL,

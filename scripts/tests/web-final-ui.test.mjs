@@ -187,7 +187,7 @@ test("출력·버전 Popup은 유형별 형식과 append-only 정책을 저장�
     const container = dom.document.createElement("div");
     dom.document.body.appendChild(container);
     reactRoot = createRoot(container);
-    const defaults = { evidence_report: "pdf", compliance_checklist: "xlsx", comparison_table: "xlsx", knowledge_graph: "json", business_draft: "docx" };
+    const defaults = { evidence_report: "pdf", compliance_checklist: "xlsx", comparison_table: "xlsx", knowledge_map: "json", business_draft: "docx" };
     const saves = [];
     const adapter = {
       getOutputVersionSettings: async () => ({ workspace_id: "workspace-1", default_formats: defaults, version_save_mode: "append_only", version: 0, etag: '"output-version-settings:workspace-1:0"' }),

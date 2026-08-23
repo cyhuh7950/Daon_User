@@ -32,6 +32,16 @@
       "build_owner_work_order": "R1-M3-04"
     },
     {
+      "id": "apps/evidence-hub",
+      "path": "apps/evidence-hub",
+      "kind": "application",
+      "owner": "prototype-evidence-hub",
+      "runtime": "vite-browser-evidence-shell",
+      "allowed_dependencies": ["packages/contracts", "packages/design-tokens"],
+      "forbidden_dependencies": ["apps/web", "apps/desktop", "apps/mobile", "services/api", "services/local-service", "packages/ui"],
+      "build_owner_work_order": "R1-M2-08"
+    },
+    {
       "id": "services/api",
       "path": "services/api",
       "kind": "service",

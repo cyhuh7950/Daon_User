@@ -16,6 +16,51 @@ from daon_user_api.identity import ClientKind, DevicePlatform, IdentityError, MI
 
 
 class IdentityStepUpTests(unittest.TestCase):
+    def test_add_tenant_membership_seeds_mandatory_step_up_actions_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            _, repository, _, _ = create_service(Path(directory) / "identity.sqlite3")
+            connection = repository._connect()
+            try:
+                connection.execute(
+                    "INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,email_verified_at,state) "
+                    "VALUES (?,?,?,?,?,?,?,'active')",
+                    (
+                        "membership-user",
+                        "local",
+                        "membership-user",
+                        "membership-user",
+                        "membership@example.com",
+                        PASSWORD_HASHER.hash("correct horse battery staple"),
+                        "2026-07-29T00:00:00+00:00",
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            repository.add_tenant_membership(
+                tenant_id="membership-tenant",
+                user_id="membership-user",
+                role="member",
+            )
+
+            self.assertTrue(
+                MINIMUM_STEP_UP_ACTION_GROUPS.issubset(
+                    repository.required_step_up_actions("membership-tenant")
+                )
+            )
+            membership = repository._connect()
+            try:
+                self.assertIsNotNone(
+                    membership.execute(
+                        "SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?",
+                        ("membership-tenant", "membership-user"),
+                    ).fetchone()
+                )
+            finally:
+                membership.close()
+            repository.close()
+
     def test_step_up_idempotency_replays_exact_grant_rejects_changed_request_and_survives_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "identity.sqlite3"
