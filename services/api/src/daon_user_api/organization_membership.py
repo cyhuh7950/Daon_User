@@ -8,6 +8,7 @@ later work item, so existing login and workspace behaviour is unchanged.
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import sqlite3
 from contextlib import contextmanager
@@ -158,6 +159,35 @@ class SqliteOrganizationRepository:
         connection.execute("PRAGMA journal_mode = WAL")
         return connection
 
+    def close(self) -> None:
+        """Repository opens short-lived transactional connections."""
+        return None
+
+    def idempotency_replay(self, *, operation: str, actor_id: str, key: str, fingerprint: str) -> str | None:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT fingerprint,result_json FROM organization_idempotency WHERE operation=? AND actor_id=? AND idempotency_key=?",
+                (_id(operation), _id(actor_id), _id(key)),
+            ).fetchone()
+        if row is None:
+            return None
+        if str(row[0]) != fingerprint:
+            raise OrganizationWorkflowError("IDEMPOTENCY_KEY_REUSED", 409)
+        return str(row[1])
+
+    def idempotency_record(self, *, operation: str, actor_id: str, key: str, fingerprint: str, result: object, now: datetime) -> None:
+        payload = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        try:
+            with self.transaction() as connection:
+                connection.execute(
+                    "INSERT INTO organization_idempotency(operation,actor_id,idempotency_key,fingerprint,result_json,created_at) VALUES (?,?,?,?,?,?)",
+                    (_id(operation), _id(actor_id), _id(key), fingerprint, payload, _iso(now)),
+                )
+        except OrganizationWorkflowError as error:
+            if error.code == "PERSISTENCE_CONFLICT":
+                return
+            raise
+
     def _create_schema(self, connection: sqlite3.Connection) -> None:
         connection.executescript(
             """
@@ -197,6 +227,11 @@ class SqliteOrganizationRepository:
               history_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
               actor_id TEXT NOT NULL, previous_role TEXT, next_role TEXT,
               previous_state TEXT, next_state TEXT, reason TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS organization_idempotency (
+              operation TEXT NOT NULL, actor_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+              fingerprint TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL,
+              PRIMARY KEY(operation, actor_id, idempotency_key)
             );
             """
         )
@@ -335,3 +370,33 @@ class SqliteOrganizationRepository:
         with self.transaction() as connection:
             rows = connection.execute("SELECT * FROM tenant_memberships WHERE tenant_id=? ORDER BY user_id", (tenant_id,)).fetchall()
         return tuple(TenantMembership(tenant_id, str(row["user_id"]), str(row["role"]), MembershipState(row["state"]), int(row["version"]), _parse(row["updated_at"])) for row in rows)
+
+    def membership_state(self, *, tenant_id: str, user_id: str) -> MembershipState | None:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT state FROM tenant_memberships WHERE tenant_id=? AND user_id=?",
+                (_id(tenant_id), _id(user_id)),
+            ).fetchone()
+        return None if row is None else MembershipState(str(row[0]))
+
+    def list_creation_requests(self, *, applicant_user_id: str | None = None) -> tuple[OrganizationCreationRequest, ...]:
+        with self.transaction() as connection:
+            if applicant_user_id is None:
+                rows = connection.execute("SELECT * FROM organization_creation_requests ORDER BY created_at DESC").fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM organization_creation_requests WHERE applicant_user_id=? ORDER BY created_at DESC", (_id(applicant_user_id),)).fetchall()
+        return tuple(self._creation(row) for row in rows)
+
+    def list_join_requests(self, *, tenant_id: str | None = None, user_id: str | None = None) -> tuple[OrganizationJoinRequest, ...]:
+        clauses: list[str] = []
+        values: list[str] = []
+        if tenant_id is not None:
+            clauses.append("tenant_id=?"); values.append(_id(tenant_id))
+        if user_id is not None:
+            clauses.append("user_id=?"); values.append(_id(user_id))
+        query = "SELECT * FROM organization_join_requests"
+        if clauses: query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC"
+        with self.transaction() as connection:
+            rows = connection.execute(query, tuple(values)).fetchall()
+        return tuple(self._join(row) for row in rows)
