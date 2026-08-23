@@ -82,3 +82,49 @@ def test_user_can_submit_join_request_with_invitation_code_only(tmp_path: Path) 
         assert created.status_code == 202
         assert created.json()["data"]["tenant_id"] == "tenant-a"
     repo.close(); auth.close()
+
+
+def test_system_approval_invokes_organization_provisioner(tmp_path: Path) -> None:
+    applicant = IdentityPrincipal("applicant", "session", "device", "tenant-personal")
+    system = IdentityPrincipal("configured-admin", "session", "device", "tenant-system")
+    auth = SqliteAuthorizationRepository(tmp_path / "auth.sqlite")
+    repo = SqliteOrganizationRepository(tmp_path / "org.sqlite")
+    app = FastAPI()
+    calls = []
+
+    @app.exception_handler(OrganizationWorkflowError)
+    async def workflow_error(_request: Request, error: OrganizationWorkflowError) -> JSONResponse:
+        return JSONResponse(status_code=error.status, content={"code": error.code})
+
+    current = {"principal": applicant}
+    OrganizationApi(
+        repo, auth, system_admin_checker=lambda value: value.user_id == "configured-admin",
+        organization_provisioner=lambda request: calls.append(request),
+    ).mount(app, lambda _request: current["principal"])
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/organization/creation-requests",
+            json={"organization_name": "New Org", "organization_identifier": "new-org"},
+            headers={"Idempotency-Key": "creation-provision-0001"},
+        )
+        assert created.status_code == 202
+        current["principal"] = system
+        decided = client.post(
+            f"/api/v1/organization/creation-requests/{created.json()['data']['request_id']}/decision",
+            json={"approved": True, "expected_version": 1},
+            headers={"Idempotency-Key": "creation-provision-0002"},
+        )
+        assert decided.status_code == 200
+        assert len(calls) == 1
+        assert calls[0].requested_org_identifier == "new-org"
+    repo.close(); auth.close()
+
+
+def test_system_directory_is_available_only_to_system_admin(tmp_path: Path) -> None:
+    principal = IdentityPrincipal("configured-admin", "session", "device", "tenant-system")
+    app, repo, auth = _app(tmp_path, principal)
+    with TestClient(app) as client:
+        directory = client.get("/api/v1/admin/directory")
+        assert directory.status_code == 200
+        assert set(directory.json()["data"]) == {"organizations", "users"}
+    repo.close(); auth.close()

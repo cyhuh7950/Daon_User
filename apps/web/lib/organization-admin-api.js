@@ -38,6 +38,7 @@ export function getOrganizationSession(options = {}) {
 }
 
 export const listCreationRequests = (options) => call("/creation-requests", options);
+export const listDirectory = (options) => call("/admin/directory", options);
 export const decideCreationRequest = (requestId, body, options = {}) => call(`/creation-requests/${encodeURIComponent(requestId)}/decision`, { ...options, method: "POST", body, mutation: true });
 export const listJoinRequests = (tenantId, options = {}) => call(`/join-requests${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ""}`, options);
 export const submitJoinRequest = (invitationCode, options = {}) => call("/join-requests", {

@@ -584,6 +584,22 @@ class SqliteIdentityRepository:
 
     def _ensure_tenant(self, connection: sqlite3.Connection, tenant_id: str) -> None:
         connection.execute("INSERT OR IGNORE INTO tenants(tenant_id) VALUES (?)", (tenant_id,))
+
+    def add_tenant_membership(self, *, tenant_id: str, user_id: str, role: str) -> None:
+        """Provision an approved organization membership idempotently."""
+        tenant_id = _checked_text(tenant_id)
+        user_id = _checked_text(user_id)
+        role = _checked_text(role)
+        with self.transaction() as connection:
+            user = connection.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone()
+            if user is None:
+                raise IdentityError("USER_NOT_FOUND", 404)
+            self._ensure_tenant(connection, tenant_id)
+            connection.execute(
+                "INSERT INTO memberships(tenant_id,user_id,role) VALUES (?,?,?) "
+                "ON CONFLICT(tenant_id,user_id) DO UPDATE SET role=excluded.role",
+                (tenant_id, user_id, role),
+            )
         for action in MINIMUM_STEP_UP_ACTION_GROUPS:
             connection.execute(
                 "INSERT OR IGNORE INTO tenant_step_up_actions(tenant_id, action_group, is_mandatory) VALUES (?, ?, 1)",
@@ -653,6 +669,24 @@ class SqliteIdentityRepository:
                     table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                     for table in tables
                 }
+            finally:
+                connection.close()
+
+    def list_directory_users(self) -> tuple[dict[str, str | None], ...]:
+        """Return non-secret identity fields for the system-admin directory."""
+        with self._lock:
+            self._ensure_open()
+            connection = self._connect()
+            try:
+                rows = connection.execute(
+                    "SELECT user_id,login_id,email,state FROM users ORDER BY user_id"
+                ).fetchall()
+                return tuple({
+                    "user_id": str(row["user_id"]),
+                    "login_id": None if row["login_id"] is None else str(row["login_id"]),
+                    "email": None if row["email"] is None else str(row["email"]),
+                    "state": str(row["state"]),
+                } for row in rows)
             finally:
                 connection.close()
 

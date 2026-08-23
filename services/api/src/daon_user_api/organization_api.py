@@ -10,13 +10,14 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 from typing import Any, Callable
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from .authorization import Role, SqliteAuthorizationRepository
-from .identity import IdentityPrincipal
+from .identity import IdentityPrincipal, SqliteIdentityRepository
 from .organization_membership import (
     MembershipState, OrganizationWorkflowError, SqliteOrganizationRepository,
 )
@@ -25,7 +26,9 @@ from .organization_membership import (
 class OrganizationCreationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     organization_name: str = Field(min_length=1, max_length=160)
-    organization_identifier: str = Field(min_length=1, max_length=160)
+    organization_identifier: str = Field(
+        min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9._:-]{0,127}$"
+    )
 
 
 class DecisionBody(BaseModel):
@@ -62,11 +65,22 @@ class RoleBody(MembershipBody):
 class OrganizationApi:
     def __init__(self, repository: SqliteOrganizationRepository, authorization: SqliteAuthorizationRepository,
                  now: Callable[[], datetime] | None = None,
-                 system_admin_checker: Callable[[IdentityPrincipal], bool] | None = None) -> None:
+                 system_admin_checker: Callable[[IdentityPrincipal], bool] | None = None,
+                 organization_provisioner: Callable[[Any], None] | None = None,
+                 identity_repository: SqliteIdentityRepository | None = None) -> None:
         self.repository = repository
         self.authorization = authorization
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.system_admin_checker = system_admin_checker or (lambda _principal: False)
+        self.organization_provisioner = organization_provisioner
+        self.identity_repository = identity_repository
+
+    @staticmethod
+    def _tenant_id(identifier: str) -> str:
+        normalized = identifier.strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,127}", normalized):
+            return ""
+        return f"tenant-{normalized}"
 
     def _tenant_role(self, tenant_id: str, user_id: str) -> str | None:
         with self.authorization.transaction() as connection:
@@ -131,6 +145,26 @@ class OrganizationApi:
             )
             return response(request, items)
 
+        @router.get("/api/v1/admin/directory")
+        async def directory(request: Request) -> dict[str, Any]:
+            actor = principal(request)
+            if not self.system_admin_checker(actor):
+                raise OrganizationWorkflowError("SYSTEM_ADMIN_REQUIRED", 403)
+            organizations = [
+                {
+                    "tenant_id": tenant_id,
+                    "name": item.requested_org_name,
+                    "identifier": item.requested_org_identifier,
+                    "state": item.state.value,
+                    "applicant_user_id": item.applicant_user_id,
+                }
+                for item in self.repository.list_creation_requests()
+                if item.state.value == "approved"
+                and (tenant_id := self._tenant_id(item.requested_org_identifier))
+            ]
+            users = () if self.identity_repository is None else self.identity_repository.list_directory_users()
+            return response(request, {"organizations": organizations, "users": users})
+
         @router.post("/api/v1/organization/creation-requests/{request_id}/decision")
         async def decide_creation(request_id: str, body: DecisionBody, request: Request) -> dict[str, Any]:
             actor = principal(request)
@@ -143,6 +177,8 @@ class OrganizationApi:
                 request_id=request_id, actor_id=actor.user_id, approved=body.approved,
                 expected_version=body.expected_version, reason=body.reason, now=self.now(),
             )
+            if body.approved and self.organization_provisioner is not None:
+                self.organization_provisioner(item)
             record(actor, "organization.creation.decide", key, fingerprint, item)
             return response(request, item)
 

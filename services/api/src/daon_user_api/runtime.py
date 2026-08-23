@@ -1287,6 +1287,27 @@ def _requires_runtime_license_precheck(service: object) -> bool:
     return True
 
 
+def _organization_provisioner(dependencies: RuntimeDependencies) -> Any:
+    """Provision the identity and authorization records for an approved org."""
+    def provision(request: Any) -> None:
+        identifier = str(request.requested_org_identifier).strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,127}", identifier):
+            raise OrganizationWorkflowError("INVALID_ORGANIZATION_IDENTIFIER", 400)
+        tenant_id = f"tenant-{identifier}"
+        dependencies.identity_repository.add_tenant_membership(
+            tenant_id=tenant_id, user_id=str(request.applicant_user_id),
+            role=Role.ORGANIZATION_ADMIN.value,
+        )
+        dependencies.authorization_repository.bootstrap_workspace(
+            tenant_id=tenant_id, workspace_id=f"workspace-{identifier}",
+            owner_user_id=str(request.applicant_user_id),
+            owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",
+            data_area="cloud_sync", cost_limit_cents=1000,
+            now=datetime.now(timezone.utc),
+        )
+    return provision
+
+
 def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     notification_service = dependencies.notification_service or NotificationService(
         repository=ReferenceNotificationRepository(),
@@ -1486,6 +1507,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             dependencies.organization_repository,
             dependencies.authorization_repository,
             system_admin_checker=lambda principal: principal.user_id in dependencies.settings.system_admin_user_ids,
+            organization_provisioner=_organization_provisioner(dependencies),
+            identity_repository=dependencies.identity_repository,
         ).mount(app, lambda request: _principal(request, dependencies))
 
     @app.middleware("http")
