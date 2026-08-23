@@ -183,7 +183,7 @@ test("세 Pane·Drawer·Bottom Tab·Evidence Viewer와 접근성 동작 계약�
     assert.match(source, new RegExp(attribute));
 });
 
-test("Web Home은 비인증 AuthPane만 제공하고 내부 API 주소를 갖지 않는다", async () => {
+test("Web Home은 AuthLanding을 통해 인증 상태를 처리하고 내부 API 주소를 갖지 않는다", async () => {
   for (const relative of webFiles) assert.ok(existsSync(path.join(root, relative)), `missing ${relative}`);
   const browserSource = [
     await read("packages/ui/src/adaptive-workspace.jsx"),
@@ -197,10 +197,9 @@ test("Web Home은 비인증 AuthPane만 제공하고 내부 API 주소를 갖지
   assert.doesNotMatch(browserSource, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL|fetch\s*\(/i);
   const home = await read("apps/web/app/page.jsx");
   const workspace = await read("apps/web/app/workspaces/[workspace_id]/page.jsx");
-  assert.match(home, /AuthPane/);
+  assert.match(home, /AuthLanding/);
   assert.doesNotMatch(home, /ProductionBoundEvidenceHub|AdaptiveWorkspace|navigation\.json|screens\.json/);
-  assert.match(workspace, /ActualWorkspace/);
-  assert.match(workspace, /workspace_detail/);
+  assert.match(workspace, /redirect\("\/notebooks"\)/);
 });
 
 test("Product Workspace는 승인된 Safe 상태만 만들고 Fixture 성공 데이터를 생성하지 않는다", async () => {
@@ -209,7 +208,19 @@ test("Product Workspace는 승인된 Safe 상태만 만들고 Fixture 성공 데
   assert.deepEqual(model.PRODUCT_WORKSPACE_STATES, ["loading", "empty", "ready", "error", "forbidden", "unavailable"]);
   for (const status of model.PRODUCT_WORKSPACE_STATES) {
     const state = model.createProductWorkspaceState({ status });
-    assert.deepEqual(state, { status, sources: [], selectedSource: null, answer: null, studioOutputs: [], safeError: null });
+    assert.deepEqual(state, {
+      status,
+      sources: [],
+      selectedSource: null,
+      answer: null,
+      answerIntent: null,
+      studioOutputs: [],
+      studioLocks: [],
+      studioStatus: "loading",
+      studioSafeError: null,
+      conversationSafeError: null,
+      safeError: null
+    });
   }
   assert.throws(() => model.createProductWorkspaceState({ status: "prototype" }), /WORKSPACE_STATE_INVALID/);
   assert.throws(() => model.normalizeProductWorkspaceState({ status: "error", sources: [], selectedSource: null, answer: null, studioOutputs: [], safeError: "http://internal:8000 password=secret" }), /WORKSPACE_SAFE_ERROR_INVALID/);
@@ -222,39 +233,40 @@ test("Product Workspace Shell은 3면 Safe 상태를 렌더하고 Prototype Toke
   assert.doesNotMatch(shell, /ProductionBoundEvidenceHub|prototype_fixture|deferred_actual|Mock Adapter/);
 });
 
-test("Stage A 실제 Workspace Route는 로그인 Workspace ID와 Safe Shell만 연결한다", async () => {
-  const page = await read("apps/web/app/workspaces/[workspace_id]/page.jsx");
+test("Notebook Route는 Notebook ID를 실제 Product Workspace에 연결하고 레거시 Workspace Route는 리다이렉트한다", async () => {
+  const legacyPage = await read("apps/web/app/workspaces/[workspace_id]/page.jsx");
+  const page = await read("apps/web/app/notebooks/[notebook_id]/page.jsx");
   const actualWorkspace = await read("apps/web/components/actual-workspace.jsx");
   const uploadClient = await read("apps/web/lib/source-upload-api.js");
   const authPane = await read("apps/web/lib/auth-pane.jsx");
 
+  assert.match(legacyPage, /redirect\("\/notebooks"\)/);
   assert.match(page, /params/);
-  assert.match(page, /workspace_id/);
-  assert.match(page, /ActualWorkspace/);
+  assert.match(page, /notebook_id/);
+  assert.match(page, /NotebookProductWorkspace/);
   assert.match(actualWorkspace, /ProductWorkspaceShell/);
   assert.match(actualWorkspace, /createProductWorkspaceState/);
   assert.match(actualWorkspace, /status:\s*"unavailable"/);
   assert.match(actualWorkspace, /workspaceId/);
-  assert.match(actualWorkspace, /uploadPdfSource/);
+  assert.match(actualWorkspace, /uploadSource/);
   assert.match(actualWorkspace, /getDocumentProcessingStatus/);
   assert.match(actualWorkspace, /askGroundedQuestion/);
   assert.match(actualWorkspace, /citationContentUrl/);
   assert.match(authPane, /result\?\.data\?\.workspace_id/);
-  assert.match(authPane, /window\.location\.assign\(`\/workspaces\/\$\{encodeURIComponent\(result\.data\.workspace_id\)\}`\)/);
+  assert.match(authPane, /window\.location\.assign\("\/notebooks"\)/);
   assert.match(authPane, /WORKSPACE_REQUIRED/);
   assert.doesNotMatch(authPane, /error\.message|error\.stack|console\./);
   assert.match(uploadClient, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/sources/);
   assert.match(uploadClient, /\/bff\/api\/workspaces\/\$\{encodeURIComponent\(workspaceId\)\}\/processing-runs\/\$\{encodeURIComponent\(processingRunId\)\}/);
-  assert.doesNotMatch(`${page}\n${actualWorkspace}\n${uploadClient}`, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
+  assert.doesNotMatch(`${legacyPage}\n${page}\n${actualWorkspace}\n${uploadClient}`, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/i);
 });
 
-test("M2-01 Route·Screen·Token 정본은 수정 없이 직접 소비된다", async () => {
+test("M2-01 정본 토큰은 UI가 직접 소비하고 Notebook Route는 Product Workspace를 사용한다", async () => {
   const component = existsSync(componentPath) ? await read("packages/ui/src/adaptive-workspace.jsx") : "";
-  const web = existsSync(path.join(root, "apps/web/app/workspaces/[workspace_id]/page.jsx")) ? await read("apps/web/app/workspaces/[workspace_id]/page.jsx") : "";
+  const web = existsSync(path.join(root, "apps/web/app/notebooks/[notebook_id]/page.jsx")) ? await read("apps/web/app/notebooks/[notebook_id]/page.jsx") : "";
   assert.match(component, /tokens\.css/);
   assert.match(component, /accessibility-contract\.json/);
-  assert.match(web, /navigation\.json/);
-  assert.match(web, /screens\.json/);
+  assert.match(web, /NotebookProductWorkspace/);
 });
 
 test("Breakpoint와 Control Target CSS는 M2-01 Token 정본에 고정된다", async () => {
