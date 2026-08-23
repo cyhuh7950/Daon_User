@@ -18,6 +18,29 @@ test("BFF local_test public origin은 exact loopback HTTP만 허용하고 produc
   assert.equal(parsePublicGatewayOrigin("https://app.example.com", "production").origin, "https://app.example.com");
 });
 
+test("조직 전체 디렉터리 BFF는 same-origin GET만 내부 관리자 계약으로 전달한다", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: { organizations: [], users: [] }, meta: {} });
+    },
+  });
+  const read = await proxy(new Request("https://app.example.com/bff/api/organization/admin/directory", {
+    headers: { Cookie: "__Host-daon_session=session-value" },
+  }), ["organization", "admin", "directory"]);
+  const write = await proxy(new Request("https://app.example.com/bff/api/organization/admin/directory", {
+    method: "POST",
+    headers: { Origin: "https://app.example.com", Cookie: "__Host-daon_session=session-value" },
+    body: "{}",
+  }), ["organization", "admin", "directory"]);
+  assert.equal(read.status, 200);
+  assert.equal(write.status, 405);
+  assert.deepEqual(captured, [{ url: "https://api.example.com/api/v1/admin/directory", method: "GET" }]);
+});
+
 test("Native BFF는 login·refresh만 무자격이고 exact 보호 Route에는 단일 Bearer를 요구한다", async () => {
   const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
   assert.equal(typeof createNativeBffProxy, "function");
