@@ -125,6 +125,55 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
 }
 
 function routeFor(method, segments) {
+  // Organization workflow and administrator console contracts. The browser
+  // only sees /bff/api; the internal /api/v1 origin remains server-side.
+  if (segments.length === 2 && segments[0] === "organization"
+    && new Set(["creation-requests", "join-requests"]).has(segments[1])) {
+    if (segments[1] === "join-requests") {
+      return new Set(["GET", "POST"]).has(method)
+        ? { path: `/api/v1/organization/${segments[1]}`, query: new Set(["tenant_id"]) }
+        : { methodRejected: true };
+    }
+    return new Set(["GET", "POST"]).has(method)
+      ? { path: `/api/v1/organization/${segments[1]}`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 4 && segments[0] === "organization"
+    && new Set(["creation-requests", "join-requests"]).has(segments[1])
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "decision") {
+    return method === "POST"
+      ? { path: `/api/v1/organization/${segments[1]}/${encodeURIComponent(segments[2])}/decision`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 4 && segments[0] === "organization"
+    && segments[1] === "tenants" && SAFE_SEGMENT.test(segments[2])
+    && segments[3] === "invitations") {
+    return method === "POST"
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 5 && segments[0] === "organization"
+    && segments[1] === "tenants" && SAFE_SEGMENT.test(segments[2])
+    && segments[3] === "invitations" && SAFE_SEGMENT.test(segments[4])) {
+    return method === "DELETE"
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/invitations/${encodeURIComponent(segments[4])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 4 && segments[0] === "organization"
+    && segments[1] === "tenants" && SAFE_SEGMENT.test(segments[2])
+    && segments[3] === "members") {
+    return method === "GET"
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/members`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 6 && segments[0] === "organization"
+    && segments[1] === "tenants" && SAFE_SEGMENT.test(segments[2])
+    && segments[3] === "members" && SAFE_SEGMENT.test(segments[4])
+    && new Set(["role", "state"]).has(segments[5])) {
+    return method === "PATCH"
+      ? { path: `/api/v1/organization/tenants/${encodeURIComponent(segments[2])}/members/${encodeURIComponent(segments[4])}/${segments[5]}`, query: segments[5] === "state" ? new Set(["active"]) : null }
+      : { methodRejected: true };
+  }
   if (
     segments.length === 4 && segments[0] === "workspaces"
     && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio"
