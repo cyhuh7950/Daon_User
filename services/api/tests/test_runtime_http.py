@@ -249,7 +249,7 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             "/api/v1/workspaces/workspace-001/sources",
             headers={**auth, "X-Source-Filename": "notes.txt"}, content=b"not pdf",
         )
-        self.assertEqual((invalid_type.status_code, invalid_type.json()["error"]["code"]), (400, "SOURCE_FILENAME_INVALID"))
+        self.assertEqual((invalid_type.status_code, invalid_type.json()["error"]["code"]), (415, "UNSUPPORTED_MEDIA_TYPE"))
 
         cross_scope = await self.client.post(
             "/api/v1/workspaces/workspace-foreign/sources",

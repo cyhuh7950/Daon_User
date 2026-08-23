@@ -1540,7 +1540,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 if is_source_upload:
                     filename = request.headers.get("x-source-filename", "")
                     expected_type = SourceIngestor.expected_mime_for_filename(filename)
-                    if expected_type is None or content_type != expected_type:
+                    if expected_type is None:
+                        return _error_response(400, "SOURCE_FILENAME_INVALID", trace_id)
+                    if content_type != expected_type:
                         return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
                 elif content_type != "application/json":
                     return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
