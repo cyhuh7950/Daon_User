@@ -3084,7 +3084,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     "workspace_id": workspace_id, "session_id": principal.session_id,
                     "device_id": principal.device_id, "client_kind": ClientKind.WEB.value,
                     "delivery": "same_origin_secure_cookie", "expires_at": "2099-01-01T00:00:00Z",
-                    "dev_auth_bypass": True,
                     "recovery_operations": [],
                 },
                 "meta": {"trace_id": request.state.trace_id},

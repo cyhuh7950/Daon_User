@@ -166,6 +166,17 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((initial.status_code, saved.status_code, reset.status_code), (200, 200, 200))
         self.assertEqual((unauthenticated.status_code, unauthenticated.json()["error"]["code"]), (401, "AUTHENTICATION_REQUIRED"))
 
+    async def test_development_bypass_session_matches_web_contract(self) -> None:
+        self.dependencies.settings = replace(self.settings, profile="development", dev_auth_bypass=True)
+        app = create_app(self.dependencies)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
+            response = await client.get("/api/v1/session")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            set(response.json()["data"]),
+            {"user_id", "tenant_id", "workspace_id", "session_id", "device_id", "client_kind", "delivery", "expires_at", "recovery_operations"},
+        )
+
     async def test_notebook_create_list_get_update_title_contract(self) -> None:
         auth = {"cookie": f"{WEB_SESSION_COOKIE}={self.web.access_token}"}
         created = await self.client.post(
