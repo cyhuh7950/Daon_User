@@ -108,14 +108,14 @@ test("PDF upload은 same-origin PDF 계약과 processing metadata를 보존한�
   assert.equal(result.status, "accepted");
 });
 
-test("PDF upload 응답이 invalid이면 안전하게 fail-close한다", async () => {
+test("Source upload 응답이 invalid이면 안전하게 fail-close한다", async () => {
   const file = new File(["%PDF-1.4"], "guide.pdf", { type: "application/pdf" });
   await assert.rejects(
     () => uploadPdfSource("workspace-1", file, {
       notebookId: "notebook-1", idempotencyKey: "upload-source-invalid-0001",
       fetchImpl: async () => Response.json({ data: { source_id: "source-1" }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } }, { status: 202 }),
     }),
-    { message: "PDF_UPLOAD_RESPONSE_INVALID" },
+    { message: "SOURCE_UPLOAD_RESPONSE_INVALID" },
   );
 });
 
@@ -130,21 +130,32 @@ test("PDF upload HTTP 오류는 safe code와 retryable을 보존한다", async (
   );
 });
 
-test("PDF upload은 PDF가 아닌 파일과 최대 크기 초과를 전송 전에 차단한다", async () => {
+test("Source upload은 빈 파일·이름과 최대 크기 초과를 전송 전에 차단하고 비PDF 형식은 허용한다", async () => {
   let calls = 0;
-  const fetchImpl = async () => { calls += 1; return Response.json({}); };
+  const validResponse = {
+    data: {
+      source_id: "source-2", source_version_id: "version-2", object_id: "c".repeat(32),
+      digest_sha256: "d".repeat(64), byte_size: 4, status: "accepted", replayed: false,
+      processing_run_id: "processing-2", processing_state: "processing", job_state: "queued",
+    },
+    meta: { trace_id: "trace-2", workspace_id: "workspace-1" },
+  };
+  const fetchImpl = async () => { calls += 1; return Response.json(validResponse, { status: 202 }); };
   await assert.rejects(
-    () => uploadPdfSource("workspace-1", new File(["text"], "notes.txt", { type: "text/plain" }), {
+    () => uploadPdfSource("workspace-1", { name: "", type: "text/plain", size: 4 }, { notebookId: "notebook-1", fetchImpl }),
+    { message: "SOURCE_UPLOAD_INPUT_INVALID" },
+  );
+  await assert.rejects(
+    () => uploadPdfSource("workspace-1", { name: "large.pdf", type: "application/pdf", size: 25 * 1024 * 1024 + 1 }, {
       notebookId: "notebook-1", fetchImpl,
     }),
-    { message: "PDF_UPLOAD_INPUT_INVALID" },
+    { message: "SOURCE_UPLOAD_INPUT_INVALID" },
   );
-  const oversized = { name: "large.pdf", type: "application/pdf", size: 25 * 1024 * 1024 + 1 };
-  await assert.rejects(
-    () => uploadPdfSource("workspace-1", oversized, { notebookId: "notebook-1", fetchImpl }),
-    { message: "PDF_UPLOAD_INPUT_INVALID" },
-  );
-  assert.equal(calls, 0);
+  const textResult = await uploadPdfSource("workspace-1", new File(["text"], "notes.txt", { type: "text/plain" }), {
+    notebookId: "notebook-1", fetchImpl,
+  });
+  assert.equal(textResult.source_id, "source-2");
+  assert.equal(calls, 1);
 });
 
 const knowledgePackage = Object.freeze({
