@@ -17,7 +17,7 @@ function SettingsMenu({ onOpenSetting, onLogout }) {
   return <div className="notebook-settings-wrap">
     <button className="notebook-toolbar-button" type="button" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((value) => !value)}>⚙ 설정</button>
     {open && <div className="notebook-settings-menu" role="menu" aria-label="공통 설정">
-      {[['screen', '화면 설정'], ['license', '라이선스'], ['manual', '사용자 설명서']].map(([id, label]) =>
+      {[['screen', '화면 설정'], ['license', '라이선스'], ['manual', '사용자 설명서'], ['organization-join', '조직 가입']].map(([id, label]) =>
         <button key={id} role="menuitem" type="button" onClick={() => { setOpen(false); onOpenSetting?.(id); }}>{label}</button>)}
       <button role="menuitem" type="button" onClick={() => { setOpen(false); onLogout?.(); }}>로그아웃</button>
     </div>}

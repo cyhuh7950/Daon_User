@@ -108,6 +108,7 @@ export function NotebookHomeWorkspace() {
       screen: "/settings/screen",
       license: "/settings/license",
       manual: "/settings/manual",
+      "organization-join": "/organization/join",
     });
     const route = routes[settingId];
     if (route) window.location.assign(route);

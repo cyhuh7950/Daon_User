@@ -1,0 +1,130 @@
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
+
+from daon_user_api.authorization import Role, SqliteAuthorizationRepository
+from daon_user_api.identity import IdentityPrincipal
+from daon_user_api.organization_api import OrganizationApi
+from daon_user_api.organization_membership import SqliteOrganizationRepository
+from daon_user_api.organization_membership import OrganizationWorkflowError
+
+
+def _app(tmp_path: Path, principal: IdentityPrincipal) -> tuple[FastAPI, SqliteOrganizationRepository, SqliteAuthorizationRepository]:
+    auth = SqliteAuthorizationRepository(tmp_path / "auth.sqlite")
+    now = datetime.now(timezone.utc)
+    auth.bootstrap_workspace(
+        tenant_id="tenant-a", workspace_id="workspace-a", owner_user_id="admin",
+        owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization", data_area="cloud_sync",
+        cost_limit_cents=1000, now=now,
+    )
+    repo = SqliteOrganizationRepository(tmp_path / "org.sqlite")
+    app = FastAPI()
+    @app.exception_handler(OrganizationWorkflowError)
+    async def workflow_error(_request: Request, error: OrganizationWorkflowError) -> JSONResponse:
+        return JSONResponse(status_code=error.status, content={"code": error.code})
+    OrganizationApi(repo, auth, system_admin_checker=lambda value: value.user_id == "configured-admin").mount(app, lambda _request: principal)
+    return app, repo, auth
+
+
+def test_creation_request_and_cross_tenant_join_isolation(tmp_path: Path) -> None:
+    principal = IdentityPrincipal("member", "session", "device", "tenant-a")
+    app, repo, auth = _app(tmp_path, principal)
+    with TestClient(app) as client:
+        created = client.post("/api/v1/organization/creation-requests", json={
+            "organization_name": "New Org", "organization_identifier": "new-org",
+        }, headers={"Idempotency-Key": "creation-request-0001"})
+        assert created.status_code == 202
+        assert created.json()["data"]["applicant_user_id"] == "member"
+        replay = client.post("/api/v1/organization/creation-requests", json={
+            "organization_name": "New Org", "organization_identifier": "new-org",
+        }, headers={"Idempotency-Key": "creation-request-0001"})
+        assert replay.status_code == 202
+        assert replay.json()["data"]["request_id"] == created.json()["data"]["request_id"]
+        denied = client.get("/api/v1/organization/join-requests?tenant_id=tenant-b")
+        assert denied.status_code == 403
+    repo.close(); auth.close()
+
+
+def test_organization_admin_can_create_and_revoke_invitation(tmp_path: Path) -> None:
+    principal = IdentityPrincipal("admin", "session", "device", "tenant-a")
+    app, repo, auth = _app(tmp_path, principal)
+    with TestClient(app) as client:
+        created = client.post("/api/v1/organization/tenants/tenant-a/invitations", json={
+            "code": "invite-secret", "expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+            "max_uses": 1,
+        }, headers={"Idempotency-Key": "invitation-create-0001"})
+        assert created.status_code == 201
+        data = created.json()["data"]
+        assert data["code_digest"] != "invite-secret"
+        revoked = client.delete(f"/api/v1/organization/tenants/tenant-a/invitations/{data['invitation_id']}", headers={"Idempotency-Key": "invitation-revoke-0001"})
+        assert revoked.status_code == 200
+        assert revoked.json()["data"]["state"] == "revoked"
+    repo.close(); auth.close()
+
+
+def test_user_can_submit_join_request_with_invitation_code_only(tmp_path: Path) -> None:
+    principal = IdentityPrincipal("member", "session", "device", "tenant-personal")
+    app, repo, auth = _app(tmp_path, principal)
+    repo.create_invitation(
+        tenant_id="tenant-a", created_by="admin", code="AAAAA-TEST-2026",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1), max_uses=1,
+        now=datetime.now(timezone.utc),
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/organization/join-requests",
+            json={"invitation_code": "AAAAA-TEST-2026"},
+            headers={"Idempotency-Key": "join-code-only-0001"},
+        )
+        assert created.status_code == 202
+        assert created.json()["data"]["tenant_id"] == "tenant-a"
+    repo.close(); auth.close()
+
+
+def test_system_approval_invokes_organization_provisioner(tmp_path: Path) -> None:
+    applicant = IdentityPrincipal("applicant", "session", "device", "tenant-personal")
+    system = IdentityPrincipal("configured-admin", "session", "device", "tenant-system")
+    auth = SqliteAuthorizationRepository(tmp_path / "auth.sqlite")
+    repo = SqliteOrganizationRepository(tmp_path / "org.sqlite")
+    app = FastAPI()
+    calls = []
+
+    @app.exception_handler(OrganizationWorkflowError)
+    async def workflow_error(_request: Request, error: OrganizationWorkflowError) -> JSONResponse:
+        return JSONResponse(status_code=error.status, content={"code": error.code})
+
+    current = {"principal": applicant}
+    OrganizationApi(
+        repo, auth, system_admin_checker=lambda value: value.user_id == "configured-admin",
+        organization_provisioner=lambda request: calls.append(request),
+    ).mount(app, lambda _request: current["principal"])
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/organization/creation-requests",
+            json={"organization_name": "New Org", "organization_identifier": "new-org"},
+            headers={"Idempotency-Key": "creation-provision-0001"},
+        )
+        assert created.status_code == 202
+        current["principal"] = system
+        decided = client.post(
+            f"/api/v1/organization/creation-requests/{created.json()['data']['request_id']}/decision",
+            json={"approved": True, "expected_version": 1},
+            headers={"Idempotency-Key": "creation-provision-0002"},
+        )
+        assert decided.status_code == 200
+        assert len(calls) == 1
+        assert calls[0].requested_org_identifier == "new-org"
+    repo.close(); auth.close()
+
+
+def test_system_directory_is_available_only_to_system_admin(tmp_path: Path) -> None:
+    principal = IdentityPrincipal("configured-admin", "session", "device", "tenant-system")
+    app, repo, auth = _app(tmp_path, principal)
+    with TestClient(app) as client:
+        directory = client.get("/api/v1/admin/directory")
+        assert directory.status_code == 200
+        assert set(directory.json()["data"]) == {"organizations", "users"}
+    repo.close(); auth.close()

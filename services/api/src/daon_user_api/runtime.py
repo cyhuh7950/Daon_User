@@ -55,6 +55,8 @@ from .identity import (
     IdentityService,
     SqliteIdentityRepository,
 )
+from .organization_api import OrganizationApi
+from .organization_membership import OrganizationWorkflowError, SqliteOrganizationRepository
 from .notification import (
     NotificationError,
     NotificationService,
@@ -224,6 +226,7 @@ class RuntimeSettings:
     bind_host: str
     port: int
     database_path: Path | None = None
+    organization_database_path: Path | None = None
     cloud_database_dsn: str | None = None
     object_storage_endpoint: str | None = None
     object_storage_bucket: str | None = None
@@ -243,6 +246,7 @@ class RuntimeSettings:
     request_timeout_seconds: float = 30.0
     drain_timeout_seconds: float = 10.0
     dev_auth_bypass: bool = False
+    system_admin_user_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.profile not in {"test", "development", "production"}:
@@ -321,6 +325,10 @@ class RuntimeSettings:
             bind_host=os.environ.get("DAON_API_BIND_HOST", "127.0.0.1"),
             port=int(os.environ.get("DAON_API_PORT", "8000")),
             database_path=None if database is None else Path(database),
+            organization_database_path=(
+                None if os.environ.get("DAON_ORGANIZATION_DATABASE_PATH") is None
+                else Path(os.environ["DAON_ORGANIZATION_DATABASE_PATH"])
+            ),
             cloud_database_dsn=os.environ.get("DAON_CLOUD_DATABASE_DSN"),
             object_storage_endpoint=os.environ.get("DAON_OBJECT_STORAGE_ENDPOINT"),
             object_storage_bucket=os.environ.get("DAON_OBJECT_STORAGE_BUCKET"),
@@ -358,6 +366,9 @@ class RuntimeSettings:
                 os.environ.get("DAON_SOURCE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024))
             ),
             dev_auth_bypass=os.environ.get("DAON_DEV_AUTH_BYPASS", "false").lower() == "true",
+            system_admin_user_ids=frozenset(
+                value.strip() for value in os.environ.get("DAON_SYSTEM_ADMIN_USER_IDS", "").split(",") if value.strip()
+            ),
         )
 
 
@@ -438,6 +449,7 @@ class RuntimeDependencies:
     studio_report_service: Any | None = None
     studio_report_repository: Any | None = None
     studio_workspace_service: Any | None = None
+    organization_repository: SqliteOrganizationRepository | None = None
     egress_policy_service: EgressPolicyService | None = None
     connector_registry: ConnectorRegistry | None = None
     connector_repository: PostgresConnectorRepository | None = None
@@ -451,6 +463,8 @@ class RuntimeDependencies:
         self.state.drain(self.settings.drain_timeout_seconds)
         self.authorization_repository.close()
         self.identity_repository.close()
+        if self.organization_repository is not None:
+            self.organization_repository.close()
         if self.cloud_store is not None:
             self.cloud_store.close()
         if self.object_queue_store is not None:
@@ -1273,6 +1287,27 @@ def _requires_runtime_license_precheck(service: object) -> bool:
     return True
 
 
+def _organization_provisioner(dependencies: RuntimeDependencies) -> Any:
+    """Provision the identity and authorization records for an approved org."""
+    def provision(request: Any) -> None:
+        identifier = str(request.requested_org_identifier).strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,127}", identifier):
+            raise OrganizationWorkflowError("INVALID_ORGANIZATION_IDENTIFIER", 400)
+        tenant_id = f"tenant-{identifier}"
+        dependencies.identity_repository.add_tenant_membership(
+            tenant_id=tenant_id, user_id=str(request.applicant_user_id),
+            role=Role.ORGANIZATION_ADMIN.value,
+        )
+        dependencies.authorization_repository.bootstrap_workspace(
+            tenant_id=tenant_id, workspace_id=f"workspace-{identifier}",
+            owner_user_id=str(request.applicant_user_id),
+            owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",
+            data_area="cloud_sync", cost_limit_cents=1000,
+            now=datetime.now(timezone.utc),
+        )
+    return provision
+
+
 def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     notification_service = dependencies.notification_service or NotificationService(
         repository=ReferenceNotificationRepository(),
@@ -1467,6 +1502,14 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     app = FastAPI(title="Daon User API", version="1.0.0", lifespan=lifespan)
     app.router.route_class = TimedApiRoute
+    if dependencies.organization_repository is not None:
+        OrganizationApi(
+            dependencies.organization_repository,
+            dependencies.authorization_repository,
+            system_admin_checker=lambda principal: principal.user_id in dependencies.settings.system_admin_user_ids,
+            organization_provisioner=_organization_provisioner(dependencies),
+            identity_repository=dependencies.identity_repository,
+        ).mount(app, lambda request: _principal(request, dependencies))
 
     @app.middleware("http")
     async def runtime_boundary(request: Request, call_next: Any) -> Response:
@@ -1497,7 +1540,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 if is_source_upload:
                     filename = request.headers.get("x-source-filename", "")
                     expected_type = SourceIngestor.expected_mime_for_filename(filename)
-                    if expected_type is None or content_type != expected_type:
+                    if expected_type is None:
+                        return _error_response(400, "SOURCE_FILENAME_INVALID", trace_id)
+                    if content_type != expected_type:
                         return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
                 elif content_type != "application/json":
                     return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
@@ -1517,6 +1562,23 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     body = await request.body()
                     if len(body) > dependencies.settings.max_body_bytes:
                         return _error_response(413, "REQUEST_TOO_LARGE", trace_id)
+            if (
+                dependencies.organization_repository is not None
+                and request.url.path.startswith("/api/v1/workspaces/")
+            ):
+                # Approved memberships are represented in the organization
+                # workflow store. A suspended member must not continue using
+                # workspace business APIs; users without a workflow row keep
+                # the existing personal/workspace authorization path.
+                try:
+                    current_principal = _principal(request, dependencies)
+                    membership_state = dependencies.organization_repository.membership_state(
+                        tenant_id=current_principal.tenant_id, user_id=current_principal.user_id,
+                    )
+                except IdentityError:
+                    membership_state = None
+                if membership_state is not None and membership_state.value == "suspended":
+                    return _error_response(403, "ORGANIZATION_MEMBERSHIP_SUSPENDED", trace_id)
             response = cast(Response, await call_next(request))
             response.headers["X-Trace-Id"] = trace_id
             response.headers["Cache-Control"] = "no-store"
@@ -1547,6 +1609,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def domain_error(request: Request, error: IdentityError | AuthorizationError) -> JSONResponse:
         status, code, retryable = _domain_error(error)
         return _error_response(status, code, request.state.trace_id, retryable=retryable)
+
+    @app.exception_handler(OrganizationWorkflowError)
+    async def organization_workflow_error(request: Request, error: OrganizationWorkflowError) -> JSONResponse:
+        return _error_response(error.status, error.code, request.state.trace_id)
 
     @app.exception_handler(NotificationError)
     async def notification_error(request: Request, error: NotificationError) -> JSONResponse:
@@ -3018,7 +3084,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     "workspace_id": workspace_id, "session_id": principal.session_id,
                     "device_id": principal.device_id, "client_kind": ClientKind.WEB.value,
                     "delivery": "same_origin_secure_cookie", "expires_at": "2099-01-01T00:00:00Z",
-                    "dev_auth_bypass": True,
                     "recovery_operations": [],
                 },
                 "meta": {"trace_id": request.state.trace_id},
@@ -4668,6 +4733,11 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         clock=lambda: datetime.now(timezone.utc),
         identity_service=identity_service,
     )
+    organization_database_path = settings.organization_database_path or settings.database_path.with_name(
+        settings.database_path.stem + "-organization.sqlite"
+    )
+    organization_database_path.parent.mkdir(parents=True, exist_ok=True)
+    organization_repository = SqliteOrganizationRepository(organization_database_path)
     notification_service = NotificationService(
         repository=ReferenceNotificationRepository(),
         authorization_service=authorization_service,
@@ -4781,6 +4851,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         object_queue_store=object_queue_store,
         source_upload_service=source_upload_service,
         document_processing_service=document_processing_service,
+        organization_repository=organization_repository,
         notebook_deletion_store=(
             None if cloud_store is None else PostgresNotebookDeletionStore(cloud_store, object_storage)
         ),
