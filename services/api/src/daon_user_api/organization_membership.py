@@ -315,7 +315,7 @@ class SqliteOrganizationRepository:
             invitation_id = None
             if invitation_code is not None:
                 invitation = connection.execute("SELECT * FROM invitation_codes WHERE code_digest=?", (_digest(_text(invitation_code, "INVALID_INVITATION_CODE")),)).fetchone()
-                if invitation is None or invitation["state"] != InvitationState.ACTIVE.value or _parse(invitation["expires_at"]) <= _utc(now) or int(invitation["used_count"]) >= int(invitation["max_uses"]):
+                if invitation is None or str(invitation["tenant_id"]) != tenant_id or invitation["state"] != InvitationState.ACTIVE.value or _parse(invitation["expires_at"]) <= _utc(now) or int(invitation["used_count"]) >= int(invitation["max_uses"]):
                     raise OrganizationWorkflowError("INVITATION_INVALID", 400)
                 invitation_id = str(invitation["invitation_id"])
             connection.execute("INSERT INTO organization_join_requests VALUES (?,?,?,?,?,?,?,?,?,?)", (request_id, tenant_id, user_id, invitation_id, RequestState.PENDING.value, None, None, 1, timestamp, timestamp))
