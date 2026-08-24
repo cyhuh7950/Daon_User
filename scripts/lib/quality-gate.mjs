@@ -17,6 +17,7 @@ const APPROVED_COMPONENTS = new Map([
   ["services/local-service", "services/local-service/pyproject.toml"]
 ]);
 const REQUIRED_MANDATORY_CHECKS = new Map([
+  ["product-ui-boundary", { category: "security", kind: null }],
   ["quality-gate-runner-tests", { category: "unit", kind: null }],
   ["toolchain-baseline", { category: "build", kind: null }],
   ["production-dependency-audit", { category: "security", kind: "npm_audit" }],
