@@ -41,7 +41,14 @@ const IGNORED_DIRECTORIES = new Set([
   "__pycache__",
   ".pytest_cache",
   ".ruff_cache",
+  ".mypy_cache",
   "target"
+]);
+const SECURITY_IGNORED_DIRECTORIES = new Set([
+  ...IGNORED_DIRECTORIES,
+  "tests",
+  "test",
+  "__tests__"
 ]);
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex").toUpperCase();
@@ -177,7 +184,10 @@ async function scanSecurity(root, security) {
   const violations = [];
   const scanned = [];
   for (const scanRoot of security.scan_roots) {
-    for (const absolute of await listFiles(path.resolve(root, scanRoot))) {
+    for (const absolute of (await listFiles(path.resolve(root, scanRoot))).filter((candidate) => {
+      const segments = path.relative(root, candidate).split(path.sep);
+      return !segments.some((segment) => SECURITY_IGNORED_DIRECTORIES.has(segment));
+    })) {
       const relative = posix(path.relative(root, absolute));
       if (excluded.has(relative)) continue;
       scanned.push(relative);

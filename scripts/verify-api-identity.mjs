@@ -7,6 +7,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiRoot = path.join(root, "services/api");
@@ -32,7 +33,13 @@ function runPython(arguments_, { capture = false } = {}) {
   const result = spawnSync(executable, launcherArguments, {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, PYTHONPATH: sourceRoot },
+    env: {
+      ...process.env,
+      PYTHONPATH: sourceRoot,
+      UV_CACHE_DIR: process.env.UV_CACHE_DIR ?? path.join(tmpdir(), "daon-user-uv-cache"),
+      UV_PYTHON_INSTALL_DIR: process.env.UV_PYTHON_INSTALL_DIR ?? path.join(tmpdir(), "daon-user-uv-python"),
+      UV_PROJECT_ENVIRONMENT: process.env.UV_PROJECT_ENVIRONMENT ?? path.join(tmpdir(), "daon-user-api-uv-env")
+    },
     stdio: capture ? "pipe" : "inherit"
   });
   if (result.error) fail(`python launch ${result.error.code ?? result.error.name}`);
