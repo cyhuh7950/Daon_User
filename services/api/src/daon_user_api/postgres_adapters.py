@@ -13,6 +13,33 @@ from .authorization import AuthorizationError, SqliteAuthorizationRepository
 from .organization_membership import OrganizationWorkflowError, SqliteOrganizationRepository
 
 
+class _RowProxy(dict[str, Any]):
+    """Allow SQLite-style positional and PostgreSQL mapping row access."""
+
+    def __getitem__(self, key: str | int) -> Any:
+        if isinstance(key, int):
+            return tuple(self.values())[key]
+        return super().__getitem__(key)
+
+
+def _compat_row(row: Any) -> Any:
+    return _RowProxy(row) if isinstance(row, dict) else row
+
+
+class _CursorProxy:
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+
+    def fetchone(self) -> Any:
+        return _compat_row(self._cursor.fetchone())
+
+    def fetchall(self) -> list[Any]:
+        return [_compat_row(row) for row in self._cursor.fetchall()]
+
+    def __iter__(self):
+        return (_compat_row(row) for row in self._cursor)
+
+
 class PostgresCompatConnection:
     def __init__(self, dsn: str, prefixes: Iterable[str]) -> None:
         self._conn = psycopg.connect(dsn, row_factory=dict_row)
@@ -42,7 +69,7 @@ class PostgresCompatConnection:
                 def fetchall(self) -> list[tuple[int]]: return [(value,)]
             return _Pragma()
         try:
-            return self._conn.execute(self._sql(statement), params)
+            return _CursorProxy(self._conn.execute(self._sql(statement), params))
         except psycopg.errors.UniqueViolation as error:
             raise sqlite3.IntegrityError(str(error)) from error
         except psycopg.errors.ForeignKeyViolation as error:

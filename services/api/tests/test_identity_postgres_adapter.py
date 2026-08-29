@@ -1,5 +1,5 @@
 from daon_user_api.identity_postgres import _CursorProxy, _PostgresCompatConnection
-from daon_user_api.postgres_adapters import PostgresCompatConnection
+from daon_user_api.postgres_adapters import PostgresCompatConnection, _compat_row
 import psycopg
 
 
@@ -60,3 +60,9 @@ def test_organization_sql_uses_isolated_tables() -> None:
     mapped = connection._sql("INSERT INTO organization_idempotency(operation) VALUES (?)")
     assert "identity_org_idempotency" in mapped
     assert "%s" in mapped
+
+
+def test_shared_postgres_rows_support_positional_access() -> None:
+    row = _compat_row({"workspace_id": "workspace-1", "state": "active"})
+    assert row["workspace_id"] == "workspace-1"
+    assert row[0] == "workspace-1"
