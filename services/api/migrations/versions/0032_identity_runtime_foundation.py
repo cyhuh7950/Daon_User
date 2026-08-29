@@ -24,7 +24,7 @@ def upgrade() -> None:
           email text,
           password_digest text,
           email_verified_at timestamptz,
-          state text NOT NULL DEFAULT 'active' CHECK (state IN ('active','disabled')),
+          state text NOT NULL DEFAULT 'active' CHECK (state IN ('pending_email','active','disabled')),
           created_at timestamptz NOT NULL DEFAULT now(),
           updated_at timestamptz NOT NULL DEFAULT now(),
           UNIQUE (issuer, subject),
