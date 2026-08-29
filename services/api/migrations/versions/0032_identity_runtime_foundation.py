@@ -6,9 +6,7 @@ from alembic import op
 
 
 revision = "0032"
-# The existing history has two intentional heads (the original 0001→0006
-# branch and the later 0007→0031 branch); this migration joins both.
-down_revision = ("0006", "0031")
+down_revision = "0031"
 branch_labels = None
 depends_on = None
 
@@ -53,11 +51,12 @@ def upgrade() -> None:
         );
         CREATE TABLE identity_refresh_families (
           family_id text PRIMARY KEY,
+          tenant_id text NOT NULL,
           session_id text NOT NULL,
           state text NOT NULL,
           created_at timestamptz NOT NULL DEFAULT now(),
           updated_at timestamptz NOT NULL DEFAULT now(),
-          FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+          FOREIGN KEY (tenant_id, session_id) REFERENCES sessions(tenant_id, session_id)
         );
         CREATE TABLE identity_refresh_tokens (
           refresh_id text PRIMARY KEY,
