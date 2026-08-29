@@ -1,0 +1,15 @@
+services:
+  api:
+    networks:
+      - postgres_env_default
+  document-worker:
+    networks:
+      - postgres_env_default
+  studio-worker:
+    networks:
+      - postgres_env_default
+
+networks:
+  postgres_env_default:
+    external: true
+    name: postgres_env_default

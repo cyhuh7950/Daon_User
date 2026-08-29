@@ -48,7 +48,6 @@ services:
     networks:
       - daon_user
       - proxy-network
-      - postgres_env_default
     depends_on:
       object-storage:
         condition: service_healthy
@@ -112,7 +111,6 @@ services:
     networks:
       - daon_user
       - proxy-network
-      - postgres_env_default
     depends_on:
       object-storage:
         condition: service_healthy
@@ -133,7 +131,6 @@ services:
     networks:
       - daon_user
       - proxy-network
-      - postgres_env_default
     healthcheck:
       disable: true
     restart: unless-stopped
@@ -166,9 +163,6 @@ networks:
   proxy-network:
     external: true
     name: proxy-network
-  postgres_env_default:
-    external: true
-    name: postgres_env_default
 
 volumes:
   daon_user_api_runtime:
