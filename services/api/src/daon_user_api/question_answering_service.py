@@ -410,22 +410,44 @@ class QuestionAnsweringService:
             )
         evidence = self._search_context(context, sources, question)
         if not evidence:
+            prepare_general = getattr(self._adapter_registry, "prepare_general", None)
+            # Legacy/custom evidence adapters do not advertise an ungrounded
+            # route; freeze an empty decision without sending the question.
+            if not callable(prepare_general):
+                egress_authorization = self._egress.authorize(
+                    context, run_id=run_id, source_id=source_id,
+                    source_version_id=source_version_id, selection=selection,
+                    provider_payload=b"", no_external_payload=True,
+                    approved_authorization=approved_authorization,
+                    question=question, context_mode=context_mode,
+                    request_fingerprint=request_fingerprint,
+                )
+                return self._repository.persist_completed(
+                    context, run_id=run_id, source_id=source_id,
+                    source_version_id=source_version_id, question=question,
+                    selection=selection, evidence=(),
+                    result=GroundedTextResult("", (), False, {"no_evidence": True}),
+                    provider_called=False, egress_authorization=egress_authorization,
+                    context_mode=context_mode, context_sources=sources,
+                    request_fingerprint=request_fingerprint,
+                )
             egress_authorization = self._egress.authorize(
-                context, run_id=run_id, source_id=source_id,
-                source_version_id=source_version_id, selection=selection,
-                provider_payload=b"", no_external_payload=True,
+                context, run_id=run_id, source_id=None, source_version_id=None,
+                selection=selection, provider_payload=b"",
                 approved_authorization=approved_authorization,
-                question=question, context_mode=context_mode,
+                question=question, context_mode="general_ungrounded",
                 request_fingerprint=request_fingerprint,
             )
+            prepared = prepare_general(
+                snapshot, question, context.trace_id,
+                self._credential_resolver, self._transport,
+            )
+            generated = self._adapter_registry.generate_general(prepared)
             return self._repository.persist_completed(
-                context, run_id=run_id, source_id=source_id,
-                source_version_id=source_version_id, question=question,
-                selection=selection, evidence=(),
-                result=GroundedTextResult("", (), False, {"no_evidence": True}),
-                provider_called=False,
-                egress_authorization=egress_authorization,
-                context_mode=context_mode, context_sources=sources,
+                context, run_id=run_id, source_id=None, source_version_id=None,
+                question=question, selection=selection, evidence=(), result=generated,
+                provider_called=True, egress_authorization=egress_authorization,
+                context_mode="general_ungrounded", context_sources=(),
                 request_fingerprint=request_fingerprint,
             )
         try:
