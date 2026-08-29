@@ -55,8 +55,10 @@ from .identity import (
     IdentityService,
     SqliteIdentityRepository,
 )
+from .identity_postgres import PostgresIdentityRepository
 from .organization_api import OrganizationApi
 from .organization_membership import OrganizationWorkflowError, SqliteOrganizationRepository
+from .postgres_adapters import PostgresAuthorizationRepository, PostgresOrganizationRepository
 from .notification import (
     NotificationError,
     NotificationService,
@@ -4718,8 +4720,19 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     else:
         step_up_token_key = None
         audit_store = AuditEventStore()
-    identity_repository = SqliteIdentityRepository(settings.database_path)
-    authorization_repository = SqliteAuthorizationRepository(settings.database_path)
+    if settings.profile == "production":
+        assert settings.cloud_database_dsn is not None
+        identity_repository = PostgresIdentityRepository(settings.cloud_database_dsn)
+        authorization_repository = PostgresAuthorizationRepository(settings.cloud_database_dsn)
+        organization_repository = PostgresOrganizationRepository(settings.cloud_database_dsn)
+    else:
+        identity_repository = SqliteIdentityRepository(settings.database_path)
+        authorization_repository = SqliteAuthorizationRepository(settings.database_path)
+        organization_database_path = settings.organization_database_path or settings.database_path.with_name(
+            settings.database_path.stem + "-organization.sqlite"
+        )
+        organization_database_path.parent.mkdir(parents=True, exist_ok=True)
+        organization_repository = SqliteOrganizationRepository(organization_database_path)
     identity_service = IdentityService(
         repository=identity_repository,
         audit_store=audit_store,
@@ -4733,11 +4746,6 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         clock=lambda: datetime.now(timezone.utc),
         identity_service=identity_service,
     )
-    organization_database_path = settings.organization_database_path or settings.database_path.with_name(
-        settings.database_path.stem + "-organization.sqlite"
-    )
-    organization_database_path.parent.mkdir(parents=True, exist_ok=True)
-    organization_repository = SqliteOrganizationRepository(organization_database_path)
     notification_service = NotificationService(
         repository=ReferenceNotificationRepository(),
         authorization_service=authorization_service,

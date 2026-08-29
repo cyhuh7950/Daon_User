@@ -942,7 +942,12 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
     const bearer = route.protected ? nativeBearer(request) : null;
     if (route.protected && !bearer) return createBffSafeError(401, "AUTHENTICATION_REQUIRED", trace);
     const destination = new URL(route.path, baseUrl);
-    if (route.query) destination.search = route.query.toString();
+    if (route.query) {
+      const incoming = new URL(request.url);
+      for (const [key, value] of incoming.searchParams) {
+        if (route.query.has(key)) destination.searchParams.append(key, value);
+      }
+    }
     const headers = new Headers();
     for (const [key, value] of request.headers) {
       if (REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);

@@ -52,7 +52,7 @@ export function runLocalServiceTool(action, { spawnImpl = spawnSync } = {}) {
       path.join(os.tmpdir(), "daon-user-local-service-uv-python"),
     UV_PROJECT_ENVIRONMENT:
       process.env.UV_PROJECT_ENVIRONMENT ??
-      path.join(os.tmpdir(), `${path.basename(repositoryRoot)}-local-service-uv-env`)
+      path.join(os.tmpdir(), `${path.basename(repositoryRoot)}-local-service-uv-env-r1`)
   };
   if (action === "security") {
     const auditDirectory = mkdtempSync(path.join(os.tmpdir(), "daon-user-full-env-audit-"));

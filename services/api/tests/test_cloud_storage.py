@@ -21,7 +21,7 @@ MIGRATION = ROOT / "services" / "api" / "migrations" / "versions" / "0001_cloud_
 
 class CloudStorageContractTests(unittest.TestCase):
     def test_readiness_tracks_the_current_notebook_schema_revision(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0022")
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0026")
 
     def test_postgres_major_version_range_accepts_packaging_suffix(self) -> None:
         for value in ("15.13", "16.9 (Debian 16.9-1.pgdg12+1)", "17.5", "18.4"):

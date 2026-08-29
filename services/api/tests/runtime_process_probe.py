@@ -57,7 +57,7 @@ class NativeFramingUpstream(BaseHTTPRequestHandler):
         elif self.path == "/api/v1/backups?workspace_id=workspace-probe":
             body = json.dumps({"data": "x" * 200_000, "meta": {}}).encode()
             self._respond(200, body, "application/json; charset=utf-8")
-        elif self.path == "/api/v1/workspaces/workspace-probe/citations/citation-probe/content":
+        elif self.path == "/api/v1/workspaces/workspace-probe/citations/citation-probe/content?notebook_id=notebook-probe":
             body = b"%PDF-1.4\n% runtime framing probe\n"
             self._respond(200, body, "application/pdf; version=1.4")
         else:
@@ -562,7 +562,7 @@ def main() -> None:
                 )
                 framing_pdf = httpx.get(
                     f"{framing_web_origin}/api/v1/workspaces/workspace-probe/citations/citation-probe/content",
-                    headers=framing_headers, timeout=10,
+                    params={"notebook_id": "notebook-probe"}, headers=framing_headers, timeout=10,
                 )
                 for framed, expected_type in (
                     (framing_recovery, "application/json"), (framing_pdf, "application/pdf"),
