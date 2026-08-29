@@ -25,6 +25,7 @@ class RetentionRuntimeContractTests(unittest.TestCase):
             "/api/v1/deletion-requests/{id}/purge",
             "/api/v1/sources/{id}/legal-holds",
             "/api/v1/legal-holds/{id}/release",
+            "/api/v1/workspaces/{id}/notebooks/{notebook_id}/deletion-requests/{request_id}",
         }
         self.assertEqual(
             {path for path in paths if "deletion-request" in path or "legal-hold" in path},

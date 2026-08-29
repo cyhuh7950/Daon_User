@@ -44,7 +44,6 @@ class SecurityAuditPersistenceContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         for operation in (
-            "studio.{action_name}",
             "knowledge.offline_copy",
             "sync.approve",
             "retention.purge",

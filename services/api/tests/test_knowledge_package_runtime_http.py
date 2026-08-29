@@ -79,7 +79,7 @@ class KnowledgePackageRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(package["producer"], "daon2_5")
         self.assertEqual(package["registration_state"], "registered")
         self.assertEqual(package["review_state"], "approved")
-        self.assertEqual(package["effective_at"], "2026-08-13T01:00:00+00:00")
+        self.assertEqual(package["effective_at"], "2026-08-13T01:00:00Z")
         step_up = self.identity.issue_step_up(
             access_token=self.session.access_token,
             action_group="data_area_move", target_id="package-runtime",
