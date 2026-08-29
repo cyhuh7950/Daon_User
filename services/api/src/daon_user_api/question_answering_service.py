@@ -360,9 +360,17 @@ class QuestionAnsweringService:
             raise QuestionAnsweringError(code, status=status) from None
         if general:
             try:
-                prepared = self._adapter_registry.prepare_general(
-                    snapshot, question, context.trace_id,
-                    self._credential_resolver, self._transport,
+                prepare_general = getattr(self._adapter_registry, "prepare_general", None)
+                prepared = (
+                    prepare_general(
+                        snapshot, question, context.trace_id,
+                        self._credential_resolver, self._transport,
+                    )
+                    if callable(prepare_general)
+                    else self._adapter_registry.prepare(
+                        snapshot, (), question, context.trace_id,
+                        self._credential_resolver, self._transport,
+                    )
                 )
             except (ValueError, DocumentUnderstandingError) as error:
                 raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
@@ -402,48 +410,22 @@ class QuestionAnsweringService:
             )
         evidence = self._search_context(context, sources, question)
         if not evidence:
-            try:
-                prepared = self._adapter_registry.prepare_general(
-                    snapshot, question, context.trace_id,
-                    self._credential_resolver, self._transport,
-                )
-            except (ValueError, DocumentUnderstandingError) as error:
-                raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
-                raise QuestionAnsweringError(
-                    raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED",
-                    status=503 if raw_code.startswith("TEXT_PROVIDER_") else 502,
-                ) from None
-            frozen_bytes = canonical_json_bytes(prepared.provider_payload)
-            transformer = getattr(self._egress, "prepare_payload", None)
-            if callable(transformer):
-                frozen_bytes = transformer(context, frozen_bytes)
-                prepared = replace(prepared, provider_payload=json.loads(frozen_bytes))
             egress_authorization = self._egress.authorize(
-                context, run_id=run_id, source_id=None,
-                source_version_id=None, selection=selection,
-                provider_payload=frozen_bytes,
+                context, run_id=run_id, source_id=source_id,
+                source_version_id=source_version_id, selection=selection,
+                provider_payload=b"", no_external_payload=True,
                 approved_authorization=approved_authorization,
-                question=question, context_mode="general_ungrounded",
+                question=question, context_mode=context_mode,
                 request_fingerprint=request_fingerprint,
             )
-            if egress_authorization.get("provider_owner") is False:
-                return self._wait_for_provider_owner(
-                    context, run_id, request_fingerprint,
-                )
-            try:
-                generated = self._adapter_registry.generate_general(prepared)
-            except (ValueError, DocumentUnderstandingError) as error:
-                raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
-                raise QuestionAnsweringError(
-                    raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED", status=502,
-                ) from None
             return self._repository.persist_completed(
-                context, run_id=run_id, source_id=None,
-                source_version_id=None, question=question,
-                selection=selection, evidence=(), result=generated,
-                provider_called=True,
+                context, run_id=run_id, source_id=source_id,
+                source_version_id=source_version_id, question=question,
+                selection=selection, evidence=(),
+                result=GroundedTextResult("", (), False, {"no_evidence": True}),
+                provider_called=False,
                 egress_authorization=egress_authorization,
-                context_mode="general_ungrounded", context_sources=(),
+                context_mode=context_mode, context_sources=sources,
                 request_fingerprint=request_fingerprint,
             )
         try:
