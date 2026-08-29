@@ -44,7 +44,7 @@ test("0.86-stable Template 출처와 설치 Toolchain에 맞춘 정확 Pin을 �
     repository: "react-native-community/template",
     branch: "0.86-stable",
     commit: "4d7c716d7afddc03ed73ca49c1102a92a0a9ff71",
-    react_native: "0.86.0"
+    react_native: "0.86.3"
   });
   assert.match(rootGradle, /buildToolsVersion\s*=\s*"36\.1\.0"/);
   assert.match(rootGradle, /compileSdkVersion\s*=\s*36/);

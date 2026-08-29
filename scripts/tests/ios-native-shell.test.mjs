@@ -9,7 +9,7 @@ const root = path.resolve(import.meta.dirname, "../..");
 const iosRoot = path.join(root, "apps/mobile/ios");
 
 async function read(relativePath) {
-  return readFile(path.join(root, relativePath), "utf8");
+  return (await readFile(path.join(root, relativePath), "utf8")).replaceAll("\r\n", "\n");
 }
 
 async function readJson(relativePath) {
@@ -47,7 +47,7 @@ test("iOS Project는 승인 Community Template Commit과 RN Pin을 기록한다"
     repository: "react-native-community/template",
     branch: "0.86-stable",
     commit: "4d7c716d7afddc03ed73ca49c1102a92a0a9ff71",
-    react_native: "0.86.0"
+    react_native: "0.86.3"
   });
   const podfile = await read("apps/mobile/ios/Podfile");
   assert.match(podfile, /target 'Daon'/);
@@ -156,7 +156,7 @@ test("Podfile Autolinking은 호출 CWD와 무관하게 Monorepo Mobile App Root
   }));
   assert.equal(path.resolve(config.root), path.join(root, "apps/mobile"));
   assert.equal(path.resolve(config.project.ios.sourceDir), iosRoot);
-  assert.equal(path.resolve(config.reactNativePath), path.join(root, "node_modules/react-native"));
+  assert.equal(path.resolve(config.reactNativePath), path.join(root, "apps/mobile/node_modules/react-native"));
   assert.deepEqual(config.dependencies, {});
 });
 

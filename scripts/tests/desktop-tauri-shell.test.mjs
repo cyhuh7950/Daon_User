@@ -1778,8 +1778,8 @@ test("PostCSS 보정 이력은 고정 Successor Blob으로, 현재 Checkout은 �
   );
 
   assert.deepEqual(root.overrides, { postcss: "8.5.23" });
-  assert.equal(lock.packages["node_modules/next"].version, "16.3.0-canary.93");
-  assert.equal(lock.packages["node_modules/vite"].version, "8.1.5");
+  assert.equal(lock.packages["node_modules/next"].version, "16.3.3");
+  assert.equal(lock.packages["apps/desktop/node_modules/vite"].version, "8.2.2");
   assert.equal(lock.packages["node_modules/postcss"].version, "8.5.23");
   assert.equal(lock.packages["node_modules/vite/node_modules/postcss"], undefined);
 
@@ -1789,13 +1789,13 @@ test("PostCSS 보정 이력은 고정 Successor Blob으로, 현재 Checkout은 �
     encoding: "utf8",
     shell: process.platform === "win32"
   });
-  assert.equal(listing.status, 1, listing.stderr || listing.stdout);
+  assert.equal(listing.status, 0, listing.stderr || listing.stdout);
   const listingJson = JSON.parse(listing.stdout);
   assert.deepEqual(
-    listingJson.problems,
-    [`invalid: postcss@8.5.23 ${fileURLToPath(new URL("../../node_modules/postcss", import.meta.url))}`]
+    listingJson.problems ?? [],
+    []
   );
-  assert.equal(listingJson.error?.code, "ELSPROBLEMS");
+  assert.equal(listingJson.error, undefined);
 
   const problemKinds = [];
   const invalidReasons = new Set();
@@ -1814,7 +1814,7 @@ test("PostCSS 보정 이력은 고정 Successor Blob으로, 현재 Checkout은 �
     }
   };
   visitListing(listingJson.dependencies);
-  assert.deepEqual([...invalidReasons], ['"8.5.10" from node_modules/next']);
+  assert.deepEqual([...invalidReasons], []);
   assert.deepEqual(problemKinds, []);
 
   const findPackage = (value, name) => {
@@ -1840,8 +1840,8 @@ test("PostCSS 보정 이력은 고정 Successor Blob으로, 현재 Checkout은 �
   assert.ok(vitePostcss, "npm ls must expose the desktop Vite PostCSS node");
   assert.equal(nextPostcss.version, "8.5.23");
   assert.equal(vitePostcss.version, "8.5.23");
-  assert.equal(nextPostcss.invalid, '"8.5.10" from node_modules/next');
-  assert.equal(vitePostcss.invalid, '"8.5.10" from node_modules/next');
+  assert.equal(nextPostcss.invalid, undefined);
+  assert.equal(vitePostcss.invalid, undefined);
 });
 test("Native Source Question Studio는 canonical Notebook scope와 rich Citation exact shape를 wire에 결속한다", async () => {
   const bridge = await readFile("apps/desktop/src-tauri/src/workspace_bridge.rs", "utf8");

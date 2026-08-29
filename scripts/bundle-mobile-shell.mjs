@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { runBuild } from "metro";
-import { loadConfig } from "metro-config";
+import { createRequire } from "node:module";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mobileRoot = path.join(root, "apps/mobile");
+const mobileRequire = createRequire(path.join(mobileRoot, "package.json"));
+const { runBuild } = mobileRequire("metro");
+const { loadConfig } = mobileRequire("metro-config");
 const platformIndex = process.argv.indexOf("--platform");
 const platform = platformIndex >= 0 ? process.argv[platformIndex + 1] : null;
 if (platform !== "android" && platform !== "ios") throw new Error("MOBILE_BUNDLE_PLATFORM_MUST_BE_ANDROID_OR_IOS");
