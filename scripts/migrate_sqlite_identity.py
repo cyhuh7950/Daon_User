@@ -34,7 +34,7 @@ def migrate(source: Path, destination: str) -> dict[str, int]:
         raise FileNotFoundError(source)
     sqlite = sqlite3.connect(f"file:{source.resolve()}?mode=ro", uri=True)
     sqlite.row_factory = sqlite3.Row
-    counts = {"users": 0, "email_tokens": 0, "password_tokens": 0, "refresh_families": 0, "refresh_tokens": 0}
+    counts = {"users": 0, "email_tokens": 0, "password_tokens": 0, "memberships": 0, "devices": 0, "sessions": 0, "refresh_families": 0, "refresh_tokens": 0}
     try:
         with psycopg.connect(destination) as pg:
             with pg.cursor() as cursor:
@@ -71,6 +71,48 @@ def migrate(source: Path, destination: str) -> dict[str, int]:
                         tuple(row[name] for name in ("token_id", "user_id", "token_digest", "expires_at", "used_at", "attempts", "created_at")),
                     )
                     counts["password_tokens"] += cursor.rowcount
+                for row in _rows(sqlite, "memberships"):
+                    cursor.execute(
+                        "INSERT INTO identity_memberships (tenant_id,user_id,role) VALUES (%s,%s,%s) ON CONFLICT (tenant_id,user_id) DO NOTHING",
+                        (row["tenant_id"], row["user_id"], row["role"]),
+                    )
+                    counts["memberships"] += cursor.rowcount
+                for row in _rows(sqlite, "devices"):
+                    cursor.execute(
+                        """
+                        INSERT INTO identity_devices
+                          (device_id,tenant_id,user_id,platform,state,last_seen_at,created_at,updated_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (device_id) DO NOTHING
+                        """,
+                        tuple(row[name] for name in ("device_id", "tenant_id", "user_id", "platform", "state", "last_seen_at", "created_at", "updated_at")),
+                    )
+                    counts["devices"] += cursor.rowcount
+                for row in _rows(sqlite, "sessions"):
+                    cursor.execute(
+                        """
+                        INSERT INTO identity_sessions
+                          (session_id,tenant_id,user_id,device_id,client_kind,access_digest,
+                           access_expires_at,state,created_at,updated_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (session_id) DO NOTHING
+                        """,
+                        tuple(row[name] for name in ("session_id", "tenant_id", "user_id", "device_id", "client_kind", "access_digest", "access_expires_at", "state", "created_at", "updated_at")),
+                    )
+                    counts["sessions"] += cursor.rowcount
+                for row in _rows(sqlite, "refresh_families"):
+                    session = sqlite.execute("SELECT tenant_id FROM sessions WHERE session_id=?", (row["session_id"],)).fetchone()
+                    if session is None:
+                        continue
+                    cursor.execute(
+                        "INSERT INTO identity_refresh_families (family_id,tenant_id,session_id,state,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (family_id) DO NOTHING",
+                        (row["family_id"], session["tenant_id"], row["session_id"], row["state"], row["created_at"], row["updated_at"]),
+                    )
+                    counts["refresh_families"] += cursor.rowcount
+                for row in _rows(sqlite, "refresh_tokens"):
+                    cursor.execute(
+                        "INSERT INTO identity_refresh_tokens (refresh_id,family_id,refresh_digest,expires_at,used_at,created_at) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (refresh_id) DO NOTHING",
+                        tuple(row[name] for name in ("refresh_id", "family_id", "refresh_digest", "expires_at", "used_at", "created_at")),
+                    )
+                    counts["refresh_tokens"] += cursor.rowcount
             pg.commit()
     finally:
         sqlite.close()
