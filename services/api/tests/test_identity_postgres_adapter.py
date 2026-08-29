@@ -1,4 +1,4 @@
-from daon_user_api.identity_postgres import _PostgresCompatConnection
+from daon_user_api.identity_postgres import _CursorProxy, _PostgresCompatConnection
 from daon_user_api.postgres_adapters import PostgresCompatConnection
 import psycopg
 
@@ -26,6 +26,24 @@ def test_identity_connection_exposes_sqlite_transaction_state() -> None:
 
     connection._connection = FakeConnection()
     assert connection.in_transaction is False
+
+
+def test_postgres_rows_support_mapping_and_positional_access() -> None:
+    class Cursor:
+        def fetchone(self):
+            return {"tenant_id": "tenant-1", "state": "active"}
+
+        def fetchall(self):
+            return [{"tenant_id": "tenant-1"}]
+
+        def __iter__(self):
+            return iter(self.fetchall())
+
+    cursor = _CursorProxy(Cursor())
+    row = cursor.fetchone()
+    assert row["tenant_id"] == "tenant-1"
+    assert row[0] == "tenant-1"
+    assert cursor.fetchall()[0][0] == "tenant-1"
 
 
 def test_authorization_sql_uses_isolated_tables() -> None:

@@ -38,18 +38,31 @@ _TABLES = (
 )
 
 
+class _RowProxy(dict[str, Any]):
+    """Allow legacy SQLite positional access alongside PostgreSQL mappings."""
+
+    def __getitem__(self, key: str | int) -> Any:
+        if isinstance(key, int):
+            return tuple(self.values())[key]
+        return super().__getitem__(key)
+
+
+def _compat_row(row: Any) -> Any:
+    return _RowProxy(row) if isinstance(row, dict) else row
+
+
 class _CursorProxy:
     def __init__(self, cursor: Any) -> None:
         self._cursor = cursor
 
     def fetchone(self) -> Any:
-        return self._cursor.fetchone()
+        return _compat_row(self._cursor.fetchone())
 
     def fetchall(self) -> list[Any]:
-        return list(self._cursor.fetchall())
+        return [_compat_row(row) for row in self._cursor.fetchall()]
 
     def __iter__(self):
-        return iter(self._cursor)
+        return (_compat_row(row) for row in self._cursor)
 
 
 class _PostgresCompatConnection:
