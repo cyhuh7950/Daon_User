@@ -1,5 +1,6 @@
 from daon_user_api.identity_postgres import _PostgresCompatConnection
 from daon_user_api.postgres_adapters import PostgresCompatConnection
+import psycopg
 
 
 def test_sql_maps_identity_tables_and_placeholders() -> None:
@@ -12,6 +13,19 @@ def test_sql_maps_identity_tables_and_placeholders() -> None:
 
 def test_sql_maps_begin_immediate() -> None:
     assert _PostgresCompatConnection._sql("BEGIN IMMEDIATE") == "BEGIN"
+
+
+def test_identity_connection_exposes_sqlite_transaction_state() -> None:
+    connection = _PostgresCompatConnection.__new__(_PostgresCompatConnection)
+
+    class Info:
+        transaction_status = psycopg.pq.TransactionStatus.IDLE
+
+    class FakeConnection:
+        info = Info()
+
+    connection._connection = FakeConnection()
+    assert connection.in_transaction is False
 
 
 def test_authorization_sql_uses_isolated_tables() -> None:

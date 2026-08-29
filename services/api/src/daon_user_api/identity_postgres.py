@@ -84,6 +84,11 @@ class _PostgresCompatConnection:
         except psycopg.Error as error:
             raise sqlite3.OperationalError(str(error)) from error
 
+    @property
+    def in_transaction(self) -> bool:
+        """Expose the SQLite-compatible transaction state used by the domain repository."""
+        return self._connection.info.transaction_status != psycopg.pq.TransactionStatus.IDLE
+
     def close(self) -> None:
         self._connection.close()
 
