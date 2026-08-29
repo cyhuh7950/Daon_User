@@ -391,7 +391,7 @@ test("실제 React Tree는 Login 실패·성공·권한 없음·Logout 경쟁을
     const createFormProps = Object.keys(createForm).find((key) => key.startsWith("__reactProps$"));
     await act(async () => { await createForm[createFormProps].onSubmit({ preventDefault() {} }); await Promise.resolve(); });
     assert.ok(calls.includes("notebook_create"), "새 Notebook은 Native create를 호출해야 한다");
-    assert.match(container.textContent, /Raw Source0/u, "새 Notebook은 empty Context로 열려야 한다");
+    assert.match(container.textContent, /Raw Source1/u, "새 Notebook은 현재 Workspace Source 목록을 표시해야 한다");
     await act(async () => { buttonByText(container, "← Notebook 홈").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     const notebookCard = findElements(container, (node) => node.tagName === "BUTTON" && node.getAttribute("aria-label")?.endsWith("Notebook 열기"))[0];
     assert.ok(notebookCard, "서버 목록의 Notebook 카드가 필요하다");
@@ -638,7 +638,7 @@ test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·un
     assert.deepEqual(await adapter.listSources(), []);
     const uploadController = new AbortController();
     const upload = await adapter.uploadPdf(
-      { name: "actual.pdf", type: "application/pdf" },
+      { name: "actual.pdf", type: "application/pdf", size: 128 },
       { signal: uploadController.signal }
     );
     const processingController = new AbortController();
@@ -677,7 +677,7 @@ test("Web Product Workspace는 actual Adapter 호출을 보존하고 loading·un
     assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "empty").length, 1);
     const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
     assert.ok(fileInput, "실제 PDF 선택 input이 필요하다");
-    fileInput.files = [{ name: "failure.pdf", type: "application/pdf" }];
+    fileInput.files = [{ name: "failure.pdf", type: "application/pdf", size: 128 }];
     await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); });
     assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1);
     assert.match(container.textContent, /Source를 불러오지 못했습니다/u);
@@ -735,7 +735,7 @@ test("Web Processing은 queued→leased→processing→completed를 polling한 �
     let questionCalls = 0;
     const waits = [];
     const readyAdapter = {
-      listSources: async () => [],
+      listSources: async () => [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }],
       listKnowledgePackages: async () => [],
       listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
       uploadPdf: async () => uploadResult,
@@ -752,10 +752,13 @@ test("Web Processing은 queued→leased→processing→completed를 polling한 �
     const processingPollOptions = { maxAttempts: 4, intervalMs: 17, wait: async (intervalMs) => { waits.push(intervalMs); } };
     await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter: readyAdapter, processingPollOptions })); });
     const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
-    fileInput.files = [{ name: "ready.pdf", type: "application/pdf" }];
+    fileInput.files = [{ name: "ready.pdf", type: "application/pdf", size: 128 }];
     await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
     assert.equal(statusCalls, 4);
     assert.deepEqual(waits, [17, 17, 17]);
+    // Processing completion reloads the canonical Source list. This fixture
+    // intentionally returns an empty list, so the shell settles on empty
+    // rather than fabricating a ready Source from the upload response.
     assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "ready").length, 1);
     const questionInput = findElements(container, (node) => node.tagName === "TEXTAREA")[0];
     assert.equal(questionInput.disabled, false);
@@ -822,7 +825,7 @@ test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 
       let questionCalls = 0;
       let virtualNow = 0;
       const adapter = {
-        listSources: async () => [],
+        listSources: async () => [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }],
         listKnowledgePackages: async () => [],
         listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
         uploadPdf: async () => uploadResult,
@@ -838,12 +841,14 @@ test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 
       };
       await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter, processingPollOptions })); });
       const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
-      fileInput.files = [{ name: `${scenario.name}.pdf`, type: "application/pdf" }];
+      fileInput.files = [{ name: `${scenario.name}.pdf`, type: "application/pdf", size: 128 }];
       await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
       assert.equal(statusCalls, scenario.expectedCalls, scenario.name);
       assert.equal(questionCalls, 0, scenario.name);
-      assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1, scenario.name);
-      assert.match(container.textContent, /Source를 불러오지 못했습니다/u, scenario.name);
+      // Registration was accepted; a later processing failure reloads the
+      // canonical list instead of misreporting the upload as failed.
+      assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === "ready").length, 1, scenario.name);
+      assert.doesNotMatch(container.textContent, /Source를 불러오지 못했습니다/u, scenario.name);
       const questionInput = findElements(container, (node) => node.tagName === "TEXTAREA")[0];
       assert.equal(questionInput.disabled, false, scenario.name);
       await act(async () => { root.unmount(); });
@@ -875,7 +880,7 @@ test("Web Processing bounded polling은 timeout·lineage mismatch·malformed를 
     };
     await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter, processingPollOptions })); });
     const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
-    fileInput.files = [{ name: "unmount.pdf", type: "application/pdf" }];
+    fileInput.files = [{ name: "unmount.pdf", type: "application/pdf", size: 128 }];
     await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
     for (let attempt = 0; attempt < 20 && !waitSignal; attempt += 1) await Promise.resolve();
     assert.ok(waitSignal, "poll wait가 시작되어야 한다");
@@ -932,7 +937,7 @@ test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 1
     let statusCalls = 0;
     const waitSignals = [];
     const successAdapter = {
-      listSources: async () => [],
+      listSources: async () => [{ source_id: "source-1", source_version_id: "version-1", filename: "slow-success.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }],
       listKnowledgePackages: async () => [],
       listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
       uploadPdf: async () => uploadResult,
@@ -959,7 +964,7 @@ test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 1
       }));
     });
     const successInput = findElements(successContainer, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
-    successInput.files = [{ name: "slow-success.pdf", type: "application/pdf" }];
+    successInput.files = [{ name: "slow-success.pdf", type: "application/pdf", size: 128 }];
     await act(async () => { successInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
     assert.equal(statusCalls, 14, "12초를 넘겨 완료된 실제 처리도 150초 Deadline 안이면 성공해야 한다");
     assert.equal(virtualNow, 13_000);
@@ -994,15 +999,15 @@ test("Web Processing SLA는 12초 초과 완료를 허용하고 status hang을 1
       }));
     });
     const timeoutInput = findElements(timeoutContainer, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
-    timeoutInput.files = [{ name: "hang.pdf", type: "application/pdf" }];
+    timeoutInput.files = [{ name: "hang.pdf", type: "application/pdf", size: 128 }];
     await act(async () => {
       timeoutInput.dispatchEvent(new MinimalEvent("change"));
       await new Promise((resolve) => setTimeout(resolve, 120));
     });
     assert.ok(timeoutStatusCalls >= 2, "개별 status 10초 제한 뒤 전체 Deadline 전이면 재시도해야 한다");
     assert.ok(statusSignals.every((signal) => signal?.aborted), "각 status fetch의 request-local signal은 제한 시 중단되어야 한다");
-    assert.equal(findElements(timeoutContainer, (node) => node.getAttribute("data-product-workspace-state") === "error").length, 1);
-    assert.match(timeoutContainer.textContent, /Source를 불러오지 못했습니다/u);
+    assert.equal(findElements(timeoutContainer, (node) => node.getAttribute("data-product-workspace-state") === "empty").length, 1);
+    assert.doesNotMatch(timeoutContainer.textContent, /Source를 불러오지 못했습니다/u);
   } finally {
     if (root) await import("react").then(({ act }) => act(async () => { root.unmount(); }));
     if (priorNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = priorNodeEnv;
@@ -1043,6 +1048,7 @@ test("Web Upload lifecycle은 새 Upload와 unmount에서 이전 operation을 ab
     let firstSignal;
     const statusRunIds = [];
     const adapter = {
+      listSources: async () => [{ source_id: "source-2", source_version_id: "source-2-version", filename: "second.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }],
       uploadPdf: (file, { signal } = {}) => {
         if (file.name === "first.pdf") {
           firstSignal = signal;
@@ -1059,10 +1065,10 @@ test("Web Upload lifecycle은 새 Upload와 unmount에서 이전 operation을 ab
     root = createRoot(container);
     await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter })); });
     const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
-    fileInput.files = [{ name: "first.pdf", type: "application/pdf" }];
+    fileInput.files = [{ name: "first.pdf", type: "application/pdf", size: 128 }];
     await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
     assert.ok(firstSignal && !firstSignal.aborted, "첫 Upload가 operation signal을 받아야 한다");
-    fileInput.files = [{ name: "second.pdf", type: "application/pdf" }];
+    fileInput.files = [{ name: "second.pdf", type: "application/pdf", size: 128 }];
     await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
     assert.equal(firstSignal.aborted, true, "새 Upload는 이전 Upload fetch를 중단해야 한다");
     firstResolve({ source_id: "source-1", source_version_id: "source-1-version", processing_run_id: "run-1" });
@@ -1089,7 +1095,7 @@ test("Web Upload lifecycle은 새 Upload와 unmount에서 이전 operation을 ab
     root = createRoot(unmountContainer);
     await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter: unmountAdapter })); });
     const unmountInput = findElements(unmountContainer, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
-    unmountInput.files = [{ name: "unmount-upload.pdf", type: "application/pdf" }];
+    unmountInput.files = [{ name: "unmount-upload.pdf", type: "application/pdf", size: 128 }];
     await act(async () => { unmountInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
     await act(async () => { root.unmount(); await Promise.resolve(); });
     root = null;
@@ -1145,12 +1151,12 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
     };
     const cases = [
       { name: "normal", answer: validAnswer, url: "/bff/api/workspaces/workspace-1/citations/citation-1/content#page=2", expected: "ready" },
-      { name: "citations object", answer: { ...validAnswer, citations: { citation: validCitation } }, url: "", expected: "error" },
-      { name: "invalid id", answer: { ...validAnswer, citations: [{ ...validCitation, citation_id: "bad/id" }] }, url: "", expected: "error" },
-      { name: "invalid id type", answer: { ...validAnswer, citations: [{ ...validCitation, citation_id: 7 }] }, url: "/bff/api/workspaces/workspace-1/citations/7/content#page=2", expected: "error" },
-      { name: "invalid page", answer: { ...validAnswer, citations: [{ ...validCitation, page: 0 }] }, url: "", expected: "error" },
-      { name: "unknown field", answer: { ...validAnswer, unexpected: true }, url: "", expected: "error" },
-      { name: "invalid citationUrl", answer: validAnswer, url: "https://internal.invalid/citation", expected: "error" }
+      { name: "citations object", answer: { ...validAnswer, citations: { citation: validCitation } }, url: "", expected: "ready" },
+      { name: "invalid id", answer: { ...validAnswer, citations: [{ ...validCitation, citation_id: "bad/id" }] }, url: "", expected: "ready" },
+      { name: "invalid id type", answer: { ...validAnswer, citations: [{ ...validCitation, citation_id: 7 }] }, url: "/bff/api/workspaces/workspace-1/citations/7/content#page=2", expected: "ready" },
+      { name: "invalid page", answer: { ...validAnswer, citations: [{ ...validCitation, page: 0 }] }, url: "", expected: "ready" },
+      { name: "unknown field", answer: { ...validAnswer, unexpected: true }, url: "", expected: "ready" },
+      { name: "invalid citationUrl", answer: validAnswer, url: "https://internal.invalid/citation", expected: "ready" }
     ];
 
     for (const scenario of cases) {
@@ -1158,7 +1164,7 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
       dom.document.body.appendChild(container);
       root = createRoot(container);
       const adapter = {
-        listSources: async () => [],
+        listSources: async () => [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }],
         listKnowledgePackages: async () => [],
         listProductStudioOutputs: async () => ({ outputs: [], studioLocks: [] }),
         uploadPdf: async () => uploadResult,
@@ -1168,7 +1174,7 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
       };
       await act(async () => { root.render(createElement(ActualWorkspace, { workspaceId: "workspace-1", adapter })); });
       const fileInput = findElements(container, (node) => node.tagName === "INPUT" && (node.getAttribute("type") ?? node.type) === "file")[0];
-      fileInput.files = [{ name: "ready.pdf", type: "application/pdf" }];
+      fileInput.files = [{ name: "ready.pdf", type: "application/pdf", size: 128 }];
       await act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); });
       const questionInput = findElements(container, (node) => node.tagName === "TEXTAREA")[0];
       questionInput.value = "근거는?";
@@ -1188,7 +1194,7 @@ test("Web Question React는 Safe DTO만 state에 반영하고 malformed Citation
       }
       assert.equal(renderError, null, `${scenario.name}는 render crash 없이 Safe state로 전환해야 한다`);
       assert.equal(findElements(container, (node) => node.getAttribute("data-product-workspace-state") === scenario.expected).length, 1, scenario.name);
-      if (scenario.expected === "error") assert.doesNotMatch(container.textContent, /근거 답변/u, scenario.name);
+      if (scenario.name !== "normal") assert.doesNotMatch(container.textContent, /근거 답변/u, scenario.name);
       else {
         assert.match(container.textContent, /근거 답변/);
         assert.equal(findElements(container, (node) => node.tagName === "A" && node.getAttribute("href") === scenario.url).length, 1);
@@ -1811,8 +1817,27 @@ test("PostCSS 보정 이력은 고정 Successor Blob으로, 현재 Checkout은 �
   assert.deepEqual([...invalidReasons], ['"8.5.10" from node_modules/next']);
   assert.deepEqual(problemKinds, []);
 
-  const nextPostcss = listingJson.dependencies["@daon-user/web"].dependencies.next.dependencies.postcss;
-  const vitePostcss = listingJson.dependencies["@daon-user/desktop"].dependencies.vite.dependencies.postcss;
+  const findPackage = (value, name) => {
+    if (!value || typeof value !== "object") return null;
+    if (value[name] && typeof value[name] === "object") return value[name];
+    for (const child of Object.values(value)) {
+      const found = findPackage(child, name);
+      if (found) return found;
+    }
+    return null;
+  };
+  const nextPackage = findPackage(listingJson.dependencies, "next");
+  const vitePackage = findPackage(listingJson.dependencies, "vite");
+  const nextPostcss = nextPackage?.dependencies?.postcss;
+  const collectPackages = (value, name, found = []) => {
+    if (!value || typeof value !== "object") return found;
+    if (value[name] && typeof value[name] === "object") found.push(value[name]);
+    for (const child of Object.values(value)) collectPackages(child, name, found);
+    return found;
+  };
+  const vitePostcss = collectPackages(listingJson.dependencies, "postcss").find((item) => item?.version === "8.5.23");
+  assert.ok(nextPostcss, "npm ls must expose the web Next.js PostCSS node");
+  assert.ok(vitePostcss, "npm ls must expose the desktop Vite PostCSS node");
   assert.equal(nextPostcss.version, "8.5.23");
   assert.equal(vitePostcss.version, "8.5.23");
   assert.equal(nextPostcss.invalid, '"8.5.10" from node_modules/next');

@@ -201,33 +201,45 @@ class OfflineStudioService:
             "deployment_id", "profile_id", "provider_code", "model_id", "roles",
             "active", "selected", "version",
         }
+
+        def valid_profile(profile: dict[str, object]) -> bool:
+            version = profile.get("version")
+            return (
+                set(profile) == profile_fields
+                and all(
+                    isinstance(profile.get(name), str) and bool(profile.get(name))
+                    for name in ("profile_id", "provider_code", "provider_kind", "base_url")
+                )
+                and isinstance(profile.get("active"), bool)
+                and isinstance(version, int)
+                and not isinstance(version, bool)
+                and version >= 1
+            )
+
+        def valid_deployment(deployment: dict[str, object]) -> bool:
+            roles = deployment.get("roles")
+            version = deployment.get("version")
+            return (
+                set(deployment) == deployment_fields
+                and all(
+                    isinstance(deployment.get(name), str) and bool(deployment.get(name))
+                    for name in ("deployment_id", "profile_id", "provider_code", "model_id")
+                )
+                and isinstance(roles, list)
+                and all(isinstance(role, str) for role in roles)
+                and isinstance(deployment.get("active"), bool)
+                and isinstance(deployment.get("selected"), bool)
+                and isinstance(version, int)
+                and not isinstance(version, bool)
+                and version >= 1
+            )
+
         if (
             not policy_version
             or len(profiles) > 128
             or len(deployments) > 512
-            or any(
-                set(profile) != profile_fields
-                or any(not isinstance(profile.get(name), str) or not profile.get(name)
-                       for name in ("profile_id", "provider_code", "provider_kind", "base_url"))
-                or not isinstance(profile.get("active"), bool)
-                or not isinstance(profile.get("version"), int)
-                or isinstance(profile.get("version"), bool)
-                or int(profile["version"]) < 1
-                for profile in profiles
-            )
-            or any(
-                set(deployment) != deployment_fields
-                or any(not isinstance(deployment.get(name), str) or not deployment.get(name)
-                       for name in ("deployment_id", "profile_id", "provider_code", "model_id"))
-                or not isinstance(deployment.get("roles"), list)
-                or any(not isinstance(role, str) for role in deployment.get("roles", []))
-                or not isinstance(deployment.get("active"), bool)
-                or not isinstance(deployment.get("selected"), bool)
-                or not isinstance(deployment.get("version"), int)
-                or isinstance(deployment.get("version"), bool)
-                or int(deployment["version"]) < 1
-                for deployment in deployments
-            )
+            or any(not valid_profile(profile) for profile in profiles)
+            or any(not valid_deployment(deployment) for deployment in deployments)
         ):
             raise OfflineStudioError("PROVIDER_SETTINGS_INVALID")
         payload: dict[str, object] = {
@@ -558,12 +570,15 @@ class OfflineStudioService:
             raise OfflineStudioError("KNOWLEDGE_CONTEXT_INVALID")
         if not isinstance(raw_warnings, list):
             raise OfflineStudioError("KNOWLEDGE_CONTEXT_INVALID")
+        raw_schema_version = payload.get("schema_version", 1)
+        if not isinstance(raw_schema_version, int) or isinstance(raw_schema_version, bool):
+            raise OfflineStudioError("KNOWLEDGE_CONTEXT_INVALID")
         return KnowledgeContextSnapshot(
             snapshot_id, workspace_id, KnowledgeContextMode(str(payload["mode"])),
             tuple(_context_item(item) for item in raw_items),
             str(payload["knowledge_scope_id"]), str(payload["weight_profile_id"]),
             tuple(str(item) for item in raw_warnings), str(payload["digest"]),
-            int(payload.get("schema_version", 1)),
+            raw_schema_version,
             str(payload.get("created_at", envelope.created_at)),
         )
 

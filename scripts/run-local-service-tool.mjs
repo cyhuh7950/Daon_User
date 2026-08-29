@@ -43,6 +43,7 @@ const commands = Object.freeze({
 });
 
 export function runLocalServiceTool(action, { spawnImpl = spawnSync } = {}) {
+  const pytestTempRoot = mkdtempSync(path.join(os.tmpdir(), "daon-user-pytest-root-"));
   const environment = {
     ...process.env,
     UV_CACHE_DIR:
@@ -52,7 +53,10 @@ export function runLocalServiceTool(action, { spawnImpl = spawnSync } = {}) {
       path.join(os.tmpdir(), "daon-user-local-service-uv-python"),
     UV_PROJECT_ENVIRONMENT:
       process.env.UV_PROJECT_ENVIRONMENT ??
-      path.join(os.tmpdir(), `${path.basename(repositoryRoot)}-local-service-uv-env-r1`)
+      path.join(os.tmpdir(), `${path.basename(repositoryRoot)}-local-service-uv-env-r1`),
+    TMP: pytestTempRoot,
+    TEMP: pytestTempRoot,
+    TMPDIR: pytestTempRoot,
   };
   if (action === "security") {
     const auditDirectory = mkdtempSync(path.join(os.tmpdir(), "daon-user-full-env-audit-"));
@@ -62,6 +66,18 @@ export function runLocalServiceTool(action, { spawnImpl = spawnSync } = {}) {
         ? path.join(environment.UV_PROJECT_ENVIRONMENT, "Scripts", "python.exe")
         : path.join(environment.UV_PROJECT_ENVIRONMENT, "bin", "python");
     try {
+      const synced = spawnImpl(
+        "uv",
+        ["sync", "--project", "services/local-service", "--frozen"],
+        { cwd: repositoryRoot, env: environment, encoding: "utf8", windowsHide: true }
+      );
+      if (synced.stderr) process.stderr.write(synced.stderr);
+      if (synced.status !== 0 || synced.error) {
+        return {
+          exitCode: Number.isInteger(synced.status) ? synced.status : 2,
+          error: synced.error?.code ?? null
+        };
+      }
       const frozen = spawnImpl(
         "uv",
         ["pip", "freeze", "--python", environmentPython],
@@ -79,7 +95,14 @@ export function runLocalServiceTool(action, { spawnImpl = spawnSync } = {}) {
           error: frozen.error?.code ?? null
         };
       }
-      writeFileSync(requirements, frozen.stdout, "utf8");
+      // The interpreter's bootstrap pip is not an application dependency and
+      // must not make the local-service dependency gate fail independently of
+      // the locked project packages.
+      const applicationRequirements = String(frozen.stdout ?? "")
+        .split(/\r?\n/u)
+        .filter((line) => !/^pip==/iu.test(line))
+        .join("\n");
+      writeFileSync(requirements, applicationRequirements, "utf8");
       const audited = spawnImpl(
         "uv",
         [
@@ -115,10 +138,14 @@ export function runLocalServiceTool(action, { spawnImpl = spawnSync } = {}) {
       };
     } finally {
       rmSync(auditDirectory, { recursive: true, force: true });
+      rmSync(pytestTempRoot, { recursive: true, force: true });
     }
   }
   const args = commands[action];
-  if (!args) return { exitCode: 2, error: "unsupported action" };
+  if (!args) {
+    rmSync(pytestTempRoot, { recursive: true, force: true });
+    return { exitCode: 2, error: "unsupported action" };
+  }
   const result = spawnImpl("uv", [
     "run",
     "--project",
@@ -134,6 +161,7 @@ export function runLocalServiceTool(action, { spawnImpl = spawnSync } = {}) {
   });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
+  rmSync(pytestTempRoot, { recursive: true, force: true });
   return {
     exitCode: Number.isInteger(result.status) ? result.status : 2,
     error: result.error?.code ?? null

@@ -7,7 +7,7 @@ from typing import cast
 
 from daon_user_local_service.local_storage import LocalEncryptedStore
 from daon_user_local_service.main import build_production_offline_studio
-from daon_user_local_service.offline_studio import ConfirmSettingsInput
+from daon_user_local_service.offline_studio import ConfirmSettingsInput, OfflineStudioService
 from daon_user_local_service.raw_source import RawSourceService
 
 
@@ -57,7 +57,7 @@ def _deployments() -> str:
     }], separators=(",", ":"))
 
 
-def _persist_provider_settings(service: object) -> None:
+def _persist_provider_settings(service: OfflineStudioService) -> None:
     service.import_provider_settings(
         workspace_id=WORKSPACE,
         profiles=({
@@ -266,7 +266,7 @@ def test_product_generation_uses_indexed_raw_source_evidence(tmp_path: Path) -> 
     output = store.get_canonical_envelope(
         WORKSPACE, "artifact", "OutputVersion", draft.output_version_id
     )
-    citation = output.payload["citation_lineage"][0]
+    citation = cast(dict[str, object], cast(list[object], output.payload["citation_lineage"])[0])
     assert citation["origin"] == "raw_source"
     assert citation["source_id"] == source.source_id
     assert citation["index_version_id"] == source.index_version_id
