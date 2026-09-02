@@ -162,7 +162,7 @@ class RawSourceService:
                     "source_version_id": source_version_id,
                     "evidence_span_ids": list(evidence_ids),
                     "state": "completed",
-                    "extractor": "pypdf-6.14.2" if content_type == "application/pdf" else "utf8",
+                    "extractor": "pypdf-6.16.1" if content_type == "application/pdf" else "utf8",
                 }
                 items = [
                     RawSourceCanonicalInput(

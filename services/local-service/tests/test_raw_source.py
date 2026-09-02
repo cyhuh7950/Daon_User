@@ -169,9 +169,11 @@ def test_pdf_text_is_extracted_into_unverified_evidence(tmp_path) -> None:
     )
 
     spans = store.list_canonical_envelopes(WORKSPACE, "source", "EvidenceSpan")
+    indexes = store.list_canonical_envelopes(WORKSPACE, "source", "IndexVersion")
     assert created.content_type == "application/pdf"
     assert [item.payload["text"] for item in spans] == ["Verified local PDF evidence"]
     assert spans[0].payload["unverified"] is True
+    assert indexes[0].payload["extractor"] == "pypdf-6.16.1"
     store.close()
 
 

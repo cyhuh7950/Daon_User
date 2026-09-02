@@ -5,7 +5,7 @@ requires-python = "==3.14.3"
 dependencies = [
   "cryptography==50.0.0",
   "fastapi==0.139.2",
-  "pypdf==6.15.0",
+  "pypdf==6.16.1",
   "sqlcipher3==0.6.2",
   "sqlite-vec==0.1.9",
   "uvicorn==0.51.0",
