@@ -25,6 +25,7 @@ async function request(path, payload) {
 export async function logoutCurrentSession(options = {}) {
   const response = await (options.fetchImpl ?? fetch)("/bff/api/session/logout", {
     method: "POST", credentials: "same-origin", headers: JSON_HEADERS,
+    body: "{}",
     signal: options.signal,
   });
   const body = await response.json().catch(() => ({}));

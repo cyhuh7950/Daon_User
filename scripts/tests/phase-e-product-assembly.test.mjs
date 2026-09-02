@@ -80,7 +80,7 @@ test("logout client는 same-origin empty POST와 exact safe projection만 수용
   assert.equal(calls[0].url, "/bff/api/session/logout");
   assert.equal(calls[0].options.method, "POST");
   assert.equal(calls[0].options.credentials, "same-origin");
-  assert.equal("body" in calls[0].options, false);
+  assert.equal(calls[0].options.body, "{}");
   await assert.rejects(
     logoutCurrentSession({ fetchImpl: async () => Response.json({ data: { status: "logged_out", replayed: "false" } }) }),
     /LOGOUT_RESPONSE_INVALID/u,
@@ -94,6 +94,16 @@ test("logout client는 same-origin empty POST와 exact safe projection만 수용
       logoutCurrentSession({ fetchImpl: async () => Response.json(invalid) }),
       /LOGOUT_RESPONSE_INVALID/u,
     );
+  }
+});
+
+test("Notebook 보호 페이지는 인증 쿠키가 없으면 서버에서 로그인으로 보낸다", async () => {
+  const page = await read("apps/web/app/notebooks/page.jsx");
+  const productPage = await read("apps/web/app/notebooks/[notebook_id]/page.jsx");
+  for (const source of [page, productPage]) {
+    assert.match(source, /cookies\(\)/u);
+    assert.match(source, /__Host-daon_session/u);
+    assert.match(source, /redirect\("\/"\)/u);
   }
 });
 

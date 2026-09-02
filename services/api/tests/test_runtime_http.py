@@ -397,6 +397,7 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         first = await self.client.post(
             "/api/v1/session/logout", headers=headers, cookies=cookie,
+            json={},
         )
         replay = await self.client.post(
             "/api/v1/session/logout", headers=headers, cookies=cookie,

@@ -2012,7 +2012,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def logout_current_web_session(request: Request) -> JSONResponse:
         _require_query_keys(request, frozenset())
         _require_validated_web_csrf(request, dependencies.settings)
-        if await request.body():
+        body = await request.body()
+        if body not in {b"", b"{}"}:
             raise HTTPException(status_code=400)
         token, expected_kind = _credential(request)
         if expected_kind is not ClientKind.WEB:
