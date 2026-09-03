@@ -33,6 +33,8 @@ MIMES = {
     "pdf": "application/pdf",
 }
 EXTENSIONS = {"markdown": "md", "docx": "docx", "pdf": "pdf"}
+LATIN_FONT = "Noto Sans"
+EAST_ASIA_FONT = "Gulim"
 
 
 def set_cell_margins(cell, *, top=80, start=120, bottom=80, end=120):
@@ -52,8 +54,11 @@ def set_cell_margins(cell, *, top=80, start=120, bottom=80, end=120):
 
 
 def set_run_font(run, size=11, bold=None, color=None):
-    run.font.name = "Calibri"
-    run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
+    run.font.name = LATIN_FONT
+    run_fonts = run._element.get_or_add_rPr().rFonts
+    run_fonts.set(qn("w:ascii"), LATIN_FONT)
+    run_fonts.set(qn("w:hAnsi"), LATIN_FONT)
+    run_fonts.set(qn("w:eastAsia"), EAST_ASIA_FONT)
     run.font.size = Pt(size)
     if bold is not None:
         run.bold = bold
@@ -76,11 +81,19 @@ def add_internal_link(paragraph, label, anchor):
     hyperlink.set(qn("w:anchor"), anchor)
     run = OxmlElement("w:r")
     rpr = OxmlElement("w:rPr")
+    fonts = OxmlElement("w:rFonts")
+    fonts.set(qn("w:ascii"), LATIN_FONT)
+    fonts.set(qn("w:hAnsi"), LATIN_FONT)
+    fonts.set(qn("w:eastAsia"), EAST_ASIA_FONT)
     color = OxmlElement("w:color")
     color.set(qn("w:val"), "2E74B5")
     underline = OxmlElement("w:u")
     underline.set(qn("w:val"), "single")
-    rpr.extend((color, underline))
+    size = OxmlElement("w:sz")
+    size.set(qn("w:val"), "16")
+    size_cs = OxmlElement("w:szCs")
+    size_cs.set(qn("w:val"), "16")
+    rpr.extend((fonts, color, underline, size, size_cs))
     run.append(rpr)
     text = OxmlElement("w:t")
     text.text = label
@@ -98,8 +111,8 @@ def add_page_number(paragraph):
 
 def configure_styles(document):
     normal = document.styles["Normal"]
-    normal.font.name = "Calibri"
-    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
+    normal.font.name = LATIN_FONT
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), EAST_ASIA_FONT)
     normal.font.size = Pt(11)
     normal.paragraph_format.space_after = Pt(6)
     normal.paragraph_format.line_spacing = 1.25
@@ -109,18 +122,21 @@ def configure_styles(document):
         ("Heading 3", 12, "1F4D78", 10, 5),
     ):
         style = document.styles[name]
-        style.font.name = "Calibri"
-        style._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
+        style.font.name = LATIN_FONT
+        style._element.rPr.rFonts.set(qn("w:eastAsia"), EAST_ASIA_FONT)
         style.font.size = Pt(size)
-        style.font.bold = True
+        # LibreOffice's synthetic CJK bold can fill complex Hangul counters and
+        # produce unreadable black blocks in exported PDFs. Size and colour
+        # provide the hierarchy while keeping Korean glyphs legible.
+        style.font.bold = False
         style.font.color.rgb = RGBColor.from_string(color)
         style.paragraph_format.space_before = Pt(before)
         style.paragraph_format.space_after = Pt(after)
         style.paragraph_format.keep_with_next = True
     if "Daon Caption" not in document.styles:
         style = document.styles.add_style("Daon Caption", WD_STYLE_TYPE.PARAGRAPH)
-        style.font.name = "Calibri"
-        style._element.rPr.rFonts.set(qn("w:eastAsia"), "Malgun Gothic")
+        style.font.name = LATIN_FONT
+        style._element.rPr.rFonts.set(qn("w:eastAsia"), EAST_ASIA_FONT)
         style.font.size = Pt(9)
         style.font.color.rgb = RGBColor(90, 90, 100)
         style.paragraph_format.space_after = Pt(8)
@@ -212,9 +228,12 @@ def add_toc(document, headings):
     add_metadata_table(document, document.core_properties.title)
     document.add_heading("목차", level=1)
     for level, title, anchor in headings:
+        if level != 2:
+            continue
         paragraph = document.add_paragraph()
-        paragraph.paragraph_format.left_indent = Inches(0 if level == 2 else 0.25)
-        paragraph.paragraph_format.space_after = Pt(4)
+        paragraph.paragraph_format.left_indent = Inches(0)
+        paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.line_spacing = 0.9
         add_internal_link(paragraph, title, anchor)
     document.add_page_break()
 

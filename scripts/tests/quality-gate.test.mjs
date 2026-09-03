@@ -47,7 +47,8 @@ function fixturePolicy({ commands = {} } = {}) {
       { id: "repository-independence", category: "independence", command: ["stub", "independence"], failure_kind: "quality" },
       { id: "local-service-runtime-verifier-tests", category: "unit", command: ["stub", "local-runtime"], failure_kind: "quality" },
       { id: "local-service-full-environment-audit", category: "security", command: ["stub", "local-audit"], failure_kind: "execution" },
-      { id: "product-ui-boundary", category: "security", command: ["stub", "product-ui-boundary"], failure_kind: "quality" }
+      { id: "product-ui-boundary", category: "security", command: ["stub", "product-ui-boundary"], failure_kind: "quality" },
+      { id: "public-repository-boundary", category: "security", command: ["stub", "public-repository-boundary"], failure_kind: "quality" }
     ],
     security: {
       scan_roots: ["apps", ".github"],

@@ -22,6 +22,9 @@ apps/mobile/android/.gradle/
 apps/mobile/android/app/.cxx/
 __pycache__/
 .pytest_cache/
+.coverage
+coverage/
+htmlcov/
 *.py[cod]
 
 # Local runtime data
@@ -46,3 +49,25 @@ docs/.build/*.pdf
 ~$*.docx
 ~$*.xlsx
 ~$*.pptx
+
+# Public repository boundary: publish user manuals only.
+# Internal plans, designs, work orders, evidence and reports stay local.
+*.md
+*.mdx
+*.docx
+*.pdf
+*.odt
+*.rtf
+/docs/*
+
+# Signing material must never be published, including debug keys.
+*.keystore
+*.jks
+*.p12
+*.pfx
+
+# Explicit public manual allowlist (canonical source and Web downloads).
+!/docs/manual/
+!/docs/manual/**
+!/apps/web/public/manual/
+!/apps/web/public/manual/**

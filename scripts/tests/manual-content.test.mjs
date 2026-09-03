@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const root = new URL("../../", import.meta.url);
+const privateNetworkEvidence = new URL("docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/browser-network.jsonl", root);
+const privateEvidenceManifest = new URL("docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/manifest.json", root);
 const docs = [
   ["daon-getting-started", "Daon Getting Started"],
   ["daon-user-manual", "Daon 사용자 설명서"],
@@ -50,10 +53,12 @@ test("Release/Web manifest는 3문서×3형식 current bytes와 deterministic ha
   }
 });
 
-test("Evidence manifest의 Network 계수는 실제 JSONL row와 unique path를 결속한다", async () => {
+test("Evidence manifest의 Network 계수는 실제 JSONL row와 unique path를 결속한다", {
+  skip: !existsSync(privateNetworkEvidence) || !existsSync(privateEvidenceManifest),
+}, async () => {
   const [networkText, evidenceText] = await Promise.all([
-    readFile(new URL("docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/browser-network.jsonl", root), "utf8"),
-    readFile(new URL("docs/03_evidence/release_1/R1-M8-10-WINDOWS-OFFLINE-STUDIO-01/phase-c3-manual/manifest.json", root), "utf8"),
+    readFile(privateNetworkEvidence, "utf8"),
+    readFile(privateEvidenceManifest, "utf8"),
   ]);
   const rows = networkText.trim().split(/\r?\n/u).map((line) => JSON.parse(line));
   const uniquePaths = new Set(rows.map((row) => row.path));

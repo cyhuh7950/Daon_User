@@ -15,22 +15,22 @@
         "markdown": {
           "filename": "daon-getting-started.md",
           "href": "/manual/daon-getting-started.md",
-          "bytes": 6399,
-          "sha256": "6787688f6b0ba16ecc616e829ddd8e71c734493312f78d35c034b4cac46f42ab",
+          "bytes": 18175,
+          "sha256": "a82bc5914edae41d626d613d7ccb9ae62f8e77b95f40637151b0a3bd656b159a",
           "mime": "text/markdown; charset=utf-8"
         },
         "docx": {
           "filename": "daon-getting-started.docx",
           "href": "/manual/daon-getting-started.docx",
-          "bytes": 42438,
-          "sha256": "b3dd8fb224ecc88a065e35d0f2a910ce8e62824e1fa5006dbb7870e62b8cd61c",
+          "bytes": 47093,
+          "sha256": "8b6c7bf675882e83fe8077048c53b6b90a5d88d2e00da37d0c1b958545e72a22",
           "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         },
         "pdf": {
           "filename": "daon-getting-started.pdf",
           "href": "/manual/daon-getting-started.pdf",
-          "bytes": 162104,
-          "sha256": "f3c1666d70fa2b6f7cd723f2d2934880e09a4eb7e705db5376e99b85adacf01b",
+          "bytes": 328700,
+          "sha256": "089e49f02a9b7f19e1322ba2e1adcd0920d1f729c34e6ce99bc100f437459a83",
           "mime": "application/pdf"
         }
       }
@@ -46,22 +46,22 @@
         "markdown": {
           "filename": "daon-user-manual.md",
           "href": "/manual/daon-user-manual.md",
-          "bytes": 6649,
-          "sha256": "e090f5513a0ae9f8d0386dd775550aa1cf4bc654e7a5cc4d2c24e22c11c5b597",
+          "bytes": 25716,
+          "sha256": "f3543add5f35776dfe96dd4dee08087dca4f073e929c33fab4801078198c08cf",
           "mime": "text/markdown; charset=utf-8"
         },
         "docx": {
           "filename": "daon-user-manual.docx",
           "href": "/manual/daon-user-manual.docx",
-          "bytes": 42658,
-          "sha256": "7b5d0efcde9b328c9d0c54720d4dcb12e1fc628620a4f0e47d802fdc7638ee1f",
+          "bytes": 50804,
+          "sha256": "17734db99f5ccb683c4fa789657e53e724617f9ebd62337a4052211e1c454dd1",
           "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         },
         "pdf": {
           "filename": "daon-user-manual.pdf",
           "href": "/manual/daon-user-manual.pdf",
-          "bytes": 177756,
-          "sha256": "b7f20eed6385a802d6269b83261969e088762a8ff134340540aa00990bf61d99",
+          "bytes": 402166,
+          "sha256": "f044476c6a0fe1626e421d1d5c1d3a40a5699f1da0d6f4df3330a8eef731c4ff",
           "mime": "application/pdf"
         }
       }
@@ -77,22 +77,22 @@
         "markdown": {
           "filename": "daon-knowledge-llm-guide.md",
           "href": "/manual/daon-knowledge-llm-guide.md",
-          "bytes": 6410,
-          "sha256": "f2cfc392faadf0d7b82c9d5fce7dae14e3f953d9e71677128ea84a3acb7fef6d",
+          "bytes": 17035,
+          "sha256": "6f620d811a3c8527f1fe5f9fffef99a013b27618b1451521970e7566f8ee0b0b",
           "mime": "text/markdown; charset=utf-8"
         },
         "docx": {
           "filename": "daon-knowledge-llm-guide.docx",
           "href": "/manual/daon-knowledge-llm-guide.docx",
-          "bytes": 42492,
-          "sha256": "e4ccca3b108ccec80e2aecde6ca651e1cfcf6b844ce79148b4747ab04f046963",
+          "bytes": 47415,
+          "sha256": "1607a594759b414732dd5c590772f44ea7352f5b01fec8d650923b1905d93802",
           "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         },
         "pdf": {
           "filename": "daon-knowledge-llm-guide.pdf",
           "href": "/manual/daon-knowledge-llm-guide.pdf",
-          "bytes": 172473,
-          "sha256": "bc3560c70e225ff7ba1f01af4dde72a4975ee1dde6487605ee1cccd2d9528259",
+          "bytes": 332665,
+          "sha256": "49fa56a985a2796772cb591329fc483af939ad3b08911ddeb9114b20c2fba84a",
           "mime": "application/pdf"
         }
       }

@@ -18,6 +18,7 @@ const APPROVED_COMPONENTS = new Map([
 ]);
 const REQUIRED_MANDATORY_CHECKS = new Map([
   ["product-ui-boundary", { category: "security", kind: null }],
+  ["public-repository-boundary", { category: "security", kind: null }],
   ["quality-gate-runner-tests", { category: "unit", kind: null }],
   ["toolchain-baseline", { category: "build", kind: null }],
   ["production-dependency-audit", { category: "security", kind: "npm_audit" }],

@@ -17,6 +17,7 @@
     "verify:product-ui-boundary": "node scripts/verify-product-ui-boundary.mjs",
     "verify:toolchain": "node scripts/verify-toolchain-baseline.mjs",
     "verify:independence": "node scripts/verify-repository-independence.mjs",
+    "verify:public-repository-boundary": "node --test scripts/tests/public-repository-boundary.test.mjs",
     "verify:product-foundation": "node --test scripts/tests/product-foundation.test.mjs",
     "verify:openapi-contract": "node scripts/verify-openapi-contract.mjs",
     "verify:api-audit": "node scripts/verify-api-audit.mjs",
