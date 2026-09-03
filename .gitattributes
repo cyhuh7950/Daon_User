@@ -1,0 +1,4 @@
+docs/manual/**/*.md text eol=lf
+docs/manual/**/*.json text eol=lf
+apps/web/public/manual/*.md text eol=lf
+apps/web/public/manual/*.json text eol=lf
