@@ -78,7 +78,7 @@ Daon은 한 Notebook 안에서 자료를 등록하고, 자료에 대해 질문�
 4. `비밀번호 변경`을 선택합니다.
 5. 로그인 화면으로 돌아오면 새 비밀번호로 다시 로그인합니다.
 
-비밀번호를 바꾸기 전에는 Notebook 데이터가 보이지 않습니다. 다른 제품 요청은 HTTP 403과 `PASSWORD_CHANGE_REQUIRED`로 거부됩니다. 변경을 마치면 기존 Session이 끝나며 `admin/admin`은 즉시 무효가 됩니다.
+비밀번호를 바꾸기 전에는 Notebook 데이터가 보이지 않습니다. 다른 제품 요청은 HTTP 403과 `PASSWORD_CHANGE_REQUIRED`로 거부됩니다. 비밀번호 변경 성공 직후 모든 기존 Session과 refresh family가 폐기되고 `admin/admin`은 즉시 무효가 됩니다.
 
 ### 3.4 비밀번호를 잊었을 때
 
@@ -100,6 +100,8 @@ Daon은 한 Notebook 안에서 자료를 등록하고, 자료에 대해 질문�
 
 로그인 Session에는 사용할 Workspace가 지정됩니다. Notebook을 열거나 Source·Studio를 사용할 때 서버가 그 Workspace의 현재 권한을 다시 확인합니다. 이 Release에는 사용자가 공동 작업자를 초대하거나 권한을 변경하는 화면이 없으므로, 보이지 않는 관리 기능을 찾거나 임의 주소로 접근하지 마세요.
 
+Workspace 내부의 멤버 권한 모델과 시스템 관리자 계정 관리는 서로 다른 범위입니다. Workspace 관리자 역할만으로는 `사용자 관리` 메뉴나 `/admin`을 사용할 수 없습니다. 현재 Release에는 Workspace 멤버를 초대하거나 역할·정책을 변경하는 사용자 화면이 없습니다. 전체 계정 검색과 일반 사용자 중지·재활성화는 아래의 시스템 관리자 전용 기능입니다.
+
 ### 4.1 시스템 관리자의 사용자 관리
 
 로그인된 시스템 관리자에게만 Notebook 홈의 `설정` 메뉴에 `사용자 관리`가 표시됩니다.
@@ -111,7 +113,7 @@ Daon은 한 Notebook 안에서 자료를 등록하고, 자료에 대해 질문�
 5. 일반 사용자의 `중지` 또는 `재활성화`를 선택합니다.
 6. 상태 문구가 `활성 계정` 또는 `중지된 계정`으로 바뀌었는지 확인합니다.
 
-초기 admin 행에는 `이메일 없음`, `보호된 시스템 관리자`, `보호됨`이 표시되며 상태 버튼을 사용할 수 없습니다. 보호된 admin의 중지 요청은 HTTP 409와 `PROTECTED_ADMIN_ACCOUNT`로 거부됩니다. 계정 삭제 기능은 제공하지 않습니다. 일반 사용자는 `사용자 관리` 메뉴를 볼 수 없고 `/admin` 직접 접근과 관리자 API가 HTTP 403 `FORBIDDEN`으로 거부됩니다.
+초기 admin 행에는 `이메일 없음`, `보호된 시스템 관리자`, `보호됨`이 표시되며 상태 버튼을 사용할 수 없습니다. 보호된 admin의 상태 변경 요청은 HTTP 409 `PROTECTED_ADMIN_ACCOUNT`로 거부됩니다. 계정 삭제 기능은 제공하지 않습니다. 일반 사용자는 `사용자 관리` 메뉴를 볼 수 없고 `/admin` 직접 접근과 관리자 API가 HTTP 403 `FORBIDDEN`으로 거부됩니다.
 
 ### 4.2 admin 비밀번호를 잊었을 때
 
@@ -120,7 +122,7 @@ Daon은 한 Notebook 안에서 자료를 등록하고, 자료에 대해 질문�
 1. 운영자는 승인된 배포 절차로 현재 API 컨테이너의 서버 콘솔에 접속합니다.
 2. API가 사용하는 것과 같은 Runtime 환경과 데이터베이스 접근 권한이 준비되었는지 확인합니다. 실제 서버 경로, DSN, Secret 값은 명령행·문의 글·보고서에 적지 않습니다.
 3. API 컨테이너에서 프로젝트 명령 `python -m daon_user_api.admin_cli reset-initial-password`를 정확히 한 번 실행합니다.
-4. 성공하면 `INITIAL_ADMIN_PASSWORD_RESET`이 표시됩니다. 실패하면 `INITIAL_ADMIN_PASSWORD_RESET_FAILED:<오류 코드>`가 표시되며, 비밀번호·hash·token을 출력하지 않습니다. 실패 원인을 확인하기 전에 반복 실행하지 않습니다.
+4. 성공하면 `INITIAL_ADMIN_PASSWORD_RESET`이 표시되고 종료 코드는 0입니다. Runtime 실패는 `INITIAL_ADMIN_PASSWORD_RESET_FAILED:<오류 코드>`를 표시하고 종료 코드 1로 끝납니다. 잘못된 인자나 지원하지 않는 옵션은 명령 사용법인 `usage:`를 표시하고 종료 코드 2로 끝납니다. 어느 경우에도 비밀번호·hash·token을 출력하지 않으며, Runtime 실패 원인을 확인하기 전에 반복 실행하지 않습니다.
 5. 성공 시 admin의 기존 Session과 refresh family가 모두 폐기됩니다. 브라우저에서 다시 `admin/admin`으로 로그인한 뒤 `/password-change`에서 즉시 새 비밀번호를 설정합니다.
 
 이 명령은 고정된 보호 admin만 대상으로 하며 사용자 ID나 비밀번호 인자를 받지 않습니다. Web 화면이나 API로 초기화를 시도하지 마세요.

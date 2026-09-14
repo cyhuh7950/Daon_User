@@ -48,15 +48,17 @@ Evidence Hub는 Web·Windows·Android·iOS의 검증 증거와 상태를 추적�
 - Source: Notebook에서 질문과 생성의 근거로 선택하는 자료입니다.
 - Studio: 선택한 Source와 설정을 사용해 Notebook 안에 산출물과 Version을 만듭니다.
 
-공동 작업 권한은 서버에 활성 Workspace 권한이 실제로 부여된 경우에만 적용됩니다. 현재 구현된 역할별 동작은 다음과 같습니다.
+공동 작업 권한은 서버에 활성 Workspace 권한이 실제로 부여된 경우에만 적용됩니다. 다음 항목은 Workspace 내부 권한 모델이며, 현재 화면에서 각 역할이나 정책을 직접 설정할 수 있다는 뜻은 아닙니다.
 
-- Workspace 관리자: 보기, 질문, 분석, 생성, 편집, 검토, 수정 요청, Workspace 정책·사용자 관리를 수행합니다.
+- Workspace 관리자: 서버 권한 모델에서 보기, 질문, 분석, 생성, 편집, 검토, 수정 요청과 Workspace 내부 정책·멤버 권한 관리 권한을 가집니다.
 - 편집자: 보기, 질문, 분석, 생성과 편집을 수행합니다.
 - 검토자: 보기, 질문, 분석, 검토와 수정 요청을 수행합니다.
 - 승인자: 보기, 질문, 분석, 검토, 승인, 전달과 생산 지식 등록을 수행합니다.
 - 열람자: 보기만 수행합니다.
 
-Workspace 역할은 시스템 관리자 여부와 별개입니다. 이 Release에는 사용자가 공동 작업자를 초대하거나 Workspace 권한을 변경하는 화면이 없습니다. 서버는 Notebook, Source, Citation, Studio 산출물마다 현재 Workspace와 활성 권한을 다시 검사하며, 역할 이름만으로 다른 Workspace에 접근할 수 없습니다.
+Workspace 역할은 시스템 관리자 여부와 별개입니다. 이 Release에는 공동 작업자를 초대하거나 Workspace 권한을 변경하거나 정책을 편집하는 사용자 화면이 없습니다. 따라서 Workspace 관리자 역할만으로는 `사용자 관리` 메뉴나 `/admin`을 사용할 수 없습니다. 서버는 Notebook, Source, Citation, Studio 산출물마다 현재 Workspace와 활성 권한을 다시 검사하며, 역할 이름만으로 다른 Workspace에 접근할 수 없습니다.
+
+시스템 관리자는 Workspace 내부 역할이 아니라 전체 계정 운영을 위한 별도 보호 권한입니다. 시스템 관리자만 `사용자 관리`와 `/admin`에서 전체 계정을 검색하고 일반 사용자를 중지하거나 재활성화할 수 있습니다. 이 동작은 Workspace 멤버 초대나 역할 변경이 아닙니다.
 
 ## 4. 조작: 계정과 인증
 
@@ -89,7 +91,7 @@ Workspace 역할은 시스템 관리자 여부와 별개입니다. 이 Release�
 5. `비밀번호 변경`을 선택합니다.
 6. 로그인 화면으로 돌아오면 새 비밀번호로 다시 로그인합니다.
 
-강제 변경 전에는 Notebook 데이터가 보이지 않습니다. Session 조회, 현재 비밀번호 변경과 로그아웃 이외의 제품 요청은 HTTP 403 `PASSWORD_CHANGE_REQUIRED`로 거부됩니다. 변경 성공 시 기존 Session과 refresh family가 모두 끝나고 `admin/admin`은 즉시 무효가 됩니다.
+강제 변경 전에는 Notebook 데이터가 보이지 않습니다. Session 조회, 현재 비밀번호 변경과 로그아웃 이외의 제품 요청은 HTTP 403 `PASSWORD_CHANGE_REQUIRED`로 거부됩니다. 비밀번호 변경 성공 직후 모든 기존 Session과 refresh family가 폐기되고 `admin/admin`은 즉시 무효가 됩니다.
 
 ### 4.4 비밀번호 재설정
 
@@ -104,7 +106,7 @@ Workspace 역할은 시스템 관리자 여부와 별개입니다. 이 Release�
 1. 승인된 배포 절차로 현재 API 컨테이너의 서버 콘솔에 접속합니다.
 2. API Runtime과 같은 환경 및 데이터베이스 접근 권한이 준비되었는지 확인합니다. 내부 실제 서버 경로, DSN, Secret 값은 문서·명령 출력·문의 글에 기록하지 않습니다.
 3. 프로젝트 명령 `python -m daon_user_api.admin_cli reset-initial-password`를 정확히 한 번 실행합니다.
-4. 성공 메시지 `INITIAL_ADMIN_PASSWORD_RESET`을 확인합니다. 실패하면 `INITIAL_ADMIN_PASSWORD_RESET_FAILED:<오류 코드>`가 표시됩니다. 명령은 비밀번호, hash 또는 token을 출력하지 않습니다.
+4. 성공 메시지 `INITIAL_ADMIN_PASSWORD_RESET`과 종료 코드 0을 확인합니다. Runtime 실패는 `INITIAL_ADMIN_PASSWORD_RESET_FAILED:<오류 코드>`를 표시하고 종료 코드 1로 끝납니다. 잘못된 인자나 지원하지 않는 옵션은 명령 사용법인 `usage:`를 표시하고 종료 코드 2로 끝납니다. 명령은 비밀번호, hash 또는 token을 출력하지 않습니다.
 5. 성공하면 admin의 모든 기존 Session과 refresh family가 폐기됩니다. 브라우저에서 `admin/admin`으로 다시 로그인하고 `/password-change`에서 즉시 새 비밀번호를 설정합니다.
 
 명령은 고정된 보호 admin만 대상으로 하며 사용자 ID나 비밀번호 인자를 받지 않습니다. 실패 시 오류 코드를 운영 기록에 남기되 민감한 Runtime 설정을 함께 남기지 말고, 원인을 확인하기 전 반복 실행하지 않습니다.
@@ -152,7 +154,7 @@ Session이 만료되면 보호된 Source, 질문, Citation과 산출물은 숨�
 
 ### 5.3 보호 admin과 일반 사용자 접근 제한
 
-초기 admin 행에는 `이메일 없음`, `보호된 시스템 관리자`, `보호됨`이 표시되고 상태 변경 버튼이 비활성화됩니다. 보호된 admin의 중지 요청은 HTTP 409 `PROTECTED_ADMIN_ACCOUNT`로 거부됩니다. 보호 admin은 삭제 및 중지할 수 없습니다.
+초기 admin 행에는 `이메일 없음`, `보호된 시스템 관리자`, `보호됨`이 표시되고 상태 변경 버튼이 비활성화됩니다. 보호된 admin의 상태 변경 요청은 HTTP 409 `PROTECTED_ADMIN_ACCOUNT`로 거부됩니다. 보호 admin은 삭제 및 중지할 수 없습니다.
 
 일반 사용자는 `사용자 관리` 메뉴를 볼 수 없습니다. 일반 사용자가 `/admin`에 직접 접근하거나 관리자 API를 호출하면 HTTP 403 `FORBIDDEN`으로 거부되며 사용자 목록이 먼저 표시되지 않습니다.
 
