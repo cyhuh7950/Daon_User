@@ -47,7 +47,7 @@ test("기존 사용자 매뉴얼은 보호된 초기 관리자와 사용자 관�
       /재활성화/u,
       /보호됨/u,
       /일반 사용자.*\/admin.*403/u,
-      /보호(?:된)? admin.*상태 변경.*HTTP 409.*`PROTECTED_ADMIN_ACCOUNT`/su,
+      /보호(?:된)? admin.*중지 요청.*HTTP 409.*`PROTECTED_ADMIN_ACCOUNT`/su,
       /python -m daon_user_api\.admin_cli reset-initial-password/u,
       /INITIAL_ADMIN_PASSWORD_RESET/u,
       /runtime 실패.*`INITIAL_ADMIN_PASSWORD_RESET_FAILED:<오류 코드>`.*(?:exit|종료 코드) 1/isu,
@@ -55,6 +55,7 @@ test("기존 사용자 매뉴얼은 보호된 초기 관리자와 사용자 관�
       /비밀번호 변경 성공.*모든 기존 Session.*refresh family.*폐기.*`admin\/admin`.*즉시 무효/su,
       /Workspace.*Notebook.*Source.*Studio/su,
     ]) assert.match(markdown, required);
+    assert.doesNotMatch(markdown, /보호(?:된)? admin.*(?:모든 )?상태 변경 요청.*HTTP 409/su);
     assert.doesNotMatch(markdown, /##+ .*조직\s*(?:가입|관리|관리자)|설정.{0,30}조직\s*가입|\/organization(?:-admin|\/join)|(?:조직|organization).{0,50}(?:초대\s*코드|가입\s*신청|가입하기|관리\s*(?:화면|콘솔))/isu);
     assert.doesNotMatch(markdown, /(?:[A-Za-z]:\\|\/srv\/|\/opt\/|\/var\/www\/|DAON_CLOUD_DATABASE_DSN\s*=|postgres(?:ql)?:\/\/|argon2(?:id)?\$|Bearer\s+[A-Za-z0-9._~-]+)/u);
   }
