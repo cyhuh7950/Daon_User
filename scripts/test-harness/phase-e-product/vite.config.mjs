@@ -64,6 +64,7 @@ export default {
         user_id: "user-phase-e", tenant_id: "tenant-phase-e", workspace_id: "workspace-phase-e",
         session_id: "session-phase-e", device_id: "device-phase-e", client_kind: "web",
         delivery: "same_origin_secure_cookie", expires_at: "2026-08-21T04:00:00Z", recovery_operations: [],
+        password_change_required: false, is_system_admin: false,
         }, meta: { trace_id: "trace-phase-e" } });
         return sessionDelayMs > 0 ? setTimeout(send, sessionDelayMs) : send();
       }

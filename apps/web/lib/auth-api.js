@@ -44,6 +44,25 @@ export async function logoutCurrentSession(options = {}) {
   return Object.freeze({ status: body.data.status, replayed: body.data.replayed });
 }
 
+export async function changeCurrentPassword(currentPassword, newPassword, options = {}) {
+  if (typeof currentPassword !== "string" || typeof newPassword !== "string") throw new Error("PASSWORD_CHANGE_INPUT_INVALID");
+  const response = await (options.fetchImpl ?? fetch)("/bff/api/auth/password/change", {
+    method: "POST", credentials: "same-origin", cache: "no-store", headers: JSON_HEADERS,
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }), signal: options.signal,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const safeCode = new Set(["AUTHENTICATION_REQUIRED", "PASSWORD_POLICY_FAILED"]).has(body?.error?.code)
+      ? body.error.code : "PASSWORD_CHANGE_FAILED";
+    throw new Error(safeCode);
+  }
+  if (!exact(body, ["data", "meta"]) || !exact(body.data, ["status"]) || !exact(body.meta, ["trace_id"])
+      || body.data.status !== "password_changed" || typeof body.meta.trace_id !== "string" || !SAFE_TRACE_ID.test(body.meta.trace_id)) {
+    throw new Error("PASSWORD_CHANGE_RESPONSE_INVALID");
+  }
+  return Object.freeze({ status: body.data.status });
+}
+
 export const authApi = Object.freeze({
   signup(input) { return request("signup", input); },
   login(input) { return request("login", input); },

@@ -14,6 +14,7 @@ const CONTEXT_KEYS = Object.freeze([
 const SESSION_KEYS = Object.freeze([
   "user_id", "tenant_id", "workspace_id", "session_id", "device_id",
   "client_kind", "delivery", "expires_at", "recovery_operations",
+  "password_change_required", "is_system_admin",
 ]);
 
 function exact(value, required, optional = []) {
@@ -61,7 +62,9 @@ function validSession(value) {
     && Array.isArray(value.recovery_operations)
     && value.recovery_operations.length <= 32
     && new Set(value.recovery_operations).size === value.recovery_operations.length
-    && value.recovery_operations.every(safeId);
+    && value.recovery_operations.every(safeId)
+    && typeof value.password_change_required === "boolean"
+    && typeof value.is_system_admin === "boolean";
 }
 
 function validCitation(value) {

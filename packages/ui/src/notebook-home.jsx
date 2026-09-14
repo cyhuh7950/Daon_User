@@ -12,12 +12,12 @@ const SAFE_CREATE_ERRORS = new Set([
 const SAFE_DELETE_ERRORS = new Set(["NOTEBOOK_TITLE_CONFIRMATION_MISMATCH", "NOTEBOOK_ETAG_MISMATCH", "NOTEBOOK_DELETION_IN_PROGRESS", "DELETE_SHARED_DATA_BLOCKED", "RETENTION_HOLD"]);
 const safeText = (value) => typeof value === "string" ? value : "";
 
-function SettingsMenu({ onOpenSetting, onLogout }) {
+function SettingsMenu({ onOpenSetting, onLogout, showUserManagement }) {
   const [open, setOpen] = useState(false);
   return <div className="notebook-settings-wrap">
     <button className="notebook-toolbar-button" type="button" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((value) => !value)}>⚙ 설정</button>
     {open && <div className="notebook-settings-menu" role="menu" aria-label="공통 설정">
-      {[['screen', '화면 설정'], ['license', '라이선스'], ['manual', '사용자 설명서'], ['organization-join', '조직 가입']].map(([id, label]) =>
+      {[['screen', '화면 설정'], ['license', '라이선스'], ['manual', '사용자 설명서'], ...(showUserManagement ? [['user-management', '사용자 관리']] : [])].map(([id, label]) =>
         <button key={id} role="menuitem" type="button" onClick={() => { setOpen(false); onOpenSetting?.(id); }}>{label}</button>)}
       <button role="menuitem" type="button" onClick={() => { setOpen(false); onLogout?.(); }}>로그아웃</button>
     </div>}
@@ -79,7 +79,7 @@ function NotebookCard({ notebook, viewMode, onOpenNotebook, onRequestDelete }) {
     </button><button type="button" className="notebook-card-menu-button" aria-label={`${safeText(notebook.title)} 메뉴`} aria-expanded={menu} onClick={() => setMenu((v) => !v)}>⋮</button>{menu && <div className="notebook-card-menu" role="menu"><button role="menuitem" type="button" onClick={() => { setMenu(false); onRequestDelete?.(notebook); }}>노트북 삭제</button></div>}</div>;
 }
 
-export function NotebookHome({ state = "ready", notebooks = [], errorCode = null, onReload, onCreate, onDelete, onOpenNotebook, onOpenSetting, onLogout }) {
+export function NotebookHome({ state = "ready", notebooks = [], errorCode = null, showUserManagement = false, onReload, onCreate, onDelete, onOpenNotebook, onOpenSetting, onLogout }) {
   const surfaceRef = useRef(null);
   const createOpenerRef = useRef(null);
   const [search, setSearch] = useState("");
@@ -108,7 +108,7 @@ export function NotebookHome({ state = "ready", notebooks = [], errorCode = null
 
   return <main className="notebook-home" aria-busy={state === "loading"}>
     <div ref={surfaceRef} className="notebook-home-surface">
-    <header className="notebook-home-header"><a className="notebook-brand" href="#notebook-home" aria-label="Daon Notebook 홈"><span aria-hidden="true">◒</span>Daon Notebook</a><SettingsMenu onOpenSetting={onOpenSetting} onLogout={onLogout} /></header>
+    <header className="notebook-home-header"><a className="notebook-brand" href="#notebook-home" aria-label="Daon Notebook 홈"><span aria-hidden="true">◒</span>Daon Notebook</a><SettingsMenu onOpenSetting={onOpenSetting} onLogout={onLogout} showUserManagement={showUserManagement} /></header>
     <section id="notebook-home" className="notebook-home-content" aria-labelledby="notebook-home-title">
       <div className="notebook-home-intro"><div><p>MY NOTEBOOKS</p><h1 id="notebook-home-title">지식에서 결과까지, 하나의 Notebook에서</h1></div><button ref={createOpenerRef} className="notebook-create-button" type="button" onClick={() => setCreating(true)}>＋ 새 Notebook</button></div>
       <div className="notebook-home-tools">

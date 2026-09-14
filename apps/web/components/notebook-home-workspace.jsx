@@ -15,6 +15,7 @@ export function NotebookHomeWorkspace() {
   const [state, setState] = useState("loading");
   const [notebooks, setNotebooks] = useState([]);
   const [workspaceId, setWorkspaceId] = useState(null);
+  const [isSystemAdmin, setIsSystemAdmin] = useState(false);
   const [errorCode, setErrorCode] = useState(null);
 
   const conceal = useCallback(() => {
@@ -32,8 +33,13 @@ export function NotebookHomeWorkspace() {
     setErrorCode(null);
     try {
       const session = await getCurrentNotebookSession({ signal });
+      if (session.password_change_required) {
+        window.location.replace("/password-change");
+        return;
+      }
       const result = await listNotebooks(session.workspace_id, { signal });
       setWorkspaceId(session.workspace_id);
+      setIsSystemAdmin(session.is_system_admin);
       setNotebooks(result.data);
       setState("ready");
       reveal();
@@ -44,6 +50,7 @@ export function NotebookHomeWorkspace() {
         return;
       }
       setWorkspaceId(null);
+      setIsSystemAdmin(false);
       setNotebooks([]);
       setErrorCode(SAFE_ERRORS.has(error?.message) ? error.message : "NOTEBOOK_UNAVAILABLE");
       setState("error");
@@ -108,7 +115,7 @@ export function NotebookHomeWorkspace() {
       screen: "/settings/screen",
       license: "/settings/license",
       manual: "/settings/manual",
-      "organization-join": "/organization/join",
+      "user-management": "/admin",
     });
     const route = routes[settingId];
     if (route) window.location.assign(route);
@@ -133,6 +140,7 @@ export function NotebookHomeWorkspace() {
     state={state}
     notebooks={notebooks}
     errorCode={errorCode}
+    showUserManagement={isSystemAdmin}
     onReload={() => void load()}
     onCreate={handleCreate}
     onDelete={handleDelete}

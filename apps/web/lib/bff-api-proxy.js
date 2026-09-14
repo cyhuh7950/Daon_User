@@ -125,6 +125,11 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (segments.length === 3 && segments[0] === "auth" && segments[1] === "password" && segments[2] === "change") {
+    return method === "POST"
+      ? { path: "/api/v1/auth/password/change", query: null }
+      : { methodRejected: true };
+  }
   if (segments.length === 2 && segments[0] === "admin" && segments[1] === "users") {
     return method === "GET"
       ? { path: "/api/v1/admin/users", query: null }

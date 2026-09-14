@@ -86,7 +86,7 @@ test("Notebook Home session은 same-origin Web projection만 수용한다", asyn
       user_id: "user-1", tenant_id: "tenant-1", workspace_id: "workspace-1",
       session_id: "session-1", device_id: "device-1", client_kind: "web",
       delivery: "same_origin_secure_cookie", expires_at: "2026-08-16T09:00:00Z",
-      recovery_operations: [],
+      recovery_operations: [], password_change_required: false, is_system_admin: true,
     },
     meta: { trace_id: "trace-1" },
   };
@@ -102,6 +102,8 @@ test("Notebook Home session은 same-origin Web projection만 수용한다", asyn
   for (const data of [
     { ...valid.data, client_kind: "native" },
     { ...valid.data, delivery: "native_https_opaque_bearer" },
+    { ...valid.data, password_change_required: "false" },
+    { ...valid.data, is_system_admin: 1 },
     { ...valid.data, internal_policy: "blocked" },
   ]) {
     await assert.rejects(getCurrentNotebookSession({ fetchImpl: async () => new Response(JSON.stringify({ ...valid, data }), { status: 200 }) }), /SESSION_RESPONSE_INVALID/u);

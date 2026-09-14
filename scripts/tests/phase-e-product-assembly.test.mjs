@@ -17,7 +17,7 @@ test("root landing sends an existing authenticated session to Notebook Home", as
   const landing = await read("apps/web/components/auth-landing.jsx");
   assert.match(page, /AuthLanding/u);
   assert.match(landing, /getCurrentNotebookSession/u);
-  assert.match(landing, /window\.location\.replace\("\/notebooks"\)/u);
+  assert.match(landing, /session\.password_change_required\s*\?\s*"\/password-change"\s*:\s*"\/notebooks"/u);
   assert.match(landing, /AUTHENTICATION_REQUIRED/u);
   assert.doesNotMatch(landing, /localStorage|sessionStorage|document\.cookie|https?:\/\/|localhost|127\.0\.0\.1/iu);
 });
@@ -28,9 +28,36 @@ test("production exposes authenticated Notebook Home but no evidence harness rou
   assert.match(page, /NotebookHomeWorkspace/u);
   assert.match(client, /getCurrentNotebookSession/u);
   assert.match(client, /listNotebooks/u);
+  assert.match(client, /password_change_required/u);
+  assert.match(client, /window\.location\.replace\("\/password-change"\)/u);
   assert.match(client, /window\.location\.replace\("\/"\)/u);
   assert.match(client, /window\.location\.assign\(`\/notebooks\/\$\{encodeURIComponent\(notebookId\)\}`\)/u);
   assert.doesNotMatch(`${page}\n${client}`, /test-harness|fixture|localhost|127\.0\.0\.1/iu);
+});
+
+test("admin과 password-change routes는 조직 console 없이 보호된 독립 화면을 조립한다", async () => {
+  const [adminPage, passwordPage] = await Promise.all([
+    read("apps/web/app/admin/page.jsx"), read("apps/web/app/password-change/page.jsx"),
+  ]);
+  assert.match(adminPage, /AdminUserConsole/u);
+  assert.doesNotMatch(adminPage, /OrganizationAdminConsole|organization-admin/u);
+  assert.match(passwordPage, /PasswordChangeWorkspace/u);
+  for (const source of [adminPage, passwordPage]) {
+    assert.match(source, /cookies\(\)/u);
+    assert.match(source, /__Host-daon_session/u);
+    assert.match(source, /redirect\("\/"\)/u);
+  }
+});
+
+test("현재 Web 탐색은 organization admin과 join 링크를 노출하지 않는다", async () => {
+  const [home, adminConsole, organizationConsole] = await Promise.all([
+    read("packages/ui/src/notebook-home.jsx"),
+    read("apps/web/components/admin-user-console.jsx"),
+    read("apps/web/components/organization-admin-console.jsx"),
+  ]);
+  for (const source of [home, adminConsole, organizationConsole]) {
+    assert.doesNotMatch(source, /href=["']\/organization-admin|href=["']\/organization\/join|location\.(?:assign|replace)\(["']\/organization/u);
+  }
 });
 
 test("selected Notebook production route assembles only the approved scoped Context adapter", async () => {
@@ -38,6 +65,8 @@ test("selected Notebook production route assembles only the approved scoped Cont
   const client = await read("apps/web/components/notebook-product-workspace.jsx");
   assert.match(page, /NotebookProductWorkspace/u);
   assert.match(client, /getCurrentNotebookSession/u);
+  assert.match(client, /password_change_required/u);
+  assert.match(client, /window\.location\.replace\("\/password-change"\)/u);
   assert.match(client, /getNotebookContext/u);
   assert.match(client, /createNotebookContextWorkspaceAdapter/u);
   assert.match(client, /ActualWorkspace/u);

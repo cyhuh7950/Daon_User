@@ -35,6 +35,10 @@ export function NotebookProductWorkspace({ notebookId }) {
     setView((current) => ({ ...current, state: "loading", error: null }));
     try {
       const session = await getCurrentNotebookSession({ signal });
+      if (session.password_change_required) {
+        window.location.replace("/password-change");
+        return;
+      }
       const notebook = await getNotebook(session.workspace_id, notebookId, { signal });
       const selected = await getNotebookContext(session.workspace_id, notebookId, { signal });
       if (!signal?.aborted) setView({

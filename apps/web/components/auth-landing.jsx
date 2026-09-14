@@ -8,8 +8,8 @@ export function AuthLanding() {
   const [state, setState] = useState("checking");
   useEffect(() => {
     const controller = new AbortController();
-    getCurrentNotebookSession({ signal: controller.signal }).then(() => {
-      window.location.replace("/notebooks");
+    getCurrentNotebookSession({ signal: controller.signal }).then((session) => {
+      window.location.replace(session.password_change_required ? "/password-change" : "/notebooks");
     }).catch((error) => {
       if (controller.signal.aborted) return;
       setState(error?.message === "AUTHENTICATION_REQUIRED" ? "login" : "unavailable");
