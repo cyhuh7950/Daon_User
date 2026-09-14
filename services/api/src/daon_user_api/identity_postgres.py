@@ -31,6 +31,7 @@ _TABLES = (
     "refresh_families",
     "refresh_tokens",
     "session_audit_outbox",
+    "admin_audit_outbox",
     "oidc_transactions",
     "tenant_step_up_actions",
     "step_up_authorizations",

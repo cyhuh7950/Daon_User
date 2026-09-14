@@ -31,7 +31,7 @@ from argon2.exceptions import VerifyMismatchError
 from .audit import ActorType, AuditDuplicateEventError, AuditEventDraft, AuditOutcome
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SELF_LOGOUT_DISPATCH_LIMIT = 32
 SELF_LOGOUT_DISPATCH_SECONDS = 0.25
 PASSWORD_MIN_LENGTH = 12
@@ -437,6 +437,27 @@ class SqliteIdentityRepository:
           created_at TEXT NOT NULL,
           UNIQUE(session_id, action)
         );
+        CREATE TABLE IF NOT EXISTS admin_audit_outbox (
+          event_id TEXT PRIMARY KEY,
+          operation TEXT NOT NULL,
+          idempotency_scope TEXT,
+          request_fingerprint TEXT,
+          actor_id TEXT NOT NULL,
+          actor_type TEXT NOT NULL,
+          tenant_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          target_type TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          occurred_at TEXT NOT NULL,
+          trace_id TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          before_state TEXT,
+          after_state TEXT,
+          metadata_json TEXT NOT NULL,
+          delivered_at TEXT,
+          created_at TEXT NOT NULL,
+          UNIQUE(operation, idempotency_scope)
+        );
         CREATE TABLE IF NOT EXISTS oidc_transactions (
           transaction_id TEXT PRIMARY KEY,
           state_digest TEXT NOT NULL UNIQUE,
@@ -513,6 +534,19 @@ class SqliteIdentityRepository:
             CREATE TRIGGER IF NOT EXISTS session_audit_outbox_delete_blocked
             BEFORE DELETE ON session_audit_outbox
             BEGIN SELECT RAISE(ABORT, 'session_audit_outbox delete is blocked'); END;
+            CREATE TRIGGER IF NOT EXISTS admin_audit_outbox_intent_immutable
+            BEFORE UPDATE OF event_id,operation,idempotency_scope,request_fingerprint,actor_id,
+              actor_type,tenant_id,action,target_type,target_id,occurred_at,trace_id,
+              policy_version,before_state,after_state,metadata_json,created_at
+            ON admin_audit_outbox
+            BEGIN SELECT RAISE(ABORT, 'admin_audit_outbox intent is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS admin_audit_outbox_delivery_one_way
+            BEFORE UPDATE OF delivered_at ON admin_audit_outbox
+            WHEN NOT (OLD.delivered_at IS NULL AND NEW.delivered_at IS NOT NULL)
+            BEGIN SELECT RAISE(ABORT, 'admin_audit_outbox delivery is one-way'); END;
+            CREATE TRIGGER IF NOT EXISTS admin_audit_outbox_delete_blocked
+            BEFORE DELETE ON admin_audit_outbox
+            BEGIN SELECT RAISE(ABORT, 'admin_audit_outbox delete is blocked'); END;
             """
         )
         columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(users)")}
@@ -750,6 +784,56 @@ class SqliteIdentityRepository:
                 connection.close()
 
 
+def dispatch_admin_audit_outbox(
+    repository: SqliteIdentityRepository,
+    audit_store: object,
+    clock: Callable[[], datetime],
+    *,
+    event_id: str | None = None,
+) -> None:
+    """Best-effort projection of committed administrator audit intents."""
+    try:
+        with repository.transaction() as connection:
+            if event_id is None:
+                rows = connection.execute(
+                    "SELECT * FROM admin_audit_outbox WHERE delivered_at IS NULL "
+                    "ORDER BY created_at,event_id LIMIT 32"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM admin_audit_outbox WHERE event_id=? AND delivered_at IS NULL",
+                    (event_id,),
+                ).fetchall()
+    except IdentityError:
+        return
+    for row in rows:
+        try:
+            before = None if row["before_state"] is None else {"state": str(row["before_state"])}
+            after = None if row["after_state"] is None else {"state": str(row["after_state"])}
+            audit_store.append(AuditEventDraft(  # type: ignore[attr-defined]
+                event_id=str(row["event_id"]), occurred_at=_dt(str(row["occurred_at"])),
+                actor_id=str(row["actor_id"]), actor_type=ActorType(str(row["actor_type"])),
+                tenant_id=str(row["tenant_id"]), workspace_id=None,
+                action=str(row["action"]), target_type=str(row["target_type"]),
+                target_id=str(row["target_id"]), outcome=AuditOutcome.SUCCEEDED,
+                trace_id=str(row["trace_id"]), policy_version=str(row["policy_version"]),
+                before=before, after=after, metadata=json.loads(str(row["metadata_json"])),
+            ))
+        except AuditDuplicateEventError:
+            pass
+        except Exception:
+            continue
+        try:
+            with repository.transaction() as connection:
+                connection.execute(
+                    "UPDATE admin_audit_outbox SET delivered_at=? "
+                    "WHERE event_id=? AND delivered_at IS NULL",
+                    (_iso(_checked_utc(clock())), str(row["event_id"])),
+                )
+        except IdentityError:
+            continue
+
+
 class IdentityService:
     def __init__(
         self,
@@ -760,6 +844,7 @@ class IdentityService:
         clock: Callable[[], datetime],
         email_sender: EmailSender | None = None,
         step_up_token_key: bytes | None = None,
+        dispatch_pending_audits: bool = True,
     ) -> None:
         self._repository = repository
         self._audit_store = audit_store
@@ -768,7 +853,9 @@ class IdentityService:
         self._policies = tuple(oidc_policies)
         self._email_sender = email_sender or SmtpEmailSender.from_env()
         self._step_up_token_key = step_up_token_key or b"daon-test-step-up-key-v1"
-        self.dispatch_pending_self_logout_audits()
+        if dispatch_pending_audits:
+            self.dispatch_pending_self_logout_audits()
+            self.dispatch_pending_admin_audits()
 
     def _now(self) -> datetime:
         return _checked_utc(self._clock())
@@ -848,6 +935,11 @@ class IdentityService:
 
     def _project_self_logout_audit(self, session_id: str) -> None:
         self.dispatch_pending_self_logout_audits(session_id)
+
+    def dispatch_pending_admin_audits(self, event_id: str | None = None) -> None:
+        dispatch_admin_audit_outbox(
+            self._repository, self._audit_store, self._clock, event_id=event_id,
+        )
 
     def _issue_token(self, connection: sqlite3.Connection, *, table: str, user_id: str,
                      now: datetime, ttl: timedelta) -> str:
@@ -932,6 +1024,7 @@ class IdentityService:
         _checked_text(policy_version)
         now = self._now()
         replacement_digest = PASSWORD_HASHER.hash(INITIAL_ADMIN_PASSWORD)
+        event_id = _id("audit-admin-reset")
         with self._lock, self._repository.transaction() as connection:
             marker = connection.execute(
                 "SELECT marker_key FROM bootstrap_state WHERE marker_key=?",
@@ -954,18 +1047,21 @@ class IdentityService:
             revoke_user_sessions(
                 connection, user_id=INITIAL_ADMIN_USER_ID, updated_at=now,
             )
-            self._audit(
-                action="identity.initial_admin_password.reset",
-                outcome=AuditOutcome.SUCCEEDED,
-                trace_id=trace_id,
-                policy_version=policy_version,
-                tenant_id=INITIAL_ADMIN_TENANT_ID,
-                actor_id="server-console",
-                actor_type=ActorType.SYSTEM,
-                target_type="user",
-                target_id=INITIAL_ADMIN_USER_ID,
-                metadata={"reason_code": "SERVER_CONSOLE_RECOVERY"},
+            connection.execute(
+                "INSERT INTO admin_audit_outbox(event_id,operation,idempotency_scope,"
+                "request_fingerprint,actor_id,actor_type,tenant_id,action,target_type,"
+                "target_id,occurred_at,trace_id,policy_version,before_state,after_state,"
+                "metadata_json,delivered_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    event_id, "reset_initial_password", None, None, "server-console",
+                    ActorType.SYSTEM.value, INITIAL_ADMIN_TENANT_ID,
+                    "identity.initial_admin_password.reset", "user",
+                    INITIAL_ADMIN_USER_ID, _iso(now), trace_id, policy_version, None, None,
+                    json.dumps({"reason_code": "SERVER_CONSOLE_RECOVERY"}, sort_keys=True),
+                    None, _iso(now),
+                ),
             )
+        self.dispatch_pending_admin_audits(event_id)
 
     def _enforce_mail_rate_limit(self, connection: sqlite3.Connection, *, table: str,
                                  user_id: str, now: datetime) -> None:

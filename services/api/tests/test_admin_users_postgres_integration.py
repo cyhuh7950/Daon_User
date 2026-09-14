@@ -76,6 +76,13 @@ def test_postgres_admin_recovery_and_user_suspension_revoke_sessions() -> None:
             policy_version=POLICY_VERSION,
         )
         assert result.user.state == "suspended"
+        with repository.transaction() as connection:
+            intent = connection.execute(
+                "SELECT delivered_at,metadata_json FROM admin_audit_outbox "
+                "WHERE operation='change_user_state' AND target_id='postgres-user'"
+            ).fetchone()
+        assert intent["delivered_at"] is not None
+        assert "password" not in str(intent["metadata_json"]).lower()
         with pytest.raises(IdentityError) as revoked:
             identity.validate_access(
                 credentials.access_token,

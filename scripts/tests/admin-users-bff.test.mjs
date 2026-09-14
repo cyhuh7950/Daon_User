@@ -36,6 +36,21 @@ test("system user BFF maps only list and same-origin state PATCH", async () => {
       body: JSON.stringify({ state: "suspended" }),
     },
   ), ["admin", "users", "user-001", "state"]);
+  const crossOrigin = await proxy(new Request(
+    "https://app.example.com/bff/api/admin/users/user-001/state",
+    {
+      method: "PATCH",
+      headers: {
+        Origin: "https://attacker.example",
+        "Sec-Fetch-Site": "cross-site",
+        "Content-Type": "application/json",
+        "Idempotency-Key": "cross-origin-denied-0001",
+      },
+      body: JSON.stringify({ state: "suspended" }),
+    },
+  ), ["admin", "users", "user-001", "state"]);
+  assert.equal(crossOrigin.status, 403);
+  assert.equal(captured.length, 2);
   const deleteUser = await proxy(new Request(
     "https://app.example.com/bff/api/admin/users/user-001",
     { method: "DELETE", headers: { Origin: "https://app.example.com" } },

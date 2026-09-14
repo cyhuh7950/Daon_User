@@ -76,6 +76,30 @@ async def _system_admin_user_api_denies_normal_user_and_protects_admin(tmp_path:
         denied = await client.get("/api/v1/admin/users")
         assert denied.status_code == 403
         assert denied.json()["error"]["code"] == "FORBIDDEN"
+        denied_patch = await client.patch(
+            "/api/v1/admin/users/normal-user/state",
+            headers={
+                "Origin": "https://app.example.com",
+                "X-Daon-Bff-Transport": "internal",
+                "Idempotency-Key": "normal-user-denied-0001",
+            },
+            json={"state": "suspended"},
+        )
+        assert denied_patch.status_code == 403
+        assert denied_patch.json()["error"]["code"] == "FORBIDDEN"
+        with dependencies.identity_repository.transaction() as connection:
+            assert connection.execute(
+                "SELECT state FROM users WHERE user_id='normal-user'"
+            ).fetchone()[0] == "active"
+            assert connection.execute(
+                "SELECT state FROM sessions WHERE user_id='normal-user'"
+            ).fetchone()[0] == "active"
+            assert connection.execute(
+                "SELECT COUNT(*) FROM admin_audit_outbox"
+            ).fetchone()[0] == 0
+        assert dependencies.audit_store.list(
+            tenant_id="normal-user", action="identity.user.state_changed"
+        ).items == ()
 
         admin_cookie = await _admin_cookie(client)
         client.cookies.set(WEB_SESSION_COOKIE, admin_cookie)

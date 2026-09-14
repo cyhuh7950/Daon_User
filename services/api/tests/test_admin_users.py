@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import os
 import secrets
+import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from daon_user_api.admin_users import AdminUserService
+from daon_user_api.audit import AuditEventStore
 from daon_user_api.identity import (
     DevicePlatform,
     IdentityError,
     IdentityPrincipal,
+    IdentityService,
     PASSWORD_HASHER,
 )
 from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
@@ -111,7 +115,7 @@ def test_reset_initial_password_is_atomic_and_revokes_all_sessions(tmp_path: Pat
     assert events[0].metadata == {"reason_code": "SERVER_CONSOLE_RECOVERY"}
 
 
-def test_reset_initial_password_rolls_back_when_audit_write_fails(tmp_path: Path) -> None:
+def test_reset_initial_password_commits_durable_intent_when_central_audit_fails(tmp_path: Path) -> None:
     class FailingAudit:
         def append(self, _draft: object) -> None:
             raise RuntimeError("audit unavailable")
@@ -120,25 +124,61 @@ def test_reset_initial_password_rolls_back_when_audit_write_fails(tmp_path: Path
         tmp_path / "identity.sqlite3", audit_store=FailingAudit()
     )
     identity.ensure_initial_admin()
-    before = None
+    identity.reset_initial_admin_password(
+        trace_id="trace-admin-recovery-durable", policy_version=POLICY_VERSION,
+    )
+    with repository.transaction() as connection:
+        assert connection.execute(
+            "SELECT password_change_required FROM users WHERE user_id='admin'"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM admin_audit_outbox WHERE delivered_at IS NULL"
+        ).fetchone()[0] == 1
+        assert "password" not in repr(connection.execute(
+            "SELECT metadata_json FROM admin_audit_outbox"
+        ).fetchall()).lower()
+    working_audit = AuditEventStore()
+    IdentityService(
+        repository=repository, audit_store=working_audit, oidc_policies=(), clock=_clock,
+    )
+    assert len(working_audit.list(
+        tenant_id="admin", action="identity.initial_admin_password.reset"
+    ).items) == 1
+    with repository.transaction() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM admin_audit_outbox WHERE delivered_at IS NOT NULL"
+        ).fetchone()[0] == 1
+
+
+def test_reset_initial_password_commit_failure_rolls_back_domain_and_intent(tmp_path: Path) -> None:
+    identity, repository, audit, _clock = create_service(tmp_path / "identity.sqlite3")
+    identity.ensure_initial_admin()
     with repository.transaction() as connection:
         before = tuple(connection.execute(
-            "SELECT password_digest,password_change_required FROM users WHERE user_id=?",
-            ("admin",),
+            "SELECT password_digest,password_change_required FROM users WHERE user_id='admin'"
         ).fetchone())
+    original_transaction = repository.transaction
 
+    @contextmanager
+    def failing_transaction():
+        with original_transaction() as connection:
+            yield connection
+            raise sqlite3.OperationalError("forced pre-commit failure")
+
+    repository.transaction = failing_transaction  # type: ignore[method-assign]
     with pytest.raises(IdentityError) as failed:
         identity.reset_initial_admin_password(
-            trace_id="trace-admin-recovery-rollback", policy_version=POLICY_VERSION,
+            trace_id="trace-admin-recovery-commit-failure", policy_version=POLICY_VERSION,
         )
-
-    assert failed.value.code == "AUDIT_WRITE_FAILED"
+    assert failed.value.code == "PERSISTENCE_UNAVAILABLE"
+    repository.transaction = original_transaction  # type: ignore[method-assign]
     with repository.transaction() as connection:
         after = tuple(connection.execute(
-            "SELECT password_digest,password_change_required FROM users WHERE user_id=?",
-            ("admin",),
+            "SELECT password_digest,password_change_required FROM users WHERE user_id='admin'"
         ).fetchone())
+        assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox").fetchone()[0] == 0
     assert after == before
+    assert audit.list(tenant_id="admin", action="identity.initial_admin_password.reset").items == ()
 
 
 def test_admin_user_state_protection_revocation_and_idempotency(tmp_path: Path) -> None:
@@ -248,6 +288,108 @@ def test_admin_user_state_protection_revocation_and_idempotency(tmp_path: Path) 
     assert relogin.user_id == "user-one"
 
 
+def test_state_change_commit_failure_rolls_back_domain_sessions_and_idempotency(tmp_path: Path) -> None:
+    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3")
+    identity.ensure_initial_admin()
+    password = secrets.token_urlsafe(24)
+    _add_local_user(repository, user_id="commit-target", password=password)
+    target = identity.local_login(
+        login_id="commit-target", password=password, platform=DevicePlatform.WEB,
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    service = AdminUserService(
+        repository=repository, audit_store=audit,
+        system_admin_user_ids=frozenset({"admin"}), clock=clock,
+    )
+    original_transaction = repository.transaction
+
+    @contextmanager
+    def failing_transaction():
+        with original_transaction() as connection:
+            yield connection
+            raise sqlite3.OperationalError("forced pre-commit failure")
+
+    repository.transaction = failing_transaction  # type: ignore[method-assign]
+    with pytest.raises(IdentityError) as failed:
+        service.change_state(
+            IdentityPrincipal("admin", "admin-session", "admin-device", "admin"),
+            user_id="commit-target", state="suspended",
+            idempotency_key="commit-failure-target-0001", trace_id=TRACE_ID,
+            policy_version=POLICY_VERSION,
+        )
+    assert failed.value.code == "PERSISTENCE_UNAVAILABLE"
+    repository.transaction = original_transaction  # type: ignore[method-assign]
+    identity.validate_access(target.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+    with repository.transaction() as connection:
+        assert connection.execute("SELECT state FROM users WHERE user_id='commit-target'").fetchone()[0] == "active"
+        assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox").fetchone()[0] == 0
+    assert audit.list(tenant_id="admin", action="identity.user.state_changed").items == ()
+
+
+def test_state_change_central_audit_failure_keeps_retryable_idempotent_intent(tmp_path: Path) -> None:
+    class FailingAudit:
+        def append(self, _draft: object) -> None:
+            raise RuntimeError("audit unavailable")
+
+    identity, repository, _audit, clock = create_service(tmp_path / "identity.sqlite3")
+    identity.ensure_initial_admin()
+    _add_local_user(repository, user_id="durable-target", password=secrets.token_urlsafe(24))
+    service = AdminUserService(
+        repository=repository, audit_store=FailingAudit(),
+        system_admin_user_ids=frozenset({"admin"}), clock=clock,
+    )
+    principal = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+    changed = service.change_state(
+        principal, user_id="durable-target", state="suspended",
+        idempotency_key="durable-target-state-0001", trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    assert changed.replayed is False
+    with repository.transaction() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM admin_audit_outbox WHERE delivered_at IS NULL"
+        ).fetchone()[0] == 1
+    working_audit = AuditEventStore()
+    retrying = AdminUserService(
+        repository=repository, audit_store=working_audit,
+        system_admin_user_ids=frozenset({"admin"}), clock=clock,
+    )
+    replay = retrying.change_state(
+        principal, user_id="durable-target", state="suspended",
+        idempotency_key="durable-target-state-0001", trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    assert replay.replayed is True
+    assert len(working_audit.list(tenant_id="admin", action="identity.user.state_changed").items) == 1
+
+
+def test_corrupted_initial_admin_is_never_changed_by_second_system_admin(tmp_path: Path) -> None:
+    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3")
+    identity.ensure_initial_admin()
+    session = identity.local_login(
+        login_id="admin", password="admin", platform=DevicePlatform.WEB,
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    with repository.transaction() as connection:
+        connection.execute("UPDATE users SET subject='corrupted-admin' WHERE user_id='admin'")
+    service = AdminUserService(
+        repository=repository, audit_store=audit,
+        system_admin_user_ids=frozenset({"admin", "second-admin"}), clock=clock,
+    )
+    with pytest.raises(IdentityError) as conflict:
+        service.change_state(
+            IdentityPrincipal("second-admin", "second-session", "second-device", "second"),
+            user_id="admin", state="suspended", idempotency_key="corrupt-admin-guard-0001",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+    assert conflict.value.code == "INITIAL_ADMIN_CONFLICT"
+    with repository.transaction() as connection:
+        assert connection.execute("SELECT state FROM users WHERE user_id='admin'").fetchone()[0] == "active"
+        assert connection.execute("SELECT state FROM sessions WHERE session_id=?", (session.session_id,)).fetchone()[0] == "active"
+        assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox").fetchone()[0] == 0
+    assert audit.list(tenant_id="second", action="identity.user.state_changed").items == ()
+
+
 def test_admin_cli_uses_fixed_target_and_never_echoes_extra_arguments(tmp_path: Path) -> None:
     database_path = tmp_path / "runtime.sqlite3"
     identity, repository, _audit, _clock = create_service(database_path)
@@ -310,3 +452,50 @@ def test_admin_cli_fails_closed_when_canonical_admin_is_missing(tmp_path: Path) 
     assert completed.returncode == 1
     assert completed.stdout == ""
     assert completed.stderr == "INITIAL_ADMIN_PASSWORD_RESET_FAILED:INITIAL_ADMIN_MISSING\n"
+
+
+@pytest.mark.parametrize("kind", ["absent", "empty"])
+def test_admin_cli_empty_database_fails_without_mutation(tmp_path: Path, kind: str) -> None:
+    database_path = tmp_path / "empty.sqlite3"
+    if kind == "empty":
+        database_path.touch()
+    before = database_path.read_bytes() if database_path.exists() else None
+    before_entries = {path.name for path in tmp_path.iterdir()}
+    environment = os.environ.copy()
+    environment.update({
+        "DAON_RUNTIME_PROFILE": "development",
+        "DAON_API_DATABASE_PATH": str(database_path),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+    })
+    completed = subprocess.run(
+        [sys.executable, "-m", "daon_user_api.admin_cli", "reset-initial-password"],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    assert completed.returncode == 1
+    assert completed.stderr == "INITIAL_ADMIN_PASSWORD_RESET_FAILED:INITIAL_ADMIN_MISSING\n"
+    assert (database_path.read_bytes() if database_path.exists() else None) == before
+    assert {path.name for path in tmp_path.iterdir()} == before_entries
+
+
+def test_admin_cli_canonical_mismatch_fails_without_mutation(tmp_path: Path) -> None:
+    database_path = tmp_path / "mismatch.sqlite3"
+    identity, repository, _audit, _clock = create_service(database_path)
+    identity.ensure_initial_admin()
+    with repository.transaction() as connection:
+        connection.execute("UPDATE users SET subject='mismatch' WHERE user_id='admin'")
+    repository.close()
+    before = database_path.read_bytes()
+    before_entries = {path.name for path in tmp_path.iterdir()}
+    environment = os.environ.copy()
+    environment.update({
+        "DAON_RUNTIME_PROFILE": "development", "DAON_API_DATABASE_PATH": str(database_path),
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+    })
+    completed = subprocess.run(
+        [sys.executable, "-m", "daon_user_api.admin_cli", "reset-initial-password"],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    assert completed.returncode == 1
+    assert completed.stderr == "INITIAL_ADMIN_PASSWORD_RESET_FAILED:INITIAL_ADMIN_CONFLICT\n"
+    assert database_path.read_bytes() == before
+    assert {path.name for path in tmp_path.iterdir()} == before_entries
