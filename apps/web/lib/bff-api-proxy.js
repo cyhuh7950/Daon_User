@@ -125,6 +125,19 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (segments.length === 2 && segments[0] === "admin" && segments[1] === "users") {
+    return method === "GET"
+      ? { path: "/api/v1/admin/users", query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "admin" && segments[1] === "users"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "state"
+  ) {
+    return method === "PATCH"
+      ? { path: `/api/v1/admin/users/${encodeURIComponent(segments[2])}/state`, query: null }
+      : { methodRejected: true };
+  }
   // Organization workflow and administrator console contracts. The browser
   // only sees /bff/api; the internal /api/v1 origin remains server-side.
   if (segments.length === 3 && segments[0] === "organization"

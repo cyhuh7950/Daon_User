@@ -1,4 +1,8 @@
-from daon_user_api.identity_postgres import _CursorProxy, _PostgresCompatConnection
+from daon_user_api.identity_postgres import (
+    PostgresIdentityRepository,
+    _CursorProxy,
+    _PostgresCompatConnection,
+)
 from daon_user_api.postgres_adapters import PostgresCompatConnection, _compat_row
 import psycopg
 
@@ -25,6 +29,14 @@ def test_sql_maps_bootstrap_marker_and_password_change_state() -> None:
     assert forced_state == (
         "UPDATE identity_users SET password_change_required=FALSE WHERE user_id=%s"
     )
+
+
+def test_postgres_identity_state_maps_public_suspended_to_existing_disabled_value() -> None:
+    repository = PostgresIdentityRepository.__new__(PostgresIdentityRepository)
+
+    assert repository.user_state_for_storage("suspended") == "disabled"
+    assert repository.user_state_for_api("disabled") == "suspended"
+    assert repository.user_state_for_storage("active") == "active"
 
 
 def test_sql_maps_begin_immediate() -> None:

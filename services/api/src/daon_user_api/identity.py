@@ -298,6 +298,21 @@ def is_protected_initial_admin_record(row: IdentityRow) -> bool:
         return False
 
 
+def revoke_user_sessions(
+    connection: sqlite3.Connection, *, user_id: str, updated_at: datetime,
+) -> None:
+    """Revoke every access session and refresh family for one persisted user."""
+    connection.execute(
+        "UPDATE sessions SET state='revoked',updated_at=? WHERE user_id=?",
+        (_iso(updated_at), user_id),
+    )
+    connection.execute(
+        "UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id IN "
+        "(SELECT session_id FROM sessions WHERE user_id=?)",
+        (_iso(updated_at), user_id),
+    )
+
+
 class SqliteIdentityRepository:
     """Injected-path, transactional SQLite adapter with restart-safe IAM state."""
 
@@ -320,6 +335,12 @@ class SqliteIdentityRepository:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
         return connection
+
+    def user_state_for_storage(self, state: str) -> str:
+        return state
+
+    def user_state_for_api(self, state: str) -> str:
+        return state
 
     def _create_schema(self, connection: sqlite3.Connection) -> None:
         schema = """
@@ -723,7 +744,7 @@ class SqliteIdentityRepository:
                     "user_id": str(row["user_id"]),
                     "login_id": None if row["login_id"] is None else str(row["login_id"]),
                     "email": None if row["email"] is None else str(row["email"]),
-                    "state": str(row["state"]),
+                    "state": self.user_state_for_api(str(row["state"])),
                 } for row in rows)
             finally:
                 connection.close()
@@ -772,10 +793,15 @@ class IdentityService:
         policy_version: str, tenant_id: str, actor_id: str = "anonymous",
         target_type: str = "identity", target_id: str = "identity-public",
         metadata: dict[str, object] | None = None,
+        actor_type: ActorType | None = None,
     ) -> None:
         draft = AuditEventDraft(
             event_id=_id("audit"), occurred_at=self._now(), actor_id=actor_id,
-            actor_type=ActorType.USER if actor_id != "anonymous" else ActorType.SYSTEM,
+            actor_type=(
+                actor_type
+                if actor_type is not None
+                else ActorType.USER if actor_id != "anonymous" else ActorType.SYSTEM
+            ),
             tenant_id=tenant_id, workspace_id=None, action=action,
             target_type=target_type, target_id=target_id, outcome=outcome,
             trace_id=_checked_text(trace_id), policy_version=_checked_text(policy_version),
@@ -899,6 +925,47 @@ class IdentityService:
             if not is_protected_initial_admin_record(existing):
                 raise IdentityError("INITIAL_ADMIN_CONFLICT", 503)
             return INITIAL_ADMIN_USER_ID
+
+    def reset_initial_admin_password(self, *, trace_id: str, policy_version: str) -> None:
+        """Restore only the canonical initial admin to its forced-change state."""
+        _checked_text(trace_id)
+        _checked_text(policy_version)
+        now = self._now()
+        replacement_digest = PASSWORD_HASHER.hash(INITIAL_ADMIN_PASSWORD)
+        with self._lock, self._repository.transaction() as connection:
+            marker = connection.execute(
+                "SELECT marker_key FROM bootstrap_state WHERE marker_key=?",
+                (INITIAL_ADMIN_BOOTSTRAP_MARKER,),
+            ).fetchone()
+            existing = connection.execute(
+                "SELECT user_id,issuer,subject,login_id,email,password_digest,"
+                "password_change_required,state FROM users WHERE user_id=?",
+                (INITIAL_ADMIN_USER_ID,),
+            ).fetchone()
+            if marker is None or existing is None:
+                raise IdentityError("INITIAL_ADMIN_MISSING", 503)
+            if not is_protected_initial_admin_record(existing):
+                raise IdentityError("INITIAL_ADMIN_CONFLICT", 503)
+            connection.execute(
+                "UPDATE users SET password_digest=?,password_change_required=TRUE "
+                "WHERE user_id=?",
+                (replacement_digest, INITIAL_ADMIN_USER_ID),
+            )
+            revoke_user_sessions(
+                connection, user_id=INITIAL_ADMIN_USER_ID, updated_at=now,
+            )
+            self._audit(
+                action="identity.initial_admin_password.reset",
+                outcome=AuditOutcome.SUCCEEDED,
+                trace_id=trace_id,
+                policy_version=policy_version,
+                tenant_id=INITIAL_ADMIN_TENANT_ID,
+                actor_id="server-console",
+                actor_type=ActorType.SYSTEM,
+                target_type="user",
+                target_id=INITIAL_ADMIN_USER_ID,
+                metadata={"reason_code": "SERVER_CONSOLE_RECOVERY"},
+            )
 
     def _enforce_mail_rate_limit(self, connection: sqlite3.Connection, *, table: str,
                                  user_id: str, now: datetime) -> None:
@@ -1357,14 +1424,8 @@ class IdentityService:
                 "UPDATE users SET password_digest=?,password_change_required=FALSE WHERE user_id=?",
                 (PASSWORD_HASHER.hash(replacement), str(principal["user_id"])),
             )
-            connection.execute(
-                "UPDATE sessions SET state='revoked',updated_at=? WHERE user_id=?",
-                (_iso(now), str(principal["user_id"])),
-            )
-            connection.execute(
-                "UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id IN "
-                "(SELECT session_id FROM sessions WHERE user_id=?)",
-                (_iso(now), str(principal["user_id"])),
+            revoke_user_sessions(
+                connection, user_id=str(principal["user_id"]), updated_at=now,
             )
             self._audit(
                 action="identity.password.changed",

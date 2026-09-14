@@ -126,3 +126,9 @@ class PostgresIdentityRepository(SqliteIdentityRepository):
 
     def _connect(self) -> _PostgresCompatConnection:
         return _PostgresCompatConnection(self._dsn)
+
+    def user_state_for_storage(self, state: str) -> str:
+        return "disabled" if state == "suspended" else state
+
+    def user_state_for_api(self, state: str) -> str:
+        return "suspended" if state == "disabled" else state
