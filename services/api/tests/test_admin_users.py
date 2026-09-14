@@ -5,6 +5,8 @@ import secrets
 import sqlite3
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from daon_user_api.identity import (
     IdentityPrincipal,
     IdentityService,
     PASSWORD_HASHER,
+    SqliteIdentityRepository,
 )
 from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
 
@@ -388,6 +391,134 @@ def test_corrupted_initial_admin_is_never_changed_by_second_system_admin(tmp_pat
         assert connection.execute("SELECT state FROM sessions WHERE session_id=?", (session.session_id,)).fetchone()[0] == "active"
         assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox").fetchone()[0] == 0
     assert audit.list(tenant_id="second", action="identity.user.state_changed").items == ()
+
+
+def test_concurrent_same_idempotency_key_converges_and_mutates_once_sqlite(tmp_path: Path) -> None:
+    database_path = tmp_path / "concurrent.sqlite3"
+    identity, first_repository, audit, base_clock = create_service(database_path)
+    identity.ensure_initial_admin()
+    password = secrets.token_urlsafe(24)
+    _add_local_user(first_repository, user_id="concurrent-target", password=password)
+    target = identity.local_login(
+        login_id="concurrent-target", password=password, platform=DevicePlatform.WEB,
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    with first_repository.transaction() as connection:
+        connection.execute(
+            "INSERT INTO refresh_families(family_id,session_id,state,created_at,updated_at) "
+            "VALUES (?,?,?,?,?)",
+            ("family-concurrent", target.session_id, "active", "2026-07-29T00:00:00+00:00", "2026-07-29T00:00:00+00:00"),
+        )
+        connection.execute("CREATE TABLE concurrency_probe(kind TEXT PRIMARY KEY,count INTEGER NOT NULL)")
+        connection.execute("INSERT INTO concurrency_probe VALUES ('state',0),('session',0),('refresh',0)")
+        connection.execute(
+            "CREATE TRIGGER count_state_change AFTER UPDATE OF state ON users "
+            "WHEN OLD.state<>NEW.state BEGIN UPDATE concurrency_probe SET count=count+1 WHERE kind='state'; END"
+        )
+        connection.execute(
+            "CREATE TRIGGER count_session_revoke AFTER UPDATE OF state ON sessions "
+            "WHEN OLD.state='active' AND NEW.state='revoked' BEGIN UPDATE concurrency_probe SET count=count+1 WHERE kind='session'; END"
+        )
+        connection.execute(
+            "CREATE TRIGGER count_refresh_revoke AFTER UPDATE OF state ON refresh_families "
+            "WHEN OLD.state='active' AND NEW.state='revoked' BEGIN UPDATE concurrency_probe SET count=count+1 WHERE kind='refresh'; END"
+        )
+    second_repository = SqliteIdentityRepository(database_path)
+    barrier = threading.Barrier(2)
+    clock_state = threading.local()
+
+    def concurrent_clock():
+        if not getattr(clock_state, "synchronized", False):
+            clock_state.synchronized = True
+            barrier.wait(timeout=5)
+        return base_clock()
+
+    services = tuple(
+        AdminUserService(
+            repository=repository, audit_store=audit,
+            system_admin_user_ids=frozenset({"admin"}), clock=concurrent_clock,
+        )
+        for repository in (first_repository, second_repository)
+    )
+    principal = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    service.change_state, principal, user_id="concurrent-target",
+                    state="suspended", idempotency_key="concurrent-same-key-0001",
+                    trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+                )
+                for service in services
+            ]
+            results = [future.result(timeout=10) for future in futures]
+        assert sorted(result.replayed for result in results) == [False, True]
+        assert {result.user.state for result in results} == {"suspended"}
+        with first_repository.transaction() as connection:
+            assert dict(connection.execute("SELECT kind,count FROM concurrency_probe")) == {
+                "state": 1, "session": 1, "refresh": 1,
+            }
+            assert connection.execute(
+                "SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='change_user_state'"
+            ).fetchone()[0] == 1
+        assert len(audit.list(tenant_id="admin", action="identity.user.state_changed").items) == 1
+    finally:
+        second_repository.close()
+
+
+def test_concurrent_reused_key_with_different_fingerprint_fails_closed_sqlite(tmp_path: Path) -> None:
+    database_path = tmp_path / "concurrent-reused.sqlite3"
+    identity, first_repository, audit, base_clock = create_service(database_path)
+    identity.ensure_initial_admin()
+    _add_local_user(first_repository, user_id="target-a", password=secrets.token_urlsafe(24))
+    _add_local_user(first_repository, user_id="target-b", password=secrets.token_urlsafe(24))
+    second_repository = SqliteIdentityRepository(database_path)
+    barrier = threading.Barrier(2)
+    clock_state = threading.local()
+
+    def concurrent_clock():
+        if not getattr(clock_state, "synchronized", False):
+            clock_state.synchronized = True
+            barrier.wait(timeout=5)
+        return base_clock()
+
+    services = tuple(
+        AdminUserService(
+            repository=repository, audit_store=audit,
+            system_admin_user_ids=frozenset({"admin"}), clock=concurrent_clock,
+        )
+        for repository in (first_repository, second_repository)
+    )
+    principal = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    service.change_state, principal, user_id=target, state="suspended",
+                    idempotency_key="concurrent-reused-key-0001", trace_id=TRACE_ID,
+                    policy_version=POLICY_VERSION,
+                )
+                for service, target in zip(services, ("target-a", "target-b"), strict=True)
+            ]
+            outcomes = []
+            for future in futures:
+                try:
+                    outcomes.append(future.result(timeout=10))
+                except IdentityError as error:
+                    outcomes.append(error)
+        assert sum(isinstance(item, IdentityError) and item.code == "IDEMPOTENCY_KEY_REUSED" for item in outcomes) == 1
+        assert sum(not isinstance(item, IdentityError) for item in outcomes) == 1
+        with first_repository.transaction() as connection:
+            states = [row[0] for row in connection.execute(
+                "SELECT state FROM users WHERE user_id IN ('target-a','target-b') ORDER BY user_id"
+            ).fetchall()]
+            assert states.count("suspended") == 1
+            assert connection.execute(
+                "SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='change_user_state'"
+            ).fetchone()[0] == 1
+        assert len(audit.list(tenant_id="admin", action="identity.user.state_changed").items) == 1
+    finally:
+        second_repository.close()
 
 
 def test_admin_cli_uses_fixed_target_and_never_echoes_extra_arguments(tmp_path: Path) -> None:

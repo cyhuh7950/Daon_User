@@ -104,12 +104,7 @@ class AdminUserService:
         now = self._clock()
         dispatch_admin_audit_outbox(self._repository, self._audit_store, self._clock)
         with self._repository.transaction() as connection:
-            prior = connection.execute(
-                "SELECT request_fingerprint,target_id,after_state FROM admin_audit_outbox "
-                "WHERE operation=? AND idempotency_scope=?",
-                ("change_user_state", idempotency_scope),
-            ).fetchone()
-            if prior is not None:
+            def replay_from(prior: Mapping[str, object]) -> AdminUserStateResult:
                 if (
                     prior["request_fingerprint"] != fingerprint
                     or prior["target_id"] != user_id
@@ -122,6 +117,14 @@ class AdminUserService:
                 if row is None:
                     raise IdentityError("USER_NOT_FOUND", 404)
                 return AdminUserStateResult(self._view(row, state=state), replayed=True)
+
+            prior = connection.execute(
+                "SELECT request_fingerprint,target_id,after_state FROM admin_audit_outbox "
+                "WHERE operation=? AND idempotency_scope=?",
+                ("change_user_state", idempotency_scope),
+            ).fetchone()
+            if prior is not None:
+                return replay_from(prior)
 
             row = connection.execute(
                 "SELECT user_id,issuer,subject,login_id,email,password_digest,"
@@ -138,17 +141,12 @@ class AdminUserService:
             if state == "suspended" and user_id == principal.user_id:
                 raise IdentityError("PROTECTED_ADMIN_ACCOUNT", 409)
             before_state = self._repository.user_state_for_api(str(row["state"]))
-            connection.execute(
-                "UPDATE users SET state=? WHERE user_id=?",
-                (self._repository.user_state_for_storage(state), user_id),
-            )
-            if before_state != state:
-                revoke_user_sessions(connection, user_id=user_id, updated_at=now)
-            connection.execute(
+            reservation = connection.execute(
                 "INSERT INTO admin_audit_outbox(event_id,operation,idempotency_scope,"
                 "request_fingerprint,actor_id,actor_type,tenant_id,action,target_type,"
                 "target_id,occurred_at,trace_id,policy_version,before_state,after_state,"
-                "metadata_json,delivered_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "metadata_json,delivered_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(operation,idempotency_scope) DO NOTHING RETURNING event_id",
                 (
                     event_id, "change_user_state", idempotency_scope, fingerprint,
                     principal.user_id, ActorType.USER.value, principal.tenant_id,
@@ -160,7 +158,22 @@ class AdminUserService:
                     }, sort_keys=True),
                     None, _iso(now),
                 ),
+            ).fetchone()
+            if reservation is None:
+                winner = connection.execute(
+                    "SELECT request_fingerprint,target_id,after_state FROM admin_audit_outbox "
+                    "WHERE operation=? AND idempotency_scope=?",
+                    ("change_user_state", idempotency_scope),
+                ).fetchone()
+                if winner is None:
+                    raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+                return replay_from(winner)
+            connection.execute(
+                "UPDATE users SET state=? WHERE user_id=?",
+                (self._repository.user_state_for_storage(state), user_id),
             )
+            if before_state != state:
+                revoke_user_sessions(connection, user_id=user_id, updated_at=now)
             result = AdminUserStateResult(self._view(row, state=state), replayed=False)
         dispatch_admin_audit_outbox(
             self._repository, self._audit_store, self._clock, event_id=event_id,
