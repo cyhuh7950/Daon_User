@@ -174,7 +174,11 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             set(response.json()["data"]),
-            {"user_id", "tenant_id", "workspace_id", "session_id", "device_id", "client_kind", "delivery", "expires_at", "recovery_operations"},
+            {
+                "user_id", "tenant_id", "workspace_id", "session_id", "device_id",
+                "client_kind", "delivery", "expires_at", "recovery_operations",
+                "password_change_required", "is_system_admin",
+            },
         )
 
     async def test_notebook_create_list_get_update_title_contract(self) -> None:

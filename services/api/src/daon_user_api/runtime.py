@@ -248,7 +248,7 @@ class RuntimeSettings:
     request_timeout_seconds: float = 30.0
     drain_timeout_seconds: float = 10.0
     dev_auth_bypass: bool = False
-    system_admin_user_ids: frozenset[str] = frozenset()
+    system_admin_user_ids: frozenset[str] = frozenset({"admin"})
 
     def __post_init__(self) -> None:
         if self.profile not in {"test", "development", "production"}:
@@ -369,7 +369,12 @@ class RuntimeSettings:
             ),
             dev_auth_bypass=os.environ.get("DAON_DEV_AUTH_BYPASS", "false").lower() == "true",
             system_admin_user_ids=frozenset(
-                value.strip() for value in os.environ.get("DAON_SYSTEM_ADMIN_USER_IDS", "").split(",") if value.strip()
+                {"admin"}
+                | {
+                    value.strip()
+                    for value in os.environ.get("DAON_SYSTEM_ADMIN_USER_IDS", "").split(",")
+                    if value.strip()
+                }
             ),
         )
 
@@ -540,6 +545,12 @@ class IdentifierBody(BaseModel):
 class PasswordResetConfirmBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     token: str
+    new_password: str
+
+
+class PasswordChangeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_password: str
     new_password: str
 
 
@@ -921,6 +932,7 @@ def _domain_error(error: IdentityError | AuthorizationError) -> tuple[int, str, 
     safe_special = {
         "CURRENT_ACCESS_DENIED", "STEP_UP_REQUIRED", "VERSION_CONFLICT",
         "EMAIL_DELIVERY_UNAVAILABLE", "CSRF_VALIDATION_FAILED",
+        "PASSWORD_CHANGE_REQUIRED",
     }
     return status, error.code if error.code in safe_special else "INVALID_REQUEST", status >= 500
 
@@ -1564,6 +1576,27 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     body = await request.body()
                     if len(body) > dependencies.settings.max_body_bytes:
                         return _error_response(413, "REQUEST_TOO_LARGE", trace_id)
+            allowed_restricted_request = (request.method, request.url.path) in {
+                ("GET", "/api/v1/session"),
+                ("POST", "/api/v1/auth/password/change"),
+                ("POST", "/api/v1/session/logout"),
+            }
+            if not is_health and not allowed_restricted_request:
+                try:
+                    restricted_token, restricted_kind = _credential(request)
+                    restricted_view = dependencies.identity_service.describe_access(
+                        restricted_token,
+                        trace_id=trace_id,
+                        policy_version=dependencies.settings.policy_version,
+                    )
+                except IdentityError:
+                    restricted_view = None
+                if (
+                    restricted_view is not None
+                    and restricted_view.client_kind is restricted_kind
+                    and restricted_view.password_change_required
+                ):
+                    return _error_response(403, "PASSWORD_CHANGE_REQUIRED", trace_id)
             if (
                 dependencies.organization_repository is not None
                 and request.url.path.startswith("/api/v1/workspaces/")
@@ -1910,6 +1943,28 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def password_reset_confirm(body: PasswordResetConfirmBody, request: Request) -> dict[str, object]:
         dependencies.identity_service.confirm_password_reset(token=body.token, new_password=body.new_password, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
         return {"data": {"status": "reset"}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.post("/api/v1/auth/password/change")
+    async def change_current_password(body: PasswordChangeBody, request: Request) -> JSONResponse:
+        _require_validated_web_csrf(request, dependencies.settings)
+        token, expected_kind = _credential(request)
+        if expected_kind is not ClientKind.WEB:
+            raise IdentityError("ACCESS_INVALID", 401)
+        dependencies.identity_service.change_current_password(
+            access_token=token,
+            current_password=body.current_password,
+            new_password=body.new_password,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        response = JSONResponse({
+            "data": {"status": "password_changed"},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+        response.delete_cookie(
+            WEB_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax",
+        )
+        return response
 
     @app.post("/api/v1/auth/login")
     async def login(body: LoginBody, request: Request) -> JSONResponse:
@@ -3087,7 +3142,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     "workspace_id": workspace_id, "session_id": principal.session_id,
                     "device_id": principal.device_id, "client_kind": ClientKind.WEB.value,
                     "delivery": "same_origin_secure_cookie", "expires_at": "2099-01-01T00:00:00Z",
-                    "recovery_operations": [],
+                    "recovery_operations": [], "password_change_required": False,
+                    "is_system_admin": principal.user_id in dependencies.settings.system_admin_user_ids,
                 },
                 "meta": {"trace_id": request.state.trace_id},
             }
@@ -3135,6 +3191,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 "delivery": "same_origin_secure_cookie" if view.client_kind is ClientKind.WEB else "native_https_opaque_bearer",
                 "expires_at": view.expires_at.isoformat().replace("+00:00", "Z"),
                 "recovery_operations": recovery_operations,
+                "password_change_required": view.password_change_required,
+                "is_system_admin": principal.user_id in dependencies.settings.system_admin_user_ids,
             },
             "meta": {"trace_id": request.state.trace_id},
         }
@@ -4740,6 +4798,17 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         oidc_policies=(),
         clock=lambda: datetime.now(timezone.utc),
         step_up_token_key=step_up_token_key,
+    )
+    identity_service.ensure_initial_admin()
+    authorization_repository.bootstrap_workspace(
+        tenant_id="admin",
+        workspace_id=_personal_workspace_id("admin"),
+        owner_user_id="admin",
+        owner_role=Role.PERSONAL_OWNER,
+        workspace_kind="personal",
+        data_area="cloud_sync",
+        cost_limit_cents=1000,
+        now=datetime.now(timezone.utc),
     )
     authorization_service = AuthorizationService(
         repository=authorization_repository,

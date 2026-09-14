@@ -31,11 +31,14 @@ from argon2.exceptions import VerifyMismatchError
 from .audit import ActorType, AuditDuplicateEventError, AuditEventDraft, AuditOutcome
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SELF_LOGOUT_DISPATCH_LIMIT = 32
 SELF_LOGOUT_DISPATCH_SECONDS = 0.25
 PASSWORD_MIN_LENGTH = 12
 PASSWORD_HASHER = PasswordHasher()
+INITIAL_ADMIN_USER_ID = "admin"
+INITIAL_ADMIN_TENANT_ID = "admin"
+INITIAL_ADMIN_PASSWORD = "admin"
 MAIL_REQUEST_COOLDOWN = timedelta(seconds=60)
 MAIL_REQUEST_WINDOW = timedelta(hours=1)
 MAIL_REQUEST_MAX_PER_WINDOW = 3
@@ -156,6 +159,7 @@ class IdentitySessionView:
     principal: IdentityPrincipal
     client_kind: ClientKind
     expires_at: datetime
+    password_change_required: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +312,7 @@ class SqliteIdentityRepository:
           email TEXT,
           password_digest TEXT,
           email_verified_at TEXT,
+          password_change_required INTEGER NOT NULL DEFAULT 0,
           state TEXT NOT NULL DEFAULT 'active',
           UNIQUE(issuer, subject)
         );
@@ -467,6 +472,7 @@ class SqliteIdentityRepository:
         for name, definition in (
             ("login_id", "TEXT"), ("email", "TEXT"), ("password_digest", "TEXT"),
             ("email_verified_at", "TEXT"), ("state", "TEXT NOT NULL DEFAULT 'active'"),
+            ("password_change_required", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in columns:
                 connection.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
@@ -800,6 +806,38 @@ class IdentityService:
         )
         return token
 
+    def ensure_initial_admin(self) -> None:
+        """Create the protected local administrator once without rotating its password."""
+        with self._lock, self._repository.transaction() as connection:
+            existing = connection.execute(
+                "SELECT user_id FROM users WHERE user_id=? OR login_id=?",
+                (INITIAL_ADMIN_USER_ID, INITIAL_ADMIN_USER_ID),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    "INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,"
+                    "email_verified_at,password_change_required,state) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        INITIAL_ADMIN_USER_ID,
+                        "local",
+                        INITIAL_ADMIN_USER_ID,
+                        INITIAL_ADMIN_USER_ID,
+                        None,
+                        PASSWORD_HASHER.hash(INITIAL_ADMIN_PASSWORD),
+                        None,
+                        1,
+                        "active",
+                    ),
+                )
+            elif str(existing["user_id"]) != INITIAL_ADMIN_USER_ID:
+                raise IdentityError("PERSISTENCE_CONFLICT", 409)
+            self._repository._ensure_tenant(connection, INITIAL_ADMIN_TENANT_ID)
+            connection.execute(
+                "INSERT OR IGNORE INTO memberships(tenant_id,user_id,role) VALUES (?,?,?)",
+                (INITIAL_ADMIN_TENANT_ID, INITIAL_ADMIN_USER_ID, "personal_owner"),
+            )
+            self._repository._seed_minimum_step_up_actions(connection, INITIAL_ADMIN_TENANT_ID)
+
     def _enforce_mail_rate_limit(self, connection: sqlite3.Connection, *, table: str,
                                  user_id: str, now: datetime) -> None:
         rows = connection.execute(
@@ -882,13 +920,28 @@ class IdentityService:
 
     def local_login(self, *, login_id: str, password: str, platform: DevicePlatform,
                     trace_id: str, policy_version: str) -> SessionCredentials:
-        login = _checked_text(login_id).lower(); secret = _password(password)
+        login = _checked_text(login_id).lower()
+        if not isinstance(password, str) or len(password) > 256 or any(ord(character) < 32 for character in password):
+            raise IdentityError("PASSWORD_POLICY_FAILED")
+        secret = password
         _checked_text(trace_id); _checked_text(policy_version)
         now = self._now()
         with self._lock, self._repository.transaction() as connection:
             row = connection.execute("SELECT * FROM users WHERE login_id=? AND issuer='local'", (login,)).fetchone()
+            initial_admin_login = bool(
+                row is not None
+                and str(row["user_id"]) == INITIAL_ADMIN_USER_ID
+                and bool(row["password_change_required"])
+                and secret == INITIAL_ADMIN_PASSWORD
+            )
+            if not initial_admin_login:
+                _password(secret)
             try:
-                if row is None or row["password_digest"] is None or row["email_verified_at"] is None or row["state"] != "active":
+                if (
+                    row is None or row["password_digest"] is None
+                    or (row["email_verified_at"] is None and str(row["user_id"]) != INITIAL_ADMIN_USER_ID)
+                    or row["state"] != "active"
+                ):
                     raise VerifyMismatchError()
                 PASSWORD_HASHER.verify(str(row["password_digest"]), secret)
             except Exception as error:
@@ -1195,7 +1248,8 @@ class IdentityService:
         )
         with self._repository.transaction() as connection:
             row = connection.execute(
-                "SELECT client_kind, access_expires_at FROM sessions WHERE session_id = ?",
+                "SELECT s.client_kind,s.access_expires_at,u.password_change_required "
+                "FROM sessions s JOIN users u ON u.user_id=s.user_id WHERE s.session_id = ?",
                 (principal.session_id,),
             ).fetchone()
             if row is None:
@@ -1204,6 +1258,62 @@ class IdentityService:
                 principal=principal,
                 client_kind=ClientKind(str(row["client_kind"])),
                 expires_at=_dt(str(row["access_expires_at"])),
+                password_change_required=bool(row["password_change_required"]),
+            )
+
+    def change_current_password(
+        self,
+        *,
+        access_token: str,
+        current_password: str,
+        new_password: str,
+        trace_id: str,
+        policy_version: str,
+    ) -> None:
+        replacement = _password(new_password)
+        _checked_text(trace_id); _checked_text(policy_version)
+        if (
+            not isinstance(current_password, str)
+            or len(current_password) > 256
+            or any(ord(character) < 32 for character in current_password)
+        ):
+            raise IdentityError("AUTHENTICATION_REQUIRED", 401)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            principal = self._principal(connection, access_token, now)
+            user = connection.execute(
+                "SELECT password_digest FROM users WHERE user_id=? AND issuer='local'",
+                (str(principal["user_id"]),),
+            ).fetchone()
+            try:
+                if user is None or user["password_digest"] is None:
+                    raise VerifyMismatchError()
+                PASSWORD_HASHER.verify(str(user["password_digest"]), current_password)
+            except Exception as error:
+                raise IdentityError("AUTHENTICATION_REQUIRED", 401) from error
+            connection.execute(
+                "UPDATE users SET password_digest=?,password_change_required=0 WHERE user_id=?",
+                (PASSWORD_HASHER.hash(replacement), str(principal["user_id"])),
+            )
+            connection.execute(
+                "UPDATE sessions SET state='revoked',updated_at=? WHERE user_id=?",
+                (_iso(now), str(principal["user_id"])),
+            )
+            connection.execute(
+                "UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id IN "
+                "(SELECT session_id FROM sessions WHERE user_id=?)",
+                (_iso(now), str(principal["user_id"])),
+            )
+            self._audit(
+                action="identity.password.changed",
+                outcome=AuditOutcome.SUCCEEDED,
+                trace_id=trace_id,
+                policy_version=policy_version,
+                tenant_id=str(principal["tenant_id"]),
+                actor_id=str(principal["user_id"]),
+                target_type="user",
+                target_id=str(principal["user_id"]),
+                metadata={"reason_code": "CURRENT_PASSWORD_CHANGED"},
             )
 
     def rotate_refresh(self, refresh_token: str | None, *, trace_id: str, policy_version: str) -> SessionCredentials:
