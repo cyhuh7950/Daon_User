@@ -11,6 +11,22 @@ def test_sql_maps_identity_tables_and_placeholders() -> None:
     assert "ON CONFLICT DO NOTHING" in mapped
 
 
+def test_sql_maps_bootstrap_marker_and_password_change_state() -> None:
+    marker = _PostgresCompatConnection._sql(
+        "SELECT marker_key FROM bootstrap_state WHERE marker_key=?"
+    )
+    forced_state = _PostgresCompatConnection._sql(
+        "UPDATE users SET password_change_required=FALSE WHERE user_id=?"
+    )
+
+    assert marker == (
+        "SELECT marker_key FROM identity_bootstrap_state WHERE marker_key=%s"
+    )
+    assert forced_state == (
+        "UPDATE identity_users SET password_change_required=FALSE WHERE user_id=%s"
+    )
+
+
 def test_sql_maps_begin_immediate() -> None:
     assert _PostgresCompatConnection._sql("BEGIN IMMEDIATE") == "BEGIN"
 

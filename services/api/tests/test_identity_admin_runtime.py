@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from dataclasses import replace
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import httpx
 
+from daon_user_api.identity import IdentityError, PASSWORD_HASHER, SqliteIdentityRepository
 from daon_user_api.runtime import (
     WEB_SESSION_COOKIE,
     RuntimeSettings,
@@ -16,6 +18,42 @@ from daon_user_api.runtime import (
 
 
 class IdentityAdminRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_startup_rejects_noncanonical_admin_before_workspace_owner_grant(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        database_path = Path(directory.name) / "runtime.sqlite3"
+        repository = SqliteIdentityRepository(database_path)
+        with repository.transaction() as connection:
+            connection.execute(
+                "INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,"
+                "password_change_required,state) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    "admin", "oidc", "admin", "admin", None,
+                    PASSWORD_HASHER.hash("a preexisting strong password"), 0, "active",
+                ),
+            )
+        repository.close()
+        settings = replace(
+            RuntimeSettings.for_test(
+                database_path=database_path,
+                policy_version="identity-policy-v1",
+            ),
+            system_admin_user_ids=frozenset({"admin"}),
+        )
+        self.addCleanup(directory.cleanup)
+
+        with self.assertRaises(IdentityError) as denied:
+            build_dependencies(settings)
+
+        self.assertEqual(denied.exception.code, "INITIAL_ADMIN_CONFLICT")
+        connection = sqlite3.connect(database_path)
+        try:
+            owner = connection.execute(
+                "SELECT 1 FROM auth_memberships WHERE user_id=?", ("admin",)
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertIsNone(owner)
+
     async def test_admin_restricted_session_can_only_read_session_change_password_or_logout(self) -> None:
         directory = tempfile.TemporaryDirectory()
         settings = replace(

@@ -22,6 +22,7 @@ from .identity import IdentityError, SqliteIdentityRepository
 _TABLES = (
     "tenants",
     "users",
+    "bootstrap_state",
     "email_verification_tokens",
     "password_reset_tokens",
     "memberships",

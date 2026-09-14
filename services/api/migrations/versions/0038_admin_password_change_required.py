@@ -1,4 +1,4 @@
-"""Persist the forced-password-change state for identity users."""
+"""Persist forced-password-change and one-time admin bootstrap state."""
 
 from __future__ import annotations
 
@@ -22,7 +22,13 @@ def upgrade() -> None:
             server_default=sa.false(),
         ),
     )
+    op.create_table(
+        "identity_bootstrap_state",
+        sa.Column("marker_key", sa.Text(), primary_key=True, nullable=False),
+        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=False),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("identity_bootstrap_state")
     op.drop_column("identity_users", "password_change_required")

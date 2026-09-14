@@ -13,12 +13,20 @@ class RecordingOperations:
     def __init__(self) -> None:
         self.added: list[tuple[str, sa.Column[object]]] = []
         self.dropped: list[tuple[str, str]] = []
+        self.created_tables: list[tuple[str, tuple[object, ...]]] = []
+        self.dropped_tables: list[str] = []
 
     def add_column(self, table_name: str, column: sa.Column[object]) -> None:
         self.added.append((table_name, column))
 
     def drop_column(self, table_name: str, column_name: str) -> None:
         self.dropped.append((table_name, column_name))
+
+    def create_table(self, table_name: str, *items: object) -> None:
+        self.created_tables.append((table_name, items))
+
+    def drop_table(self, table_name: str) -> None:
+        self.dropped_tables.append(table_name)
 
 
 def load_migration():  # type: ignore[no-untyped-def]
@@ -30,7 +38,7 @@ def load_migration():  # type: ignore[no-untyped-def]
 
 
 class IdentityAdminMigrationTests(unittest.TestCase):
-    def test_migration_0038_adds_and_safely_drops_password_change_required(self) -> None:
+    def test_migration_0038_adds_and_safely_drops_admin_bootstrap_state(self) -> None:
         self.assertTrue(MIGRATION.exists(), "0038 forward migration is required")
         module = load_migration()
         self.assertEqual(module.revision, "0038")
@@ -47,6 +55,19 @@ class IdentityAdminMigrationTests(unittest.TestCase):
         self.assertIsInstance(column.type, sa.Boolean)
         self.assertFalse(column.nullable)
         self.assertEqual(str(column.server_default.arg), "false")
+        self.assertEqual(len(operations.created_tables), 1)
+        marker_table, marker_items = operations.created_tables[0]
+        self.assertEqual(marker_table, "identity_bootstrap_state")
+        marker_columns = {
+            item.name: item for item in marker_items if isinstance(item, sa.Column)
+        }
+        self.assertEqual(set(marker_columns), {"marker_key", "completed_at"})
+        self.assertIsInstance(marker_columns["marker_key"].type, sa.Text)
+        self.assertFalse(marker_columns["marker_key"].nullable)
+        self.assertTrue(marker_columns["marker_key"].primary_key)
+        self.assertIsInstance(marker_columns["completed_at"].type, sa.DateTime)
+        self.assertFalse(marker_columns["completed_at"].nullable)
+        self.assertEqual(operations.dropped_tables, ["identity_bootstrap_state"])
         self.assertEqual(
             operations.dropped,
             [("identity_users", "password_change_required")],

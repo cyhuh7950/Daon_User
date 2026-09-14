@@ -31,7 +31,7 @@ from argon2.exceptions import VerifyMismatchError
 from .audit import ActorType, AuditDuplicateEventError, AuditEventDraft, AuditOutcome
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SELF_LOGOUT_DISPATCH_LIMIT = 32
 SELF_LOGOUT_DISPATCH_SECONDS = 0.25
 PASSWORD_MIN_LENGTH = 12
@@ -39,6 +39,7 @@ PASSWORD_HASHER = PasswordHasher()
 INITIAL_ADMIN_USER_ID = "admin"
 INITIAL_ADMIN_TENANT_ID = "admin"
 INITIAL_ADMIN_PASSWORD = "admin"
+INITIAL_ADMIN_BOOTSTRAP_MARKER = "initial_admin_v1"
 MAIL_REQUEST_COOLDOWN = timedelta(seconds=60)
 MAIL_REQUEST_WINDOW = timedelta(hours=1)
 MAIL_REQUEST_MAX_PER_WINDOW = 3
@@ -189,6 +190,10 @@ class EmailSender(Protocol):
     def send(self, *, recipient: str, subject: str, body: str) -> None: ...
 
 
+class IdentityRow(Protocol):
+    def __getitem__(self, key: str) -> object: ...
+
+
 class SmtpEmailSender:
     def __init__(self, *, host: str | None, port: int, username: str | None,
                  password: str | None, sender: str | None, secure: bool) -> None:
@@ -276,6 +281,23 @@ def _password(value: object) -> str:
     return value
 
 
+def is_protected_initial_admin_record(row: IdentityRow) -> bool:
+    """Return whether a persisted user is the one protected bootstrap identity."""
+    try:
+        return bool(
+            row["user_id"] == INITIAL_ADMIN_USER_ID
+            and row["issuer"] == "local"
+            and row["subject"] == INITIAL_ADMIN_USER_ID
+            and row["login_id"] == INITIAL_ADMIN_USER_ID
+            and row["email"] is None
+            and row["state"] == "active"
+            and row["password_digest"]
+            and row["password_change_required"] in (0, 1, False, True)
+        )
+    except (KeyError, IndexError, TypeError):
+        return False
+
+
 class SqliteIdentityRepository:
     """Injected-path, transactional SQLite adapter with restart-safe IAM state."""
 
@@ -315,6 +337,10 @@ class SqliteIdentityRepository:
           password_change_required INTEGER NOT NULL DEFAULT 0,
           state TEXT NOT NULL DEFAULT 'active',
           UNIQUE(issuer, subject)
+        );
+        CREATE TABLE IF NOT EXISTS bootstrap_state (
+          marker_key TEXT PRIMARY KEY,
+          completed_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS email_verification_tokens (
           token_id TEXT PRIMARY KEY,
@@ -809,11 +835,24 @@ class IdentityService:
     def ensure_initial_admin(self) -> None:
         """Create the protected local administrator once without rotating its password."""
         with self._lock, self._repository.transaction() as connection:
-            existing = connection.execute(
-                "SELECT user_id FROM users WHERE user_id=? OR login_id=?",
-                (INITIAL_ADMIN_USER_ID, INITIAL_ADMIN_USER_ID),
+            marker = connection.execute(
+                "SELECT marker_key FROM bootstrap_state WHERE marker_key=?",
+                (INITIAL_ADMIN_BOOTSTRAP_MARKER,),
             ).fetchone()
+            existing = connection.execute(
+                "SELECT user_id,issuer,subject,login_id,email,password_digest,"
+                "password_change_required,state FROM users WHERE user_id=?",
+                (INITIAL_ADMIN_USER_ID,),
+            ).fetchone()
+            if marker is not None and existing is None:
+                raise IdentityError("INITIAL_ADMIN_MISSING", 503)
             if existing is None:
+                login_collision = connection.execute(
+                    "SELECT user_id FROM users WHERE login_id=?",
+                    (INITIAL_ADMIN_USER_ID,),
+                ).fetchone()
+                if login_collision is not None:
+                    raise IdentityError("INITIAL_ADMIN_CONFLICT", 503)
                 connection.execute(
                     "INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,"
                     "email_verified_at,password_change_required,state) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -825,18 +864,41 @@ class IdentityService:
                         None,
                         PASSWORD_HASHER.hash(INITIAL_ADMIN_PASSWORD),
                         None,
-                        1,
+                        True,
                         "active",
                     ),
                 )
-            elif str(existing["user_id"]) != INITIAL_ADMIN_USER_ID:
-                raise IdentityError("PERSISTENCE_CONFLICT", 409)
+            elif not is_protected_initial_admin_record(existing):
+                raise IdentityError("INITIAL_ADMIN_CONFLICT", 503)
             self._repository._ensure_tenant(connection, INITIAL_ADMIN_TENANT_ID)
             connection.execute(
                 "INSERT OR IGNORE INTO memberships(tenant_id,user_id,role) VALUES (?,?,?)",
                 (INITIAL_ADMIN_TENANT_ID, INITIAL_ADMIN_USER_ID, "personal_owner"),
             )
             self._repository._seed_minimum_step_up_actions(connection, INITIAL_ADMIN_TENANT_ID)
+            if marker is None:
+                connection.execute(
+                    "INSERT INTO bootstrap_state(marker_key,completed_at) VALUES (?,?)",
+                    (INITIAL_ADMIN_BOOTSTRAP_MARKER, _iso(self._now())),
+                )
+
+    def require_initial_admin_recovery_target(self) -> str:
+        """Resolve the fixed console-recovery target without changing credentials."""
+        with self._lock, self._repository.transaction() as connection:
+            marker = connection.execute(
+                "SELECT marker_key FROM bootstrap_state WHERE marker_key=?",
+                (INITIAL_ADMIN_BOOTSTRAP_MARKER,),
+            ).fetchone()
+            existing = connection.execute(
+                "SELECT user_id,issuer,subject,login_id,email,password_digest,"
+                "password_change_required,state FROM users WHERE user_id=?",
+                (INITIAL_ADMIN_USER_ID,),
+            ).fetchone()
+            if marker is None or existing is None:
+                raise IdentityError("INITIAL_ADMIN_MISSING", 503)
+            if not is_protected_initial_admin_record(existing):
+                raise IdentityError("INITIAL_ADMIN_CONFLICT", 503)
+            return INITIAL_ADMIN_USER_ID
 
     def _enforce_mail_rate_limit(self, connection: sqlite3.Connection, *, table: str,
                                  user_id: str, now: datetime) -> None:
@@ -1292,7 +1354,7 @@ class IdentityService:
             except Exception as error:
                 raise IdentityError("AUTHENTICATION_REQUIRED", 401) from error
             connection.execute(
-                "UPDATE users SET password_digest=?,password_change_required=0 WHERE user_id=?",
+                "UPDATE users SET password_digest=?,password_change_required=FALSE WHERE user_id=?",
                 (PASSWORD_HASHER.hash(replacement), str(principal["user_id"])),
             )
             connection.execute(
