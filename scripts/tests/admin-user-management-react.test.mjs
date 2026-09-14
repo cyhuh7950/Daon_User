@@ -33,6 +33,20 @@ async function render(entry, exportName, props, prefix) {
   return { act, container, dom, output, reactRoot, cleanup: async () => { await act(async () => reactRoot.unmount()); dom.restore(); await rm(output, { recursive: true, force: true }); } };
 }
 
+test("로그인은 초기 admin 단축 비밀번호를 허용하고 새 비밀번호 입력만 12자를 강제한다", async () => {
+  const view = await render("apps/web/lib/auth-pane.jsx", "AuthPane", {}, ".admin-initial-login-");
+  try {
+    let passwordInputs = findElements(view.container, (node) => node.tagName === "INPUT" && reactProps(node)?.type === "password");
+    assert.equal(passwordInputs.length, 1);
+    assert.equal(reactProps(passwordInputs[0]).minLength, undefined);
+
+    await view.act(async () => { buttonByText(view.container, "가입하기").dispatchEvent(new MinimalEvent("click")); });
+    passwordInputs = findElements(view.container, (node) => node.tagName === "INPUT" && reactProps(node)?.type === "password");
+    assert.equal(passwordInputs.length, 1);
+    assert.equal(reactProps(passwordInputs[0]).minLength, 12);
+  } finally { await view.cleanup(); }
+});
+
 test("Notebook 설정은 system admin에게만 사용자 관리를 표시하고 조직 항목은 노출하지 않는다", async () => {
   for (const [showUserManagement, expected] of [[false, false], [true, true]]) {
     const view = await render("packages/ui/src/notebook-home.jsx", "NotebookHome", { notebooks: [], showUserManagement }, `.admin-menu-${showUserManagement}-`);

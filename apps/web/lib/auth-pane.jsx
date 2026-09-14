@@ -65,7 +65,7 @@ export function AuthPane() {
         <form onSubmit={(event) => { event.preventDefault(); run("login", { login_id: form.login_id, password: form.password }, "로그인했습니다."); }}>
           <div className="daon-auth-grid">
             <label>사용자 ID<input ref={firstInputRef} name="login-id" value={form.login_id} onInput={update("login_id")} autoComplete="username" /></label>
-            <label>비밀번호<input name="password" type="password" minLength={12} value={form.password} onInput={update("password")} autoComplete="current-password" /></label>
+            <label>비밀번호<input name="password" type="password" value={form.password} onInput={update("password")} autoComplete="current-password" /></label>
           </div>
           <div className="daon-auth-actions">
             <button type="button" disabled={busy} onClick={() => run("login", { login_id: form.login_id, password: form.password }, "로그인했습니다.")}>로그인</button>
