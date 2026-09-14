@@ -127,7 +127,7 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
 function routeFor(method, segments) {
   if (segments.length === 3 && segments[0] === "auth" && segments[1] === "password" && segments[2] === "change") {
     return method === "POST"
-      ? { path: "/api/v1/auth/password/change", query: null }
+      ? { path: "/api/v1/auth/password/change", query: null, csrfProvenanceRequired: true }
       : { methodRejected: true };
   }
   if (segments.length === 2 && segments[0] === "admin" && segments[1] === "users") {
@@ -580,7 +580,7 @@ function routeFor(method, segments) {
   }
   if (segments.length === 2 && segments[0] === "session" && segments[1] === "logout") {
     return method === "POST"
-      ? { path: "/api/v1/session/logout", query: null, currentSessionLogout: true }
+      ? { path: "/api/v1/session/logout", query: null, csrfProvenanceRequired: true }
       : { methodRejected: true };
   }
   if (segments.length === 1 && segments[0] === "access-decisions") {
@@ -769,7 +769,7 @@ function writeRequestIsSameOrigin(request, publicOrigin) {
   return !fetchSite || fetchSite === "same-origin";
 }
 
-function logoutRefererIsSameOrigin(request, publicOrigin) {
+function csrfRefererIsSameOrigin(request, publicOrigin) {
   const referer = request.headers.get("referer");
   if (!referer) return false;
   try {
@@ -856,7 +856,7 @@ export function createBffProxy({
     if (!writeRequestIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
     }
-    if (route.currentSessionLogout && !logoutRefererIsSameOrigin(request, publicOrigin)) {
+    if (route.csrfProvenanceRequired && !csrfRefererIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
     }
 
@@ -880,7 +880,7 @@ export function createBffProxy({
     if (credential) headers.set("cookie", credential);
     headers.set("x-trace-id", trace);
     headers.set("x-daon-bff-transport", "internal");
-    if (route.currentSessionLogout) {
+    if (route.csrfProvenanceRequired) {
       headers.set("x-daon-csrf-origin", publicOrigin?.origin ?? new URL(request.url).origin);
       headers.set("x-daon-csrf-referer", request.headers.get("referer"));
     }

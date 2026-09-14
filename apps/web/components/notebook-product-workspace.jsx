@@ -9,8 +9,15 @@ import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-ro
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const SAFE_ERRORS = new Set(["NOTEBOOK_NOT_FOUND", "NOTEBOOK_UNAVAILABLE", "NOTEBOOK_CONTEXT_INVALID"]);
+const replaceLocation = (path) => window.location.replace(path);
 
-export function NotebookProductWorkspace({ notebookId }) {
+export function NotebookProductWorkspace({
+  notebookId,
+  getSession = getCurrentNotebookSession,
+  getSelectedNotebook = getNotebook,
+  getSelectedContext = getNotebookContext,
+  navigate = replaceLocation,
+}) {
   const logoutPending = useRef(false);
   const protectedRoot = useRef(null);
   const [sessionValidated, setSessionValidated] = useState(false);
@@ -34,13 +41,13 @@ export function NotebookProductWorkspace({ notebookId }) {
     }
     setView((current) => ({ ...current, state: "loading", error: null }));
     try {
-      const session = await getCurrentNotebookSession({ signal });
+      const session = await getSession({ signal });
       if (session.password_change_required) {
-        window.location.replace("/password-change");
+        navigate("/password-change");
         return;
       }
-      const notebook = await getNotebook(session.workspace_id, notebookId, { signal });
-      const selected = await getNotebookContext(session.workspace_id, notebookId, { signal });
+      const notebook = await getSelectedNotebook(session.workspace_id, notebookId, { signal });
+      const selected = await getSelectedContext(session.workspace_id, notebookId, { signal });
       if (!signal?.aborted) setView({
         state: "ready", workspaceId: session.workspace_id, notebook: notebook.data, context: selected.data,
         error: null,
@@ -49,7 +56,7 @@ export function NotebookProductWorkspace({ notebookId }) {
     } catch (error) {
       if (signal?.aborted) return;
       if (error?.message === "AUTHENTICATION_REQUIRED") {
-        window.location.replace("/");
+        navigate("/");
         return;
       }
       setView({
@@ -58,7 +65,7 @@ export function NotebookProductWorkspace({ notebookId }) {
       });
       reveal();
     }
-  }, [conceal, notebookId, reveal]);
+  }, [conceal, getSelectedContext, getSelectedNotebook, getSession, navigate, notebookId, reveal]);
 
   useEffect(() => {
     const controller = new AbortController();

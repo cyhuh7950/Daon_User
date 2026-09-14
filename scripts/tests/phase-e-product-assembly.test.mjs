@@ -29,7 +29,7 @@ test("production exposes authenticated Notebook Home but no evidence harness rou
   assert.match(client, /getCurrentNotebookSession/u);
   assert.match(client, /listNotebooks/u);
   assert.match(client, /password_change_required/u);
-  assert.match(client, /window\.location\.replace\("\/password-change"\)/u);
+  assert.match(client, /navigate\("\/password-change"\)/u);
   assert.match(client, /window\.location\.replace\("\/"\)/u);
   assert.match(client, /window\.location\.assign\(`\/notebooks\/\$\{encodeURIComponent\(notebookId\)\}`\)/u);
   assert.doesNotMatch(`${page}\n${client}`, /test-harness|fixture|localhost|127\.0\.0\.1/iu);
@@ -66,7 +66,7 @@ test("selected Notebook production route assembles only the approved scoped Cont
   assert.match(page, /NotebookProductWorkspace/u);
   assert.match(client, /getCurrentNotebookSession/u);
   assert.match(client, /password_change_required/u);
-  assert.match(client, /window\.location\.replace\("\/password-change"\)/u);
+  assert.match(client, /navigate\("\/password-change"\)/u);
   assert.match(client, /getNotebookContext/u);
   assert.match(client, /createNotebookContextWorkspaceAdapter/u);
   assert.match(client, /ActualWorkspace/u);

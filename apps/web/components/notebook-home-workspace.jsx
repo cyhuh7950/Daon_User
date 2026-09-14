@@ -7,8 +7,13 @@ import { logoutCurrentSession } from "../lib/auth-api.js";
 import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-route-guard.js";
 
 const SAFE_ERRORS = new Set(["NOTEBOOK_UNAVAILABLE", "SESSION_UNAVAILABLE", "SESSION_RESPONSE_INVALID"]);
+const replaceLocation = (path) => window.location.replace(path);
 
-export function NotebookHomeWorkspace() {
+export function NotebookHomeWorkspace({
+  getSession = getCurrentNotebookSession,
+  getNotebooks = listNotebooks,
+  navigate = replaceLocation,
+} = {}) {
   const logoutPending = useRef(false);
   const protectedRoot = useRef(null);
   const [sessionValidated, setSessionValidated] = useState(false);
@@ -32,12 +37,12 @@ export function NotebookHomeWorkspace() {
     setState("loading");
     setErrorCode(null);
     try {
-      const session = await getCurrentNotebookSession({ signal });
+      const session = await getSession({ signal });
       if (session.password_change_required) {
-        window.location.replace("/password-change");
+        navigate("/password-change");
         return;
       }
-      const result = await listNotebooks(session.workspace_id, { signal });
+      const result = await getNotebooks(session.workspace_id, { signal });
       setWorkspaceId(session.workspace_id);
       setIsSystemAdmin(session.is_system_admin);
       setNotebooks(result.data);
@@ -46,7 +51,7 @@ export function NotebookHomeWorkspace() {
     } catch (error) {
       if (signal?.aborted) return;
       if (error?.message === "AUTHENTICATION_REQUIRED") {
-        window.location.replace("/");
+        navigate("/");
         return;
       }
       setWorkspaceId(null);
@@ -56,7 +61,7 @@ export function NotebookHomeWorkspace() {
       setState("error");
       reveal();
     }
-  }, [conceal, reveal]);
+  }, [conceal, getNotebooks, getSession, navigate, reveal]);
 
   useEffect(() => {
     const controller = new AbortController();

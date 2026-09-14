@@ -59,6 +59,36 @@ test("일반 사용자의 admin 직접 접근은 목록 호출·사용자 렌더
   } finally { await view.cleanup(); }
 });
 
+test("비밀번호 제한 session은 Notebook home 목록 API를 호출하지 않는다", async () => {
+  const calls = { session: 0, list: 0 }; const redirects = [];
+  const view = await render("apps/web/components/notebook-home-workspace.jsx", "NotebookHomeWorkspace", {
+    getSession: async () => { calls.session += 1; return { password_change_required: true }; },
+    getNotebooks: async () => { calls.list += 1; throw new Error("MUST_NOT_BE_CALLED"); },
+    navigate: (path) => redirects.push(path),
+  }, ".restricted-home-");
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    assert.deepEqual(calls, { session: 1, list: 0 });
+    assert.deepEqual(redirects, ["/password-change"]);
+  } finally { await view.cleanup(); }
+});
+
+test("비밀번호 제한 session은 selected Notebook get/context API를 호출하지 않는다", async () => {
+  const calls = { session: 0, get: 0, context: 0 }; const redirects = [];
+  const view = await render("apps/web/components/notebook-product-workspace.jsx", "NotebookProductWorkspace", {
+    notebookId: "notebook-001",
+    getSession: async () => { calls.session += 1; return { password_change_required: true }; },
+    getSelectedNotebook: async () => { calls.get += 1; throw new Error("MUST_NOT_BE_CALLED"); },
+    getSelectedContext: async () => { calls.context += 1; throw new Error("MUST_NOT_BE_CALLED"); },
+    navigate: (path) => redirects.push(path),
+  }, ".restricted-selected-");
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    assert.deepEqual(calls, { session: 1, get: 0, context: 0 });
+    assert.deepEqual(redirects, ["/password-change"]);
+  } finally { await view.cleanup(); }
+});
+
 test("admin console은 안전한 loading·empty·error 상태만 표시한다", async () => {
   let releaseSession;
   const heldSession = new Promise((resolve) => { releaseSession = resolve; });
