@@ -8,6 +8,7 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { resolveEvidenceMode } from "./lib/verification-evidence-mode.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiRoot = path.join(root, "services/api");
@@ -55,8 +56,7 @@ function runPython(arguments_, { capture = false } = {}) {
 
 async function main() {
   const args = process.argv.slice(2).filter((argument) => argument !== "--");
-  const write = args.includes("--write");
-  if (write && args.includes("--no-write")) fail("--write and --no-write are mutually exclusive");
+  const evidenceMode = resolveEvidenceMode(args);
 
   const tests = runPython(
     ["-m", "unittest", "discover", "-s", testRoot, "-p", "test_identity*.py", "-v"],
@@ -84,10 +84,10 @@ async function main() {
     test_count: Number(countMatch[1])
   };
   const expected = `${JSON.stringify(summary, null, 2)}\n`;
-  if (write) {
+  if (evidenceMode === "write") {
     await mkdir(path.dirname(evidencePath), { recursive: true });
     await writeFile(evidencePath, expected, "utf8");
-  } else {
+  } else if (evidenceMode === "compare") {
     const actual = (await readFile(evidencePath, "utf8")).replaceAll("\r\n", "\n");
     if (actual !== expected) fail("deterministic evidence mismatch; run with --write");
   }

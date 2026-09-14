@@ -24,6 +24,7 @@ const REQUIRED_MANDATORY_CHECKS = new Map([
   ["production-dependency-audit", { category: "security", kind: "npm_audit" }],
   ["repository-independence", { category: "independence", kind: null }],
   ["local-service-runtime-verifier-tests", { category: "unit", kind: null }],
+  ["public-check-only-verifier-contract", { category: "unit", kind: null }],
   ["local-service-full-environment-audit", { category: "security", kind: null }]
 ]);
 export const CI_FALLBACK_STEP_IDS = ["toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate"];

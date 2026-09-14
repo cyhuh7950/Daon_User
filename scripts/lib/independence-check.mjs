@@ -7,7 +7,8 @@ const JS_CODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"
 const JS_IMPORT_PATTERN = /(?:\b(?:import|export)\s+(?:[^"'`\r\n;]*?\s+from\s+)?|\bimport\s*\(\s*|\brequire\s*\(\s*)["']([^"']+)["']/g;
 const DAON_PRODUCT_PATTERN = /(?:^|[\\/@._-])daon(?:2(?:\.5)?|3)(?:$|[\\/@._-])/i;
 const LOCAL_PACKAGE_PATTERN = /^(?:file:|link:|\.\.?[\\/]|[a-z]:[\\/]|\\\\)/i;
-const ABSOLUTE_PATH_PATTERN = /(?:[a-z]:[\\/](?:users|project|workspaces?)[\\/][^\s"'`]+|\/(?:users|home|opt|srv)\/[^\s"'`]+)/i;
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /[a-z]:[\\/](?:users|project|workspaces?)[\\/][^\s"'`]+/i;
+const POSIX_ABSOLUTE_PATH_PATTERN = /(?:^|[\s"'`=:(])\/(?:[Uu]sers|home|opt|srv)\/[^\s"'`]+/;
 const DAON_PATH_PATTERN = /(?:[a-z]:[\\/][^\s"'`]*[\\/]daon(?:2(?:\.5)?|3)(?:[\\/]|\b)|\/(?:[^\s"'`]+\/)*daon(?:2(?:\.5)?|3)(?:\/|\b))/i;
 const DIRECT_URL_PATTERN = /(?:https?:\/\/|\blocalhost(?::\d+)?\b|\b127\.0\.0\.1(?::\d+)?\b|NEXT_PUBLIC_API_BASE_URL)/i;
 const CONNECTOR_PATTERN = /(?:daon(?:2(?:\.5)?|3)[-_/]?(?:client|sdk|internal|endpoint)|daon[-_/](?:internal|sdk|client|endpoint))/i;
@@ -271,7 +272,7 @@ function inspectGeneralFile(file, text, policy, components, packageNames, violat
     for (const match of pythonImportSpecifiers(text)) addImportViolation(file, text, match, policy, components, packageNames, violations);
   }
   text.split(/\r?\n/).forEach((line, index) => {
-    if (DAON_PATH_PATTERN.test(line) || ABSOLUTE_PATH_PATTERN.test(line)) violations.push(violation("PATH_EXTERNAL_ABSOLUTE", file, index + 1, "실행 Source/설정의 외부 절대 경로를 제거하십시오.", line));
+    if (DAON_PATH_PATTERN.test(line) || WINDOWS_ABSOLUTE_PATH_PATTERN.test(line) || POSIX_ABSOLUTE_PATH_PATTERN.test(line)) violations.push(violation("PATH_EXTERNAL_ABSOLUTE", file, index + 1, "실행 Source/설정의 외부 절대 경로를 제거하십시오.", line));
     const lower = file.toLowerCase();
     if ((path.basename(lower).startsWith("dockerfile") || /(?:compose|\.github\/workflows)/.test(lower)) && /(?:^\s*from\s+|\bimage\s*:).*daon(?:2(?:\.5)?|3)/i.test(line)) {
       violations.push(violation("RUNTIME_IMAGE_DAON", file, index + 1, "다른 Daon 제품 Runtime Image를 제거하십시오.", line));

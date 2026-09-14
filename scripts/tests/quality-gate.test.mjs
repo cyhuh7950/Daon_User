@@ -3,7 +3,8 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { runQualityGate } from "../lib/quality-gate.mjs";
+import { fileURLToPath } from "node:url";
+import { loadQualityGatePolicy, runQualityGate } from "../lib/quality-gate.mjs";
 
 const categories = ["lint", "type", "unit", "contract", "build", "security", "independence"];
 const approvedComponents = [
@@ -16,6 +17,8 @@ const approvedComponents = [
   ["services/api", "pyproject.toml"],
   ["services/local-service", "pyproject.toml"]
 ];
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function componentPolicy([root, manifest], commands) {
   return {
@@ -46,6 +49,7 @@ function fixturePolicy({ commands = {} } = {}) {
       { id: "production-dependency-audit", category: "security", command: ["stub", "audit"], kind: "npm_audit", failure_kind: "execution" },
       { id: "repository-independence", category: "independence", command: ["stub", "independence"], failure_kind: "quality" },
       { id: "local-service-runtime-verifier-tests", category: "unit", command: ["stub", "local-runtime"], failure_kind: "quality" },
+      { id: "public-check-only-verifier-contract", category: "unit", command: ["stub", "check-only-contract"], failure_kind: "quality" },
       { id: "local-service-full-environment-audit", category: "security", command: ["stub", "local-audit"], failure_kind: "execution" },
       { id: "product-ui-boundary", category: "security", command: ["stub", "product-ui-boundary"], failure_kind: "quality" },
       { id: "public-repository-boundary", category: "security", command: ["stub", "public-repository-boundary"], failure_kind: "quality" }
@@ -99,6 +103,21 @@ async function runFixture(root, policy, commandRunner = passingCommandRunner()) 
     gitSha: "fixture-sha"
   });
 }
+
+test("정본 품질 게이트 정책의 모든 필수 검사는 실행기 허용 목록과 일치한다", async () => {
+  const policyPath = path.join(repositoryRoot, "quality-gate-policy.json");
+  const policy = await loadQualityGatePolicy(policyPath);
+  const { exitCode, report } = await runQualityGate({
+    root: repositoryRoot,
+    policy,
+    policyPath,
+    commandRunner: passingCommandRunner(),
+    writeArtifacts: false,
+    gitSha: "policy-contract-test"
+  });
+  assert.equal(exitCode, 0, JSON.stringify(report.failures));
+  assert.equal(report.overall_status, "PASS");
+});
 
 test("foundation 저장소는 정확한 부재 조건만 N/A이고 상시 검사는 PASS다", async (t) => {
   const root = await makeFixture();

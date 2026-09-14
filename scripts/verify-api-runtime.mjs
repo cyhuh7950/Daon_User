@@ -6,6 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolveEvidenceMode } from "./lib/verification-evidence-mode.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiRoot = path.join(root, "services/api");
@@ -75,7 +76,7 @@ async function assertClientBoundary() {
 }
 
 async function main() {
-  const write = process.argv.includes("--write");
+  const evidenceMode = resolveEvidenceMode(process.argv.slice(2).filter((argument) => argument !== "--"));
   runPython(["-m", "compileall", "-q", apiSource]);
   runPython(["-m", "unittest", "discover", "-s", apiTests, "-p", "test_runtime_http.py", "-v"]);
   runPython(["-m", "unittest", "discover", "-s", apiTests, "-p", "test_runtime_process_lifecycle.py", "-v"]);
@@ -90,9 +91,9 @@ async function main() {
   await assertClientBoundary();
   runPython([
     path.join(apiTests, "runtime_process_probe.py"),
-    write ? "--write" : "--no-write",
+    evidenceMode === "write" ? "--write" : evidenceMode === "check-only" ? "--check-only" : null,
     "--with-next",
-  ].filter((argument) => argument !== "--no-write"));
+  ].filter(Boolean));
   console.log("api runtime verified: unit=10 lifecycle_unit=6 bff_unit=9 actual_api=true actual_next=true same_port_restart=true");
 }
 

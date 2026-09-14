@@ -1777,7 +1777,9 @@ test("PostCSS 보정 이력은 고정 Successor Blob으로, 현재 Checkout은 �
     "49a32ff6e416651358ef5638da18aa2be4de4e04d7f47268cc2ad5f5d1cfd0ca"
   );
 
-  assert.deepEqual(root.overrides, { postcss: "8.5.23" });
+  assert.equal(root.overrides.postcss, "8.5.23");
+  assert.equal(root.overrides.qs, "6.16.0");
+  assert.equal(root.overrides.sharp, "0.35.4");
   assert.equal(lock.packages["node_modules/next"].version, "16.3.3");
   assert.equal(lock.packages["apps/desktop/node_modules/vite"].version, "8.2.2");
   assert.equal(lock.packages["node_modules/postcss"].version, "8.5.23");

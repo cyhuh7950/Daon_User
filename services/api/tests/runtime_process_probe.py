@@ -40,6 +40,32 @@ class DiscardTestEmailSender:
         return None
 
 
+def process_evidence(
+    runtime_summary: dict[str, object],
+    bff_summary: dict[str, object],
+    *,
+    write: bool,
+    check_only: bool,
+    evidence_dir: Path = EVIDENCE,
+) -> None:
+    if write:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "runtime-process-summary.json").write_text(
+            json.dumps(runtime_summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        (evidence_dir / "bff-network-summary.json").write_text(
+            json.dumps(bff_summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    elif not check_only:
+        for name, expected in (
+            ("runtime-process-summary.json", runtime_summary),
+            ("bff-network-summary.json", bff_summary),
+        ):
+            actual = json.loads((evidence_dir / name).read_text("utf-8"))
+            if actual != expected:
+                raise RuntimeError(f"EVIDENCE_MISMATCH:{name}")
+
+
 class NativeFramingUpstream(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
 
@@ -301,7 +327,9 @@ def seed_database(database_path: Path) -> tuple[str, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--write", action="store_true")
+    evidence_mode = parser.add_mutually_exclusive_group()
+    evidence_mode.add_argument("--write", action="store_true")
+    evidence_mode.add_argument("--check-only", action="store_true")
     parser.add_argument("--with-next", action="store_true")
     arguments = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="daon-r1-m4-05-") as directory:
@@ -650,22 +678,12 @@ def main() -> None:
                 "owned_processes_remaining": 0,
                 "listeners_remaining": 0,
             }
-            if arguments.write:
-                EVIDENCE.mkdir(parents=True, exist_ok=True)
-                (EVIDENCE / "runtime-process-summary.json").write_text(
-                    json.dumps(runtime_summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                )
-                (EVIDENCE / "bff-network-summary.json").write_text(
-                    json.dumps(bff_summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                )
-            else:
-                for name, expected in (
-                    ("runtime-process-summary.json", runtime_summary),
-                    ("bff-network-summary.json", bff_summary),
-                ):
-                    actual = json.loads((EVIDENCE / name).read_text("utf-8"))
-                    if actual != expected:
-                        raise RuntimeError(f"EVIDENCE_MISMATCH:{name}")
+            process_evidence(
+                runtime_summary,
+                bff_summary,
+                write=arguments.write,
+                check_only=arguments.check_only,
+            )
             print(json.dumps({"runtime": runtime_summary, "bff": bff_summary}, ensure_ascii=False))
         finally:
             for process in (framing_next_process, next_process, second, first):

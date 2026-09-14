@@ -158,6 +158,22 @@ test("외부 절대 경로를 차단한다", async () => {
   await expectViolation("PATH_EXTERNAL_ABSOLUTE", async (root) => put(root, "apps/web/client/config.ts", "export const source = 'D:\\\\Project\\\\Daon2\\\\data';\n"));
 });
 
+test("REST users 경로를 POSIX 사용자 홈 절대경로로 오인하지 않는다", async () => {
+  const root = await fixture();
+  await put(root, "services/api/src/routes.py", "route = '/api/v1/admin/users/user-001/state'\n");
+  const result = run(root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /violations=0/);
+});
+
+test("macOS Users 사용자 홈 절대경로는 계속 차단한다", async () => {
+  await expectViolation("PATH_EXTERNAL_ABSOLUTE", async (root) => put(root, "apps/web/client/config.ts", "export const source = '/Users/person/project/data';\n"));
+});
+
+test("소문자 users 사용자 홈 절대경로도 계속 차단한다", async () => {
+  await expectViolation("PATH_EXTERNAL_ABSOLUTE", async (root) => put(root, "apps/web/client/config.ts", "export const source = '/users/person/project/data';\n"));
+});
+
 test("다른 Daon Runtime Image를 차단한다", async () => {
   await expectViolation("RUNTIME_IMAGE_DAON", async (root) => put(root, "Dockerfile", "FROM registry.example/daon3-api:latest\n"));
 });
