@@ -4,8 +4,8 @@ import test from "node:test";
 import { changeCurrentPassword } from "../../apps/web/lib/auth-api.js";
 import { changeAdminUserState, listAdminUsers } from "../../apps/web/lib/admin-users-api.js";
 
-const user = Object.freeze({ user_id: "user-1", login_id: "person", has_email: true, state: "active", protected: false });
-const pendingEmailUser = Object.freeze({ user_id: "user-2", login_id: "pending-person", has_email: true, state: "pending_email", protected: false });
+const user = Object.freeze({ user_id: "user-1", login_id: "person", email: "person@example.test", has_email: true, state: "active", protected: false });
+const pendingEmailUser = Object.freeze({ user_id: "user-2", login_id: "pending-person", email: "pending@example.test", has_email: true, state: "pending_email", protected: false });
 const meta = Object.freeze({ trace_id: "trace-1" });
 
 test("admin user client는 pending_email 사용자가 포함된 실제 목록 응답을 수용한다", async () => {
@@ -13,6 +13,15 @@ test("admin user client는 pending_email 사용자가 포함된 실제 목록 �
     fetchImpl: async () => Response.json({ data: { users: [user, pendingEmailUser] }, meta }),
   });
   assert.deepEqual(result, [user, pendingEmailUser]);
+  await assert.rejects(listAdminUsers({
+    fetchImpl: async () => Response.json({ data: { users: [{ ...user, email: 42 }] }, meta }),
+  }), /ADMIN_USERS_RESPONSE_INVALID/u);
+  await assert.rejects(listAdminUsers({
+    fetchImpl: async () => Response.json({ data: { users: [{ ...user, email: null }] }, meta }),
+  }), /ADMIN_USERS_RESPONSE_INVALID/u);
+  await assert.rejects(listAdminUsers({
+    fetchImpl: async () => Response.json({ data: { users: [{ ...user, has_email: false }] }, meta }),
+  }), /ADMIN_USERS_RESPONSE_INVALID/u);
 });
 
 test("admin user client는 exact same-origin 목록과 상태 변경 계약만 수용한다", async () => {

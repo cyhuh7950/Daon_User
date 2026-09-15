@@ -2108,6 +2108,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     {
                         "user_id": user.user_id,
                         "login_id": user.login_id,
+                        "email": user.email,
                         "has_email": user.has_email,
                         "state": user.state,
                         "protected": user.protected,
@@ -2145,6 +2146,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 "user": {
                     "user_id": user.user_id,
                     "login_id": user.login_id,
+                    "email": user.email,
                     "has_email": user.has_email,
                     "state": user.state,
                     "protected": user.protected,

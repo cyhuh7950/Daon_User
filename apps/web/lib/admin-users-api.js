@@ -13,10 +13,12 @@ function exact(value, keys) {
 }
 
 function validUser(value, states) {
-  return exact(value, ["user_id", "login_id", "has_email", "state", "protected"])
+  return exact(value, ["user_id", "login_id", "email", "has_email", "state", "protected"])
     && typeof value.user_id === "string" && SAFE_ID.test(value.user_id)
     && (value.login_id === null || (typeof value.login_id === "string" && value.login_id.length <= 255))
-    && typeof value.has_email === "boolean" && states.has(value.state) && typeof value.protected === "boolean";
+    && (value.email === null || (typeof value.email === "string" && value.email.length <= 320))
+    && typeof value.has_email === "boolean" && value.has_email === (value.email !== null)
+    && states.has(value.state) && typeof value.protected === "boolean";
 }
 
 async function bodyOf(response) {

@@ -26,6 +26,7 @@ from .identity import (
 class AdminUserView:
     user_id: str
     login_id: str | None
+    email: str | None
     has_email: bool
     state: str
     protected: bool
@@ -62,6 +63,7 @@ class AdminUserService:
         return AdminUserView(
             user_id=user_id,
             login_id=None if row["login_id"] is None else str(row["login_id"]),
+            email=None if row["email"] is None else str(row["email"]),
             has_email=row["email"] is not None,
             state=(
                 self._repository.user_state_for_api(str(row["state"]))
@@ -104,28 +106,6 @@ class AdminUserService:
         now = self._clock()
         dispatch_admin_audit_outbox(self._repository, self._audit_store, self._clock)
         with self._repository.transaction() as connection:
-            def replay_from(prior: Mapping[str, object]) -> AdminUserStateResult:
-                if (
-                    prior["request_fingerprint"] != fingerprint
-                    or prior["target_id"] != user_id
-                    or prior["after_state"] != state
-                ):
-                    raise IdentityError("IDEMPOTENCY_KEY_REUSED", 409)
-                row = connection.execute(
-                    "SELECT user_id,login_id,email,state FROM users WHERE user_id=?", (user_id,)
-                ).fetchone()
-                if row is None:
-                    raise IdentityError("USER_NOT_FOUND", 404)
-                return AdminUserStateResult(self._view(row, state=state), replayed=True)
-
-            prior = connection.execute(
-                "SELECT request_fingerprint,target_id,after_state FROM admin_audit_outbox "
-                "WHERE operation=? AND idempotency_scope=?",
-                ("change_user_state", idempotency_scope),
-            ).fetchone()
-            if prior is not None:
-                return replay_from(prior)
-
             row = connection.execute(
                 "SELECT user_id,issuer,subject,login_id,email,password_digest,"
                 "password_change_required,state FROM users WHERE user_id=?",
@@ -138,6 +118,26 @@ class AdminUserService:
                     raise IdentityError("INITIAL_ADMIN_CONFLICT", 503)
                 if state == "suspended":
                     raise IdentityError("PROTECTED_ADMIN_ACCOUNT", 409)
+            if self._repository.user_state_for_api(str(row["state"])) == "pending_email":
+                raise IdentityError("INVALID_USER_STATE", 409)
+
+            def replay_from(prior: Mapping[str, object]) -> AdminUserStateResult:
+                if (
+                    prior["request_fingerprint"] != fingerprint
+                    or prior["target_id"] != user_id
+                    or prior["after_state"] != state
+                ):
+                    raise IdentityError("IDEMPOTENCY_KEY_REUSED", 409)
+                return AdminUserStateResult(self._view(row, state=state), replayed=True)
+
+            prior = connection.execute(
+                "SELECT request_fingerprint,target_id,after_state FROM admin_audit_outbox "
+                "WHERE operation=? AND idempotency_scope=?",
+                ("change_user_state", idempotency_scope),
+            ).fetchone()
+            if prior is not None:
+                return replay_from(prior)
+
             if state == "suspended" and user_id == principal.user_id:
                 raise IdentityError("PROTECTED_ADMIN_ACCOUNT", 409)
             before_state = self._repository.user_state_for_api(str(row["state"]))

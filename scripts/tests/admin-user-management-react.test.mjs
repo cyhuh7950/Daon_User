@@ -62,7 +62,7 @@ test("일반 사용자의 admin 직접 접근은 목록 호출·사용자 렌더
   let listCalls = 0; const redirects = [];
   const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
     getSession: async () => ({ password_change_required: false, is_system_admin: false }),
-    getUsers: async () => { listCalls += 1; return [{ user_id: "secret-user", login_id: "secret", has_email: true, state: "active", protected: false }]; },
+    getUsers: async () => { listCalls += 1; return [{ user_id: "secret-user", login_id: "secret", email: "secret@example.test", has_email: true, state: "active", protected: false }]; },
     navigate: (path) => redirects.push(path),
   }, ".admin-denial-");
   try {
@@ -132,8 +132,8 @@ test("admin console은 검색·필터·보호 표시와 상태 변경 double-sub
   let changes = 0; let release;
   const pending = new Promise((resolve) => { release = resolve; });
   const users = [
-    { user_id: "admin", login_id: "admin", has_email: false, state: "active", protected: true },
-    { user_id: "user-1", login_id: "person", has_email: true, state: "active", protected: false },
+    { user_id: "admin", login_id: "admin", email: null, has_email: false, state: "active", protected: true },
+    { user_id: "user-1", login_id: "person", email: "person@example.test", has_email: true, state: "active", protected: false },
   ];
   const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
     getSession: async () => ({ password_change_required: false, is_system_admin: true }),
@@ -143,8 +143,15 @@ test("admin console은 검색·필터·보호 표시와 상태 변경 double-sub
   try {
     await view.act(async () => { await Promise.resolve(); });
     assert.match(view.container.textContent, /admin.*보호된 시스템 관리자/su);
+    assert.match(view.container.textContent, /person@example\.test/u);
+    assert.match(view.container.textContent, /admin.*이메일 없음/su);
     const protectedButton = buttonByText(view.container, "보호됨");
     assert.equal(protectedButton.disabled, true);
+    const searchInput = findElements(view.container, (node) => node.tagName === "INPUT" && reactProps(node)?.type === "search")[0];
+    assert.equal(reactProps(searchInput).placeholder, "로그인 ID, 사용자 ID 또는 이메일");
+    await view.act(async () => { reactProps(searchInput).onChange({ target: { value: "person@example.test" } }); });
+    assert.doesNotMatch(view.container.textContent, /보호된 시스템 관리자/u);
+    assert.match(view.container.textContent, /person@example\.test/u);
     const action = buttonByText(view.container, "중지");
     await view.act(async () => { action.dispatchEvent(new MinimalEvent("click")); action.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     assert.equal(changes, 1);
@@ -155,7 +162,7 @@ test("admin console은 검색·필터·보호 표시와 상태 변경 double-sub
 
 test("admin console은 pending_email을 이메일 인증 대기로 표시하고 상태 변경을 허용하지 않는다", async () => {
   let changes = 0;
-  const pendingEmailUser = { user_id: "user-pending", login_id: "pending-person", has_email: true, state: "pending_email", protected: false };
+  const pendingEmailUser = { user_id: "user-pending", login_id: "pending-person", email: "pending@example.test", has_email: true, state: "pending_email", protected: false };
   const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
     getSession: async () => ({ password_change_required: false, is_system_admin: true }),
     getUsers: async () => [pendingEmailUser],

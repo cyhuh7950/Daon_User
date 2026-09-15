@@ -109,10 +109,16 @@ async def _system_admin_user_api_denies_normal_user_and_protects_admin(tmp_path:
         assert admin == {
             "user_id": "admin",
             "login_id": "admin",
+            "email": None,
             "has_email": False,
             "state": "active",
             "protected": True,
         }
+        normal_user = next(
+            item for item in listed.json()["data"]["users"]
+            if item["user_id"] == "normal-user"
+        )
+        assert normal_user["email"] == "normal-user@example.test"
 
         protected = await client.patch(
             "/api/v1/admin/users/admin/state",
@@ -135,6 +141,66 @@ async def _system_admin_user_api_denies_normal_user_and_protects_admin(tmp_path:
         assert delete.status_code in {404, 405}
         unchanged = await client.get("/api/v1/admin/users")
         assert next(item for item in unchanged.json()["data"]["users"] if item["user_id"] == "admin")["state"] == "active"
+    dependencies.close()
+
+
+def test_pending_email_patch_is_rejected_without_mutation(tmp_path: Path) -> None:
+    asyncio.run(_pending_email_patch_is_rejected_without_mutation(tmp_path))
+
+
+async def _pending_email_patch_is_rejected_without_mutation(tmp_path: Path) -> None:
+    settings = replace(
+        RuntimeSettings.for_test(
+            database_path=tmp_path / "runtime.sqlite3",
+            policy_version="identity-policy-v1",
+        ),
+        system_admin_user_ids=frozenset({"admin"}),
+    )
+    dependencies = build_dependencies(settings)
+    password = secrets.token_urlsafe(24)
+    _add_user(dependencies, user_id="pending-user", password=password)
+    app = create_app(dependencies)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://app.example.com"
+    ) as admin_client, httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://app.example.com"
+    ) as target_client:
+        target_login = await target_client.post(
+            "/api/v1/auth/login", json={"login_id": "pending-user", "password": password}
+        )
+        assert target_login.status_code == 200
+        with dependencies.identity_repository.transaction() as connection:
+            connection.execute(
+                "UPDATE users SET state='pending_email' WHERE user_id='pending-user'"
+            )
+        admin_client.cookies.set(WEB_SESSION_COOKIE, await _admin_cookie(admin_client))
+
+        rejected = await admin_client.patch(
+            "/api/v1/admin/users/pending-user/state",
+            headers={
+                "Origin": "https://app.example.com",
+                "X-Daon-Bff-Transport": "internal",
+                "Idempotency-Key": "pending-user-state-0001",
+            },
+            json={"state": "active"},
+        )
+
+        assert rejected.status_code == 409
+        assert rejected.json()["error"]["code"] == "INVALID_USER_STATE"
+        with dependencies.identity_repository.transaction() as connection:
+            assert connection.execute(
+                "SELECT state FROM users WHERE user_id='pending-user'"
+            ).fetchone()[0] == "pending_email"
+            assert connection.execute(
+                "SELECT state FROM sessions WHERE user_id='pending-user'"
+            ).fetchone()[0] == "active"
+            assert connection.execute(
+                "SELECT COUNT(*) FROM admin_audit_outbox "
+                "WHERE operation='change_user_state' AND target_id='pending-user'"
+            ).fetchone()[0] == 0
+        assert dependencies.audit_store.list(
+            tenant_id="admin", action="identity.user.state_changed"
+        ).items == ()
     dependencies.close()
 
 

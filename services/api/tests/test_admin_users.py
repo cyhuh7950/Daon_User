@@ -218,6 +218,10 @@ def test_admin_user_state_protection_revocation_and_idempotency(tmp_path: Path) 
         service.list_users(normal)
     assert forbidden.value.code == "FORBIDDEN"
 
+    listed_users = {user.user_id: user for user in service.list_users(admin)}
+    assert listed_users["admin"].email is None
+    assert listed_users["user-one"].email == "user-one@example.test"
+
     with pytest.raises(IdentityError) as protected:
         service.change_state(
             admin,
@@ -289,6 +293,54 @@ def test_admin_user_state_protection_revocation_and_idempotency(tmp_path: Path) 
         trace_id=TRACE_ID, policy_version=POLICY_VERSION,
     )
     assert relogin.user_id == "user-one"
+
+
+def test_pending_email_state_change_is_rejected_without_mutation(tmp_path: Path) -> None:
+    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3")
+    identity.ensure_initial_admin()
+    password = secrets.token_urlsafe(24)
+    _add_local_user(repository, user_id="pending-user", password=password)
+    target = identity.local_login(
+        login_id="pending-user", password=password, platform=DevicePlatform.WEB,
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    with repository.transaction() as connection:
+        connection.execute(
+            "UPDATE users SET state='pending_email' WHERE user_id='pending-user'"
+        )
+    service = AdminUserService(
+        repository=repository,
+        audit_store=audit,
+        system_admin_user_ids=frozenset({"admin"}),
+        clock=clock,
+    )
+    admin = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+
+    with pytest.raises(IdentityError) as rejected:
+        service.change_state(
+            admin,
+            user_id="pending-user",
+            state="active",
+            idempotency_key="pending-user-state-0001",
+            trace_id=TRACE_ID,
+            policy_version=POLICY_VERSION,
+        )
+
+    assert rejected.value.code == "INVALID_USER_STATE"
+    assert rejected.value.http_status == 409
+    with repository.transaction() as connection:
+        assert connection.execute(
+            "SELECT state FROM users WHERE user_id='pending-user'"
+        ).fetchone()[0] == "pending_email"
+        assert connection.execute(
+            "SELECT state FROM sessions WHERE session_id=?", (target.session_id,)
+        ).fetchone()[0] == "active"
+        assert connection.execute(
+            "SELECT COUNT(*) FROM admin_audit_outbox WHERE operation='change_user_state'"
+        ).fetchone()[0] == 0
+    assert audit.list(
+        tenant_id="admin", action="identity.user.state_changed"
+    ).items == ()
 
 
 def test_state_change_commit_failure_rolls_back_domain_sessions_and_idempotency(tmp_path: Path) -> None:
@@ -366,7 +418,10 @@ def test_state_change_central_audit_failure_keeps_retryable_idempotent_intent(tm
     assert len(working_audit.list(tenant_id="admin", action="identity.user.state_changed").items) == 1
 
 
-def test_corrupted_initial_admin_is_never_changed_by_second_system_admin(tmp_path: Path) -> None:
+@pytest.mark.parametrize("corrupted_state", ["active", "pending_email"])
+def test_corrupted_initial_admin_is_never_changed_by_second_system_admin(
+    tmp_path: Path, corrupted_state: str,
+) -> None:
     identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3")
     identity.ensure_initial_admin()
     session = identity.local_login(
@@ -374,7 +429,10 @@ def test_corrupted_initial_admin_is_never_changed_by_second_system_admin(tmp_pat
         trace_id=TRACE_ID, policy_version=POLICY_VERSION,
     )
     with repository.transaction() as connection:
-        connection.execute("UPDATE users SET subject='corrupted-admin' WHERE user_id='admin'")
+        connection.execute(
+            "UPDATE users SET subject='corrupted-admin',state=? WHERE user_id='admin'",
+            (corrupted_state,),
+        )
     service = AdminUserService(
         repository=repository, audit_store=audit,
         system_admin_user_ids=frozenset({"admin", "second-admin"}), clock=clock,
@@ -386,8 +444,11 @@ def test_corrupted_initial_admin_is_never_changed_by_second_system_admin(tmp_pat
             trace_id=TRACE_ID, policy_version=POLICY_VERSION,
         )
     assert conflict.value.code == "INITIAL_ADMIN_CONFLICT"
+    assert conflict.value.http_status == 503
     with repository.transaction() as connection:
-        assert connection.execute("SELECT state FROM users WHERE user_id='admin'").fetchone()[0] == "active"
+        assert connection.execute(
+            "SELECT state FROM users WHERE user_id='admin'"
+        ).fetchone()[0] == corrupted_state
         assert connection.execute("SELECT state FROM sessions WHERE session_id=?", (session.session_id,)).fetchone()[0] == "active"
         assert connection.execute("SELECT COUNT(*) FROM admin_audit_outbox").fetchone()[0] == 0
     assert audit.list(tenant_id="second", action="identity.user.state_changed").items == ()
