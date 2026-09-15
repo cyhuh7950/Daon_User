@@ -7,6 +7,8 @@ import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-ro
 
 const SAFE_ERRORS = new Set(["ADMIN_USERS_UNAVAILABLE", "ADMIN_USERS_RESPONSE_INVALID", "FORBIDDEN"]);
 const replaceLocation = (path) => window.location.replace(path);
+const MUTABLE_STATES = new Set(["active", "suspended"]);
+const canChangeState = (user) => !user.protected && MUTABLE_STATES.has(user.state);
 
 export function AdminUserConsole({
   getSession = getCurrentNotebookSession,
@@ -70,7 +72,7 @@ export function AdminUserConsole({
   }, [search, stateFilter, users]);
 
   const changeState = async (user) => {
-    if (user.protected || pendingIds.current.has(user.user_id)) return;
+    if (!canChangeState(user) || pendingIds.current.has(user.user_id)) return;
     pendingIds.current.add(user.user_id); setPending(new Set(pendingIds.current)); setError(null);
     const nextState = user.state === "active" ? "suspended" : "active";
     try {
@@ -95,8 +97,8 @@ export function AdminUserConsole({
       <div className="admin-user-tools"><label>사용자 검색<input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="로그인 ID 또는 사용자 ID" /></label><label>상태 필터<select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}><option value="all">전체</option><option value="active">활성</option><option value="suspended">중지</option></select></label></div>
       {visibleUsers.length === 0 ? <p className="admin-user-empty">조건에 맞는 사용자가 없습니다.</p> : <div className="admin-user-list">
         {visibleUsers.map((user) => <article className="admin-user-row" key={user.user_id}>
-          <div><strong>{user.login_id ?? "로그인 ID 없음"}</strong><span>{user.user_id}</span><small>{user.has_email ? "이메일 등록" : "이메일 없음"} · {user.protected ? "보호된 시스템 관리자" : user.state === "active" ? "활성 계정" : "중지된 계정"}</small></div>
-          <button type="button" disabled={user.protected || pending.has(user.user_id)} aria-label={`${user.login_id ?? user.user_id} 계정 상태 변경`} onClick={() => void changeState(user)}>{user.protected ? "보호됨" : pending.has(user.user_id) ? "처리 중…" : user.state === "active" ? "중지" : "재활성화"}</button>
+          <div><strong>{user.login_id ?? "로그인 ID 없음"}</strong><span>{user.user_id}</span><small>{user.has_email ? "이메일 등록" : "이메일 없음"} · {user.protected ? "보호된 시스템 관리자" : user.state === "pending_email" ? "이메일 인증 대기" : user.state === "active" ? "활성 계정" : "중지된 계정"}</small></div>
+          <button type="button" disabled={!canChangeState(user) || pending.has(user.user_id)} aria-label={`${user.login_id ?? user.user_id} 계정 상태 변경`} onClick={() => void changeState(user)}>{user.protected ? "보호됨" : user.state === "pending_email" ? "인증 대기" : pending.has(user.user_id) ? "처리 중…" : user.state === "active" ? "중지" : "재활성화"}</button>
         </article>)}
       </div>}
     </section>}

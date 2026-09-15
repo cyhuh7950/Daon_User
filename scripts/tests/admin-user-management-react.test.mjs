@@ -153,6 +153,24 @@ test("admin console은 검색·필터·보호 표시와 상태 변경 double-sub
   } finally { await view.cleanup(); }
 });
 
+test("admin console은 pending_email을 이메일 인증 대기로 표시하고 상태 변경을 허용하지 않는다", async () => {
+  let changes = 0;
+  const pendingEmailUser = { user_id: "user-pending", login_id: "pending-person", has_email: true, state: "pending_email", protected: false };
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ password_change_required: false, is_system_admin: true }),
+    getUsers: async () => [pendingEmailUser],
+    setUserState: async () => { changes += 1; return { ...pendingEmailUser, state: "active" }; },
+  }, ".admin-pending-email-");
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    assert.match(view.container.textContent, /pending-person.*이메일 인증 대기/su);
+    const action = buttonByText(view.container, "인증 대기");
+    assert.equal(action.disabled, true);
+    await view.act(async () => { reactProps(action).onClick(); await Promise.resolve(); });
+    assert.equal(changes, 0);
+  } finally { await view.cleanup(); }
+});
+
 test("강제 변경 화면은 확인 불일치와 double-submit을 막고 성공 시 로그인으로 복귀한다", async () => {
   let changes = 0; const redirects = []; let release;
   const pending = new Promise((resolve) => { release = resolve; });
