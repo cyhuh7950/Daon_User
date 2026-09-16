@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from ipaddress import ip_address
 import os
 import re
 from threading import RLock
@@ -19,6 +20,8 @@ PROVIDER_CODES = (
     "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
     "OPENROUTER", "ANTHROPIC", "OLLAMA",
 )
+GATEWAY_PROVIDER_CODES = ("OMNIROUTE", "EOUL_GATEWAY")
+CONNECTION_PROVIDER_CODES = PROVIDER_CODES + GATEWAY_PROVIDER_CODES
 MODEL_ROLES = (
     "text", "vision", "document_parser", "audio_understanding", "speech_to_text", "embedding", "reranker",
 )
@@ -207,22 +210,66 @@ def _validate_provider(provider_code: str) -> str:
     return provider_code
 
 
-def _validate_base_url(provider_code: str, value: str) -> str:
+def _validate_connection_provider(provider_code: str) -> str:
+    if provider_code not in CONNECTION_PROVIDER_CODES:
+        raise ProviderSettingsError("PROVIDER_CODE_UNSUPPORTED")
+    return provider_code
+
+
+def validate_provider_base_url(provider_code: str, value: str) -> str:
+    _validate_connection_provider(provider_code)
     if not isinstance(value, str) or value != value.strip() or len(value) > 2048:
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
     parsed = urlsplit(value)
-    allowed_schemes = {"http", "https"} if provider_code == "OLLAMA" else {"https"}
+    dynamic_endpoint = provider_code in {"OLLAMA", "OMNIROUTE", "EOUL_GATEWAY"}
+    allowed_schemes = {"http", "https"} if dynamic_endpoint else {"https"}
     if (parsed.scheme not in allowed_schemes or not parsed.hostname or parsed.username is not None
             or parsed.password is not None or parsed.query or parsed.fragment):
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
-    normalized = value.rstrip("/")
-    if provider_code == "OLLAMA":
-        configured = os.environ.get("OLLAMA_BASE_URL", "").strip().rstrip("/")
-        if not configured or normalized != configured:
-            raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
-    elif normalized != _PROVIDER_BASE_URLS[provider_code]:
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID") from None
+    if port is not None and port < 1:
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
+    normalized = value.rstrip("/")
+    hostname = parsed.hostname.lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
+    try:
+        address = ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is not None and (
+        address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    ):
+        raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
+    internal_hostname = (
+        address is None
+        and (
+            "." not in hostname
+            or hostname.endswith(".internal")
+            or hostname.endswith(".svc")
+            or hostname.endswith(".svc.cluster.local")
+        )
+    )
+    if parsed.scheme == "http" and not (
+        (address is not None and address.is_private) or internal_hostname
+    ):
+        raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
+    if not dynamic_endpoint:
+        expected = _PROVIDER_BASE_URLS.get(provider_code)
+        if expected is None or normalized != expected:
+            raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
     return normalized
+
+
+def _validate_base_url(provider_code: str, value: str) -> str:
+    return validate_provider_base_url(provider_code, value)
 
 
 def _validate_deployment(deployment_id: str, model_id: str, roles: tuple[str, ...]) -> None:
