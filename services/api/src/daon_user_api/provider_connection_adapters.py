@@ -243,6 +243,32 @@ class OpenRouterAdapter(_BaseAdapter):
         return self._ready(connection)
 
 
+class FixedOpenAICompatibleAdapter(OpenRouterAdapter):
+    _OFFICIAL_BASE_URLS = {
+        "GROQ": "https://api.groq.com/openai/v1",
+        "MISTRAL": "https://api.mistral.ai/v1",
+        "UPSTAGE": "https://api.upstage.ai/v1",
+    }
+
+    def _validate_connection(self, connection: ProviderConnection) -> str:
+        base = super()._validate_connection(connection)
+        if base != self._OFFICIAL_BASE_URLS[self.provider_code]:
+            raise AdapterError("PROVIDER_BASE_URL_INVALID")
+        return base
+
+
+class GroqAdapter(FixedOpenAICompatibleAdapter):
+    provider_code = "GROQ"
+
+
+class MistralAdapter(FixedOpenAICompatibleAdapter):
+    provider_code = "MISTRAL"
+
+
+class UpstageAdapter(FixedOpenAICompatibleAdapter):
+    provider_code = "UPSTAGE"
+
+
 class _RoutingGatewayAdapter(_BaseAdapter):
     routing_owner = "gateway"
     daon_fallback_allowed = False
@@ -342,6 +368,9 @@ class AdapterRegistry:
         actual_transport = transport or UrllibAdapterTransport()
         configured_models = logical_models or {}
         self._adapters: dict[str, ConnectionAdapter] = {
+            "GROQ": GroqAdapter(actual_transport),
+            "MISTRAL": MistralAdapter(actual_transport),
+            "UPSTAGE": UpstageAdapter(actual_transport),
             "OLLAMA": OllamaAdapter(actual_transport),
             "OPENROUTER": OpenRouterAdapter(actual_transport),
             "OMNIROUTE": OmniRouteAdapter(actual_transport, configured_models),

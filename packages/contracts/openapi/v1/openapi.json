@@ -4019,6 +4019,21 @@
         "responses": { "200": { "$ref": "#/components/responses/RestoreResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
       }
     },
+    "/api/v1/workspaces/{id}/model-defaults": {
+      "get": {
+        "operationId": "getWorkspaceModelDefaults", "tags": ["Model"],
+        "summary": "Workspace 기본 모델과 선택 가능한 안전 모델 조회", "x-implementation-owner": "R1-PROVIDER-CREDENTIAL-CAPABILITY",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }],
+        "responses": { "200": { "description": "Credential과 내부 Endpoint가 제외된 Workspace 모델 기본값", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceModelDefaultsEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/SafeFailure" } }
+      },
+      "patch": {
+        "operationId": "updateWorkspaceModelDefault", "tags": ["Model"],
+        "summary": "Workspace 기능별 기본 모델 변경", "x-implementation-owner": "R1-PROVIDER-CREDENTIAL-CAPABILITY",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceModelDefaultRequest" } } } },
+        "responses": { "200": { "description": "변경된 Workspace 모델 기본값", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceModelDefaultsEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
     "/api/v1/workspaces/{id}/egress-policy": {
       "get": {
         "operationId": "getWorkspaceEffectiveEgressPolicy", "tags": ["Policy"],
@@ -4081,6 +4096,15 @@
         "parameters": [{ "$ref": "#/components/parameters/ProviderConnectionId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderConnectionMutationRequest" } } } },
         "responses": { "204": { "description": "연결과 Catalog를 유지한 Credential 삭제", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
+      }
+    },
+    "/api/v1/admin/provider-connections/{connection_id}/credential": {
+      "post": {
+        "operationId": "replaceSystemProviderCredential", "tags": ["Model"],
+        "summary": "저장된 Endpoint 재입력 없이 시스템 Provider Credential 교체", "x-implementation-owner": "R1-PROVIDER-CREDENTIAL-CAPABILITY",
+        "parameters": [{ "$ref": "#/components/parameters/ProviderConnectionId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderCredentialReplaceRequest" } } } },
+        "responses": { "200": { "description": "Credential 교체와 재검증이 완료된 안전 연결 상태", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderConnectionAdminEnvelope" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }, "503": { "$ref": "#/components/responses/SafeFailure" } }
       }
     },
     "/api/v1/admin/provider-catalog/{connection_id}/refresh": {
@@ -4951,6 +4975,69 @@
         "properties": {
           "expected_version": { "type": "integer", "minimum": 1 },
           "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true }
+        }
+      },
+      "ProviderCredentialReplaceRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["credential", "expected_version", "step_up_authorization_id"],
+        "properties": {
+          "credential": { "type": "string", "minLength": 1, "maxLength": 16384, "writeOnly": true },
+          "expected_version": { "type": "integer", "minimum": 1 },
+          "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true }
+        }
+      },
+      "WorkspaceAvailableModel": {
+        "type": "object", "additionalProperties": false,
+        "required": ["connection_id", "provider_code", "display_name", "configured", "credential_version", "verification_status", "connection_version", "model_id", "effective_capabilities", "catalog_status", "catalog_version"],
+        "properties": {
+          "connection_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "provider_code": { "$ref": "#/components/schemas/ProviderCode" },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "configured": { "type": "boolean" },
+          "credential_version": { "type": "integer", "minimum": 0 },
+          "verification_status": { "type": "string", "enum": ["verified"] },
+          "connection_version": { "type": "integer", "minimum": 1 },
+          "model_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "effective_capabilities": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/components/schemas/ProviderCapability" } },
+          "catalog_status": { "type": "string", "enum": ["ready"] },
+          "catalog_version": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "WorkspaceModelDefaultView": {
+        "type": "object", "additionalProperties": false,
+        "required": ["capability", "connection_id", "model_id", "version"],
+        "properties": {
+          "capability": { "$ref": "#/components/schemas/ProviderCapability" },
+          "connection_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "model_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "version": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "WorkspaceModelDefaultsView": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspace_id", "available_models", "defaults", "version"],
+        "properties": {
+          "workspace_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "available_models": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceAvailableModel" } },
+          "defaults": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceModelDefaultView" } },
+          "version": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "WorkspaceModelDefaultRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["capability", "connection_id", "model_id", "expected_version"],
+        "properties": {
+          "capability": { "type": "string", "enum": ["text_generation", "image_understanding", "document_parsing"] },
+          "connection_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "model_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "expected_version": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "WorkspaceModelDefaultsEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "$ref": "#/components/schemas/WorkspaceModelDefaultsView" },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id", "workspace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" }, "workspace_id": { "$ref": "#/components/schemas/OpaqueId" }, "replayed": { "type": "boolean" } } }
         }
       },
       "ProviderCapabilityCorrectionRequest": {

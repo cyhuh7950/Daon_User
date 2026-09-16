@@ -65,6 +65,10 @@ class ProviderCatalog:
             return ProviderCatalog._from_ollama(connection_id, payload)
         if provider_code == "OPENROUTER":
             return ProviderCatalog._from_openrouter(connection_id, payload)
+        if provider_code in {"GROQ", "MISTRAL", "UPSTAGE"}:
+            return ProviderCatalog._from_openai_compatible(
+                connection_id, provider_code, payload,
+            )
         raise ProviderCatalogError("PROVIDER_CATALOG_UNSUPPORTED")
 
     @staticmethod
@@ -160,3 +164,29 @@ class ProviderCatalog:
                 daon_fallback_allowed=True,
             )
         return tuple(discovered[model_id] for model_id in sorted(discovered))
+
+    @staticmethod
+    def _from_openai_compatible(
+        connection_id: str,
+        provider_code: str,
+        payload: Mapping[object, object],
+    ) -> tuple[DiscoveredModel, ...]:
+        raw_models = payload.get("data")
+        if not isinstance(raw_models, list):
+            raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+        model_ids: list[str] = []
+        for raw_model in raw_models:
+            if not isinstance(raw_model, Mapping):
+                raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+            model_ids.append(_valid_model_id(raw_model.get("id")))
+        return tuple(
+            DiscoveredModel(
+                connection_id=connection_id,
+                provider_code=provider_code,
+                model_id=model_id,
+                reported_capabilities=("text_generation",),
+                routing_owner="provider",
+                daon_fallback_allowed=True,
+            )
+            for model_id in sorted(set(model_ids))
+        )

@@ -159,11 +159,15 @@ from .provider_connection_admin import (
     ProviderConnectionAdminContext,
     ProviderConnectionAdminError,
     ProviderConnectionCreateCommand,
+    ProviderCredentialReplaceCommand,
     ProviderConnectionUpdateCommand,
     PostgresProviderConnectionService,
 )
 from .provider_credentials import ProviderCredentialCipher
-from .workspace_model_defaults import PostgresWorkspaceModelResolver
+from .workspace_model_defaults import (
+    PostgresWorkspaceModelDefaultsService, PostgresWorkspaceModelResolver,
+    WorkspaceModelDefaultsContext, WorkspaceModelDefaultsError,
+)
 from .retention_inventory_postgres import PostgresRetentionInventoryProvider
 from .retention_request_postgres import PostgresRetentionRequestService
 from .operations_status import OperationsStatusContext, OperationsStatusService
@@ -464,6 +468,7 @@ class RuntimeDependencies:
     object_queue_store: PostgresObjectQueueStore | None = None
     provider_settings_service: ProviderSettingsService | None = None
     provider_connection_service: Any | None = None
+    workspace_model_defaults_service: Any | None = None
     operations_status_service: OperationsStatusService | None = None
     output_version_settings_service: OutputVersionSettingsService | None = None
     screen_preference_service: ScreenPreferenceService | None = None
@@ -875,6 +880,10 @@ class ProviderConnectionMutationBody(BaseModel):
     step_up_authorization_id: str = Field(min_length=1, max_length=4096, repr=False)
 
 
+class ProviderCredentialReplaceBody(ProviderConnectionMutationBody):
+    credential: str = Field(min_length=1, max_length=16384, repr=False)
+
+
 class ProviderCapabilityBody(ProviderConnectionMutationBody):
     effective_capabilities: list[str] = Field(min_length=1, max_length=12)
 
@@ -895,6 +904,14 @@ class ModelPolicyBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     bindings: dict[str, str]
     expected_version: int
+
+
+class WorkspaceModelDefaultBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    capability: str
+    connection_id: str = Field(min_length=1, max_length=256)
+    model_id: str = Field(min_length=1, max_length=256)
+    expected_version: int = Field(ge=0)
 
 
 class OutputVersionSettingsBody(BaseModel):
@@ -1456,6 +1473,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         provider_connection_service = PostgresProviderConnectionService(
             dependencies.cloud_store, provider_cipher,
         )
+    workspace_model_defaults_service = dependencies.workspace_model_defaults_service
+    if workspace_model_defaults_service is None and dependencies.cloud_store is not None:
+        workspace_model_defaults_service = PostgresWorkspaceModelDefaultsService(dependencies.cloud_store)
     retention_request_service = retention_service
     operations_status_service = dependencies.operations_status_service
     if operations_status_service is None and dependencies.cloud_store is not None:
@@ -2027,6 +2047,21 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return _error_response(
             error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
             request.state.trace_id, retryable=error.retryable,
+        )
+
+    @app.exception_handler(WorkspaceModelDefaultsError)
+    async def workspace_model_defaults_error(
+        request: Request, error: WorkspaceModelDefaultsError,
+    ) -> JSONResponse:
+        safe_codes = {
+            "PROVIDER_CAPABILITY_UNSUPPORTED", "WORKSPACE_MODEL_DEFAULT_UNAVAILABLE",
+            "VERSION_CONFLICT", "IDEMPOTENCY_KEY_REUSED",
+        }
+        return _error_response(
+            error.status,
+            error.code if error.code in safe_codes else "WORKSPACE_MODEL_DEFAULTS_UNAVAILABLE",
+            request.state.trace_id,
+            retryable=error.retryable,
         )
 
     @app.post("/api/v1/auth/verify-email")
@@ -4471,6 +4506,32 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             },
         )
 
+    @app.post("/api/v1/admin/provider-connections/{connection_id}/credential")
+    async def replace_provider_credential(
+        connection_id: str, body: ProviderCredentialReplaceBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        context = _provider_admin_step_up(
+            request, target_id=f"provider-connection:{connection_id}",
+            authorization=body.step_up_authorization_id,
+            operation="provider_connection.credential.replace", idempotency_key=idempotency_key,
+        )
+        command = ProviderCredentialReplaceCommand(
+            credential=body.credential, expected_version=body.expected_version,
+        )
+        try:
+            item, replayed = await asyncio.to_thread(
+                _provider_admin_service().replace_credential,
+                context, connection_id, command, idempotency_key,
+            )
+        finally:
+            body.credential = ""
+        return _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
+        )
+
     @app.post("/api/v1/admin/provider-catalog/{connection_id}/refresh")
     async def refresh_provider_catalog(
         connection_id: str, body: ProviderConnectionMutationBody, request: Request,
@@ -4605,6 +4666,79 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
         })
         response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/model-defaults")
+    async def get_workspace_model_defaults(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        if workspace_model_defaults_service is None:
+            raise WorkspaceModelDefaultsError(
+                "WORKSPACE_MODEL_DEFAULTS_UNAVAILABLE", 503, retryable=True,
+            )
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        result = await asyncio.to_thread(
+            workspace_model_defaults_service.read,
+            WorkspaceModelDefaultsContext(
+                principal.tenant_id, id, principal.user_id,
+                request.state.trace_id, dependencies.settings.policy_version,
+            ),
+        )
+        data = {key: value for key, value in result.items() if key != "etag"}
+        response = JSONResponse({
+            "data": data,
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        })
+        response.headers["ETag"] = str(result["etag"])
+        return response
+
+    @app.patch("/api/v1/workspaces/{id}/model-defaults")
+    async def patch_workspace_model_defaults(
+        id: str,
+        body: WorkspaceModelDefaultBody,
+        request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        if workspace_model_defaults_service is None:
+            raise WorkspaceModelDefaultsError(
+                "WORKSPACE_MODEL_DEFAULTS_UNAVAILABLE", 503, retryable=True,
+            )
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        result, replayed = await asyncio.to_thread(
+            workspace_model_defaults_service.save,
+            WorkspaceModelDefaultsContext(
+                principal.tenant_id, id, principal.user_id,
+                request.state.trace_id, dependencies.settings.policy_version,
+            ),
+            capability=body.capability,
+            connection_id=body.connection_id,
+            model_id=body.model_id,
+            expected_version=body.expected_version,
+            expected_etag=if_match,
+            idempotency_key=idempotency_key,
+        )
+        data = {key: value for key, value in result.items() if key != "etag"}
+        response = JSONResponse({
+            "data": data,
+            "meta": {
+                "trace_id": request.state.trace_id,
+                "workspace_id": id,
+                "replayed": replayed,
+            },
+        })
+        response.headers["ETag"] = str(result["etag"])
         return response
 
     @app.get("/api/v1/workspaces/{id}/sync-operations")

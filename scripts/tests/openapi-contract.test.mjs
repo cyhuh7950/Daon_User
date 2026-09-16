@@ -200,6 +200,24 @@ test("시스템 Provider 연결 관리 계약은 admin step-up version과 비밀
   assert.match(credentialDelete.responses["204"].description, /Credential 삭제/);
 });
 
+test("Workspace model defaults와 credential-only rotation은 versioned secret-safe 계약이다", async () => {
+  const document = await loadContract();
+  const defaults = document.paths["/api/v1/workspaces/{id}/model-defaults"];
+  assert.deepEqual(Object.keys(defaults), ["get", "patch"]);
+  assert.ok(defaults.patch.parameters.some((item) => item.$ref === "#/components/parameters/IfMatch"));
+  assert.ok(defaults.patch.parameters.some((item) => item.$ref === "#/components/parameters/IdempotencyKey"));
+  const rotation = document.paths["/api/v1/admin/provider-connections/{connection_id}/credential"].post;
+  assert.ok(rotation.parameters.some((item) => item.$ref === "#/components/parameters/IdempotencyKey"));
+  const request = document.components.schemas.ProviderCredentialReplaceRequest;
+  assert.deepEqual(request.required, ["credential", "expected_version", "step_up_authorization_id"]);
+  assert.equal(request.properties.credential.writeOnly, true);
+  assert.equal(request.properties.base_url, undefined);
+  const model = document.components.schemas.WorkspaceAvailableModel;
+  for (const forbidden of ["credential", "credential_digest", "base_url", "endpoint", "api_key", "secret"]) {
+    assert.equal(model.properties[forbidden], undefined, forbidden);
+  }
+});
+
 test("OpenAPI 검증기는 body-versioned Provider mutation의 expected_version 누락을 거부한다", async () => {
   const document = clone(await loadContract());
   document.components.schemas.ProviderConnectionMutationRequest.required = ["step_up_authorization_id"];

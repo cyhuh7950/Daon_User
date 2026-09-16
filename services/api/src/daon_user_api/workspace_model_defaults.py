@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Iterator, Sequence
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterator, Mapping, Sequence, cast
+
+from psycopg.types.json import Jsonb
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .provider_credentials import EncryptedCredential, ProviderCredentialCipher, ProviderCredentialError
 from .provider_settings import ProviderSettingsError, validate_provider_base_url
+from .data_canon import canonical_json_bytes
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -19,6 +24,7 @@ _ACTIVE_PROVIDERS = {
     "document_parsing": frozenset({"UPSTAGE"}),
 }
 _ROUTING_GATEWAYS = frozenset({"EOUL_GATEWAY", "OMNIROUTE"})
+_ACTIVE_CAPABILITIES = frozenset(_ACTIVE_PROVIDERS)
 
 
 class WorkspaceModelUnavailable(RuntimeError):
@@ -26,6 +32,166 @@ class WorkspaceModelUnavailable(RuntimeError):
         self.code = code
         self.retryable = retryable
         super().__init__(code)
+
+
+class WorkspaceModelDefaultsError(RuntimeError):
+    def __init__(self, code: str, status: int = 400, *, retryable: bool = False) -> None:
+        self.code = code
+        self.status = status
+        self.retryable = retryable
+        super().__init__(code)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceModelDefaultsContext:
+    tenant_id: str
+    workspace_id: str
+    actor_id: str
+    trace_id: str
+    policy_version: str
+
+    def __post_init__(self) -> None:
+        if any(
+            not isinstance(value, str) or _SAFE_ID.fullmatch(value) is None
+            for value in (
+                self.tenant_id, self.workspace_id, self.actor_id,
+                self.trace_id, self.policy_version,
+            )
+        ):
+            raise WorkspaceModelDefaultsError("WORKSPACE_MODEL_DEFAULTS_CONTEXT_INVALID")
+
+
+class PostgresWorkspaceModelDefaultsService:
+    def __init__(self, store: PostgresCloudStore) -> None:
+        self._store = store
+
+    @staticmethod
+    def _cloud(context: WorkspaceModelDefaultsContext, operation: str) -> CloudAccessContext:
+        return CloudAccessContext(context.tenant_id, context.workspace_id, context.actor_id, operation)
+
+    @staticmethod
+    def _snapshot(connection: Any, context: WorkspaceModelDefaultsContext) -> dict[str, object]:
+        models = connection.execute(
+            "SELECT c.connection_id,c.provider_code,c.display_name,c.encrypted_credential IS NOT NULL,"
+            "c.credential_version,c.verification_status,c.version,m.model_id,m.effective_capabilities,"
+            "m.catalog_status,m.catalog_version FROM system_provider_connections c "
+            "JOIN system_provider_models m ON m.connection_id=c.connection_id "
+            "WHERE c.enabled=true AND c.verification_status='verified' AND m.catalog_status='ready' "
+            "ORDER BY c.display_name,c.connection_id,m.model_id"
+        ).fetchall()
+        defaults = connection.execute(
+            "SELECT capability,connection_id,model_id,version FROM workspace_model_defaults "
+            "WHERE tenant_id=%s AND workspace_id=%s ORDER BY capability",
+            (context.tenant_id, context.workspace_id),
+        ).fetchall()
+        available = [
+            {
+                "connection_id": str(row[0]), "provider_code": str(row[1]),
+                "display_name": str(row[2]), "configured": bool(row[3]),
+                "credential_version": int(row[4]), "verification_status": str(row[5]),
+                "connection_version": int(row[6]), "model_id": str(row[7]),
+                "effective_capabilities": [
+                    str(item) for item in (row[8] or ()) if str(item) in _ACTIVE_CAPABILITIES
+                ],
+                "catalog_status": str(row[9]), "catalog_version": int(row[10]),
+            }
+            for row in models
+            if set(row[8] or ()) & _ACTIVE_CAPABILITIES
+        ]
+        default_views = [
+            {"capability": str(row[0]), "connection_id": str(row[1]),
+             "model_id": str(row[2]), "version": int(row[3])}
+            for row in defaults if str(row[0]) in _ACTIVE_CAPABILITIES
+        ]
+        etag_payload = {"available_models": available, "defaults": default_views}
+        etag = '"workspace-model-defaults-' + hashlib.sha256(
+            canonical_json_bytes(etag_payload)
+        ).hexdigest()[:24] + '"'
+        return {
+            "workspace_id": context.workspace_id,
+            "available_models": available,
+            "defaults": default_views,
+            "version": max((item["version"] for item in default_views), default=0),
+            "etag": etag,
+        }
+
+    def read(self, context: WorkspaceModelDefaultsContext) -> dict[str, object]:
+        try:
+            with self._store._transaction(self._cloud(context, "workspace_model_defaults.read")) as connection:
+                return self._snapshot(connection, context)
+        except CloudDatabaseError as error:
+            raise WorkspaceModelDefaultsError(
+                "WORKSPACE_MODEL_DEFAULTS_UNAVAILABLE", 503, retryable=error.retryable,
+            ) from None
+
+    def save(
+        self, context: WorkspaceModelDefaultsContext, *, capability: str,
+        connection_id: str, model_id: str, expected_version: int,
+        expected_etag: str, idempotency_key: str,
+    ) -> tuple[dict[str, object], bool]:
+        if capability not in _ACTIVE_CAPABILITIES:
+            raise WorkspaceModelDefaultsError("PROVIDER_CAPABILITY_UNSUPPORTED", 409)
+        operation = "workspace_model_defaults.save"
+        fingerprint = hashlib.sha256(canonical_json_bytes({
+            "capability": capability, "connection_id": connection_id, "model_id": model_id,
+            "expected_version": expected_version, "expected_etag": expected_etag,
+        })).hexdigest()
+        try:
+            with self._store._transaction(self._cloud(context, operation)) as connection:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{operation}|{idempotency_key}",),
+                )
+                replay = connection.execute(
+                    "SELECT request_fingerprint,result FROM idempotency_records "
+                    "WHERE tenant_id=%s AND workspace_id=%s AND actor_id=%s AND operation=%s AND idempotency_key=%s",
+                    (context.tenant_id, context.workspace_id, context.actor_id, operation, idempotency_key),
+                ).fetchone()
+                if replay is not None:
+                    if str(replay[0]) != fingerprint:
+                        raise WorkspaceModelDefaultsError("IDEMPOTENCY_KEY_REUSED", 409)
+                    return cast(dict[str, object], replay[1]), True
+                current_snapshot = self._snapshot(connection, context)
+                if current_snapshot["etag"] != expected_etag:
+                    raise WorkspaceModelDefaultsError("VERSION_CONFLICT", 409)
+                current = connection.execute(
+                    "SELECT version FROM workspace_model_defaults WHERE tenant_id=%s AND workspace_id=%s AND capability=%s FOR UPDATE",
+                    (context.tenant_id, context.workspace_id, capability),
+                ).fetchone()
+                current_version = 0 if current is None else int(current[0])
+                if current_version != expected_version:
+                    raise WorkspaceModelDefaultsError("VERSION_CONFLICT", 409)
+                allowed = connection.execute(
+                    "SELECT 1 FROM system_provider_connections c JOIN system_provider_models m ON m.connection_id=c.connection_id "
+                    "WHERE c.connection_id=%s AND m.model_id=%s AND c.enabled=true AND c.verification_status='verified' "
+                    "AND m.catalog_status='ready' AND %s=ANY(m.effective_capabilities)",
+                    (connection_id, model_id, capability),
+                ).fetchone()
+                if allowed is None:
+                    raise WorkspaceModelDefaultsError("WORKSPACE_MODEL_DEFAULT_UNAVAILABLE", 409)
+                next_version = current_version + 1
+                connection.execute(
+                    "INSERT INTO workspace_model_defaults (tenant_id,workspace_id,capability,connection_id,model_id,version,updated_by,trace_id,policy_version) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (tenant_id,workspace_id,capability) DO UPDATE SET "
+                    "connection_id=excluded.connection_id,model_id=excluded.model_id,version=excluded.version,updated_by=excluded.updated_by,"
+                    "trace_id=excluded.trace_id,policy_version=excluded.policy_version,updated_at=now()",
+                    (context.tenant_id, context.workspace_id, capability, connection_id, model_id,
+                     next_version, context.actor_id, context.trace_id, context.policy_version),
+                )
+                result = self._snapshot(connection, context)
+                connection.execute(
+                    "INSERT INTO idempotency_records (tenant_id,workspace_id,actor_id,operation,idempotency_key,request_fingerprint,result,status,expires_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,'completed',%s)",
+                    (context.tenant_id, context.workspace_id, context.actor_id, operation,
+                     idempotency_key, fingerprint, Jsonb(result), datetime.now(timezone.utc) + timedelta(hours=24)),
+                )
+                return result, False
+        except WorkspaceModelDefaultsError:
+            raise
+        except CloudDatabaseError as error:
+            raise WorkspaceModelDefaultsError(
+                "WORKSPACE_MODEL_DEFAULTS_UNAVAILABLE", 503, retryable=error.retryable,
+            ) from None
 
 
 @dataclass(frozen=True, slots=True)

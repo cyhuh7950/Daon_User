@@ -856,6 +856,45 @@ test("BFF exposes only bounded Provider settings paths and query", async () => {
   assert.equal(rejectedCalls, 0);
 });
 
+test("BFF exposes safe named connection credential and Workspace model default routes", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: {}, meta: {} }, { headers: { ETag: '"model-defaults-v1"' } });
+    },
+  });
+  const mutationHeaders = {
+    Origin: "https://app.example.com",
+    "Sec-Fetch-Site": "same-origin",
+    "Content-Type": "application/json",
+    "Idempotency-Key": "provider-operation-0001",
+  };
+  const replaced = await proxy(new Request(
+    "https://app.example.com/bff/api/admin/provider-connections/upstage-primary/credential",
+    { method: "POST", headers: mutationHeaders, body: JSON.stringify({ credential: "fixture-only" }) },
+  ), ["admin", "provider-connections", "upstage-primary", "credential"]);
+  const read = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/model-defaults",
+  ), ["workspaces", "workspace-001", "model-defaults"]);
+  const saved = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/model-defaults",
+    {
+      method: "PATCH",
+      headers: { ...mutationHeaders, "If-Match": '"model-defaults-v0"' },
+      body: JSON.stringify({ capability: "text_generation" }),
+    },
+  ), ["workspaces", "workspace-001", "model-defaults"]);
+
+  assert.deepEqual([replaced.status, read.status, saved.status], [200, 200, 200]);
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/admin/provider-connections/upstage-primary/credential", method: "POST" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-defaults", method: "GET" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-defaults", method: "PATCH" },
+  ]);
+});
+
 test("BFF는 검증된 Workspace Knowledge 목록 GET만 same-origin으로 노출한다", async () => {
   const captured = [];
   const proxy = createBffProxy({

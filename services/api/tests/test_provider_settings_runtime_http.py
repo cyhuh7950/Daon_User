@@ -240,6 +240,87 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale.status_code, 409)
         self.assertEqual(stale.json()["error"]["code"], "VERSION_CONFLICT")
 
+    async def test_workspace_model_defaults_get_and_patch_use_safe_projection_and_etag(self) -> None:
+        class WorkspaceDefaultsService:
+            def __init__(self) -> None:
+                self.calls = []
+                self.result = {
+                    "workspace_id": self_workspace_id,
+                    "available_models": [{
+                        "connection_id": "ollama-lan",
+                        "provider_code": "OLLAMA",
+                        "display_name": "사내 Ollama",
+                        "configured": False,
+                        "credential_version": 0,
+                        "verification_status": "verified",
+                        "connection_version": 3,
+                        "model_id": "qwen3:8b",
+                        "effective_capabilities": ["text_generation"],
+                        "catalog_status": "ready",
+                        "catalog_version": 2,
+                    }],
+                    "defaults": [],
+                    "version": 0,
+                    "etag": '"workspace-model-defaults-test-v0"',
+                }
+
+            def read(self, context):
+                self.calls.append(("read", context))
+                return self.result
+
+            def save(self, context, **values):
+                self.calls.append(("save", context, values))
+                self.result = {
+                    **self.result,
+                    "defaults": [{
+                        "capability": values["capability"],
+                        "connection_id": values["connection_id"],
+                        "model_id": values["model_id"],
+                        "version": 1,
+                    }],
+                    "version": 1,
+                    "etag": '"workspace-model-defaults-test-v1"',
+                }
+                return self.result, False
+
+        self_workspace_id = self.workspace_id
+        service = WorkspaceDefaultsService()
+        self.dependencies.workspace_model_defaults_service = service
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        path = f"/api/v1/workspaces/{self.workspace_id}/model-defaults"
+        initial = await self.client.get(path)
+        self.assertEqual(initial.status_code, 200, initial.text)
+        self.assertEqual(initial.headers["etag"], '"workspace-model-defaults-test-v0"')
+        self.assertNotIn("base_url", initial.text)
+        self.assertNotIn("credential_digest", initial.text)
+        self.assertNotIn("etag", initial.json()["data"])
+
+        saved = await self.client.patch(
+            path,
+            headers={
+                "If-Match": initial.headers["etag"],
+                "Idempotency-Key": "workspace-model-default-save-0001",
+            },
+            json={
+                "capability": "text_generation",
+                "connection_id": "ollama-lan",
+                "model_id": "qwen3:8b",
+                "expected_version": 0,
+            },
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.headers["etag"], '"workspace-model-defaults-test-v1"')
+        self.assertEqual(saved.json()["data"]["defaults"][0]["model_id"], "qwen3:8b")
+        self.assertFalse(saved.json()["meta"]["replayed"])
+        operation = service.calls[-1][2]
+        self.assertEqual(operation["expected_etag"], initial.headers["etag"])
+        self.assertEqual(operation["idempotency_key"], "workspace-model-default-save-0001")
+
     async def test_workspace_admin_cannot_read_or_mutate_system_provider_connections(self) -> None:
         listed = await self.client.get("/api/v1/admin/provider-connections")
         created = await self.client.post(
@@ -430,6 +511,64 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(refresh.status_code, 403)
         self.assertEqual(correction.status_code, 403)
+
+    async def test_system_admin_replaces_only_provider_credential_without_endpoint_reentry(self) -> None:
+        class ProviderAdminService:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def replace_credential(self, context, connection_id, body, idempotency_key):
+                self.calls.append((context, connection_id, body, idempotency_key))
+                return {
+                    "connection_id": connection_id,
+                    "provider_code": "UPSTAGE",
+                    "display_name": "Upstage 운영",
+                    "enabled": True,
+                    "configured": True,
+                    "credential_version": 5,
+                    "version": 8,
+                    "verification_status": "verified",
+                    "verified_at": "2026-09-17T00:00:00Z",
+                    "catalog_status": "ready",
+                    "catalog_version": 4,
+                    "models": [],
+                }, False
+
+        service = ProviderAdminService()
+        self.dependencies.provider_connection_service = service
+        self.dependencies.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION,
+            system_admin_user_ids=frozenset({self.credentials.user_id}),
+        )
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        grant = self.identity.issue_step_up(
+            access_token=self.credentials.access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id="provider-connection:upstage-primary",
+            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
+        )
+        secret = "replacement-provider-secret"
+        response = await self.client.post(
+            "/api/v1/admin/provider-connections/upstage-primary/credential",
+            headers={"Idempotency-Key": "provider-credential-replace-0001"},
+            json={
+                "credential": secret,
+                "expected_version": 7,
+                "step_up_authorization_id": grant.authorization,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn(secret, response.text)
+        self.assertNotIn("base_url", response.text)
+        self.assertEqual(response.json()["data"]["credential_version"], 5)
+        self.assertEqual(service.calls[0][1], "upstage-primary")
+        self.assertEqual(service.calls[0][2].credential, secret)
+        self.assertEqual(service.calls[0][2].expected_version, 7)
 
 
 if __name__ == "__main__":

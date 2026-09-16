@@ -74,6 +74,12 @@ class ProviderCapabilityCommand:
     expected_version: int
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderCredentialReplaceCommand:
+    credential: str = field(repr=False)
+    expected_version: int
+
+
 def normalized_connection_fingerprint_payload(
     *, connection_id: str, provider_code: str | None, display_name: str,
     base_url: str, enabled: bool, expected_version: int,
@@ -292,12 +298,27 @@ class PostgresProviderConnectionService:
         connection: Connection[tuple[Any, ...]], context: ProviderConnectionAdminContext,
         connection_id: str, models: Sequence[object], catalog_version: int,
     ) -> None:
-        connection.execute("DELETE FROM system_provider_models WHERE connection_id=%s", (connection_id,))
+        model_ids = [model.model_id for model in models]
+        if model_ids:
+            connection.execute(
+                "DELETE FROM system_provider_models WHERE connection_id=%s AND NOT (model_id=ANY(%s))",
+                (connection_id, model_ids),
+            )
+        else:
+            connection.execute(
+                "DELETE FROM system_provider_models WHERE connection_id=%s", (connection_id,),
+            )
         for model in models:
             connection.execute(
                 "INSERT INTO system_provider_models (connection_id,model_id,reported_capabilities,"
                 "effective_capabilities,override_applied,catalog_status,catalog_version,discovered_at,updated_by) "
-                "VALUES (%s,%s,%s,%s,false,'ready',%s,now(),%s)",
+                "VALUES (%s,%s,%s,%s,false,'ready',%s,now(),%s) "
+                "ON CONFLICT (connection_id,model_id) DO UPDATE SET "
+                "reported_capabilities=excluded.reported_capabilities,"
+                "effective_capabilities=CASE WHEN system_provider_models.override_applied "
+                "THEN system_provider_models.effective_capabilities ELSE excluded.effective_capabilities END,"
+                "catalog_status='ready',catalog_version=excluded.catalog_version,discovered_at=now(),"
+                "updated_at=now(),updated_by=excluded.updated_by",
                 (connection_id, model.model_id, list(model.reported_capabilities),
                  list(model.reported_capabilities), catalog_version, context.actor_id),
             )
@@ -431,6 +452,58 @@ class PostgresProviderConnectionService:
             audit=ProviderAdminAudit(
                 "provider_connection.credential_deleted", "provider_connection", connection_id,
                 expected_version + 1,
+            ),
+        )
+
+    def replace_credential(
+        self, context: ProviderConnectionAdminContext, connection_id: str,
+        command: ProviderCredentialReplaceCommand, idempotency_key: str,
+    ) -> tuple[dict[str, object], bool]:
+        credential_fingerprint = self._cipher.idempotency_fingerprint(
+            connection_id, command.credential.encode("utf-8")
+        )
+
+        def mutation(connection: Connection[tuple[Any, ...]]) -> dict[str, object]:
+            current = self._load(connection, connection_id)
+            if int(current[12]) != command.expected_version:
+                raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
+            model_rows = connection.execute(
+                "SELECT model_id FROM system_provider_models WHERE connection_id=%s ORDER BY model_id",
+                (connection_id,),
+            ).fetchall()
+            profile, sealed, models = self._prepare(
+                connection_id=connection_id, provider_code=str(current[1]),
+                display_name=str(current[2]), base_url=str(current[3]),
+                credential=command.credential,
+                logical_model_ids=[str(row[0]) for row in model_rows], enabled=bool(current[9]),
+                version=command.expected_version + 1, previous_sealed=self._sealed(current),
+            )
+            row = connection.execute(
+                "UPDATE system_provider_connections SET encrypted_credential=%s,credential_nonce=%s,"
+                "encryption_key_version=%s,credential_schema_version=%s,credential_version=%s,"
+                "verification_status='verified',verified_at=now(),version=version+1,updated_at=now(),"
+                "updated_by=%s,trace_id=%s,policy_version=%s WHERE connection_id=%s AND version=%s RETURNING version",
+                (sealed.ciphertext if sealed else None, sealed.nonce if sealed else None,
+                 sealed.encryption_key_version if sealed else None, sealed.schema_version if sealed else None,
+                 sealed.credential_version if sealed else 0, context.actor_id, context.trace_id,
+                 context.policy_version, connection_id, command.expected_version),
+            ).fetchone()
+            if row is None:
+                raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
+            self._replace_models(connection, context, profile.connection_id, models, int(row[0]))
+            return self._safe_by_id(connection, connection_id)
+
+        return self._mutations.run(
+            context, operation="provider_connection.credential.replace",
+            idempotency_key=idempotency_key,
+            fingerprint_payload={
+                "connection_id": connection_id, "expected_version": command.expected_version,
+                "credential_action": "replace", "credential_fingerprint": credential_fingerprint,
+            },
+            mutation=mutation,
+            audit=ProviderAdminAudit(
+                "provider_connection.credential_replaced", "provider_connection", connection_id,
+                command.expected_version + 1,
             ),
         )
 

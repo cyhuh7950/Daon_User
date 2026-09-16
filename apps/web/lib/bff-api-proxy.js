@@ -149,6 +149,14 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (
+    segments.length === 4 && segments[0] === "admin" && segments[1] === "provider-connections"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "credential"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/admin/provider-connections/${encodeURIComponent(segments[2])}/credential`, query: null }
+      : { methodRejected: true };
+  }
+  if (
     segments.length === 4 && segments[0] === "admin" && segments[1] === "provider-catalog"
     && SAFE_SEGMENT.test(segments[2]) && segments[3] === "refresh"
   ) {
@@ -426,6 +434,16 @@ function routeFor(method, segments) {
   ) {
     return new Set(["GET", "PATCH"]).has(method)
       ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/output-version-settings`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "model-defaults"
+  ) {
+    return new Set(["GET", "PATCH"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/model-defaults`, query: null }
       : { methodRejected: true };
   }
   if (
@@ -723,7 +741,7 @@ function nativeSensitiveBodyValues(body) {
   try {
     const parsed = JSON.parse(Buffer.from(body).toString("utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-    return ["password", "access_credential", "refresh_credential"]
+    return ["password", "credential", "access_credential", "refresh_credential"]
       .map((key) => parsed[key])
       .filter((value) => typeof value === "string" && value.length > 0);
   } catch {

@@ -15,6 +15,7 @@ from daon_user_api.provider_connection_admin import (
     normalized_connection_fingerprint_payload,
 )
 from daon_user_api.provider_credentials import ProviderCredentialCipher
+from daon_user_api.provider_catalog import DiscoveredModel
 
 
 class Cursor:
@@ -318,3 +319,30 @@ def test_delete_connection_removes_only_credential_and_replays_without_second_mu
     assert result["version"] == 8
     assert result["catalog_version"] == 3
     assert len(database.outbox) == 1
+
+
+def test_catalog_refresh_upserts_models_without_erasing_admin_capability_override() -> None:
+    class CapturingConnection:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def execute(self, sql, params=()):
+            self.calls.append((" ".join(sql.split()), params))
+            return Cursor()
+
+    connection = CapturingConnection()
+    model = DiscoveredModel(
+        connection_id="upstage-primary", provider_code="UPSTAGE",
+        model_id="information-extract", reported_capabilities=("text_generation",),
+        routing_owner="provider", daon_fallback_allowed=True,
+    )
+
+    PostgresProviderConnectionService._replace_models(
+        connection, context(), "upstage-primary", (model,), 8,
+    )
+
+    assert "NOT (model_id=ANY(%s))" in connection.calls[0][0]
+    upsert = connection.calls[1][0]
+    assert "ON CONFLICT (connection_id,model_id) DO UPDATE" in upsert
+    assert "WHEN system_provider_models.override_applied" in upsert
+    assert "THEN system_provider_models.effective_capabilities" in upsert

@@ -6,256 +6,385 @@ import { providerSettingsApi } from "../lib/provider-settings-api.js";
 
 const PROVIDERS = Object.freeze([
   "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
-  "OPENROUTER", "ANTHROPIC", "OLLAMA"
+  "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY"
 ]);
-const ROLES = Object.freeze([
-  "text", "vision", "document_parser", "audio_understanding", "speech_to_text", "embedding", "reranker"
+const ACTIVE_CAPABILITIES = Object.freeze([
+  "text_generation", "image_understanding", "document_parsing"
 ]);
-const ROLE_LABELS = Object.freeze({
-  text: "텍스트 생성", vision: "이미지 이해", document_parser: "문서 분석",
-  audio_understanding: "오디오 이해", speech_to_text: "음성 변환", embedding: "임베딩", reranker: "재정렬",
+const CAPABILITIES = Object.freeze([
+  ...ACTIVE_CAPABILITIES, "embedding", "reranking", "audio_understanding",
+  "speech_to_text", "video_understanding", "image_generation", "text_to_speech",
+  "audio_generation", "video_generation"
+]);
+const CAPABILITY_LABELS = Object.freeze({
+  text_generation: "텍스트 생성",
+  image_understanding: "이미지 이해",
+  document_parsing: "문서 분석",
+  embedding: "임베딩",
+  reranking: "재정렬",
+  audio_understanding: "오디오 이해",
+  speech_to_text: "음성 인식(STT)",
+  video_understanding: "영상 이해",
+  image_generation: "이미지 생성",
+  text_to_speech: "음성 생성(TTS)",
+  audio_generation: "오디오 생성",
+  video_generation: "영상 생성"
 });
-
-export function projectProviderConnection(profile) {
-  if (!profile?.active) return { label: profile?.credential_configured ? "비활성 · Credential 설정됨" : "미설정", verified: false };
-  if (!profile.credential_configured) return { label: "활성 · Credential 미설정", verified: false };
-  return { label: "활성 · Credential 설정됨 · 연결 미확인", verified: false };
-}
-
-export function projectProviderEndpoint(baseUrl) {
-  return typeof baseUrl === "string" && baseUrl.trim() ? "Endpoint 설정됨" : "Endpoint 미설정";
-}
-
-export function safeProviderErrorMessage(action, error) {
-  const prefix = ({ provider: "Provider 설정", model: "모델", bindings: "역할 매핑" })[action] ?? "설정";
-  if (error?.code === "VERSION_CONFLICT" || error?.code === "PRECONDITION_FAILED") return `${prefix}이 다른 변경과 충돌했습니다. 새로고침 후 다시 시도해 주세요.`;
-  if (error?.code === "FORBIDDEN") return `${prefix}을 변경할 권한이 없습니다.`;
-  return `${prefix}을 저장하지 못했습니다. 다시 시도해 주세요.`;
-}
 
 function operationKey(prefix) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
-function initialDraft(providerCode) {
+function emptyConnectionDraft() {
   return {
-    provider_code: providerCode,
+    connection_id: "",
+    provider_code: "OLLAMA",
+    display_name: "",
     base_url: "",
-    active: false,
-    credential_configured: false,
-    profile_version: 0
-  };
-}
-
-function initialDeploymentDraft(providerCode) {
-  return {
-    provider_code: providerCode,
-    deployment_id: `deployment-${providerCode.toLowerCase()}-${crypto.randomUUID()}`,
-    model_id: "",
-    roles: ["text"],
-    active: false,
-    selected: false,
+    logical_model_ids: "",
+    enabled: true,
     version: 0
   };
 }
 
+function draftFromConnection(connection) {
+  return {
+    connection_id: connection.connection_id,
+    provider_code: connection.provider_code,
+    display_name: connection.display_name,
+    base_url: "",
+    logical_model_ids: connection.models.map((model) => model.model_id).join("\n"),
+    enabled: connection.enabled,
+    version: connection.version
+  };
+}
+
+export function formatModelChoice(connection, model) {
+  return `${connection.display_name} · ${model.model_id}`;
+}
+
+export function projectProviderConnection(connection) {
+  if (!connection?.enabled) {
+    return { label: connection?.configured ? "비활성 · Credential 설정됨" : "비활성 · Credential 없음", verified: false };
+  }
+  const verified = connection.verification_status === "verified";
+  const credential = connection.configured ? "Credential 설정됨" : "Credential 없음";
+  return { label: `활성 · ${credential} · ${verified ? "확인됨" : "확인 필요"}`, verified };
+}
+
+export function safeProviderErrorMessage(action, error) {
+  const prefix = ({
+    provider: "Provider 연결",
+    credential: "Credential",
+    catalog: "모델 카탈로그",
+    capability: "모델 기능"
+  })[action] ?? "Provider 설정";
+  if (error?.code === "VERSION_CONFLICT" || error?.code === "PRECONDITION_FAILED" || error?.code === "PROVIDER_CREDENTIAL_VERSION_CONFLICT") {
+    return `${prefix}이 다른 변경과 충돌했습니다. 새로고침 후 다시 시도해 주세요.`;
+  }
+  if (error?.code === "FORBIDDEN" || error?.code === "ACTION_DENIED") return `${prefix}을 변경할 권한이 없습니다.`;
+  return `${prefix}을 저장하지 못했습니다. 다시 시도해 주세요.`;
+}
+
+function normalizedLogicalModels(value) {
+  return [...new Set(value.split(/[\n,]/u).map((item) => item.trim()).filter(Boolean))];
+}
+
+function modelKey(connectionId, modelId) {
+  return JSON.stringify([connectionId, modelId]);
+}
+
 export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   const [resolvedWorkspaceId, setResolvedWorkspaceId] = useState(workspaceId ?? null);
-  const [drafts, setDrafts] = useState(() => Object.fromEntries(PROVIDERS.map((code) => [code, initialDraft(code)])));
-  const [deploymentDrafts, setDeploymentDrafts] = useState([]);
-  const [bindings, setBindings] = useState({});
-  const [bindingVersion, setBindingVersion] = useState(0);
-  const [bindingEtag, setBindingEtag] = useState(null);
+  const [isSystemAdmin, setIsSystemAdmin] = useState(null);
+  const [connections, setConnections] = useState([]);
+  const [modelDefaults, setModelDefaults] = useState({ available_models: [], defaults: [] });
+  const [modelDefaultsEtag, setModelDefaultsEtag] = useState(null);
+  const [defaultDrafts, setDefaultDrafts] = useState({});
+  const [selectedId, setSelectedId] = useState(null);
+  const [draft, setDraft] = useState(emptyConnectionDraft);
+  const [credential, setCredential] = useState("");
+  const [administratorPassword, setAdministratorPassword] = useState("");
+  const [capabilityDrafts, setCapabilityDrafts] = useState({});
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
-  const [selectedProvider, setSelectedProvider] = useState("UPSTAGE");
-  const [endpointEdits, setEndpointEdits] = useState({});
-  const [connectionChecks, setConnectionChecks] = useState({});
+
+  const selectConnection = useCallback((connection) => {
+    setSelectedId(connection.connection_id);
+    setDraft(draftFromConnection(connection));
+    setCredential("");
+  }, []);
+
+  const applyConnections = useCallback((items, preferredId = null) => {
+    setConnections(items);
+    setCapabilityDrafts(Object.fromEntries(items.flatMap((connection) => connection.models.map((model) => [
+      modelKey(connection.connection_id, model.model_id), [...model.effective_capabilities]
+    ]))));
+    const selected = items.find((item) => item.connection_id === preferredId) ?? items[0];
+    if (selected) selectConnection(selected);
+    else {
+      setSelectedId(null);
+      setDraft(emptyConnectionDraft());
+    }
+  }, [selectConnection]);
+
+  const applyModelDefaults = useCallback((snapshot, etag) => {
+    const safeSnapshot = snapshot && typeof snapshot === "object"
+      ? snapshot
+      : { available_models: [], defaults: [] };
+    setModelDefaults(safeSnapshot);
+    setModelDefaultsEtag(etag);
+    setDefaultDrafts(Object.fromEntries((safeSnapshot.defaults ?? []).map((item) => [
+      item.capability, modelKey(item.connection_id, item.model_id)
+    ])));
+  }, []);
 
   const load = useCallback(async () => {
     setStatus({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
     try {
-      const sessionResult = workspaceId ? null : await providerSettingsApi.getSession();
-      const activeWorkspaceId = workspaceId ?? sessionResult?.payload?.data?.workspace_id;
-      if (typeof activeWorkspaceId !== "string" || !activeWorkspaceId.trim()) {
-        const error = new Error("RESOURCE_UNAVAILABLE");
-        error.code = "RESOURCE_UNAVAILABLE";
-        throw error;
-      }
+      const session = await providerSettingsApi.getSession();
+      const activeWorkspaceId = workspaceId ?? session.payload?.data?.workspace_id;
+      if (typeof activeWorkspaceId !== "string" || !activeWorkspaceId.trim()) throw new Error("RESOURCE_UNAVAILABLE");
       setResolvedWorkspaceId(activeWorkspaceId);
-      const [profilesResult, deploymentsResult, policyResult] = await Promise.all([
-        providerSettingsApi.listProfiles(activeWorkspaceId),
-        providerSettingsApi.listDeployments(activeWorkspaceId),
-        providerSettingsApi.getModelPolicy(activeWorkspaceId)
-      ]);
-      setDrafts({ ...Object.fromEntries(PROVIDERS.map((code) => [code, initialDraft(code)])), ...Object.fromEntries(profilesResult.payload.data.map((profile) => {
-        return [profile.provider_code, {
-          ...initialDraft(profile.provider_code),
-          base_url: profile.base_url,
-          active: profile.active,
-          credential_configured: profile.credential_configured,
-          profile_version: profile.version
-        }];
-      })) });
-      setDeploymentDrafts(deploymentsResult.payload.data.map((item) => ({ ...item })));
-      setBindings(policyResult.payload.data.bindings);
-      setBindingVersion(policyResult.payload.data.version);
-      setBindingEtag(policyResult.etag ?? `"model-policy:${activeWorkspaceId}:${policyResult.payload.data.version}"`);
-      setStatus({ kind: "ready", message: "Provider 설정을 조회했습니다." });
-    } catch (error) {
-      setStatus({ kind: "error", message: "Provider 설정을 불러오지 못했습니다. 연결 상태를 확인해 주세요." });
+      const systemAdmin = session.payload?.data?.is_system_admin === true;
+      setIsSystemAdmin(systemAdmin);
+      const defaultsRequest = providerSettingsApi.getModelDefaults(activeWorkspaceId);
+      if (systemAdmin) {
+        const [result, defaults] = await Promise.all([
+          providerSettingsApi.listConnections(), defaultsRequest
+        ]);
+        applyConnections(Array.isArray(result.payload?.data) ? result.payload.data : []);
+        applyModelDefaults(defaults.payload?.data, defaults.etag);
+        setStatus({ kind: "ready", message: "시스템 연결과 Workspace 기본 모델을 조회했습니다." });
+      } else {
+        const defaults = await defaultsRequest;
+        setConnections([]);
+        applyModelDefaults(defaults.payload?.data, defaults.etag);
+        setStatus({ kind: "ready", message: "Workspace 기본 모델을 조회했습니다." });
+      }
+    } catch {
+      setStatus({ kind: "error", message: "Provider 설정을 불러오지 못했습니다. 다시 시도해 주세요." });
     }
-  }, [workspaceId]);
+  }, [applyConnections, applyModelDefaults, workspaceId]);
 
   useEffect(() => { load(); }, [load]);
 
-  function workspaceIdForWrite() {
-    if (resolvedWorkspaceId) return resolvedWorkspaceId;
-    const error = new Error("RESOURCE_UNAVAILABLE");
-    error.code = "RESOURCE_UNAVAILABLE";
-    throw error;
-  }
-
-  const deployments = useMemo(
-    () => deploymentDrafts.filter((item) => item.model_id && item.active),
-    [deploymentDrafts]
+  const selectedConnection = connections.find((item) => item.connection_id === selectedId) ?? null;
+  const adminAvailableModels = useMemo(() => connections.flatMap((connection) => (
+    !connection.enabled || connection.verification_status !== "verified" || connection.catalog_status !== "ready"
+      ? []
+      : connection.models.filter((model) => model.catalog_status === "ready").map((model) => ({ connection, model }))
+  )), [connections]);
+  const availableModels = useMemo(
+    () => Array.isArray(modelDefaults.available_models) ? modelDefaults.available_models : [],
+    [modelDefaults]
   );
 
-  function updateDraft(providerCode, field, value) {
-    setDrafts((current) => ({
-      ...current,
-      [providerCode]: { ...current[providerCode], [field]: value }
-    }));
+  async function stepUp(targetId) {
+    const result = await providerSettingsApi.issueStepUp(
+      targetId, administratorPassword, operationKey("provider-step-up")
+    );
+    const authorization = result.payload?.data?.step_up_authorization;
+    if (typeof authorization !== "string" || !authorization) throw new Error("STEP_UP_RESPONSE_INVALID");
+    return authorization;
   }
 
-  function updateDeployment(deploymentId, field, value) {
-    setDeploymentDrafts((current) => current.map((item) => (
-      item.deployment_id === deploymentId ? { ...item, [field]: value } : item
-    )));
-  }
-
-  function toggleRole(deploymentId, role) {
-    const current = deploymentDrafts.find((item) => item.deployment_id === deploymentId);
-    if (!current) return;
-    const roles = current.roles.includes(role)
-      ? current.roles.filter((item) => item !== role)
-      : [...current.roles, role];
-    updateDeployment(deploymentId, "roles", roles.length ? roles : [role]);
-  }
-
-  function addDeployment(providerCode) {
-    setDeploymentDrafts((current) => [...current, initialDeploymentDraft(providerCode)]);
-  }
-
-  async function saveProvider(providerCode) {
-    const draft = drafts[providerCode];
-    const nextBaseUrl = Object.hasOwn(endpointEdits, providerCode) ? endpointEdits[providerCode] : draft.base_url;
-    setStatus({ kind: "saving", message: `${providerCode} 설정을 저장하는 중입니다.` });
+  async function saveConnection(includeCredential) {
+    const connectionId = draft.connection_id.trim();
+    const action = includeCredential ? "credential" : "provider";
+    setStatus({ kind: "saving", message: "Provider 연결을 검증하고 저장하는 중입니다." });
     try {
-      const activeWorkspaceId = workspaceIdForWrite();
-      const profileResult = await providerSettingsApi.saveProfile({
-        workspace_id: activeWorkspaceId,
-        provider_code: providerCode,
-        base_url: nextBaseUrl,
-        active: draft.active,
-        expected_version: draft.profile_version
-      }, operationKey(`provider-${providerCode}`));
-      setDrafts((current) => ({
-        ...current,
-        [providerCode]: {
-          ...current[providerCode],
-          base_url: nextBaseUrl,
-          profile_version: profileResult.payload.data.version,
-          credential_configured: profileResult.payload.data.credential_configured
-        }
-      }));
-      setEndpointEdits((current) => { const next = { ...current }; delete next[providerCode]; return next; });
-      setStatus({ kind: "ready", message: `${providerCode} 설정을 저장했습니다.` });
+      const authorization = await stepUp(`provider-connection:${connectionId}`);
+      let result;
+      if (includeCredential && draft.version > 0) {
+        result = await providerSettingsApi.replaceCredential(connectionId, {
+          credential,
+          expected_version: draft.version,
+          step_up_authorization_id: authorization
+        }, operationKey("provider-credential-replace"));
+      } else {
+        const body = {
+          display_name: draft.display_name.trim(),
+          base_url: draft.base_url.trim(),
+          logical_model_ids: normalizedLogicalModels(draft.logical_model_ids),
+          enabled: draft.enabled,
+          expected_version: draft.version,
+          step_up_authorization_id: authorization,
+          ...(includeCredential ? { credential } : {})
+        };
+        result = draft.version === 0
+          ? await providerSettingsApi.createConnection({ connection_id: connectionId, provider_code: draft.provider_code, ...body }, operationKey("provider-create"))
+          : await providerSettingsApi.updateConnection(connectionId, body, operationKey("provider-update"));
+      }
+      const item = result.payload.data;
+      applyConnections([...connections.filter((connection) => connection.connection_id !== item.connection_id), item], item.connection_id);
+      setCredential("");
+      setAdministratorPassword("");
+      setStatus({ kind: "ready", message: includeCredential ? "키를 저장하고 연결을 확인했습니다." : "Provider 연결을 저장했습니다." });
     } catch (error) {
-      setStatus({ kind: "error", message: safeProviderErrorMessage("provider", error) });
+      setCredential("");
+      setAdministratorPassword("");
+      setStatus({ kind: "error", message: safeProviderErrorMessage(action, error) });
     }
   }
 
-  async function checkConnection(providerCode) {
-    setStatus({ kind: "checking", message: `${providerCode} 연결을 확인하는 중입니다.` });
+  async function saveModelDefault(capability) {
+    const selected = defaultDrafts[capability];
+    if (!selected || !modelDefaultsEtag || !resolvedWorkspaceId) return;
+    let parsed;
+    try { parsed = JSON.parse(selected); } catch { return; }
+    if (!Array.isArray(parsed) || parsed.length !== 2 || parsed.some((item) => typeof item !== "string" || !item)) return;
+    const [connectionId, modelId] = parsed;
+    const current = (modelDefaults.defaults ?? []).find((item) => item.capability === capability);
+    setStatus({ kind: "saving", message: `${CAPABILITY_LABELS[capability]} 기본 모델을 저장하는 중입니다.` });
     try {
-      const result = await providerSettingsApi.checkConnection(workspaceIdForWrite(), providerCode);
-      setConnectionChecks((current) => ({ ...current, [providerCode]: result }));
-      setStatus({
-        kind: result.status === "ready" ? "ready" : "warning",
-        message: result.status === "ready"
-          ? `${providerCode} 연결을 확인했습니다.`
-          : `${providerCode} 연결을 사용할 수 없습니다. Credential과 Provider 상태를 확인해 주세요.`,
-      });
-    } catch (error) {
-      setConnectionChecks((current) => ({ ...current, [providerCode]: { providerCode, status: "unavailable", checkedAt: null } }));
-      setStatus({ kind: "error", message: "Provider 연결을 확인하지 못했습니다. 다시 시도해 주세요." });
-    }
-  }
-
-  async function saveDeployment(deploymentId) {
-    const draft = deploymentDrafts.find((item) => item.deployment_id === deploymentId);
-    if (!draft) return;
-    setStatus({ kind: "saving", message: `${draft.provider_code} 모델을 저장하는 중입니다.` });
-    try {
-      const activeWorkspaceId = workspaceIdForWrite();
-      const result = await providerSettingsApi.saveDeployment({
-        workspace_id: activeWorkspaceId,
-        deployment_id: draft.deployment_id,
-        provider_code: draft.provider_code,
-        model_id: draft.model_id,
-        roles: draft.roles,
-        active: draft.active,
-        selected: draft.selected,
-        expected_version: draft.version
-      }, operationKey(`deployment-${draft.provider_code}`));
-      setDeploymentDrafts((current) => current.map((item) => (
-        item.deployment_id === deploymentId ? { ...result.payload.data } : item
-      )));
-      setStatus({ kind: "ready", message: `${draft.provider_code} 모델을 저장했습니다.` });
-    } catch (error) {
-      setStatus({ kind: "error", message: safeProviderErrorMessage("model", error) });
-    }
-  }
-
-  async function saveBindings() {
-    setStatus({ kind: "saving", message: "역할 매핑을 저장하는 중입니다." });
-    try {
-      const activeWorkspaceId = workspaceIdForWrite();
-      const result = await providerSettingsApi.saveModelPolicy(
-        activeWorkspaceId,
-        { bindings, expected_version: bindingVersion },
-        bindingEtag,
-        operationKey("model-policy")
+      const result = await providerSettingsApi.saveModelDefault(
+        resolvedWorkspaceId,
+        { capability, connection_id: connectionId, model_id: modelId, expected_version: current?.version ?? 0 },
+        modelDefaultsEtag,
+        operationKey("workspace-model-default")
       );
-      setBindingVersion(result.payload.data.version);
-      setBindingEtag(result.etag);
-      setStatus({ kind: "ready", message: "역할 매핑을 저장했습니다." });
+      applyModelDefaults(result.payload?.data, result.etag);
+      setStatus({ kind: "ready", message: `${CAPABILITY_LABELS[capability]} 기본 모델을 저장했습니다.` });
     } catch (error) {
-      setStatus({ kind: "error", message: safeProviderErrorMessage("bindings", error) });
+      setStatus({ kind: "error", message: safeProviderErrorMessage("default", error) });
     }
   }
 
-  const selectedDraft = drafts[selectedProvider] ?? initialDraft(selectedProvider);
-  const selectedDeployments = deploymentDrafts.filter((item) => item.provider_code === selectedProvider);
+  async function deleteCredential() {
+    if (!selectedConnection) return;
+    setStatus({ kind: "saving", message: "Credential을 삭제하는 중입니다." });
+    try {
+      const authorization = await stepUp(`provider-connection:${selectedConnection.connection_id}`);
+      await providerSettingsApi.deleteCredential(selectedConnection.connection_id, {
+        expected_version: selectedConnection.version,
+        step_up_authorization_id: authorization
+      }, operationKey("provider-credential-delete"));
+      setCredential("");
+      setAdministratorPassword("");
+      await load();
+      setStatus({ kind: "ready", message: "Credential을 삭제했습니다. 연결과 카탈로그는 유지됩니다." });
+    } catch (error) {
+      setAdministratorPassword("");
+      setStatus({ kind: "error", message: safeProviderErrorMessage("credential", error) });
+    }
+  }
+
+  async function refreshCatalog() {
+    if (!selectedConnection) return;
+    setStatus({ kind: "saving", message: "모델 카탈로그를 새로고침하는 중입니다." });
+    try {
+      const authorization = await stepUp(`provider-connection:${selectedConnection.connection_id}`);
+      const result = await providerSettingsApi.refreshCatalog(selectedConnection.connection_id, {
+        expected_version: selectedConnection.version,
+        step_up_authorization_id: authorization
+      }, operationKey("provider-catalog-refresh"));
+      const item = result.payload.data;
+      applyConnections([...connections.filter((connection) => connection.connection_id !== item.connection_id), item], item.connection_id);
+      setAdministratorPassword("");
+      setStatus({ kind: "ready", message: "모델 카탈로그를 새로고침했습니다." });
+    } catch (error) {
+      setAdministratorPassword("");
+      setStatus({ kind: "error", message: safeProviderErrorMessage("catalog", error) });
+    }
+  }
+
+  function toggleCapability(connection, model, capability) {
+    const key = modelKey(connection.connection_id, model.model_id);
+    setCapabilityDrafts((current) => {
+      const selected = current[key] ?? model.effective_capabilities;
+      const next = selected.includes(capability)
+        ? selected.filter((item) => item !== capability)
+        : [...selected, capability];
+      return next.length ? { ...current, [key]: next } : current;
+    });
+  }
+
+  async function saveCapabilities(connection, model) {
+    setStatus({ kind: "saving", message: "모델 기능 보정을 저장하는 중입니다." });
+    try {
+      const authorization = await stepUp(`provider-model:${connection.connection_id}:${model.model_id}`);
+      const result = await providerSettingsApi.correctCapabilities(
+        connection.connection_id,
+        model.model_id,
+        {
+          effective_capabilities: capabilityDrafts[modelKey(connection.connection_id, model.model_id)] ?? model.effective_capabilities,
+          expected_version: model.catalog_version,
+          step_up_authorization_id: authorization
+        },
+        operationKey("provider-capability")
+      );
+      const updatedModel = result.payload.data;
+      const nextConnections = connections.map((item) => item.connection_id === connection.connection_id
+        ? { ...item, models: item.models.map((candidate) => candidate.model_id === model.model_id ? updatedModel : candidate) }
+        : item);
+      applyConnections(nextConnections, connection.connection_id);
+      setAdministratorPassword("");
+      setStatus({ kind: "ready", message: "모델 기능 보정을 저장했습니다." });
+    } catch (error) {
+      setAdministratorPassword("");
+      setStatus({ kind: "error", message: safeProviderErrorMessage("capability", error) });
+    }
+  }
+
+  const busy = status.kind === "saving" || status.kind === "loading";
+  const canMutate = !busy && Boolean(administratorPassword) && Boolean(draft.connection_id.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim());
+  const canReplaceCredential = !busy && Boolean(administratorPassword) && Boolean(credential) && Boolean(selectedConnection);
   const Root = embedded ? "div" : "main";
+
   return (
     <Root className={`provider-settings-shell ${embedded ? "is-embedded" : ""}`}>
-      <header className="provider-settings-header"><div><span className="section-kicker">MODEL CONNECTIONS</span><h1>{embedded ? "Provider 연결" : "모델·Provider 설정"}</h1><p>{resolvedWorkspaceId ? "현재 Workspace 설정" : "Workspace 확인 중"}</p></div><button className="secondary-button" type="button" onClick={load}>새로고침</button></header>
+      <header className="provider-settings-header">
+        <div><span className="section-kicker">MODEL CONNECTIONS</span><h1>{embedded ? "Provider 연결" : "모델·Provider 설정"}</h1><p>{resolvedWorkspaceId ? "현재 Workspace 설정" : "Workspace 확인 중"}</p></div>
+        <button className="secondary-button" type="button" onClick={load} disabled={busy}>새로고침</button>
+      </header>
       <div className={`provider-status ${status.kind}`} role="status"><span className="status-dot" aria-hidden="true" />{status.message}</div>
-      <div className="provider-settings-layout">
-        <section aria-labelledby="provider-list-title"><h2 id="provider-list-title">Provider</h2><div className="provider-grid">
-          {PROVIDERS.map((providerCode) => { const draft = drafts[providerCode] ?? initialDraft(providerCode); const connection = projectProviderConnection(draft); return <button className="provider-card" type="button" aria-pressed={selectedProvider === providerCode} onClick={() => setSelectedProvider(providerCode)} key={providerCode}><span className="provider-monogram" aria-hidden="true">{providerCode.slice(0, 1)}</span><span><strong>{providerCode}</strong><small>{connection.label}</small></span><span className="provider-state-dot" aria-hidden="true" /></button>; })}
-        </div></section>
-        <section className="provider-detail" aria-labelledby="provider-detail-title"><header><div><span className="section-kicker">SELECTED PROVIDER</span><h2 id="provider-detail-title">{selectedProvider}</h2></div><span className="connection-badge">{connectionChecks[selectedProvider]?.status === "ready" ? "연결 확인됨" : projectProviderConnection(selectedDraft).label}</span></header>
-          <div className="provider-detail-grid"><div className="credential-summary"><span>Endpoint</span><strong>{projectProviderEndpoint(selectedDraft.base_url)}</strong><small>내부 주소 원문은 화면에 표시하지 않습니다.</small></div><label>Endpoint 변경<input value={endpointEdits[selectedProvider] ?? ""} autoComplete="off" placeholder="새 Endpoint를 입력하면 기존 값을 교체합니다" onChange={(event) => setEndpointEdits((current) => ({ ...current, [selectedProvider]: event.target.value }))} /></label><div className="credential-summary"><span>Credential</span><strong>{selectedDraft.credential_configured ? "설정됨" : "미설정"}</strong><small>Credential 원문은 화면에 표시하지 않습니다.</small></div></div>
-          <label className="styled-check"><input type="checkbox" checked={selectedDraft.active} onChange={(event) => updateDraft(selectedProvider, "active", event.target.checked)} /><span>Provider 활성</span></label>
-          <div className="provider-detail-actions"><button className="secondary-button" type="button" onClick={() => checkConnection(selectedProvider)} disabled={status.kind === "checking" || !selectedDraft.active || !selectedDraft.credential_configured}>연결 시험</button><button className="primary-button" type="button" onClick={() => saveProvider(selectedProvider)} disabled={status.kind === "saving"}>Provider 저장</button></div>
-          <div className="deployment-list"><div className="studio-section-heading"><h3>모델</h3><button className="secondary-button" type="button" onClick={() => addDeployment(selectedProvider)}>모델 추가</button></div>
-            {selectedDeployments.length ? selectedDeployments.map((deployment) => <section className="deployment-card" key={deployment.deployment_id}><div className="provider-detail-grid"><label>Deployment ID<input value={deployment.deployment_id} disabled={deployment.version > 0} onChange={(event) => updateDeployment(deployment.deployment_id, "deployment_id", event.target.value)} /></label><label>모델 ID<input value={deployment.model_id} onChange={(event) => updateDeployment(deployment.deployment_id, "model_id", event.target.value)} /></label></div><fieldset><legend>역할</legend><div className="role-chip-grid">{ROLES.map((role) => <label className="role-chip" key={role}><input type="checkbox" checked={deployment.roles.includes(role)} onChange={() => toggleRole(deployment.deployment_id, role)} /><span>{ROLE_LABELS[role]}</span></label>)}</div></fieldset><div className="provider-switches"><label className="styled-check"><input type="checkbox" checked={deployment.active} onChange={(event) => updateDeployment(deployment.deployment_id, "active", event.target.checked)} /><span>활성</span></label><label className="styled-check"><input type="checkbox" checked={deployment.selected} onChange={(event) => updateDeployment(deployment.deployment_id, "selected", event.target.checked)} /><span>기본 선택</span></label></div><button className="secondary-button" type="button" onClick={() => saveDeployment(deployment.deployment_id)}>모델 저장</button></section>) : <div className="provider-empty"><strong>등록된 모델이 없습니다.</strong><small>실제 모델 연결 전에는 생성 Action이 활성화되지 않습니다.</small></div>}
+
+      {isSystemAdmin === true ? <section className="provider-admin-panel" aria-labelledby="provider-admin-title">
+        <div className="studio-section-heading"><div><span className="section-kicker">SYSTEM ADMIN</span><h2 id="provider-admin-title">시스템 Provider 연결</h2></div><button className="secondary-button" type="button" onClick={() => { setSelectedId(null); setDraft(emptyConnectionDraft()); setCredential(""); }}>연결 추가</button></div>
+        <div className="provider-settings-layout">
+          <div className="provider-connection-list" aria-label="Provider 연결 목록">
+            {connections.map((connection) => { const projected = projectProviderConnection(connection); return <button className="provider-card" type="button" aria-pressed={selectedId === connection.connection_id} onClick={() => selectConnection(connection)} key={connection.connection_id}><span className="provider-monogram" aria-hidden="true">{connection.provider_code.slice(0, 1)}</span><span><strong>{connection.display_name}</strong><small>{connection.provider_code} · {projected.label}</small></span><span className={`provider-state-dot ${projected.verified ? "is-ready" : ""}`} aria-hidden="true" /></button>; })}
+            {!connections.length ? <div className="provider-empty"><strong>등록된 연결이 없습니다.</strong><small>연결 이름과 Endpoint를 입력해 첫 연결을 추가하세요.</small></div> : null}
           </div>
-        </section>
-      </div>
-      <details className="role-bindings"><summary>역할 매핑</summary><div className="role-grid">{ROLES.map((role) => <label key={role}>{ROLE_LABELS[role]}<select value={bindings[role] ?? ""} onChange={(event) => setBindings((current) => ({ ...current, [role]: event.target.value }))}><option value="">선택 안 함</option>{deployments.filter((item) => item.roles.includes(role)).map((item) => <option value={item.deployment_id} key={item.deployment_id}>{item.provider_code} · {item.model_id}</option>)}</select></label>)}</div><button className="primary-button" type="button" onClick={saveBindings}>역할 매핑 저장</button></details>
+
+          <div className="provider-detail">
+            <header><div><span className="section-kicker">{draft.version ? "SELECTED CONNECTION" : "NEW CONNECTION"}</span><h2>{draft.display_name || "새 Provider 연결"}</h2></div>{selectedConnection ? <span className={`connection-badge ${projectProviderConnection(selectedConnection).verified ? "is-ready" : ""}`}>{projectProviderConnection(selectedConnection).label}</span> : null}</header>
+            <div className="provider-detail-grid">
+              <label>Connection ID<input value={draft.connection_id} disabled={draft.version > 0} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, connection_id: event.target.value }))} /></label>
+              <label>Provider<select value={draft.provider_code} disabled={draft.version > 0} onChange={(event) => setDraft((current) => ({ ...current, provider_code: event.target.value }))}>{PROVIDERS.map((provider) => <option value={provider} key={provider}>{provider}</option>)}</select></label>
+              <label>연결 이름<input value={draft.display_name} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} /></label>
+              <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
+              <label className="provider-field-wide">Logical model IDs<textarea value={draft.logical_model_ids} placeholder="Gateway 모델 ID를 줄바꿈으로 구분" onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label>
+              <label>API Key 또는 Client Key<input type="password" value={credential} autoComplete="new-password" onChange={(event) => setCredential(event.target.value)} /></label>
+              <label>현재 관리자 비밀번호<input type="password" value={administratorPassword} autoComplete="current-password" onChange={(event) => setAdministratorPassword(event.target.value)} /></label>
+            </div>
+            <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>연결 활성</span></label>
+            <div className="provider-detail-actions">
+              <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate}>연결 저장</button>
+              <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={draft.version > 0 ? !canReplaceCredential : (!canMutate || !credential)}>키 저장 및 연결 확인</button>
+              <button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured || !administratorPassword}>키 삭제</button>
+              <button className="secondary-button" type="button" onClick={refreshCatalog} disabled={busy || !selectedConnection || !administratorPassword}>카탈로그 새로고침</button>
+            </div>
+          </div>
+        </div>
+      </section> : null}
+
+      <section className="workspace-model-defaults" aria-labelledby="workspace-default-title">
+        <div className="studio-section-heading"><div><span className="section-kicker">WORKSPACE</span><h2 id="workspace-default-title">Workspace 기본 모델</h2></div></div>
+        <div className="capability-default-grid">
+          {ACTIVE_CAPABILITIES.map((capability) => {
+            const choices = availableModels.filter((model) => model.effective_capabilities.includes(capability));
+            return <article className="capability-default-card" key={capability}><strong>{CAPABILITY_LABELS[capability]}</strong><select aria-label={`${CAPABILITY_LABELS[capability]} 기본 모델`} value={defaultDrafts[capability] ?? ""} disabled={busy || !choices.length} onChange={(event) => setDefaultDrafts((current) => ({ ...current, [capability]: event.target.value }))}><option value="">선택 안 함</option>{choices.map((model) => <option value={modelKey(model.connection_id, model.model_id)} key={modelKey(model.connection_id, model.model_id)}>{model.display_name} · {model.model_id}</option>)}</select><button className="secondary-button" type="button" disabled={busy || !defaultDrafts[capability] || !modelDefaultsEtag} onClick={() => saveModelDefault(capability)}>기본 모델 저장</button><small>{choices.length ? `${choices.length}개 모델 사용 가능` : "선택 가능한 모델 없음"}</small></article>;
+          })}
+        </div>
+        <div className="provider-model-grid">
+          {adminAvailableModels.map(({ connection, model }) => {
+            const correction = capabilityDrafts[modelKey(connection.connection_id, model.model_id)] ?? model.effective_capabilities;
+            return <article className="provider-model-card" key={modelKey(connection.connection_id, model.model_id)}><header><div><strong>{formatModelChoice(connection, model)}</strong><small>Catalog v{model.catalog_version}</small></div><span className="connection-badge is-ready">{model.override_applied ? "관리자 보정" : "자동 판별"}</span></header><div className="model-capabilities">{model.effective_capabilities.map((capability) => ACTIVE_CAPABILITIES.includes(capability) ? <span className="capability-chip is-active" key={capability}>{CAPABILITY_LABELS[capability]}</span> : <button className="capability-chip is-pending" type="button" disabled title="실행 Adapter가 연결되지 않았습니다." key={capability}>{CAPABILITY_LABELS[capability]} · 준비 중</button>)}</div>{isSystemAdmin ? <details className="capability-correction"><summary>모델 기능 보정</summary><fieldset><legend className="sr-only">{formatModelChoice(connection, model)} 기능</legend><div className="role-chip-grid">{CAPABILITIES.map((capability) => { const ready = ACTIVE_CAPABILITIES.includes(capability); return <label className="role-chip" key={capability} title={ready ? undefined : "실행 Adapter가 연결되지 않았습니다."}><input type="checkbox" disabled={!ready} checked={correction.includes(capability)} onChange={() => toggleCapability(connection, model, capability)} /><span>{CAPABILITY_LABELS[capability]}{ready ? "" : " · 준비 중"}</span></label>; })}</div></fieldset><button className="secondary-button" type="button" onClick={() => saveCapabilities(connection, model)} disabled={busy || !administratorPassword}>기능 보정 저장</button></details> : null}</article>;
+          })}
+          {isSystemAdmin === true && !adminAvailableModels.length ? <div className="provider-empty"><strong>사용 가능한 모델이 없습니다.</strong><small>연결을 확인하고 카탈로그를 새로고침하세요.</small></div> : null}
+        </div>
+      </section>
     </Root>
   );
 }

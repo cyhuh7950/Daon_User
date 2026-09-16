@@ -24,6 +24,9 @@ def connection(
     base_url: str | None = None,
 ) -> ProviderConnection:
     defaults = {
+        "GROQ": "https://api.groq.com/openai/v1",
+        "MISTRAL": "https://api.mistral.ai/v1",
+        "UPSTAGE": "https://api.upstage.ai/v1",
         "OLLAMA": "http://192.168.220.180:11434",
         "OPENROUTER": "https://openrouter.ai/api/v1",
         "OMNIROUTE": "https://omniroute.example/v1",
@@ -76,6 +79,9 @@ class FakeTransport:
                     ]
                 },
             ),
+            "https://api.groq.com/openai/v1/models": TransportResponse(200, {"data": [{"id": "llama-3.3-70b-versatile"}]}),
+            "https://api.mistral.ai/v1/models": TransportResponse(200, {"data": [{"id": "mistral-large-latest"}]}),
+            "https://api.upstage.ai/v1/models": TransportResponse(200, {"data": [{"id": "solar-pro3"}]}),
             "https://omniroute.example/v1/responses": TransportResponse(200, {}),
             "http://eoul-gateway:8080/v1/chat/completions": TransportResponse(200, {}),
         }
@@ -199,6 +205,25 @@ def test_openrouter_catalog_probe_is_bounded_and_does_not_follow_redirects(
     assert request.timeout_seconds == 5.0
     assert request.follow_redirects is False
     assert models[0].model_id == "openai/gpt-4.1"
+
+
+@pytest.mark.parametrize(
+    ("code", "endpoint"),
+    [
+        ("GROQ", "https://api.groq.com/openai/v1/models"),
+        ("MISTRAL", "https://api.mistral.ai/v1/models"),
+        ("UPSTAGE", "https://api.upstage.ai/v1/models"),
+    ],
+)
+def test_migrated_provider_credential_verification_uses_fixed_official_endpoint(
+    code: str, endpoint: str, registry: AdapterRegistry, fake_transport: FakeTransport,
+) -> None:
+    result = registry.adapter(code).verify(connection(code), TEST_CREDENTIAL)
+    assert result.status == "ready"
+    assert fake_transport.requests[-1].url == endpoint
+    assert fake_transport.requests[-1].headers == {"authorization": f"Bearer {TEST_CREDENTIAL}"}
+    with pytest.raises(AdapterError, match="^PROVIDER_BASE_URL_INVALID$"):
+        registry.adapter(code).verify(connection(code, base_url="https://attacker.example/v1"), TEST_CREDENTIAL)
 
 
 @pytest.mark.parametrize(
