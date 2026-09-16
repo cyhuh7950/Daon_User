@@ -1,7 +1,7 @@
 # Daon 사용자 설명서
 
 - Release: 1.0.0
-- 문서 업데이트: 2026-09-15
+- 문서 업데이트: 2026-09-17
 - 언어: 한국어(ko-KR)
 - 대상: 일반 사용자, 검토자, 승인자, Workspace 관리자, 시스템 관리자, 운영 담당자
 - 범위: Web 중심의 현재 기능과 Windows·Mobile·Evidence Hub의 지원 경계를 설명합니다.
@@ -363,11 +363,78 @@ Citation은 답변이 참조한 근거 위치입니다.
 
 ## 13. LLM 설정
 
-`설정 → LLM 설정`에서 Provider Profile, Credential 설정 여부, Deployment, Model 역할, 활성 상태와 선택 상태를 확인합니다.
+`설정 → LLM 설정`은 시스템 Provider 연결과 현재 Workspace의 기본 모델을 관리하는 화면입니다. 시스템 관리자 여부에 따라 보이는 범위가 다릅니다.
 
-설정 가능한 Provider 코드는 Cerebras, Groq, Mistral, OpenAI, Upstage, Gemini, OpenRouter, Anthropic, Ollama입니다. 그러나 현재 질문·일반 대화 실행 Adapter가 직접 지원하는 것은 Ollama, Groq, Mistral, Upstage입니다. 나머지 Provider 카드가 보이거나 연결 시험이 가능하더라도 현재 질문 생성 경로에서 사용할 수 있다고 단정하지 않습니다.
+- 시스템 관리자: 모든 Workspace가 함께 사용하는 이름 있는 Provider 연결을 추가·수정하고, 키를 교체·삭제하며, 모델 카탈로그와 모델 기능을 관리합니다.
+- Workspace 권한 사용자: 현재 Workspace의 `텍스트 생성`, `이미지 이해`, `문서 분석` 기본 모델을 선택합니다.
+- 준비 중 기능: 임베딩, 재정렬, 오디오·음성·동영상·이미지 생성 등 실행 Adapter가 연결되지 않은 기능은 `준비 중`으로 표시되며 기본값으로 선택할 수 없습니다.
 
-Credential 원문은 다시 표시되지 않습니다. Provider 연결 시험 성공은 Source 기반 질문, 조직 Egress 승인 또는 Studio 생성 성공을 의미하지 않습니다.
+### 13.1 시스템 Provider 연결 추가
+
+시스템 관리자로 로그인한 뒤 다음 순서로 진행합니다.
+
+1. `설정 → LLM 설정`을 엽니다.
+2. `시스템 Provider 연결`에서 `연결 추가`를 선택합니다.
+3. `Connection ID`에 영문·숫자와 `-`, `_`, `.`, `:`만 사용한 고유 ID를 입력합니다. 저장 후에는 바꿀 수 없습니다.
+4. `Provider`를 선택하고 사람이 구분하기 쉬운 `연결 이름`을 입력합니다.
+5. 서버에서 접근 가능한 HTTPS 또는 승인된 내부 HTTP `Endpoint`를 입력합니다.
+6. OmniRoute나 Eoul Gateway처럼 모델 목록을 자동 제공하지 않는 Gateway이면 `Logical model IDs`에 실제 Gateway에 등록한 모델 ID를 한 줄에 하나씩 입력합니다.
+7. 외부 Provider나 Gateway이면 `API Key 또는 Client Key`를 입력합니다. 인증이 필요 없는 Ollama는 비워 둡니다.
+8. `현재 관리자 비밀번호`를 입력합니다.
+9. `연결 활성`을 확인합니다. 키가 있는 Provider는 `키 저장 및 연결 확인`, 무키 Ollama는 `연결 저장`을 선택합니다.
+10. 연결 카드가 `확인됨`이고 모델 목록이 나타나는지 확인합니다. 무키 Ollama는 `Credential 없음`으로 표시될 수 있으며 이것만으로 오류는 아닙니다.
+
+키와 저장된 Endpoint 원문은 화면에 다시 표시되지 않습니다. 화면·로그·문의 글에 키를 붙여 넣지 않습니다. 연결 확인 성공은 해당 Endpoint와 모델 카탈로그를 확인했다는 뜻이며, 실제 질문·Source·Studio 흐름까지 성공했다는 뜻은 아닙니다.
+
+현재 질문·일반 대화 실행 경로에 연결된 Provider는 Ollama, Groq, Mistral, Upstage, OpenRouter, OmniRoute와 Eoul Gateway입니다. Cerebras, OpenAI, Gemini와 Anthropic은 코드 값이 남아 있더라도 현재 실행 Adapter가 없으므로 실제 질문용으로 선택하지 않습니다.
+
+### 13.2 Ollama Endpoint 여러 개 등록
+
+Ollama는 Endpoint마다 별도 이름과 Connection ID를 부여해 동시에 등록합니다. 예를 들어 사내 LAN 주소, HTTPS Gateway 주소와 다른 Ollama 서버를 각각 별도 연결로 만들 수 있습니다.
+
+1. 첫 번째 Ollama 주소를 `ollama-lan` 같은 ID와 `사내 Ollama` 같은 이름으로 등록합니다.
+2. 두 번째 주소를 `ollama-https` 같은 다른 ID와 이름으로 등록합니다.
+3. 각 연결의 카탈로그에서 실제 모델이 따로 조회되는지 확인합니다.
+4. Workspace 기본 모델에서 필요한 연결과 모델 조합을 선택합니다.
+
+주소는 예시에 고정되지 않습니다. Daon User의 API 컨테이너가 실제로 접근할 수 있는 주소를 사용해야 하며, 브라우저용 `localhost`나 Docker 내부 이름을 사용자 화면에서 임의로 입력해 우회하지 않습니다.
+
+### 13.3 OpenRouter·OmniRoute·Eoul Gateway
+
+- OpenRouter: OpenAI 호환 Endpoint와 API Key를 등록합니다. 모델 목록은 Provider가 제공하는 카탈로그를 사용합니다.
+- OmniRoute: 라우팅 Gateway Endpoint, Client Key와 Gateway에 등록된 Logical model ID를 입력합니다.
+- Eoul Gateway: Daon User 서버에 함께 설치한 형태와 별도 서버에 배포한 형태 모두 사용할 수 있습니다. Daon User에서는 접근 가능한 Gateway Endpoint, Client Key와 Logical model ID만 등록합니다.
+
+OmniRoute와 Eoul Gateway의 하위 Provider 선택·우선순위·Fallback은 Gateway가 책임집니다. Daon User는 사용자가 선택한 하나의 논리 모델을 한 번 호출하며 Gateway 내부 라우팅을 중복 구현하지 않습니다.
+
+### 13.4 Workspace 기본 모델 선택
+
+1. `Workspace 기본 모델`에서 `텍스트 생성`, `이미지 이해` 또는 `문서 분석` 카드를 찾습니다.
+2. `연결 이름 · 모델 ID` 형식의 항목을 선택합니다.
+3. `기본 모델 저장`을 선택합니다.
+4. 저장 완료 문구를 확인한 뒤 새 질문 또는 새 처리 Run으로 실제 호출을 검증합니다.
+
+선택 목록에는 활성화되고, 연결 확인과 카탈로그 조회가 끝났으며, 해당 기능이 확인된 모델만 표시됩니다. 수동 역할 매핑 화면은 없습니다. Provider가 보고한 기능을 시스템 관리자가 `모델 기능 보정`에서 확인할 수 있지만, `준비 중` 기능은 보정으로 실행 가능하게 만들 수 없습니다.
+
+### 13.5 키 교체·삭제·카탈로그 새로고침
+
+- 키 교체: 기존 연결을 선택하고 새 키와 현재 관리자 비밀번호만 입력한 뒤 `키 저장 및 연결 확인`을 선택합니다. 저장된 Endpoint를 다시 입력하거나 worker를 재생성할 필요가 없습니다. 다음 요청부터 DB의 최신 자격증명 버전을 읽습니다.
+- 키 삭제: 현재 관리자 비밀번호를 입력하고 `키 삭제`를 선택합니다. 연결과 모델 카탈로그 기록은 남지만 Provider 실행은 차단됩니다.
+- 카탈로그 새로고침: Provider에서 모델을 추가·삭제한 뒤 현재 관리자 비밀번호를 입력하고 `카탈로그 새로고침`을 선택합니다. 사라진 모델은 선택 목록에서 제거되며 기존 Workspace 기본값에 영향이 있는지 확인해야 합니다.
+
+### 13.6 기존 환경변수 키 1회 이관(운영자)
+
+이 절차는 이전 배포에서 Provider 키를 환경변수로 사용하던 경우에만 한 번 수행합니다. 일반 사용자는 실행하지 않습니다.
+
+1. 배포 전에 `DAON_PROVIDER_CREDENTIAL_KEY_FILE`이 32바이트 이상의 비공개 master key 파일을 가리키는지 확인합니다.
+2. DB migration 0040 이상이 적용되어 기존 Provider 설정이 시스템 연결로 이관되었는지 확인합니다.
+3. 기존 키가 서버 환경에 있는 동안 API 이미지의 `/app/scripts/import-provider-credentials.py`를 한 번 실행합니다. 명령에는 키 값을 직접 적지 말고 기존 환경변수 이름만 전달합니다.
+4. `PROVIDER_CREDENTIAL_IMPORT_COMPLETED imported=... skipped=... unused_provider_types=...` 결과만 기록합니다. 키 원문은 출력되지 않습니다.
+5. 같은 명령을 다시 실행했을 때 이미 Credential이 있는 연결은 변경하지 않습니다.
+6. 화면에서 연결별 `확인 필요` 상태를 선택해 `키 저장 및 연결 확인` 또는 카탈로그 새로고침으로 실제 Provider를 검증합니다.
+7. 검증 후 배포 환경의 기존 `*_API_KEY`와 `OLLAMA_BASE_URL` 항목을 제거하고 API·document-worker에 master key 파일만 read-only Secret으로 제공합니다.
+
+이관 도구는 migration 0040이 만든 기존 연결에만 키를 넣습니다. 환경변수만 있고 대응 연결이 없으면 새 Endpoint를 추측해 만들지 않으며 `unused_provider_types`로 집계합니다.
 
 ## 14. 출력·버전 설정
 
@@ -493,7 +560,11 @@ Mobile 계약상 허용되는 작업에는 제목·텍스트 블록·간단한 �
 
 ### 선택 모델이 없음
 
-`LLM 설정`에서 text 역할의 활성 Deployment가 선택되었는지 확인합니다. 일반 사용자가 변경할 수 없으면 Workspace 관리자에게 요청합니다.
+`LLM 설정`의 `Workspace 기본 모델`에서 해당 기능에 사용할 연결과 모델을 선택했는지 확인합니다. 선택 항목이 없으면 시스템 관리자에게 연결 활성 상태, 연결 확인 결과, 모델 카탈로그와 기능 판별을 확인해 달라고 요청합니다.
+
+### Provider 연결 확인이 실패함
+
+Endpoint에 오타가 없는지, Daon User 서버에서 해당 주소로 통신할 수 있는지, 키가 유효한지, Gateway의 Logical model ID가 실제 등록값과 일치하는지 확인합니다. 키 원문이나 Provider 응답 본문을 오류 보고에 포함하지 않습니다. 키 교체만 필요한 경우 Endpoint를 다시 입력하거나 worker를 재생성하지 않습니다.
 
 ### 외부 전송이 거부됨
 

@@ -23,26 +23,19 @@ services:
       DAON_SMTP_PASSWORD: ${DAON_SMTP_PASSWORD-}
       DAON_SMTP_SECURE: ${DAON_SMTP_SECURE-true}
       DAON_EMAIL_FROM: ${DAON_EMAIL_FROM-}
-      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY-}
-      GROQ_API_KEY: ${GROQ_API_KEY-}
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY-}
-      UPSTAGE_API_KEY: ${UPSTAGE_API_KEY-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY-}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL-}
       LLM_DATA_REGION: ${LLM_DATA_REGION-}
       LLM_EXTERNAL_EGRESS_APPROVED: ${LLM_EXTERNAL_EGRESS_APPROVED-false}
       DAON_OBJECT_ACCESS_KEY_FILE: /run/secrets/object_access_key
       DAON_OBJECT_SECRET_KEY_FILE: /run/secrets/object_secret_key
       DAON_RECOVERY_MANIFEST_KEY_FILE: /run/secrets/recovery_manifest_key
       DAON_STEP_UP_TOKEN_KEY_FILE: /run/secrets/step_up_token_key
+      DAON_PROVIDER_CREDENTIAL_KEY_FILE: /run/secrets/provider_credential_key
     secrets:
       - object_access_key
       - object_secret_key
       - recovery_manifest_key
       - step_up_token_key
+      - provider_credential_key
     volumes:
       - daon_user_api_runtime:/var/lib/daon-user
     networks:
@@ -91,23 +84,16 @@ services:
       DAON_OBJECT_STORAGE_SECURE: ${DAON_OBJECT_STORAGE_SECURE-true}
       DAON_OBJECT_ACCESS_KEY_FILE: /run/secrets/object_access_key
       DAON_OBJECT_SECRET_KEY_FILE: /run/secrets/object_secret_key
+      DAON_PROVIDER_CREDENTIAL_KEY_FILE: /run/secrets/provider_credential_key
       DAON_DOCUMENT_WORKER_ID: ${COMPOSE_PROJECT_NAME}-document-worker
       DAON_DOCUMENT_WORKER_LEASE_SECONDS: ${DAON_DOCUMENT_WORKER_LEASE_SECONDS-600}
       DAON_DOCUMENT_WORKER_POLL_SECONDS: ${DAON_DOCUMENT_WORKER_POLL_SECONDS-0.5}
-      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY-}
-      GROQ_API_KEY: ${GROQ_API_KEY-}
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY-}
-      UPSTAGE_API_KEY: ${UPSTAGE_API_KEY-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY-}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL-}
       LLM_DATA_REGION: ${LLM_DATA_REGION-}
       LLM_EXTERNAL_EGRESS_APPROVED: ${LLM_EXTERNAL_EGRESS_APPROVED-false}
     secrets:
       - object_access_key
       - object_secret_key
+      - provider_credential_key
     networks:
       - daon_user
       - proxy-network
@@ -179,3 +165,5 @@ secrets:
     file: ${DAON_RECOVERY_MANIFEST_KEY_FILE:?recovery manifest key reference required}
   step_up_token_key:
     file: ${DAON_STEP_UP_TOKEN_KEY_FILE:?step-up token key reference required}
+  provider_credential_key:
+    file: ${DAON_PROVIDER_CREDENTIAL_KEY_FILE:?provider credential key reference required}
