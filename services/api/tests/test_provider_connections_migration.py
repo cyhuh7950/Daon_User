@@ -100,6 +100,23 @@ def test_migration_0040_preserves_system_scope_and_workspace_rls_permissions() -
     assert "system_provider_models ENABLE ROW LEVEL SECURITY" not in sql
 
 
+def test_migration_0040_adds_immutable_system_idempotency_and_audit_outbox() -> None:
+    sql = migration_sql()
+
+    assert "CREATE TABLE system_provider_admin_idempotency" in sql
+    assert "PRIMARY KEY (tenant_id, actor_id, operation, idempotency_key)" in sql
+    assert "request_fingerprint text NOT NULL" in sql
+    assert "result jsonb NOT NULL" in sql
+    assert "CREATE TRIGGER system_provider_admin_idempotency_immutable" in sql
+    assert "CREATE TABLE system_provider_audit_outbox" in sql
+    assert "audit_payload jsonb NOT NULL" in sql
+    assert "published_at timestamptz" in sql
+    assert "GRANT SELECT, INSERT ON system_provider_admin_idempotency TO daon_app" in sql
+    assert "GRANT SELECT, INSERT, UPDATE (published_at) ON system_provider_audit_outbox TO daon_app" in sql
+    assert "system_provider_admin_idempotency ENABLE ROW LEVEL SECURITY" not in sql
+    assert "system_provider_audit_outbox ENABLE ROW LEVEL SECURITY" not in sql
+
+
 def test_migration_0040_is_forward_only() -> None:
     module = load_migration()
 

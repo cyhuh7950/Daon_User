@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -15,6 +16,7 @@ _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _PROVIDER_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _NONCE_BYTES = 12
 _SCHEMA_VERSION = 1
+_IDEMPOTENCY_FINGERPRINT_DOMAIN = b"daon-user/provider-credential/idempotency/v1"
 
 
 class ProviderCredentialError(RuntimeError):
@@ -52,7 +54,32 @@ class ProviderCredentialCipher:
         if encryption_key_version < 1:
             raise ProviderCredentialError("PROVIDER_CREDENTIAL_KEY_INVALID")
         self._key = hashlib.sha256(master_key).digest()
+        self._idempotency_fingerprint_key = hmac.new(
+            master_key,
+            _IDEMPOTENCY_FINGERPRINT_DOMAIN,
+            hashlib.sha256,
+        ).digest()
         self._encryption_key_version = encryption_key_version
+
+    def idempotency_fingerprint(self, connection_id: str, plaintext: bytes) -> str:
+        if not _IDENTIFIER_PATTERN.fullmatch(connection_id):
+            raise ProviderCredentialError("PROVIDER_CONNECTION_ID_INVALID")
+        if not isinstance(plaintext, bytes) or not plaintext:
+            raise ProviderCredentialError("PROVIDER_CREDENTIAL_INVALID")
+        context = json.dumps(
+            {
+                "connection_id": connection_id,
+                "domain": _IDEMPOTENCY_FINGERPRINT_DOMAIN.decode("ascii"),
+                "schema_version": _SCHEMA_VERSION,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hmac.new(
+            self._idempotency_fingerprint_key,
+            context + len(plaintext).to_bytes(8, "big") + plaintext,
+            hashlib.sha256,
+        ).hexdigest()
 
     def encrypt(
         self,

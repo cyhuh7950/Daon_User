@@ -240,6 +240,197 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale.status_code, 409)
         self.assertEqual(stale.json()["error"]["code"], "VERSION_CONFLICT")
 
+    async def test_workspace_admin_cannot_read_or_mutate_system_provider_connections(self) -> None:
+        listed = await self.client.get("/api/v1/admin/provider-connections")
+        created = await self.client.post(
+            "/api/v1/admin/provider-connections",
+            headers={"Idempotency-Key": "provider-create-denied-0001"},
+            json={
+                "connection_id": "ollama-lan", "provider_code": "OLLAMA",
+                "display_name": "LAN Ollama", "base_url": "http://ollama.internal:11434",
+                "enabled": True, "expected_version": 0,
+                "step_up_authorization_id": "not-a-grant",
+            },
+        )
+        self.assertEqual(listed.status_code, 403)
+        self.assertEqual(created.status_code, 403)
+
+    async def test_system_admin_connection_crud_is_step_up_versioned_and_secret_safe(self) -> None:
+        class ProviderAdminService:
+            def __init__(self) -> None:
+                self.item = None
+                self.deleted_replay = None
+
+            def list_connections(self, context):
+                return [] if self.item is None else [self.item]
+
+            def create_connection(self, context, body, idempotency_key):
+                if self.item is not None:
+                    return self.item, True
+                self.item = {
+                    "connection_id": body.connection_id, "provider_code": body.provider_code,
+                    "display_name": body.display_name, "enabled": body.enabled,
+                    "configured": body.credential is not None, "credential_version": 1,
+                    "version": 1, "verification_status": "verified",
+                    "verified_at": "2026-09-16T00:00:00Z", "catalog_status": "ready",
+                    "catalog_version": 1, "models": [],
+                }
+                return self.item, False
+
+            def update_connection(self, context, connection_id, body, idempotency_key):
+                if body.expected_version != self.item["version"]:
+                    from daon_user_api.runtime import ProviderConnectionAdminError
+                    raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
+                self.item = {**self.item, "display_name": body.display_name,
+                             "enabled": body.enabled, "version": body.expected_version + 1}
+                return self.item, False
+
+            def delete_connection(self, context, connection_id, expected_version, idempotency_key):
+                if self.deleted_replay is not None:
+                    return self.deleted_replay, True
+                if expected_version != self.item["version"]:
+                    from daon_user_api.runtime import ProviderConnectionAdminError
+                    raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
+                self.item = {
+                    **self.item, "configured": False,
+                    "credential_version": self.item["credential_version"] + 1,
+                    "verification_status": "unverified", "verified_at": None,
+                    "version": expected_version + 1,
+                }
+                self.deleted_replay = self.item
+                return self.item, False
+
+            def refresh_catalog(self, context, connection_id, expected_version, idempotency_key):
+                self.item = {**self.item, "version": expected_version + 1, "catalog_version": 2}
+                return self.item, False
+
+            def correct_capabilities(self, context, connection_id, model_id, body, idempotency_key):
+                return {"connection_id": connection_id, "model_id": model_id,
+                        "reported_capabilities": ["text_generation"],
+                        "effective_capabilities": body.effective_capabilities,
+                        "override_applied": True, "catalog_version": body.expected_version + 1}, False
+
+        service = ProviderAdminService()
+        self.dependencies.provider_connection_service = service
+        self.dependencies.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION,
+            system_admin_user_ids=frozenset({self.credentials.user_id}),
+        )
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+
+        secret = "raw-provider-secret-must-not-return"
+        create_step = self.identity.issue_step_up(
+            access_token=self.credentials.access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id="provider-connection:ollama-lan",
+            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
+        )
+        created = await self.client.post(
+            "/api/v1/admin/provider-connections",
+            headers={"Idempotency-Key": "provider-create-admin-0001"},
+            json={
+                "connection_id": "ollama-lan", "provider_code": "OLLAMA",
+                "display_name": "LAN Ollama", "base_url": "http://ollama.internal:11434",
+                "credential": secret, "enabled": True, "expected_version": 0,
+                "step_up_authorization_id": create_step.authorization,
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertIn("etag", created.headers)
+        self.assertNotIn(secret, created.text)
+        self.assertNotIn("ollama.internal", created.text)
+        self.assertTrue(created.json()["data"]["configured"])
+        replay = await self.client.post(
+            "/api/v1/admin/provider-connections",
+            headers={"Idempotency-Key": "provider-create-admin-0001"},
+            json={
+                "connection_id": "ollama-lan", "provider_code": "OLLAMA",
+                "display_name": "LAN Ollama", "base_url": "http://ollama.internal:11434",
+                "credential": secret, "enabled": True, "expected_version": 0,
+                "step_up_authorization_id": create_step.authorization,
+            },
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.headers["etag"], created.headers["etag"])
+        self.assertTrue(replay.json()["meta"]["replayed"])
+        self.assertNotIn(secret, replay.text)
+
+        listed = await self.client.get("/api/v1/admin/provider-connections")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertIn("etag", listed.headers)
+        self.assertNotIn(secret, listed.text)
+        self.assertNotIn("base_url", listed.text)
+
+        stale_step = self.identity.issue_step_up(
+            access_token=self.credentials.access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id="provider-connection:ollama-lan",
+            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
+        )
+        stale = await self.client.put(
+            "/api/v1/admin/provider-connections/ollama-lan",
+            headers={"Idempotency-Key": "provider-update-admin-0001"},
+            json={"display_name": "LAN Ollama 2", "base_url": "http://ollama.internal:11434",
+                  "enabled": True, "expected_version": 2,
+                  "step_up_authorization_id": stale_step.authorization},
+        )
+        self.assertEqual(stale.status_code, 409, stale.text)
+
+        delete_step = self.identity.issue_step_up(
+            access_token=self.credentials.access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id="provider-connection:ollama-lan",
+            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
+        )
+        deleted = await self.client.request(
+            "DELETE", "/api/v1/admin/provider-connections/ollama-lan",
+            headers={"Idempotency-Key": "provider-credential-delete-0001"},
+            json={"expected_version": 1, "step_up_authorization_id": delete_step.authorization},
+        )
+        self.assertEqual(deleted.status_code, 204, deleted.text)
+        self.assertEqual(deleted.headers["etag"], '"projection-d12d910806b0e61fe29bd7ae"')
+        self.assertIsNotNone(service.item)
+        self.assertFalse(service.item["configured"])
+        self.assertEqual(service.item["credential_version"], 2)
+        self.assertEqual(service.item["version"], 2)
+        delete_replay = await self.client.request(
+            "DELETE", "/api/v1/admin/provider-connections/ollama-lan",
+            headers={"Idempotency-Key": "provider-credential-delete-0001"},
+            json={"expected_version": 1, "step_up_authorization_id": delete_step.authorization},
+        )
+        self.assertEqual(delete_replay.status_code, 204, delete_replay.text)
+        self.assertEqual(delete_replay.headers["etag"], deleted.headers["etag"])
+
+    async def test_catalog_refresh_and_capability_correction_require_step_up(self) -> None:
+        self.dependencies.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION,
+            system_admin_user_ids=frozenset({self.credentials.user_id}),
+        )
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        refresh = await self.client.post(
+            "/api/v1/admin/provider-catalog/ollama-lan/refresh",
+            headers={"Idempotency-Key": "provider-refresh-admin-0001"},
+            json={"expected_version": 1, "step_up_authorization_id": "missing"},
+        )
+        correction = await self.client.patch(
+            "/api/v1/admin/provider-models/ollama-lan/qwen3/capabilities",
+            headers={"Idempotency-Key": "provider-capability-admin-0001"},
+            json={"effective_capabilities": ["text_generation"], "expected_version": 1,
+                  "step_up_authorization_id": "missing"},
+        )
+        self.assertEqual(refresh.status_code, 403)
+        self.assertEqual(correction.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

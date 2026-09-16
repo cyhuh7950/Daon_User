@@ -123,6 +123,41 @@ def upgrade() -> None:
             REFERENCES system_provider_models(connection_id, model_id)
         );
 
+        CREATE TABLE system_provider_admin_idempotency (
+          tenant_id text NOT NULL,
+          actor_id text NOT NULL,
+          operation text NOT NULL,
+          idempotency_key text NOT NULL,
+          request_fingerprint text NOT NULL CHECK (request_fingerprint ~ '^[0-9a-f]{64}$'),
+          result jsonb NOT NULL,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (tenant_id, actor_id, operation, idempotency_key)
+        );
+
+        CREATE FUNCTION reject_system_provider_idempotency_mutation()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'SYSTEM_PROVIDER_IDEMPOTENCY_IMMUTABLE' USING ERRCODE = '55000';
+        END $$;
+
+        CREATE TRIGGER system_provider_admin_idempotency_immutable
+          BEFORE UPDATE OR DELETE ON system_provider_admin_idempotency
+          FOR EACH ROW EXECUTE FUNCTION reject_system_provider_idempotency_mutation();
+
+        CREATE TABLE system_provider_audit_outbox (
+          event_id text PRIMARY KEY,
+          tenant_id text NOT NULL,
+          actor_id text NOT NULL,
+          action text NOT NULL,
+          target_type text NOT NULL,
+          target_id text NOT NULL,
+          trace_id text NOT NULL,
+          policy_version text NOT NULL,
+          audit_payload jsonb NOT NULL,
+          occurred_at timestamptz NOT NULL DEFAULT now(),
+          published_at timestamptz
+        );
+
         INSERT INTO system_provider_connections (
           connection_id, provider_code, display_name, base_url,
           encrypted_credential, credential_nonce, encryption_key_version,
@@ -240,9 +275,14 @@ def upgrade() -> None:
         GRANT SELECT, INSERT, UPDATE, DELETE ON system_provider_connections TO daon_app;
         GRANT SELECT, INSERT, UPDATE, DELETE ON system_provider_models TO daon_app;
         GRANT SELECT, INSERT, UPDATE, DELETE ON workspace_model_defaults TO daon_app;
+        GRANT SELECT, INSERT ON system_provider_admin_idempotency TO daon_app;
+        GRANT SELECT, INSERT, UPDATE (published_at) ON system_provider_audit_outbox TO daon_app;
         ALTER TABLE system_provider_connections OWNER TO daon_app;
         ALTER TABLE system_provider_models OWNER TO daon_app;
         ALTER TABLE workspace_model_defaults OWNER TO daon_app;
+        ALTER TABLE system_provider_admin_idempotency OWNER TO daon_app;
+        ALTER TABLE system_provider_audit_outbox OWNER TO daon_app;
+        ALTER FUNCTION reject_system_provider_idempotency_mutation() OWNER TO daon_app;
         """
     )
 

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { MinimalEvent, findElements, installMinimalDom } from "./product-studio-dom.mjs";
 
 import { providerSettingsApi } from "../../apps/web/lib/provider-settings-api.js";
+import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 
 const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
 
@@ -15,6 +16,57 @@ test("provider settings helper uses same-origin relative BFF paths only", async 
   assert.match(source, /credentials:\s*["']same-origin["']/);
   assert.doesNotMatch(source, /["'`]\/api\/v1\//);
   assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL|api[_-]?key|secret_value/i);
+});
+
+test("provider connection admin BFF allowlist forwards exact same-origin routes without logging bodies", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method, body: Buffer.from(init.body ?? []).toString("utf8") });
+      return Response.json({ data: {}, meta: { trace_id: "trace-provider-admin" } });
+    },
+  });
+  const mutate = (path, method, body) => proxy(new Request(`https://app.example.com/bff/api/${path}`, {
+    method,
+    headers: {
+      Origin: "https://app.example.com", Referer: "https://app.example.com/settings",
+      "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json",
+      "Idempotency-Key": `provider-admin-${method.toLowerCase()}-0001`,
+    },
+    body: JSON.stringify(body),
+  }), path.split("/"));
+  assert.equal((await proxy(
+    new Request("https://app.example.com/bff/api/admin/provider-connections"),
+    ["admin", "provider-connections"],
+  )).status, 200);
+  assert.equal((await mutate("admin/provider-connections", "POST", { credential: "raw-secret" })).status, 200);
+  assert.equal((await mutate("admin/provider-connections/ollama-lan", "PUT", { credential: "rotated-secret" })).status, 200);
+  assert.equal((await mutate("admin/provider-connections/ollama-lan", "DELETE", { expected_version: 2 })).status, 200);
+  assert.equal((await mutate("admin/provider-catalog/ollama-lan/refresh", "POST", { expected_version: 2 })).status, 200);
+  assert.equal((await mutate("admin/provider-models/ollama-lan/qwen3/capabilities", "PATCH", { effective_capabilities: ["text_generation"] })).status, 200);
+  assert.deepEqual(captured.map(({ url, method }) => ({ url, method })), [
+    { url: "https://api.example.com/api/v1/admin/provider-connections", method: "GET" },
+    { url: "https://api.example.com/api/v1/admin/provider-connections", method: "POST" },
+    { url: "https://api.example.com/api/v1/admin/provider-connections/ollama-lan", method: "PUT" },
+    { url: "https://api.example.com/api/v1/admin/provider-connections/ollama-lan", method: "DELETE" },
+    { url: "https://api.example.com/api/v1/admin/provider-catalog/ollama-lan/refresh", method: "POST" },
+    { url: "https://api.example.com/api/v1/admin/provider-models/ollama-lan/qwen3/capabilities", method: "PATCH" },
+  ]);
+  const source = await read("apps/web/lib/bff-api-proxy.js");
+  assert.doesNotMatch(source, /console\.(?:log|info|warn|error)\([^)]*(?:body|credential)/iu);
+  const denied = await proxy(new Request("https://app.example.com/bff/api/admin/provider-connections", {
+    method: "POST",
+    headers: {
+      Origin: "https://attacker.example", Referer: "https://attacker.example/settings",
+      "Sec-Fetch-Site": "cross-site", "Content-Type": "application/json",
+      "Idempotency-Key": "provider-admin-cross-origin-0001",
+    },
+    body: JSON.stringify({ credential: "cross-origin" }),
+  }), ["admin", "provider-connections"]);
+  assert.equal(denied.status, 403);
+  assert.equal(captured.length, 6);
 });
 
 test("Provider 연결 시험은 same-origin exact route와 safe result만 허용한다", async () => {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import replace
 
@@ -133,6 +134,23 @@ def test_cipher_requires_at_least_256_bits_of_master_key() -> None:
         match="^PROVIDER_CREDENTIAL_KEY_INVALID$",
     ):
         ProviderCredentialCipher(b"short", encryption_key_version=1)
+
+
+def test_idempotency_fingerprint_is_keyed_and_connection_bound(
+    cipher: ProviderCredentialCipher,
+) -> None:
+    plaintext = b"credential-test-value"
+
+    first = cipher.idempotency_fingerprint("ollama-lan", plaintext)
+    retry = cipher.idempotency_fingerprint("ollama-lan", plaintext)
+    changed_secret = cipher.idempotency_fingerprint("ollama-lan", b"credential-test-value-2")
+    changed_connection = cipher.idempotency_fingerprint("ollama-public", plaintext)
+
+    assert first == retry
+    assert first != changed_secret
+    assert first != changed_connection
+    assert first != hashlib.sha256(plaintext).hexdigest()
+    assert plaintext.decode() not in first
 
 
 def test_provider_connection_supports_named_nullable_credential() -> None:

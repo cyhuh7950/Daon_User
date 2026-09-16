@@ -58,7 +58,7 @@ const BACKUP_QUERY = new Set(["workspace_id"]);
 const MODEL_SETTINGS_QUERY = new Set(["workspace_id"]);
 const PROVIDER_CODES = new Set([
   "ANTHROPIC", "CEREBRAS", "GEMINI", "GROQ", "MISTRAL", "OLLAMA",
-  "OPENAI", "OPENROUTER", "UPSTAGE",
+  "OPENAI", "OPENROUTER", "UPSTAGE", "OMNIROUTE", "EOUL_GATEWAY",
 ]);
 const STUDIO_QUERY = new Set(["workspace_id", "notebook_id"]);
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
@@ -133,6 +133,36 @@ function routeFor(method, segments) {
   if (segments.length === 2 && segments[0] === "admin" && segments[1] === "users") {
     return method === "GET"
       ? { path: "/api/v1/admin/users", query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "admin" && segments[1] === "provider-connections") {
+    return new Set(["GET", "POST"]).has(method)
+      ? { path: "/api/v1/admin/provider-connections", query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "admin" && segments[1] === "provider-connections"
+    && SAFE_SEGMENT.test(segments[2])
+  ) {
+    return new Set(["PUT", "DELETE"]).has(method)
+      ? { path: `/api/v1/admin/provider-connections/${encodeURIComponent(segments[2])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "admin" && segments[1] === "provider-catalog"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "refresh"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/admin/provider-catalog/${encodeURIComponent(segments[2])}/refresh`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5 && segments[0] === "admin" && segments[1] === "provider-models"
+    && SAFE_SEGMENT.test(segments[2]) && SAFE_SEGMENT.test(segments[3])
+    && segments[4] === "capabilities"
+  ) {
+    return method === "PATCH"
+      ? { path: `/api/v1/admin/provider-models/${encodeURIComponent(segments[2])}/${encodeURIComponent(segments[3])}/capabilities`, query: null }
       : { methodRejected: true };
   }
   if (

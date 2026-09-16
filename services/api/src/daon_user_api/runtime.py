@@ -154,6 +154,15 @@ from .provider_settings import (
     ReferenceProviderSettingsRepository,
     ServerCredentialPresenceResolver,
 )
+from .provider_connection_admin import (
+    ProviderCapabilityCommand,
+    ProviderConnectionAdminContext,
+    ProviderConnectionAdminError,
+    ProviderConnectionCreateCommand,
+    ProviderConnectionUpdateCommand,
+    PostgresProviderConnectionService,
+)
+from .provider_credentials import ProviderCredentialCipher
 from .retention_inventory_postgres import PostgresRetentionInventoryProvider
 from .retention_request_postgres import PostgresRetentionRequestService
 from .operations_status import OperationsStatusContext, OperationsStatusService
@@ -237,6 +246,7 @@ class RuntimeSettings:
     object_secret_key_file: Path | None = None
     recovery_manifest_key_file: Path | None = None
     step_up_token_key_file: Path | None = None
+    provider_credential_key_file: Path | None = None
     license_public_keys_file: Path | None = None
     object_storage_secure: bool = True
     object_storage_provision_bucket: bool = False
@@ -305,13 +315,17 @@ class RuntimeSettings:
                 ipaddress.ip_address(address)
 
     @classmethod
-    def for_test(cls, *, database_path: Path, policy_version: str) -> "RuntimeSettings":
+    def for_test(
+        cls, *, database_path: Path, policy_version: str,
+        system_admin_user_ids: frozenset[str] = frozenset({"admin"}),
+    ) -> "RuntimeSettings":
         return cls(
             profile="test",
             bind_host="127.0.0.1",
             port=8000,
             database_path=database_path,
             policy_version=policy_version,
+            system_admin_user_ids=system_admin_user_ids,
         )
 
     @classmethod
@@ -357,6 +371,10 @@ class RuntimeSettings:
             step_up_token_key_file=(
                 None if os.environ.get("DAON_STEP_UP_TOKEN_KEY_FILE") is None
                 else Path(os.environ["DAON_STEP_UP_TOKEN_KEY_FILE"])
+            ),
+            provider_credential_key_file=(
+                None if os.environ.get("DAON_PROVIDER_CREDENTIAL_KEY_FILE") is None
+                else Path(os.environ["DAON_PROVIDER_CREDENTIAL_KEY_FILE"])
             ),
             license_public_keys_file=(
                 None if os.environ.get("DAON_LICENSE_PUBLIC_KEYS_FILE") is None
@@ -444,6 +462,7 @@ class RuntimeDependencies:
     recovery_service: RecoveryService | PostgresRecoveryService | UnavailableRecoveryService | None = None
     object_queue_store: PostgresObjectQueueStore | None = None
     provider_settings_service: ProviderSettingsService | None = None
+    provider_connection_service: Any | None = None
     operations_status_service: OperationsStatusService | None = None
     output_version_settings_service: OutputVersionSettingsService | None = None
     screen_preference_service: ScreenPreferenceService | None = None
@@ -825,6 +844,40 @@ class ProviderProfileBody(BaseModel):
     expected_version: int
 
 
+class ProviderConnectionCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connection_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    provider_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Z][A-Z0-9_]{0,63}$")
+    display_name: str = Field(min_length=1, max_length=256)
+    base_url: str = Field(min_length=1, max_length=2048)
+    credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
+    logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    enabled: bool
+    expected_version: int = Field(ge=0)
+    step_up_authorization_id: str = Field(min_length=1, max_length=4096, repr=False)
+
+
+class ProviderConnectionUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str = Field(min_length=1, max_length=256)
+    base_url: str = Field(min_length=1, max_length=2048)
+    credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
+    logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    enabled: bool
+    expected_version: int = Field(ge=1)
+    step_up_authorization_id: str = Field(min_length=1, max_length=4096, repr=False)
+
+
+class ProviderConnectionMutationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    step_up_authorization_id: str = Field(min_length=1, max_length=4096, repr=False)
+
+
+class ProviderCapabilityBody(ProviderConnectionMutationBody):
+    effective_capabilities: list[str] = Field(min_length=1, max_length=12)
+
+
 class ModelDeploymentBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_id: str
@@ -991,10 +1044,14 @@ def _require_query_keys(request: Request, allowed: frozenset[str]) -> None:
         raise HTTPException(status_code=400)
 
 
+def _etag_header(etag_seed: str) -> str:
+    digest = hashlib.sha256(etag_seed.encode("utf-8")).hexdigest()[:24]
+    return f'"projection-{digest}"'
+
+
 def _json_with_etag(content: dict[str, object], etag_seed: str) -> JSONResponse:
     response = JSONResponse(content=content)
-    digest = hashlib.sha256(etag_seed.encode("utf-8")).hexdigest()[:24]
-    response.headers["ETag"] = f'"projection-{digest}"'
+    response.headers["ETag"] = _etag_header(etag_seed)
     return response
 
 
@@ -1379,6 +1436,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ),
         ServerCredentialPresenceResolver(),
     )
+    provider_connection_service = dependencies.provider_connection_service
+    if (
+        provider_connection_service is None
+        and dependencies.cloud_store is not None
+        and dependencies.settings.provider_credential_key_file is not None
+    ):
+        try:
+            provider_key = dependencies.settings.provider_credential_key_file.read_bytes()
+        except OSError:
+            raise ValueError("PROVIDER_CREDENTIAL_KEY_REFERENCE_UNAVAILABLE") from None
+        provider_connection_service = PostgresProviderConnectionService(
+            dependencies.cloud_store,
+            ProviderCredentialCipher(provider_key, encryption_key_version=1),
+        )
     retention_request_service = retention_service
     operations_status_service = dependencies.operations_status_service
     if operations_status_service is None and dependencies.cloud_store is not None:
@@ -1930,6 +2001,25 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             error.code if error.code in public_codes else "INVALID_REQUEST",
             request.state.trace_id,
             retryable=error.retryable,
+        )
+
+    @app.exception_handler(ProviderConnectionAdminError)
+    async def provider_connection_admin_error(
+        request: Request, error: ProviderConnectionAdminError,
+    ) -> JSONResponse:
+        safe_codes = {
+            "PROVIDER_CONNECTION_NOT_FOUND", "PROVIDER_CONNECTION_ID_INVALID",
+            "PROVIDER_CODE_INVALID", "PROVIDER_BASE_URL_INVALID", "PROVIDER_ADAPTER_UNSUPPORTED",
+            "PROVIDER_CREDENTIAL_REQUIRED", "PROVIDER_CREDENTIAL_INVALID",
+            "PROVIDER_AUTHENTICATION_FAILED", "PROVIDER_CONNECTION_FAILED",
+            "PROVIDER_CATALOG_UNAVAILABLE", "PROVIDER_CATALOG_RESPONSE_INVALID",
+            "PROVIDER_LOGICAL_MODEL_INVALID", "PROVIDER_REDIRECT_BLOCKED",
+            "PROVIDER_RATE_LIMITED", "PROVIDER_CAPABILITY_UNSUPPORTED", "VERSION_CONFLICT",
+            "IDEMPOTENCY_KEY_REUSED",
+        }
+        return _error_response(
+            error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
+            request.state.trace_id, retryable=error.retryable,
         )
 
     @app.post("/api/v1/auth/verify-email")
@@ -4239,6 +4329,176 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         })
         response.headers["ETag"] = hold.etag
         return response
+
+    def _provider_admin_context(request: Request) -> tuple[IdentityPrincipal, ProviderConnectionAdminContext]:
+        principal = _principal(request, dependencies)
+        if principal.user_id not in dependencies.settings.system_admin_user_ids:
+            raise AuthorizationError("ACCESS_DENIED", 403)
+        return principal, ProviderConnectionAdminContext(
+            tenant_id=principal.tenant_id, actor_id=principal.user_id,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+
+    def _provider_admin_step_up(
+        request: Request, *, target_id: str, authorization: str,
+        operation: str, idempotency_key: str,
+    ) -> ProviderConnectionAdminContext:
+        _egress_idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        _principal_value, context = _provider_admin_context(request)
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=authorization, access_token=access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id=target_id, policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id, operation=operation,
+            idempotency_key=idempotency_key,
+        )
+        return context
+
+    def _provider_admin_service() -> Any:
+        if provider_connection_service is None:
+            raise ProviderConnectionAdminError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
+        return provider_connection_service
+
+    @app.get("/api/v1/admin/provider-connections")
+    async def list_provider_connections(request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _principal_value, context = _provider_admin_context(request)
+        items = await asyncio.to_thread(_provider_admin_service().list_connections, context)
+        return _json_with_etag(
+            {"data": items, "meta": {"trace_id": request.state.trace_id}},
+            "provider-connections:"
+            + "|".join(
+                f"{item['connection_id']}:{item['version']}:{item['catalog_version']}"
+                for item in items
+            ),
+        )
+
+    @app.post("/api/v1/admin/provider-connections", status_code=201)
+    async def create_provider_connection(
+        body: ProviderConnectionCreateBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        context = _provider_admin_step_up(
+            request, target_id=f"provider-connection:{body.connection_id}",
+            authorization=body.step_up_authorization_id,
+            operation="provider_connection.create", idempotency_key=idempotency_key,
+        )
+        command = ProviderConnectionCreateCommand(
+            connection_id=body.connection_id, provider_code=body.provider_code,
+            display_name=body.display_name, base_url=body.base_url, credential=body.credential,
+            logical_model_ids=tuple(body.logical_model_ids), enabled=body.enabled,
+            expected_version=body.expected_version,
+        )
+        try:
+            item, replayed = await asyncio.to_thread(
+                _provider_admin_service().create_connection, context, command, idempotency_key,
+            )
+        finally:
+            body.credential = None
+        response = _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
+        )
+        response.status_code = 200 if replayed else 201
+        return response
+
+    @app.put("/api/v1/admin/provider-connections/{connection_id}")
+    async def update_provider_connection(
+        connection_id: str, body: ProviderConnectionUpdateBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        context = _provider_admin_step_up(
+            request, target_id=f"provider-connection:{connection_id}",
+            authorization=body.step_up_authorization_id,
+            operation="provider_connection.update", idempotency_key=idempotency_key,
+        )
+        command = ProviderConnectionUpdateCommand(
+            display_name=body.display_name, base_url=body.base_url, credential=body.credential,
+            logical_model_ids=tuple(body.logical_model_ids), enabled=body.enabled,
+            expected_version=body.expected_version,
+        )
+        try:
+            item, replayed = await asyncio.to_thread(
+                _provider_admin_service().update_connection,
+                context, connection_id, command, idempotency_key,
+            )
+        finally:
+            body.credential = None
+        return _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
+        )
+
+    @app.delete("/api/v1/admin/provider-connections/{connection_id}", status_code=204)
+    async def delete_provider_connection(
+        connection_id: str, body: ProviderConnectionMutationBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> Response:
+        _require_query_keys(request, frozenset())
+        context = _provider_admin_step_up(
+            request, target_id=f"provider-connection:{connection_id}",
+            authorization=body.step_up_authorization_id,
+            operation="provider_connection.credential.delete", idempotency_key=idempotency_key,
+        )
+        item, _replayed = await asyncio.to_thread(
+            _provider_admin_service().delete_connection,
+            context, connection_id, body.expected_version, idempotency_key,
+        )
+        return Response(
+            status_code=204,
+            headers={
+                "ETag": _etag_header(
+                    f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}"
+                )
+            },
+        )
+
+    @app.post("/api/v1/admin/provider-catalog/{connection_id}/refresh")
+    async def refresh_provider_catalog(
+        connection_id: str, body: ProviderConnectionMutationBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        context = _provider_admin_step_up(
+            request, target_id=f"provider-connection:{connection_id}",
+            authorization=body.step_up_authorization_id,
+            operation="provider_catalog.refresh", idempotency_key=idempotency_key,
+        )
+        item, replayed = await asyncio.to_thread(
+            _provider_admin_service().refresh_catalog,
+            context, connection_id, body.expected_version, idempotency_key,
+        )
+        return _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
+        )
+
+    @app.patch("/api/v1/admin/provider-models/{connection_id}/{model_id}/capabilities")
+    async def correct_provider_capabilities(
+        connection_id: str, model_id: str, body: ProviderCapabilityBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        target_id = f"provider-model:{connection_id}:{model_id}"
+        context = _provider_admin_step_up(
+            request, target_id=target_id, authorization=body.step_up_authorization_id,
+            operation="provider_model.capabilities.update", idempotency_key=idempotency_key,
+        )
+        command = ProviderCapabilityCommand(
+            effective_capabilities=tuple(body.effective_capabilities),
+            expected_version=body.expected_version,
+        )
+        item, replayed = await asyncio.to_thread(
+            _provider_admin_service().correct_capabilities,
+            context, connection_id, model_id, command, idempotency_key,
+        )
+        return _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-model:{connection_id}:{model_id}:{item['catalog_version']}",
+        )
 
     @app.get("/api/v1/model-profiles")
     async def list_model_profiles(request: Request, workspace_id: str = Query()) -> JSONResponse:

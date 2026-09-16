@@ -66,6 +66,10 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/model-profiles",
   "/api/v1/model-profiles/{provider_code}/connection-check",
   "/api/v1/model-deployments",
+  "/api/v1/admin/provider-connections",
+  "/api/v1/admin/provider-connections/{connection_id}",
+  "/api/v1/admin/provider-catalog/{connection_id}/refresh",
+  "/api/v1/admin/provider-models/{connection_id}/{model_id}/capabilities",
   "/api/v1/model-routing/preview",
   "/api/v1/local-nodes",
   "/api/v1/model-installations",
@@ -100,6 +104,10 @@ export const REQUIRED_PATHS = Object.freeze([
 
 const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete"]);
 const COMMON_ERROR_STATUSES = ["400", "401", "403", "404", "409", "412", "500"];
+const BODY_VERSIONED_MUTATIONS = new Set([
+  "DELETE /api/v1/admin/provider-connections/{connection_id}",
+  "PATCH /api/v1/admin/provider-models/{connection_id}/{model_id}/capabilities",
+]);
 const REQUIRED_ERROR_CODES = [
   "COST_LIMIT_EXCEEDED",
   "STEP_UP_REQUIRED",
@@ -155,6 +163,14 @@ function parameterRefs(operation) {
 
 function responseObject(document, response) {
   return response?.$ref ? resolveRef(document, response.$ref) : response;
+}
+
+function requestSchema(document, operation) {
+  const requestBody = operation.requestBody?.$ref
+    ? resolveRef(document, operation.requestBody.$ref)
+    : operation.requestBody;
+  const schema = requestBody?.content?.["application/json"]?.schema;
+  return schema?.$ref ? resolveRef(document, schema.$ref) : schema;
 }
 
 function validateResponse(document, response, operationId, status) {
@@ -617,7 +633,13 @@ export function validateOpenApiDocument(document) {
         "/api/v1/session/logout"
       ]);
       if (method === "post" && !idempotencyExemptPosts.has(apiPath) && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
-      if ((method === "patch" || method === "delete") && !refs.has("#/components/parameters/IfMatch")) fail(`${operationId} missing If-Match`);
+      if ((method === "patch" || method === "delete") && !refs.has("#/components/parameters/IfMatch")) {
+        const mutationKey = `${method.toUpperCase()} ${apiPath}`;
+        const schema = requestSchema(document, operation);
+        if (!BODY_VERSIONED_MUTATIONS.has(mutationKey) || !(schema?.required ?? []).includes("expected_version")) {
+          fail(`${operationId} missing If-Match or required expected_version`);
+        }
+      }
       if (operation["x-list-operation"] === true) {
         for (const name of ["Cursor", "Limit", "Filter", "Search"]) {
           if (!refs.has(`#/components/parameters/${name}`)) fail(`${operationId} missing list parameter ${name}`);
