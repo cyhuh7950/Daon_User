@@ -353,4 +353,3 @@ class AdapterRegistry:
             return self._adapters[provider_code]
         except KeyError:
             raise AdapterError("PROVIDER_ADAPTER_UNSUPPORTED") from None
-
