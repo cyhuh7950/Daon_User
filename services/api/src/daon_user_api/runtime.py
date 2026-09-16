@@ -163,6 +163,7 @@ from .provider_connection_admin import (
     PostgresProviderConnectionService,
 )
 from .provider_credentials import ProviderCredentialCipher
+from .workspace_model_defaults import PostgresWorkspaceModelResolver
 from .retention_inventory_postgres import PostgresRetentionInventoryProvider
 from .retention_request_postgres import PostgresRetentionRequestService
 from .operations_status import OperationsStatusContext, OperationsStatusService
@@ -1437,18 +1438,23 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ServerCredentialPresenceResolver(),
     )
     provider_connection_service = dependencies.provider_connection_service
+    provider_cipher = None
     if (
-        provider_connection_service is None
-        and dependencies.cloud_store is not None
+        dependencies.cloud_store is not None
         and dependencies.settings.provider_credential_key_file is not None
     ):
         try:
             provider_key = dependencies.settings.provider_credential_key_file.read_bytes()
         except OSError:
             raise ValueError("PROVIDER_CREDENTIAL_KEY_REFERENCE_UNAVAILABLE") from None
+        provider_cipher = ProviderCredentialCipher(provider_key, encryption_key_version=1)
+    if (
+        provider_connection_service is None
+        and dependencies.cloud_store is not None
+        and provider_cipher is not None
+    ):
         provider_connection_service = PostgresProviderConnectionService(
-            dependencies.cloud_store,
-            ProviderCredentialCipher(provider_key, encryption_key_version=1),
+            dependencies.cloud_store, provider_cipher,
         )
     retention_request_service = retention_service
     operations_status_service = dependencies.operations_status_service
@@ -1533,13 +1539,14 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     question_answering_service = dependencies.question_answering_service
     if (
         question_answering_service is None and dependencies.cloud_store is not None
-        and dependencies.object_storage is not None
+        and dependencies.object_storage is not None and provider_cipher is not None
     ):
         citation_content_repository = PostgresQuestionAnsweringRepository(
             dependencies.cloud_store, dependencies.object_storage,
         )
         question_answering_service = QuestionAnsweringService(
-            provider_settings_service, citation_content_repository,
+            PostgresWorkspaceModelResolver(dependencies.cloud_store, provider_cipher),
+            citation_content_repository,
             PostgresDocumentIndex(dependencies.cloud_store),
             ServerProviderCredentialResolver(), UrlLibDocumentUnderstandingTransport(),
             PostgresQuestionEgressAuthorizer(
@@ -2613,6 +2620,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "provider_payload_fingerprint": "sha256:" + hashlib.sha256(payload).hexdigest(),
             "provider_kind": selection.provider_kind,
             "deployment_id": selection.deployment_id,
+            "connection_id": getattr(selection, "connection_id", None),
+            "credential_version": getattr(selection, "credential_version", 0),
+            "default_version": selection.binding_version,
+            "catalog_version": getattr(selection, "catalog_version", 0),
             "effective_policy_fingerprint": policy_fingerprint,
             "idempotency_key": idempotency_key,
         })).hexdigest()
@@ -2915,6 +2926,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     ).hexdigest(),
                     "provider_kind": cast(Any, prepared).selection.provider_kind,
                     "deployment_id": cast(Any, prepared).selection.deployment_id,
+                    "connection_id": cast(Any, prepared).selection.connection_id,
+                    "credential_version": str(cast(Any, prepared).selection.credential_version),
+                    "default_version": str(cast(Any, prepared).selection.binding_version),
+                    "catalog_version": str(cast(Any, prepared).selection.catalog_version),
                 }
                 if (
                     dependencies.settings.dev_auth_bypass

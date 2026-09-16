@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,7 +10,7 @@ import httpx
 
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
-from daon_user_api.identity import ClientKind, IdentityPrincipal
+from daon_user_api.identity import ClientKind, IdentityPrincipal, IdentitySessionView
 from daon_user_api.question_answering_postgres import CitationContent, StoredCitation, StoredQuestionAnswer
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
 from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
@@ -276,9 +277,16 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.directory.cleanup()
 
     def _authenticated(self):  # type: ignore[no-untyped-def]
-        return patch.object(self.identity, "describe_access", return_value=type(
-            "SessionView", (), {"client_kind": ClientKind.WEB, "principal": self.principal},
-        )())
+        return patch.object(
+            self.identity,
+            "describe_access",
+            return_value=IdentitySessionView(
+                principal=self.principal,
+                client_kind=ClientKind.WEB,
+                expires_at=datetime.max.replace(tzinfo=timezone.utc),
+                password_change_required=False,
+            ),
+        )
 
     async def test_authenticated_question_returns_grounded_lineage_without_internal_url(self) -> None:
         with self._authenticated():

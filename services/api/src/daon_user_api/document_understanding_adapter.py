@@ -138,6 +138,12 @@ class DocumentModelSelection:
     parser_deployment_id: str
     parser_model_id: str
     binding_version: int
+    semantic_connection_id: str | None = None
+    semantic_credential_version: int = 0
+    semantic_base_url: str | None = None
+    parser_connection_id: str | None = None
+    parser_credential_version: int = 0
+    parser_base_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,13 +224,19 @@ class DocumentUnderstandingTransport(Protocol):
     def post_multipart(self, *, url: str, api_key: str, fields: dict[str, str], filename: str, content: bytes, timeout_seconds: float) -> dict[str, object]: ...
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 class UrlLibDocumentUnderstandingTransport:
     """Bounded HTTPS transport with stable, secret-free upstream errors."""
 
     @staticmethod
     def _request(request: urllib.request.Request, timeout_seconds: float) -> dict[str, object]:
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            opener = urllib.request.build_opener(_NoRedirectHandler())
+            with opener.open(request, timeout=timeout_seconds) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
             retryable = error.code in {408, 429} or error.code >= 500
@@ -326,12 +338,14 @@ class UpstageDocumentUnderstandingAdapter:
 
     def __init__(
         self, *, transport: DocumentUnderstandingTransport, api_key: str,
+        parser_api_key: str | None = None,
         timeout_seconds: float = 60.0,
     ) -> None:
         if not api_key or not 1 <= timeout_seconds <= 120:
             raise DocumentUnderstandingError("UNDERSTANDING_ADAPTER_CONFIG_INVALID")
         self._transport = transport
         self._api_key = api_key
+        self._parser_api_key = parser_api_key or api_key
         self._timeout_seconds = timeout_seconds
 
     def __repr__(self) -> str:
@@ -407,9 +421,25 @@ class UpstageDocumentUnderstandingAdapter:
         self, request: DocumentUnderstandingRequest, selection: DocumentModelSelection,
     ) -> DocumentUnderstandingResult:
         base_url = self._base_url(selection)
+        semantic_base_url = selection.semantic_base_url or base_url
+        parser_base_url = selection.parser_base_url or base_url
+        if self._base_url(DocumentModelSelection(
+            selection.provider_code, semantic_base_url,
+            selection.semantic_deployment_id, selection.semantic_model_id,
+            selection.parser_deployment_id, selection.parser_model_id,
+            selection.binding_version,
+        )) != semantic_base_url.rstrip("/"):
+            raise DocumentUnderstandingError("UPSTAGE_ENDPOINT_INVALID", status=409)
+        if self._base_url(DocumentModelSelection(
+            selection.provider_code, parser_base_url,
+            selection.semantic_deployment_id, selection.semantic_model_id,
+            selection.parser_deployment_id, selection.parser_model_id,
+            selection.binding_version,
+        )) != parser_base_url.rstrip("/"):
+            raise DocumentUnderstandingError("UPSTAGE_ENDPOINT_INVALID", status=409)
         encoded = base64.b64encode(request.content).decode("ascii")
         semantic_response = self._transport.post_json(
-            url=f"{base_url}/information-extraction",
+            url=f"{semantic_base_url.rstrip('/')}/information-extraction",
             api_key=self._api_key,
             payload={
                 "model": selection.semantic_model_id,
@@ -425,7 +455,7 @@ class UpstageDocumentUnderstandingAdapter:
         )
         semantic, semantic_revision = self._semantic(semantic_response)
         parser_response = self._transport.post_multipart(
-            url=f"{base_url}/document-digitization", api_key=self._api_key,
+            url=f"{parser_base_url.rstrip('/')}/document-digitization", api_key=self._parser_api_key,
             fields={
                 "model": selection.parser_model_id,
                 "ocr": "force",
@@ -445,10 +475,14 @@ class UpstageDocumentUnderstandingAdapter:
             "needs_review" if conflict else "ready", self._SUBSTATES, semantic, parser,
             {
                 "provider_code": selection.provider_code,
+                "semantic_connection_id": selection.semantic_connection_id or selection.semantic_deployment_id,
+                "semantic_credential_version": str(selection.semantic_credential_version),
                 "semantic_deployment_id": selection.semantic_deployment_id,
                 "semantic_model_id": selection.semantic_model_id,
                 "semantic_model_revision": semantic_revision,
                 "parser_deployment_id": selection.parser_deployment_id,
+                "parser_connection_id": selection.parser_connection_id or selection.parser_deployment_id,
+                "parser_credential_version": str(selection.parser_credential_version),
                 "parser_model_id": selection.parser_model_id,
                 "parser_model_revision": parser_revision,
                 "parser_role": "validation_only",

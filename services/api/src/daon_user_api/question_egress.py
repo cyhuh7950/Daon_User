@@ -62,6 +62,37 @@ class PostgresQuestionEgressAuthorizer:
     def _id(prefix: str, *values: str) -> str:
         return PostgresQuestionAnsweringRepository._opaque_id(prefix, *values)
 
+    @staticmethod
+    def _safe_model_context(selection: TextModelSelection) -> Mapping[str, object]:
+        return {
+            "connection_id": selection.connection_id,
+            "provider_code": selection.provider_code,
+            "model_id": selection.model_id,
+            "credential_version": selection.credential_version,
+            "default_version": selection.binding_version,
+            "catalog_version": selection.catalog_version,
+            "routing_owner": selection.routing_owner,
+            "daon_fallback_allowed": selection.daon_fallback_allowed,
+        }
+
+    @staticmethod
+    def _approval_matches(
+        approved: Mapping[str, str] | None, selection: TextModelSelection,
+        *, policy_fingerprint: str, payload_fingerprint: str,
+    ) -> bool:
+        return approved is not None and all((
+            approved.get("policy_fingerprint") == policy_fingerprint,
+            approved.get("provider_payload_fingerprint") == payload_fingerprint,
+            approved.get("provider_kind") == selection.provider_kind,
+            approved.get("deployment_id") == selection.deployment_id,
+            selection.connection_id is None or (
+                approved.get("connection_id") == selection.connection_id
+                and approved.get("credential_version") == str(selection.credential_version)
+                and approved.get("default_version") == str(selection.binding_version)
+                and approved.get("catalog_version") == str(selection.catalog_version)
+            ),
+        ))
+
     def prepare_payload(
         self, context: QuestionContext, provider_payload: bytes,
     ) -> bytes:
@@ -138,13 +169,10 @@ class PostgresQuestionEgressAuthorizer:
             approved_authorization is not None
             and approved_authorization.get("authorization_mode") == "development_auth_bypass"
         )
-        approval_exact = development_auth_bypass or (
-            approved_authorization is not None and all((
-                approved_authorization.get("policy_fingerprint") == effective.fingerprint,
-                approved_authorization.get("provider_payload_fingerprint") == payload_fingerprint,
-                approved_authorization.get("provider_kind") == provider_kind,
-                approved_authorization.get("deployment_id") == selection.deployment_id,
-            ))
+        approval_exact = development_auth_bypass or self._approval_matches(
+            approved_authorization, selection,
+            policy_fingerprint=effective.fingerprint,
+            payload_fingerprint=payload_fingerprint,
         )
         approver_unavailable = external and not approval_exact and not self._development_auth_bypass
         external_scope_allowed = external_question_policy_matches(
@@ -191,6 +219,7 @@ class PostgresQuestionEgressAuthorizer:
             "payload_fingerprint": payload_fingerprint,
             "payload_bytes": payload_bytes,
             "provider_kind": provider_kind,
+            **self._safe_model_context(selection),
             "destination": destination,
             "approved_request_fingerprint": None if approved_authorization is None
             else approved_authorization.get("request_fingerprint"),
@@ -298,6 +327,7 @@ class PostgresQuestionEgressAuthorizer:
                             "routing_decision_id": routing_decision_id,
                             "policy_fingerprint": effective.fingerprint,
                             "safe_reason": reason,
+                            **self._safe_model_context(selection),
                         }),
                     ),
                 )

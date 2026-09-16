@@ -20,6 +20,13 @@ _SOURCE_ACTION_PATTERN = re.compile(r"(?:이\s*자료|선택한\s*(?:source|문�
 _WEB_RESEARCH_PATTERN = re.compile(r"(?:최신|웹|인터넷|검색).*(?:찾아|알려|조사|검색)", re.IGNORECASE)
 
 
+def _append_provider_path(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1") and path.startswith("/v1/"):
+        return base + path[3:]
+    return base + path
+
+
 def classify_question_intent(value: str) -> str:
     if not isinstance(value, str):
         return "work_support"
@@ -44,6 +51,11 @@ class TextModelSelection:
     model_id: str
     binding_version: int
     provider_kind: str = "external_api"
+    connection_id: str | None = None
+    credential_version: int = 0
+    catalog_version: int = 0
+    routing_owner: str = "provider"
+    daon_fallback_allowed: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +132,7 @@ class OpenAICompatibleTextGenerationAdapter:
         "GROQ": "https://api.groq.com/openai/v1",
         "MISTRAL": "https://api.mistral.ai/v1",
         "UPSTAGE": "https://api.upstage.ai/v1",
+        "OPENROUTER": "https://openrouter.ai/api/v1",
     }
     _SCHEMA: dict[str, object] = {
         "type": "json_schema",
@@ -168,12 +181,18 @@ class OpenAICompatibleTextGenerationAdapter:
     @staticmethod
     def _base_url(selection: TextModelSelection) -> str:
         parsed = urlsplit(selection.base_url)
+        fixed_base = OpenAICompatibleTextGenerationAdapter._BASE_URLS.get(
+            selection.provider_code,
+        )
         if (
-            selection.provider_code not in OpenAICompatibleTextGenerationAdapter._BASE_URLS
-            or selection.base_url.rstrip("/")
-            != OpenAICompatibleTextGenerationAdapter._BASE_URLS.get(selection.provider_code)
-            or parsed.scheme != "https" or parsed.username is not None
+            selection.provider_code not in {
+                "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY",
+            }
+            or parsed.scheme not in (
+                {"http", "https"} if selection.provider_code == "EOUL_GATEWAY" else {"https"}
+            ) or not parsed.hostname or parsed.username is not None
             or parsed.password is not None or parsed.query or parsed.fragment
+            or (fixed_base is not None and selection.base_url.rstrip("/") != fixed_base)
         ):
             raise ValueError("TEXT_PROVIDER_ENDPOINT_INVALID")
         return selection.base_url.rstrip("/")
@@ -209,7 +228,11 @@ class OpenAICompatibleTextGenerationAdapter:
         *, provider_payload: dict[str, object] | None = None,
     ) -> GroundedTextResult:
         response = self._transport.post_json(
-            url=f"{self._base_url(selection)}/chat/completions",
+            url=_append_provider_path(
+                self._base_url(selection),
+                "/v1/chat/completions" if selection.provider_code == "EOUL_GATEWAY"
+                else "/chat/completions",
+            ),
             api_key=self._api_key,
             payload=provider_payload or self.provider_payload(request, selection),
             timeout_seconds=self._timeout_seconds,
@@ -264,7 +287,11 @@ class OpenAICompatibleTextGenerationAdapter:
         *, provider_payload: dict[str, object] | None = None,
     ) -> GroundedTextResult:
         response = self._transport.post_json(
-            url=f"{self._base_url(selection)}/chat/completions",
+            url=_append_provider_path(
+                self._base_url(selection),
+                "/v1/chat/completions" if selection.provider_code == "EOUL_GATEWAY"
+                else "/chat/completions",
+            ),
             api_key=self._api_key,
             payload=provider_payload or self.general_provider_payload(request, selection),
             timeout_seconds=self._timeout_seconds,

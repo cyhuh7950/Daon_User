@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Protocol
+from typing import ContextManager, Protocol, cast
 
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
     DocumentUnderstandingRequest,
     DocumentUnderstandingResult,
-    ProviderCredentialResolver,
+    DocumentModelSelection,
     UpstageDocumentUnderstandingAdapter,
     UrlLibDocumentUnderstandingTransport,
-    resolve_document_model_selection,
 )
-from .provider_settings import ProviderSettingsContext, ProviderSettingsSnapshot
+from .workspace_model_defaults import (
+    ResolvedModel, WorkspaceModelContext, WorkspaceModelUnavailable,
+)
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -35,11 +36,8 @@ class DocumentProcessingContext:
         )):
             raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
 
-    def provider_context(self) -> ProviderSettingsContext:
-        return ProviderSettingsContext(
-            self.tenant_id, self.workspace_id, self.actor_id,
-            self.trace_id, self.policy_version,
-        )
+    def model_context(self) -> WorkspaceModelContext:
+        return WorkspaceModelContext(self.tenant_id, self.workspace_id, self.actor_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,8 +106,10 @@ class DocumentProcessingSubmissionService:
         return self._repository.get_status(context, processing_run_id, notebook_id=notebook_id)
 
 
-class ProviderSnapshotPort(Protocol):
-    def snapshot(self, context: ProviderSettingsContext) -> ProviderSettingsSnapshot: ...
+class WorkspaceModelResolverPort(Protocol):
+    def resolve(
+        self, context: WorkspaceModelContext, capability: str,
+    ) -> ContextManager[ResolvedModel]: ...
 
 
 class DocumentUnderstandingPort(Protocol):
@@ -117,15 +117,22 @@ class DocumentUnderstandingPort(Protocol):
 
 
 class DocumentAdapterFactory(Protocol):
-    def create(self, provider_code: str, credential: str) -> DocumentUnderstandingPort: ...
+    def create(
+        self, selection: DocumentModelSelection,
+        semantic_credential: str, parser_credential: str,
+    ) -> DocumentUnderstandingPort: ...
 
 
 class DefaultDocumentAdapterFactory:
-    def create(self, provider_code: str, credential: str) -> DocumentUnderstandingPort:
-        if provider_code != "UPSTAGE":
+    def create(
+        self, selection: DocumentModelSelection,
+        semantic_credential: str, parser_credential: str,
+    ) -> DocumentUnderstandingPort:
+        if selection.provider_code != "UPSTAGE":
             raise DocumentUnderstandingError("DOCUMENT_PROVIDER_ADAPTER_UNAVAILABLE", status=503)
         return UpstageDocumentUnderstandingAdapter(
-            transport=UrlLibDocumentUnderstandingTransport(), api_key=credential,
+            transport=UrlLibDocumentUnderstandingTransport(), api_key=semantic_credential,
+            parser_api_key=parser_credential,
         )
 
 
@@ -133,13 +140,11 @@ class DocumentProcessingService:
     def __init__(
         self,
         repository: DocumentProcessingRepository,
-        provider_settings: ProviderSnapshotPort,
-        credentials: ProviderCredentialResolver,
+        model_resolver: WorkspaceModelResolverPort,
         adapter_factory: DocumentAdapterFactory,
     ) -> None:
         self._repository = repository
-        self._provider_settings = provider_settings
-        self._credentials = credentials
+        self._model_resolver = model_resolver
         self._adapter_factory = adapter_factory
 
     def process(
@@ -161,20 +166,43 @@ class DocumentProcessingService:
         processing_run_id: str,
     ) -> DocumentUnderstandingResult:
         try:
-            snapshot = self._provider_settings.snapshot(context.provider_context())
-            selection = resolve_document_model_selection(snapshot)
-            credential = self._credentials.resolve(selection.provider_code)
-            adapter = self._adapter_factory.create(selection.provider_code, credential)
-            result = adapter.understand(
-                DocumentUnderstandingRequest(
-                    document.source_id, document.source_version_id, document.filename,
-                    document.content, context.trace_id, "document-understanding-v1",
-                    context.policy_version,
-                ),
-                selection,
-            )
+            with self._model_resolver.resolve(
+                context.model_context(), "image_understanding",
+            ) as semantic, self._model_resolver.resolve(
+                context.model_context(), "document_parsing",
+            ) as parser:
+                if semantic.provider_code != "UPSTAGE" or parser.provider_code != "UPSTAGE":
+                    raise DocumentUnderstandingError(
+                        "DOCUMENT_PROVIDER_ADAPTER_UNAVAILABLE", status=503,
+                    )
+                selection = DocumentModelSelection(
+                    semantic.provider_code, semantic.base_url,
+                    semantic.deployment_id, semantic.model_id,
+                    parser.deployment_id, parser.model_id,
+                    max(semantic.binding_version, parser.binding_version),
+                    semantic.connection_id, semantic.credential_version, semantic.base_url,
+                    parser.connection_id, parser.credential_version, parser.base_url,
+                )
+                adapter = self._adapter_factory.create(
+                    selection, cast(str, semantic.credential_text()),
+                    cast(str, parser.credential_text()),
+                )
+                result = adapter.understand(
+                    DocumentUnderstandingRequest(
+                        document.source_id, document.source_version_id, document.filename,
+                        document.content, context.trace_id, "document-understanding-v1",
+                        context.policy_version,
+                    ),
+                    selection,
+                )
             self._repository.complete(context, processing_run_id, result)
             return result
+        except WorkspaceModelUnavailable as error:
+            mapped = DocumentUnderstandingError(error.code, status=503, retryable=error.retryable)
+            self._repository.fail(
+                context, processing_run_id, mapped.code, retryable=mapped.retryable,
+            )
+            raise mapped from None
         except DocumentUnderstandingError as error:
             self._repository.fail(
                 context, processing_run_id, error.code, retryable=error.retryable,

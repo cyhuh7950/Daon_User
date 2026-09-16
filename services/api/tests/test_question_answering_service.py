@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from contextlib import contextmanager
 
 from daon_user_api.document_index_postgres import IndexedEvidenceChunk
 from daon_user_api.provider_settings import (
@@ -15,26 +16,28 @@ from daon_user_api.question_answering_service import (
     QuestionAdapterRegistry, QuestionAnsweringError, QuestionAnsweringService, QuestionInputSource,
     is_general_conversation_intent,
 )
+from daon_user_api.workspace_model_defaults import ResolvedModel
 
 
 class FakeProviderSettings:
     def __init__(self) -> None:
         self.calls = 0
 
-    def snapshot(self, context):  # type: ignore[no-untyped-def]
+    @contextmanager
+    def resolve(self, context, capability):  # type: ignore[no-untyped-def]
         self.calls += 1
-        return ProviderSettingsSnapshot(
-            context.workspace_id,
-            (ProviderProfileView(
-                "profile-upstage", "UPSTAGE", "external_api",
-                "https://api.upstage.ai/v1", True, True, 1,
-            ),),
-            (ModelDeploymentView(
-                "deployment-text", "profile-upstage", "UPSTAGE", "solar-pro4",
-                ("text",), True, True, 1,
-            ),),
-            {"text": "deployment-text"}, 5,
+        model = ResolvedModel(
+            connection_id="profile-upstage", provider_code="UPSTAGE",
+            model_id="solar-pro4", capability=capability,
+            base_url="https://api.upstage.ai/v1", credential_version=1,
+            default_version=5, catalog_version=1, provider_kind="external_api",
+            routing_owner="provider", daon_fallback_allowed=True,
+            _credential=bytearray(b"server-secret"),
         )
+        try:
+            yield model
+        finally:
+            model.release()
 
 
 class FakeRepository:
@@ -104,7 +107,106 @@ class FakeEgress:
         return {"egress_decision_id": "egress-test", "routing_decision_id": "routing-test"}
 
 
+class StaticWorkspaceModelResolver:
+    def __init__(self, *, provider_code: str = "EOUL_GATEWAY") -> None:
+        self.provider_code = provider_code
+        self.calls = []
+
+    @contextmanager
+    def resolve(self, context, capability):  # type: ignore[no-untyped-def]
+        self.calls.append((context.workspace_id, capability))
+        model = ResolvedModel(
+            connection_id="eoul-primary", provider_code=self.provider_code,
+            model_id="assistant-default", capability=capability,
+            base_url="https://gateway.example.com", credential_version=7,
+            default_version=3, catalog_version=11, provider_kind="external_api",
+            routing_owner="gateway", daon_fallback_allowed=False,
+            _credential=bytearray(b"data-api-client-key"),
+        )
+        try:
+            yield model
+        finally:
+            model.release()
+
+
+class CapturingGatewayTransport:
+    def __init__(self, *, failure: bool = False) -> None:
+        self.failure = failure
+        self.calls = []
+
+    def post_json(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls.append(kwargs)
+        if self.failure:
+            raise ValueError("gateway unavailable")
+        return {"choices": [{"message": {"content": json.dumps({"answer": "gateway answer"})}}]}
+
+
+class OmniRouteTransport(CapturingGatewayTransport):
+    def post_json(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls.append(kwargs)
+        return {"output_text": json.dumps({"answer": "omni answer"})}
+
+
 class QuestionAnsweringServiceTests(unittest.TestCase):
+    def test_question_uses_workspace_text_default_and_latest_connection_credential(self) -> None:
+        resolver = StaticWorkspaceModelResolver()
+        repository = FakeRepository()
+        transport = CapturingGatewayTransport()
+        service = QuestionAnsweringService(
+            resolver, repository, FakeIndex(()), FakeCredential(), transport, FakeEgress(),
+        )
+
+        answer = service.ask(
+            QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+            source_id=None, source_version_id=None, question="안녕하세요", run_id="run-workspace-model",
+        )
+
+        self.assertEqual(answer.answer, "gateway answer")
+        self.assertEqual(resolver.calls, [("workspace-cp3", "text_generation")])
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/chat/completions")
+        self.assertEqual(transport.calls[0]["api_key"], "data-api-client-key")
+        self.assertEqual(transport.calls[0]["payload"]["model"], "assistant-default")
+        selection = repository.persisted["selection"]
+        self.assertEqual(
+            (selection.connection_id, selection.provider_code, selection.model_id, selection.credential_version),
+            ("eoul-primary", "EOUL_GATEWAY", "assistant-default", 7),
+        )
+        self.assertNotIn("data-api-client-key", repr(selection))
+        self.assertNotIn("data-api-client-key", repr(repository.persisted))
+
+    def test_gateway_failure_has_one_external_attempt_and_no_daon_fallback(self) -> None:
+        transport = CapturingGatewayTransport(failure=True)
+        service = QuestionAnsweringService(
+            StaticWorkspaceModelResolver(), FakeRepository(), FakeIndex(()),
+            FakeCredential(), transport, FakeEgress(),
+        )
+
+        with self.assertRaisesRegex(QuestionAnsweringError, "TEXT_GENERATION_FAILED"):
+            service.ask(
+                QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+                source_id=None, source_version_id=None, question="안녕하세요", run_id="run-gateway-failure",
+            )
+
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_omniroute_uses_responses_endpoint_and_logical_model_once(self) -> None:
+        transport = OmniRouteTransport()
+        service = QuestionAnsweringService(
+            StaticWorkspaceModelResolver(provider_code="OMNIROUTE"), FakeRepository(),
+            FakeIndex(()), FakeCredential(), transport, FakeEgress(),
+        )
+
+        answer = service.ask(
+            QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+            source_id=None, source_version_id=None, question="안녕하세요", run_id="run-omni",
+        )
+
+        self.assertEqual(answer.answer, "omni answer")
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/responses")
+        self.assertEqual(transport.calls[0]["payload"]["model"], "assistant-default")
+
     def test_general_conversation_intent_is_exact_and_factual_suffix_fails_closed(self) -> None:
         for value in ("안녕", "안녕하세요!", "안녕하세요?", "고마워", "감사합니다.", "Daon 사용법 알려줘"):
             self.assertTrue(is_general_conversation_intent(value), value)
@@ -329,50 +431,39 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             "ORANGE-COMPASS-42", "span-page-2", 1.0,
         ),)
         registry = QuestionAdapterRegistry()
-        credential = FakeCredential()
         for provider_code, base_url in (
             ("GROQ", "https://api.groq.com/openai/v1"),
             ("MISTRAL", "https://api.mistral.ai/v1"),
             ("UPSTAGE", "https://api.upstage.ai/v1"),
         ):
-            snapshot = ProviderSettingsSnapshot(
-                "workspace-cp3",
-                (ProviderProfileView(
-                    f"profile-{provider_code.lower()}", provider_code, "external_api",
-                    base_url, True, True, 1,
-                ),),
-                (ModelDeploymentView(
-                    "deployment-text", f"profile-{provider_code.lower()}", provider_code,
-                    "selected-model", ("text",), True, True, 1,
-                ),),
-                {"text": "deployment-text"}, 1,
+            selection = ResolvedModel(
+                connection_id=f"connection-{provider_code.lower()}", provider_code=provider_code,
+                model_id="selected-model", capability="text_generation", base_url=base_url,
+                credential_version=1, default_version=1, catalog_version=1,
+                provider_kind="external_api", routing_owner="provider",
+                daon_fallback_allowed=True, _credential=bytearray(b"server-secret"),
             )
             prepared = registry.prepare(
-                snapshot, evidence, "phrase?", "trace-cp3", credential, FakeTransport(),
+                selection, evidence, "phrase?", "trace-cp3", FakeTransport(),
             )
             self.assertEqual(prepared.selection.provider_code, provider_code)
+            selection.release()
 
     def test_ollama_provider_uses_internal_adapter_without_external_credential(self) -> None:
         evidence = (IndexedEvidenceChunk(
             "chunk-local", "source-cp3", "source-version-cp3", 1,
             "정책 보존 기간은 30일입니다.", "span-local", 1.0,
         ),)
-        snapshot = ProviderSettingsSnapshot(
-            "workspace-cp3",
-            (ProviderProfileView(
-                "profile-ollama", "OLLAMA", "server_internal",
-                "http://ollama.internal:11434", True, True, 1,
-            ),),
-            (ModelDeploymentView(
-                "deployment-local", "profile-ollama", "OLLAMA", "llama3.2:3b",
-                ("text",), True, True, 1,
-            ),),
-            {"text": "deployment-local"}, 1,
-        )
-
         class LocalProviderSettings:
-            def snapshot(self, context):  # type: ignore[no-untyped-def]
-                return snapshot
+            @contextmanager
+            def resolve(self, context, capability):  # type: ignore[no-untyped-def]
+                yield ResolvedModel(
+                    connection_id="ollama-local", provider_code="OLLAMA",
+                    model_id="llama3.2:3b", capability=capability,
+                    base_url="http://ollama.internal:11434", credential_version=0,
+                    default_version=1, catalog_version=1, provider_kind="server_internal",
+                    routing_owner="provider", daon_fallback_allowed=True, _credential=None,
+                )
 
         class NoExternalCredential:
             def resolve(self, provider_code: str) -> str:

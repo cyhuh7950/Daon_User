@@ -11,12 +11,14 @@ from daon_user_api.provider_settings import (
     ProviderSettingsSnapshot,
 )
 from daon_user_api.question_answering_postgres import QuestionContext
+from daon_user_api.question_answering_postgres import PostgresQuestionAnsweringRepository
 from daon_user_api.question_answering_service import (
     QuestionAdapterRegistry,
     QuestionAnsweringError,
 )
 from daon_user_api.question_egress import PostgresQuestionEgressAuthorizer
 from daon_user_api.question_answering import TextModelSelection
+from daon_user_api.workspace_model_defaults import ResolvedModel
 
 
 class Policy:
@@ -60,10 +62,18 @@ def _prepared_wire(provider_code: str) -> bytes:
     evidence = (IndexedEvidenceChunk(
         "chunk-1", "source", "source-version", 3, "secret evidence", "span-1",
     ),)
-    prepared = QuestionAdapterRegistry().prepare(
-        _snapshot(provider_code), evidence, "secret question", "trace-1",
-        CredentialResolver(), NoTransport(),
+    selection = ResolvedModel(
+        "profile", provider_code, "model", "text_generation",
+        "https://api.upstage.ai/v1" if provider_code == "UPSTAGE" else "http://ollama:11434",
+        1 if provider_code == "UPSTAGE" else 0, 1, 1,
+        "external_api" if provider_code == "UPSTAGE" else "local_runtime",
+        "provider", True,
+        bytearray(b"configured-test-credential") if provider_code == "UPSTAGE" else None,
     )
+    prepared = QuestionAdapterRegistry().prepare(
+        selection, evidence, "secret question", "trace-1", NoTransport(),
+    )
+    selection.release()
     return canonical_json_bytes(prepared.provider_payload)
 
 
@@ -190,3 +200,48 @@ def test_concurrent_mismatched_canonical_fails_without_retry_audit_write() -> No
         )
     assert events[:4] == ["enter", "lock", "reread", "exit"]
     assert events[4:] == []
+
+
+def test_frozen_egress_and_run_snapshot_contain_only_safe_exact_model_metadata() -> None:
+    selection = ResolvedModel(
+        "eoul-primary", "EOUL_GATEWAY", "assistant-default", "text_generation",
+        "https://gateway.example.com", 7, 3, 11, "external_api",
+        "gateway", False, bytearray(b"data-api-client-key"),
+    )
+    frozen = dict(PostgresQuestionEgressAuthorizer._safe_model_context(selection))
+    run = PostgresQuestionAnsweringRepository._run_canonical_payload(
+        question="hello", source_id=None, source_version_id=None,
+        context_mode="general_ungrounded", request_fingerprint="sha256:" + "a" * 64,
+        selection=selection, frozen_scope=frozen,
+    )
+
+    assert frozen == {
+        "connection_id": "eoul-primary", "provider_code": "EOUL_GATEWAY",
+        "model_id": "assistant-default", "credential_version": 7,
+        "default_version": 3, "catalog_version": 11,
+        "routing_owner": "gateway", "daon_fallback_allowed": False,
+    }
+    assert run["connection_id"] == "eoul-primary"
+    assert run["credential_version"] == 7
+    assert "data-api-client-key" not in repr(frozen)
+    assert "data-api-client-key" not in repr(run)
+    selection.release()
+
+
+def test_approval_fails_closed_when_credential_or_catalog_version_changes() -> None:
+    selection = ResolvedModel(
+        "eoul-primary", "EOUL_GATEWAY", "assistant-default", "text_generation",
+        "https://gateway.example.com", 8, 3, 12, "external_api",
+        "gateway", False, bytearray(b"new-key"),
+    )
+    approved = {
+        "policy_fingerprint": "policy-1", "provider_payload_fingerprint": "payload-1",
+        "provider_kind": "external_api", "deployment_id": selection.deployment_id,
+        "connection_id": "eoul-primary", "credential_version": "7",
+        "default_version": "3", "catalog_version": "11",
+    }
+
+    assert PostgresQuestionEgressAuthorizer._approval_matches(
+        approved, selection, policy_fingerprint="policy-1", payload_fingerprint="payload-1",
+    ) is False
+    selection.release()

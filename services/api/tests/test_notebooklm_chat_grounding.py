@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from contextlib import contextmanager
 
 from daon_user_api.document_index_postgres import IndexedEvidenceChunk
 from daon_user_api.provider_settings import ModelDeploymentView, ProviderProfileView, ProviderSettingsSnapshot
@@ -12,22 +13,21 @@ from daon_user_api.question_answering_postgres import (
     StoredQuestionAnswer,
 )
 from daon_user_api.question_answering_service import QuestionAnsweringService, QuestionInputSource
+from daon_user_api.workspace_model_defaults import ResolvedModel
 
 
 class _ProviderSettings:
-    def snapshot(self, context):  # type: ignore[no-untyped-def]
-        return ProviderSettingsSnapshot(
-            context.workspace_id,
-            (ProviderProfileView(
-                "profile-upstage", "UPSTAGE", "external_api",
-                "https://api.upstage.ai/v1", True, True, 1,
-            ),),
-            (ModelDeploymentView(
-                "deployment-text", "profile-upstage", "UPSTAGE", "solar-pro4",
-                ("text",), True, True, 1,
-            ),),
-            {"text": "deployment-text"}, 1,
+    @contextmanager
+    def resolve(self, context, capability):  # type: ignore[no-untyped-def]
+        model = ResolvedModel(
+            "profile-upstage", "UPSTAGE", "solar-pro4", capability,
+            "https://api.upstage.ai/v1", 1, 1, 1, "external_api",
+            "provider", True, bytearray(b"server-secret"),
         )
+        try:
+            yield model
+        finally:
+            model.release()
 
 
 class _Repository:

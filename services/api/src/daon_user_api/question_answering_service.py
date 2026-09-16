@@ -8,21 +8,24 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, replace
-from typing import Mapping, Protocol
+from typing import ContextManager, Mapping, Protocol, cast
 
 from .data_canon import canonical_json_bytes
 from .document_processing import DocumentProcessingContext
 from .document_index_postgres import IndexedEvidenceChunk
-from .document_understanding_adapter import DocumentUnderstandingError
-from .provider_settings import ProviderSettingsContext, ProviderSettingsService
+from .document_understanding_adapter import DocumentUnderstandingError, _evidence_anchors
 from .question_answering import (
     GeneralConversationRequest, GroundedQuestionRequest, GroundedTextResult, TextGenerationTransport,
     OllamaTextGenerationAdapter, OpenAICompatibleTextGenerationAdapter,
-    resolve_text_model_selection,
+    TextModelSelection,
+    _append_provider_path,
 )
 from .question_answering_postgres import (
     PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
     StoredQuestionAnswer,
+)
+from .workspace_model_defaults import (
+    ResolvedModel, WorkspaceModelContext, WorkspaceModelUnavailable,
 )
 
 
@@ -64,6 +67,12 @@ class CredentialResolver(Protocol):
     def resolve(self, provider_code: str) -> str: ...
 
 
+class WorkspaceModelResolver(Protocol):
+    def resolve(
+        self, context: WorkspaceModelContext, capability: str,
+    ) -> ContextManager[ResolvedModel]: ...
+
+
 class DocumentIndexPort(Protocol):
     def search(self, context: DocumentProcessingContext, **kwargs): ...  # type: ignore[no-untyped-def]
 
@@ -83,17 +92,23 @@ class QuestionAdapterRegistry:
         provider_payload: dict[str, object]
 
     def prepare(
-        self, snapshot, evidence, question: str, trace_id: str,  # type: ignore[no-untyped-def]
-        credential_resolver: CredentialResolver, transport: TextGenerationTransport,
+        self, selection: ResolvedModel, evidence, question: str, trace_id: str,  # type: ignore[no-untyped-def]
+        transport: TextGenerationTransport,
     ) -> "QuestionAdapterRegistry.Prepared":
-        selection = resolve_text_model_selection(snapshot)
         request = GroundedQuestionRequest(question.strip(), evidence, trace_id)
         if selection.provider_code == "OLLAMA":
             adapter = OllamaTextGenerationAdapter(transport=transport)
             return self.Prepared(request, selection, adapter, adapter.provider_payload(request, selection))
-        if selection.provider_code not in {"GROQ", "MISTRAL", "UPSTAGE"}:
+        if selection.provider_code == "OMNIROUTE":
+            adapter = _OmniRouteTextGenerationAdapter(
+                transport=transport, api_key=cast(str, selection.credential_text()),
+            )
+            return self.Prepared(request, selection, adapter, adapter.provider_payload(request, selection))
+        if selection.provider_code not in {
+            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY",
+        }:
             raise ValueError("TEXT_PROVIDER_UNAVAILABLE")
-        api_key = credential_resolver.resolve(selection.provider_code)
+        api_key = selection.credential_text()
         external_adapter = OpenAICompatibleTextGenerationAdapter(
             transport=transport, api_key=api_key
         )
@@ -110,16 +125,21 @@ class QuestionAdapterRegistry:
         )
 
     def prepare_general(
-        self, snapshot, question: str, trace_id: str,  # type: ignore[no-untyped-def]
-        credential_resolver: CredentialResolver, transport: TextGenerationTransport,
+        self, selection: ResolvedModel, question: str, trace_id: str,
+        transport: TextGenerationTransport,
     ) -> "QuestionAdapterRegistry.Prepared":
-        selection = resolve_text_model_selection(snapshot)
         request = GeneralConversationRequest(question.strip(), trace_id)
         if selection.provider_code == "OLLAMA":
             adapter = OllamaTextGenerationAdapter(transport=transport)
-        elif selection.provider_code in {"GROQ", "MISTRAL", "UPSTAGE"}:
+        elif selection.provider_code == "OMNIROUTE":
+            adapter = _OmniRouteTextGenerationAdapter(
+                transport=transport, api_key=cast(str, selection.credential_text()),
+            )
+        elif selection.provider_code in {
+            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY",
+        }:
             adapter = OpenAICompatibleTextGenerationAdapter(
-                transport=transport, api_key=credential_resolver.resolve(selection.provider_code),
+                transport=transport, api_key=cast(str, selection.credential_text()),
             )
         else:
             raise ValueError("TEXT_PROVIDER_UNAVAILABLE")
@@ -131,6 +151,79 @@ class QuestionAdapterRegistry:
         return prepared.adapter.generate_general(  # type: ignore[attr-defined]
             prepared.request, prepared.selection, provider_payload=prepared.provider_payload,
         )
+
+
+class _OmniRouteTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
+    """Single-attempt OpenAI Responses adapter for the OmniRoute gateway."""
+
+    @staticmethod
+    def _url(selection: ResolvedModel) -> str:
+        return _append_provider_path(selection.base_url, "/v1/responses")
+
+    @classmethod
+    def provider_payload(cls, request, selection):  # type: ignore[no-untyped-def]
+        chat = super().provider_payload(request, selection)
+        return {
+            "model": selection.model_id, "input": chat["messages"],
+            "text": {"format": cast(dict[str, object], chat["response_format"])["json_schema"]},
+        }
+
+    @classmethod
+    def general_provider_payload(cls, request, selection):  # type: ignore[no-untyped-def]
+        chat = super().general_provider_payload(request, selection)
+        return {
+            "model": selection.model_id, "input": chat["messages"],
+            "text": {"format": cast(dict[str, object], chat["response_format"])["json_schema"]},
+        }
+
+    def _call(self, selection: ResolvedModel, payload: dict[str, object]) -> dict[str, object]:
+        return self._transport.post_json(
+            url=self._url(selection), api_key=self._api_key, payload=payload,
+            timeout_seconds=self._timeout_seconds,
+        )
+
+    @staticmethod
+    def _parsed(response: Mapping[str, object]) -> dict[str, object]:
+        raw = response.get("output_text")
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
+        if not isinstance(value, dict):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        return cast(dict[str, object], value)
+
+    def generate_general(self, request, selection, *, provider_payload=None):  # type: ignore[no-untyped-def]
+        parsed = self._parsed(self._call(
+            selection, provider_payload or self.general_provider_payload(request, selection),
+        ))
+        if set(parsed) != {"answer"}:
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        answer = str(parsed["answer"]).strip()
+        if not answer or len(answer) > 8_000:
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        return GroundedTextResult(answer, (), False, {})
+
+    def generate(self, request, selection, *, provider_payload=None):  # type: ignore[no-untyped-def]
+        parsed = self._parsed(self._call(
+            selection, provider_payload or self.provider_payload(request, selection),
+        ))
+        try:
+            answer = str(parsed["answer"]).strip()
+            cited = tuple(str(item) for item in cast(list[object], parsed["cited_chunk_ids"]))
+            insufficient = bool(parsed["insufficient"])
+        except (KeyError, TypeError):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
+        allowed = {item.chunk_id for item in request.evidence}
+        cited_text = "\n".join(item.text for item in request.evidence if item.chunk_id in set(cited))
+        if (
+            not answer or len(answer) > 8_000 or len(cited) != len(set(cited))
+            or not set(cited).issubset(allowed) or (insufficient and cited)
+            or (not insufficient and not cited)
+            or not _evidence_anchors(answer).issubset(_evidence_anchors(cited_text))
+        ):
+            raise ValueError("TEXT_GENERATION_GROUNDING_INVALID")
+        return GroundedTextResult(answer, cited, insufficient, {})
 
 
 class QuestionAnsweringError(RuntimeError):
@@ -165,7 +258,7 @@ class QuestionInputSource:
 
 class QuestionAnsweringService:
     def __init__(
-        self, provider_settings: ProviderSettingsService,
+        self, model_resolver: WorkspaceModelResolver,
         repository: PostgresQuestionAnsweringRepository,
         document_index: DocumentIndexPort, credential_resolver: CredentialResolver,
         transport: TextGenerationTransport, egress: QuestionEgressPort,
@@ -173,10 +266,12 @@ class QuestionAnsweringService:
         concurrent_wait_seconds: float = 2.0,
         concurrent_poll_seconds: float = 0.02,
     ) -> None:
-        self._provider_settings = provider_settings
+        self._model_resolver = model_resolver
         self._repository = repository
         self._document_index = document_index
-        self._credential_resolver = credential_resolver
+        # Retained in the constructor until callers are migrated; credentials are
+        # resolved exclusively from the selected encrypted connection.
+        del credential_resolver
         self._transport = transport
         self._egress = egress
         self._adapter_registry = adapter_registry or QuestionAdapterRegistry()
@@ -275,12 +370,6 @@ class QuestionAnsweringService:
             sources = self._ready_context_sources(context, sources)
             if not sources:
                 general = True
-        provider_context = ProviderSettingsContext(
-            context.tenant_id, context.workspace_id, context.actor_id,
-            context.trace_id, context.policy_version,
-        )
-        snapshot = self._provider_settings.snapshot(provider_context)
-        selection = resolve_text_model_selection(snapshot)
         evidence = ()
         if not general:
             # Freeze authorization against the same evidence that `ask` will
@@ -289,25 +378,26 @@ class QuestionAnsweringService:
             evidence = self._search_context(context, sources, question)
             if not evidence:
                 general = True
-        if general:
-            prepared = self._adapter_registry.prepare_general(
-                snapshot, question, context.trace_id,
-                self._credential_resolver, self._transport,
-            )
-            wire = canonical_json_bytes(prepared.provider_payload)
-            transformer = getattr(self._egress, "prepare_payload", None)
-            if callable(transformer):
-                wire = transformer(context, wire)
-            return PreparedQuestionAuthorization(selection, wire, 0)
-        prepared = self._adapter_registry.prepare(
-            snapshot, evidence, question, context.trace_id,
-            self._credential_resolver, self._transport,
+        model_context = WorkspaceModelContext(
+            context.tenant_id, context.workspace_id, context.actor_id,
         )
-        wire = canonical_json_bytes(prepared.provider_payload)
-        transformer = getattr(self._egress, "prepare_payload", None)
-        if callable(transformer):
-            wire = transformer(context, wire)
-        return PreparedQuestionAuthorization(selection, wire, len(evidence))
+        try:
+            with self._model_resolver.resolve(model_context, "text_generation") as selection:
+                prepared = (
+                    self._adapter_registry.prepare_general(
+                        selection, question, context.trace_id, self._transport,
+                    )
+                    if general else self._adapter_registry.prepare(
+                        selection, evidence, question, context.trace_id, self._transport,
+                    )
+                )
+                wire = canonical_json_bytes(prepared.provider_payload)
+                transformer = getattr(self._egress, "prepare_payload", None)
+                if callable(transformer):
+                    wire = transformer(context, wire)
+                return PreparedQuestionAuthorization(selection, wire, len(evidence))
+        except WorkspaceModelUnavailable as error:
+            raise QuestionAnsweringError(error.code, status=503, retryable=error.retryable) from None
 
     def ask(
         self, context: QuestionContext, *, source_id: str | None,
@@ -347,29 +437,39 @@ class QuestionAnsweringService:
             else:
                 source_id = sources[0].source_id
                 source_version_id = sources[0].source_version_id
-        provider_context = ProviderSettingsContext(
+        model_context = WorkspaceModelContext(
             context.tenant_id, context.workspace_id, context.actor_id,
-            context.trace_id, context.policy_version,
         )
         try:
-            snapshot = self._provider_settings.snapshot(provider_context)
-            selection = resolve_text_model_selection(snapshot)
-        except ValueError as error:
-            code = str(error)
-            status = 409 if code.startswith("TEXT_") else 503
-            raise QuestionAnsweringError(code, status=status) from None
+            with self._model_resolver.resolve(model_context, "text_generation") as selection:
+                return self._ask_resolved(
+                    context, selection=selection, sources=sources, general=general,
+                    source_id=source_id, source_version_id=source_version_id,
+                    question=question, run_id=run_id,
+                    approved_authorization=approved_authorization,
+                    context_mode=context_mode, request_fingerprint=request_fingerprint,
+                )
+        except WorkspaceModelUnavailable as error:
+            raise QuestionAnsweringError(error.code, status=503, retryable=error.retryable) from None
+
+    def _ask_resolved(
+        self, context: QuestionContext, *, selection: ResolvedModel,
+        sources: tuple[QuestionInputSource, ...], general: bool,
+        source_id: str | None, source_version_id: str | None,
+        question: str, run_id: str,
+        approved_authorization: Mapping[str, str] | None,
+        context_mode: str, request_fingerprint: str,
+    ) -> StoredQuestionAnswer:
         if general:
             try:
                 prepare_general = getattr(self._adapter_registry, "prepare_general", None)
                 prepared = (
                     prepare_general(
-                        snapshot, question, context.trace_id,
-                        self._credential_resolver, self._transport,
+                        selection, question, context.trace_id, self._transport,
                     )
                     if callable(prepare_general)
                     else self._adapter_registry.prepare(
-                        snapshot, (), question, context.trace_id,
-                        self._credential_resolver, self._transport,
+                        selection, (), question, context.trace_id, self._transport,
                     )
                 )
             except (ValueError, DocumentUnderstandingError) as error:
@@ -439,8 +539,7 @@ class QuestionAnsweringService:
                 request_fingerprint=request_fingerprint,
             )
             prepared = prepare_general(
-                snapshot, question, context.trace_id,
-                self._credential_resolver, self._transport,
+                selection, question, context.trace_id, self._transport,
             )
             generated = self._adapter_registry.generate_general(prepared)
             return self._repository.persist_completed(
@@ -452,8 +551,7 @@ class QuestionAnsweringService:
             )
         try:
             prepared = self._adapter_registry.prepare(
-                snapshot, evidence, question, context.trace_id,
-                self._credential_resolver, self._transport,
+                selection, evidence, question, context.trace_id, self._transport,
             )
         except (ValueError, DocumentUnderstandingError) as error:
             raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)

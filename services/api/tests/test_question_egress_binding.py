@@ -1,4 +1,5 @@
 import pytest
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from daon_user_api.data_canon import canonical_json_bytes
@@ -8,21 +9,21 @@ from daon_user_api.provider_settings import (
 )
 from daon_user_api.question_answering_postgres import QuestionContext, ReadyQuestionSource
 from daon_user_api.question_answering_service import QuestionAnsweringError, QuestionAnsweringService
+from daon_user_api.workspace_model_defaults import ResolvedModel
 
 
 class Provider:
-    def snapshot(self, context):  # type: ignore[no-untyped-def]
-        return ProviderSettingsSnapshot(
-            context.workspace_id,
-            (ProviderProfileView(
-                "profile", "UPSTAGE", "external_api", "https://api.upstage.ai/v1",
-                True, True, 1,
-            ),),
-            (ModelDeploymentView(
-                "deployment", "profile", "UPSTAGE", "model", ("text",), True, True, 1,
-            ),),
-            {"text": "deployment"}, 1,
+    @contextmanager
+    def resolve(self, context, capability):  # type: ignore[no-untyped-def]
+        model = ResolvedModel(
+            "profile", "UPSTAGE", "model", capability,
+            "https://api.upstage.ai/v1", 1, 1, 1, "external_api",
+            "provider", True, bytearray(b"credential"),
         )
+        try:
+            yield model
+        finally:
+            model.release()
 
 
 class Repository:
@@ -77,8 +78,8 @@ class Adapter:
     def __init__(self, events):  # type: ignore[no-untyped-def]
         self.events = events
 
-    def prepare(self, snapshot, evidence, question, trace_id, credential_resolver, transport):  # type: ignore[no-untyped-def]
-        del snapshot, trace_id, credential_resolver, transport
+    def prepare(self, selection, evidence, question, trace_id, transport):  # type: ignore[no-untyped-def]
+        del selection, trace_id, transport
         payload = {"evidence": [
             {"chunk_id": item.chunk_id, "page": item.page, "text": item.text}
             for item in evidence
