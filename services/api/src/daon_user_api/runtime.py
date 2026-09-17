@@ -35,7 +35,7 @@ from .audit import (
     AuditValidationError,
 )
 from .admin_users import AdminUserService
-from .cloud_storage import PostgresCloudStore
+from .cloud_storage import CloudAccessContext, PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .authorization import (
     AccessAction,
@@ -1205,6 +1205,31 @@ def _personal_workspace_id(tenant_id: str) -> str:
     return f"workspace-{hashlib.sha256(tenant_id.encode('utf-8')).hexdigest()[:24]}"
 
 
+def _ensure_personal_workspace(
+    dependencies: RuntimeDependencies, *, tenant_id: str, user_id: str,
+) -> str:
+    workspace_id = dependencies.authorization_repository.primary_workspace_id(
+        tenant_id
+    ) or _personal_workspace_id(tenant_id)
+    dependencies.authorization_repository.bootstrap_workspace(
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        owner_user_id=user_id,
+        owner_role=Role.PERSONAL_OWNER,
+        workspace_kind="personal",
+        data_area="cloud_sync",
+        cost_limit_cents=1000,
+        now=datetime.now(timezone.utc),
+    )
+    if dependencies.cloud_store is not None:
+        dependencies.cloud_store.seed_scope(
+            CloudAccessContext(
+                tenant_id, workspace_id, user_id, "workspace.bootstrap",
+            )
+        )
+    return workspace_id
+
+
 def _sync_expected_version(value: str, operation_id: str | None = None) -> int | str:
     if value == "*" and operation_id is None:
         return value
@@ -2141,18 +2166,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             login_id=body.login_id, password=body.password, platform=DevicePlatform.WEB,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        workspace_id = dependencies.authorization_repository.primary_workspace_id(
-            credentials.tenant_id
-        ) or _personal_workspace_id(credentials.tenant_id)
-        dependencies.authorization_repository.bootstrap_workspace(
+        workspace_id = _ensure_personal_workspace(
+            dependencies,
             tenant_id=credentials.tenant_id,
-            workspace_id=workspace_id,
-            owner_user_id=credentials.user_id,
-            owner_role=Role.PERSONAL_OWNER,
-            workspace_kind="personal",
-            data_area="cloud_sync",
-            cost_limit_cents=1000,
-            now=datetime.now(timezone.utc),
+            user_id=credentials.user_id,
         )
         response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id, "workspace_id": workspace_id}, "meta": {"trace_id": request.state.trace_id}})
         response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=WEB_SESSION_COOKIE_MAX_AGE, httponly=True, secure=True, samesite="lax", path="/")
@@ -2167,18 +2184,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
-        workspace_id = dependencies.authorization_repository.primary_workspace_id(
-            credentials.tenant_id
-        ) or _personal_workspace_id(credentials.tenant_id)
-        dependencies.authorization_repository.bootstrap_workspace(
+        workspace_id = _ensure_personal_workspace(
+            dependencies,
             tenant_id=credentials.tenant_id,
-            workspace_id=workspace_id,
-            owner_user_id=credentials.user_id,
-            owner_role=Role.PERSONAL_OWNER,
-            workspace_kind="personal",
-            data_area="cloud_sync",
-            cost_limit_cents=1000,
-            now=datetime.now(timezone.utc),
+            user_id=credentials.user_id,
         )
         session = dependencies.identity_service.describe_access(
             credentials.access_token, trace_id=request.state.trace_id,

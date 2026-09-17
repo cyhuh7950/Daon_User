@@ -52,6 +52,14 @@ class SlowUnreadyCloudStore(UnreadyCloudStore):
         return super().readiness()
 
 
+class ScopeRecordingCloudStore(UnreadyCloudStore):
+    def __init__(self) -> None:
+        self.scopes = []
+
+    def seed_scope(self, context):  # type: ignore[no-untyped-def]
+        self.scopes.append(context)
+
+
 class UnreadyObjectStorage:
     def health(self) -> bool:
         return False
@@ -296,20 +304,26 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["data"], {"status": "verification_required"})
 
     async def test_first_local_login_bootstraps_and_returns_personal_workspace(self) -> None:
+        cloud_store = ScopeRecordingCloudStore()
+        self.dependencies.cloud_store = cloud_store  # type: ignore[assignment]
+        app = create_app(self.dependencies)
         credentials = replace(
             self.web,
             user_id="user-local-001",
             tenant_id="tenant-local-001",
         )
-        with patch.object(self.identity, "local_login", return_value=credentials):
-            first = await self.client.post(
-                "/api/v1/auth/login",
-                json={"login_id": "local-user", "password": "valid-password-001"},
-            )
-            second = await self.client.post(
-                "/api/v1/auth/login",
-                json={"login_id": "local-user", "password": "valid-password-001"},
-            )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1",
+        ) as client:
+            with patch.object(self.identity, "local_login", return_value=credentials):
+                first = await client.post(
+                    "/api/v1/auth/login",
+                    json={"login_id": "local-user", "password": "valid-password-001"},
+                )
+                second = await client.post(
+                    "/api/v1/auth/login",
+                    json={"login_id": "local-user", "password": "valid-password-001"},
+                )
         self.assertEqual((first.status_code, second.status_code), (200, 200))
         workspace_id = first.json()["data"]["workspace_id"]
         self.assertEqual(second.json()["data"]["workspace_id"], workspace_id)
@@ -317,6 +331,11 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             self.authorization_repository.primary_workspace_id("tenant-local-001"),
             workspace_id,
         )
+        self.assertEqual(len(cloud_store.scopes), 2)
+        self.assertTrue(all(scope.tenant_id == "tenant-local-001" for scope in cloud_store.scopes))
+        self.assertTrue(all(scope.workspace_id == workspace_id for scope in cloud_store.scopes))
+        self.assertTrue(all(scope.actor_id == "user-local-001" for scope in cloud_store.scopes))
+        self.assertTrue(all(scope.capability == "workspace.bootstrap" for scope in cloud_store.scopes))
 
     async def test_native_local_login_returns_opaque_credentials_without_cookie_and_rejects_client_kind_overrides(self) -> None:
         class Sender:
