@@ -436,7 +436,7 @@ class PostgresProviderConnectionService:
             row = connection.execute(
                 "UPDATE system_provider_connections SET encrypted_credential=NULL,credential_nonce=NULL,"
                 "encryption_key_version=NULL,credential_schema_version=NULL,"
-                "credential_version=credential_version+1,verification_status='unverified',verified_at=NULL,"
+                "credential_version=0,verification_status='unverified',verified_at=NULL,"
                 "version=version+1,updated_at=now(),updated_by=%s,trace_id=%s,policy_version=%s "
                 "WHERE connection_id=%s AND version=%s RETURNING connection_id,version",
                 (context.actor_id, context.trace_id, context.policy_version, connection_id, expected_version),

@@ -65,6 +65,7 @@ class Connection:
             self.database.system_connection = None
             return Cursor((params[0],))
         if normalized.startswith("UPDATE system_provider_connections SET encrypted_credential=NULL"):
+            assert "credential_version=0" in normalized
             record = self.database.system_connection
             if record is None or record["connection_id"] != params[-2] or record["version"] != params[-1]:
                 return Cursor(None)
@@ -73,7 +74,7 @@ class Connection:
                 "credential_nonce": None,
                 "encryption_key_version": None,
                 "credential_schema_version": None,
-                "credential_version": record["credential_version"] + 1,
+                "credential_version": 0,
                 "verification_status": "unverified",
                 "verified_at": None,
                 "version": record["version"] + 1,
@@ -314,7 +315,7 @@ def test_delete_connection_removes_only_credential_and_replays_without_second_mu
     assert database.system_connection["base_url"] == "http://ollama.internal:11434"
     assert database.models == [("qwen3", ["text_generation"], ["text_generation"], False, "ready", 3)]
     assert result["configured"] is False
-    assert result["credential_version"] == 5
+    assert result["credential_version"] == 0
     assert result["verification_status"] == "unverified"
     assert result["version"] == 8
     assert result["catalog_version"] == 3
