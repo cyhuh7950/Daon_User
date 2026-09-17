@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   BffConfigurationError,
+  browserSessionCookieName,
   createBffProxy,
   parseInternalApiBase,
   parsePublicGatewayOrigin,
@@ -16,6 +17,51 @@ test("BFF local_test public origin은 exact loopback HTTP만 허용하고 produc
   }
   assert.throws(() => parsePublicGatewayOrigin("http://localhost:3080", "production"), BffConfigurationError);
   assert.equal(parsePublicGatewayOrigin("https://app.example.com", "production").origin, "https://app.example.com");
+});
+
+test("BFF wsl_http_qa public origin은 RFC1918 IP HTTP만 허용한다", () => {
+  assert.equal(
+    parsePublicGatewayOrigin("http://172.27.253.53:3330", "wsl_http_qa").origin,
+    "http://172.27.253.53:3330",
+  );
+  assert.equal(browserSessionCookieName("wsl_http_qa"), "daon_session");
+  assert.equal(browserSessionCookieName("production"), "__Host-daon_session");
+  for (const invalid of [
+    "http://8.8.8.8:3330",
+    "http://0.0.0.0:3330",
+    "http://daon-user.sinsan.kr:3330",
+    "https://172.27.253.53:3330",
+    "http://172.27.253.53:3330/path",
+  ]) {
+    assert.throws(() => parsePublicGatewayOrigin(invalid, "wsl_http_qa"), BffConfigurationError);
+  }
+});
+
+test("BFF wsl_http_qa는 브라우저 HTTP 쿠키를 API Secure 쿠키 경계로 양방향 변환한다", async () => {
+  let forwardedCookie;
+  const proxy = createBffProxy({
+    baseUrl: new URL("http://api:8000"),
+    publicOrigin: new URL("http://172.27.253.53:3330"),
+    browserCookieName: browserSessionCookieName("wsl_http_qa"),
+    fetchImpl: async (_url, init) => {
+      forwardedCookie = init.headers.get("cookie");
+      return Response.json({ data: { status: "ok" }, meta: {} }, {
+        headers: {
+          "Set-Cookie": "__Host-daon_session=opaque-session; HttpOnly; Max-Age=3600; Path=/; SameSite=lax; Secure",
+        },
+      });
+    },
+  });
+  const response = await proxy(new Request("http://172.27.253.53:3330/bff/api/session", {
+    headers: { Cookie: "analytics=private; daon_session=opaque-session" },
+  }), ["session"]);
+  assert.equal(response.status, 200);
+  assert.equal(forwardedCookie, "__Host-daon_session=opaque-session");
+  const setCookie = response.headers.get("set-cookie");
+  assert.match(setCookie, /^daon_session=opaque-session;/);
+  assert.match(setCookie, /HttpOnly/i);
+  assert.match(setCookie, /SameSite=lax/i);
+  assert.doesNotMatch(setCookie, /(?:^|;)\s*Secure(?:;|$)/i);
 });
 
 test("조직 전체 디렉터리 BFF는 same-origin GET만 내부 관리자 계약으로 전달한다", async () => {
@@ -783,7 +829,9 @@ test("BFF current-session logout requires exact Origin and Referer and forwards 
   }), ["session", "logout"]);
 
   assert.equal(accepted.status, 200);
+  assert.match(accepted.headers.get("set-cookie"), /^__Host-daon_session=/u);
   assert.match(accepted.headers.get("set-cookie"), /Max-Age=0/u);
+  assert.match(accepted.headers.get("set-cookie"), /(?:^|;)\s*Secure(?:;|$)/iu);
   assert.deepEqual([missingReferer.status, crossOrigin.status], [403, 403]);
   assert.equal(captured.length, 1);
   assert.equal(captured[0].url, "https://api.example.com/api/v1/session/logout");

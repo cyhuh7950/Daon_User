@@ -1,10 +1,9 @@
 import {
+  browserSessionCookieName,
   createBffProxy,
   parseInternalApiBase,
   parsePublicGatewayOrigin,
 } from "./bff-api-proxy.js";
-
-const SESSION_COOKIE_NAME = "__Host-daon_session";
 
 function validProjection(value) {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -13,21 +12,24 @@ function validProjection(value) {
 }
 
 export async function getServerAdminAccess(sessionCookie, { fetchImpl = fetch } = {}) {
+  const bffProfile = process.env.DAON_BFF_PROFILE ?? "production";
+  const sessionCookieName = browserSessionCookieName(bffProfile);
   const baseUrl = parseInternalApiBase(
     process.env.DAON_API_INTERNAL_URL,
     process.env.DAON_RUNTIME_PROFILE ?? "production",
   );
   const publicOrigin = parsePublicGatewayOrigin(
     process.env.DAON_PUBLIC_GATEWAY_URL,
-    process.env.DAON_BFF_PROFILE ?? "production",
+    bffProfile,
   );
   const proxy = createBffProxy({
     baseUrl,
     publicOrigin,
+    browserCookieName: sessionCookieName,
     fetchImpl: (url, init) => fetchImpl(url, { ...init, cache: "no-store" }),
   });
   const request = new Request(new URL("/bff/api/session", publicOrigin), {
-    headers: { Cookie: `${SESSION_COOKIE_NAME}=${sessionCookie}` },
+    headers: { Cookie: `${sessionCookieName}=${sessionCookie}` },
   });
   const response = await proxy(request, ["session"]);
   if (response.status === 401) return "unauthenticated";

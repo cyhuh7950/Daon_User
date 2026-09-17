@@ -39,6 +39,7 @@ const NATIVE_RESPONSE_HEADERS = new Set([
 ]);
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SESSION_COOKIE_NAME = "__Host-daon_session";
+const WSL_HTTP_SESSION_COOKIE_NAME = "daon_session";
 const AUDIT_QUERY = new Set([
   "action",
   "cursor",
@@ -111,8 +112,20 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
     && parsed.protocol === "http:"
     && new Set(["localhost", "127.0.0.1"]).has(parsed.hostname)
     && parsed.port !== "";
+  const octets = parsed.hostname.split(".").map((part) => Number(part));
+  const privateIpv4 = octets.length === 4
+    && octets.every((part, index) => /^\d{1,3}$/.test(parsed.hostname.split(".")[index]) && part >= 0 && part <= 255)
+    && (
+      octets[0] === 10
+      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+      || (octets[0] === 192 && octets[1] === 168)
+    );
+  const wslHttpQa = profile === "wsl_http_qa"
+    && parsed.protocol === "http:"
+    && privateIpv4
+    && parsed.port !== "";
   if (
-    (profile === "local_test" ? !localTestHttp : parsed.protocol !== "https:")
+    (profile === "local_test" ? !localTestHttp : profile === "wsl_http_qa" ? !wslHttpQa : parsed.protocol !== "https:")
     || parsed.pathname !== "/"
     || parsed.search
     || parsed.hash
@@ -122,6 +135,10 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
     throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_HTTPS_ORIGIN_REQUIRED");
   }
   return parsed;
+}
+
+export function browserSessionCookieName(profile = "production") {
+  return profile === "wsl_http_qa" ? WSL_HTTP_SESSION_COOKIE_NAME : SESSION_COOKIE_NAME;
 }
 
 function routeFor(method, segments) {
@@ -778,7 +795,7 @@ export function createBffSafeError(status, code, trace, retryable = false, messa
   });
 }
 
-function sessionCookie(request) {
+function sessionCookie(request, browserCookieName) {
   const rawCookie = request.headers.get("cookie");
   if (!rawCookie) return null;
   if (/[\r\n\0]/.test(rawCookie)) throw new Error("INVALID_SESSION_COOKIE");
@@ -787,7 +804,7 @@ function sessionCookie(request) {
     const separator = item.indexOf("=");
     if (separator < 0) continue;
     const name = item.slice(0, separator).trim();
-    if (name !== SESSION_COOKIE_NAME) continue;
+    if (name !== browserCookieName) continue;
     const value = item.slice(separator + 1).trim();
     if (
       !value
@@ -800,6 +817,21 @@ function sessionCookie(request) {
   }
   if (matches.length > 1) throw new Error("INVALID_SESSION_COOKIE");
   return matches.length === 1 ? `${SESSION_COOKIE_NAME}=${matches[0]}` : null;
+}
+
+function browserSetCookie(value, browserCookieName) {
+  if (browserCookieName === SESSION_COOKIE_NAME) return value;
+  const parts = value.split(";").map((part) => part.trim());
+  const prefix = `${SESSION_COOKIE_NAME}=`;
+  if (!parts[0]?.startsWith(prefix)) throw new Error("INVALID_SESSION_COOKIE");
+  const cookieValue = parts[0].slice(prefix.length);
+  if (/[\r\n\0;,]/.test(cookieValue) || Buffer.byteLength(cookieValue, "utf8") > MAX_SESSION_COOKIE_BYTES) {
+    throw new Error("INVALID_SESSION_COOKIE");
+  }
+  return [
+    `${browserCookieName}=${cookieValue}`,
+    ...parts.slice(1).filter((part) => part.toLowerCase() !== "secure"),
+  ].join("; ");
 }
 
 function writeRequestIsSameOrigin(request, publicOrigin) {
@@ -889,12 +921,16 @@ function cancellationError(scope, trace) {
 export function createBffProxy({
   baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000,
   questionTimeoutMs = GROUNDED_QUESTION_TIMEOUT_MS,
+  browserCookieName = SESSION_COOKIE_NAME,
 }) {
   if (!(baseUrl instanceof URL)) {
     throw new BffConfigurationError("BFF_INTERNAL_API_URL_REQUIRED");
   }
   if (publicOrigin !== undefined && !(publicOrigin instanceof URL)) {
     throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_REQUIRED");
+  }
+  if (!new Set([SESSION_COOKIE_NAME, WSL_HTTP_SESSION_COOKIE_NAME]).has(browserCookieName)) {
+    throw new BffConfigurationError("BFF_SESSION_COOKIE_NAME_INVALID");
   }
   return async function proxy(request, pathSegments, providedTrace) {
     const trace = providedTrace ?? createBffTraceId(request);
@@ -921,7 +957,7 @@ export function createBffProxy({
     }
     let credential;
     try {
-      credential = sessionCookie(request);
+      credential = sessionCookie(request, browserCookieName);
     } catch {
       return createBffSafeError(400, "INVALID_SESSION_COOKIE", trace);
     }
@@ -969,7 +1005,15 @@ export function createBffProxy({
       }
       const responseHeaders = new Headers();
       for (const [key, value] of upstream.headers) {
-        if (RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders.set(key, value);
+        if (!RESPONSE_HEADERS.has(key.toLowerCase())) continue;
+        try {
+          responseHeaders.set(
+            key,
+            key.toLowerCase() === "set-cookie" ? browserSetCookie(value, browserCookieName) : value,
+          );
+        } catch {
+          return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
       }
       responseHeaders.set("Cache-Control", "no-store");
       if (!responseHeaders.has("x-trace-id")) responseHeaders.set("x-trace-id", trace);
