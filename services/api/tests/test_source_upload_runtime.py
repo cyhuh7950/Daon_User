@@ -7,14 +7,14 @@ from unittest.mock import patch
 
 import httpx
 
-from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
+from test_identity_support import POLICY_VERSION, TRACE_ID, create_service, identity_session_view
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import (
     AuthorizationService,
     Role,
     SqliteAuthorizationRepository,
 )
-from daon_user_api.identity import ClientKind, IdentityPrincipal
+from daon_user_api.identity import IdentityPrincipal
 from daon_user_api.runtime import (
     WEB_SESSION_COOKIE,
     RuntimeDependencies,
@@ -129,11 +129,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         return patch.object(
             self.identity,
             "describe_access",
-            return_value=type(
-                "SessionView",
-                (),
-                {"client_kind": ClientKind.WEB, "principal": self.principal},
-            )(),
+            return_value=identity_session_view(self.principal),
         )
 
     async def test_pdf_upload_requires_authentication(self) -> None:

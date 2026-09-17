@@ -10,11 +10,11 @@ import pytest
 
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
-from daon_user_api.identity import ClientKind, IdentityPrincipal
+from daon_user_api.identity import IdentityPrincipal, IdentitySessionView
 from daon_user_api.notebook import NotebookError
 from daon_user_api.question_answering_postgres import StoredQuestionAnswer
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
-from test_identity_support import POLICY_VERSION, create_service
+from test_identity_support import POLICY_VERSION, create_service, identity_session_view
 
 
 class NotebookBoundary:
@@ -135,8 +135,8 @@ def _question_payload(*, grounded: bool = False) -> dict[str, object]:
     return payload
 
 
-def _access(principal: IdentityPrincipal) -> SimpleNamespace:
-    return SimpleNamespace(client_kind=ClientKind.WEB, principal=principal)
+def _access(principal: IdentityPrincipal) -> IdentitySessionView:
+    return identity_session_view(principal)
 
 
 def _replay_answer(provider_kind: str) -> StoredQuestionAnswer:
