@@ -9,12 +9,12 @@ import httpx
 
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
-from daon_user_api.identity import ClientKind, IdentityPrincipal
+from daon_user_api.identity import IdentityPrincipal
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
 from daon_user_api.studio_report import (
     StudioCitation, StudioOutputProjection, StudioReportError, WorkspaceSourceProjection,
 )
-from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
+from test_identity_support import POLICY_VERSION, TRACE_ID, create_service, identity_session_view
 
 
 OUTPUT = StudioOutputProjection(
@@ -86,9 +86,11 @@ class StudioRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.directory.cleanup()
 
     def _authenticated(self, principal=None):
-        return patch.object(self.identity, "describe_access", return_value=type(
-            "SessionView", (), {"client_kind": ClientKind.WEB, "principal": principal or self.principal},
-        )())
+        return patch.object(
+            self.identity,
+            "describe_access",
+            return_value=identity_session_view(principal or self.principal),
+        )
 
     async def test_source_list_and_studio_routes_return_exact_safe_projection(self):
         with self._authenticated():

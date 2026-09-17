@@ -13,7 +13,9 @@ sys.path.insert(0, str(SRC))
 from daon_user_api.identity import (  # noqa: E402
     ClientKind,
     DevicePlatform,
+    IdentityPrincipal,
     IdentityService,
+    IdentitySessionView,
     OidcClientPolicy,
     SqliteIdentityRepository,
     VerifiedOidcClaims,
@@ -24,6 +26,21 @@ from daon_user_api.audit import AuditEventStore  # noqa: E402
 UTC_1 = datetime(2026, 7, 29, 0, 0, tzinfo=timezone.utc)
 POLICY_VERSION = "identity-policy-v1"
 TRACE_ID = "trace-identity-001"
+
+
+def identity_session_view(
+    principal: IdentityPrincipal,
+    *,
+    client_kind: ClientKind = ClientKind.WEB,
+    password_change_required: bool = False,
+) -> IdentitySessionView:
+    """Build the complete session projection consumed by runtime routes."""
+    return IdentitySessionView(
+        principal=principal,
+        client_kind=client_kind,
+        expires_at=UTC_1 + timedelta(hours=1),
+        password_change_required=password_change_required,
+    )
 
 
 @dataclass

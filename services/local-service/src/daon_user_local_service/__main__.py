@@ -1,3 +1,3 @@
-from .main import run
+from .bootstrap import run_entrypoint
 
-raise SystemExit(run())
+raise SystemExit(run_entrypoint())

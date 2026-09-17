@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
-from daon_user_api.identity import ClientKind, IdentityPrincipal
+from daon_user_api.identity import IdentityPrincipal
 from daon_user_api.license import (
     LicenseService,
     LicenseContext,
@@ -32,7 +32,7 @@ from daon_user_api.studio_report import StudioReportService
 from daon_user_api.studio_report_postgres import PostgresStudioReportRepository
 from daon_user_api.studio_workspace import StudioWorkspaceService
 from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
-from test_identity_support import POLICY_VERSION, create_service
+from test_identity_support import POLICY_VERSION, create_service, identity_session_view
 
 
 NOW = datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc)
@@ -123,8 +123,8 @@ async def _exercise_license_http():
         document = _signed_document(private_key)
         admin = IdentityPrincipal("org-admin", "session-admin", "device-admin", "tenant-001")
         member = IdentityPrincipal("member-001", "session-member", "device-member", "tenant-001")
-        admin_view = type("SessionView", (), {"client_kind": ClientKind.WEB, "principal": admin})()
-        member_view = type("SessionView", (), {"client_kind": ClientKind.WEB, "principal": member})()
+        admin_view = identity_session_view(admin)
+        member_view = identity_session_view(member)
         try:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(dependencies)), base_url="http://test") as client:
                 with patch.object(identity, "describe_access", return_value=member_view):

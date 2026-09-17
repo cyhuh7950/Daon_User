@@ -1,3 +1,3 @@
-from daon_user_local_service.main import run
+from daon_user_local_service.bootstrap import run_entrypoint
 
-raise SystemExit(run())
+raise SystemExit(run_entrypoint())
