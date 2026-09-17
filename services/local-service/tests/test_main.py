@@ -119,6 +119,54 @@ def test_packaged_entrypoint_rejects_incomplete_bootstrap_with_deadline(
     assert time.monotonic() - started < 3
 
 
+def test_entrypoint_starts_bootstrap_deadline_before_slow_runtime_import(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sitecustomize.py").write_text(
+        """
+import importlib.abc
+import sys
+import time
+
+
+class SlowRuntimeImport(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "daon_user_local_service.main":
+            sys.meta_path.remove(self)
+            time.sleep(2.5)
+        return None
+
+
+sys.meta_path.insert(0, SlowRuntimeImport())
+""".lstrip(),
+        encoding="utf-8",
+    )
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    process = subprocess.Popen(
+        [sys.executable, "-m", "daon_user_local_service"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join((str(tmp_path), str(source_root))),
+        },
+    )
+    assert process.stdin is not None
+    started = time.monotonic()
+    try:
+        actual_code = process.wait(timeout=3)
+        stderr = process.stderr.read().decode() if process.stderr else ""
+        assert actual_code == main.EXIT_BOOTSTRAP_TIMEOUT, stderr
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
+        if not process.stdin.closed:
+            process.stdin.close()
+    assert time.monotonic() - started < 3
+
+
 def test_bootstrap_reader_timeout_does_not_keep_process_alive() -> None:
     read_fd, write_fd = os.pipe()
     stream = os.fdopen(read_fd, "rb", buffering=0)
