@@ -31,6 +31,19 @@ def test_sql_maps_bootstrap_marker_and_password_change_state() -> None:
     )
 
 
+def test_sql_rewrites_reserved_authorization_alias_for_postgres() -> None:
+    mapped = _PostgresCompatConnection._sql(
+        "SELECT authorization.authorization_digest "
+        "FROM step_up_authorizations AS authorization "
+        "WHERE authorization.step_up_id=?"
+    )
+
+    assert "AS authorization_row" in mapped
+    assert "authorization_row.authorization_digest" in mapped
+    assert "authorization_row.step_up_id=%s" in mapped
+    assert " AS authorization " not in mapped
+
+
 def test_postgres_identity_state_maps_public_suspended_to_existing_disabled_value() -> None:
     repository = PostgresIdentityRepository.__new__(PostgresIdentityRepository)
 

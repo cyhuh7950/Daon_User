@@ -79,6 +79,15 @@ class _PostgresCompatConnection:
             statement = re.sub(r"BEGIN\s+IMMEDIATE", "BEGIN", statement, flags=re.I)
         for table in _TABLES:
             statement = re.sub(rf"\b{table}\b", f"identity_{table}", statement)
+        # SQLite accepts AUTHORIZATION as an unquoted table alias, while
+        # PostgreSQL reserves it as a keyword.  The step-up replay query uses
+        # that legacy alias, so translate only the alias and its qualifiers.
+        statement = re.sub(
+            r"\bAS\s+authorization\b", "AS authorization_row", statement, flags=re.I
+        )
+        statement = re.sub(
+            r"\bauthorization\.", "authorization_row.", statement, flags=re.I
+        )
         statement = statement.replace("?", "%s")
         if ignored_insert and "ON CONFLICT" not in statement.upper():
             statement = statement.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
