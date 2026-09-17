@@ -229,6 +229,25 @@ _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 _SOURCE_UPLOAD_PATH = re.compile(r"^/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/sources$")
 _SOURCE_FILENAME = re.compile(r"^[^/\\\x00-\x1f]{1,251}$")
 _QUESTION_REQUEST_TIMEOUT_SECONDS = 95.0
+_RFC1918_NETWORKS = tuple(
+    ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+
+
+def _is_private_http_gateway(parsed: object) -> bool:
+    try:
+        scheme = parsed.scheme  # type: ignore[attr-defined]
+        hostname = parsed.hostname  # type: ignore[attr-defined]
+        port = parsed.port  # type: ignore[attr-defined]
+        address = ipaddress.ip_address(hostname)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (
+        scheme == "http"
+        and port is not None
+        and address.version == 4
+        and any(address in network for network in _RFC1918_NETWORKS)
+    )
 
 
 def request_timeout_for_path(settings: "RuntimeSettings", path: str) -> float:
@@ -257,6 +276,7 @@ class RuntimeSettings:
     object_storage_provision_bucket: bool = False
     policy_version: str = "runtime-policy-v1"
     public_gateway_url: str | None = None
+    allow_private_http_gateway: bool = False
     trusted_proxy_ips: tuple[str, ...] = ()
     max_body_bytes: int = 65_536
     source_upload_max_bytes: int = 25 * 1024 * 1024
@@ -305,7 +325,10 @@ class RuntimeSettings:
                 raise ValueError("STEP_UP_TOKEN_KEY_REFERENCE_REQUIRED")
             parsed = urlsplit(self.public_gateway_url)
             if (
-                parsed.scheme != "https"
+                not (
+                    parsed.scheme == "https"
+                    or (self.allow_private_http_gateway and _is_private_http_gateway(parsed))
+                )
                 or not parsed.hostname
                 or parsed.username is not None
                 or parsed.password is not None
@@ -387,6 +410,9 @@ class RuntimeSettings:
             ),
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
+            allow_private_http_gateway=(
+                os.environ.get("DAON_ALLOW_PRIVATE_HTTP_GATEWAY", "false").lower() == "true"
+            ),
             trusted_proxy_ips=proxies,
             source_upload_max_bytes=int(
                 os.environ.get("DAON_SOURCE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024))
@@ -1141,8 +1167,11 @@ def _require_validated_web_csrf(request: Request, settings: RuntimeSettings) -> 
         parsed_referer = urlsplit(referer)
     except ValueError as error:
         raise IdentityError("CSRF_VALIDATION_FAILED", 403) from error
+    valid_transport = parsed_origin.scheme == "https" or (
+        settings.allow_private_http_gateway and _is_private_http_gateway(parsed_origin)
+    )
     if (
-        parsed_origin.scheme != "https" or not parsed_origin.netloc
+        not valid_transport or not parsed_origin.netloc
         or parsed_origin.path not in {"", "/"} or parsed_origin.query or parsed_origin.fragment
         or (parsed_referer.scheme, parsed_referer.netloc)
         != (parsed_origin.scheme, parsed_origin.netloc)

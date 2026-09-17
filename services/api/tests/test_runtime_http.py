@@ -443,6 +443,25 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((input_attempt.status_code, input_attempt.json()["error"]["code"]), (400, "INVALID_REQUEST"))
         self.identity.validate_access(self.web.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
 
+    async def test_current_web_session_logout_accepts_explicit_private_http_gateway(self) -> None:
+        self.dependencies.settings = replace(
+            self.settings,
+            public_gateway_url="http://172.27.253.53:3330",
+            allow_private_http_gateway=True,
+        )
+        response = await self.client.post(
+            "/api/v1/session/logout",
+            headers={
+                "Content-Type": "application/json",
+                "X-Daon-Bff-Transport": "internal",
+                "X-Daon-Csrf-Origin": "http://172.27.253.53:3330",
+                "X-Daon-Csrf-Referer": "http://172.27.253.53:3330/notebooks",
+            },
+            cookies={WEB_SESSION_COOKIE: self.web.access_token},
+            json={},
+        )
+        self.assertEqual(response.status_code, 200)
+
     async def test_native_refresh_rejects_extra_invalid_expired_and_replayed_credentials(self) -> None:
         extra = await self.client.post(
             "/api/v1/session/refresh",
@@ -815,6 +834,31 @@ class RuntimeSettingsTests(unittest.TestCase):
                 step_up_token_key_file=step_up_key,
             )
             self.assertEqual(valid.public_gateway_url, "https://api.example.com")
+
+            private_http = RuntimeSettings(
+                profile="production", bind_host="0.0.0.0", port=8000,
+                public_gateway_url="http://172.27.253.53:3330",
+                allow_private_http_gateway=True,
+                trusted_proxy_ips=("10.0.0.1",),
+                cloud_database_dsn="postgresql://app@database/daon",
+                step_up_token_key_file=step_up_key,
+            )
+            self.assertTrue(private_http.allow_private_http_gateway)
+            for invalid in (
+                "http://8.8.8.8:3330",
+                "http://0.0.0.0:3330",
+                "http://daon-user.sinsan.kr:3330",
+                "http://172.27.253.53",
+            ):
+                with self.assertRaises(ValueError):
+                    RuntimeSettings(
+                        profile="production", bind_host="0.0.0.0", port=8000,
+                        public_gateway_url=invalid,
+                        allow_private_http_gateway=True,
+                        trusted_proxy_ips=("10.0.0.1",),
+                        cloud_database_dsn="postgresql://app@database/daon",
+                        step_up_token_key_file=step_up_key,
+                    )
 
 
 if __name__ == "__main__":
