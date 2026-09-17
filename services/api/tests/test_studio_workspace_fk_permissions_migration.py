@@ -73,6 +73,27 @@ def test_migration_0041_fails_closed_without_forced_rls_and_immutable_guards() -
     assert "_immutable" in sql
 
 
+def test_migration_0041_backfills_existing_workspaces_and_checks_six_defaults() -> None:
+    sql = migration_sql()
+
+    assert "STUDIO_FK_PERMISSION_MIGRATION_ROLE_REQUIRED" in sql
+    assert (
+        "FOR v_workspace IN SELECT tenant_id, workspace_id FROM workspaces LOOP"
+        in sql
+    )
+    assert "PERFORM ensure_studio_workspace_defaults" in sql
+    assert "STUDIO_FK_PERMISSION_BACKFILL_POSTCONDITION_FAILED" in sql
+    for table in (
+        "workspace_policies",
+        "knowledge_scopes",
+        "weight_profiles",
+        "ruleset_references",
+        "ruleset_version_snapshots",
+        "ruleset_bindings",
+    ):
+        assert f"FROM {table}" in sql
+
+
 def test_migration_0041_verifies_postcondition_and_is_forward_only() -> None:
     module = load_migration()
     sql = migration_sql()

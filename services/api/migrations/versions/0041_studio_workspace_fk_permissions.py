@@ -30,6 +30,16 @@ def upgrade() -> None:
               USING ERRCODE = '55000';
           END IF;
 
+          IF NOT EXISTS (
+            SELECT 1
+              FROM pg_roles
+             WHERE rolname = current_user
+               AND (rolsuper OR rolbypassrls)
+          ) THEN
+            RAISE EXCEPTION 'STUDIO_FK_PERMISSION_MIGRATION_ROLE_REQUIRED'
+              USING ERRCODE = '55000';
+          END IF;
+
           FOREACH v_table IN ARRAY ARRAY[
             'workspace_policies',
             'knowledge_scopes',
@@ -102,6 +112,55 @@ def upgrade() -> None:
                 USING ERRCODE = '55000';
             END IF;
           END LOOP;
+        END $$;
+
+        DO $$
+        DECLARE
+          v_workspace record;
+        BEGIN
+          FOR v_workspace IN SELECT tenant_id, workspace_id FROM workspaces LOOP
+            PERFORM ensure_studio_workspace_defaults(
+              v_workspace.tenant_id, v_workspace.workspace_id
+            );
+          END LOOP;
+
+          IF EXISTS (
+            SELECT 1
+              FROM workspaces AS workspace
+             WHERE NOT EXISTS (
+                     SELECT 1 FROM workspace_policies
+                      WHERE tenant_id = workspace.tenant_id
+                        AND workspace_id = workspace.workspace_id
+                   )
+                OR NOT EXISTS (
+                     SELECT 1 FROM knowledge_scopes
+                      WHERE tenant_id = workspace.tenant_id
+                        AND workspace_id = workspace.workspace_id
+                   )
+                OR NOT EXISTS (
+                     SELECT 1 FROM weight_profiles
+                      WHERE tenant_id = workspace.tenant_id
+                        AND workspace_id = workspace.workspace_id
+                   )
+                OR NOT EXISTS (
+                     SELECT 1 FROM ruleset_references
+                      WHERE tenant_id = workspace.tenant_id
+                        AND workspace_id = workspace.workspace_id
+                   )
+                OR NOT EXISTS (
+                     SELECT 1 FROM ruleset_version_snapshots
+                      WHERE tenant_id = workspace.tenant_id
+                        AND workspace_id = workspace.workspace_id
+                   )
+                OR NOT EXISTS (
+                     SELECT 1 FROM ruleset_bindings
+                      WHERE tenant_id = workspace.tenant_id
+                        AND workspace_id = workspace.workspace_id
+                   )
+          ) THEN
+            RAISE EXCEPTION 'STUDIO_FK_PERMISSION_BACKFILL_POSTCONDITION_FAILED'
+              USING ERRCODE = '55000';
+          END IF;
         END $$;
         """
     )
