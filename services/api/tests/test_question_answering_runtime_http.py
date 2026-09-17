@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,10 +9,10 @@ import httpx
 
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
-from daon_user_api.identity import ClientKind, IdentityPrincipal, IdentitySessionView
+from daon_user_api.identity import IdentityPrincipal
 from daon_user_api.question_answering_postgres import CitationContent, StoredCitation, StoredQuestionAnswer
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
-from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
+from test_identity_support import POLICY_VERSION, TRACE_ID, create_service, identity_session_view
 
 
 PDF = b"%PDF-1.4\npage one\fpage two\n%%EOF\n"
@@ -280,12 +279,7 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         return patch.object(
             self.identity,
             "describe_access",
-            return_value=IdentitySessionView(
-                principal=self.principal,
-                client_kind=ClientKind.WEB,
-                expires_at=datetime.max.replace(tzinfo=timezone.utc),
-                password_change_required=False,
-            ),
+            return_value=identity_session_view(self.principal),
         )
 
     async def test_authenticated_question_returns_grounded_lineage_without_internal_url(self) -> None:

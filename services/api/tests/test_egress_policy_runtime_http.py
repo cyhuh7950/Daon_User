@@ -14,9 +14,9 @@ from daon_user_api.egress_policy import (
     EgressPolicyContext, EgressPolicyPayload, EgressPolicyService,
     ReferenceEgressPolicyRepository,
 )
-from daon_user_api.identity import ClientKind, IdentityError, IdentityPrincipal
+from daon_user_api.identity import IdentityError, IdentityPrincipal
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
-from test_identity_support import POLICY_VERSION, create_service
+from test_identity_support import POLICY_VERSION, create_service, identity_session_view
 
 
 def test_org_admin_uses_organization_etag_and_workspace_admin_is_denied() -> None:
@@ -81,9 +81,7 @@ async def _exercise_ambiguous_tenant_policy_http() -> None:
             principal = IdentityPrincipal(
                 user_id, f"session-{index}", f"device-{index}", tenant_id,
             )
-            session_view = type(
-                "SessionView", (), {"client_kind": ClientKind.WEB, "principal": principal},
-            )()
+            session_view = identity_session_view(principal)
             with patch.object(identity, "describe_access", return_value=session_view), patch.object(
                 identity, "consume_step_up", return_value=None,
             ) as consume_step_up:
@@ -151,9 +149,7 @@ async def _exercise_personal_owner_policy_http() -> None:
         principal = IdentityPrincipal(
             "personal-owner", "session-personal", "device-personal", "tenant-personal",
         )
-        session_view = type(
-            "SessionView", (), {"client_kind": ClientKind.WEB, "principal": principal},
-        )()
+        session_view = identity_session_view(principal)
         with patch.object(identity, "describe_access", return_value=session_view), patch.object(
             identity, "consume_step_up", return_value=None,
         ) as consume_step_up:
@@ -243,7 +239,7 @@ async def _exercise_org_policy_http() -> None:
             egress_policy_service=EgressPolicyService(policy_repository),
         )
         principal = IdentityPrincipal("org-admin", "session-001", "device-001", "tenant-001")
-        session_view = type("SessionView", (), {"client_kind": ClientKind.WEB, "principal": principal})()
+        session_view = identity_session_view(principal)
         with patch.object(identity, "describe_access", return_value=session_view), patch.object(
             identity, "consume_step_up", return_value=None,
         ) as consume_step_up:
@@ -324,9 +320,7 @@ async def _exercise_org_policy_http() -> None:
                 )
                 with patch.object(
                     identity, "describe_access",
-                    return_value=type("SessionView", (), {
-                        "client_kind": ClientKind.WEB, "principal": workspace_actor,
-                    })(),
+                    return_value=identity_session_view(workspace_actor),
                 ):
                     denied = await client.post(
                         "/api/v1/organizations/tenant-001/egress-policy-versions",

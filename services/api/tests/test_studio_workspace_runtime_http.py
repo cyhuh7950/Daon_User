@@ -9,11 +9,11 @@ import httpx
 
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
-from daon_user_api.identity import ClientKind, IdentityError, IdentityPrincipal
+from daon_user_api.identity import IdentityError, IdentityPrincipal
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
 from daon_user_api.studio_export import export_studio_output
 from daon_user_api.studio_workspace import StudioError
-from test_identity_support import POLICY_VERSION, TRACE_ID, create_service
+from test_identity_support import POLICY_VERSION, TRACE_ID, create_service, identity_session_view
 
 
 class FakeStudioWorkspace:
@@ -93,7 +93,11 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose(); self.dependencies.close(); self.directory.cleanup()
 
     def authenticated(self):
-        return patch.object(self.identity, "describe_access", return_value=type("View", (), {"client_kind": ClientKind.WEB, "principal": self.principal})())
+        return patch.object(
+            self.identity,
+            "describe_access",
+            return_value=identity_session_view(self.principal),
+        )
 
     async def test_generation_version_action_and_export_routes_are_real_and_safe(self):
         generation = {
