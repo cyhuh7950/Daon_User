@@ -283,8 +283,6 @@ class PostgresCloudStore:
                     context.tenant_id,
                     context.workspace_id,
                     context.tenant_id,
-                    context.workspace_id,
-                    context.tenant_id,
                     context.tenant_id,
                     context.workspace_id,
                 ),

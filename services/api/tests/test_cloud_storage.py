@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -82,6 +83,39 @@ class CloudStorageContractTests(unittest.TestCase):
         self.assertIn("egress_policy_versions", source)
         self.assertIn("egress_policy_bindings", source)
         self.assertIn("NOT EXISTS", source)
+
+    def test_seed_scope_binds_every_sql_placeholder_once(self) -> None:
+        class RecordingConnection:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+            def execute(self, query: str, params: tuple[object, ...] = ()) -> None:
+                self.calls.append((query, params))
+
+        connection = RecordingConnection()
+        store = object.__new__(PostgresCloudStore)
+
+        @contextmanager
+        def transaction(_context):
+            yield connection
+
+        store._transaction = transaction  # type: ignore[method-assign]
+        context = CloudAccessContext(
+            tenant_id="tenant-test",
+            workspace_id="workspace-test",
+            actor_id="user-test",
+            capability="test",
+        )
+
+        store.seed_scope(context)
+
+        self.assertGreaterEqual(len(connection.calls), 5)
+        for query, params in connection.calls:
+            self.assertEqual(
+                query.count("%s"),
+                len(params),
+                msg=f"placeholder/parameter mismatch in query: {query[:120]}",
+            )
 
 
 @unittest.skipUnless(os.environ.get("DAON_TEST_POSTGRES_DSN"), "isolated PostgreSQL DSN required")
