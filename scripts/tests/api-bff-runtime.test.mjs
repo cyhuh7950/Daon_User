@@ -311,6 +311,7 @@ test("public /api/v1 Route Handler는 Native proxy를 실행해 login non-404·S
 test("BFF internal destination is server-only, fixed and profile constrained", () => {
   assert.throws(() => parseInternalApiBase("http://api.internal:8000", "production"), BffConfigurationError);
   assert.equal(parseInternalApiBase("http://api:8000", "production").origin, "http://api:8000");
+  assert.equal(parseInternalApiBase("http://api:8000", "wsl_http_qa").origin, "http://api:8000");
   assert.throws(() => parseInternalApiBase("https://user:pass@api.example.com", "production"), BffConfigurationError);
   assert.throws(() => parseInternalApiBase("https://api.example.com/variable/path", "production"), BffConfigurationError);
   assert.equal(parseInternalApiBase("https://api.example.com", "production").origin, "https://api.example.com");
