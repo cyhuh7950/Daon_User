@@ -1,5 +1,8 @@
 services:
   api:
+    environment:
+      # WSL 통합 QA는 사설 IP의 HTTP로 접근한다. 운영 Compose는 HTTPS 강제를 유지한다.
+      DAON_ALLOW_PRIVATE_HTTP_GATEWAY: "true"
     networks:
       - postgres_env_default
   document-worker:
