@@ -65,7 +65,7 @@ class ProviderCatalog:
             return ProviderCatalog._from_ollama(connection_id, payload)
         if provider_code == "OPENROUTER":
             return ProviderCatalog._from_openrouter(connection_id, payload)
-        if provider_code in {"GROQ", "MISTRAL", "UPSTAGE"}:
+        if provider_code in {"GROQ", "MISTRAL", "UPSTAGE", "MEDIA_BRIDGE"}:
             return ProviderCatalog._from_openai_compatible(
                 connection_id, provider_code, payload,
             )

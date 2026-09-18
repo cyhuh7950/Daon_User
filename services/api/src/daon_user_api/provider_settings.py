@@ -21,7 +21,8 @@ PROVIDER_CODES = (
     "OPENROUTER", "ANTHROPIC", "OLLAMA",
 )
 GATEWAY_PROVIDER_CODES = ("OMNIROUTE", "EOUL_GATEWAY")
-CONNECTION_PROVIDER_CODES = PROVIDER_CODES + GATEWAY_PROVIDER_CODES
+MEDIA_PROVIDER_CODES = ("MEDIA_BRIDGE",)
+CONNECTION_PROVIDER_CODES = PROVIDER_CODES + GATEWAY_PROVIDER_CODES + MEDIA_PROVIDER_CODES
 MODEL_ROLES = (
     "text", "vision", "document_parser", "audio_understanding", "speech_to_text", "embedding", "reranker",
 )
@@ -221,7 +222,7 @@ def validate_provider_base_url(provider_code: str, value: str) -> str:
     if not isinstance(value, str) or value != value.strip() or len(value) > 2048:
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
     parsed = urlsplit(value)
-    dynamic_endpoint = provider_code in {"OLLAMA", "OMNIROUTE", "EOUL_GATEWAY"}
+    dynamic_endpoint = provider_code in {"OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE"}
     allowed_schemes = {"http", "https"} if dynamic_endpoint else {"https"}
     if (parsed.scheme not in allowed_schemes or not parsed.hostname or parsed.username is not None
             or parsed.password is not None or parsed.query or parsed.fragment):
@@ -240,8 +241,9 @@ def validate_provider_base_url(provider_code: str, value: str) -> str:
         address = ip_address(hostname)
     except ValueError:
         address = None
+    local_gateway = provider_code in {"OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE"}
     if address is not None and (
-        address.is_loopback
+        (address.is_loopback and not local_gateway)
         or address.is_link_local
         or address.is_multicast
         or address.is_reserved
@@ -258,6 +260,7 @@ def validate_provider_base_url(provider_code: str, value: str) -> str:
         )
     )
     if parsed.scheme == "http" and not (
+        (local_gateway and address is not None and address.is_loopback) or
         (address is not None and address.is_private) or internal_hostname
     ):
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")

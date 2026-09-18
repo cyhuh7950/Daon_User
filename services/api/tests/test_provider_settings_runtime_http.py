@@ -321,7 +321,24 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operation["expected_etag"], initial.headers["etag"])
         self.assertEqual(operation["idempotency_key"], "workspace-model-default-save-0001")
 
-    async def test_workspace_admin_cannot_read_or_mutate_system_provider_connections(self) -> None:
+    async def test_workspace_admin_can_read_but_cannot_manage_system_provider_connections(self) -> None:
+        class SafeProviderService:
+            def list_connections(self, context):
+                return [{
+                    "connection_id": "shared-ollama", "provider_code": "OLLAMA",
+                    "display_name": "공유 Ollama", "enabled": True, "configured": True,
+                    "credential_version": 1, "version": 1, "verification_status": "verified",
+                    "verified_at": "2026-09-18T00:00:00Z", "catalog_status": "ready",
+                    "catalog_version": 1, "models": [],
+                }]
+
+        self.dependencies.provider_connection_service = SafeProviderService()
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
         listed = await self.client.get("/api/v1/admin/provider-connections")
         created = await self.client.post(
             "/api/v1/admin/provider-connections",
@@ -333,8 +350,48 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "step_up_authorization_id": "not-a-grant",
             },
         )
-        self.assertEqual(listed.status_code, 403)
+        self.assertEqual(listed.status_code, 200, listed.text)
         self.assertEqual(created.status_code, 403)
+
+    async def test_authenticated_workspace_user_can_rotate_shared_provider_credential(self) -> None:
+        class SafeProviderService:
+            def replace_credential(self, context, connection_id, body, idempotency_key):
+                return {
+                    "connection_id": connection_id, "provider_code": "OLLAMA",
+                    "display_name": "공유 Ollama", "enabled": True, "configured": True,
+                    "credential_version": 2, "version": 2,
+                    "verification_status": "verified", "verified_at": "2026-09-18T00:00:00Z",
+                    "catalog_status": "ready", "catalog_version": 1, "models": [],
+                }, False
+
+        self.dependencies.provider_connection_service = SafeProviderService()
+        self.dependencies.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION,
+            system_admin_user_ids=frozenset(),
+        )
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        grant = self.identity.issue_step_up(
+            access_token=self.credentials.access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id="provider-connection:shared-ollama",
+            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
+        )
+        response = await self.client.post(
+            "/api/v1/admin/provider-connections/shared-ollama/credential",
+            headers={"Idempotency-Key": "provider-credential-replace-user-0001"},
+            json={
+                "credential": "user-rotated-secret",
+                "expected_version": 1,
+                "step_up_authorization_id": grant.authorization,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("user-rotated-secret", response.text)
 
     async def test_system_admin_connection_crud_is_step_up_versioned_and_secret_safe(self) -> None:
         class ProviderAdminService:

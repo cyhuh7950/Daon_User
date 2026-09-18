@@ -358,6 +358,12 @@ class EoulGatewayAdapter(_RoutingGatewayAdapter):
         )
 
 
+class MediaBridgeAdapter(OpenRouterAdapter):
+    """Media Bridge exposes the bounded OpenAI-compatible model catalog."""
+
+    provider_code = "MEDIA_BRIDGE"
+
+
 class AdapterRegistry:
     def __init__(
         self,
@@ -375,6 +381,7 @@ class AdapterRegistry:
             "OPENROUTER": OpenRouterAdapter(actual_transport),
             "OMNIROUTE": OmniRouteAdapter(actual_transport, configured_models),
             "EOUL_GATEWAY": EoulGatewayAdapter(actual_transport, configured_models),
+            "MEDIA_BRIDGE": MediaBridgeAdapter(actual_transport),
         }
 
     def adapter(self, provider_code: str) -> ConnectionAdapter:

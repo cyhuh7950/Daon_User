@@ -3702,16 +3702,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
         can_apply = False
-        try:
-            dependencies.authorization_service.organization_admin_workspace(
-                principal=principal, trace_id=request.state.trace_id,
-                policy_version=dependencies.settings.policy_version,
-            )
-        except AuthorizationError as error:
-            if error.code != "ACTION_DENIED":
-                raise
-        else:
+        if principal.user_id in dependencies.settings.system_admin_user_ids:
             can_apply = True
+        else:
+            try:
+                dependencies.authorization_service.organization_admin_workspace(
+                    principal=principal, trace_id=request.state.trace_id,
+                    policy_version=dependencies.settings.policy_version,
+                )
+            except AuthorizationError as error:
+                if error.code != "ACTION_DENIED":
+                    raise
+            else:
+                can_apply = True
         view = await asyncio.to_thread(
             license_service.get, _license_context(principal, id, request, dependencies),
         )
@@ -3736,10 +3739,15 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         principal = _principal(request, dependencies)
         if id != principal.tenant_id:
             raise AuthorizationError("ACCESS_DENIED", 403)
-        workspace_id = dependencies.authorization_service.organization_admin_workspace(
-            principal=principal, trace_id=request.state.trace_id,
-            policy_version=dependencies.settings.policy_version,
-        )
+        if principal.user_id in dependencies.settings.system_admin_user_ids:
+            workspace_id = dependencies.authorization_repository.primary_workspace_id(
+                principal.tenant_id
+            ) or f"{principal.tenant_id}-workspace"
+        else:
+            workspace_id = dependencies.authorization_service.organization_admin_workspace(
+                principal=principal, trace_id=request.state.trace_id,
+                policy_version=dependencies.settings.policy_version,
+            )
         context = _license_context(principal, workspace_id, request, dependencies)
         replay = await asyncio.to_thread(
             license_service.replay, context, body.document, idempotency_key,
@@ -4427,6 +4435,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
 
+    def _provider_connection_context(request: Request) -> tuple[IdentityPrincipal, ProviderConnectionAdminContext]:
+        """Read shared system connections for any authenticated user.
+
+        The projection is secret-safe. Full connection/model mutations remain
+        protected by _provider_admin_context; ordinary users only reach the
+        credential rotation endpoint below.
+        """
+        principal = _principal(request, dependencies)
+        return principal, ProviderConnectionAdminContext(
+            tenant_id=principal.tenant_id, actor_id=principal.user_id,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+
     def _provider_admin_step_up(
         request: Request, *, target_id: str, authorization: str,
         operation: str, idempotency_key: str,
@@ -4434,6 +4455,22 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _egress_idempotency_key(idempotency_key)
         access_token, _ = _credential(request)
         _principal_value, context = _provider_admin_context(request)
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=authorization, access_token=access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id=target_id, policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id, operation=operation,
+            idempotency_key=idempotency_key,
+        )
+        return context
+
+    def _provider_credential_step_up(
+        request: Request, *, target_id: str, authorization: str,
+        operation: str, idempotency_key: str,
+    ) -> ProviderConnectionAdminContext:
+        _egress_idempotency_key(idempotency_key)
+        access_token, _ = _credential(request)
+        _principal_value, context = _provider_connection_context(request)
         dependencies.identity_service.consume_step_up(
             step_up_authorization=authorization, access_token=access_token,
             action_group="organization_security_or_connector_policy_change",
@@ -4451,7 +4488,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     @app.get("/api/v1/admin/provider-connections")
     async def list_provider_connections(request: Request) -> JSONResponse:
         _require_query_keys(request, frozenset())
-        _principal_value, context = _provider_admin_context(request)
+        _principal_value, context = _provider_connection_context(request)
         items = await asyncio.to_thread(_provider_admin_service().list_connections, context)
         return _json_with_etag(
             {"data": items, "meta": {"trace_id": request.state.trace_id}},
@@ -4550,7 +4587,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
-        context = _provider_admin_step_up(
+        context = _provider_credential_step_up(
             request, target_id=f"provider-connection:{connection_id}",
             authorization=body.step_up_authorization_id,
             operation="provider_connection.credential.replace", idempotency_key=idempotency_key,
@@ -4874,10 +4911,15 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if scope_type == "organization" and scope_id != principal.tenant_id:
             raise AuthorizationError("ACCESS_DENIED", 403)
         if scope_type == "organization":
-            workspace_id = dependencies.authorization_service.organization_admin_workspace(
-                principal=principal, trace_id=request.state.trace_id,
-                policy_version=dependencies.settings.policy_version,
-            )
+            if principal.user_id in dependencies.settings.system_admin_user_ids:
+                workspace_id = dependencies.authorization_repository.primary_workspace_id(
+                    principal.tenant_id
+                ) or f"{principal.tenant_id}-workspace"
+            else:
+                workspace_id = dependencies.authorization_service.organization_admin_workspace(
+                    principal=principal, trace_id=request.state.trace_id,
+                    policy_version=dependencies.settings.policy_version,
+                )
         else:
             dependencies.authorization_service.authorize_action(
                 principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,

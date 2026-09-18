@@ -31,6 +31,7 @@ def connection(
         "OPENROUTER": "https://openrouter.ai/api/v1",
         "OMNIROUTE": "https://omniroute.example/v1",
         "EOUL_GATEWAY": "http://eoul-gateway:8080",
+        "MEDIA_BRIDGE": "http://media-bridge.internal:8080/v1",
     }
     return ProviderConnection(
         connection_id=connection_id or provider_code.lower(),
@@ -84,6 +85,9 @@ class FakeTransport:
             "https://api.upstage.ai/v1/models": TransportResponse(200, {"data": [{"id": "solar-pro3"}]}),
             "https://omniroute.example/v1/responses": TransportResponse(200, {}),
             "http://eoul-gateway:8080/v1/chat/completions": TransportResponse(200, {}),
+            "http://media-bridge.internal:8080/v1/models": TransportResponse(
+                200, {"data": [{"id": "media-bridge-vision"}]}
+            ),
         }
 
     def request(
@@ -128,7 +132,7 @@ def registry(fake_transport: FakeTransport) -> AdapterRegistry:
     )
 
 
-@pytest.mark.parametrize("code", ["OPENROUTER", "OMNIROUTE", "EOUL_GATEWAY"])
+@pytest.mark.parametrize("code", ["OPENROUTER", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE"])
 def test_gateway_credentials_never_escape_safe_result(
     code: str,
     registry: AdapterRegistry,
@@ -207,6 +211,21 @@ def test_openrouter_catalog_probe_is_bounded_and_does_not_follow_redirects(
     assert models[0].model_id == "openai/gpt-4.1"
 
 
+def test_media_bridge_is_an_openai_compatible_named_connection(
+    registry: AdapterRegistry,
+    fake_transport: FakeTransport,
+) -> None:
+    models = registry.adapter("MEDIA_BRIDGE").discover_models(
+        connection("MEDIA_BRIDGE"), TEST_CREDENTIAL
+    )
+
+    assert models[0].model_id == "media-bridge-vision"
+    assert fake_transport.requests[-1].url == "http://media-bridge.internal:8080/v1/models"
+    assert fake_transport.requests[-1].headers == {
+        "authorization": f"Bearer {TEST_CREDENTIAL}"
+    }
+
+
 @pytest.mark.parametrize(
     ("code", "endpoint"),
     [
@@ -278,6 +297,10 @@ def test_endpoint_validation_allows_named_ollama_and_internal_gateway_but_blocks
     assert (
         validate_provider_base_url("EOUL_GATEWAY", "http://eoul-gateway:8080")
         == "http://eoul-gateway:8080"
+    )
+    assert (
+        validate_provider_base_url("MEDIA_BRIDGE", "http://127.0.0.1:8642/v1")
+        == "http://127.0.0.1:8642/v1"
     )
     for value in (
         "http://127.0.0.1:11434",

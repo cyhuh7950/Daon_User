@@ -363,9 +363,14 @@ Citation은 답변이 참조한 근거 위치입니다.
 
 ## 13. LLM 설정
 
-`설정 → LLM 설정`에서 Provider Profile, Credential 설정 여부, Deployment, Model 역할, 활성 상태와 선택 상태를 확인합니다.
+로그인 후 Notebook 홈의 `설정 → LLM 설정`에서 공유 시스템 Provider 연결과 Workspace 기본 모델을 확인합니다. 화면 상단에는 현재 접속한 사용자 ID와 시스템 관리자 여부가 표시됩니다.
 
-설정 가능한 Provider 코드는 Cerebras, Groq, Mistral, OpenAI, Upstage, Gemini, OpenRouter, Anthropic, Ollama입니다. 그러나 현재 질문·일반 대화 실행 Adapter가 직접 지원하는 것은 Ollama, Groq, Mistral, Upstage입니다. 나머지 Provider 카드가 보이거나 연결 시험이 가능하더라도 현재 질문 생성 경로에서 사용할 수 있다고 단정하지 않습니다.
+- 시스템 관리자는 Provider 연결을 추가·수정·활성화하고 Endpoint, 모델 목록, 모델 기능과 Workspace 기본 모델을 관리합니다.
+- 일반 사용자와 조직 관리자는 등록된 공유 연결을 조회하고 API Key 또는 Client Key만 교체할 수 있습니다. Endpoint, Provider 종류, 모델 목록과 기능은 변경할 수 없습니다.
+- Credential과 저장된 Endpoint 원문은 다시 표시되지 않습니다. 키를 교체할 때는 현재 비밀번호를 입력하고 연결 확인을 완료합니다.
+- 지원 Provider 코드는 Cerebras, Groq, Mistral, OpenAI, Upstage, Gemini, OpenRouter, Anthropic, Ollama, OmniRoute, Eoul-Gateway, Media Bridge입니다. 실제 사용 가능 여부는 해당 연결의 Adapter와 Provider 상태에 따라 달라집니다.
+- Ollama는 `LAN Ollama`, `공용 Ollama`처럼 연결 이름을 다르게 지정해 여러 Endpoint를 동시에 등록할 수 있습니다. 각 연결의 모델과 Workspace 기본값은 연결별로 선택합니다. 예를 들어 `http://192.168.220.180:11434`와 `https://ollama-api.sinsan.kr`를 별도 연결로 등록할 수 있습니다.
+- OmniRoute와 Eoul-Gateway는 설치형·배포형의 실제 접근 가능한 API Endpoint를 사용합니다. Console 화면 주소(`/home`)와 API Endpoint를 혼동하지 않습니다. Media Bridge는 Eoul-Gateway 또는 별도 설치형의 실제 API Endpoint를 사용하며, localhost 주소는 Daon User 서버와 같은 호스트에서 실행되는 경우에만 등록합니다.
 
 Credential 원문은 다시 표시되지 않습니다. Provider 연결 시험 성공은 Source 기반 질문, 조직 Egress 승인 또는 Studio 생성 성공을 의미하지 않습니다.
 
@@ -387,7 +392,7 @@ Daon은 Preview 전체를 자동 승인하거나 자동 전송하지 않습니�
 
 ## 16. 조직 정책
 
-Workspace에서는 조직의 외부 전송 정책을 읽기 전용으로 확인합니다.
+시스템 관리자는 Notebook 홈의 `설정 → 조직 정책` 또는 `/settings/organization`에서 현재 tenant의 조직 외부 전송 정책을 확인·변경합니다. 일반 사용자와 Workspace 사용자는 같은 화면에서 유효 정책을 읽기 전용으로 확인합니다.
 
 - 정책 모드: 외부 전송 차단 또는 승인된 외부 전송
 - 허용 Provider 종류
@@ -399,7 +404,7 @@ Workspace에서는 조직의 외부 전송 정책을 읽기 전용으로 확인�
 - 필수 승인자
 - Workspace 적용 결과
 
-조직 차단 정책은 Workspace에서 완화할 수 없습니다. 사용자가 Endpoint를 변경하거나 다른 Provider로 우회해서는 안 됩니다.
+조직 차단 정책은 Workspace에서 완화할 수 없습니다. 사용자가 Endpoint를 변경하거나 다른 Provider로 우회해서는 안 됩니다. 조직 정책을 변경한 뒤 Workspace 적용 결과와 ETag 충돌 여부를 확인합니다.
 
 ## 17. 라이선스
 
@@ -409,7 +414,9 @@ Workspace에서는 조직의 외부 전송 정책을 읽기 전용으로 확인�
 
 상태는 `미적용`, `정상`, `30일 이내 만료`, `만료`, `한도 도달`로 표시될 수 있습니다.
 
-### 17.2 적용 권한이 있는 관리자
+### 17.2 시스템 관리자
+
+라이선스 등록·교체·적용은 시스템 관리자만 수행합니다. 일반 사용자와 Workspace 관리자는 제품·Edition·상태·만료일·기능·사용량만 조회합니다.
 
 1. 승인된 JSON License document를 준비합니다.
 2. 현재 비밀번호를 입력합니다.

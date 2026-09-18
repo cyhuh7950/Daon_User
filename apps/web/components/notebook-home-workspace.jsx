@@ -21,6 +21,7 @@ export function NotebookHomeWorkspace({
   const [notebooks, setNotebooks] = useState([]);
   const [workspaceId, setWorkspaceId] = useState(null);
   const [isSystemAdmin, setIsSystemAdmin] = useState(false);
+  const [userId, setUserId] = useState(null);
   const [errorCode, setErrorCode] = useState(null);
 
   const conceal = useCallback(() => {
@@ -44,6 +45,7 @@ export function NotebookHomeWorkspace({
       }
       const result = await getNotebooks(session.workspace_id, { signal });
       setWorkspaceId(session.workspace_id);
+      setUserId(session.user_id);
       setIsSystemAdmin(session.is_system_admin);
       setNotebooks(result.data);
       setState("ready");
@@ -55,6 +57,7 @@ export function NotebookHomeWorkspace({
         return;
       }
       setWorkspaceId(null);
+      setUserId(null);
       setIsSystemAdmin(false);
       setNotebooks([]);
       setErrorCode(SAFE_ERRORS.has(error?.message) ? error.message : "NOTEBOOK_UNAVAILABLE");
@@ -120,6 +123,8 @@ export function NotebookHomeWorkspace({
       screen: "/settings/screen",
       license: "/settings/license",
       manual: "/settings/manual",
+      "model-connections": "/settings/model-connections",
+      "organization-policy": "/settings/organization",
       "user-management": "/admin",
     });
     const route = routes[settingId];
@@ -146,6 +151,8 @@ export function NotebookHomeWorkspace({
     notebooks={notebooks}
     errorCode={errorCode}
     showUserManagement={isSystemAdmin}
+    showOrganizationPolicy={isSystemAdmin}
+    displayIdentity={userId ? `${userId}${isSystemAdmin ? " · 시스템 관리자" : ""}` : null}
     onReload={() => void load()}
     onCreate={handleCreate}
     onDelete={handleDelete}
