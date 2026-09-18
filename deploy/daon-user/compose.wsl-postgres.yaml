@@ -16,6 +16,7 @@ services:
     environment:
       # WSL 통합 QA는 사설 IP의 HTTP Origin을 사용한다.
       DAON_RUNTIME_PROFILE: wsl_http_qa
+      DAON_BFF_PROFILE: wsl_http_qa
 
 networks:
   postgres_env_default:
