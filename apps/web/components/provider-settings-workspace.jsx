@@ -30,7 +30,15 @@ const CAPABILITY_LABELS = Object.freeze({
 });
 
 function operationKey(prefix) {
-  return `${prefix}-${crypto.randomUUID()}`;
+  const webCrypto = globalThis.crypto;
+  if (typeof webCrypto?.randomUUID === "function") {
+    return `${prefix}-${webCrypto.randomUUID()}`;
+  }
+  if (typeof webCrypto?.getRandomValues === "function") {
+    const values = webCrypto.getRandomValues(new Uint32Array(4));
+    return `${prefix}-${Array.from(values, (value) => value.toString(16).padStart(8, "0")).join("")}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function emptyConnectionDraft(defaultEndpoint = "") {
