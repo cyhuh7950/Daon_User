@@ -12,6 +12,7 @@ services:
       DAON_API_DATABASE_PATH: /var/lib/daon-user/runtime.sqlite3
       DAON_CLOUD_DATABASE_DSN: ${DAON_CLOUD_DATABASE_DSN:?cloud database DSN reference required}
       DAON_DEV_AUTH_BYPASS: ${DAON_DEV_AUTH_BYPASS-false}
+      DAON_SYSTEM_ADMIN_USER_IDS: ${DAON_SYSTEM_ADMIN_USER_IDS-admin}
       DAON_PUBLIC_GATEWAY_URL: ${DAON_PUBLIC_GATEWAY_URL:?public HTTPS gateway required}
       DAON_TRUSTED_PROXY_IPS: ${DAON_TRUSTED_PROXY_IPS:?trusted proxy IPs required}
       DAON_OBJECT_STORAGE_ENDPOINT: ${DAON_OBJECT_STORAGE_ENDPOINT:?object storage endpoint required}
