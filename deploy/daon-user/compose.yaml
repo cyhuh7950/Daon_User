@@ -11,6 +11,7 @@ services:
       DAON_API_PORT: 8000
       DAON_API_DATABASE_PATH: /var/lib/daon-user/runtime.sqlite3
       DAON_CLOUD_DATABASE_DSN: ${DAON_CLOUD_DATABASE_DSN:?cloud database DSN reference required}
+      DAON_DEV_AUTH_BYPASS: ${DAON_DEV_AUTH_BYPASS-false}
       DAON_PUBLIC_GATEWAY_URL: ${DAON_PUBLIC_GATEWAY_URL:?public HTTPS gateway required}
       DAON_TRUSTED_PROXY_IPS: ${DAON_TRUSTED_PROXY_IPS:?trusted proxy IPs required}
       DAON_OBJECT_STORAGE_ENDPOINT: ${DAON_OBJECT_STORAGE_ENDPOINT:?object storage endpoint required}
@@ -128,7 +129,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3330
-      DAON_RUNTIME_PROFILE: production
+      DAON_RUNTIME_PROFILE: ${DAON_RUNTIME_PROFILE-production}
       DAON_BFF_PROFILE: ${DAON_BFF_PROFILE-production}
       DAON_API_INTERNAL_URL: ${DAON_API_INTERNAL_URL:?server-side BFF API URL required}
       DAON_PUBLIC_GATEWAY_URL: ${DAON_WEB_PUBLIC_GATEWAY_URL:?web public gateway required}
