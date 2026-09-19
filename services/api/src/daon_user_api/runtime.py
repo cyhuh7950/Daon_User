@@ -620,7 +620,7 @@ class AdminUserCreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     login_id: str = Field(min_length=1, max_length=255)
     email: str = Field(min_length=3, max_length=320)
-    initial_password: str = Field(min_length=8, max_length=256, repr=False)
+    initial_password: str = Field(min_length=12, max_length=256, repr=False)
 
 
 class AdminUserUpdateBody(BaseModel):
