@@ -183,7 +183,10 @@ class PostgresProviderAdminMutationRepository:
 
     @classmethod
     def _validate_safe_mapping(cls, value: object) -> None:
-        forbidden = {"credential", "base_url", "endpoint", "api_key", "secret", "response_body"}
+        # The connection response intentionally exposes the normalized endpoint
+        # so the admin form can reload it.  Only credentials and raw upstream
+        # response material are forbidden from durable mutation results.
+        forbidden = {"credential", "api_key", "secret", "response_body"}
         if isinstance(value, Mapping):
             for key, nested in value.items():
                 if str(key).lower() in forbidden:

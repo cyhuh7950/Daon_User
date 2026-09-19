@@ -187,6 +187,17 @@ def test_credential_plaintext_is_absent_from_fingerprint_result_and_audit_outbox
     }
 
 
+def test_provider_connection_result_may_return_endpoint_but_not_credentials() -> None:
+    repository = PostgresProviderAdminMutationRepository(Store(SharedDatabase()))
+
+    repository._validate_safe_mapping({
+        "connection_id": "media-bridge", "base_url": "http://127.0.0.1:8642/v1",
+    })
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_ADMIN_RESULT_UNSAFE$"):
+        repository._validate_safe_mapping({"connection_id": "media-bridge", "api_key": "secret"})
+
+
 def test_same_idempotency_key_replays_same_credential_and_rejects_different_credential() -> None:
     cipher = ProviderCredentialCipher(b"m" * 32, encryption_key_version=1)
 
