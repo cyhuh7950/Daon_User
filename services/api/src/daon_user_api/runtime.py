@@ -1077,8 +1077,9 @@ def _require_validated_web_csrf(request: Request, settings: RuntimeSettings) -> 
         parsed_referer = urlsplit(referer)
     except ValueError as error:
         raise IdentityError("CSRF_VALIDATION_FAILED", 403) from error
+    expected_scheme = "http" if settings.profile == "wsl_http_qa" else "https"
     if (
-        parsed_origin.scheme != "https" or not parsed_origin.netloc
+        parsed_origin.scheme != expected_scheme or not parsed_origin.netloc
         or parsed_origin.path not in {"", "/"} or parsed_origin.query or parsed_origin.fragment
         or (parsed_referer.scheme, parsed_referer.netloc)
         != (parsed_origin.scheme, parsed_origin.netloc)
