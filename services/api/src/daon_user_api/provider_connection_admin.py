@@ -366,7 +366,15 @@ class PostgresProviderConnectionService:
                 raise AdapterError("PROVIDER_CREDENTIAL_REQUIRED", 409)
             if discover_models:
                 adapter.verify(profile, raw)
-            models = adapter.discover_models(profile, raw) if discover_models else ()
+                models = adapter.discover_models(profile, raw)
+            elif provider_code in {"OMNIROUTE", "EOUL_GATEWAY", "SENTENCE_TRANSFORMERS"} and logical_model_ids:
+                # These local/gateway providers have no remote catalog. Their
+                # explicitly configured logical models are the catalog.
+                models = adapter.discover_models(profile, raw)
+            else:
+                # Saving a connection must not delete a previously discovered
+                # catalog. Catalog refresh is the operation that owns it.
+                models = ()
             sealed = previous_sealed
             if credential is not None:
                 next_version = 1 if previous_sealed is None else previous_sealed.credential_version + 1
@@ -508,7 +516,8 @@ class PostgresProviderConnectionService:
             ).fetchone()
             if row is None:
                 raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
-            self._replace_models(connection, context, connection_id, models, int(row[0]))
+            if models or str(current[1]) in {"OMNIROUTE", "EOUL_GATEWAY", "SENTENCE_TRANSFORMERS"}:
+                self._replace_models(connection, context, connection_id, models, int(row[0]))
             return self._safe_by_id(connection, connection_id)
 
         return self._mutations.run(

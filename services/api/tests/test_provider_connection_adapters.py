@@ -232,7 +232,7 @@ def test_openrouter_catalog_probe_is_bounded_and_does_not_follow_redirects(
     assert models[0].model_id == "openai/gpt-4.1"
 
 
-def test_media_bridge_is_an_openai_compatible_named_connection(
+def test_media_bridge_owns_its_models_and_does_not_query_a_remote_catalog(
     registry: AdapterRegistry,
     fake_transport: FakeTransport,
 ) -> None:
@@ -240,11 +240,8 @@ def test_media_bridge_is_an_openai_compatible_named_connection(
         connection("MEDIA_BRIDGE"), TEST_CREDENTIAL
     )
 
-    assert models[0].model_id == "media-bridge-vision"
-    assert fake_transport.requests[-1].url == "http://media-bridge.internal:8080/v1/models"
-    assert fake_transport.requests[-1].headers == {
-        "authorization": f"Bearer {TEST_CREDENTIAL}"
-    }
+    assert models == ()
+    assert fake_transport.requests == []
 
 
 @pytest.mark.parametrize(

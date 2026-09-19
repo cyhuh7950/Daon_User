@@ -81,12 +81,12 @@ class Connection:
                 "version": record["version"] + 1,
             })
             return Cursor((record["connection_id"], record["version"]))
-        if normalized.startswith("SELECT c.connection_id,c.provider_code,c.display_name,c.enabled"):
+        if normalized.startswith("SELECT c.connection_id,c.provider_code,c.display_name,c.base_url,c.enabled"):
             record = self.database.system_connection
             if record is None or (params and record["connection_id"] != params[0]):
                 return Cursor(rows=[])
             return Cursor(rows=[(
-                record["connection_id"], record["provider_code"], record["display_name"], record["enabled"],
+                record["connection_id"], record["provider_code"], record["display_name"], record["base_url"], record["enabled"],
                 record["encrypted_credential"], record["credential_version"], record["verification_status"],
                 record["verified_at"], record["version"], record["catalog_status"], record["catalog_version"],
             )])

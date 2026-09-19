@@ -235,13 +235,13 @@ def validate_provider_base_url(provider_code: str, value: str) -> str:
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
     normalized = value.rstrip("/")
     hostname = parsed.hostname.lower()
-    if hostname == "localhost" or hostname.endswith(".localhost"):
+    local_gateway = provider_code in {"OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS"}
+    if (hostname == "localhost" or hostname.endswith(".localhost")) and not local_gateway:
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
     try:
         address = ip_address(hostname)
     except ValueError:
         address = None
-    local_gateway = provider_code in {"OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS"}
     if address is not None and (
         (address.is_loopback and not local_gateway)
         or address.is_link_local

@@ -126,6 +126,12 @@ function normalizedLogicalModels(value) {
   return [...new Set(value.split(/[\n,]/u).map((item) => item.trim()).filter(Boolean))];
 }
 
+function updateLogicalModelSelection(current, modelId, checked) {
+  const selected = normalizedLogicalModels(current);
+  const next = checked ? [...selected, modelId] : selected.filter((item) => item !== modelId);
+  return [...new Set(next)].join("\n");
+}
+
 function modelKey(connectionId, modelId) {
   return JSON.stringify([connectionId, modelId]);
 }
@@ -199,6 +205,12 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       ? []
       : connection.models.filter((model) => model.catalog_status === "ready").map((model) => ({ connection, model }))
   )), [connections]);
+  const availableModels = useMemo(() => (
+    (selectedConnection?.models ?? [])
+      .filter((model) => model.catalog_status === "ready")
+      .map((model) => model.model_id)
+  ), [selectedConnection]);
+  const selectedModelIds = useMemo(() => normalizedLogicalModels(draft.logical_model_ids), [draft.logical_model_ids]);
 
   async function saveConnection(includeCredential) {
     const connectionId = draft.connection_id.trim();
@@ -347,7 +359,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
                 <label>Provider<select value={draft.provider_code} disabled={draft.version > 0} onChange={(event) => setDraft((current) => ({ ...current, provider_code: event.target.value, base_url: connections.find((connection) => connection.provider_code === event.target.value)?.base_url ?? current.base_url }))}>{PROVIDERS.map((provider) => <option value={provider} key={provider}>{provider}</option>)}</select></label>
                 <label>연결 이름<input value={draft.display_name} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} /></label>
                 <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
-                {!managedModels ? <label className="provider-field-wide">연결할 모델 (선택)<textarea value={draft.logical_model_ids} rows={2} placeholder="모델 ID를 입력하지 않으면 Provider 기준 모델을 사용합니다." onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label> : null}<p className="provider-field-wide provider-form-note">{managedModels ? "이 Provider는 모델 목록을 Daon에 저장하지 않으며, 지정한 모델이 없으면 Provider가 기준 모델을 선택합니다." : <>API Key 저장과 <strong>모델 조회</strong>는 선택 사항입니다. 필요할 때만 모델 목록을 확인하고, 모델을 지정하지 않으면 Provider 기준 모델을 사용합니다.</>}</p>
+                <fieldset className="provider-field-wide provider-model-picker"><legend>연결할 모델 (선택)</legend><p>모델을 선택하지 않으면 Provider 기준 모델을 사용합니다.</p>{managedModels ? <small>이 Provider가 모델을 직접 관리하므로 Daon에서 모델을 선택하지 않습니다.</small> : availableModels.length ? <div className="provider-model-options">{availableModels.map((modelId) => <label key={modelId}><input type="checkbox" checked={selectedModelIds.includes(modelId)} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: updateLogicalModelSelection(current.logical_model_ids, modelId, event.target.checked) }))} /><span>{modelId}</span></label>)}</div> : <small>등록된 모델이 없습니다. 모델 연결 없이 저장할 수 있습니다.</small>}{selectedModelIds.length ? <button type="button" className="provider-model-clear" onClick={() => setDraft((current) => ({ ...current, logical_model_ids: "" }))}>Provider 기준 모델 사용으로 변경</button> : null}</fieldset><p className="provider-field-wide provider-form-note">API Key 저장과 모델 조회는 선택 사항입니다. 모델을 지정하지 않아도 Provider 연결은 저장됩니다.</p>
               </> : <p className="provider-field-wide">공유 연결의 Endpoint와 모델 목록은 숨겨져 있습니다. 아래에서 이 연결의 API Key만 교체할 수 있습니다.</p>}
               <label>API Key 또는 Client Key {providerRequiresCredential(draft.provider_code) ? "(필수)" : "(선택)"}{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : providerRequiresCredential(draft.provider_code) ? "OMNIROUTE API Key를 입력하세요" : "키를 입력하지 않으면 Provider 기본 인증을 사용합니다"} onChange={(event) => setCredential(event.target.value)} /></label>
             </div>
