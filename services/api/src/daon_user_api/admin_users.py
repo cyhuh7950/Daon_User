@@ -143,7 +143,7 @@ class AdminUserService:
                 "INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,"
                 "email_verified_at,password_change_required,state) VALUES (?,?,?,?,?,?,?,?,?)",
                 (user_id, "local", login, login, address, PASSWORD_HASHER.hash(secret),
-                 None, 1, "pending_approval"),
+                 None, True, "pending_approval"),
             )
             self._repository._ensure_tenant(connection, tenant_id)
             connection.execute(
