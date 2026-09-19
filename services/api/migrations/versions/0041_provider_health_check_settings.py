@@ -5,8 +5,8 @@ from __future__ import annotations
 from alembic import op
 
 
-revision = "0041"
-down_revision = "0040"
+revision = "0049"
+down_revision = "0048"
 branch_labels = None
 depends_on = None
 
@@ -18,8 +18,8 @@ def upgrade() -> None:
           setting_id text PRIMARY KEY CHECK (setting_id = 'global'),
           interval_minutes integer NOT NULL DEFAULT 60 CHECK (interval_minutes BETWEEN 1 AND 1440),
           version integer NOT NULL DEFAULT 0 CHECK (version >= 0),
-          updated_by text NOT NULL DEFAULT 'migration:0041',
-          trace_id text NOT NULL DEFAULT 'migration:0041',
+          updated_by text NOT NULL DEFAULT 'migration:0049',
+          trace_id text NOT NULL DEFAULT 'migration:0049',
           policy_version text NOT NULL DEFAULT 'runtime-policy-v1',
           updated_at timestamptz NOT NULL DEFAULT now()
         );

@@ -16,8 +16,8 @@ class Operations:
         self.statements.append(statement)
 
 
-def test_migration_0041_creates_global_sixty_minute_setting() -> None:
-    spec = importlib.util.spec_from_file_location("provider_health_0041", MIGRATION)
+def test_migration_0049_creates_global_sixty_minute_setting() -> None:
+    spec = importlib.util.spec_from_file_location("provider_health_0049", MIGRATION)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
