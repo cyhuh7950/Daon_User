@@ -23,7 +23,7 @@ export function ManualSettingsPane() {
   const download = async (documentId, format) => { if (!manifest || pending) return; setPending(true); setSafeError(null); try { saveDownload(await downloadManualAsset(documentId, format, { manifest })); } catch { setSafeError("MANUAL_CONTENT_INVALID"); } finally { setPending(false); } };
 
   return <main className="common-settings-page" aria-labelledby="manual-settings-title">
-    <header className="common-settings-header"><a href="/notebooks">← Notebook 홈</a><p>HELP CENTER</p><h1 id="manual-settings-title">사용자 설명서</h1><span>{manifest ? `Release ${manifest.release_version} · ${manifest.language}` : "검증된 Daon 문서를 불러옵니다."}</span></header>
+    <header className="common-settings-header"><a href="/notebooks">Notebook으로</a><p>HELP CENTER</p><h1 id="manual-settings-title">사용자 설명서</h1><span>{manifest ? `Release ${manifest.release_version} · ${manifest.language}` : "검증된 Daon 문서를 불러옵니다."}</span></header>
     <label className="manual-page-search"><span className="sr-only">설명서 검색</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="문서 제목 또는 설명 검색" disabled={!manifest || pending} /></label>
     {pending && !manifest ? <p role="status" className="common-settings-state">사용자 설명서를 불러오고 있습니다.</p> : null}
     {safeError ? <div role="alert" className="common-settings-error"><strong>사용자 설명서를 처리하지 못했습니다.</strong><span>{safeError}</span><button type="button" onClick={() => void load()}>다시 시도</button></div> : null}

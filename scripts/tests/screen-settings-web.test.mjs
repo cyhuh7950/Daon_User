@@ -48,6 +48,7 @@ test("screen settings page has early paint, accessible three-way controls and sc
   assert.match(pane, /light/);
   assert.match(pane, /dark/);
   assert.match(pane, /화면 설정 초기화/);
+  assert.match(pane, /Notebook으로/);
   assert.match(pane, /aria-live/);
   assert.match(page, /ScreenPreferencesPane/);
   assert.match(layout, /ScreenThemeRuntime/);

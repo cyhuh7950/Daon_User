@@ -240,7 +240,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   const Root = embedded ? "div" : "main";
   return (
     <Root className={`provider-settings-shell ${embedded ? "is-embedded" : ""}`}>
-      <header className="provider-settings-header"><div><span className="section-kicker">MODEL CONNECTIONS</span><h1>{embedded ? "Provider 연결" : "모델·Provider 설정"}</h1><p>{resolvedWorkspaceId ? "현재 Workspace 설정" : "Workspace 확인 중"}</p></div><button className="secondary-button" type="button" onClick={load}>새로고침</button></header>
+      <header className="provider-settings-header"><div><span className="section-kicker">MODEL CONNECTIONS</span><h1>{embedded ? "Provider 연결" : "모델·Provider 설정"}</h1><p>{resolvedWorkspaceId ? "현재 Workspace 설정" : "Workspace 확인 중"}</p></div><nav className="provider-settings-navigation"><button className="secondary-button" type="button" onClick={load}>새로고침</button><a className="secondary-button" href="/notebooks">Notebook으로</a></nav></header>
       <div className={`provider-status ${status.kind}`} role="status"><span className="status-dot" aria-hidden="true" />{status.message}</div>
       <div className="provider-settings-layout">
         <section aria-labelledby="provider-list-title"><h2 id="provider-list-title">Provider</h2><div className="provider-grid">

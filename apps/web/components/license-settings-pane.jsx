@@ -46,7 +46,7 @@ export function LicenseSettingsPane() {
   };
 
   return <main className="common-settings-page" aria-labelledby="license-settings-title">
-    <header className="common-settings-header"><a href="/notebooks">← Notebook 홈</a><p>WORKSPACE SETTINGS</p><h1 id="license-settings-title">라이선스</h1><span>Edition과 사용 한도를 확인하고 승인된 문서를 적용합니다.</span></header>
+    <header className="common-settings-header"><a href="/notebooks">Notebook으로</a><p>WORKSPACE SETTINGS</p><h1 id="license-settings-title">라이선스</h1><span>Edition과 사용 한도를 확인하고 승인된 문서를 적용합니다.</span></header>
     {pending && !view ? <p role="status" className="common-settings-state">라이선스를 확인하고 있습니다.</p> : null}
     {safeError ? <div role="alert" className="common-settings-error"><strong>라이선스 요청을 처리하지 못했습니다.</strong><span>{safeError}</span><button type="button" onClick={() => void load()}>다시 시도</button></div> : null}
     {view ? <div className="license-settings-grid">

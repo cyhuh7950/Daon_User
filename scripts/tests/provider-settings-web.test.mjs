@@ -101,6 +101,7 @@ test("model connections screen edits approved providers, models, roles and safe 
   for (const provider of ["CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI", "OPENROUTER", "ANTHROPIC", "OLLAMA"]) assert.match(pane, new RegExp(provider));
   for (const label of ["Endpoint 설정됨", "모델 ID", "역할 매핑", "활성", "선택", "Credential 설정됨"]) assert.match(pane, new RegExp(label));
   assert.doesNotMatch(pane, /api[_-]?key|secret_value|type=["']password["']/i);
+  assert.match(pane, /Notebook으로/u);
 });
 
 test("provider settings resolves the authenticated workspace from the same-origin session endpoint", async () => {

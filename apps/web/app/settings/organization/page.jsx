@@ -13,7 +13,7 @@ const adapter = {
 };
 function OrganizationSettingsContent() {
   const searchParams = useSearchParams();
-  return <main className="organization-settings-page"><EgressPolicyPane
+  return <main className="organization-settings-page"><nav className="organization-settings-navigation"><a href="/notebooks">Notebook으로</a></nav><EgressPolicyPane
     organizationId={searchParams.get("organization_id") || ""}
     workspaceId={searchParams.get("workspace_id") || ""} adapter={adapter} /></main>;
 }

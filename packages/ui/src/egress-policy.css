@@ -6,3 +6,10 @@
 .egress-policy-pane input, .egress-policy-pane select, .egress-policy-pane button { font: inherit; min-height: 32px; }
 .egress-policy-pane .info-button { width: 24px; min-height: 24px; border-radius: 50%; }
 .egress-policy-pane .policy-lock { font-size: 10px; }
+.egress-policy-pane { box-sizing: border-box; color: var(--daon-color-text-primary, #172033); }
+.egress-policy-pane header p, .egress-policy-pane .policy-lock, .egress-policy-pane label { color: var(--daon-color-text-secondary, #4B5B73); }
+.egress-policy-pane form > label:not(:has(input[type="checkbox"])) { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); align-items: center; gap: 10px; }
+.egress-policy-pane form > label:has(input[type="checkbox"]) { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.egress-policy-pane input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--daon-color-accent, #2563EB); }
+.egress-policy-pane input:not([type="checkbox"]), .egress-policy-pane select { width: 100%; box-sizing: border-box; background: var(--daon-color-canvas, #F4F7FB); color: var(--daon-color-text-primary, #172033); border: 1px solid var(--daon-color-border, #C7D2E0); border-radius: 8px; padding: 0 9px; }
+.egress-policy-pane button { color: var(--daon-color-text-primary, #172033); background: var(--daon-color-muted-surface, #EAF0F6); border: 1px solid var(--daon-color-border, #C7D2E0); border-radius: 8px; }
