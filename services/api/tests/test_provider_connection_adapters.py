@@ -166,6 +166,26 @@ def test_ollama_catalog_is_scoped_by_named_connection(
     }
 
 
+def test_media_bridge_catalog_and_verification_do_not_require_api_key(
+    registry: AdapterRegistry,
+    fake_transport: FakeTransport,
+) -> None:
+    result = registry.adapter("MEDIA_BRIDGE").verify(connection("MEDIA_BRIDGE"), None)
+
+    assert fake_transport.requests == []
+    assert result.status == "ready"
+
+
+def test_omniroute_verification_does_not_require_provider_models_or_api_key(
+    registry: AdapterRegistry,
+    fake_transport: FakeTransport,
+) -> None:
+    result = registry.adapter("OMNIROUTE").verify(connection("OMNIROUTE"), None)
+
+    assert fake_transport.requests == []
+    assert result.status == "ready"
+
+
 @pytest.mark.parametrize(
     ("code", "expected_url", "expected_model"),
     [

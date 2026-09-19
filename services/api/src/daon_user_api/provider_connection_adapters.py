@@ -323,6 +323,8 @@ class OmniRouteAdapter(_RoutingGatewayAdapter):
         credential: str | bytes | None,
     ) -> VerificationResult:
         models = self.discover_models(connection, credential)
+        if not models:
+            return self._ready(connection)
         return self._probe(
             connection,
             credential,
@@ -345,6 +347,8 @@ class EoulGatewayAdapter(_RoutingGatewayAdapter):
         credential: str | bytes | None,
     ) -> VerificationResult:
         models = self.discover_models(connection, credential)
+        if not models:
+            return self._ready(connection)
         return self._probe(
             connection,
             credential,
@@ -359,9 +363,25 @@ class EoulGatewayAdapter(_RoutingGatewayAdapter):
 
 
 class MediaBridgeAdapter(OpenRouterAdapter):
-    """Media Bridge exposes the bounded OpenAI-compatible model catalog."""
+    """Media Bridge owns its model and credential management."""
 
     provider_code = "MEDIA_BRIDGE"
+
+    def discover_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> tuple[DiscoveredModel, ...]:
+        self._validate_connection(connection)
+        return ()
+
+    def verify(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> VerificationResult:
+        self._validate_connection(connection)
+        return self._ready(connection)
 
 
 class SentenceTransformersAdapter(_RoutingGatewayAdapter):

@@ -9,6 +9,8 @@ const PROVIDERS = Object.freeze([
   "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
   "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS"
 ]);
+const NO_CREDENTIAL_PROVIDERS = new Set(["OLLAMA", "MEDIA_BRIDGE"]);
+const MANAGED_MODEL_PROVIDERS = new Set(["OLLAMA", "MEDIA_BRIDGE", "OMNIROUTE"]);
 const CAPABILITY_LABELS = Object.freeze({
   text_generation: "텍스트 생성",
   image_understanding: "이미지 이해",
@@ -76,11 +78,13 @@ export function formatModelChoice(connection, model) {
 }
 
 export function projectProviderConnection(connection) {
+  const credential = NO_CREDENTIAL_PROVIDERS.has(connection?.provider_code)
+    ? "Credential 불필요"
+    : connection?.configured ? "Credential 설정됨" : "Credential 없음";
   if (!connection?.enabled) {
-    return { label: connection?.configured ? "비활성 · Credential 설정됨" : "비활성 · Credential 없음", verified: false };
+    return { label: `비활성 · ${credential}`, verified: false };
   }
   const verified = connection.verification_status === "verified";
-  const credential = connection.configured ? "Credential 설정됨" : "Credential 없음";
   return { label: `활성 · ${credential} · ${verified ? "확인됨" : "확인 필요"}`, verified };
 }
 
@@ -95,7 +99,19 @@ export function safeProviderErrorMessage(action, error) {
     return `${prefix}이 다른 변경과 충돌했습니다. 새로고침 후 다시 시도해 주세요.`;
   }
   if (error?.code === "FORBIDDEN" || error?.code === "ACTION_DENIED") return `${prefix}을 변경할 권한이 없습니다.`;
+  if (action === "catalog" && (error?.code === "PROVIDER_CONNECTION_NOT_FOUND" || error?.code === "PROVIDER_CREDENTIAL_NOT_CONFIGURED")) {
+    return "저장된 API Key가 없습니다. 먼저 API Key를 저장하세요.";
+  }
+  if (action === "catalog" && (error?.code === "PROVIDER_AUTHENTICATION_FAILED" || error?.code === "PROVIDER_VERIFICATION_FAILED")) {
+    return "API Key가 유효하지 않거나 Provider에 연결할 수 없습니다. Endpoint와 API Key를 확인하세요.";
+  }
   return `${prefix}을 저장하지 못했습니다. 다시 시도해 주세요.`;
+}
+
+export function canRefreshCatalog(connection, busy) {
+  return !busy && Number(connection?.version ?? 0) > 0
+    && !MANAGED_MODEL_PROVIDERS.has(connection?.provider_code)
+    && connection?.configured === true;
 }
 
 function normalizedLogicalModels(value) {
@@ -213,7 +229,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       const item = result.payload.data;
       applyConnections([...connections.filter((connection) => connection.connection_id !== item.connection_id), item], item.connection_id);
       setCredential("");
-      setStatus({ kind: "ready", message: includeCredential ? "키를 저장하고 연결을 확인했습니다." : "Provider 연결을 저장했습니다." });
+      setStatus({ kind: "ready", message: includeCredential ? "API Key를 저장했습니다." : "Provider 연결을 저장했습니다." });
     } catch (error) {
       setCredential("");
       setStatus({ kind: "error", message: safeProviderErrorMessage(action, error) });
@@ -271,8 +287,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   }
 
   const busy = status.kind === "saving" || status.kind === "loading";
+  const managedModels = MANAGED_MODEL_PROVIDERS.has(selectedConnection?.provider_code);
+  const credentialRequired = !NO_CREDENTIAL_PROVIDERS.has(selectedConnection?.provider_code);
   const canMutate = isSystemAdmin === true && !busy && Boolean(draft.connection_id.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim());
-  const canUsePersonalCredential = isSystemAdmin || Number(selectedConnection?.version ?? 0) > 0;
+  const canUsePersonalCredential = credentialRequired && (isSystemAdmin || Number(selectedConnection?.version ?? 0) > 0);
   const canReplaceCredential = !busy && canUsePersonalCredential && Boolean(credential) && Boolean(selectedConnection);
   const Root = embedded ? "div" : "main";
 
@@ -300,28 +318,28 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
                 <label>Provider<select value={draft.provider_code} disabled={draft.version > 0} onChange={(event) => setDraft((current) => ({ ...current, provider_code: event.target.value, base_url: connections.find((connection) => connection.provider_code === event.target.value)?.base_url ?? current.base_url }))}>{PROVIDERS.map((provider) => <option value={provider} key={provider}>{provider}</option>)}</select></label>
                 <label>연결 이름<input value={draft.display_name} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} /></label>
                 <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
-                <p className="provider-field-wide provider-form-note">API Key를 저장한 뒤 <strong>모델 조회</strong> 버튼을 눌러 모델 목록을 확인합니다.</p>
+                <label className="provider-field-wide">연결할 모델 (선택)<textarea value={draft.logical_model_ids} rows={2} placeholder="모델 ID를 입력하지 않으면 Provider 기준 모델을 사용합니다." onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label><p className="provider-field-wide provider-form-note">{managedModels ? "이 Provider는 모델 목록을 Daon에 저장하지 않으며, 지정한 모델이 없으면 Provider가 기준 모델을 선택합니다." : <>API Key 저장과 <strong>모델 조회</strong>는 선택 사항입니다. 필요할 때만 모델 목록을 확인하고, 모델을 지정하지 않으면 Provider 기준 모델을 사용합니다.</>}</p>
               </> : <p className="provider-field-wide">공유 연결의 Endpoint와 모델 목록은 숨겨져 있습니다. 아래에서 이 연결의 API Key만 교체할 수 있습니다.</p>}
-              <label>API Key 또는 Client Key<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : "키를 입력하세요"} onChange={(event) => setCredential(event.target.value)} /></label>
+              {!managedModels ? <label>API Key 또는 Client Key{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!credentialRequired ? "이 Provider는 API Key가 필요하지 않습니다" : !isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : "키를 입력하세요"} onChange={(event) => setCredential(event.target.value)} /></label> : <p className="provider-field-wide provider-form-note">API Key 없음 · Provider가 모델과 인증을 관리합니다.</p>}
             </div>
             {isSystemAdmin ? <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label> : null}
             <div className="provider-detail-actions">
               {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate}>연결 저장</button> : null}
-              <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canReplaceCredential}>{isSystemAdmin ? "시스템 키 저장" : "내 계정 키 저장"}</button>
+              {!managedModels ? <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canReplaceCredential}>{isSystemAdmin ? "시스템 키 저장" : "내 계정 키 저장"}</button> : null}
               {!isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteUserCredential} disabled={busy || !canUsePersonalCredential || !userCredentials[selectedConnection?.connection_id]}>내 계정 키 삭제</button> : null}
-              {isSystemAdmin ? <><button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured}>키 삭제</button><button className="secondary-button" type="button" onClick={refreshCatalog} disabled={busy || !selectedConnection}>모델 조회</button></> : null}
+              {isSystemAdmin && !managedModels ? <><button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured}>키 삭제</button><button className="secondary-button" type="button" onClick={refreshCatalog} disabled={!canRefreshCatalog(selectedConnection, busy)} title={selectedConnection?.configured ? "저장된 API Key로 모델 목록을 수동 조회합니다." : "먼저 API Key를 저장하세요."}>모델 조회</button></> : null}
             </div>
           </div>
         </div>
       </section> : null}
 
       <section className="workspace-model-defaults" aria-labelledby="provider-models-title">
-        <div className="studio-section-heading"><div><span className="section-kicker">MODEL CATALOG</span><h2 id="provider-models-title">조회된 모델</h2><small>Provider를 저장한 뒤 `모델 조회`를 눌러 확인된 모델입니다.</small></div></div>
+        <div className="studio-section-heading"><div><span className="section-kicker">MODEL CATALOG</span><h2 id="provider-models-title">조회된 모델</h2><small>모델 지정과 `모델 조회`는 선택 사항입니다. 지정하지 않으면 Provider 기준 모델을 사용합니다.</small></div></div>
         <div className="provider-model-grid">
           {adminAvailableModels.map(({ connection, model }) => (
             <article className="provider-model-card" key={modelKey(connection.connection_id, model.model_id)}><header><div><strong>{formatModelChoice(connection, model)}</strong><small>Catalog v{model.catalog_version}</small></div><span className="connection-badge is-ready">사용 가능</span></header><div className="model-capabilities">{model.effective_capabilities.map((capability) => <span className="capability-chip is-active" key={capability}>{CAPABILITY_LABELS[capability] ?? capability}</span>)}</div></article>
           ))}
-          {isSystemAdmin === true && !adminAvailableModels.length ? <div className="provider-empty"><strong>조회된 모델이 없습니다.</strong><small>Provider에 API Key를 저장한 뒤 `모델 조회`를 실행하세요.</small></div> : null}
+          {isSystemAdmin === true && !adminAvailableModels.length ? <div className="provider-empty"><strong>저장된 모델 카탈로그가 없습니다.</strong><small>필요한 경우 API Key를 저장한 뒤 `모델 조회`로 확인할 수 있습니다. 모델을 지정하지 않아도 Provider 기준 모델로 사용할 수 있습니다.</small></div> : null}
         </div>
       </section>
     </Root>

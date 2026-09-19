@@ -32,9 +32,9 @@ DEFAULT_PROVIDER_ENDPOINTS = {
     "OPENROUTER": "https://openrouter.ai/api/v1",
     "ANTHROPIC": "https://api.anthropic.com/v1",
     "OLLAMA": "http://localhost:11434",
-    "OMNIROUTE": "http://localhost:20128/home",
+    "OMNIROUTE": "http://localhost:20128/v1",
     "EOUL_GATEWAY": "http://localhost:8660",
-    "MEDIA_BRIDGE": "http://localhost:20129",
+    "MEDIA_BRIDGE": "http://127.0.0.1:8642/v1",
     "SENTENCE_TRANSFORMERS": "http://localhost:8000",
 }
 
