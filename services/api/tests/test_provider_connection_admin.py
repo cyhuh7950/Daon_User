@@ -398,7 +398,7 @@ def test_connection_prepare_does_not_discover_models_until_manual_lookup(monkeyp
     assert calls == []
 
 
-def test_connection_prepare_requires_omniroute_credential_without_calling_provider(monkeypatch) -> None:
+def test_connection_prepare_allows_omniroute_without_credential_without_calling_provider(monkeypatch) -> None:
     calls = []
 
     class Adapter:
@@ -421,11 +421,11 @@ def test_connection_prepare_requires_omniroute_credential_without_calling_provid
         Store(SharedDatabase()), ProviderCredentialCipher(b"p" * 32, encryption_key_version=1),
     )
 
-    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_CREDENTIAL_REQUIRED$"):
-        service._prepare(
-            connection_id="omniroute", provider_code="OMNIROUTE", display_name="OmniRoute",
-            base_url="http://localhost:20128/v1", credential=None, logical_model_ids=(),
-            enabled=True, version=1, discover_models=False,
-        )
+    _profile, _sealed, models = service._prepare(
+        connection_id="omniroute", provider_code="OMNIROUTE", display_name="OmniRoute",
+        base_url="http://localhost:20128/v1", credential=None, logical_model_ids=(),
+        enabled=True, version=1, discover_models=False,
+    )
 
+    assert models == ()
     assert calls == []

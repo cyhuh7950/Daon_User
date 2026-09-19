@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .provider_credentials import EncryptedCredential, ProviderCredentialCipher, ProviderCredentialError
 from .user_provider_credentials import PostgresUserProviderCredentialService
-from .provider_settings import ProviderSettingsError, validate_provider_base_url
+from .provider_settings import ProviderSettingsError, provider_requires_credential, validate_provider_base_url
 from .data_canon import canonical_json_bytes
 
 
@@ -345,7 +345,7 @@ class PostgresWorkspaceModelResolver:
                 credential = bytearray(fallback.credential)
                 credential_version = fallback.credential_version
                 system_credential_failed = False
-        if system_credential_failed and provider_code != "OLLAMA":
+        if system_credential_failed and provider_requires_credential(provider_code, base_url):
             raise WorkspaceModelUnavailable("PROVIDER_CREDENTIAL_REQUIRED")
 
         resolved = ResolvedModel(

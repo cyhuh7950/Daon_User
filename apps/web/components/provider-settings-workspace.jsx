@@ -10,6 +10,10 @@ const PROVIDERS = Object.freeze([
   "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS"
 ]);
 const MANAGED_MODEL_PROVIDERS = new Set(["MEDIA_BRIDGE", "OMNIROUTE"]);
+const CREDENTIAL_REQUIRED_PROVIDERS = new Set([
+  "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
+  "OPENROUTER", "ANTHROPIC", "OMNIROUTE", "EOUL_GATEWAY", "SENTENCE_TRANSFORMERS"
+]);
 const CAPABILITY_LABELS = Object.freeze({
   text_generation: "텍스트 생성",
   image_understanding: "이미지 이해",
@@ -110,8 +114,17 @@ export function canRefreshCatalog(connection, busy) {
     && !MANAGED_MODEL_PROVIDERS.has(connection?.provider_code);
 }
 
-export function providerRequiresCredential(providerCode) {
-  return providerCode === "OMNIROUTE";
+export function providerRequiresCredential(providerCode, baseUrl = "") {
+  if (providerCode === "OLLAMA") return false;
+  if (providerCode === "EOUL_GATEWAY" || providerCode === "MEDIA_BRIDGE") {
+    try {
+      const hostname = new URL(baseUrl).hostname;
+      return !new Set(["localhost", "127.0.0.1", "[::1]", "::1"]).has(hostname);
+    } catch {
+      return false;
+    }
+  }
+  return CREDENTIAL_REQUIRED_PROVIDERS.has(providerCode);
 }
 
 export function canSaveCredential(connection, draft, credential, busy) {
@@ -361,7 +374,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
                 <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
                 <fieldset className="provider-field-wide provider-model-picker"><legend>연결할 모델 (선택)</legend><p>모델을 선택하지 않으면 Provider 기준 모델을 사용합니다.</p>{managedModels ? <small>이 Provider가 모델을 직접 관리하므로 Daon에서 모델을 선택하지 않습니다.</small> : availableModels.length ? <div className="provider-model-options">{availableModels.map((modelId) => <label key={modelId}><input type="checkbox" checked={selectedModelIds.includes(modelId)} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: updateLogicalModelSelection(current.logical_model_ids, modelId, event.target.checked) }))} /><span>{modelId}</span></label>)}</div> : <small>등록된 모델이 없습니다. 모델 연결 없이 저장할 수 있습니다.</small>}{selectedModelIds.length ? <button type="button" className="provider-model-clear" onClick={() => setDraft((current) => ({ ...current, logical_model_ids: "" }))}>Provider 기준 모델 사용으로 변경</button> : null}</fieldset><p className="provider-field-wide provider-form-note">API Key 저장과 모델 조회는 선택 사항입니다. 모델을 지정하지 않아도 Provider 연결은 저장됩니다.</p>
               </> : <p className="provider-field-wide">공유 연결의 Endpoint와 모델 목록은 숨겨져 있습니다. 아래에서 이 연결의 API Key만 교체할 수 있습니다.</p>}
-              <label>API Key 또는 Client Key {providerRequiresCredential(draft.provider_code) ? "(필수)" : "(선택)"}{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : providerRequiresCredential(draft.provider_code) ? "OMNIROUTE API Key를 입력하세요" : "키를 입력하지 않으면 Provider 기본 인증을 사용합니다"} onChange={(event) => setCredential(event.target.value)} /></label>
+              <label>API Key 또는 Client Key {providerRequiresCredential(draft.provider_code, draft.base_url) ? "(연결 저장 선택 · 사용 시 필수)" : "(선택)"}{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : providerRequiresCredential(draft.provider_code, draft.base_url) ? "연결 저장은 가능하지만 사용하려면 API Key가 필요합니다" : "연결 저장 후 Provider 기본 인증으로 사용할 수 있습니다"} onChange={(event) => setCredential(event.target.value)} /></label>
             </div>
             {isSystemAdmin ? <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label> : null}
             <div className="provider-detail-actions">

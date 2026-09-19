@@ -360,8 +360,6 @@ class PostgresProviderConnectionService:
                 connection_id, provider_code, display_name, normalized_url, previous_sealed, True, version,
             )
             adapter = AdapterRegistry(logical_models={connection_id: logical_model_ids}).adapter(provider_code)
-            if provider_code == "OMNIROUTE" and (raw is None or not str(raw).strip()):
-                raise AdapterError("PROVIDER_CREDENTIAL_REQUIRED", 409)
             if credential is not None and (not isinstance(credential, (str, bytes)) or not str(credential).strip()):
                 raise AdapterError("PROVIDER_CREDENTIAL_REQUIRED", 409)
             if discover_models:

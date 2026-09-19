@@ -18,8 +18,10 @@ test("provider connection draft exposes a provider endpoint and removes legacy d
   assert.match(source, /Provider 기준 모델을 사용합니다/u);
   assert.match(source, /저장된 API Key로 모델 목록을 수동 조회합니다/u);
   assert.match(source, /canSaveCredential\(selectedConnection, draft, credential, busy\)/u);
-  assert.match(source, /API Key 또는 Client Key \{providerRequiresCredential\(draft\.provider_code\) \? "\(필수\)" : "\(선택\)"\}/u);
-  assert.match(source, /providerRequiresCredential\(providerCode\)/u);
+  assert.match(source, /onClick=\{\(\) => saveConnection\(false\)\} disabled=\{!canMutate\}/u);
+  assert.match(source, /CREDENTIAL_REQUIRED_PROVIDERS/u);
+  assert.match(source, /연결 저장 선택 · 사용 시 필수/u);
+  assert.match(source, /providerRequiresCredential\(providerCode, baseUrl/u);
   assert.match(source, /canSaveCredential\(selectedConnection, draft, credential, busy\)/u);
   assert.doesNotMatch(source, /기능별 모델 선택|모델 기능 보정/u);
   assert.doesNotMatch(source, /stepUp|step_up|관리자 확인|관리자 비밀번호|현재 비밀번호|추가 암호/u);

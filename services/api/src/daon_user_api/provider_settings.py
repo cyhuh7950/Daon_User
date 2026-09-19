@@ -38,6 +38,14 @@ _CREDENTIAL_ENV = {
     "ANTHROPIC": "ANTHROPIC_API_KEY",
     "OLLAMA": "OLLAMA_BASE_URL",
 }
+
+def provider_requires_credential(provider_code: str, base_url: str) -> bool:
+    if provider_code == "OLLAMA":
+        return False
+    if provider_code in {"EOUL_GATEWAY", "MEDIA_BRIDGE"}:
+        hostname = urlsplit(base_url).hostname
+        return hostname not in {"localhost", "127.0.0.1", "::1"}
+    return True
 _PROVIDER_BASE_URLS = {
     "CEREBRAS": "https://api.cerebras.ai/v1",
     "GROQ": "https://api.groq.com/openai/v1",
@@ -514,7 +522,7 @@ class ProviderSettingsService:
         if not profile.active:
             raise ProviderSettingsError("PROVIDER_PROFILE_INACTIVE", 409)
         credential = self._credentials.resolve(code)
-        if code != "OLLAMA" and credential is None:
+        if provider_requires_credential(code, profile.base_url) and credential is None:
             raise ProviderSettingsError("PROVIDER_CREDENTIAL_REQUIRED", 409)
         return self._connection_checker.check(profile, credential)
 
