@@ -18,6 +18,21 @@ test("BFF local_test public origin은 exact loopback HTTP만 허용하고 produc
   assert.equal(parsePublicGatewayOrigin("https://app.example.com", "production").origin, "https://app.example.com");
 });
 
+test("BFF wsl_http_qa public origin은 RFC1918 HTTP 테스트 주소만 허용한다", () => {
+  assert.equal(parsePublicGatewayOrigin("http://172.27.253.53:3330", "wsl_http_qa").origin, "http://172.27.253.53:3330");
+  assert.equal(parsePublicGatewayOrigin("http://10.0.0.12:3330", "wsl_http_qa").origin, "http://10.0.0.12:3330");
+  assert.equal(parsePublicGatewayOrigin("http://192.168.1.20:3330", "wsl_http_qa").origin, "http://192.168.1.20:3330");
+  for (const invalid of [
+    "http://8.8.8.8:3330",
+    "http://172.15.0.1:3330",
+    "https://172.27.253.53:3330",
+    "http://172.27.253.53:3330/path",
+  ]) {
+    assert.throws(() => parsePublicGatewayOrigin(invalid, "wsl_http_qa"), BffConfigurationError);
+  }
+  assert.throws(() => parsePublicGatewayOrigin("http://172.27.253.53:3330", "production"), BffConfigurationError);
+});
+
 test("조직 전체 디렉터리 BFF는 same-origin GET만 내부 관리자 계약으로 전달한다", async () => {
   const captured = [];
   const proxy = createBffProxy({

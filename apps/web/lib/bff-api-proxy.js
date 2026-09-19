@@ -111,8 +111,18 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
     && parsed.protocol === "http:"
     && new Set(["localhost", "127.0.0.1"]).has(parsed.hostname)
     && parsed.port !== "";
+  const wslHttpQa = profile === "wsl_http_qa"
+    && parsed.protocol === "http:"
+    && parsed.port !== ""
+    && (
+      parsed.hostname === "localhost"
+      || parsed.hostname === "127.0.0.1"
+      || /^10\.(?:\d{1,3}\.){2}\d{1,3}$/u.test(parsed.hostname)
+      || /^192\.168\.(?:\d{1,3}\.)\d{1,3}$/u.test(parsed.hostname)
+      || /^172\.(?:1[6-9]|2\d|3[0-1])\.(?:\d{1,3}\.)\d{1,3}$/u.test(parsed.hostname)
+    );
   if (
-    (profile === "local_test" ? !localTestHttp : parsed.protocol !== "https:")
+    (profile === "local_test" ? !localTestHttp : profile === "wsl_http_qa" ? !wslHttpQa : parsed.protocol !== "https:")
     || parsed.pathname !== "/"
     || parsed.search
     || parsed.hash
