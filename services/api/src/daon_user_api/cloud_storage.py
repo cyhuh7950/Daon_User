@@ -17,7 +17,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 
 _SAFE_SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_EXPECTED_SCHEMA_REVISION = "0026"
+_EXPECTED_SCHEMA_REVISION = "0047"
 _DEFAULT_DENY_CANONICAL_TEXT = '{"allowed_destinations":[],"allowed_provider_kinds":[],"classification":"restricted","masking_required":true,"max_bytes":0,"mode":"deny_external","redaction_required":true,"required_approver":"organization_admin"}'
 _DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25b819d7f"
 
