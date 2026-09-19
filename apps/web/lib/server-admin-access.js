@@ -3,8 +3,7 @@ import {
   parseInternalApiBase,
   parsePublicGatewayOrigin,
 } from "./bff-api-proxy.js";
-
-const SESSION_COOKIE_NAME = "__Host-daon_session";
+import { SESSION_COOKIE_NAME } from "./session-cookie.js";
 
 function validProjection(value) {
   return value && typeof value === "object" && !Array.isArray(value)

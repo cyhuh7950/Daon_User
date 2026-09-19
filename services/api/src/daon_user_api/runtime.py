@@ -188,7 +188,12 @@ from .notebook import (
 from .notebook_postgres import PostgresNotebookRepository
 
 
-WEB_SESSION_COOKIE = "__Host-daon_session"
+WEB_SESSION_COOKIE = (
+    "daon_session"
+    if os.environ.get("DAON_RUNTIME_PROFILE") == "wsl_http_qa"
+    else "__Host-daon_session"
+)
+WEB_SESSION_COOKIE_SECURE = WEB_SESSION_COOKIE.startswith("__Host-")
 WEB_SESSION_COOKIE_MAX_AGE = 10 * 365 * 24 * 60 * 60
 _TRACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _TRACEPARENT = re.compile(
@@ -252,7 +257,7 @@ class RuntimeSettings:
     system_admin_user_ids: frozenset[str] = frozenset({"admin"})
 
     def __post_init__(self) -> None:
-        if self.profile not in {"test", "development", "production"}:
+        if self.profile not in {"test", "development", "production", "wsl_http_qa"}:
             raise ValueError("RUNTIME_PROFILE_INVALID")
         if not isinstance(self.port, int) or isinstance(self.port, bool) or not 1 <= self.port <= 65_535:
             raise ValueError("RUNTIME_PORT_INVALID")
@@ -289,8 +294,14 @@ class RuntimeSettings:
             if self.step_up_token_key_file is None:
                 raise ValueError("STEP_UP_TOKEN_KEY_REFERENCE_REQUIRED")
             parsed = urlsplit(self.public_gateway_url)
+            wsl_http_qa = self.profile == "wsl_http_qa"
+            try:
+                private_http_host = parsed.hostname is not None and ipaddress.ip_address(parsed.hostname).is_private
+            except ValueError:
+                private_http_host = False
+            allowed_http_qa = wsl_http_qa and parsed.scheme == "http" and private_http_host
             if (
-                parsed.scheme != "https"
+                not allowed_http_qa and parsed.scheme != "https"
                 or not parsed.hostname
                 or parsed.username is not None
                 or parsed.password is not None
@@ -1970,7 +1981,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id},
         })
         response.delete_cookie(
-            WEB_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax",
+            WEB_SESSION_COOKIE, path="/", secure=WEB_SESSION_COOKIE_SECURE, httponly=True, samesite="lax",
         )
         return response
 
@@ -1994,7 +2005,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             now=datetime.now(timezone.utc),
         )
         response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id, "workspace_id": workspace_id}, "meta": {"trace_id": request.state.trace_id}})
-        response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=WEB_SESSION_COOKIE_MAX_AGE, httponly=True, secure=True, samesite="lax", path="/")
+        response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=WEB_SESSION_COOKIE_MAX_AGE, httponly=True, secure=WEB_SESSION_COOKIE_SECURE, samesite="lax", path="/")
         return response
 
     @app.post("/api/v1/auth/native/login")
@@ -2090,7 +2101,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id},
         })
         response.delete_cookie(
-            WEB_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax",
+            WEB_SESSION_COOKIE, path="/", secure=WEB_SESSION_COOKIE_SECURE, httponly=True, samesite="lax",
         )
         response.headers["ETag"] = '"session:logged-out"'
         return response

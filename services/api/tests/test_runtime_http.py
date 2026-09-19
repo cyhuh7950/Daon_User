@@ -816,6 +816,27 @@ class RuntimeSettingsTests(unittest.TestCase):
             )
             self.assertEqual(valid.public_gateway_url, "https://api.example.com")
 
+    def test_wsl_http_qa_allows_private_http_gateway_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            step_up_key = Path(directory) / "step-up.key"
+            step_up_key.write_bytes(b"s" * 32)
+            valid = RuntimeSettings(
+                profile="wsl_http_qa", bind_host="0.0.0.0", port=8000,
+                public_gateway_url="http://172.27.253.53:3330",
+                trusted_proxy_ips=("10.0.0.1",),
+                cloud_database_dsn="postgresql://app@database/daon",
+                step_up_token_key_file=step_up_key,
+            )
+            self.assertEqual(valid.profile, "wsl_http_qa")
+            with self.assertRaises(ValueError):
+                RuntimeSettings(
+                    profile="wsl_http_qa", bind_host="0.0.0.0", port=8000,
+                    public_gateway_url="http://8.8.8.8:3330",
+                    trusted_proxy_ips=("10.0.0.1",),
+                    cloud_database_dsn="postgresql://app@database/daon",
+                    step_up_token_key_file=step_up_key,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

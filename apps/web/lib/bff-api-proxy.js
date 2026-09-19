@@ -38,7 +38,9 @@ const NATIVE_RESPONSE_HEADERS = new Set([
   "x-citation-page",
 ]);
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const SESSION_COOKIE_NAME = "__Host-daon_session";
+const SESSION_COOKIE_NAME = process.env.DAON_BFF_PROFILE === "wsl_http_qa"
+  ? "daon_session"
+  : "__Host-daon_session";
 const AUDIT_QUERY = new Set([
   "action",
   "cursor",
