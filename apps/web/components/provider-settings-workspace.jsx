@@ -79,7 +79,7 @@ function draftFromConnection(connection) {
     display_name: connection.display_name,
     base_url: connection.base_url || "",
     logical_model_ids: connection.models.map((model) => model.model_id).join("\n"),
-    enabled: connection.enabled,
+    enabled: Number(connection.version ?? 0) === 0 ? true : connection.enabled,
     version: connection.version
   };
 }
