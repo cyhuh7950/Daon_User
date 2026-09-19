@@ -5640,6 +5640,8 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         ),
         recovery_service=recovery_service,
         object_queue_store=object_queue_store,
+        provider_connection_service=provider_connection_service,
+        workspace_model_defaults_service=workspace_model_defaults_service,
         source_upload_service=source_upload_service,
         document_processing_service=document_processing_service,
         organization_repository=organization_repository,
