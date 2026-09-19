@@ -4,7 +4,7 @@ import test from "node:test";
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 
 
-test("system user BFF maps only list and same-origin state PATCH", async () => {
+test("system user BFF maps list and administrator mutations through same-origin routes", async () => {
   const captured = [];
   const proxy = createBffProxy({
     baseUrl: new URL("https://api.example.com"),
@@ -53,20 +53,25 @@ test("system user BFF maps only list and same-origin state PATCH", async () => {
   assert.equal(captured.length, 2);
   const deleteUser = await proxy(new Request(
     "https://app.example.com/bff/api/admin/users/user-001",
-    { method: "DELETE", headers: { Origin: "https://app.example.com" } },
+    { method: "DELETE", headers: { Origin: "https://app.example.com", "Idempotency-Key": "admin-delete-user-0001" }, body: "{}" },
   ), ["admin", "users", "user-001"]);
   const wrongMethod = await proxy(new Request(
     "https://app.example.com/bff/api/admin/users/user-001/state",
     { method: "POST", headers: { Origin: "https://app.example.com" } },
   ), ["admin", "users", "user-001", "state"]);
 
-  assert.deepEqual([listed.status, changed.status, deleteUser.status, wrongMethod.status], [200, 200, 404, 405]);
+  assert.deepEqual([listed.status, changed.status, deleteUser.status, wrongMethod.status], [200, 200, 200, 405]);
   assert.deepEqual(captured, [
     { url: "https://api.example.com/api/v1/admin/users", method: "GET", idempotencyKey: null },
     {
       url: "https://api.example.com/api/v1/admin/users/user-001/state",
       method: "PATCH",
       idempotencyKey: "admin-state-change-0001",
+    },
+    {
+      url: "https://api.example.com/api/v1/admin/users/user-001",
+      method: "DELETE",
+      idempotencyKey: "admin-delete-user-0001",
     },
   ]);
 });
@@ -120,4 +125,32 @@ test("authenticated password change BFF validates referer and forwards exact CSR
     csrfOrigin: "https://app.example.com",
     csrfReferer: "https://app.example.com/password-change?required=1",
   }]);
+});
+
+test("user Provider credential BFF keeps personal key mutations same-origin", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return new Response(null, { status: 204 });
+    },
+  });
+  const listed = await proxy(new Request("https://app.example.com/bff/api/provider-credentials"), ["provider-credentials"]);
+  const replaced = await proxy(new Request(
+    "https://app.example.com/bff/api/provider-credentials/ollama-lan",
+    { method: "PUT", headers: { Origin: "https://app.example.com", "Content-Type": "application/json" }, body: "{}" },
+  ), ["provider-credentials", "ollama-lan"]);
+  const deleted = await proxy(new Request(
+    "https://app.example.com/bff/api/provider-credentials/ollama-lan",
+    { method: "DELETE", headers: { Origin: "https://app.example.com", "Content-Type": "application/json" }, body: "{}" },
+  ), ["provider-credentials", "ollama-lan"]);
+
+  assert.deepEqual([listed.status, replaced.status, deleted.status], [204, 204, 204]);
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/provider-credentials", method: "GET" },
+    { url: "https://api.example.com/api/v1/provider-credentials/ollama-lan", method: "PUT" },
+    { url: "https://api.example.com/api/v1/provider-credentials/ollama-lan", method: "DELETE" },
+  ]);
 });

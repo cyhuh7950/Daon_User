@@ -2,7 +2,7 @@
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const SAFE_TRACE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
-const USER_STATES = new Set(["active", "suspended", "pending_email"]);
+const USER_STATES = new Set(["active", "suspended", "pending_email", "pending_approval"]);
 const MUTABLE_STATES = new Set(["active", "suspended"]);
 
 function exact(value, keys) {
@@ -53,4 +53,56 @@ export async function changeAdminUserState(userId, state, { fetchImpl = fetch, s
   if (!validEnvelope(payload) || !exact(payload.data, ["user", "replayed"]) || !validUser(payload.data.user, MUTABLE_STATES)
       || typeof payload.data.replayed !== "boolean") throw new Error("ADMIN_USERS_RESPONSE_INVALID");
   return payload.data.user;
+}
+
+function mutationHeaders(idempotencyKey) {
+  if (typeof idempotencyKey !== "string" || idempotencyKey.length < 16 || idempotencyKey.length > 128) {
+    throw new Error("ADMIN_USER_INPUT_INVALID");
+  }
+  return { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey };
+}
+
+async function mutation(path, method, body, { fetchImpl = fetch, signal, idempotencyKey } = {}) {
+  const response = await fetchImpl(path, {
+    method, credentials: "same-origin", cache: "no-store", signal,
+    headers: mutationHeaders(idempotencyKey), body: JSON.stringify(body),
+  });
+  const payload = await bodyOf(response);
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "ADMIN_USER_MUTATION_FAILED");
+  if (!validEnvelope(payload) || !payload.data || typeof payload.data.user !== "object"
+      || !validUser(payload.data.user, USER_STATES) || typeof payload.data.replayed !== "boolean") {
+    throw new Error("ADMIN_USERS_RESPONSE_INVALID");
+  }
+  return payload.data.user;
+}
+
+export function createAdminUser(input, options = {}) {
+  if (!input || typeof input.login_id !== "string" || typeof input.email !== "string"
+      || typeof input.initial_password !== "string") throw new Error("ADMIN_USER_INPUT_INVALID");
+  return mutation("/bff/api/admin/users", "POST", input, options);
+}
+
+export function updateAdminUser(userId, input, options = {}) {
+  if (typeof userId !== "string" || !SAFE_ID.test(userId) || !input || typeof input.email !== "string") {
+    throw new Error("ADMIN_USER_INPUT_INVALID");
+  }
+  return mutation(`/bff/api/admin/users/${encodeURIComponent(userId)}`, "PATCH", input, options);
+}
+
+export function approveAdminUser(userId, options = {}) {
+  if (typeof userId !== "string" || !SAFE_ID.test(userId)) throw new Error("ADMIN_USER_INPUT_INVALID");
+  return mutation(`/bff/api/admin/users/${encodeURIComponent(userId)}/approve`, "POST", {}, options);
+}
+
+export async function deleteAdminUser(userId, { fetchImpl = fetch, signal, idempotencyKey } = {}) {
+  if (typeof userId !== "string" || !SAFE_ID.test(userId)) throw new Error("ADMIN_USER_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/admin/users/${encodeURIComponent(userId)}`, {
+    method: "DELETE", credentials: "same-origin", cache: "no-store", signal,
+    headers: mutationHeaders(idempotencyKey), body: JSON.stringify({}),
+  });
+  const payload = await bodyOf(response);
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "ADMIN_USER_DELETE_FAILED");
+  if (!validEnvelope(payload) || !payload.data || typeof payload.data.user_id !== "string"
+      || typeof payload.data.replayed !== "boolean") throw new Error("ADMIN_USERS_RESPONSE_INVALID");
+  return payload.data;
 }

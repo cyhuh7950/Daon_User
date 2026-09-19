@@ -164,6 +164,10 @@ from .provider_connection_admin import (
     PostgresProviderConnectionService,
 )
 from .provider_credentials import ProviderCredentialCipher
+from .user_provider_credentials import (
+    PostgresUserProviderCredentialService,
+    UserProviderCredentialError,
+)
 from .workspace_model_defaults import (
     PostgresWorkspaceModelDefaultsService, PostgresWorkspaceModelResolver,
     WorkspaceModelDefaultsContext, WorkspaceModelDefaultsError,
@@ -610,6 +614,29 @@ class PasswordChangeBody(BaseModel):
 class AdminUserStateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     state: str
+
+
+class AdminUserCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    login_id: str = Field(min_length=1, max_length=255)
+    email: str = Field(min_length=3, max_length=320)
+    initial_password: str = Field(min_length=8, max_length=256, repr=False)
+
+
+class AdminUserUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=320)
+
+
+class UserProviderCredentialBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    credential: str = Field(min_length=1, max_length=16384, repr=False)
+    expected_version: int = Field(ge=0)
+
+
+class UserProviderCredentialDeleteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=0)
 
 
 class AccessDecisionBody(BaseModel):
@@ -1509,6 +1536,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ServerCredentialPresenceResolver(),
     )
     provider_connection_service = dependencies.provider_connection_service
+    user_provider_credential_service = None
     provider_cipher = None
     if (
         dependencies.cloud_store is not None
@@ -1525,6 +1553,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         and provider_cipher is not None
     ):
         provider_connection_service = PostgresProviderConnectionService(
+            dependencies.cloud_store, provider_cipher,
+        )
+    if dependencies.cloud_store is not None and provider_cipher is not None:
+        user_provider_credential_service = PostgresUserProviderCredentialService(
             dependencies.cloud_store, provider_cipher,
         )
     workspace_model_defaults_service = dependencies.workspace_model_defaults_service
@@ -1619,7 +1651,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             dependencies.cloud_store, dependencies.object_storage,
         )
         question_answering_service = QuestionAnsweringService(
-            PostgresWorkspaceModelResolver(dependencies.cloud_store, provider_cipher),
+            PostgresWorkspaceModelResolver(
+                dependencies.cloud_store, provider_cipher, user_provider_credential_service,
+            ),
             citation_content_repository,
             PostgresDocumentIndex(dependencies.cloud_store),
             ServerProviderCredentialResolver(), UrlLibDocumentUnderstandingTransport(),
@@ -2103,6 +2137,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             request.state.trace_id, retryable=error.retryable,
         )
 
+    @app.exception_handler(UserProviderCredentialError)
+    async def user_provider_credential_error(
+        request: Request, error: UserProviderCredentialError,
+    ) -> JSONResponse:
+        safe_codes = {
+            "PROVIDER_CONNECTION_NOT_FOUND", "PROVIDER_CREDENTIAL_INVALID",
+            "PROVIDER_CREDENTIAL_VERSION_INVALID", "VERSION_CONFLICT",
+            "PERSISTENCE_UNAVAILABLE",
+        }
+        return _error_response(
+            error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
+            request.state.trace_id,
+        )
+
     @app.exception_handler(WorkspaceModelDefaultsError)
     async def workspace_model_defaults_error(
         request: Request, error: WorkspaceModelDefaultsError,
@@ -2264,6 +2312,93 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         response.headers["ETag"] = '"session:logged-out"'
         return response
+
+    @app.post("/api/v1/admin/users", status_code=201)
+    async def create_admin_user(
+        body: AdminUserCreateBody,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("x-daon-bff-transport") != "internal":
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+        principal = _principal(request, dependencies)
+        if dependencies.admin_user_service is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        result = dependencies.admin_user_service.create_user(
+            principal, login_id=body.login_id, email=body.email,
+            initial_password=body.initial_password, idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        user = result.user
+        return {"data": {"user": {
+            "user_id": user.user_id, "login_id": user.login_id, "email": user.email,
+            "has_email": user.has_email, "state": user.state, "protected": user.protected,
+        }, "replayed": result.replayed}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.patch("/api/v1/admin/users/{user_id}")
+    async def update_admin_user(
+        user_id: str,
+        body: AdminUserUpdateBody,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("x-daon-bff-transport") != "internal":
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+        principal = _principal(request, dependencies)
+        if dependencies.admin_user_service is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        result = dependencies.admin_user_service.update_user(
+            principal, user_id=user_id, email=body.email, idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        user = result.user
+        return {"data": {"user": {
+            "user_id": user.user_id, "login_id": user.login_id, "email": user.email,
+            "has_email": user.has_email, "state": user.state, "protected": user.protected,
+        }, "replayed": result.replayed}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.post("/api/v1/admin/users/{user_id}/approve")
+    async def approve_admin_user(
+        user_id: str,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("x-daon-bff-transport") != "internal":
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+        principal = _principal(request, dependencies)
+        if dependencies.admin_user_service is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        result = dependencies.admin_user_service.approve_user(
+            principal, user_id=user_id, idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        user = result.user
+        return {"data": {"user": {
+            "user_id": user.user_id, "login_id": user.login_id, "email": user.email,
+            "has_email": user.has_email, "state": user.state, "protected": user.protected,
+        }, "replayed": result.replayed}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.delete("/api/v1/admin/users/{user_id}")
+    async def delete_admin_user(
+        user_id: str,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("x-daon-bff-transport") != "internal":
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+        principal = _principal(request, dependencies)
+        if dependencies.admin_user_service is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        result = dependencies.admin_user_service.delete_user(
+            principal, user_id=user_id, idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        return {"data": {"user_id": result.user_id, "replayed": result.replayed},
+                "meta": {"trace_id": request.state.trace_id}}
 
     @app.get("/api/v1/admin/users")
     async def list_admin_users(request: Request) -> dict[str, object]:
@@ -4484,6 +4619,63 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if provider_connection_service is None:
             raise ProviderConnectionAdminError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
         return provider_connection_service
+
+    @app.get("/api/v1/provider-credentials")
+    async def list_user_provider_credentials(request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        if user_provider_credential_service is None:
+            raise UserProviderCredentialError("PERSISTENCE_UNAVAILABLE", 503)
+        items = await asyncio.to_thread(
+            user_provider_credential_service.list_credentials,
+            tenant_id=principal.tenant_id, user_id=principal.user_id,
+        )
+        return JSONResponse({
+            "data": {"credentials": [
+                {"connection_id": item.connection_id, "provider_code": item.provider_code,
+                 "configured": item.configured, "credential_version": item.credential_version}
+                for item in items
+            ]},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+
+    @app.put("/api/v1/provider-credentials/{connection_id}")
+    async def replace_user_provider_credential(
+        connection_id: str, body: UserProviderCredentialBody, request: Request,
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        if user_provider_credential_service is None:
+            raise UserProviderCredentialError("PERSISTENCE_UNAVAILABLE", 503)
+        try:
+            item = await asyncio.to_thread(
+                user_provider_credential_service.replace_credential,
+                tenant_id=principal.tenant_id, user_id=principal.user_id,
+                connection_id=connection_id, credential=body.credential,
+                expected_version=body.expected_version,
+            )
+        finally:
+            body.credential = ""
+        return JSONResponse({
+            "data": {"connection_id": item.connection_id, "provider_code": item.provider_code,
+                     "configured": item.configured, "credential_version": item.credential_version},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+
+    @app.delete("/api/v1/provider-credentials/{connection_id}")
+    async def delete_user_provider_credential(
+        connection_id: str, body: UserProviderCredentialDeleteBody, request: Request,
+    ) -> Response:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        if user_provider_credential_service is None:
+            raise UserProviderCredentialError("PERSISTENCE_UNAVAILABLE", 503)
+        await asyncio.to_thread(
+            user_provider_credential_service.delete_credential,
+            tenant_id=principal.tenant_id, user_id=principal.user_id,
+            connection_id=connection_id, expected_version=body.expected_version,
+        )
+        return Response(status_code=204)
 
     @app.get("/api/v1/admin/provider-connections")
     async def list_provider_connections(request: Request) -> JSONResponse:

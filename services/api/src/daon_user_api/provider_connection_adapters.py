@@ -364,6 +364,22 @@ class MediaBridgeAdapter(OpenRouterAdapter):
     provider_code = "MEDIA_BRIDGE"
 
 
+class SentenceTransformersAdapter(_RoutingGatewayAdapter):
+    """Local embedding runtime with an explicitly configured logical model list."""
+
+    provider_code = "SENTENCE_TRANSFORMERS"
+    routing_owner = "local_runtime"
+    daon_fallback_allowed = False
+
+    def verify(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> VerificationResult:
+        self.discover_models(connection, credential)
+        return self._ready(connection)
+
+
 class AdapterRegistry:
     def __init__(
         self,
@@ -382,6 +398,7 @@ class AdapterRegistry:
             "OMNIROUTE": OmniRouteAdapter(actual_transport, configured_models),
             "EOUL_GATEWAY": EoulGatewayAdapter(actual_transport, configured_models),
             "MEDIA_BRIDGE": MediaBridgeAdapter(actual_transport),
+            "SENTENCE_TRANSFORMERS": SentenceTransformersAdapter(actual_transport, configured_models),
         }
 
     def adapter(self, provider_code: str) -> ConnectionAdapter:

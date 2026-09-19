@@ -40,6 +40,42 @@ class FakeProviderSettings:
             model.release()
 
 
+class PersonalCredentialFallbackResolver:
+    supports_user_credential_fallback = True
+
+    def __init__(self) -> None:
+        self.sources = []
+
+    @contextmanager
+    def resolve(self, context, capability):  # type: ignore[no-untyped-def]
+        self.sources.append(context.credential_source)
+        model = ResolvedModel(
+            connection_id="openrouter-primary", provider_code="OPENROUTER",
+            model_id="openai/gpt-4.1", capability=capability,
+            base_url="https://openrouter.ai/api/v1", credential_version=1,
+            default_version=5, catalog_version=1, provider_kind="external_api",
+            routing_owner="provider", daon_fallback_allowed=True,
+            _credential=bytearray(
+                b"system-secret" if context.credential_source == "system" else b"user-secret"
+            ),
+        )
+        try:
+            yield model
+        finally:
+            model.release()
+
+
+class SystemCredentialFailureThenPersonalSuccessTransport:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def post_json(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        if self.calls == 1:
+            raise ValueError("provider unavailable")
+        return {"choices": [{"message": {"content": json.dumps({"answer": "personal answer"})}}]}
+
+
 class FakeRepository:
     def __init__(self) -> None:
         self.persisted = None
@@ -189,6 +225,22 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(len(transport.calls), 1)
+
+    def test_provider_failure_retries_once_with_same_users_personal_credential(self) -> None:
+        resolver = PersonalCredentialFallbackResolver()
+        transport = SystemCredentialFailureThenPersonalSuccessTransport()
+        service = QuestionAnsweringService(
+            resolver, FakeRepository(), FakeIndex(()), FakeCredential(), transport, FakeEgress(),
+        )
+
+        answer = service.ask(
+            QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+            source_id=None, source_version_id=None, question="안녕하세요", run_id="run-personal-fallback",
+        )
+
+        self.assertEqual(answer.answer, "personal answer")
+        self.assertEqual(resolver.sources, ["system", "user"])
+        self.assertEqual(transport.calls, 2)
 
     def test_omniroute_uses_responses_endpoint_and_logical_model_once(self) -> None:
         transport = OmniRouteTransport()

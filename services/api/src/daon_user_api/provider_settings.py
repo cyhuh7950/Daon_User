@@ -17,8 +17,8 @@ from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloud
 
 
 PROVIDER_CODES = (
-    "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
-    "OPENROUTER", "ANTHROPIC", "OLLAMA",
+  "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
+    "OPENROUTER", "ANTHROPIC", "OLLAMA", "SENTENCE_TRANSFORMERS",
 )
 GATEWAY_PROVIDER_CODES = ("OMNIROUTE", "EOUL_GATEWAY")
 MEDIA_PROVIDER_CODES = ("MEDIA_BRIDGE",)
@@ -222,7 +222,7 @@ def validate_provider_base_url(provider_code: str, value: str) -> str:
     if not isinstance(value, str) or value != value.strip() or len(value) > 2048:
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
     parsed = urlsplit(value)
-    dynamic_endpoint = provider_code in {"OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE"}
+    dynamic_endpoint = provider_code in {"OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS"}
     allowed_schemes = {"http", "https"} if dynamic_endpoint else {"https"}
     if (parsed.scheme not in allowed_schemes or not parsed.hostname or parsed.username is not None
             or parsed.password is not None or parsed.query or parsed.fragment):
@@ -241,7 +241,7 @@ def validate_provider_base_url(provider_code: str, value: str) -> str:
         address = ip_address(hostname)
     except ValueError:
         address = None
-    local_gateway = provider_code in {"OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE"}
+    local_gateway = provider_code in {"OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS"}
     if address is not None and (
         (address.is_loopback and not local_gateway)
         or address.is_link_local

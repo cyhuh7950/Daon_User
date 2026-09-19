@@ -148,8 +148,21 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (segments.length === 2 && segments[0] === "admin" && segments[1] === "users") {
-    return method === "GET"
+    return new Set(["GET", "POST"]).has(method)
       ? { path: "/api/v1/admin/users", query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 1 && segments[0] === "provider-credentials") {
+    return method === "GET"
+      ? { path: "/api/v1/provider-credentials", query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 2 && segments[0] === "provider-credentials"
+    && SAFE_SEGMENT.test(segments[1])
+  ) {
+    return new Set(["PUT", "DELETE"]).has(method)
+      ? { path: `/api/v1/provider-credentials/${encodeURIComponent(segments[1])}`, query: null }
       : { methodRejected: true };
   }
   if (segments.length === 2 && segments[0] === "admin" && segments[1] === "provider-connections") {
@@ -196,6 +209,22 @@ function routeFor(method, segments) {
   ) {
     return method === "PATCH"
       ? { path: `/api/v1/admin/users/${encodeURIComponent(segments[2])}/state`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "admin" && segments[1] === "users"
+    && SAFE_SEGMENT.test(segments[2])
+  ) {
+    return new Set(["PATCH", "DELETE"]).has(method)
+      ? { path: `/api/v1/admin/users/${encodeURIComponent(segments[2])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "admin" && segments[1] === "users"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "approve"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/admin/users/${encodeURIComponent(segments[2])}/approve`, query: null }
       : { methodRejected: true };
   }
   // Organization workflow and administrator console contracts. The browser

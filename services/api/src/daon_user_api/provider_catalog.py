@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal, Mapping, Sequence
 
 
-RoutingOwner = Literal["provider", "gateway"]
+RoutingOwner = Literal["provider", "gateway", "local_runtime"]
 
 
 class ProviderCatalogError(ValueError):
@@ -77,7 +77,7 @@ class ProviderCatalog:
         provider_code: str,
         model_ids: Sequence[str],
     ) -> tuple[DiscoveredModel, ...]:
-        if provider_code not in {"OMNIROUTE", "EOUL_GATEWAY"} or not model_ids:
+        if provider_code not in {"OMNIROUTE", "EOUL_GATEWAY", "SENTENCE_TRANSFORMERS"} or not model_ids:
             raise ProviderCatalogError("PROVIDER_LOGICAL_MODEL_INVALID")
         try:
             normalized = tuple(_valid_model_id(model_id) for model_id in model_ids)
@@ -90,8 +90,13 @@ class ProviderCatalog:
                 connection_id=connection_id,
                 provider_code=provider_code,
                 model_id=model_id,
-                reported_capabilities=("text_generation",),
-                routing_owner="gateway",
+                reported_capabilities=(
+                    ("embedding",) if provider_code == "SENTENCE_TRANSFORMERS"
+                    else ("text_generation",)
+                ),
+                routing_owner=(
+                    "local_runtime" if provider_code == "SENTENCE_TRANSFORMERS" else "gateway"
+                ),
                 daon_fallback_allowed=False,
             )
             for model_id in normalized

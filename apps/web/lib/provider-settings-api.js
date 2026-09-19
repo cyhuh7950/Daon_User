@@ -26,6 +26,19 @@ export const providerSettingsApi = Object.freeze({
   listConnections() {
     return request("/bff/api/admin/provider-connections");
   },
+  listUserCredentials() {
+    return request("/bff/api/provider-credentials");
+  },
+  replaceUserCredential(connectionId, input) {
+    return request(`/bff/api/provider-credentials/${encodeURIComponent(connectionId)}`, {
+      method: "PUT", body: input,
+    });
+  },
+  deleteUserCredential(connectionId, input) {
+    return request(`/bff/api/provider-credentials/${encodeURIComponent(connectionId)}`, {
+      method: "DELETE", body: input,
+    });
+  },
   issueStepUp(targetId, password, idempotencyKey) {
     return request("/bff/api/session/step-up", {
       method: "POST",

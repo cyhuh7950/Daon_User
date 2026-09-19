@@ -32,6 +32,7 @@ def connection(
         "OMNIROUTE": "https://omniroute.example/v1",
         "EOUL_GATEWAY": "http://eoul-gateway:8080",
         "MEDIA_BRIDGE": "http://media-bridge.internal:8080/v1",
+        "SENTENCE_TRANSFORMERS": "http://sentence-transformers:8080",
     }
     return ProviderConnection(
         connection_id=connection_id or provider_code.lower(),
@@ -313,3 +314,13 @@ def test_endpoint_validation_allows_named_ollama_and_internal_gateway_but_blocks
     ):
         with pytest.raises(ProviderSettingsError, match="^PROVIDER_BASE_URL_INVALID$"):
             validate_provider_base_url("OLLAMA", value)
+
+
+def test_sentence_transformers_is_a_local_logical_model_provider() -> None:
+    adapter = AdapterRegistry(
+        logical_models={"sentence-local": ("all-MiniLM-L6-v2",)},
+    ).adapter("SENTENCE_TRANSFORMERS")
+
+    connection_value = connection("SENTENCE_TRANSFORMERS", connection_id="sentence-local")
+    assert adapter.verify(connection_value, None).routing_owner == "local_runtime"
+    assert adapter.discover_models(connection_value, None)[0].model_id == "all-MiniLM-L6-v2"

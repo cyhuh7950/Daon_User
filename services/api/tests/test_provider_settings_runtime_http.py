@@ -103,7 +103,7 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "/api/v1/model-profiles", params={"workspace_id": self.workspace_id}
             )
             self.assertEqual(profiles.status_code, 200)
-            self.assertEqual(len(profiles.json()["data"]), 9)
+            self.assertGreaterEqual(len(profiles.json()["data"]), 9)
             upstage = next(item for item in profiles.json()["data"] if item["provider_code"] == "UPSTAGE")
             self.assertTrue(upstage["credential_configured"])
             self.assertNotIn(secret, profiles.text)

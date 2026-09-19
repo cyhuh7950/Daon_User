@@ -6,7 +6,7 @@ import { providerSettingsApi } from "../lib/provider-settings-api.js";
 
 const PROVIDERS = Object.freeze([
   "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
-  "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE"
+  "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS"
 ]);
 const ACTIVE_CAPABILITIES = Object.freeze([
   "text_generation", "image_understanding", "document_parsing"
@@ -45,6 +45,24 @@ function emptyConnectionDraft() {
     enabled: true,
     version: 0
   };
+}
+
+function withDefaultProviders(items) {
+  const registered = new Set(items.map((item) => item.provider_code));
+  const defaults = PROVIDERS.filter((provider) => !registered.has(provider)).map((provider) => ({
+    connection_id: `provider-${provider.toLowerCase()}`,
+    provider_code: provider,
+    display_name: provider,
+    enabled: false,
+    configured: false,
+    credential_version: 0,
+    verification_status: "unverified",
+    catalog_status: "stale",
+    catalog_version: 0,
+    version: 0,
+    models: [],
+  }));
+  return [...items, ...defaults];
 }
 
 function draftFromConnection(connection) {
@@ -98,6 +116,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   const [resolvedWorkspaceId, setResolvedWorkspaceId] = useState(workspaceId ?? null);
   const [isSystemAdmin, setIsSystemAdmin] = useState(null);
   const [connections, setConnections] = useState([]);
+  const [userCredentials, setUserCredentials] = useState({});
   const [modelDefaults, setModelDefaults] = useState({ available_models: [], defaults: [] });
   const [modelDefaultsEtag, setModelDefaultsEtag] = useState(null);
   const [defaultDrafts, setDefaultDrafts] = useState({});
@@ -115,11 +134,12 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   }, []);
 
   const applyConnections = useCallback((items, preferredId = null) => {
-    setConnections(items);
-    setCapabilityDrafts(Object.fromEntries(items.flatMap((connection) => connection.models.map((model) => [
+    const projectedItems = withDefaultProviders(items);
+    setConnections(projectedItems);
+    setCapabilityDrafts(Object.fromEntries(projectedItems.flatMap((connection) => connection.models.map((model) => [
       modelKey(connection.connection_id, model.model_id), [...model.effective_capabilities]
     ]))));
-    const selected = items.find((item) => item.connection_id === preferredId) ?? items[0];
+    const selected = projectedItems.find((item) => item.connection_id === preferredId) ?? projectedItems[0];
     if (selected) selectConnection(selected);
     else {
       setSelectedId(null);
@@ -138,6 +158,11 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
     ])));
   }, []);
 
+  const applyUserCredentials = useCallback((snapshot) => {
+    const items = Array.isArray(snapshot?.credentials) ? snapshot.credentials : [];
+    setUserCredentials(Object.fromEntries(items.map((item) => [item.connection_id, item])));
+  }, []);
+
   const load = useCallback(async () => {
     setStatus({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
     try {
@@ -147,26 +172,19 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       setResolvedWorkspaceId(activeWorkspaceId);
       const systemAdmin = session.payload?.data?.is_system_admin === true;
       setIsSystemAdmin(systemAdmin);
-      const defaultsRequest = providerSettingsApi.getModelDefaults(activeWorkspaceId);
-      if (systemAdmin) {
-        const [result, defaults] = await Promise.all([
-          providerSettingsApi.listConnections(), defaultsRequest
-        ]);
-        applyConnections(Array.isArray(result.payload?.data) ? result.payload.data : []);
-        applyModelDefaults(defaults.payload?.data, defaults.etag);
-        setStatus({ kind: "ready", message: "시스템 연결과 Workspace 기본 모델을 조회했습니다." });
-      } else {
-        const [result, defaults] = await Promise.all([
-          providerSettingsApi.listConnections(), defaultsRequest
-        ]);
-        applyConnections(Array.isArray(result.payload?.data) ? result.payload.data : []);
-        applyModelDefaults(defaults.payload?.data, defaults.etag);
-        setStatus({ kind: "ready", message: "공유 Provider 연결과 Workspace 기본 모델을 조회했습니다." });
-      }
+      const [result, defaults, personal] = await Promise.all([
+        providerSettingsApi.listConnections(),
+        providerSettingsApi.getModelDefaults(activeWorkspaceId),
+        providerSettingsApi.listUserCredentials()
+      ]);
+      applyConnections(Array.isArray(result.payload?.data) ? result.payload.data : []);
+      applyModelDefaults(defaults.payload?.data, defaults.etag);
+      applyUserCredentials(personal.payload?.data);
+      setStatus({ kind: "ready", message: systemAdmin ? "시스템 연결과 Workspace 기본 모델을 조회했습니다." : "공유 Provider 연결과 개인 키 설정을 조회했습니다." });
     } catch {
       setStatus({ kind: "error", message: "Provider 설정을 불러오지 못했습니다. 다시 시도해 주세요." });
     }
-  }, [applyConnections, applyModelDefaults, workspaceId]);
+  }, [applyConnections, applyModelDefaults, applyUserCredentials, workspaceId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -192,6 +210,23 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
 
   async function saveConnection(includeCredential) {
     const connectionId = draft.connection_id.trim();
+    if (!isSystemAdmin) {
+      if (!includeCredential || !connectionId || !credential) return;
+      setStatus({ kind: "saving", message: "개인 Provider 키를 저장하는 중입니다." });
+      try {
+        const current = userCredentials[connectionId];
+        const result = await providerSettingsApi.replaceUserCredential(connectionId, {
+          credential, expected_version: current?.credential_version ?? 0
+        });
+        setUserCredentials((items) => ({ ...items, [connectionId]: result.payload.data }));
+        setCredential("");
+        setStatus({ kind: "ready", message: "이 계정에서만 사용하는 개인 키를 저장했습니다." });
+      } catch (error) {
+        setCredential("");
+        setStatus({ kind: "error", message: safeProviderErrorMessage("credential", error) });
+      }
+      return;
+    }
     const action = includeCredential ? "credential" : "provider";
     setStatus({ kind: "saving", message: "Provider 연결을 검증하고 저장하는 중입니다." });
     try {
@@ -226,6 +261,26 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       setCredential("");
       setAdministratorPassword("");
       setStatus({ kind: "error", message: safeProviderErrorMessage(action, error) });
+    }
+  }
+
+  async function deleteUserCredential() {
+    if (!selectedConnection || !userCredentials[selectedConnection.connection_id]) return;
+    setStatus({ kind: "saving", message: "개인 Provider 키를 삭제하는 중입니다." });
+    try {
+      const current = userCredentials[selectedConnection.connection_id];
+      await providerSettingsApi.deleteUserCredential(selectedConnection.connection_id, {
+        expected_version: current.credential_version
+      });
+      setUserCredentials((items) => {
+        const next = { ...items };
+        delete next[selectedConnection.connection_id];
+        return next;
+      });
+      setCredential("");
+      setStatus({ kind: "ready", message: "이 계정의 개인 키를 삭제했습니다." });
+    } catch (error) {
+      setStatus({ kind: "error", message: safeProviderErrorMessage("credential", error) });
     }
   }
 
@@ -330,7 +385,9 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
 
   const busy = status.kind === "saving" || status.kind === "loading";
   const canMutate = isSystemAdmin === true && !busy && Boolean(administratorPassword) && Boolean(draft.connection_id.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim());
-  const canReplaceCredential = !busy && Boolean(administratorPassword) && Boolean(credential) && Boolean(selectedConnection);
+  const canUsePersonalCredential = isSystemAdmin || Number(selectedConnection?.version ?? 0) > 0;
+  const canReplaceCredential = !busy && canUsePersonalCredential && Boolean(credential) && Boolean(selectedConnection)
+    && (isSystemAdmin !== true || Boolean(administratorPassword));
   const Root = embedded ? "div" : "main";
 
   return (
@@ -359,13 +416,14 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
                 <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
                 <label className="provider-field-wide">Logical model IDs<textarea value={draft.logical_model_ids} placeholder="Gateway 모델 ID를 줄바꿈으로 구분" onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label>
               </> : <p className="provider-field-wide">공유 연결의 Endpoint와 모델 목록은 숨겨져 있습니다. 아래에서 이 연결의 API Key만 교체할 수 있습니다.</p>}
-              <label>API Key 또는 Client Key<input type="password" value={credential} autoComplete="new-password" onChange={(event) => setCredential(event.target.value)} /></label>
-              <label>현재 비밀번호<input type="password" value={administratorPassword} autoComplete="current-password" onChange={(event) => setAdministratorPassword(event.target.value)} /></label>
+              <label>API Key 또는 Client Key<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : "키를 입력하세요"} onChange={(event) => setCredential(event.target.value)} /></label>
+              {isSystemAdmin ? <label>현재 비밀번호<input type="password" value={administratorPassword} autoComplete="current-password" onChange={(event) => setAdministratorPassword(event.target.value)} /></label> : null}
             </div>
             {isSystemAdmin ? <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>연결 활성</span></label> : null}
             <div className="provider-detail-actions">
               {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate}>연결 저장</button> : null}
-              <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={draft.version > 0 ? !canReplaceCredential : (!canMutate || !credential)}>키 저장 및 연결 확인</button>
+              <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canReplaceCredential}>{isSystemAdmin ? "시스템 키 저장 및 연결 확인" : "내 계정 키 저장"}</button>
+              {!isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteUserCredential} disabled={busy || !canUsePersonalCredential || !userCredentials[selectedConnection?.connection_id]}>내 계정 키 삭제</button> : null}
               {isSystemAdmin ? <><button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured || !administratorPassword}>키 삭제</button><button className="secondary-button" type="button" onClick={refreshCatalog} disabled={busy || !selectedConnection || !administratorPassword}>카탈로그 새로고침</button></> : null}
             </div>
           </div>

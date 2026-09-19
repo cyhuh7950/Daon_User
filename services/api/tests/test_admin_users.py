@@ -691,3 +691,140 @@ def test_admin_cli_canonical_mismatch_fails_without_mutation(tmp_path: Path) -> 
     assert completed.stderr == "INITIAL_ADMIN_PASSWORD_RESET_FAILED:INITIAL_ADMIN_CONFLICT\n"
     assert database_path.read_bytes() == before
     assert {path.name for path in tmp_path.iterdir()} == before_entries
+def test_admin_can_register_update_approve_and_delete_general_user(tmp_path: Path) -> None:
+    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3")
+    identity.ensure_initial_admin()
+    service = AdminUserService(
+        repository=repository,
+        audit_store=audit,
+        system_admin_user_ids=frozenset({"admin"}),
+        clock=clock,
+    )
+    admin = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+
+    created = service.create_user(
+        admin,
+        login_id="managed-user",
+        email="managed@example.test",
+        initial_password="initial managed password",
+        idempotency_key="register-managed-user-0001",
+        trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    assert created.user.login_id == "managed-user"
+    assert created.user.email == "managed@example.test"
+    assert created.user.state == "pending_approval"
+    assert created.user.protected is False
+
+    updated = service.update_user(
+        admin,
+        user_id=created.user.user_id,
+        email="managed.updated@example.test",
+        idempotency_key="update-managed-user-0001",
+        trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    assert updated.user.email == "managed.updated@example.test"
+    assert updated.user.state == "pending_approval"
+
+    approved = service.approve_user(
+        admin,
+        user_id=created.user.user_id,
+        idempotency_key="approve-managed-user-0001",
+        trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    assert approved.user.state == "active"
+
+    deleted = service.delete_user(
+        admin,
+        user_id=created.user.user_id,
+        idempotency_key="delete-managed-user-0001",
+        trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    assert deleted.replayed is False
+    with repository.transaction() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM users WHERE user_id=?", (created.user.user_id,)
+        ).fetchone() is None
+    assert audit.list(tenant_id="admin", action="identity.user.deleted").items
+
+
+def test_admin_cannot_delete_initial_admin(tmp_path: Path) -> None:
+    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3")
+    identity.ensure_initial_admin()
+    service = AdminUserService(
+        repository=repository,
+        audit_store=audit,
+        system_admin_user_ids=frozenset({"admin"}),
+        clock=clock,
+    )
+    admin = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+
+    with pytest.raises(IdentityError) as error:
+        service.delete_user(
+            admin,
+            user_id="admin",
+            idempotency_key="delete-initial-admin-0001",
+            trace_id=TRACE_ID,
+            policy_version=POLICY_VERSION,
+        )
+    assert error.value.code == "PROTECTED_ADMIN_ACCOUNT"
+
+
+def test_admin_crud_mutations_replay_and_reject_key_reuse(tmp_path: Path) -> None:
+    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3")
+    identity.ensure_initial_admin()
+    service = AdminUserService(
+        repository=repository,
+        audit_store=audit,
+        system_admin_user_ids=frozenset({"admin"}),
+        clock=clock,
+    )
+    admin = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+
+    created = service.create_user(
+        admin, login_id="replay-user", email="replay@example.test",
+        initial_password="initial replay password", idempotency_key="create-replay-user-001",
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    replayed_create = service.create_user(
+        admin, login_id="replay-user", email="replay@example.test",
+        initial_password="different password", idempotency_key="create-replay-user-001",
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    assert replayed_create.replayed is True
+    assert replayed_create.user.user_id == created.user.user_id
+    with pytest.raises(IdentityError) as reused_create:
+        service.create_user(
+            admin, login_id="other-user", email="other@example.test",
+            initial_password="different password", idempotency_key="create-replay-user-001",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+    assert reused_create.value.code == "IDEMPOTENCY_KEY_REUSED"
+
+    updated = service.update_user(
+        admin, user_id=created.user.user_id, email="replay.updated@example.test",
+        idempotency_key="update-replay-user-001", trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    replayed_update = service.update_user(
+        admin, user_id=created.user.user_id, email="replay.updated@example.test",
+        idempotency_key="update-replay-user-001", trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    assert updated.replayed is False
+    assert replayed_update.replayed is True
+    assert replayed_update.user.email == "replay.updated@example.test"
+
+    deleted = service.delete_user(
+        admin, user_id=created.user.user_id, idempotency_key="delete-replay-user-001",
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    replayed_delete = service.delete_user(
+        admin, user_id=created.user.user_id, idempotency_key="delete-replay-user-001",
+        trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+    )
+    assert deleted.replayed is False
+    assert replayed_delete.replayed is True

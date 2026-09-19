@@ -11,6 +11,7 @@ from psycopg.types.json import Jsonb
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .provider_credentials import EncryptedCredential, ProviderCredentialCipher, ProviderCredentialError
+from .user_provider_credentials import PostgresUserProviderCredentialService
 from .provider_settings import ProviderSettingsError, validate_provider_base_url
 from .data_canon import canonical_json_bytes
 
@@ -22,6 +23,7 @@ _ACTIVE_PROVIDERS = {
     }),
     "image_understanding": frozenset({"UPSTAGE"}),
     "document_parsing": frozenset({"UPSTAGE"}),
+    "embedding": frozenset({"SENTENCE_TRANSFORMERS"}),
 }
 _ROUTING_GATEWAYS = frozenset({"EOUL_GATEWAY", "OMNIROUTE"})
 _ACTIVE_CAPABILITIES = frozenset(_ACTIVE_PROVIDERS)
@@ -199,11 +201,12 @@ class WorkspaceModelContext:
     tenant_id: str
     workspace_id: str
     actor_id: str
+    credential_source: str = "system"
 
     def __post_init__(self) -> None:
         if any(not isinstance(value, str) or _SAFE_ID.fullmatch(value) is None for value in (
             self.tenant_id, self.workspace_id, self.actor_id,
-        )):
+        )) or self.credential_source not in {"system", "user"}:
             raise WorkspaceModelUnavailable("WORKSPACE_MODEL_CONTEXT_INVALID")
 
 
@@ -254,9 +257,15 @@ class ResolvedModel:
 
 
 class PostgresWorkspaceModelResolver:
-    def __init__(self, store: PostgresCloudStore, cipher: ProviderCredentialCipher) -> None:
+    supports_user_credential_fallback = True
+
+    def __init__(
+        self, store: PostgresCloudStore, cipher: ProviderCredentialCipher,
+        user_credentials: PostgresUserProviderCredentialService | None = None,
+    ) -> None:
         self._store = store
         self._cipher = cipher
+        self._user_credentials = user_credentials
 
     @staticmethod
     def _cloud(context: WorkspaceModelContext) -> CloudAccessContext:
@@ -311,10 +320,8 @@ class PostgresWorkspaceModelResolver:
         credential_version = int(values[9])
         credential: bytearray | None = None
         encrypted = values[5]
-        if encrypted is None:
-            if provider_code != "OLLAMA":
-                raise WorkspaceModelUnavailable("PROVIDER_CREDENTIAL_REQUIRED")
-        else:
+        system_credential_failed = encrypted is None or context.credential_source == "user"
+        if encrypted is not None and context.credential_source != "user":
             if any(value is None for value in values[6:9]) or credential_version < 1:
                 raise WorkspaceModelUnavailable("PROVIDER_CREDENTIAL_INVALID")
             sealed = EncryptedCredential(
@@ -326,16 +333,32 @@ class PostgresWorkspaceModelResolver:
                 credential = bytearray(self._cipher.decrypt(
                     connection_id, provider_code, credential_version, sealed,
                 ))
-            except ProviderCredentialError as error:
-                raise WorkspaceModelUnavailable(str(error)) from None
+            except ProviderCredentialError:
+                system_credential_failed = True
+
+        if system_credential_failed and self._user_credentials is not None:
+            fallback = self._user_credentials.resolve_credential(
+                tenant_id=context.tenant_id, user_id=context.actor_id, connection_id=connection_id,
+                prefer_user=context.credential_source == "user",
+            )
+            if fallback.credential is not None:
+                credential = bytearray(fallback.credential)
+                credential_version = fallback.credential_version
+                system_credential_failed = False
+        if system_credential_failed and provider_code != "OLLAMA":
+            raise WorkspaceModelUnavailable("PROVIDER_CREDENTIAL_REQUIRED")
 
         resolved = ResolvedModel(
             connection_id=connection_id, provider_code=provider_code, model_id=model_id,
             capability=capability, base_url=base_url, credential_version=credential_version,
             default_version=int(values[0]), catalog_version=int(values[14]),
-            provider_kind="local" if provider_code == "OLLAMA" else "external_api",
-            routing_owner="gateway" if provider_code in _ROUTING_GATEWAYS else "provider",
-            daon_fallback_allowed=provider_code not in _ROUTING_GATEWAYS,
+            provider_kind="local" if provider_code in {"OLLAMA", "SENTENCE_TRANSFORMERS"} else "external_api",
+            routing_owner=(
+                "gateway" if provider_code in _ROUTING_GATEWAYS
+                else "local_runtime" if provider_code == "SENTENCE_TRANSFORMERS"
+                else "provider"
+            ),
+            daon_fallback_allowed=provider_code not in _ROUTING_GATEWAYS | {"SENTENCE_TRANSFORMERS"},
             _credential=credential,
         )
         try:

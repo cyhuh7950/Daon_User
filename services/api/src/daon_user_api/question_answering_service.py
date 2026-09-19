@@ -442,13 +442,34 @@ class QuestionAnsweringService:
         )
         try:
             with self._model_resolver.resolve(model_context, "text_generation") as selection:
-                return self._ask_resolved(
-                    context, selection=selection, sources=sources, general=general,
-                    source_id=source_id, source_version_id=source_version_id,
-                    question=question, run_id=run_id,
-                    approved_authorization=approved_authorization,
-                    context_mode=context_mode, request_fingerprint=request_fingerprint,
-                )
+                try:
+                    return self._ask_resolved(
+                        context, selection=selection, sources=sources, general=general,
+                        source_id=source_id, source_version_id=source_version_id,
+                        question=question, run_id=run_id,
+                        approved_authorization=approved_authorization,
+                        context_mode=context_mode, request_fingerprint=request_fingerprint,
+                    )
+                except QuestionAnsweringError as error:
+                    if not getattr(self._model_resolver, "supports_user_credential_fallback", False) or error.code not in {
+                        "TEXT_PROVIDER_UNAVAILABLE", "TEXT_GENERATION_PROVIDER_UNAVAILABLE",
+                        "TEXT_GENERATION_FAILED",
+                    }:
+                        raise
+                    user_context = WorkspaceModelContext(
+                        context.tenant_id, context.workspace_id, context.actor_id, "user",
+                    )
+                    try:
+                        with self._model_resolver.resolve(user_context, "text_generation") as fallback:
+                            return self._ask_resolved(
+                                context, selection=fallback, sources=sources, general=general,
+                                source_id=source_id, source_version_id=source_version_id,
+                                question=question, run_id=run_id,
+                                approved_authorization=approved_authorization,
+                                context_mode=context_mode, request_fingerprint=request_fingerprint,
+                            )
+                    except WorkspaceModelUnavailable:
+                        raise error
         except WorkspaceModelUnavailable as error:
             raise QuestionAnsweringError(error.code, status=503, retryable=error.retryable) from None
 
