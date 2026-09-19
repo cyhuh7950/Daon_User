@@ -5539,6 +5539,16 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         if settings.cloud_database_dsn is None
         else PostgresCloudStore(settings.cloud_database_dsn)
     )
+    provider_connection_service = None
+    workspace_model_defaults_service = None
+    if cloud_store is not None and settings.provider_credential_key_file is not None:
+        try:
+            provider_key = settings.provider_credential_key_file.read_bytes()
+        except OSError:
+            raise ValueError("PROVIDER_CREDENTIAL_KEY_REFERENCE_UNAVAILABLE") from None
+        provider_cipher = ProviderCredentialCipher(provider_key, encryption_key_version=1)
+        provider_connection_service = PostgresProviderConnectionService(cloud_store, provider_cipher)
+        workspace_model_defaults_service = PostgresWorkspaceModelDefaultsService(cloud_store)
     object_storage: ObjectStoragePort | None = None
     if settings.object_storage_endpoint is not None:
         assert settings.object_storage_bucket is not None
