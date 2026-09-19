@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { providerSettingsApi } from "../lib/provider-settings-api.js";
+import { summarizeConnectionUsage } from "./provider-settings-usage.js";
 
 const PROVIDERS = Object.freeze([
   "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
@@ -189,6 +190,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   useEffect(() => { load(); }, [load]);
 
   const selectedConnection = connections.find((item) => item.connection_id === selectedId) ?? null;
+  const connectionUsage = summarizeConnectionUsage(connections);
   const adminAvailableModels = useMemo(() => connections.flatMap((connection) => (
     !connection.enabled || connection.verification_status !== "verified" || connection.catalog_status !== "ready"
       ? []
@@ -399,7 +401,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       <div className={`provider-status ${status.kind}`} role="status"><span className="status-dot" aria-hidden="true" />{status.message}</div>
 
       {isSystemAdmin !== null ? <section className="provider-admin-panel" aria-labelledby="provider-admin-title">
-        <div className="studio-section-heading"><div><span className="section-kicker">{isSystemAdmin ? "SYSTEM ADMIN" : "SHARED CONNECTIONS"}</span><h2 id="provider-admin-title">시스템 Provider 연결</h2></div>{isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => { setSelectedId(null); setDraft(emptyConnectionDraft()); setCredential(""); }}>연결 추가</button> : <small>Endpoint·모델 설정은 시스템 관리자만 변경할 수 있습니다.</small>}</div>
+        <div className="studio-section-heading"><div><span className="section-kicker">{isSystemAdmin ? "SYSTEM ADMIN" : "SHARED CONNECTIONS"}</span><h2 id="provider-admin-title">시스템 Provider 연결</h2><small>{connectionUsage.label} · {connectionUsage.description}</small></div>{isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => { setSelectedId(null); setDraft(emptyConnectionDraft()); setCredential(""); }}>연결 추가</button> : <small>Endpoint·모델 설정은 시스템 관리자만 변경할 수 있습니다.</small>}</div>
         <div className="provider-settings-layout">
           <div className="provider-connection-list" aria-label="Provider 연결 목록">
             {connections.map((connection) => { const projected = projectProviderConnection(connection); return <button className="provider-card" type="button" aria-pressed={selectedId === connection.connection_id} onClick={() => selectConnection(connection)} key={connection.connection_id}><span className="provider-monogram" aria-hidden="true">{connection.provider_code.slice(0, 1)}</span><span><strong>{connection.display_name}</strong><small>{connection.provider_code} · {projected.label}</small></span><span className={`provider-state-dot ${projected.verified ? "is-ready" : ""}`} aria-hidden="true" /></button>; })}
@@ -419,7 +421,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
               <label>API Key 또는 Client Key<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : "키를 입력하세요"} onChange={(event) => setCredential(event.target.value)} /></label>
               {isSystemAdmin ? <label>현재 비밀번호<input type="password" value={administratorPassword} autoComplete="current-password" onChange={(event) => setAdministratorPassword(event.target.value)} /></label> : null}
             </div>
-            {isSystemAdmin ? <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>연결 활성</span></label> : null}
+            {isSystemAdmin ? <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label> : null}
             <div className="provider-detail-actions">
               {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate}>연결 저장</button> : null}
               <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canReplaceCredential}>{isSystemAdmin ? "시스템 키 저장 및 연결 확인" : "내 계정 키 저장"}</button>
