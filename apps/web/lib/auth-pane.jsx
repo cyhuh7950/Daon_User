@@ -48,7 +48,9 @@ export function AuthPane() {
         setMessage("WORKSPACE_REQUIRED");
       }
     }
-    catch { setMessage("처리 실패: 요청을 완료하지 못했습니다."); }
+    catch (error) {
+      setMessage(error?.code || error?.message || "처리 실패: 요청을 완료하지 못했습니다.");
+    }
     finally {
       clearSensitive();
       setBusy(false);
