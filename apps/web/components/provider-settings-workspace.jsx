@@ -125,6 +125,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   const [draft, setDraft] = useState(emptyConnectionDraft);
   const [credential, setCredential] = useState("");
   const [administratorPassword, setAdministratorPassword] = useState("");
+  const [stepUpAction, setStepUpAction] = useState(null);
   const [capabilityDrafts, setCapabilityDrafts] = useState({});
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
 
@@ -181,7 +182,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       applyConnections(Array.isArray(result.payload?.data) ? result.payload.data : []);
       applyModelDefaults(defaults.payload?.data, defaults.etag);
       applyUserCredentials(personal.payload?.data);
-      setStatus({ kind: "ready", message: systemAdmin ? "시스템 연결과 Workspace 기본 모델을 조회했습니다." : "공유 Provider 연결과 개인 키 설정을 조회했습니다." });
+      setStatus({ kind: "ready", message: systemAdmin ? "시스템 연결과 모델 목록을 조회했습니다." : "공유 Provider 연결과 개인 키 설정을 조회했습니다." });
     } catch {
       setStatus({ kind: "error", message: "Provider 설정을 불러오지 못했습니다. 다시 시도해 주세요." });
     }
@@ -208,6 +209,19 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
     const authorization = result.payload?.data?.step_up_authorization;
     if (typeof authorization !== "string" || !authorization) throw new Error("STEP_UP_RESPONSE_INVALID");
     return authorization;
+  }
+
+  function requestStepUp(action) {
+    setAdministratorPassword("");
+    setStepUpAction(() => action);
+  }
+
+  async function confirmStepUp(event) {
+    event.preventDefault();
+    const action = stepUpAction;
+    if (!action || !administratorPassword) return;
+    setStepUpAction(null);
+    await action();
   }
 
   async function saveConnection(includeCredential) {
@@ -386,10 +400,9 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   }
 
   const busy = status.kind === "saving" || status.kind === "loading";
-  const canMutate = isSystemAdmin === true && !busy && Boolean(administratorPassword) && Boolean(draft.connection_id.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim());
+  const canMutate = isSystemAdmin === true && !busy && Boolean(draft.connection_id.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim());
   const canUsePersonalCredential = isSystemAdmin || Number(selectedConnection?.version ?? 0) > 0;
-  const canReplaceCredential = !busy && canUsePersonalCredential && Boolean(credential) && Boolean(selectedConnection)
-    && (isSystemAdmin !== true || Boolean(administratorPassword));
+  const canReplaceCredential = !busy && canUsePersonalCredential && Boolean(credential) && Boolean(selectedConnection);
   const Root = embedded ? "div" : "main";
 
   return (
@@ -416,24 +429,23 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
                 <label>Provider<select value={draft.provider_code} disabled={draft.version > 0} onChange={(event) => setDraft((current) => ({ ...current, provider_code: event.target.value }))}>{PROVIDERS.map((provider) => <option value={provider} key={provider}>{provider}</option>)}</select></label>
                 <label>연결 이름<input value={draft.display_name} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} /></label>
                 <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
-                <label className="provider-field-wide">Logical model IDs<textarea value={draft.logical_model_ids} placeholder="Gateway 모델 ID를 줄바꿈으로 구분" onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label>
+                <p className="provider-field-wide provider-form-note">API Key를 저장한 뒤 <strong>모델 조회</strong> 버튼을 눌러 모델 목록을 확인합니다.</p>
               </> : <p className="provider-field-wide">공유 연결의 Endpoint와 모델 목록은 숨겨져 있습니다. 아래에서 이 연결의 API Key만 교체할 수 있습니다.</p>}
               <label>API Key 또는 Client Key<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : "키를 입력하세요"} onChange={(event) => setCredential(event.target.value)} /></label>
-              {isSystemAdmin ? <label>현재 비밀번호<input type="password" value={administratorPassword} autoComplete="current-password" onChange={(event) => setAdministratorPassword(event.target.value)} /></label> : null}
             </div>
             {isSystemAdmin ? <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label> : null}
             <div className="provider-detail-actions">
-              {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate}>연결 저장</button> : null}
-              <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canReplaceCredential}>{isSystemAdmin ? "시스템 키 저장 및 연결 확인" : "내 계정 키 저장"}</button>
+              {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => requestStepUp(() => saveConnection(false))} disabled={!canMutate}>연결 저장</button> : null}
+              <button className="primary-button" type="button" onClick={() => isSystemAdmin ? requestStepUp(() => saveConnection(true)) : saveConnection(true)} disabled={!canReplaceCredential}>{isSystemAdmin ? "시스템 키 저장" : "내 계정 키 저장"}</button>
               {!isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteUserCredential} disabled={busy || !canUsePersonalCredential || !userCredentials[selectedConnection?.connection_id]}>내 계정 키 삭제</button> : null}
-              {isSystemAdmin ? <><button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured || !administratorPassword}>키 삭제</button><button className="secondary-button" type="button" onClick={refreshCatalog} disabled={busy || !selectedConnection || !administratorPassword}>카탈로그 새로고침</button></> : null}
+              {isSystemAdmin ? <><button className="secondary-button danger-button" type="button" onClick={() => requestStepUp(deleteCredential)} disabled={busy || !selectedConnection?.configured}>키 삭제</button><button className="secondary-button" type="button" onClick={() => requestStepUp(refreshCatalog)} disabled={busy || !selectedConnection}>모델 조회</button></> : null}
             </div>
           </div>
         </div>
       </section> : null}
 
       <section className="workspace-model-defaults" aria-labelledby="workspace-default-title">
-        <div className="studio-section-heading"><div><span className="section-kicker">WORKSPACE</span><h2 id="workspace-default-title">Workspace 기본 모델</h2></div></div>
+        <div className="studio-section-heading"><div><span className="section-kicker">MODEL SELECTION</span><h2 id="workspace-default-title">기능별 모델 선택</h2><small>각 기능에서 사용할 모델을 선택합니다.</small></div></div>
         <div className="capability-default-grid">
           {ACTIVE_CAPABILITIES.map((capability) => {
             const choices = availableModels.filter((model) => model.effective_capabilities.includes(capability));
@@ -443,11 +455,12 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
         <div className="provider-model-grid">
           {adminAvailableModels.map(({ connection, model }) => {
             const correction = capabilityDrafts[modelKey(connection.connection_id, model.model_id)] ?? model.effective_capabilities;
-            return <article className="provider-model-card" key={modelKey(connection.connection_id, model.model_id)}><header><div><strong>{formatModelChoice(connection, model)}</strong><small>Catalog v{model.catalog_version}</small></div><span className="connection-badge is-ready">{model.override_applied ? "관리자 보정" : "자동 판별"}</span></header><div className="model-capabilities">{model.effective_capabilities.map((capability) => ACTIVE_CAPABILITIES.includes(capability) ? <span className="capability-chip is-active" key={capability}>{CAPABILITY_LABELS[capability]}</span> : <button className="capability-chip is-pending" type="button" disabled title="실행 Adapter가 연결되지 않았습니다." key={capability}>{CAPABILITY_LABELS[capability]} · 준비 중</button>)}</div>{isSystemAdmin ? <details className="capability-correction"><summary>모델 기능 보정</summary><fieldset><legend className="sr-only">{formatModelChoice(connection, model)} 기능</legend><div className="role-chip-grid">{CAPABILITIES.map((capability) => { const ready = ACTIVE_CAPABILITIES.includes(capability); return <label className="role-chip" key={capability} title={ready ? undefined : "실행 Adapter가 연결되지 않았습니다."}><input type="checkbox" disabled={!ready} checked={correction.includes(capability)} onChange={() => toggleCapability(connection, model, capability)} /><span>{CAPABILITY_LABELS[capability]}{ready ? "" : " · 준비 중"}</span></label>; })}</div></fieldset><button className="secondary-button" type="button" onClick={() => saveCapabilities(connection, model)} disabled={busy || !administratorPassword}>기능 보정 저장</button></details> : null}</article>;
+            return <article className="provider-model-card" key={modelKey(connection.connection_id, model.model_id)}><header><div><strong>{formatModelChoice(connection, model)}</strong><small>Catalog v{model.catalog_version}</small></div><span className="connection-badge is-ready">{model.override_applied ? "관리자 보정" : "자동 판별"}</span></header><div className="model-capabilities">{model.effective_capabilities.map((capability) => ACTIVE_CAPABILITIES.includes(capability) ? <span className="capability-chip is-active" key={capability}>{CAPABILITY_LABELS[capability]}</span> : <button className="capability-chip is-pending" type="button" disabled title="실행 Adapter가 연결되지 않았습니다." key={capability}>{CAPABILITY_LABELS[capability]} · 준비 중</button>)}</div>{isSystemAdmin ? <details className="capability-correction"><summary>모델 기능 보정</summary><fieldset><legend className="sr-only">{formatModelChoice(connection, model)} 기능</legend><div className="role-chip-grid">{CAPABILITIES.map((capability) => { const ready = ACTIVE_CAPABILITIES.includes(capability); return <label className="role-chip" key={capability} title={ready ? undefined : "실행 Adapter가 연결되지 않았습니다."}><input type="checkbox" disabled={!ready} checked={correction.includes(capability)} onChange={() => toggleCapability(connection, model, capability)} /><span>{CAPABILITY_LABELS[capability]}{ready ? "" : " · 준비 중"}</span></label>; })}</div></fieldset><button className="secondary-button" type="button" onClick={() => requestStepUp(() => saveCapabilities(connection, model))} disabled={busy}>기능 보정 저장</button></details> : null}</article>;
           })}
           {isSystemAdmin === true && !adminAvailableModels.length ? <div className="provider-empty"><strong>사용 가능한 모델이 없습니다.</strong><small>연결을 확인하고 카탈로그를 새로고침하세요.</small></div> : null}
         </div>
       </section>
+      {stepUpAction ? <div className="provider-step-up-backdrop" role="presentation"><form className="provider-step-up-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-step-up-title" onSubmit={confirmStepUp}><h2 id="provider-step-up-title">관리자 확인</h2><p>민감한 Provider 설정을 변경하려면 관리자 비밀번호가 필요합니다.</p><label>현재 비밀번호<input type="password" autoFocus autoComplete="current-password" value={administratorPassword} onChange={(event) => setAdministratorPassword(event.target.value)} /></label><div className="provider-detail-actions"><button className="secondary-button" type="button" onClick={() => { setStepUpAction(null); setAdministratorPassword(""); }}>취소</button><button className="primary-button" type="submit" disabled={!administratorPassword}>확인</button></div></form></div> : null}
     </Root>
   );
 }

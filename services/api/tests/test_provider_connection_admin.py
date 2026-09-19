@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 import pytest
+import daon_user_api.provider_connection_admin as provider_connection_admin_module
 
 from daon_user_api.provider_connection_admin import (
     ProviderAdminAudit,
@@ -347,3 +348,40 @@ def test_catalog_refresh_upserts_models_without_erasing_admin_capability_overrid
     assert "ON CONFLICT (connection_id,model_id) DO UPDATE" in upsert
     assert "WHEN system_provider_models.override_applied" in upsert
     assert "THEN system_provider_models.effective_capabilities" in upsert
+
+
+def test_connection_prepare_does_not_discover_models_until_manual_lookup(monkeypatch) -> None:
+    calls = []
+
+    class Adapter:
+        def verify(self, _profile, _credential):
+            calls.append("verify")
+
+        def discover_models(self, _profile, _credential):
+            calls.append("discover")
+            return [DiscoveredModel(
+                connection_id="ollama-lan", provider_code="OLLAMA", model_id="qwen3",
+                reported_capabilities=("text_generation",), routing_owner="provider",
+                daon_fallback_allowed=True,
+            )]
+
+    class Registry:
+        def __init__(self, **_kwargs):
+            pass
+
+        def adapter(self, _provider_code):
+            return Adapter()
+
+    monkeypatch.setattr(provider_connection_admin_module, "AdapterRegistry", Registry)
+    service = PostgresProviderConnectionService(
+        Store(SharedDatabase()), ProviderCredentialCipher(b"p" * 32, encryption_key_version=1),
+    )
+
+    _profile, _sealed, models = service._prepare(
+        connection_id="ollama-lan", provider_code="OLLAMA", display_name="LAN Ollama",
+        base_url="http://ollama.internal:11434", credential=None, logical_model_ids=(),
+        enabled=True, version=1, discover_models=False,
+    )
+
+    assert models == ()
+    assert calls == ["verify"]

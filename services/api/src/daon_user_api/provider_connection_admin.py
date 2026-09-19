@@ -264,6 +264,7 @@ class PostgresProviderConnectionService:
         self, *, connection_id: str, provider_code: str, display_name: str, base_url: str,
         credential: str | bytes | None, logical_model_ids: Sequence[str], enabled: bool,
         version: int, previous_sealed: EncryptedCredential | None = None,
+        discover_models: bool = True,
     ) -> tuple[ProviderConnection, EncryptedCredential | None, tuple[object, ...]]:
         try:
             normalized_url = validate_provider_base_url(provider_code, base_url)
@@ -277,7 +278,7 @@ class PostgresProviderConnectionService:
             )
             adapter = AdapterRegistry(logical_models={connection_id: logical_model_ids}).adapter(provider_code)
             adapter.verify(profile, raw)
-            models = adapter.discover_models(profile, raw)
+            models = adapter.discover_models(profile, raw) if discover_models else ()
             sealed = previous_sealed
             if credential is not None:
                 next_version = 1 if previous_sealed is None else previous_sealed.credential_version + 1
@@ -356,7 +357,7 @@ class PostgresProviderConnectionService:
                 connection_id=command.connection_id, provider_code=command.provider_code,
                 display_name=command.display_name, base_url=command.base_url,
                 credential=command.credential, logical_model_ids=command.logical_model_ids,
-                enabled=command.enabled, version=1,
+                enabled=command.enabled, version=1, discover_models=False,
             )
             connection.execute(
                 "INSERT INTO system_provider_connections (connection_id,provider_code,display_name,base_url,"
@@ -404,7 +405,7 @@ class PostgresProviderConnectionService:
                 display_name=command.display_name, base_url=command.base_url,
                 credential=command.credential, logical_model_ids=command.logical_model_ids,
                 enabled=command.enabled, version=command.expected_version + 1,
-                previous_sealed=self._sealed(current),
+                previous_sealed=self._sealed(current), discover_models=False,
             )
             row = connection.execute(
                 "UPDATE system_provider_connections SET display_name=%s,base_url=%s,encrypted_credential=%s,"
@@ -477,6 +478,7 @@ class PostgresProviderConnectionService:
                 credential=command.credential,
                 logical_model_ids=[str(row[0]) for row in model_rows], enabled=bool(current[9]),
                 version=command.expected_version + 1, previous_sealed=self._sealed(current),
+                discover_models=False,
             )
             row = connection.execute(
                 "UPDATE system_provider_connections SET encrypted_credential=%s,credential_nonce=%s,"
@@ -490,7 +492,6 @@ class PostgresProviderConnectionService:
             ).fetchone()
             if row is None:
                 raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
-            self._replace_models(connection, context, profile.connection_id, models, int(row[0]))
             return self._safe_by_id(connection, connection_id)
 
         return self._mutations.run(
