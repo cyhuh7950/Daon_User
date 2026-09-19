@@ -322,9 +322,15 @@ class OmniRouteAdapter(_RoutingGatewayAdapter):
         connection: ProviderConnection,
         credential: str | bytes | None,
     ) -> VerificationResult:
+        _credential_text(credential)
         models = self.discover_models(connection, credential)
         if not models:
-            return self._ready(connection)
+            return self._probe(
+                connection,
+                credential,
+                "/v1/responses",
+                {"model": "health-check", "input": "health-check", "max_output_tokens": 1, "stream": False},
+            )
         return self._probe(
             connection,
             credential,

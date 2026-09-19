@@ -107,8 +107,11 @@ export function safeProviderErrorMessage(action, error) {
 
 export function canRefreshCatalog(connection, busy) {
   return !busy && Number(connection?.version ?? 0) > 0
-    && !MANAGED_MODEL_PROVIDERS.has(connection?.provider_code)
-    && connection?.configured === true;
+    && !MANAGED_MODEL_PROVIDERS.has(connection?.provider_code);
+}
+
+export function providerRequiresCredential(providerCode) {
+  return providerCode === "OMNIROUTE";
 }
 
 export function canSaveCredential(connection, draft, credential, busy) {
@@ -210,7 +213,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       return;
     }
     const action = includeCredential ? "credential" : "provider";
-    setStatus({ kind: "saving", message: "Provider 연결을 검증하고 저장하는 중입니다." });
+    setStatus({ kind: "saving", message: "Provider 연결 설정을 저장하는 중입니다." });
     try {
       let result;
       if (includeCredential && draft.version > 0) {
@@ -323,7 +326,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
                 <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
                 {!managedModels ? <label className="provider-field-wide">연결할 모델 (선택)<textarea value={draft.logical_model_ids} rows={2} placeholder="모델 ID를 입력하지 않으면 Provider 기준 모델을 사용합니다." onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label> : null}<p className="provider-field-wide provider-form-note">{managedModels ? "이 Provider는 모델 목록을 Daon에 저장하지 않으며, 지정한 모델이 없으면 Provider가 기준 모델을 선택합니다." : <>API Key 저장과 <strong>모델 조회</strong>는 선택 사항입니다. 필요할 때만 모델 목록을 확인하고, 모델을 지정하지 않으면 Provider 기준 모델을 사용합니다.</>}</p>
               </> : <p className="provider-field-wide">공유 연결의 Endpoint와 모델 목록은 숨겨져 있습니다. 아래에서 이 연결의 API Key만 교체할 수 있습니다.</p>}
-              <label>API Key 또는 Client Key (선택){isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : "키를 입력하지 않으면 Provider 기본 인증을 사용합니다"} onChange={(event) => setCredential(event.target.value)} /></label>
+              <label>API Key 또는 Client Key {providerRequiresCredential(draft.provider_code) ? "(필수)" : "(선택)"}{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : providerRequiresCredential(draft.provider_code) ? "OMNIROUTE API Key를 입력하세요" : "키를 입력하지 않으면 Provider 기본 인증을 사용합니다"} onChange={(event) => setCredential(event.target.value)} /></label>
             </div>
             {isSystemAdmin ? <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label> : null}
             <div className="provider-detail-actions">

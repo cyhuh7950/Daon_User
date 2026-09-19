@@ -176,14 +176,14 @@ def test_media_bridge_catalog_and_verification_do_not_require_api_key(
     assert result.status == "ready"
 
 
-def test_omniroute_verification_does_not_require_provider_models_or_api_key(
+def test_omniroute_verification_requires_api_key_even_without_provider_models(
     registry: AdapterRegistry,
     fake_transport: FakeTransport,
 ) -> None:
-    result = registry.adapter("OMNIROUTE").verify(connection("OMNIROUTE"), None)
+    with pytest.raises(AdapterError, match="^PROVIDER_CREDENTIAL_REQUIRED$"):
+        registry.adapter("OMNIROUTE").verify(connection("OMNIROUTE"), None)
 
     assert fake_transport.requests == []
-    assert result.status == "ready"
 
 
 @pytest.mark.parametrize(
