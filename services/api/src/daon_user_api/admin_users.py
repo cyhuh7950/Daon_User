@@ -421,10 +421,17 @@ class AdminUserService:
                 if winner is None:
                     raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
                 return replay_from(winner)
-            connection.execute(
-                "UPDATE users SET state=? WHERE user_id=?",
-                (self._repository.user_state_for_storage(state), user_id),
-            )
+            if state == "active" and before_state == "pending_approval":
+                connection.execute(
+                    "UPDATE users SET state=?,email_verified_at=COALESCE(email_verified_at,?) "
+                    "WHERE user_id=?",
+                    (self._repository.user_state_for_storage(state), _iso(now), user_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE users SET state=? WHERE user_id=?",
+                    (self._repository.user_state_for_storage(state), user_id),
+                )
             if before_state != state:
                 revoke_user_sessions(connection, user_id=user_id, updated_at=now)
             result = AdminUserStateResult(self._view(row, state=state), replayed=False)

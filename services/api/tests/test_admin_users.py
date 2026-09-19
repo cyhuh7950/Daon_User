@@ -735,6 +735,19 @@ def test_admin_can_register_update_approve_and_delete_general_user(tmp_path: Pat
         policy_version=POLICY_VERSION,
     )
     assert approved.user.state == "active"
+    with repository.transaction() as connection:
+        assert connection.execute(
+            "SELECT email_verified_at FROM users WHERE user_id=?",
+            (created.user.user_id,),
+        ).fetchone()[0] is not None
+    credentials = identity.local_login(
+        login_id="managed-user",
+        password="initial managed password",
+        platform=DevicePlatform.WEB,
+        trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    assert credentials.user_id == created.user.user_id
 
     deleted = service.delete_user(
         admin,
