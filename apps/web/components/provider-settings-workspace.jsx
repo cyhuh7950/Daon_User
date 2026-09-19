@@ -138,6 +138,8 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(() => emptyConnectionDraft());
   const [credential, setCredential] = useState("");
+  const [healthSettings, setHealthSettings] = useState({ interval_minutes: 60, version: 0 });
+  const [healthIntervalDraft, setHealthIntervalDraft] = useState(60);
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
 
   const selectConnection = useCallback((connection) => {
@@ -171,12 +173,17 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       setResolvedWorkspaceId(activeWorkspaceId);
       const systemAdmin = session.payload?.data?.is_system_admin === true;
       setIsSystemAdmin(systemAdmin);
-      const [result, personal] = await Promise.all([
+      const [result, personal, health] = await Promise.all([
         providerSettingsApi.listConnections(),
-        providerSettingsApi.listUserCredentials()
+        providerSettingsApi.listUserCredentials(),
+        systemAdmin ? providerSettingsApi.getHealthSettings() : Promise.resolve(null)
       ]);
       applyConnections(Array.isArray(result.payload?.data) ? result.payload.data : []);
       applyUserCredentials(personal.payload?.data);
+      if (health?.payload?.data) {
+        setHealthSettings(health.payload.data);
+        setHealthIntervalDraft(health.payload.data.interval_minutes);
+      }
       setStatus({ kind: "ready", message: systemAdmin ? "시스템 연결과 모델 목록을 조회했습니다." : "공유 Provider 연결과 개인 키 설정을 조회했습니다." });
     } catch {
       setStatus({ kind: "error", message: "Provider 설정을 불러오지 못했습니다. 다시 시도해 주세요." });
@@ -241,6 +248,22 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
     } catch (error) {
       setCredential("");
       setStatus({ kind: "error", message: safeProviderErrorMessage(action, error) });
+    }
+  }
+
+  async function saveHealthSettings() {
+    if (!isSystemAdmin || busy) return;
+    setStatus({ kind: "saving", message: "연결 상태 확인 주기를 저장하는 중입니다." });
+    try {
+      const result = await providerSettingsApi.saveHealthSettings({
+        interval_minutes: Number(healthIntervalDraft),
+        expected_version: healthSettings.version,
+      });
+      setHealthSettings(result.payload.data);
+      setHealthIntervalDraft(result.payload.data.interval_minutes);
+      setStatus({ kind: "ready", message: "연결 상태 확인 주기를 저장했습니다." });
+    } catch {
+      setStatus({ kind: "error", message: "연결 상태 확인 주기를 저장하지 못했습니다. 새로고침 후 다시 시도해 주세요." });
     }
   }
 
@@ -309,7 +332,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       <div className={`provider-status ${status.kind}`} role="status"><span className="status-dot" aria-hidden="true" />{status.message}</div>
 
       {isSystemAdmin !== null ? <section className="provider-admin-panel" aria-labelledby="provider-admin-title">
-        <div className="studio-section-heading"><div><span className="section-kicker">{isSystemAdmin ? "SYSTEM ADMIN" : "SHARED CONNECTIONS"}</span><h2 id="provider-admin-title">시스템 Provider 연결</h2><small>{connectionUsage.label} · {connectionUsage.description}</small></div>{isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => { setSelectedId(null); setDraft(emptyConnectionDraft()); setCredential(""); }}>연결 추가</button> : <small>Endpoint·모델 설정은 시스템 관리자만 변경할 수 있습니다.</small>}</div>
+        <div className="studio-section-heading"><div><span className="section-kicker">{isSystemAdmin ? "SYSTEM ADMIN" : "SHARED CONNECTIONS"}</span><h2 id="provider-admin-title">시스템 Provider 연결</h2><small>{connectionUsage.label} · {connectionUsage.description}</small></div>{isSystemAdmin ? <div className="provider-heading-actions"><label>상태 확인 주기<select aria-label="상태 확인 주기" value={healthIntervalDraft} onChange={(event) => setHealthIntervalDraft(Number(event.target.value))}><option value={60}>60분</option><option value={120}>120분</option><option value={360}>360분</option><option value={720}>720분</option><option value={1440}>1440분</option></select></label><button className="secondary-button" type="button" onClick={saveHealthSettings} disabled={busy || Number(healthIntervalDraft) === Number(healthSettings.interval_minutes)}>주기 저장</button><button className="secondary-button" type="button" onClick={() => { setSelectedId(null); setDraft(emptyConnectionDraft()); setCredential(""); }}>연결 추가</button></div> : <small>Endpoint·모델 설정은 시스템 관리자만 변경할 수 있습니다.</small>}</div>
         <div className="provider-settings-layout">
           <div className="provider-connection-list" aria-label="Provider 연결 목록">
             {connections.map((connection) => { const projected = projectProviderConnection(connection); return <button className="provider-card" type="button" aria-pressed={selectedId === connection.connection_id} onClick={() => selectConnection(connection)} key={connection.connection_id}><span className="provider-monogram" aria-hidden="true">{connection.provider_code.slice(0, 1)}</span><span><strong>{connection.display_name}</strong><small>{connection.provider_code} · {projected.label}</small></span><span className={`provider-state-dot ${projected.verified ? "is-ready" : ""}`} aria-hidden="true" /></button>; })}

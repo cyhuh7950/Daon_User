@@ -26,6 +26,14 @@ export const providerSettingsApi = Object.freeze({
   listConnections() {
     return request("/bff/api/admin/provider-connections");
   },
+  getHealthSettings() {
+    return request("/bff/api/admin/provider-health-settings");
+  },
+  saveHealthSettings(input) {
+    return request("/bff/api/admin/provider-health-settings", {
+      method: "PATCH", body: input,
+    });
+  },
   listUserCredentials() {
     return request("/bff/api/provider-credentials");
   },

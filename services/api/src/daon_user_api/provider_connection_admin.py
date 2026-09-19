@@ -279,6 +279,49 @@ class PostgresProviderConnectionService:
                 })
             return items
 
+    def list_active_connection_ids(self, context: ProviderConnectionAdminContext) -> tuple[str, ...]:
+        with self._store._transaction(self._cloud(context)) as connection:
+            rows = connection.execute(
+                "SELECT connection_id FROM system_provider_connections "
+                "WHERE enabled=true ORDER BY connection_id",
+            ).fetchall()
+            return tuple(str(row[0]) for row in rows)
+
+    def check_active_connection(
+        self, context: ProviderConnectionAdminContext, connection_id: str,
+    ) -> dict[str, object]:
+        checked_at = datetime.now().astimezone().isoformat()
+        try:
+            with self._store._transaction(self._cloud(context)) as connection:
+                row = self._load(connection, connection_id)
+                if not bool(row[9]):
+                    return {"connection_id": connection_id, "status": "skipped"}
+                sealed = self._sealed(row)
+                credential = None if sealed is None else self._cipher.decrypt(
+                    connection_id, str(row[1]), sealed.credential_version, sealed,
+                )
+                profile = ProviderConnection(
+                    connection_id, str(row[1]), str(row[2]), str(row[3]), sealed,
+                    True, int(row[12]), str(row[10]), row[11],
+                )
+                adapter = AdapterRegistry().adapter(str(row[1]))
+                adapter.verify(profile, credential)
+                status = "verified"
+                connection.execute(
+                    "UPDATE system_provider_connections SET verification_status='verified',"
+                    "verified_at=now(),updated_at=now() WHERE connection_id=%s",
+                    (connection_id,),
+                )
+                return {"connection_id": connection_id, "status": status, "checked_at": checked_at}
+        except (AdapterError, ProviderCredentialError, ProviderSettingsError, Exception):
+            with self._store._transaction(self._cloud(context)) as connection:
+                connection.execute(
+                    "UPDATE system_provider_connections SET verification_status='failed',"
+                    "verified_at=now(),updated_at=now() WHERE connection_id=%s AND enabled=true",
+                    (connection_id,),
+                )
+            return {"connection_id": connection_id, "status": "failed", "checked_at": checked_at}
+
     @staticmethod
     def _load(connection: Connection[tuple[Any, ...]], connection_id: str) -> tuple[Any, ...]:
         row = connection.execute(

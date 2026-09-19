@@ -170,6 +170,11 @@ function routeFor(method, segments) {
       ? { path: "/api/v1/admin/provider-connections", query: null }
       : { methodRejected: true };
   }
+  if (segments.length === 2 && segments[0] === "admin" && segments[1] === "provider-health-settings") {
+    return new Set(["GET", "PATCH"]).has(method)
+      ? { path: "/api/v1/admin/provider-health-settings", query: null }
+      : { methodRejected: true };
+  }
   if (
     segments.length === 3 && segments[0] === "admin" && segments[1] === "provider-connections"
     && SAFE_SEGMENT.test(segments[2])

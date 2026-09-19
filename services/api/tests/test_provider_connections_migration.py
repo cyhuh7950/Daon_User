@@ -53,6 +53,7 @@ def test_migration_0040_creates_named_connection_catalog_and_workspace_defaults(
     assert "PRIMARY KEY (connection_id, model_id)" in sql
     assert "CREATE TABLE workspace_model_defaults" in sql
     assert "PRIMARY KEY (tenant_id, workspace_id, capability)" in sql
+    assert "'MEDIA_BRIDGE','SENTENCE_TRANSFORMERS'" in sql
 
 
 def test_migration_0040_allows_nullable_credentials_but_requires_complete_envelope() -> None:

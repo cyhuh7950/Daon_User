@@ -154,6 +154,12 @@ from .provider_settings import (
     ReferenceProviderSettingsRepository,
     ServerCredentialPresenceResolver,
 )
+from .provider_health_settings import (
+    PostgresProviderHealthCheckSettingsService,
+    PostgresProviderHealthSettingsRepository,
+    ProviderHealthSettingsError,
+)
+from .provider_health_monitor import ProviderHealthConnection, ProviderHealthMonitor
 from .provider_connection_admin import (
     ProviderCapabilityCommand,
     ProviderConnectionAdminContext,
@@ -498,6 +504,7 @@ class RuntimeDependencies:
     object_queue_store: PostgresObjectQueueStore | None = None
     provider_settings_service: ProviderSettingsService | None = None
     provider_connection_service: Any | None = None
+    provider_health_settings_service: PostgresProviderHealthCheckSettingsService | None = None
     workspace_model_defaults_service: Any | None = None
     operations_status_service: OperationsStatusService | None = None
     output_version_settings_service: OutputVersionSettingsService | None = None
@@ -928,6 +935,12 @@ class ProviderConnectionUpdateBody(BaseModel):
 class ProviderConnectionMutationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
+
+
+class ProviderHealthSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    interval_minutes: int = Field(ge=1, le=1440)
+    expected_version: int = Field(ge=0)
 
 
 class ProviderCredentialReplaceBody(ProviderConnectionMutationBody):
@@ -1533,6 +1546,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ServerCredentialPresenceResolver(),
     )
     provider_connection_service = dependencies.provider_connection_service
+    provider_health_settings_service = dependencies.provider_health_settings_service
     user_provider_credential_service = None
     provider_cipher = None
     if (
@@ -1679,6 +1693,38 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             dependencies.cloud_store, dependencies.object_storage,
             creation_enforcer=enforce_license_creation if license_enforcement_enabled else None,
         ))
+    provider_health_stop = asyncio.Event()
+    provider_health_task: asyncio.Task[None] | None = None
+
+    async def provider_health_loop() -> None:
+        if provider_connection_service is None or provider_health_settings_service is None:
+            return
+        health_context = ProviderConnectionAdminContext(
+            tenant_id="system", actor_id="provider-health-monitor",
+            trace_id="provider-health-monitor", policy_version=dependencies.settings.policy_version,
+        )
+        monitor = ProviderHealthMonitor(
+            list_connections=lambda: tuple(
+                ProviderHealthConnection(connection_id)
+                for connection_id in provider_connection_service.list_active_connection_ids(health_context)
+            ),
+            check_connection=lambda item: str(
+                provider_connection_service.check_active_connection(
+                    health_context, item.connection_id,
+                )["status"]
+            ),
+        )
+        while not provider_health_stop.is_set():
+            interval = await asyncio.to_thread(
+                provider_health_settings_service.get, health_context,
+            )
+            try:
+                await asyncio.wait_for(
+                    provider_health_stop.wait(), timeout=interval.interval_minutes * 60,
+                )
+            except TimeoutError:
+                await asyncio.to_thread(monitor.run_once)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # Resume durable deletion requests after the process is ready. The
@@ -1687,8 +1733,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         resume = getattr(dependencies.notebook_deletion_worker, "resume_startup", None)
         if callable(resume):
             await asyncio.to_thread(resume)
-        yield
-        dependencies.close()
+        nonlocal provider_health_task
+        if provider_connection_service is not None and provider_health_settings_service is not None:
+            provider_health_task = asyncio.create_task(provider_health_loop())
+        try:
+            yield
+        finally:
+            provider_health_stop.set()
+            if provider_health_task is not None:
+                await provider_health_task
+            dependencies.close()
 
     class TimedApiRoute(APIRoute):
         def get_route_handler(self) -> Any:
@@ -2132,6 +2186,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return _error_response(
             error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
             request.state.trace_id, retryable=error.retryable,
+        )
+
+    @app.exception_handler(ProviderHealthSettingsError)
+    async def provider_health_settings_error(
+        request: Request, error: ProviderHealthSettingsError,
+    ) -> JSONResponse:
+        return _error_response(
+            error.status,
+            error.code if error.code in {"PROVIDER_HEALTH_INTERVAL_INVALID", "VERSION_CONFLICT"} else "INVALID_REQUEST",
+            request.state.trace_id,
         )
 
     @app.exception_handler(UserProviderCredentialError)
@@ -4656,6 +4720,44 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         return Response(status_code=204)
 
+    @app.get("/api/v1/admin/provider-health-settings")
+    async def get_provider_health_settings(request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _principal_value, context = _provider_admin_context(request)
+        if provider_health_settings_service is None:
+            raise ProviderConnectionAdminError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
+        settings_view = await asyncio.to_thread(
+            provider_health_settings_service.get, context,
+        )
+        return JSONResponse({
+            "data": {
+                "interval_minutes": settings_view.interval_minutes,
+                "version": settings_view.version,
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        })
+
+    @app.patch("/api/v1/admin/provider-health-settings")
+    async def save_provider_health_settings(
+        body: ProviderHealthSettingsBody, request: Request,
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _principal_value, context = _provider_admin_context(request)
+        if provider_health_settings_service is None:
+            raise ProviderConnectionAdminError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
+        settings_view = await asyncio.to_thread(
+            provider_health_settings_service.save, context,
+            interval_minutes=body.interval_minutes,
+            expected_version=body.expected_version,
+        )
+        return JSONResponse({
+            "data": {
+                "interval_minutes": settings_view.interval_minutes,
+                "version": settings_view.version,
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        })
+
     @app.get("/api/v1/admin/provider-connections")
     async def list_provider_connections(request: Request) -> JSONResponse:
         _require_query_keys(request, frozenset())
@@ -5540,6 +5642,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         else PostgresCloudStore(settings.cloud_database_dsn)
     )
     provider_connection_service = None
+    provider_health_settings_service = None
     workspace_model_defaults_service = None
     if cloud_store is not None and settings.provider_credential_key_file is not None:
         try:
@@ -5548,6 +5651,9 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
             raise ValueError("PROVIDER_CREDENTIAL_KEY_REFERENCE_UNAVAILABLE") from None
         provider_cipher = ProviderCredentialCipher(provider_key, encryption_key_version=1)
         provider_connection_service = PostgresProviderConnectionService(cloud_store, provider_cipher)
+        provider_health_settings_service = PostgresProviderHealthCheckSettingsService(
+            PostgresProviderHealthSettingsRepository(cloud_store),
+        )
         workspace_model_defaults_service = PostgresWorkspaceModelDefaultsService(cloud_store)
     object_storage: ObjectStoragePort | None = None
     if settings.object_storage_endpoint is not None:
@@ -5651,6 +5757,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         recovery_service=recovery_service,
         object_queue_store=object_queue_store,
         provider_connection_service=provider_connection_service,
+        provider_health_settings_service=provider_health_settings_service,
         workspace_model_defaults_service=workspace_model_defaults_service,
         source_upload_service=source_upload_service,
         document_processing_service=document_processing_service,

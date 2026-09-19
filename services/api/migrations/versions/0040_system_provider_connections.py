@@ -32,7 +32,8 @@ def upgrade() -> None:
           connection_id text PRIMARY KEY,
           provider_code text NOT NULL CHECK (provider_code IN (
             'CEREBRAS','GROQ','MISTRAL','OPENAI','UPSTAGE','GEMINI',
-            'OPENROUTER','ANTHROPIC','OLLAMA','OMNIROUTE','EOUL_GATEWAY'
+            'OPENROUTER','ANTHROPIC','OLLAMA','OMNIROUTE','EOUL_GATEWAY',
+            'MEDIA_BRIDGE','SENTENCE_TRANSFORMERS'
           )),
           display_name text NOT NULL CHECK (length(display_name) BETWEEN 1 AND 256),
           base_url text NOT NULL CHECK (length(base_url) BETWEEN 1 AND 2048),
