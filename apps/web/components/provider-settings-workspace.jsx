@@ -9,7 +9,6 @@ const PROVIDERS = Object.freeze([
   "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
   "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS"
 ]);
-const NO_CREDENTIAL_PROVIDERS = new Set(["OLLAMA", "MEDIA_BRIDGE"]);
 const MANAGED_MODEL_PROVIDERS = new Set(["OLLAMA", "MEDIA_BRIDGE", "OMNIROUTE"]);
 const CAPABILITY_LABELS = Object.freeze({
   text_generation: "텍스트 생성",
@@ -78,9 +77,7 @@ export function formatModelChoice(connection, model) {
 }
 
 export function projectProviderConnection(connection) {
-  const credential = NO_CREDENTIAL_PROVIDERS.has(connection?.provider_code)
-    ? "Credential 불필요"
-    : connection?.configured ? "Credential 설정됨" : "Credential 없음";
+  const credential = connection?.configured ? "Credential 설정됨" : "Credential 없음";
   if (!connection?.enabled) {
     return { label: `비활성 · ${credential}`, verified: false };
   }
@@ -112,6 +109,14 @@ export function canRefreshCatalog(connection, busy) {
   return !busy && Number(connection?.version ?? 0) > 0
     && !MANAGED_MODEL_PROVIDERS.has(connection?.provider_code)
     && connection?.configured === true;
+}
+
+export function canSaveCredential(connection, draft, credential, busy) {
+  const isNewConnection = Number(draft?.version ?? 0) === 0;
+  return !busy && Boolean(credential?.trim()) && Boolean(draft?.connection_id?.trim())
+    && (isNewConnection
+      ? Boolean(draft?.display_name?.trim()) && Boolean(draft?.base_url?.trim())
+      : Boolean(connection));
 }
 
 function normalizedLogicalModels(value) {
@@ -288,10 +293,8 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
 
   const busy = status.kind === "saving" || status.kind === "loading";
   const managedModels = MANAGED_MODEL_PROVIDERS.has(selectedConnection?.provider_code);
-  const credentialRequired = !NO_CREDENTIAL_PROVIDERS.has(selectedConnection?.provider_code);
   const canMutate = isSystemAdmin === true && !busy && Boolean(draft.connection_id.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim());
-  const canUsePersonalCredential = credentialRequired && (isSystemAdmin || Number(selectedConnection?.version ?? 0) > 0);
-  const canReplaceCredential = !busy && canUsePersonalCredential && Boolean(credential) && Boolean(selectedConnection);
+  const canUsePersonalCredential = isSystemAdmin || Number(selectedConnection?.version ?? 0) > 0;
   const Root = embedded ? "div" : "main";
 
   return (
@@ -318,16 +321,17 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
                 <label>Provider<select value={draft.provider_code} disabled={draft.version > 0} onChange={(event) => setDraft((current) => ({ ...current, provider_code: event.target.value, base_url: connections.find((connection) => connection.provider_code === event.target.value)?.base_url ?? current.base_url }))}>{PROVIDERS.map((provider) => <option value={provider} key={provider}>{provider}</option>)}</select></label>
                 <label>연결 이름<input value={draft.display_name} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} /></label>
                 <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
-                <label className="provider-field-wide">연결할 모델 (선택)<textarea value={draft.logical_model_ids} rows={2} placeholder="모델 ID를 입력하지 않으면 Provider 기준 모델을 사용합니다." onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label><p className="provider-field-wide provider-form-note">{managedModels ? "이 Provider는 모델 목록을 Daon에 저장하지 않으며, 지정한 모델이 없으면 Provider가 기준 모델을 선택합니다." : <>API Key 저장과 <strong>모델 조회</strong>는 선택 사항입니다. 필요할 때만 모델 목록을 확인하고, 모델을 지정하지 않으면 Provider 기준 모델을 사용합니다.</>}</p>
+                {!managedModels ? <label className="provider-field-wide">연결할 모델 (선택)<textarea value={draft.logical_model_ids} rows={2} placeholder="모델 ID를 입력하지 않으면 Provider 기준 모델을 사용합니다." onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label> : null}<p className="provider-field-wide provider-form-note">{managedModels ? "이 Provider는 모델 목록을 Daon에 저장하지 않으며, 지정한 모델이 없으면 Provider가 기준 모델을 선택합니다." : <>API Key 저장과 <strong>모델 조회</strong>는 선택 사항입니다. 필요할 때만 모델 목록을 확인하고, 모델을 지정하지 않으면 Provider 기준 모델을 사용합니다.</>}</p>
               </> : <p className="provider-field-wide">공유 연결의 Endpoint와 모델 목록은 숨겨져 있습니다. 아래에서 이 연결의 API Key만 교체할 수 있습니다.</p>}
-              {!managedModels ? <label>API Key 또는 Client Key{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!credentialRequired ? "이 Provider는 API Key가 필요하지 않습니다" : !isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : "키를 입력하세요"} onChange={(event) => setCredential(event.target.value)} /></label> : <p className="provider-field-wide provider-form-note">API Key 없음 · Provider가 모델과 인증을 관리합니다.</p>}
+              <label>API Key 또는 Client Key (선택){isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} placeholder={!isSystemAdmin && !canUsePersonalCredential ? "관리자가 먼저 Provider 연결을 등록해야 합니다" : "키를 입력하지 않으면 Provider 기본 인증을 사용합니다"} onChange={(event) => setCredential(event.target.value)} /></label>
             </div>
             {isSystemAdmin ? <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label> : null}
             <div className="provider-detail-actions">
               {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate}>연결 저장</button> : null}
-              {!managedModels ? <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canReplaceCredential}>{isSystemAdmin ? "시스템 키 저장" : "내 계정 키 저장"}</button> : null}
+              <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canSaveCredential(selectedConnection, draft, credential, busy) || !canUsePersonalCredential}>{isSystemAdmin ? "시스템 키 저장" : "내 계정 키 저장"}</button>
               {!isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteUserCredential} disabled={busy || !canUsePersonalCredential || !userCredentials[selectedConnection?.connection_id]}>내 계정 키 삭제</button> : null}
-              {isSystemAdmin && !managedModels ? <><button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured}>키 삭제</button><button className="secondary-button" type="button" onClick={refreshCatalog} disabled={!canRefreshCatalog(selectedConnection, busy)} title={selectedConnection?.configured ? "저장된 API Key로 모델 목록을 수동 조회합니다." : "먼저 API Key를 저장하세요."}>모델 조회</button></> : null}
+              {isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured}>키 삭제</button> : null}
+              {isSystemAdmin && !managedModels ? <button className="secondary-button" type="button" onClick={refreshCatalog} disabled={!canRefreshCatalog(selectedConnection, busy)} title={selectedConnection?.configured ? "저장된 API Key로 모델 목록을 수동 조회합니다." : "먼저 API Key를 저장하세요."}>모델 조회</button> : null}
             </div>
           </div>
         </div>
