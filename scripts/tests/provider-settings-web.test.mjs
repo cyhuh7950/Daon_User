@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -71,7 +72,7 @@ test("provider settings helper uses only the approved same-origin admin routes",
 
 test("system admin sees named multi-connections, password-only secrets, catalogs and capability readiness", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(root, ".provider-settings-react-"));
+  const output = await mkdtemp(path.join(tmpdir(), "provider-settings-react-"));
   const dom = installMinimalDom();
   const originalFetch = globalThis.fetch;
   let reactRoot;
@@ -109,13 +110,13 @@ test("system admin sees named multi-connections, password-only secrets, catalogs
       await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
     });
 
-    for (const label of ["연결 이름", "Endpoint", "LAN Ollama · qwen3", "Lab Ollama · qwen3", "키 저장 및 연결 확인", "키 삭제", "카탈로그 새로고침", "텍스트 생성", "임베딩", "준비 중"]) {
+    for (const label of ["연결 이름", "Endpoint", "LAN Ollama · qwen3", "Lab Ollama · qwen3", "키 저장 및 연결 확인", "키 삭제", "모델 조회", "텍스트 생성", "임베딩"]) {
       assert.match(container.textContent, new RegExp(label, "u"));
     }
+    assert.ok(findElements(container, (node) => node.tagName === "INPUT" && node.value === endpoint).length >= 1);
     const passwordInputs = findElements(container, (node) => node.tagName === "INPUT" && (node.type === "password" || node.getAttribute("type") === "password"));
     assert.equal(passwordInputs.length, 2);
-    assert.ok(findElements(container, (node) => node.tagName === "BUTTON" && node.disabled && /준비 중/u.test(node.textContent)).length >= 1);
-    assert.doesNotMatch(container.textContent, new RegExp(`${endpoint}|${rawCredential}|역할 매핑 저장`, "u"));
+    assert.doesNotMatch(container.textContent, new RegExp(`${endpoint}|${rawCredential}|역할 매핑 저장|기능별 모델 선택|모델 기능 보정`, "u"));
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     globalThis.fetch = originalFetch;
@@ -126,7 +127,7 @@ test("system admin sees named multi-connections, password-only secrets, catalogs
 
 test("non-system admin never receives credential mutation controls or calls the admin list", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(root, ".provider-settings-workspace-react-"));
+  const output = await mkdtemp(path.join(tmpdir(), "provider-settings-workspace-react-"));
   const dom = installMinimalDom();
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -144,8 +145,7 @@ test("non-system admin never receives credential mutation controls or calls the 
     await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
     assert.deepEqual(requests, ["/bff/api/session", "/bff/api/workspaces/workspace-001/model-defaults"]);
     assert.equal(findElements(container, (node) => node.tagName === "INPUT" && (node.type === "password" || node.getAttribute("type") === "password")).length, 0);
-    assert.doesNotMatch(container.textContent, /키 저장 및 연결 확인|키 삭제|카탈로그 새로고침|역할 매핑 저장/u);
-    assert.match(container.textContent, /Workspace 기본 모델/u);
+    assert.doesNotMatch(container.textContent, /키 저장 및 연결 확인|키 삭제|모델 조회|역할 매핑 저장|기능별 모델 선택/u);
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     globalThis.fetch = originalFetch;
@@ -156,7 +156,7 @@ test("non-system admin never receives credential mutation controls or calls the 
 
 test("provider view helpers expose safe status and connection-name model choices only", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
-  const output = await mkdtemp(path.join(root, ".provider-settings-helpers-"));
+  const output = await mkdtemp(path.join(tmpdir(), "provider-settings-helpers-"));
   try {
     const { formatModelChoice, projectProviderConnection, safeProviderErrorMessage } = await bundleProvider(root, output, "provider-helpers");
     assert.equal(formatModelChoice({ display_name: "LAN Ollama" }, { model_id: "qwen3" }), "LAN Ollama · qwen3");

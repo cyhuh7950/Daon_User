@@ -22,6 +22,23 @@ from .provider_credentials import (
 from .provider_settings import ProviderSettingsError, validate_provider_base_url
 
 
+DEFAULT_PROVIDER_ENDPOINTS = {
+    "CEREBRAS": "https://api.cerebras.ai/v1",
+    "GROQ": "https://api.groq.com/openai/v1",
+    "MISTRAL": "https://api.mistral.ai/v1",
+    "OPENAI": "https://api.openai.com/v1",
+    "UPSTAGE": "https://api.upstage.ai/v1",
+    "GEMINI": "https://generativelanguage.googleapis.com/v1beta",
+    "OPENROUTER": "https://openrouter.ai/api/v1",
+    "ANTHROPIC": "https://api.anthropic.com/v1",
+    "OLLAMA": "http://localhost:11434",
+    "OMNIROUTE": "http://localhost:20128/home",
+    "EOUL_GATEWAY": "http://localhost:8660",
+    "MEDIA_BRIDGE": "http://localhost:20129",
+    "SENTENCE_TRANSFORMERS": "http://localhost:8000",
+}
+
+
 class ProviderConnectionAdminError(RuntimeError):
     def __init__(self, code: str, status: int = 400, *, retryable: bool = False) -> None:
         self.code = code
@@ -212,12 +229,12 @@ class PostgresProviderConnectionService:
         ).fetchall()
         return {
             "connection_id": str(row[0]), "provider_code": str(row[1]),
-            "display_name": str(row[2]), "enabled": bool(row[3]),
-            "configured": row[4] is not None, "credential_version": int(row[5]),
-            "verification_status": str(row[6]),
-            "verified_at": None if row[7] is None else cast(datetime, row[7]).isoformat(),
-            "version": int(row[8]), "catalog_status": "stale" if row[9] is None else str(row[9]),
-            "catalog_version": 0 if row[10] is None else int(row[10]),
+            "display_name": str(row[2]), "base_url": str(row[3]), "enabled": bool(row[4]),
+            "configured": row[5] is not None, "credential_version": int(row[6]),
+            "verification_status": str(row[7]),
+            "verified_at": None if row[8] is None else cast(datetime, row[8]).isoformat(),
+            "version": int(row[9]), "catalog_status": "stale" if row[10] is None else str(row[10]),
+            "catalog_version": 0 if row[11] is None else int(row[11]),
             "models": [cls._model_view(item) for item in model_rows],
         }
 
@@ -228,7 +245,7 @@ class PostgresProviderConnectionService:
         where = "" if connection_id is None else "WHERE c.connection_id=%s "
         params: tuple[object, ...] = () if connection_id is None else (connection_id,)
         return connection.execute(
-            "SELECT c.connection_id,c.provider_code,c.display_name,c.enabled,c.encrypted_credential,"
+            "SELECT c.connection_id,c.provider_code,c.display_name,c.base_url,c.enabled,c.encrypted_credential,"
             "c.credential_version,c.verification_status,c.verified_at,c.version,"
             "max(m.catalog_status),max(m.catalog_version) FROM system_provider_connections c "
             "LEFT JOIN system_provider_models m ON m.connection_id=c.connection_id " + where +
@@ -237,7 +254,27 @@ class PostgresProviderConnectionService:
 
     def list_connections(self, context: ProviderConnectionAdminContext) -> list[dict[str, object]]:
         with self._store._transaction(self._cloud(context)) as connection:
-            return [self._safe_connection(connection, row) for row in self._select_summary(connection)]
+            items = [self._safe_connection(connection, row) for row in self._select_summary(connection)]
+            registered = {str(item["provider_code"]) for item in items}
+            for provider_code, base_url in DEFAULT_PROVIDER_ENDPOINTS.items():
+                if provider_code in registered:
+                    continue
+                items.append({
+                    "connection_id": f"provider-{provider_code.lower()}",
+                    "provider_code": provider_code,
+                    "display_name": provider_code,
+                    "base_url": base_url,
+                    "enabled": False,
+                    "configured": False,
+                    "credential_version": 0,
+                    "verification_status": "unverified",
+                    "verified_at": None,
+                    "version": 0,
+                    "catalog_status": "stale",
+                    "catalog_version": 0,
+                    "models": [],
+                })
+            return items
 
     @staticmethod
     def _load(connection: Connection[tuple[Any, ...]], connection_id: str) -> tuple[Any, ...]:
