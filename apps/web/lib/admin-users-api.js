@@ -5,6 +5,11 @@ const SAFE_TRACE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const USER_STATES = new Set(["active", "suspended", "pending_email", "pending_approval"]);
 const MUTABLE_STATES = new Set(["active", "suspended"]);
 
+export function createAdminUserIdempotencyKey(prefix) {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return `${prefix}-${crypto.randomUUID()}`;
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function exact(value, keys) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const actual = Object.keys(value).sort();

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentNotebookSession } from "../lib/notebook-api.js";
 import {
   approveAdminUser, changeAdminUserState, createAdminUser, deleteAdminUser,
-  listAdminUsers, updateAdminUser,
+  listAdminUsers, updateAdminUser, createAdminUserIdempotencyKey,
 } from "../lib/admin-users-api.js";
 import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-route-guard.js";
 
@@ -86,7 +86,7 @@ export function AdminUserConsole({
     pendingIds.current.add(user.user_id); setPending(new Set(pendingIds.current)); setError(null);
     const nextState = user.state === "active" ? "suspended" : "active";
     try {
-      const changed = await setUserState(user.user_id, nextState, { idempotencyKey: `admin-state-${crypto.randomUUID()}` });
+      const changed = await setUserState(user.user_id, nextState, { idempotencyKey: createAdminUserIdempotencyKey("admin-state") });
       setUsers((current) => current.map((item) => item.user_id === changed.user_id ? changed : item));
     } catch (caught) {
       setError(new Set(["PROTECTED_ADMIN_ACCOUNT", "IDEMPOTENCY_KEY_REUSED", "FORBIDDEN"]).has(caught?.message)
@@ -96,7 +96,7 @@ export function AdminUserConsole({
     }
   };
 
-  const operationKey = (prefix) => `${prefix}-${crypto.randomUUID()}`;
+  const operationKey = createAdminUserIdempotencyKey;
   const saveUser = async (event) => {
     event.preventDefault();
     setError(null);
