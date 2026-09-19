@@ -158,7 +158,7 @@ test("Provider 연결 확인은 비밀·Endpoint 없는 안전 상태 계약이�
   }
 });
 
-test("시스템 Provider 연결 관리 계약은 admin step-up version과 비밀 비노출을 고정한다", async () => {
+test("시스템 Provider 연결 관리 계약은 admin 권한과 비밀 비노출을 고정한다", async () => {
   const document = await loadContract();
   const paths = [
     "/api/v1/admin/provider-connections",
@@ -184,8 +184,7 @@ test("시스템 Provider 연결 관리 계약은 admin step-up version과 비밀
   ]) {
     const request = document.components.schemas[name];
     assert.ok(request.required.includes("expected_version"));
-    assert.ok(request.required.includes("step_up_authorization_id"));
-    assert.equal(request.properties.step_up_authorization_id.writeOnly, true);
+    assert.equal(request.properties.step_up_authorization_id, undefined);
   }
   assert.equal(document.components.schemas.ProviderConnectionCreateRequest.properties.credential.writeOnly, true);
   assert.equal(document.components.schemas.ProviderConnectionUpdateRequest.properties.credential.writeOnly, true);
@@ -209,7 +208,7 @@ test("Workspace model defaults와 credential-only rotation은 versioned secret-s
   const rotation = document.paths["/api/v1/admin/provider-connections/{connection_id}/credential"].post;
   assert.ok(rotation.parameters.some((item) => item.$ref === "#/components/parameters/IdempotencyKey"));
   const request = document.components.schemas.ProviderCredentialReplaceRequest;
-  assert.deepEqual(request.required, ["credential", "expected_version", "step_up_authorization_id"]);
+  assert.deepEqual(request.required, ["credential", "expected_version"]);
   assert.equal(request.properties.credential.writeOnly, true);
   assert.equal(request.properties.base_url, undefined);
   const model = document.components.schemas.WorkspaceAvailableModel;
@@ -220,7 +219,7 @@ test("Workspace model defaults와 credential-only rotation은 versioned secret-s
 
 test("OpenAPI 검증기는 body-versioned Provider mutation의 expected_version 누락을 거부한다", async () => {
   const document = clone(await loadContract());
-  document.components.schemas.ProviderConnectionMutationRequest.required = ["step_up_authorization_id"];
+  document.components.schemas.ProviderConnectionMutationRequest.required = [];
   assert.throws(() => validateOpenApiDocument(document), /expected_version/i);
 });
 

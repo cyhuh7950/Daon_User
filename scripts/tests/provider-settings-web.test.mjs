@@ -29,16 +29,12 @@ test("provider settings helper uses only the approved same-origin admin routes",
     if (String(url) === "/bff/api/admin/provider-connections" && options.method === "GET") {
       return Response.json({ data: [], meta: { trace_id: "trace-list" } }, { headers: { etag: '"connections:1"' } });
     }
-    if (String(url) === "/bff/api/session/step-up") {
-      return Response.json({ data: { step_up_authorization: "step-up-token", issued_at: "2026-09-17T00:00:00Z", expires_at: "2026-09-17T00:05:00Z" }, meta: { trace_id: "trace-step-up" } });
-    }
     if (options.method === "DELETE") return new Response(null, { status: 204, headers: { etag: '"connection:3"' } });
     return Response.json({ data: { connection_id: "ollama-lan", version: 2, catalog_version: 3 }, meta: { trace_id: "trace-mutation" } });
   };
   try {
     await providerSettingsApi.listConnections();
     await providerSettingsApi.getModelDefaults("workspace-001");
-    await providerSettingsApi.issueStepUp("provider-connection:ollama-lan", "administrator-password", "stepup-0001");
     await providerSettingsApi.createConnection({ connection_id: "ollama-lan" }, "create-0001");
     await providerSettingsApi.updateConnection("ollama-lan", { expected_version: 1 }, "update-0001");
     await providerSettingsApi.replaceCredential("ollama-lan", { credential: "replacement", expected_version: 2 }, "credential-0001");
@@ -53,7 +49,6 @@ test("provider settings helper uses only the approved same-origin admin routes",
   assert.deepEqual(requests.map(({ url, options }) => [options.method ?? "GET", url]), [
     ["GET", "/bff/api/admin/provider-connections"],
     ["GET", "/bff/api/workspaces/workspace-001/model-defaults"],
-    ["POST", "/bff/api/session/step-up"],
     ["POST", "/bff/api/admin/provider-connections"],
     ["PUT", "/bff/api/admin/provider-connections/ollama-lan"],
     ["POST", "/bff/api/admin/provider-connections/ollama-lan/credential"],
@@ -62,7 +57,6 @@ test("provider settings helper uses only the approved same-origin admin routes",
     ["PATCH", "/bff/api/admin/provider-models/ollama-lan/qwen3/capabilities"],
     ["PATCH", "/bff/api/workspaces/workspace-001/model-defaults"],
   ]);
-  assert.equal(JSON.parse(requests[2].options.body).password, "administrator-password");
   assert.equal(requests.at(-1).options.headers["If-Match"], '"defaults-v0"');
   for (const request of requests) assert.equal(request.options.credentials, "same-origin");
   const source = await read("apps/web/lib/provider-settings-api.js");
@@ -115,7 +109,7 @@ test("system admin sees named multi-connections, password-only secrets, catalogs
     }
     assert.ok(findElements(container, (node) => node.tagName === "INPUT" && node.value === endpoint).length >= 1);
     const passwordInputs = findElements(container, (node) => node.tagName === "INPUT" && (node.type === "password" || node.getAttribute("type") === "password"));
-    assert.equal(passwordInputs.length, 2);
+    assert.equal(passwordInputs.length, 1);
     assert.doesNotMatch(container.textContent, new RegExp(`${endpoint}|${rawCredential}|역할 매핑 저장|기능별 모델 선택|모델 기능 보정`, "u"));
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));

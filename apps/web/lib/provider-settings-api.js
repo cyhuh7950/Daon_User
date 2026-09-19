@@ -39,18 +39,6 @@ export const providerSettingsApi = Object.freeze({
       method: "DELETE", body: input,
     });
   },
-  issueStepUp(targetId, password, idempotencyKey) {
-    return request("/bff/api/session/step-up", {
-      method: "POST",
-      body: {
-        action_group: "organization_security_or_connector_policy_change",
-        target_id: targetId,
-        password,
-        ttl_seconds: 300
-      },
-      headers: { "Idempotency-Key": idempotencyKey }
-    });
-  },
   createConnection(input, idempotencyKey) {
     return request("/bff/api/admin/provider-connections", {
       method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }

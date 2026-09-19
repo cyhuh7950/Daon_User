@@ -114,8 +114,6 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(() => emptyConnectionDraft());
   const [credential, setCredential] = useState("");
-  const [administratorPassword, setAdministratorPassword] = useState("");
-  const [stepUpAction, setStepUpAction] = useState(null);
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
 
   const selectConnection = useCallback((connection) => {
@@ -171,28 +169,6 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       : connection.models.filter((model) => model.catalog_status === "ready").map((model) => ({ connection, model }))
   )), [connections]);
 
-  async function stepUp(targetId) {
-    const result = await providerSettingsApi.issueStepUp(
-      targetId, administratorPassword, operationKey("provider-step-up")
-    );
-    const authorization = result.payload?.data?.step_up_authorization;
-    if (typeof authorization !== "string" || !authorization) throw new Error("STEP_UP_RESPONSE_INVALID");
-    return authorization;
-  }
-
-  function requestStepUp(action) {
-    setAdministratorPassword("");
-    setStepUpAction(() => action);
-  }
-
-  async function confirmStepUp(event) {
-    event.preventDefault();
-    const action = stepUpAction;
-    if (!action || !administratorPassword) return;
-    setStepUpAction(null);
-    await action();
-  }
-
   async function saveConnection(includeCredential) {
     const connectionId = draft.connection_id.trim();
     if (!isSystemAdmin) {
@@ -215,13 +191,11 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
     const action = includeCredential ? "credential" : "provider";
     setStatus({ kind: "saving", message: "Provider 연결을 검증하고 저장하는 중입니다." });
     try {
-      const authorization = await stepUp(`provider-connection:${connectionId}`);
       let result;
       if (includeCredential && draft.version > 0) {
         result = await providerSettingsApi.replaceCredential(connectionId, {
           credential,
-          expected_version: draft.version,
-          step_up_authorization_id: authorization
+          expected_version: draft.version
         }, operationKey("provider-credential-replace"));
       } else {
         const body = {
@@ -230,7 +204,6 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
           logical_model_ids: normalizedLogicalModels(draft.logical_model_ids),
           enabled: draft.enabled,
           expected_version: draft.version,
-          step_up_authorization_id: authorization,
           ...(includeCredential ? { credential } : {})
         };
         result = draft.version === 0
@@ -240,11 +213,9 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
       const item = result.payload.data;
       applyConnections([...connections.filter((connection) => connection.connection_id !== item.connection_id), item], item.connection_id);
       setCredential("");
-      setAdministratorPassword("");
       setStatus({ kind: "ready", message: includeCredential ? "키를 저장하고 연결을 확인했습니다." : "Provider 연결을 저장했습니다." });
     } catch (error) {
       setCredential("");
-      setAdministratorPassword("");
       setStatus({ kind: "error", message: safeProviderErrorMessage(action, error) });
     }
   }
@@ -273,17 +244,13 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
     if (!selectedConnection) return;
     setStatus({ kind: "saving", message: "Credential을 삭제하는 중입니다." });
     try {
-      const authorization = await stepUp(`provider-connection:${selectedConnection.connection_id}`);
       await providerSettingsApi.deleteCredential(selectedConnection.connection_id, {
-        expected_version: selectedConnection.version,
-        step_up_authorization_id: authorization
+        expected_version: selectedConnection.version
       }, operationKey("provider-credential-delete"));
       setCredential("");
-      setAdministratorPassword("");
       await load();
       setStatus({ kind: "ready", message: "Credential을 삭제했습니다. 연결과 카탈로그는 유지됩니다." });
     } catch (error) {
-      setAdministratorPassword("");
       setStatus({ kind: "error", message: safeProviderErrorMessage("credential", error) });
     }
   }
@@ -292,17 +259,13 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
     if (!selectedConnection) return;
     setStatus({ kind: "saving", message: "모델 카탈로그를 새로고침하는 중입니다." });
     try {
-      const authorization = await stepUp(`provider-connection:${selectedConnection.connection_id}`);
       const result = await providerSettingsApi.refreshCatalog(selectedConnection.connection_id, {
-        expected_version: selectedConnection.version,
-        step_up_authorization_id: authorization
+        expected_version: selectedConnection.version
       }, operationKey("provider-catalog-refresh"));
       const item = result.payload.data;
       applyConnections([...connections.filter((connection) => connection.connection_id !== item.connection_id), item], item.connection_id);
-      setAdministratorPassword("");
       setStatus({ kind: "ready", message: "모델 카탈로그를 새로고침했습니다." });
     } catch (error) {
-      setAdministratorPassword("");
       setStatus({ kind: "error", message: safeProviderErrorMessage("catalog", error) });
     }
   }
@@ -343,10 +306,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
             </div>
             {isSystemAdmin ? <label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label> : null}
             <div className="provider-detail-actions">
-              {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => requestStepUp(() => saveConnection(false))} disabled={!canMutate}>연결 저장</button> : null}
-              <button className="primary-button" type="button" onClick={() => isSystemAdmin ? requestStepUp(() => saveConnection(true)) : saveConnection(true)} disabled={!canReplaceCredential}>{isSystemAdmin ? "시스템 키 저장" : "내 계정 키 저장"}</button>
+              {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate}>연결 저장</button> : null}
+              <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canReplaceCredential}>{isSystemAdmin ? "시스템 키 저장" : "내 계정 키 저장"}</button>
               {!isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteUserCredential} disabled={busy || !canUsePersonalCredential || !userCredentials[selectedConnection?.connection_id]}>내 계정 키 삭제</button> : null}
-              {isSystemAdmin ? <><button className="secondary-button danger-button" type="button" onClick={() => requestStepUp(deleteCredential)} disabled={busy || !selectedConnection?.configured}>키 삭제</button><button className="secondary-button" type="button" onClick={() => requestStepUp(refreshCatalog)} disabled={busy || !selectedConnection}>모델 조회</button></> : null}
+              {isSystemAdmin ? <><button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured}>키 삭제</button><button className="secondary-button" type="button" onClick={refreshCatalog} disabled={busy || !selectedConnection}>모델 조회</button></> : null}
             </div>
           </div>
         </div>
@@ -361,7 +324,6 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
           {isSystemAdmin === true && !adminAvailableModels.length ? <div className="provider-empty"><strong>조회된 모델이 없습니다.</strong><small>Provider에 API Key를 저장한 뒤 `모델 조회`를 실행하세요.</small></div> : null}
         </div>
       </section>
-      {stepUpAction ? <div className="provider-step-up-backdrop" role="presentation"><form className="provider-step-up-dialog" role="dialog" aria-modal="true" aria-labelledby="provider-step-up-title" onSubmit={confirmStepUp}><h2 id="provider-step-up-title">관리자 확인</h2><p>민감한 Provider 설정을 변경하려면 관리자 비밀번호가 필요합니다.</p><label>현재 비밀번호<input type="password" autoFocus autoComplete="current-password" value={administratorPassword} onChange={(event) => setAdministratorPassword(event.target.value)} /></label><div className="provider-detail-actions"><button className="secondary-button" type="button" onClick={() => { setStepUpAction(null); setAdministratorPassword(""); }}>취소</button><button className="primary-button" type="submit" disabled={!administratorPassword}>확인</button></div></form></div> : null}
     </Root>
   );
 }
