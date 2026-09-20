@@ -8,7 +8,7 @@ import { createProductStudioState, selectOutputType } from "../../packages/ui/sr
 import { createProductWorkspaceState } from "../../packages/ui/src/product-workspace-model.js";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
 
-const PROVIDERS = ["CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI", "OPENROUTER", "ANTHROPIC", "OLLAMA"];
+const PROVIDERS = ["CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI", "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY"];
 
 async function bundle(entry, fileName, output) {
   const root = path.resolve(import.meta.dirname, "../..");
@@ -92,7 +92,7 @@ test("보고서 Tile 선택은 설정 View를 열고 3열 Grid·Library·상태 
   }
 });
 
-test("설정 anchored menu에서 LLM 설정 accessible modal을 열고 9 Provider를 표시한다", async () => {
+test("설정 anchored menu에서 LLM 설정 accessible modal을 열고 승인된 Provider 유형을 표시한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".web-final-settings-react-"));
   const dom = installMinimalDom();
@@ -330,27 +330,21 @@ test("생성 중·실패·완료는 동시에 노출되지 않고 안전한 사�
   }
 });
 
-test("실제 Provider 설정 View는 9개 카드와 한 Provider 상세만 렌더한다", async () => {
+test("실제 Provider 설정 View는 credential-safe 초기 화면과 capability 기본값 구조를 렌더한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".web-final-provider-react-"));
   try {
     const { createElement } = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const { ProviderSettingsWorkspace, projectProviderConnection, projectProviderEndpoint, safeProviderErrorMessage } = await bundle("apps/web/components/provider-settings-workspace.jsx", "web-final-provider", output);
+    const { ProviderSettingsWorkspace, formatModelChoice, projectProviderConnection, safeProviderErrorMessage } = await bundle("apps/web/components/provider-settings-workspace.jsx", "web-final-provider", output);
     const html = renderToStaticMarkup(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-1", embedded: true }));
-    for (const provider of PROVIDERS) assert.match(html, new RegExp(provider, "u"));
-    assert.equal((html.match(/class="provider-card"/gu) ?? []).length, 9);
-    assert.equal((html.match(/>Endpoint</gu) ?? []).length, 1);
-    assert.match(html, /Endpoint 변경/u);
-    assert.match(html, /UPSTAGE/u);
-    assert.match(html, /Credential 미설정|미설정/u);
-    assert.doesNotMatch(html, /api[_-]?key|secret_value|type="password"/iu);
-    assert.deepEqual(projectProviderConnection({ active: true, credential_configured: true }), { label: "활성 · Credential 설정됨 · 연결 미확인", verified: false });
-    assert.equal(projectProviderEndpoint("http://api:8000/internal"), "Endpoint 설정됨");
-    assert.doesNotMatch(projectProviderEndpoint("http://api:8000/internal"), /api:8000|http/u);
-    assert.equal(safeProviderErrorMessage("provider", { code: "INTERNAL_DOCKER_HOST_api:8000" }), "Provider 설정을 저장하지 못했습니다. 다시 시도해 주세요.");
+    assert.match(html, /Workspace 기본 모델/u);
+    assert.doesNotMatch(html, /역할 매핑 저장|api[_-]?key|secret_value|type="password"/iu);
+    assert.deepEqual(projectProviderConnection({ enabled: true, configured: true, verification_status: "verified" }), { label: "활성 · Credential 설정됨 · 확인됨", verified: true });
+    assert.equal(formatModelChoice({ display_name: "LAN Ollama" }, { model_id: "qwen3" }), "LAN Ollama · qwen3");
+    assert.equal(safeProviderErrorMessage("provider", { code: "INTERNAL_DOCKER_HOST_api:8000" }), "Provider 연결을 저장하지 못했습니다. 다시 시도해 주세요.");
     const source = await readFile(path.join(root, "apps/web/components/provider-settings-workspace.jsx"), "utf8");
-    assert.doesNotMatch(source, /value=\{selectedDraft\.base_url\}|\$\{error\.code/u);
+    assert.doesNotMatch(source, /\$\{error\.code/u);
   } finally {
     await rm(output, { recursive: true, force: true });
   }

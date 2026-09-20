@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -17,11 +18,19 @@ from daon_user_api.cloud_admin import server_version_supported
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "services" / "api" / "migrations" / "versions" / "0001_cloud_foundation.py"
+CLOUD_STORAGE = ROOT / "services" / "api" / "src" / "daon_user_api" / "cloud_storage.py"
+DEFAULT_DENY_CANONICAL_TEXT = (
+    '{"allowed_destinations":[],"allowed_provider_kinds":[],'
+    '"classification":"restricted","masking_required":true,"max_bytes":0,'
+    '"mode":"deny_external","redaction_required":true,'
+    '"required_approver":"organization_admin"}'
+)
+DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25b819d7f"
 
 
 class CloudStorageContractTests(unittest.TestCase):
     def test_readiness_tracks_the_current_notebook_schema_revision(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0026")
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0047")
 
     def test_postgres_major_version_range_accepts_packaging_suffix(self) -> None:
         for value in ("15.13", "16.9 (Debian 16.9-1.pgdg12+1)", "17.5", "18.4"):
@@ -65,6 +74,49 @@ class CloudStorageContractTests(unittest.TestCase):
         ):
             self.assertIn(token, source)
 
+    def test_seed_scope_declares_canonical_default_deny_policy_contract(self) -> None:
+        source = CLOUD_STORAGE.read_text(encoding="utf-8")
+        self.assertIn(DEFAULT_DENY_CANONICAL_TEXT, source)
+        self.assertIn(DEFAULT_DENY_DIGEST, source)
+        self.assertIn("egress-backfill-policy:", source)
+        self.assertIn("egress-backfill-binding:", source)
+        self.assertIn("egress_policy_versions", source)
+        self.assertIn("egress_policy_bindings", source)
+        self.assertIn("NOT EXISTS", source)
+
+    def test_seed_scope_binds_every_sql_placeholder_once(self) -> None:
+        class RecordingConnection:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+            def execute(self, query: str, params: tuple[object, ...] = ()) -> None:
+                self.calls.append((query, params))
+
+        connection = RecordingConnection()
+        store = object.__new__(PostgresCloudStore)
+
+        @contextmanager
+        def transaction(_context):
+            yield connection
+
+        store._transaction = transaction  # type: ignore[method-assign]
+        context = CloudAccessContext(
+            tenant_id="tenant-test",
+            workspace_id="workspace-test",
+            actor_id="user-test",
+            capability="test",
+        )
+
+        store.seed_scope(context)
+
+        self.assertGreaterEqual(len(connection.calls), 5)
+        for query, params in connection.calls:
+            self.assertEqual(
+                query.count("%s"),
+                len(params),
+                msg=f"placeholder/parameter mismatch in query: {query[:120]}",
+            )
+
 
 @unittest.skipUnless(os.environ.get("DAON_TEST_POSTGRES_DSN"), "isolated PostgreSQL DSN required")
 class PostgresCloudIntegrationTests(unittest.TestCase):
@@ -84,7 +136,7 @@ class PostgresCloudIntegrationTests(unittest.TestCase):
     def test_readiness_requires_migration_and_vector(self) -> None:
         status = self.store.readiness()
         self.assertTrue(status.ready)
-        self.assertEqual(status.schema_revision, "0022")
+        self.assertEqual(status.schema_revision, "0047")
         self.assertEqual(status.vector_version, "0.8.2")
 
     def test_rls_blocks_cross_tenant_and_context_does_not_leak(self) -> None:
@@ -94,6 +146,129 @@ class PostgresCloudIntegrationTests(unittest.TestCase):
         self.assertEqual(self.store.get_vector(self.tenant_a, "vector-a"), (1.0, 0.0, 0.0))
         self.assertIsNone(self.store.get_vector(self.tenant_b, "vector-a"))
         self.assertTrue(self.store.context_is_clear())
+
+    def test_seed_scope_creates_idempotent_current_default_deny_policies(self) -> None:
+        self.store.seed_scope(self.tenant_a)
+        self.store.seed_scope(self.tenant_a)
+
+        with self.store._transaction(self.tenant_a) as connection:
+            rows = connection.execute(
+                "SELECT version.scope_type, version.workspace_id, "
+                "version.policy_version_id, binding.binding_id, "
+                "version.canonical_text, version.digest_sha256 "
+                "FROM egress_policy_bindings AS binding "
+                "JOIN egress_policy_versions AS version "
+                "ON version.tenant_id = binding.tenant_id "
+                "AND version.policy_version_id = binding.policy_version_id "
+                "WHERE binding.tenant_id = %s AND binding.current "
+                "ORDER BY version.scope_type",
+                (self.tenant_a.tenant_id,),
+            ).fetchall()
+            expected_ids = connection.execute(
+                "SELECT "
+                "'egress-backfill-policy:' || md5(%s || ':organization'), "
+                "'egress-backfill-binding:' || md5(%s || ':organization'), "
+                "'egress-backfill-policy:' || md5(%s || ':' || %s), "
+                "'egress-backfill-binding:' || md5(%s || ':' || %s)",
+                (
+                    self.tenant_a.tenant_id,
+                    self.tenant_a.tenant_id,
+                    self.tenant_a.tenant_id,
+                    self.tenant_a.workspace_id,
+                    self.tenant_a.tenant_id,
+                    self.tenant_a.workspace_id,
+                ),
+            ).fetchone()
+
+        self.assertIsNotNone(expected_ids)
+        self.assertEqual(len(rows), 2)
+        by_scope = {str(row[0]): row for row in rows}
+        self.assertEqual(by_scope["organization"][1], None)
+        self.assertEqual(by_scope["organization"][2:4], expected_ids[0:2])
+        self.assertEqual(by_scope["workspace"][1], self.tenant_a.workspace_id)
+        self.assertEqual(by_scope["workspace"][2:4], expected_ids[2:4])
+        for row in rows:
+            self.assertEqual(row[4], DEFAULT_DENY_CANONICAL_TEXT)
+            self.assertEqual(row[5], DEFAULT_DENY_DIGEST)
+
+    def test_seed_scope_preserves_existing_current_policies(self) -> None:
+        context = self.tenant_b
+        existing = (
+            ("organization", None, "custom-policy-organization", "custom-binding-organization"),
+            ("workspace", context.workspace_id, "custom-policy-workspace", "custom-binding-workspace"),
+        )
+        with self.store._transaction(context) as connection:
+            connection.execute(
+                "INSERT INTO tenants (tenant_id, display_name) VALUES (%s, %s)",
+                (context.tenant_id, context.tenant_id),
+            )
+            connection.execute(
+                "INSERT INTO workspaces (tenant_id, workspace_id, display_name) VALUES (%s, %s, %s)",
+                (context.tenant_id, context.workspace_id, context.workspace_id),
+            )
+            for scope_type, workspace_id, policy_id, binding_id in existing:
+                connection.execute(
+                    "INSERT INTO egress_policy_versions "
+                    "(tenant_id, organization_id, workspace_id, policy_version_id, scope_type, "
+                    "policy_version, state, canonical_json, canonical_text, digest_sha256, created_by, trace_id) "
+                    "VALUES (%s, %s, %s, %s, %s, 1, 'active', %s::jsonb, %s, %s, %s, %s)",
+                    (
+                        context.tenant_id,
+                        context.tenant_id,
+                        workspace_id,
+                        policy_id,
+                        scope_type,
+                        DEFAULT_DENY_CANONICAL_TEXT,
+                        DEFAULT_DENY_CANONICAL_TEXT,
+                        DEFAULT_DENY_DIGEST,
+                        "test:custom-policy",
+                        f"test:custom-policy:{scope_type}",
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO egress_policy_bindings "
+                    "(tenant_id, organization_id, workspace_id, binding_id, scope_type, "
+                    "policy_version_id, binding_version, active, current, created_by, trace_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 1, true, true, %s, %s)",
+                    (
+                        context.tenant_id,
+                        context.tenant_id,
+                        workspace_id,
+                        binding_id,
+                        scope_type,
+                        policy_id,
+                        "test:custom-policy",
+                        f"test:custom-policy:{scope_type}",
+                    ),
+                )
+
+        self.store.seed_scope(context)
+
+        with self.store._transaction(context) as connection:
+            rows = connection.execute(
+                "SELECT version.policy_version_id, binding.binding_id "
+                "FROM egress_policy_bindings AS binding "
+                "JOIN egress_policy_versions AS version "
+                "ON version.tenant_id = binding.tenant_id "
+                "AND version.policy_version_id = binding.policy_version_id "
+                "WHERE binding.tenant_id = %s AND binding.current "
+                "ORDER BY version.scope_type",
+                (context.tenant_id,),
+            ).fetchall()
+            version_count = connection.execute(
+                "SELECT count(*) FROM egress_policy_versions WHERE tenant_id = %s",
+                (context.tenant_id,),
+            ).fetchone()
+
+        self.assertEqual(
+            rows,
+            [
+                ("custom-policy-organization", "custom-binding-organization"),
+                ("custom-policy-workspace", "custom-binding-workspace"),
+            ],
+        )
+        self.assertIsNotNone(version_count)
+        self.assertEqual(version_count[0], 2)
 
     def test_notification_audit_and_idempotency_are_atomic(self) -> None:
         self.store.seed_scope(self.tenant_a)

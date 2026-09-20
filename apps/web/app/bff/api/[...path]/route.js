@@ -1,5 +1,6 @@
 import {
   BffConfigurationError,
+  browserSessionCookieName,
   createBffSafeError,
   createBffTraceId,
   createBffProxy,
@@ -20,16 +21,21 @@ function configurationFailure(trace) {
 async function handler(request, context) {
   const trace = createBffTraceId(request);
   try {
+    const bffProfile = process.env.DAON_BFF_PROFILE ?? "production";
     const baseUrl = parseInternalApiBase(
       process.env.DAON_API_INTERNAL_URL,
       process.env.DAON_RUNTIME_PROFILE ?? "production",
     );
     const publicOrigin = parsePublicGatewayOrigin(
       process.env.DAON_PUBLIC_GATEWAY_URL,
-      process.env.DAON_BFF_PROFILE ?? "production",
+      bffProfile,
     );
     const { path } = await context.params;
-    return createBffProxy({ baseUrl, publicOrigin })(request, path, trace);
+    return createBffProxy({
+      baseUrl,
+      publicOrigin,
+      browserCookieName: browserSessionCookieName(bffProfile),
+    })(request, path, trace);
   } catch (error) {
     const errorTrace = createBffTraceId();
     if (error instanceof BffConfigurationError) return configurationFailure(errorTrace);

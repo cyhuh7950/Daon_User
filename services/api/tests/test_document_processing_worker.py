@@ -81,10 +81,15 @@ class DocumentProcessingWorkerTests(unittest.TestCase):
             "DAON_OBJECT_STORAGE_BUCKET": "daon-user",
             "DAON_OBJECT_ACCESS_KEY_FILE": "/run/secrets/access",
             "DAON_OBJECT_SECRET_KEY_FILE": "/run/secrets/secret",
+            "DAON_PROVIDER_CREDENTIAL_KEY_FILE": "/run/secrets/provider-credential-key",
         }, clear=True):
             settings = DocumentWorkerSettings.from_env()
 
         self.assertEqual(settings.lease_seconds, 600)
+        self.assertEqual(
+            settings.provider_credential_key_file,
+            __import__("pathlib").Path("/run/secrets/provider-credential-key"),
+        )
 
     def test_claimed_existing_run_is_processed_indexed_then_completed(self) -> None:
         queue = FakeQueue(job())

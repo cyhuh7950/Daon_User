@@ -39,6 +39,7 @@ const NATIVE_RESPONSE_HEADERS = new Set([
 ]);
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SESSION_COOKIE_NAME = "__Host-daon_session";
+const WSL_HTTP_SESSION_COOKIE_NAME = "daon_session";
 const AUDIT_QUERY = new Set([
   "action",
   "cursor",
@@ -58,7 +59,7 @@ const BACKUP_QUERY = new Set(["workspace_id"]);
 const MODEL_SETTINGS_QUERY = new Set(["workspace_id"]);
 const PROVIDER_CODES = new Set([
   "ANTHROPIC", "CEREBRAS", "GEMINI", "GROQ", "MISTRAL", "OLLAMA",
-  "OPENAI", "OPENROUTER", "UPSTAGE",
+  "OPENAI", "OPENROUTER", "UPSTAGE", "OMNIROUTE", "EOUL_GATEWAY",
 ]);
 const STUDIO_QUERY = new Set(["workspace_id", "notebook_id"]);
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
@@ -83,7 +84,7 @@ export function parseInternalApiBase(rawValue, profile = "production") {
   if (!cleanOrigin || parsed.username || parsed.password) {
     throw new BffConfigurationError("BFF_INTERNAL_API_ORIGIN_REQUIRED");
   }
-  if (profile === "production") {
+  if (profile === "production" || profile === "wsl_http_qa") {
     // Browser traffic remains same-origin HTTPS. The isolated Docker service
     // is reached server-side over its fixed Compose DNS name and private
     // network, so only that exact internal origin may use HTTP.
@@ -111,8 +112,20 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
     && parsed.protocol === "http:"
     && new Set(["localhost", "127.0.0.1"]).has(parsed.hostname)
     && parsed.port !== "";
+  const octets = parsed.hostname.split(".").map((part) => Number(part));
+  const privateIpv4 = octets.length === 4
+    && octets.every((part, index) => /^\d{1,3}$/.test(parsed.hostname.split(".")[index]) && part >= 0 && part <= 255)
+    && (
+      octets[0] === 10
+      || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+      || (octets[0] === 192 && octets[1] === 168)
+    );
+  const wslHttpQa = profile === "wsl_http_qa"
+    && parsed.protocol === "http:"
+    && privateIpv4
+    && parsed.port !== "";
   if (
-    (profile === "local_test" ? !localTestHttp : parsed.protocol !== "https:")
+    (profile === "local_test" ? !localTestHttp : profile === "wsl_http_qa" ? !wslHttpQa : parsed.protocol !== "https:")
     || parsed.pathname !== "/"
     || parsed.search
     || parsed.hash
@@ -124,6 +137,10 @@ export function parsePublicGatewayOrigin(rawValue, profile = "production") {
   return parsed;
 }
 
+export function browserSessionCookieName(profile = "production") {
+  return profile === "wsl_http_qa" ? WSL_HTTP_SESSION_COOKIE_NAME : SESSION_COOKIE_NAME;
+}
+
 function routeFor(method, segments) {
   if (segments.length === 3 && segments[0] === "auth" && segments[1] === "password" && segments[2] === "change") {
     return method === "POST"
@@ -131,8 +148,64 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (segments.length === 2 && segments[0] === "admin" && segments[1] === "users") {
-    return method === "GET"
+    return new Set(["GET", "POST"]).has(method)
       ? { path: "/api/v1/admin/users", query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 1 && segments[0] === "provider-credentials") {
+    return method === "GET"
+      ? { path: "/api/v1/provider-credentials", query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 2 && segments[0] === "provider-credentials"
+    && SAFE_SEGMENT.test(segments[1])
+  ) {
+    return new Set(["PUT", "DELETE"]).has(method)
+      ? { path: `/api/v1/provider-credentials/${encodeURIComponent(segments[1])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "admin" && segments[1] === "provider-connections") {
+    return new Set(["GET", "POST"]).has(method)
+      ? { path: "/api/v1/admin/provider-connections", query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "admin" && segments[1] === "provider-health-settings") {
+    return new Set(["GET", "PATCH"]).has(method)
+      ? { path: "/api/v1/admin/provider-health-settings", query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "admin" && segments[1] === "provider-connections"
+    && SAFE_SEGMENT.test(segments[2])
+  ) {
+    return new Set(["PUT", "DELETE"]).has(method)
+      ? { path: `/api/v1/admin/provider-connections/${encodeURIComponent(segments[2])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "admin" && segments[1] === "provider-connections"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "credential"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/admin/provider-connections/${encodeURIComponent(segments[2])}/credential`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "admin" && segments[1] === "provider-catalog"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "refresh"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/admin/provider-catalog/${encodeURIComponent(segments[2])}/refresh`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 5 && segments[0] === "admin" && segments[1] === "provider-models"
+    && SAFE_SEGMENT.test(segments[2]) && SAFE_SEGMENT.test(segments[3])
+    && segments[4] === "capabilities"
+  ) {
+    return method === "PATCH"
+      ? { path: `/api/v1/admin/provider-models/${encodeURIComponent(segments[2])}/${encodeURIComponent(segments[3])}/capabilities`, query: null }
       : { methodRejected: true };
   }
   if (
@@ -141,6 +214,22 @@ function routeFor(method, segments) {
   ) {
     return method === "PATCH"
       ? { path: `/api/v1/admin/users/${encodeURIComponent(segments[2])}/state`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3 && segments[0] === "admin" && segments[1] === "users"
+    && SAFE_SEGMENT.test(segments[2])
+  ) {
+    return new Set(["PATCH", "DELETE"]).has(method)
+      ? { path: `/api/v1/admin/users/${encodeURIComponent(segments[2])}`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 4 && segments[0] === "admin" && segments[1] === "users"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "approve"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/admin/users/${encodeURIComponent(segments[2])}/approve`, query: null }
       : { methodRejected: true };
   }
   // Organization workflow and administrator console contracts. The browser
@@ -396,6 +485,16 @@ function routeFor(method, segments) {
   ) {
     return new Set(["GET", "PATCH"]).has(method)
       ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/output-version-settings`, query: null }
+      : { methodRejected: true };
+  }
+  if (
+    segments.length === 3
+    && segments[0] === "workspaces"
+    && SAFE_SEGMENT.test(segments[1])
+    && segments[2] === "model-defaults"
+  ) {
+    return new Set(["GET", "PATCH"]).has(method)
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/model-defaults`, query: null }
       : { methodRejected: true };
   }
   if (
@@ -693,7 +792,7 @@ function nativeSensitiveBodyValues(body) {
   try {
     const parsed = JSON.parse(Buffer.from(body).toString("utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-    return ["password", "access_credential", "refresh_credential"]
+    return ["password", "credential", "access_credential", "refresh_credential"]
       .map((key) => parsed[key])
       .filter((value) => typeof value === "string" && value.length > 0);
   } catch {
@@ -730,7 +829,7 @@ export function createBffSafeError(status, code, trace, retryable = false, messa
   });
 }
 
-function sessionCookie(request) {
+function sessionCookie(request, browserCookieName) {
   const rawCookie = request.headers.get("cookie");
   if (!rawCookie) return null;
   if (/[\r\n\0]/.test(rawCookie)) throw new Error("INVALID_SESSION_COOKIE");
@@ -739,7 +838,7 @@ function sessionCookie(request) {
     const separator = item.indexOf("=");
     if (separator < 0) continue;
     const name = item.slice(0, separator).trim();
-    if (name !== SESSION_COOKIE_NAME) continue;
+    if (name !== browserCookieName) continue;
     const value = item.slice(separator + 1).trim();
     if (
       !value
@@ -752,6 +851,21 @@ function sessionCookie(request) {
   }
   if (matches.length > 1) throw new Error("INVALID_SESSION_COOKIE");
   return matches.length === 1 ? `${SESSION_COOKIE_NAME}=${matches[0]}` : null;
+}
+
+function browserSetCookie(value, browserCookieName) {
+  if (browserCookieName === SESSION_COOKIE_NAME) return value;
+  const parts = value.split(";").map((part) => part.trim());
+  const prefix = `${SESSION_COOKIE_NAME}=`;
+  if (!parts[0]?.startsWith(prefix)) throw new Error("INVALID_SESSION_COOKIE");
+  const cookieValue = parts[0].slice(prefix.length);
+  if (/[\r\n\0;,]/.test(cookieValue) || Buffer.byteLength(cookieValue, "utf8") > MAX_SESSION_COOKIE_BYTES) {
+    throw new Error("INVALID_SESSION_COOKIE");
+  }
+  return [
+    `${browserCookieName}=${cookieValue}`,
+    ...parts.slice(1).filter((part) => part.toLowerCase() !== "secure"),
+  ].join("; ");
 }
 
 function writeRequestIsSameOrigin(request, publicOrigin) {
@@ -841,12 +955,16 @@ function cancellationError(scope, trace) {
 export function createBffProxy({
   baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000,
   questionTimeoutMs = GROUNDED_QUESTION_TIMEOUT_MS,
+  browserCookieName = SESSION_COOKIE_NAME,
 }) {
   if (!(baseUrl instanceof URL)) {
     throw new BffConfigurationError("BFF_INTERNAL_API_URL_REQUIRED");
   }
   if (publicOrigin !== undefined && !(publicOrigin instanceof URL)) {
     throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_REQUIRED");
+  }
+  if (!new Set([SESSION_COOKIE_NAME, WSL_HTTP_SESSION_COOKIE_NAME]).has(browserCookieName)) {
+    throw new BffConfigurationError("BFF_SESSION_COOKIE_NAME_INVALID");
   }
   return async function proxy(request, pathSegments, providedTrace) {
     const trace = providedTrace ?? createBffTraceId(request);
@@ -873,7 +991,7 @@ export function createBffProxy({
     }
     let credential;
     try {
-      credential = sessionCookie(request);
+      credential = sessionCookie(request, browserCookieName);
     } catch {
       return createBffSafeError(400, "INVALID_SESSION_COOKIE", trace);
     }
@@ -921,7 +1039,15 @@ export function createBffProxy({
       }
       const responseHeaders = new Headers();
       for (const [key, value] of upstream.headers) {
-        if (RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders.set(key, value);
+        if (!RESPONSE_HEADERS.has(key.toLowerCase())) continue;
+        try {
+          responseHeaders.set(
+            key,
+            key.toLowerCase() === "set-cookie" ? browserSetCookie(value, browserCookieName) : value,
+          );
+        } catch {
+          return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
       }
       responseHeaders.set("Cache-Control", "no-store");
       if (!responseHeaders.has("x-trace-id")) responseHeaders.set("x-trace-id", trace);

@@ -6,11 +6,13 @@ services:
       context: ../..
       dockerfile: services/api/Dockerfile
     environment:
-      DAON_RUNTIME_PROFILE: production
+      DAON_RUNTIME_PROFILE: ${DAON_RUNTIME_PROFILE-production}
       DAON_API_BIND_HOST: 0.0.0.0
       DAON_API_PORT: 8000
       DAON_API_DATABASE_PATH: /var/lib/daon-user/runtime.sqlite3
       DAON_CLOUD_DATABASE_DSN: ${DAON_CLOUD_DATABASE_DSN:?cloud database DSN reference required}
+      DAON_DEV_AUTH_BYPASS: ${DAON_DEV_AUTH_BYPASS-false}
+      DAON_SYSTEM_ADMIN_USER_IDS: ${DAON_SYSTEM_ADMIN_USER_IDS-admin}
       DAON_PUBLIC_GATEWAY_URL: ${DAON_PUBLIC_GATEWAY_URL:?public HTTPS gateway required}
       DAON_TRUSTED_PROXY_IPS: ${DAON_TRUSTED_PROXY_IPS:?trusted proxy IPs required}
       DAON_OBJECT_STORAGE_ENDPOINT: ${DAON_OBJECT_STORAGE_ENDPOINT:?object storage endpoint required}
@@ -23,26 +25,19 @@ services:
       DAON_SMTP_PASSWORD: ${DAON_SMTP_PASSWORD-}
       DAON_SMTP_SECURE: ${DAON_SMTP_SECURE-true}
       DAON_EMAIL_FROM: ${DAON_EMAIL_FROM-}
-      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY-}
-      GROQ_API_KEY: ${GROQ_API_KEY-}
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY-}
-      UPSTAGE_API_KEY: ${UPSTAGE_API_KEY-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY-}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL-}
       LLM_DATA_REGION: ${LLM_DATA_REGION-}
       LLM_EXTERNAL_EGRESS_APPROVED: ${LLM_EXTERNAL_EGRESS_APPROVED-false}
       DAON_OBJECT_ACCESS_KEY_FILE: /run/secrets/object_access_key
       DAON_OBJECT_SECRET_KEY_FILE: /run/secrets/object_secret_key
       DAON_RECOVERY_MANIFEST_KEY_FILE: /run/secrets/recovery_manifest_key
       DAON_STEP_UP_TOKEN_KEY_FILE: /run/secrets/step_up_token_key
+      DAON_PROVIDER_CREDENTIAL_KEY_FILE: /run/secrets/provider_credential_key
     secrets:
       - object_access_key
       - object_secret_key
       - recovery_manifest_key
       - step_up_token_key
+      - provider_credential_key
     volumes:
       - daon_user_api_runtime:/var/lib/daon-user
     networks:
@@ -91,23 +86,16 @@ services:
       DAON_OBJECT_STORAGE_SECURE: ${DAON_OBJECT_STORAGE_SECURE-true}
       DAON_OBJECT_ACCESS_KEY_FILE: /run/secrets/object_access_key
       DAON_OBJECT_SECRET_KEY_FILE: /run/secrets/object_secret_key
+      DAON_PROVIDER_CREDENTIAL_KEY_FILE: /run/secrets/provider_credential_key
       DAON_DOCUMENT_WORKER_ID: ${COMPOSE_PROJECT_NAME}-document-worker
       DAON_DOCUMENT_WORKER_LEASE_SECONDS: ${DAON_DOCUMENT_WORKER_LEASE_SECONDS-600}
       DAON_DOCUMENT_WORKER_POLL_SECONDS: ${DAON_DOCUMENT_WORKER_POLL_SECONDS-0.5}
-      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY-}
-      GROQ_API_KEY: ${GROQ_API_KEY-}
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY-}
-      UPSTAGE_API_KEY: ${UPSTAGE_API_KEY-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY-}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL-}
       LLM_DATA_REGION: ${LLM_DATA_REGION-}
       LLM_EXTERNAL_EGRESS_APPROVED: ${LLM_EXTERNAL_EGRESS_APPROVED-false}
     secrets:
       - object_access_key
       - object_secret_key
+      - provider_credential_key
     networks:
       - daon_user
       - proxy-network
@@ -143,8 +131,9 @@ services:
       NODE_ENV: production
       PORT: 3330
       DAON_RUNTIME_PROFILE: production
+      DAON_BFF_PROFILE: ${DAON_BFF_PROFILE-production}
       DAON_API_INTERNAL_URL: ${DAON_API_INTERNAL_URL:?server-side BFF API URL required}
-      DAON_PUBLIC_GATEWAY_URL: ${DAON_PUBLIC_GATEWAY_URL:?public HTTPS gateway required}
+      DAON_PUBLIC_GATEWAY_URL: ${DAON_WEB_PUBLIC_GATEWAY_URL:?web public gateway required}
     depends_on:
       api:
         condition: service_healthy
@@ -179,3 +168,5 @@ secrets:
     file: ${DAON_RECOVERY_MANIFEST_KEY_FILE:?recovery manifest key reference required}
   step_up_token_key:
     file: ${DAON_STEP_UP_TOKEN_KEY_FILE:?step-up token key reference required}
+  provider_credential_key:
+    file: ${DAON_PROVIDER_CREDENTIAL_KEY_FILE:?provider credential key reference required}

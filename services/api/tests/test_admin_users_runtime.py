@@ -136,9 +136,14 @@ async def _system_admin_user_api_denies_normal_user_and_protects_admin(tmp_path:
 
         delete = await client.delete(
             "/api/v1/admin/users/admin",
-            headers={"Origin": "https://app.example.com", "X-Daon-Bff-Transport": "internal"},
+            headers={
+                "Origin": "https://app.example.com",
+                "X-Daon-Bff-Transport": "internal",
+                "Idempotency-Key": "delete-protected-admin-001",
+            },
         )
-        assert delete.status_code in {404, 405}
+        assert delete.status_code == 409
+        assert delete.json()["error"]["code"] == "PROTECTED_ADMIN_ACCOUNT"
         unchanged = await client.get("/api/v1/admin/users")
         assert next(item for item in unchanged.json()["data"]["users"] if item["user_id"] == "admin")["state"] == "active"
     dependencies.close()

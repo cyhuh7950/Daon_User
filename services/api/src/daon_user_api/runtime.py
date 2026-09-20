@@ -35,7 +35,7 @@ from .audit import (
     AuditValidationError,
 )
 from .admin_users import AdminUserService
-from .cloud_storage import PostgresCloudStore
+from .cloud_storage import CloudAccessContext, PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .authorization import (
     AccessAction,
@@ -154,6 +154,30 @@ from .provider_settings import (
     ReferenceProviderSettingsRepository,
     ServerCredentialPresenceResolver,
 )
+from .provider_health_settings import (
+    PostgresProviderHealthCheckSettingsService,
+    PostgresProviderHealthSettingsRepository,
+    ProviderHealthSettingsError,
+)
+from .provider_health_monitor import ProviderHealthConnection, ProviderHealthMonitor
+from .provider_connection_admin import (
+    ProviderCapabilityCommand,
+    ProviderConnectionAdminContext,
+    ProviderConnectionAdminError,
+    ProviderConnectionCreateCommand,
+    ProviderCredentialReplaceCommand,
+    ProviderConnectionUpdateCommand,
+    PostgresProviderConnectionService,
+)
+from .provider_credentials import ProviderCredentialCipher
+from .user_provider_credentials import (
+    PostgresUserProviderCredentialService,
+    UserProviderCredentialError,
+)
+from .workspace_model_defaults import (
+    PostgresWorkspaceModelDefaultsService, PostgresWorkspaceModelResolver,
+    WorkspaceModelDefaultsContext, WorkspaceModelDefaultsError,
+)
 from .retention_inventory_postgres import PostgresRetentionInventoryProvider
 from .retention_request_postgres import PostgresRetentionRequestService
 from .operations_status import OperationsStatusContext, OperationsStatusService
@@ -215,6 +239,25 @@ _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 _SOURCE_UPLOAD_PATH = re.compile(r"^/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/sources$")
 _SOURCE_FILENAME = re.compile(r"^[^/\\\x00-\x1f]{1,251}$")
 _QUESTION_REQUEST_TIMEOUT_SECONDS = 95.0
+_RFC1918_NETWORKS = tuple(
+    ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+
+
+def _is_private_http_gateway(parsed: object) -> bool:
+    try:
+        scheme = parsed.scheme  # type: ignore[attr-defined]
+        hostname = parsed.hostname  # type: ignore[attr-defined]
+        port = parsed.port  # type: ignore[attr-defined]
+        address = ipaddress.ip_address(hostname)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (
+        scheme == "http"
+        and port is not None
+        and address.version == 4
+        and any(address in network for network in _RFC1918_NETWORKS)
+    )
 
 
 def request_timeout_for_path(settings: "RuntimeSettings", path: str) -> float:
@@ -237,11 +280,13 @@ class RuntimeSettings:
     object_secret_key_file: Path | None = None
     recovery_manifest_key_file: Path | None = None
     step_up_token_key_file: Path | None = None
+    provider_credential_key_file: Path | None = None
     license_public_keys_file: Path | None = None
     object_storage_secure: bool = True
     object_storage_provision_bucket: bool = False
     policy_version: str = "runtime-policy-v1"
     public_gateway_url: str | None = None
+    allow_private_http_gateway: bool = False
     trusted_proxy_ips: tuple[str, ...] = ()
     max_body_bytes: int = 65_536
     source_upload_max_bytes: int = 25 * 1024 * 1024
@@ -290,7 +335,10 @@ class RuntimeSettings:
                 raise ValueError("STEP_UP_TOKEN_KEY_REFERENCE_REQUIRED")
             parsed = urlsplit(self.public_gateway_url)
             if (
-                parsed.scheme != "https"
+                not (
+                    parsed.scheme == "https"
+                    or (self.allow_private_http_gateway and _is_private_http_gateway(parsed))
+                )
                 or not parsed.hostname
                 or parsed.username is not None
                 or parsed.password is not None
@@ -305,13 +353,17 @@ class RuntimeSettings:
                 ipaddress.ip_address(address)
 
     @classmethod
-    def for_test(cls, *, database_path: Path, policy_version: str) -> "RuntimeSettings":
+    def for_test(
+        cls, *, database_path: Path, policy_version: str,
+        system_admin_user_ids: frozenset[str] = frozenset({"admin"}),
+    ) -> "RuntimeSettings":
         return cls(
             profile="test",
             bind_host="127.0.0.1",
             port=8000,
             database_path=database_path,
             policy_version=policy_version,
+            system_admin_user_ids=system_admin_user_ids,
         )
 
     @classmethod
@@ -358,12 +410,19 @@ class RuntimeSettings:
                 None if os.environ.get("DAON_STEP_UP_TOKEN_KEY_FILE") is None
                 else Path(os.environ["DAON_STEP_UP_TOKEN_KEY_FILE"])
             ),
+            provider_credential_key_file=(
+                None if os.environ.get("DAON_PROVIDER_CREDENTIAL_KEY_FILE") is None
+                else Path(os.environ["DAON_PROVIDER_CREDENTIAL_KEY_FILE"])
+            ),
             license_public_keys_file=(
                 None if os.environ.get("DAON_LICENSE_PUBLIC_KEYS_FILE") is None
                 else Path(os.environ["DAON_LICENSE_PUBLIC_KEYS_FILE"])
             ),
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
+            allow_private_http_gateway=(
+                os.environ.get("DAON_ALLOW_PRIVATE_HTTP_GATEWAY", "false").lower() == "true"
+            ),
             trusted_proxy_ips=proxies,
             source_upload_max_bytes=int(
                 os.environ.get("DAON_SOURCE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024))
@@ -444,6 +503,9 @@ class RuntimeDependencies:
     recovery_service: RecoveryService | PostgresRecoveryService | UnavailableRecoveryService | None = None
     object_queue_store: PostgresObjectQueueStore | None = None
     provider_settings_service: ProviderSettingsService | None = None
+    provider_connection_service: Any | None = None
+    provider_health_settings_service: PostgresProviderHealthCheckSettingsService | None = None
+    workspace_model_defaults_service: Any | None = None
     operations_status_service: OperationsStatusService | None = None
     output_version_settings_service: OutputVersionSettingsService | None = None
     screen_preference_service: ScreenPreferenceService | None = None
@@ -559,6 +621,29 @@ class PasswordChangeBody(BaseModel):
 class AdminUserStateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     state: str
+
+
+class AdminUserCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    login_id: str = Field(min_length=1, max_length=255)
+    email: str = Field(min_length=3, max_length=320)
+    initial_password: str = Field(min_length=12, max_length=256, repr=False)
+
+
+class AdminUserUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=320)
+
+
+class UserProviderCredentialBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    credential: str = Field(min_length=1, max_length=16384, repr=False)
+    expected_version: int = Field(ge=0)
+
+
+class UserProviderCredentialDeleteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=0)
 
 
 class AccessDecisionBody(BaseModel):
@@ -825,6 +910,47 @@ class ProviderProfileBody(BaseModel):
     expected_version: int
 
 
+class ProviderConnectionCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connection_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    provider_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Z][A-Z0-9_]{0,63}$")
+    display_name: str = Field(min_length=1, max_length=256)
+    base_url: str = Field(min_length=1, max_length=2048)
+    credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
+    logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    enabled: bool
+    expected_version: int = Field(ge=0)
+
+
+class ProviderConnectionUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str = Field(min_length=1, max_length=256)
+    base_url: str = Field(min_length=1, max_length=2048)
+    credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
+    logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    enabled: bool
+    expected_version: int = Field(ge=1)
+
+
+class ProviderConnectionMutationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+
+
+class ProviderHealthSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    interval_minutes: int = Field(ge=1, le=1440)
+    expected_version: int = Field(ge=0)
+
+
+class ProviderCredentialReplaceBody(ProviderConnectionMutationBody):
+    credential: str = Field(min_length=1, max_length=16384, repr=False)
+
+
+class ProviderCapabilityBody(ProviderConnectionMutationBody):
+    effective_capabilities: list[str] = Field(min_length=1, max_length=12)
+
+
 class ModelDeploymentBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_id: str
@@ -841,6 +967,14 @@ class ModelPolicyBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     bindings: dict[str, str]
     expected_version: int
+
+
+class WorkspaceModelDefaultBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    capability: str
+    connection_id: str = Field(min_length=1, max_length=256)
+    model_id: str = Field(min_length=1, max_length=256)
+    expected_version: int = Field(ge=0)
 
 
 class OutputVersionSettingsBody(BaseModel):
@@ -991,10 +1125,14 @@ def _require_query_keys(request: Request, allowed: frozenset[str]) -> None:
         raise HTTPException(status_code=400)
 
 
+def _etag_header(etag_seed: str) -> str:
+    digest = hashlib.sha256(etag_seed.encode("utf-8")).hexdigest()[:24]
+    return f'"projection-{digest}"'
+
+
 def _json_with_etag(content: dict[str, object], etag_seed: str) -> JSONResponse:
     response = JSONResponse(content=content)
-    digest = hashlib.sha256(etag_seed.encode("utf-8")).hexdigest()[:24]
-    response.headers["ETag"] = f'"projection-{digest}"'
+    response.headers["ETag"] = _etag_header(etag_seed)
     return response
 
 
@@ -1066,8 +1204,11 @@ def _require_validated_web_csrf(request: Request, settings: RuntimeSettings) -> 
         parsed_referer = urlsplit(referer)
     except ValueError as error:
         raise IdentityError("CSRF_VALIDATION_FAILED", 403) from error
+    valid_transport = parsed_origin.scheme == "https" or (
+        settings.allow_private_http_gateway and _is_private_http_gateway(parsed_origin)
+    )
     if (
-        parsed_origin.scheme != "https" or not parsed_origin.netloc
+        not valid_transport or not parsed_origin.netloc
         or parsed_origin.path not in {"", "/"} or parsed_origin.query or parsed_origin.fragment
         or (parsed_referer.scheme, parsed_referer.netloc)
         != (parsed_origin.scheme, parsed_origin.netloc)
@@ -1099,6 +1240,31 @@ def _egress_idempotency_key(value: str) -> str:
 
 def _personal_workspace_id(tenant_id: str) -> str:
     return f"workspace-{hashlib.sha256(tenant_id.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _ensure_personal_workspace(
+    dependencies: RuntimeDependencies, *, tenant_id: str, user_id: str,
+) -> str:
+    workspace_id = dependencies.authorization_repository.primary_workspace_id(
+        tenant_id
+    ) or _personal_workspace_id(tenant_id)
+    dependencies.authorization_repository.bootstrap_workspace(
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        owner_user_id=user_id,
+        owner_role=Role.PERSONAL_OWNER,
+        workspace_kind="personal",
+        data_area="cloud_sync",
+        cost_limit_cents=1000,
+        now=datetime.now(timezone.utc),
+    )
+    if dependencies.cloud_store is not None:
+        dependencies.cloud_store.seed_scope(
+            CloudAccessContext(
+                tenant_id, workspace_id, user_id, "workspace.bootstrap",
+            )
+        )
+    return workspace_id
 
 
 def _sync_expected_version(value: str, operation_id: str | None = None) -> int | str:
@@ -1379,6 +1545,34 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         ),
         ServerCredentialPresenceResolver(),
     )
+    provider_connection_service = dependencies.provider_connection_service
+    provider_health_settings_service = dependencies.provider_health_settings_service
+    user_provider_credential_service = None
+    provider_cipher = None
+    if (
+        dependencies.cloud_store is not None
+        and dependencies.settings.provider_credential_key_file is not None
+    ):
+        try:
+            provider_key = dependencies.settings.provider_credential_key_file.read_bytes()
+        except OSError:
+            raise ValueError("PROVIDER_CREDENTIAL_KEY_REFERENCE_UNAVAILABLE") from None
+        provider_cipher = ProviderCredentialCipher(provider_key, encryption_key_version=1)
+    if (
+        provider_connection_service is None
+        and dependencies.cloud_store is not None
+        and provider_cipher is not None
+    ):
+        provider_connection_service = PostgresProviderConnectionService(
+            dependencies.cloud_store, provider_cipher,
+        )
+    if dependencies.cloud_store is not None and provider_cipher is not None:
+        user_provider_credential_service = PostgresUserProviderCredentialService(
+            dependencies.cloud_store, provider_cipher,
+        )
+    workspace_model_defaults_service = dependencies.workspace_model_defaults_service
+    if workspace_model_defaults_service is None and dependencies.cloud_store is not None:
+        workspace_model_defaults_service = PostgresWorkspaceModelDefaultsService(dependencies.cloud_store)
     retention_request_service = retention_service
     operations_status_service = dependencies.operations_status_service
     if operations_status_service is None and dependencies.cloud_store is not None:
@@ -1462,13 +1656,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     question_answering_service = dependencies.question_answering_service
     if (
         question_answering_service is None and dependencies.cloud_store is not None
-        and dependencies.object_storage is not None
+        and dependencies.object_storage is not None and provider_cipher is not None
     ):
         citation_content_repository = PostgresQuestionAnsweringRepository(
             dependencies.cloud_store, dependencies.object_storage,
         )
         question_answering_service = QuestionAnsweringService(
-            provider_settings_service, citation_content_repository,
+            PostgresWorkspaceModelResolver(
+                dependencies.cloud_store, provider_cipher, user_provider_credential_service,
+            ),
+            citation_content_repository,
             PostgresDocumentIndex(dependencies.cloud_store),
             ServerProviderCredentialResolver(), UrlLibDocumentUnderstandingTransport(),
             PostgresQuestionEgressAuthorizer(
@@ -1496,6 +1693,38 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             dependencies.cloud_store, dependencies.object_storage,
             creation_enforcer=enforce_license_creation if license_enforcement_enabled else None,
         ))
+    provider_health_stop = asyncio.Event()
+    provider_health_task: asyncio.Task[None] | None = None
+
+    async def provider_health_loop() -> None:
+        if provider_connection_service is None or provider_health_settings_service is None:
+            return
+        health_context = ProviderConnectionAdminContext(
+            tenant_id="system", actor_id="provider-health-monitor",
+            trace_id="provider-health-monitor", policy_version=dependencies.settings.policy_version,
+        )
+        monitor = ProviderHealthMonitor(
+            list_connections=lambda: tuple(
+                ProviderHealthConnection(connection_id)
+                for connection_id in provider_connection_service.list_active_connection_ids(health_context)
+            ),
+            check_connection=lambda item: str(
+                provider_connection_service.check_active_connection(
+                    health_context, item.connection_id,
+                )["status"]
+            ),
+        )
+        while not provider_health_stop.is_set():
+            interval = await asyncio.to_thread(
+                provider_health_settings_service.get, health_context,
+            )
+            try:
+                await asyncio.wait_for(
+                    provider_health_stop.wait(), timeout=interval.interval_minutes * 60,
+                )
+            except TimeoutError:
+                await asyncio.to_thread(monitor.run_once)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # Resume durable deletion requests after the process is ready. The
@@ -1504,8 +1733,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         resume = getattr(dependencies.notebook_deletion_worker, "resume_startup", None)
         if callable(resume):
             await asyncio.to_thread(resume)
-        yield
-        dependencies.close()
+        nonlocal provider_health_task
+        if provider_connection_service is not None and provider_health_settings_service is not None:
+            provider_health_task = asyncio.create_task(provider_health_loop())
+        try:
+            yield
+        finally:
+            provider_health_stop.set()
+            if provider_health_task is not None:
+                await provider_health_task
+            dependencies.close()
 
     class TimedApiRoute(APIRoute):
         def get_route_handler(self) -> Any:
@@ -1932,6 +2169,64 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             retryable=error.retryable,
         )
 
+    @app.exception_handler(ProviderConnectionAdminError)
+    async def provider_connection_admin_error(
+        request: Request, error: ProviderConnectionAdminError,
+    ) -> JSONResponse:
+        safe_codes = {
+            "PROVIDER_CONNECTION_NOT_FOUND", "PROVIDER_CONNECTION_ID_INVALID",
+            "PROVIDER_CODE_INVALID", "PROVIDER_BASE_URL_INVALID", "PROVIDER_ADAPTER_UNSUPPORTED",
+            "PROVIDER_CREDENTIAL_REQUIRED", "PROVIDER_CREDENTIAL_INVALID",
+            "PROVIDER_AUTHENTICATION_FAILED", "PROVIDER_CONNECTION_FAILED",
+            "PROVIDER_CATALOG_UNAVAILABLE", "PROVIDER_CATALOG_RESPONSE_INVALID",
+            "PROVIDER_LOGICAL_MODEL_INVALID", "PROVIDER_REDIRECT_BLOCKED",
+            "PROVIDER_RATE_LIMITED", "PROVIDER_CAPABILITY_UNSUPPORTED", "VERSION_CONFLICT",
+            "IDEMPOTENCY_KEY_REUSED",
+        }
+        return _error_response(
+            error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
+            request.state.trace_id, retryable=error.retryable,
+        )
+
+    @app.exception_handler(ProviderHealthSettingsError)
+    async def provider_health_settings_error(
+        request: Request, error: ProviderHealthSettingsError,
+    ) -> JSONResponse:
+        return _error_response(
+            error.status,
+            error.code if error.code in {"PROVIDER_HEALTH_INTERVAL_INVALID", "VERSION_CONFLICT"} else "INVALID_REQUEST",
+            request.state.trace_id,
+        )
+
+    @app.exception_handler(UserProviderCredentialError)
+    async def user_provider_credential_error(
+        request: Request, error: UserProviderCredentialError,
+    ) -> JSONResponse:
+        safe_codes = {
+            "PROVIDER_CONNECTION_NOT_FOUND", "PROVIDER_CREDENTIAL_INVALID",
+            "PROVIDER_CREDENTIAL_VERSION_INVALID", "VERSION_CONFLICT",
+            "PERSISTENCE_UNAVAILABLE",
+        }
+        return _error_response(
+            error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
+            request.state.trace_id,
+        )
+
+    @app.exception_handler(WorkspaceModelDefaultsError)
+    async def workspace_model_defaults_error(
+        request: Request, error: WorkspaceModelDefaultsError,
+    ) -> JSONResponse:
+        safe_codes = {
+            "PROVIDER_CAPABILITY_UNSUPPORTED", "WORKSPACE_MODEL_DEFAULT_UNAVAILABLE",
+            "VERSION_CONFLICT", "IDEMPOTENCY_KEY_REUSED",
+        }
+        return _error_response(
+            error.status,
+            error.code if error.code in safe_codes else "WORKSPACE_MODEL_DEFAULTS_UNAVAILABLE",
+            request.state.trace_id,
+            retryable=error.retryable,
+        )
+
     @app.post("/api/v1/auth/verify-email")
     async def verify_email(body: TokenBody, request: Request) -> dict[str, object]:
         dependencies.identity_service.verify_email(token=body.token, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
@@ -1980,18 +2275,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             login_id=body.login_id, password=body.password, platform=DevicePlatform.WEB,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        workspace_id = dependencies.authorization_repository.primary_workspace_id(
-            credentials.tenant_id
-        ) or _personal_workspace_id(credentials.tenant_id)
-        dependencies.authorization_repository.bootstrap_workspace(
+        workspace_id = _ensure_personal_workspace(
+            dependencies,
             tenant_id=credentials.tenant_id,
-            workspace_id=workspace_id,
-            owner_user_id=credentials.user_id,
-            owner_role=Role.PERSONAL_OWNER,
-            workspace_kind="personal",
-            data_area="cloud_sync",
-            cost_limit_cents=1000,
-            now=datetime.now(timezone.utc),
+            user_id=credentials.user_id,
         )
         response = JSONResponse({"data": {"user_id": credentials.user_id, "tenant_id": credentials.tenant_id, "workspace_id": workspace_id}, "meta": {"trace_id": request.state.trace_id}})
         response.set_cookie(WEB_SESSION_COOKIE, credentials.access_token, max_age=WEB_SESSION_COOKIE_MAX_AGE, httponly=True, secure=True, samesite="lax", path="/")
@@ -2006,18 +2293,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
-        workspace_id = dependencies.authorization_repository.primary_workspace_id(
-            credentials.tenant_id
-        ) or _personal_workspace_id(credentials.tenant_id)
-        dependencies.authorization_repository.bootstrap_workspace(
+        workspace_id = _ensure_personal_workspace(
+            dependencies,
             tenant_id=credentials.tenant_id,
-            workspace_id=workspace_id,
-            owner_user_id=credentials.user_id,
-            owner_role=Role.PERSONAL_OWNER,
-            workspace_kind="personal",
-            data_area="cloud_sync",
-            cost_limit_cents=1000,
-            now=datetime.now(timezone.utc),
+            user_id=credentials.user_id,
         )
         session = dependencies.identity_service.describe_access(
             credentials.access_token, trace_id=request.state.trace_id,
@@ -2094,6 +2373,93 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
         response.headers["ETag"] = '"session:logged-out"'
         return response
+
+    @app.post("/api/v1/admin/users", status_code=201)
+    async def create_admin_user(
+        body: AdminUserCreateBody,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("x-daon-bff-transport") != "internal":
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+        principal = _principal(request, dependencies)
+        if dependencies.admin_user_service is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        result = dependencies.admin_user_service.create_user(
+            principal, login_id=body.login_id, email=body.email,
+            initial_password=body.initial_password, idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        user = result.user
+        return {"data": {"user": {
+            "user_id": user.user_id, "login_id": user.login_id, "email": user.email,
+            "has_email": user.has_email, "state": user.state, "protected": user.protected,
+        }, "replayed": result.replayed}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.patch("/api/v1/admin/users/{user_id}")
+    async def update_admin_user(
+        user_id: str,
+        body: AdminUserUpdateBody,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("x-daon-bff-transport") != "internal":
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+        principal = _principal(request, dependencies)
+        if dependencies.admin_user_service is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        result = dependencies.admin_user_service.update_user(
+            principal, user_id=user_id, email=body.email, idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        user = result.user
+        return {"data": {"user": {
+            "user_id": user.user_id, "login_id": user.login_id, "email": user.email,
+            "has_email": user.has_email, "state": user.state, "protected": user.protected,
+        }, "replayed": result.replayed}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.post("/api/v1/admin/users/{user_id}/approve")
+    async def approve_admin_user(
+        user_id: str,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("x-daon-bff-transport") != "internal":
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+        principal = _principal(request, dependencies)
+        if dependencies.admin_user_service is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        result = dependencies.admin_user_service.approve_user(
+            principal, user_id=user_id, idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        user = result.user
+        return {"data": {"user": {
+            "user_id": user.user_id, "login_id": user.login_id, "email": user.email,
+            "has_email": user.has_email, "state": user.state, "protected": user.protected,
+        }, "replayed": result.replayed}, "meta": {"trace_id": request.state.trace_id}}
+
+    @app.delete("/api/v1/admin/users/{user_id}")
+    async def delete_admin_user(
+        user_id: str,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("x-daon-bff-transport") != "internal":
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+        principal = _principal(request, dependencies)
+        if dependencies.admin_user_service is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        result = dependencies.admin_user_service.delete_user(
+            principal, user_id=user_id, idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        return {"data": {"user_id": result.user_id, "replayed": result.replayed},
+                "meta": {"trace_id": request.state.trace_id}}
 
     @app.get("/api/v1/admin/users")
     async def list_admin_users(request: Request) -> dict[str, object]:
@@ -2523,6 +2889,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "provider_payload_fingerprint": "sha256:" + hashlib.sha256(payload).hexdigest(),
             "provider_kind": selection.provider_kind,
             "deployment_id": selection.deployment_id,
+            "connection_id": getattr(selection, "connection_id", None),
+            "credential_version": getattr(selection, "credential_version", 0),
+            "default_version": selection.binding_version,
+            "catalog_version": getattr(selection, "catalog_version", 0),
             "effective_policy_fingerprint": policy_fingerprint,
             "idempotency_key": idempotency_key,
         })).hexdigest()
@@ -2825,6 +3195,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     ).hexdigest(),
                     "provider_kind": cast(Any, prepared).selection.provider_kind,
                     "deployment_id": cast(Any, prepared).selection.deployment_id,
+                    "connection_id": cast(Any, prepared).selection.connection_id,
+                    "credential_version": str(cast(Any, prepared).selection.credential_version),
+                    "default_version": str(cast(Any, prepared).selection.binding_version),
+                    "catalog_version": str(cast(Any, prepared).selection.catalog_version),
                 }
                 if (
                     dependencies.settings.dev_auth_bypass
@@ -3524,16 +3898,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
         can_apply = False
-        try:
-            dependencies.authorization_service.organization_admin_workspace(
-                principal=principal, trace_id=request.state.trace_id,
-                policy_version=dependencies.settings.policy_version,
-            )
-        except AuthorizationError as error:
-            if error.code != "ACTION_DENIED":
-                raise
-        else:
+        if principal.user_id in dependencies.settings.system_admin_user_ids:
             can_apply = True
+        else:
+            try:
+                dependencies.authorization_service.organization_admin_workspace(
+                    principal=principal, trace_id=request.state.trace_id,
+                    policy_version=dependencies.settings.policy_version,
+                )
+            except AuthorizationError as error:
+                if error.code != "ACTION_DENIED":
+                    raise
+            else:
+                can_apply = True
         view = await asyncio.to_thread(
             license_service.get, _license_context(principal, id, request, dependencies),
         )
@@ -3558,10 +3935,15 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         principal = _principal(request, dependencies)
         if id != principal.tenant_id:
             raise AuthorizationError("ACCESS_DENIED", 403)
-        workspace_id = dependencies.authorization_service.organization_admin_workspace(
-            principal=principal, trace_id=request.state.trace_id,
-            policy_version=dependencies.settings.policy_version,
-        )
+        if principal.user_id in dependencies.settings.system_admin_user_ids:
+            workspace_id = dependencies.authorization_repository.primary_workspace_id(
+                principal.tenant_id
+            ) or f"{principal.tenant_id}-workspace"
+        else:
+            workspace_id = dependencies.authorization_service.organization_admin_workspace(
+                principal=principal, trace_id=request.state.trace_id,
+                policy_version=dependencies.settings.policy_version,
+            )
         context = _license_context(principal, workspace_id, request, dependencies)
         replay = await asyncio.to_thread(
             license_service.replay, context, body.document, idempotency_key,
@@ -4240,6 +4622,285 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.headers["ETag"] = hold.etag
         return response
 
+    def _provider_admin_context(request: Request) -> tuple[IdentityPrincipal, ProviderConnectionAdminContext]:
+        principal = _principal(request, dependencies)
+        if principal.user_id not in dependencies.settings.system_admin_user_ids:
+            raise AuthorizationError("ACCESS_DENIED", 403)
+        return principal, ProviderConnectionAdminContext(
+            tenant_id=principal.tenant_id, actor_id=principal.user_id,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+
+    def _provider_connection_context(request: Request) -> tuple[IdentityPrincipal, ProviderConnectionAdminContext]:
+        """Read shared system connections for any authenticated user.
+
+        The projection is secret-safe. Full connection/model mutations remain
+        protected by _provider_admin_context; ordinary users only reach the
+        credential rotation endpoint below.
+        """
+        principal = _principal(request, dependencies)
+        return principal, ProviderConnectionAdminContext(
+            tenant_id=principal.tenant_id, actor_id=principal.user_id,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+
+    def _provider_admin_mutation_context(
+        request: Request, *, idempotency_key: str,
+    ) -> ProviderConnectionAdminContext:
+        _egress_idempotency_key(idempotency_key)
+        _principal_value, context = _provider_admin_context(request)
+        return context
+
+    def _provider_credential_mutation_context(
+        request: Request, *, idempotency_key: str,
+    ) -> ProviderConnectionAdminContext:
+        _egress_idempotency_key(idempotency_key)
+        _principal_value, context = _provider_admin_context(request)
+        return context
+
+    def _provider_admin_service() -> Any:
+        if provider_connection_service is None:
+            raise ProviderConnectionAdminError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
+        return provider_connection_service
+
+    @app.get("/api/v1/provider-credentials")
+    async def list_user_provider_credentials(request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        if user_provider_credential_service is None:
+            raise UserProviderCredentialError("PERSISTENCE_UNAVAILABLE", 503)
+        items = await asyncio.to_thread(
+            user_provider_credential_service.list_credentials,
+            tenant_id=principal.tenant_id, user_id=principal.user_id,
+        )
+        return JSONResponse({
+            "data": {"credentials": [
+                {"connection_id": item.connection_id, "provider_code": item.provider_code,
+                 "configured": item.configured, "credential_version": item.credential_version}
+                for item in items
+            ]},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+
+    @app.put("/api/v1/provider-credentials/{connection_id}")
+    async def replace_user_provider_credential(
+        connection_id: str, body: UserProviderCredentialBody, request: Request,
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        if user_provider_credential_service is None:
+            raise UserProviderCredentialError("PERSISTENCE_UNAVAILABLE", 503)
+        try:
+            item = await asyncio.to_thread(
+                user_provider_credential_service.replace_credential,
+                tenant_id=principal.tenant_id, user_id=principal.user_id,
+                connection_id=connection_id, credential=body.credential,
+                expected_version=body.expected_version,
+            )
+        finally:
+            body.credential = ""
+        return JSONResponse({
+            "data": {"connection_id": item.connection_id, "provider_code": item.provider_code,
+                     "configured": item.configured, "credential_version": item.credential_version},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+
+    @app.delete("/api/v1/provider-credentials/{connection_id}")
+    async def delete_user_provider_credential(
+        connection_id: str, body: UserProviderCredentialDeleteBody, request: Request,
+    ) -> Response:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        if user_provider_credential_service is None:
+            raise UserProviderCredentialError("PERSISTENCE_UNAVAILABLE", 503)
+        await asyncio.to_thread(
+            user_provider_credential_service.delete_credential,
+            tenant_id=principal.tenant_id, user_id=principal.user_id,
+            connection_id=connection_id, expected_version=body.expected_version,
+        )
+        return Response(status_code=204)
+
+    @app.get("/api/v1/admin/provider-health-settings")
+    async def get_provider_health_settings(request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _principal_value, context = _provider_admin_context(request)
+        if provider_health_settings_service is None:
+            raise ProviderConnectionAdminError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
+        settings_view = await asyncio.to_thread(
+            provider_health_settings_service.get, context,
+        )
+        return JSONResponse({
+            "data": {
+                "interval_minutes": settings_view.interval_minutes,
+                "version": settings_view.version,
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        })
+
+    @app.patch("/api/v1/admin/provider-health-settings")
+    async def save_provider_health_settings(
+        body: ProviderHealthSettingsBody, request: Request,
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _principal_value, context = _provider_admin_context(request)
+        if provider_health_settings_service is None:
+            raise ProviderConnectionAdminError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
+        settings_view = await asyncio.to_thread(
+            provider_health_settings_service.save, context,
+            interval_minutes=body.interval_minutes,
+            expected_version=body.expected_version,
+        )
+        return JSONResponse({
+            "data": {
+                "interval_minutes": settings_view.interval_minutes,
+                "version": settings_view.version,
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        })
+
+    @app.get("/api/v1/admin/provider-connections")
+    async def list_provider_connections(request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _principal_value, context = _provider_connection_context(request)
+        items = await asyncio.to_thread(_provider_admin_service().list_connections, context)
+        return _json_with_etag(
+            {"data": items, "meta": {"trace_id": request.state.trace_id}},
+            "provider-connections:"
+            + "|".join(
+                f"{item['connection_id']}:{item['version']}:{item['catalog_version']}"
+                for item in items
+            ),
+        )
+
+    @app.post("/api/v1/admin/provider-connections", status_code=201)
+    async def create_provider_connection(
+        body: ProviderConnectionCreateBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
+        command = ProviderConnectionCreateCommand(
+            connection_id=body.connection_id, provider_code=body.provider_code,
+            display_name=body.display_name, base_url=body.base_url, credential=body.credential,
+            logical_model_ids=tuple(body.logical_model_ids), enabled=body.enabled,
+            expected_version=body.expected_version,
+        )
+        try:
+            item, replayed = await asyncio.to_thread(
+                _provider_admin_service().create_connection, context, command, idempotency_key,
+            )
+        finally:
+            body.credential = None
+        response = _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
+        )
+        response.status_code = 200 if replayed else 201
+        return response
+
+    @app.put("/api/v1/admin/provider-connections/{connection_id}")
+    async def update_provider_connection(
+        connection_id: str, body: ProviderConnectionUpdateBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
+        command = ProviderConnectionUpdateCommand(
+            display_name=body.display_name, base_url=body.base_url, credential=body.credential,
+            logical_model_ids=tuple(body.logical_model_ids), enabled=body.enabled,
+            expected_version=body.expected_version,
+        )
+        try:
+            item, replayed = await asyncio.to_thread(
+                _provider_admin_service().update_connection,
+                context, connection_id, command, idempotency_key,
+            )
+        finally:
+            body.credential = None
+        return _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
+        )
+
+    @app.delete("/api/v1/admin/provider-connections/{connection_id}", status_code=204)
+    async def delete_provider_connection(
+        connection_id: str, body: ProviderConnectionMutationBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> Response:
+        _require_query_keys(request, frozenset())
+        context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
+        item, _replayed = await asyncio.to_thread(
+            _provider_admin_service().delete_connection,
+            context, connection_id, body.expected_version, idempotency_key,
+        )
+        return Response(
+            status_code=204,
+            headers={
+                "ETag": _etag_header(
+                    f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}"
+                )
+            },
+        )
+
+    @app.post("/api/v1/admin/provider-connections/{connection_id}/credential")
+    async def replace_provider_credential(
+        connection_id: str, body: ProviderCredentialReplaceBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        context = _provider_credential_mutation_context(request, idempotency_key=idempotency_key)
+        command = ProviderCredentialReplaceCommand(
+            credential=body.credential, expected_version=body.expected_version,
+        )
+        try:
+            item, replayed = await asyncio.to_thread(
+                _provider_admin_service().replace_credential,
+                context, connection_id, command, idempotency_key,
+            )
+        finally:
+            body.credential = ""
+        return _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
+        )
+
+    @app.post("/api/v1/admin/provider-catalog/{connection_id}/refresh")
+    async def refresh_provider_catalog(
+        connection_id: str, body: ProviderConnectionMutationBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
+        item, replayed = await asyncio.to_thread(
+            _provider_admin_service().refresh_catalog,
+            context, connection_id, body.expected_version, idempotency_key,
+        )
+        return _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
+        )
+
+    @app.patch("/api/v1/admin/provider-models/{connection_id}/{model_id}/capabilities")
+    async def correct_provider_capabilities(
+        connection_id: str, model_id: str, body: ProviderCapabilityBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        target_id = f"provider-model:{connection_id}:{model_id}"
+        context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
+        command = ProviderCapabilityCommand(
+            effective_capabilities=tuple(body.effective_capabilities),
+            expected_version=body.expected_version,
+        )
+        item, replayed = await asyncio.to_thread(
+            _provider_admin_service().correct_capabilities,
+            context, connection_id, model_id, command, idempotency_key,
+        )
+        return _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-model:{connection_id}:{model_id}:{item['catalog_version']}",
+        )
+
     @app.get("/api/v1/model-profiles")
     async def list_model_profiles(request: Request, workspace_id: str = Query()) -> JSONResponse:
         _require_query_keys(request, frozenset({"workspace_id", "cursor", "limit", "filter", "search"}))
@@ -4330,6 +4991,79 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
         })
         response.headers["ETag"] = view.etag
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/model-defaults")
+    async def get_workspace_model_defaults(id: str, request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        if workspace_model_defaults_service is None:
+            raise WorkspaceModelDefaultsError(
+                "WORKSPACE_MODEL_DEFAULTS_UNAVAILABLE", 503, retryable=True,
+            )
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.VIEW,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        result = await asyncio.to_thread(
+            workspace_model_defaults_service.read,
+            WorkspaceModelDefaultsContext(
+                principal.tenant_id, id, principal.user_id,
+                request.state.trace_id, dependencies.settings.policy_version,
+            ),
+        )
+        data = {key: value for key, value in result.items() if key != "etag"}
+        response = JSONResponse({
+            "data": data,
+            "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
+        })
+        response.headers["ETag"] = str(result["etag"])
+        return response
+
+    @app.patch("/api/v1/workspaces/{id}/model-defaults")
+    async def patch_workspace_model_defaults(
+        id: str,
+        body: WorkspaceModelDefaultBody,
+        request: Request,
+        if_match: str = Header(alias="If-Match"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        if workspace_model_defaults_service is None:
+            raise WorkspaceModelDefaultsError(
+                "WORKSPACE_MODEL_DEFAULTS_UNAVAILABLE", 503, retryable=True,
+            )
+        principal = _principal(request, dependencies)
+        dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=id, action=Action.POLICY_MANAGE,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        result, replayed = await asyncio.to_thread(
+            workspace_model_defaults_service.save,
+            WorkspaceModelDefaultsContext(
+                principal.tenant_id, id, principal.user_id,
+                request.state.trace_id, dependencies.settings.policy_version,
+            ),
+            capability=body.capability,
+            connection_id=body.connection_id,
+            model_id=body.model_id,
+            expected_version=body.expected_version,
+            expected_etag=if_match,
+            idempotency_key=idempotency_key,
+        )
+        data = {key: value for key, value in result.items() if key != "etag"}
+        response = JSONResponse({
+            "data": data,
+            "meta": {
+                "trace_id": request.state.trace_id,
+                "workspace_id": id,
+                "replayed": replayed,
+            },
+        })
+        response.headers["ETag"] = str(result["etag"])
         return response
 
     @app.get("/api/v1/workspaces/{id}/sync-operations")
@@ -4427,10 +5161,15 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if scope_type == "organization" and scope_id != principal.tenant_id:
             raise AuthorizationError("ACCESS_DENIED", 403)
         if scope_type == "organization":
-            workspace_id = dependencies.authorization_service.organization_admin_workspace(
-                principal=principal, trace_id=request.state.trace_id,
-                policy_version=dependencies.settings.policy_version,
-            )
+            if principal.user_id in dependencies.settings.system_admin_user_ids:
+                workspace_id = dependencies.authorization_repository.primary_workspace_id(
+                    principal.tenant_id
+                ) or f"{principal.tenant_id}-workspace"
+            else:
+                workspace_id = dependencies.authorization_service.organization_admin_workspace(
+                    principal=principal, trace_id=request.state.trace_id,
+                    policy_version=dependencies.settings.policy_version,
+                )
         else:
             dependencies.authorization_service.authorize_action(
                 principal=principal, workspace_id=workspace_id, action=Action.POLICY_MANAGE,
@@ -4902,6 +5641,20 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         if settings.cloud_database_dsn is None
         else PostgresCloudStore(settings.cloud_database_dsn)
     )
+    provider_connection_service = None
+    provider_health_settings_service = None
+    workspace_model_defaults_service = None
+    if cloud_store is not None and settings.provider_credential_key_file is not None:
+        try:
+            provider_key = settings.provider_credential_key_file.read_bytes()
+        except OSError:
+            raise ValueError("PROVIDER_CREDENTIAL_KEY_REFERENCE_UNAVAILABLE") from None
+        provider_cipher = ProviderCredentialCipher(provider_key, encryption_key_version=1)
+        provider_connection_service = PostgresProviderConnectionService(cloud_store, provider_cipher)
+        provider_health_settings_service = PostgresProviderHealthCheckSettingsService(
+            PostgresProviderHealthSettingsRepository(cloud_store),
+        )
+        workspace_model_defaults_service = PostgresWorkspaceModelDefaultsService(cloud_store)
     object_storage: ObjectStoragePort | None = None
     if settings.object_storage_endpoint is not None:
         assert settings.object_storage_bucket is not None
@@ -5003,6 +5756,9 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         ),
         recovery_service=recovery_service,
         object_queue_store=object_queue_store,
+        provider_connection_service=provider_connection_service,
+        provider_health_settings_service=provider_health_settings_service,
+        workspace_model_defaults_service=workspace_model_defaults_service,
         source_upload_service=source_upload_service,
         document_processing_service=document_processing_service,
         organization_repository=organization_repository,

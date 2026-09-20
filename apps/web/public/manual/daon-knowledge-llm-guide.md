@@ -1,7 +1,7 @@
 # Daon 지식·LLM 활용 가이드
 
 - Release: 1.0.0
-- 문서 업데이트: 2026-09-03
+- 문서 업데이트: 2026-09-17
 - 언어: 한국어(ko-KR)
 - 대상: 지식 관리자, 업무 사용자, 검토자, Workspace 관리자, LLM 운영 담당자
 - 목표: Source, Daon 승인 지식, 모델, Citation과 외부 전송을 현재 구현 범위 안에서 안전하게 사용합니다.
@@ -26,8 +26,8 @@
 - Source Version: 특정 시점 Source의 변경 불가능한 Version
 - Evidence: 질문 처리에 실제 사용된 근거 조각
 - Citation: 답변에서 Evidence 위치를 가리키는 참조
-- Provider Profile: LLM 제공자 연결 설정
-- Model Deployment: Provider의 특정 모델과 역할 설정
+- Provider 연결: 이름, Endpoint, Credential과 모델 카탈로그를 묶은 시스템 공용 연결
+- Workspace 기본 모델: 작업 기능별로 선택한 Provider 연결과 모델
 - Run: 한 번의 질문 또는 생성 실행
 - RunSnapshot: 실행 시점의 선택과 정책 기록
 - RuleSet: 결과에 적용할 규칙 집합
@@ -138,56 +138,58 @@ Source와 승인 지식을 선택하지 않으면 `작업 상담 · 근거 미�
 
 ## 7. Provider와 모델
 
-### 7.1 설정 화면에 등록된 Provider
+### 7.1 시스템 공용 Provider 연결
 
-`LLM 설정`에서 다음 Provider Profile을 구성할 수 있습니다.
+시스템 관리자는 `LLM 설정`에서 이름 있는 Provider 연결을 등록합니다. 한 번 등록한 연결은 모든 Workspace가 공유하지만, 각 Workspace가 어떤 모델을 기본으로 사용할지는 별도로 선택합니다. Credential과 Endpoint 원문은 화면에 다시 표시하지 않습니다.
 
-- Cerebras
+현재 질문·일반 대화 실행 경로가 지원하는 Provider는 다음과 같습니다.
+
+- Ollama
 - Groq
 - Mistral
-- OpenAI
 - Upstage
-- Gemini
 - OpenRouter
-- Anthropic
-- Ollama
+- OmniRoute
+- Eoul Gateway
 
-Profile에는 Provider 종류, 안전한 Base URL, 활성 상태와 Credential 설정 여부가 포함됩니다. Credential 원문은 화면에 다시 표시하지 않습니다.
+Cerebras, OpenAI, Gemini와 Anthropic은 Provider 코드가 남아 있더라도 현재 질문 실행 Adapter가 없습니다. 카드 표시, Credential 저장, 실제 질문 실행은 서로 다른 검증 단계이므로 실행 Adapter가 없는 Provider를 운영 기본값으로 사용하지 않습니다.
 
-### 7.2 실제 질문 실행 지원 Provider
+### 7.2 모델 기능과 Workspace 기본값
 
-현재 질문·일반 대화 Adapter가 직접 실행하는 Provider는 다음 네 종류입니다.
+Daon User는 수동 `역할 매핑` 화면을 사용하지 않습니다. 연결 확인 때 조회한 모델 카탈로그와 기능 정보를 바탕으로 다음 세 기능의 Workspace 기본값을 선택합니다.
 
-- Ollama
-- Groq
-- Mistral
-- Upstage
+- 텍스트 생성(`text_generation`): 질문, 일반 대화와 텍스트 생성
+- 이미지 이해(`image_understanding`): 이미지·스캔·도표 이해
+- 문서 분석(`document_parsing`): 문서 구조와 내용 분석
 
-OpenAI, Cerebras, Gemini, OpenRouter와 Anthropic은 설정 목록에 존재하더라도 현재 질문 Adapter에서 `사용 불가`가 될 수 있습니다. 연결 시험 가능 여부와 실제 text 생성 지원 여부를 분리해서 기록합니다.
+임베딩, 재정렬, 오디오 이해, 음성 변환, 동영상 이해와 생성 기능은 내부 구분을 유지하지만 실행 Adapter가 연결되지 않은 기능은 `준비 중`으로 표시됩니다. 시스템 관리자의 기능 보정은 Provider 보고값의 오류를 바로잡는 용도이며, 준비 중인 실행 코드를 새로 만드는 기능이 아닙니다.
 
-### 7.3 모델 역할
+### 7.3 Ollama 여러 연결
 
-Deployment에는 다음 역할을 지정할 수 있습니다.
+Ollama는 Endpoint마다 고유 Connection ID와 이름을 부여해 여러 개를 동시에 등록합니다. 사내 LAN Ollama, HTTPS로 공개한 Ollama와 추가 서버를 각각 등록할 수 있습니다. Daon은 Ollama 모델을 자동 설치하거나 삭제하지 않으며, API 컨테이너가 Endpoint에 접근할 수 있어야 합니다.
 
-- text
-- vision
-- document_parser
-- audio_understanding
-- speech_to_text
-- embedding
-- reranker
+각 연결에서 모델 카탈로그를 확인한 뒤 Workspace 기본값에서 `연결 이름 · 모델 ID`를 선택합니다. 한 개의 전역 `OLLAMA_BASE_URL`로 모든 Workspace를 묶지 않습니다.
 
-질문에는 text 역할의 활성 모델이 필요합니다. 파일 처리에는 형식에 따라 다른 역할이 필요할 수 있습니다. 역할 Label만 등록하고 실제 기능 시험을 하지 않은 모델은 사용 가능한 것으로 판정하지 않습니다.
+### 7.4 OpenRouter·OmniRoute·Eoul Gateway
 
-### 7.4 Ollama
+OpenRouter는 OpenAI 호환 모델 카탈로그와 API를 사용합니다. OmniRoute와 Eoul Gateway는 동등한 Gateway 유형으로 취급하며, Daon User에는 Gateway Endpoint, Client Key와 Logical model ID를 등록합니다.
 
-Ollama는 서버 또는 승인된 로컬 환경에 설치된 모델을 사용합니다. Daon이 모델을 자동 설치하거나 삭제하지 않습니다. 모델 이름, 역할, 활성 상태와 Endpoint가 정확한지 확인합니다.
+Eoul Gateway가 Daon User와 같은 서버에 설치되었는지 별도 서버에 배포되었는지는 연결 방식의 차이일 뿐입니다. 실제 설치 토폴로지에서 API 컨테이너가 접근할 수 있는 주소를 등록합니다. 하위 Provider 선택, 우선순위와 Fallback은 Gateway가 담당하고 Daon User는 선택한 논리 모델을 한 번 호출합니다.
+
+### 7.5 Credential 수명주기
+
+Credential은 DB에 암호화해 저장하며 시스템 범위의 연결별 키 하나를 모든 Workspace가 공유합니다. 키 원문은 조회 API, 화면, 감사 이벤트나 오류 메시지에 포함하지 않습니다.
+
+- 교체: 새 키와 현재 관리자 비밀번호만 입력합니다. Endpoint 재입력과 worker 재생성은 필요하지 않습니다.
+- 삭제: 연결과 카탈로그는 유지되지만 실행은 차단됩니다.
+- master key: API와 실제 Provider 호출 worker에 read-only Secret 파일로만 제공합니다.
+- 이전 환경변수: 1회 이관 후 런타임 fallback으로 사용하지 않습니다.
 
 ## 8. 모델 선택과 Routing의 현재 동작
 
-질문 실행은 현재 Workspace에서 선택된 단일 Deployment를 사용합니다. 실행 시 선택, Provider와 정책 정보가 RoutingDecision과 RunSnapshot에 기록될 수 있습니다.
+질문 실행은 현재 Workspace에서 해당 기능의 기본값으로 선택된 단일 연결·모델을 사용합니다. 실행 시 선택, Provider와 정책 정보가 RoutingDecision과 RunSnapshot에 기록될 수 있습니다.
 
-현재 서버가 설계서의 다중 후보 우선순위를 계산해 자동 정렬하고, 장애 시 다음 모델로 자동 Fallback한다고 설명할 수는 없습니다. 실제 기록의 후보 순서는 선택된 Deployment 한 개를 중심으로 구성됩니다.
+현재 서버가 설계서의 다중 후보 우선순위를 계산해 자동 정렬하고, 장애 시 다음 모델로 자동 Fallback한다고 설명할 수는 없습니다. 실제 기록의 후보 순서는 선택된 연결·모델 한 개를 중심으로 구성됩니다.
 
 따라서 다음 원칙을 지킵니다.
 
@@ -302,9 +304,9 @@ AI 오디오와 동영상은 계약에 등록되어 있지만 전용 Provider가
 
 ## 13. 예상 결과와 권장 운영 절차
 
-1. 조직 관리자가 Provider Profile과 Credential을 설정합니다.
-2. 역할에 맞는 Model Deployment를 등록하고 활성화합니다.
-3. 연결 시험을 수행합니다.
+1. 시스템 관리자가 이름 있는 Provider 연결과 Credential을 설정합니다.
+2. 연결 확인과 모델 카탈로그 조회를 완료합니다.
+3. Workspace에서 기능별 기본 모델을 선택합니다.
 4. 실제 지원 Provider로 작은 비민감 질문을 시험합니다.
 5. 조직 Egress 정책과 실행 기록을 확인합니다.
 6. PDF Source로 질문·Citation 수직 흐름을 검증합니다.
@@ -317,15 +319,15 @@ AI 오디오와 동영상은 계약에 등록되어 있지만 전용 Provider가
 
 ### Provider 설정이 필요함
 
-text 역할 Deployment, Profile 활성 상태, Credential 설정 여부와 선택 상태를 확인합니다. Credential 값을 화면이나 로그로 확인하려 하지 않습니다.
+시스템 연결의 활성 상태, Credential 설정 여부, 연결 확인 결과, 모델 카탈로그와 Workspace의 텍스트 생성 기본값을 확인합니다. Credential 값을 화면이나 로그로 확인하려 하지 않습니다.
 
 ### TEXT_PROVIDER_UNAVAILABLE
 
-선택 Provider가 현재 질문 Adapter 지원 범위인지 확인합니다. Ollama, Groq, Mistral, Upstage 외 Provider는 설정되어 있어도 질문 경로에서 사용할 수 없을 수 있습니다.
+선택 Provider가 현재 질문 Adapter 지원 범위인지 확인합니다. Ollama, Groq, Mistral, Upstage, OpenRouter, OmniRoute와 Eoul Gateway만 현재 질문 경로에 연결되어 있습니다.
 
 ### TEXT_MODEL_NOT_SELECTED 또는 모델 선택 오류
 
-Workspace의 text 역할 활성 Deployment를 선택합니다. 변경 후 기존 Run을 재사용하지 말고 새 Run을 실행합니다.
+Workspace의 `텍스트 생성` 기본 연결·모델을 선택합니다. 변경 후 기존 Run을 재사용하지 말고 새 Run을 실행합니다.
 
 ### EGRESS 정책 거부
 
@@ -333,7 +335,7 @@ Workspace의 text 역할 활성 Deployment를 선택합니다. 변경 후 기존
 
 ### Source가 모델 대기 상태
 
-필요한 document parser, vision, audio understanding, speech-to-text 또는 text 역할이 준비되었는지 확인합니다. Source 원본은 보존하고 준비 후 새 처리 Run을 시작합니다.
+필요한 문서 분석, 이미지 이해, 오디오 이해, 음성 변환 또는 텍스트 생성 기능이 준비되었는지 확인합니다. Source 원본은 보존하고 준비 후 새 처리 Run을 시작합니다.
 
 ### QUESTION_RESPONSE_INVALID 또는 CITATION_RESPONSE_INVALID
 
@@ -350,7 +352,7 @@ Workspace의 text 역할 활성 Deployment를 선택합니다. 변경 후 기존
 ## 15. 관리자 점검표
 
 - Provider 연결과 실제 질문 실행 지원을 구분했습니다.
-- text 역할 Deployment가 명시적으로 선택되었습니다.
+- Workspace의 기능별 기본 연결·모델이 명시적으로 선택되었습니다.
 - Source 형식별 실제 처리 수준을 확인했습니다.
 - 외부 전송 정책과 마스킹 조건을 확인했습니다.
 - PDF 질문과 Citation을 실제로 열어 보았습니다.
@@ -365,6 +367,6 @@ Workspace의 text 역할 활성 Deployment를 선택합니다. 변경 후 기존
 - 다중 후보 모델 정렬과 자동 Fallback은 현재 실제 질문 서비스 기능으로 제공되지 않습니다.
 - RoutingDecision과 RunSnapshot 저장이 있더라도 후보가 단일 선택 모델일 수 있습니다.
 - PDF 외 등록 형식 전체의 운영 의미 이해는 미완료입니다.
-- 설정 가능한 9개 Provider와 실제 질문 Adapter가 지원하는 4개 Provider는 다릅니다.
+- 실제 질문 Adapter는 Ollama, Groq, Mistral, Upstage, OpenRouter, OmniRoute와 Eoul Gateway를 지원합니다. 나머지 Provider 코드는 실행 준비가 되지 않았습니다.
 - AI 오디오·동영상은 전용 Provider가 없으면 사용할 수 없습니다.
 - Mobile과 실제 기기에서의 지식·모델 흐름은 별도 검증이 필요합니다.

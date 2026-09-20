@@ -100,6 +100,52 @@ def test_postgres_admin_recovery_and_user_suspension_revoke_sessions() -> None:
     not os.environ.get("DAON_TEST_POSTGRES_DSN"),
     reason="isolated PostgreSQL test DSN is not configured",
 )
+def test_postgres_admin_can_create_pending_approval_user() -> None:
+    repository = PostgresIdentityRepository(os.environ["DAON_TEST_POSTGRES_DSN"])
+    audit = AuditEventStore()
+    clock = lambda: datetime.now(timezone.utc)
+    identity = IdentityService(
+        repository=repository,
+        audit_store=audit,
+        oidc_policies=(),
+        clock=clock,
+    )
+    service = AdminUserService(
+        repository=repository,
+        audit_store=audit,
+        system_admin_user_ids=frozenset({"admin"}),
+        clock=clock,
+    )
+    principal = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+    user_id = None
+    try:
+        identity.ensure_initial_admin()
+        created = service.create_user(
+            principal,
+            login_id="postgres-pending-user",
+            email="postgres-pending-user@example.test",
+            initial_password="initial postgres pending password",
+            idempotency_key="postgres-create-pending-0001",
+            trace_id=TRACE_ID,
+            policy_version=POLICY_VERSION,
+        )
+        user_id = created.user.user_id
+        assert created.user.state == "pending_approval"
+    finally:
+        if user_id is not None:
+            with repository.transaction() as connection:
+                connection.execute(
+                    "DELETE FROM admin_audit_outbox WHERE target_id=?", (user_id,)
+                )
+                connection.execute("DELETE FROM memberships WHERE user_id=?", (user_id,))
+                connection.execute("DELETE FROM users WHERE user_id=?", (user_id,))
+        repository.close()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DAON_TEST_POSTGRES_DSN"),
+    reason="isolated PostgreSQL test DSN is not configured",
+)
 def test_postgres_concurrent_same_key_converges_and_different_fingerprint_fails_closed() -> None:
     dsn = os.environ["DAON_TEST_POSTGRES_DSN"]
     setup_repository = PostgresIdentityRepository(dsn)

@@ -12,6 +12,7 @@ from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationService, Role, SqliteAuthorizationRepository
 from daon_user_api.identity import IdentityPrincipal, IdentitySessionView
 from daon_user_api.notebook import NotebookError
+from daon_user_api.question_answering import TextModelSelection
 from daon_user_api.question_answering_postgres import StoredQuestionAnswer
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
 from test_identity_support import POLICY_VERSION, create_service, identity_session_view
@@ -42,9 +43,14 @@ class QuestionBoundary:
     def prepare_authorization(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         self.prepare_calls += 1
         return SimpleNamespace(
-            selection=SimpleNamespace(
-                provider_kind=self.provider_kind, deployment_id="deployment-upstage",
-                provider_code="UPSTAGE", base_url="https://api.upstage.ai/v1",
+            selection=TextModelSelection(
+                provider_kind=self.provider_kind,
+                provider_code="UPSTAGE",
+                base_url="https://api.upstage.ai/v1",
+                profile_id="profile-upstage",
+                deployment_id="deployment-upstage",
+                model_id="solar-pro4",
+                binding_version=1,
             ),
             provider_payload=b'{"question":"masked"}',
         )

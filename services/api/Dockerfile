@@ -1,8 +1,10 @@
 FROM python:3.14-slim
 WORKDIR /app
 COPY services/api/src ./src
+COPY scripts/import-provider-credentials.py ./scripts/import-provider-credentials.py
 RUN pip install --no-cache-dir \
     alembic==1.18.5 \
+    cryptography==50.0.0 \
     fastapi==0.139.2 \
     minio==7.2.20 \
     'psycopg[binary,pool]==3.3.4' \

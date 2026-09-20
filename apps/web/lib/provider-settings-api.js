@@ -19,56 +19,71 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
   return { payload, etag: response.headers.get("etag") };
 }
 
-function exactKeys(value, keys) {
-  return value && typeof value === "object" && !Array.isArray(value)
-    && Object.keys(value).sort().join("|") === [...keys].sort().join("|");
-}
-
-function providerConnectionResult(payload, expectedProvider) {
-  const data = payload?.data;
-  if (
-    !exactKeys(payload, ["data", "meta"])
-    || !exactKeys(data, ["provider_code", "status", "checked_at"])
-    || data.provider_code !== expectedProvider
-    || !new Set(["ready", "unconfigured", "unavailable"]).has(data.status)
-    || typeof data.checked_at !== "string"
-    || !data.checked_at
-  ) {
-    throw new Error("PROVIDER_CONNECTION_RESPONSE_INVALID");
-  }
-  return { providerCode: data.provider_code, status: data.status, checkedAt: data.checked_at };
-}
-
 export const providerSettingsApi = Object.freeze({
   getSession() {
     return request("/bff/api/session");
   },
-  listProfiles(workspaceId) {
-    return request(`/bff/api/model-profiles?workspace_id=${encodeURIComponent(workspaceId)}`);
+  listConnections() {
+    return request("/bff/api/admin/provider-connections");
   },
-  async checkConnection(workspaceId, providerCode) {
-    const result = await request(`/bff/api/model-profiles/${encodeURIComponent(providerCode)}/connection-check?workspace_id=${encodeURIComponent(workspaceId)}`);
-    return providerConnectionResult(result.payload, providerCode);
+  getHealthSettings() {
+    return request("/bff/api/admin/provider-health-settings");
   },
-  saveProfile(input, idempotencyKey) {
-    return request("/bff/api/model-profiles", {
-      method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
-    });
-  },
-  listDeployments(workspaceId) {
-    return request(`/bff/api/model-deployments?workspace_id=${encodeURIComponent(workspaceId)}`);
-  },
-  saveDeployment(input, idempotencyKey) {
-    return request("/bff/api/model-deployments", {
-      method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
-    });
-  },
-  getModelPolicy(workspaceId) {
-    return request(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/model-policy`);
-  },
-  saveModelPolicy(workspaceId, input, etag, idempotencyKey) {
-    return request(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/model-policy`, {
+  saveHealthSettings(input) {
+    return request("/bff/api/admin/provider-health-settings", {
       method: "PATCH", body: input,
+    });
+  },
+  listUserCredentials() {
+    return request("/bff/api/provider-credentials");
+  },
+  replaceUserCredential(connectionId, input) {
+    return request(`/bff/api/provider-credentials/${encodeURIComponent(connectionId)}`, {
+      method: "PUT", body: input,
+    });
+  },
+  deleteUserCredential(connectionId, input) {
+    return request(`/bff/api/provider-credentials/${encodeURIComponent(connectionId)}`, {
+      method: "DELETE", body: input,
+    });
+  },
+  createConnection(input, idempotencyKey) {
+    return request("/bff/api/admin/provider-connections", {
+      method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
+    });
+  },
+  updateConnection(connectionId, input, idempotencyKey) {
+    return request(`/bff/api/admin/provider-connections/${encodeURIComponent(connectionId)}`, {
+      method: "PUT", body: input, headers: { "Idempotency-Key": idempotencyKey }
+    });
+  },
+  replaceCredential(connectionId, input, idempotencyKey) {
+    return request(`/bff/api/admin/provider-connections/${encodeURIComponent(connectionId)}/credential`, {
+      method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
+    });
+  },
+  deleteCredential(connectionId, input, idempotencyKey) {
+    return request(`/bff/api/admin/provider-connections/${encodeURIComponent(connectionId)}`, {
+      method: "DELETE", body: input, headers: { "Idempotency-Key": idempotencyKey }
+    });
+  },
+  refreshCatalog(connectionId, input, idempotencyKey) {
+    return request(`/bff/api/admin/provider-catalog/${encodeURIComponent(connectionId)}/refresh`, {
+      method: "POST", body: input, headers: { "Idempotency-Key": idempotencyKey }
+    });
+  },
+  correctCapabilities(connectionId, modelId, input, idempotencyKey) {
+    return request(`/bff/api/admin/provider-models/${encodeURIComponent(connectionId)}/${encodeURIComponent(modelId)}/capabilities`, {
+      method: "PATCH", body: input, headers: { "Idempotency-Key": idempotencyKey }
+    });
+  },
+  getModelDefaults(workspaceId) {
+    return request(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/model-defaults`);
+  },
+  saveModelDefault(workspaceId, input, etag, idempotencyKey) {
+    return request(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/model-defaults`, {
+      method: "PATCH",
+      body: input,
       headers: { "If-Match": etag, "Idempotency-Key": idempotencyKey }
     });
   }

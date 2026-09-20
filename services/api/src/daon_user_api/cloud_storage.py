@@ -17,7 +17,9 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 
 _SAFE_SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_EXPECTED_SCHEMA_REVISION = "0026"
+_EXPECTED_SCHEMA_REVISION = "0047"
+_DEFAULT_DENY_CANONICAL_TEXT = '{"allowed_destinations":[],"allowed_provider_kinds":[],"classification":"restricted","masking_required":true,"max_bytes":0,"mode":"deny_external","redaction_required":true,"required_approver":"organization_admin"}'
+_DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25b819d7f"
 
 
 class _PoolAvailabilityLogFilter(logging.Filter):
@@ -185,6 +187,105 @@ class PostgresCloudStore:
             connection.execute(
                 "INSERT INTO memberships (tenant_id, workspace_id, user_id, role) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
                 (context.tenant_id, context.workspace_id, context.actor_id, "member"),
+            )
+            connection.execute(
+                "INSERT INTO egress_policy_versions "
+                "(tenant_id, organization_id, workspace_id, policy_version_id, scope_type, "
+                "policy_version, state, canonical_json, canonical_text, digest_sha256, created_by, trace_id) "
+                "SELECT %s, %s, NULL, 'egress-backfill-policy:' || md5(%s || ':organization'), "
+                "'organization', 1, 'active', %s::jsonb, %s, %s, 'runtime:seed_scope', "
+                "'runtime:seed_scope:' || md5(%s || ':organization') "
+                "WHERE NOT EXISTS (SELECT 1 FROM egress_policy_bindings AS binding "
+                "WHERE binding.tenant_id = %s AND binding.organization_id = %s "
+                "AND binding.workspace_id IS NULL AND binding.scope_type = 'organization' "
+                "AND binding.current) ON CONFLICT DO NOTHING",
+                (
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.tenant_id,
+                    _DEFAULT_DENY_CANONICAL_TEXT,
+                    _DEFAULT_DENY_CANONICAL_TEXT,
+                    _DEFAULT_DENY_DIGEST,
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.tenant_id,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO egress_policy_bindings "
+                "(tenant_id, organization_id, workspace_id, binding_id, scope_type, "
+                "policy_version_id, binding_version, active, current, created_by, trace_id) "
+                "SELECT %s, %s, NULL, 'egress-backfill-binding:' || md5(%s || ':organization'), "
+                "'organization', 'egress-backfill-policy:' || md5(%s || ':organization'), "
+                "1, true, true, 'runtime:seed_scope', "
+                "'runtime:seed_scope:' || md5(%s || ':organization') "
+                "WHERE NOT EXISTS (SELECT 1 FROM egress_policy_bindings AS binding "
+                "WHERE binding.tenant_id = %s AND binding.organization_id = %s "
+                "AND binding.workspace_id IS NULL AND binding.scope_type = 'organization' "
+                "AND binding.current) ON CONFLICT DO NOTHING",
+                (
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.tenant_id,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO egress_policy_versions "
+                "(tenant_id, organization_id, workspace_id, policy_version_id, scope_type, "
+                "policy_version, state, canonical_json, canonical_text, digest_sha256, created_by, trace_id) "
+                "SELECT %s, %s, %s, 'egress-backfill-policy:' || md5(%s || ':' || %s), "
+                "'workspace', 1, 'active', %s::jsonb, %s, %s, 'runtime:seed_scope', "
+                "'runtime:seed_scope:' || md5(%s || ':' || %s) "
+                "WHERE NOT EXISTS (SELECT 1 FROM egress_policy_bindings AS binding "
+                "WHERE binding.tenant_id = %s AND binding.organization_id = %s "
+                "AND binding.workspace_id = %s AND binding.scope_type = 'workspace' "
+                "AND binding.current) ON CONFLICT DO NOTHING",
+                (
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.workspace_id,
+                    context.tenant_id,
+                    context.workspace_id,
+                    _DEFAULT_DENY_CANONICAL_TEXT,
+                    _DEFAULT_DENY_CANONICAL_TEXT,
+                    _DEFAULT_DENY_DIGEST,
+                    context.tenant_id,
+                    context.workspace_id,
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.workspace_id,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO egress_policy_bindings "
+                "(tenant_id, organization_id, workspace_id, binding_id, scope_type, "
+                "policy_version_id, binding_version, active, current, created_by, trace_id) "
+                "SELECT %s, %s, %s, 'egress-backfill-binding:' || md5(%s || ':' || %s), "
+                "'workspace', 'egress-backfill-policy:' || md5(%s || ':' || %s), "
+                "1, true, true, 'runtime:seed_scope', "
+                "'runtime:seed_scope:' || md5(%s || ':' || %s) "
+                "WHERE NOT EXISTS (SELECT 1 FROM egress_policy_bindings AS binding "
+                "WHERE binding.tenant_id = %s AND binding.organization_id = %s "
+                "AND binding.workspace_id = %s AND binding.scope_type = 'workspace' "
+                "AND binding.current) ON CONFLICT DO NOTHING",
+                (
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.workspace_id,
+                    context.tenant_id,
+                    context.workspace_id,
+                    context.tenant_id,
+                    context.workspace_id,
+                    context.tenant_id,
+                    context.workspace_id,
+                    context.tenant_id,
+                    context.tenant_id,
+                    context.workspace_id,
+                ),
             )
 
     def put_vector(self, context: CloudAccessContext, vector_id: str, embedding: Sequence[float]) -> None:

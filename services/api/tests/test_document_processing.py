@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 
 from daon_user_api.document_processing import (
     DocumentProcessingContext,
@@ -13,6 +14,7 @@ from daon_user_api.document_understanding_adapter import (
     ParserValidation,
     SemanticUnderstanding,
 )
+from daon_user_api.workspace_model_defaults import ResolvedModel
 try:
     from tests.test_document_understanding_adapter import provider_snapshot
 except ModuleNotFoundError:
@@ -42,20 +44,32 @@ class RecordingRepository:
         self.events.append(("fail", (processing_run_id, code, retryable)))
 
 
-class SnapshotService:
+class ModelResolver:
     def __init__(self) -> None:
         self.calls = 0
 
-    def snapshot(self, context):  # type: ignore[no-untyped-def]
+        self.capabilities = []
+
+    @contextmanager
+    def resolve(self, context, capability):  # type: ignore[no-untyped-def]
         self.calls += 1
-        return provider_snapshot()
-
-
-class CredentialResolver:
-    def resolve(self, provider_code: str) -> str:
-        if provider_code != "UPSTAGE":
-            raise AssertionError(provider_code)
-        return "up_test_secret"
+        self.capabilities.append(capability)
+        semantic = capability == "image_understanding"
+        model = ResolvedModel(
+            connection_id="upstage-vision" if semantic else "upstage-parser",
+            provider_code="UPSTAGE",
+            model_id="information-extract" if semantic else "document-parse",
+            capability=capability, base_url="https://api.upstage.ai/v1",
+            credential_version=4 if semantic else 9,
+            default_version=2 if semantic else 3, catalog_version=8,
+            provider_kind="external_api", routing_owner="provider",
+            daon_fallback_allowed=True,
+            _credential=bytearray(b"vision-secret" if semantic else b"parser-secret"),
+        )
+        try:
+            yield model
+        finally:
+            model.release()
 
 
 class Adapter:
@@ -81,8 +95,12 @@ class AdapterFactory:
         self.adapter = adapter
         self.calls: list[tuple[str, str]] = []
 
-    def create(self, provider_code: str, credential: str):
-        self.calls.append((provider_code, credential))
+    def create(self, selection, semantic_credential: str, parser_credential: str):  # type: ignore[no-untyped-def]
+        self.calls.append((
+            selection.semantic_connection_id, selection.parser_connection_id,
+            selection.semantic_credential_version, selection.parser_credential_version,
+            semantic_credential == "vision-secret", parser_credential == "parser-secret",
+        ))
         return self.adapter
 
 
@@ -94,17 +112,22 @@ class DocumentProcessingServiceTests(unittest.TestCase):
 
     def test_frozen_selection_processes_original_pdf_and_persists_completion(self) -> None:
         repository = RecordingRepository()
-        snapshots = SnapshotService()
+        snapshots = ModelResolver()
         adapter = Adapter()
         factory = AdapterFactory(adapter)
-        service = DocumentProcessingService(repository, snapshots, CredentialResolver(), factory)
+        service = DocumentProcessingService(repository, snapshots, factory)
 
         result = service.process(self.context, source_id="source-cp3")
 
         self.assertEqual(result.status, "ready")
-        self.assertEqual(snapshots.calls, 1)
+        self.assertEqual(snapshots.calls, 2)
+        self.assertEqual(snapshots.capabilities, ["image_understanding", "document_parsing"])
         self.assertEqual(adapter.calls, 1)
-        self.assertEqual(factory.calls, [("UPSTAGE", "up_test_secret")])
+        self.assertEqual(factory.calls, [(
+            "upstage-vision", "upstage-parser", 4, 9, True, True,
+        )])
+        self.assertNotIn("vision-secret", repr(result))
+        self.assertNotIn("parser-secret", repr(result))
         self.assertEqual([event[0] for event in repository.events], ["load", "start", "complete"])
 
     def test_retryable_semantic_failure_is_persisted_without_false_completion(self) -> None:
@@ -113,7 +136,7 @@ class DocumentProcessingServiceTests(unittest.TestCase):
             "UNDERSTANDING_PROVIDER_UNAVAILABLE", status=503, retryable=True,
         ))
         service = DocumentProcessingService(
-            repository, SnapshotService(), CredentialResolver(), AdapterFactory(adapter),
+            repository, ModelResolver(), AdapterFactory(adapter),
         )
 
         with self.assertRaisesRegex(DocumentUnderstandingError, "UNDERSTANDING_PROVIDER_UNAVAILABLE"):
@@ -127,7 +150,7 @@ class DocumentProcessingServiceTests(unittest.TestCase):
     def test_worker_processes_an_existing_run_without_creating_a_second_run(self) -> None:
         repository = RecordingRepository()
         service = DocumentProcessingService(
-            repository, SnapshotService(), CredentialResolver(), AdapterFactory(Adapter()),
+            repository, ModelResolver(), AdapterFactory(Adapter()),
         )
 
         result = service.process_existing(

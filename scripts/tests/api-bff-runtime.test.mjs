@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   BffConfigurationError,
+  browserSessionCookieName,
   createBffProxy,
   parseInternalApiBase,
   parsePublicGatewayOrigin,
@@ -16,6 +17,51 @@ test("BFF local_test public origin은 exact loopback HTTP만 허용하고 produc
   }
   assert.throws(() => parsePublicGatewayOrigin("http://localhost:3080", "production"), BffConfigurationError);
   assert.equal(parsePublicGatewayOrigin("https://app.example.com", "production").origin, "https://app.example.com");
+});
+
+test("BFF wsl_http_qa public origin은 RFC1918 IP HTTP만 허용한다", () => {
+  assert.equal(
+    parsePublicGatewayOrigin("http://172.27.253.53:3330", "wsl_http_qa").origin,
+    "http://172.27.253.53:3330",
+  );
+  assert.equal(browserSessionCookieName("wsl_http_qa"), "daon_session");
+  assert.equal(browserSessionCookieName("production"), "__Host-daon_session");
+  for (const invalid of [
+    "http://8.8.8.8:3330",
+    "http://0.0.0.0:3330",
+    "http://daon-user.sinsan.kr:3330",
+    "https://172.27.253.53:3330",
+    "http://172.27.253.53:3330/path",
+  ]) {
+    assert.throws(() => parsePublicGatewayOrigin(invalid, "wsl_http_qa"), BffConfigurationError);
+  }
+});
+
+test("BFF wsl_http_qa는 브라우저 HTTP 쿠키를 API Secure 쿠키 경계로 양방향 변환한다", async () => {
+  let forwardedCookie;
+  const proxy = createBffProxy({
+    baseUrl: new URL("http://api:8000"),
+    publicOrigin: new URL("http://172.27.253.53:3330"),
+    browserCookieName: browserSessionCookieName("wsl_http_qa"),
+    fetchImpl: async (_url, init) => {
+      forwardedCookie = init.headers.get("cookie");
+      return Response.json({ data: { status: "ok" }, meta: {} }, {
+        headers: {
+          "Set-Cookie": "__Host-daon_session=opaque-session; HttpOnly; Max-Age=3600; Path=/; SameSite=lax; Secure",
+        },
+      });
+    },
+  });
+  const response = await proxy(new Request("http://172.27.253.53:3330/bff/api/session", {
+    headers: { Cookie: "analytics=private; daon_session=opaque-session" },
+  }), ["session"]);
+  assert.equal(response.status, 200);
+  assert.equal(forwardedCookie, "__Host-daon_session=opaque-session");
+  const setCookie = response.headers.get("set-cookie");
+  assert.match(setCookie, /^daon_session=opaque-session;/);
+  assert.match(setCookie, /HttpOnly/i);
+  assert.match(setCookie, /SameSite=lax/i);
+  assert.doesNotMatch(setCookie, /(?:^|;)\s*Secure(?:;|$)/i);
 });
 
 test("조직 전체 디렉터리 BFF는 same-origin GET만 내부 관리자 계약으로 전달한다", async () => {
@@ -265,6 +311,7 @@ test("public /api/v1 Route Handler는 Native proxy를 실행해 login non-404·S
 test("BFF internal destination is server-only, fixed and profile constrained", () => {
   assert.throws(() => parseInternalApiBase("http://api.internal:8000", "production"), BffConfigurationError);
   assert.equal(parseInternalApiBase("http://api:8000", "production").origin, "http://api:8000");
+  assert.equal(parseInternalApiBase("http://api:8000", "wsl_http_qa").origin, "http://api:8000");
   assert.throws(() => parseInternalApiBase("https://user:pass@api.example.com", "production"), BffConfigurationError);
   assert.throws(() => parseInternalApiBase("https://api.example.com/variable/path", "production"), BffConfigurationError);
   assert.equal(parseInternalApiBase("https://api.example.com", "production").origin, "https://api.example.com");
@@ -783,7 +830,9 @@ test("BFF current-session logout requires exact Origin and Referer and forwards 
   }), ["session", "logout"]);
 
   assert.equal(accepted.status, 200);
+  assert.match(accepted.headers.get("set-cookie"), /^__Host-daon_session=/u);
   assert.match(accepted.headers.get("set-cookie"), /Max-Age=0/u);
+  assert.match(accepted.headers.get("set-cookie"), /(?:^|;)\s*Secure(?:;|$)/iu);
   assert.deepEqual([missingReferer.status, crossOrigin.status], [403, 403]);
   assert.equal(captured.length, 1);
   assert.equal(captured[0].url, "https://api.example.com/api/v1/session/logout");
@@ -854,6 +903,45 @@ test("BFF exposes only bounded Provider settings paths and query", async () => {
   assert.equal(invalidId.status, 404);
   assert.equal(invalidMethod.status, 405);
   assert.equal(rejectedCalls, 0);
+});
+
+test("BFF exposes safe named connection credential and Workspace model default routes", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method });
+      return Response.json({ data: {}, meta: {} }, { headers: { ETag: '"model-defaults-v1"' } });
+    },
+  });
+  const mutationHeaders = {
+    Origin: "https://app.example.com",
+    "Sec-Fetch-Site": "same-origin",
+    "Content-Type": "application/json",
+    "Idempotency-Key": "provider-operation-0001",
+  };
+  const replaced = await proxy(new Request(
+    "https://app.example.com/bff/api/admin/provider-connections/upstage-primary/credential",
+    { method: "POST", headers: mutationHeaders, body: JSON.stringify({ credential: "fixture-only" }) },
+  ), ["admin", "provider-connections", "upstage-primary", "credential"]);
+  const read = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/model-defaults",
+  ), ["workspaces", "workspace-001", "model-defaults"]);
+  const saved = await proxy(new Request(
+    "https://app.example.com/bff/api/workspaces/workspace-001/model-defaults",
+    {
+      method: "PATCH",
+      headers: { ...mutationHeaders, "If-Match": '"model-defaults-v0"' },
+      body: JSON.stringify({ capability: "text_generation" }),
+    },
+  ), ["workspaces", "workspace-001", "model-defaults"]);
+
+  assert.deepEqual([replaced.status, read.status, saved.status], [200, 200, 200]);
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/admin/provider-connections/upstage-primary/credential", method: "POST" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-defaults", method: "GET" },
+    { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-defaults", method: "PATCH" },
+  ]);
 });
 
 test("BFF는 검증된 Workspace Knowledge 목록 GET만 same-origin으로 노출한다", async () => {

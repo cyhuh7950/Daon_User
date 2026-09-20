@@ -21,14 +21,10 @@ from .document_processing_postgres import PostgresDocumentProcessingRepository
 from .document_processing_queue import PostgresDocumentProcessingQueue
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
-    ServerProviderCredentialResolver,
 )
 from .object_queue import MinioObjectStorageAdapter
-from .provider_settings import (
-    PostgresProviderSettingsRepository,
-    ProviderSettingsService,
-    ServerCredentialPresenceResolver,
-)
+from .provider_credentials import ProviderCredentialCipher
+from .workspace_model_defaults import PostgresWorkspaceModelResolver
 
 
 class QueuePort(Protocol):
@@ -100,6 +96,7 @@ class DocumentWorkerSettings:
     object_bucket: str
     object_access_key_file: Path
     object_secret_key_file: Path
+    provider_credential_key_file: Path
     object_secure: bool
     lease_seconds: int
     poll_seconds: float
@@ -112,6 +109,7 @@ class DocumentWorkerSettings:
             "object_bucket": os.environ.get("DAON_OBJECT_STORAGE_BUCKET", "").strip(),
             "access": os.environ.get("DAON_OBJECT_ACCESS_KEY_FILE", "").strip(),
             "secret": os.environ.get("DAON_OBJECT_SECRET_KEY_FILE", "").strip(),
+            "provider_key": os.environ.get("DAON_PROVIDER_CREDENTIAL_KEY_FILE", "").strip(),
         }
         if any(not value for value in required.values()):
             raise ValueError("DOCUMENT_WORKER_ENV_REQUIRED")
@@ -122,6 +120,7 @@ class DocumentWorkerSettings:
             object_bucket=required["object_bucket"],
             object_access_key_file=Path(required["access"]),
             object_secret_key_file=Path(required["secret"]),
+            provider_credential_key_file=Path(required["provider_key"]),
             object_secure=os.environ.get("DAON_OBJECT_STORAGE_SECURE", "true").lower() == "true",
             lease_seconds=int(os.environ.get("DAON_DOCUMENT_WORKER_LEASE_SECONDS", "600")),
             poll_seconds=float(os.environ.get("DAON_DOCUMENT_WORKER_POLL_SECONDS", "0.5")),
@@ -135,17 +134,21 @@ def build_worker(settings: DocumentWorkerSettings) -> tuple[DocumentProcessingWo
     except OSError:
         raise ValueError("OBJECT_SECRET_REFERENCE_UNAVAILABLE") from None
     cloud_store = PostgresCloudStore(settings.database_dsn)
+    try:
+        provider_key = settings.provider_credential_key_file.read_bytes()
+    except OSError:
+        cloud_store.close()
+        raise ValueError("PROVIDER_CREDENTIAL_KEY_REFERENCE_UNAVAILABLE") from None
     storage = MinioObjectStorageAdapter(
         endpoint=settings.object_endpoint, bucket=settings.object_bucket,
         access_key=access_key, secret_key=secret_key, secure=settings.object_secure,
     )
     repository = PostgresDocumentProcessingRepository(cloud_store, storage)
-    provider_settings = ProviderSettingsService(
-        PostgresProviderSettingsRepository(cloud_store),
-        ServerCredentialPresenceResolver(),
-    )
     processing = DocumentProcessingService(
-        repository, provider_settings, ServerProviderCredentialResolver(),
+        repository,
+        PostgresWorkspaceModelResolver(
+            cloud_store, ProviderCredentialCipher(provider_key, encryption_key_version=1),
+        ),
         DefaultDocumentAdapterFactory(),
     )
     queue = PostgresDocumentProcessingQueue(settings.database_dsn, cloud_store)
