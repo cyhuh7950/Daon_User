@@ -8,5 +8,5 @@ const route = navigation.routes.find((item) => item.route_id === "model_connecti
 const screen = screens.screens.find((item) => item.screen_id === "model_connections");
 
 export default function ModelConnectionsPage() {
-  return <ProviderSettingsWorkspace routeId={route.route_id} screenId={screen.screen_id} />;
+  return <ProviderSettingsWorkspace routeId={route.route_id} screenId={screen.screen_id} showNotebookLink />;
 }
