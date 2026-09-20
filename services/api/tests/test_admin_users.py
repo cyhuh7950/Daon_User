@@ -69,8 +69,8 @@ def test_admin_user_password_reset_request_protects_accounts_and_uses_email_cont
         )
     sent: list[tuple[str, str, str]] = []
 
-    def request_reset(*, identifier: str, trace_id: str, policy_version: str) -> None:
-        sent.append((identifier, trace_id, policy_version))
+    def request_reset(*, identifier: str, trace_id: str, policy_version: str, revoke_sessions: bool = False) -> None:
+        sent.append((identifier, trace_id, policy_version, revoke_sessions))
 
     service = AdminUserService(
         repository=repository,
@@ -90,7 +90,7 @@ def test_admin_user_password_reset_request_protects_accounts_and_uses_email_cont
     )
     assert result.replayed is False
     assert result.status == "accepted"
-    assert sent == [("target-user@example.test", TRACE_ID, POLICY_VERSION)]
+    assert sent == [("target-user@example.test", TRACE_ID, POLICY_VERSION, True)]
 
     with pytest.raises(IdentityError) as protected:
         service.request_password_reset(

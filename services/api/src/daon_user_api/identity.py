@@ -1120,7 +1120,10 @@ class IdentityService:
             token = self._issue_token(connection, table="email_verification_tokens", user_id=str(row["user_id"]), now=now, ttl=timedelta(hours=24))
             self._email_sender.send(recipient=str(row["email"]), subject="Daon 이메일 인증 재전송", body=f"Daon 이메일 인증 토큰: {token}")
 
-    def request_password_reset(self, *, identifier: str, trace_id: str, policy_version: str) -> None:
+    def request_password_reset(
+        self, *, identifier: str, trace_id: str, policy_version: str,
+        revoke_sessions: bool = False,
+    ) -> None:
         value = _checked_text(identifier).lower(); _checked_text(trace_id); _checked_text(policy_version)
         now = self._now()
         with self._lock, self._repository.transaction() as connection:
@@ -1129,6 +1132,8 @@ class IdentityService:
                 return
             self._enforce_mail_rate_limit(connection, table="password_reset_tokens", user_id=str(row["user_id"]), now=now)
             token = self._issue_token(connection, table="password_reset_tokens", user_id=str(row["user_id"]), now=now, ttl=timedelta(minutes=30))
+            if revoke_sessions:
+                revoke_user_sessions(connection, user_id=str(row["user_id"]), updated_at=now)
             self._email_sender.send(recipient=str(row["email"]), subject="Daon 비밀번호 재설정", body=f"Daon 비밀번호 재설정 토큰: {token}")
 
     def confirm_password_reset(self, *, token: str, new_password: str, trace_id: str, policy_version: str) -> None:

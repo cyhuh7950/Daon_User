@@ -155,6 +155,7 @@ class AdminUserService:
         try:
             self._password_reset_requester(
                 identifier=email, trace_id=trace_id, policy_version=policy_version,
+                revoke_sessions=True,
             )
         except Exception:
             with self._repository.transaction() as connection:

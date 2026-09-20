@@ -41,6 +41,23 @@ def test_signup_verify_login_and_password_reset(tmp_path):
     repo.close()
 
 
+def test_admin_reset_request_revokes_existing_sessions_before_email_delivery(tmp_path):
+    identity, repo, sender = service(tmp_path)
+    identity.signup(login_id="alice", email="alice@example.com", password="correct horse battery staple", trace_id="t1", policy_version="p1")
+    verification = sender.messages[-1]["body"].split(": ", 1)[1].splitlines()[0]
+    identity.verify_email(token=verification, trace_id="t2", policy_version="p1")
+    credentials = identity.local_login(login_id="alice", password="correct horse battery staple", platform=DevicePlatform.WEB, trace_id="t3", policy_version="p1")
+    identity.request_password_reset(identifier="alice", trace_id="t4", policy_version="p1", revoke_sessions=True)
+    connection = repo._connect()
+    try:
+        session_state = connection.execute("SELECT state FROM sessions WHERE session_id=?", (credentials.session_id,)).fetchone()[0]
+    finally:
+        connection.close()
+    assert session_state == "revoked"
+    assert len(sender.messages) == 2
+    repo.close()
+
+
 def test_local_native_login_issues_windows_native_rotating_credentials_without_changing_web_contract(tmp_path):
     identity, repo, sender = service(tmp_path)
     identity.signup(login_id="alice", email="alice@example.com", password="correct horse battery staple", trace_id="t1", policy_version="p1")

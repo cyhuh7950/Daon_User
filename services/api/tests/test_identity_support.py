@@ -135,6 +135,7 @@ def create_service(
     clock: MutableClock | None = None,
     audit_store: object | None = None,
     policies: tuple[OidcClientPolicy, ...] | None = None,
+    email_sender: object | None = None,
 ) -> tuple[IdentityService, SqliteIdentityRepository, AuditEventStore | object, MutableClock]:
     actual_clock = clock or MutableClock()
     repository = SqliteIdentityRepository(db_path)
@@ -144,6 +145,7 @@ def create_service(
         audit_store=actual_audit,
         oidc_policies=policies or (policy(), policy(ClientKind.WEB)),
         clock=actual_clock,
+        email_sender=email_sender,
     )
     return service, repository, actual_audit, actual_clock
 
