@@ -45,7 +45,7 @@ export function NotebookHomeWorkspace({
       }
       const result = await getNotebooks(session.workspace_id, { signal });
       setWorkspaceId(session.workspace_id);
-      setUserId(session.user_id);
+      setUserId(session.login_id ?? session.user_id);
       setIsSystemAdmin(session.is_system_admin);
       setNotebooks(result.data);
       setState("ready");

@@ -184,6 +184,7 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             set(response.json()["data"]),
             {
                 "user_id", "tenant_id", "workspace_id", "session_id", "device_id",
+                "login_id",
                 "client_kind", "delivery", "expires_at", "recovery_operations",
                 "password_change_required", "is_system_admin",
             },

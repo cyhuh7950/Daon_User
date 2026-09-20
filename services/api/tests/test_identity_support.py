@@ -37,6 +37,7 @@ def identity_session_view(
     """Build the complete session projection consumed by runtime routes."""
     return IdentitySessionView(
         principal=principal,
+        login_id=user_id,
         client_kind=client_kind,
         expires_at=UTC_1 + timedelta(hours=1),
         password_change_required=password_change_required,

@@ -3607,6 +3607,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             return {
                 "data": {
                     "user_id": principal.user_id, "tenant_id": principal.tenant_id,
+                    "login_id": principal.user_id,
                     "workspace_id": workspace_id, "session_id": principal.session_id,
                     "device_id": principal.device_id, "client_kind": ClientKind.WEB.value,
                     "delivery": "same_origin_secure_cookie", "expires_at": "2099-01-01T00:00:00Z",
@@ -3651,6 +3652,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return {
             "data": {
                 "user_id": principal.user_id,
+                "login_id": view.login_id,
                 "tenant_id": principal.tenant_id,
                 "workspace_id": workspace_id,
                 "session_id": principal.session_id,

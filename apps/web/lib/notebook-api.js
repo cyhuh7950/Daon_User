@@ -25,6 +25,7 @@ function exact(value, required, optional = []) {
 }
 
 function safeId(value) { return typeof value === "string" && SAFE_ID.test(value); }
+function safeOptionalLoginId(value) { return value === null || value === undefined || (typeof value === "string" && value.length >= 1 && value.length <= 128); }
 function timestamp(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(value)
     && !Number.isNaN(Date.parse(value));
@@ -55,8 +56,9 @@ function validMeta(value) {
 }
 
 function validSession(value) {
-  return exact(value, SESSION_KEYS)
+  return exact(value, SESSION_KEYS, ["login_id"])
     && ["user_id", "tenant_id", "workspace_id", "session_id", "device_id"].every((key) => safeId(value[key]))
+    && safeOptionalLoginId(value.login_id)
     && value.client_kind === "web" && value.delivery === "same_origin_secure_cookie"
     && timestamp(value.expires_at)
     && Array.isArray(value.recovery_operations)

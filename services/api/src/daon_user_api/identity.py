@@ -158,6 +158,7 @@ class IdentityPrincipal:
 @dataclass(frozen=True, slots=True)
 class IdentitySessionView:
     principal: IdentityPrincipal
+    login_id: str | None
     client_kind: ClientKind
     expires_at: datetime
     password_change_required: bool
@@ -1478,7 +1479,7 @@ class IdentityService:
         )
         with self._repository.transaction() as connection:
             row = connection.execute(
-                "SELECT s.client_kind,s.access_expires_at,u.password_change_required "
+                "SELECT s.client_kind,s.access_expires_at,u.login_id,u.password_change_required "
                 "FROM sessions s JOIN users u ON u.user_id=s.user_id WHERE s.session_id = ?",
                 (principal.session_id,),
             ).fetchone()
@@ -1486,6 +1487,7 @@ class IdentityService:
                 raise IdentityError("ACCESS_INVALID", 401)
             return IdentitySessionView(
                 principal=principal,
+                login_id=None if row["login_id"] is None else str(row["login_id"]),
                 client_kind=ClientKind(str(row["client_kind"])),
                 expires_at=_dt(str(row["access_expires_at"])),
                 password_change_required=bool(row["password_change_required"]),
