@@ -48,6 +48,12 @@ class AdminUserDeleteResult:
     replayed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class AdminUserPasswordResetResult:
+    status: str
+    replayed: bool
+
+
 class AdminUserService:
     """Apply the system-admin allowlist and protected-account invariant."""
 
@@ -58,11 +64,13 @@ class AdminUserService:
         audit_store: object,
         system_admin_user_ids: frozenset[str],
         clock: Callable[[], datetime],
+        password_reset_requester: Callable[..., None] | None = None,
     ) -> None:
         self._repository = repository
         self._audit_store = audit_store
         self._system_admin_user_ids = system_admin_user_ids
         self._clock = clock
+        self._password_reset_requester = password_reset_requester
 
     def _require_admin(self, principal: IdentityPrincipal) -> None:
         if principal.user_id not in self._system_admin_user_ids:
@@ -86,6 +94,78 @@ class AdminUserService:
     def list_users(self, principal: IdentityPrincipal) -> tuple[AdminUserView, ...]:
         self._require_admin(principal)
         return tuple(self._view(row) for row in self._repository.list_directory_users())
+
+    def request_password_reset(
+        self, principal: IdentityPrincipal, *, user_id: str, idempotency_key: str,
+        trace_id: str, policy_version: str,
+    ) -> AdminUserPasswordResetResult:
+        self._require_admin(principal)
+        target, key = self._validate_operation(
+            user_id=user_id, idempotency_key=idempotency_key,
+            trace_id=trace_id, policy_version=policy_version,
+        )
+        if target == principal.user_id or target == INITIAL_ADMIN_USER_ID:
+            raise IdentityError("PROTECTED_ADMIN_ACCOUNT", 409)
+        if self._password_reset_requester is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        fingerprint = hashlib.sha256(
+            f"admin-password-reset-v1|{principal.user_id}|{target}".encode("utf-8")
+        ).hexdigest()
+        scope = f"{principal.tenant_id}|{principal.user_id}|{key}"
+        event_id = "audit-admin-password-reset-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()
+        now = self._clock()
+        dispatch_admin_audit_outbox(self._repository, self._audit_store, self._clock)
+        with self._repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT user_id,issuer,email,email_verified_at,state FROM users WHERE user_id=?",
+                (target,),
+            ).fetchone()
+            if row is None:
+                raise IdentityError("USER_NOT_FOUND", 404)
+            if str(row["issuer"]) != "local" or str(row["state"]) != "active":
+                raise IdentityError("INVALID_USER_STATE", 409)
+            if row["email"] is None:
+                raise IdentityError("USER_EMAIL_REQUIRED", 409)
+            if row["email_verified_at"] is None:
+                raise IdentityError("EMAIL_VERIFICATION_REQUIRED", 409)
+            prior = connection.execute(
+                "SELECT request_fingerprint,target_id FROM admin_audit_outbox "
+                "WHERE operation=? AND idempotency_scope=?",
+                ("request_password_reset", scope),
+            ).fetchone()
+            if prior is not None:
+                if prior["request_fingerprint"] != fingerprint or prior["target_id"] != target:
+                    raise IdentityError("IDEMPOTENCY_KEY_REUSED", 409)
+                return AdminUserPasswordResetResult(status="accepted", replayed=True)
+            connection.execute(
+                "INSERT INTO admin_audit_outbox(event_id,operation,idempotency_scope,"
+                "request_fingerprint,actor_id,actor_type,tenant_id,action,target_type,"
+                "target_id,occurred_at,trace_id,policy_version,before_state,after_state,"
+                "metadata_json,delivered_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    event_id, "request_password_reset", scope, fingerprint,
+                    principal.user_id, ActorType.USER.value, principal.tenant_id,
+                    "identity.user.password_reset.requested", "user", target,
+                    _iso(now), trace_id, policy_version, str(row["state"]), str(row["state"]),
+                    json.dumps({"reason_code": "SYSTEM_ADMIN_PASSWORD_RESET_REQUEST"}, sort_keys=True),
+                    None, _iso(now),
+                ),
+            )
+            email = str(row["email"])
+        try:
+            self._password_reset_requester(
+                identifier=email, trace_id=trace_id, policy_version=policy_version,
+                revoke_sessions=True,
+            )
+        except Exception:
+            with self._repository.transaction() as connection:
+                connection.execute(
+                    "DELETE FROM admin_audit_outbox WHERE event_id=? AND delivered_at IS NULL",
+                    (event_id,),
+                )
+            raise
+        dispatch_admin_audit_outbox(self._repository, self._audit_store, self._clock, event_id=event_id)
+        return AdminUserPasswordResetResult(status="accepted", replayed=False)
 
     def _validate_operation(self, *, user_id: str | None, idempotency_key: str,
                             trace_id: str, policy_version: str) -> tuple[str | None, str]:
@@ -300,8 +380,8 @@ class AdminUserService:
             connection.execute("DELETE FROM refresh_tokens WHERE family_id IN (SELECT family_id FROM refresh_families WHERE session_id IN (SELECT session_id FROM sessions WHERE user_id=?))", (target,))
             connection.execute("DELETE FROM refresh_families WHERE session_id IN (SELECT session_id FROM sessions WHERE user_id=?)", (target,))
             connection.execute("DELETE FROM session_audit_outbox WHERE session_id IN (SELECT session_id FROM sessions WHERE user_id=?)", (target,))
-            connection.execute("DELETE FROM devices WHERE user_id=?", (target,))
             connection.execute("DELETE FROM sessions WHERE user_id=?", (target,))
+            connection.execute("DELETE FROM devices WHERE user_id=?", (target,))
             connection.execute("DELETE FROM email_verification_tokens WHERE user_id=?", (target,))
             connection.execute("DELETE FROM password_reset_tokens WHERE user_id=?", (target,))
             connection.execute("DELETE FROM memberships WHERE user_id=?", (target,))

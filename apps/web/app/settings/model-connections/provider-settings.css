@@ -8,6 +8,9 @@
 .provider-status.error { border-color: #b42318; color: #b42318; }
 .provider-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .provider-card, .role-bindings { display: grid; gap: 8px; padding: 12px; border: 1px solid #ccd5e3; border-radius: 8px; background: #fff; }
+.provider-card:not([aria-pressed="true"]) { color: #172033; }
+.provider-card:not([aria-pressed="true"]) strong { color: #172033; }
+.provider-card:not([aria-pressed="true"]) small { color: #475569; }
 .provider-card > label, .role-grid > label { display: grid; gap: 4px; }
 .provider-card input:not([type]), .role-grid select { min-width: 0; padding: 6px; border: 1px solid #9aa9bd; border-radius: 4px; }
 .provider-card fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; border: 1px solid #d6deea; }

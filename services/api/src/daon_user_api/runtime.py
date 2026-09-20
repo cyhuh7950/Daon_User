@@ -1075,6 +1075,7 @@ def _domain_error(error: IdentityError | AuthorizationError) -> tuple[int, str, 
         "EMAIL_DELIVERY_UNAVAILABLE", "CSRF_VALIDATION_FAILED",
         "PASSWORD_CHANGE_REQUIRED", "FORBIDDEN", "PROTECTED_ADMIN_ACCOUNT",
         "IDEMPOTENCY_KEY_REUSED", "IDEMPOTENCY_KEY_INVALID", "INVALID_USER_STATE",
+        "USER_EMAIL_REQUIRED", "EMAIL_VERIFICATION_REQUIRED",
     }
     return status, error.code if error.code in safe_special else "INVALID_REQUEST", status >= 500
 
@@ -2420,6 +2421,30 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "has_email": user.has_email, "state": user.state, "protected": user.protected,
         }, "replayed": result.replayed}, "meta": {"trace_id": request.state.trace_id}}
 
+    @app.post("/api/v1/admin/users/{user_id}/password-reset", status_code=202)
+    async def request_admin_user_password_reset(
+        user_id: str,
+        request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("x-daon-bff-transport") != "internal":
+            raise IdentityError("CSRF_VALIDATION_FAILED", 403)
+        principal = _principal(request, dependencies)
+        if dependencies.admin_user_service is None:
+            raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        result = dependencies.admin_user_service.request_password_reset(
+            principal,
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+            trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        return {
+            "data": {"status": result.status, "replayed": result.replayed},
+            "meta": {"trace_id": request.state.trace_id},
+        }
+
     @app.post("/api/v1/admin/users/{user_id}/approve")
     async def approve_admin_user(
         user_id: str,
@@ -3582,6 +3607,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             return {
                 "data": {
                     "user_id": principal.user_id, "tenant_id": principal.tenant_id,
+                    "login_id": principal.user_id,
                     "workspace_id": workspace_id, "session_id": principal.session_id,
                     "device_id": principal.device_id, "client_kind": ClientKind.WEB.value,
                     "delivery": "same_origin_secure_cookie", "expires_at": "2099-01-01T00:00:00Z",
@@ -3626,6 +3652,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return {
             "data": {
                 "user_id": principal.user_id,
+                "login_id": view.login_id,
                 "tenant_id": principal.tenant_id,
                 "workspace_id": workspace_id,
                 "session_id": principal.session_id,
@@ -5613,6 +5640,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         audit_store=audit_store,
         system_admin_user_ids=settings.system_admin_user_ids,
         clock=lambda: datetime.now(timezone.utc),
+        password_reset_requester=identity_service.request_password_reset,
     )
     authorization_repository.bootstrap_workspace(
         tenant_id="admin",

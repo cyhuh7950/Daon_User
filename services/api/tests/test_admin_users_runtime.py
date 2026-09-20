@@ -57,6 +57,35 @@ def test_system_admin_user_api_denies_normal_user_and_protects_admin(tmp_path: P
     asyncio.run(_system_admin_user_api_denies_normal_user_and_protects_admin(tmp_path))
 
 
+def test_admin_password_reset_route_rejects_protected_admin_target(tmp_path: Path) -> None:
+    asyncio.run(_admin_password_reset_route_rejects_protected_admin_target(tmp_path))
+
+
+async def _admin_password_reset_route_rejects_protected_admin_target(tmp_path: Path) -> None:
+    settings = replace(
+        RuntimeSettings.for_test(database_path=tmp_path / "runtime.sqlite3", policy_version="identity-policy-v1"),
+        system_admin_user_ids=frozenset({"admin"}),
+    )
+    dependencies = build_dependencies(settings)
+    app = create_app(dependencies)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://app.example.com"
+    ) as client:
+        client.cookies.set(WEB_SESSION_COOKIE, await _admin_cookie(client))
+        response = await client.post(
+            "/api/v1/admin/users/admin/password-reset",
+            headers={
+                "Origin": "https://app.example.com",
+                "X-Daon-Bff-Transport": "internal",
+                "Idempotency-Key": "admin-reset-protected-01",
+            },
+            json={},
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "PROTECTED_ADMIN_ACCOUNT"
+    dependencies.close()
+
+
 async def _system_admin_user_api_denies_normal_user_and_protects_admin(tmp_path: Path) -> None:
     settings = replace(
         RuntimeSettings.for_test(database_path=tmp_path / "runtime.sqlite3", policy_version="identity-policy-v1"),

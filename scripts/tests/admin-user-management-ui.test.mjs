@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { changeCurrentPassword } from "../../apps/web/lib/auth-api.js";
-import { changeAdminUserState, listAdminUsers } from "../../apps/web/lib/admin-users-api.js";
+import { changeAdminUserState, listAdminUsers, requestAdminUserPasswordReset } from "../../apps/web/lib/admin-users-api.js";
 
 const user = Object.freeze({ user_id: "user-1", login_id: "person", email: "person@example.test", has_email: true, state: "active", protected: false });
 const pendingEmailUser = Object.freeze({ user_id: "user-2", login_id: "pending-person", email: "pending@example.test", has_email: true, state: "pending_email", protected: false });
@@ -52,6 +52,29 @@ test("admin user client는 exact same-origin 목록과 상태 변경 계약만 �
   await assert.rejects(changeAdminUserState("user-1", "active", {
     fetchImpl: async () => Response.json({ data: { user: pendingEmailUser, replayed: false }, meta }),
     idempotencyKey: "admin-state-0004",
+  }), /ADMIN_USERS_RESPONSE_INVALID/u);
+});
+
+test("admin user client는 비밀번호 reset 응답에 status와 replayed만 허용한다", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, method: init.method, credentials: init.credentials, headers: init.headers, body: init.body });
+    return Response.json({ data: { status: "accepted", replayed: false }, meta });
+  };
+  assert.deepEqual(
+    await requestAdminUserPasswordReset("user-1", { fetchImpl, idempotencyKey: "admin-reset-user-0001" }),
+    { status: "accepted", replayed: false },
+  );
+  assert.deepEqual(calls[0], {
+    url: "/bff/api/admin/users/user-1/password-reset",
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "admin-reset-user-0001" },
+    body: "{}",
+  });
+  await assert.rejects(requestAdminUserPasswordReset("user-1", {
+    fetchImpl: async () => Response.json({ data: { status: "accepted", replayed: false, token: "blocked" }, meta }),
+    idempotencyKey: "admin-reset-user-0002",
   }), /ADMIN_USERS_RESPONSE_INVALID/u);
 });
 

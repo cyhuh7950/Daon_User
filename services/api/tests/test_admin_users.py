@@ -49,6 +49,71 @@ def _add_local_user(repository, *, user_id: str, password: str) -> None:
         )
 
 
+def test_admin_user_password_reset_request_protects_accounts_and_uses_email_contract(tmp_path: Path) -> None:
+    identity, repository, audit, clock = create_service(tmp_path / "identity.sqlite3")
+    identity.ensure_initial_admin()
+    _add_local_user(repository, user_id="target-user", password=secrets.token_urlsafe(24))
+    with repository.transaction() as connection:
+        repository._ensure_tenant(connection, "no-email-user")
+        connection.execute(
+            "INSERT INTO users(user_id,issuer,subject,login_id,email,password_digest,"
+            "email_verified_at,password_change_required,state) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "no-email-user", "local", "no-email-user", "no-email-user", None,
+                None, "2026-07-29T00:00:00+00:00", False, "active",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO memberships(tenant_id,user_id,role) VALUES (?,?,?)",
+            ("no-email-user", "no-email-user", "personal_owner"),
+        )
+    sent: list[tuple[str, str, str]] = []
+
+    def request_reset(*, identifier: str, trace_id: str, policy_version: str, revoke_sessions: bool = False) -> None:
+        sent.append((identifier, trace_id, policy_version, revoke_sessions))
+
+    service = AdminUserService(
+        repository=repository,
+        audit_store=audit,
+        system_admin_user_ids=frozenset({"admin"}),
+        clock=clock,
+        password_reset_requester=request_reset,
+    )
+    admin = IdentityPrincipal("admin", "admin-session", "admin-device", "admin")
+
+    result = service.request_password_reset(
+        admin,
+        user_id="target-user",
+        idempotency_key="admin-reset-target-0001",
+        trace_id=TRACE_ID,
+        policy_version=POLICY_VERSION,
+    )
+    assert result.replayed is False
+    assert result.status == "accepted"
+    assert sent == [("target-user@example.test", TRACE_ID, POLICY_VERSION, True)]
+
+    with pytest.raises(IdentityError) as protected:
+        service.request_password_reset(
+            admin, user_id="admin", idempotency_key="admin-reset-admin-0001",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+    assert protected.value.code == "PROTECTED_ADMIN_ACCOUNT"
+
+    with pytest.raises(IdentityError) as self_reset:
+        service.request_password_reset(
+            admin, user_id="admin", idempotency_key="admin-reset-self-00001",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+    assert self_reset.value.code == "PROTECTED_ADMIN_ACCOUNT"
+
+    with pytest.raises(IdentityError) as missing_email:
+        service.request_password_reset(
+            admin, user_id="no-email-user", idempotency_key="admin-reset-noemail-01",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+    assert missing_email.value.code == "USER_EMAIL_REQUIRED"
+
+
 def test_reset_initial_password_is_atomic_and_revokes_all_sessions(tmp_path: Path) -> None:
     identity, repository, audit, _clock = create_service(tmp_path / "identity.sqlite3")
     identity.ensure_initial_admin()

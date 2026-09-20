@@ -158,6 +158,7 @@ class IdentityPrincipal:
 @dataclass(frozen=True, slots=True)
 class IdentitySessionView:
     principal: IdentityPrincipal
+    login_id: str | None
     client_kind: ClientKind
     expires_at: datetime
     password_change_required: bool
@@ -1120,7 +1121,10 @@ class IdentityService:
             token = self._issue_token(connection, table="email_verification_tokens", user_id=str(row["user_id"]), now=now, ttl=timedelta(hours=24))
             self._email_sender.send(recipient=str(row["email"]), subject="Daon 이메일 인증 재전송", body=f"Daon 이메일 인증 토큰: {token}")
 
-    def request_password_reset(self, *, identifier: str, trace_id: str, policy_version: str) -> None:
+    def request_password_reset(
+        self, *, identifier: str, trace_id: str, policy_version: str,
+        revoke_sessions: bool = False,
+    ) -> None:
         value = _checked_text(identifier).lower(); _checked_text(trace_id); _checked_text(policy_version)
         now = self._now()
         with self._lock, self._repository.transaction() as connection:
@@ -1129,6 +1133,8 @@ class IdentityService:
                 return
             self._enforce_mail_rate_limit(connection, table="password_reset_tokens", user_id=str(row["user_id"]), now=now)
             token = self._issue_token(connection, table="password_reset_tokens", user_id=str(row["user_id"]), now=now, ttl=timedelta(minutes=30))
+            if revoke_sessions:
+                revoke_user_sessions(connection, user_id=str(row["user_id"]), updated_at=now)
             self._email_sender.send(recipient=str(row["email"]), subject="Daon 비밀번호 재설정", body=f"Daon 비밀번호 재설정 토큰: {token}")
 
     def confirm_password_reset(self, *, token: str, new_password: str, trace_id: str, policy_version: str) -> None:
@@ -1473,7 +1479,7 @@ class IdentityService:
         )
         with self._repository.transaction() as connection:
             row = connection.execute(
-                "SELECT s.client_kind,s.access_expires_at,u.password_change_required "
+                "SELECT s.client_kind,s.access_expires_at,u.login_id,u.password_change_required "
                 "FROM sessions s JOIN users u ON u.user_id=s.user_id WHERE s.session_id = ?",
                 (principal.session_id,),
             ).fetchone()
@@ -1481,6 +1487,7 @@ class IdentityService:
                 raise IdentityError("ACCESS_INVALID", 401)
             return IdentitySessionView(
                 principal=principal,
+                login_id=None if row["login_id"] is None else str(row["login_id"]),
                 client_kind=ClientKind(str(row["client_kind"])),
                 expires_at=_dt(str(row["access_expires_at"])),
                 password_change_required=bool(row["password_change_required"]),

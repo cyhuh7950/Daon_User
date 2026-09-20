@@ -157,7 +157,7 @@ function modelKey(connectionId, modelId) {
   return JSON.stringify([connectionId, modelId]);
 }
 
-export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
+export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showNotebookLink = false }) {
   const [resolvedWorkspaceId, setResolvedWorkspaceId] = useState(workspaceId ?? null);
   const [isSystemAdmin, setIsSystemAdmin] = useState(null);
   const [connections, setConnections] = useState([]);
@@ -360,7 +360,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false }) {
     <Root className={`provider-settings-shell ${embedded ? "is-embedded" : ""}`}>
       <header className="provider-settings-header">
         <div><span className="section-kicker">MODEL CONNECTIONS</span><h1>{embedded ? "Provider 연결" : "모델·Provider 설정"}</h1><p>{resolvedWorkspaceId ? "현재 Workspace 설정" : "Workspace 확인 중"}</p></div>
-        <button className="secondary-button" type="button" onClick={load} disabled={busy}>새로고침</button>
+        <div className="provider-settings-navigation">{showNotebookLink ? <a className="secondary-button" href="/notebooks">Notebook으로</a> : null}<button className="secondary-button" type="button" onClick={load} disabled={busy}>새로고침</button></div>
       </header>
       <div className={`provider-status ${status.kind}`} role="status"><span className="status-dot" aria-hidden="true" />{status.message}</div>
 

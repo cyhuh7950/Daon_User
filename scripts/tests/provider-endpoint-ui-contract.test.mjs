@@ -3,7 +3,17 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("../../apps/web/components/provider-settings-workspace.jsx", import.meta.url), "utf8");
+const modelConnectionsPage = await readFile(new URL("../../apps/web/app/settings/model-connections/page.jsx", import.meta.url), "utf8");
+const providerStyles = await readFile(new URL("../../apps/web/app/settings/model-connections/provider-settings.css", import.meta.url), "utf8");
 const adminSource = await readFile(new URL("../../services/api/src/daon_user_api/provider_connection_admin.py", import.meta.url), "utf8");
+
+test("LLM 설정은 Notebook 복귀 링크와 선택되지 않은 카드의 읽기 쉬운 텍스트 색상을 제공한다", () => {
+  assert.match(modelConnectionsPage, /showNotebookLink/u);
+  assert.match(source, /href="\/notebooks"/u);
+  assert.match(source, /Notebook으로/u);
+  assert.match(providerStyles, /\.provider-card:not\(\[aria-pressed="true"\]\).*color:/u);
+  assert.match(providerStyles, /\.provider-card:not\(\[aria-pressed="true"\]\) small.*color:/u);
+});
 
 test("provider connection draft exposes a provider endpoint and removes legacy default-model controls", () => {
   assert.match(source, /base_url:\s*connection\.base_url\s*\|\|\s*""/u);
