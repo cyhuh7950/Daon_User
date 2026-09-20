@@ -99,6 +99,21 @@ export function approveAdminUser(userId, options = {}) {
   return mutation(`/bff/api/admin/users/${encodeURIComponent(userId)}/approve`, "POST", {}, options);
 }
 
+export async function requestAdminUserPasswordReset(userId, { fetchImpl = fetch, signal, idempotencyKey } = {}) {
+  if (typeof userId !== "string" || !SAFE_ID.test(userId)) throw new Error("ADMIN_USER_INPUT_INVALID");
+  const response = await fetchImpl(`/bff/api/admin/users/${encodeURIComponent(userId)}/password-reset`, {
+    method: "POST", credentials: "same-origin", cache: "no-store", signal,
+    headers: mutationHeaders(idempotencyKey), body: JSON.stringify({}),
+  });
+  const payload = await bodyOf(response);
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "ADMIN_USER_PASSWORD_RESET_FAILED");
+  if (!validEnvelope(payload) || !exact(payload.data, ["status", "replayed"])
+      || payload.data.status !== "accepted" || typeof payload.data.replayed !== "boolean") {
+    throw new Error("ADMIN_USERS_RESPONSE_INVALID");
+  }
+  return payload.data;
+}
+
 export async function deleteAdminUser(userId, { fetchImpl = fetch, signal, idempotencyKey } = {}) {
   if (typeof userId !== "string" || !SAFE_ID.test(userId)) throw new Error("ADMIN_USER_INPUT_INVALID");
   const response = await fetchImpl(`/bff/api/admin/users/${encodeURIComponent(userId)}`, {

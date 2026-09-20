@@ -36,6 +36,18 @@ test("system user BFF maps list and administrator mutations through same-origin 
       body: JSON.stringify({ state: "suspended" }),
     },
   ), ["admin", "users", "user-001", "state"]);
+  const reset = await proxy(new Request(
+    "https://app.example.com/bff/api/admin/users/user-001/password-reset",
+    {
+      method: "POST",
+      headers: {
+        Origin: "https://app.example.com",
+        "Sec-Fetch-Site": "same-origin",
+        "Idempotency-Key": "admin-reset-user-0001",
+      },
+      body: "{}",
+    },
+  ), ["admin", "users", "user-001", "password-reset"]);
   const crossOrigin = await proxy(new Request(
     "https://app.example.com/bff/api/admin/users/user-001/state",
     {
@@ -50,7 +62,7 @@ test("system user BFF maps list and administrator mutations through same-origin 
     },
   ), ["admin", "users", "user-001", "state"]);
   assert.equal(crossOrigin.status, 403);
-  assert.equal(captured.length, 2);
+  assert.equal(captured.length, 3);
   const deleteUser = await proxy(new Request(
     "https://app.example.com/bff/api/admin/users/user-001",
     { method: "DELETE", headers: { Origin: "https://app.example.com", "Idempotency-Key": "admin-delete-user-0001" }, body: "{}" },
@@ -60,13 +72,18 @@ test("system user BFF maps list and administrator mutations through same-origin 
     { method: "POST", headers: { Origin: "https://app.example.com" } },
   ), ["admin", "users", "user-001", "state"]);
 
-  assert.deepEqual([listed.status, changed.status, deleteUser.status, wrongMethod.status], [200, 200, 200, 405]);
+  assert.deepEqual([listed.status, changed.status, reset.status, deleteUser.status, wrongMethod.status], [200, 200, 200, 200, 405]);
   assert.deepEqual(captured, [
     { url: "https://api.example.com/api/v1/admin/users", method: "GET", idempotencyKey: null },
     {
       url: "https://api.example.com/api/v1/admin/users/user-001/state",
       method: "PATCH",
       idempotencyKey: "admin-state-change-0001",
+    },
+    {
+      url: "https://api.example.com/api/v1/admin/users/user-001/password-reset",
+      method: "POST",
+      idempotencyKey: "admin-reset-user-0001",
     },
     {
       url: "https://api.example.com/api/v1/admin/users/user-001",

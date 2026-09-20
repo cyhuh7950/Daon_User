@@ -217,6 +217,14 @@ function routeFor(method, segments) {
       : { methodRejected: true };
   }
   if (
+    segments.length === 4 && segments[0] === "admin" && segments[1] === "users"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "password-reset"
+  ) {
+    return method === "POST"
+      ? { path: `/api/v1/admin/users/${encodeURIComponent(segments[2])}/password-reset`, query: null }
+      : { methodRejected: true };
+  }
+  if (
     segments.length === 3 && segments[0] === "admin" && segments[1] === "users"
     && SAFE_SEGMENT.test(segments[2])
   ) {
