@@ -176,6 +176,10 @@ test("admin console은 사용자 계정 관리 표와 일괄 작업 도구를 �
     }
     assert.match(view.container.textContent, /2명의 계정을 조회했습니다/u);
     assert.match(view.container.textContent, /관리자/u);
+    assert.match(view.container.textContent, /일반 사용자/u);
+    assert.doesNotMatch(view.container.textContent, /user-1/u);
+    assert.doesNotMatch(view.container.textContent, /전문가/u);
+    assert.match(view.container.textContent, /관리자/u);
     assert.match(view.container.textContent, /수정/u);
   } finally { await view.cleanup(); }
 });
