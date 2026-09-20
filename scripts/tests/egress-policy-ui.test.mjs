@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 
 import {
   createEgressPolicyDraft,
@@ -11,6 +12,12 @@ import {
   saveOrganizationEgressPolicy,
   saveWorkspaceEgressPolicy,
 } from "../../apps/web/lib/egress-policy-api.js";
+
+test("조직 정책 화면은 Notebook으로 이동 링크를 제공한다", async () => {
+  const source = await readFile(new URL("../../apps/web/app/settings/organization/page.jsx", import.meta.url), "utf8");
+  assert.match(source, /href=["']\/notebooks["']/u);
+  assert.match(source, /Notebook으로/u);
+});
 
 
 test("loaded same policy is save-eligible while workspace parent deny blocks only relaxation", () => {

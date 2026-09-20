@@ -160,6 +160,26 @@ test("admin console은 검색·필터·보호 표시와 상태 변경 double-sub
   } finally { await view.cleanup(); }
 });
 
+test("admin console은 사용자 계정 관리 표와 일괄 작업 도구를 표시한다", async () => {
+  const users = [
+    { user_id: "admin", login_id: "admin", email: "admin@example.test", has_email: true, state: "active", protected: true },
+    { user_id: "user-1", login_id: "cyhuh", email: "cyhuh@example.test", has_email: true, state: "active", protected: false },
+  ];
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ password_change_required: false, is_system_admin: true }),
+    getUsers: async () => users,
+  }, ".admin-table-layout-");
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    for (const label of ["선택 0건", "선택 삭제", "새로고침", "사용자 등록", "조회", "사용자", "이메일", "상태", "역할", "관리"]) {
+      assert.match(view.container.textContent, new RegExp(label, "u"));
+    }
+    assert.match(view.container.textContent, /2명의 계정을 조회했습니다/u);
+    assert.match(view.container.textContent, /관리자/u);
+    assert.match(view.container.textContent, /수정/u);
+  } finally { await view.cleanup(); }
+});
+
 test("admin console은 pending_email을 이메일 인증 대기로 표시하고 상태 변경을 허용하지 않는다", async () => {
   let changes = 0;
   const pendingEmailUser = { user_id: "user-pending", login_id: "pending-person", email: "pending@example.test", has_email: true, state: "pending_email", protected: false };

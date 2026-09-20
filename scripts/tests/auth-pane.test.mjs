@@ -31,3 +31,10 @@ test("비밀번호 입력은 서버 정책과 같은 최소 12자 HTML 제약을
 
   assert.match(source, /type="password"[^>]*minLength=\{12\}/);
 });
+
+test("로그인 실패 시 서버 오류 코드를 사용자에게 표시한다", async () => {
+  const source = await readFile(path.join(root, "apps/web/lib/auth-pane.jsx"), "utf8");
+
+  assert.match(source, /catch\s*\(error\)\s*\{\s*setMessage\(error\?\.code \|\| error\?\.message \|\|/s);
+  assert.doesNotMatch(source, /catch\s*\{\s*setMessage\("처리 실패: 요청을 완료하지 못했습니다\."\)/s);
+});
