@@ -33,6 +33,7 @@ from daon_user_api.studio_report import StudioReportService
 from daon_user_api.studio_report_postgres import PostgresStudioReportRepository
 from daon_user_api.studio_workspace import StudioWorkspaceService
 from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+from daon_user_api.notebook_postgres import _enforce_creation_if_configured
 from test_identity_support import POLICY_VERSION, create_service, identity_session_view
 
 
@@ -100,6 +101,23 @@ def test_production_profile_enforces_license_without_an_injected_service():
     )
 
     assert _license_enforcement_enabled(settings, configured_service=False) is True
+
+
+def test_development_notebook_creation_does_not_require_a_license_enforcer():
+    calls = []
+
+    _enforce_creation_if_configured(
+        None, object(), "tenant-001", "notebook.create", {"notebooks": 1},
+    )
+
+    assert calls == []
+
+    _enforce_creation_if_configured(
+        lambda *_args: calls.append("enforced"),
+        object(), "tenant-001", "notebook.create", {"notebooks": 1},
+    )
+
+    assert calls == ["enforced"]
 
 
 async def _exercise_license_http():
