@@ -4,6 +4,7 @@ import base64
 import asyncio
 import json
 import tempfile
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -26,7 +27,7 @@ from daon_user_api.license import (
 )
 from daon_user_api.runtime import (
     WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings,
-    _requires_runtime_license_precheck, create_app,
+    _license_enforcement_enabled, _requires_runtime_license_precheck, create_app,
 )
 from daon_user_api.studio_report import StudioReportService
 from daon_user_api.studio_report_postgres import PostgresStudioReportRepository
@@ -79,6 +80,26 @@ def test_runtime_precheck_is_skipped_only_for_transactional_postgres_generation_
     assert _requires_runtime_license_precheck(report) is False
     assert _requires_runtime_license_precheck(fake) is True
     assert _requires_runtime_license_precheck(wrapped_fake) is True
+
+
+def test_development_profile_does_not_enforce_license_even_when_public_keys_are_configured(tmp_path):
+    settings = RuntimeSettings.for_test(
+        database_path=tmp_path / "runtime.sqlite3", policy_version=POLICY_VERSION,
+    )
+    settings = replace(settings, license_public_keys_file=tmp_path / "license-public-keys.json")
+
+    assert _license_enforcement_enabled(settings, configured_service=False) is False
+
+
+def test_production_profile_enforces_license_without_an_injected_service():
+    settings = RuntimeSettings(
+        profile="production", bind_host="0.0.0.0", port=8000,
+        cloud_database_dsn="postgresql://db/app",
+        public_gateway_url="https://example.test",
+        step_up_token_key_file=Path("step-up-key"), trusted_proxy_ips=("127.0.0.1",),
+    )
+
+    assert _license_enforcement_enabled(settings, configured_service=False) is True
 
 
 async def _exercise_license_http():
