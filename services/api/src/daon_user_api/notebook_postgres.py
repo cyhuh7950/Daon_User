@@ -23,13 +23,6 @@ from .notebook import (
 )
 
 
-def _enforce_creation_if_configured(
-    creation_enforcer, connection, tenant_id: str, action: str, quantities: Mapping[str, int],
-) -> None:  # type: ignore[no-untyped-def]
-    if creation_enforcer is not None:
-        creation_enforcer(connection, tenant_id, action, quantities)
-
-
 class PostgresNotebookRepository:
     _TARGET_QUERIES = {
         "knowledge_context": "SELECT 1 FROM scope_snapshots WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
@@ -135,10 +128,9 @@ class PostgresNotebookRepository:
                 replay = self._replay(connection, context, idempotency_key, request_fingerprint)
                 if replay is not None:
                     return replay, True
-                _enforce_creation_if_configured(
-                    self._creation_enforcer, connection, context.tenant_id,
-                    "notebook.create", {"notebooks": 1},
-                )
+                if self._creation_enforcer is None:
+                    raise NotebookError("LICENSE_ENFORCEMENT_UNAVAILABLE", 503)
+                self._creation_enforcer(connection, context.tenant_id, "notebook.create", {"notebooks": 1})
                 notebook_id = "notebook-" + hashlib.sha256(
                     f"{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{idempotency_key}".encode()
                 ).hexdigest()[:32]

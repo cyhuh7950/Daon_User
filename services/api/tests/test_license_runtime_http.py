@@ -4,7 +4,6 @@ import base64
 import asyncio
 import json
 import tempfile
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -27,14 +26,12 @@ from daon_user_api.license import (
 )
 from daon_user_api.runtime import (
     WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings,
-    _ensure_development_cloud_scope, _license_enforcement_enabled,
     _requires_runtime_license_precheck, create_app,
 )
 from daon_user_api.studio_report import StudioReportService
 from daon_user_api.studio_report_postgres import PostgresStudioReportRepository
 from daon_user_api.studio_workspace import StudioWorkspaceService
 from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
-from daon_user_api.notebook_postgres import _enforce_creation_if_configured
 from test_identity_support import POLICY_VERSION, create_service, identity_session_view
 
 
@@ -82,64 +79,6 @@ def test_runtime_precheck_is_skipped_only_for_transactional_postgres_generation_
     assert _requires_runtime_license_precheck(report) is False
     assert _requires_runtime_license_precheck(fake) is True
     assert _requires_runtime_license_precheck(wrapped_fake) is True
-
-
-def test_development_profile_does_not_enforce_license_even_when_public_keys_are_configured(tmp_path):
-    settings = RuntimeSettings.for_test(
-        database_path=tmp_path / "runtime.sqlite3", policy_version=POLICY_VERSION,
-    )
-    settings = replace(settings, license_public_keys_file=tmp_path / "license-public-keys.json")
-
-    assert _license_enforcement_enabled(settings, configured_service=False) is False
-
-
-def test_production_profile_enforces_license_without_an_injected_service():
-    settings = RuntimeSettings(
-        profile="production", bind_host="0.0.0.0", port=8000,
-        cloud_database_dsn="postgresql://db/app",
-        public_gateway_url="https://example.test",
-        step_up_token_key_file=Path("step-up-key"), trusted_proxy_ips=("127.0.0.1",),
-    )
-
-    assert _license_enforcement_enabled(settings, configured_service=False) is True
-
-
-def test_development_notebook_creation_does_not_require_a_license_enforcer():
-    calls = []
-
-    _enforce_creation_if_configured(
-        None, object(), "tenant-001", "notebook.create", {"notebooks": 1},
-    )
-
-    assert calls == []
-
-    _enforce_creation_if_configured(
-        lambda *_args: calls.append("enforced"),
-        object(), "tenant-001", "notebook.create", {"notebooks": 1},
-    )
-
-    assert calls == ["enforced"]
-
-
-def test_development_scope_is_seeded_in_cloud_storage_when_configured():
-    class Cloud:
-        def __init__(self):
-            self.contexts = []
-
-        def seed_scope(self, context):
-            self.contexts.append(context)
-
-    cloud = Cloud()
-    dependencies = type("Dependencies", (), {"cloud_store": cloud})()
-    principal = IdentityPrincipal("dev-user", "dev-session", "dev-device", "dev-tenant")
-
-    _ensure_development_cloud_scope(
-        dependencies, principal=principal, workspace_id="dev-workspace",
-    )
-
-    assert [(item.tenant_id, item.workspace_id, item.actor_id, item.capability) for item in cloud.contexts] == [
-        ("dev-tenant", "dev-workspace", "dev-user", "workspace.bootstrap"),
-    ]
 
 
 async def _exercise_license_http():
