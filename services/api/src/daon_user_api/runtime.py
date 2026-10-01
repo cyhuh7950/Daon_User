@@ -1279,12 +1279,7 @@ def _ensure_development_cloud_scope(
     dependencies: RuntimeDependencies, *, principal: IdentityPrincipal, workspace_id: str,
 ) -> None:
     if dependencies.cloud_store is not None:
-        seed_scope = getattr(
-            dependencies.cloud_store,
-            "seed_development_scope",
-            dependencies.cloud_store.seed_scope,
-        )
-        seed_scope(
+        dependencies.cloud_store.seed_scope(
             CloudAccessContext(
                 principal.tenant_id, workspace_id, principal.user_id, "workspace.bootstrap",
             )

@@ -170,32 +170,6 @@ class PostgresCloudStore:
         except Error as error:
             raise classify_database_error(error.sqlstate) from None
 
-    def seed_development_scope(self, context: CloudAccessContext) -> None:
-        """Seed only the identity/workspace rows needed by the dev bypass.
-
-        Development QA may run against a legacy database whose egress RLS/FK
-        policy bootstrap is not repairable by the application role. Notebook
-        creation itself only needs the core scope rows; keep the full
-        ``seed_scope`` contract unchanged for normal flows.
-        """
-        with self._transaction(context) as connection:
-            connection.execute(
-                "INSERT INTO tenants (tenant_id, display_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (context.tenant_id, context.tenant_id),
-            )
-            connection.execute(
-                "INSERT INTO workspaces (tenant_id, workspace_id, display_name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                (context.tenant_id, context.workspace_id, context.workspace_id),
-            )
-            connection.execute(
-                "INSERT INTO user_accounts (tenant_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (context.tenant_id, context.actor_id),
-            )
-            connection.execute(
-                "INSERT INTO memberships (tenant_id, workspace_id, user_id, role) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                (context.tenant_id, context.workspace_id, context.actor_id, "member"),
-            )
-
     def seed_scope(self, context: CloudAccessContext) -> None:
         with self._transaction(context) as connection:
             connection.execute(
