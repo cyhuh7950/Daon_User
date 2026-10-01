@@ -294,6 +294,7 @@ class RuntimeSettings:
     request_timeout_seconds: float = 30.0
     drain_timeout_seconds: float = 10.0
     dev_auth_bypass: bool = False
+    development_stage: bool | None = None
     system_admin_user_ids: frozenset[str] = frozenset({"admin"})
 
     def __post_init__(self) -> None:
@@ -363,6 +364,7 @@ class RuntimeSettings:
             port=8000,
             database_path=database_path,
             policy_version=policy_version,
+            development_stage=True,
             system_admin_user_ids=system_admin_user_ids,
         )
 
@@ -428,6 +430,11 @@ class RuntimeSettings:
                 os.environ.get("DAON_SOURCE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024))
             ),
             dev_auth_bypass=os.environ.get("DAON_DEV_AUTH_BYPASS", "false").lower() == "true",
+            development_stage=(
+                None
+                if os.environ.get("DAON_DEVELOPMENT_STAGE") is None
+                else os.environ.get("DAON_DEVELOPMENT_STAGE", "false").lower() == "true"
+            ),
             system_admin_user_ids=frozenset(
                 {"admin"}
                 | {
@@ -1268,6 +1275,17 @@ def _ensure_personal_workspace(
     return workspace_id
 
 
+def _ensure_development_cloud_scope(
+    dependencies: RuntimeDependencies, *, principal: IdentityPrincipal, workspace_id: str,
+) -> None:
+    if dependencies.cloud_store is not None:
+        dependencies.cloud_store.seed_scope(
+            CloudAccessContext(
+                principal.tenant_id, workspace_id, principal.user_id, "workspace.bootstrap",
+            )
+        )
+
+
 def _sync_expected_version(value: str, operation_id: str | None = None) -> int | str:
     if value == "*" and operation_id is None:
         return value
@@ -1424,6 +1442,9 @@ def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityP
                 cost_limit_cents=1000,
                 now=datetime.now(timezone.utc),
             )
+            _ensure_development_cloud_scope(
+                dependencies, principal=principal, workspace_id=workspace_match.group(1),
+            )
         return principal
     token, expected_kind = _credential(request)
     view = dependencies.identity_service.describe_access(
@@ -1458,6 +1479,16 @@ def _resolve_knowledge_package_service(
         ReferenceKnowledgePackageRepository(),
         clock=lambda: datetime.now(timezone.utc),
     )
+
+
+def _license_enforcement_enabled(settings: RuntimeSettings, *, configured_service: bool) -> bool:
+    """Enable license gates outside development stage or for an injected test service."""
+    development_stage = (
+        settings.development_stage
+        if settings.development_stage is not None
+        else settings.profile in {"test", "development"}
+    )
+    return configured_service or not development_stage
 
 
 def _requires_runtime_license_precheck(service: object) -> bool:
@@ -1613,10 +1644,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             license_repository, license_verifier, product_code="daon-user",
             clock=lambda: datetime.now(timezone.utc), usage_reader=usage_reader,
         )
-    license_enforcement_enabled = (
-        dependencies.license_service is not None
-        or dependencies.settings.profile == "production"
-        or dependencies.settings.license_public_keys_file is not None
+    license_enforcement_enabled = _license_enforcement_enabled(
+        dependencies.settings,
+        configured_service=dependencies.license_service is not None,
     )
     if dependencies.notebook_service is not None:
         notebook_service = dependencies.notebook_service
@@ -1627,9 +1657,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             else PostgresNotebookRepository(
                 dependencies.cloud_store,
                 creation_enforcer=(
-                    (lambda *_args: None)
-                    if dependencies.settings.dev_auth_bypass
-                    else enforce_license_creation
+                    (
+                        (lambda *_args: None)
+                        if dependencies.settings.dev_auth_bypass
+                        else enforce_license_creation
+                    )
+                    if license_enforcement_enabled
+                    else None
                 ),
             )
         )
@@ -3603,6 +3637,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 data_area="cloud_sync",
                 cost_limit_cents=1000,
                 now=datetime.now(timezone.utc),
+            )
+            _ensure_development_cloud_scope(
+                dependencies, principal=principal, workspace_id=workspace_id,
             )
             return {
                 "data": {
@@ -5710,7 +5747,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
     document_processing_service: DocumentProcessingSubmissionService | None = None
     license_creation_enforcer = (
         enforce_license_creation
-        if settings.profile == "production" or settings.license_public_keys_file is not None
+        if _license_enforcement_enabled(settings, configured_service=False)
         else None
     )
     if cloud_store is None:
