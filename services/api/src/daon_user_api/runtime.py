@@ -1275,6 +1275,17 @@ def _ensure_personal_workspace(
     return workspace_id
 
 
+def _ensure_development_cloud_scope(
+    dependencies: RuntimeDependencies, *, principal: IdentityPrincipal, workspace_id: str,
+) -> None:
+    if dependencies.cloud_store is not None:
+        dependencies.cloud_store.seed_scope(
+            CloudAccessContext(
+                principal.tenant_id, workspace_id, principal.user_id, "workspace.bootstrap",
+            )
+        )
+
+
 def _sync_expected_version(value: str, operation_id: str | None = None) -> int | str:
     if value == "*" and operation_id is None:
         return value
@@ -1430,6 +1441,9 @@ def _principal(request: Request, dependencies: RuntimeDependencies) -> IdentityP
                 data_area="cloud_sync",
                 cost_limit_cents=1000,
                 now=datetime.now(timezone.utc),
+            )
+            _ensure_development_cloud_scope(
+                dependencies, principal=principal, workspace_id=workspace_match.group(1),
             )
         return principal
     token, expected_kind = _credential(request)
@@ -3623,6 +3637,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 data_area="cloud_sync",
                 cost_limit_cents=1000,
                 now=datetime.now(timezone.utc),
+            )
+            _ensure_development_cloud_scope(
+                dependencies, principal=principal, workspace_id=workspace_id,
             )
             return {
                 "data": {

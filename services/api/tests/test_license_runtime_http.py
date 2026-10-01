@@ -27,7 +27,8 @@ from daon_user_api.license import (
 )
 from daon_user_api.runtime import (
     WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings,
-    _license_enforcement_enabled, _requires_runtime_license_precheck, create_app,
+    _ensure_development_cloud_scope, _license_enforcement_enabled,
+    _requires_runtime_license_precheck, create_app,
 )
 from daon_user_api.studio_report import StudioReportService
 from daon_user_api.studio_report_postgres import PostgresStudioReportRepository
@@ -118,6 +119,27 @@ def test_development_notebook_creation_does_not_require_a_license_enforcer():
     )
 
     assert calls == ["enforced"]
+
+
+def test_development_scope_is_seeded_in_cloud_storage_when_configured():
+    class Cloud:
+        def __init__(self):
+            self.contexts = []
+
+        def seed_scope(self, context):
+            self.contexts.append(context)
+
+    cloud = Cloud()
+    dependencies = type("Dependencies", (), {"cloud_store": cloud})()
+    principal = IdentityPrincipal("dev-user", "dev-session", "dev-device", "dev-tenant")
+
+    _ensure_development_cloud_scope(
+        dependencies, principal=principal, workspace_id="dev-workspace",
+    )
+
+    assert [(item.tenant_id, item.workspace_id, item.actor_id, item.capability) for item in cloud.contexts] == [
+        ("dev-tenant", "dev-workspace", "dev-user", "workspace.bootstrap"),
+    ]
 
 
 async def _exercise_license_http():
