@@ -220,6 +220,7 @@ _TRACEPARENT = re.compile(
 )
 
 _source_boundary_logger = logging.getLogger(__name__)
+_runtime_logger = logging.getLogger(__name__)
 
 
 def _source_boundary_event(
@@ -1989,7 +1990,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         )
 
     @app.exception_handler(Exception)
-    async def unexpected_error(request: Request, _error: Exception) -> JSONResponse:
+    async def unexpected_error(request: Request, error: Exception) -> JSONResponse:
+        _runtime_logger.exception(
+            "unexpected_api_error trace_id=%s path=%s error_type=%s",
+            request.state.trace_id, request.url.path, type(error).__name__,
+        )
         return _error_response(500, "INTERNAL_ERROR", request.state.trace_id)
 
     @app.get("/health/live")
@@ -2094,6 +2099,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.exception_handler(NotebookError)
     async def notebook_error(request: Request, error: NotebookError) -> JSONResponse:
+        _runtime_logger.warning(
+            "notebook_api_error trace_id=%s path=%s code=%s status=%s",
+            request.state.trace_id, request.url.path, error.code, error.status,
+        )
         public_codes = {
             "NOTEBOOK_NOT_FOUND", "NOTEBOOK_TITLE_INVALID", "NOTEBOOK_DESCRIPTION_INVALID",
             "NOTEBOOK_ETAG_INVALID", "NOTEBOOK_ETAG_MISMATCH", "NOTEBOOK_UNAVAILABLE",
