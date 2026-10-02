@@ -7106,7 +7106,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["resource", "limit", "used", "remaining", "status"],
         "properties": {
-          "resource": { "type": "string", "enum": ["users", "notebooks", "storage_bytes", "generation_runs", "source_versions", "studio_outputs"] },
+          "resource": { "type": "string", "enum": ["users", "notebooks"] },
           "limit": { "type": "integer", "minimum": 1 },
           "used": { "type": "integer", "minimum": 0 },
           "remaining": { "type": "integer", "minimum": 0 },

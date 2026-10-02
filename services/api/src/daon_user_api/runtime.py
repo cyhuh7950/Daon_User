@@ -2426,6 +2426,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         principal = _principal(request, dependencies)
         if dependencies.admin_user_service is None:
             raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+        if license_enforcement_enabled:
+            license_service.require_user_capacity(
+                _license_context(principal, principal.tenant_id, request, dependencies)
+            )
         result = dependencies.admin_user_service.create_user(
             principal, login_id=body.login_id, email=body.email,
             initial_password=body.initial_password, idempotency_key=idempotency_key,

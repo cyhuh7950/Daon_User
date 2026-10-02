@@ -5,6 +5,8 @@ import { getCurrentNotebookSession } from "../lib/notebook-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
 
 const STATUS_LABEL = Object.freeze({ not_configured: "미설정", active: "정상", expiring_soon: "만료 예정", expired: "만료", limit_reached: "한도 도달" });
+const RESOURCE_LABEL = Object.freeze({ users: "사용자", notebooks: "Notebook" });
+const FEATURE_LABEL = Object.freeze({ llm_access: "LLM 사용" });
 
 export function LicenseSettingsPane() {
   const fileRef = useRef(null);
@@ -51,8 +53,8 @@ export function LicenseSettingsPane() {
     {safeError ? <div role="alert" className="common-settings-error"><strong>라이선스 요청을 처리하지 못했습니다.</strong><span>{safeError}</span><button type="button" onClick={() => void load()}>다시 시도</button></div> : null}
     {view ? <div className="license-settings-grid">
       <section className="settings-card license-overview"><h2>현재 라이선스</h2><dl><div><dt>제품</dt><dd>{view.product}</dd></div><div><dt>Edition</dt><dd>{view.edition ?? "미적용"}</dd></div><div><dt>상태</dt><dd>{STATUS_LABEL[view.status] ?? view.status}</dd></div><div><dt>만료</dt><dd>{view.expires_at ? new Date(view.expires_at).toLocaleDateString("ko-KR") : "-"}</dd></div></dl>{view.warning ? <p className="settings-warning" role="status">{view.warning.action}</p> : null}</section>
-      <section className="settings-card"><h2>허용 기능</h2><div className="settings-tags">{view.features.map((feature) => <span key={feature}>{feature}</span>)}</div></section>
-      <section className="settings-card license-resources"><h2>사용 한도</h2>{view.resources.map((resource) => <div key={resource.resource}><span>{resource.resource}</span><strong>{resource.used.toLocaleString()} / {resource.limit.toLocaleString()}</strong></div>)}</section>
+      <section className="settings-card"><h2>허용 기능</h2><div className="settings-tags">{view.features.map((feature) => <span key={feature}>{FEATURE_LABEL[feature] ?? feature}</span>)}</div></section>
+      <section className="settings-card license-resources"><h2>사용 한도</h2>{view.resources.map((resource) => <div key={resource.resource}><span>{RESOURCE_LABEL[resource.resource] ?? resource.resource}</span><strong>{resource.used.toLocaleString()} / {resource.limit.toLocaleString()}</strong></div>)}</section>
       {view.can_apply ? <form className="settings-card license-apply" onSubmit={apply}><h2>라이선스 적용</h2><label>License document<input ref={fileRef} type="file" accept="application/json,.json" disabled={pending} required /></label><label>현재 비밀번호<input ref={passwordRef} type="password" minLength={12} maxLength={1024} autoComplete="current-password" disabled={pending} required /></label><button type="submit" disabled={pending}>{pending ? "검증 중…" : "Step-up 후 검증·적용"}</button></form> : <p className="settings-card">일반 사용자는 라이선스 정보를 읽기 전용으로 확인합니다.</p>}
     </div> : null}
   </main>;

@@ -12,33 +12,30 @@ from .license import LicenseContext, LicenseError, VerifiedLicense
 
 
 _CREATION_REQUIREMENTS = {
-    "studio.generate": (
-        "studio_generation",
-        frozenset({"generation_runs", "studio_outputs"}),
-    ),
-    "source.create": ("citation", frozenset({"source_versions", "storage_bytes"})),
+    "studio.generate": ("llm_access", frozenset()),
     "notebook.create": ("notebook_management", frozenset({"notebooks"})),
 }
 _USAGE_SQL = {
+    "users": "SELECT count(*) FROM user_accounts WHERE tenant_id=%s",
     "notebooks": "SELECT count(*) FROM notebooks WHERE tenant_id=%s",
-    "generation_runs": "SELECT count(*) FROM generation_requests WHERE tenant_id=%s",
-    "studio_outputs": "SELECT count(*) FROM studio_outputs WHERE tenant_id=%s",
-    "source_versions": "SELECT count(*) FROM source_versions WHERE tenant_id=%s",
-    "storage_bytes": (
-        "SELECT coalesce(sum(byte_size),0) FROM object_records "
-        "WHERE tenant_id=%s AND status IN ('pending','completed')"
-    ),
 }
+_DEFAULT_RESOURCE_LIMITS = {"users": 1, "notebooks": 1}
 
 
 def enforce_license_creation(
     connection, tenant_id: str, action: str, increments: dict[str, int]
 ) -> None:
     """Check feature/quota under one tenant lock inside the caller's creation transaction."""
+    if action == "source.create":
+        return
     requirement = _CREATION_REQUIREMENTS.get(action)
-    if requirement is None or not increments:
+    if requirement is None:
         raise LicenseError("LICENSE_CREATION_ACTION_INVALID")
     feature, allowed_resources = requirement
+    if action == "studio.generate":
+        increments = {}
+    elif not increments:
+        raise LicenseError("LICENSE_CREATION_ACTION_INVALID")
     if any(
         resource not in allowed_resources
         or not isinstance(amount, int)
@@ -57,7 +54,11 @@ def enforce_license_creation(
         (tenant_id,),
     ).fetchone()
     if row is None:
-        raise LicenseError("LICENSE_NOT_CONFIGURED", 409)
+        for resource, amount in increments.items():
+            used = int(connection.execute(_USAGE_SQL[resource], (tenant_id,)).fetchone()[0])
+            if used + amount > _DEFAULT_RESOURCE_LIMITS[resource]:
+                raise LicenseError("LICENSE_RESOURCE_LIMIT_REACHED", 409)
+        return
     if connection.execute("SELECT %s <= now()", (row[0],)).fetchone()[0] is True:
         raise LicenseError("LICENSE_EXPIRED", 409)
     if feature not in tuple(str(value) for value in row[1]):
@@ -125,13 +126,8 @@ class PostgresLicenseRepository:
         try:
             with self._store._transaction(self._context(context)) as connection:
                 row = connection.execute(
-                    "SELECT "
-                    "(SELECT count(*) FROM user_accounts WHERE tenant_id=%s),"
-                    "(SELECT coalesce(sum(byte_size),0) FROM object_records WHERE tenant_id=%s AND status IN ('pending','completed')),"
-                    "(SELECT count(*) FROM generation_requests WHERE tenant_id=%s),"
-                    "(SELECT count(*) FROM source_versions WHERE tenant_id=%s),"
-                    "(SELECT count(*) FROM studio_outputs WHERE tenant_id=%s)",
-                    (context.tenant_id,) * 5,
+                    "SELECT count(*) FROM user_accounts WHERE tenant_id=%s",
+                    (context.tenant_id,),
                 ).fetchone()
                 notebooks = 0
                 if (
@@ -146,27 +142,7 @@ class PostgresLicenseRepository:
                     )
         except CloudDatabaseError as error:
             raise LicenseError("LICENSE_USAGE_UNAVAILABLE", 503) from error
-        return dict(
-            zip(
-                (
-                    "users",
-                    "notebooks",
-                    "storage_bytes",
-                    "generation_runs",
-                    "source_versions",
-                    "studio_outputs",
-                ),
-                (
-                    int(row[0]),
-                    notebooks,
-                    int(row[1]),
-                    int(row[2]),
-                    int(row[3]),
-                    int(row[4]),
-                ),
-                strict=True,
-            )
-        )
+        return {"users": int(row[0]), "notebooks": notebooks}
 
     def apply(
         self,
