@@ -87,6 +87,53 @@ test("비밀번호 제한 session은 Notebook home 목록 API를 호출하지 �
   } finally { await view.cleanup(); }
 });
 
+test("HTTP 테스트 화면은 randomUUID 없이도 새 Notebook 요청을 전송한다", async () => {
+  const view = await render("apps/web/components/notebook-home-workspace.jsx", "NotebookHomeWorkspace", {
+    getSession: async () => ({
+      workspace_id: "workspace-test", login_id: "qa-user",
+      is_system_admin: false, password_change_required: false,
+    }),
+    getNotebooks: async () => ({ data: [] }),
+  }, ".notebook-http-create-");
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { getRandomValues(bytes) { bytes.fill(7); return bytes; } },
+    });
+    globalThis.fetch = async (url, options) => {
+      requests.push({ url, options });
+      return Response.json({
+        data: {
+          notebook_id: "notebook-test", title: "HTTP Notebook", source_count: 0,
+          output_count: 0, updated_at: "2026-10-03T00:00:00Z", status: "empty",
+          etag: '"notebook:1"',
+        },
+        meta: { trace_id: "trace-test", workspace_id: "workspace-test", replayed: false },
+      }, { status: 201, headers: { ETag: '"notebook:1"' } });
+    };
+    await view.act(async () => { buttonByText(view.container, "＋ 새 Notebook").dispatchEvent(new MinimalEvent("click")); });
+    const dialog = findElements(view.container, (node) => node.getAttribute?.("role") === "dialog")[0];
+    const title = findElements(dialog, (node) => node.tagName === "INPUT")[0];
+    await view.act(async () => { reactProps(title).onChange({ target: { value: "HTTP Notebook" } }); });
+    await view.act(async () => {
+      findElements(dialog, (node) => node.tagName === "FORM")[0].dispatchEvent(new MinimalEvent("submit"));
+      await Promise.resolve();
+    });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "/bff/api/workspaces/workspace-test/notebooks");
+    assert.match(requests[0].options.headers["Idempotency-Key"], /^notebook-[a-f0-9]{32}$/u);
+    assert.equal(findElements(view.container, (node) => node.getAttribute?.("role") === "dialog").length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+    await view.cleanup();
+  }
+});
+
 test("비밀번호 제한 session은 selected Notebook get/context API를 호출하지 않는다", async () => {
   const calls = { session: 0, get: 0, context: 0 }; const redirects = [];
   const view = await render("apps/web/components/notebook-product-workspace.jsx", "NotebookProductWorkspace", {
