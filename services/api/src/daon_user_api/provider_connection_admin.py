@@ -84,6 +84,7 @@ class ProviderConnectionCreateCommand:
     adapter_type: str = ""
     allowed_model_ids: tuple[str, ...] = ()
     provider_name: str = ""
+    test_credential: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +101,7 @@ class ProviderConnectionUpdateCommand:
     adapter_type: str = ""
     allowed_model_ids: tuple[str, ...] = ()
     provider_name: str = ""
+    test_credential: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +124,7 @@ def normalized_connection_fingerprint_payload(
     short_code: str | None = None, adapter_type: str | None = None,
     allowed_model_ids: Sequence[str] = (),
     provider_name: str | None = None,
+    test_credential_fingerprint: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "connection_id": connection_id,
@@ -139,6 +142,8 @@ def normalized_connection_fingerprint_payload(
     }
     if credential_fingerprint is not None:
         payload["credential_fingerprint"] = credential_fingerprint
+    if test_credential_fingerprint is not None:
+        payload["test_credential_fingerprint"] = test_credential_fingerprint
     return payload
 
 
@@ -242,12 +247,15 @@ def validate_connection_policy(
         raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
     if provider_code == "OLLAMA" and credential_requirement != "none":
         raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
-    if (provider_code == "CUSTOM" and adapter_type != "openai_compatible") or (
+    if (provider_code == "CUSTOM" and adapter_type not in {"openai_compatible", "anthropic_compatible"}) or (
         provider_code != "CUSTOM" and adapter_type != provider_code
     ):
         raise ProviderConnectionAdminError("PROVIDER_ADAPTER_UNSUPPORTED", 409)
     try:
-        AdapterRegistry().adapter(provider_code)
+        if provider_code == "CUSTOM":
+            AdapterRegistry().adapter(provider_code, adapter_type)
+        else:
+            AdapterRegistry().adapter(provider_code)
     except AdapterError:
         raise ProviderConnectionAdminError("PROVIDER_ADAPTER_UNSUPPORTED", 409) from None
     return access_mode
@@ -320,6 +328,27 @@ class PostgresProviderConnectionService:
     def list_connections(self, context: ProviderConnectionAdminContext) -> list[dict[str, object]]:
         with self._store._transaction(self._cloud(context)) as connection:
             return [self._safe_connection(connection, row) for row in self._select_summary(connection)]
+
+    def preview_models(
+        self, context: ProviderConnectionAdminContext, *, connection_id: str,
+        provider_code: str, adapter_type: str, base_url: str, credential: str,
+    ) -> tuple[str, ...]:
+        if provider_code != "CUSTOM" or adapter_type not in {"openai_compatible", "anthropic_compatible"}:
+            raise ProviderConnectionAdminError("PROVIDER_ADAPTER_UNSUPPORTED", 409)
+        try:
+            normalized_url = validate_provider_base_url(provider_code, base_url)
+            profile = ProviderConnection(
+                connection_id, provider_code, connection_id, normalized_url, None, True, 0,
+            )
+            models = AdapterRegistry().adapter(provider_code, adapter_type).discover_models(profile, credential)
+            if any(credential in model.model_id for model in models):
+                raise ProviderConnectionAdminError("PROVIDER_CATALOG_RESPONSE_INVALID", 503)
+            return tuple(model.model_id for model in models)
+        except (AdapterError, ProviderSettingsError) as error:
+            raise ProviderConnectionAdminError(
+                str(getattr(error, "code", str(error))), int(getattr(error, "status", 400)),
+                retryable=bool(getattr(error, "retryable", False)),
+            ) from None
 
     def list_active_connection_ids(self, context: ProviderConnectionAdminContext) -> tuple[str, ...]:
         with self._store._transaction(self._cloud(context)) as connection:
@@ -403,21 +432,32 @@ class PostgresProviderConnectionService:
         credential: str | bytes | None, logical_model_ids: Sequence[str], enabled: bool,
         version: int, previous_sealed: EncryptedCredential | None = None,
         discover_models: bool = True, verify_required: bool = True,
+        adapter_type: str = "", verified_model_ids: Sequence[str] | None = None,
+        test_credential: str | None = None,
     ) -> tuple[ProviderConnection, EncryptedCredential | None, tuple[object, ...]]:
         try:
             normalized_url = validate_provider_base_url(provider_code, base_url)
             raw = credential
-            if raw is None and previous_sealed is not None and (verify_required or discover_models):
+            if raw is None and previous_sealed is not None and (verify_required or discover_models or verified_model_ids is not None):
                 raw = self._cipher.decrypt(
                     connection_id, provider_code, previous_sealed.credential_version, previous_sealed,
                 )
             profile = ProviderConnection(
                 connection_id, provider_code, display_name, normalized_url, previous_sealed, True, version,
             )
-            adapter = AdapterRegistry(logical_models={connection_id: logical_model_ids}).adapter(provider_code)
+            registry = AdapterRegistry(logical_models={connection_id: logical_model_ids})
+            adapter = registry.adapter(provider_code, adapter_type) if provider_code == "CUSTOM" else registry.adapter(provider_code)
             if credential is not None and (not isinstance(credential, (str, bytes)) or not str(credential).strip()):
                 raise AdapterError("PROVIDER_CREDENTIAL_REQUIRED", 409)
-            if discover_models:
+            if verified_model_ids is not None:
+                probe_credential = test_credential if test_credential is not None else raw
+                if probe_credential is None:
+                    raise AdapterError("PROVIDER_CREDENTIAL_REQUIRED", 409)
+                models = adapter.verify_models(profile, probe_credential, verified_model_ids)
+            elif discover_models and provider_code == "CUSTOM":
+                # A catalog lookup is preview data, never evidence of model generation.
+                models = adapter.discover_models(profile, raw)
+            elif discover_models:
                 adapter.verify(profile, raw)
                 models = adapter.discover_models(profile, raw)
             elif verify_required:
@@ -450,6 +490,7 @@ class PostgresProviderConnectionService:
     def _replace_models(
         connection: Connection[tuple[Any, ...]], context: ProviderConnectionAdminContext,
         connection_id: str, models: Sequence[object], catalog_version: int,
+        *, mark_missing_stale: bool = True,
     ) -> None:
         model_ids = [model.model_id for model in models]
         for model in models:
@@ -466,11 +507,12 @@ class PostgresProviderConnectionService:
                 (connection_id, model.model_id, list(model.reported_capabilities),
                  list(model.reported_capabilities), catalog_version, context.actor_id),
             )
-        connection.execute(
-            "UPDATE system_provider_models SET catalog_status='stale',updated_at=now() "
-            "WHERE connection_id=%s AND NOT (model_id=ANY(%s))",
-            (connection_id, model_ids),
-        )
+        if mark_missing_stale:
+            connection.execute(
+                "UPDATE system_provider_models SET catalog_status='stale',updated_at=now() "
+                "WHERE connection_id=%s AND NOT (model_id=ANY(%s))",
+                (connection_id, model_ids),
+            )
 
     @staticmethod
     def _set_allowed_models(
@@ -524,6 +566,10 @@ class PostgresProviderConnectionService:
         provider_name = command.provider_name.strip() or command.provider_code
         if (command.provider_name and not command.provider_name.strip()) or len(provider_name) > 256:
             raise ProviderConnectionAdminError("PROVIDER_NAME_INVALID", 409)
+        if command.test_credential is not None and (command.provider_code != "CUSTOM" or command.access_mode != "personal"):
+            raise ProviderConnectionAdminError("PROVIDER_TEST_CREDENTIAL_FORBIDDEN", 409)
+        if command.provider_code == "CUSTOM" and command.access_mode == "personal" and command.test_credential is None:
+            raise ProviderConnectionAdminError("PROVIDER_CREDENTIAL_REQUIRED", 409)
         payload = normalized_connection_fingerprint_payload(
             connection_id=command.connection_id, provider_code=command.provider_code,
             display_name=command.display_name, base_url=command.base_url, enabled=command.enabled,
@@ -536,6 +582,12 @@ class PostgresProviderConnectionService:
                 None if command.credential is None
                 else self._cipher.idempotency_fingerprint(
                     command.connection_id, command.credential.encode("utf-8")
+                )
+            ),
+            test_credential_fingerprint=(
+                None if command.test_credential is None
+                else self._cipher.idempotency_fingerprint(
+                    command.connection_id, command.test_credential.encode("utf-8")
                 )
             ),
         )
@@ -556,6 +608,9 @@ class PostgresProviderConnectionService:
                 credential=command.credential, logical_model_ids=command.logical_model_ids,
                 enabled=command.enabled, version=1, discover_models=False,
                 verify_required=command.access_mode == "public",
+                adapter_type=command.adapter_type,
+                verified_model_ids=command.allowed_model_ids if command.provider_code == "CUSTOM" else None,
+                test_credential=command.test_credential,
             )
             connection.execute(
                 "INSERT INTO system_provider_connections (connection_id,provider_code,display_name,base_url,"
@@ -589,6 +644,8 @@ class PostgresProviderConnectionService:
         self, context: ProviderConnectionAdminContext, connection_id: str,
         command: ProviderConnectionUpdateCommand, idempotency_key: str,
     ) -> tuple[dict[str, object], bool]:
+        if command.test_credential is not None and command.access_mode != "personal":
+            raise ProviderConnectionAdminError("PROVIDER_TEST_CREDENTIAL_FORBIDDEN", 409)
         payload = normalized_connection_fingerprint_payload(
             connection_id=connection_id, provider_code=None, display_name=command.display_name,
             base_url=command.base_url, enabled=command.enabled, expected_version=command.expected_version,
@@ -603,12 +660,22 @@ class PostgresProviderConnectionService:
                     connection_id, command.credential.encode("utf-8")
                 )
             ),
+            test_credential_fingerprint=(
+                None if command.test_credential is None
+                else self._cipher.idempotency_fingerprint(
+                    connection_id, command.test_credential.encode("utf-8")
+                )
+            ),
         )
 
         def mutation(connection: Connection[tuple[Any, ...]]) -> dict[str, object]:
             current = self._load(connection, connection_id)
             if int(current[12]) != command.expected_version:
                 raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
+            if str(current[1]) == "CUSTOM" and str(current[16]) != command.adapter_type:
+                raise ProviderConnectionAdminError("PROVIDER_ADAPTER_IMMUTABLE", 409)
+            if str(current[1]) != "CUSTOM" and command.test_credential is not None:
+                raise ProviderConnectionAdminError("PROVIDER_TEST_CREDENTIAL_FORBIDDEN", 409)
             validate_connection_policy(
                 str(current[1]), command.access_mode, command.credential_requirement,
                 command.short_code, command.adapter_type, command.base_url,
@@ -622,7 +689,22 @@ class PostgresProviderConnectionService:
             if (command.access_mode == "public" and command.credential_requirement == "required"
                     and command.credential is None and current[4] is None):
                 raise ProviderConnectionAdminError("PROVIDER_CREDENTIAL_REQUIRED", 409)
-            verify_required = command.access_mode == "public" and (
+            custom = str(current[1]) == "CUSTOM"
+            current_allowed = (
+                tuple(str(row[0]) for row in connection.execute(
+                    "SELECT model_id FROM system_provider_allowed_models WHERE connection_id=%s ORDER BY model_id",
+                    (connection_id,),
+                ).fetchall()) if custom else ()
+            )
+            custom_probe = custom and (
+                command.base_url != str(current[3]) or command.credential is not None
+                or command.test_credential is not None or command.access_mode != str(current[13])
+                or set(command.allowed_model_ids) != set(current_allowed)
+                or (command.enabled and not bool(current[9]))
+            )
+            if custom_probe and command.access_mode == "personal" and command.test_credential is None:
+                raise ProviderConnectionAdminError("PROVIDER_CREDENTIAL_REQUIRED", 409)
+            verify_required = not custom and command.access_mode == "public" and (
                 command.base_url != str(current[3]) or command.credential is not None
                 or str(current[13]) != "public" or str(current[14]) != command.credential_requirement
             )
@@ -633,14 +715,17 @@ class PostgresProviderConnectionService:
                 enabled=command.enabled, version=command.expected_version + 1,
                 previous_sealed=None if command.access_mode == "personal" else self._sealed(current), discover_models=False,
                 verify_required=verify_required,
+                adapter_type=command.adapter_type,
+                verified_model_ids=command.allowed_model_ids if custom_probe else None,
+                test_credential=command.test_credential,
             )
             verification_status = (
                 "unverified" if command.access_mode == "personal"
-                else "verified" if verify_required else str(current[10])
+                else "verified" if verify_required or custom_probe else str(current[10])
             )
             verified_at = (
                 None if command.access_mode == "personal"
-                else datetime.now().astimezone() if verify_required else current[11]
+                else datetime.now().astimezone() if verify_required or custom_probe else current[11]
             )
             row = connection.execute(
                 "UPDATE system_provider_connections SET display_name=%s,base_url=%s,encrypted_credential=%s,"
@@ -756,7 +841,9 @@ class PostgresProviderConnectionService:
             if str(current[13]) != "public":
                 raise ProviderConnectionAdminError("PROVIDER_PERSONAL_SYSTEM_KEY_FORBIDDEN", 409)
             model_rows = connection.execute(
-                "SELECT model_id FROM system_provider_models WHERE connection_id=%s ORDER BY model_id",
+                "SELECT model_id FROM " + (
+                    "system_provider_allowed_models" if str(current[1]) == "CUSTOM" else "system_provider_models"
+                ) + " WHERE connection_id=%s ORDER BY model_id",
                 (connection_id,),
             ).fetchall()
             profile, sealed, models = self._prepare(
@@ -766,6 +853,8 @@ class PostgresProviderConnectionService:
                 logical_model_ids=[str(row[0]) for row in model_rows], enabled=bool(current[9]),
                 version=command.expected_version + 1, previous_sealed=self._sealed(current),
                 discover_models=False,
+                adapter_type=str(current[16]),
+                verified_model_ids=[str(row[0]) for row in model_rows] if str(current[1]) == "CUSTOM" else None,
             )
             row = connection.execute(
                 "UPDATE system_provider_connections SET encrypted_credential=%s,credential_nonce=%s,"
@@ -814,16 +903,24 @@ class PostgresProviderConnectionService:
                 base_url=str(current[3]), credential=None,
                 logical_model_ids=[str(row[0]) for row in model_rows], enabled=bool(current[9]),
                 version=expected_version + 1, previous_sealed=self._sealed(current),
+                adapter_type=str(current[16]),
+            )
+            verification_sql = (
+                "" if str(current[1]) == "CUSTOM"
+                else "verification_status='verified',verified_at=now(),"
             )
             row = connection.execute(
-                "UPDATE system_provider_connections SET verification_status='verified',verified_at=now(),"
+                "UPDATE system_provider_connections SET " + verification_sql +
                 "version=version+1,updated_at=now(),updated_by=%s,trace_id=%s,policy_version=%s "
                 "WHERE connection_id=%s AND version=%s RETURNING version",
                 (context.actor_id, context.trace_id, context.policy_version, connection_id, expected_version),
             ).fetchone()
             if row is None:
                 raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
-            self._replace_models(connection, context, profile.connection_id, models, int(row[0]))
+            self._replace_models(
+                connection, context, profile.connection_id, models, int(row[0]),
+                mark_missing_stale=str(current[1]) != "CUSTOM",
+            )
             return self._safe_by_id(connection, connection_id)
 
         return self._mutations.run(

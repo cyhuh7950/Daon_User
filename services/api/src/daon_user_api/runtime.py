@@ -926,6 +926,7 @@ class ProviderConnectionCreateBody(BaseModel):
     provider_name: str | None = Field(default=None, min_length=1, max_length=256)
     base_url: str = Field(min_length=1, max_length=2048)
     credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
+    test_credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
     logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
     allowed_model_ids: list[str] = Field(default_factory=list, max_length=256)
     access_mode: str = "public"
@@ -943,6 +944,7 @@ class ProviderConnectionUpdateBody(BaseModel):
     provider_name: str | None = Field(default=None, min_length=1, max_length=256)
     base_url: str = Field(min_length=1, max_length=2048)
     credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
+    test_credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
     logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
     allowed_model_ids: list[str] = Field(default_factory=list, max_length=256)
     access_mode: str = "public"
@@ -951,6 +953,16 @@ class ProviderConnectionUpdateBody(BaseModel):
     adapter_type: str = ""
     enabled: bool
     expected_version: int = Field(ge=1)
+    step_up_authorization_id: str = Field(min_length=1, max_length=512)
+
+
+class ProviderConnectionModelPreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connection_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    provider_code: str = Field(min_length=1, max_length=64)
+    adapter_type: str = Field(min_length=1, max_length=64)
+    base_url: str = Field(min_length=1, max_length=2048)
+    credential: str = Field(min_length=1, max_length=16384, repr=False)
     step_up_authorization_id: str = Field(min_length=1, max_length=512)
 
 
@@ -2255,7 +2267,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "PROVIDER_SHORT_CODE_INVALID", "PROVIDER_SHORT_CODE_CONFLICT",
             "PROVIDER_ACCESS_MODE_INVALID", "PROVIDER_PERSONAL_SYSTEM_KEY_FORBIDDEN",
             "PROVIDER_ALLOWED_MODEL_INVALID", "PROVIDER_ALLOWED_MODEL_UNKNOWN",
-            "PROVIDER_NAME_INVALID",
+            "PROVIDER_NAME_INVALID", "PROVIDER_MODEL_IDS_INVALID", "PROVIDER_PROBE_RESPONSE_INVALID",
+            "PROVIDER_ADAPTER_IMMUTABLE", "PROVIDER_TEST_CREDENTIAL_FORBIDDEN",
             "PROVIDER_MODEL_DEFAULT_REFERENCED", "PROVIDER_CONNECTION_REFERENCED",
         }
         return _error_response(
@@ -4769,7 +4782,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     def _provider_step_up(
         request: Request, authorization_id: str, *, target_id: str,
-        operation: str, idempotency_key: str,
+        operation: str, idempotency_key: str | None = None,
     ) -> None:
         access_token, _ = _credential(request)
         dependencies.identity_service.consume_step_up(
@@ -4896,6 +4909,30 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             ),
         )
 
+    @app.post("/api/v1/admin/provider-connections/model-preview")
+    async def preview_provider_models(
+        body: ProviderConnectionModelPreviewBody, request: Request,
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _principal_value, context = _provider_admin_context(request)
+        _provider_step_up(request, body.step_up_authorization_id,
+                          target_id=f"provider-connection:{body.connection_id}",
+                          operation="provider_catalog.preview",
+                          idempotency_key=request.state.trace_id)
+        try:
+            model_ids = await asyncio.to_thread(
+                _provider_admin_service().preview_models,
+                context, connection_id=body.connection_id, provider_code=body.provider_code,
+                adapter_type=body.adapter_type, base_url=body.base_url,
+                credential=body.credential,
+            )
+        finally:
+            body.credential = ""
+        return JSONResponse({
+            "data": {"model_ids": list(model_ids)},
+            "meta": {"trace_id": request.state.trace_id},
+        })
+
     @app.post("/api/v1/admin/provider-connections", status_code=201)
     async def create_provider_connection(
         body: ProviderConnectionCreateBody, request: Request,
@@ -4914,7 +4951,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             expected_version=body.expected_version,
             allowed_model_ids=tuple(body.allowed_model_ids), access_mode=body.access_mode,
             credential_requirement=body.credential_requirement, short_code=body.short_code,
-            adapter_type=body.adapter_type,
+            adapter_type=body.adapter_type, test_credential=body.test_credential,
         )
         try:
             item, replayed = await asyncio.to_thread(
@@ -4922,6 +4959,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             )
         finally:
             body.credential = None
+            body.test_credential = None
         response = _json_with_etag(
             {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
             f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
@@ -4946,7 +4984,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             expected_version=body.expected_version,
             allowed_model_ids=tuple(body.allowed_model_ids), access_mode=body.access_mode,
             credential_requirement=body.credential_requirement, short_code=body.short_code,
-            adapter_type=body.adapter_type,
+            adapter_type=body.adapter_type, test_credential=body.test_credential,
         )
         try:
             item, replayed = await asyncio.to_thread(
@@ -4955,6 +4993,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             )
         finally:
             body.credential = None
+            body.test_credential = None
         return _json_with_etag(
             {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
             f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",

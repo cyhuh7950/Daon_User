@@ -52,3 +52,28 @@
 - 코드·테스트·진행 기록 commit: `7697bc2d4c9041034ca99efd5144cac9508ad404`(지정된 5개 파일만 포함). 커밋 직후 worktree clean 확인.
 - 최종 판정: Task 1 로컬 구현·fixture 검증 완료. 자체 검토에서 남은 Critical/Important finding 없음. 실제 Provider 연결 성공 또는 DB 저장 완료를 주장하지 않음.
 - 다음 조치: 어울1이 Task 2 관리자 preview/시험-후-저장 연계를 검토·진행. 이번 인계에서 push·PR·merge·배포 없음.
+
+## Task 2 구현 시작 — R1-PROVIDER-COMPAT-20261003-T2
+
+- 일자/담당: 2026-10-03 / 어울2(daon-developer), 동일 단일 writer.
+- 기준/상태: `codex/next-user-development`, HEAD `7e786327ae4fa85b1089b3024ddc1ddde9a46abc`, clean 확인. 신산님이 Task 1 인계 수락 및 Task 2만 재지시.
+- 설계/계획: 승인 설계와 구현 계획 전체 재독. Task 2 대상은 관리자 read-only preview, 모델별 시험 후 원자 저장, 공용 Key 암호화·비공용 시험 Key 비저장, 저장 규격 불변과 replay digest.
+- 변경 전 테스트: `PYTHONPATH=services/api/src`에서 대상 `test_provider_connection_admin.py`·`test_provider_settings_runtime_http.py` `25 passed`.
+- 변경 파일 예정: `provider_connection_admin.py`, `runtime.py`, 두 대상 테스트, 이 진행 기록. 오류 횟수 0.
+- 미검증: 실제 Provider·유료 호출·실 DB·Web·WSL·배포는 이번 범위 밖. 다음 조치: fixture 기반 RED 테스트 작성 및 실패 원인 확인.
+
+### Task 2 RED 및 Task 1 검토 수신
+
+- RED: 신규 관리자 서비스/HTTP fixture 테스트 8개가 예상대로 실패하고 기존 25개는 통과. 실패 원인은 `test_credential` command 필드와 `model-preview` route 부재로 확인. 의도된 RED이므로 구현 오류 횟수 0.
+- 신산님이 전달한 내부 Task 1 검토: 모델별 시험 총량 상한, OpenAI 토큰 파라미터 호환, Anthropic 모델 목록 pagination. Task 2 GREEN 후 완료 판정 전 공식 문서·승인 설계를 대조하고 Task 1 보완을 별도 테스트/commit으로 분리한다. 외부 수락 결과로 취급하지 않음.
+- 다음 조치: 기존 admin auth/step-up/version/replay 흐름을 유지하며 Task 2 최소 구현.
+
+### Task 2 GREEN 체크포인트 — Task 1 검토 보완 전
+
+- 구현: 관리자 전용 step-up `provider_catalog.preview` 경로(읽기 전용), `CUSTOM` 두 규격별 실제 모델 probe 후 create/update/공용 Key 교체, 비공용 일회성 시험 Key 비저장, keyed digest replay, 저장된 규격 변경 409 차단. 조회 실패 또는 모델별 시험 실패 시 기존 연결·Key·카탈로그·허용 목록 불변.
+- 검토 경계: `CUSTOM` catalog refresh 성공 시 조회 목록에서 빠진 수동 검증 모델을 stale 처리하는 현상을 신규 RED로 확인하고, refresh에서 기존 catalog를 보존하도록 수정. 조회만으로 verification 상태를 새로 올리지 않음.
+- 변경 파일: `provider_connection_admin.py`, `runtime.py`, `test_provider_connection_admin.py`, `test_provider_settings_runtime_http.py`, 이 진행 기록(총 5개).
+- 검증: 대상 2개 pytest 파일 `39 passed`; Provider 인접 8개 파일 묶음 `139 passed, 1 skipped`(실 PostgreSQL DSN 없음). `git diff --check`는 commit 직전 재확인 예정. fixture transport만 사용, 외부 Provider·비용 호출 0회.
+- 오류 횟수: 구현 중 비의도 실패 원인 2개(테스트 가짜 DB의 `Jsonb` 객체 동일성 비교, preview step-up의 operation/key 쌍 누락)를 각각 확인·수정. 신규 Secret 반사 및 refresh stale 실패는 의도된 RED; 동일 근본 원인 3회 반복 없음.
+- 미검증: 실 DB transaction/Provider, 사용자 Key Task 3, Web Task 4, WSL/배포. Anthropic 모델 목록 pagination은 아직 1페이지 조회로 부분 목록 가능; Task 1 검토 보완에서 명시 기록.
+- 다음 조치: Task 2 지정 파일만 체크포인트 commit 후, 신산님 전달 Task 1 Important(모델 수 상한) RED→GREEN과 토큰 파라미터·pagination 판단을 별도 commit으로 처리. Task 3 시작 금지.

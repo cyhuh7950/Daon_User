@@ -353,6 +353,61 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed.status_code, 200, listed.text)
         self.assertEqual(created.status_code, 403)
 
+    async def test_preview_is_admin_only_and_read_only(self) -> None:
+        class PreviewService:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def preview_models(self, context, **kwargs):
+                self.calls.append((context, kwargs))
+                return ("listed-model",)
+
+        service = PreviewService()
+        self.dependencies.provider_connection_service = service
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        path = "/api/v1/admin/provider-connections/model-preview"
+        body = {
+            "connection_id": "custom-1", "provider_code": "CUSTOM",
+            "adapter_type": "anthropic_compatible", "base_url": "https://models.example/v1",
+            "credential": "fixture-preview-key", "step_up_authorization_id": "missing",
+        }
+        denied = await self.client.post(path, json=body)
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(service.calls, [])
+
+        self.dependencies.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION,
+            system_admin_user_ids=frozenset({self.credentials.user_id}),
+        )
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        grant = self.identity.issue_step_up(
+            access_token=self.credentials.access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id="provider-connection:custom-1",
+            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
+        )
+        body["step_up_authorization_id"] = grant.authorization
+        preview = await self.client.post(path, json=body)
+
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(preview.json()["data"], {"model_ids": ["listed-model"]})
+        self.assertNotIn("fixture-preview-key", preview.text)
+        self.assertEqual(len(service.calls), 1)
+        self.assertEqual(service.calls[0][1]["adapter_type"], "anthropic_compatible")
+        reused = await self.client.post(path, json=body)
+        self.assertEqual(reused.status_code, 403)
+        self.assertEqual(len(service.calls), 1)
+
     async def test_authenticated_workspace_user_cannot_rotate_shared_provider_credential(self) -> None:
         class SafeProviderService:
             def replace_credential(self, context, connection_id, body, idempotency_key):

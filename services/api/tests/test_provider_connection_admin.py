@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 import daon_user_api.provider_connection_admin as provider_connection_admin_module
@@ -11,6 +13,7 @@ from daon_user_api.provider_connection_admin import (
     ProviderConnectionAdminError,
     ProviderConnectionCreateCommand,
     ProviderConnectionUpdateCommand,
+    ProviderCredentialReplaceCommand,
     PostgresProviderAdminMutationRepository,
     PostgresProviderConnectionService,
     normalized_connection_fingerprint_payload,
@@ -18,6 +21,7 @@ from daon_user_api.provider_connection_admin import (
 )
 from daon_user_api.provider_credentials import ProviderCredentialCipher
 from daon_user_api.provider_catalog import DiscoveredModel
+from daon_user_api.provider_connection_adapters import AdapterRegistry, TransportResponse
 
 
 class Cursor:
@@ -107,6 +111,123 @@ class Store:
     @contextmanager
     def _transaction(self, context):
         yield Connection(self.database)
+
+
+class CompatibleDatabase(SharedDatabase):
+    def __init__(self) -> None:
+        super().__init__()
+        self.allowed_model_ids: list[str] = []
+
+
+class CompatibleConnection(Connection):
+    def execute(self, sql, params=()):
+        normalized = " ".join(sql.split())
+        record = self.database.system_connection
+        if normalized.startswith("SELECT 1 FROM system_provider_connections"):
+            return Cursor((1,) if record and record["connection_id"] == params[0] else None)
+        if normalized.startswith("SELECT connection_id FROM system_provider_connections WHERE short_code"):
+            return Cursor((record["connection_id"],) if record and record["short_code"] == params[0]
+                          and record["connection_id"] != params[1] else None)
+        if normalized.startswith("SELECT connection_id,provider_code,display_name,base_url,encrypted_credential"):
+            if record is None or record["connection_id"] != params[0]:
+                return Cursor(None)
+            return Cursor(tuple(record[key] for key in (
+                "connection_id", "provider_code", "display_name", "base_url", "encrypted_credential",
+                "credential_nonce", "encryption_key_version", "credential_schema_version", "credential_version",
+                "enabled", "verification_status", "verified_at", "version", "access_mode",
+                "credential_requirement", "short_code", "adapter_type", "provider_name",
+            )))
+        if normalized.startswith("INSERT INTO system_provider_connections"):
+            self.database.system_connection = dict(zip((
+                "connection_id", "provider_code", "display_name", "base_url", "encrypted_credential",
+                "credential_nonce", "encryption_key_version", "credential_schema_version", "credential_version",
+                "enabled", "verification_status", "verified_at", "updated_by", "trace_id", "policy_version",
+                "access_mode", "credential_requirement", "short_code", "adapter_type", "provider_name",
+            ), params))
+            self.database.system_connection.update(version=1, catalog_status="stale", catalog_version=0)
+            return Cursor()
+        if normalized.startswith("UPDATE system_provider_connections SET display_name="):
+            if record is None or record["connection_id"] != params[-2] or record["version"] != params[-1]:
+                return Cursor(None)
+            record.update(dict(zip((
+                "display_name", "base_url", "encrypted_credential", "credential_nonce",
+                "encryption_key_version", "credential_schema_version", "credential_version", "enabled",
+                "verification_status", "verified_at", "access_mode", "credential_requirement", "short_code",
+                "adapter_type", "provider_name", "updated_by", "trace_id", "policy_version",
+            ), params[:-2])))
+            record["version"] += 1
+            return Cursor((record["version"],))
+        if normalized.startswith("UPDATE system_provider_connections SET encrypted_credential=%s"):
+            if record is None or record["connection_id"] != params[-2] or record["version"] != params[-1]:
+                return Cursor(None)
+            record.update(dict(zip((
+                "encrypted_credential", "credential_nonce", "encryption_key_version",
+                "credential_schema_version", "credential_version",
+            ), params[:5])))
+            record["verification_status"] = "verified"
+            record["version"] += 1
+            return Cursor((record["version"],))
+        if normalized.startswith("UPDATE system_provider_connections SET version=version+1"):
+            if record is None or record["connection_id"] != params[-2] or record["version"] != params[-1]:
+                return Cursor(None)
+            record["version"] += 1
+            return Cursor((record["version"],))
+        if normalized.startswith("INSERT INTO system_provider_models"):
+            self.database.models = [item for item in self.database.models if item[0] != params[1]]
+            self.database.models.append((params[1], params[2], params[3], False, "ready", params[4]))
+            self.database.system_connection["catalog_status"] = "ready"
+            self.database.system_connection["catalog_version"] = params[4]
+            return Cursor()
+        if normalized.startswith("UPDATE system_provider_models SET catalog_status='stale'"):
+            self.database.models = [
+                (item[0], item[1], item[2], item[3], item[4] if item[0] in params[1] else "stale", item[5])
+                for item in self.database.models
+            ]
+            return Cursor()
+        if normalized.startswith("SELECT model_id FROM system_provider_models WHERE connection_id=%s AND model_id=ANY"):
+            return Cursor(rows=[(item[0],) for item in self.database.models if item[0] in params[1]])
+        if normalized.startswith("SELECT model_id FROM system_provider_models WHERE connection_id=%s ORDER BY"):
+            return Cursor(rows=[(item[0],) for item in self.database.models])
+        if normalized.startswith("SELECT count(*) FROM workspace_model_defaults"):
+            return Cursor((0,))
+        if normalized.startswith("DELETE FROM system_provider_allowed_models"):
+            self.database.allowed_model_ids = [item for item in self.database.allowed_model_ids if item in params[1]]
+            return Cursor()
+        if normalized.startswith("INSERT INTO system_provider_allowed_models"):
+            if params[1] not in self.database.allowed_model_ids:
+                self.database.allowed_model_ids.append(params[1])
+            return Cursor()
+        if normalized.startswith("SELECT model_id FROM system_provider_allowed_models"):
+            return Cursor(rows=[(item,) for item in self.database.allowed_model_ids])
+        return super().execute(sql, params)
+
+
+class CompatibleStore(Store):
+    @contextmanager
+    def _transaction(self, context):
+        snapshot = deepcopy(self.database.__dict__)
+        try:
+            yield CompatibleConnection(self.database)
+        except Exception:
+            self.database.__dict__.clear()
+            self.database.__dict__.update(snapshot)
+            raise
+
+
+class FixtureTransport:
+    def __init__(self) -> None:
+        self.requests = []
+        self.responses = {}
+
+    def request(self, method, url, headers, body, timeout_seconds, *, follow_redirects):
+        self.requests.append((method, url, dict(headers), body, timeout_seconds, follow_redirects))
+        response = self.responses.get((url, None if body is None else body.get("model")),
+                                      self.responses.get(url))
+        if isinstance(response, Exception):
+            raise response
+        if response is None:
+            raise AssertionError("fixture response missing")
+        return response
 
 
 def context() -> ProviderConnectionAdminContext:
@@ -534,3 +655,289 @@ def test_allowed_models_reject_removing_workspace_default_before_mutation() -> N
         )
 
     assert not any(sql.startswith("DELETE FROM system_provider_allowed_models") for sql in calls)
+
+
+def compatible_service(monkeypatch, transport: FixtureTransport):
+    monkeypatch.setattr(
+        provider_connection_admin_module, "AdapterRegistry",
+        lambda **kwargs: AdapterRegistry(transport, **kwargs),
+    )
+    database = CompatibleDatabase()
+    service = PostgresProviderConnectionService(
+        CompatibleStore(database), ProviderCredentialCipher(b"t" * 32, encryption_key_version=1),
+    )
+    return service, database
+
+
+def durable_state(database: CompatibleDatabase):
+    return deepcopy((database.system_connection, database.models, database.allowed_model_ids,
+                     database.idempotency, [item["payload"] for item in database.outbox]))
+
+
+def custom_command(*, adapter_type="openai_compatible", access_mode="public", credential="fixture-public-key",
+                   test_credential=None, allowed_model_ids=("manual-model",)):
+    return ProviderConnectionCreateCommand(
+        connection_id="custom-1", provider_code="CUSTOM", display_name="Custom primary",
+        base_url="https://models.example/v1", credential=credential,
+        logical_model_ids=(), enabled=True, expected_version=0, access_mode=access_mode,
+        credential_requirement="required", short_code="CU", adapter_type=adapter_type,
+        allowed_model_ids=allowed_model_ids, provider_name="Example AI", test_credential=test_credential,
+    )
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "path", "payload"),
+    [
+        ("openai_compatible", "/chat/completions", {"choices": [{"message": {"content": "ready"}}]}),
+        ("anthropic_compatible", "/messages", {"content": [{"type": "text", "text": "ready"}]}),
+    ],
+)
+def test_custom_create_registers_verified_manual_model(
+    monkeypatch, adapter_type, path, payload,
+) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/models"] = TransportResponse(404, {})
+    transport.responses[f"https://models.example/v1{path}"] = TransportResponse(200, payload)
+    service, database = compatible_service(monkeypatch, transport)
+
+    saved, replayed = service.create_connection(
+        context(), custom_command(adapter_type=adapter_type), "custom-create-001",
+    )
+
+    assert replayed is False
+    assert saved["adapter_type"] == adapter_type
+    assert saved["allowed_model_ids"] == ["manual-model"]
+    assert [item["model_id"] for item in saved["models"]] == ["manual-model"]
+    assert saved["verification_status"] == "verified"
+    assert database.system_connection["encrypted_credential"] is not None
+    assert len(database.outbox) == 1
+    assert [(item[0], item[1], item[3]["model"]) for item in transport.requests] == [
+        ("POST", f"https://models.example/v1{path}", "manual-model"),
+    ]
+    assert "fixture-public-key" not in repr(database.idempotency) + repr(database.outbox) + repr(saved)
+
+
+def test_private_test_key_is_ephemeral(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/messages"] = TransportResponse(
+        200, {"content": [{"type": "text", "text": "ready"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    command = custom_command(adapter_type="anthropic_compatible", access_mode="personal",
+                             credential=None, test_credential="fixture-one-time-key")
+
+    saved, _replayed = service.create_connection(context(), command, "private-create-001")
+
+    assert database.system_connection["encrypted_credential"] is None
+    assert database.system_connection["credential_version"] == 0
+    assert saved["allowed_model_ids"] == ["manual-model"]
+    assert saved["verification_status"] == "unverified"
+    assert transport.requests[0][2]["x-api-key"] == "fixture-one-time-key"
+    assert "fixture-one-time-key" not in repr(command) + repr(saved) + repr(database.__dict__)
+
+
+def test_failed_update_preserves_connection(monkeypatch) -> None:
+    transport = FixtureTransport()
+    url = "https://models.example/v1/chat/completions"
+    transport.responses[url] = TransportResponse(200, {"choices": [{"message": {"content": "ready"}}]})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), custom_command(), "custom-create-002")
+    before = durable_state(database)
+    transport.requests.clear()
+    transport.responses[(url, "second-model")] = TransportResponse(401, {"error": "fixture-private-error"})
+    update = ProviderConnectionUpdateCommand(
+        display_name="Changed", base_url="https://models.example/v1", credential=None,
+        logical_model_ids=(), enabled=True, expected_version=1, access_mode="public",
+        credential_requirement="required", short_code="CU", adapter_type="openai_compatible",
+        allowed_model_ids=("manual-model", "second-model"), provider_name="Example AI",
+    )
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_AUTHENTICATION_FAILED$"):
+        service.update_connection(context(), "custom-1", update, "custom-update-001")
+
+    assert durable_state(database) == before
+    assert [item[3]["model"] for item in transport.requests] == ["manual-model", "second-model"]
+
+
+def test_manual_catalog_refresh_failure_preserves_allowlist(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/messages"] = TransportResponse(
+        200, {"content": [{"type": "text", "text": "ready"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), custom_command(adapter_type="anthropic_compatible"), "custom-create-003")
+    before = durable_state(database)
+    transport.requests.clear()
+    transport.responses["https://models.example/v1/models"] = TransportResponse(405, {})
+
+    with pytest.raises(ProviderConnectionAdminError):
+        service.refresh_catalog(context(), "custom-1", 1, "custom-refresh-001")
+
+    assert durable_state(database) == before
+    assert [item[1] for item in transport.requests] == ["https://models.example/v1/models"]
+    assert transport.requests[0][2]["anthropic-version"] == "2023-06-01"
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "path", "probe_payload"),
+    [
+        ("openai_compatible", "/chat/completions", {"choices": [{"message": {"content": "ready"}}]}),
+        ("anthropic_compatible", "/messages", {"content": [{"type": "text", "text": "ready"}]}),
+    ],
+)
+def test_custom_catalog_refresh_success_preserves_verified_allowed_manual_model(
+    monkeypatch, adapter_type, path, probe_payload,
+) -> None:
+    transport = FixtureTransport()
+    transport.responses[f"https://models.example/v1{path}"] = TransportResponse(200, probe_payload)
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), custom_command(adapter_type=adapter_type), "custom-create-007")
+    transport.requests.clear()
+    transport.responses["https://models.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "listed-only-model"}], "has_more": adapter_type == "anthropic_compatible"},
+    )
+
+    saved, replayed = service.refresh_catalog(context(), "custom-1", 1, "custom-refresh-002")
+
+    assert replayed is False
+    assert saved["allowed_model_ids"] == ["manual-model"]
+    assert {item["model_id"]: item["catalog_status"] for item in saved["models"]} == {
+        "manual-model": "ready", "listed-only-model": "ready",
+    }
+    assert database.system_connection["verification_status"] == "verified"
+    assert [item[1] for item in transport.requests] == ["https://models.example/v1/models"]
+
+
+def test_existing_custom_adapter_type_immutable(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/chat/completions"] = TransportResponse(
+        200, {"choices": [{"message": {"content": "ready"}}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), custom_command(), "custom-create-004")
+    before = durable_state(database)
+    transport.requests.clear()
+    update = ProviderConnectionUpdateCommand(
+        display_name="Changed", base_url="https://models.example/v1", credential=None,
+        logical_model_ids=(), enabled=True, expected_version=1, access_mode="public",
+        credential_requirement="required", short_code="CU", adapter_type="anthropic_compatible",
+        allowed_model_ids=("manual-model",), provider_name="Example AI",
+    )
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_ADAPTER_IMMUTABLE$"):
+        service.update_connection(context(), "custom-1", update, "custom-update-002")
+
+    assert durable_state(database) == before
+    assert transport.requests == []
+
+
+def test_private_replay_uses_keyed_test_key_digest(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/messages"] = TransportResponse(
+        200, {"content": [{"type": "text", "text": "ready"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    first = custom_command(adapter_type="anthropic_compatible", access_mode="personal",
+                           credential=None, test_credential="fixture-one-time-key")
+    service.create_connection(context(), first, "private-create-002")
+    before = durable_state(database)
+    transport.requests.clear()
+
+    replay, replayed = service.create_connection(context(), first, "private-create-002")
+    assert replayed is True
+    assert replay["allowed_model_ids"] == ["manual-model"]
+    assert transport.requests == []
+    with pytest.raises(ProviderConnectionAdminError, match="^IDEMPOTENCY_KEY_REUSED$"):
+        service.create_connection(context(), replace(first, test_credential="fixture-different-key"),
+                                  "private-create-002")
+    assert durable_state(database) == before
+    assert "fixture-one-time-key" not in repr(database.__dict__)
+    assert "fixture-different-key" not in repr(database.__dict__)
+
+
+def test_preview_reads_only_catalog_and_rejects_non_custom(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "listed-model"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+
+    ids = service.preview_models(
+        context(), connection_id="custom-1", provider_code="CUSTOM",
+        adapter_type="anthropic_compatible", base_url="https://models.example/v1",
+        credential="fixture-preview-key",
+    )
+
+    assert ids == ("listed-model",)
+    assert database.system_connection is None and database.idempotency == {} and database.outbox == []
+    assert [(item[0], item[1], item[2]["anthropic-version"]) for item in transport.requests] == [
+        ("GET", "https://models.example/v1/models", "2023-06-01"),
+    ]
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_ADAPTER_UNSUPPORTED$"):
+        service.preview_models(context(), connection_id="custom-1", provider_code="UPSTAGE",
+                               adapter_type="UPSTAGE", base_url="https://api.upstage.ai/v1",
+                               credential="fixture-preview-key")
+    assert len(transport.requests) == 1
+
+
+def test_preview_rejects_upstream_model_id_that_echoes_input_key(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "model-fixture-preview-key"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_CATALOG_RESPONSE_INVALID$") as captured:
+        service.preview_models(context(), connection_id="custom-1", provider_code="CUSTOM",
+                               adapter_type="openai_compatible", base_url="https://models.example/v1",
+                               credential="fixture-preview-key")
+
+    assert "fixture-preview-key" not in repr(captured.value)
+    assert database.system_connection is None
+
+
+def test_custom_model_change_probes_then_updates_catalog_and_allowlist(monkeypatch) -> None:
+    transport = FixtureTransport()
+    url = "https://models.example/v1/chat/completions"
+    transport.responses[url] = TransportResponse(200, {"choices": [{"message": {"content": "ready"}}]})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), custom_command(), "custom-create-005")
+    transport.requests.clear()
+    update = ProviderConnectionUpdateCommand(
+        display_name="Changed", base_url="https://models.example/v1", credential=None,
+        logical_model_ids=(), enabled=True, expected_version=1, access_mode="public",
+        credential_requirement="required", short_code="CU", adapter_type="openai_compatible",
+        allowed_model_ids=("manual-model", "second-model"), provider_name="Example AI",
+    )
+
+    saved, replayed = service.update_connection(context(), "custom-1", update, "custom-update-003")
+
+    assert replayed is False
+    assert saved["allowed_model_ids"] == ["manual-model", "second-model"]
+    assert {item["model_id"] for item in saved["models"]} == {"manual-model", "second-model"}
+    assert [item[3]["model"] for item in transport.requests] == ["manual-model", "second-model"]
+    assert database.system_connection["credential_version"] == 1
+
+
+def test_custom_public_key_replacement_probes_allowed_model_before_encrypting(monkeypatch) -> None:
+    transport = FixtureTransport()
+    url = "https://models.example/v1/messages"
+    transport.responses[url] = TransportResponse(200, {"content": [{"type": "text", "text": "ready"}]})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), custom_command(adapter_type="anthropic_compatible"), "custom-create-006")
+    old_ciphertext = database.system_connection["encrypted_credential"]
+    transport.requests.clear()
+
+    saved, replayed = service.replace_credential(
+        context(), "custom-1", ProviderCredentialReplaceCommand("fixture-replacement-key", 1),
+        "custom-credential-001",
+    )
+
+    assert replayed is False
+    assert saved["credential_version"] == 2
+    assert saved["allowed_model_ids"] == ["manual-model"]
+    assert database.system_connection["encrypted_credential"] != old_ciphertext
+    assert [(item[1], item[2]["x-api-key"], item[3]["model"]) for item in transport.requests] == [
+        (url, "fixture-replacement-key", "manual-model"),
+    ]
+    assert "fixture-replacement-key" not in repr(saved) + repr(database.idempotency) + repr(database.outbox)
