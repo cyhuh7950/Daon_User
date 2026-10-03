@@ -978,6 +978,31 @@ test("BFF permits only exact same-origin admin model preview POST", async () => 
   })));
 });
 
+test("BFF keeps named connection model-preview PUT and DELETE separate from preview POST", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method, body: JSON.parse(await new Response(init.body).text()) });
+      return Response.json({ data: { connection_id: "model-preview", version: 3 } });
+    },
+  });
+  const url = "https://app.example.com/bff/api/admin/provider-connections/model-preview";
+  const segments = ["admin", "provider-connections", "model-preview"];
+  const body = { expected_version: 2, step_up_authorization_id: "fixture-grant" };
+  for (const method of ["PUT", "DELETE"]) {
+    const result = await proxy(new Request(url, {
+      method,
+      headers: { Origin: "https://app.example.com", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }), segments);
+    assert.equal(result.status, 200, `${method} named connection should remain available`);
+  }
+  assert.deepEqual(captured, ["PUT", "DELETE"].map((method) => ({
+    url: "https://api.example.com/api/v1/admin/provider-connections/model-preview", method, body,
+  })));
+});
+
 test("BFF는 검증된 Workspace Knowledge 목록 GET만 same-origin으로 노출한다", async () => {
   const captured = [];
   const proxy = createBffProxy({

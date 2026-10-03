@@ -170,10 +170,8 @@ function routeFor(method, segments) {
       ? { path: "/api/v1/admin/provider-connections", query: null }
       : { methodRejected: true };
   }
-  if (segments.length === 3 && segments[0] === "admin" && segments[1] === "provider-connections" && segments[2] === "model-preview") {
-    return method === "POST"
-      ? { path: "/api/v1/admin/provider-connections/model-preview", query: null }
-      : { methodRejected: true };
+  if (method === "POST" && segments.length === 3 && segments[0] === "admin" && segments[1] === "provider-connections" && segments[2] === "model-preview") {
+    return { path: "/api/v1/admin/provider-connections/model-preview", query: null };
   }
   if (segments.length === 2 && segments[0] === "admin" && segments[1] === "provider-health-settings") {
     return new Set(["GET", "PATCH"]).has(method)

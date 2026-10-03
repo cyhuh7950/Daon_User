@@ -49,7 +49,7 @@ async function click(act, button) {
   await act(async () => { button.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
 }
 
-function adminFixture({ previewModels = [], previewFails = false, saveFailures = 0, existingConnections = [] } = {}) {
+function adminFixture({ previewModels = [], previewFails = false, saveFailures = 0, existingConnections = [], refreshResult = null } = {}) {
   const requests = [];
   let connections = existingConnections;
   let pendingSaveFailures = saveFailures;
@@ -69,6 +69,10 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
         return previewFails
           ? Response.json({ error: { code: "PROVIDER_CATALOG_UNAVAILABLE" } }, { status: 503 })
           : Response.json({ data: { model_ids: previewModels } });
+      }
+      if (refreshResult && path === `/bff/api/admin/provider-catalog/${refreshResult.connection_id}/refresh` && method === "POST") {
+        connections = [refreshResult];
+        return Response.json({ data: refreshResult });
       }
       if (path === "/bff/api/admin/provider-connections" && method === "POST") {
         if (pendingSaveFailures > 0) {
@@ -267,6 +271,34 @@ test("saved legacy CUSTOM connection retains its old catalog and credential acti
     assert.ok(buttonByText(view.container, "모델 조회"));
     assert.ok(buttonByText(view.container, "시스템 키 시험 및 저장"));
     assert.doesNotMatch(view.container.textContent, /시험 대상 .*사용료|모델 ID 직접 입력/u);
+  } finally { await view.cleanup(); }
+});
+
+test("saved public compatible CUSTOM refreshes with stored Key without replacing its manual allowlist", async () => {
+  const connection = {
+    connection_id: "custom-public", provider_code: "CUSTOM", adapter_type: "openai_compatible", provider_name: "공용 공급자", display_name: "공용 연결",
+    base_url: "https://models.example/v1", short_code: "CP", access_mode: "public", credential_requirement: "required",
+    allowed_model_ids: ["manual-a"], enabled: true, configured: true, verification_status: "verified", version: 2,
+    catalog_status: "ready", catalog_version: 2,
+    models: [{ model_id: "manual-a", catalog_status: "ready", catalog_version: 2, effective_capabilities: ["text_generation"] }],
+  };
+  const fixture = adminFixture({ existingConnections: [connection], refreshResult: {
+    ...connection, version: 3, catalog_version: 3,
+    models: [...connection.models, { model_id: "listed-only", catalog_status: "ready", catalog_version: 3, effective_capabilities: ["text_generation"] }],
+  } });
+  const view = await mountAdminFixture(fixture, "stored-custom-refresh");
+  try {
+    assert.ok(buttonByText(view.container, "모델 조회"), "stored-Key catalog refresh action is missing");
+    assert.ok(buttonByText(view.container, "모델 목록 조회"), "input-Key preview remains separate");
+    assert.equal(buttonByText(view.container, "모델 목록 조회").disabled, true);
+    await fill(view.act, controlFor(view.container, "관리자 재인증 비밀번호"), "fixture-password");
+    await click(view.act, buttonByText(view.container, "모델 조회"));
+    const refresh = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-catalog/custom-public/refresh");
+    assert.deepEqual(refresh?.body, { expected_version: 2, step_up_authorization_id: "fixture-grant" });
+    assert.equal(fixture.requests.some((item) => item.path.endsWith("/model-preview")), false);
+    assert.equal(controlFor(view.container, "모델 ID 직접 입력").value, "manual-a");
+    assert.match(view.container.textContent, /listed-only/u);
+    assert.match(view.container.textContent, /모델 카탈로그를 새로고침했습니다/u);
   } finally { await view.cleanup(); }
 });
 

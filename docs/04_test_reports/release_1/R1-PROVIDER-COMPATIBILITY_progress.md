@@ -149,3 +149,13 @@
 - 오류 횟수: 신규 제품 코드의 비의도 오류 0건. 최소 DOM fixture에서 텍스트 이벤트가 React 상태를 갱신하지 않아 테스트 전용 입력 헬퍼를 교정한 1건, 전체 boundary의 데스크톱 산출물 누락 1건, lint의 대상 불일치 1건을 각각 원인 확인·분리했다. 동일 근본 원인 3회 반복 없음.
 - 미검증: 실제 브라우저 1920×1080·1440×900·430×844 클릭/Network, 실제 Provider·유료 시험, 실 DB/WSL/배포. Task 3의 기존 HTTP helper `NameError: user_id` 실패는 Task 4와 무관하며 재해결/재검증하지 않았다. 외부 Provider/실 DB/WSL 호출·원격 push·merge·deploy 0건.
 - 다음 조치: Task 4 지정 파일만 scoped commit하고 clean 상태를 확인한 뒤 어울1에게 독립 리뷰를 요청한다. 브라우저/실 Provider/DB/WSL은 이번 Task 4 완료 증거로 주장하지 않는다.
+
+## Task 4 독립 리뷰 Important 보완 — R1-PROVIDER-COMPAT-20261003-T4-REVIEW
+
+- 일자/담당/시작점: 2026-10-03 / 어울2 단일 writer. 신산님이 Task 4 Important 2건 재작업을 지시했다. `codex/next-user-development`, HEAD `6830b434c3785c0541fffcce103f8457345d3381`, clean을 먼저 확인했다. 승인된 Task 4 UI/BFF와 대응 Node 테스트·이 기록만 수정한다.
+- 원인 1: 명시 규격 CUSTOM에는 입력 Key를 쓰는 preview만 표시하고 저장된 공용 Key를 쓰는 기존 `refreshCatalog` 버튼을 숨겼다. RED 테스트에서 저장된 `CUSTOM/openai_compatible` 공용 연결의 `모델 조회` action 부재로 실패했다. GREEN은 저장된·공용·Key 설정된 명시 규격에만 기존 refresh action을 preview와 별도로 복원하고 legacy CUSTOM 동작은 유지했다. UI fixture는 refresh 후 수동 허용 ID 보존과 새 목록 모델의 별도 노출을 확인한다.
+- 서버 계약 확인: `refresh_catalog()`는 공용 연결의 기존 암호화 Key를 `_prepare()`에 전달하고 CUSTOM이면 `_replace_models(..., mark_missing_stale=False)`를 사용하며 `_set_allowed_models()`를 호출하지 않는다. 기존 OpenAI/Anthropic 성공 및 조회 실패 fixture 3건 `3 passed, 30 deselected`; 성공 시 수동 검증 모델은 ready, 관리자 허용 목록은 그대로이고 목록에만 나온 모델은 자동 허용되지 않는다. 서버 소스·테스트 변경 없음.
+- 원인 2: BFF static `model-preview` 분기가 모든 method를 먼저 포착해, 같은 문자열을 연결 ID로 쓴 named connection의 PUT/DELETE가 405였다. RED 테스트에서 PUT 405를 확인했다. GREEN은 POST만 preview static 경로로 예약하고 다른 method는 기존 SAFE_SEGMENT named connection 분기로 흘려 PUT/DELETE를 유지했다. 기존 preview POST·GET 405·same-origin 보호 회귀는 Node 묶음에서 통과했다.
+- 검증: 신규 2건 각각 예상 원인 RED→GREEN; Task 4 Node 3개 파일 `52 passed, 0 failed`; 위 서버 계약 fixture `3 passed`; Web production build 및 내장 Web boundary PASS(`475 files, violations 0, boundaryErrors 0`), 전체 `npm run verify:product-ui-boundary` PASS(`498 files, violations 0, boundaryErrors 0`), 수정 JS TypeScript 구문 검사 exit 0, `git diff --check` exit 0. 이전 기록의 범용 workspace lint 대상 불일치/거짓 양성은 이번 보완에서도 미해결이며 전체 lint PASS로 주장하지 않는다.
+- 변경 파일: `apps/web/components/provider-settings-workspace.jsx`, `apps/web/lib/bff-api-proxy.js`, `scripts/tests/provider-settings-web.test.mjs`, `scripts/tests/api-bff-runtime.test.mjs`, 이 진행 기록(5개)만. 비의도 구현 오류 0건, 의도한 RED 2건. 외부 Provider/실 DB/WSL/원격 push·merge·deploy 0건.
+- 미검증/다음 조치: 실제 브라우저 클릭·Network/Provider·DB 지속 상태는 미검증이며 기존 Task 3 HTTP helper `NameError`는 범위 밖 그대로다. 5개 파일만 별도 scoped commit하고 clean 확인 후 어울1 독립 재검토를 요청한다.
