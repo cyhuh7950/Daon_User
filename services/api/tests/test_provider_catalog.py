@@ -109,3 +109,27 @@ def test_duplicate_logical_model_is_rejected_instead_of_silently_reordered() -> 
             "EOUL_GATEWAY",
             ("assistant-default", "assistant-default"),
         )
+
+
+def test_verified_manual_models_are_scoped_text_models_in_given_order() -> None:
+    models = ProviderCatalog.from_verified_text_models(
+        "custom-primary", "CUSTOM", ("manual-b", "manual-a"),
+    )
+
+    assert [(item.connection_id, item.provider_code, item.model_id) for item in models] == [
+        ("custom-primary", "CUSTOM", "manual-b"),
+        ("custom-primary", "CUSTOM", "manual-a"),
+    ]
+    assert all(item.reported_capabilities == ("text_generation",) for item in models)
+    assert all(item.routing_owner == "provider" and item.daon_fallback_allowed for item in models)
+
+
+@pytest.mark.parametrize("model_ids", [(), ("",), ("manual id",), ("same", "same")])
+def test_verified_manual_models_reject_empty_invalid_or_duplicate_ids(model_ids: tuple[str, ...]) -> None:
+    with pytest.raises(ProviderCatalogError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        ProviderCatalog.from_verified_text_models("custom-primary", "CUSTOM", model_ids)
+
+
+def test_verified_manual_models_reject_non_custom_provider() -> None:
+    with pytest.raises(ProviderCatalogError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        ProviderCatalog.from_verified_text_models("router", "OPENROUTER", ("manual",))

@@ -397,3 +397,174 @@ def test_sentence_transformers_is_a_local_logical_model_provider() -> None:
     connection_value = connection("SENTENCE_TRANSFORMERS", connection_id="sentence-local")
     assert adapter.verify(connection_value, None).routing_owner == "local_runtime"
     assert adapter.discover_models(connection_value, None)[0].model_id == "all-MiniLM-L6-v2"
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "expected_headers"),
+    [
+        ("openai_compatible", {"authorization": f"Bearer {TEST_CREDENTIAL}"}),
+        ("anthropic_compatible", {"x-api-key": TEST_CREDENTIAL, "anthropic-version": "2023-06-01"}),
+    ],
+)
+def test_compatible_catalog_uses_protocol_headers_and_models_path(
+    adapter_type: str, expected_headers: dict[str, str], fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses["https://models.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "listed-model"}]},
+    )
+    profile = connection("CUSTOM", base_url="https://models.example/v1")
+
+    models = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type).discover_models(
+        profile, TEST_CREDENTIAL,
+    )
+
+    assert [item.model_id for item in models] == ["listed-model"]
+    assert [(item.method, item.url, item.headers, item.follow_redirects) for item in fake_transport.requests] == [
+        ("GET", "https://models.example/v1/models", expected_headers, False),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "probe_path", "probe_payload", "expected_headers"),
+    [
+        (
+            "openai_compatible", "/chat/completions",
+            {"choices": [{"message": {"content": "ready"}}]},
+            {"authorization": f"Bearer {TEST_CREDENTIAL}"},
+        ),
+        (
+            "anthropic_compatible", "/messages",
+            {"content": [{"type": "text", "text": "ready"}]},
+            {"x-api-key": TEST_CREDENTIAL, "anthropic-version": "2023-06-01"},
+        ),
+    ],
+)
+@pytest.mark.parametrize("catalog_status", [404, 405])
+def test_manual_model_works_without_catalog(
+    adapter_type: str, probe_path: str, probe_payload: object,
+    expected_headers: dict[str, str], catalog_status: int, fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses["https://models.example/v1/models"] = TransportResponse(catalog_status, {})
+    fake_transport.responses[f"https://models.example/v1{probe_path}"] = TransportResponse(200, probe_payload)
+    profile = connection("CUSTOM", base_url="https://models.example/v1")
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type)
+
+    with pytest.raises(AdapterError):
+        adapter.discover_models(profile, TEST_CREDENTIAL)
+    models = adapter.verify_models(profile, TEST_CREDENTIAL, ("manual-model",))
+
+    assert [item.model_id for item in models] == ["manual-model"]
+    probe = fake_transport.requests[-1]
+    assert (probe.method, probe.url, probe.headers) == (
+        "POST", f"https://models.example/v1{probe_path}", expected_headers,
+    )
+    assert probe.timeout_seconds == 5.0 and probe.follow_redirects is False
+    assert probe.body is not None
+    assert probe.body["model"] == "manual-model"
+    assert probe.body["messages"] == [{"role": "user", "content": "connection test"}]
+    assert probe.body["max_tokens"] == 16
+    assert probe.body["stream"] is False
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "path", "bad_payload"),
+    [
+        ("openai_compatible", "/chat/completions", {"choices": [{"message": {"content": ""}}]}),
+        ("openai_compatible", "/chat/completions", {"choices": []}),
+        ("anthropic_compatible", "/messages", {"content": [{"type": "tool_use", "text": "hidden"}]}),
+        ("anthropic_compatible", "/messages", {"content": [{"type": "text", "text": " "}]}),
+    ],
+)
+def test_compatible_probe_rejects_2xx_without_nonempty_text(
+    adapter_type: str, path: str, bad_payload: object, fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses[f"https://models.example/v1{path}"] = TransportResponse(200, bad_payload)
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type)
+
+    with pytest.raises(AdapterError, match="^PROVIDER_PROBE_RESPONSE_INVALID$"):
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL, ("manual",))
+
+    assert len(fake_transport.requests) == 1
+
+
+def test_probe_all_models_fails_closed() -> None:
+    class SecondModelFails(FakeTransport):
+        def request(self, method, url, headers, body, timeout_seconds, *, follow_redirects):
+            self.requests.append(RequestRecord(method, url, dict(headers), dict(body) if body else None,
+                                               timeout_seconds, follow_redirects))
+            if body and body["model"] == "second":
+                return TransportResponse(401, {"error": TEST_CREDENTIAL})
+            return TransportResponse(200, {"choices": [{"message": {"content": "ready"}}]})
+
+    transport = SecondModelFails()
+    adapter = AdapterRegistry(transport).adapter("CUSTOM", "openai_compatible")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_AUTHENTICATION_FAILED$") as captured:
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL,
+                              ("first", "second"))
+
+    assert [item.body["model"] for item in transport.requests if item.body] == ["first", "second"]
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "path"),
+    [("openai_compatible", "/chat/completions"), ("anthropic_compatible", "/messages")],
+)
+def test_compatible_probe_auth_failure_is_safe(
+    adapter_type: str, path: str, fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses[f"https://models.example/v1{path}"] = TransportResponse(
+        401, {"error": TEST_CREDENTIAL},
+    )
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type)
+
+    with pytest.raises(AdapterError, match="^PROVIDER_AUTHENTICATION_FAILED$") as captured:
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"),
+                              TEST_CREDENTIAL, ("manual",))
+
+    assert len(fake_transport.requests) == 1
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+@pytest.mark.parametrize("status", [302, 307])
+def test_compatible_probe_blocks_redirect_without_retry(status: int, fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://models.example/v1/messages"] = TransportResponse(status, {})
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", "anthropic_compatible")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_REDIRECT_BLOCKED$"):
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL, ("manual",))
+
+    assert len(fake_transport.requests) == 1
+    assert fake_transport.requests[0].follow_redirects is False
+
+
+def test_compatible_probe_timeout_is_safe_and_does_not_retry(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://models.example/v1/chat/completions"] = TimeoutError(TEST_CREDENTIAL)
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", "openai_compatible")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_UNAVAILABLE$") as captured:
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL, ("manual",))
+
+    assert len(fake_transport.requests) == 1
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+@pytest.mark.parametrize("base_url", ["http://127.0.0.1:9000/v1", "https://169.254.169.254/v1"])
+def test_compatible_probe_rejects_ssrf_before_request(base_url: str, fake_transport: FakeTransport) -> None:
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", "anthropic_compatible")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_BASE_URL_INVALID$"):
+        adapter.verify_models(connection("CUSTOM", base_url=base_url), TEST_CREDENTIAL, ("manual",))
+
+    assert fake_transport.requests == []
+
+
+def test_unsupported_adapter_cannot_verify_models(registry: AdapterRegistry) -> None:
+    with pytest.raises(AdapterError, match="^PROVIDER_ADAPTER_UNSUPPORTED$"):
+        registry.adapter("OPENROUTER").verify_models(connection("OPENROUTER"), TEST_CREDENTIAL, ("manual",))
+
+
+def test_unknown_custom_protocol_cannot_fall_back_to_openai(registry: AdapterRegistry) -> None:
+    with pytest.raises(AdapterError, match="^PROVIDER_ADAPTER_UNSUPPORTED$"):
+        registry.adapter("CUSTOM", "unknown_protocol")

@@ -66,6 +66,13 @@ class ConnectionAdapter(Protocol):
         credential: str | bytes | None,
     ) -> tuple[DiscoveredModel, ...]: ...
 
+    def verify_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes,
+        model_ids: Sequence[str],
+    ) -> tuple[DiscoveredModel, ...]: ...
+
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
@@ -132,6 +139,14 @@ class _BaseAdapter:
 
     def __init__(self, transport: AdapterTransport) -> None:
         self._transport = transport
+
+    def verify_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes,
+        model_ids: Sequence[str],
+    ) -> tuple[DiscoveredModel, ...]:
+        raise AdapterError("PROVIDER_ADAPTER_UNSUPPORTED")
 
     def _validate_connection(self, connection: ProviderConnection) -> str:
         if connection.provider_code != self.provider_code or not connection.enabled:
@@ -243,8 +258,99 @@ class OpenRouterAdapter(_BaseAdapter):
         return self._ready(connection)
 
 
-class CustomOpenAICompatibleAdapter(OpenRouterAdapter):
+class _CustomCompatibleAdapter(OpenRouterAdapter):
     provider_code = "CUSTOM"
+
+    def _headers(self, secret: str) -> Mapping[str, str]:
+        raise NotImplementedError
+
+    def _probe_path(self) -> str:
+        raise NotImplementedError
+
+    def _has_text(self, payload: object) -> bool:
+        raise NotImplementedError
+
+    def discover_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> tuple[DiscoveredModel, ...]:
+        base = self._validate_connection(connection)
+        secret = _credential_text(credential)
+        payload = self._request("GET", _append_path(base, "/models"), self._headers(secret))
+        try:
+            return ProviderCatalog.from_payload(connection.connection_id, self.provider_code, payload)
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 503) from None
+
+    def verify_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes,
+        model_ids: Sequence[str],
+    ) -> tuple[DiscoveredModel, ...]:
+        base = self._validate_connection(connection)
+        try:
+            models = ProviderCatalog.from_verified_text_models(
+                connection.connection_id, self.provider_code, model_ids,
+            )
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 409) from None
+        headers = self._headers(_credential_text(credential))
+        url = _append_path(base, self._probe_path())
+        for model in models:
+            payload = self._request(
+                "POST", url, headers,
+                {
+                    "model": model.model_id,
+                    "messages": [{"role": "user", "content": "connection test"}],
+                    "max_tokens": 16,
+                    "stream": False,
+                },
+            )
+            if not self._has_text(payload):
+                raise AdapterError("PROVIDER_PROBE_RESPONSE_INVALID", 503)
+        return models
+
+
+class CustomOpenAICompatibleAdapter(_CustomCompatibleAdapter):
+    def _headers(self, secret: str) -> Mapping[str, str]:
+        return {"authorization": f"Bearer {secret}"}
+
+    def _probe_path(self) -> str:
+        return "/chat/completions"
+
+    def _has_text(self, payload: object) -> bool:
+        if not isinstance(payload, Mapping):
+            return False
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+            return False
+        message = choices[0].get("message")
+        if not isinstance(message, Mapping):
+            return False
+        content = message.get("content")
+        return isinstance(content, str) and bool(content.strip())
+
+
+class CustomAnthropicCompatibleAdapter(_CustomCompatibleAdapter):
+    def _headers(self, secret: str) -> Mapping[str, str]:
+        return {"x-api-key": secret, "anthropic-version": "2023-06-01"}
+
+    def _probe_path(self) -> str:
+        return "/messages"
+
+    def _has_text(self, payload: object) -> bool:
+        if not isinstance(payload, Mapping):
+            return False
+        content = payload.get("content")
+        return isinstance(content, list) and any(
+            isinstance(block, Mapping)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+            and bool(block["text"].strip())
+            for block in content
+        )
 
 
 class FixedOpenAICompatibleAdapter(OpenRouterAdapter):
@@ -439,8 +545,14 @@ class AdapterRegistry:
             "MEDIA_BRIDGE": MediaBridgeAdapter(actual_transport),
             "SENTENCE_TRANSFORMERS": SentenceTransformersAdapter(actual_transport, configured_models),
         }
+        self._custom_anthropic = CustomAnthropicCompatibleAdapter(actual_transport)
 
-    def adapter(self, provider_code: str) -> ConnectionAdapter:
+    def adapter(self, provider_code: str, adapter_type: str = "") -> ConnectionAdapter:
+        if provider_code == "CUSTOM":
+            if adapter_type == "anthropic_compatible":
+                return self._custom_anthropic
+            if adapter_type not in {"", "openai_compatible"}:
+                raise AdapterError("PROVIDER_ADAPTER_UNSUPPORTED")
         try:
             return self._adapters[provider_code]
         except KeyError:

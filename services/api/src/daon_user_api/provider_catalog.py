@@ -54,6 +54,32 @@ def _contains_sensitive_key(value: object) -> bool:
 
 class ProviderCatalog:
     @staticmethod
+    def from_verified_text_models(
+        connection_id: str,
+        provider_code: str,
+        model_ids: Sequence[str],
+    ) -> tuple[DiscoveredModel, ...]:
+        if provider_code != "CUSTOM" or not model_ids:
+            raise ProviderCatalogError("PROVIDER_MODEL_IDS_INVALID")
+        try:
+            normalized = tuple(_valid_model_id(model_id) for model_id in model_ids)
+        except ProviderCatalogError:
+            raise ProviderCatalogError("PROVIDER_MODEL_IDS_INVALID") from None
+        if len(set(normalized)) != len(normalized):
+            raise ProviderCatalogError("PROVIDER_MODEL_IDS_INVALID")
+        return tuple(
+            DiscoveredModel(
+                connection_id=connection_id,
+                provider_code=provider_code,
+                model_id=model_id,
+                reported_capabilities=("text_generation",),
+                routing_owner="provider",
+                daon_fallback_allowed=True,
+            )
+            for model_id in normalized
+        )
+
+    @staticmethod
     def from_payload(
         connection_id: str,
         provider_code: str,
