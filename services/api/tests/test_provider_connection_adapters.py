@@ -192,8 +192,44 @@ def test_media_bridge_catalog_and_verification_do_not_require_api_key(
 ) -> None:
     result = registry.adapter("MEDIA_BRIDGE").verify(connection("MEDIA_BRIDGE"), None)
 
-    assert fake_transport.requests == []
+    assert [(request.method, request.url, request.headers) for request in fake_transport.requests] == [
+        ("GET", "http://media-bridge.internal:8080/v1/models", {})
+    ]
     assert result.status == "ready"
+
+
+def test_media_bridge_failed_probe_never_returns_verified(fake_transport: FakeTransport) -> None:
+    local_endpoint = "http://127.0.0.1:8642/v1/models"
+    fake_transport.responses[local_endpoint] = TimeoutError(
+        TEST_CREDENTIAL
+    )
+    adapter = AdapterRegistry(fake_transport).adapter("MEDIA_BRIDGE")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_UNAVAILABLE$") as captured:
+        adapter.verify(connection("MEDIA_BRIDGE", base_url="http://127.0.0.1:8642/v1"), None)
+
+    assert len(fake_transport.requests) == 1
+    assert fake_transport.requests[0].url == local_endpoint
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+def test_media_bridge_malformed_probe_response_is_not_verified(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["http://media-bridge.internal:8080/v1/models"] = TransportResponse(200, {})
+    adapter = AdapterRegistry(fake_transport).adapter("MEDIA_BRIDGE")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_RESPONSE_INVALID$"):
+        adapter.verify(connection("MEDIA_BRIDGE"), None)
+
+
+def test_eoul_gateway_empty_discovery_cannot_be_verified(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = FakeTransport()
+    adapter = AdapterRegistry(transport, logical_models={"eoul_gateway": ("assistant-default",)}).adapter("EOUL_GATEWAY")
+    monkeypatch.setattr(adapter, "discover_models", lambda _connection, _credential: ())
+
+    with pytest.raises(AdapterError, match="^PROVIDER_LOGICAL_MODEL_INVALID$"):
+        adapter.verify(connection("EOUL_GATEWAY"), TEST_CREDENTIAL)
+
+    assert transport.requests == []
 
 
 def test_omniroute_verification_requires_api_key_even_without_provider_models(

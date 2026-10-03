@@ -358,7 +358,7 @@ class EoulGatewayAdapter(_RoutingGatewayAdapter):
     ) -> VerificationResult:
         models = self.discover_models(connection, credential)
         if not models:
-            return self._ready(connection)
+            raise AdapterError("PROVIDER_LOGICAL_MODEL_INVALID", 409)
         return self._probe(
             connection,
             credential,
@@ -390,7 +390,15 @@ class MediaBridgeAdapter(OpenRouterAdapter):
         connection: ProviderConnection,
         credential: str | bytes | None,
     ) -> VerificationResult:
-        self._validate_connection(connection)
+        base = self._validate_connection(connection)
+        headers = {} if credential is None else {
+            "authorization": f"Bearer {_credential_text(credential)}"
+        }
+        payload = self._request("GET", _append_path(base, "/models"), headers)
+        try:
+            ProviderCatalog.from_payload(connection.connection_id, self.provider_code, payload)
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 503) from None
         return self._ready(connection)
 
 
