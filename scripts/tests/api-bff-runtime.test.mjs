@@ -949,6 +949,35 @@ test("BFF exposes safe named connection credential and Workspace model default r
   ]);
 });
 
+test("BFF permits only exact same-origin admin model preview POST", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method, body: JSON.parse(await new Response(init.body).text()) });
+      return Response.json({ data: { model_ids: ["manual-a"] } });
+    },
+  });
+  const path = "https://app.example.com/bff/api/admin/provider-connections/model-preview";
+  const segments = ["admin", "provider-connections", "model-preview"];
+  const body = { connection_id: "custom-1", provider_code: "CUSTOM", adapter_type: "anthropic_compatible", base_url: "https://models.example/v1", credential: "fixture-key", step_up_authorization_id: "fixture-step-up" };
+  const post = (url, origin = "https://app.example.com", pathSegments = segments) => proxy(new Request(url, {
+    method: "POST", headers: { Origin: origin, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }), pathSegments);
+
+  const accepted = await post(path);
+  const wrongMethod = await proxy(new Request(path), segments);
+  const ignoredQuery = await post(`${path}?raw=true`);
+  const wrongPath = await post(`${path}/extra`, "https://app.example.com", [...segments, "extra"]);
+  const crossOrigin = await post(path, "https://other.example.com");
+
+  assert.deepEqual([accepted.status, wrongMethod.status, ignoredQuery.status, wrongPath.status, crossOrigin.status], [200, 405, 200, 404, 403]);
+  assert.deepEqual(captured, [0, 1].map(() => ({
+    url: "https://api.example.com/api/v1/admin/provider-connections/model-preview", method: "POST", body,
+  })));
+});
+
 test("BFF는 검증된 Workspace Knowledge 목록 GET만 same-origin으로 노출한다", async () => {
   const captured = [];
   const proxy = createBffProxy({

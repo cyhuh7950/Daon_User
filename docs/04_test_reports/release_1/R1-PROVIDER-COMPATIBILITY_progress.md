@@ -136,3 +136,16 @@
 - 기존 실패 분리: `test_question_answering_runtime_http.py`는 12건 모두 변경 전과 동일한 `test_identity_support.py:40`의 `NameError: user_id`로 실패. 범위 밖 helper 수정 없이 FAIL로 유지하며 HTTP 런타임 통과를 주장하지 않는다.
 - 변경 파일: `provider_connection_adapters.py`, `provider_connection_admin.py`, `question_answering.py`, `question_answering_service.py`, 대응 테스트 5개와 이 기록. 외부 Provider 호출·실 DB·WSL·push·배포 0건. 실제 Provider 호환성과 운영 데이터 불변은 미검증이다.
 - 다음 조치: 위 Task 3 보완 파일만 별도 scoped commit 후 어울1 독립 재검토. Task 4 UI/BFF는 중단 유지.
+
+## Task 4 UI/BFF 재개 — R1-PROVIDER-COMPAT-20261003-T4
+
+- 일자/담당: 2026-10-03 / 어울2 단일 writer. 어울1이 Task 3 보완 commit `f92455f2`를 독립 재검증한 뒤 신산님이 Task 4 재개를 지시했다. 재개 시 branch `codex/next-user-development`, HEAD `f92455f2`, worktree clean 확인. API/DB/WSL/원격 변경 없음.
+- RED: 신규 UI 2건은 `호환 방식` 입력 부재로 실패, preview API helper는 메서드 부재, BFF exact POST는 405로 실패. 기존 `provider-endpoint-ui-contract`에는 현재 구현과 반대인 step-up 금지/오래된 문구 assertion이 있어 수정 전 실패했다. 의도된 RED와 기존 stale assertion을 분리했다.
+- GREEN 구현: 신규 CUSTOM 두 명시 규격(`openai_compatible`/Chat Completions, `anthropic_compatible`/Messages) 선택, Provider 이름 자유 입력, Endpoint/Key, 선택적 모델 목록 preview와 수동 ID, 최대 4모델 저장 제한, 시험 대상 수·사용료 가능성, Anthropic 첫 페이지 안내, 실제 서버 시험-후-저장 호출을 UI에 연결했다. 조회 실패 후 수동 ID와 Key 유지, 성공 뒤 Key 초기화, 비공용 일회성 `test_credential` 전달을 확인했다. preview는 기존 관리자 재인증 step-up의 `provider-connection:<id>` 대상과 grant를 재사용한다. 저장된 규격은 읽기 전용이고 legacy `CUSTOM`의 기존 catalog/Key 버튼을 유지한다. 일반 사용자의 개인 Key 및 허용 모델 읽기 전용 경계를 유지한다.
+- BFF/API: same-origin `/bff/api/admin/provider-connections/model-preview` POST helper와 exact path/method allowlist만 추가했다. 다른 method/path 및 cross-origin 요청은 거부하고 query는 기존 BFF 계약처럼 upstream으로 전달하지 않는다. stale 테스트는 step-up이 존재해야 한다는 assertion으로 교정했다.
+- 수정 파일: `apps/web/components/provider-settings-workspace.jsx`, `apps/web/lib/provider-settings-api.js`, `apps/web/lib/bff-api-proxy.js`, `apps/web/app/globals.css`(컴포넌트가 임베드된 화면에도 적용되는 scoped textarea/비용 고지 스타일), Node 테스트 3개, 이 진행 기록. Task 3 소스 수정 없음.
+- 검증: scoped Node 3개 파일 `50 passed`; Web production build/TypeScript 통과, Web UI boundary `scannedFiles 475, violations 0, boundaryErrors 0`; 전체 `npm run verify:product-ui-boundary`는 최초 데스크톱 `dist` 누락으로 실패했으나 소스 변경 없이 데스크톱 정적 빌드 산출물 생성 후 `scannedFiles 498, violations 0, boundaryErrors 0`으로 통과. 대상 JS TypeScript 구문 검사 exit 0, API helper 단독 workspace lint PASS. `git diff --check` exit 0.
+- lint 주의: `lint-workspace.mjs`를 모든 Task 4 JS/테스트에 그대로 적용하면 기존 컴포넌트의 `localhost` 보안 비교, 서버 BFF의 내부 URL, 테스트 fixture의 절대 URL/fetch를 금지 문자열로 잡아 exit 1이다. 이 규칙은 browser-source 전용이며 해당 입력은 검사 대상에 적합하지 않다. 해당 파일의 구문 검사와 product UI boundary는 통과했지만 전체 파일 scoped lint PASS라고 주장하지 않는다.
+- 오류 횟수: 신규 제품 코드의 비의도 오류 0건. 최소 DOM fixture에서 텍스트 이벤트가 React 상태를 갱신하지 않아 테스트 전용 입력 헬퍼를 교정한 1건, 전체 boundary의 데스크톱 산출물 누락 1건, lint의 대상 불일치 1건을 각각 원인 확인·분리했다. 동일 근본 원인 3회 반복 없음.
+- 미검증: 실제 브라우저 1920×1080·1440×900·430×844 클릭/Network, 실제 Provider·유료 시험, 실 DB/WSL/배포. Task 3의 기존 HTTP helper `NameError: user_id` 실패는 Task 4와 무관하며 재해결/재검증하지 않았다. 외부 Provider/실 DB/WSL 호출·원격 push·merge·deploy 0건.
+- 다음 조치: Task 4 지정 파일만 scoped commit하고 clean 상태를 확인한 뒤 어울1에게 독립 리뷰를 요청한다. 브라우저/실 Provider/DB/WSL은 이번 Task 4 완료 증거로 주장하지 않는다.
