@@ -348,6 +348,29 @@ test("saved public compatible CUSTOM refreshes with stored Key without replacing
   } finally { await view.cleanup(); }
 });
 
+test("saved keyless Media Bridge shows model lookup and displays its catalog", async () => {
+  const connection = {
+    connection_id: "media-bridge", provider_code: "MEDIA_BRIDGE", adapter_type: "MEDIA_BRIDGE",
+    provider_name: "Media Bridge", display_name: "Media Bridge", base_url: "http://127.0.0.1:8642/v1",
+    short_code: "MB", access_mode: "public", credential_requirement: "none",
+    allowed_model_ids: [], enabled: true, configured: false, verification_status: "verified",
+    version: 2, catalog_status: "ready", catalog_version: 2, models: [],
+  };
+  const fixture = adminFixture({ existingConnections: [connection], refreshResult: {
+    ...connection, version: 3, catalog_version: 3,
+    models: [{ model_id: "solar-pro4", catalog_status: "ready", catalog_version: 3, effective_capabilities: ["text_generation"] }],
+  } });
+  const view = await mountAdminFixture(fixture, "media-bridge-catalog");
+  try {
+    const lookup = buttonByText(view.container, "모델 조회");
+    assert.ok(lookup, "Media Bridge model lookup is hidden");
+    assert.equal(lookup.disabled, false);
+    await click(view.act, lookup);
+    assert.deepEqual(fixture.requests.find((item) => item.path === "/bff/api/admin/provider-catalog/media-bridge/refresh")?.body, { expected_version: 2 });
+    assert.match(view.container.textContent, /solar-pro4/u);
+  } finally { await view.cleanup(); }
+});
+
 test("new OmniRoute uses auto when no model is selected and exposes direct model ID", async () => {
   const fixture = adminFixture();
   const view = await mountAdminFixture(fixture, "route-auto-create");

@@ -221,3 +221,13 @@
 - 데이터 불변 확인: 개발 DB의 `system_provider_connections.provider_code` 읽기 전용 조회 결과는 EOUL_GATEWAY, GROQ, MEDIA_BRIDGE, MISTRAL, OLLAMA, OMNIROUTE, OPENROUTER, UPSTAGE의 8개다. ANTHROPIC·OPENAI·GEMINI 연결은 현재 없으며 이번 작업에서 재등록하거나 다른 연결 데이터를 변경하지 않았다.
 - 오류/미검증: 읽기 전용 DB 확인 때 잘못 추정한 테이블명 `provider_connections` 조회 1건이 실패해 스키마를 확인한 뒤 실제 `system_provider_connections`를 조회했다. WSL 무권한 셸 호출 1건은 `E_ACCESSDENIED`였고 승인된 실행 경로로 재조회했다. 외부 Provider 실제 호출, 유료 시험, 저장/삭제 클릭, 브라우저 Network의 실제 fetch URL, 일반 사용자 화면, 전체 API suite는 미검증이다. 동일 근본 원인 3회 반복 없음.
 - 다음: 신산님이 위 QA URL에서 새로고침 후 화면을 직접 확인한다. 기존에 없는 세 Provider 연결과 UPSTAGE 허용 모델 설정은 별도 지시 없이 변경하지 않는다. `main` 병합·Oracle 배포는 인수 전 진행하지 않는다.
+
+## Media Bridge 모델 조회 복구 — 2026-10-04
+
+- 담당/기준: 어울, 기존 `codex/next-user-development` 단일 writer. 시작 HEAD `ce5d5553`, clean. 신산님이 Media Bridge 모델 조회 예외를 제거하고 WSL QA URL `http://172.27.253.53:3330/`에서 직접 확인할 수 있게 하라고 지시했다.
+- 원인: Web이 `MEDIA_BRIDGE`를 모델 조회 버튼 제외 집합에 넣고, API `MediaBridgeAdapter.discover_models()`가 모델 API를 호출하지 않고 빈 목록을 반환했다. 반면 같은 Adapter의 연결 확인은 `/v1/models`를 이미 호출하고 있었다.
+- 수정 파일: `apps/web/components/provider-settings-workspace.jsx`, `services/api/src/daon_user_api/provider_connection_adapters.py`, 각 대응 회귀 테스트 `scripts/tests/provider-settings-web.test.mjs`, `services/api/tests/test_provider_connection_adapters.py`, 이 진행 기록. 기존 연결·Key·허용 목록은 코드 변경으로 재작성하지 않는다.
+- RED→GREEN: 신규 Python 테스트는 모델 목록이 빈 값으로 나와 실패, 신규 Web 테스트는 Media Bridge 조회 버튼 부재로 실패한 뒤 각각 통과. Adapter 대상 `63 passed`, 관리자·카탈로그 포함 API 인접 `152 passed`, Web 화면/계약 `25 passed`, Web production build·TypeScript·경계 검사 475파일 0위반.
+- 전체 API suite 관찰: 기본 pytest 임시 디렉터리 접근 거부를 전용 `--basetemp`로 분리한 후 `255 passed, 14 skipped, 1 failed, 171 subtests passed`에서 중단. 실패는 기존 라이선스 fixture의 `LICENSE_DOCUMENT_INVALID`이며 이번 Provider 변경 파일이 아니다. 전용 임시 디렉터리는 경계 확인 후 제거했다.
+- WSL 읽기 전용 확인: 현재 API/Web은 clean한 `827c9189` checkout에서 실행 중. 설치형 Media Bridge는 WSL 호스트의 `127.0.0.1:8642/v1/models`에 HTTP 200, Daon API 컨테이너에서 같은 loopback 주소는 연결 거부. 기존 Docker host gateway `172.17.0.1:8642/v1/models`는 API 컨테이너에서 HTTP 200. 배포형 HTTPS `/v1/models`는 컨테이너에서 인증 없는 요청에 401. Secret 원문 출력·유료 Provider 호출 0회.
+- 다음 조치: 지정 파일만 commit/push 후 WSL에서 exact SHA checkout으로 API/Web을 빌드·교체, healthy·URL·화면을 확인한다. QA Media Bridge 연결의 loopback Endpoint는 조회 가능한 Docker host gateway로 관리자 화면을 통해 검증 후 수정할 필요가 있다. Oracle/ysna/main 및 다른 연결 설정은 범위 밖이다.

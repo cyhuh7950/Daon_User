@@ -530,7 +530,7 @@ class EoulGatewayAdapter(_RoutingGatewayAdapter):
 
 
 class MediaBridgeAdapter(OpenRouterAdapter):
-    """Media Bridge owns its model and credential management."""
+    """Read Media Bridge's OpenAI-compatible model catalog."""
 
     provider_code = "MEDIA_BRIDGE"
 
@@ -539,23 +539,22 @@ class MediaBridgeAdapter(OpenRouterAdapter):
         connection: ProviderConnection,
         credential: str | bytes | None,
     ) -> tuple[DiscoveredModel, ...]:
-        self._validate_connection(connection)
-        return ()
-
-    def verify(
-        self,
-        connection: ProviderConnection,
-        credential: str | bytes | None,
-    ) -> VerificationResult:
         base = self._validate_connection(connection)
         headers = {} if credential is None else {
             "authorization": f"Bearer {_credential_text(credential)}"
         }
         payload = self._request("GET", _append_path(base, "/models"), headers)
         try:
-            ProviderCatalog.from_payload(connection.connection_id, self.provider_code, payload)
+            return ProviderCatalog.from_payload(connection.connection_id, self.provider_code, payload)
         except ProviderCatalogError as error:
             raise AdapterError(error.args[0], 503) from None
+
+    def verify(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> VerificationResult:
+        self.discover_models(connection, credential)
         return self._ready(connection)
 
 
