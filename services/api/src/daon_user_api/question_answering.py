@@ -238,6 +238,7 @@ class OpenAICompatibleTextGenerationAdapter:
             raw = message["content"]
             value = json.loads(raw) if isinstance(raw, str) else raw
             parsed = cast(dict[str, object], value)
+            self._validate_response_fields(parsed, grounded=True)
             answer = str(parsed["answer"]).strip()
             cited = tuple(str(item) for item in cast(list[object], parsed["cited_chunk_ids"]))
             insufficient = bool(parsed["insufficient"])
@@ -273,6 +274,9 @@ class OpenAICompatibleTextGenerationAdapter:
             timeout_seconds=self._timeout_seconds,
         )
 
+    def _validate_response_fields(self, parsed: object, *, grounded: bool) -> None:
+        """Provider-specific response validation hook; legacy parsing is unchanged."""
+
     @classmethod
     def general_provider_payload(
         cls, request: GeneralConversationRequest, selection: TextModelSelection,
@@ -299,6 +303,7 @@ class OpenAICompatibleTextGenerationAdapter:
             message = cast(dict[str, object], cast(dict[str, object], choices[0])["message"])
             raw = message["content"]
             parsed = cast(dict[str, object], json.loads(raw) if isinstance(raw, str) else raw)
+            self._validate_response_fields(parsed, grounded=False)
             if set(parsed) != {"answer"}:
                 raise ValueError
             answer = str(parsed["answer"]).strip()
@@ -315,6 +320,23 @@ class AnthropicMessagesTextGenerationAdapter(OpenAICompatibleTextGenerationAdapt
     """CUSTOM Messages protocol, with the same answer and grounding validation."""
 
     _MAX_OUTPUT_TOKENS = 2048
+
+    def _validate_response_fields(self, parsed: object, *, grounded: bool) -> None:
+        if not isinstance(parsed, dict):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        if grounded:
+            cited = parsed.get("cited_chunk_ids")
+            valid = (
+                set(parsed) == {"answer", "cited_chunk_ids", "insufficient"}
+                and isinstance(parsed.get("answer"), str)
+                and isinstance(cited, list)
+                and all(isinstance(item, str) for item in cited)
+                and type(parsed.get("insufficient")) is bool
+            )
+        else:
+            valid = set(parsed) == {"answer"} and isinstance(parsed.get("answer"), str)
+        if not valid:
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
 
     @classmethod
     def _messages_payload(cls, chat: dict[str, object]) -> dict[str, object]:

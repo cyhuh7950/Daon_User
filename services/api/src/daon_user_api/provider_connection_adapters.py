@@ -551,7 +551,7 @@ class AdapterRegistry:
         if provider_code == "CUSTOM":
             if adapter_type == "anthropic_compatible":
                 return self._custom_anthropic
-            if adapter_type not in {"", "openai_compatible"}:
+            if adapter_type not in {"", "CUSTOM", "openai_compatible"}:
                 raise AdapterError("PROVIDER_ADAPTER_UNSUPPORTED")
         try:
             return self._adapters[provider_code]

@@ -855,6 +855,42 @@ def test_existing_custom_adapter_type_immutable(monkeypatch) -> None:
     assert transport.requests == []
 
 
+def test_new_custom_rejects_migration_legacy_adapter_type(monkeypatch) -> None:
+    service, database = compatible_service(monkeypatch, FixtureTransport())
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_ADAPTER_UNSUPPORTED$"):
+        service.create_connection(context(), custom_command(adapter_type="CUSTOM"), "legacy-create-001")
+
+    assert database.system_connection is None
+
+
+def test_migrated_custom_update_preserves_legacy_adapter_type(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/chat/completions"] = TransportResponse(
+        200, {"choices": [{"message": {"content": "ready"}}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), custom_command(), "legacy-seed-001")
+    database.system_connection["adapter_type"] = "CUSTOM"
+    before_allowed = list(database.allowed_model_ids)
+    before_credential = database.system_connection["encrypted_credential"]
+    transport.requests.clear()
+
+    saved, replayed = service.update_connection(context(), "custom-1", ProviderConnectionUpdateCommand(
+        display_name="Legacy renamed", base_url="https://models.example/v1", credential=None,
+        logical_model_ids=(), enabled=True, expected_version=1, access_mode="public",
+        credential_requirement="required", short_code="CU", adapter_type="CUSTOM",
+        allowed_model_ids=("manual-model",), provider_name="Example AI",
+    ), "legacy-update-001")
+
+    assert replayed is False
+    assert saved["display_name"] == "Legacy renamed"
+    assert saved["adapter_type"] == "CUSTOM"
+    assert database.allowed_model_ids == before_allowed
+    assert database.system_connection["encrypted_credential"] == before_credential
+    assert transport.requests == []
+
+
 def test_private_replay_uses_keyed_test_key_digest(monkeypatch) -> None:
     transport = FixtureTransport()
     transport.responses["https://models.example/v1/messages"] = TransportResponse(

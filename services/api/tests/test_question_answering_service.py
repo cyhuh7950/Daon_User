@@ -204,8 +204,8 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             registry.prepare_general(selection, "안녕하세요", "trace-cp3", transport)
         self.assertEqual(transport.calls, [])
 
-    def test_custom_openai_and_empty_legacy_adapter_type_keep_chat_completions(self) -> None:
-        for adapter_type in ("openai_compatible", ""):
+    def test_custom_openai_and_legacy_adapter_types_keep_chat_completions(self) -> None:
+        for adapter_type in ("openai_compatible", "", "CUSTOM"):
             with self.subTest(adapter_type=adapter_type):
                 selection = ResolvedModel(
                     connection_id="custom-1", provider_code="CUSTOM", model_id="manual-a",

@@ -88,7 +88,7 @@ class QuestionAdapterRegistry:
     @staticmethod
     def _validate_custom_adapter_type(selection: ResolvedModel) -> None:
         if selection.provider_code == "CUSTOM" and selection.adapter_type not in {
-            "", "openai_compatible", "anthropic_compatible",
+            "", "CUSTOM", "openai_compatible", "anthropic_compatible",
         }:
             raise ValueError("TEXT_PROVIDER_UNAVAILABLE")
 

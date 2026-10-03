@@ -124,3 +124,15 @@
 - 미검증: 실제 Provider/유료 호출, 실제 DB transaction 및 데이터, HTTP 대상의 정상 fixture 통과, Web/Network, WSL/배포. 다음 조치: Task 3 범위 파일만 commit 및 clean 확인 후 어울1 검토 대기. Task 4 시작 금지.
 - 계획의 5개 대상 파일 합동 최종 실행도 `12 failed, 55 passed, 7 subtests passed`: 실패 12건은 모두 위 동일 `test_identity_support.py:40`의 사전 존재 `NameError`다. 테스트를 수정하거나 실패를 통과로 표시하지 않았다.
 - Git stage 진단 1건: 진행 기록이 추적 파일이지만 ignore 디렉터리 하위라 명시 경로 `git add`가 exit 1을 반환했다. 확인 결과 승인 범위 10개 파일만 모두 stage됐고 유실·범위 외 stage는 없다. `git add -u`로 진행 기록 최종 갱신을 반영해 검증한다. 구현/테스트의 비의도 오류 0건과 별도 계산한다.
+
+## Task 4 중단 및 Task 3 독립 검토 보완 — R1-PROVIDER-COMPAT-20261003-T3-REVIEW
+
+- 일자/담당: 2026-10-03 / 어울2, 지정 worktree의 단일 코드 writer. Task 4 착수 시 HEAD `c6e10df0`, clean 확인. Task 4 조사 중 신산님 중단 지시를 받아 작업을 멈췄으며 Task 4 파일 수정·커밋은 0건이다. Task 4 재개는 어울1 재검토 지시 이후로 제한한다.
+- Task 4 변경 전 Node 묶음은 기존 `provider-endpoint-ui-contract.test.mjs`의 오래된 UI 문구 assertion으로 실패했다. 화면·BFF 수정은 하지 않았고 이 실패의 교정은 Task 4 재개 후 수행한다.
+- 독립 검토 원인: migration 0050은 기존 `CUSTOM` 행의 `adapter_type`을 `CUSTOM`으로 채우는데 Task 3의 Adapter/질문 실행 검증과 관리자 수정 정책이 이를 거부했다. Anthropic Messages의 JSON 필드도 공통 질문 파서의 `str()`·`bool()` 변환 때문에 잘못된 타입을 답변으로 승인할 수 있었다.
+- 보완 경계: 기존 `CUSTOM` 값만 레거시 OpenAI Chat Completions로 처리하고 미지원 신규 규격은 계속 거부한다. 신규 CUSTOM 생성은 두 명시 규격만 허용하며 저장된 `CUSTOM` 행의 동일 규격 관리자 수정만 허용한다. Anthropic 일반/근거 답변의 `answer` 문자열, 근거 ID 문자열 배열, `insufficient` boolean 및 필드 구성을 검증한다. 기존 OpenAI 파싱 방식은 유지한다.
+- RED: 신규 레거시 probe, 관리자 수정, 질문 분기와 Anthropic 잘못된 필드 타입에서 `10 failed, 111 passed, 7 subtests passed`를 관찰했다. 신규 CUSTOM의 레거시 규격 생성 거부와 미지원 규격 fail-closed는 별도 회귀로 보존한다. 의도된 RED 외 새 비의도 구현 오류 0건.
+- GREEN 및 인접 회귀: 집중 5개 파일 `122 passed, 15 subtests passed`; Provider/관리자/개인 Key/Workspace/질문/0050 migration 인접 9개 파일 `176 passed, 15 subtests passed`. `git diff --check` exit 0. 레거시 개인 Key는 허용 모델로 Chat Completions probe 후에만 저장하는 fixture를 추가했다.
+- 기존 실패 분리: `test_question_answering_runtime_http.py`는 12건 모두 변경 전과 동일한 `test_identity_support.py:40`의 `NameError: user_id`로 실패. 범위 밖 helper 수정 없이 FAIL로 유지하며 HTTP 런타임 통과를 주장하지 않는다.
+- 변경 파일: `provider_connection_adapters.py`, `provider_connection_admin.py`, `question_answering.py`, `question_answering_service.py`, 대응 테스트 5개와 이 기록. 외부 Provider 호출·실 DB·WSL·push·배포 0건. 실제 Provider 호환성과 운영 데이터 불변은 미검증이다.
+- 다음 조치: 위 Task 3 보완 파일만 별도 scoped commit 후 어울1 독립 재검토. Task 4 UI/BFF는 중단 유지.

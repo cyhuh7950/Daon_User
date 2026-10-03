@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import pytest
 
 import daon_user_api.user_provider_credentials as module
-from daon_user_api.provider_connection_adapters import AdapterError
+from daon_user_api.provider_connection_adapters import AdapterError, AdapterRegistry, TransportResponse
 from daon_user_api.provider_credentials import ProviderCredentialCipher
 from daon_user_api.user_provider_credentials import resolve_credential_candidates
 
@@ -156,3 +156,53 @@ def test_custom_personal_key_probes_only_db_allowed_models_before_encrypt(monkey
         assert result.verification_status == "verified"
         assert any(item[0].startswith("INSERT INTO user_provider_credentials") for item in calls if len(item) == 2)
     assert ("probe", secret, ("manual-a", "manual-b")) in calls
+
+
+def test_migrated_custom_personal_key_replacement_uses_openai_probe(monkeypatch) -> None:
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None, rows=()):
+            self.row, self.rows = row, rows
+
+        def fetchone(self):
+            return self.row
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, sql, params=()):
+            calls.append((sql, params))
+            if sql.startswith("SELECT provider_code"):
+                return Cursor(("CUSTOM", "https://models.example.com/v1", "personal", "required", True, "CUSTOM"))
+            if sql.startswith("SELECT credential_version"):
+                return Cursor((1,))
+            if sql.startswith("SELECT model_id FROM system_provider_allowed_models"):
+                return Cursor(rows=(("legacy-model",),))
+            return Cursor()
+
+    class Store:
+        @contextmanager
+        def _transaction(self, _context):
+            yield Connection()
+
+    class Transport:
+        def request(self, method, url, headers, body, timeout_seconds, *, follow_redirects):
+            calls.append((method, url, body["model"], follow_redirects))
+            return TransportResponse(200, {"choices": [{"message": {"content": "ready"}}]})
+
+    transport = Transport()
+    monkeypatch.setattr(module, "AdapterRegistry", lambda: AdapterRegistry(transport))
+    service = module.PostgresUserProviderCredentialService(
+        Store(), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+
+    result = service.replace_credential(
+        tenant_id="tenant-1", user_id="user-1", connection_id="custom-1",
+        credential="fixture-personal-secret", expected_version=1,
+    )
+
+    assert result.verification_status == "verified" and result.credential_version == 2
+    assert ("POST", "https://models.example.com/v1/chat/completions", "legacy-model", False) in calls
+    assert any(item[0].startswith("INSERT INTO user_provider_credentials") for item in calls if len(item) == 2)

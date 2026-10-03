@@ -173,6 +173,47 @@ class QuestionAnsweringContractTests(unittest.TestCase):
                 transport=MessagesTransport(), api_key="fixture-secret",
             ).generate(GroundedQuestionRequest("What code?", evidence, "trace-cp3"), selection)
 
+    def test_anthropic_messages_rejects_malformed_general_answer_types(self) -> None:
+        selection = TextModelSelection(
+            "CUSTOM", "https://models.example.com/v1", "custom-1", "custom-1:manual-a",
+            "manual-a", 1,
+        )
+        for answer in (["text"], {"text": "answer"}, None, 3):
+            with self.subTest(answer=answer):
+                class MessagesTransport:
+                    def post_json_headers(self, **_kwargs):
+                        return {"content": [{"type": "text", "text": json.dumps({"answer": answer})}]}
+
+                with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+                    AnthropicMessagesTextGenerationAdapter(
+                        transport=MessagesTransport(), api_key="fixture-secret",
+                    ).generate_general(GeneralConversationRequest("hello", "trace-cp3"), selection)
+
+    def test_anthropic_messages_rejects_malformed_grounded_field_types(self) -> None:
+        selection = TextModelSelection(
+            "CUSTOM", "https://models.example.com/v1", "custom-1", "custom-1:manual-a",
+            "manual-a", 1,
+        )
+        evidence = (IndexedEvidenceChunk(
+            "1", "source-cp3", "source-version-cp3", 2,
+            "검증된 내용입니다.", "span-page-2", 1.0,
+        ),)
+        malformed = (
+            {"answer": {"text": "검증된 내용입니다."}, "cited_chunk_ids": ["1"], "insufficient": False},
+            {"answer": "검증된 내용입니다.", "cited_chunk_ids": [1], "insufficient": False},
+            {"answer": "자료가 없습니다.", "cited_chunk_ids": [], "insufficient": "false"},
+        )
+        for response in malformed:
+            with self.subTest(response=response):
+                class MessagesTransport:
+                    def post_json_headers(self, **_kwargs):
+                        return {"content": [{"type": "text", "text": json.dumps(response, ensure_ascii=False)}]}
+
+                with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+                    AnthropicMessagesTextGenerationAdapter(
+                        transport=MessagesTransport(), api_key="fixture-secret",
+                    ).generate(GroundedQuestionRequest("내용은?", evidence, "trace-cp3"), selection)
+
     def test_work_support_and_source_modes_are_classified_without_refusal(self) -> None:
         self.assertEqual(classify_question_intent("다음 작업을 어떻게 진행할까?"), "work_support")
         self.assertEqual(classify_question_intent("선택한 문서에서 보존 기간을 찾아줘"), "explicit_source_lookup")

@@ -234,6 +234,7 @@ _SHORT_CODE = re.compile(r"^[A-Z]{2}$")
 def validate_connection_policy(
     provider_code: str, access_mode: str, credential_requirement: str,
     short_code: str, adapter_type: str, base_url: str | None = None,
+    *, allow_existing_legacy_custom: bool = False,
 ) -> str:
     if _SHORT_CODE.fullmatch(short_code) is None or (short_code == "OR" and provider_code != "OPENROUTER"):
         raise ProviderConnectionAdminError("PROVIDER_SHORT_CODE_INVALID", 409)
@@ -247,7 +248,10 @@ def validate_connection_policy(
         raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
     if provider_code == "OLLAMA" and credential_requirement != "none":
         raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
-    if (provider_code == "CUSTOM" and adapter_type not in {"openai_compatible", "anthropic_compatible"}) or (
+    if (provider_code == "CUSTOM" and adapter_type not in (
+        {"openai_compatible", "anthropic_compatible", "CUSTOM"}
+        if allow_existing_legacy_custom else {"openai_compatible", "anthropic_compatible"}
+    )) or (
         provider_code != "CUSTOM" and adapter_type != provider_code
     ):
         raise ProviderConnectionAdminError("PROVIDER_ADAPTER_UNSUPPORTED", 409)
@@ -679,6 +683,7 @@ class PostgresProviderConnectionService:
             validate_connection_policy(
                 str(current[1]), command.access_mode, command.credential_requirement,
                 command.short_code, command.adapter_type, command.base_url,
+                allow_existing_legacy_custom=(str(current[1]) == "CUSTOM" and str(current[16]) == "CUSTOM"),
             )
             provider_name = command.provider_name.strip() or str(current[17])
             if (command.provider_name and not command.provider_name.strip()) or not provider_name or len(provider_name) > 256:

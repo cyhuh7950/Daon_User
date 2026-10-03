@@ -584,3 +584,19 @@ def test_unsupported_adapter_cannot_verify_models(registry: AdapterRegistry) -> 
 def test_unknown_custom_protocol_cannot_fall_back_to_openai(registry: AdapterRegistry) -> None:
     with pytest.raises(AdapterError, match="^PROVIDER_ADAPTER_UNSUPPORTED$"):
         registry.adapter("CUSTOM", "unknown_protocol")
+
+
+def test_migrated_custom_adapter_type_keeps_openai_probe(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://models.example/v1/chat/completions"] = TransportResponse(
+        200, {"choices": [{"message": {"content": "ready"}}]},
+    )
+
+    models = AdapterRegistry(fake_transport).adapter("CUSTOM", "CUSTOM").verify_models(
+        connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL,
+        ("legacy-model",),
+    )
+
+    assert [item.model_id for item in models] == ["legacy-model"]
+    assert [(item.method, item.url) for item in fake_transport.requests] == [
+        ("POST", "https://models.example/v1/chat/completions"),
+    ]
