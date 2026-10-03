@@ -247,3 +247,11 @@
 - 변경 파일: Web 관리자 연결 화면 및 Node 테스트, Provider 관리자 정책/Adapter/HTTP body, 모델 resolver/질문 실행 및 Python 테스트, 호환 설계/계획과 이 진행 기록. DB migration·기존 연결 행·Secret·운영 데이터는 변경하지 않는다.
 - 검증: 신규 UI 테스트 RED→GREEN. Web/계약 Node 3파일 `26 passed`; Web production build와 TypeScript PASS; 전체 UI 경계 498파일, Web 경계 475파일 위반 0. Python 신규 Key 불필요 저장/조회/resolver/실행 테스트 `4 passed, 2 subtests passed`; Provider/질문 인접 5파일 `189 passed, 20 subtests passed`; API HTTP/개인 Key 인접 3파일 `39 passed`. 기존 신규 OmniRoute 등록 테스트 3개는 제거된 등록 경로를 전제하므로 삭제했으며 저장된 OmniRoute 관리 회귀 테스트는 유지했다.
 - 오류 횟수/미검증/다음: Python 실행기 경로 탐색 중 Windows `python`/`py` 사용 불가, WSL 시스템 Python의 `argon2` 누락을 확인한 뒤 기존 Daon_User WSL venv로 검증했다. Key 불필요 질문 신규 테스트 첫 실행은 `prepare_general`에 남은 필수 Key 호출 1건으로 실패해 수정·재실행했다. 동일 근본 원인 3회 연속 없음. 사용자 실제 화면 클릭·저장과 실제 Key 불필요 Provider 연동은 신산님 확인 전 미검증이다. 다음은 변경 파일만 commit/push, WSL exact-SHA API/Web 배포, URL/health/DB 불변 smoke 후 신산님이 3330에서 확인한다. Oracle·ysna·main·기존 Key는 범위 밖이다.
+
+## 신규 호환 등록·Key 선택 WSL QA 배포 — 2026-10-04
+
+- 제품 기준: `7db19f1fdebf78478b2757fa268fe9cd9071e33d`를 `origin/codex/next-user-development`에 비강제 push. WSL에서 GitHub로 별도 clean detached checkout `/home/daon/deploy/daon-user-compat-7db19f1f`를 생성해 같은 SHA를 확인했다. 기존 실행 checkout·환경 파일·Secret은 변경하지 않았다.
+- 배포 전: API/Web healthy, 실행 checkout은 `411e0d07`이었다. DB 연결 11개, `Media Bridge Server`는 `CUSTOM/openai_compatible`로 Key 저장 상태, 설치형 `MEDIA_BRIDGE` 0개. API/Web의 이전 image를 `rollback-compat-7db19f1f-pre` 태그로 보존했다.
+- 배포: 새 checkout과 기존 환경·Secret 참조로 Compose config PASS, API/Web 이미지만 빌드·순차 교체했다. API image `sha256:de936f5978582d23d9a90223fda1cdf11b3cb9b401a45817367a0da30e76a4cd`, Web image `sha256:e20ace4949bf988b8cfa771965aeac6d85e38c917085e02e6a05c6075454e0ee`. 두 컨테이너의 Compose working directory가 새 checkout을 가리키고 healthy, 두 worker는 계속 running이다.
+- 비파괴 smoke: `http://172.27.253.53:3330/settings/model-connections` HTTP 200, 비인증 BFF session 예상 401. DB 연결 11개·설치형 `MEDIA_BRIDGE` 0개 불변, Alembic `0050`. 실제 사용자 저장/삭제 클릭, Provider 유료 호출, 브라우저 Network는 수행하지 않았다.
+- 오류/미검증/다음: DB 읽기 전용 사전 조회에서 잘못 추정한 `daon_user` role 1건과 SQL 인용 1건을 확인 후 실제 컨테이너 환경의 계정으로 조회했다. 제품/DB 수정으로 이어지지 않았다. 신산님이 3330에서 새 연결의 두 호환 방식, `Key 필요/불필요`, 실제 저장 결과를 확인한다. 사용자의 실사용 수락 및 외부 Keyless Provider 연동은 미검증이다. Oracle·ysna·main·기존 Key/연결 데이터는 변경하지 않았다.
