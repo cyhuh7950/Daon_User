@@ -231,3 +231,11 @@
 - 전체 API suite 관찰: 기본 pytest 임시 디렉터리 접근 거부를 전용 `--basetemp`로 분리한 후 `255 passed, 14 skipped, 1 failed, 171 subtests passed`에서 중단. 실패는 기존 라이선스 fixture의 `LICENSE_DOCUMENT_INVALID`이며 이번 Provider 변경 파일이 아니다. 전용 임시 디렉터리는 경계 확인 후 제거했다.
 - WSL 읽기 전용 확인: 현재 API/Web은 clean한 `827c9189` checkout에서 실행 중. 설치형 Media Bridge는 WSL 호스트의 `127.0.0.1:8642/v1/models`에 HTTP 200, Daon API 컨테이너에서 같은 loopback 주소는 연결 거부. 기존 Docker host gateway `172.17.0.1:8642/v1/models`는 API 컨테이너에서 HTTP 200. 배포형 HTTPS `/v1/models`는 컨테이너에서 인증 없는 요청에 401. Secret 원문 출력·유료 Provider 호출 0회.
 - 다음 조치: 지정 파일만 commit/push 후 WSL에서 exact SHA checkout으로 API/Web을 빌드·교체, healthy·URL·화면을 확인한다. QA Media Bridge 연결의 loopback Endpoint는 조회 가능한 Docker host gateway로 관리자 화면을 통해 검증 후 수정할 필요가 있다. Oracle/ysna/main 및 다른 연결 설정은 범위 밖이다.
+
+## Media Bridge 모델 조회 WSL QA 반영 — 2026-10-04
+
+- 담당/배포 기준: 어울. 수정 5개 파일을 `411e0d071554a6a4ce5121f87a57e80e2bafa733`로 commit하고 작업 브랜치에 비강제 push했다. WSL의 별도 clean checkout `/home/daon/deploy/daon-user-media-411e0d07`가 동일 SHA인 것을 확인한 뒤 API/Web 이미지 2개만 빌드·교체했다. 이전 API/Web 이미지는 각각 `rollback-media-411e0d07-pre` 태그로 보존했다. 다른 worker·PostgreSQL·Secret 파일·Oracle·ysna·main은 변경하지 않았다.
+- 실행 확인: `daon_user-api-1`과 `daon_user-web-1`이 healthy, `/settings/model-connections` HTTP 200이다. 실행 중인 두 컨테이너의 Compose checkout은 새 exact-SHA checkout이다. Media Bridge `/v1/models`는 API 컨테이너에서 `host.docker.internal:8642`로 HTTP 200이며 새 Adapter가 `solar-pro4` 한 개를 실제 조회했다.
+- QA 연결 조정: 개발 DB의 정확한 `provider-media_bridge` 1개 행이 `http://127.0.0.1:8642/v1`, version 7, failed인 것을 읽기 전용 확인했다. API 컨테이너의 127.0.0.1은 다른 컨테이너 자신을 가리켜 연결이 거부되므로, 대상 행·기존 값·버전을 조건으로 `http://host.docker.internal:8642/v1`로 조정하고 version 8, unverified로 되돌렸다. Key·공용 정책·허용 모델은 변경하지 않았다. 저장된 QA 행을 새 Adapter로 다시 조회해 `solar-pro4` 1개를 확인했다. 원래 URL과 version 7은 이 기록에 남겼다.
+- 화면/미검증: 기존 Chrome 관리자 탭 새로고침 후 로그인 세션이 만료되어 로그인 화면으로 이동했다. 따라서 배포 화면의 `모델 조회` 버튼 클릭, same-origin Network와 목록 반영, 사용자 수락은 아직 검증하지 못했다. 신산님에게 기존 QA 관리자 세션 재로그인을 요청했다. 비밀번호·토큰은 출력하거나 저장하지 않았다. 전체 API suite는 위 기존 라이선스 fixture 실패로 여전히 GREEN 아님.
+- 다음 조치: 로그인 후 `/settings/model-connections`에서 `MEDIA_BRIDGE` 선택, `모델 조회` 클릭, `solar-pro4`의 카탈로그 표시와 Network 경로를 확인한다. 그 전에는 화면 기능까지 검증 완료로 보고하지 않는다.
