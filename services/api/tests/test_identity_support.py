@@ -37,11 +37,22 @@ def identity_session_view(
     """Build the complete session projection consumed by runtime routes."""
     return IdentitySessionView(
         principal=principal,
-        login_id=user_id,
+        login_id=principal.user_id,
         client_kind=client_kind,
         expires_at=UTC_1 + timedelta(hours=1),
         password_change_required=password_change_required,
     )
+
+
+def test_identity_session_view_projects_principal_user_as_fixture_login_id() -> None:
+    principal = IdentityPrincipal("member-001", "session-001", "device-001", "tenant-001")
+
+    view = identity_session_view(principal, password_change_required=True)
+
+    assert view.principal is principal
+    assert view.login_id == "member-001"
+    assert view.client_kind is ClientKind.WEB
+    assert view.password_change_required is True
 
 
 @dataclass

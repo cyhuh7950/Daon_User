@@ -169,3 +169,13 @@
 - 변경·영향: 신규 `CUSTOM` 두 호환 규격의 관리자 조회/모델별 시험-후-저장, 비공용 일회성 시험 Key, 개인 Key 검증, Anthropic 질문 실행, 화면/BFF. 기존 연결·Key·허용 모델·Workspace 기본 모델을 재작성하는 migration은 추가하지 않았다. 외부 Provider 유료 호출 0회, 실 DB 데이터 변경 0건, WSL/Oracle 변경 0건. rollback 기준은 이 작업 이전 branch commit `34f89b60`; 각 Task commit은 Git에 보존한다.
 - 오류 횟수/미검증: 독립 리뷰에서 확인한 새 회귀 위험은 Task 3 두 건과 Task 4 두 건으로 각각 수정·검증했으며 동일 근본 원인 3회 반복은 없었다. 기존 HTTP helper 오류 1원인, 범용 lint 대상 불일치 1원인은 미해결. 실제 1920×1080·1440×900·430×844 브라우저 클릭/Network, 실제 Provider 응답·비용, 실 PostgreSQL 데이터 전후, WSL URL은 미검증이다.
 - 다음 조치/승인 경계: HTTP gate를 완전히 통과하려면 승인 범위 밖인 `test_identity_support.py:40` 보조 코드 수정 승인이 필요하다. WSL 개발 배포는 별도 승인과 read-only preflight 이후 exact SHA로만 수행한다. 그 전에는 push·PR·main 병합·WSL 배포를 하지 않는다.
+
+## HTTP 테스트 helper 복구 — R1-PROVIDER-COMPAT-HTTP-HELPER-20261003
+
+- 일자/담당/기준: 2026-10-03 / 어울2 단일 writer. `codex/next-user-development`, 시작 HEAD `75714f4d`, 시작 상태 clean. 신산님이 기존 HTTP helper `NameError`만 별도 승인했다. 운영 코드·DB·배포·원격 변경은 범위 밖이다.
+- 원인/최소 수정: `test_identity_support.py`의 `identity_session_view(principal)`가 정의되지 않은 `user_id`를 `IdentitySessionView.login_id`에 넣었다. 실제 호출자는 `IdentityPrincipal`만 전달한다. fixture의 login ID를 `principal.user_id`로 바꾸고 해당 투영을 고정하는 테스트 1개를 같은 helper 파일에 추가했다. 운영 IdentitySessionView/호출자 계약은 변경하지 않았다.
+- RED→GREEN: 변경 전 `test_question_answering_runtime_http.py -q -x` 첫 건과 신규 helper 집중 테스트가 모두 예상된 `NameError: user_id`로 RED. 수정 후 helper 집중 테스트 `1 passed`, 질문 HTTP `12 passed`(httpx 쿠키 deprecation warning 19건), Provider 설정 API HTTP 통합 `test_provider_settings_runtime_http.py` `12 passed`. 재검증 명령은 모두 로컬 Windows `.venv-win` Python과 `PYTHONPATH=services/api/src`를 사용했다.
+- 제외/실패: 인접 파일 묶음 탐색에서는 `40 passed, 1 failed, 1 error`가 나왔다. `test_license_runtime_http.py`의 400 `LICENSE_DOCUMENT_INVALID`는 테스트 서명 문서가 `generation_runs` 리소스를 사용하지만 현재 라이선스 검증기의 허용 리소스가 `users`, `notebooks`뿐인 별도 fixture 불일치다. 격리 재현에서 `1 failed, 5 passed`; 이 라이선스 실패는 총 3회 관찰했다. 기본 pytest 임시 경로 `PermissionError` 1건은 전용 `--basetemp`로 분리했고, 1회 `PYTHONPATH` 누락 collection 오류를 바로잡았다. 어울1은 이 FAILURE_REPORT를 작업지시 실패보고 **1회**로 판정했고 라이선스 테스트는 이번 승인 범위에서 제외·재시도 금지했다. 라이선스 소스/테스트는 수정하지 않았다.
+- 임시자원: 이 작업만의 `.pytest-tmp-http-helper-01372`를 worktree 내부에서 사용했다. 절대경로·비-reparse 디렉터리·내부 빈 폴더/내부 대상 링크만 확인한 뒤 정확히 이 디렉터리만 제거했고 잔류 없음.
+- 변경 파일: `services/api/tests/test_identity_support.py`, 이 진행 기록만. 동일 helper 근본 원인의 반복 실패 0건(RED 후 수정); 별도 라이선스 실패는 helper 성공 판정에 포함하지 않는다.
+- 미검증/다음: 전체 API suite, 실 Provider·DB, WSL·브라우저·배포는 이 helper 수정으로 검증하지 않았다. `git diff --check` exit 0; 지정 파일만 scoped commit한 뒤 어울1이 별도 라이선스 fixture와 WSL gate를 판단한다. push·PR·main 병합·배포는 하지 않는다.
