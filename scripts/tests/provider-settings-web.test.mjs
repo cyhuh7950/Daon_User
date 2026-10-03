@@ -9,6 +9,12 @@ import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./p
 
 const read = (file) => readFile(new URL(`../../${file}`, import.meta.url), "utf8");
 
+test("pending compatible registration is a distinct no-cost UI action", async () => {
+  const source = await read("apps/web/components/provider-settings-workspace.jsx");
+  assert.match(source, /사용 대기 연결 등록/u);
+  assert.match(source, /시험 없이 사용 대기/u);
+});
+
 async function bundleProvider(root, output, fileName) {
   const { build } = await import("vite");
   await build({ configFile: false, logLevel: "silent", root, build: {
@@ -78,7 +84,7 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
           pendingSaveFailures -= 1;
           return Response.json({ error: { code: "PROVIDER_VERIFICATION_FAILED" } }, { status: 503 });
         }
-        const item = { ...body, version: 1, configured: body.access_mode === "public", verification_status: "verified", catalog_status: "ready", catalog_version: 1,
+        const item = { ...body, version: 1, configured: body.access_mode === "public", verification_status: body.access_mode === "personal" ? "unverified" : "verified", catalog_status: "ready", catalog_version: 1,
           models: body.allowed_model_ids.map((model_id) => ({ model_id, catalog_status: "ready", catalog_version: 1, effective_capabilities: ["text_generation"] })) };
         delete item.credential;
         delete item.test_credential;
@@ -266,6 +272,37 @@ test("new Anthropic-compatible personal connection selects previewed model and s
   } finally { await view.cleanup(); }
 });
 
+test("new personal compatible connection registers pending without models, Key, preview or provider test", async () => {
+  const fixture = adminFixture();
+  const view = await mountAdminFixture(fixture, "custom-pending");
+  const { container, act } = view;
+  try {
+    await fill(act, controlFor(container, "호환 방식"), "openai_compatible");
+    await fill(act, controlFor(container, "Provider 표시 이름"), "대기 Provider");
+    await fill(act, controlFor(container, "연결 이름"), "대기 연결");
+    await fill(act, controlFor(container, "두 글자 약어"), "PD");
+    await fill(act, controlFor(container, "Endpoint"), "https://pending.example/v1");
+    const publicCheckbox = findElements(container, (node) => node.tagName === "INPUT" && (node.type === "checkbox" || node.getAttribute("type") === "checkbox") && node.parentNode?.textContent.includes("공용 사용"))[0];
+    await setChecked(act, publicCheckbox, false);
+
+    assert.equal(buttonByText(container, "연결 시험 및 저장"), undefined);
+    assert.equal(buttonByText(container, "사용 대기 연결 등록")?.disabled, false);
+    assert.match(container.textContent, /시험 없이 사용 대기/u);
+    await click(act, buttonByText(container, "사용 대기 연결 등록"));
+
+    const create = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
+    assert.ok(create);
+    assert.equal(create.body.provider_code, "CUSTOM");
+    assert.equal(create.body.access_mode, "personal");
+    assert.deepEqual(create.body.allowed_model_ids, []);
+    assert.deepEqual(create.body.logical_model_ids, []);
+    assert.equal(Object.hasOwn(create.body, "credential"), false);
+    assert.equal(Object.hasOwn(create.body, "test_credential"), false);
+    assert.equal(fixture.requests.some((item) => item.path.endsWith("/model-preview")), false);
+    assert.match(container.textContent, /사용 대기 상태로 저장/u);
+  } finally { await view.cleanup(); }
+});
+
 test("saved legacy CUSTOM connection retains its old catalog and credential actions", async () => {
   const fixture = adminFixture({ existingConnections: [{
     connection_id: "legacy-custom", provider_code: "CUSTOM", adapter_type: "CUSTOM", provider_name: "기존 공급자", display_name: "기존 연결",
@@ -311,6 +348,176 @@ test("saved public compatible CUSTOM refreshes with stored Key without replacing
   } finally { await view.cleanup(); }
 });
 
+test("new OmniRoute uses auto when no model is selected and exposes direct model ID", async () => {
+  const fixture = adminFixture();
+  const view = await mountAdminFixture(fixture, "route-auto-create");
+  try {
+    await fill(view.act, controlFor(view.container, "Provider 방식"), "OMNIROUTE");
+    await fill(view.act, controlFor(view.container, "연결 이름"), "Route 연결");
+    await fill(view.act, controlFor(view.container, "두 글자 약어"), "RM");
+    await fill(view.act, controlFor(view.container, "Endpoint"), "https://omniroute.example/v1");
+    await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-route-key");
+    assert.ok(controlFor(view.container, "모델 ID 직접 입력"));
+    assert.match(view.container.textContent, /선택하지 않으면 auto/u);
+    assert.ok(buttonByText(view.container, "모델 조회"));
+    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+    const create = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
+    assert.deepEqual(create.body.allowed_model_ids, ["auto"]);
+    assert.deepEqual(create.body.logical_model_ids, ["auto"]);
+    assert.equal(create.body.credential, "fixture-route-key");
+    assert.equal(controlFor(view.container, "API Key 또는 Client Key").value, "");
+  } finally { await view.cleanup(); }
+});
+
+test("OmniRoute UI caps selected models at four and warns about per-model periodic cost", async () => {
+  const fixture = adminFixture();
+  const view = await mountAdminFixture(fixture, "route-four-model-limit");
+  try {
+    await fill(view.act, controlFor(view.container, "Provider 방식"), "OMNIROUTE");
+    await fill(view.act, controlFor(view.container, "연결 이름"), "Route 연결");
+    await fill(view.act, controlFor(view.container, "두 글자 약어"), "RM");
+    await fill(view.act, controlFor(view.container, "Endpoint"), "https://omniroute.example/v1");
+    await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-route-key");
+    await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), "m1\nm2\nm3\nm4\nm5");
+
+    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, true);
+    assert.equal(buttonByText(view.container, "시스템 키 시험 및 저장").disabled, true);
+    assert.match(view.container.textContent, /최대 4개 모델/u);
+    assert.match(view.container.textContent, /각각 시험.*정기 점검.*사용료/u);
+    assert.equal(fixture.requests.some((item) => item.method === "POST" && item.path === "/bff/api/admin/provider-connections"), false);
+
+    await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), "m1\nm2\nm3\nm4");
+    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
+    await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), "auto\nm1\nm2\nm3\nm4");
+    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
+    assert.equal(buttonByText(view.container, "시스템 키 시험 및 저장").disabled, false);
+    assert.match(view.container.textContent, /시험 대상 4개 모델/u);
+    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+    const create = fixture.requests.find((item) => item.method === "POST" && item.path === "/bff/api/admin/provider-connections");
+    assert.deepEqual(create.body.allowed_model_ids, ["m1", "m2", "m3", "m4"]);
+    assert.deepEqual(create.body.logical_model_ids, ["m1", "m2", "m3", "m4"]);
+  } finally { await view.cleanup(); }
+});
+
+test("saved legacy OmniRoute with five allowed models can replace its Key without changing allowlist", async () => {
+  const existing = {
+    connection_id: "route-legacy", provider_code: "OMNIROUTE", adapter_type: "OMNIROUTE", provider_name: "OmniRoute", display_name: "Legacy Route",
+    base_url: "https://omniroute.example/v1", short_code: "LR", access_mode: "public", credential_requirement: "required",
+    allowed_model_ids: ["auto", "m1", "m2", "m3", "m4"], enabled: true, configured: true, verification_status: "verified", version: 1,
+    models: ["auto", "m1", "m2", "m3", "m4"].map((model_id) => ({ model_id, catalog_status: "ready", effective_capabilities: ["text_generation"] })),
+  };
+  const fixture = adminFixture({ existingConnections: [existing] });
+  const originalFetch = fixture.fetch;
+  fixture.fetch = async (url, options = {}) => {
+    if (String(url) === "/bff/api/admin/provider-connections/route-legacy/credential" && options.method === "POST") {
+      fixture.requests.push({ path: String(url), method: options.method, body: JSON.parse(options.body) });
+      return Response.json({ data: { ...existing, version: 2 } });
+    }
+    return originalFetch(url, options);
+  };
+  const view = await mountAdminFixture(fixture, "route-legacy-key");
+  try {
+    assert.match(view.container.textContent, /auto 포함 5개 모델.*정기 점검/u);
+    await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-replacement-key");
+    assert.equal(buttonByText(view.container, "시스템 키 시험 및 저장").disabled, false);
+    await click(view.act, buttonByText(view.container, "시스템 키 시험 및 저장"));
+    const replaced = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections/route-legacy/credential");
+    assert.ok(replaced);
+    assert.equal(replaced.body.expected_version, 1);
+    assert.equal(replaced.body.credential, "fixture-replacement-key");
+    assert.deepEqual(existing.allowed_model_ids, ["auto", "m1", "m2", "m3", "m4"]);
+  } finally { await view.cleanup(); }
+});
+
+for (const [caseName, legacyAllowed] of [
+  ["five explicit", ["m1", "m2", "m3", "m4", "m5"]],
+  ["auto plus four explicit", ["auto", "m1", "m2", "m3", "m4"]],
+]) {
+  test(`saved legacy OmniRoute ${caseName} allows unrelated admin save without changing models`, async () => {
+    const existing = {
+      connection_id: "route-legacy-save", provider_code: "OMNIROUTE", adapter_type: "OMNIROUTE", provider_name: "OmniRoute", display_name: "Legacy Route",
+      base_url: "https://omniroute.example/v1", short_code: "LR", access_mode: "public", credential_requirement: "required",
+      allowed_model_ids: legacyAllowed, enabled: true, configured: true, verification_status: "verified", version: 1,
+      models: legacyAllowed.map((model_id) => ({ model_id, catalog_status: "ready", effective_capabilities: ["text_generation"] })),
+    };
+    const fixture = adminFixture({ existingConnections: [existing] });
+    const originalFetch = fixture.fetch;
+    fixture.fetch = async (url, options = {}) => {
+      if (String(url) === "/bff/api/admin/provider-connections/route-legacy-save" && options.method === "PUT") {
+        const body = JSON.parse(options.body);
+        fixture.requests.push({ path: String(url), method: options.method, body });
+        return Response.json({ data: { ...existing, ...body, models: existing.models, version: 2 } });
+      }
+      return originalFetch(url, options);
+    };
+    const view = await mountAdminFixture(fixture, `route-legacy-${caseName.replaceAll(" ", "-")}`);
+    try {
+      await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), "m1\nm2\nm3\nm4\nm6");
+      assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, true);
+      await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), legacyAllowed.join("\n"));
+      await fill(view.act, controlFor(view.container, "연결 이름"), "Renamed Route");
+      const enabledCheckbox = findElements(view.container, (node) => node.tagName === "INPUT" && node.type === "checkbox" && node.parentNode?.textContent.includes("사용 후보에 포함"))[0];
+      await setChecked(view.act, enabledCheckbox, false);
+      assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
+      await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+      const update = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections/route-legacy-save" && item.method === "PUT");
+      assert.ok(update);
+      assert.equal(update.body.display_name, "Renamed Route");
+      assert.equal(update.body.enabled, false);
+      assert.deepEqual(update.body.allowed_model_ids, legacyAllowed);
+      assert.deepEqual(update.body.logical_model_ids, legacyAllowed);
+    } finally { await view.cleanup(); }
+  });
+}
+
+test("personal OmniRoute save never sends an admin credential", async () => {
+  const fixture = adminFixture();
+  const view = await mountAdminFixture(fixture, "route-personal-no-admin-key");
+  try {
+    await fill(view.act, controlFor(view.container, "Provider 방식"), "OMNIROUTE");
+    await fill(view.act, controlFor(view.container, "연결 이름"), "개인 Route");
+    await fill(view.act, controlFor(view.container, "두 글자 약어"), "RM");
+    await fill(view.act, controlFor(view.container, "Endpoint"), "https://omniroute.example/v1");
+    await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-should-not-send");
+    const publicCheckbox = findElements(view.container, (node) => node.tagName === "INPUT" && node.type === "checkbox" && node.parentNode?.textContent.includes("공용 사용"))[0];
+    await setChecked(view.act, publicCheckbox, false);
+
+    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+
+    const create = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
+    assert.equal(create.body.access_mode, "personal");
+    assert.equal(Object.hasOwn(create.body, "credential"), false);
+    assert.equal(buttonByText(view.container, "시스템 키 시험 및 저장"), undefined);
+  } finally { await view.cleanup(); }
+});
+
+test("saved OmniRoute reads catalog through existing same-origin refresh without allowing listed models", async () => {
+  const connection = {
+    connection_id: "route-1", provider_code: "OMNIROUTE", adapter_type: "OMNIROUTE", provider_name: "OmniRoute", display_name: "Route 연결",
+    base_url: "https://omniroute.example/v1", short_code: "RM", access_mode: "public", credential_requirement: "required",
+    allowed_model_ids: ["auto"], enabled: true, configured: true, verification_status: "verified", version: 2,
+    catalog_status: "ready", catalog_version: 2,
+    models: [{ model_id: "auto", catalog_status: "ready", catalog_version: 2, effective_capabilities: ["text_generation"] }],
+  };
+  const fixture = adminFixture({ existingConnections: [connection], refreshResult: {
+    ...connection, version: 3, catalog_version: 3,
+    models: [...connection.models, ...["cc/claude-sonnet", "combo-writing"].map((model_id) => ({ model_id, catalog_status: "ready", catalog_version: 3, effective_capabilities: ["text_generation"] }))],
+  } });
+  const view = await mountAdminFixture(fixture, "route-catalog-refresh");
+  try {
+    assert.equal(buttonByText(view.container, "모델 조회")?.disabled, false);
+    await click(view.act, buttonByText(view.container, "모델 조회"));
+    assert.deepEqual(fixture.requests.find((item) => item.path === "/bff/api/admin/provider-catalog/route-1/refresh")?.body, { expected_version: 2 });
+    assert.match(view.container.textContent, /cc\/claude-sonnet|combo-writing/u);
+    assert.equal(controlFor(view.container, "모델 ID 직접 입력").value, "auto");
+    const option = findElements(view.container, (node) => node.tagName === "INPUT" && node.type === "checkbox" && node.parentNode?.textContent.includes("cc/claude-sonnet"))[0];
+    assert.ok(option);
+    await setChecked(view.act, option, true);
+    assert.equal(controlFor(view.container, "모델 ID 직접 입력").value, "cc/claude-sonnet");
+    assert.equal(fixture.requests.filter((item) => item.path === "/bff/api/admin/provider-connections/route-1" && item.method === "PUT").length, 0);
+  } finally { await view.cleanup(); }
+});
+
 test("ordinary personal CUSTOM user sees only admin-allowed models and no admin controls", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, "node_modules", ".provider-personal-user-"));
@@ -341,6 +548,43 @@ test("ordinary personal CUSTOM user sees only admin-allowed models and no admin 
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     globalThis.fetch = originalFetch;
     dom.restore();
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("ordinary user cannot save a Key for pending personal CUSTOM without allowed models", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, "node_modules", ".provider-pending-user-"));
+  const dom = installMinimalDom();
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  let reactRoot;
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), method: options.method ?? "GET" });
+    if (String(url) === "/bff/api/session") return Response.json({ data: { workspace_id: "workspace-001", is_system_admin: false } });
+    if (String(url) === "/bff/api/admin/provider-connections") return Response.json({ data: [{
+      connection_id: "custom-pending", provider_code: "CUSTOM", adapter_type: "openai_compatible", provider_name: "Pending", display_name: "Pending personal",
+      base_url: "https://models.example/v1", short_code: "PC", access_mode: "personal", credential_requirement: "required",
+      allowed_model_ids: [], enabled: true, configured: false, verification_status: "unverified", version: 1, models: [],
+    }] });
+    if (String(url) === "/bff/api/provider-credentials") return Response.json({ data: { credentials: [] } });
+    throw new Error(`UNEXPECTED_REQUEST: ${String(url)}`);
+  };
+  try {
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { ProviderSettingsWorkspace } = await bundleProvider(root, output, "provider-pending-user");
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
+    assert.equal(controlFor(container, "API Key 또는 Client Key").disabled, true);
+    assert.equal(buttonByText(container, "내 계정 키 시험 및 저장").disabled, true);
+    assert.match(container.textContent, /관리자가 사용할 모델을 허용한 뒤 Key를 시험/u);
+    assert.equal(buttonByText(container, "연결 시험 및 저장"), undefined);
+    assert.equal(requests.some((item) => item.method === "POST"), false);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    globalThis.fetch = originalFetch; dom.restore();
     await rm(output, { recursive: true, force: true });
   }
 });
@@ -488,6 +732,10 @@ test("provider view helpers expose safe status and connection-name model choices
     assert.deepEqual(projectProviderConnection({ enabled: true, access_mode: "personal", credential_requirement: "required", verification_status: "unverified" }), { label: "비공용 · 개인 Key 필요 · 사용 대기", verified: false });
     assert.deepEqual(projectProviderConnection({ enabled: true, access_mode: "personal", credential_requirement: "required", verification_status: "unverified" }, { verification_status: "verified" }), { label: "비공용 · 개인 Key 필요 · 사용 가능", verified: true });
     assert.deepEqual(projectProviderConnection({ enabled: true, access_mode: "public", credential_requirement: "none", verification_status: "verified" }), { label: "공용 · Key 불필요 · 사용 가능", verified: true });
+    const staleRoute = { provider_code: "OMNIROUTE", enabled: true, access_mode: "public", credential_requirement: "required", verification_status: "verified", allowed_model_ids: ["auto"], models: [{ model_id: "auto", catalog_status: "stale", effective_capabilities: ["text_generation"] }] };
+    assert.deepEqual(projectProviderConnection(staleRoute), { label: "공용 · 관리자 Key 필요 · 확인 필요", verified: false });
+    assert.deepEqual(projectProviderConnection({ ...staleRoute, models: [{ ...staleRoute.models[0], catalog_status: "ready" }] }), { label: "공용 · 관리자 Key 필요 · 사용 가능", verified: true });
+    assert.deepEqual(projectProviderConnection({ ...staleRoute, access_mode: "personal" }, { verification_status: "verified" }), { label: "비공용 · 개인 Key 필요 · 사용 대기", verified: false });
     assert.equal(safeProviderErrorMessage("credential", { code: "INTERNAL_DOCKER_HOST_api:8000" }), "Credential을 저장하지 못했습니다. 다시 시도해 주세요.");
     assert.doesNotMatch(safeProviderErrorMessage("credential", { code: "INTERNAL_DOCKER_HOST_api:8000" }), /api:8000|INTERNAL/iu);
   } finally {

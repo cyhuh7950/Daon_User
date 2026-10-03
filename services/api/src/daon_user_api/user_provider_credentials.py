@@ -112,15 +112,21 @@ class PostgresUserProviderCredentialService:
                 bool(provider[4]), 1,
             )
             try:
-                if provider_code == "CUSTOM":
+                if provider_code in {"CUSTOM", "OMNIROUTE"}:
                     allowed = connection.execute(
                         "SELECT model_id FROM system_provider_allowed_models "
                         "WHERE connection_id=%s ORDER BY model_id",
                         (connection_id,),
                     ).fetchall()
-                    AdapterRegistry().adapter(provider_code, str(provider[5])).verify_models(
-                        profile, credential, tuple(str(row[0]) for row in allowed),
-                    )
+                    model_ids = tuple(str(row[0]) for row in allowed)
+                    if provider_code == "CUSTOM":
+                        AdapterRegistry().adapter(provider_code, str(provider[5])).verify_models(
+                            profile, credential, model_ids,
+                        )
+                    else:
+                        AdapterRegistry(logical_models={connection_id: model_ids or ("auto",)}).adapter(
+                            provider_code,
+                        ).verify(profile, credential)
                 else:
                     AdapterRegistry().adapter(provider_code).verify(profile, credential)
             except AdapterError as error:

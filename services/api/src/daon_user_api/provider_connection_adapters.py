@@ -427,31 +427,82 @@ class _RoutingGatewayAdapter(_BaseAdapter):
 class OmniRouteAdapter(_RoutingGatewayAdapter):
     provider_code = "OMNIROUTE"
 
+    def discover_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> tuple[DiscoveredModel, ...]:
+        models, _rejected_ids = self.discover_models_with_rejected_ids(connection, credential)
+        return models
+
+    def discover_models_with_rejected_ids(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> tuple[tuple[DiscoveredModel, ...], tuple[str, ...]]:
+        base = self._validate_connection(connection)
+        secret = _credential_text(credential)
+        payload = self._request(
+            "GET", _append_path(base, "/v1/models"),
+            {"authorization": f"Bearer {secret}"},
+        )
+        try:
+            listed = ProviderCatalog.from_payload(connection.connection_id, "CUSTOM", payload)
+            if any(secret in model.model_id for model in listed):
+                raise AdapterError("PROVIDER_CATALOG_RESPONSE_INVALID", 503)
+            assert isinstance(payload, Mapping)
+            rows = payload["data"]
+            assert isinstance(rows, list)
+            specialty_ids = {
+                row["id"] for row in rows
+                if row.get("type") not in (None, "chat", "combo")
+                or row.get("subtype") not in (None, "")
+            }
+            # OpenAI-compatible catalogs often omit type, so untyped rows stay
+            # visible. Discovery never grants allowlist access: every selected
+            # model must pass a text-producing /v1/responses probe before use.
+            chat_ids = tuple(model.model_id for model in listed if model.model_id not in specialty_ids)
+            models = (
+                ProviderCatalog.from_logical_models(
+                    connection.connection_id, self.provider_code,
+                    chat_ids,
+                ) if chat_ids else ()
+            )
+            return models, tuple(sorted(specialty_ids))
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 503) from None
+
     def verify(
         self,
         connection: ProviderConnection,
         credential: str | bytes | None,
     ) -> VerificationResult:
-        _credential_text(credential)
-        models = self.discover_models(connection, credential)
-        if not models:
-            return self._probe(
-                connection,
-                credential,
-                "/v1/responses",
-                {"model": "health-check", "input": "health-check", "max_output_tokens": 1, "stream": False},
+        base = self._validate_connection(connection)
+        secret = _credential_text(credential)
+        try:
+            configured = self._logical_models.get(connection.connection_id, ())
+            # New create/update requests enforce the four-model cap before
+            # reaching this adapter. Stored legacy allowlists may be larger or
+            # contain auto beside explicit IDs; every runnable ID must be
+            # probed, including auto, during Key replacement and health checks.
+            selected = tuple(configured) or ("auto",)
+            models = ProviderCatalog.from_logical_models(
+                connection.connection_id, self.provider_code,
+                selected,
             )
-        return self._probe(
-            connection,
-            credential,
-            "/v1/responses",
-            {
-                "model": models[0].model_id,
-                "input": "health-check",
-                "max_output_tokens": 1,
-                "stream": False,
-            },
-        )
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 409) from None
+        for model in models:
+            payload = self._request(
+                "POST", _append_path(base, "/v1/responses"),
+                {"authorization": f"Bearer {secret}"},
+                {"model": model.model_id, "input": "Reply OK.", "max_output_tokens": 16, "stream": False},
+            )
+            if (not isinstance(payload, Mapping)
+                    or not isinstance(payload.get("output_text"), str)
+                    or not payload["output_text"].strip()):
+                raise AdapterError("PROVIDER_PROBE_RESPONSE_INVALID", 503)
+        return self._ready(connection)
 
 
 class EoulGatewayAdapter(_RoutingGatewayAdapter):

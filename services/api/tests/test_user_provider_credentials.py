@@ -158,6 +158,53 @@ def test_custom_personal_key_probes_only_db_allowed_models_before_encrypt(monkey
     assert ("probe", secret, ("manual-a", "manual-b")) in calls
 
 
+def test_pending_custom_without_allowed_models_cannot_verify_personal_key(monkeypatch) -> None:
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None, rows=()):
+            self.row, self.rows = row, rows
+
+        def fetchone(self):
+            return self.row
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, sql, _params=()):
+            calls.append(sql)
+            if sql.startswith("SELECT provider_code"):
+                return Cursor(("CUSTOM", "https://models.example/v1", "personal", "required", True, "openai_compatible"))
+            if sql.startswith("SELECT credential_version"):
+                return Cursor(None)
+            if sql.startswith("SELECT model_id FROM system_provider_allowed_models"):
+                return Cursor(rows=())
+            return Cursor()
+
+    class Store:
+        @contextmanager
+        def _transaction(self, _context):
+            yield Connection()
+
+    class Transport:
+        def request(self, *_args, **_kwargs):
+            raise AssertionError("pending connection must not call Provider")
+
+    monkeypatch.setattr(module, "AdapterRegistry", lambda: AdapterRegistry(Transport()))
+    service = module.PostgresUserProviderCredentialService(
+        Store(), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+
+    with pytest.raises(module.UserProviderCredentialError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        service.replace_credential(
+            tenant_id="tenant-1", user_id="user-1", connection_id="custom-1",
+            credential="fixture-personal-secret", expected_version=0,
+        )
+
+    assert not any(sql.startswith("INSERT INTO user_provider_credentials") for sql in calls)
+
+
 def test_migrated_custom_personal_key_replacement_uses_openai_probe(monkeypatch) -> None:
     calls = []
 
@@ -206,3 +253,114 @@ def test_migrated_custom_personal_key_replacement_uses_openai_probe(monkeypatch)
     assert result.verification_status == "verified" and result.credential_version == 2
     assert ("POST", "https://models.example.com/v1/chat/completions", "legacy-model", False) in calls
     assert any(item[0].startswith("INSERT INTO user_provider_credentials") for item in calls if len(item) == 2)
+
+
+@pytest.mark.parametrize("second_response", [{"output_text": "ready"}, {}])
+def test_omniroute_personal_key_probes_every_allowed_model_before_encrypt(monkeypatch, second_response) -> None:
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None, rows=()):
+            self.row, self.rows = row, rows
+
+        def fetchone(self):
+            return self.row
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, sql, _params=()):
+            calls.append(sql)
+            if sql.startswith("SELECT provider_code"):
+                return Cursor(("OMNIROUTE", "https://omniroute.example/v1", "personal", "required", True, "OMNIROUTE"))
+            if sql.startswith("SELECT credential_version"):
+                return Cursor((0,))
+            if sql.startswith("SELECT model_id FROM system_provider_allowed_models"):
+                return Cursor(rows=(("cc/claude-sonnet",), ("combo-writing",)))
+            return Cursor()
+
+    class Store:
+        @contextmanager
+        def _transaction(self, _context):
+            yield Connection()
+
+    class Transport:
+        def request(self, method, url, headers, body, timeout_seconds, *, follow_redirects):
+            calls.append((method, url, body["model"], follow_redirects))
+            return TransportResponse(200, second_response if body["model"] == "combo-writing" else {"output_text": "ready"})
+
+    monkeypatch.setattr(module, "AdapterRegistry", lambda **kwargs: AdapterRegistry(Transport(), **kwargs))
+    service = module.PostgresUserProviderCredentialService(
+        Store(), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+
+    if second_response:
+        result = service.replace_credential(
+            tenant_id="tenant-1", user_id="user-1", connection_id="route-1",
+            credential="fixture-personal-secret", expected_version=0,
+        )
+        assert result.verification_status == "verified"
+        assert any(isinstance(item, str) and item.startswith("INSERT INTO user_provider_credentials") for item in calls)
+    else:
+        with pytest.raises(module.UserProviderCredentialError, match="^PROVIDER_PROBE_RESPONSE_INVALID$"):
+            service.replace_credential(
+                tenant_id="tenant-1", user_id="user-1", connection_id="route-1",
+                credential="fixture-personal-secret", expected_version=0,
+            )
+        assert not any(isinstance(item, str) and item.startswith("INSERT INTO user_provider_credentials") for item in calls)
+    assert ("POST", "https://omniroute.example/v1/responses", "cc/claude-sonnet", False) in calls
+    assert ("POST", "https://omniroute.example/v1/responses", "combo-writing", False) in calls
+
+
+@pytest.mark.parametrize("legacy_allowed", [
+    ("m1", "m2", "m3", "m4", "m5"),
+    ("auto", "m1", "m2", "m3", "m4"),
+])
+def test_omniroute_personal_key_probes_every_legacy_allowed_model(monkeypatch, legacy_allowed) -> None:
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None, rows=()):
+            self.row, self.rows = row, rows
+
+        def fetchone(self):
+            return self.row
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, sql, _params=()):
+            calls.append(sql)
+            if sql.startswith("SELECT provider_code"):
+                return Cursor(("OMNIROUTE", "https://omniroute.example/v1", "personal", "required", True, "OMNIROUTE"))
+            if sql.startswith("SELECT credential_version"):
+                return Cursor((1,))
+            if sql.startswith("SELECT model_id FROM system_provider_allowed_models"):
+                return Cursor(rows=tuple((model_id,) for model_id in legacy_allowed))
+            return Cursor()
+
+    class Store:
+        @contextmanager
+        def _transaction(self, _context):
+            yield Connection()
+
+    class Transport:
+        def request(self, method, url, headers, body, timeout_seconds, *, follow_redirects):
+            calls.append((method, url, body))
+            return TransportResponse(200, {"output_text": "ready"})
+
+    monkeypatch.setattr(module, "AdapterRegistry", lambda **kwargs: AdapterRegistry(Transport(), **kwargs))
+    service = module.PostgresUserProviderCredentialService(
+        Store(), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+
+    saved = service.replace_credential(
+        tenant_id="tenant-1", user_id="user-1", connection_id="route-1",
+        credential="fixture-personal-secret", expected_version=1,
+    )
+
+    assert saved.verification_status == "verified"
+    assert [item[2]["model"] for item in calls if isinstance(item, tuple)] == list(legacy_allowed)
+    assert any(isinstance(item, str) and item.startswith("INSERT INTO user_provider_credentials") for item in calls)

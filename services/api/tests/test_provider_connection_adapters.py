@@ -84,7 +84,7 @@ class FakeTransport:
             "https://api.groq.com/openai/v1/models": TransportResponse(200, {"data": [{"id": "llama-3.3-70b-versatile"}]}),
             "https://api.mistral.ai/v1/models": TransportResponse(200, {"data": [{"id": "mistral-large-latest"}]}),
             "https://api.upstage.ai/v1/models": TransportResponse(200, {"data": [{"id": "solar-pro3"}]}),
-            "https://omniroute.example/v1/responses": TransportResponse(200, {}),
+            "https://omniroute.example/v1/responses": TransportResponse(200, {"output_text": "ready"}),
             "http://eoul-gateway:8080/v1/chat/completions": TransportResponse(200, {}),
             "http://media-bridge.internal:8080/v1/models": TransportResponse(
                 200, {"data": [{"id": "media-bridge-vision"}]}
@@ -240,6 +240,155 @@ def test_omniroute_verification_requires_api_key_even_without_provider_models(
         registry.adapter("OMNIROUTE").verify(connection("OMNIROUTE"), None)
 
     assert fake_transport.requests == []
+
+
+def test_omniroute_model_lookup_uses_authenticated_official_catalog(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "cc/claude-sonnet"}, {"id": "combo-writing"}]},
+    )
+    adapter = AdapterRegistry(fake_transport).adapter("OMNIROUTE")
+
+    models = adapter.discover_models(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert [item.model_id for item in models] == ["cc/claude-sonnet", "combo-writing"]
+    assert [item.routing_owner for item in models] == ["gateway", "gateway"]
+    assert [(item.method, item.url, item.headers, item.body) for item in fake_transport.requests] == [
+        ("GET", "https://omniroute.example/v1/models", {"authorization": f"Bearer {TEST_CREDENTIAL}"}, None)
+    ]
+    assert fake_transport.requests[0].follow_redirects is False
+
+
+@pytest.mark.parametrize("specialty_type", ["embedding", "image", "audio"])
+def test_omniroute_lookup_excludes_typed_non_chat_models(
+    fake_transport: FakeTransport, specialty_type: str,
+) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [
+            {"id": "cc/claude-sonnet", "type": "chat"},
+            {"id": "combo-writing", "type": "combo"},
+            {"id": "legacy-chat"},
+            {"id": f"specialty-{specialty_type}", "type": specialty_type},
+        ]},
+    )
+
+    models = AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+        connection("OMNIROUTE"), TEST_CREDENTIAL,
+    )
+
+    assert [model.model_id for model in models] == ["cc/claude-sonnet", "combo-writing", "legacy-chat"]
+
+
+def test_omniroute_lookup_excludes_generic_sibling_of_typed_specialty(
+    fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [
+            {"id": "openai/whisper-1"},
+            {"id": "cc/claude-sonnet", "type": "chat"},
+            {"id": "openai/whisper-1", "type": "audio", "subtype": "transcription"},
+            {"id": "veo-free/veo"},
+            {"id": "veo-free/veo", "type": "video"},
+        ]},
+    )
+
+    models = AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+        connection("OMNIROUTE"), TEST_CREDENTIAL,
+    )
+
+    assert [model.model_id for model in models] == ["cc/claude-sonnet"]
+
+
+def test_omniroute_omitted_model_probes_auto_without_catalog_lookup(fake_transport: FakeTransport) -> None:
+    adapter = AdapterRegistry(fake_transport).adapter("OMNIROUTE")
+
+    result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert result.status == "ready"
+    assert [(item.method, item.url, item.body["model"] if item.body else None)
+            for item in fake_transport.requests] == [
+        ("POST", "https://omniroute.example/v1/responses", "auto")
+    ]
+
+
+def test_omniroute_verification_probes_every_allowed_model(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(
+        200, {"output_text": "ready"},
+    )
+    adapter = AdapterRegistry(fake_transport, logical_models={
+        "omniroute": ("cc/claude-sonnet", "combo-writing"),
+    }).adapter("OMNIROUTE")
+
+    result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert result.status == "ready"
+    assert [request.body["model"] for request in fake_transport.requests] == [
+        "cc/claude-sonnet", "combo-writing",
+    ]
+    assert [request.body["max_output_tokens"] for request in fake_transport.requests] == [16, 16]
+
+
+def test_omniroute_verification_probes_all_five_legacy_allowed_models(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(
+        200, {"output_text": "ready"},
+    )
+    adapter = AdapterRegistry(fake_transport, logical_models={
+        "omniroute": ("m1", "m2", "m3", "m4", "m5"),
+    }).adapter("OMNIROUTE")
+
+    result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert result.status == "ready"
+    assert [request.body["model"] for request in fake_transport.requests] == ["m1", "m2", "m3", "m4", "m5"]
+
+
+def test_omniroute_verification_legacy_auto_plus_four_explicit_probes_all_five(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(
+        200, {"output_text": "ready"},
+    )
+    adapter = AdapterRegistry(fake_transport, logical_models={
+        "omniroute": ("auto", "m1", "m2", "m3", "m4"),
+    }).adapter("OMNIROUTE")
+
+    result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert result.status == "ready"
+    assert [request.body["model"] for request in fake_transport.requests] == ["auto", "m1", "m2", "m3", "m4"]
+
+
+@pytest.mark.parametrize("body", [{}, {"output_text": ""}, {"output_text": "  "}, {"output_text": 123}])
+def test_omniroute_verification_rejects_empty_or_non_text_responses(
+    fake_transport: FakeTransport, body: object,
+) -> None:
+    fake_transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, body)
+
+    with pytest.raises(AdapterError, match="^PROVIDER_PROBE_RESPONSE_INVALID$"):
+        AdapterRegistry(fake_transport).adapter("OMNIROUTE").verify(
+            connection("OMNIROUTE"), TEST_CREDENTIAL,
+        )
+
+
+def test_omniroute_catalog_failure_hides_secret(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TimeoutError(TEST_CREDENTIAL)
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_UNAVAILABLE$") as captured:
+        AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+            connection("OMNIROUTE"), TEST_CREDENTIAL,
+        )
+
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+def test_omniroute_catalog_rejects_model_id_containing_secret(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": f"model-{TEST_CREDENTIAL}"}]},
+    )
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_RESPONSE_INVALID$") as captured:
+        AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+            connection("OMNIROUTE"), TEST_CREDENTIAL,
+        )
+
+    assert TEST_CREDENTIAL not in repr(captured.value)
 
 
 @pytest.mark.parametrize(

@@ -144,8 +144,9 @@ class FakeEgress:
 
 
 class StaticWorkspaceModelResolver:
-    def __init__(self, *, provider_code: str = "EOUL_GATEWAY") -> None:
+    def __init__(self, *, provider_code: str = "EOUL_GATEWAY", model_id: str = "assistant-default") -> None:
         self.provider_code = provider_code
+        self.model_id = model_id
         self.calls = []
 
     @contextmanager
@@ -153,7 +154,7 @@ class StaticWorkspaceModelResolver:
         self.calls.append((context.workspace_id, capability))
         model = ResolvedModel(
             connection_id="eoul-primary", provider_code=self.provider_code,
-            model_id="assistant-default", capability=capability,
+            model_id=self.model_id, capability=capability,
             base_url="https://gateway.example.com", credential_version=7,
             default_version=3, catalog_version=11, provider_kind="external_api",
             routing_owner="gateway", daon_fallback_allowed=False,
@@ -382,6 +383,24 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 1)
         self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/responses")
         self.assertEqual(transport.calls[0]["payload"]["model"], "assistant-default")
+
+    def test_omniroute_selected_or_auto_model_reaches_responses_unchanged(self) -> None:
+        for model_id in ("auto", "cc/claude-sonnet", "combo-writing"):
+            with self.subTest(model_id=model_id):
+                transport = OmniRouteTransport()
+                service = QuestionAnsweringService(
+                    StaticWorkspaceModelResolver(provider_code="OMNIROUTE", model_id=model_id),
+                    FakeRepository(), FakeIndex(()), FakeCredential(), transport, FakeEgress(),
+                )
+
+                answer = service.ask(
+                    QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+                    source_id=None, source_version_id=None, question="안녕하세요", run_id="run-omni-model",
+                )
+
+                self.assertEqual(answer.answer, "omni answer")
+                self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/responses")
+                self.assertEqual(transport.calls[0]["payload"]["model"], model_id)
 
     def test_general_conversation_intent_is_exact_and_factual_suffix_fails_closed(self) -> None:
         for value in ("안녕", "안녕하세요!", "안녕하세요?", "고마워", "감사합니다.", "Daon 사용법 알려줘"):

@@ -1,5 +1,8 @@
 services:
   api:
+    # WSL 호스트의 로컬 Gateway를 컨테이너에서도 안정적인 이름으로 접근한다.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # WSL 통합 QA는 사설 IP의 HTTP로 접근한다. 운영 Compose는 HTTPS 강제를 유지한다.
       DAON_ALLOW_PRIVATE_HTTP_GATEWAY: "true"

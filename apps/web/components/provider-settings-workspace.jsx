@@ -9,7 +9,7 @@ const PROVIDERS = Object.freeze([
   "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
   "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS", "CUSTOM"
 ]);
-const MANAGED_MODEL_PROVIDERS = new Set(["MEDIA_BRIDGE", "OMNIROUTE"]);
+const MANAGED_MODEL_PROVIDERS = new Set(["MEDIA_BRIDGE"]);
 const CREDENTIAL_REQUIRED_PROVIDERS = new Set([
   "CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI",
   "OPENROUTER", "ANTHROPIC", "OMNIROUTE", "EOUL_GATEWAY", "SENTENCE_TRANSFORMERS", "CUSTOM"
@@ -88,16 +88,19 @@ export function formatModelChoice(connection, model) {
 }
 
 export function projectProviderConnection(connection, userCredential = null) {
+  const routeReady = connection?.provider_code !== "OMNIROUTE" || (connection.allowed_model_ids ?? []).some((modelId) =>
+    (connection.models ?? []).some((model) => model.model_id === modelId && model.catalog_status === "ready"
+      && (model.effective_capabilities ?? []).includes("text_generation")));
   if (connection?.access_mode === "personal") {
-    const verified = connection.enabled === true && userCredential?.verification_status === "verified";
+    const verified = connection.enabled === true && routeReady && userCredential?.verification_status === "verified";
     return { label: `비공용 · 개인 Key 필요 · ${verified ? "사용 가능" : "사용 대기"}`, verified };
   }
   if (connection?.access_mode === "public" && connection?.credential_requirement === "none") {
-    const verified = connection.enabled === true && connection.verification_status === "verified";
+    const verified = connection.enabled === true && routeReady && connection.verification_status === "verified";
     return { label: `공용 · Key 불필요 · ${verified ? "사용 가능" : "확인 필요"}`, verified };
   }
   if (connection?.access_mode === "public") {
-    const verified = connection.enabled === true && connection.verification_status === "verified";
+    const verified = connection.enabled === true && routeReady && connection.verification_status === "verified";
     return { label: `공용 · 관리자 Key 필요 · ${verified ? "사용 가능" : "확인 필요"}`, verified };
   }
   const credential = connection?.configured ? "Credential 설정됨" : "Credential 없음";
@@ -130,7 +133,8 @@ export function safeProviderErrorMessage(action, error) {
 
 export function canRefreshCatalog(connection, busy) {
   return !busy && Number(connection?.version ?? 0) > 0
-    && !MANAGED_MODEL_PROVIDERS.has(connection?.provider_code);
+    && !MANAGED_MODEL_PROVIDERS.has(connection?.provider_code)
+    && (connection?.provider_code !== "OMNIROUTE" || connection?.configured === true);
 }
 
 export function providerRequiresCredential(providerCode, baseUrl = "") {
@@ -149,6 +153,8 @@ export function providerRequiresCredential(providerCode, baseUrl = "") {
 export function canSaveCredential(connection, draft, credential, busy) {
   const isNewConnection = Number(draft?.version ?? 0) === 0;
   return !busy && Boolean(credential?.trim()) && Boolean(draft?.connection_id?.trim())
+    && !(connection?.provider_code === "CUSTOM" && connection?.access_mode === "personal" && !(connection.allowed_model_ids ?? []).length)
+    && (draft?.provider_code !== "OMNIROUTE" || !isNewConnection || omniRouteSelectedModelCount(draft.logical_model_ids) <= 4)
     && (isNewConnection
       ? Boolean(draft?.display_name?.trim()) && Boolean(draft?.base_url?.trim())
       : Boolean(connection));
@@ -158,8 +164,26 @@ function normalizedLogicalModels(value) {
   return [...new Set(value.split(/[\n,]/u).map((item) => item.trim()).filter(Boolean))];
 }
 
-function updateLogicalModelSelection(current, modelId, checked) {
+function normalizedOmniRouteModels(value) {
+  const explicit = normalizedLogicalModels(value).filter((modelId) => modelId !== "auto");
+  return explicit.length ? explicit : ["auto"];
+}
+
+function omniRouteSelectedModelCount(value) {
+  return normalizedOmniRouteModels(value).length;
+}
+
+function unchangedOmniRouteSelection(draft, connection) {
+  if (draft.provider_code !== "OMNIROUTE" || !draft.version || connection?.connection_id !== draft.connection_id) return false;
+  const selected = normalizedLogicalModels(draft.logical_model_ids);
+  const allowed = connection.allowed_model_ids ?? [];
+  return allowed.length > 0 && selected.length === allowed.length && selected.every((modelId) => allowed.includes(modelId));
+}
+
+function updateLogicalModelSelection(current, modelId, checked, route = false) {
   const selected = normalizedLogicalModels(current);
+  if (route && checked && modelId === "auto") return "auto";
+  if (route && checked) return [...new Set([...selected.filter((item) => item !== "auto"), modelId])].join("\n");
   const next = checked ? [...selected, modelId] : selected.filter((item) => item !== modelId);
   return [...new Set(next)].join("\n");
 }
@@ -257,8 +281,12 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   async function saveConnection(includeCredential) {
     const connectionId = draft.connection_id.trim();
     const compatible = draft.provider_code === "CUSTOM" && Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type);
+    const route = draft.provider_code === "OMNIROUTE";
+    const routeModelsUnchanged = unchangedOmniRouteSelection(draft, selectedConnection);
+    if (route && !(includeCredential && draft.version > 0) && !routeModelsUnchanged && omniRouteSelectedModelCount(draft.logical_model_ids) > 4) return;
+    if (isSystemAdmin && route && draft.access_mode === "personal" && includeCredential) return;
     if (!isSystemAdmin) {
-      if (!includeCredential || !connectionId || !credential || selectedConnection?.access_mode !== "personal") return;
+      if (!includeCredential || !connectionId || !credential || selectedConnection?.access_mode !== "personal" || !canUsePersonalCredential) return;
       setStatus({ kind: "saving", message: "개인 Provider 키를 저장하는 중입니다." });
       try {
         const current = userCredentials[connectionId];
@@ -284,12 +312,16 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
           expected_version: draft.version
         }, operationKey("provider-credential-replace"));
       } else {
+        const chosenModels = normalizedLogicalModels(draft.logical_model_ids);
+        const modelIds = route
+          ? routeModelsUnchanged ? [...selectedConnection.allowed_model_ids] : normalizedOmniRouteModels(draft.logical_model_ids)
+          : chosenModels;
         const body = {
           display_name: draft.display_name.trim(),
           provider_name: draft.provider_name.trim(),
           base_url: draft.base_url.trim(),
-          logical_model_ids: normalizedLogicalModels(draft.logical_model_ids),
-          allowed_model_ids: normalizedLogicalModels(draft.logical_model_ids),
+          logical_model_ids: modelIds,
+          allowed_model_ids: modelIds,
           short_code: draft.short_code.trim().toUpperCase(),
           access_mode: draft.credential_requirement === "none" ? "public" : draft.access_mode,
           credential_requirement: draft.credential_requirement,
@@ -298,7 +330,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
           expected_version: draft.version,
           ...(compatible && credential.trim()
             ? draft.access_mode === "personal" ? { test_credential: credential } : { credential }
-            : includeCredential ? { credential } : {})
+            : (includeCredential || (route && draft.access_mode === "public" && credential.trim())) ? { credential } : {})
         };
         result = draft.version === 0
           ? await providerSettingsApi.createConnection({ connection_id: connectionId, provider_code: draft.provider_code, ...body }, operationKey("provider-create"))
@@ -420,12 +452,21 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
 
   const busy = status.kind === "saving" || status.kind === "loading";
   const compatible = draft.provider_code === "CUSTOM" && Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type);
+  const pendingCompatible = compatible && draft.version === 0 && draft.access_mode === "personal"
+    && !credential.trim() && selectedModelIds.length === 0;
+  const routeModelsUnchanged = unchangedOmniRouteSelection(draft, selectedConnection);
   const managedModels = MANAGED_MODEL_PROVIDERS.has(selectedConnection?.provider_code);
   const canMutate = isSystemAdmin === true && !busy && Boolean(draft.connection_id.trim()) && Boolean(draft.provider_name.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim())
-    && (!compatible || (selectedModelIds.length >= 1 && selectedModelIds.length <= 4 && (draft.version > 0 || Boolean(credential.trim()))));
+    && (draft.provider_code !== "OMNIROUTE" || routeModelsUnchanged || omniRouteSelectedModelCount(draft.logical_model_ids) <= 4)
+    && (!compatible || pendingCompatible || (selectedModelIds.length >= 1 && selectedModelIds.length <= 4 && (draft.version > 0 || Boolean(credential.trim()))));
   const canPreview = isSystemAdmin === true && compatible && !busy
     && Boolean(draft.connection_id.trim()) && Boolean(draft.base_url.trim()) && Boolean(credential.trim());
-  const canUsePersonalCredential = isSystemAdmin || (Number(selectedConnection?.version ?? 0) > 0 && selectedConnection?.access_mode === "personal");
+  const personalCustomWithoutModels = !isSystemAdmin && selectedConnection?.provider_code === "CUSTOM"
+    && selectedConnection?.access_mode === "personal" && !(selectedConnection.allowed_model_ids ?? []).length;
+  const canUsePersonalCredential = !personalCustomWithoutModels
+    && (isSystemAdmin || (Number(selectedConnection?.version ?? 0) > 0 && selectedConnection?.access_mode === "personal"));
+  const adminSystemKeyAllowed = draft.credential_requirement === "required"
+    && !(draft.provider_code === "OMNIROUTE" && draft.access_mode === "personal");
   const Root = embedded ? "div" : "main";
 
   return (
@@ -468,15 +509,16 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                 <label>두 글자 약어<input aria-label="두 글자 약어" value={draft.short_code} maxLength={2} pattern="[A-Z]{2}" autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, short_code: event.target.value.toUpperCase() }))} /></label>
                 <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
                 <label>인증 유형{compatible ? <input readOnly value="Key 필요" /> : <select value={draft.credential_requirement} onChange={(event) => setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode }))}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>
-                <fieldset className="provider-field-wide provider-model-picker"><legend>사용 허용 모델</legend><p>체크한 모델만 실행할 수 있습니다. 선택하지 않으면 사용할 모델이 없습니다.</p>{managedModels ? <small>이 Provider가 모델을 직접 관리합니다.</small> : availableModels.length ? <div className="provider-model-options">{availableModels.map((modelId) => <label key={modelId}><input type="checkbox" checked={selectedModelIds.includes(modelId)} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: updateLogicalModelSelection(current.logical_model_ids, modelId, event.target.checked) }))} /><span>{modelId}</span></label>)}</div> : <small>{compatible ? "모델 목록 조회는 선택 사항입니다. 모델 ID를 직접 입력해 시험할 수 있습니다." : "조회된 모델이 없습니다. 모델 조회 후 허용할 모델을 선택하세요."}</small>}{compatible ? <><label className="provider-manual-models">모델 ID 직접 입력<textarea value={draft.logical_model_ids} rows={3} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label><small>최대 4개 모델을 허용할 수 있습니다.{draft.adapter_type === "anthropic_compatible" ? " Anthropic 모델 목록은 첫 페이지만 표시될 수 있습니다." : ""}</small></> : null}{selectedModelIds.length ? <button type="button" className="provider-model-clear" onClick={() => setDraft((current) => ({ ...current, logical_model_ids: "" }))}>허용 목록 비우기</button> : null}</fieldset>
+                <fieldset className="provider-field-wide provider-model-picker"><legend>사용 허용 모델</legend><p>{draft.provider_code === "OMNIROUTE" ? "선택하지 않으면 auto를 연결 시험과 질문 실행에 사용합니다." : "체크한 모델만 실행할 수 있습니다. 선택하지 않으면 사용할 모델이 없습니다."}</p>{managedModels ? <small>이 Provider가 모델을 직접 관리합니다.</small> : availableModels.length ? <div className="provider-model-options">{availableModels.map((modelId) => <label key={modelId}><input type="checkbox" checked={selectedModelIds.includes(modelId)} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: updateLogicalModelSelection(current.logical_model_ids, modelId, event.target.checked, draft.provider_code === "OMNIROUTE") }))} /><span>{modelId}</span></label>)}</div> : <small>{compatible ? "모델 조회는 선택 사항입니다. 모델 ID를 직접 입력해 시험할 수 있습니다." : draft.provider_code === "OMNIROUTE" ? "모델 ID를 직접 입력할 수 있습니다." : "조회된 모델이 없습니다. 모델 조회 후 허용할 모델을 선택하세요."}</small>}{compatible || draft.provider_code === "OMNIROUTE" ? <><label className="provider-manual-models">모델 ID 직접 입력<textarea value={draft.logical_model_ids} rows={3} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label>{compatible ? <small>최대 4개 모델을 허용할 수 있습니다.{draft.adapter_type === "anthropic_compatible" ? " Anthropic 모델 목록은 첫 페이지만 표시될 수 있습니다." : ""}</small> : draft.provider_code === "OMNIROUTE" ? <small>최대 4개 모델을 허용할 수 있습니다.</small> : null}</> : null}{selectedModelIds.length ? <button type="button" className="provider-model-clear" onClick={() => setDraft((current) => ({ ...current, logical_model_ids: "" }))}>허용 목록 비우기</button> : null}</fieldset>
               </> : <div className="provider-field-wide"><p>연결 이름과 허용 모델은 읽기 전용입니다.</p><p>Endpoint: {selectedConnection?.base_url ?? ""}</p><p>사용 허용 모델: {(selectedConnection?.allowed_model_ids ?? []).join(", ") || "없음"}</p></div>}
-              {(isSystemAdmin ? draft.credential_requirement === "required" : selectedConnection?.access_mode === "personal") ? <label>API Key 또는 Client Key{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}{isSystemAdmin && compatible && draft.access_mode === "personal" ? <small>개인 연결의 시험 Key는 저장하지 않습니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} onChange={(event) => setCredential(event.target.value)} /></label> : null}
+              {(isSystemAdmin ? adminSystemKeyAllowed : selectedConnection?.access_mode === "personal") ? <label>API Key 또는 Client Key{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}{isSystemAdmin && compatible && draft.access_mode === "personal" ? <small>개인 연결의 시험 Key는 저장하지 않습니다.</small> : null}{personalCustomWithoutModels ? <small>관리자가 사용할 모델을 허용한 뒤 Key를 시험할 수 있습니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} onChange={(event) => setCredential(event.target.value)} /></label> : null}
             </div>
             {isSystemAdmin ? <><label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label><label className="styled-check"><input type="checkbox" checked={draft.access_mode === "public"} disabled={draft.credential_requirement === "none"} onChange={(event) => setDraft((current) => ({ ...current, access_mode: event.target.checked ? "public" : "personal" }))} /><span>공용 사용{draft.credential_requirement === "none" ? " (Key 불필요 연결은 항상 공용)" : ""}</span></label></> : null}
             <div className="provider-detail-actions">
-              {isSystemAdmin && compatible ? <span className="provider-test-cost">시험 대상 {selectedModelIds.length}개 모델 · 실제 시험 시 사용료가 발생할 수 있습니다.</span> : null}
-              {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate || !/^[A-Z]{2}$/u.test(draft.short_code)}>연결 시험 및 저장</button> : null}
-              {(isSystemAdmin ? draft.credential_requirement === "required" && !compatible : selectedConnection?.access_mode === "personal") ? <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canSaveCredential(selectedConnection, draft, credential, busy) || !canUsePersonalCredential}>{isSystemAdmin ? "시스템 키 시험 및 저장" : "내 계정 키 시험 및 저장"}</button> : null}
+              {isSystemAdmin && compatible ? <span className="provider-test-cost">{pendingCompatible ? "시험 없이 사용 대기 연결을 등록합니다. Provider 호출과 사용료가 없습니다." : `시험 대상 ${selectedModelIds.length}개 모델 · 실제 시험 시 사용료가 발생할 수 있습니다.`}</span> : null}
+              {draft.provider_code === "OMNIROUTE" ? <span className="provider-test-cost">시험 대상 {omniRouteSelectedModelCount(draft.logical_model_ids)}개 모델 · 선택한 모델을 각각 시험합니다. 공용 연결은 정기 점검에서도 각각 호출되어 사용료가 발생할 수 있습니다.{selectedConnection?.provider_code === "OMNIROUTE" && (selectedConnection.allowed_model_ids ?? []).length > omniRouteSelectedModelCount(draft.logical_model_ids) ? ` 기존 허용 목록은 auto 포함 ${selectedConnection.allowed_model_ids.length}개 모델을 Key 재시험·정기 점검에서 각각 호출합니다.` : ""}</span> : null}
+              {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate || !/^[A-Z]{2}$/u.test(draft.short_code)}>{pendingCompatible ? "사용 대기 연결 등록" : "연결 시험 및 저장"}</button> : null}
+              {(isSystemAdmin ? adminSystemKeyAllowed && !compatible : selectedConnection?.access_mode === "personal") ? <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canSaveCredential(selectedConnection, draft, credential, busy) || !canUsePersonalCredential}>{isSystemAdmin ? "시스템 키 시험 및 저장" : "내 계정 키 시험 및 저장"}</button> : null}
               {!isSystemAdmin && selectedConnection?.access_mode === "personal" ? <button className="secondary-button danger-button" type="button" onClick={deleteUserCredential} disabled={busy || !canUsePersonalCredential || !userCredentials[selectedConnection?.connection_id]}>내 계정 키 삭제</button> : null}
               {isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured}>키 삭제</button> : null}
               {isSystemAdmin && compatible ? <button className="secondary-button" type="button" onClick={previewModels} disabled={!canPreview} title="입력한 Key로 모델 목록을 조회합니다. Provider에 따라 사용료가 발생할 수 있습니다.">모델 목록 조회</button> : null}

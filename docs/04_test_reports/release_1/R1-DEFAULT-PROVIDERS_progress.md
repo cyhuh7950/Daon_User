@@ -1,0 +1,18 @@
+# 기본 Provider 사용 대기 등록 작업현황
+
+- issue_id: `R1-DEFAULT-PROVIDERS-20261003`; 담당: 어울2 단일 code writer; 작업공간: `codex/next-user-development` worktree.
+- 상태(2026-10-04): 승인 계획 Task 1·2의 로컬 구현·검증 완료. Task 3의 실제 Anthropic·OpenAI·Gemini 세 행 등록, WSL QA 배포·DB 변경은 신산님 지시에 따라 시작하지 않았다.
+- 승인 범위: `CUSTOM + personal + credential 없음 + test_credential 없음 + 허용/논리 모델 없음`인 신규 연결만 기존 API에서 `unverified` 사용 대기로 저장한다. 공개 CUSTOM과 모델 지정 개인 CUSTOM의 시험 Key 요구는 유지한다. 새 공개 API·DB schema·권한 정책은 변경하지 않았다.
+- Task 1 결과: `services/api/src/daon_user_api/provider_connection_admin.py`에 위 좁은 예외를 두어 카탈로그·허용 목록·암호화 Key 없이, Provider 네트워크 호출 0회로 생성한다. 실패한 모델 추가·공용 전환은 기존 행 불변이며, 모델을 추가할 때 일회성 시험 Key로 실제 fixture probe가 성공해야 허용된다. 개인 Key는 허용 모델이 없는 대기 연결을 사용 가능으로 만들 수 없다.
+- Task 2 결과: `apps/web/components/provider-settings-workspace.jsx`는 새 개인 CUSTOM 빈 연결에만 `사용 대기 연결 등록`을 표시·활성화하고 “시험 없이 사용 대기”와 무비용을 안내한다. 다른 생성은 `연결 시험 및 저장`, 개인 모델 시험 Key 비저장, 일반 사용자 읽기 전용·same-origin BFF를 유지한다. 기존 “모델 조회는 선택 사항” 안내문도 인접 계약 회귀로 확인하여 복원했다.
+- 이번 Task 1·2 수정·테스트 파일: `services/api/src/daon_user_api/provider_connection_admin.py`, `services/api/tests/test_provider_connection_admin.py`, `services/api/tests/test_user_provider_credentials.py`, `apps/web/components/provider-settings-workspace.jsx`, `scripts/tests/provider-settings-web.test.mjs`, 이 진행 파일. 같은 worktree의 기존 OmniRoute diff와 메인의 `deploy/daon-user/compose.wsl-postgres.yaml` 수정은 보존했다.
+- TDD: API 대기 생성 2개 adapter 사례 `2 failed, 3 passed` RED 후 해당 5건 GREEN. UI 동적 RED를 시도할 때 번들링 메모리 오류가 2회 발생해 기능 단언에 도달하지 못했고, 대기 action 정적 계약 1건을 RED→GREEN으로 확인했다. 이후 동적 UI 대기 action·payload·무호출 검증이 통과했다. 모델 추가 성공/실패, 개인 Key 무모델 거절, 멱등 재시도, 공개/모델 지정 거절을 회귀 테스트로 추가했다.
+- 최종 인접 검증(OmniRoute 후속 재작업 포함): Python 12개 파일 `246 passed, 1 skipped, 6 subtests passed` 및 기존 httpx 쿠키 deprecation warning 19건. Node Provider/질문 인접 5개 파일 `40 passed`. Web production build·TypeScript PASS, Web UI boundary 475파일 위반 0, 전체 product UI boundary 498파일 위반 0, `git diff --check` PASS. 실제 유료 Provider 호출 없이 fixture만 사용했다.
+- 오류 횟수/원인: 비의도 동적 Node 시험 오류 2회는 Vite 번들 중 `RangeError: Array buffer allocation failed`였고 이후 동일 시험 단독·전체 재실행은 통과했다. Provider health UI 계약 실패 1회는 기존 모델 조회 선택 안내문 누락으로 확인·복원 후 GREEN. 확장 Node suite의 account/organization React Route 시험은 외부 `react` require 미노출 오류 1건이 남았다(이번 Provider 파일과 다른 경로); 별도 제품 UI boundary 실행은 PASS. 한 차례 PowerShell 프로세스 검사에서 ACL helper spawn 실패가 있었으나 후속 로컬 명령은 정상. 같은 원인 3회 반복 없음. 의도된 RED 실패는 구현 오류에 포함하지 않는다.
+- 미검증: 실제 3330 화면 클릭·Network, 실제 DB 전후·WSL QA의 세 행 생성, 실 Provider Key/모델 시험, Oracle·배포는 하지 않았다. 메인 전달 정보상 QA DB는 기존 8개 연결, 세 기본 Provider 행 없음, OmniRoute 허용 0개이며 WSL.exe는 timeout, escalated SSH 경로는 가능하다. 이 수치는 어울2가 직접 재조회하지 않았다. 이전 전체 API suite의 별도 라이선스 `LICENSE_DOCUMENT_INVALID` 10건은 이번 턴에 재실행·해결하지 않았다.
+- 다음 판단: 어울1이 Task 1·2와 같은 worktree의 OmniRoute 후속 diff를 독립 검토하고, 별도 승인·QA 절차로 계획 Task 3 및 배포 여부를 결정한다. 이 파일은 `.gitignore` 대상이므로 그대로 보존하고 메인이 명시적으로 stage해야 한다. commit/push/deploy 없음.
+
+## 일반 사용자 pending CUSTOM Key 화면 후속
+
+- 2026-10-04 / 어울2: 최종 독립 리뷰 Minor 1에 따라 `CUSTOM + personal + allowed_model_ids=[]` 대기 연결에서 일반 사용자의 Key 입력과 “내 계정 키 시험 및 저장”을 비활성화하고 관리자 모델 허용 후 시험 안내를 추가했다. 기존 서버 측 거절·암호화 Key·권한은 바꾸지 않았다.
+- 동적 Node fixture에서 Key 입력 활성 상태를 RED 1건으로 관찰한 후 GREEN. 같은 회차 최종 인접 검증은 Python 12개 파일 `250 passed, 1 skipped, 6 subtests passed`, Node 5개 파일 `43 passed`, Web build·TypeScript·UI boundary 475/498 위반 0, `git diff --check` PASS. 전체 API suite는 별도 라이선스 `LICENSE_DOCUMENT_INVALID` 10건 때문에 `10 failed, 864 passed, 48 skipped`로 전체 PASS 아님. 실제 DB/브라우저/외부 Provider/배포 미검증; 별도 WSL Compose 수정 보존, commit/push/deploy 없음. 오류·정책 미결은 `R1-ROUTE-MODELS_progress.md`의 같은 날짜 절에 상세 기록했다. 이 `.gitignore` 파일은 메인이 명시적으로 stage할 때까지 현 위치에 보존한다.

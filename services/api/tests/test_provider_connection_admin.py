@@ -90,10 +90,11 @@ class Connection:
             record = self.database.system_connection
             if record is None or (params and record["connection_id"] != params[0]):
                 return Cursor(rows=[])
+            catalog_status = max((item[4] for item in self.database.models), default=None)
             return Cursor(rows=[(
                 record["connection_id"], record["provider_code"], record["display_name"], record["base_url"], record["enabled"],
                 record["encrypted_credential"], record["credential_version"], record["verification_status"],
-                record["verified_at"], record["version"], record["catalog_status"], record["catalog_version"],
+                record["verified_at"], record["version"], catalog_status, record["catalog_version"],
                 record["access_mode"], record["credential_requirement"], record["short_code"], record["adapter_type"],
                 record.get("provider_name", record["provider_code"]),
             )])
@@ -117,6 +118,7 @@ class CompatibleDatabase(SharedDatabase):
     def __init__(self) -> None:
         super().__init__()
         self.allowed_model_ids: list[str] = []
+        self.user_credentials: list[dict[str, object]] = []
 
 
 class CompatibleConnection(Connection):
@@ -184,6 +186,12 @@ class CompatibleConnection(Connection):
                 for item in self.database.models
             ]
             return Cursor()
+        if normalized.startswith("UPDATE system_provider_models SET reported_capabilities=%s"):
+            self.database.models = [
+                (item[0], params[0], params[1], False, "stale", params[2]) if item[0] in params[4] else item
+                for item in self.database.models
+            ]
+            return Cursor()
         if normalized.startswith("SELECT model_id FROM system_provider_models WHERE connection_id=%s AND model_id=ANY"):
             return Cursor(rows=[(item[0],) for item in self.database.models if item[0] in params[1]])
         if normalized.startswith("SELECT model_id FROM system_provider_models WHERE connection_id=%s ORDER BY"):
@@ -199,6 +207,11 @@ class CompatibleConnection(Connection):
             return Cursor()
         if normalized.startswith("SELECT model_id FROM system_provider_allowed_models"):
             return Cursor(rows=[(item,) for item in self.database.allowed_model_ids])
+        if normalized.startswith("UPDATE user_provider_credentials SET verification_status='unverified'"):
+            for item in self.database.user_credentials:
+                if item["connection_id"] == params[0] and item["verification_status"] == "verified":
+                    item["verification_status"] = "unverified"
+            return Cursor()
         return super().execute(sql, params)
 
 
@@ -709,6 +722,493 @@ def custom_command(*, adapter_type="openai_compatible", access_mode="public", cr
     )
 
 
+def route_command(*, model_ids=()):
+    return ProviderConnectionCreateCommand(
+        connection_id="route-1", provider_code="OMNIROUTE", display_name="OmniRoute",
+        base_url="https://omniroute.example/v1", credential="fixture-route-key",
+        logical_model_ids=model_ids, enabled=True, expected_version=0, access_mode="public",
+        credential_requirement="required", short_code="OM", adapter_type="OMNIROUTE",
+        allowed_model_ids=model_ids, provider_name="OmniRoute",
+    )
+
+
+@pytest.mark.parametrize("model_ids", [(), ("cc/claude-sonnet",), ("combo-writing",)])
+def test_omniroute_create_uses_selected_model_or_auto_for_probe_and_allowlist(monkeypatch, model_ids) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+
+    saved, _ = service.create_connection(context(), route_command(model_ids=model_ids), "route-create-001")
+
+    chosen = list(model_ids or ("auto",))
+    assert saved["allowed_model_ids"] == chosen
+    assert [item["model_id"] for item in saved["models"]] == chosen
+    assert [(item[0], item[1], item[3]["model"]) for item in transport.requests] == [
+        ("POST", "https://omniroute.example/v1/responses", chosen[0])
+    ]
+    assert "fixture-route-key" not in repr(saved) + repr(database.idempotency) + repr(database.outbox)
+
+
+def test_omniroute_explicit_model_takes_precedence_over_previous_auto(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, _ = compatible_service(monkeypatch, transport)
+
+    saved, _ = service.create_connection(
+        context(), route_command(model_ids=("auto", "cc/claude-sonnet")), "route-create-explicit-001",
+    )
+
+    assert saved["allowed_model_ids"] == ["cc/claude-sonnet"]
+    assert [item["model_id"] for item in saved["models"]] == ["cc/claude-sonnet"]
+    assert [(item[0], item[3]["model"]) for item in transport.requests] == [
+        ("POST", "cc/claude-sonnet"),
+    ]
+
+
+def test_omniroute_auto_plus_four_explicit_counts_as_four_probes(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, _ = compatible_service(monkeypatch, transport)
+
+    saved, _ = service.create_connection(
+        context(), route_command(model_ids=("auto", "m1", "m2", "m3", "m4")),
+        "route-auto-plus-four-create",
+    )
+
+    assert saved["allowed_model_ids"] == ["m1", "m2", "m3", "m4"]
+    assert [item[3]["model"] for item in transport.requests] == ["m1", "m2", "m3", "m4"]
+
+
+def test_omniroute_refresh_reads_models_without_verifying_or_expanding_allowlist(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [
+            {"id": "cc/claude-sonnet"}, {"id": "combo-writing"},
+            {"id": "openai/whisper-1"},
+            {"id": "openai/whisper-1", "type": "audio", "subtype": "transcription"},
+            {"id": "embedding-only", "type": "embedding"},
+            {"id": "image-only", "type": "image"},
+        ]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-create-002")
+    old_key = database.system_connection["encrypted_credential"]
+    transport.requests.clear()
+
+    saved, _ = service.refresh_catalog(context(), "route-1", 1, "route-refresh-001")
+
+    assert saved["allowed_model_ids"] == ["auto"]
+    assert {item["model_id"] for item in saved["models"]} == {"auto", "cc/claude-sonnet", "combo-writing"}
+    assert database.system_connection["encrypted_credential"] == old_key
+    assert [(item[0], item[1], item[3]) for item in transport.requests] == [
+        ("GET", "https://omniroute.example/v1/models", None)
+    ]
+
+
+@pytest.mark.parametrize("allowed_model", ["auto", "combo-writing"])
+def test_omniroute_refresh_stales_missing_unallowed_but_preserves_allowed(
+    monkeypatch, allowed_model: str,
+) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "old-discovered"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(model_ids=(allowed_model,)), f"route-stale-create-{allowed_model}")
+    service.refresh_catalog(context(), "route-1", 1, f"route-stale-refresh-1-{allowed_model}")
+    transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "new-discovered"}]},
+    )
+
+    saved, _ = service.refresh_catalog(context(), "route-1", 2, f"route-stale-refresh-2-{allowed_model}")
+
+    statuses = {item["model_id"]: item["catalog_status"] for item in saved["models"]}
+    assert statuses == {allowed_model: "ready", "old-discovered": "stale", "new-discovered": "ready"}
+    assert saved["allowed_model_ids"] == [allowed_model]
+    assert database.allowed_model_ids == [allowed_model]
+
+
+@pytest.mark.parametrize("specialty_type", ["embedding", "image", "audio"])
+def test_omniroute_refresh_revokes_ready_capability_for_listed_specialty_but_keeps_absent_probe(
+    monkeypatch, specialty_type: str,
+) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "listed-specialty", "type": specialty_type}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(
+        context(), route_command(model_ids=("manual-absent", "listed-specialty")),
+        f"route-specialty-create-{specialty_type}",
+    )
+    original_key = database.system_connection["encrypted_credential"]
+    transport.requests.clear()
+
+    saved, _ = service.refresh_catalog(context(), "route-1", 1, f"route-specialty-refresh-{specialty_type}")
+
+    models = {item["model_id"]: item for item in saved["models"]}
+    assert models["manual-absent"]["catalog_status"] == "ready"
+    assert models["manual-absent"]["effective_capabilities"] == ["text_generation"]
+    assert saved["catalog_status"] == "ready"
+    assert models["listed-specialty"]["catalog_status"] == "stale"
+    assert models["listed-specialty"]["reported_capabilities"] == []
+    assert models["listed-specialty"]["effective_capabilities"] == []
+    assert saved["allowed_model_ids"] == ["manual-absent", "listed-specialty"]
+    assert database.system_connection["encrypted_credential"] == original_key
+    assert [request[0] for request in transport.requests] == ["GET"]
+
+
+def test_omniroute_key_replacement_probes_only_allowed_models(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "catalog-only"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    allowed = ("cc/claude-sonnet", "combo-writing")
+    service.create_connection(context(), route_command(model_ids=allowed), "route-replace-create")
+    service.refresh_catalog(context(), "route-1", 1, "route-replace-refresh")
+    transport.requests.clear()
+
+    saved, _ = service.replace_credential(
+        context(), "route-1", ProviderCredentialReplaceCommand("fixture-new-route-key", 2),
+        "route-replace-key",
+    )
+
+    assert saved["allowed_model_ids"] == list(allowed)
+    assert database.system_connection["credential_version"] == 2
+    assert [request[3]["model"] for request in transport.requests] == list(allowed)
+
+
+def test_omniroute_untyped_catalog_candidate_stays_unallowed_until_successful_probe(monkeypatch) -> None:
+    transport = FixtureTransport()
+    responses_url = "https://omniroute.example/v1/responses"
+    transport.responses[responses_url] = TransportResponse(200, {"output_text": "ready"})
+    transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "untyped-candidate"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-untyped-create")
+    refreshed, _ = service.refresh_catalog(context(), "route-1", 1, "route-untyped-refresh")
+    assert {item["model_id"] for item in refreshed["models"]} == {"auto", "untyped-candidate"}
+    assert refreshed["allowed_model_ids"] == ["auto"]
+
+    command = ProviderConnectionUpdateCommand(
+        display_name="OmniRoute", base_url="https://omniroute.example/v1", credential=None,
+        logical_model_ids=("untyped-candidate",), enabled=True, expected_version=2,
+        access_mode="public", credential_requirement="required", short_code="OM",
+        adapter_type="OMNIROUTE", allowed_model_ids=("untyped-candidate",), provider_name="OmniRoute",
+    )
+    before = durable_state(database)
+    transport.responses[(responses_url, "untyped-candidate")] = TransportResponse(200, {})
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_PROBE_RESPONSE_INVALID$"):
+        service.update_connection(context(), "route-1", command, "route-untyped-invalid")
+    assert durable_state(database) == before
+
+    transport.responses[(responses_url, "untyped-candidate")] = TransportResponse(200, {"output_text": "ready"})
+    saved, _ = service.update_connection(context(), "route-1", command, "route-untyped-valid")
+    assert saved["allowed_model_ids"] == ["untyped-candidate"]
+    assert database.system_connection["credential_version"] == 1
+
+
+def test_omniroute_health_rechecks_each_allowed_model(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(
+        context(), route_command(model_ids=("cc/claude-sonnet", "combo-writing")),
+        "route-health-create",
+    )
+    service._store = HealthStore(database)
+    database.health_updates = []
+    transport.requests.clear()
+
+    result = service.check_active_connection(context(), "route-1")
+
+    assert result["status"] == "verified"
+    assert [request[3]["model"] for request in transport.requests] == [
+        "cc/claude-sonnet", "combo-writing",
+    ]
+
+
+@pytest.mark.parametrize("access_mode", ["public", "personal"])
+def test_omniroute_create_rejects_fifth_model_before_network_or_mutation(monkeypatch, access_mode: str) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    command = route_command(model_ids=("m1", "m2", "m3", "m4", "m5"))
+    if access_mode == "personal":
+        command = replace(command, credential=None, access_mode="personal")
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        service.create_connection(context(), command, f"route-too-many-create-{access_mode}")
+
+    assert transport.requests == []
+    assert database.system_connection is None
+    assert database.idempotency == {}
+
+
+def test_omniroute_update_rejects_fifth_model_without_changing_connection(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-too-many-update-create")
+    before = durable_state(database)
+    transport.requests.clear()
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+            display_name="OmniRoute", base_url="https://omniroute.example/v1", credential=None,
+            logical_model_ids=("m1", "m2", "m3", "m4", "m5"), enabled=True, expected_version=1,
+            access_mode="public", credential_requirement="required", short_code="OM",
+            adapter_type="OMNIROUTE", allowed_model_ids=("m1", "m2", "m3", "m4", "m5"), provider_name="OmniRoute",
+        ), "route-too-many-update")
+
+    assert durable_state(database) == before
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize("legacy_allowed", [
+    ["m1", "m2", "m3", "m4", "m5"],
+    ["auto", "m1", "m2", "m3", "m4"],
+])
+def test_omniroute_key_replacement_probes_every_legacy_allowed_model(monkeypatch, legacy_allowed) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-too-many-key-create")
+    database.allowed_model_ids = legacy_allowed
+    old_encrypted_key = database.system_connection["encrypted_credential"]
+    transport.requests.clear()
+
+    saved, replayed = service.replace_credential(
+        context(), "route-1", ProviderCredentialReplaceCommand("fixture-new-route-key", 1),
+        "route-too-many-key",
+    )
+
+    assert replayed is False
+    assert saved["verification_status"] == "verified"
+    assert saved["allowed_model_ids"] == sorted(legacy_allowed)
+    assert database.system_connection["encrypted_credential"] != old_encrypted_key
+    assert [request[3]["model"] for request in transport.requests] == sorted(legacy_allowed)
+
+
+@pytest.mark.parametrize("legacy_allowed", [
+    ["m1", "m2", "m3", "m4", "m5"],
+    ["auto", "m1", "m2", "m3", "m4"],
+])
+def test_omniroute_health_probes_every_legacy_allowed_model(monkeypatch, legacy_allowed) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-too-many-health-create")
+    database.allowed_model_ids = legacy_allowed
+    service._store = HealthStore(database)
+    database.health_updates = []
+    transport.requests.clear()
+
+    result = service.check_active_connection(context(), "route-1")
+
+    assert result["status"] == "verified"
+    assert database.system_connection["verification_status"] == "verified"
+    assert [request[3]["model"] for request in transport.requests] == sorted(legacy_allowed)
+
+
+@pytest.mark.parametrize("legacy_allowed", [
+    ("m1", "m2", "m3", "m4", "m5"),
+    ("auto", "m1", "m2", "m3", "m4"),
+])
+def test_omniroute_unchanged_legacy_allowlist_survives_admin_rename_and_disable(
+    monkeypatch, legacy_allowed,
+) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-legacy-admin-seed")
+    database.allowed_model_ids = list(legacy_allowed)
+    database.models = [
+        (model_id, ["text_generation"], ["text_generation"], False, "ready", 1)
+        for model_id in legacy_allowed
+    ]
+    before_models = deepcopy(database.models)
+    before_key = database.system_connection["encrypted_credential"]
+    transport.requests.clear()
+
+    saved, replayed = service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+        display_name="Renamed Route", base_url="https://omniroute.example/v1", credential=None,
+        logical_model_ids=legacy_allowed, enabled=False, expected_version=1,
+        access_mode="public", credential_requirement="required", short_code="OM",
+        adapter_type="OMNIROUTE", allowed_model_ids=legacy_allowed, provider_name="OmniRoute",
+    ), "route-legacy-admin-update")
+
+    assert replayed is False
+    assert saved["display_name"] == "Renamed Route"
+    assert saved["enabled"] is False
+    assert saved["allowed_model_ids"] == list(legacy_allowed)
+    assert database.allowed_model_ids == list(legacy_allowed)
+    assert database.models == before_models
+    assert database.system_connection["encrypted_credential"] == before_key
+    assert transport.requests == []
+
+
+def test_omniroute_legacy_allowlist_change_still_rejects_five_selected_models(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-legacy-change-seed")
+    database.allowed_model_ids = ["m1", "m2", "m3", "m4", "m5"]
+    before = durable_state(database)
+    transport.requests.clear()
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+            display_name="Changed", base_url="https://omniroute.example/v1", credential=None,
+            logical_model_ids=("m1", "m2", "m3", "m4", "m6"), enabled=True, expected_version=1,
+            access_mode="public", credential_requirement="required", short_code="OM",
+            adapter_type="OMNIROUTE", allowed_model_ids=("m1", "m2", "m3", "m4", "m6"), provider_name="OmniRoute",
+        ), "route-legacy-change-rejected")
+
+    assert durable_state(database) == before
+    assert transport.requests == []
+
+
+def test_omniroute_explicit_legacy_model_change_removes_auto_only_after_probe(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-legacy-explicit-seed")
+    database.allowed_model_ids = ["auto", "m1", "m2", "m3", "m4"]
+    database.models = [
+        (model_id, ["text_generation"], ["text_generation"], False, "ready", 1)
+        for model_id in database.allowed_model_ids
+    ]
+    transport.requests.clear()
+
+    saved, _ = service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+        display_name="OmniRoute", base_url="https://omniroute.example/v1", credential=None,
+        logical_model_ids=("m1", "m2", "m3", "m4"), enabled=True, expected_version=1,
+        access_mode="public", credential_requirement="required", short_code="OM",
+        adapter_type="OMNIROUTE", allowed_model_ids=("m1", "m2", "m3", "m4"), provider_name="OmniRoute",
+    ), "route-legacy-explicit-change")
+
+    assert saved["allowed_model_ids"] == ["m1", "m2", "m3", "m4"]
+    assert database.allowed_model_ids == ["m1", "m2", "m3", "m4"]
+    assert [request[3]["model"] for request in transport.requests] == ["m1", "m2", "m3", "m4"]
+    assert {item[0]: item[4] for item in database.models}["auto"] == "stale"
+
+
+def test_omniroute_failed_refresh_preserves_connection_and_key(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-create-003")
+    before = durable_state(database)
+    transport.requests.clear()
+    transport.responses["https://omniroute.example/v1/models"] = TransportResponse(401, {})
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_AUTHENTICATION_FAILED$"):
+        service.refresh_catalog(context(), "route-1", 1, "route-refresh-002")
+
+    assert durable_state(database) == before
+    assert [(item[0], item[1]) for item in transport.requests] == [
+        ("GET", "https://omniroute.example/v1/models")
+    ]
+
+
+def test_omniroute_model_change_probes_selected_id_and_keeps_saved_key(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-create-004")
+    old_key = database.system_connection["encrypted_credential"]
+    transport.requests.clear()
+
+    saved, _ = service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+        display_name="OmniRoute", base_url="https://omniroute.example/v1", credential=None,
+        logical_model_ids=("cc/claude-sonnet",), enabled=True, expected_version=1,
+        access_mode="public", credential_requirement="required", short_code="OM",
+        adapter_type="OMNIROUTE", allowed_model_ids=("cc/claude-sonnet",), provider_name="OmniRoute",
+    ), "route-update-001")
+
+    assert saved["allowed_model_ids"] == ["cc/claude-sonnet"]
+    assert database.system_connection["encrypted_credential"] == old_key
+    assert [(item[0], item[1], item[3]["model"]) for item in transport.requests] == [
+        ("POST", "https://omniroute.example/v1/responses", "cc/claude-sonnet")
+    ]
+
+
+def test_personal_omniroute_saves_pending_auto_without_admin_key_or_network(monkeypatch) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    command = replace(route_command(), credential=None, access_mode="personal")
+
+    saved, _ = service.create_connection(context(), command, "route-personal-001")
+
+    assert saved["verification_status"] == "unverified"
+    assert saved["allowed_model_ids"] == ["auto"]
+    assert saved["configured"] is False
+    assert database.system_connection["encrypted_credential"] is None
+    assert transport.requests == []
+
+
+def test_personal_omniroute_allowed_change_invalidates_user_keys_without_deleting_them(monkeypatch) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(
+        context(), replace(route_command(), credential=None, access_mode="personal"),
+        "route-personal-change-create",
+    )
+    database.user_credentials = [
+        {"connection_id": "route-1", "verification_status": "verified", "encrypted_credential": b"sealed-a", "credential_version": 2},
+        {"connection_id": "other-route", "verification_status": "verified", "encrypted_credential": b"sealed-b", "credential_version": 3},
+    ]
+
+    saved, _ = service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+        display_name="OmniRoute", base_url="https://omniroute.example/v1", credential=None,
+        logical_model_ids=("combo-writing",), enabled=True, expected_version=1,
+        access_mode="personal", credential_requirement="required", short_code="OM",
+        adapter_type="OMNIROUTE", allowed_model_ids=("combo-writing",), provider_name="OmniRoute",
+    ), "route-personal-change-update")
+
+    assert saved["allowed_model_ids"] == ["combo-writing"]
+    assert database.user_credentials == [
+        {"connection_id": "route-1", "verification_status": "unverified", "encrypted_credential": b"sealed-a", "credential_version": 2},
+        {"connection_id": "other-route", "verification_status": "verified", "encrypted_credential": b"sealed-b", "credential_version": 3},
+    ]
+    assert transport.requests == []
+
+
+def test_personal_omniroute_endpoint_change_invalidates_same_models_user_key(monkeypatch) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(
+        context(), replace(route_command(), credential=None, access_mode="personal"),
+        "route-personal-endpoint-create",
+    )
+    database.user_credentials = [{
+        "connection_id": "route-1", "verification_status": "verified",
+        "encrypted_credential": b"sealed-a", "credential_version": 2,
+    }]
+
+    saved, _ = service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+        display_name="OmniRoute", base_url="https://new-omniroute.example/v1", credential=None,
+        logical_model_ids=("auto",), enabled=True, expected_version=1,
+        access_mode="personal", credential_requirement="required", short_code="OM",
+        adapter_type="OMNIROUTE", allowed_model_ids=("auto",), provider_name="OmniRoute",
+    ), "route-personal-endpoint-update")
+
+    assert saved["base_url"] == "https://new-omniroute.example/v1"
+    assert saved["allowed_model_ids"] == ["auto"]
+    assert database.user_credentials == [{
+        "connection_id": "route-1", "verification_status": "unverified",
+        "encrypted_credential": b"sealed-a", "credential_version": 2,
+    }]
+    assert transport.requests == []
+
+
 @pytest.mark.parametrize(
     ("adapter_type", "path", "payload"),
     [
@@ -758,6 +1258,119 @@ def test_private_test_key_is_ephemeral(monkeypatch) -> None:
     assert saved["verification_status"] == "unverified"
     assert transport.requests[0][2]["x-api-key"] == "fixture-one-time-key"
     assert "fixture-one-time-key" not in repr(command) + repr(saved) + repr(database.__dict__)
+
+
+@pytest.mark.parametrize("adapter_type", ["openai_compatible", "anthropic_compatible"])
+def test_personal_custom_without_key_or_models_registers_pending_without_provider_call(
+    monkeypatch, adapter_type,
+) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    command = custom_command(
+        adapter_type=adapter_type, access_mode="personal", credential=None,
+        allowed_model_ids=(),
+    )
+
+    saved, replayed = service.create_connection(context(), command, "custom-pending-001")
+
+    assert replayed is False
+    assert saved["verification_status"] == "unverified"
+    assert saved["allowed_model_ids"] == []
+    assert saved["models"] == []
+    assert database.system_connection["encrypted_credential"] is None
+    assert database.system_connection["credential_version"] == 0
+    assert transport.requests == []
+    before = durable_state(database)
+    replay, replayed = service.create_connection(context(), command, "custom-pending-001")
+    assert replayed is True
+    assert replay == saved
+    assert durable_state(database) == before
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"allowed_model_ids": ("manual-model",)},
+        {"logical_model_ids": ("manual-model",)},
+        {"access_mode": "public"},
+    ],
+)
+def test_pending_exception_does_not_bypass_model_or_public_key_requirements(
+    monkeypatch, overrides,
+) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    command = replace(custom_command(access_mode="personal", credential=None, allowed_model_ids=()), **overrides)
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_CREDENTIAL_REQUIRED$"):
+        service.create_connection(context(), command, "custom-pending-rejected-001")
+
+    assert database.system_connection is None
+    assert database.allowed_model_ids == []
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize("access_mode,model_ids", [("personal", ("manual-model",)), ("public", ())])
+def test_pending_custom_cannot_become_usable_without_required_key_and_probe(
+    monkeypatch, access_mode, model_ids,
+) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(
+        context(), custom_command(access_mode="personal", credential=None, allowed_model_ids=()),
+        "custom-pending-transition-seed",
+    )
+    before = durable_state(database)
+    update = ProviderConnectionUpdateCommand(
+        display_name="Changed", base_url="https://models.example/v1", credential=None,
+        logical_model_ids=model_ids, enabled=True, expected_version=1, access_mode=access_mode,
+        credential_requirement="required", short_code="CU", adapter_type="openai_compatible",
+        allowed_model_ids=model_ids, provider_name="Example AI",
+    )
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_CREDENTIAL_REQUIRED$"):
+        service.update_connection(context(), "custom-1", update, "custom-pending-transition-001")
+
+    assert durable_state(database) == before
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize("probe_ok", [False, True])
+def test_pending_custom_model_addition_requires_ephemeral_probe_and_keeps_key_unstored(
+    monkeypatch, probe_ok,
+) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(
+        context(), custom_command(access_mode="personal", credential=None, allowed_model_ids=()),
+        "custom-pending-add-seed",
+    )
+    before = durable_state(database)
+    url = "https://models.example/v1/chat/completions"
+    transport.responses[url] = TransportResponse(
+        200 if probe_ok else 401,
+        {"choices": [{"message": {"content": "ready"}}]} if probe_ok else {"error": "fixture"},
+    )
+    update = ProviderConnectionUpdateCommand(
+        display_name="Changed", base_url="https://models.example/v1", credential=None,
+        logical_model_ids=("manual-model",), enabled=True, expected_version=1, access_mode="personal",
+        credential_requirement="required", short_code="CU", adapter_type="openai_compatible",
+        allowed_model_ids=("manual-model",), provider_name="Example AI",
+        test_credential="fixture-ephemeral-key",
+    )
+
+    if probe_ok:
+        saved, replayed = service.update_connection(context(), "custom-1", update, "custom-pending-add-001")
+        assert replayed is False
+        assert saved["allowed_model_ids"] == ["manual-model"]
+        assert saved["verification_status"] == "unverified"
+        assert database.system_connection["encrypted_credential"] is None
+    else:
+        with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_AUTHENTICATION_FAILED$"):
+            service.update_connection(context(), "custom-1", update, "custom-pending-add-001")
+        assert durable_state(database) == before
+    assert [(item[1], item[3]["model"]) for item in transport.requests] == [(url, "manual-model")]
+    assert "fixture-ephemeral-key" not in repr(database.__dict__)
 
 
 def test_failed_update_preserves_connection(monkeypatch) -> None:
