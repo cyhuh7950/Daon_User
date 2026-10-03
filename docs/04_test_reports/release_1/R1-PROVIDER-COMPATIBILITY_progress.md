@@ -93,3 +93,13 @@
 - 상태: Task 2 로컬 구현·fixture 검증 완료, 어울1 검토 대기. Task 2 commit `13b8d90d`, 분리된 Task 1 내부 검토 보완 commit `75c639ee`.
 - 최종 재검증: 승인 시작점 `7e786327` 대비 `git diff --check` 통과, Provider 인접 8개 파일 `142 passed, 1 skipped`(실 PostgreSQL DSN 없음). 커밋 직후 worktree clean 확인.
 - 오류 횟수: Task 2 비의도 오류 원인 2건 해결, Task 1 보완 비의도 오류 0건. 미검증은 실 Provider/유료 호출, 실 DB, Web, 사용자 Key, WSL·배포. 다음 조치: 어울1 자체 검토 및 Task 3 진행 여부 판단; 어울2는 Task 3 시작하지 않음.
+
+### Task 2 내부 검토 P1 보완 — 자동 상태 점검의 CUSTOM 보존
+
+- 기준/상태: 2026-10-03 / 어울2 단일 writer, `codex/next-user-development` HEAD `3231e38a`, 시작 시 clean. 어울1의 내부 읽기 전용 검토에서 P1을 전달받아 Task 3 전에 보완.
+- 확인된 원인/영향: `check_active_connection()`이 `CUSTOM`의 저장된 `adapter_type`을 무시하고 이름 기준 Adapter의 `/models` 조회로 `verify()`한다. 수동 ID를 실제 생성 시험으로 검증했어도 선택적 목록 조회가 405이면 자동 점검이 `verification_status='failed'`로 내려 Workspace 모델 선택에서 제외될 수 있다.
+- 결정: `CUSTOM`의 예약 상태 점검은 기존 `skipped` 결과만 반환하고 외부 호출·검증 상태 DB UPDATE를 하지 않는다. 마지막 명시적 모델별 시험 결과를 보존한다. 기존 비-CUSTOM 상태 점검의 성공/실패 갱신은 그대로 둔다. `ProviderHealthMonitor`는 서비스의 `skipped` 문자열을 그대로 결과에 담는 계약이며 상태 점검 설정·schema·auth는 변경하지 않는다.
+- RED: 공용 CUSTOM OpenAI/Anthropic 수동 허용 모델 2건에서 `/models` 405 fixture가 실제 `failed`로 변경되는 것을 확인. 기존 Ollama 성공/실패 2건은 같은 실행에서 통과(`2 failed, 2 passed`). 의도된 RED로 오류 횟수에 산입하지 않음.
+- GREEN: CUSTOM 2건에서 반환 `skipped`, 네트워크 0회, Provider 설정 DB 갱신 0회, 저장된 연결·모델·허용 목록 불변 확인. 기존 Ollama 성공/실패 각각 1회 목록 조회와 상태 갱신 확인. 집중 4건 통과, 인접 9개 파일 최종 `149 passed, 1 skipped`(실 PostgreSQL DSN 없음).
+- Preview 표현 정정: 관리자 model-preview는 Provider 설정 DB의 연결·카탈로그·허용 목록을 쓰지 않는다. 관리자 인증의 step-up 권한은 별도 인증 저장소에서 소비되므로 시스템 전체의 DB 무기록 호출이라는 뜻은 아니다. HTTP 테스트는 step-up 재사용 403을 확인한다.
+- 변경 파일: `provider_connection_admin.py`, `test_provider_connection_admin.py`, 이 진행 기록만. 이번 보완 비의도 오류 0건(이전 Task 2 누적 2건 유지). 실 DB/Provider/비용 호출, WSL·배포, Task 3·Web은 미검증/미착수. 다음 조치: 관련 회귀와 diff 자체 검토 후 범위 파일만 commit, 어울1 재검토 대기.

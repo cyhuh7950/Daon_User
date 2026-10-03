@@ -214,6 +214,30 @@ class CompatibleStore(Store):
             raise
 
 
+class HealthConnection(CompatibleConnection):
+    def execute(self, sql, params=()):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("UPDATE system_provider_connections SET verification_status="):
+            self.database.health_updates.append(normalized)
+            self.database.system_connection["verification_status"] = (
+                "verified" if "verification_status='verified'" in normalized else "failed"
+            )
+            return Cursor()
+        return super().execute(sql, params)
+
+
+class HealthStore(CompatibleStore):
+    @contextmanager
+    def _transaction(self, context):
+        snapshot = deepcopy(self.database.__dict__)
+        try:
+            yield HealthConnection(self.database)
+        except Exception:
+            self.database.__dict__.clear()
+            self.database.__dict__.update(snapshot)
+            raise
+
+
 class FixtureTransport:
     def __init__(self) -> None:
         self.requests = []
@@ -941,3 +965,70 @@ def test_custom_public_key_replacement_probes_allowed_model_before_encrypting(mo
         (url, "fixture-replacement-key", "manual-model"),
     ]
     assert "fixture-replacement-key" not in repr(saved) + repr(database.idempotency) + repr(database.outbox)
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "probe_path", "probe_payload"),
+    [
+        ("openai_compatible", "/chat/completions", {"choices": [{"message": {"content": "ready"}}]}),
+        ("anthropic_compatible", "/messages", {"content": [{"type": "text", "text": "ready"}]}),
+    ],
+)
+def test_custom_public_health_skips_without_replacing_manual_probe_result(
+    monkeypatch, adapter_type, probe_path, probe_payload,
+) -> None:
+    transport = FixtureTransport()
+    transport.responses[f"https://models.example/v1{probe_path}"] = TransportResponse(200, probe_payload)
+    service, database = compatible_service(monkeypatch, transport)
+    saved, _ = service.create_connection(
+        context(), custom_command(adapter_type=adapter_type), f"create-health-{adapter_type}",
+    )
+    assert saved["verification_status"] == "verified"
+    assert saved["allowed_model_ids"] == ["manual-model"]
+    before = durable_state(database)
+    transport.requests.clear()
+    transport.responses["https://models.example/v1/models"] = TransportResponse(405, {})
+    database.health_updates = []
+    service._store = HealthStore(database)
+
+    result = service.check_active_connection(context(), "custom-1")
+
+    assert result == {"connection_id": "custom-1", "status": "skipped"}
+    assert transport.requests == []
+    assert database.health_updates == []
+    assert durable_state(database) == before
+
+
+@pytest.mark.parametrize(
+    ("upstream_status", "expected_status"), [(200, "verified"), (503, "failed")],
+)
+def test_existing_ollama_public_health_still_checks_and_updates(
+    monkeypatch, upstream_status, expected_status,
+) -> None:
+    transport = FixtureTransport()
+    transport.responses["http://ollama.internal:11434/api/tags"] = TransportResponse(
+        upstream_status, {"models": [{"name": "qwen3"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    database.system_connection = {
+        "connection_id": "ollama-lan", "provider_code": "OLLAMA", "display_name": "LAN Ollama",
+        "base_url": "http://ollama.internal:11434", "encrypted_credential": None,
+        "credential_nonce": None, "encryption_key_version": None,
+        "credential_schema_version": None, "credential_version": 0, "enabled": True,
+        "verification_status": "unverified", "verified_at": None, "version": 1,
+        "access_mode": "public", "credential_requirement": "none", "short_code": "OL",
+        "adapter_type": "OLLAMA", "provider_name": "Ollama",
+    }
+    database.health_updates = []
+    service._store = HealthStore(database)
+
+    result = service.check_active_connection(context(), "ollama-lan")
+
+    assert result["status"] == expected_status
+    assert result["connection_id"] == "ollama-lan"
+    assert "checked_at" in result
+    assert database.system_connection["verification_status"] == expected_status
+    assert len(database.health_updates) == 1
+    assert [(item[0], item[1]) for item in transport.requests] == [
+        ("GET", "http://ollama.internal:11434/api/tags"),
+    ]

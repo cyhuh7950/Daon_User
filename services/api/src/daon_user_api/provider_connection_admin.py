@@ -365,7 +365,7 @@ class PostgresProviderConnectionService:
         try:
             with self._store._transaction(self._cloud(context)) as connection:
                 row = self._load(connection, connection_id)
-                if not bool(row[9]) or str(row[13]) == "personal":
+                if not bool(row[9]) or str(row[13]) == "personal" or str(row[1]) == "CUSTOM":
                     return {"connection_id": connection_id, "status": "skipped"}
                 sealed = self._sealed(row)
                 credential = None if sealed is None else self._cipher.decrypt(
