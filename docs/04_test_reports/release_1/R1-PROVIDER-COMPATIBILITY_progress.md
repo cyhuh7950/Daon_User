@@ -255,3 +255,12 @@
 - 배포: 새 checkout과 기존 환경·Secret 참조로 Compose config PASS, API/Web 이미지만 빌드·순차 교체했다. API image `sha256:de936f5978582d23d9a90223fda1cdf11b3cb9b401a45817367a0da30e76a4cd`, Web image `sha256:e20ace4949bf988b8cfa771965aeac6d85e38c917085e02e6a05c6075454e0ee`. 두 컨테이너의 Compose working directory가 새 checkout을 가리키고 healthy, 두 worker는 계속 running이다.
 - 비파괴 smoke: `http://172.27.253.53:3330/settings/model-connections` HTTP 200, 비인증 BFF session 예상 401. DB 연결 11개·설치형 `MEDIA_BRIDGE` 0개 불변, Alembic `0050`. 실제 사용자 저장/삭제 클릭, Provider 유료 호출, 브라우저 Network는 수행하지 않았다.
 - 오류/미검증/다음: DB 읽기 전용 사전 조회에서 잘못 추정한 `daon_user` role 1건과 SQL 인용 1건을 확인 후 실제 컨테이너 환경의 계정으로 조회했다. 제품/DB 수정으로 이어지지 않았다. 신산님이 3330에서 새 연결의 두 호환 방식, `Key 필요/불필요`, 실제 저장 결과를 확인한다. 사용자의 실사용 수락 및 외부 Keyless Provider 연동은 미검증이다. Oracle·ysna·main·기존 Key/연결 데이터는 변경하지 않았다.
+
+## OmniRoute 모델 카탈로그 조회 오류 수정 — 2026-10-04
+
+- 담당/기준: 어울, 기존 `codex/next-user-development` 단일 writer. 시작 HEAD `40fd5719`, clean. 신산님 화면에서 저장된 OmniRoute 연결의 `모델 조회` 후 카탈로그 저장 오류가 표시되고, OmniRoute 자체 화면에는 발견 모델 약 840개·등록 0개가 표시됐다.
+- 원인: WSL QA API 컨테이너에서 저장된 Key를 출력하지 않고 읽기 전용 `/v1/models`를 호출해 HTTP 200, 839행 중 공백 포함 ID 94개를 확인했다. 기존 `ProviderCatalog.from_payload(..., "CUSTOM", ...)`는 유효하지 않은 ID 하나만 있어도 전체 목록을 거부해 `PROVIDER_CATALOG_RESPONSE_INVALID`가 발생했다. DB의 OmniRoute 연결·Key·허용 목록은 수정하지 않았다.
+- 조치: OmniRoute 목록에 한해 기존 저장용 모델 ID 규칙을 통과하지 않는 행을 제외하고 유효한 ID만 기존 카탈로그 검증에 전달한다. 응답 구조·민감 키 검사와 credential 포함 ID 거부, 실제 모델 사용 전 probe, 다른 Provider의 엄격한 검증은 유지한다. 새 schema·권한·연결 정책 변경은 없다.
+- RED→GREEN: 공백 ID와 정상 ID가 섞인 응답의 조회 테스트가 수정 전 `PROVIDER_CATALOG_RESPONSE_INVALID`로 실패했고 수정 후 통과했다. Adapter·Catalog `81 passed`, 관리자 저장/HTTP 인접 `88 passed`, `git diff --check` 통과. 전체 API suite는 기존 라이선스 fixture의 `LICENSE_DOCUMENT_INVALID`에서 `255 passed, 14 skipped, 1 failed, 171 subtests passed`로 중단되어 전체 GREEN이 아니다.
+- 변경 파일: `provider_catalog.py`, `provider_connection_adapters.py`, `test_provider_connection_adapters.py`, 이 진행 기록. 진단 과정의 잘못된 SQL 인용 1건·Adapter 생성자 인수 누락 1건은 읽기 전용 진단 실패였고 제품/DB 변경은 없었다. 동일 원인 수정 3회 반복은 없다.
+- 미검증/다음: 아직 3330 배포 및 신산님 실제 클릭은 미검증. 변경 파일만 안전한 commit/branch push 후 WSL exact-SHA API 이미지만 교체하고 읽기 전용 실제 카탈로그 조회·health·URL·DB 불변을 확인한다. Web·worker·Oracle·ysna·main·기존 Key는 변경하지 않는다.

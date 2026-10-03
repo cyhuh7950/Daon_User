@@ -258,6 +258,25 @@ def test_omniroute_model_lookup_uses_authenticated_official_catalog(fake_transpo
     assert fake_transport.requests[0].follow_redirects is False
 
 
+def test_omniroute_lookup_keeps_valid_models_when_catalog_has_whitespace_ids(
+    fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [
+            {"id": "aihorde/A Zovya RPG Inpainting", "type": "chat"},
+            {"id": "combo-writing", "type": "combo"},
+            {"id": "cc/claude-sonnet", "type": "chat"},
+        ]},
+    )
+
+    models = AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+        connection("OMNIROUTE"), TEST_CREDENTIAL,
+    )
+
+    assert [model.model_id for model in models] == ["cc/claude-sonnet", "combo-writing"]
+    assert [request.method for request in fake_transport.requests] == ["GET"]
+
+
 @pytest.mark.parametrize("specialty_type", ["embedding", "image", "audio"])
 def test_omniroute_lookup_excludes_typed_non_chat_models(
     fake_transport: FakeTransport, specialty_type: str,

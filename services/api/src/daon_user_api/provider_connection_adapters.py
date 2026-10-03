@@ -447,12 +447,8 @@ class OmniRouteAdapter(_RoutingGatewayAdapter):
             {"authorization": f"Bearer {secret}"},
         )
         try:
-            listed = ProviderCatalog.from_payload(connection.connection_id, "CUSTOM", payload)
-            if any(secret in model.model_id for model in listed):
-                raise AdapterError("PROVIDER_CATALOG_RESPONSE_INVALID", 503)
-            assert isinstance(payload, Mapping)
-            rows = payload["data"]
-            assert isinstance(rows, list)
+            rows = ProviderCatalog.usable_omniroute_rows(payload, secret)
+            listed = ProviderCatalog.from_payload(connection.connection_id, "CUSTOM", {"data": rows})
             specialty_ids = {
                 row["id"] for row in rows
                 if row.get("type") not in (None, "chat", "combo")

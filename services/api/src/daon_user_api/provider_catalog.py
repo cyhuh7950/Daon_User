@@ -55,6 +55,28 @@ def _contains_sensitive_key(value: object) -> bool:
 
 class ProviderCatalog:
     @staticmethod
+    def usable_omniroute_rows(payload: object, credential: str) -> list[Mapping[object, object]]:
+        """Keep selectable catalog IDs without weakening stored model-ID validation."""
+        if not isinstance(payload, Mapping) or _contains_sensitive_key(payload):
+            raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+        rows = payload.get("data")
+        if not isinstance(rows, list):
+            raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+        usable: list[Mapping[object, object]] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+            model_id = row.get("id")
+            if isinstance(model_id, str) and credential in model_id:
+                raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+            try:
+                _valid_model_id(model_id)
+            except ProviderCatalogError:
+                continue
+            usable.append(row)
+        return usable
+
+    @staticmethod
     def from_verified_text_models(
         connection_id: str,
         provider_code: str,
