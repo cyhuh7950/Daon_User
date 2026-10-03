@@ -185,6 +185,42 @@ class OmniRouteTransport(CapturingGatewayTransport):
 
 
 class QuestionAnsweringServiceTests(unittest.TestCase):
+    def test_custom_keyless_compatible_routes_without_authentication(self) -> None:
+        class KeylessTransport:
+            def __init__(self):
+                self.calls = []
+
+            def post_json_no_auth(self, **kwargs):
+                self.calls.append(("openai", kwargs))
+                return {"choices": [{"message": {"content": json.dumps({"answer": "ready"})}}]}
+
+            def post_json_headers(self, **kwargs):
+                self.calls.append(("anthropic", kwargs))
+                return {"content": [{"type": "text", "text": json.dumps({"answer": "ready"})}]}
+
+            def post_json(self, **_kwargs):
+                raise AssertionError("keyless CUSTOM must not use authenticated transport")
+
+        for adapter_type, expected_path in (
+            ("openai_compatible", "/chat/completions"),
+            ("anthropic_compatible", "/messages"),
+        ):
+            with self.subTest(adapter_type=adapter_type):
+                selection = ResolvedModel(
+                    connection_id="custom-keyless", provider_code="CUSTOM", model_id="manual-a",
+                    capability="text_generation", base_url="https://models.example.com/v1",
+                    credential_version=0, default_version=1, catalog_version=1,
+                    provider_kind="external_api", routing_owner="provider", daon_fallback_allowed=True,
+                    _credential=None, adapter_type=adapter_type,
+                )
+                transport = KeylessTransport()
+                registry = QuestionAdapterRegistry()
+                result = registry.generate_general(registry.prepare_general(selection, "안녕하세요", "trace-keyless", transport))
+                self.assertEqual(result.answer, "ready")
+                self.assertEqual(transport.calls[0][1]["url"], f"https://models.example.com/v1{expected_path}")
+                if adapter_type == "anthropic_compatible":
+                    self.assertNotIn("x-api-key", transport.calls[0][1]["headers"])
+
     def test_unknown_custom_adapter_type_fails_closed_for_both_question_modes(self) -> None:
         selection = ResolvedModel(
             connection_id="custom-1", provider_code="CUSTOM", model_id="manual-a",

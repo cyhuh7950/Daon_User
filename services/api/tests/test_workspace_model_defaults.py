@@ -183,6 +183,20 @@ def test_ollama_default_allows_nullable_credential_without_legacy_fallback() -> 
         assert resolved.daon_fallback_allowed is True
 
 
+def test_custom_keyless_default_allows_nullable_credential() -> None:
+    cipher = ProviderCredentialCipher(b"k" * 32, encryption_key_version=1)
+    database = Database(row(
+        cipher, credential=None, credential_version=0,
+        connection_id="custom-keyless", provider_code="CUSTOM",
+        credential_requirement="none", adapter_type="openai_compatible",
+    ))
+    resolver = PostgresWorkspaceModelResolver(Store(database), cipher)
+
+    with resolver.resolve(context(), "text_generation") as resolved:
+        assert resolved.credential_text(required=False) is None
+        assert resolved.adapter_type == "openai_compatible"
+
+
 def test_personal_model_uses_only_verified_own_key_even_if_system_key_exists() -> None:
     cipher = ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1)
     database = Database(row(

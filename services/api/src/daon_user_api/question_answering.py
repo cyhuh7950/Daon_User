@@ -170,17 +170,17 @@ class OpenAICompatibleTextGenerationAdapter:
     }
 
     def __init__(
-        self, *, transport: TextGenerationTransport, api_key: str,
+        self, *, transport: TextGenerationTransport, api_key: str | None,
         timeout_seconds: float = 60.0,
     ) -> None:
-        if not api_key or not 1 <= timeout_seconds <= 120:
+        if (api_key is not None and not api_key) or not 1 <= timeout_seconds <= 120:
             raise ValueError("TEXT_ADAPTER_CONFIG_INVALID")
         self._transport = transport
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(credential_configured=True, timeout_seconds={self._timeout_seconds})"
+        return f"{type(self).__name__}(credential_configured={self._api_key is not None}, timeout_seconds={self._timeout_seconds})"
 
     @staticmethod
     def _base_url(selection: TextModelSelection) -> str:
@@ -263,6 +263,14 @@ class OpenAICompatibleTextGenerationAdapter:
         return GroundedTextResult(answer, cited, insufficient, usage)
 
     def _post(self, selection: TextModelSelection, payload: dict[str, object]) -> dict[str, object]:
+        if self._api_key is None:
+            if selection.provider_code != "CUSTOM":
+                raise ValueError("TEXT_ADAPTER_CONFIG_INVALID")
+            return self._transport.post_json_no_auth(
+                url=_append_provider_path(self._base_url(selection), "/chat/completions"),
+                payload=payload,
+                timeout_seconds=self._timeout_seconds,
+            )
         return self._transport.post_json(
             url=_append_provider_path(
                 self._base_url(selection),
@@ -367,7 +375,8 @@ class AnthropicMessagesTextGenerationAdapter(OpenAICompatibleTextGenerationAdapt
             raise ValueError("TEXT_PROVIDER_ENDPOINT_INVALID")
         response = self._transport.post_json_headers(
             url=_append_provider_path(self._base_url(selection), "/messages"),
-            headers={"x-api-key": self._api_key, "anthropic-version": "2023-06-01"},
+            headers=({"x-api-key": self._api_key, "anthropic-version": "2023-06-01"}
+                     if self._api_key is not None else {"anthropic-version": "2023-06-01"}),
             payload=payload,
             timeout_seconds=self._timeout_seconds,
         )

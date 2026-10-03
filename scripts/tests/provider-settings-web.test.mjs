@@ -84,7 +84,7 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
           pendingSaveFailures -= 1;
           return Response.json({ error: { code: "PROVIDER_VERIFICATION_FAILED" } }, { status: 503 });
         }
-        const item = { ...body, version: 1, configured: body.access_mode === "public", verification_status: body.access_mode === "personal" ? "unverified" : "verified", catalog_status: "ready", catalog_version: 1,
+        const item = { ...body, version: 1, configured: body.access_mode === "public" && Boolean(body.credential), verification_status: body.access_mode === "personal" ? "unverified" : "verified", catalog_status: "ready", catalog_version: 1,
           models: body.allowed_model_ids.map((model_id) => ({ model_id, catalog_status: "ready", catalog_version: 1, effective_capabilities: ["text_generation"] })) };
         delete item.credential;
         delete item.test_credential;
@@ -111,15 +111,54 @@ async function mountAdminFixture(fixture, fileName) {
   return { container, act, async cleanup() { await act(async () => reactRoot.unmount()); globalThis.fetch = originalFetch; dom.restore(); await rm(output, { recursive: true, force: true }); } };
 }
 
-test("system admin can save a Provider connection without a second password", async () => {
+test("new connection offers only OpenAI and Anthropic compatibility, not legacy providers", async () => {
+  const view = await mountAdminFixture(adminFixture(), "compatible-only-new");
+  try {
+    const mode = controlFor(view.container, "호환 방식");
+    const options = findElements(mode, (node) => node.tagName === "OPTION");
+    assert.deepEqual(options.map((option) => option.value), ["openai_compatible", "anthropic_compatible"]);
+    assert.equal(reactProps(mode).value, "openai_compatible");
+    assert.equal(controlFor(view.container, "API 유형").value, "Chat Completions");
+    assert.equal(findElements(view.container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("Provider 방식")).length, 0);
+  } finally { await view.cleanup(); }
+});
+
+test("new compatible connection can use no API Key", async () => {
+  const fixture = adminFixture();
+  const view = await mountAdminFixture(fixture, "compatible-no-key");
+  try {
+    await fill(view.act, controlFor(view.container, "Provider 표시 이름"), "Local Gateway");
+    await fill(view.act, controlFor(view.container, "연결 이름"), "Keyless Gateway");
+    await fill(view.act, controlFor(view.container, "두 글자 약어"), "KG");
+    await fill(view.act, controlFor(view.container, "Endpoint"), "https://local.example/v1");
+    await fill(view.act, controlFor(view.container, "인증 유형"), "none");
+    assert.equal(buttonByText(view.container, "모델 목록 조회").disabled, false);
+    await click(view.act, buttonByText(view.container, "모델 목록 조회"));
+    const preview = fixture.requests.find((item) => item.path.endsWith("/model-preview"));
+    assert.equal(Object.hasOwn(preview.body, "credential"), false);
+    await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), "local-model");
+    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
+    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+    const create = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
+    assert.equal(create.body.provider_code, "CUSTOM");
+    assert.equal(create.body.credential_requirement, "none");
+    assert.equal(Object.hasOwn(create.body, "credential"), false);
+    assert.deepEqual(create.body.allowed_model_ids, ["local-model"]);
+    assert.equal(buttonByText(view.container, "모델 조회").disabled, false);
+  } finally { await view.cleanup(); }
+});
+
+test("system admin can save a compatible connection without a second password", async () => {
   const fixture = adminFixture();
   const view = await mountAdminFixture(fixture, "admin-session-save");
   try {
     assert.equal(findElements(view.container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("관리자 재인증 비밀번호")).length, 0);
-    await fill(view.act, controlFor(view.container, "Provider 표시 이름"), "Ollama");
-    await fill(view.act, controlFor(view.container, "연결 이름"), "공용 Ollama");
+    await fill(view.act, controlFor(view.container, "Provider 표시 이름"), "Compatible Gateway");
+    await fill(view.act, controlFor(view.container, "연결 이름"), "공용 Gateway");
     await fill(view.act, controlFor(view.container, "두 글자 약어"), "OO");
-    await fill(view.act, controlFor(view.container, "Endpoint"), "http://ollama.internal:11434");
+    await fill(view.act, controlFor(view.container, "Endpoint"), "https://gateway.example/v1");
+    await fill(view.act, controlFor(view.container, "인증 유형"), "none");
+    await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), "model-a");
     assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
     await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
     assert.equal(fixture.requests.filter((item) => item.path === "/bff/api/session/step-up").length, 0);
@@ -371,57 +410,6 @@ test("saved keyless Media Bridge shows model lookup and displays its catalog", a
   } finally { await view.cleanup(); }
 });
 
-test("new OmniRoute uses auto when no model is selected and exposes direct model ID", async () => {
-  const fixture = adminFixture();
-  const view = await mountAdminFixture(fixture, "route-auto-create");
-  try {
-    await fill(view.act, controlFor(view.container, "Provider 방식"), "OMNIROUTE");
-    await fill(view.act, controlFor(view.container, "연결 이름"), "Route 연결");
-    await fill(view.act, controlFor(view.container, "두 글자 약어"), "RM");
-    await fill(view.act, controlFor(view.container, "Endpoint"), "https://omniroute.example/v1");
-    await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-route-key");
-    assert.ok(controlFor(view.container, "모델 ID 직접 입력"));
-    assert.match(view.container.textContent, /선택하지 않으면 auto/u);
-    assert.ok(buttonByText(view.container, "모델 조회"));
-    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
-    const create = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
-    assert.deepEqual(create.body.allowed_model_ids, ["auto"]);
-    assert.deepEqual(create.body.logical_model_ids, ["auto"]);
-    assert.equal(create.body.credential, "fixture-route-key");
-    assert.equal(controlFor(view.container, "API Key 또는 Client Key").value, "");
-  } finally { await view.cleanup(); }
-});
-
-test("OmniRoute UI caps selected models at four and warns about per-model periodic cost", async () => {
-  const fixture = adminFixture();
-  const view = await mountAdminFixture(fixture, "route-four-model-limit");
-  try {
-    await fill(view.act, controlFor(view.container, "Provider 방식"), "OMNIROUTE");
-    await fill(view.act, controlFor(view.container, "연결 이름"), "Route 연결");
-    await fill(view.act, controlFor(view.container, "두 글자 약어"), "RM");
-    await fill(view.act, controlFor(view.container, "Endpoint"), "https://omniroute.example/v1");
-    await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-route-key");
-    await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), "m1\nm2\nm3\nm4\nm5");
-
-    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, true);
-    assert.equal(buttonByText(view.container, "시스템 키 시험 및 저장").disabled, true);
-    assert.match(view.container.textContent, /최대 4개 모델/u);
-    assert.match(view.container.textContent, /각각 시험.*정기 점검.*사용료/u);
-    assert.equal(fixture.requests.some((item) => item.method === "POST" && item.path === "/bff/api/admin/provider-connections"), false);
-
-    await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), "m1\nm2\nm3\nm4");
-    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
-    await fill(view.act, controlFor(view.container, "모델 ID 직접 입력"), "auto\nm1\nm2\nm3\nm4");
-    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
-    assert.equal(buttonByText(view.container, "시스템 키 시험 및 저장").disabled, false);
-    assert.match(view.container.textContent, /시험 대상 4개 모델/u);
-    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
-    const create = fixture.requests.find((item) => item.method === "POST" && item.path === "/bff/api/admin/provider-connections");
-    assert.deepEqual(create.body.allowed_model_ids, ["m1", "m2", "m3", "m4"]);
-    assert.deepEqual(create.body.logical_model_ids, ["m1", "m2", "m3", "m4"]);
-  } finally { await view.cleanup(); }
-});
-
 test("saved legacy OmniRoute with five allowed models can replace its Key without changing allowlist", async () => {
   const existing = {
     connection_id: "route-legacy", provider_code: "OMNIROUTE", adapter_type: "OMNIROUTE", provider_name: "OmniRoute", display_name: "Legacy Route",
@@ -492,27 +480,6 @@ for (const [caseName, legacyAllowed] of [
     } finally { await view.cleanup(); }
   });
 }
-
-test("personal OmniRoute save never sends an admin credential", async () => {
-  const fixture = adminFixture();
-  const view = await mountAdminFixture(fixture, "route-personal-no-admin-key");
-  try {
-    await fill(view.act, controlFor(view.container, "Provider 방식"), "OMNIROUTE");
-    await fill(view.act, controlFor(view.container, "연결 이름"), "개인 Route");
-    await fill(view.act, controlFor(view.container, "두 글자 약어"), "RM");
-    await fill(view.act, controlFor(view.container, "Endpoint"), "https://omniroute.example/v1");
-    await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-should-not-send");
-    const publicCheckbox = findElements(view.container, (node) => node.tagName === "INPUT" && node.type === "checkbox" && node.parentNode?.textContent.includes("공용 사용"))[0];
-    await setChecked(view.act, publicCheckbox, false);
-
-    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
-
-    const create = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
-    assert.equal(create.body.access_mode, "personal");
-    assert.equal(Object.hasOwn(create.body, "credential"), false);
-    assert.equal(buttonByText(view.container, "시스템 키 시험 및 저장"), undefined);
-  } finally { await view.cleanup(); }
-});
 
 test("saved OmniRoute reads catalog through existing same-origin refresh without allowing listed models", async () => {
   const connection = {

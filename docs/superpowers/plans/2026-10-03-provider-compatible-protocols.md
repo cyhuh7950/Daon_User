@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - 지원: `openai_compatible`의 Chat Completions, `anthropic_compatible`의 Messages만. 기존 연결은 ID·Provider 코드·접근 방식·Key·허용 모델·Workspace 기본 모델 불변이다.
-- 새 연결은 공개 HTTPS Endpoint와 Key를 사용한다. 저장된 규격은 수정하지 않는다. Key 없는 기존 연결은 재분류하지 않는다.
+- 새 연결은 공개 HTTPS Endpoint를 사용한다. 신산님의 2026-10-04 후속 지시에 따라 신규 등록은 두 호환 방식만 노출하며 Key 필요/불필요를 선택한다. Key 불필요 연결은 공용으로 한정하고 인증 헤더 없이 조회·시험·실행한다. 저장된 규격은 수정하지 않으며 기존 연결은 재분류하지 않는다.
 - 조회 불가 시 수동 모델 ID 입력. 허용 모델마다 비스트리밍 최대 1회, 출력 한도 16토큰으로 시험하고 하나라도 실패하면 저장 전 상태를 유지한다. 시험에 비용이 들 수 있음을 화면에 표시한다.
 - 공용 Key는 성공 후 암호화 저장, 비공용 관리자 시험 Key는 저장하지 않음. 개인 Key 검증 성공 전 사용 대기; 개인 Key는 관리자 연결/허용 모델을 바꾸지 못한다.
 - 기존 `CUSTOM`의 공개 HTTPS/SSRF 방어, no-redirect/응답 크기/시간 제한, 질문 egress, 인증/step-up, version/idempotency, same-origin BFF를 약화하지 않는다.

@@ -362,7 +362,11 @@ class PostgresWorkspaceModelResolver:
             credential = bytearray(personal.credential)
             credential_version = personal.credential_version
             system_credential_failed = False
-        if system_credential_failed and provider_requires_credential(provider_code, base_url):
+        credential_required = (
+            str(values[16]) == "required" if provider_code == "CUSTOM"
+            else provider_requires_credential(provider_code, base_url)
+        )
+        if system_credential_failed and credential_required:
             raise WorkspaceModelUnavailable("PROVIDER_CREDENTIAL_REQUIRED")
 
         resolved = ResolvedModel(

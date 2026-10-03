@@ -117,7 +117,7 @@ class QuestionAdapterRegistry:
             "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY", "CUSTOM",
         }:
             raise ValueError("TEXT_PROVIDER_UNAVAILABLE")
-        api_key = selection.credential_text()
+        api_key = selection.credential_text(required=selection.provider_code != "CUSTOM")
         adapter_type = (
             AnthropicMessagesTextGenerationAdapter
             if selection.provider_code == "CUSTOM" and selection.adapter_type == "anthropic_compatible"
@@ -159,7 +159,7 @@ class QuestionAdapterRegistry:
                 else OpenAICompatibleTextGenerationAdapter
             )
             adapter = adapter_type(
-                transport=transport, api_key=cast(str, selection.credential_text()),
+                transport=transport, api_key=selection.credential_text(required=selection.provider_code != "CUSTOM"),
             )
         else:
             raise ValueError("TEXT_PROVIDER_UNAVAILABLE")

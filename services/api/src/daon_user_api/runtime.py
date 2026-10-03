@@ -962,7 +962,7 @@ class ProviderConnectionModelPreviewBody(BaseModel):
     provider_code: str = Field(min_length=1, max_length=64)
     adapter_type: str = Field(min_length=1, max_length=64)
     base_url: str = Field(min_length=1, max_length=2048)
-    credential: str = Field(min_length=1, max_length=16384, repr=False)
+    credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
     step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 

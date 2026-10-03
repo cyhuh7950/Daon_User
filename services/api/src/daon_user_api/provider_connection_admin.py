@@ -253,7 +253,7 @@ def validate_connection_policy(
         raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
     if credential_requirement == "none" and access_mode != "public":
         raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
-    if base_url is not None and credential_requirement != (
+    if base_url is not None and provider_code != "CUSTOM" and credential_requirement != (
         "required" if provider_requires_credential(provider_code, base_url) else "none"
     ):
         raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
@@ -353,7 +353,7 @@ class PostgresProviderConnectionService:
 
     def preview_models(
         self, context: ProviderConnectionAdminContext, *, connection_id: str,
-        provider_code: str, adapter_type: str, base_url: str, credential: str,
+        provider_code: str, adapter_type: str, base_url: str, credential: str | None,
     ) -> tuple[str, ...]:
         if provider_code != "CUSTOM" or adapter_type not in {"openai_compatible", "anthropic_compatible"}:
             raise ProviderConnectionAdminError("PROVIDER_ADAPTER_UNSUPPORTED", 409)
@@ -363,7 +363,7 @@ class PostgresProviderConnectionService:
                 connection_id, provider_code, connection_id, normalized_url, None, True, 0,
             )
             models = AdapterRegistry().adapter(provider_code, adapter_type).discover_models(profile, credential)
-            if any(credential in model.model_id for model in models):
+            if credential and any(credential in model.model_id for model in models):
                 raise ProviderConnectionAdminError("PROVIDER_CATALOG_RESPONSE_INVALID", 503)
             return tuple(model.model_id for model in models)
         except (AdapterError, ProviderSettingsError) as error:
@@ -480,7 +480,7 @@ class PostgresProviderConnectionService:
                 raise AdapterError("PROVIDER_CREDENTIAL_REQUIRED", 409)
             if verified_model_ids is not None:
                 probe_credential = test_credential if test_credential is not None else raw
-                if probe_credential is None:
+                if probe_credential is None and provider_code != "CUSTOM":
                     raise AdapterError("PROVIDER_CREDENTIAL_REQUIRED", 409)
                 models = adapter.verify_models(profile, probe_credential, verified_model_ids)
             elif discover_models and provider_code == "OMNIROUTE" and rejected_model_ids is not None:

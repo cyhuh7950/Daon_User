@@ -1241,6 +1241,31 @@ def test_custom_create_registers_verified_manual_model(
     assert "fixture-public-key" not in repr(database.idempotency) + repr(database.outbox) + repr(saved)
 
 
+@pytest.mark.parametrize(
+    ("adapter_type", "path", "payload"),
+    [
+        ("openai_compatible", "/chat/completions", {"choices": [{"message": {"content": "ready"}}]}),
+        ("anthropic_compatible", "/messages", {"content": [{"type": "text", "text": "ready"}]}),
+    ],
+)
+def test_custom_keyless_public_connection_verifies_without_auth_header(
+    monkeypatch, adapter_type, path, payload,
+) -> None:
+    transport = FixtureTransport()
+    transport.responses[f"https://models.example/v1{path}"] = TransportResponse(200, payload)
+    service, database = compatible_service(monkeypatch, transport)
+    command = replace(custom_command(adapter_type=adapter_type, credential=None), credential_requirement="none")
+
+    saved, _ = service.create_connection(context(), command, f"custom-keyless-{adapter_type}")
+
+    assert saved["credential_requirement"] == "none"
+    assert saved["verification_status"] == "verified"
+    assert database.system_connection["encrypted_credential"] is None
+    assert len(transport.requests) == 1
+    assert transport.requests[0][2].get("authorization") is None
+    assert transport.requests[0][2].get("x-api-key") is None
+
+
 def test_private_test_key_is_ephemeral(monkeypatch) -> None:
     transport = FixtureTransport()
     transport.responses["https://models.example/v1/messages"] = TransportResponse(
@@ -1551,6 +1576,24 @@ def test_preview_reads_only_catalog_and_rejects_non_custom(monkeypatch) -> None:
                                adapter_type="UPSTAGE", base_url="https://api.upstage.ai/v1",
                                credential="fixture-preview-key")
     assert len(transport.requests) == 1
+
+
+def test_preview_keyless_custom_catalog_omits_authentication(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "local-model"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+
+    ids = service.preview_models(
+        context(), connection_id="custom-1", provider_code="CUSTOM",
+        adapter_type="openai_compatible", base_url="https://models.example/v1",
+        credential=None,
+    )
+
+    assert ids == ("local-model",)
+    assert transport.requests[0][2] == {}
+    assert database.system_connection is None
 
 
 def test_preview_rejects_upstream_model_id_that_echoes_input_key(monkeypatch) -> None:

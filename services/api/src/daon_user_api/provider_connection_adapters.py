@@ -261,7 +261,7 @@ class OpenRouterAdapter(_BaseAdapter):
 class _CustomCompatibleAdapter(OpenRouterAdapter):
     provider_code = "CUSTOM"
 
-    def _headers(self, secret: str) -> Mapping[str, str]:
+    def _headers(self, secret: str | None) -> Mapping[str, str]:
         raise NotImplementedError
 
     def _probe_path(self) -> str:
@@ -276,7 +276,7 @@ class _CustomCompatibleAdapter(OpenRouterAdapter):
         credential: str | bytes | None,
     ) -> tuple[DiscoveredModel, ...]:
         base = self._validate_connection(connection)
-        secret = _credential_text(credential)
+        secret = _credential_text(credential) if credential is not None else None
         payload = self._request("GET", _append_path(base, "/models"), self._headers(secret))
         try:
             return ProviderCatalog.from_payload(connection.connection_id, self.provider_code, payload)
@@ -286,7 +286,7 @@ class _CustomCompatibleAdapter(OpenRouterAdapter):
     def verify_models(
         self,
         connection: ProviderConnection,
-        credential: str | bytes,
+        credential: str | bytes | None,
         model_ids: Sequence[str],
     ) -> tuple[DiscoveredModel, ...]:
         base = self._validate_connection(connection)
@@ -296,7 +296,7 @@ class _CustomCompatibleAdapter(OpenRouterAdapter):
             )
         except ProviderCatalogError as error:
             raise AdapterError(error.args[0], 409) from None
-        headers = self._headers(_credential_text(credential))
+        headers = self._headers(_credential_text(credential) if credential is not None else None)
         url = _append_path(base, self._probe_path())
         for model in models:
             payload = self._request(
@@ -314,8 +314,8 @@ class _CustomCompatibleAdapter(OpenRouterAdapter):
 
 
 class CustomOpenAICompatibleAdapter(_CustomCompatibleAdapter):
-    def _headers(self, secret: str) -> Mapping[str, str]:
-        return {"authorization": f"Bearer {secret}"}
+    def _headers(self, secret: str | None) -> Mapping[str, str]:
+        return {"authorization": f"Bearer {secret}"} if secret is not None else {}
 
     def _probe_path(self) -> str:
         return "/chat/completions"
@@ -334,8 +334,8 @@ class CustomOpenAICompatibleAdapter(_CustomCompatibleAdapter):
 
 
 class CustomAnthropicCompatibleAdapter(_CustomCompatibleAdapter):
-    def _headers(self, secret: str) -> Mapping[str, str]:
-        return {"x-api-key": secret, "anthropic-version": "2023-06-01"}
+    def _headers(self, secret: str | None) -> Mapping[str, str]:
+        return {"x-api-key": secret, "anthropic-version": "2023-06-01"} if secret is not None else {"anthropic-version": "2023-06-01"}
 
     def _probe_path(self) -> str:
         return "/messages"

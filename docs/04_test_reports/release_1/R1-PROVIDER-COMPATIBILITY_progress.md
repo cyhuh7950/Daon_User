@@ -239,3 +239,11 @@
 - QA 연결 조정: 개발 DB의 정확한 `provider-media_bridge` 1개 행이 `http://127.0.0.1:8642/v1`, version 7, failed인 것을 읽기 전용 확인했다. API 컨테이너의 127.0.0.1은 다른 컨테이너 자신을 가리켜 연결이 거부되므로, 대상 행·기존 값·버전을 조건으로 `http://host.docker.internal:8642/v1`로 조정하고 version 8, unverified로 되돌렸다. Key·공용 정책·허용 모델은 변경하지 않았다. 저장된 QA 행을 새 Adapter로 다시 조회해 `solar-pro4` 1개를 확인했다. 원래 URL과 version 7은 이 기록에 남겼다.
 - 화면/미검증: 기존 Chrome 관리자 탭 새로고침 후 로그인 세션이 만료되어 로그인 화면으로 이동했다. 따라서 배포 화면의 `모델 조회` 버튼 클릭, same-origin Network와 목록 반영, 사용자 수락은 아직 검증하지 못했다. 신산님에게 기존 QA 관리자 세션 재로그인을 요청했다. 비밀번호·토큰은 출력하거나 저장하지 않았다. 전체 API suite는 위 기존 라이선스 fixture 실패로 여전히 GREEN 아님.
 - 다음 조치: 로그인 후 `/settings/model-connections`에서 `MEDIA_BRIDGE` 선택, `모델 조회` 클릭, `solar-pro4`의 카탈로그 표시와 Network 경로를 확인한다. 그 전에는 화면 기능까지 검증 완료로 보고하지 않는다.
+
+## 신규 연결 기존 Provider 목록 제거·Key 선택 — 2026-10-04
+
+- 담당/기준: 어울. 기존 `codex/next-user-development` 단일 writer, 시작 HEAD `b9f4bd3a`, 기존 worktree clean. 신산님은 신규 등록의 `기존 Provider 방식` 및 Provider 목록 제거와 `OpenAI 호환`/`Anthropic 호환`만 표시, API Key 필요 여부 선택을 직접 지시했다. 설치형 `MEDIA_BRIDGE` 연결은 신산님이 이미 삭제했으며 배포형 `Media Bridge Server`와 저장된 Key는 수정하지 않는다.
+- 원인/조치: 신규 draft가 `OLLAMA` 및 Key 불필요로 시작해 기존 Provider 드롭다운을 노출했다. 호환 draft를 기본값으로 만들고 신규 등록의 기존 Provider 선택을 제거했다. 호환 연결의 Key 불필요 선택은 기존 서버 정책이 거절했으므로 `CUSTOM` 공용 연결에서만 Key 불필요를 허용하고, 모델 조회·모델별 시험·실제 질문에 인증 헤더를 붙이지 않도록 했다. 기존 저장 연결의 조회/수정 경로는 유지한다. 설계·계획 문서에 최신 직접 지시를 반영했다.
+- 변경 파일: Web 관리자 연결 화면 및 Node 테스트, Provider 관리자 정책/Adapter/HTTP body, 모델 resolver/질문 실행 및 Python 테스트, 호환 설계/계획과 이 진행 기록. DB migration·기존 연결 행·Secret·운영 데이터는 변경하지 않는다.
+- 검증: 신규 UI 테스트 RED→GREEN. Web/계약 Node 3파일 `26 passed`; Web production build와 TypeScript PASS; 전체 UI 경계 498파일, Web 경계 475파일 위반 0. Python 신규 Key 불필요 저장/조회/resolver/실행 테스트 `4 passed, 2 subtests passed`; Provider/질문 인접 5파일 `189 passed, 20 subtests passed`; API HTTP/개인 Key 인접 3파일 `39 passed`. 기존 신규 OmniRoute 등록 테스트 3개는 제거된 등록 경로를 전제하므로 삭제했으며 저장된 OmniRoute 관리 회귀 테스트는 유지했다.
+- 오류 횟수/미검증/다음: Python 실행기 경로 탐색 중 Windows `python`/`py` 사용 불가, WSL 시스템 Python의 `argon2` 누락을 확인한 뒤 기존 Daon_User WSL venv로 검증했다. Key 불필요 질문 신규 테스트 첫 실행은 `prepare_general`에 남은 필수 Key 호출 1건으로 실패해 수정·재실행했다. 동일 근본 원인 3회 연속 없음. 사용자 실제 화면 클릭·저장과 실제 Key 불필요 Provider 연동은 신산님 확인 전 미검증이다. 다음은 변경 파일만 commit/push, WSL exact-SHA API/Web 배포, URL/health/DB 불변 smoke 후 신산님이 3330에서 확인한다. Oracle·ysna·main·기존 Key는 범위 밖이다.
