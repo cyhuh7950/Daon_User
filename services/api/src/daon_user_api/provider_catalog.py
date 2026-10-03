@@ -5,6 +5,7 @@ from typing import Literal, Mapping, Sequence
 
 
 RoutingOwner = Literal["provider", "gateway", "local_runtime"]
+MAX_COMPATIBLE_PROBE_MODELS = 4
 
 
 class ProviderCatalogError(ValueError):
@@ -59,7 +60,7 @@ class ProviderCatalog:
         provider_code: str,
         model_ids: Sequence[str],
     ) -> tuple[DiscoveredModel, ...]:
-        if provider_code != "CUSTOM" or not model_ids:
+        if provider_code != "CUSTOM" or not model_ids or len(model_ids) > MAX_COMPATIBLE_PROBE_MODELS:
             raise ProviderCatalogError("PROVIDER_MODEL_IDS_INVALID")
         try:
             normalized = tuple(_valid_model_id(model_id) for model_id in model_ids)

@@ -507,6 +507,22 @@ def test_probe_all_models_fails_closed() -> None:
     assert TEST_CREDENTIAL not in repr(captured.value)
 
 
+@pytest.mark.parametrize("adapter_type", ["openai_compatible", "anthropic_compatible"])
+def test_compatible_probe_rejects_five_models_before_network(
+    adapter_type: str, fake_transport: FakeTransport,
+) -> None:
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type)
+    model_ids = tuple(f"manual-{index}" for index in range(5))
+
+    with pytest.raises(AdapterError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        adapter.verify_models(
+            connection("CUSTOM", base_url="https://models.example/v1"),
+            TEST_CREDENTIAL, model_ids,
+        )
+
+    assert fake_transport.requests == []
+
+
 @pytest.mark.parametrize(
     ("adapter_type", "path"),
     [("openai_compatible", "/chat/completions"), ("anthropic_compatible", "/messages")],

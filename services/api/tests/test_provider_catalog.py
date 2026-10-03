@@ -133,3 +133,13 @@ def test_verified_manual_models_reject_empty_invalid_or_duplicate_ids(model_ids:
 def test_verified_manual_models_reject_non_custom_provider() -> None:
     with pytest.raises(ProviderCatalogError, match="^PROVIDER_MODEL_IDS_INVALID$"):
         ProviderCatalog.from_verified_text_models("router", "OPENROUTER", ("manual",))
+
+
+def test_verified_manual_models_limit_probe_count() -> None:
+    model_ids = tuple(f"manual-{index}" for index in range(5))
+    with pytest.raises(ProviderCatalogError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        ProviderCatalog.from_verified_text_models("custom-primary", "CUSTOM", model_ids)
+
+    assert len(ProviderCatalog.from_verified_text_models(
+        "custom-primary", "CUSTOM", model_ids[:4],
+    )) == 4

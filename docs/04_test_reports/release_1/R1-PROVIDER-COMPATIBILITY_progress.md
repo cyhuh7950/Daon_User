@@ -77,3 +77,13 @@
 - 오류 횟수: 구현 중 비의도 실패 원인 2개(테스트 가짜 DB의 `Jsonb` 객체 동일성 비교, preview step-up의 operation/key 쌍 누락)를 각각 확인·수정. 신규 Secret 반사 및 refresh stale 실패는 의도된 RED; 동일 근본 원인 3회 반복 없음.
 - 미검증: 실 DB transaction/Provider, 사용자 Key Task 3, Web Task 4, WSL/배포. Anthropic 모델 목록 pagination은 아직 1페이지 조회로 부분 목록 가능; Task 1 검토 보완에서 명시 기록.
 - 다음 조치: Task 2 지정 파일만 체크포인트 commit 후, 신산님 전달 Task 1 Important(모델 수 상한) RED→GREEN과 토큰 파라미터·pagination 판단을 별도 commit으로 처리. Task 3 시작 금지.
+
+### Task 2 체크포인트 및 Task 1 내부 검토 보완
+
+- Task 2 체크포인트: 지정 5개 파일만 `13b8d90d`에 commit. `git diff --cached --check` 통과. 사용자 지적의 refresh 성공·부분 목록에서 수동 검증/허용 모델 보존은 OpenAI·Anthropic fixture로 검증.
+- Task 1 Important 상한 RED: 5개 모델 ID에 대해 catalog 1건과 두 규격 adapter 2건이 예상대로 실패; 당시 adapter는 첫 네트워크 probe로 진행. GREEN: `CUSTOM` 검증 모델을 최대 4개로 제한해 입력 검증 단계에서 `PROVIDER_MODEL_IDS_INVALID`로 종료. 5개 경계에서 두 규격 모두 네트워크 요청 0회; 4개는 허용. 5초/모델 기준 probe 요청은 최대 4회이며 기존 Provider의 모델 목록 제한은 바꾸지 않음.
+- Task 1 Important 토큰 파라미터 판단: OpenAI Chat Completions 공식 문서는 `max_tokens`를 deprecated/o-series 비호환으로 명시하지만 Mistral·Upstage 공식 Chat API는 `max_tokens`를 요청 필드로 명시한다. 승인된 범용 `openai_compatible` 설계에서 단일 파라미터로 모두를 보장할 근거가 없어 16토큰 `max_tokens`를 유지하고 자동 재시도·추가 API 하위유형을 도입하지 않음. OpenAI o-series는 알려진 호환성 한계로 남겨 별도 설계 판단 전 지원 성공을 주장하지 않음. 근거: https://platform.openai.com/docs/api-reference/chat/getMessages , https://docs.mistral.ai/api , https://console.upstage.ai/api/chat .
+- Task 1 Minor pagination 판단: Anthropic 공식 `/models`는 기본 20개/페이지, `has_more`·`last_id` 커서를 제공한다(https://platform.claude.com/docs/en/api/models/list). 현재 preview/refresh는 첫 페이지만 조회하므로 목록은 부분 결과일 수 있다. 이번 범위에서 추가 페이지 요청·공개 응답 계약 변경 없이 이 제한을 명시하며, 수동 ID 입력과 실제 probe는 계속 가능하고 refresh는 누락된 기존 검증/허용 모델을 stale 처리하지 않는다. Task 4 UI에서 목록이 전체가 아닐 수 있음을 표시할 필요가 있다.
+- 보완 변경 파일: `provider_catalog.py`, `test_provider_catalog.py`, `test_provider_connection_adapters.py`, 이 진행 기록. 보완 RED는 의도된 3건; 새 비의도 오류 0건. 누적 비의도 오류 원인 2건, 동일 원인 3회 반복 없음.
+- 검증: `PYTHONPATH=services/api/src`에서 Provider 관련 8개 파일 `142 passed, 1 skipped`(실 PostgreSQL DSN 없음). fixture transport만 사용했고 실제 Key·외부 유료 Provider 호출 없음. 최종 diff/self-review 및 commit 뒤 worktree 상태 확인 예정.
+- 미검증/다음: 실제 Provider 규격 차이, 실 DB transaction, 사용자 Key Task 3, Web Task 4, WSL/배포. Task 1 보완만 별도 commit 후 Task 2 결과를 어울1에 인계; Task 3은 어울1 검토 전 시작하지 않음.
