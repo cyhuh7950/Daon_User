@@ -1,7 +1,7 @@
 # 기본 Provider 사용 대기 등록 작업현황
 
 - issue_id: `R1-DEFAULT-PROVIDERS-20261003`; 담당: 어울2 단일 code writer; 작업공간: `codex/next-user-development` worktree.
-- 상태(2026-10-04): 승인 계획 Task 1·2의 로컬 구현·검증 완료. Task 3의 실제 Anthropic·OpenAI·Gemini 세 행 등록, WSL QA 배포·DB 변경은 신산님 지시에 따라 시작하지 않았다.
+- 상태(2026-10-04): 승인 계획 Task 1·2의 구현·검증과 Task 3의 WSL QA 배포·관리자 화면 등록을 완료했다. 실제 Key/모델 시험과 일반 사용자 인수는 미검증이다. 아래의 기존 Task 1·2 기록 뒤에 WSL QA 등록 결과를 누적 기록했다.
 - 승인 범위: `CUSTOM + personal + credential 없음 + test_credential 없음 + 허용/논리 모델 없음`인 신규 연결만 기존 API에서 `unverified` 사용 대기로 저장한다. 공개 CUSTOM과 모델 지정 개인 CUSTOM의 시험 Key 요구는 유지한다. 새 공개 API·DB schema·권한 정책은 변경하지 않았다.
 - Task 1 결과: `services/api/src/daon_user_api/provider_connection_admin.py`에 위 좁은 예외를 두어 카탈로그·허용 목록·암호화 Key 없이, Provider 네트워크 호출 0회로 생성한다. 실패한 모델 추가·공용 전환은 기존 행 불변이며, 모델을 추가할 때 일회성 시험 Key로 실제 fixture probe가 성공해야 허용된다. 개인 Key는 허용 모델이 없는 대기 연결을 사용 가능으로 만들 수 없다.
 - Task 2 결과: `apps/web/components/provider-settings-workspace.jsx`는 새 개인 CUSTOM 빈 연결에만 `사용 대기 연결 등록`을 표시·활성화하고 “시험 없이 사용 대기”와 무비용을 안내한다. 다른 생성은 `연결 시험 및 저장`, 개인 모델 시험 Key 비저장, 일반 사용자 읽기 전용·same-origin BFF를 유지한다. 기존 “모델 조회는 선택 사항” 안내문도 인접 계약 회귀로 확인하여 복원했다.
@@ -16,3 +16,12 @@
 
 - 2026-10-04 / 어울2: 최종 독립 리뷰 Minor 1에 따라 `CUSTOM + personal + allowed_model_ids=[]` 대기 연결에서 일반 사용자의 Key 입력과 “내 계정 키 시험 및 저장”을 비활성화하고 관리자 모델 허용 후 시험 안내를 추가했다. 기존 서버 측 거절·암호화 Key·권한은 바꾸지 않았다.
 - 동적 Node fixture에서 Key 입력 활성 상태를 RED 1건으로 관찰한 후 GREEN. 같은 회차 최종 인접 검증은 Python 12개 파일 `250 passed, 1 skipped, 6 subtests passed`, Node 5개 파일 `43 passed`, Web build·TypeScript·UI boundary 475/498 위반 0, `git diff --check` PASS. 전체 API suite는 별도 라이선스 `LICENSE_DOCUMENT_INVALID` 10건 때문에 `10 failed, 864 passed, 48 skipped`로 전체 PASS 아님. 실제 DB/브라우저/외부 Provider/배포 미검증; 별도 WSL Compose 수정 보존, commit/push/deploy 없음. 오류·정책 미결은 `R1-ROUTE-MODELS_progress.md`의 같은 날짜 절에 상세 기록했다. 이 `.gitignore` 파일은 메인이 명시적으로 stage할 때까지 현 위치에 보존한다.
+
+## WSL QA 실제 등록 (2026-10-04 / 어울)
+
+- 신산님이 관리자 로그인을 완료한 뒤 브라우저 새로고침에서도 `admin · 시스템 관리자`가 유지되고 연결 목록 8개를 조회했다. 기존 8개에 이름·약어 `ANTHROPIC/AN`, `OPENAI/OA`, `GEMINI/GE`는 없었다.
+- `http://172.27.253.53:3330/settings/model-connections`의 `연결 추가` 화면에서 세 건만 한 건씩 등록했다. Anthropic은 `Anthropic 호환`, OpenAI·Gemini는 `OpenAI 호환`; 모두 `비공용`, `Key 필요`, Key·모델 미입력, `사용 대기 연결 등록`이다. Provider 호출과 실제 생성 시험은 하지 않았다.
+- 자동 생성 ID는 `ANTHROPIC=provider-436f01a25388750b48cec6dd8fab395c`, `OPENAI=provider-68a60f42582e4de2c9aec26982b553cd`, `GEMINI=provider-88b950ff039b8cc42e55c0e231ea0b9e`. Endpoint는 승인 계획의 각 공식 HTTPS 주소로 저장했다. 화면의 표시 이름은 기존 목록 표기에 맞춰 대문자로 입력했다.
+- 저장 후 브라우저 새로고침에서 11개 카드와 새 3개의 `비공용 · 개인 Key 필요 · 사용 대기`를 확인했다. DB 읽기 전용 조회에서도 새 3개는 각각 `CUSTOM` 호환 adapter, `personal/required/unverified`, 암호화 관리자 Key 없음, 허용 모델 0개다. 전체 허용 모델 45개(OLLAMA 30, UPSTAGE 15), Workspace 기본 모델 2개는 유지됐다. 컨테이너 API/Web healthy.
+- 기존 8개 연결의 약어는 사전 조회 시 `AB/AC/AD/AE/AA/AF/OR/AG`였으나 후속 조회에서는 일부가 `EG/GR/MB/MI/OL/AF/OR/US`로 달랐다. 세 신규 연결 등록 이외에 어울은 기존 연결의 편집 버튼을 누르지 않았다. 다른 세션 변경 주체는 미확인이라 기존 모든 필드가 불변이었다고 단정하지 않는다.
+- 일반 사용자 계정 화면·브라우저 Network same-origin·실 Provider Key/모델 시험은 미검증. OmniRoute 기존 Endpoint/health 비용 문제와 전체 API gate 실패는 별도 미결이며 Oracle·ysna·main 변경 없음. 기존 QA DB 백업·이전 API/Web rollback image 보존.

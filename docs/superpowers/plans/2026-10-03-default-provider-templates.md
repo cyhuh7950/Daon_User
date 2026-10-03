@@ -56,7 +56,7 @@
 
 **Interfaces:** 화면이 자동 생성한 내부 연결 ID를 사용하고 등록 후 실제 ID를 기록한다. 표시 이름은 `Anthropic`, `OpenAI`, `Gemini`, 약어는 `AN`, `OA`, `GE`; Endpoint는 차례로 `https://api.anthropic.com/v1`, `https://api.openai.com/v1`, `https://generativelanguage.googleapis.com/v1beta/openai`다. 마지막 주소는 [Google 공식 OpenAI 호환 문서](https://ai.google.dev/gemini-api/docs/openai)의 Base URL이다.
 
-- [ ] **Step 1: 사전 점검.** WSL DB에서 세 표시 이름·약어·기존 8개 행·허용 모델·Workspace 기본값 건수만 읽어 충돌을 확인한다. 충돌하면 덮어쓰지 않고 보고한다.
-- [ ] **Step 2: exact-SHA 배포.** 로컬 전체 검증·독립 검토 후 GitHub 경유 WSL 격리 checkout으로 API/Web을 배포한다. 기존 checkout·Secret·DB를 덮어쓰지 않는다.
-- [ ] **Step 3: 관리자 화면으로 세 행 등록.** 기존 행은 skip; 없는 행만 한 건씩 생성하고 실제 생성 ID를 기록한다. 저장 오류 시 이름·약어와 DB 결과를 재조회한 뒤에만 재시도한다. 결과가 `personal/required/unverified`, Key·허용 모델 없음인지 확인한다.
+- [x] **Step 1: 사전 점검.** WSL DB에서 세 표시 이름·약어·기존 8개 행·허용 모델·Workspace 기본값 건수만 읽어 충돌을 확인한다. 충돌하면 덮어쓰지 않고 보고한다.
+- [x] **Step 2: exact-SHA 배포.** 로컬 전체 검증·독립 검토 후 GitHub 경유 WSL 격리 checkout으로 API/Web을 배포한다. 기존 checkout·Secret·DB를 덮어쓰지 않는다. 전체 API gate의 기존 실패는 진행 기록에 분리했다.
+- [x] **Step 3: 관리자 화면으로 세 행 등록.** 기존 행은 skip; 없는 행만 한 건씩 생성하고 실제 생성 ID를 기록한다. 저장 오류 시 이름·약어와 DB 결과를 재조회한 뒤에만 재시도한다. 결과가 `personal/required/unverified`, Key·허용 모델 없음인지 확인한다.
 - [ ] **Step 4: 화면·권한 검증.** `http://172.27.253.53:3330/`에서 관리자 3개 카드, 일반 사용자 사용 대기, same-origin Network, 기존 8개 보존을 확인한다. 실제 Key/모델이 없어 생성 시험은 미검증으로 기록한다.
