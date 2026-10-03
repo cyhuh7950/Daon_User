@@ -46,3 +46,9 @@
 - 오류 횟수: 0. 의도한 RED는 실패 횟수에 산입하지 않음.
 - 미검증: 실제 Provider별 응답/비용, DB 불변, Web/Network, WSL·배포는 Task 1 밖. PostgreSQL DSN 필요 테스트 1개 미실행.
 - 다음 조치: Task 1 관련 5개 파일만 commit 후 어울1에게 결과 인계. Task 2~5는 이번 어울2 범위 밖.
+
+### Task 1 인계 체크포인트
+
+- 코드·테스트·진행 기록 commit: `7697bc2d4c9041034ca99efd5144cac9508ad404`(지정된 5개 파일만 포함). 커밋 직후 worktree clean 확인.
+- 최종 판정: Task 1 로컬 구현·fixture 검증 완료. 자체 검토에서 남은 Critical/Important finding 없음. 실제 Provider 연결 성공 또는 DB 저장 완료를 주장하지 않음.
+- 다음 조치: 어울1이 Task 2 관리자 preview/시험-후-저장 연계를 검토·진행. 이번 인계에서 push·PR·merge·배포 없음.
