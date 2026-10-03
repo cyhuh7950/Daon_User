@@ -103,3 +103,4 @@
 - GREEN: CUSTOM 2건에서 반환 `skipped`, 네트워크 0회, Provider 설정 DB 갱신 0회, 저장된 연결·모델·허용 목록 불변 확인. 기존 Ollama 성공/실패 각각 1회 목록 조회와 상태 갱신 확인. 집중 4건 통과, 인접 9개 파일 최종 `149 passed, 1 skipped`(실 PostgreSQL DSN 없음).
 - Preview 표현 정정: 관리자 model-preview는 Provider 설정 DB의 연결·카탈로그·허용 목록을 쓰지 않는다. 관리자 인증의 step-up 권한은 별도 인증 저장소에서 소비되므로 시스템 전체의 DB 무기록 호출이라는 뜻은 아니다. HTTP 테스트는 step-up 재사용 403을 확인한다.
 - 변경 파일: `provider_connection_admin.py`, `test_provider_connection_admin.py`, 이 진행 기록만. 이번 보완 비의도 오류 0건(이전 Task 2 누적 2건 유지). 실 DB/Provider/비용 호출, WSL·배포, Task 3·Web은 미검증/미착수. 다음 조치: 관련 회귀와 diff 자체 검토 후 범위 파일만 commit, 어울1 재검토 대기.
+- 인계 체크포인트: 지정 3개 파일 commit `91ba2fc2ae7a6bc9cc0d7a2ede093a564a15e168`. 커밋 후 인접 9개 파일 `149 passed, 1 skipped`, 기준 `3231e38a` 대비 `git diff --check` 통과, worktree clean 확인. 상태는 Task 2 P1 보완 로컬 완료·어울1 재검토 대기; Task 3 시작 금지.
