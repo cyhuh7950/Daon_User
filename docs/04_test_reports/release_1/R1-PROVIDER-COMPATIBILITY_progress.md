@@ -271,3 +271,12 @@
 - 새 API image `sha256:234832be6619e160014a668ffa75fd71b11b785a33010c31f44f1e800d7da9ed3`가 위 checkout에서 실행되며 healthy. Web은 기존 `7db19f1f` 이미지로 healthy이고 두 worker는 계속 실행 중이다. `http://172.27.253.53:3330/settings/model-connections` HTTP 200.
 - 새 API 컨테이너에서 저장된 OmniRoute Key를 출력하지 않는 읽기 전용 조회 결과: `catalog_status=ok`, 텍스트 후보 682개, 별도 기능 유형 63개. 상위 응답 839행 중 기존 모델 ID 규칙에서 제외되는 94개가 있었으며 이를 저장/등록하지 않았다. 실제 관리자 `모델 조회` 클릭과 카탈로그 DB 저장은 수행하지 않았다.
 - 배포 전후 DB 연결/카탈로그/허용 모델 수는 `11/47/33`으로 불변, OmniRoute 연결 version 7·Key 저장 상태 유지. Oracle·ysna·main·Web/worker·기존 Key는 변경하지 않았다. 사용자 수락과 화면에서 실제 조회·등록은 신산님 확인 전 미검증. 다음: 신산님이 3330에서 새로고침 후 OmniRoute `모델 조회`를 클릭해 오류가 사라지고 목록이 반영되는지 확인한다.
+
+## Provider 설정 1920×1080 스크롤 정리 — 2026-10-04
+
+- 담당/상태: 어울, 기존 `codex/next-user-development` 단일 writer. 화면 변경 제품 commit `3cfd462efe4afa0e8523ecf1e856a8344ec66c75`를 비강제 push했고, WSL clean detached checkout `/home/daon/deploy/daon-user-layout-3cfd462e`에서 동일 SHA를 확인했다.
+- 변경: `apps/web/app/globals.css`의 모델 체크 목록을 최대 320px·내부 세로 스크롤로 제한. `apps/web/app/settings/model-connections/provider-settings.css`에서 상단 상태/제목 간격을 줄이고 제목 액션을 같은 행에 배치했으며, 왼쪽 연결 목록과 오른쪽 상세 패널을 뷰포트 기준 최대 760px·각각 내부 스크롤로 제한했다. 카드 여백/줄간격도 축소했다. 연결·모델·Key 저장 로직은 변경하지 않았다.
+- RED→GREEN: 신규 실제 Edge 배치 회귀 검사 `scripts/tests/provider-model-picker-layout.test.mjs`는 수정 전 모델 목록 5371px, 연결 목록 9564px로 실패했고 수정 후 2 passed. Provider Web/계약 23 passed, Web production build·TypeScript·경계 검사 475파일 0위반, `git diff --check` 통과. 브라우저 회귀 검사는 Edge가 없는 환경에서는 skip되므로 WSL 브라우저 실측은 수행하지 않았다.
+- QA 배포: 이전 Web image `sha256:e20ace4949bf988b8cfa771965aeac6d85e38c917085e02e6a05c6075454e0ee`를 `daon_user-web:rollback-layout-3cfd462e-pre`로 보존한 후 Web만 새 image `sha256:3dc918745ba8867270c33614c2cf2c1045176549fb809442298df3f18bae3484`로 교체했다. 새 Web Compose checkout·healthy, API 기존 image `sha256:234832be6619e160014a668ffa75fd71b11b785a33010c31f44f1e800d7da9ed3` healthy, 두 worker 계속 running. WSL·Windows 양쪽에서 `http://172.27.253.53:3330/settings/model-connections` HTTP 200. DB·Secret·Provider 연결·Key·Oracle·ysna·main은 변경하지 않았다.
+- 확인 주기 `0` 요청: 현재 UI는 60~1440분만 표시하고 API는 `ge=1`, 서비스는 최솟값 1, DB `CHECK (interval_minutes BETWEEN 1 AND 1440)`이며 반복 루프는 0을 받으면 즉시 재실행한다. 실제 중지 기능은 DB 제약 변경과 실행 루프 수정이 필요해 별도 승인 답변을 요청했다. 이 배포에는 0분 기능을 포함하지 않았다.
+- 미검증/다음: 신산님 실제 관리자 화면 스크롤·저장 조작과 사용자 인수는 미검증. 신산님이 3330에서 모델 목록·연결 목록·상세 패널 내부 스크롤과 상단 간격을 확인한다. 확인 주기 0의 별도 승인 시 API/DB 변경을 독립 검증·배포한다. 동일 근본 원인 3회 반복 없음.
