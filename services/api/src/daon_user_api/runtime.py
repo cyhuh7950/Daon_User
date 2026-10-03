@@ -974,7 +974,7 @@ class ProviderConnectionMutationBody(BaseModel):
 
 class ProviderHealthSettingsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    interval_minutes: int = Field(ge=1, le=1440)
+    interval_minutes: int = Field(ge=0, le=1440)
     expected_version: int = Field(ge=0)
 
 
@@ -1788,16 +1788,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 )["status"]
             ),
         )
-        while not provider_health_stop.is_set():
-            interval = await asyncio.to_thread(
-                provider_health_settings_service.get, health_context,
-            )
-            try:
-                await asyncio.wait_for(
-                    provider_health_stop.wait(), timeout=interval.interval_minutes * 60,
-                )
-            except TimeoutError:
-                await asyncio.to_thread(monitor.run_once)
+        await monitor.run_with_settings(
+            provider_health_stop,
+            lambda: provider_health_settings_service.get(health_context),
+        )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:

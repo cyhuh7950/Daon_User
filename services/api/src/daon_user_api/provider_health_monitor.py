@@ -12,6 +12,11 @@ class _Connection(Protocol):
     enabled: bool
 
 
+class _HealthSettings(Protocol):
+    interval_minutes: int
+    version: int
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderHealthCheckResult:
     connection_id: str
@@ -64,3 +69,32 @@ class ProviderHealthMonitor:
                     return
             await asyncio.to_thread(self.run_once)
             first = False
+
+    async def run_with_settings(
+        self, stop_event: asyncio.Event, get_settings: Callable[[], _HealthSettings],
+        *, poll_seconds: float = 60.0, seconds_per_minute: float = 60.0,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        last_setting: tuple[int, int] | None = None
+        next_check_at: float | None = None
+        while not stop_event.is_set():
+            setting = await asyncio.to_thread(get_settings)
+            setting_key = (setting.version, setting.interval_minutes)
+            now = loop.time()
+            if setting_key != last_setting:
+                last_setting = setting_key
+                next_check_at = (
+                    None if setting.interval_minutes == 0
+                    else now + setting.interval_minutes * seconds_per_minute
+                )
+            if next_check_at is not None and now >= next_check_at:
+                await asyncio.to_thread(self.run_once)
+                next_check_at = loop.time() + setting.interval_minutes * seconds_per_minute
+            wait_seconds = (
+                poll_seconds if next_check_at is None
+                else min(poll_seconds, max(0.0, next_check_at - loop.time()))
+            )
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=wait_seconds)
+            except TimeoutError:
+                pass

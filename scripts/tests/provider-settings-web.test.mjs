@@ -111,6 +111,30 @@ async function mountAdminFixture(fixture, fileName) {
   return { container, act, async cleanup() { await act(async () => reactRoot.unmount()); globalThis.fetch = originalFetch; dom.restore(); await rm(output, { recursive: true, force: true }); } };
 }
 
+test("admin can save zero minutes to disable periodic provider checks", async () => {
+  const fixture = adminFixture();
+  const originalFetch = fixture.fetch;
+  let savedBody;
+  fixture.fetch = async (url, options = {}) => {
+    if (String(url) === "/bff/api/admin/provider-health-settings" && options.method === "PATCH") {
+      savedBody = JSON.parse(options.body);
+      return Response.json({ data: { interval_minutes: 0, version: 2 } });
+    }
+    return originalFetch(url, options);
+  };
+  const view = await mountAdminFixture(fixture, "health-zero");
+  try {
+    const interval = controlFor(view.container, "상태 확인 주기");
+    const choices = findElements(interval, (node) => node.tagName === "OPTION");
+    assert.ok(choices.some((option) => option.value === "0" && /안 함|중지/u.test(option.textContent)));
+    await fill(view.act, interval, "0");
+    await click(view.act, buttonByText(view.container, "주기 저장"));
+    assert.deepEqual(savedBody, { interval_minutes: 0, expected_version: 1 });
+    assert.equal(reactProps(interval).value, 0);
+    assert.match(view.container.textContent, /정기 확인을 중지했습니다/u);
+  } finally { await view.cleanup(); }
+});
+
 test("new connection offers only OpenAI and Anthropic compatibility, not legacy providers", async () => {
   const view = await mountAdminFixture(adminFixture(), "compatible-only-new");
   try {
