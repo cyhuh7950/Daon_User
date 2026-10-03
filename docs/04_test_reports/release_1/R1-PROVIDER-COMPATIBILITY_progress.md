@@ -87,3 +87,9 @@
 - 보완 변경 파일: `provider_catalog.py`, `test_provider_catalog.py`, `test_provider_connection_adapters.py`, 이 진행 기록. 보완 RED는 의도된 3건; 새 비의도 오류 0건. 누적 비의도 오류 원인 2건, 동일 원인 3회 반복 없음.
 - 검증: `PYTHONPATH=services/api/src`에서 Provider 관련 8개 파일 `142 passed, 1 skipped`(실 PostgreSQL DSN 없음). fixture transport만 사용했고 실제 Key·외부 유료 Provider 호출 없음. 최종 diff/self-review 및 commit 뒤 worktree 상태 확인 예정.
 - 미검증/다음: 실제 Provider 규격 차이, 실 DB transaction, 사용자 Key Task 3, Web Task 4, WSL/배포. Task 1 보완만 별도 commit 후 Task 2 결과를 어울1에 인계; Task 3은 어울1 검토 전 시작하지 않음.
+
+### Task 2 인계 상태
+
+- 상태: Task 2 로컬 구현·fixture 검증 완료, 어울1 검토 대기. Task 2 commit `13b8d90d`, 분리된 Task 1 내부 검토 보완 commit `75c639ee`.
+- 최종 재검증: 승인 시작점 `7e786327` 대비 `git diff --check` 통과, Provider 인접 8개 파일 `142 passed, 1 skipped`(실 PostgreSQL DSN 없음). 커밋 직후 worktree clean 확인.
+- 오류 횟수: Task 2 비의도 오류 원인 2건 해결, Task 1 보완 비의도 오류 0건. 미검증은 실 Provider/유료 호출, 실 DB, Web, 사용자 Key, WSL·배포. 다음 조치: 어울1 자체 검토 및 Task 3 진행 여부 판단; 어울2는 Task 3 시작하지 않음.
