@@ -30,7 +30,7 @@
 
 ### Task 1: 접근 정책·약어·허용 모델 저장
 
-**Files:** `services/api/migrations/versions/0049_provider_connection_access.py`(new), `services/api/src/daon_user_api/provider_connection_admin.py`, `services/api/tests/test_provider_connections_migration.py`, `services/api/tests/test_provider_connection_admin.py`.
+**Files:** `services/api/migrations/versions/0050_provider_connection_access.py`(new; `down_revision="0049"`), `services/api/src/daon_user_api/provider_connection_admin.py`, `services/api/tests/test_provider_connections_migration.py`, `services/api/tests/test_provider_connection_admin.py`.
 
 **Interfaces:** 기존 `ProviderConnectionCreateCommand`/`UpdateCommand`, 목록 응답에 `access_mode`, `credential_requirement`, `short_code`, `allowed_model_ids`를 명시적으로 추가한다. 모델 카탈로그는 기존 응답으로 유지한다.
 
