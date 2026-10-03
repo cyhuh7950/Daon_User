@@ -353,7 +353,7 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed.status_code, 200, listed.text)
         self.assertEqual(created.status_code, 403)
 
-    async def test_authenticated_workspace_user_can_rotate_shared_provider_credential(self) -> None:
+    async def test_authenticated_workspace_user_cannot_rotate_shared_provider_credential(self) -> None:
         class SafeProviderService:
             def replace_credential(self, context, connection_id, body, idempotency_key):
                 return {
@@ -390,7 +390,7 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "step_up_authorization_id": grant.authorization,
             },
         )
-        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.status_code, 403, response.text)
         self.assertNotIn("user-rotated-secret", response.text)
 
     async def test_system_admin_connection_crud_is_step_up_versioned_and_secret_safe(self) -> None:
@@ -429,14 +429,10 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 if expected_version != self.item["version"]:
                     from daon_user_api.runtime import ProviderConnectionAdminError
                     raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
-                self.item = {
-                    **self.item, "configured": False,
-                    "credential_version": self.item["credential_version"] + 1,
-                    "verification_status": "unverified", "verified_at": None,
-                    "version": expected_version + 1,
-                }
-                self.deleted_replay = self.item
-                return self.item, False
+                self.deleted_replay = {"connection_id": connection_id, "deleted": True,
+                                       "version": expected_version}
+                self.item = None
+                return self.deleted_replay, False
 
             def refresh_catalog(self, context, connection_id, expected_version, idempotency_key):
                 self.item = {**self.item, "version": expected_version + 1, "catalog_version": 2}
@@ -531,18 +527,14 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             json={"expected_version": 1, "step_up_authorization_id": delete_step.authorization},
         )
         self.assertEqual(deleted.status_code, 204, deleted.text)
-        self.assertEqual(deleted.headers["etag"], '"projection-d12d910806b0e61fe29bd7ae"')
-        self.assertIsNotNone(service.item)
-        self.assertFalse(service.item["configured"])
-        self.assertEqual(service.item["credential_version"], 2)
-        self.assertEqual(service.item["version"], 2)
+        self.assertIsNone(service.item)
         delete_replay = await self.client.request(
             "DELETE", "/api/v1/admin/provider-connections/ollama-lan",
             headers={"Idempotency-Key": "provider-credential-delete-0001"},
             json={"expected_version": 1, "step_up_authorization_id": delete_step.authorization},
         )
         self.assertEqual(delete_replay.status_code, 204, delete_replay.text)
-        self.assertEqual(delete_replay.headers["etag"], deleted.headers["etag"])
+        self.assertIsNone(service.item)
 
     async def test_catalog_refresh_and_capability_correction_require_step_up(self) -> None:
         self.dependencies.settings = RuntimeSettings.for_test(
@@ -568,6 +560,42 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(refresh.status_code, 403)
         self.assertEqual(correction.status_code, 403)
+
+    async def test_connection_delete_reports_reference_counts_without_deleting(self) -> None:
+        class ReferencedService:
+            def delete_connection(self, context, connection_id, expected_version, idempotency_key):
+                from daon_user_api.runtime import ProviderConnectionAdminError
+                raise ProviderConnectionAdminError(
+                    "PROVIDER_CONNECTION_REFERENCED", 409,
+                    references={"user_credentials": 1, "workspace_defaults": 2},
+                )
+
+        self.dependencies.provider_connection_service = ReferencedService()
+        self.dependencies.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION,
+            system_admin_user_ids=frozenset({self.credentials.user_id}),
+        )
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        grant = self.identity.issue_step_up(
+            access_token=self.credentials.access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id="provider-connection:upstage-primary",
+            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
+        )
+        response = await self.client.request(
+            "DELETE", "/api/v1/admin/provider-connections/upstage-primary",
+            headers={"Idempotency-Key": "provider-delete-referenced-0001"},
+            json={"expected_version": 3, "step_up_authorization_id": grant.authorization},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "PROVIDER_CONNECTION_REFERENCED")
+        self.assertEqual(response.json()["error"]["details"]["references"],
+                         {"user_credentials": 1, "workspace_defaults": 2})
 
     async def test_system_admin_replaces_only_provider_credential_without_endpoint_reentry(self) -> None:
         class ProviderAdminService:

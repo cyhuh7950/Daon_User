@@ -14,6 +14,7 @@ from daon_user_api.provider_connection_admin import (
     PostgresProviderAdminMutationRepository,
     PostgresProviderConnectionService,
     normalized_connection_fingerprint_payload,
+    validate_connection_policy,
 )
 from daon_user_api.provider_credentials import ProviderCredentialCipher
 from daon_user_api.provider_catalog import DiscoveredModel
@@ -89,9 +90,13 @@ class Connection:
                 record["connection_id"], record["provider_code"], record["display_name"], record["base_url"], record["enabled"],
                 record["encrypted_credential"], record["credential_version"], record["verification_status"],
                 record["verified_at"], record["version"], record["catalog_status"], record["catalog_version"],
+                record["access_mode"], record["credential_requirement"], record["short_code"], record["adapter_type"],
+                record.get("provider_name", record["provider_code"]),
             )])
         if normalized.startswith("SELECT model_id,reported_capabilities,effective_capabilities"):
             return Cursor(rows=list(self.database.models))
+        if normalized.startswith("SELECT model_id FROM system_provider_allowed_models"):
+            return Cursor(rows=[(item[0],) for item in self.database.models])
         raise AssertionError(f"unexpected SQL: {normalized}")
 
 
@@ -116,6 +121,21 @@ def audit() -> ProviderAdminAudit:
         action="provider_connection.updated", target_type="provider_connection",
         target_id="ollama-lan", version=2,
     )
+
+
+def test_connection_policy_requires_unique_two_letter_code_and_keyless_public() -> None:
+    assert validate_connection_policy("OPENROUTER", "public", "required", "OR", "OPENROUTER") == "public"
+    assert validate_connection_policy("OPENROUTER", "public", "required", "OT", "OPENROUTER") == "public"
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_SHORT_CODE_INVALID$"):
+        validate_connection_policy("CUSTOM", "personal", "required", "OR", "openai_compatible")
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_SHORT_CODE_INVALID$"):
+        validate_connection_policy("CUSTOM", "personal", "required", "A", "openai_compatible")
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_ACCESS_MODE_INVALID$"):
+        validate_connection_policy("OLLAMA", "personal", "none", "OL", "OLLAMA")
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_ACCESS_MODE_INVALID$"):
+        validate_connection_policy("OLLAMA", "personal", "required", "OL", "OLLAMA")
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_ADAPTER_UNSUPPORTED$"):
+        validate_connection_policy("GEMINI", "public", "required", "GE", "GEMINI")
 
 
 def test_persistent_replay_survives_repository_restart_without_second_mutation() -> None:
@@ -198,6 +218,29 @@ def test_provider_connection_result_may_return_endpoint_but_not_credentials() ->
         repository._validate_safe_mapping({"connection_id": "media-bridge", "api_key": "secret"})
 
 
+def test_connection_projection_separates_catalog_from_allowed_models() -> None:
+    database = SharedDatabase()
+    database.system_connection = {
+        "connection_id": "ollama-lan", "provider_code": "OLLAMA", "display_name": "LAN Ollama",
+        "base_url": "http://ollama.internal:11434", "enabled": True,
+        "encrypted_credential": None, "credential_version": 0,
+        "verification_status": "verified", "verified_at": None, "version": 2,
+        "catalog_status": "ready", "catalog_version": 3,
+        "access_mode": "public", "credential_requirement": "none", "short_code": "OL", "adapter_type": "OLLAMA",
+    }
+    database.models = [("qwen3", ["text_generation"], ["text_generation"], False, "ready", 3)]
+    service = PostgresProviderConnectionService(
+        Store(database), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+
+    item = next(item for item in service.list_connections(context()) if item["connection_id"] == "ollama-lan")
+
+    assert (item["access_mode"], item["credential_requirement"], item["short_code"]) == ("public", "none", "OL")
+    assert item["allowed_model_ids"] == ["qwen3"]
+    assert item["provider_name"] == "OLLAMA"
+    assert [model["model_id"] for model in item["models"]] == ["qwen3"]
+
+
 def test_same_idempotency_key_replays_same_credential_and_rejects_different_credential() -> None:
     cipher = ProviderCredentialCipher(b"m" * 32, encryption_key_version=1)
 
@@ -255,19 +298,23 @@ def test_connection_service_fingerprints_replaced_credentials_but_omits_preserve
         connection_id="ollama-lan", provider_code="OLLAMA", display_name="LAN Ollama",
         base_url="http://ollama.internal:11434", credential="first-secret",
         logical_model_ids=("qwen3",), enabled=True, expected_version=0,
+        access_mode="public", credential_requirement="none", short_code="OL", adapter_type="OLLAMA",
     )
     changed_command = ProviderConnectionCreateCommand(
         connection_id="ollama-lan", provider_code="OLLAMA", display_name="LAN Ollama",
         base_url="http://ollama.internal:11434", credential="different-secret",
         logical_model_ids=("qwen3",), enabled=True, expected_version=0,
+        access_mode="public", credential_requirement="none", short_code="OL", adapter_type="OLLAMA",
     )
     preserved_command = ProviderConnectionUpdateCommand(
         display_name="LAN Ollama", base_url="http://ollama.internal:11434", credential=None,
         logical_model_ids=("qwen3",), enabled=True, expected_version=1,
+        access_mode="public", credential_requirement="none", short_code="OL", adapter_type="OLLAMA",
     )
     replaced_command = ProviderConnectionUpdateCommand(
         display_name="LAN Ollama", base_url="http://ollama.internal:11434", credential="update-secret",
         logical_model_ids=("qwen3",), enabled=True, expected_version=1,
+        access_mode="public", credential_requirement="none", short_code="OL", adapter_type="OLLAMA",
     )
     assert "first-secret" not in repr(first_command)
     assert "different-secret" not in repr(changed_command)
@@ -307,16 +354,17 @@ def test_delete_connection_removes_only_credential_and_replays_without_second_mu
         "encryption_key_version": 1, "credential_schema_version": 1,
         "credential_version": 4, "verification_status": "verified",
         "verified_at": None, "version": 7, "catalog_status": "ready", "catalog_version": 3,
+        "access_mode": "public", "credential_requirement": "none", "short_code": "OL", "adapter_type": "OLLAMA",
     }
     database.models = [("qwen3", ["text_generation"], ["text_generation"], False, "ready", 3)]
     service = PostgresProviderConnectionService(
         Store(database), ProviderCredentialCipher(b"d" * 32, encryption_key_version=1),
     )
 
-    result, replayed = service.delete_connection(
+    result, replayed = service.delete_credential(
         context(), "ollama-lan", 7, "provider-credential-delete-0001",
     )
-    retry, was_replayed = service.delete_connection(
+    retry, was_replayed = service.delete_credential(
         context(), "ollama-lan", 7, "provider-credential-delete-0001",
     )
 
@@ -334,7 +382,43 @@ def test_delete_connection_removes_only_credential_and_replays_without_second_mu
     assert len(database.outbox) == 1
 
 
-def test_catalog_refresh_upserts_models_without_erasing_admin_capability_override() -> None:
+def test_connection_delete_reports_references_without_deleting_any_data() -> None:
+    database = SharedDatabase()
+    database.system_connection = {
+        "connection_id": "ollama-lan", "provider_code": "OLLAMA", "display_name": "LAN Ollama",
+        "base_url": "http://ollama.internal:11434", "enabled": True,
+        "encrypted_credential": None, "credential_version": 0,
+        "verification_status": "verified", "verified_at": None, "version": 7,
+        "catalog_status": "ready", "catalog_version": 3,
+        "access_mode": "public", "credential_requirement": "none", "short_code": "OL", "adapter_type": "OLLAMA",
+    }
+
+    class ReferenceConnection(Connection):
+        def execute(self, sql, params=()):
+            if sql.startswith("SELECT version FROM system_provider_connections"):
+                return Cursor((7,))
+            if sql.startswith("SELECT count(*) FROM user_provider_credentials"):
+                return Cursor((2,))
+            if sql.startswith("SELECT count(*) FROM workspace_model_defaults"):
+                return Cursor((1,))
+            return super().execute(sql, params)
+
+    class ReferenceStore(Store):
+        @contextmanager
+        def _transaction(self, _context):
+            yield ReferenceConnection(database)
+
+    service = PostgresProviderConnectionService(
+        ReferenceStore(database), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_CONNECTION_REFERENCED$") as caught:
+        service.delete_connection(context(), "ollama-lan", 7, "delete-0001")
+
+    assert caught.value.references == {"user_credentials": 2, "workspace_defaults": 1}
+    assert database.connection_deleted is False
+
+
+def test_catalog_refresh_keeps_catalog_history_and_admin_allowed_models() -> None:
     class CapturingConnection:
         def __init__(self) -> None:
             self.calls = []
@@ -354,14 +438,15 @@ def test_catalog_refresh_upserts_models_without_erasing_admin_capability_overrid
         connection, context(), "upstage-primary", (model,), 8,
     )
 
-    assert "NOT (model_id=ANY(%s))" in connection.calls[0][0]
-    upsert = connection.calls[1][0]
+    assert not any("DELETE FROM system_provider_models" in sql for sql, _ in connection.calls)
+    assert not any("system_provider_allowed_models" in sql for sql, _ in connection.calls)
+    upsert = connection.calls[0][0]
     assert "ON CONFLICT (connection_id,model_id) DO UPDATE" in upsert
     assert "WHEN system_provider_models.override_applied" in upsert
     assert "THEN system_provider_models.effective_capabilities" in upsert
 
 
-def test_connection_prepare_does_not_discover_models_until_manual_lookup(monkeypatch) -> None:
+def test_connection_prepare_probes_without_discovering_catalog(monkeypatch) -> None:
     calls = []
 
     class Adapter:
@@ -395,10 +480,10 @@ def test_connection_prepare_does_not_discover_models_until_manual_lookup(monkeyp
     )
 
     assert models == ()
-    assert calls == []
+    assert calls == ["verify"]
 
 
-def test_connection_prepare_allows_omniroute_without_credential_without_calling_provider(monkeypatch) -> None:
+def test_connection_prepare_allows_pending_private_connection_without_calling_provider(monkeypatch) -> None:
     calls = []
 
     class Adapter:
@@ -424,8 +509,28 @@ def test_connection_prepare_allows_omniroute_without_credential_without_calling_
     _profile, _sealed, models = service._prepare(
         connection_id="omniroute", provider_code="OMNIROUTE", display_name="OmniRoute",
         base_url="http://localhost:20128/v1", credential=None, logical_model_ids=(),
-        enabled=True, version=1, discover_models=False,
+        enabled=True, version=1, discover_models=False, verify_required=False,
     )
 
     assert models == ()
     assert calls == []
+
+
+def test_allowed_models_reject_removing_workspace_default_before_mutation() -> None:
+    calls = []
+
+    class ReferenceConnection:
+        def execute(self, sql, _params=()):
+            calls.append(sql)
+            if sql.startswith("SELECT model_id FROM system_provider_models"):
+                return Cursor(rows=[("solar-pro4",)])
+            if sql.startswith("SELECT count(*) FROM workspace_model_defaults"):
+                return Cursor((1,))
+            return Cursor()
+
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_MODEL_DEFAULT_REFERENCED$"):
+        PostgresProviderConnectionService._set_allowed_models(
+            ReferenceConnection(), context(), "upstage-primary", ("solar-pro4",),
+        )
+
+    assert not any(sql.startswith("DELETE FROM system_provider_allowed_models") for sql in calls)

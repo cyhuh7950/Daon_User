@@ -923,26 +923,41 @@ class ProviderConnectionCreateBody(BaseModel):
     connection_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
     provider_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Z][A-Z0-9_]{0,63}$")
     display_name: str = Field(min_length=1, max_length=256)
+    provider_name: str | None = Field(default=None, min_length=1, max_length=256)
     base_url: str = Field(min_length=1, max_length=2048)
     credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
     logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    allowed_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    access_mode: str = "public"
+    credential_requirement: str = "required"
+    short_code: str = ""
+    adapter_type: str = ""
     enabled: bool
     expected_version: int = Field(ge=0)
+    step_up_authorization_id: str = Field(min_length=1, max_length=512)
 
 
 class ProviderConnectionUpdateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     display_name: str = Field(min_length=1, max_length=256)
+    provider_name: str | None = Field(default=None, min_length=1, max_length=256)
     base_url: str = Field(min_length=1, max_length=2048)
     credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
     logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    allowed_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    access_mode: str = "public"
+    credential_requirement: str = "required"
+    short_code: str = ""
+    adapter_type: str = ""
     enabled: bool
     expected_version: int = Field(ge=1)
+    step_up_authorization_id: str = Field(min_length=1, max_length=512)
 
 
 class ProviderConnectionMutationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
+    step_up_authorization_id: str = Field(min_length=1, max_length=512)
 
 
 class ProviderHealthSettingsBody(BaseModel):
@@ -1058,10 +1073,16 @@ def _error_payload(
     }
 
 
-def _error_response(status: int, code: str, trace_id: str, *, retryable: bool = False) -> JSONResponse:
+def _error_response(
+    status: int, code: str, trace_id: str, *, retryable: bool = False,
+    details: dict[str, object] | None = None,
+) -> JSONResponse:
+    payload = _error_payload(code=code, trace_id=trace_id, retryable=retryable)
+    if details is not None:
+        payload["error"]["details"] = details
     response = JSONResponse(
         status_code=status,
-        content=_error_payload(code=code, trace_id=trace_id, retryable=retryable),
+        content=payload,
     )
     response.headers["X-Trace-Id"] = trace_id
     response.headers["Cache-Control"] = "no-store"
@@ -2231,10 +2252,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "PROVIDER_LOGICAL_MODEL_INVALID", "PROVIDER_REDIRECT_BLOCKED",
             "PROVIDER_RATE_LIMITED", "PROVIDER_CAPABILITY_UNSUPPORTED", "VERSION_CONFLICT",
             "IDEMPOTENCY_KEY_REUSED",
+            "PROVIDER_SHORT_CODE_INVALID", "PROVIDER_SHORT_CODE_CONFLICT",
+            "PROVIDER_ACCESS_MODE_INVALID", "PROVIDER_PERSONAL_SYSTEM_KEY_FORBIDDEN",
+            "PROVIDER_ALLOWED_MODEL_INVALID", "PROVIDER_ALLOWED_MODEL_UNKNOWN",
+            "PROVIDER_NAME_INVALID",
+            "PROVIDER_MODEL_DEFAULT_REFERENCED", "PROVIDER_CONNECTION_REFERENCED",
         }
         return _error_response(
             error.status, error.code if error.code in safe_codes else "INVALID_REQUEST",
             request.state.trace_id, retryable=error.retryable,
+            details={"references": error.references} if error.references else None,
         )
 
     @app.exception_handler(ProviderHealthSettingsError)
@@ -4740,6 +4767,19 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _principal_value, context = _provider_admin_context(request)
         return context
 
+    def _provider_step_up(
+        request: Request, authorization_id: str, *, target_id: str,
+        operation: str, idempotency_key: str,
+    ) -> None:
+        access_token, _ = _credential(request)
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=authorization_id, access_token=access_token,
+            action_group="organization_security_or_connector_policy_change",
+            target_id=target_id, policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id, operation=operation,
+            idempotency_key=idempotency_key,
+        )
+
     def _provider_admin_service() -> Any:
         if provider_connection_service is None:
             raise ProviderConnectionAdminError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
@@ -4758,7 +4798,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return JSONResponse({
             "data": {"credentials": [
                 {"connection_id": item.connection_id, "provider_code": item.provider_code,
-                 "configured": item.configured, "credential_version": item.credential_version}
+                 "configured": item.configured, "credential_version": item.credential_version,
+                 "verification_status": item.verification_status}
                 for item in items
             ]},
             "meta": {"trace_id": request.state.trace_id},
@@ -4783,7 +4824,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             body.credential = ""
         return JSONResponse({
             "data": {"connection_id": item.connection_id, "provider_code": item.provider_code,
-                     "configured": item.configured, "credential_version": item.credential_version},
+                     "configured": item.configured, "credential_version": item.credential_version,
+                     "verification_status": item.verification_status},
             "meta": {"trace_id": request.state.trace_id},
         })
 
@@ -4861,11 +4903,18 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
+        _provider_step_up(request, body.step_up_authorization_id,
+                          target_id=f"provider-connection:{body.connection_id}",
+                          operation="provider_connection.create", idempotency_key=idempotency_key)
         command = ProviderConnectionCreateCommand(
             connection_id=body.connection_id, provider_code=body.provider_code,
             display_name=body.display_name, base_url=body.base_url, credential=body.credential,
+            provider_name=body.provider_name or body.provider_code,
             logical_model_ids=tuple(body.logical_model_ids), enabled=body.enabled,
             expected_version=body.expected_version,
+            allowed_model_ids=tuple(body.allowed_model_ids), access_mode=body.access_mode,
+            credential_requirement=body.credential_requirement, short_code=body.short_code,
+            adapter_type=body.adapter_type,
         )
         try:
             item, replayed = await asyncio.to_thread(
@@ -4887,10 +4936,17 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
+        _provider_step_up(request, body.step_up_authorization_id,
+                          target_id=f"provider-connection:{connection_id}",
+                          operation="provider_connection.update", idempotency_key=idempotency_key)
         command = ProviderConnectionUpdateCommand(
             display_name=body.display_name, base_url=body.base_url, credential=body.credential,
+            provider_name=body.provider_name or "",
             logical_model_ids=tuple(body.logical_model_ids), enabled=body.enabled,
             expected_version=body.expected_version,
+            allowed_model_ids=tuple(body.allowed_model_ids), access_mode=body.access_mode,
+            credential_requirement=body.credential_requirement, short_code=body.short_code,
+            adapter_type=body.adapter_type,
         )
         try:
             item, replayed = await asyncio.to_thread(
@@ -4911,17 +4967,32 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> Response:
         _require_query_keys(request, frozenset())
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
-        item, _replayed = await asyncio.to_thread(
+        _provider_step_up(request, body.step_up_authorization_id,
+                          target_id=f"provider-connection:{connection_id}",
+                          operation="provider_connection.delete", idempotency_key=idempotency_key)
+        await asyncio.to_thread(
             _provider_admin_service().delete_connection,
             context, connection_id, body.expected_version, idempotency_key,
         )
-        return Response(
-            status_code=204,
-            headers={
-                "ETag": _etag_header(
-                    f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}"
-                )
-            },
+        return Response(status_code=204)
+
+    @app.delete("/api/v1/admin/provider-connections/{connection_id}/credential")
+    async def delete_provider_credential(
+        connection_id: str, body: ProviderConnectionMutationBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        context = _provider_credential_mutation_context(request, idempotency_key=idempotency_key)
+        _provider_step_up(request, body.step_up_authorization_id,
+                          target_id=f"provider-connection:{connection_id}",
+                          operation="provider_connection.credential.delete", idempotency_key=idempotency_key)
+        item, replayed = await asyncio.to_thread(
+            _provider_admin_service().delete_credential,
+            context, connection_id, body.expected_version, idempotency_key,
+        )
+        return _json_with_etag(
+            {"data": item, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}},
+            f"provider-connection:{item['connection_id']}:{item['version']}:{item['catalog_version']}",
         )
 
     @app.post("/api/v1/admin/provider-connections/{connection_id}/credential")
@@ -4931,6 +5002,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         context = _provider_credential_mutation_context(request, idempotency_key=idempotency_key)
+        _provider_step_up(request, body.step_up_authorization_id,
+                          target_id=f"provider-connection:{connection_id}",
+                          operation="provider_connection.credential.replace", idempotency_key=idempotency_key)
         command = ProviderCredentialReplaceCommand(
             credential=body.credential, expected_version=body.expected_version,
         )
@@ -4953,6 +5027,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
+        _provider_step_up(request, body.step_up_authorization_id,
+                          target_id=f"provider-connection:{connection_id}",
+                          operation="provider_catalog.refresh", idempotency_key=idempotency_key)
         item, replayed = await asyncio.to_thread(
             _provider_admin_service().refresh_catalog,
             context, connection_id, body.expected_version, idempotency_key,
@@ -4970,6 +5047,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _require_query_keys(request, frozenset())
         target_id = f"provider-model:{connection_id}:{model_id}"
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
+        _provider_step_up(request, body.step_up_authorization_id,
+                          target_id=target_id, operation="provider_model.capabilities.update",
+                          idempotency_key=idempotency_key)
         command = ProviderCapabilityCommand(
             effective_capabilities=tuple(body.effective_capabilities),
             expected_version=body.expected_version,

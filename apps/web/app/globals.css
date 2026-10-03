@@ -110,6 +110,15 @@ button:focus-visible, input:focus-visible { outline: 3px solid var(--daon-color-
 .provider-settings-shell .deployment-card,
 .provider-settings-shell .role-bindings { color: var(--daon-color-text-primary); }
 .provider-settings-shell input::placeholder { color: color-mix(in srgb, var(--daon-color-text-secondary) 82%, transparent); opacity: 1; }
+.provider-settings-shell .provider-card small,
+.provider-settings-shell .provider-detail-grid label,
+.provider-settings-shell .provider-detail-grid input,
+.provider-settings-shell .provider-detail-grid select,
+.provider-settings-shell .provider-detail-actions button,
+.provider-settings-shell .provider-model-picker label { font-size: 12px; }
+.provider-settings-shell :is(button, input, select):focus-visible { outline: 2px solid var(--daon-color-accent); outline-offset: 2px; }
+.provider-settings-shell .provider-delete-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; padding: 8px; border: 1px solid #b42318; border-radius: 8px; color: var(--daon-color-text-primary); }
+.provider-settings-shell .provider-detail-actions { flex-wrap: wrap; gap: 6px; }
 
 .screen-preference-page { position: relative; box-sizing: border-box; color: var(--daon-color-text-primary); }
 .screen-preference-page header { position: relative; }

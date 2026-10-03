@@ -22,7 +22,7 @@ PROVIDER_CODES = (
 )
 GATEWAY_PROVIDER_CODES = ("OMNIROUTE", "EOUL_GATEWAY")
 MEDIA_PROVIDER_CODES = ("MEDIA_BRIDGE",)
-CONNECTION_PROVIDER_CODES = PROVIDER_CODES + GATEWAY_PROVIDER_CODES + MEDIA_PROVIDER_CODES
+CONNECTION_PROVIDER_CODES = PROVIDER_CODES + GATEWAY_PROVIDER_CODES + MEDIA_PROVIDER_CODES + ("CUSTOM",)
 MODEL_ROLES = (
     "text", "vision", "document_parser", "audio_understanding", "speech_to_text", "embedding", "reranker",
 )
@@ -230,7 +230,7 @@ def validate_provider_base_url(provider_code: str, value: str) -> str:
     if not isinstance(value, str) or value != value.strip() or len(value) > 2048:
         raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
     parsed = urlsplit(value)
-    dynamic_endpoint = provider_code in {"OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS"}
+    dynamic_endpoint = provider_code in {"OLLAMA", "OMNIROUTE", "EOUL_GATEWAY", "MEDIA_BRIDGE", "SENTENCE_TRANSFORMERS", "CUSTOM"}
     allowed_schemes = {"http", "https"} if dynamic_endpoint else {"https"}
     if (parsed.scheme not in allowed_schemes or not parsed.hostname or parsed.username is not None
             or parsed.password is not None or parsed.query or parsed.fragment):
@@ -267,6 +267,11 @@ def validate_provider_base_url(provider_code: str, value: str) -> str:
             or hostname.endswith(".svc.cluster.local")
         )
     )
+    if provider_code == "CUSTOM" and (
+        parsed.scheme != "https" or (address is not None and not address.is_global) or internal_hostname
+        or hostname.endswith(".localhost")
+    ):
+        raise ProviderSettingsError("PROVIDER_BASE_URL_INVALID")
     if parsed.scheme == "http" and not (
         (local_gateway and address is not None and address.is_loopback) or
         (address is not None and address.is_private) or internal_hostname

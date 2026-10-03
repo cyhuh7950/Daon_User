@@ -187,7 +187,7 @@ function routeFor(method, segments) {
     segments.length === 4 && segments[0] === "admin" && segments[1] === "provider-connections"
     && SAFE_SEGMENT.test(segments[2]) && segments[3] === "credential"
   ) {
-    return method === "POST"
+    return new Set(["POST", "DELETE"]).has(method)
       ? { path: `/api/v1/admin/provider-connections/${encodeURIComponent(segments[2])}/credential`, query: null }
       : { methodRejected: true };
   }

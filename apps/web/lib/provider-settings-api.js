@@ -23,6 +23,15 @@ export const providerSettingsApi = Object.freeze({
   getSession() {
     return request("/bff/api/session");
   },
+  async issueStepUp(targetId, password) {
+    const result = await request("/bff/api/session/step-up", {
+      method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+      body: { action_group: "organization_security_or_connector_policy_change", target_id: targetId, password, ttl_seconds: 300 },
+    });
+    const authorization = result.payload?.data?.step_up_authorization;
+    if (typeof authorization !== "string" || !authorization) throw new Error("STEP_UP_RESPONSE_INVALID");
+    return authorization;
+  },
   listConnections() {
     return request("/bff/api/admin/provider-connections");
   },
@@ -63,6 +72,11 @@ export const providerSettingsApi = Object.freeze({
     });
   },
   deleteCredential(connectionId, input, idempotencyKey) {
+    return request(`/bff/api/admin/provider-connections/${encodeURIComponent(connectionId)}/credential`, {
+      method: "DELETE", body: input, headers: { "Idempotency-Key": idempotencyKey }
+    });
+  },
+  deleteConnection(connectionId, input, idempotencyKey) {
     return request(`/bff/api/admin/provider-connections/${encodeURIComponent(connectionId)}`, {
       method: "DELETE", body: input, headers: { "Idempotency-Key": idempotencyKey }
     });

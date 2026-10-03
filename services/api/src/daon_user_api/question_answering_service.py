@@ -105,7 +105,7 @@ class QuestionAdapterRegistry:
             )
             return self.Prepared(request, selection, adapter, adapter.provider_payload(request, selection))
         if selection.provider_code not in {
-            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY",
+            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY", "CUSTOM",
         }:
             raise ValueError("TEXT_PROVIDER_UNAVAILABLE")
         api_key = selection.credential_text()
@@ -136,7 +136,7 @@ class QuestionAdapterRegistry:
                 transport=transport, api_key=cast(str, selection.credential_text()),
             )
         elif selection.provider_code in {
-            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY",
+            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY", "CUSTOM",
         }:
             adapter = OpenAICompatibleTextGenerationAdapter(
                 transport=transport, api_key=cast(str, selection.credential_text()),

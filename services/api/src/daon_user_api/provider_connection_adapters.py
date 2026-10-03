@@ -243,6 +243,10 @@ class OpenRouterAdapter(_BaseAdapter):
         return self._ready(connection)
 
 
+class CustomOpenAICompatibleAdapter(OpenRouterAdapter):
+    provider_code = "CUSTOM"
+
+
 class FixedOpenAICompatibleAdapter(OpenRouterAdapter):
     _OFFICIAL_BASE_URLS = {
         "GROQ": "https://api.groq.com/openai/v1",
@@ -421,6 +425,7 @@ class AdapterRegistry:
             "UPSTAGE": UpstageAdapter(actual_transport),
             "OLLAMA": OllamaAdapter(actual_transport),
             "OPENROUTER": OpenRouterAdapter(actual_transport),
+            "CUSTOM": CustomOpenAICompatibleAdapter(actual_transport),
             "OMNIROUTE": OmniRouteAdapter(actual_transport, configured_models),
             "EOUL_GATEWAY": EoulGatewayAdapter(actual_transport, configured_models),
             "MEDIA_BRIDGE": MediaBridgeAdapter(actual_transport),

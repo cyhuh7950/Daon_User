@@ -19,7 +19,7 @@ from .data_canon import canonical_json_bytes
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 _ACTIVE_PROVIDERS = {
     "text_generation": frozenset({
-        "OLLAMA", "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "OMNIROUTE", "EOUL_GATEWAY",
+        "OLLAMA", "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "OMNIROUTE", "EOUL_GATEWAY", "CUSTOM",
     }),
     "image_understanding": frozenset({"UPSTAGE"}),
     "document_parsing": frozenset({"UPSTAGE"}),
@@ -78,8 +78,14 @@ class PostgresWorkspaceModelDefaultsService:
             "c.credential_version,c.verification_status,c.version,m.model_id,m.effective_capabilities,"
             "m.catalog_status,m.catalog_version FROM system_provider_connections c "
             "JOIN system_provider_models m ON m.connection_id=c.connection_id "
-            "WHERE c.enabled=true AND c.verification_status='verified' AND m.catalog_status='ready' "
-            "ORDER BY c.display_name,c.connection_id,m.model_id"
+            "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
+            "LEFT JOIN user_provider_credentials u ON u.connection_id=c.connection_id "
+            "AND u.tenant_id=%s AND u.user_id=%s AND u.verification_status='verified' "
+            "WHERE c.enabled=true AND m.catalog_status='ready' "
+            "AND ((c.access_mode='public' AND c.verification_status='verified') "
+            "OR (c.access_mode='personal' AND u.connection_id IS NOT NULL)) "
+            "ORDER BY c.display_name,c.connection_id,m.model_id",
+            (context.tenant_id, context.actor_id),
         ).fetchall()
         defaults = connection.execute(
             "SELECT capability,connection_id,model_id,version FROM workspace_model_defaults "
@@ -165,9 +171,14 @@ class PostgresWorkspaceModelDefaultsService:
                     raise WorkspaceModelDefaultsError("VERSION_CONFLICT", 409)
                 allowed = connection.execute(
                     "SELECT 1 FROM system_provider_connections c JOIN system_provider_models m ON m.connection_id=c.connection_id "
-                    "WHERE c.connection_id=%s AND m.model_id=%s AND c.enabled=true AND c.verification_status='verified' "
+                    "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
+                    "LEFT JOIN user_provider_credentials u ON u.connection_id=c.connection_id "
+                    "AND u.tenant_id=%s AND u.user_id=%s AND u.verification_status='verified' "
+                    "WHERE c.connection_id=%s AND m.model_id=%s AND c.enabled=true "
+                    "AND ((c.access_mode='public' AND c.verification_status='verified') "
+                    "OR (c.access_mode='personal' AND u.connection_id IS NOT NULL)) "
                     "AND m.catalog_status='ready' AND %s=ANY(m.effective_capabilities)",
-                    (connection_id, model_id, capability),
+                    (context.tenant_id, context.actor_id, connection_id, model_id, capability),
                 ).fetchone()
                 if allowed is None:
                     raise WorkspaceModelDefaultsError("WORKSPACE_MODEL_DEFAULT_UNAVAILABLE", 409)
@@ -287,12 +298,14 @@ class PostgresWorkspaceModelResolver:
                     "SELECT d.version,d.connection_id,d.model_id,c.provider_code,c.base_url,"
                     "c.encrypted_credential,c.credential_nonce,c.encryption_key_version,"
                     "c.credential_schema_version,c.credential_version,c.enabled,c.verification_status,"
-                    "m.effective_capabilities,m.catalog_status,m.catalog_version "
+                    "m.effective_capabilities,m.catalog_status,m.catalog_version,"
+                    "c.access_mode,c.credential_requirement "
                     "FROM workspace_model_defaults d "
                     "JOIN system_provider_connections c ON c.connection_id=d.connection_id "
                     "JOIN system_provider_models m ON m.connection_id=d.connection_id AND m.model_id=d.model_id "
-                    "WHERE d.capability=%s",
-                    (capability,),
+                    "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
+                    "WHERE d.tenant_id=%s AND d.workspace_id=%s AND d.capability=%s",
+                    (context.tenant_id, context.workspace_id, capability),
                 ).fetchone()
         except CloudDatabaseError as error:
             raise WorkspaceModelUnavailable(
@@ -306,7 +319,8 @@ class PostgresWorkspaceModelResolver:
         provider_code = str(values[3])
         if provider_code not in providers:
             raise WorkspaceModelUnavailable("PROVIDER_EXECUTION_NOT_READY")
-        if not bool(values[10]) or str(values[11]) != "verified":
+        access_mode = str(values[15])
+        if not bool(values[10]) or (access_mode == "public" and str(values[11]) != "verified"):
             raise WorkspaceModelUnavailable("PROVIDER_CONNECTION_UNAVAILABLE")
         if str(values[13]) != "ready":
             raise WorkspaceModelUnavailable("PROVIDER_MODEL_NOT_READY")
@@ -320,8 +334,8 @@ class PostgresWorkspaceModelResolver:
         credential_version = int(values[9])
         credential: bytearray | None = None
         encrypted = values[5]
-        system_credential_failed = encrypted is None or context.credential_source == "user"
-        if encrypted is not None and context.credential_source != "user":
+        system_credential_failed = encrypted is None
+        if encrypted is not None and access_mode == "public":
             if any(value is None for value in values[6:9]) or credential_version < 1:
                 raise WorkspaceModelUnavailable("PROVIDER_CREDENTIAL_INVALID")
             sealed = EncryptedCredential(
@@ -336,15 +350,17 @@ class PostgresWorkspaceModelResolver:
             except ProviderCredentialError:
                 system_credential_failed = True
 
-        if system_credential_failed and self._user_credentials is not None:
-            fallback = self._user_credentials.resolve_credential(
+        if access_mode == "personal":
+            if self._user_credentials is None:
+                raise WorkspaceModelUnavailable("PROVIDER_CREDENTIAL_REQUIRED")
+            personal = self._user_credentials.resolve_credential(
                 tenant_id=context.tenant_id, user_id=context.actor_id, connection_id=connection_id,
-                prefer_user=context.credential_source == "user",
             )
-            if fallback.credential is not None:
-                credential = bytearray(fallback.credential)
-                credential_version = fallback.credential_version
-                system_credential_failed = False
+            if personal.source != "user" or personal.credential is None:
+                raise WorkspaceModelUnavailable("PROVIDER_CREDENTIAL_REQUIRED")
+            credential = bytearray(personal.credential)
+            credential_version = personal.credential_version
+            system_credential_failed = False
         if system_credential_failed and provider_requires_credential(provider_code, base_url):
             raise WorkspaceModelUnavailable("PROVIDER_CREDENTIAL_REQUIRED")
 

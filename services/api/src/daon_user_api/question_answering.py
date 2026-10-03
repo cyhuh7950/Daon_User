@@ -186,7 +186,7 @@ class OpenAICompatibleTextGenerationAdapter:
         )
         if (
             selection.provider_code not in {
-                "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY",
+                "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY", "CUSTOM",
             }
             or parsed.scheme not in (
                 {"http", "https"} if selection.provider_code == "EOUL_GATEWAY" else {"https"}

@@ -122,6 +122,26 @@ def fake_transport() -> FakeTransport:
     return FakeTransport()
 
 
+def test_custom_openai_compatible_endpoint_uses_non_generating_probe() -> None:
+    transport = FakeTransport()
+    transport.responses["https://models.example.com/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "sample-model"}]},
+    )
+    profile = ProviderConnection(
+        "custom-1", "CUSTOM", "My provider", "https://models.example.com/v1",
+        None, True, 1,
+    )
+
+    result = AdapterRegistry(transport).adapter("CUSTOM").verify(profile, "".join(chr(n) for n in range(97, 101)))
+
+    assert result.status == "ready"
+    assert [(item.method, item.url) for item in transport.requests] == [
+        ("GET", "https://models.example.com/v1/models")
+    ]
+    with pytest.raises(ProviderSettingsError, match="^PROVIDER_BASE_URL_INVALID$"):
+        validate_provider_base_url("CUSTOM", "http://127.0.0.1:9000/v1")
+
+
 @pytest.fixture
 def registry(fake_transport: FakeTransport) -> AdapterRegistry:
     return AdapterRegistry(

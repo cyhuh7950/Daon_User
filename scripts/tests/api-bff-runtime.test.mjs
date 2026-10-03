@@ -924,6 +924,10 @@ test("BFF exposes safe named connection credential and Workspace model default r
     "https://app.example.com/bff/api/admin/provider-connections/upstage-primary/credential",
     { method: "POST", headers: mutationHeaders, body: JSON.stringify({ credential: "fixture-only" }) },
   ), ["admin", "provider-connections", "upstage-primary", "credential"]);
+  const removed = await proxy(new Request(
+    "https://app.example.com/bff/api/admin/provider-connections/upstage-primary/credential",
+    { method: "DELETE", headers: mutationHeaders, body: JSON.stringify({ expected_version: 2 }) },
+  ), ["admin", "provider-connections", "upstage-primary", "credential"]);
   const read = await proxy(new Request(
     "https://app.example.com/bff/api/workspaces/workspace-001/model-defaults",
   ), ["workspaces", "workspace-001", "model-defaults"]);
@@ -936,9 +940,10 @@ test("BFF exposes safe named connection credential and Workspace model default r
     },
   ), ["workspaces", "workspace-001", "model-defaults"]);
 
-  assert.deepEqual([replaced.status, read.status, saved.status], [200, 200, 200]);
+  assert.deepEqual([replaced.status, removed.status, read.status, saved.status], [200, 200, 200, 200]);
   assert.deepEqual(captured, [
     { url: "https://api.example.com/api/v1/admin/provider-connections/upstage-primary/credential", method: "POST" },
+    { url: "https://api.example.com/api/v1/admin/provider-connections/upstage-primary/credential", method: "DELETE" },
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-defaults", method: "GET" },
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-defaults", method: "PATCH" },
   ]);

@@ -11,6 +11,7 @@ MIGRATION = (
     Path(__file__).parents[1]
     / "migrations/versions/0040_system_provider_connections.py"
 )
+ACCESS_MIGRATION = MIGRATION.with_name("0050_provider_connection_access.py")
 
 
 class RecordingOperations:
@@ -38,6 +39,45 @@ def migration_sql() -> str:
     with patch.object(module, "op", operations):
         module.upgrade()
     return "\n".join(operations.statements)
+
+
+def access_migration_sql() -> str:
+    spec = importlib.util.spec_from_file_location("provider_connection_access_0050", ACCESS_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert (module.revision, module.down_revision) == ("0050", "0049")
+    operations = RecordingOperations()
+    with patch.object(module, "op", operations):
+        module.upgrade()
+    return "\n".join(operations.statements)
+
+
+def test_migration_0050_adds_policy_and_separate_allowed_models_without_deleting_data() -> None:
+    sql = access_migration_sql()
+
+    for field in ("access_mode", "credential_requirement", "short_code", "adapter_type", "provider_name"):
+        assert f"ADD COLUMN {field}" in sql
+    assert "CREATE TABLE system_provider_allowed_models" in sql
+    assert "INSERT INTO system_provider_allowed_models" in sql
+    assert "FROM system_provider_models" in sql
+    assert "CREATE UNIQUE INDEX" in sql and "short_code" in sql
+    assert "provider_code='OPENROUTER'" in sql and "'OR'" in sql
+    assert "ORDER BY connection_id" in sql
+    assert "DELETE FROM system_provider_connections" not in sql
+    assert "DELETE FROM system_provider_models" not in sql
+    assert "DELETE FROM workspace_model_defaults" not in sql
+
+
+def test_migration_0050_preserves_existing_credentials_and_defaults() -> None:
+    sql = access_migration_sql()
+
+    assert "encrypted_credential IS NOT NULL" in sql
+    assert "credential_requirement='none'" in sql
+    assert "THEN 'public' ELSE 'personal' END" in sql
+    assert "verification_status" in sql
+    assert "ALTER TABLE user_provider_credentials" in sql
+    assert "REFERENCES system_provider_models(connection_id, model_id)" in sql
 
 
 def test_migration_0040_creates_named_connection_catalog_and_workspace_defaults() -> None:
