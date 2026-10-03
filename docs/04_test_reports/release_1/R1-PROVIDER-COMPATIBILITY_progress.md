@@ -211,3 +211,13 @@
 - RED→GREEN: 관리자 화면의 비밀번호 없는 저장 테스트는 재인증 필드 존재로 RED 후 GREEN; API 비밀번호 없는 모델 preview는 `INVALID_REQUEST` RED 후 GREEN. 로컬 Provider 관련 API 집중 6개 파일 `128 passed`, Provider 화면/BFF Node 3개 파일 `53 passed`, Web production build/TypeScript 및 Web boundary 475파일 0위반, 전체 UI boundary 498파일 0위반, `git diff --check` 통과. 비의도 오류 0건; 기존 재인증을 기대하던 회귀 테스트는 최신 정책으로 교정했다.
 - WSL 배포 전 확인: 현재 `SINSAN` WSL 인스턴스 주소는 `172.27.253.53`, 실행 checkout은 `e56a12e92458777598fe4565ff23806df493dbc7`에서 clean, API/Web healthy. SSH alias 연결은 host-key 검증에 실패해 우회하지 않았으며 동일 WSL 인스턴스에서 직접 확인했다. 신규 배포는 검증된 exact commit으로 별도 Git checkout에 구성하고 기존 checkout·Secret·DB를 보존한다. 배포 전/후 이미지와 DB 상태 확인 및 실패 시 이전 이미지 복구를 기록한다.
 - 현재 미검증/다음: WSL 새 commit 배포·실제 브라우저 로그인 화면·same-origin Network·실 Provider 유료 호출은 아직 확인되지 않았다. 변경 파일만 scoped commit·branch push → WSL exact-SHA checkout/빌드/교체 → URL 화면 및 비파괴 smoke → 사용자 확인 순서로 진행한다.
+
+## 신산님 화면 테스트 후속 수정 WSL QA 배포 결과
+
+- 일자/담당/범위: 2026-10-03 / 어울. 신산님이 직접 지정한 WSL QA URL `http://172.27.253.53:3330/`에 위 후속 수정을 배포했다. Oracle·ysna·main은 변경하지 않았다.
+- Git/배포 기준: 변경 9개 파일을 `89de2e957eaf38585ad26108f7d8e41a8fc7ad2a`로 commit하고 `origin/codex/next-user-development`에 비강제 push했다. WSL의 별도 checkout `/home/daon/deploy/daon-user-provider-89de2e95`를 동일 exact SHA로 만들었고 기존 checkout은 유지했다.
+- 배포 조치: 기존 API/Web 이미지를 각각 `rollback-provider-89de2e95-pre` 태그로 보존하고, 기존 환경 파일과 Secret 경로를 변경하지 않은 채 새 checkout에서 API/Web 이미지만 빌드·교체했다. PostgreSQL·객체 저장소·document/studio worker는 재생성하지 않았다.
+- 배포 후 확인: 새 API/Web 컨테이너가 healthy이고 두 worker는 계속 running이다. `/`와 `/settings/model-connections`는 HTTP 200, 비인증 `/bff/api/session`은 예상대로 401이었다. 로그인된 Chrome의 새 탭에서 기존 연결 8개와 사용 후보 4개가 로드되고 자동 생성 `Connection ID` 및 `관리자 재인증 비밀번호` 입력란이 표시되지 않음을 확인했다. 이 확인은 화면 조회이며 설정 저장·삭제 클릭은 하지 않았다.
+- 데이터 불변 확인: 개발 DB의 `system_provider_connections.provider_code` 읽기 전용 조회 결과는 EOUL_GATEWAY, GROQ, MEDIA_BRIDGE, MISTRAL, OLLAMA, OMNIROUTE, OPENROUTER, UPSTAGE의 8개다. ANTHROPIC·OPENAI·GEMINI 연결은 현재 없으며 이번 작업에서 재등록하거나 다른 연결 데이터를 변경하지 않았다.
+- 오류/미검증: 읽기 전용 DB 확인 때 잘못 추정한 테이블명 `provider_connections` 조회 1건이 실패해 스키마를 확인한 뒤 실제 `system_provider_connections`를 조회했다. WSL 무권한 셸 호출 1건은 `E_ACCESSDENIED`였고 승인된 실행 경로로 재조회했다. 외부 Provider 실제 호출, 유료 시험, 저장/삭제 클릭, 브라우저 Network의 실제 fetch URL, 일반 사용자 화면, 전체 API suite는 미검증이다. 동일 근본 원인 3회 반복 없음.
+- 다음: 신산님이 위 QA URL에서 새로고침 후 화면을 직접 확인한다. 기존에 없는 세 Provider 연결과 UPSTAGE 허용 모델 설정은 별도 지시 없이 변경하지 않는다. `main` 병합·Oracle 배포는 인수 전 진행하지 않는다.
