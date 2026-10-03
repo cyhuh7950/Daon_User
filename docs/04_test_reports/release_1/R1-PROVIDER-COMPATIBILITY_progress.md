@@ -264,3 +264,10 @@
 - RED→GREEN: 공백 ID와 정상 ID가 섞인 응답의 조회 테스트가 수정 전 `PROVIDER_CATALOG_RESPONSE_INVALID`로 실패했고 수정 후 통과했다. Adapter·Catalog `81 passed`, 관리자 저장/HTTP 인접 `88 passed`, `git diff --check` 통과. 전체 API suite는 기존 라이선스 fixture의 `LICENSE_DOCUMENT_INVALID`에서 `255 passed, 14 skipped, 1 failed, 171 subtests passed`로 중단되어 전체 GREEN이 아니다.
 - 변경 파일: `provider_catalog.py`, `provider_connection_adapters.py`, `test_provider_connection_adapters.py`, 이 진행 기록. 진단 과정의 잘못된 SQL 인용 1건·Adapter 생성자 인수 누락 1건은 읽기 전용 진단 실패였고 제품/DB 변경은 없었다. 동일 원인 수정 3회 반복은 없다.
 - 미검증/다음: 아직 3330 배포 및 신산님 실제 클릭은 미검증. 변경 파일만 안전한 commit/branch push 후 WSL exact-SHA API 이미지만 교체하고 읽기 전용 실제 카탈로그 조회·health·URL·DB 불변을 확인한다. Web·worker·Oracle·ysna·main·기존 Key는 변경하지 않는다.
+
+### OmniRoute 조회 오류 WSL QA 반영
+
+- 제품 commit `4e96366c454208d8af89c93bf73dc9338a504990`를 기존 작업 브랜치에 비강제 push하고, WSL 전용 clean checkout `/home/daon/deploy/daon-user-omnicatalog-4e96366c`에서 exact SHA를 확인했다. 기존 Compose 환경/Secret 참조를 유지하고 API 이미지만 빌드·교체했다. 이전 API image는 `daon_user-api:rollback-omnicatalog-4e96366c-pre`로 보존했다.
+- 새 API image `sha256:234832be6619e160014a668ffa75fd71b11b785a33010c31f44f1e800d7da9ed3`가 위 checkout에서 실행되며 healthy. Web은 기존 `7db19f1f` 이미지로 healthy이고 두 worker는 계속 실행 중이다. `http://172.27.253.53:3330/settings/model-connections` HTTP 200.
+- 새 API 컨테이너에서 저장된 OmniRoute Key를 출력하지 않는 읽기 전용 조회 결과: `catalog_status=ok`, 텍스트 후보 682개, 별도 기능 유형 63개. 상위 응답 839행 중 기존 모델 ID 규칙에서 제외되는 94개가 있었으며 이를 저장/등록하지 않았다. 실제 관리자 `모델 조회` 클릭과 카탈로그 DB 저장은 수행하지 않았다.
+- 배포 전후 DB 연결/카탈로그/허용 모델 수는 `11/47/33`으로 불변, OmniRoute 연결 version 7·Key 저장 상태 유지. Oracle·ysna·main·Web/worker·기존 Key는 변경하지 않았다. 사용자 수락과 화면에서 실제 조회·등록은 신산님 확인 전 미검증. 다음: 신산님이 3330에서 새로고침 후 OmniRoute `모델 조회`를 클릭해 오류가 사라지고 목록이 반영되는지 확인한다.
