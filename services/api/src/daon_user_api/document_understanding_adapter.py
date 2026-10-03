@@ -275,6 +275,26 @@ class UrlLibDocumentUnderstandingTransport:
         )
         return self._request(request, timeout_seconds)
 
+    def post_json_headers(
+        self, *, url: str, headers: Mapping[str, str], payload: dict[str, object],
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        if (
+            set(headers) != {"x-api-key", "anthropic-version"}
+            or headers.get("anthropic-version") != "2023-06-01"
+            or not isinstance(headers.get("x-api-key"), str)
+            or not headers["x-api-key"]
+            or len(headers["x-api-key"]) > 16384
+            or any(not 33 <= ord(character) <= 126 for character in headers["x-api-key"])
+            or not 1 <= timeout_seconds <= 120
+        ):
+            raise DocumentUnderstandingError("UNDERSTANDING_PROVIDER_HEADERS_INVALID", status=502)
+        request = urllib.request.Request(
+            url, data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers={**headers, "Content-Type": "application/json"}, method="POST",
+        )
+        return self._request(request, timeout_seconds)
+
     def post_multipart(
         self, *, url: str, api_key: str, fields: dict[str, str], filename: str,
         content: bytes, timeout_seconds: float,

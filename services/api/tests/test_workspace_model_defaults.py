@@ -66,6 +66,7 @@ def row(
     verification_status: str = "verified", catalog_status: str = "ready",
     effective_capabilities: list[str] | None = None, credential_version: int = 4,
     access_mode: str = "public", credential_requirement: str = "required",
+    adapter_type: str = "",
 ):
     sealed = None if credential is None else cipher.encrypt(
         connection_id, provider_code, credential_version, credential,
@@ -78,7 +79,7 @@ def row(
         None if sealed is None else sealed.schema_version,
         credential_version, enabled, verification_status,
         effective_capabilities if effective_capabilities is not None else [capability],
-        catalog_status, 9, access_mode, credential_requirement,
+        catalog_status, 9, access_mode, credential_requirement, adapter_type,
     )
 
 
@@ -103,6 +104,19 @@ def test_resolve_revalidates_workspace_default_and_releases_latest_credential() 
     assert database.contexts[0].tenant_id == "tenant-001"
     assert database.contexts[0].workspace_id == "workspace-001"
     assert database.queries[0][1] == ("tenant-001", "workspace-001", "text_generation")
+
+
+def test_custom_resolver_propagates_saved_anthropic_adapter_type() -> None:
+    cipher = ProviderCredentialCipher(b"x" * 32, encryption_key_version=1)
+    database = Database(row(
+        cipher, connection_id="custom-anthropic", provider_code="CUSTOM",
+        adapter_type="anthropic_compatible",
+    ))
+    with PostgresWorkspaceModelResolver(Store(database), cipher).resolve(
+        context(), "text_generation",
+    ) as resolved:
+        assert resolved.adapter_type == "anthropic_compatible"
+        assert "c.adapter_type" in database.queries[0][0]
 
 
 def test_resolve_reads_latest_credential_version_on_each_request() -> None:

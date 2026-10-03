@@ -104,3 +104,23 @@
 - Preview 표현 정정: 관리자 model-preview는 Provider 설정 DB의 연결·카탈로그·허용 목록을 쓰지 않는다. 관리자 인증의 step-up 권한은 별도 인증 저장소에서 소비되므로 시스템 전체의 DB 무기록 호출이라는 뜻은 아니다. HTTP 테스트는 step-up 재사용 403을 확인한다.
 - 변경 파일: `provider_connection_admin.py`, `test_provider_connection_admin.py`, 이 진행 기록만. 이번 보완 비의도 오류 0건(이전 Task 2 누적 2건 유지). 실 DB/Provider/비용 호출, WSL·배포, Task 3·Web은 미검증/미착수. 다음 조치: 관련 회귀와 diff 자체 검토 후 범위 파일만 commit, 어울1 재검토 대기.
 - 인계 체크포인트: 지정 3개 파일 commit `91ba2fc2ae7a6bc9cc0d7a2ede093a564a15e168`. 커밋 후 인접 9개 파일 `149 passed, 1 skipped`, 기준 `3231e38a` 대비 `git diff --check` 통과, worktree clean 확인. 상태는 Task 2 P1 보완 로컬 완료·어울1 재검토 대기; Task 3 시작 금지.
+
+## Task 3 시작 및 RED — R1-PROVIDER-COMPAT-20261003-T3
+
+- 일자/담당: 2026-10-03 / 어울2, 동일 단일 writer. 승인된 Task 3만 수행한다. 지시된 시작점 `91ba2fc2`와 달리 실제 시작 HEAD는 `34f89b60`이며, 그 사이 변경은 이 진행 기록뿐이다. 시작 worktree clean, 기존 worktree 격리 확인.
+- 승인 설계/계획 및 PMO·프로젝트 지침 전체 재독. 범위는 계획에 열거된 source 5개, 테스트 5개, 이 진행 기록뿐이다.
+- 변경 전 대상 5개 pytest 파일: `12 failed, 45 passed, 3 subtests passed`. 실패 12건 모두 기존 `test_identity_support.py:40`의 `NameError: user_id` 공통 HTTP fixture 오류로 Task 3 코드 변경 전부터 발생. 범위 밖 helper는 수정하지 않으며 Task 3 PASS로 간주하지 않는다.
+- 신규 RED: 4개 핵심 테스트 파일 합동 실행에서 새 Anthropic adapter 미정의로 수집 오류. 분리 실행에서는 `4 failed, 37 passed`: CUSTOM 개인 Key의 `adapter_type`/허용 모델별 시험 누락, resolver 규격 미전달, registry 분기 부재가 예상 원인이다. 의도된 RED로 비의도 오류 횟수 0.
+- 다음 조치: 개인 Key의 DB 허용 모델 probe 선행, resolver 규격 전달, Anthropic Messages 일반·근거 질문과 제한 헤더 transport를 최소 구현. 실제 Provider/Key·실 DB·Web·WSL·배포는 검증하지 않는다.
+
+### Task 3 GREEN 및 자체 검토
+
+- 구현: 개인 CUSTOM Key는 해당 연결 DB 허용 모델을 읽어 저장된 규격의 `verify_models`를 모두 통과한 뒤에만 암호화 저장한다. 실패 시 기존 Key/version은 그대로 둔다. 기존 비-CUSTOM 개인 Key 검증 경로는 유지한다.
+- `ResolvedModel.adapter_type` 후방 호환 필드와 DB 조회를 연결했다. `CUSTOM/anthropic_compatible`의 일반·근거 질문만 Messages로 실행한다. 요청은 `/messages`, `x-api-key`·`anthropic-version`, 최상위 `system`/`messages`/`max_tokens`; 응답 text 블록과 usage를 기존 일반 답변 및 인용·증거 검증으로 처리한다. OpenAI/Ollama/OmniRoute/Gateway/UPSTAGE 분기는 변경하지 않는다.
+- 새 transport는 서버 생성 Anthropic 헤더 두 개만 허용하고 Key의 길이·문자와 timeout을 제한한다. 기존 2 MiB 응답 상한, no-redirect, 원문/Secret 없는 upstream 오류 처리를 재사용한다. fixture에서 추가 헤더·개행 Key를 요청 전에 거부했다.
+- 어울1 추가 검토의 미지원 `CUSTOM.adapter_type` 조용한 OpenAI fallback은 RED 1건으로 확인 후, 두 질문 모드에서 `TEXT_PROVIDER_UNAVAILABLE`로 fail-closed 했다. 빈 레거시 기본값과 `openai_compatible`은 기존 Chat Completions를 유지한다.
+- RED 증거: 신규 adapter 수집 오류와 분리 실행의 `4 failed, 37 passed`(예상 기능 부재), 미지원 규격 `1 failed`(예상 fallback). GREEN: Task 3 핵심 4개 파일 `55 passed, 7 subtests passed`; Provider·질문·문서 인접 10개 파일 `171 passed, 7 subtests passed`. `test_question_answering_runtime_http.py`는 별도 재실행에서도 기존 `test_identity_support.py:40`의 `NameError: user_id`로 `12 failed`; 이번 변경 전과 같은 원인이라 PASS라고 하지 않는다.
+- 변경 파일: Task 3 지정 source 5개, target test 4개, 이 진행 기록(10개). 비의도 구현 오류 0건; 의도된 RED와 기존 HTTP baseline은 오류 횟수에 산입하지 않음. `git diff --check` exit 0.
+- 미검증: 실제 Provider/유료 호출, 실제 DB transaction 및 데이터, HTTP 대상의 정상 fixture 통과, Web/Network, WSL/배포. 다음 조치: Task 3 범위 파일만 commit 및 clean 확인 후 어울1 검토 대기. Task 4 시작 금지.
+- 계획의 5개 대상 파일 합동 최종 실행도 `12 failed, 55 passed, 7 subtests passed`: 실패 12건은 모두 위 동일 `test_identity_support.py:40`의 사전 존재 `NameError`다. 테스트를 수정하거나 실패를 통과로 표시하지 않았다.
+- Git stage 진단 1건: 진행 기록이 추적 파일이지만 ignore 디렉터리 하위라 명시 경로 `git add`가 exit 1을 반환했다. 확인 결과 승인 범위 10개 파일만 모두 stage됐고 유실·범위 외 stage는 없다. `git add -u`로 진행 기록 최종 갱신을 반영해 검증한다. 구현/테스트의 비의도 오류 0건과 별도 계산한다.

@@ -56,11 +56,14 @@ def test_failed_personal_probe_preserves_existing_credential(monkeypatch) -> Non
         def fetchone(self):
             return self.row
 
+        def fetchall(self):
+            return (("manual-a",),)
+
     class Connection:
         def execute(self, sql, _params=()):
             calls.append(sql)
             if sql.startswith("SELECT provider_code"):
-                return Cursor(("CUSTOM", "https://models.example.com/v1", "personal", "required", True))
+                return Cursor(("CUSTOM", "https://models.example.com/v1", "personal", "required", True, "openai_compatible"))
             if sql.startswith("SELECT credential_version"):
                 return Cursor((2,))
             return Cursor()
@@ -71,11 +74,11 @@ def test_failed_personal_probe_preserves_existing_credential(monkeypatch) -> Non
             yield Connection()
 
     class FailingAdapter:
-        def verify(self, _profile, _credential):
+        def verify_models(self, _profile, _credential, _model_ids):
             raise AdapterError("PROVIDER_AUTHENTICATION_FAILED", 401)
 
     class Registry:
-        def adapter(self, _code):
+        def adapter(self, _code, _adapter_type=""):
             return FailingAdapter()
 
     monkeypatch.setattr(module, "AdapterRegistry", Registry, raising=False)
@@ -89,3 +92,67 @@ def test_failed_personal_probe_preserves_existing_credential(monkeypatch) -> Non
         )
 
     assert not any(sql.startswith("INSERT INTO user_provider_credentials") for sql in calls)
+
+
+@pytest.mark.parametrize("adapter_type", ["openai_compatible", "anthropic_compatible"])
+def test_custom_personal_key_probes_only_db_allowed_models_before_encrypt(monkeypatch, adapter_type) -> None:
+    calls = []
+    secret = "fixture-personal-secret"
+
+    class Cursor:
+        def __init__(self, row=None, rows=()):
+            self.row, self.rows = row, rows
+
+        def fetchone(self):
+            return self.row
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, sql, params=()):
+            calls.append((sql, params))
+            if sql.startswith("SELECT provider_code"):
+                return Cursor(("CUSTOM", "https://models.example.com/v1", "personal", "required", True, adapter_type))
+            if sql.startswith("SELECT credential_version"):
+                return Cursor((2,))
+            if sql.startswith("SELECT model_id FROM system_provider_allowed_models"):
+                return Cursor(rows=(("manual-a",), ("manual-b",)))
+            return Cursor()
+
+    class Store:
+        @contextmanager
+        def _transaction(self, _context):
+            yield Connection()
+
+    class Adapter:
+        def verify_models(self, _profile, credential, model_ids):
+            calls.append(("probe", credential, tuple(model_ids)))
+            if adapter_type == "anthropic_compatible":
+                raise AdapterError("PROVIDER_PROBE_RESPONSE_INVALID", 503)
+            return ()
+
+    class Registry:
+        def adapter(self, provider_code, selected_type=""):
+            assert (provider_code, selected_type) == ("CUSTOM", adapter_type)
+            return Adapter()
+
+    monkeypatch.setattr(module, "AdapterRegistry", Registry)
+    service = module.PostgresUserProviderCredentialService(
+        Store(), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+    if adapter_type == "anthropic_compatible":
+        with pytest.raises(module.UserProviderCredentialError, match="^PROVIDER_PROBE_RESPONSE_INVALID$"):
+            service.replace_credential(
+                tenant_id="tenant-1", user_id="user-1", connection_id="custom-1",
+                credential=secret, expected_version=2,
+            )
+        assert not any(item[0].startswith("INSERT INTO user_provider_credentials") for item in calls if len(item) == 2)
+    else:
+        result = service.replace_credential(
+            tenant_id="tenant-1", user_id="user-1", connection_id="custom-1",
+            credential=secret, expected_version=2,
+        )
+        assert result.verification_status == "verified"
+        assert any(item[0].startswith("INSERT INTO user_provider_credentials") for item in calls if len(item) == 2)
+    assert ("probe", secret, ("manual-a", "manual-b")) in calls

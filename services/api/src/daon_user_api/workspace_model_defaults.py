@@ -236,6 +236,7 @@ class ResolvedModel:
     daon_fallback_allowed: bool
     _credential: bytearray | None = field(repr=False, compare=False)
     _released: bool = field(default=False, repr=False, compare=False)
+    adapter_type: str = ""
 
     @property
     def profile_id(self) -> str:
@@ -299,7 +300,7 @@ class PostgresWorkspaceModelResolver:
                     "c.encrypted_credential,c.credential_nonce,c.encryption_key_version,"
                     "c.credential_schema_version,c.credential_version,c.enabled,c.verification_status,"
                     "m.effective_capabilities,m.catalog_status,m.catalog_version,"
-                    "c.access_mode,c.credential_requirement "
+                    "c.access_mode,c.credential_requirement,c.adapter_type "
                     "FROM workspace_model_defaults d "
                     "JOIN system_provider_connections c ON c.connection_id=d.connection_id "
                     "JOIN system_provider_models m ON m.connection_id=d.connection_id AND m.model_id=d.model_id "
@@ -376,6 +377,7 @@ class PostgresWorkspaceModelResolver:
             ),
             daon_fallback_allowed=provider_code not in _ROUTING_GATEWAYS | {"SENTENCE_TRANSFORMERS"},
             _credential=credential,
+            adapter_type=str(values[17]),
         )
         try:
             yield resolved

@@ -89,7 +89,7 @@ class PostgresUserProviderCredentialService:
             raise UserProviderCredentialError("PROVIDER_CREDENTIAL_INVALID")
         with self._store._transaction(self._cloud(tenant_id, user_id, "provider_credential.write")) as connection:
             provider = connection.execute(
-                "SELECT provider_code,base_url,access_mode,credential_requirement,enabled "
+                "SELECT provider_code,base_url,access_mode,credential_requirement,enabled,adapter_type "
                 "FROM system_provider_connections "
                 "WHERE connection_id=%s AND enabled=true",
                 (connection_id,),
@@ -112,7 +112,17 @@ class PostgresUserProviderCredentialService:
                 bool(provider[4]), 1,
             )
             try:
-                AdapterRegistry().adapter(provider_code).verify(profile, credential)
+                if provider_code == "CUSTOM":
+                    allowed = connection.execute(
+                        "SELECT model_id FROM system_provider_allowed_models "
+                        "WHERE connection_id=%s ORDER BY model_id",
+                        (connection_id,),
+                    ).fetchall()
+                    AdapterRegistry().adapter(provider_code, str(provider[5])).verify_models(
+                        profile, credential, tuple(str(row[0]) for row in allowed),
+                    )
+                else:
+                    AdapterRegistry().adapter(provider_code).verify(profile, credential)
             except AdapterError as error:
                 raise UserProviderCredentialError(error.code, error.status) from None
             next_version = actual + 1

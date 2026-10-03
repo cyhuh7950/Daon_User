@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import json
+import io
 import unittest
+from unittest.mock import patch
 
 from daon_user_api.document_index_postgres import IndexedEvidenceChunk
+from daon_user_api.document_understanding_adapter import (
+    DocumentUnderstandingError, UrlLibDocumentUnderstandingTransport,
+)
 from daon_user_api.provider_settings import (
     ModelDeploymentView,
     ProviderProfileView,
     ProviderSettingsSnapshot,
 )
 from daon_user_api.question_answering import (
+    AnthropicMessagesTextGenerationAdapter,
+    GeneralConversationRequest,
     GroundedQuestionRequest,
     OpenAICompatibleTextGenerationAdapter,
+    TextModelSelection,
     UpstageTextGenerationAdapter,
     classify_question_intent,
     resolve_text_model_selection,
@@ -66,6 +74,105 @@ class RecordingTransport:
 
 
 class QuestionAnsweringContractTests(unittest.TestCase):
+    def test_messages_header_transport_is_bounded_and_rejects_extra_headers(self) -> None:
+        captured = []
+
+        class Opener:
+            def open(self, request, timeout):
+                captured.append((request, timeout))
+                return io.BytesIO(b'{"content":[{"type":"text","text":"ok"}]}')
+
+        with patch("daon_user_api.document_understanding_adapter.urllib.request.build_opener", return_value=Opener()) as build:
+            result = UrlLibDocumentUnderstandingTransport().post_json_headers(
+                url="https://models.example.com/v1/messages",
+                headers={"x-api-key": "fixture-secret", "anthropic-version": "2023-06-01"},
+                payload={"model": "manual-a"}, timeout_seconds=5,
+            )
+        self.assertEqual(result["content"][0]["text"], "ok")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0][0].get_method(), "POST")
+        self.assertEqual(captured[0][0].get_header("X-api-key"), "fixture-secret")
+        self.assertEqual(captured[0][1], 5)
+        self.assertEqual(type(build.call_args.args[0]).__name__, "_NoRedirectHandler")
+
+        for headers in (
+            {"x-api-key": "fixture-secret", "anthropic-version": "2023-06-01", "Authorization": "Bearer bad"},
+            {"x-api-key": "fixture-secret\r\nInjected: bad", "anthropic-version": "2023-06-01"},
+        ):
+            with self.subTest(headers=list(headers)):
+                with self.assertRaises(DocumentUnderstandingError):
+                    UrlLibDocumentUnderstandingTransport().post_json_headers(
+                        url="https://models.example.com/v1/messages", headers=headers,
+                        payload={}, timeout_seconds=5,
+                    )
+
+    def test_anthropic_messages_grounded_and_general_contract(self) -> None:
+        class MessagesTransport:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def post_json_headers(self, **kwargs):
+                self.calls.append(kwargs)
+                answer = (
+                    {"answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}
+                    if len(self.calls) == 1 else {"answer": "일반 답변입니다."}
+                )
+                return {
+                    "content": [{"type": "text", "text": json.dumps(answer, ensure_ascii=False)}],
+                    "usage": {"input_tokens": 17, "output_tokens": 9},
+                }
+
+        transport = MessagesTransport()
+        adapter = AnthropicMessagesTextGenerationAdapter(transport=transport, api_key="fixture-secret")
+        selection = TextModelSelection(
+            "CUSTOM", "https://models.example.com/v1", "custom-1", "custom-1:manual-a",
+            "manual-a", 1,
+        )
+        evidence = (IndexedEvidenceChunk(
+            "chunk-page-2", "source-cp3", "source-version-cp3", 2,
+            "Verified code ORANGE-COMPASS-42.", "span-page-2", 1.0,
+        ),)
+        grounded = adapter.generate(
+            GroundedQuestionRequest("What code?", evidence, "trace-cp3"), selection,
+        )
+        general = adapter.generate_general(
+            GeneralConversationRequest("안녕하세요", "trace-cp3"), selection,
+        )
+        self.assertEqual(grounded.cited_chunk_ids, ("chunk-page-2",))
+        self.assertEqual(grounded.usage["input_tokens"], 17)
+        self.assertEqual(general.answer, "일반 답변입니다.")
+        for call in transport.calls:
+            self.assertEqual(call["url"], "https://models.example.com/v1/messages")
+            self.assertEqual(call["headers"], {
+                "x-api-key": "fixture-secret", "anthropic-version": "2023-06-01",
+            })
+            payload = call["payload"]
+            self.assertEqual(payload["model"], "manual-a")
+            self.assertIn("system", payload)
+            self.assertEqual([message["role"] for message in payload["messages"]], ["user"])
+            self.assertGreater(payload["max_tokens"], 0)
+            self.assertNotIn("response_format", payload)
+
+    def test_anthropic_messages_rejects_unsupported_citation(self) -> None:
+        class MessagesTransport:
+            def post_json_headers(self, **_kwargs):
+                return {"content": [{"type": "text", "text": json.dumps({
+                    "answer": "unverified", "cited_chunk_ids": ["other"], "insufficient": False,
+                })}]}
+
+        selection = TextModelSelection(
+            "CUSTOM", "https://models.example.com/v1", "custom-1", "custom-1:manual-a",
+            "manual-a", 1,
+        )
+        evidence = (IndexedEvidenceChunk(
+            "chunk-page-2", "source-cp3", "source-version-cp3", 2,
+            "Verified code ORANGE-COMPASS-42.", "span-page-2", 1.0,
+        ),)
+        with self.assertRaisesRegex(ValueError, "TEXT_GENERATION_GROUNDING_INVALID"):
+            AnthropicMessagesTextGenerationAdapter(
+                transport=MessagesTransport(), api_key="fixture-secret",
+            ).generate(GroundedQuestionRequest("What code?", evidence, "trace-cp3"), selection)
+
     def test_work_support_and_source_modes_are_classified_without_refusal(self) -> None:
         self.assertEqual(classify_question_intent("다음 작업을 어떻게 진행할까?"), "work_support")
         self.assertEqual(classify_question_intent("선택한 문서에서 보존 기간을 찾아줘"), "explicit_source_lookup")

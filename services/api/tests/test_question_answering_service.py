@@ -184,6 +184,130 @@ class OmniRouteTransport(CapturingGatewayTransport):
 
 
 class QuestionAnsweringServiceTests(unittest.TestCase):
+    def test_unknown_custom_adapter_type_fails_closed_for_both_question_modes(self) -> None:
+        selection = ResolvedModel(
+            connection_id="custom-1", provider_code="CUSTOM", model_id="manual-a",
+            capability="text_generation", base_url="https://models.example.com/v1",
+            credential_version=1, default_version=1, catalog_version=1,
+            provider_kind="external_api", routing_owner="provider", daon_fallback_allowed=True,
+            _credential=bytearray(b"fixture-secret"), adapter_type="unknown_protocol",
+        )
+        evidence = (IndexedEvidenceChunk(
+            "chunk-page-2", "source-cp3", "source-version-cp3", 2,
+            "ORANGE-COMPASS-42", "span-page-2", 1.0,
+        ),)
+        registry = QuestionAdapterRegistry()
+        transport = CapturingGatewayTransport()
+        with self.assertRaisesRegex(ValueError, "^TEXT_PROVIDER_UNAVAILABLE$"):
+            registry.prepare(selection, evidence, "What code?", "trace-cp3", transport)
+        with self.assertRaisesRegex(ValueError, "^TEXT_PROVIDER_UNAVAILABLE$"):
+            registry.prepare_general(selection, "안녕하세요", "trace-cp3", transport)
+        self.assertEqual(transport.calls, [])
+
+    def test_custom_openai_and_empty_legacy_adapter_type_keep_chat_completions(self) -> None:
+        for adapter_type in ("openai_compatible", ""):
+            with self.subTest(adapter_type=adapter_type):
+                selection = ResolvedModel(
+                    connection_id="custom-1", provider_code="CUSTOM", model_id="manual-a",
+                    capability="text_generation", base_url="https://models.example.com/v1",
+                    credential_version=1, default_version=1, catalog_version=1,
+                    provider_kind="external_api", routing_owner="provider", daon_fallback_allowed=True,
+                    _credential=bytearray(b"fixture-secret"), adapter_type=adapter_type,
+                )
+                transport = CapturingGatewayTransport()
+                registry = QuestionAdapterRegistry()
+                result = registry.generate_general(registry.prepare_general(
+                    selection, "안녕하세요", "trace-cp3", transport,
+                ))
+                self.assertEqual(result.answer, "gateway answer")
+                self.assertEqual(transport.calls[0]["url"], "https://models.example.com/v1/chat/completions")
+
+    def test_custom_anthropic_selection_routes_both_question_modes_to_messages(self) -> None:
+        class MessagesTransport:
+            def __init__(self):
+                self.calls = []
+
+            def post_json_headers(self, **kwargs):
+                self.calls.append(kwargs)
+                answer = (
+                    {"answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}
+                    if len(self.calls) == 1 else {"answer": "일반 답변입니다."}
+                )
+                return {"content": [{"type": "text", "text": json.dumps(answer, ensure_ascii=False)}]}
+
+            def post_json(self, **_kwargs):
+                raise AssertionError("CUSTOM anthropic must not use Chat Completions")
+
+        selection = ResolvedModel(
+            connection_id="custom-1", provider_code="CUSTOM", model_id="manual-a",
+            capability="text_generation", base_url="https://models.example.com/v1",
+            credential_version=1, default_version=1, catalog_version=1,
+            provider_kind="external_api", routing_owner="provider", daon_fallback_allowed=True,
+            _credential=bytearray(b"fixture-secret"), adapter_type="anthropic_compatible",
+        )
+        evidence = (IndexedEvidenceChunk(
+            "chunk-page-2", "source-cp3", "source-version-cp3", 2,
+            "Verified code ORANGE-COMPASS-42.", "span-page-2", 1.0,
+        ),)
+        transport = MessagesTransport()
+        registry = QuestionAdapterRegistry()
+        grounded = registry.generate_prepared(registry.prepare(
+            selection, evidence, "What code?", "trace-cp3", transport,
+        ))
+        general = registry.generate_general(registry.prepare_general(
+            selection, "안녕하세요", "trace-cp3", transport,
+        ))
+        self.assertEqual(grounded.cited_chunk_ids, ("chunk-page-2",))
+        self.assertEqual(general.answer, "일반 답변입니다.")
+        self.assertEqual(len(transport.calls), 2)
+
+    def test_custom_anthropic_grounded_service_persists_validated_citation(self) -> None:
+        evidence = (IndexedEvidenceChunk(
+            "chunk-page-2", "source-cp3", "source-version-cp3", 2,
+            "Verified code ORANGE-COMPASS-42.", "span-page-2", 1.0,
+        ),)
+
+        class Resolver:
+            @contextmanager
+            def resolve(self, _context, capability):
+                selection = ResolvedModel(
+                    connection_id="custom-1", provider_code="CUSTOM", model_id="manual-a",
+                    capability=capability, base_url="https://models.example.com/v1",
+                    credential_version=1, default_version=1, catalog_version=1,
+                    provider_kind="external_api", routing_owner="provider", daon_fallback_allowed=True,
+                    _credential=bytearray(b"fixture-secret"), adapter_type="anthropic_compatible",
+                )
+                try:
+                    yield selection
+                finally:
+                    selection.release()
+
+        class Transport:
+            def __init__(self):
+                self.calls = []
+
+            def post_json_headers(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"content": [{"type": "text", "text": json.dumps({
+                    "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"],
+                    "insufficient": False,
+                })}]}
+
+        repository, transport = FakeRepository(), Transport()
+        service = QuestionAnsweringService(
+            Resolver(), repository, FakeIndex(evidence), FakeCredential(), transport, FakeEgress(),
+            adapter_registry=QuestionAdapterRegistry(),
+        )
+        result = service.ask(
+            QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+            source_id="source-cp3", source_version_id="source-version-cp3",
+            question="What code?", run_id="run-custom-anthropic",
+        )
+        self.assertEqual(result.answer, "ORANGE-COMPASS-42")
+        self.assertEqual(repository.persisted["result"].cited_chunk_ids, ("chunk-page-2",))
+        self.assertEqual(len(transport.calls), 1)
+        self.assertNotIn("fixture-secret", repr(repository.persisted))
+
     def test_question_uses_workspace_text_default_and_latest_connection_credential(self) -> None:
         resolver = StaticWorkspaceModelResolver()
         repository = FakeRepository()
