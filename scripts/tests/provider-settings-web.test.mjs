@@ -64,7 +64,6 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
       if (path === "/bff/api/admin/provider-connections" && method === "GET") return Response.json({ data: connections });
       if (path === "/bff/api/provider-credentials") return Response.json({ data: { credentials: [] } });
       if (path === "/bff/api/admin/provider-health-settings") return Response.json({ data: { interval_minutes: 60, version: 1 } });
-      if (path === "/bff/api/session/step-up") return Response.json({ data: { step_up_authorization: "fixture-grant" } });
       if (path === "/bff/api/admin/provider-connections/model-preview") {
         return previewFails
           ? Response.json({ error: { code: "PROVIDER_CATALOG_UNAVAILABLE" } }, { status: 503 })
@@ -83,7 +82,6 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
           models: body.allowed_model_ids.map((model_id) => ({ model_id, catalog_status: "ready", catalog_version: 1, effective_capabilities: ["text_generation"] })) };
         delete item.credential;
         delete item.test_credential;
-        delete item.step_up_authorization_id;
         connections = [item];
         return Response.json({ data: item });
       }
@@ -107,6 +105,24 @@ async function mountAdminFixture(fixture, fileName) {
   return { container, act, async cleanup() { await act(async () => reactRoot.unmount()); globalThis.fetch = originalFetch; dom.restore(); await rm(output, { recursive: true, force: true }); } };
 }
 
+test("system admin can save a Provider connection without a second password", async () => {
+  const fixture = adminFixture();
+  const view = await mountAdminFixture(fixture, "admin-session-save");
+  try {
+    assert.equal(findElements(view.container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("관리자 재인증 비밀번호")).length, 0);
+    await fill(view.act, controlFor(view.container, "Provider 표시 이름"), "Ollama");
+    await fill(view.act, controlFor(view.container, "연결 이름"), "공용 Ollama");
+    await fill(view.act, controlFor(view.container, "두 글자 약어"), "OO");
+    await fill(view.act, controlFor(view.container, "Endpoint"), "http://ollama.internal:11434");
+    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
+    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+    assert.equal(fixture.requests.filter((item) => item.path === "/bff/api/session/step-up").length, 0);
+    const created = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
+    assert.ok(created);
+    assert.equal(Object.hasOwn(created.body, "step_up_authorization_id"), false);
+  } finally { await view.cleanup(); }
+});
+
 test("provider settings helper uses only the approved same-origin admin routes", async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -115,16 +131,12 @@ test("provider settings helper uses only the approved same-origin admin routes",
     if (String(url) === "/bff/api/admin/provider-connections" && options.method === "GET") {
       return Response.json({ data: [], meta: { trace_id: "trace-list" } }, { headers: { etag: '"connections:1"' } });
     }
-    if (String(url) === "/bff/api/session/step-up") {
-      return Response.json({ data: { step_up_authorization: "fixture-grant" } });
-    }
     if (options.method === "DELETE") return new Response(null, { status: 204, headers: { etag: '"connection:3"' } });
     return Response.json({ data: { connection_id: "ollama-lan", version: 2, catalog_version: 3 }, meta: { trace_id: "trace-mutation" } });
   };
   try {
     await providerSettingsApi.listConnections();
-    await providerSettingsApi.issueStepUp("provider-connection:ollama-lan", "fixture-password-only");
-    await providerSettingsApi.previewModels({ connection_id: "custom-1", provider_code: "CUSTOM", adapter_type: "openai_compatible", base_url: "https://models.example/v1", credential: "fixture-preview-key", step_up_authorization_id: "fixture-grant" });
+    await providerSettingsApi.previewModels({ connection_id: "custom-1", provider_code: "CUSTOM", adapter_type: "openai_compatible", base_url: "https://models.example/v1", credential: "fixture-preview-key" });
     await providerSettingsApi.getModelDefaults("workspace-001");
     await providerSettingsApi.createConnection({ connection_id: "ollama-lan" }, "create-0001");
     await providerSettingsApi.updateConnection("ollama-lan", { expected_version: 1 }, "update-0001");
@@ -140,7 +152,6 @@ test("provider settings helper uses only the approved same-origin admin routes",
 
   assert.deepEqual(requests.map(({ url, options }) => [options.method ?? "GET", url]), [
     ["GET", "/bff/api/admin/provider-connections"],
-    ["POST", "/bff/api/session/step-up"],
     ["POST", "/bff/api/admin/provider-connections/model-preview"],
     ["GET", "/bff/api/workspaces/workspace-001/model-defaults"],
     ["POST", "/bff/api/admin/provider-connections"],
@@ -153,9 +164,9 @@ test("provider settings helper uses only the approved same-origin admin routes",
     ["PATCH", "/bff/api/workspaces/workspace-001/model-defaults"],
   ]);
   assert.equal(requests.at(-1).options.headers["If-Match"], '"defaults-v0"');
-  assert.deepEqual(JSON.parse(requests[2].options.body), {
+  assert.deepEqual(JSON.parse(requests[1].options.body), {
     connection_id: "custom-1", provider_code: "CUSTOM", adapter_type: "openai_compatible",
-    base_url: "https://models.example/v1", credential: "fixture-preview-key", step_up_authorization_id: "fixture-grant",
+    base_url: "https://models.example/v1", credential: "fixture-preview-key",
   });
   for (const request of requests) assert.equal(request.options.credentials, "same-origin");
   const source = await read("apps/web/lib/provider-settings-api.js");
@@ -163,35 +174,34 @@ test("provider settings helper uses only the approved same-origin admin routes",
   assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL/iu);
 });
 
-test("new OpenAI-compatible public connection keeps manual ID after preview failure and clears Key only after save", async () => {
+test("new OpenAI-compatible public connection keeps generated ID after preview failure and clears Key only after save", async () => {
   const fixture = adminFixture({ previewFails: true, saveFailures: 1 });
   const view = await mountAdminFixture(fixture, "custom-openai");
   const { container, act } = view;
   try {
+    assert.equal(findElements(container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("Connection ID")).length, 0);
     assert.equal(buttonByText(container, "연결 시험 및 저장")?.disabled, true);
     await fill(act, controlFor(container, "호환 방식"), "openai_compatible");
     assert.equal(controlFor(container, "API 유형").value, "Chat Completions");
     assert.doesNotMatch(container.textContent, /Responses API|임베딩 API/u);
-    await fill(act, controlFor(container, "Connection ID"), "custom-1");
     await fill(act, controlFor(container, "Provider 표시 이름"), "자유 Provider");
     await fill(act, controlFor(container, "연결 이름"), "자유 연결");
     await fill(act, controlFor(container, "두 글자 약어"), "CU");
     await fill(act, controlFor(container, "Endpoint"), "https://models.example/v1");
     await fill(act, controlFor(container, "API Key 또는 Client Key"), "fixture-key");
-    await fill(act, controlFor(container, "관리자 재인증 비밀번호"), "fixture-password");
     assert.equal(buttonByText(container, "모델 목록 조회")?.disabled, false);
     await click(act, buttonByText(container, "모델 목록 조회"));
     assert.match(container.textContent, /모델 ID를 직접 입력/u);
     assert.equal(controlFor(container, "API Key 또는 Client Key").value, "fixture-key");
-    assert.equal(fixture.requests.find((item) => item.path === "/bff/api/session/step-up")?.body?.target_id, "provider-connection:custom-1");
-    assert.equal(fixture.requests.find((item) => item.path.endsWith("/model-preview"))?.body.step_up_authorization_id, "fixture-grant");
+    const generatedId = fixture.requests.find((item) => item.path.endsWith("/model-preview"))?.body.connection_id;
+    assert.match(generatedId, /^provider-[A-Za-z0-9._:-]+$/u);
+    assert.equal(fixture.requests.some((item) => item.path === "/bff/api/session/step-up"), false);
     assert.deepEqual(fixture.requests.find((item) => item.path.endsWith("/model-preview"))?.body, {
-      connection_id: "custom-1", provider_code: "CUSTOM", adapter_type: "openai_compatible",
-      base_url: "https://models.example/v1", credential: "fixture-key", step_up_authorization_id: "fixture-grant",
+      connection_id: generatedId, provider_code: "CUSTOM", adapter_type: "openai_compatible",
+      base_url: "https://models.example/v1", credential: "fixture-key",
     });
 
     await fill(act, controlFor(container, "모델 ID 직접 입력"), "m1\nm2\nm3\nm4\nm5");
-    await fill(act, controlFor(container, "관리자 재인증 비밀번호"), "fixture-password");
     assert.equal(buttonByText(container, "연결 시험 및 저장")?.disabled, true);
     await fill(act, controlFor(container, "모델 ID 직접 입력"), "manual-a");
     assert.match(container.textContent, /시험 대상 1개 모델.*사용료/u);
@@ -199,10 +209,11 @@ test("new OpenAI-compatible public connection keeps manual ID after preview fail
     await click(act, buttonByText(container, "연결 시험 및 저장"));
     assert.match(container.textContent, /저장하지 못했습니다/u);
     assert.equal(controlFor(container, "API Key 또는 Client Key").value, "fixture-key");
-    await fill(act, controlFor(container, "관리자 재인증 비밀번호"), "fixture-password");
     await click(act, buttonByText(container, "연결 시험 및 저장"));
     const creates = fixture.requests.filter((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
     assert.equal(creates.length, 2);
+    assert.equal(creates[0].body.connection_id, generatedId);
+    assert.equal(creates[1].body.connection_id, generatedId);
     assert.equal(creates[1].body.provider_code, "CUSTOM");
     assert.equal(creates[1].body.adapter_type, "openai_compatible");
     assert.equal(creates[1].body.provider_name, "자유 Provider");
@@ -212,6 +223,7 @@ test("new OpenAI-compatible public connection keeps manual ID after preview fail
     assert.equal(controlFor(container, "API Key 또는 Client Key").value, "");
     assert.match(container.textContent, /연결 시험에 성공/u);
     await click(act, buttonByText(container, "새로고침"));
+    assert.equal(findElements(container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("Connection ID")).length, 0);
     assert.equal(controlFor(container, "호환 방식").value, "OpenAI 호환");
     assert.equal(reactProps(controlFor(container, "호환 방식")).readOnly, true);
     assert.equal(controlFor(container, "모델 ID 직접 입력").value, "manual-a");
@@ -226,7 +238,6 @@ test("new Anthropic-compatible personal connection selects previewed model and s
     await fill(act, controlFor(container, "호환 방식"), "anthropic_compatible");
     assert.equal(controlFor(container, "API 유형").value, "Messages");
     assert.match(container.textContent, /첫 페이지만 표시될 수 있습니다/u);
-    await fill(act, controlFor(container, "Connection ID"), "custom-2");
     await fill(act, controlFor(container, "Provider 표시 이름"), "별도 Provider");
     await fill(act, controlFor(container, "연결 이름"), "별도 연결");
     await fill(act, controlFor(container, "두 글자 약어"), "AT");
@@ -235,7 +246,6 @@ test("new Anthropic-compatible personal connection selects previewed model and s
     const publicCheckbox = findElements(container, (node) => node.tagName === "INPUT" && (node.type === "checkbox" || node.getAttribute("type") === "checkbox") && node.parentNode?.textContent.includes("공용 사용"))[0];
     assert.ok(publicCheckbox);
     await setChecked(act, publicCheckbox, false);
-    await fill(act, controlFor(container, "관리자 재인증 비밀번호"), "fixture-password");
     assert.equal(buttonByText(container, "모델 목록 조회")?.disabled, false);
     await click(act, buttonByText(container, "모델 목록 조회"));
     assert.match(container.textContent, /anthropic-a/u);
@@ -243,9 +253,9 @@ test("new Anthropic-compatible personal connection selects previewed model and s
     assert.ok(modelCheckbox);
     await setChecked(act, modelCheckbox, true);
     assert.match(container.textContent, /시험 대상 1개 모델.*사용료/u);
-    await fill(act, controlFor(container, "관리자 재인증 비밀번호"), "fixture-password");
     await click(act, buttonByText(container, "연결 시험 및 저장"));
     const create = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
+    assert.match(create.body.connection_id, /^provider-[A-Za-z0-9._:-]+$/u);
     assert.equal(create.body.adapter_type, "anthropic_compatible");
     assert.equal(create.body.access_mode, "personal");
     assert.deepEqual(create.body.allowed_model_ids, ["anthropic-a"]);
@@ -291,10 +301,9 @@ test("saved public compatible CUSTOM refreshes with stored Key without replacing
     assert.ok(buttonByText(view.container, "모델 조회"), "stored-Key catalog refresh action is missing");
     assert.ok(buttonByText(view.container, "모델 목록 조회"), "input-Key preview remains separate");
     assert.equal(buttonByText(view.container, "모델 목록 조회").disabled, true);
-    await fill(view.act, controlFor(view.container, "관리자 재인증 비밀번호"), "fixture-password");
     await click(view.act, buttonByText(view.container, "모델 조회"));
     const refresh = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-catalog/custom-public/refresh");
-    assert.deepEqual(refresh?.body, { expected_version: 2, step_up_authorization_id: "fixture-grant" });
+    assert.deepEqual(refresh?.body, { expected_version: 2 });
     assert.equal(fixture.requests.some((item) => item.path.endsWith("/model-preview")), false);
     assert.equal(controlFor(view.container, "모델 ID 직접 입력").value, "manual-a");
     assert.match(view.container.textContent, /listed-only/u);
@@ -387,8 +396,8 @@ test("system admin sees named multi-connections, password-only secrets, catalogs
     assert.ok(findElements(container, (node) => node.tagName === "INPUT" && node.value === endpoint).length >= 1);
     assert.ok(findElements(container, (node) => node.tagName === "INPUT" && node.value === "내부 추론 엔진").length >= 1);
     const passwordInputs = findElements(container, (node) => node.tagName === "INPUT" && (node.type === "password" || node.getAttribute("type") === "password"));
-    assert.equal(passwordInputs.length, 1);
-    assert.match(container.textContent, /관리자 재인증 비밀번호/u);
+    assert.equal(passwordInputs.length, 0);
+    assert.doesNotMatch(container.textContent, /관리자 재인증 비밀번호/u);
     assert.doesNotMatch(container.textContent, new RegExp(`${endpoint}|${rawCredential}|역할 매핑 저장|기능별 모델 선택|모델 기능 보정`, "u"));
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));

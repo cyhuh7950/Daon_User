@@ -43,7 +43,7 @@
 
 **Files:** `services/api/src/daon_user_api/provider_connection_admin.py`, `provider_connection_adapters.py`, `user_provider_credentials.py`, `workspace_model_defaults.py`, 해당 FastAPI route 파일, `services/api/tests/test_provider_connection_admin.py`, `test_user_provider_credentials.py`, `test_workspace_model_defaults.py`, `test_provider_settings_runtime_http.py`.
 
-**Interfaces:** 관리자 probe/저장, 사용자 Key probe/저장, 연결 삭제는 인증·step-up·version·idempotency 계약을 유지한다. resolver는 연결 `access_mode`와 허용 모델을 확인한다.
+**Interfaces:** 관리자 probe/저장, 사용자 Key probe/저장, 연결 삭제는 인증·version·idempotency 계약을 유지한다. 2026-10-03 신산님 직접 지시로 Provider 관리자 동작의 비밀번호 재입력/step-up만 제거하며 시스템 관리자 권한 검사는 유지한다. resolver는 연결 `access_mode`와 허용 모델을 확인한다.
 
 - [ ] 무인증 공용, 관리자 Key 공용, 개인 Key 필수, 실패 probe 기존 상태 보존, 허용 외 모델 차단, 참조 연결 삭제 차단의 RED 테스트를 추가한다.
 - [ ] `uv run --project services/api pytest services/api/tests/test_provider_connection_admin.py services/api/tests/test_user_provider_credentials.py services/api/tests/test_workspace_model_defaults.py services/api/tests/test_provider_settings_runtime_http.py -q`로 RED 확인.

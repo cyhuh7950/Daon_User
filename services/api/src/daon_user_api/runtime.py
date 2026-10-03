@@ -935,7 +935,7 @@ class ProviderConnectionCreateBody(BaseModel):
     adapter_type: str = ""
     enabled: bool
     expected_version: int = Field(ge=0)
-    step_up_authorization_id: str = Field(min_length=1, max_length=512)
+    step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class ProviderConnectionUpdateBody(BaseModel):
@@ -953,7 +953,7 @@ class ProviderConnectionUpdateBody(BaseModel):
     adapter_type: str = ""
     enabled: bool
     expected_version: int = Field(ge=1)
-    step_up_authorization_id: str = Field(min_length=1, max_length=512)
+    step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class ProviderConnectionModelPreviewBody(BaseModel):
@@ -963,13 +963,13 @@ class ProviderConnectionModelPreviewBody(BaseModel):
     adapter_type: str = Field(min_length=1, max_length=64)
     base_url: str = Field(min_length=1, max_length=2048)
     credential: str = Field(min_length=1, max_length=16384, repr=False)
-    step_up_authorization_id: str = Field(min_length=1, max_length=512)
+    step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class ProviderConnectionMutationBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
-    step_up_authorization_id: str = Field(min_length=1, max_length=512)
+    step_up_authorization_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class ProviderHealthSettingsBody(BaseModel):
@@ -4780,19 +4780,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         _principal_value, context = _provider_admin_context(request)
         return context
 
-    def _provider_step_up(
-        request: Request, authorization_id: str, *, target_id: str,
-        operation: str, idempotency_key: str | None = None,
-    ) -> None:
-        access_token, _ = _credential(request)
-        dependencies.identity_service.consume_step_up(
-            step_up_authorization=authorization_id, access_token=access_token,
-            action_group="organization_security_or_connector_policy_change",
-            target_id=target_id, policy_version=dependencies.settings.policy_version,
-            trace_id=request.state.trace_id, operation=operation,
-            idempotency_key=idempotency_key,
-        )
-
     def _provider_admin_service() -> Any:
         if provider_connection_service is None:
             raise ProviderConnectionAdminError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
@@ -4915,10 +4902,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         _principal_value, context = _provider_admin_context(request)
-        _provider_step_up(request, body.step_up_authorization_id,
-                          target_id=f"provider-connection:{body.connection_id}",
-                          operation="provider_catalog.preview",
-                          idempotency_key=request.state.trace_id)
         try:
             model_ids = await asyncio.to_thread(
                 _provider_admin_service().preview_models,
@@ -4940,9 +4923,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
-        _provider_step_up(request, body.step_up_authorization_id,
-                          target_id=f"provider-connection:{body.connection_id}",
-                          operation="provider_connection.create", idempotency_key=idempotency_key)
         command = ProviderConnectionCreateCommand(
             connection_id=body.connection_id, provider_code=body.provider_code,
             display_name=body.display_name, base_url=body.base_url, credential=body.credential,
@@ -4974,9 +4954,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
-        _provider_step_up(request, body.step_up_authorization_id,
-                          target_id=f"provider-connection:{connection_id}",
-                          operation="provider_connection.update", idempotency_key=idempotency_key)
         command = ProviderConnectionUpdateCommand(
             display_name=body.display_name, base_url=body.base_url, credential=body.credential,
             provider_name=body.provider_name or "",
@@ -5006,9 +4983,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> Response:
         _require_query_keys(request, frozenset())
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
-        _provider_step_up(request, body.step_up_authorization_id,
-                          target_id=f"provider-connection:{connection_id}",
-                          operation="provider_connection.delete", idempotency_key=idempotency_key)
         await asyncio.to_thread(
             _provider_admin_service().delete_connection,
             context, connection_id, body.expected_version, idempotency_key,
@@ -5022,9 +4996,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         context = _provider_credential_mutation_context(request, idempotency_key=idempotency_key)
-        _provider_step_up(request, body.step_up_authorization_id,
-                          target_id=f"provider-connection:{connection_id}",
-                          operation="provider_connection.credential.delete", idempotency_key=idempotency_key)
         item, replayed = await asyncio.to_thread(
             _provider_admin_service().delete_credential,
             context, connection_id, body.expected_version, idempotency_key,
@@ -5041,9 +5012,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         context = _provider_credential_mutation_context(request, idempotency_key=idempotency_key)
-        _provider_step_up(request, body.step_up_authorization_id,
-                          target_id=f"provider-connection:{connection_id}",
-                          operation="provider_connection.credential.replace", idempotency_key=idempotency_key)
         command = ProviderCredentialReplaceCommand(
             credential=body.credential, expected_version=body.expected_version,
         )
@@ -5066,9 +5034,6 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
-        _provider_step_up(request, body.step_up_authorization_id,
-                          target_id=f"provider-connection:{connection_id}",
-                          operation="provider_catalog.refresh", idempotency_key=idempotency_key)
         item, replayed = await asyncio.to_thread(
             _provider_admin_service().refresh_catalog,
             context, connection_id, body.expected_version, idempotency_key,
@@ -5084,11 +5049,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> JSONResponse:
         _require_query_keys(request, frozenset())
-        target_id = f"provider-model:{connection_id}:{model_id}"
         context = _provider_admin_mutation_context(request, idempotency_key=idempotency_key)
-        _provider_step_up(request, body.step_up_authorization_id,
-                          target_id=target_id, operation="provider_model.capabilities.update",
-                          idempotency_key=idempotency_key)
         command = ProviderCapabilityCommand(
             effective_capabilities=tuple(body.effective_capabilities),
             expected_version=body.expected_version,

@@ -47,7 +47,7 @@ function operationKey(prefix) {
 
 function emptyConnectionDraft(defaultEndpoint = "") {
   return {
-    connection_id: "",
+    connection_id: operationKey("provider"),
     provider_code: "OLLAMA",
     display_name: "",
     provider_name: "",
@@ -177,7 +177,6 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const [draft, setDraft] = useState(() => emptyConnectionDraft());
   const [credential, setCredential] = useState("");
   const [previewModelIds, setPreviewModelIds] = useState([]);
-  const [adminPassword, setAdminPassword] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [healthSettings, setHealthSettings] = useState({ interval_minutes: 60, version: 0 });
   const [healthIntervalDraft, setHealthIntervalDraft] = useState(60);
@@ -255,15 +254,6 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   ), [selectedConnection, previewModelIds]);
   const selectedModelIds = useMemo(() => normalizedLogicalModels(draft.logical_model_ids), [draft.logical_model_ids]);
 
-  async function authorizeAdminAction(connectionId) {
-    if (!isSystemAdmin || !adminPassword) throw new Error("STEP_UP_REQUIRED");
-    try {
-      return await providerSettingsApi.issueStepUp(`provider-connection:${connectionId}`, adminPassword);
-    } finally {
-      setAdminPassword("");
-    }
-  }
-
   async function saveConnection(includeCredential) {
     const connectionId = draft.connection_id.trim();
     const compatible = draft.provider_code === "CUSTOM" && Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type);
@@ -287,12 +277,11 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     const action = includeCredential ? "credential" : "provider";
     setStatus({ kind: "saving", message: "Provider 연결 설정을 저장하는 중입니다." });
     try {
-      const step_up_authorization_id = await authorizeAdminAction(connectionId);
       let result;
       if (includeCredential && draft.version > 0) {
         result = await providerSettingsApi.replaceCredential(connectionId, {
           credential,
-          expected_version: draft.version, step_up_authorization_id
+          expected_version: draft.version
         }, operationKey("provider-credential-replace"));
       } else {
         const body = {
@@ -307,7 +296,6 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
           adapter_type: draft.adapter_type,
           enabled: draft.enabled,
           expected_version: draft.version,
-          step_up_authorization_id,
           ...(compatible && credential.trim()
             ? draft.access_mode === "personal" ? { test_credential: credential } : { credential }
             : includeCredential ? { credential } : {})
@@ -330,11 +318,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     if (!isSystemAdmin || draft.provider_code !== "CUSTOM" || !Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type) || !credential.trim()) return;
     setStatus({ kind: "saving", message: "모델 목록을 조회하는 중입니다." });
     try {
-      const step_up_authorization_id = await authorizeAdminAction(draft.connection_id.trim());
       const result = await providerSettingsApi.previewModels({
         connection_id: draft.connection_id.trim(), provider_code: "CUSTOM",
         adapter_type: draft.adapter_type, base_url: draft.base_url.trim(),
-        credential, step_up_authorization_id,
+        credential,
       });
       const ids = Array.isArray(result.payload?.data?.model_ids)
         ? result.payload.data.model_ids.filter((item) => typeof item === "string" && item.trim())
@@ -389,9 +376,8 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     if (!selectedConnection) return;
     setStatus({ kind: "saving", message: "Credential을 삭제하는 중입니다." });
     try {
-      const step_up_authorization_id = await authorizeAdminAction(selectedConnection.connection_id);
       await providerSettingsApi.deleteCredential(selectedConnection.connection_id, {
-        expected_version: selectedConnection.version, step_up_authorization_id
+        expected_version: selectedConnection.version
       }, operationKey("provider-credential-delete"));
       setCredential("");
       await load();
@@ -405,9 +391,8 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     if (!isSystemAdmin || !selectedConnection || !confirmDelete) return;
     setStatus({ kind: "saving", message: "Provider 연결을 삭제하는 중입니다." });
     try {
-      const step_up_authorization_id = await authorizeAdminAction(selectedConnection.connection_id);
       await providerSettingsApi.deleteConnection(selectedConnection.connection_id, {
-        expected_version: selectedConnection.version, step_up_authorization_id
+        expected_version: selectedConnection.version
       }, operationKey("provider-connection-delete"));
       applyConnections(connections.filter((item) => item.connection_id !== selectedConnection.connection_id));
       setConfirmDelete(false);
@@ -422,9 +407,8 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     if (!selectedConnection) return;
     setStatus({ kind: "saving", message: "모델 카탈로그를 새로고침하는 중입니다." });
     try {
-      const step_up_authorization_id = await authorizeAdminAction(selectedConnection.connection_id);
       const result = await providerSettingsApi.refreshCatalog(selectedConnection.connection_id, {
-        expected_version: selectedConnection.version, step_up_authorization_id
+        expected_version: selectedConnection.version
       }, operationKey("provider-catalog-refresh"));
       const item = result.payload.data;
       applyConnections([...connections.filter((connection) => connection.connection_id !== item.connection_id), item], item.connection_id);
@@ -437,9 +421,9 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const busy = status.kind === "saving" || status.kind === "loading";
   const compatible = draft.provider_code === "CUSTOM" && Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type);
   const managedModels = MANAGED_MODEL_PROVIDERS.has(selectedConnection?.provider_code);
-  const canMutate = isSystemAdmin === true && !busy && Boolean(adminPassword) && Boolean(draft.connection_id.trim()) && Boolean(draft.provider_name.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim())
+  const canMutate = isSystemAdmin === true && !busy && Boolean(draft.connection_id.trim()) && Boolean(draft.provider_name.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim())
     && (!compatible || (selectedModelIds.length >= 1 && selectedModelIds.length <= 4 && (draft.version > 0 || Boolean(credential.trim()))));
-  const canPreview = isSystemAdmin === true && compatible && !busy && Boolean(adminPassword)
+  const canPreview = isSystemAdmin === true && compatible && !busy
     && Boolean(draft.connection_id.trim()) && Boolean(draft.base_url.trim()) && Boolean(credential.trim());
   const canUsePersonalCredential = isSystemAdmin || (Number(selectedConnection?.version ?? 0) > 0 && selectedConnection?.access_mode === "personal");
   const Root = embedded ? "div" : "main";
@@ -464,7 +448,6 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
             <header><div><span className="section-kicker">{draft.version ? "SELECTED CONNECTION" : "NEW CONNECTION"}</span><h2>{draft.display_name || "새 Provider 연결"}</h2></div>{selectedConnection ? <span className={`connection-badge ${projectProviderConnection(selectedConnection, userCredentials[selectedConnection.connection_id]).verified ? "is-ready" : ""}`}>{projectProviderConnection(selectedConnection, userCredentials[selectedConnection.connection_id]).label}</span> : null}</header>
             <div className="provider-detail-grid">
               {isSystemAdmin ? <>
-                <label>Connection ID<input value={draft.connection_id} disabled={draft.version > 0} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, connection_id: event.target.value }))} /></label>
                 {draft.version > 0
                   ? <label>호환 방식<input readOnly value={compatible ? COMPATIBLE_APIS[draft.adapter_type].label : draft.provider_code === "CUSTOM" ? "기존 CUSTOM (OpenAI 호환)" : "기존 Provider 방식"} /></label>
                   : <label>호환 방식<select value={compatible ? draft.adapter_type : ""} onChange={(event) => {
@@ -488,18 +471,17 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                 <fieldset className="provider-field-wide provider-model-picker"><legend>사용 허용 모델</legend><p>체크한 모델만 실행할 수 있습니다. 선택하지 않으면 사용할 모델이 없습니다.</p>{managedModels ? <small>이 Provider가 모델을 직접 관리합니다.</small> : availableModels.length ? <div className="provider-model-options">{availableModels.map((modelId) => <label key={modelId}><input type="checkbox" checked={selectedModelIds.includes(modelId)} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: updateLogicalModelSelection(current.logical_model_ids, modelId, event.target.checked) }))} /><span>{modelId}</span></label>)}</div> : <small>{compatible ? "모델 목록 조회는 선택 사항입니다. 모델 ID를 직접 입력해 시험할 수 있습니다." : "조회된 모델이 없습니다. 모델 조회 후 허용할 모델을 선택하세요."}</small>}{compatible ? <><label className="provider-manual-models">모델 ID 직접 입력<textarea value={draft.logical_model_ids} rows={3} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label><small>최대 4개 모델을 허용할 수 있습니다.{draft.adapter_type === "anthropic_compatible" ? " Anthropic 모델 목록은 첫 페이지만 표시될 수 있습니다." : ""}</small></> : null}{selectedModelIds.length ? <button type="button" className="provider-model-clear" onClick={() => setDraft((current) => ({ ...current, logical_model_ids: "" }))}>허용 목록 비우기</button> : null}</fieldset>
               </> : <div className="provider-field-wide"><p>연결 이름과 허용 모델은 읽기 전용입니다.</p><p>Endpoint: {selectedConnection?.base_url ?? ""}</p><p>사용 허용 모델: {(selectedConnection?.allowed_model_ids ?? []).join(", ") || "없음"}</p></div>}
               {(isSystemAdmin ? draft.credential_requirement === "required" : selectedConnection?.access_mode === "personal") ? <label>API Key 또는 Client Key{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}{isSystemAdmin && compatible && draft.access_mode === "personal" ? <small>개인 연결의 시험 Key는 저장하지 않습니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} onChange={(event) => setCredential(event.target.value)} /></label> : null}
-              {isSystemAdmin ? <label>관리자 재인증 비밀번호<input type="password" value={adminPassword} autoComplete="current-password" onChange={(event) => setAdminPassword(event.target.value)} /></label> : null}
             </div>
             {isSystemAdmin ? <><label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label><label className="styled-check"><input type="checkbox" checked={draft.access_mode === "public"} disabled={draft.credential_requirement === "none"} onChange={(event) => setDraft((current) => ({ ...current, access_mode: event.target.checked ? "public" : "personal" }))} /><span>공용 사용{draft.credential_requirement === "none" ? " (Key 불필요 연결은 항상 공용)" : ""}</span></label></> : null}
             <div className="provider-detail-actions">
               {isSystemAdmin && compatible ? <span className="provider-test-cost">시험 대상 {selectedModelIds.length}개 모델 · 실제 시험 시 사용료가 발생할 수 있습니다.</span> : null}
               {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate || !/^[A-Z]{2}$/u.test(draft.short_code)}>연결 시험 및 저장</button> : null}
-              {(isSystemAdmin ? draft.credential_requirement === "required" && !compatible : selectedConnection?.access_mode === "personal") ? <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canSaveCredential(selectedConnection, draft, credential, busy) || !canUsePersonalCredential || (isSystemAdmin && !adminPassword)}>{isSystemAdmin ? "시스템 키 시험 및 저장" : "내 계정 키 시험 및 저장"}</button> : null}
+              {(isSystemAdmin ? draft.credential_requirement === "required" && !compatible : selectedConnection?.access_mode === "personal") ? <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canSaveCredential(selectedConnection, draft, credential, busy) || !canUsePersonalCredential}>{isSystemAdmin ? "시스템 키 시험 및 저장" : "내 계정 키 시험 및 저장"}</button> : null}
               {!isSystemAdmin && selectedConnection?.access_mode === "personal" ? <button className="secondary-button danger-button" type="button" onClick={deleteUserCredential} disabled={busy || !canUsePersonalCredential || !userCredentials[selectedConnection?.connection_id]}>내 계정 키 삭제</button> : null}
-              {isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !adminPassword || !selectedConnection?.configured}>키 삭제</button> : null}
+              {isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured}>키 삭제</button> : null}
               {isSystemAdmin && compatible ? <button className="secondary-button" type="button" onClick={previewModels} disabled={!canPreview} title="입력한 Key로 모델 목록을 조회합니다. Provider에 따라 사용료가 발생할 수 있습니다.">모델 목록 조회</button> : null}
-              {isSystemAdmin && !managedModels && (!compatible || (selectedConnection?.version > 0 && selectedConnection?.access_mode === "public" && selectedConnection?.configured)) ? <button className="secondary-button" type="button" onClick={refreshCatalog} disabled={!adminPassword || !canRefreshCatalog(selectedConnection, busy)} title={selectedConnection?.configured ? "저장된 API Key로 모델 목록을 수동 조회합니다." : "먼저 API Key를 저장하세요."}>모델 조회</button> : null}
-              {isSystemAdmin && selectedConnection?.version > 0 ? <button className="secondary-button danger-button" type="button" onClick={() => setConfirmDelete(true)} disabled={busy || !adminPassword}>연결 삭제</button> : null}
+              {isSystemAdmin && !managedModels && (!compatible || (selectedConnection?.version > 0 && selectedConnection?.access_mode === "public" && selectedConnection?.configured)) ? <button className="secondary-button" type="button" onClick={refreshCatalog} disabled={!canRefreshCatalog(selectedConnection, busy)} title={selectedConnection?.configured ? "저장된 API Key로 모델 목록을 수동 조회합니다." : "먼저 API Key를 저장하세요."}>모델 조회</button> : null}
+              {isSystemAdmin && selectedConnection?.version > 0 ? <button className="secondary-button danger-button" type="button" onClick={() => setConfirmDelete(true)} disabled={busy}>연결 삭제</button> : null}
               {isSystemAdmin && confirmDelete ? <div className="provider-delete-confirm" role="group" aria-label="연결 삭제 확인"><span>이 연결을 실제 삭제합니다. 참조가 있으면 삭제되지 않습니다.</span><button type="button" className="danger-button" onClick={deleteConnection}>삭제 확인</button><button type="button" className="secondary-button" onClick={() => setConfirmDelete(false)}>취소</button></div> : null}
             </div>
           </div>

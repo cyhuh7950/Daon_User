@@ -15,7 +15,7 @@ test("LLM 설정은 Notebook 복귀 링크와 선택되지 않은 카드의 읽�
   assert.match(providerStyles, /\.provider-card:not\(\[aria-pressed="true"\]\) small.*color:/u);
 });
 
-test("provider connection draft keeps endpoint, admin step-up and read-only user boundary", () => {
+test("provider connection draft keeps endpoint and read-only user boundary without admin password", () => {
   assert.match(source, /base_url:\s*connection\.base_url\s*\|\|\s*""/u);
   assert.match(source, /canRefreshCatalog\(selectedConnection, busy\)/u);
   assert.doesNotMatch(source, /NO_CREDENTIAL_PROVIDERS/u);
@@ -25,9 +25,7 @@ test("provider connection draft keeps endpoint, admin step-up and read-only user
   assert.match(source, /canSaveCredential\(selectedConnection, draft, credential, busy\)/u);
   assert.match(source, /CREDENTIAL_REQUIRED_PROVIDERS/u);
   assert.match(source, /providerRequiresCredential\(providerCode, baseUrl/u);
-  assert.match(source, /관리자 재인증 비밀번호/u);
-  assert.match(source, /issueStepUp/u);
-  assert.match(source, /step_up_authorization_id/u);
+  assert.doesNotMatch(source, /관리자 재인증 비밀번호/u);
   assert.match(source, /연결 이름과 허용 모델은 읽기 전용입니다/u);
   assert.match(source, /호환 방식/u);
   assert.match(source, /모델 ID 직접 입력/u);

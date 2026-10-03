@@ -202,3 +202,12 @@
 - 브라우저 오류/경로: 이 세션에서 수집된 console warn/error는 0건이고, 현재 화면의 확인 가능한 링크는 상대 경로 `/notebooks`였다. 브라우저 Network의 실제 fetch URL을 직접 관찰할 수 없어 same-origin 실제 요청 검증은 미완료이며, 로컬 Web boundary 테스트의 PASS와 구분한다.
 - 경계/미검증: 일반 사용자 계정의 라이브 화면·개인 Key 경로는 별도 로그인 세션이 없어 미검증이다. 유료 Provider 호출·모델 조회·관리자 설정 저장·개인 Key 저장·DB 변경은 0건. 이 확인은 로그인된 관리자 화면의 읽기 전용 QA이며 실제 OpenAI/Anthropic Provider 연동 성공을 뜻하지 않는다.
 - 판정/다음: 배포된 신규 호환 방식의 관리자 UI 표시는 확인. 일반 사용자 라이브 인수, 실제 Network, `solar-pro4` 단독 허용 설정은 완료로 판정하지 않는다. 후자는 신산님이 설정 변경을 명시적으로 지시할 때만 적용한다. 기존 라이선스 fixture 실패와 의존성 audit finding도 그대로 남긴다. 이 기록만 작업 브랜치에 commit/push하고 제품 SHA `e56a12e9`·WSL 실행 상태·main은 변경하지 않는다.
+
+## 신산님 화면 테스트 후속 수정 — 내부 ID 비노출·Provider 관리자 재인증 제거
+
+- 일자/담당/범위: 2026-10-03 / 어울. 신산님이 새 연결의 자동 생성 `Connection ID`를 화면에서 숨기고, 로그인된 시스템 관리자에게 Provider 연결 관리 시 별도 비밀번호 재입력을 요구하지 않도록 직접 지시했다. 대상은 기존 `codex/next-user-development` 격리 worktree와 WSL QA URL `http://172.27.253.53:3330/`; Oracle·ysna·main은 제외한다.
+- 원인/변경: 새 연결 ID가 수동 입력란에 노출되고, Provider UI의 비밀번호 상태·step-up 호출과 API 본문 필수 필드·grant 소비가 저장/조회/삭제를 함께 가로막았다. 새 연결 ID는 내부에서 생성하되 UI에서 보이지 않게 했고, Provider 관리자 API는 기존 시스템 관리자 세션/역할 검사와 version/idempotency/삭제 확인을 유지하면서 별도 step-up을 요구하지 않게 했다. 다른 기능의 step-up은 변경하지 않았다. 설계/계획의 해당 계약도 최신 직접 지시로 정정했다.
+- 변경 파일: `provider-settings-workspace.jsx`, `provider-settings-api.js`, `runtime.py`, 해당 Node/API 테스트 3개와 설계/계획 문서 2개 및 이 기록. 기존 DB schema, 사용자 Key 정책, Secret 값은 변경하지 않았다.
+- RED→GREEN: 관리자 화면의 비밀번호 없는 저장 테스트는 재인증 필드 존재로 RED 후 GREEN; API 비밀번호 없는 모델 preview는 `INVALID_REQUEST` RED 후 GREEN. 로컬 Provider 관련 API 집중 6개 파일 `128 passed`, Provider 화면/BFF Node 3개 파일 `53 passed`, Web production build/TypeScript 및 Web boundary 475파일 0위반, 전체 UI boundary 498파일 0위반, `git diff --check` 통과. 비의도 오류 0건; 기존 재인증을 기대하던 회귀 테스트는 최신 정책으로 교정했다.
+- WSL 배포 전 확인: 현재 `SINSAN` WSL 인스턴스 주소는 `172.27.253.53`, 실행 checkout은 `e56a12e92458777598fe4565ff23806df493dbc7`에서 clean, API/Web healthy. SSH alias 연결은 host-key 검증에 실패해 우회하지 않았으며 동일 WSL 인스턴스에서 직접 확인했다. 신규 배포는 검증된 exact commit으로 별도 Git checkout에 구성하고 기존 checkout·Secret·DB를 보존한다. 배포 전/후 이미지와 DB 상태 확인 및 실패 시 이전 이미지 복구를 기록한다.
+- 현재 미검증/다음: WSL 새 commit 배포·실제 브라우저 로그인 화면·same-origin Network·실 Provider 유료 호출은 아직 확인되지 않았다. 변경 파일만 scoped commit·branch push → WSL exact-SHA checkout/빌드/교체 → URL 화면 및 비파괴 smoke → 사용자 확인 순서로 진행한다.
