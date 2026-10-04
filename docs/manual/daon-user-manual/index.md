@@ -371,6 +371,7 @@ Citation은 답변이 참조한 근거 위치입니다.
 - 지원 Provider 코드는 Cerebras, Groq, Mistral, OpenAI, Upstage, Gemini, OpenRouter, Anthropic, Ollama, OmniRoute, Eoul-Gateway, Media Bridge입니다. 실제 사용 가능 여부는 해당 연결의 Adapter와 Provider 상태에 따라 달라집니다.
 - Ollama는 `LAN Ollama`, `공용 Ollama`처럼 연결 이름을 다르게 지정해 여러 Endpoint를 동시에 등록할 수 있습니다. 각 연결의 모델과 Workspace 기본값은 연결별로 선택합니다. 예를 들어 `http://192.168.220.180:11434`와 `https://ollama-api.sinsan.kr`를 별도 연결로 등록할 수 있습니다.
 - OmniRoute와 Eoul-Gateway는 설치형·배포형의 실제 접근 가능한 API Endpoint를 사용합니다. Console 화면 주소(`/home`)와 API Endpoint를 혼동하지 않습니다. Media Bridge는 Eoul-Gateway 또는 별도 설치형의 실제 API Endpoint를 사용하며, localhost 주소는 Daon User 서버와 같은 호스트에서 실행되는 경우에만 등록합니다.
+- 라우터의 `Auto`는 모델 목록에서 다른 모델과 함께 선택할 수 있는 하나의 모델입니다. OmniRoute는 `auto`, OpenRouter는 `openrouter/auto`를 사용합니다. OpenAI 호환 연결은 시스템 관리자가 `라우터 Auto 사용`을 켜고 실제 Auto 모델 ID를 지정할 수 있습니다. 조회 결과에 없는 Auto에는 `논리 모델` 표시가 붙습니다. Auto를 선택하는 것과 모델을 지정하지 않아 Provider의 기준 모델을 사용하는 것은 서로 다릅니다. 이번 설정에 Combo 자동 선택은 없습니다.
 
 Credential 원문은 다시 표시되지 않습니다. Provider 연결 시험 성공은 Source 기반 질문, 조직 Egress 승인 또는 Studio 생성 성공을 의미하지 않습니다.
 

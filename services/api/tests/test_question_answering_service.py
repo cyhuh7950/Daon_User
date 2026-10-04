@@ -438,6 +438,32 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 self.assertEqual(transport.calls[0]["url"], "https://gateway.example.com/v1/responses")
                 self.assertEqual(transport.calls[0]["payload"]["model"], model_id)
 
+    def test_router_auto_ids_reach_existing_question_adapters_unchanged(self) -> None:
+        cases = (
+            ("OMNIROUTE", "auto", "https://omniroute.example/v1", "openai_compatible", "/responses"),
+            ("OPENROUTER", "openrouter/auto", "https://openrouter.ai/api/v1", "OPENROUTER", "/chat/completions"),
+            ("CUSTOM", "auto", "https://media-bridge-gateway.sinsan.kr/v1", "openai_compatible", "/chat/completions"),
+        )
+        for provider_code, model_id, base_url, adapter_type, path in cases:
+            with self.subTest(provider_code=provider_code):
+                selection = ResolvedModel(
+                    connection_id=f"{provider_code.lower()}-router", provider_code=provider_code,
+                    model_id=model_id, capability="text_generation", base_url=base_url,
+                    credential_version=1, default_version=3, catalog_version=11,
+                    provider_kind="external_api", routing_owner="gateway" if provider_code == "OMNIROUTE" else "provider",
+                    daon_fallback_allowed=provider_code != "OMNIROUTE",
+                    _credential=bytearray(b"fixture-key"), adapter_type=adapter_type,
+                )
+                transport = OmniRouteTransport() if provider_code == "OMNIROUTE" else CapturingGatewayTransport()
+                registry = QuestionAdapterRegistry()
+                result = registry.generate_general(registry.prepare_general(
+                    selection, "안녕하세요", "trace-auto", transport,
+                ))
+                self.assertTrue(result.answer)
+                self.assertEqual(transport.calls[0]["url"], base_url + path)
+                self.assertEqual(transport.calls[0]["payload"]["model"], model_id)
+                selection.release()
+
     def test_general_conversation_intent_is_exact_and_factual_suffix_fails_closed(self) -> None:
         for value in ("안녕", "안녕하세요!", "안녕하세요?", "고마워", "감사합니다.", "Daon 사용법 알려줘"):
             self.assertTrue(is_general_conversation_intent(value), value)

@@ -1,11 +1,21 @@
 # 라우터 Auto 모델 작업현황
 
-- 단계: 설계서 승인·구현 계획 작성, 계획 검토 대기 (2026-10-04)
-- 담당: main agent 어울
-- 기준: `codex/next-user-development`, 시작 HEAD `980850b972b56e84400226ccfed88ddcee142e1b`
-- 신산님 결정: OmniRoute, OpenRouter, Media Bridge Server 등 라우터의 Auto 개념만 다룬다. `combo`는 제외한다. 모델 미지정의 기준 모델 동작은 Auto 명시 선택과 구분한다.
-- 변경 파일: `docs/superpowers/specs/2026-10-04-router-auto-model-design.md`, `docs/superpowers/plans/2026-10-04-router-auto-model.md`, 이 현황 파일. 제품 코드·DB·설정 변경 없음.
-- 확인: OmniRoute QA `GET /v1/models` HTTP 200, 867개 ID 중 `auto`와 `combo` 없음. QA 카탈로그/허용 목록에는 기존 `auto`가 각각 있음. OpenRouter 공식 문서와 공개 `/api/v1/models`에서 실제 ID `openrouter/auto` 확인. 기존 UI·API는 OmniRoute만 Auto를 특수 취급하고 `CUSTOM`/OpenRouter는 조회 모델 중심임을 코드에서 확인.
-- 테스트: 설계 단계이므로 코드 테스트 미실행. 오류 횟수 0.
-- 미검증: Media Bridge Server의 실제 Auto 생성 응답, 새 migration/API/UI, WSL 브라우저 동작, 사용자 인수.
-- 다음 조치: 신산님의 구현 계획 검토 및 실행 방식 선택. 이후 승인된 범위에서 TDD 구현·로컬 검증.
+- 담당: main agent 어울. 기준 브랜치 `codex/next-user-development`, 구현 시작 `c17c7e77`.
+- 승인 범위: OmniRoute=`auto`, OpenRouter=`openrouter/auto`, 관리자가 지정한 OpenAI 호환 CUSTOM의 실제 Auto ID. Combo 특수 처리 없음. 모델 미지정의 기준 모델 동작은 Auto 명시 선택과 별개. 유료 Provider 호출·WSL/Oracle 배포·기존 Media Bridge Server 설정 변경 제외.
+
+## 단계별 진행 (2026-10-04)
+
+1. 스키마·연결 계약: `b81dc617`. `0052_router_auto_model.py`, 연결 관리자·Runtime 및 회귀 테스트. 관련 테스트 102 passed. 오류: 최초 예상 RED 3건; 테스트 실행 환경의 `PYTHONPATH` 누락 1건을 수정 후 재검증. 기존 연결의 키·허용 목록·기본 모델은 migration에서 재작성하지 않음.
+2. 카탈로그·허용 목록: `376ec12c`. 조회 출처 `upstream`/`logical`을 분리하고 Auto 중복 방지, OmniRoute의 Auto·다른 모델 공존, CUSTOM Auto 시험 실패 시 불변성, 모델 미지정 probe의 `model` 생략을 구현. 관련 테스트 169 passed. 구현 중 신규 RED 및 기존 기대값 변경을 분리해 수정; 최종 관련 테스트 실패 0.
+3. 관리자 화면: `ef65fb19`. CUSTOM/OpenAI 호환 라우터 Auto 설정, 고정 라우터 ID 읽기 전용 표시, 논리 모델 표기, 실제 ID 선택, 기존 내부 스크롤 유지. Node/BFF 화면 테스트 68 passed, Web build PASS, UI 경계 검사 PASS. 최종 관련 테스트 실패 0.
+4. 실행 ID·통합: 진행 중. 질문 fixture에서 OmniRoute `auto`→Responses, OpenRouter `openrouter/auto`→Chat Completions, OpenAI 호환 Media Bridge `auto`→Chat Completions의 실제 `model` 필드를 검증. 허용된 Auto의 Workspace 기본 모델 저장·해석과 기존 기준 모델을 함께 확인. 질문·기본 모델·Runtime 집중 테스트 58 passed 및 11 subtests passed. 전체 관련 집중 묶음은 236 passed 및 11 subtests passed. 실제 Provider 호출 없음.
+
+## 전체 로컬 검증과 예외
+
+- API 전체 테스트 1차: Windows 기본 pytest 임시 폴더 접근 거부로 43 setup errors. 코드 오류와 분리함.
+- API 전체 테스트 2차: 작업 폴더의 새 pytest 임시 경로로 재실행하여 889 passed, 48 skipped, 10 failed, 207 subtests passed. 실패 10건은 모두 기존 License 테스트(`test_license.py` 9건, `test_license_runtime_http.py` 1건). `license.py`의 `_RESOURCE_CODES`는 `users`, `notebooks`만 허용하지만 기존 fixture는 `generation_runs`를 사용하여 `LICENSE_DOCUMENT_INVALID`가 발생. 이번 브랜치는 License 제품 코드·테스트를 변경하지 않음. 이 결함은 승인된 Auto 범위 밖이므로 수정하지 않음.
+- 설치된 로컬 `psql`/PostgreSQL/Docker/Podman 명령이 없어 격리 PostgreSQL의 실제 migration 보존 검증은 실행하지 못함. migration SQL·테스트의 정적/fixture 검증은 통과했지만 실제 DB 적용 성공으로 판정하지 않음. WSL DB에는 변경하지 않음.
+- 오류 횟수: 본 작업 구현 중 Auto 관련 지속 오류 0; 관련 집중 테스트 최종 실패 0. 전체 gate는 License 실패와 실제 migration 미검증 때문에 NON-GREEN.
+- 미검증: 실제 PostgreSQL migration 및 기존 연결·Key·허용·기본값 보존, 실제 Media Bridge Server Auto 생성 응답, WSL/Oracle 브라우저·배포, 사용자 인수. 현재 브랜치를 `main`에 병합하거나 배포하지 않음.
+- Rollback: 작업 브랜치의 체크포인트 `c17c7e77`이 제품 코드 변경 전 기준. 실제 DB migration 미적용 상태이므로 DB rollback 수행 없음. 기존 연결/Key/허용/Workspace 기본값 변경 없음.
+- 다음 조치: Auto 관련 코드는 로컬 검증 범위에서 유지하고, License 기존 결함은 별도 범위로 처리한다. 격리 PostgreSQL migration과 사용자 인수 경로가 준비되면 재검증 후 별도 승인 경계를 판단한다.
