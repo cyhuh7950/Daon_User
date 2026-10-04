@@ -470,6 +470,9 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     && (isSystemAdmin || (Number(selectedConnection?.version ?? 0) > 0 && selectedConnection?.access_mode === "personal"));
   const adminSystemKeyAllowed = draft.credential_requirement === "required"
     && !(draft.provider_code === "OMNIROUTE" && draft.access_mode === "personal");
+  const credentialField = (isSystemAdmin ? adminSystemKeyAllowed : selectedConnection?.access_mode === "personal")
+    ? <label>API Key 또는 Client Key{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}{isSystemAdmin && compatible && draft.access_mode === "personal" ? <small>개인 연결의 시험 Key는 저장하지 않습니다.</small> : null}{personalCustomWithoutModels ? <small>관리자가 사용할 모델을 허용한 뒤 Key를 시험할 수 있습니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} onChange={(event) => setCredential(event.target.value)} /></label>
+    : null;
   const Root = embedded ? "div" : "main";
 
   return (
@@ -511,11 +514,15 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                 <label>연결 이름<input value={draft.display_name} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} /></label>
                 <label>두 글자 약어<input aria-label="두 글자 약어" value={draft.short_code} maxLength={2} pattern="[A-Z]{2}" autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, short_code: event.target.value.toUpperCase() }))} /></label>
                 <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
-                <label>인증 유형{draft.version > 0 && compatible ? <input readOnly value={draft.credential_requirement === "none" ? "Key 불필요" : "Key 필요"} /> : <select value={draft.credential_requirement} onChange={(event) => { if (event.target.value === "none") setCredential(""); setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode })); }}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>
-                {Object.hasOwn(FIXED_AUTO_MODELS, draft.provider_code) ? <label>Auto 모델 ID<input readOnly value={draft.auto_model_id} /></label> : null}
-                {compatible && draft.adapter_type === "openai_compatible" ? <label className="styled-check"><input type="checkbox" checked={Boolean(draft.auto_model_id)} onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.checked ? "auto" : "" }))} /><span>라우터 Auto 사용</span></label> : null}
-                {compatible && draft.adapter_type === "openai_compatible" && draft.auto_model_id ? <label>Auto 모델 ID<input value={draft.auto_model_id} maxLength={256} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.value }))} /></label> : null}
-                <fieldset className="provider-field-wide provider-model-picker">
+                <div className="provider-field-wide provider-configuration-columns">
+                  <div className="provider-configuration-settings">
+                    <label>인증 유형{draft.version > 0 && compatible ? <input readOnly value={draft.credential_requirement === "none" ? "Key 불필요" : "Key 필요"} /> : <select value={draft.credential_requirement} onChange={(event) => { if (event.target.value === "none") setCredential(""); setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode })); }}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>
+                    {Object.hasOwn(FIXED_AUTO_MODELS, draft.provider_code) ? <label>Auto 모델 ID<input readOnly value={draft.auto_model_id} /></label> : null}
+                    {compatible && draft.adapter_type === "openai_compatible" ? <label className="styled-check"><input type="checkbox" checked={Boolean(draft.auto_model_id)} onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.checked ? "auto" : "" }))} /><span>라우터 Auto 사용</span></label> : null}
+                    {compatible && draft.adapter_type === "openai_compatible" && draft.auto_model_id ? <label>Auto 모델 ID<input value={draft.auto_model_id} maxLength={256} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.value }))} /></label> : null}
+                    {credentialField}
+                  </div>
+                  <fieldset className="provider-model-picker">
                   <legend>사용 허용 모델</legend>
                   <p>체크한 모델만 사용 허용 목록에 저장합니다. 모델을 지정하지 않는 호출은 Provider의 기준 모델을 사용합니다.</p>
                   {managedModels ? <small>이 Provider가 모델을 직접 관리합니다.</small> : availableModels.length
@@ -527,9 +534,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                     : <small>{compatible ? "모델 조회는 선택 사항입니다. 모델 ID를 직접 입력해 시험할 수 있습니다." : "조회된 모델이 없습니다. 모델 조회 후 허용할 모델을 선택하세요."}</small>}
                   {compatible || draft.provider_code === "OMNIROUTE" ? <><label className="provider-manual-models">모델 ID 직접 입력<textarea value={draft.logical_model_ids} rows={3} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label><small>최대 4개 모델을 허용할 수 있습니다.{draft.adapter_type === "anthropic_compatible" ? " Anthropic 모델 목록은 첫 페이지만 표시될 수 있습니다." : ""}</small></> : null}
                   {selectedModelIds.length ? <button type="button" className="provider-model-clear" onClick={() => setDraft((current) => ({ ...current, logical_model_ids: "" }))}>허용 목록 비우기</button> : null}
-                </fieldset>
+                  </fieldset>
+                </div>
               </> : <div className="provider-field-wide"><p>연결 이름과 허용 모델은 읽기 전용입니다.</p><p>Endpoint: {selectedConnection?.base_url ?? ""}</p><p>사용 허용 모델: {(selectedConnection?.allowed_model_ids ?? []).join(", ") || "없음"}</p></div>}
-              {(isSystemAdmin ? adminSystemKeyAllowed : selectedConnection?.access_mode === "personal") ? <label>API Key 또는 Client Key{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}{isSystemAdmin && compatible && draft.access_mode === "personal" ? <small>개인 연결의 시험 Key는 저장하지 않습니다.</small> : null}{personalCustomWithoutModels ? <small>관리자가 사용할 모델을 허용한 뒤 Key를 시험할 수 있습니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} onChange={(event) => setCredential(event.target.value)} /></label> : null}
+              {!isSystemAdmin ? credentialField : null}
             </div>
             {isSystemAdmin ? <><label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label><label className="styled-check"><input type="checkbox" checked={draft.access_mode === "public"} disabled={draft.credential_requirement === "none"} onChange={(event) => setDraft((current) => ({ ...current, access_mode: event.target.checked ? "public" : "personal" }))} /><span>공용 사용{draft.credential_requirement === "none" ? " (Key 불필요 연결은 항상 공용)" : ""}</span></label></> : null}
             <div className="provider-detail-actions">
