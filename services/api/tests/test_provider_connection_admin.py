@@ -97,9 +97,10 @@ class Connection:
                 record["verified_at"], record["version"], catalog_status, record["catalog_version"],
                 record["access_mode"], record["credential_requirement"], record["short_code"], record["adapter_type"],
                 record.get("provider_name", record["provider_code"]),
+                record.get("auto_model_id"),
             )])
         if normalized.startswith("SELECT model_id,reported_capabilities,effective_capabilities"):
-            return Cursor(rows=list(self.database.models))
+            return Cursor(rows=[(*item[:6], item[6] if len(item) > 6 else "upstream") for item in self.database.models])
         if normalized.startswith("SELECT model_id FROM system_provider_allowed_models"):
             return Cursor(rows=[(item[0],) for item in self.database.models])
         raise AssertionError(f"unexpected SQL: {normalized}")
@@ -133,18 +134,18 @@ class CompatibleConnection(Connection):
         if normalized.startswith("SELECT connection_id,provider_code,display_name,base_url,encrypted_credential"):
             if record is None or record["connection_id"] != params[0]:
                 return Cursor(None)
-            return Cursor(tuple(record[key] for key in (
+            return Cursor(tuple(record.get(key) for key in (
                 "connection_id", "provider_code", "display_name", "base_url", "encrypted_credential",
                 "credential_nonce", "encryption_key_version", "credential_schema_version", "credential_version",
                 "enabled", "verification_status", "verified_at", "version", "access_mode",
-                "credential_requirement", "short_code", "adapter_type", "provider_name",
+                "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
             )))
         if normalized.startswith("INSERT INTO system_provider_connections"):
             self.database.system_connection = dict(zip((
                 "connection_id", "provider_code", "display_name", "base_url", "encrypted_credential",
                 "credential_nonce", "encryption_key_version", "credential_schema_version", "credential_version",
                 "enabled", "verification_status", "verified_at", "updated_by", "trace_id", "policy_version",
-                "access_mode", "credential_requirement", "short_code", "adapter_type", "provider_name",
+                "access_mode", "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
             ), params))
             self.database.system_connection.update(version=1, catalog_status="stale", catalog_version=0)
             return Cursor()
@@ -155,7 +156,7 @@ class CompatibleConnection(Connection):
                 "display_name", "base_url", "encrypted_credential", "credential_nonce",
                 "encryption_key_version", "credential_schema_version", "credential_version", "enabled",
                 "verification_status", "verified_at", "access_mode", "credential_requirement", "short_code",
-                "adapter_type", "provider_name", "updated_by", "trace_id", "policy_version",
+                "adapter_type", "provider_name", "auto_model_id", "updated_by", "trace_id", "policy_version",
             ), params[:-2])))
             record["version"] += 1
             return Cursor((record["version"],))
@@ -730,6 +731,64 @@ def route_command(*, model_ids=()):
         credential_requirement="required", short_code="OM", adapter_type="OMNIROUTE",
         allowed_model_ids=model_ids, provider_name="OmniRoute",
     )
+
+
+def test_update_omits_auto_model_id_preserves_existing_router(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    created, _ = service.create_connection(context(), route_command(), "route-auto-create")
+    assert created["auto_model_id"] == "auto"
+    updated, _ = service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+        display_name="OmniRoute renamed", base_url="https://omniroute.example/v1", credential=None,
+        logical_model_ids=("auto",), enabled=True, expected_version=1,
+        access_mode="public", credential_requirement="required", short_code="OM",
+        adapter_type="OMNIROUTE", allowed_model_ids=("auto",), provider_name="OmniRoute",
+    ), "route-auto-rename")
+    assert updated["auto_model_id"] == "auto"
+    assert database.system_connection["auto_model_id"] == "auto"
+
+
+def test_named_custom_is_not_router_until_admin_marks_it(monkeypatch) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    command = replace(
+        custom_command(access_mode="personal", credential=None, allowed_model_ids=()),
+        display_name="Media Bridge Server", provider_name="Media Bridge Server",
+    )
+    saved, _ = service.create_connection(context(), command, "media-bridge-named-create")
+    assert saved["auto_model_id"] is None
+    assert database.system_connection["auto_model_id"] is None
+    assert saved["allowed_model_ids"] == []
+
+
+def test_fixed_router_rejects_changed_auto_model_id_without_mutation(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-fixed-auto-create")
+    before = durable_state(database)
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_AUTO_MODEL_ID_INVALID$"):
+        service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+            display_name="OmniRoute", base_url="https://omniroute.example/v1", credential=None,
+            logical_model_ids=("auto",), enabled=True, expected_version=1,
+            access_mode="public", credential_requirement="required", short_code="OM",
+            adapter_type="OMNIROUTE", allowed_model_ids=("auto",), provider_name="OmniRoute",
+            auto_model_id="other-auto", auto_model_id_specified=True,
+        ), "route-fixed-auto-tamper")
+    assert durable_state(database) == before
+
+
+def test_custom_auto_requires_openai_compatible_and_valid_id(monkeypatch) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    for command in (
+        replace(custom_command(adapter_type="anthropic_compatible"), auto_model_id="auto"),
+        replace(custom_command(), auto_model_id="bad model"),
+    ):
+        with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_AUTO_MODEL_ID_INVALID$"):
+            service.create_connection(context(), command, "custom-auto-invalid")
+    assert database.system_connection is None
 
 
 @pytest.mark.parametrize("model_ids", [(), ("cc/claude-sonnet",), ("combo-writing",)])

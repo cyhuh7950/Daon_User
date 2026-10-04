@@ -26,8 +26,21 @@ from daon_user_api.provider_settings import (
     ServerCredentialPresenceResolver,
     ProviderConnectionStatus,
 )
-from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
+from daon_user_api.runtime import (
+    WEB_SESSION_COOKIE, ProviderConnectionUpdateBody, RuntimeDependencies, RuntimeSettings, create_app,
+)
 from test_identity_support import FakeVerifiedOidcProvider, POLICY_VERSION, TRACE_ID, create_service
+
+
+def test_provider_update_body_distinguishes_omitted_auto_from_explicit_null() -> None:
+    body = {
+        "display_name": "Router", "base_url": "https://router.example/v1",
+        "enabled": True, "expected_version": 1,
+    }
+    omitted = ProviderConnectionUpdateBody.model_validate(body)
+    cleared = ProviderConnectionUpdateBody.model_validate({**body, "auto_model_id": None})
+    assert "auto_model_id" not in omitted.model_fields_set
+    assert "auto_model_id" in cleared.model_fields_set
 
 
 class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):

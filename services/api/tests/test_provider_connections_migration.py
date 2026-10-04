@@ -12,6 +12,7 @@ MIGRATION = (
     / "migrations/versions/0040_system_provider_connections.py"
 )
 ACCESS_MIGRATION = MIGRATION.with_name("0050_provider_connection_access.py")
+ROUTER_AUTO_MIGRATION = MIGRATION.with_name("0052_router_auto_model.py")
 
 
 class RecordingOperations:
@@ -51,6 +52,27 @@ def access_migration_sql() -> str:
     with patch.object(module, "op", operations):
         module.upgrade()
     return "\n".join(operations.statements)
+
+
+def test_migration_0052_adds_router_auto_without_rewriting_existing_data() -> None:
+    spec = importlib.util.spec_from_file_location("router_auto_model_0052", ROUTER_AUTO_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert (module.revision, module.down_revision) == ("0052", "0051")
+    operations = RecordingOperations()
+    with patch.object(module, "op", operations):
+        module.upgrade()
+    sql = "\n".join(operations.statements)
+    assert "ADD COLUMN auto_model_id text" in sql
+    assert "ADD COLUMN catalog_origin text" in sql
+    assert "DEFAULT 'upstream'" in sql
+    assert "'OMNIROUTE'" in sql and "'auto'" in sql
+    assert "'OPENROUTER'" in sql and "'openrouter/auto'" in sql
+    assert "CUSTOM" not in sql
+    for table in ("system_provider_allowed_models", "workspace_model_defaults", "user_provider_credentials"):
+        assert f"UPDATE {table}" not in sql
+        assert f"DELETE FROM {table}" not in sql
 
 
 def test_migration_0050_adds_policy_and_separate_allowed_models_without_deleting_data() -> None:

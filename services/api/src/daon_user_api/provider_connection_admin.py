@@ -14,7 +14,7 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .provider_connection_adapters import AdapterError, AdapterRegistry, OmniRouteAdapter
-from .provider_catalog import ProviderCatalog, ProviderCatalogError
+from .provider_catalog import ProviderCatalog, ProviderCatalogError, _valid_model_id
 from .provider_credentials import (
     EncryptedCredential,
     ProviderConnection,
@@ -39,6 +39,24 @@ DEFAULT_PROVIDER_ENDPOINTS = {
     "MEDIA_BRIDGE": "http://127.0.0.1:8642/v1",
     "SENTENCE_TRANSFORMERS": "http://localhost:8000",
 }
+
+FIXED_ROUTER_AUTO_IDS = {"OMNIROUTE": "auto", "OPENROUTER": "openrouter/auto"}
+
+
+def _router_auto_id(provider_code: str, adapter_type: str, value: str | None) -> str | None:
+    fixed = FIXED_ROUTER_AUTO_IDS.get(provider_code)
+    if fixed is not None:
+        if value is not None and value != fixed:
+            raise ProviderConnectionAdminError("PROVIDER_AUTO_MODEL_ID_INVALID", 409)
+        return fixed
+    if value is None:
+        return None
+    if provider_code != "CUSTOM" or adapter_type != "openai_compatible":
+        raise ProviderConnectionAdminError("PROVIDER_AUTO_MODEL_ID_INVALID", 409)
+    try:
+        return _valid_model_id(value)
+    except ProviderCatalogError:
+        raise ProviderConnectionAdminError("PROVIDER_AUTO_MODEL_ID_INVALID", 409) from None
 
 
 def _omniroute_models(provider_code: str, allowed: Sequence[str], logical: Sequence[str]) -> tuple[str, ...]:
@@ -96,6 +114,7 @@ class ProviderConnectionCreateCommand:
     allowed_model_ids: tuple[str, ...] = ()
     provider_name: str = ""
     test_credential: str | None = field(default=None, repr=False)
+    auto_model_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +132,8 @@ class ProviderConnectionUpdateCommand:
     allowed_model_ids: tuple[str, ...] = ()
     provider_name: str = ""
     test_credential: str | None = field(default=None, repr=False)
+    auto_model_id: str | None = None
+    auto_model_id_specified: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +157,7 @@ def normalized_connection_fingerprint_payload(
     allowed_model_ids: Sequence[str] = (),
     provider_name: str | None = None,
     test_credential_fingerprint: str | None = None,
+    auto_model_id: str | None = None, auto_model_id_specified: bool = False,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "connection_id": connection_id,
@@ -151,6 +173,8 @@ def normalized_connection_fingerprint_payload(
         "allowed_model_ids": list(allowed_model_ids),
         "provider_name": provider_name,
     }
+    if auto_model_id_specified:
+        payload["auto_model_id"] = auto_model_id
     if credential_fingerprint is not None:
         payload["credential_fingerprint"] = credential_fingerprint
     if test_credential_fingerprint is not None:
@@ -295,6 +319,7 @@ class PostgresProviderConnectionService:
             "model_id": str(row[0]), "reported_capabilities": list(row[1] or ()),
             "effective_capabilities": list(row[2] or ()), "override_applied": bool(row[3]),
             "catalog_status": str(row[4]), "catalog_version": int(row[5]),
+            "catalog_origin": str(row[6]),
         }
 
     @classmethod
@@ -303,7 +328,7 @@ class PostgresProviderConnectionService:
     ) -> dict[str, object]:
         model_rows = connection.execute(
             "SELECT model_id,reported_capabilities,effective_capabilities,override_applied,"
-            "catalog_status,catalog_version FROM system_provider_models "
+            "catalog_status,catalog_version,catalog_origin FROM system_provider_models "
             "WHERE connection_id=%s ORDER BY model_id", (row[0],),
         ).fetchall()
         allowed_rows = connection.execute(
@@ -329,6 +354,7 @@ class PostgresProviderConnectionService:
             "access_mode": str(row[12]), "credential_requirement": str(row[13]),
             "short_code": str(row[14]), "adapter_type": str(row[15]),
             "provider_name": str(row[16]),
+            "auto_model_id": None if row[17] is None else str(row[17]),
             "allowed_model_ids": [str(item[0]) for item in allowed_rows],
         }
 
@@ -342,7 +368,7 @@ class PostgresProviderConnectionService:
             "SELECT c.connection_id,c.provider_code,c.display_name,c.base_url,c.enabled,c.encrypted_credential,"
             "c.credential_version,c.verification_status,c.verified_at,c.version,"
             "max(m.catalog_status),max(m.catalog_version),c.access_mode,c.credential_requirement,"
-            "c.short_code,c.adapter_type,c.provider_name FROM system_provider_connections c "
+            "c.short_code,c.adapter_type,c.provider_name,c.auto_model_id FROM system_provider_connections c "
             "LEFT JOIN system_provider_models m ON m.connection_id=c.connection_id " + where +
             "GROUP BY c.connection_id ORDER BY c.display_name,c.connection_id", params,
         ).fetchall()
@@ -428,7 +454,7 @@ class PostgresProviderConnectionService:
             "SELECT connection_id,provider_code,display_name,base_url,encrypted_credential,"
             "credential_nonce,encryption_key_version,credential_schema_version,credential_version,"
             "enabled,verification_status,verified_at,version,access_mode,credential_requirement,"
-            "short_code,adapter_type,provider_name FROM system_provider_connections "
+            "short_code,adapter_type,provider_name,auto_model_id FROM system_provider_connections "
             "WHERE connection_id=%s", (connection_id,),
         ).fetchone()
         if row is None:
@@ -625,6 +651,7 @@ class PostgresProviderConnectionService:
         )
         if command.provider_code == "CUSTOM" and command.access_mode == "personal" and command.test_credential is None and not pending_custom:
             raise ProviderConnectionAdminError("PROVIDER_CREDENTIAL_REQUIRED", 409)
+        auto_model_id = _router_auto_id(command.provider_code, command.adapter_type, command.auto_model_id)
         route_models = _omniroute_models(command.provider_code, command.allowed_model_ids, command.logical_model_ids)
         payload = normalized_connection_fingerprint_payload(
             connection_id=command.connection_id, provider_code=command.provider_code,
@@ -634,6 +661,7 @@ class PostgresProviderConnectionService:
             short_code=command.short_code, adapter_type=command.adapter_type,
             allowed_model_ids=route_models,
             provider_name=provider_name,
+            auto_model_id=auto_model_id, auto_model_id_specified=True,
             credential_fingerprint=(
                 None if command.credential is None
                 else self._cipher.idempotency_fingerprint(
@@ -672,8 +700,8 @@ class PostgresProviderConnectionService:
                 "INSERT INTO system_provider_connections (connection_id,provider_code,display_name,base_url,"
                 "encrypted_credential,credential_nonce,encryption_key_version,credential_schema_version,"
                 "credential_version,enabled,verification_status,verified_at,version,updated_by,trace_id,policy_version,"
-                "access_mode,credential_requirement,short_code,adapter_type,provider_name) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "access_mode,credential_requirement,short_code,adapter_type,provider_name,auto_model_id) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (profile.connection_id, profile.provider_code, profile.display_name, profile.base_url,
                  None if sealed is None else sealed.ciphertext, None if sealed is None else sealed.nonce,
                  None if sealed is None else sealed.encryption_key_version,
@@ -683,7 +711,7 @@ class PostgresProviderConnectionService:
                  datetime.now().astimezone() if command.access_mode == "public" else None,
                  context.actor_id, context.trace_id, context.policy_version,
                  command.access_mode, command.credential_requirement, command.short_code, command.adapter_type,
-                 provider_name),
+                 provider_name, auto_model_id),
             )
             if models:
                 self._replace_models(connection, context, command.connection_id, models, 1)
@@ -710,6 +738,8 @@ class PostgresProviderConnectionService:
             short_code=command.short_code, adapter_type=command.adapter_type,
             allowed_model_ids=command.allowed_model_ids,
             provider_name=command.provider_name,
+            auto_model_id=command.auto_model_id,
+            auto_model_id_specified=command.auto_model_id_specified,
             credential_fingerprint=(
                 None if command.credential is None
                 else self._cipher.idempotency_fingerprint(
@@ -737,6 +767,13 @@ class PostgresProviderConnectionService:
                 command.short_code, command.adapter_type, command.base_url,
                 allow_existing_legacy_custom=(str(current[1]) == "CUSTOM" and str(current[16]) == "CUSTOM"),
             )
+            auto_model_id = _router_auto_id(
+                str(current[1]), command.adapter_type,
+                command.auto_model_id if command.auto_model_id_specified else current[18],
+            )
+            if (str(current[1]) in FIXED_ROUTER_AUTO_IDS and command.auto_model_id_specified
+                    and command.auto_model_id is None):
+                raise ProviderConnectionAdminError("PROVIDER_AUTO_MODEL_ID_INVALID", 409)
             provider_name = command.provider_name.strip() or str(current[17])
             if (command.provider_name and not command.provider_name.strip()) or not provider_name or len(provider_name) > 256:
                 raise ProviderConnectionAdminError("PROVIDER_NAME_INVALID", 409)
@@ -804,14 +841,14 @@ class PostgresProviderConnectionService:
                 "UPDATE system_provider_connections SET display_name=%s,base_url=%s,encrypted_credential=%s,"
                 "credential_nonce=%s,encryption_key_version=%s,credential_schema_version=%s,credential_version=%s,"
                 "enabled=%s,verification_status=%s,verified_at=%s,access_mode=%s,credential_requirement=%s,"
-                "short_code=%s,adapter_type=%s,provider_name=%s,version=version+1,updated_at=now(),"
+                "short_code=%s,adapter_type=%s,provider_name=%s,auto_model_id=%s,version=version+1,updated_at=now(),"
                 "updated_by=%s,trace_id=%s,policy_version=%s WHERE connection_id=%s AND version=%s RETURNING version",
                 (profile.display_name, profile.base_url, None if sealed is None else sealed.ciphertext,
                  None if sealed is None else sealed.nonce, None if sealed is None else sealed.encryption_key_version,
                  None if sealed is None else sealed.schema_version, 0 if sealed is None else sealed.credential_version,
                  command.enabled, verification_status, verified_at, command.access_mode,
                  command.credential_requirement, command.short_code, command.adapter_type,
-                 provider_name,
+                 provider_name, auto_model_id,
                  context.actor_id, context.trace_id, context.policy_version,
                  connection_id, command.expected_version),
             ).fetchone()

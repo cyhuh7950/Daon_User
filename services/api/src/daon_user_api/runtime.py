@@ -929,6 +929,7 @@ class ProviderConnectionCreateBody(BaseModel):
     test_credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
     logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
     allowed_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    auto_model_id: str | None = Field(default=None, max_length=256)
     access_mode: str = "public"
     credential_requirement: str = "required"
     short_code: str = ""
@@ -947,6 +948,7 @@ class ProviderConnectionUpdateBody(BaseModel):
     test_credential: str | None = Field(default=None, min_length=1, max_length=16384, repr=False)
     logical_model_ids: list[str] = Field(default_factory=list, max_length=256)
     allowed_model_ids: list[str] = Field(default_factory=list, max_length=256)
+    auto_model_id: str | None = Field(default=None, max_length=256)
     access_mode: str = "public"
     credential_requirement: str = "required"
     short_code: str = ""
@@ -4926,6 +4928,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             allowed_model_ids=tuple(body.allowed_model_ids), access_mode=body.access_mode,
             credential_requirement=body.credential_requirement, short_code=body.short_code,
             adapter_type=body.adapter_type, test_credential=body.test_credential,
+            auto_model_id=body.auto_model_id,
         )
         try:
             item, replayed = await asyncio.to_thread(
@@ -4956,6 +4959,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             allowed_model_ids=tuple(body.allowed_model_ids), access_mode=body.access_mode,
             credential_requirement=body.credential_requirement, short_code=body.short_code,
             adapter_type=body.adapter_type, test_credential=body.test_credential,
+            auto_model_id=body.auto_model_id,
+            auto_model_id_specified="auto_model_id" in body.model_fields_set,
         )
         try:
             item, replayed = await asyncio.to_thread(
