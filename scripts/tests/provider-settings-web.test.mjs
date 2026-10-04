@@ -172,6 +172,39 @@ test("new compatible connection can use no API Key", async () => {
   } finally { await view.cleanup(); }
 });
 
+test("custom router Auto is offered only after an admin enables it and saves its real ID", async () => {
+  const fixture = adminFixture();
+  const view = await mountAdminFixture(fixture, "custom-router-auto");
+  try {
+    assert.equal(findElements(view.container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("Auto 모델 ID")).length, 0);
+    const routerToggle = findElements(view.container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.includes("라우터 Auto 사용"))[0];
+    assert.ok(routerToggle);
+    await setChecked(view.act, routerToggle, true);
+    assert.equal(controlFor(view.container, "Auto 모델 ID").value, "auto");
+    assert.match(view.container.textContent, /Auto · auto/u);
+    await fill(view.act, controlFor(view.container, "Provider 표시 이름"), "Media Bridge Server");
+    await fill(view.act, controlFor(view.container, "연결 이름"), "Media Bridge Server");
+    await fill(view.act, controlFor(view.container, "두 글자 약어"), "MS");
+    await fill(view.act, controlFor(view.container, "Endpoint"), "https://media-bridge-gateway.sinsan.kr/v1");
+    await fill(view.act, controlFor(view.container, "인증 유형"), "none");
+    const autoCheckbox = findElements(view.container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.includes("Auto · auto"))[0];
+    await setChecked(view.act, autoCheckbox, true);
+    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+    const create = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections" && item.method === "POST");
+    assert.equal(create.body.auto_model_id, "auto");
+    assert.deepEqual(create.body.allowed_model_ids, ["auto"]);
+  } finally { await view.cleanup(); }
+});
+
+test("regular Anthropic-compatible provider has no router Auto setting", async () => {
+  const view = await mountAdminFixture(adminFixture(), "regular-no-auto");
+  try {
+    await fill(view.act, controlFor(view.container, "호환 방식"), "anthropic_compatible");
+    assert.equal(findElements(view.container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.includes("라우터 Auto 사용")).length, 0);
+    assert.equal(findElements(view.container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("Auto 모델 ID")).length, 0);
+  } finally { await view.cleanup(); }
+});
+
 test("system admin can save a compatible connection without a second password", async () => {
   const fixture = adminFixture();
   const view = await mountAdminFixture(fixture, "admin-session-save");
@@ -452,7 +485,7 @@ test("saved legacy OmniRoute with five allowed models can replace its Key withou
   };
   const view = await mountAdminFixture(fixture, "route-legacy-key");
   try {
-    assert.match(view.container.textContent, /auto 포함 5개 모델.*정기 점검/u);
+    assert.match(view.container.textContent, /시험 대상 5개 모델.*정기 점검/u);
     await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-replacement-key");
     assert.equal(buttonByText(view.container, "시스템 키 시험 및 저장").disabled, false);
     await click(view.act, buttonByText(view.container, "시스템 키 시험 및 저장"));
@@ -527,8 +560,54 @@ test("saved OmniRoute reads catalog through existing same-origin refresh without
     const option = findElements(view.container, (node) => node.tagName === "INPUT" && node.type === "checkbox" && node.parentNode?.textContent.includes("cc/claude-sonnet"))[0];
     assert.ok(option);
     await setChecked(view.act, option, true);
-    assert.equal(controlFor(view.container, "모델 ID 직접 입력").value, "cc/claude-sonnet");
+    assert.equal(controlFor(view.container, "모델 ID 직접 입력").value, "auto\ncc/claude-sonnet");
     assert.equal(fixture.requests.filter((item) => item.path === "/bff/api/admin/provider-connections/route-1" && item.method === "PUT").length, 0);
+  } finally { await view.cleanup(); }
+});
+
+test("OpenRouter Auto uses the actual openrouter/auto ID in the admin save", async () => {
+  const connection = {
+    connection_id: "openrouter-1", provider_code: "OPENROUTER", adapter_type: "OPENROUTER",
+    provider_name: "OpenRouter", display_name: "OpenRouter", base_url: "https://openrouter.ai/api/v1",
+    short_code: "OR", access_mode: "public", credential_requirement: "required", auto_model_id: "openrouter/auto",
+    allowed_model_ids: [], enabled: true, configured: true, verification_status: "verified", version: 1,
+    models: [{ model_id: "openrouter/auto", catalog_origin: "upstream", catalog_status: "ready", effective_capabilities: ["text_generation"] }],
+  };
+  const fixture = adminFixture({ existingConnections: [connection] });
+  const originalFetch = fixture.fetch;
+  fixture.fetch = async (url, options = {}) => {
+    if (String(url) === "/bff/api/admin/provider-connections/openrouter-1" && options.method === "PUT") {
+      const body = JSON.parse(options.body); fixture.requests.push({ path: String(url), method: "PUT", body });
+      return Response.json({ data: { ...connection, ...body, version: 2 } });
+    }
+    return originalFetch(url, options);
+  };
+  const view = await mountAdminFixture(fixture, "openrouter-auto-real-id");
+  try {
+    assert.equal(controlFor(view.container, "Auto 모델 ID").value, "openrouter/auto");
+    assert.equal(reactProps(controlFor(view.container, "Auto 모델 ID")).readOnly, true);
+    const option = findElements(view.container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.includes("Auto · openrouter/auto"))[0];
+    await setChecked(view.act, option, true);
+    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+    const update = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections/openrouter-1" && item.method === "PUT");
+    assert.equal(update.body.auto_model_id, "openrouter/auto");
+    assert.deepEqual(update.body.allowed_model_ids, ["openrouter/auto"]);
+    assert.doesNotMatch(view.container.textContent, /Auto · auto(?!\w)|combo/u);
+  } finally { await view.cleanup(); }
+});
+
+test("logical Auto is labeled separately and no Combo is invented", async () => {
+  const connection = {
+    connection_id: "route-auto", provider_code: "OMNIROUTE", adapter_type: "OMNIROUTE", provider_name: "OmniRoute",
+    display_name: "OmniRoute", base_url: "https://omniroute.example/v1", short_code: "OM", auto_model_id: "auto",
+    access_mode: "public", credential_requirement: "required", allowed_model_ids: ["auto"], enabled: true,
+    configured: true, verification_status: "verified", version: 1,
+    models: [{ model_id: "auto", catalog_origin: "logical", catalog_status: "ready", effective_capabilities: ["text_generation"] }],
+  };
+  const view = await mountAdminFixture(adminFixture({ existingConnections: [connection] }), "logical-auto-only");
+  try {
+    assert.match(view.container.textContent, /Auto · auto · 논리 모델/u);
+    assert.doesNotMatch(view.container.textContent, /combo/u);
   } finally { await view.cleanup(); }
 });
 
