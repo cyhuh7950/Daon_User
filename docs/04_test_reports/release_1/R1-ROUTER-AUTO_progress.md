@@ -25,3 +25,14 @@
 - 미검증: 실제 PostgreSQL migration 및 기존 연결·Key·허용·기본값 보존, 실제 Media Bridge Server Auto 생성 응답, WSL/Oracle 브라우저·배포, 사용자 인수. 현재 브랜치를 `main`에 병합하거나 배포하지 않음.
 - Rollback: 작업 브랜치의 체크포인트 `c17c7e77`이 제품 코드 변경 전 기준. 실제 DB migration 미적용 상태이므로 DB rollback 수행 없음. 기존 연결/Key/허용/Workspace 기본값 변경 없음.
 - 다음 조치: 지정된 WSL 정식 QA checkout/DB·Secret 주입 경로를 확정하고 미해결 Critical 보안 finding의 처리 범위를 결정한다. 그 뒤 격리 PostgreSQL에 `0052`를 먼저 적용하여 연결·Key·허용 목록·Workspace 기본값 보존을 검증한다. 이후 WSL 정식 QA, PR, Oracle staging 사용자 인수, 승인 후 병합·재배포 순으로 진행한다. 기존 dirty checkout이나 실행 중 checkout을 덮어쓰지 않으며, 실행하지 못한 항목은 PASS로 승격하지 않는다.
+
+## 보안 업데이트·WSL 격리 QA 후속 (2026-10-04)
+
+- 담당: main agent 어울. 신산님이 Next.js 보안 업데이트와 새 WSL 격리 QA 경로의 권고안을 추가 승인함. 시작 HEAD `c3f0f706`, 작업 브랜치 `codex/next-user-development`, 로컬 worktree clean 확인. 기존 작업 브랜치·worktree를 재사용한다.
+- RED 확인: `npm audit --omit=dev --audit-level=critical --json`에서 critical 1, high 22, 종료 코드 1. 대상은 고정 의존성 `next` 16.3.3; 공식 패치 버전 16.3.6. `next/og` 사용은 소스 검색상 없음. 의존성 업데이트 후 audit와 Web/Node/API 회귀를 다시 판정한다.
+- 계획된 로컬 임시 자원: 이 worktree 내부 `.npm-cache-security-20261004`. 소유자 어울/본 후속 작업, 목적 npm 레지스트리 패키지 조회·잠금 파일 재생성, 수명 이번 로컬 검증까지, 정리 방법 정확한 절대경로 검증 후 이 폴더만 제거·잔류 0 확인. 기존 `node_modules`는 이 worktree의 일반 디렉터리이며 사용자 자료를 삭제하지 않는다.
+- WSL 개발 자원은 새 exact-SHA가 확정되면 기존 `/home/daon/deploy/daon-user-*` 격리 checkout 관례 안에서 정확한 이름·정리 조건을 먼저 기록한다. 기존 dirty 정식 checkout과 실행 중 checkout·DB·Secret은 사전 읽기/백업 없이 변경하지 않는다.
+- 로컬 수정: `apps/web/package.json`의 `next` 16.3.3→16.3.6 및 npm이 생성한 `package-lock.json`의 해당 Next/SWC/환경 패키지 항목만 갱신. 설치된 버전 `npm ls next`로 16.3.6 확인.
+- GREEN 확인: `npm audit --workspace @daon-user/web --omit=dev`의 critical/high 0, 관리자 화면·BFF Node 테스트 78 passed, Web production build/TypeScript/UI 경계 475파일 위반 0, API 전체 906 passed/48 skipped/207 subtests passed. 저장소 전체 `npm audit --omit=dev`는 critical 0/high 21이며, high는 React Native/Metro/CLI 계열 모바일 의존성으로 웹 대상 audit와 구분한다. WSL·실 PostgreSQL·실 Provider 검증으로 승격하지 않는다.
+- WSL 읽기 전용 재점검: 호스트 `SINSAN`, 현재 Daon_User API/Web healthy 및 두 worker running. 기존 `/home/daon/deploy/daon-user` 변경 139개, 실행 중 checkout `/home/daon/deploy/daon-user-health-7d168c50` clean. 기존 경로·서비스는 변경하지 않음.
+- 임시 자원 정리: 이번 npm 캐시 `.npm-cache-security-20261004`와 API 전체 테스트의 `.pytest-tmp-security-full-20261004`를 worktree 내부 절대경로로 확인했다. pytest 폴더 내부 36개 링크가 모두 같은 폴더 내부를 가리킴을 검증하고 링크부터 제거한 뒤 두 폴더를 삭제, 잔류 0 확인. 복구 대상 데이터는 없음.
