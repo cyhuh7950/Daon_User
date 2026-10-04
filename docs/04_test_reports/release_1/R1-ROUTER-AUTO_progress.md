@@ -99,5 +99,11 @@
 - 담당 main agent 어울. 신산님이 1920×1080 화면의 상태 메시지 아래·모델 카탈로그 위 빈 간격 축소와 Provider별 입력 항목 위치 고정을 직접 요청했다. 작업 branch `codex/next-user-development`의 기존 Router Auto PR #39에 속한 화면 후속 수정으로 분류했다.
 - 원인: Provider 상세 폼의 2열 CSS Grid에서 `Auto 모델 ID`가 조건부로 삽입되면 `사용 허용 모델`과 Key 필드의 자동 배치 열이 달라졌다. 상·하 섹션 제목은 세로 3줄 구조여서 빈 간격처럼 보이는 높이를 차지했다.
 - 로컬 변경: `apps/web/components/provider-settings-workspace.jsx`에서 공통 3행 뒤 설정/모델 영역을 좌우 고정 열로 분리하고 Key 필드를 설정 열에 배치했다. `apps/web/app/settings/model-connections/provider-settings.css`에서 상·하 섹션 제목을 데스크톱 한 줄로 압축하고 상태 메시지 아래 여백을 줄였다. `apps/web/components/provider-settings-layout.test.mjs` 회귀 검사 2건을 추가했다. 이 변경은 저장 값·API·DB를 바꾸지 않는다.
-- 회귀 검사 RED 2건→GREEN 2건, 관련 Provider/UI 테스트 39/39 PASS, Web production build/TypeScript/UI boundary PASS(477파일·위반 0), `git diff --check` PASS. 실제 인증된 1920×1080 픽셀 검증은 미실시이며 WSL 3330/Oracle 배포도 미실시. 오류 횟수: 현재 배치 수정 테스트 0건, 기존 브라우저 자동화 도구 오류는 별도 기록 유지.
+- 회귀 검사 RED 2건→GREEN 2건, 관련 Provider/UI 테스트 39/39 PASS, 로컬 Web production build/TypeScript/UI boundary PASS(477파일·위반 0), `git diff --check` PASS. 실제 인증된 1920×1080 픽셀 검증은 미실시. 오류 횟수: 현재 배치 수정 테스트 0건, 기존 브라우저 자동화 도구 오류는 별도 기록 유지.
 - 별도 신규 범위: 신산님이 현재 관리자 설정 화면과 모든 로그인 사용자의 사용 가능 Provider·허용 모델 조회/개인 Key 시험/추론 등급 화면 분리를 지시했다. 공용 연결의 개인 Key 우선 규칙은 기존 승인 설계의 `공용 연결에는 자기 Key를 등록하지 않는다`와 충돌하며, API·Credential resolver·권한·지속 데이터 계약에 영향을 준다. 이 범위는 별도 설계·계획 승인 전 Router Auto PR에 구현·배포하지 않는다. 현재 설정 화면의 관리자 전용 전환도 사용자 Key 대체 화면이 준비되기 전에는 배포하지 않는다.
+
+## Provider 설정 화면 배치 수정 WSL 검증 (2026-10-05)
+
+- 범위: 화면 배치 코드 commit `5e6b3faa97ad4f189d0dbf3e5d1a136156f96b58`를 WSL 지정 clean checkout `/home/daon/deploy/daon-user-router-auto-24343ac1`에 exact checkout하고 Web 이미지만 빌드·교체했다. WSL Web 빌드/TypeScript/UI boundary 477파일·위반 0 PASS.
+- 배포 전 Web 이미지 `sha256:01ed5be9f25a3661f39201e75f886568bc457bc50a5cfc1019680ac0dad412db`는 rollback 태그 `daon-user-formal:web-b926c06e`로 보존했다. 새 Web 이미지 `sha256:7c1cbb9908d68f93dab987face4ca814d37c6b34574296a9f218c5f34ddd171e`에 `daon-user-formal:web-5e6b3faa` 태그를 붙인 뒤 Compose `up -d --no-deps --no-build web`으로 Web만 재생성했다. API 이미지 `sha256:b7245709fcfc3125d6b665840f2105ae012e90ccf9ebb9b15681eda9462ee739`와 DB/worker/storage는 교체하지 않았다.
+- 배포 후 `daon_user-web-1` 및 `daon_user-api-1` 모두 healthy. `/settings/model-connections` HTTP 200, 미인증 same-origin `/bff/api/session`과 `/bff/api/admin/provider-connections` 각각 HTTP 401(정상 차단). 실제 인증된 관리자 브라우저에서 1920×1080 배치/픽셀 확인은 신산님 인수 대상으로 남긴다. Oracle staging·PR 병합은 미실시이며 Draft PR #39를 유지한다. 신규 사용자 조회 화면·Key/추론 정책은 이 Web 배포에 포함되지 않았다.
