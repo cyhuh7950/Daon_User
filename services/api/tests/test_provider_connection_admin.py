@@ -183,8 +183,14 @@ class CompatibleConnection(Connection):
             record["version"] += 1
             return Cursor((record["version"],))
         if normalized.startswith("INSERT INTO system_provider_models"):
+            existing = next((item for item in self.database.models if item[0] == params[1]), None)
+            catalog_origin = params[5]
+            if (existing is not None and params[7]
+                    and (existing[6] if len(existing) > 6 else "upstream") == "upstream"
+                    and catalog_origin == "logical"):
+                catalog_origin = "upstream"
             self.database.models = [item for item in self.database.models if item[0] != params[1]]
-            self.database.models.append((params[1], params[2], params[3], False, "ready", params[4], params[5]))
+            self.database.models.append((params[1], params[2], params[3], False, "ready", params[4], catalog_origin))
             self.database.system_connection["catalog_status"] = "ready"
             self.database.system_connection["catalog_version"] = params[4]
             return Cursor()
@@ -1018,6 +1024,43 @@ def test_omniroute_refresh_reads_models_without_verifying_or_expanding_allowlist
     assert [(item[0], item[1], item[3]) for item in transport.requests] == [
         ("GET", "https://omniroute.example/v1/models", None)
     ]
+
+
+@pytest.mark.parametrize(
+    ("updated_base_url", "expected_origin"),
+    [
+        ("https://omniroute.example/v1", "upstream"),
+        ("https://alternate-omniroute.example/v1", "logical"),
+    ],
+)
+def test_omniroute_allowing_discovered_model_tracks_origin_for_endpoint(
+    monkeypatch, updated_base_url: str, expected_origin: str,
+) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    transport.responses["https://alternate-omniroute.example/v1/responses"] = TransportResponse(
+        200, {"output_text": "ready"},
+    )
+    transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "cc/claude-sonnet"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(), "route-origin-create")
+    refreshed, _ = service.refresh_catalog(context(), "route-1", 1, "route-origin-refresh")
+    assert next(model for model in refreshed["models"] if model["model_id"] == "cc/claude-sonnet")["catalog_origin"] == "upstream"
+
+    updated, _ = service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
+        display_name="OmniRoute", base_url=updated_base_url, credential=None,
+        logical_model_ids=("auto", "cc/claude-sonnet"), enabled=True, expected_version=2,
+        access_mode="public", credential_requirement="required", short_code="OM",
+        adapter_type="OMNIROUTE", allowed_model_ids=("auto", "cc/claude-sonnet"),
+        provider_name="OmniRoute",
+    ), "route-origin-allow")
+
+    assert updated["allowed_model_ids"] == ["auto", "cc/claude-sonnet"]
+    assert next(model for model in updated["models"] if model["model_id"] == "cc/claude-sonnet")["catalog_origin"] == expected_origin
+    assert next(model for model in updated["models"] if model["model_id"] == "auto")["catalog_origin"] == "logical"
+    assert database.system_connection["encrypted_credential"] is not None
 
 
 @pytest.mark.parametrize("allowed_model", ["auto", "combo-writing"])

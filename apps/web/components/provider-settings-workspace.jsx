@@ -83,7 +83,8 @@ function draftFromConnection(connection) {
 }
 
 export function formatModelChoice(connection, model) {
-  return `${connection.display_name} · ${model.model_id}`;
+  const modelName = model.model_id === connection.auto_model_id ? `Auto · ${model.model_id}` : model.model_id;
+  return `${connection.display_name} · ${modelName}`;
 }
 
 export function projectProviderConnection(connection, userCredential = null) {

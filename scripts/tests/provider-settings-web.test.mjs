@@ -647,6 +647,22 @@ test("OpenRouter Auto uses the actual openrouter/auto ID in the admin save", asy
   } finally { await view.cleanup(); }
 });
 
+test("available model card labels Auto without replacing its real ID", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, "node_modules", ".provider-model-choice-"));
+  try {
+    const { formatModelChoice } = await bundleProvider(root, output, "provider-model-choice");
+    assert.equal(formatModelChoice(
+      { display_name: "OpenRouter", auto_model_id: "openrouter/auto" },
+      { model_id: "openrouter/auto" },
+    ), "OpenRouter · Auto · openrouter/auto");
+    assert.equal(formatModelChoice(
+      { display_name: "OpenRouter", auto_model_id: "openrouter/auto" },
+      { model_id: "ordinary-model" },
+    ), "OpenRouter · ordinary-model");
+  } finally { await rm(output, { recursive: true, force: true }); }
+});
+
 test("logical Auto is labeled separately and no Combo is invented", async () => {
   const connection = {
     connection_id: "route-auto", provider_code: "OMNIROUTE", adapter_type: "OMNIROUTE", provider_name: "OmniRoute",

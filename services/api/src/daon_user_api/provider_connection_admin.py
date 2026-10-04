@@ -578,7 +578,7 @@ class PostgresProviderConnectionService:
         connection: Connection[tuple[Any, ...]], context: ProviderConnectionAdminContext,
         connection_id: str, models: Sequence[object], catalog_version: int,
         *, mark_missing_stale: bool = True, keep_model_ids: Sequence[str] = (),
-        rejected_model_ids: Sequence[str] = (),
+        rejected_model_ids: Sequence[str] = (), preserve_existing_upstream: bool = False,
     ) -> None:
         model_ids = [model.model_id for model in models]
         for model in models:
@@ -591,10 +591,13 @@ class PostgresProviderConnectionService:
                 "effective_capabilities=CASE WHEN system_provider_models.override_applied "
                 "THEN system_provider_models.effective_capabilities ELSE excluded.effective_capabilities END,"
                 "catalog_status='ready',catalog_version=excluded.catalog_version,"
-                "catalog_origin=excluded.catalog_origin,discovered_at=now(),"
+                "catalog_origin=CASE WHEN %s AND system_provider_models.catalog_origin='upstream' "
+                "AND excluded.catalog_origin='logical' THEN 'upstream' "
+                "ELSE excluded.catalog_origin END,discovered_at=now(),"
                 "updated_at=now(),updated_by=excluded.updated_by",
                 (connection_id, model.model_id, list(model.reported_capabilities),
-                 list(model.reported_capabilities), catalog_version, model.catalog_origin, context.actor_id),
+                 list(model.reported_capabilities), catalog_version, model.catalog_origin,
+                 context.actor_id, preserve_existing_upstream),
             )
         if mark_missing_stale:
             connection.execute(
@@ -893,7 +896,10 @@ class PostgresProviderConnectionService:
             if models:
                 models = _models_with_auto(connection_id, str(current[1]), auto_model_id, models,
                                            auto_from_probe=custom)
-                self._replace_models(connection, context, connection_id, models, int(row[0]))
+                self._replace_models(
+                    connection, context, connection_id, models, int(row[0]),
+                    preserve_existing_upstream=profile.base_url == str(current[3]),
+                )
             elif auto_model_id and not connection.execute(
                 "SELECT model_id FROM system_provider_models WHERE connection_id=%s AND model_id=ANY(%s)",
                 (connection_id, [auto_model_id]),
