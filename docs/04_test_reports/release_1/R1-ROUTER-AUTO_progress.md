@@ -1,7 +1,7 @@
 # 라우터 Auto 모델 작업현황
 
 - 담당: main agent 어울. 기준 브랜치 `codex/next-user-development`, 구현 시작 `c17c7e77`.
-- 승인 범위: OmniRoute=`auto`, OpenRouter=`openrouter/auto`, 관리자가 지정한 OpenAI 호환 CUSTOM의 실제 Auto ID. Combo 특수 처리 없음. 모델 미지정의 기준 모델 동작은 Auto 명시 선택과 별개. 유료 Provider 호출·WSL/Oracle 배포·기존 Media Bridge Server 설정 변경 제외.
+- 승인 범위: OmniRoute=`auto`, OpenRouter=`openrouter/auto`, 관리자가 지정한 OpenAI 호환 CUSTOM의 실제 Auto ID. Combo 특수 처리 없음. 모델 미지정의 기준 모델 동작은 Auto 명시 선택과 별개. 기존 Media Bridge Server 설정 변경은 제외. 후속 직접 지시로 병합·배포 및 License 테스트 보정 범위가 추가 승인됨.
 
 ## 단계별 진행 (2026-10-04)
 
@@ -16,7 +16,9 @@
 - API 전체 테스트 최종 재실행: 작업 폴더의 새 pytest 임시 경로로 895 passed, 48 skipped, 10 failed, 207 subtests passed. 실패 10건은 모두 기존 License 테스트(`test_license.py` 9건, `test_license_runtime_http.py` 1건). `license.py`의 `_RESOURCE_CODES`는 `users`, `notebooks`만 허용하지만 기존 fixture는 `generation_runs`를 사용하여 `LICENSE_DOCUMENT_INVALID`가 발생. 이번 브랜치는 License 제품 코드·테스트를 변경하지 않음. 이 결함은 승인된 Auto 범위 밖이므로 수정하지 않음. 테스트용 임시 경로는 정확한 대상 확인 후 제거함.
 - 읽기 전용 코드 검토: 중요 3건(미선택 개인 OmniRoute Auto probe, 개인 CUSTOM Key 재검증, OpenRouter 5개 허용 모델 화면 저장)과 경미 2건(OpenRouter 초기 출처, 개인 CUSTOM 시험 Key 안내)을 확인하여 각각 재현 테스트 RED→수정→관련 테스트 GREEN으로 보완함.
 - 설치된 로컬 `psql`/PostgreSQL/Docker/Podman 명령이 없어 격리 PostgreSQL의 실제 migration 보존 검증은 실행하지 못함. migration SQL·테스트의 정적/fixture 검증은 통과했지만 실제 DB 적용 성공으로 판정하지 않음. WSL DB에는 변경하지 않음.
-- 오류 횟수: 본 작업 구현 중 Auto 관련 지속 오류 0; 관련 집중 테스트 최종 실패 0. 전체 gate는 License 실패와 실제 migration 미검증 때문에 NON-GREEN.
+- 후속 License 보정(2026-10-04): 현재 제품 License 계약은 `users`·`notebooks` 수량과 `llm_access`·`notebook_management` 기능이다. 기존 테스트의 폐기된 `generation_runs`·`citation` 등 fixture/기대값만 갱신하고 제품 License 코드는 변경하지 않음. 만료 시 생성 차단·기존 읽기 허용, 서명·재요청·권한 검증을 보존. 보정 전 10 failed/12 passed, 보정 후 License 관련 23 passed.
+- 전체 로컬 API 재검증: 906 passed, 48 skipped, 207 subtests passed. 관리자 UI 관련 Node 테스트 39 passed, Web production build 및 UI 경계 검사 PASS(475개 파일, 위반 0), `git diff --check` PASS. 작업 중 생성한 pytest 임시 폴더 3개는 정확한 경로 검증 후 제거함.
+- 오류 횟수: 본 작업 구현 중 Auto 관련 지속 오류 0; License 계약 불일치 1회 발견·보정 완료. 로컬 코드 gate는 GREEN이나 실제 PostgreSQL migration과 WSL/Oracle 검증은 아직 NON-GREEN/UNVERIFIED.
 - 미검증: 실제 PostgreSQL migration 및 기존 연결·Key·허용·기본값 보존, 실제 Media Bridge Server Auto 생성 응답, WSL/Oracle 브라우저·배포, 사용자 인수. 현재 브랜치를 `main`에 병합하거나 배포하지 않음.
 - Rollback: 작업 브랜치의 체크포인트 `c17c7e77`이 제품 코드 변경 전 기준. 실제 DB migration 미적용 상태이므로 DB rollback 수행 없음. 기존 연결/Key/허용/Workspace 기본값 변경 없음.
-- 다음 조치: Auto 관련 코드는 로컬 검증 범위에서 유지하고, License 기존 결함은 별도 범위로 처리한다. 격리 PostgreSQL migration과 사용자 인수 경로가 준비되면 재검증 후 별도 승인 경계를 판단한다.
+- 다음 조치: 격리 PostgreSQL에 `0052` migration을 적용하여 연결·Key·허용 목록·Workspace 기본값 보존을 검증한다. 이후 안전한 commit·push, 지정 WSL 정식 QA, PR, Oracle staging 사용자 인수, 승인 후 병합·재배포 순으로 진행한다. 각 환경에서 실행하지 못한 항목은 PASS로 승격하지 않는다.

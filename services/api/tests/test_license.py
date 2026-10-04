@@ -40,7 +40,7 @@ def _service(signing_key, *, usage=None):
         verifier,
         product_code="daon-user",
         clock=lambda: NOW,
-        usage_reader=lambda _context: dict(usage or {"notebooks": 2, "generation_runs": 4}),
+        usage_reader=lambda _context: dict(usage if usage is not None else {"notebooks": 2, "users": 1}),
     )
     return service, repository
 
@@ -54,8 +54,8 @@ def _document(signing_key, **overrides):
         "organization_id": "tenant-001",
         "issued_at": (NOW - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
         "expires_at": (NOW + timedelta(days=20)).isoformat().replace("+00:00", "Z"),
-        "features": ["citation", "studio_generation"],
-        "resource_limits": {"generation_runs": 10, "notebooks": 5},
+        "features": ["llm_access", "notebook_management"],
+        "resource_limits": {"notebooks": 5, "users": 10},
     }
     claims.update(overrides)
     payload = json.dumps(claims, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode()
@@ -86,10 +86,10 @@ def test_apply_verifies_signature_and_projects_safe_read_only_status(signing_key
         "issued_at": "2026-08-14T08:00:00Z",
         "expires_at": "2026-09-04T08:00:00Z",
         "status": "expiring_soon",
-        "features": ["citation", "studio_generation"],
+        "features": ["llm_access", "notebook_management"],
         "resources": [
-            {"resource": "generation_runs", "limit": 10, "used": 4, "remaining": 6, "status": "available"},
             {"resource": "notebooks", "limit": 5, "used": 2, "remaining": 3, "status": "available"},
+            {"resource": "users", "limit": 10, "used": 1, "remaining": 9, "status": "available"},
         ],
         "warning": {"code": "LICENSE_EXPIRES_WITHIN_30_DAYS", "action": "조직 관리자에게 라이선스 갱신을 요청하세요."},
         "creation_allowed": True,
@@ -106,6 +106,7 @@ def test_apply_verifies_signature_and_projects_safe_read_only_status(signing_key
         ({"license_id": "x"}, "LICENSE_DOCUMENT_INVALID"),
         ({"schema_version": 2}, "LICENSE_SCHEMA_UNSUPPORTED"),
         ({"expires_at": (NOW - timedelta(seconds=1)).isoformat().replace("+00:00", "Z")}, "LICENSE_EXPIRED"),
+        ({"resource_limits": {"generation_runs": 10}}, "LICENSE_DOCUMENT_INVALID"),
     ],
 )
 def test_invalid_claims_fail_before_repository_write(signing_key, mutation, code):
@@ -193,40 +194,28 @@ def test_rs256_rejects_signature_integer_at_or_above_modulus():
     pytest.fail("test key generation did not produce a same-width malleable signature")
 
 
-def test_limit_reached_blocks_only_new_generation(signing_key):
-    service, _ = _service(signing_key, usage={"notebooks": 2, "generation_runs": 10})
+def test_notebook_limit_does_not_block_llm_access(signing_key):
+    service, _ = _service(signing_key, usage={"notebooks": 5, "users": 1})
     service.apply(_context(), _document(signing_key), "license-apply-idem-0005")
     view = service.get(_context())
     assert view["status"] == "limit_reached"
     assert view["creation_allowed"] is False
     assert view["existing_read_allowed"] is True
     assert view["existing_export_allowed"] is True
+    service.require_new_generation(_context())
     with pytest.raises(LicenseError) as denied:
-        service.require_new_generation(_context())
+        service.require_creation(_context(), "notebook.create", {"notebooks": 1})
     assert denied.value.code == "LICENSE_RESOURCE_LIMIT_REACHED"
 
 
-def test_creation_action_requires_mapped_feature_and_each_resource_capacity(signing_key):
-    service, _ = _service(signing_key, usage={"generation_runs": 9, "studio_outputs": 1})
-    document = _document(
-        signing_key,
-        resource_limits={"generation_runs": 10, "studio_outputs": 2},
-    )
-    service.apply(_context(), document, "license-apply-idem-action-0001")
-    service.require_creation(
-        _context(), "studio.generate", {"generation_runs": 1, "studio_outputs": 1},
-    )
-
-    service._usage_reader = lambda _context: {"generation_runs": 10, "studio_outputs": 1}
-    with pytest.raises(LicenseError) as limit_denied:
-        service.require_creation(
-            _context(), "studio.generate", {"generation_runs": 1, "studio_outputs": 1},
-        )
-    assert limit_denied.value.code == "LICENSE_RESOURCE_LIMIT_REACHED"
+def test_studio_generation_requires_llm_access_but_has_no_generation_quota(signing_key):
+    service, _ = _service(signing_key, usage={"notebooks": 5, "users": 10})
+    service.apply(_context(), _document(signing_key), "license-apply-idem-action-0001")
+    service.require_creation(_context(), "studio.generate", {"generation_runs": 1})
 
     no_feature_service, _ = _service(signing_key)
     no_feature_service.apply(
-        _context(), _document(signing_key, features=["citation"]),
+        _context(), _document(signing_key, features=["notebook_management"]),
         "license-apply-idem-action-0002",
     )
     with pytest.raises(LicenseError) as feature_denied:
@@ -236,25 +225,17 @@ def test_creation_action_requires_mapped_feature_and_each_resource_capacity(sign
     assert feature_denied.value.code == "LICENSE_FEATURE_NOT_ALLOWED"
 
 
-def test_source_creation_maps_citation_feature_to_source_and_storage_resources(signing_key):
-    service, _ = _service(signing_key, usage={"source_versions": 1, "storage_bytes": 90})
+def test_source_creation_has_no_separate_license_quota(signing_key):
+    service, _ = _service(signing_key, usage={"notebooks": 5, "users": 10})
     service.apply(
         _context(),
         _document(
             signing_key,
-            features=["citation"],
-            resource_limits={"source_versions": 2, "storage_bytes": 100},
+            features=["notebook_management"],
         ),
         "license-apply-idem-action-0003",
     )
-    service.require_creation(
-        _context(), "source.create", {"source_versions": 1, "storage_bytes": 10},
-    )
-    with pytest.raises(LicenseError) as denied:
-        service.require_creation(
-            _context(), "source.create", {"source_versions": 1, "storage_bytes": 11},
-        )
-    assert denied.value.code == "LICENSE_RESOURCE_LIMIT_REACHED"
+    service.require_creation(_context(), "source.create", {"source_versions": 1, "storage_bytes": 101})
 
 
 def test_notebook_creation_maps_management_feature_to_notebook_resource(signing_key):

@@ -48,8 +48,8 @@ def _signed_document(private_key):
         "organization_id": "tenant-001",
         "issued_at": (NOW - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
         "expires_at": (NOW + timedelta(days=365)).isoformat().replace("+00:00", "Z"),
-        "features": ["citation", "studio_generation"],
-        "resource_limits": {"generation_runs": 100, "notebooks": 20},
+        "features": ["llm_access", "notebook_management"],
+        "resource_limits": {"notebooks": 20, "users": 100},
     }
     payload = json.dumps(claims, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode()
     signature = private_key.sign(payload, padding.PKCS1v15(), hashes.SHA256())
@@ -165,7 +165,7 @@ async def _exercise_license_http():
         )
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         numbers = private_key.public_key().public_numbers()
-        usage = {"generation_runs": 2, "notebooks": 1}
+        usage = {"notebooks": 1, "users": 2}
         license_repository = ReferenceLicenseRepository()
         license_service = LicenseService(
             license_repository,
@@ -256,8 +256,7 @@ async def _exercise_license_http():
                 assert license_repository.count(LicenseContext(
                     "tenant-001", "workspace-001", "org-admin", "trace-count", POLICY_VERSION,
                 )) == 1
-                license_service._clock = lambda: NOW
-                usage["generation_runs"] = 100
+                license_service._clock = lambda: NOW + timedelta(days=730)
                 generation = {
                     "workspace_id": "workspace-001", "notebook_id": "notebook-license-limit",
                     "output_type": "evidence_report", "source_id": "source-1",
@@ -274,7 +273,7 @@ async def _exercise_license_http():
                     readable = await client.get(
                         "/api/v1/workspaces/workspace-001/license", cookies={WEB_SESSION_COOKIE: "opaque-session"},
                     )
-                assert (blocked.status_code, blocked.json()["error"]["code"]) == (409, "LICENSE_RESOURCE_LIMIT_REACHED")
+                assert (blocked.status_code, blocked.json()["error"]["code"]) == (409, "LICENSE_EXPIRED")
                 assert readable.status_code == 200 and readable.json()["data"]["existing_read_allowed"] is True
                 assert studio.calls == 0
         finally:
