@@ -399,6 +399,24 @@ test("new personal compatible connection registers pending without models, Key, 
   } finally { await view.cleanup(); }
 });
 
+test("saved personal CUSTOM needs a one-time test Key when enabling router Auto", async () => {
+  const fixture = adminFixture({ existingConnections: [{
+    connection_id: "custom-pending", provider_code: "CUSTOM", adapter_type: "openai_compatible",
+    provider_name: "Pending", display_name: "Pending", base_url: "https://pending.example/v1",
+    short_code: "PD", access_mode: "personal", credential_requirement: "required",
+    allowed_model_ids: [], enabled: true, configured: false, verification_status: "unverified", version: 1,
+    models: [],
+  }] });
+  const view = await mountAdminFixture(fixture, "custom-pending-auto-key");
+  try {
+    const routerToggle = findElements(view.container, (node) => node.tagName === "INPUT" && node.parentNode?.textContent.includes("라우터 Auto 사용"))[0];
+    await setChecked(view.act, routerToggle, true);
+    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, true);
+    await fill(view.act, controlFor(view.container, "API Key 또는 Client Key"), "fixture-one-time-key");
+    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
+  } finally { await view.cleanup(); }
+});
+
 test("saved legacy CUSTOM connection retains its old catalog and credential actions", async () => {
   const fixture = adminFixture({ existingConnections: [{
     connection_id: "legacy-custom", provider_code: "CUSTOM", adapter_type: "CUSTOM", provider_name: "기존 공급자", display_name: "기존 연결",
@@ -537,6 +555,39 @@ for (const [caseName, legacyAllowed] of [
     } finally { await view.cleanup(); }
   });
 }
+
+test("saved legacy OpenRouter with five allowed models permits an unrelated admin save", async () => {
+  const legacyAllowed = ["openrouter/auto", "m1", "m2", "m3", "m4"];
+  const existing = {
+    connection_id: "openrouter-legacy-save", provider_code: "OPENROUTER", adapter_type: "OPENROUTER",
+    provider_name: "OpenRouter", display_name: "Legacy OpenRouter", base_url: "https://openrouter.ai/api/v1",
+    short_code: "OR", access_mode: "public", credential_requirement: "required", auto_model_id: "openrouter/auto",
+    allowed_model_ids: legacyAllowed, enabled: true, configured: true, verification_status: "verified", version: 1,
+    models: legacyAllowed.map((model_id) => ({ model_id, catalog_status: "ready", effective_capabilities: ["text_generation"] })),
+  };
+  const fixture = adminFixture({ existingConnections: [existing] });
+  const originalFetch = fixture.fetch;
+  fixture.fetch = async (url, options = {}) => {
+    if (String(url) === "/bff/api/admin/provider-connections/openrouter-legacy-save" && options.method === "PUT") {
+      const body = JSON.parse(options.body);
+      fixture.requests.push({ path: String(url), method: options.method, body });
+      return Response.json({ data: { ...existing, ...body, models: existing.models, version: 2 } });
+    }
+    return originalFetch(url, options);
+  };
+  const view = await mountAdminFixture(fixture, "openrouter-legacy-save");
+  try {
+    await fill(view.act, controlFor(view.container, "연결 이름"), "Renamed OpenRouter");
+    const enabledCheckbox = findElements(view.container, (node) => node.tagName === "INPUT" && node.type === "checkbox" && node.parentNode?.textContent.includes("사용 후보에 포함"))[0];
+    await setChecked(view.act, enabledCheckbox, false);
+    assert.equal(buttonByText(view.container, "연결 시험 및 저장").disabled, false);
+    await click(view.act, buttonByText(view.container, "연결 시험 및 저장"));
+    const update = fixture.requests.find((item) => item.path === "/bff/api/admin/provider-connections/openrouter-legacy-save" && item.method === "PUT");
+    assert.ok(update);
+    assert.equal(update.body.enabled, false);
+    assert.deepEqual(update.body.allowed_model_ids, legacyAllowed);
+  } finally { await view.cleanup(); }
+});
 
 test("saved OmniRoute reads catalog through existing same-origin refresh without allowing listed models", async () => {
   const connection = {

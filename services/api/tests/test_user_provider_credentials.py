@@ -364,3 +364,52 @@ def test_omniroute_personal_key_probes_every_legacy_allowed_model(monkeypatch, l
     assert saved.verification_status == "verified"
     assert [item[2]["model"] for item in calls if isinstance(item, tuple)] == list(legacy_allowed)
     assert any(isinstance(item, str) and item.startswith("INSERT INTO user_provider_credentials") for item in calls)
+
+
+def test_omniroute_personal_key_without_allowed_models_omits_model(monkeypatch) -> None:
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None, rows=()):
+            self.row, self.rows = row, rows
+
+        def fetchone(self):
+            return self.row
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, sql, _params=()):
+            if sql.startswith("SELECT provider_code"):
+                return Cursor(("OMNIROUTE", "https://omniroute.example/v1", "personal", "required", True, "OMNIROUTE"))
+            if sql.startswith("SELECT credential_version"):
+                return Cursor((0,))
+            if sql.startswith("SELECT model_id FROM system_provider_allowed_models"):
+                return Cursor(rows=())
+            return Cursor()
+
+    class Store:
+        @contextmanager
+        def _transaction(self, _context):
+            yield Connection()
+
+    class Transport:
+        def request(self, method, url, headers, body, timeout_seconds, *, follow_redirects):
+            calls.append((method, url, body))
+            return TransportResponse(200, {"output_text": "ready"})
+
+    monkeypatch.setattr(module, "AdapterRegistry", lambda **kwargs: AdapterRegistry(Transport(), **kwargs))
+    service = module.PostgresUserProviderCredentialService(
+        Store(), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+
+    saved = service.replace_credential(
+        tenant_id="tenant-1", user_id="user-1", connection_id="route-1",
+        credential="fixture-personal-secret", expected_version=0,
+    )
+
+    assert saved.verification_status == "verified"
+    assert len(calls) == 1
+    assert calls[0][0:2] == ("POST", "https://omniroute.example/v1/responses")
+    assert "model" not in calls[0][2]

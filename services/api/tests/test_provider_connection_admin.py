@@ -892,7 +892,10 @@ def test_openrouter_listed_auto_refresh_keeps_one_upstream_row(monkeypatch) -> N
         base_url="https://openrouter.ai/api/v1", short_code="OR", adapter_type="OPENROUTER",
         provider_name="OpenRouter",
     )
-    service.create_connection(context(), command, "openrouter-auto-seed")
+    created, _ = service.create_connection(context(), command, "openrouter-auto-seed")
+    created_auto_rows = [item for item in created["models"] if item["model_id"] == "openrouter/auto"]
+    assert len(created_auto_rows) == 1
+    assert created_auto_rows[0]["catalog_origin"] == "upstream"
     refreshed, _ = service.refresh_catalog(context(), "openrouter-1", 1, "openrouter-auto-refresh")
     auto_rows = [item for item in refreshed["models"] if item["model_id"] == "openrouter/auto"]
     assert len(auto_rows) == 1
@@ -1497,6 +1500,39 @@ def test_private_test_key_is_ephemeral(monkeypatch) -> None:
     assert saved["verification_status"] == "unverified"
     assert transport.requests[0][2]["x-api-key"] == "fixture-one-time-key"
     assert "fixture-one-time-key" not in repr(command) + repr(saved) + repr(database.__dict__)
+
+
+def test_personal_custom_auto_expansion_requires_existing_user_keys_to_be_reverified(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://models.example/v1/chat/completions"] = TransportResponse(
+        200, {"choices": [{"message": {"content": "ready"}}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(
+        context(), custom_command(access_mode="personal", credential=None,
+                                  test_credential="fixture-one-time-key"),
+        "custom-personal-auto-seed",
+    )
+    database.user_credentials = [
+        {"connection_id": "custom-1", "verification_status": "verified", "encrypted_credential": b"sealed-a", "credential_version": 2},
+        {"connection_id": "other-custom", "verification_status": "verified", "encrypted_credential": b"sealed-b", "credential_version": 3},
+    ]
+
+    saved, _ = service.update_connection(context(), "custom-1", ProviderConnectionUpdateCommand(
+        display_name="Custom primary", base_url="https://models.example/v1", credential=None,
+        logical_model_ids=(), enabled=True, expected_version=1,
+        access_mode="personal", credential_requirement="required", short_code="CU",
+        adapter_type="openai_compatible", allowed_model_ids=("manual-model", "auto"),
+        provider_name="Example AI", test_credential="fixture-one-time-key",
+        auto_model_id="auto", auto_model_id_specified=True,
+    ), "custom-personal-auto-expand")
+
+    assert saved["auto_model_id"] == "auto"
+    assert saved["allowed_model_ids"] == ["manual-model", "auto"]
+    assert database.user_credentials == [
+        {"connection_id": "custom-1", "verification_status": "unverified", "encrypted_credential": b"sealed-a", "credential_version": 2},
+        {"connection_id": "other-custom", "verification_status": "verified", "encrypted_credential": b"sealed-b", "credential_version": 3},
+    ]
 
 
 @pytest.mark.parametrize("adapter_type", ["openai_compatible", "anthropic_compatible"])

@@ -22,6 +22,11 @@ def upgrade() -> None:
         "WHEN 'OMNIROUTE' THEN 'auto' WHEN 'OPENROUTER' THEN 'openrouter/auto' END "
         "WHERE provider_code IN ('OMNIROUTE','OPENROUTER')"
     )
+    op.execute(
+        "UPDATE system_provider_models m SET catalog_origin='logical' "
+        "FROM system_provider_connections c WHERE m.connection_id=c.connection_id "
+        "AND c.provider_code='OMNIROUTE' AND m.model_id='auto'"
+    )
 
 
 def downgrade() -> None:

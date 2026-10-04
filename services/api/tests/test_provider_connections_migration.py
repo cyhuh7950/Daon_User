@@ -70,6 +70,9 @@ def test_migration_0052_adds_router_auto_without_rewriting_existing_data() -> No
     assert "'OMNIROUTE'" in sql and "'auto'" in sql
     assert "'OPENROUTER'" in sql and "'openrouter/auto'" in sql
     assert "CUSTOM" not in sql
+    assert "UPDATE system_provider_models" in sql
+    assert "catalog_origin='logical'" in sql
+    assert "c.provider_code='OMNIROUTE'" in sql and "m.model_id='auto'" in sql
     for table in ("system_provider_allowed_models", "workspace_model_defaults", "user_provider_credentials"):
         assert f"UPDATE {table}" not in sql
         assert f"DELETE FROM {table}" not in sql

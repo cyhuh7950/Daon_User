@@ -124,7 +124,7 @@ class PostgresUserProviderCredentialService:
                             profile, credential, model_ids,
                         )
                     else:
-                        AdapterRegistry(logical_models={connection_id: model_ids or ("auto",)}).adapter(
+                        AdapterRegistry(logical_models={connection_id: model_ids}).adapter(
                             provider_code,
                         ).verify(profile, credential)
                 else:

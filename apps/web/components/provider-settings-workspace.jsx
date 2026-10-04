@@ -167,8 +167,8 @@ function omniRouteSelectedModelCount(value) {
   return normalizedLogicalModels(value).length;
 }
 
-function unchangedOmniRouteSelection(draft, connection) {
-  if (draft.provider_code !== "OMNIROUTE" || !draft.version || connection?.connection_id !== draft.connection_id) return false;
+function unchangedRouteSelection(draft, connection) {
+  if (!Object.hasOwn(FIXED_AUTO_MODELS, draft.provider_code) || !draft.version || connection?.connection_id !== draft.connection_id) return false;
   const selected = normalizedLogicalModels(draft.logical_model_ids);
   const allowed = connection.allowed_model_ids ?? [];
   return allowed.length > 0 && selected.length === allowed.length && selected.every((modelId) => allowed.includes(modelId));
@@ -276,7 +276,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     const connectionId = draft.connection_id.trim();
     const compatible = draft.provider_code === "CUSTOM" && Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type);
     const route = draft.provider_code === "OMNIROUTE" || draft.provider_code === "OPENROUTER";
-    const routeModelsUnchanged = unchangedOmniRouteSelection(draft, selectedConnection);
+    const routeModelsUnchanged = unchangedRouteSelection(draft, selectedConnection);
     if (route && !(includeCredential && draft.version > 0) && !routeModelsUnchanged && omniRouteSelectedModelCount(draft.logical_model_ids) > 4) return;
     if (isSystemAdmin && route && draft.access_mode === "personal" && includeCredential) return;
     if (!isSystemAdmin) {
@@ -447,11 +447,19 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const compatible = draft.provider_code === "CUSTOM" && Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type);
   const pendingCompatible = compatible && draft.version === 0 && draft.access_mode === "personal"
     && !credential.trim() && selectedModelIds.length === 0 && !draft.auto_model_id.trim();
-  const routeModelsUnchanged = unchangedOmniRouteSelection(draft, selectedConnection);
+  const personalCustomProbeNeeded = compatible && draft.version > 0 && draft.access_mode === "personal"
+    && (draft.base_url.trim() !== selectedConnection?.base_url
+      || draft.auto_model_id.trim() !== (selectedConnection?.auto_model_id ?? "")
+      || draft.access_mode !== selectedConnection?.access_mode
+      || (draft.enabled && !selectedConnection?.enabled)
+      || selectedModelIds.length !== (selectedConnection?.allowed_model_ids ?? []).length
+      || selectedModelIds.some((modelId) => !(selectedConnection?.allowed_model_ids ?? []).includes(modelId)));
+  const routeModelsUnchanged = unchangedRouteSelection(draft, selectedConnection);
   const managedModels = MANAGED_MODEL_PROVIDERS.has(selectedConnection?.provider_code);
   const canMutate = isSystemAdmin === true && !busy && Boolean(draft.connection_id.trim()) && Boolean(draft.provider_name.trim()) && Boolean(draft.display_name.trim()) && Boolean(draft.base_url.trim())
     && (!draft.auto_model_id || (draft.auto_model_id.length <= 256 && /^\S+$/u.test(draft.auto_model_id)))
     && (!Object.hasOwn(FIXED_AUTO_MODELS, draft.provider_code) || routeModelsUnchanged || omniRouteSelectedModelCount(draft.logical_model_ids) <= 4)
+    && (!personalCustomProbeNeeded || Boolean(credential.trim()))
     && (!compatible || pendingCompatible || ((selectedModelIds.length >= 1 || draft.auto_model_id.trim()) && selectedModelIds.length <= 4 && (draft.version > 0 || draft.credential_requirement === "none" || Boolean(credential.trim()))));
   const canPreview = isSystemAdmin === true && compatible && !busy
     && Boolean(draft.connection_id.trim()) && Boolean(draft.base_url.trim()) && (draft.credential_requirement === "none" || Boolean(credential.trim()));

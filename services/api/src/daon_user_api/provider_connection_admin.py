@@ -538,11 +538,16 @@ class PostgresProviderConnectionService:
                 adapter.verify(profile, raw)
                 models = adapter.discover_models(profile, raw)
             elif verify_required:
-                adapter.verify(profile, raw)
-                models = (
-                    ProviderCatalog.from_logical_models(connection_id, provider_code, logical_model_ids)
-                    if provider_code == "OMNIROUTE" and logical_model_ids else ()
-                )
+                if provider_code == "OPENROUTER":
+                    # Its verification already reads /models; keep the upstream
+                    # rows so a listed Auto is not mislabeled as synthetic.
+                    models = adapter.discover_models(profile, raw)
+                else:
+                    adapter.verify(profile, raw)
+                    models = (
+                        ProviderCatalog.from_logical_models(connection_id, provider_code, logical_model_ids)
+                        if provider_code == "OMNIROUTE" and logical_model_ids else ()
+                    )
             elif provider_code in {"OMNIROUTE", "EOUL_GATEWAY", "SENTENCE_TRANSFORMERS"} and logical_model_ids:
                 # Explicit logical selections are cataloged without a remote lookup.
                 models = (
@@ -900,8 +905,13 @@ class PostgresProviderConnectionService:
                 )
             if not route_models_unchanged:
                 self._set_allowed_models(connection, context, connection_id, route_models)
-            if route and command.access_mode == "personal" and (
-                route_models_changed or profile.base_url != str(current[3])
+            if command.access_mode == "personal" and (
+                profile.base_url != str(current[3])
+                or (route and route_models_changed)
+                or (custom and (
+                    set(command.allowed_model_ids) != set(current_allowed)
+                    or auto_model_id != current[18]
+                ))
             ):
                 connection.execute(
                     "UPDATE user_provider_credentials SET verification_status='unverified',"
