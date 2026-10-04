@@ -20,6 +20,7 @@ class DiscoveredModel:
     reported_capabilities: tuple[str, ...]
     routing_owner: RoutingOwner
     daon_fallback_allowed: bool
+    catalog_origin: Literal["upstream", "logical"] = "upstream"
 
 
 def _valid_model_id(value: object) -> str:
@@ -54,6 +55,17 @@ def _contains_sensitive_key(value: object) -> bool:
 
 
 class ProviderCatalog:
+    @staticmethod
+    def logical_auto_model(connection_id: str, provider_code: str, auto_model_id: str) -> DiscoveredModel:
+        return DiscoveredModel(
+            connection_id=connection_id, provider_code=provider_code,
+            model_id=_valid_model_id(auto_model_id),
+            reported_capabilities=("text_generation",),
+            routing_owner="gateway" if provider_code == "OMNIROUTE" else "provider",
+            daon_fallback_allowed=provider_code != "OMNIROUTE",
+            catalog_origin="logical",
+        )
+
     @staticmethod
     def usable_omniroute_rows(payload: object, credential: str) -> list[Mapping[object, object]]:
         """Keep selectable catalog IDs without weakening stored model-ID validation."""
@@ -147,6 +159,7 @@ class ProviderCatalog:
                     "local_runtime" if provider_code == "SENTENCE_TRANSFORMERS" else "gateway"
                 ),
                 daon_fallback_allowed=False,
+                catalog_origin="logical",
             )
             for model_id in normalized
         )

@@ -317,15 +317,15 @@ def test_omniroute_lookup_excludes_generic_sibling_of_typed_specialty(
     assert [model.model_id for model in models] == ["cc/claude-sonnet"]
 
 
-def test_omniroute_omitted_model_probes_auto_without_catalog_lookup(fake_transport: FakeTransport) -> None:
+def test_omniroute_omitted_model_probes_provider_default_without_catalog_lookup(fake_transport: FakeTransport) -> None:
     adapter = AdapterRegistry(fake_transport).adapter("OMNIROUTE")
 
     result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
 
     assert result.status == "ready"
-    assert [(item.method, item.url, item.body["model"] if item.body else None)
+    assert [(item.method, item.url, item.body.get("model") if item.body else None)
             for item in fake_transport.requests] == [
-        ("POST", "https://omniroute.example/v1/responses", "auto")
+        ("POST", "https://omniroute.example/v1/responses", None)
     ]
 
 

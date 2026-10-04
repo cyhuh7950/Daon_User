@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Mapping, Protocol, Sequence
 import urllib.error
@@ -459,10 +459,9 @@ class OmniRouteAdapter(_RoutingGatewayAdapter):
             # model must pass a text-producing /v1/responses probe before use.
             chat_ids = tuple(model.model_id for model in listed if model.model_id not in specialty_ids)
             models = (
-                ProviderCatalog.from_logical_models(
-                    connection.connection_id, self.provider_code,
-                    chat_ids,
-                ) if chat_ids else ()
+                tuple(replace(model, catalog_origin="upstream") for model in ProviderCatalog.from_logical_models(
+                    connection.connection_id, self.provider_code, chat_ids,
+                )) if chat_ids else ()
             )
             return models, tuple(sorted(specialty_ids))
         except ProviderCatalogError as error:
@@ -481,18 +480,20 @@ class OmniRouteAdapter(_RoutingGatewayAdapter):
             # reaching this adapter. Stored legacy allowlists may be larger or
             # contain auto beside explicit IDs; every runnable ID must be
             # probed, including auto, during Key replacement and health checks.
-            selected = tuple(configured) or ("auto",)
-            models = ProviderCatalog.from_logical_models(
-                connection.connection_id, self.provider_code,
-                selected,
+            models = (
+                ProviderCatalog.from_logical_models(connection.connection_id, self.provider_code, configured)
+                if configured else ()
             )
         except ProviderCatalogError as error:
             raise AdapterError(error.args[0], 409) from None
-        for model in models:
+        for model in models or (None,):
+            body: dict[str, object] = {"input": "Reply OK.", "max_output_tokens": 16, "stream": False}
+            if model is not None:
+                body["model"] = model.model_id
             payload = self._request(
                 "POST", _append_path(base, "/v1/responses"),
                 {"authorization": f"Bearer {secret}"},
-                {"model": model.model_id, "input": "Reply OK.", "max_output_tokens": 16, "stream": False},
+                body,
             )
             if (not isinstance(payload, Mapping)
                     or not isinstance(payload.get("output_text"), str)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 import hashlib
 import re
@@ -60,13 +60,27 @@ def _router_auto_id(provider_code: str, adapter_type: str, value: str | None) ->
 
 
 def _omniroute_models(provider_code: str, allowed: Sequence[str], logical: Sequence[str]) -> tuple[str, ...]:
-    if provider_code != "OMNIROUTE":
-        return tuple(allowed)
-    selected = tuple(allowed or logical or ("auto",))
-    model_ids = tuple(model for model in selected if model != "auto") or ("auto",)
+    model_ids = tuple(allowed or logical) if provider_code == "OMNIROUTE" else tuple(allowed)
+    if provider_code not in {"OMNIROUTE", "OPENROUTER"}:
+        return model_ids
     if len(model_ids) > 4:
         raise ProviderConnectionAdminError("PROVIDER_MODEL_IDS_INVALID", 409)
     return model_ids
+
+
+def _models_with_auto(
+    connection_id: str, provider_code: str, auto_model_id: str | None, models: Sequence[object],
+    *, auto_from_probe: bool = False,
+) -> tuple[object, ...]:
+    merged = list(models)
+    if auto_from_probe and auto_model_id is not None:
+        merged = [
+            replace(model, catalog_origin="logical") if model.model_id == auto_model_id else model
+            for model in merged
+        ]
+    if auto_model_id is not None and not any(model.model_id == auto_model_id for model in merged):
+        merged.append(ProviderCatalog.logical_auto_model(connection_id, provider_code, auto_model_id))
+    return tuple(merged)
 
 
 class ProviderConnectionAdminError(RuntimeError):
@@ -428,7 +442,7 @@ class PostgresProviderConnectionService:
                         "SELECT model_id FROM system_provider_allowed_models "
                         "WHERE connection_id=%s ORDER BY model_id", (connection_id,),
                     ).fetchall())
-                    adapter = AdapterRegistry(logical_models={connection_id: allowed or ("auto",)}).adapter("OMNIROUTE")
+                    adapter = AdapterRegistry(logical_models={connection_id: allowed}).adapter("OMNIROUTE")
                 else:
                     adapter = AdapterRegistry().adapter(str(row[1]))
                 adapter.verify(profile, credential)
@@ -488,6 +502,7 @@ class PostgresProviderConnectionService:
         version: int, previous_sealed: EncryptedCredential | None = None,
         discover_models: bool = True, verify_required: bool = True,
         adapter_type: str = "", verified_model_ids: Sequence[str] | None = None,
+        auto_probe_model_id: str | None = None,
         test_credential: str | None = None, rejected_model_ids: list[str] | None = None,
     ) -> tuple[ProviderConnection, EncryptedCredential | None, tuple[object, ...]]:
         try:
@@ -508,7 +523,9 @@ class PostgresProviderConnectionService:
                 probe_credential = test_credential if test_credential is not None else raw
                 if probe_credential is None and provider_code != "CUSTOM":
                     raise AdapterError("PROVIDER_CREDENTIAL_REQUIRED", 409)
-                models = adapter.verify_models(profile, probe_credential, verified_model_ids)
+                models = adapter.verify_models(profile, probe_credential, verified_model_ids) if verified_model_ids else ()
+                if auto_probe_model_id is not None and auto_probe_model_id not in verified_model_ids:
+                    models = (*models, *adapter.verify_models(profile, probe_credential, (auto_probe_model_id,)))
             elif discover_models and provider_code == "OMNIROUTE" and rejected_model_ids is not None:
                 # Refresh must distinguish a missing manually probed ID from
                 # an explicitly listed non-text ID before preserving allowed rows.
@@ -524,7 +541,7 @@ class PostgresProviderConnectionService:
                 adapter.verify(profile, raw)
                 models = (
                     ProviderCatalog.from_logical_models(connection_id, provider_code, logical_model_ids)
-                    if provider_code == "OMNIROUTE" else ()
+                    if provider_code == "OMNIROUTE" and logical_model_ids else ()
                 )
             elif provider_code in {"OMNIROUTE", "EOUL_GATEWAY", "SENTENCE_TRANSFORMERS"} and logical_model_ids:
                 # Explicit logical selections are cataloged without a remote lookup.
@@ -562,16 +579,17 @@ class PostgresProviderConnectionService:
         for model in models:
             connection.execute(
                 "INSERT INTO system_provider_models (connection_id,model_id,reported_capabilities,"
-                "effective_capabilities,override_applied,catalog_status,catalog_version,discovered_at,updated_by) "
-                "VALUES (%s,%s,%s,%s,false,'ready',%s,now(),%s) "
+                "effective_capabilities,override_applied,catalog_status,catalog_version,catalog_origin,discovered_at,updated_by) "
+                "VALUES (%s,%s,%s,%s,false,'ready',%s,%s,now(),%s) "
                 "ON CONFLICT (connection_id,model_id) DO UPDATE SET "
                 "reported_capabilities=excluded.reported_capabilities,"
                 "effective_capabilities=CASE WHEN system_provider_models.override_applied "
                 "THEN system_provider_models.effective_capabilities ELSE excluded.effective_capabilities END,"
-                "catalog_status='ready',catalog_version=excluded.catalog_version,discovered_at=now(),"
+                "catalog_status='ready',catalog_version=excluded.catalog_version,"
+                "catalog_origin=excluded.catalog_origin,discovered_at=now(),"
                 "updated_at=now(),updated_by=excluded.updated_by",
                 (connection_id, model.model_id, list(model.reported_capabilities),
-                 list(model.reported_capabilities), catalog_version, context.actor_id),
+                 list(model.reported_capabilities), catalog_version, model.catalog_origin, context.actor_id),
             )
         if mark_missing_stale:
             connection.execute(
@@ -648,6 +666,7 @@ class PostgresProviderConnectionService:
             command.provider_code == "CUSTOM" and command.access_mode == "personal"
             and command.credential is None and command.test_credential is None
             and not command.allowed_model_ids and not command.logical_model_ids
+            and command.auto_model_id is None
         )
         if command.provider_code == "CUSTOM" and command.access_mode == "personal" and command.test_credential is None and not pending_custom:
             raise ProviderConnectionAdminError("PROVIDER_CREDENTIAL_REQUIRED", 409)
@@ -694,6 +713,7 @@ class PostgresProviderConnectionService:
                 verify_required=command.access_mode == "public",
                 adapter_type=command.adapter_type,
                 verified_model_ids=command.allowed_model_ids if command.provider_code == "CUSTOM" and not pending_custom else None,
+                auto_probe_model_id=auto_model_id if command.provider_code == "CUSTOM" and not pending_custom else None,
                 test_credential=command.test_credential,
             )
             connection.execute(
@@ -713,6 +733,8 @@ class PostgresProviderConnectionService:
                  command.access_mode, command.credential_requirement, command.short_code, command.adapter_type,
                  provider_name, auto_model_id),
             )
+            models = _models_with_auto(command.connection_id, command.provider_code, auto_model_id, models,
+                                       auto_from_probe=command.provider_code == "CUSTOM")
             if models:
                 self._replace_models(connection, context, command.connection_id, models, 1)
             self._set_allowed_models(connection, context, command.connection_id, route_models)
@@ -774,6 +796,13 @@ class PostgresProviderConnectionService:
             if (str(current[1]) in FIXED_ROUTER_AUTO_IDS and command.auto_model_id_specified
                     and command.auto_model_id is None):
                 raise ProviderConnectionAdminError("PROVIDER_AUTO_MODEL_ID_INVALID", 409)
+            if current[18] is not None and current[18] != auto_model_id:
+                referenced = connection.execute(
+                    "SELECT count(*) FROM workspace_model_defaults WHERE connection_id=%s AND model_id=%s",
+                    (connection_id, str(current[18])),
+                ).fetchone()
+                if referenced is not None and int(referenced[0]) > 0:
+                    raise ProviderConnectionAdminError("PROVIDER_AUTO_MODEL_REFERENCED", 409)
             provider_name = command.provider_name.strip() or str(current[17])
             if (command.provider_name and not command.provider_name.strip()) or not provider_name or len(provider_name) > 256:
                 raise ProviderConnectionAdminError("PROVIDER_NAME_INVALID", 409)
@@ -784,7 +813,7 @@ class PostgresProviderConnectionService:
                     and command.credential is None and current[4] is None):
                 raise ProviderConnectionAdminError("PROVIDER_CREDENTIAL_REQUIRED", 409)
             custom = str(current[1]) == "CUSTOM"
-            route = str(current[1]) == "OMNIROUTE"
+            route = str(current[1]) in {"OMNIROUTE", "OPENROUTER"}
             current_allowed = (
                 tuple(str(row[0]) for row in connection.execute(
                     "SELECT model_id FROM system_provider_allowed_models WHERE connection_id=%s ORDER BY model_id",
@@ -809,6 +838,7 @@ class PostgresProviderConnectionService:
                 or command.test_credential is not None or command.access_mode != str(current[13])
                 or set(command.allowed_model_ids) != set(current_allowed)
                 or (command.enabled and not bool(current[9]))
+                or auto_model_id != current[18]
             )
             if custom_probe and command.access_mode == "personal" and command.test_credential is None:
                 raise ProviderConnectionAdminError("PROVIDER_CREDENTIAL_REQUIRED", 409)
@@ -827,6 +857,7 @@ class PostgresProviderConnectionService:
                 verify_required=verify_required,
                 adapter_type=command.adapter_type,
                 verified_model_ids=command.allowed_model_ids if custom_probe else None,
+                auto_probe_model_id=auto_model_id if custom_probe else None,
                 test_credential=command.test_credential,
             )
             verification_status = (
@@ -855,7 +886,18 @@ class PostgresProviderConnectionService:
             if row is None:
                 raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
             if models:
+                models = _models_with_auto(connection_id, str(current[1]), auto_model_id, models,
+                                           auto_from_probe=custom)
                 self._replace_models(connection, context, connection_id, models, int(row[0]))
+            elif auto_model_id and not connection.execute(
+                "SELECT model_id FROM system_provider_models WHERE connection_id=%s AND model_id=ANY(%s)",
+                (connection_id, [auto_model_id]),
+            ).fetchall():
+                self._replace_models(
+                    connection, context, connection_id,
+                    _models_with_auto(connection_id, str(current[1]), auto_model_id, ()), int(row[0]),
+                    mark_missing_stale=False,
+                )
             if not route_models_unchanged:
                 self._set_allowed_models(connection, context, connection_id, route_models)
             if route and command.access_mode == "personal" and (
@@ -1044,6 +1086,7 @@ class PostgresProviderConnectionService:
                     (connection_id,),
                 ).fetchall()) if str(current[1]) == "OMNIROUTE" else ()
             )
+            models = _models_with_auto(connection_id, str(current[1]), current[18], models)
             self._replace_models(
                 connection, context, profile.connection_id, models, int(row[0]),
                 mark_missing_stale=str(current[1]) != "CUSTOM",

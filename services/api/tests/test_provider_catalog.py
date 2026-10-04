@@ -64,6 +64,17 @@ def test_openrouter_catalog_accepts_non_secret_tokenizer_metadata() -> None:
     assert models[0].model_id == "vendor/text-model"
 
 
+def test_openrouter_listed_auto_is_not_duplicated() -> None:
+    models = ProviderCatalog.from_payload(
+        "openrouter-primary", "OPENROUTER",
+        {"data": [{"id": "openrouter/auto", "architecture": {"output_modalities": ["text"]}}]},
+    )
+    logical = ProviderCatalog.logical_auto_model("openrouter-primary", "OPENROUTER", "openrouter/auto")
+    merged = {model.model_id: model for model in (logical, *models)}
+    assert len(merged) == 1
+    assert merged["openrouter/auto"].catalog_origin == "upstream"
+
+
 @pytest.mark.parametrize("code", ["OMNIROUTE", "EOUL_GATEWAY"])
 def test_gateway_logical_models_are_explicit_and_never_provider_native(
     code: str,

@@ -120,6 +120,7 @@ class CompatibleDatabase(SharedDatabase):
         super().__init__()
         self.allowed_model_ids: list[str] = []
         self.user_credentials: list[dict[str, object]] = []
+        self.default_model_ids: list[str] = []
 
 
 class CompatibleConnection(Connection):
@@ -175,21 +176,27 @@ class CompatibleConnection(Connection):
                 return Cursor(None)
             record["version"] += 1
             return Cursor((record["version"],))
+        if normalized.startswith("UPDATE system_provider_connections SET verification_status='verified'"):
+            if record is None or record["connection_id"] != params[-2] or record["version"] != params[-1]:
+                return Cursor(None)
+            record["verification_status"] = "verified"
+            record["version"] += 1
+            return Cursor((record["version"],))
         if normalized.startswith("INSERT INTO system_provider_models"):
             self.database.models = [item for item in self.database.models if item[0] != params[1]]
-            self.database.models.append((params[1], params[2], params[3], False, "ready", params[4]))
+            self.database.models.append((params[1], params[2], params[3], False, "ready", params[4], params[5]))
             self.database.system_connection["catalog_status"] = "ready"
             self.database.system_connection["catalog_version"] = params[4]
             return Cursor()
         if normalized.startswith("UPDATE system_provider_models SET catalog_status='stale'"):
             self.database.models = [
-                (item[0], item[1], item[2], item[3], item[4] if item[0] in params[1] else "stale", item[5])
+                (item[0], item[1], item[2], item[3], item[4] if item[0] in params[1] else "stale", item[5], item[6] if len(item) > 6 else "upstream")
                 for item in self.database.models
             ]
             return Cursor()
         if normalized.startswith("UPDATE system_provider_models SET reported_capabilities=%s"):
             self.database.models = [
-                (item[0], params[0], params[1], False, "stale", params[2]) if item[0] in params[4] else item
+                (item[0], params[0], params[1], False, "stale", params[2], item[6] if len(item) > 6 else "upstream") if item[0] in params[4] else item
                 for item in self.database.models
             ]
             return Cursor()
@@ -198,6 +205,8 @@ class CompatibleConnection(Connection):
         if normalized.startswith("SELECT model_id FROM system_provider_models WHERE connection_id=%s ORDER BY"):
             return Cursor(rows=[(item[0],) for item in self.database.models])
         if normalized.startswith("SELECT count(*) FROM workspace_model_defaults"):
+            if "AND model_id=%s" in normalized:
+                return Cursor((sum(item == params[1] for item in self.database.default_model_ids),))
             return Cursor((0,))
         if normalized.startswith("DELETE FROM system_provider_allowed_models"):
             self.database.allowed_model_ids = [item for item in self.database.allowed_model_ids if item in params[1]]
@@ -723,7 +732,7 @@ def custom_command(*, adapter_type="openai_compatible", access_mode="public", cr
     )
 
 
-def route_command(*, model_ids=()):
+def route_command(*, model_ids=("auto",)):
     return ProviderConnectionCreateCommand(
         connection_id="route-1", provider_code="OMNIROUTE", display_name="OmniRoute",
         base_url="https://omniroute.example/v1", credential="fixture-route-key",
@@ -791,7 +800,122 @@ def test_custom_auto_requires_openai_compatible_and_valid_id(monkeypatch) -> Non
     assert database.system_connection is None
 
 
-@pytest.mark.parametrize("model_ids", [(), ("cc/claude-sonnet",), ("combo-writing",)])
+def test_custom_auto_probe_failure_preserves_key_allowlist_and_default(monkeypatch) -> None:
+    transport = FixtureTransport()
+    url = "https://models.example/v1/chat/completions"
+    transport.responses[(url, "manual-model")] = TransportResponse(
+        200, {"choices": [{"message": {"content": "ready"}}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), custom_command(), "custom-auto-probe-seed")
+    before = durable_state(database)
+    transport.responses[(url, "auto")] = TransportResponse(200, {})
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_PROBE_RESPONSE_INVALID$"):
+        service.update_connection(context(), "custom-1", ProviderConnectionUpdateCommand(
+            display_name="Custom primary", base_url="https://models.example/v1", credential=None,
+            logical_model_ids=(), enabled=True, expected_version=1,
+            access_mode="public", credential_requirement="required", short_code="CU",
+            adapter_type="openai_compatible", allowed_model_ids=("manual-model",),
+            provider_name="Example AI", auto_model_id="auto", auto_model_id_specified=True,
+        ), "custom-auto-probe-failed")
+    assert durable_state(database) == before
+    assert database.system_connection["auto_model_id"] is None
+
+
+def test_custom_auto_success_adds_logical_catalog_without_granting_allowlist(monkeypatch) -> None:
+    transport = FixtureTransport()
+    url = "https://models.example/v1/chat/completions"
+    transport.responses[(url, "manual-model")] = TransportResponse(
+        200, {"choices": [{"message": {"content": "ready"}}]},
+    )
+    transport.responses[(url, "auto")] = TransportResponse(
+        200, {"choices": [{"message": {"content": "ready"}}]},
+    )
+    service, _ = compatible_service(monkeypatch, transport)
+    saved, _ = service.create_connection(
+        context(), replace(custom_command(), auto_model_id="auto"), "custom-auto-created",
+    )
+    assert saved["auto_model_id"] == "auto"
+    assert saved["allowed_model_ids"] == ["manual-model"]
+    assert next(item for item in saved["models"] if item["model_id"] == "auto")["catalog_origin"] == "logical"
+    assert [item[3]["model"] for item in transport.requests] == ["manual-model", "auto"]
+
+
+def test_custom_auto_configuration_does_not_count_unselected_auto_as_fifth_allowed(monkeypatch) -> None:
+    transport = FixtureTransport()
+    url = "https://models.example/v1/chat/completions"
+    for model_id in ("m1", "m2", "m3", "m4", "auto"):
+        transport.responses[(url, model_id)] = TransportResponse(
+            200, {"choices": [{"message": {"content": "ready"}}]},
+        )
+    service, _ = compatible_service(monkeypatch, transport)
+    saved, _ = service.create_connection(context(), replace(
+        custom_command(allowed_model_ids=("m1", "m2", "m3", "m4")), auto_model_id="auto",
+    ), "custom-auto-four-allowed")
+    assert saved["allowed_model_ids"] == ["m1", "m2", "m3", "m4"]
+    assert [item[3]["model"] for item in transport.requests] == ["m1", "m2", "m3", "m4", "auto"]
+
+
+def test_removing_router_flag_with_referenced_auto_rejects_without_mutation(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses[("https://models.example/v1/chat/completions", "auto")] = TransportResponse(
+        200, {"choices": [{"message": {"content": "ready"}}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), replace(
+        custom_command(allowed_model_ids=("auto",)), auto_model_id="auto",
+    ), "custom-auto-default-seed")
+    database.default_model_ids = ["auto"]
+    before = durable_state(database)
+    transport.requests.clear()
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_AUTO_MODEL_REFERENCED$"):
+        service.update_connection(context(), "custom-1", ProviderConnectionUpdateCommand(
+            display_name="Custom primary", base_url="https://models.example/v1", credential=None,
+            logical_model_ids=(), enabled=True, expected_version=1,
+            access_mode="public", credential_requirement="required", short_code="CU",
+            adapter_type="openai_compatible", allowed_model_ids=("auto",),
+            provider_name="Example AI", auto_model_id=None, auto_model_id_specified=True,
+        ), "custom-auto-default-remove")
+    assert durable_state(database) == before
+    assert transport.requests == []
+
+
+def test_openrouter_listed_auto_refresh_keeps_one_upstream_row(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://openrouter.ai/api/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "openrouter/auto", "architecture": {"output_modalities": ["text"]}}]},
+    )
+    service, _ = compatible_service(monkeypatch, transport)
+    command = replace(
+        route_command(model_ids=("openrouter/auto",)),
+        connection_id="openrouter-1", provider_code="OPENROUTER", display_name="OpenRouter",
+        base_url="https://openrouter.ai/api/v1", short_code="OR", adapter_type="OPENROUTER",
+        provider_name="OpenRouter",
+    )
+    service.create_connection(context(), command, "openrouter-auto-seed")
+    refreshed, _ = service.refresh_catalog(context(), "openrouter-1", 1, "openrouter-auto-refresh")
+    auto_rows = [item for item in refreshed["models"] if item["model_id"] == "openrouter/auto"]
+    assert len(auto_rows) == 1
+    assert auto_rows[0]["catalog_origin"] == "upstream"
+    assert refreshed["allowed_model_ids"] == ["openrouter/auto"]
+
+
+def test_openrouter_auto_counts_toward_four_allowed_models(monkeypatch) -> None:
+    transport = FixtureTransport()
+    service, database = compatible_service(monkeypatch, transport)
+    command = replace(
+        route_command(model_ids=("openrouter/auto", "m1", "m2", "m3", "m4")),
+        connection_id="openrouter-1", provider_code="OPENROUTER", display_name="OpenRouter",
+        base_url="https://openrouter.ai/api/v1", short_code="OR", adapter_type="OPENROUTER",
+        provider_name="OpenRouter",
+    )
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        service.create_connection(context(), command, "openrouter-auto-fifth")
+    assert database.system_connection is None
+    assert transport.requests == []
+
+
+@pytest.mark.parametrize("model_ids", [("auto",), ("cc/claude-sonnet",), ("combo-writing",)])
 def test_omniroute_create_uses_selected_model_or_auto_for_probe_and_allowlist(monkeypatch, model_ids) -> None:
     transport = FixtureTransport()
     transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
@@ -801,7 +925,7 @@ def test_omniroute_create_uses_selected_model_or_auto_for_probe_and_allowlist(mo
 
     chosen = list(model_ids or ("auto",))
     assert saved["allowed_model_ids"] == chosen
-    assert [item["model_id"] for item in saved["models"]] == chosen
+    assert {item["model_id"] for item in saved["models"]} == set(chosen) | {"auto"}
     assert [(item[0], item[1], item[3]["model"]) for item in transport.requests] == [
         ("POST", "https://omniroute.example/v1/responses", chosen[0])
     ]
@@ -817,10 +941,10 @@ def test_omniroute_explicit_model_takes_precedence_over_previous_auto(monkeypatc
         context(), route_command(model_ids=("auto", "cc/claude-sonnet")), "route-create-explicit-001",
     )
 
-    assert saved["allowed_model_ids"] == ["cc/claude-sonnet"]
-    assert [item["model_id"] for item in saved["models"]] == ["cc/claude-sonnet"]
+    assert saved["allowed_model_ids"] == ["auto", "cc/claude-sonnet"]
+    assert [item["model_id"] for item in saved["models"]] == ["auto", "cc/claude-sonnet"]
     assert [(item[0], item[3]["model"]) for item in transport.requests] == [
-        ("POST", "cc/claude-sonnet"),
+        ("POST", "auto"), ("POST", "cc/claude-sonnet"),
     ]
 
 
@@ -829,13 +953,41 @@ def test_omniroute_auto_plus_four_explicit_counts_as_four_probes(monkeypatch) ->
     transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
     service, _ = compatible_service(monkeypatch, transport)
 
-    saved, _ = service.create_connection(
-        context(), route_command(model_ids=("auto", "m1", "m2", "m3", "m4")),
-        "route-auto-plus-four-create",
-    )
+    with pytest.raises(ProviderConnectionAdminError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        service.create_connection(
+            context(), route_command(model_ids=("auto", "m1", "m2", "m3", "m4")),
+            "route-auto-plus-four-create",
+        )
+    assert transport.requests == []
 
-    assert saved["allowed_model_ids"] == ["m1", "m2", "m3", "m4"]
-    assert [item[3]["model"] for item in transport.requests] == ["m1", "m2", "m3", "m4"]
+
+def test_omniroute_unlisted_auto_survives_refresh_and_keeps_allowlist(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "cc/claude-sonnet"}]},
+    )
+    service, database = compatible_service(monkeypatch, transport)
+    service.create_connection(context(), route_command(model_ids=("auto",)), "route-auto-refresh-create")
+    refreshed, _ = service.refresh_catalog(context(), "route-1", 1, "route-auto-refresh")
+    auto = next(item for item in refreshed["models"] if item["model_id"] == "auto")
+    assert auto["catalog_status"] == "ready"
+    assert auto["catalog_origin"] == "logical"
+    assert refreshed["allowed_model_ids"] == ["auto"]
+    assert database.allowed_model_ids == ["auto"]
+
+
+def test_omniroute_unselected_model_uses_provider_default_without_granting_auto(monkeypatch) -> None:
+    transport = FixtureTransport()
+    transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, {"output_text": "ready"})
+    service, _ = compatible_service(monkeypatch, transport)
+    saved, _ = service.create_connection(context(), route_command(model_ids=()), "route-unselected-create")
+    assert saved["allowed_model_ids"] == []
+    assert saved["auto_model_id"] == "auto"
+    assert next(item for item in saved["models"] if item["model_id"] == "auto")["catalog_origin"] == "logical"
+    assert [item[3] for item in transport.requests] == [
+        {"input": "Reply OK.", "max_output_tokens": 16, "stream": False}
+    ]
 
 
 def test_omniroute_refresh_reads_models_without_verifying_or_expanding_allowlist(monkeypatch) -> None:
@@ -884,7 +1036,7 @@ def test_omniroute_refresh_stales_missing_unallowed_but_preserves_allowed(
     saved, _ = service.refresh_catalog(context(), "route-1", 2, f"route-stale-refresh-2-{allowed_model}")
 
     statuses = {item["model_id"]: item["catalog_status"] for item in saved["models"]}
-    assert statuses == {allowed_model: "ready", "old-discovered": "stale", "new-discovered": "ready"}
+    assert statuses == {allowed_model: "ready", "auto": "ready", "old-discovered": "stale", "new-discovered": "ready"}
     assert saved["allowed_model_ids"] == [allowed_model]
     assert database.allowed_model_ids == [allowed_model]
 
@@ -1108,7 +1260,10 @@ def test_omniroute_unchanged_legacy_allowlist_survives_admin_rename_and_disable(
     assert saved["enabled"] is False
     assert saved["allowed_model_ids"] == list(legacy_allowed)
     assert database.allowed_model_ids == list(legacy_allowed)
-    assert database.models == before_models
+    assert [item for item in database.models if item[0] != "auto"] == [
+        item for item in before_models if item[0] != "auto"
+    ]
+    assert {item[0] for item in database.models} == {item[0] for item in before_models} | {"auto"}
     assert database.system_connection["encrypted_credential"] == before_key
     assert transport.requests == []
 
@@ -1156,7 +1311,7 @@ def test_omniroute_explicit_legacy_model_change_removes_auto_only_after_probe(mo
     assert saved["allowed_model_ids"] == ["m1", "m2", "m3", "m4"]
     assert database.allowed_model_ids == ["m1", "m2", "m3", "m4"]
     assert [request[3]["model"] for request in transport.requests] == ["m1", "m2", "m3", "m4"]
-    assert {item[0]: item[4] for item in database.models}["auto"] == "stale"
+    assert {item[0]: item[4] for item in database.models}["auto"] == "ready"
 
 
 def test_omniroute_failed_refresh_preserves_connection_and_key(monkeypatch) -> None:
