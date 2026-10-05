@@ -6,7 +6,7 @@ import pytest
 
 import daon_user_api.user_provider_credentials as module
 from daon_user_api.provider_connection_adapters import AdapterError, AdapterRegistry, TransportResponse
-from daon_user_api.provider_credentials import ProviderCredentialCipher
+from daon_user_api.provider_credentials import ProviderCredentialCipher, ProviderCredentialError
 from daon_user_api.user_provider_credentials import resolve_credential_candidates
 
 
@@ -44,6 +44,75 @@ def test_public_connection_never_uses_personal_credential() -> None:
 
     assert result.credential is None
     assert result.source == "none"
+
+
+def test_legacy_personal_v1_resolves_as_missing_without_rebinding() -> None:
+    cipher = ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1)
+    legacy = cipher.encrypt("route-1", "OPENROUTER", 1, b"legacy-personal-key")
+    seen_contexts = []
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Connection:
+        def execute(self, sql, params=()):
+            if sql.startswith("SELECT provider_code"):
+                return Cursor(("OPENROUTER", None, None, None, None, 0, "personal", "required"))
+            if sql.startswith("SELECT encrypted_credential"):
+                assert params == ("tenant-1", "user-1", "route-1")
+                return Cursor((
+                    legacy.ciphertext, legacy.nonce, legacy.encryption_key_version,
+                    legacy.schema_version, legacy.credential_version, "verified",
+                ))
+            raise AssertionError(f"unexpected query: {sql}")
+
+    class Store:
+        @contextmanager
+        def _transaction(self, context):
+            seen_contexts.append(context)
+            yield Connection()
+
+    service = module.PostgresUserProviderCredentialService(Store(), cipher)
+    result = service.resolve_credential(
+        tenant_id="tenant-1", user_id="user-1", connection_id="route-1",
+    )
+
+    assert result.source == "none" and result.credential is None
+    assert len(seen_contexts) == 1
+    assert seen_contexts[0].tenant_id == "tenant-1"
+    assert seen_contexts[0].actor_id == "user-1"
+    assert seen_contexts[0].workspace_id == "user:user-1"
+
+
+def test_legacy_personal_v1_is_reported_as_needing_reentry() -> None:
+    class Cursor:
+        def fetchall(self):
+            return (("route-1", "OPENROUTER", 3, "verified", 1),)
+
+    class Connection:
+        def execute(self, sql, params=()):
+            assert "credential_schema_version" in sql
+            assert params == ("tenant-1", "user-1")
+            return Cursor()
+
+    class Store:
+        @contextmanager
+        def _transaction(self, _context):
+            yield Connection()
+
+    service = module.PostgresUserProviderCredentialService(
+        Store(), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+    credentials = service.list_credentials(tenant_id="tenant-1", user_id="user-1")
+
+    assert len(credentials) == 1
+    assert credentials[0].configured is False
+    assert credentials[0].verification_status == "unverified"
+    assert credentials[0].credential_version == 3
 
 
 def test_failed_personal_probe_preserves_existing_credential(monkeypatch) -> None:
@@ -305,7 +374,21 @@ def test_migrated_custom_personal_key_replacement_uses_openai_probe(monkeypatch)
 
     assert result.verification_status == "verified" and result.credential_version == 2
     assert ("POST", "https://models.example.com/v1/chat/completions", "legacy-model", False) in calls
-    assert any(item[0].startswith("INSERT INTO user_provider_credentials") for item in calls if len(item) == 2)
+    insert = next(
+        item for item in calls
+        if isinstance(item, tuple) and item[0].startswith("INSERT INTO user_provider_credentials")
+    )
+    params = insert[1]
+    sealed = module._sealed((params[4], params[5], params[6], params[7], params[8]))
+    cipher = ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1)
+    assert sealed.schema_version == 2
+    assert cipher.decrypt(
+        "custom-1", "CUSTOM", 2, sealed, tenant_id="tenant-1", user_id="user-1",
+    ) == b"fixture-personal-secret"
+    with pytest.raises(ProviderCredentialError, match="^CREDENTIAL_DECRYPTION_FAILED$"):
+        cipher.decrypt(
+            "custom-1", "CUSTOM", 2, sealed, tenant_id="tenant-2", user_id="user-1",
+        )
 
 
 @pytest.mark.parametrize("second_response", [{"output_text": "ready"}, {}])

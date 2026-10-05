@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING, Sequence
 
 from .provider_connection_adapters import AdapterError, AdapterRegistry
-from .provider_credentials import EncryptedCredential, ProviderConnection, ProviderCredentialCipher, ProviderCredentialError
+from .provider_credentials import (
+    PERSONAL_CREDENTIAL_SCHEMA_VERSION,
+    EncryptedCredential,
+    ProviderConnection,
+    ProviderCredentialCipher,
+    ProviderCredentialError,
+)
 
 if TYPE_CHECKING:
     from .cloud_storage import CloudAccessContext, PostgresCloudStore
@@ -73,12 +79,20 @@ class PostgresUserProviderCredentialService:
     def list_credentials(self, *, tenant_id: str, user_id: str) -> list[UserProviderCredentialView]:
         with self._store._transaction(self._cloud(tenant_id, user_id, "provider_credential.read")) as connection:
             rows = connection.execute(
-                "SELECT connection_id,provider_code,credential_version,verification_status "
+                "SELECT connection_id,provider_code,credential_version,verification_status,credential_schema_version "
                 "FROM user_provider_credentials WHERE tenant_id=%s AND user_id=%s "
                 "ORDER BY connection_id",
                 (tenant_id, user_id),
             ).fetchall()
-        return [UserProviderCredentialView(str(row[0]), str(row[1]), True, int(row[2]), str(row[3])) for row in rows]
+        return [
+            UserProviderCredentialView(
+                str(row[0]), str(row[1]),
+                int(row[4]) == PERSONAL_CREDENTIAL_SCHEMA_VERSION,
+                int(row[2]),
+                str(row[3]) if int(row[4]) == PERSONAL_CREDENTIAL_SCHEMA_VERSION else "unverified",
+            )
+            for row in rows
+        ]
 
     def replace_credential(
         self, *, tenant_id: str, user_id: str, connection_id: str, credential: str,
@@ -134,7 +148,10 @@ class PostgresUserProviderCredentialService:
             except AdapterError as error:
                 raise UserProviderCredentialError(error.code, error.status) from None
             next_version = actual + 1
-            sealed = self._cipher.encrypt(connection_id, provider_code, next_version, credential.encode("utf-8"))
+            sealed = self._cipher.encrypt(
+                connection_id, provider_code, next_version, credential.encode("utf-8"),
+                tenant_id=tenant_id, user_id=user_id,
+            )
             connection.execute(
                 "INSERT INTO user_provider_credentials "
                 "(tenant_id,user_id,connection_id,provider_code,encrypted_credential,credential_nonce,"
@@ -203,7 +220,8 @@ class PostgresUserProviderCredentialService:
             if personal is not None and str(personal[5]) == "verified":
                 try:
                     user_value = self._cipher.decrypt(
-                        connection_id, provider_code, int(personal[4]), _sealed(personal)
+                        connection_id, provider_code, int(personal[4]), _sealed(personal),
+                        tenant_id=tenant_id, user_id=user_id,
                     )
                     return UserProviderCredentialResult(user_value, "user", int(personal[4]))
                 except ProviderCredentialError:
