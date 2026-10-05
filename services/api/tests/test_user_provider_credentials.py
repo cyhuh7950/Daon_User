@@ -6,7 +6,7 @@ import pytest
 
 import daon_user_api.user_provider_credentials as module
 from daon_user_api.provider_connection_adapters import AdapterError, AdapterRegistry, TransportResponse
-from daon_user_api.provider_credentials import ProviderCredentialCipher
+from daon_user_api.provider_credentials import EncryptedCredential, ProviderCredentialCipher, ProviderCredentialError
 from daon_user_api.user_provider_credentials import resolve_credential_candidates
 
 
@@ -138,8 +138,9 @@ def test_custom_personal_key_probes_only_db_allowed_models_before_encrypt(monkey
             return Adapter()
 
     monkeypatch.setattr(module, "AdapterRegistry", Registry)
+    cipher = ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1)
     service = module.PostgresUserProviderCredentialService(
-        Store(), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+        Store(), cipher,
     )
     if adapter_type == "anthropic_compatible":
         with pytest.raises(module.UserProviderCredentialError, match="^PROVIDER_PROBE_RESPONSE_INVALID$"):
@@ -154,8 +155,66 @@ def test_custom_personal_key_probes_only_db_allowed_models_before_encrypt(monkey
             credential=secret, expected_version=2,
         )
         assert result.verification_status == "verified"
-        assert any(item[0].startswith("INSERT INTO user_provider_credentials") for item in calls if len(item) == 2)
+        inserted = next(item[1] for item in calls if len(item) == 2 and item[0].startswith("INSERT INTO user_provider_credentials"))
+        sealed = EncryptedCredential(inserted[4], inserted[5], inserted[6], inserted[8], inserted[7])
+        assert cipher.decrypt(
+            "custom-1", "CUSTOM", 3, sealed, tenant_id="tenant-1", user_id="user-1",
+        ) == secret.encode("utf-8")
+        with pytest.raises(ProviderCredentialError, match="^CREDENTIAL_DECRYPTION_FAILED$"):
+            cipher.decrypt("custom-1", "CUSTOM", 3, sealed, tenant_id="tenant-1", user_id="user-2")
     assert ("probe", secret, ("manual-a", "manual-b")) in calls
+
+
+def test_personal_resolution_rejects_ciphertext_swapped_from_another_user() -> None:
+    cipher = ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1)
+    sealed = cipher.encrypt(
+        "shared-connection", "CUSTOM", 1, b"fixture-private-key",
+        tenant_id="tenant-1", user_id="user-1",
+    )
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self, envelope):
+            self.envelope = envelope
+
+        def execute(self, sql, _params=()):
+            if "FROM system_provider_connections" in sql:
+                return Cursor(("CUSTOM", None, None, None, None, 0, "personal", "required"))
+            if "FROM user_provider_credentials" in sql:
+                return Cursor((
+                    self.envelope.ciphertext, self.envelope.nonce, self.envelope.encryption_key_version,
+                    self.envelope.schema_version, self.envelope.credential_version, "verified",
+                ))
+            raise AssertionError(sql)
+
+    class Store:
+        def __init__(self, envelope):
+            self.envelope = envelope
+
+        @contextmanager
+        def _transaction(self, _context):
+            yield Connection(self.envelope)
+
+    service = module.PostgresUserProviderCredentialService(Store(sealed), cipher)
+    owner = service.resolve_credential(
+        tenant_id="tenant-1", user_id="user-1", connection_id="shared-connection",
+    )
+    swapped = service.resolve_credential(
+        tenant_id="tenant-1", user_id="user-2", connection_id="shared-connection",
+    )
+    assert owner.credential == b"fixture-private-key" and owner.source == "user"
+    assert swapped.credential is None and swapped.source == "none"
+    legacy = cipher.encrypt("shared-connection", "CUSTOM", 1, b"fixture-legacy-key")
+    legacy_result = module.PostgresUserProviderCredentialService(Store(legacy), cipher).resolve_credential(
+        tenant_id="tenant-1", user_id="user-1", connection_id="shared-connection",
+    )
+    assert legacy_result.credential is None and legacy_result.source == "none"
 
 
 def test_pending_custom_without_allowed_models_cannot_verify_personal_key(monkeypatch) -> None:

@@ -45,6 +45,37 @@ def test_cipher_rejects_cross_connection_replay(
         cipher.decrypt("ollama-public", "OLLAMA", 1, sealed)
 
 
+def test_personal_cipher_binds_tenant_and_user_without_changing_system_envelope(
+    cipher: ProviderCredentialCipher,
+) -> None:
+    secret = b"personal-key-fixture"
+    sealed = cipher.encrypt(
+        "shared-connection", "CUSTOM", 1, secret,
+        tenant_id="tenant-a", user_id="user-a",
+    )
+
+    assert sealed.schema_version == 1
+    assert cipher.decrypt(
+        "shared-connection", "CUSTOM", 1, sealed,
+        tenant_id="tenant-a", user_id="user-a",
+    ) == secret
+    for other_tenant, other_user in (("tenant-a", "user-b"), ("tenant-b", "user-a")):
+        with pytest.raises(ProviderCredentialError, match="^CREDENTIAL_DECRYPTION_FAILED$"):
+            cipher.decrypt(
+                "shared-connection", "CUSTOM", 1, sealed,
+                tenant_id=other_tenant, user_id=other_user,
+            )
+    with pytest.raises(ProviderCredentialError, match="^CREDENTIAL_DECRYPTION_FAILED$"):
+        cipher.decrypt("shared-connection", "CUSTOM", 1, sealed)
+    system_sealed = cipher.encrypt("shared-connection", "CUSTOM", 1, secret)
+    assert cipher.decrypt("shared-connection", "CUSTOM", 1, system_sealed) == secret
+    with pytest.raises(ProviderCredentialError, match="^CREDENTIAL_DECRYPTION_FAILED$"):
+        cipher.decrypt(
+            "shared-connection", "CUSTOM", 1, system_sealed,
+            tenant_id="tenant-a", user_id="user-a",
+        )
+
+
 def test_cipher_rejects_cross_provider_replay(
     cipher: ProviderCredentialCipher,
 ) -> None:

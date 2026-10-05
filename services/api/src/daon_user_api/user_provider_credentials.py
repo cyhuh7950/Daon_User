@@ -134,7 +134,10 @@ class PostgresUserProviderCredentialService:
             except AdapterError as error:
                 raise UserProviderCredentialError(error.code, error.status) from None
             next_version = actual + 1
-            sealed = self._cipher.encrypt(connection_id, provider_code, next_version, credential.encode("utf-8"))
+            sealed = self._cipher.encrypt(
+                connection_id, provider_code, next_version, credential.encode("utf-8"),
+                tenant_id=tenant_id, user_id=user_id,
+            )
             connection.execute(
                 "INSERT INTO user_provider_credentials "
                 "(tenant_id,user_id,connection_id,provider_code,encrypted_credential,credential_nonce,"
@@ -203,7 +206,8 @@ class PostgresUserProviderCredentialService:
             if personal is not None and str(personal[5]) == "verified":
                 try:
                     user_value = self._cipher.decrypt(
-                        connection_id, provider_code, int(personal[4]), _sealed(personal)
+                        connection_id, provider_code, int(personal[4]), _sealed(personal),
+                        tenant_id=tenant_id, user_id=user_id,
                     )
                     return UserProviderCredentialResult(user_value, "user", int(personal[4]))
                 except ProviderCredentialError:

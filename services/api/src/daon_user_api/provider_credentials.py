@@ -87,8 +87,11 @@ class ProviderCredentialCipher:
         provider_code: str,
         version: int,
         plaintext: bytes,
+        *,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
     ) -> EncryptedCredential:
-        aad = self._aad(connection_id, provider_code, version)
+        aad = self._aad(connection_id, provider_code, version, tenant_id=tenant_id, user_id=user_id)
         if not isinstance(plaintext, bytes) or not plaintext:
             raise ProviderCredentialError("PROVIDER_CREDENTIAL_INVALID")
         nonce = os.urandom(_NONCE_BYTES)
@@ -107,6 +110,9 @@ class ProviderCredentialCipher:
         provider_code: str,
         version: int,
         sealed: EncryptedCredential,
+        *,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
     ) -> bytes:
         if sealed.encryption_key_version != self._encryption_key_version:
             raise ProviderCredentialError("PROVIDER_CREDENTIAL_KEY_UNAVAILABLE")
@@ -114,27 +120,36 @@ class ProviderCredentialCipher:
             raise ProviderCredentialError("CREDENTIAL_DECRYPTION_FAILED")
         if sealed.schema_version != _SCHEMA_VERSION:
             raise ProviderCredentialError("CREDENTIAL_DECRYPTION_FAILED")
-        aad = self._aad(connection_id, provider_code, version)
+        aad = self._aad(connection_id, provider_code, version, tenant_id=tenant_id, user_id=user_id)
         try:
             return AESGCM(self._key).decrypt(sealed.nonce, sealed.ciphertext, aad)
         except (InvalidTag, ValueError):
             raise ProviderCredentialError("CREDENTIAL_DECRYPTION_FAILED") from None
 
     @staticmethod
-    def _aad(connection_id: str, provider_code: str, version: int) -> bytes:
+    def _aad(
+        connection_id: str, provider_code: str, version: int, *,
+        tenant_id: str | None = None, user_id: str | None = None,
+    ) -> bytes:
         if not _IDENTIFIER_PATTERN.fullmatch(connection_id):
             raise ProviderCredentialError("PROVIDER_CONNECTION_ID_INVALID")
         if not _PROVIDER_PATTERN.fullmatch(provider_code):
             raise ProviderCredentialError("PROVIDER_CODE_INVALID")
         if version < 1:
             raise ProviderCredentialError("PROVIDER_CREDENTIAL_VERSION_INVALID")
+        if tenant_id is not None or user_id is not None:
+            if not isinstance(tenant_id, str) or not tenant_id or not isinstance(user_id, str) or not user_id:
+                raise ProviderCredentialError("PROVIDER_CREDENTIAL_SCOPE_INVALID")
+        context = {
+            "connection_id": connection_id,
+            "credential_version": version,
+            "provider_code": provider_code,
+            "schema_version": _SCHEMA_VERSION,
+        }
+        if tenant_id is not None:
+            context.update({"tenant_id": tenant_id, "user_id": user_id})
         return json.dumps(
-            {
-                "connection_id": connection_id,
-                "credential_version": version,
-                "provider_code": provider_code,
-                "schema_version": _SCHEMA_VERSION,
-            },
+            context,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
