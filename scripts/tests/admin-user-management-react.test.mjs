@@ -315,6 +315,107 @@ test("admin console의 복수 삭제 실패는 후속 요청을 중단한다", a
   } finally { globalThis.window.confirm = previousConfirm; await view.cleanup(); }
 });
 
+test("admin console의 복수 삭제는 요청 대기 중 재클릭해도 같은 계정을 한 번만 삭제한다", async () => {
+  const users = ["one", "two"].map((name, index) => ({ user_id: `user-${index + 1}`, login_id: name, email: `${name}@example.test`, has_email: true, state: "active", protected: false }));
+  const removed = []; let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ password_change_required: false, is_system_admin: true }),
+    getUsers: async () => users,
+    removeUser: async (id) => { removed.push(id); if (id === "user-1") await pending; },
+  }, ".admin-bulk-inflight-");
+  const previousConfirm = globalThis.window.confirm;
+  let confirms = 0; globalThis.window.confirm = () => { confirms += 1; return true; };
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    const selectAll = findElements(view.container, (node) => node.tagName === "INPUT" && reactProps(node)?.["aria-label"] === "전체 사용자 선택")[0];
+    await view.act(async () => { reactProps(selectAll).onChange({ target: { checked: true } }); });
+    const bulk = buttonByText(view.container, "선택 삭제");
+    await view.act(async () => { bulk.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(buttonByText(view.container, "선택 삭제").disabled, true);
+    await view.act(async () => { reactProps(bulk).onClick(); await Promise.resolve(); });
+    assert.deepEqual(removed, ["user-1"]);
+    assert.equal(confirms, 1);
+    await view.act(async () => { release(); await pending; await Promise.resolve(); });
+    assert.deepEqual(removed, ["user-1", "user-2"]);
+  } finally { release(); globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+});
+
+test("admin console의 단일 삭제는 요청 대기 중 재클릭을 막고 실패 후 잠금을 푼다", async () => {
+  const user = { user_id: "user-1", login_id: "one", email: "one@example.test", has_email: true, state: "active", protected: false };
+  let rejectPending; const removed = [];
+  const pending = new Promise((resolve, reject) => { rejectPending = reject; });
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ password_change_required: false, is_system_admin: true }),
+    getUsers: async () => [user],
+    removeUser: async (id) => { removed.push(id); if (removed.length === 1) await pending; },
+  }, ".admin-single-inflight-");
+  const previousConfirm = globalThis.window.confirm;
+  let confirms = 0; globalThis.window.confirm = () => { confirms += 1; return true; };
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    const single = buttonByText(view.container, "삭제");
+    await view.act(async () => { single.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(buttonByText(view.container, "삭제").disabled, true);
+    await view.act(async () => { reactProps(single).onClick(); await Promise.resolve(); });
+    assert.deepEqual(removed, ["user-1"]);
+    assert.equal(confirms, 1);
+    await view.act(async () => { rejectPending(new Error("ADMIN_USER_DELETE_FAILED")); await pending.catch(() => {}); await Promise.resolve(); });
+    assert.equal(buttonByText(view.container, "삭제").disabled, false);
+    assert.match(view.container.textContent, /ADMIN_USER_DELETE_FAILED/u);
+    await view.act(async () => { buttonByText(view.container, "삭제").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(removed, ["user-1", "user-1"]);
+  } finally { rejectPending(new Error("TEST_CLEANUP")); globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+});
+
+test("admin console의 복수 삭제 실패는 선택을 유지하고 잠금을 해제한다", async () => {
+  const user = { user_id: "user-1", login_id: "one", email: "one@example.test", has_email: true, state: "active", protected: false };
+  let rejectPending; const removed = [];
+  const pending = new Promise((resolve, reject) => { rejectPending = reject; });
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ password_change_required: false, is_system_admin: true }),
+    getUsers: async () => [user],
+    removeUser: async (id) => { removed.push(id); if (removed.length === 1) await pending; },
+  }, ".admin-bulk-retry-");
+  const previousConfirm = globalThis.window.confirm;
+  globalThis.window.confirm = () => true;
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    const selectAll = findElements(view.container, (node) => node.tagName === "INPUT" && reactProps(node)?.["aria-label"] === "전체 사용자 선택")[0];
+    await view.act(async () => { reactProps(selectAll).onChange({ target: { checked: true } }); });
+    await view.act(async () => { buttonByText(view.container, "선택 삭제").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(buttonByText(view.container, "선택 삭제").disabled, true);
+    await view.act(async () => { rejectPending(new Error("ADMIN_USER_DELETE_FAILED")); await pending.catch(() => {}); await Promise.resolve(); });
+    assert.match(view.container.textContent, /선택 1건/u);
+    assert.equal(buttonByText(view.container, "선택 삭제").disabled, false);
+    await view.act(async () => { buttonByText(view.container, "선택 삭제").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(removed, ["user-1", "user-1"]);
+  } finally { rejectPending(new Error("TEST_CLEANUP")); globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+});
+
+test("admin console은 membership 역할을 추정하거나 편집 가능한 역할처럼 표시하지 않는다", async () => {
+  const users = [
+    { user_id: "admin", login_id: "admin", email: "admin@example.test", has_email: true, state: "active", protected: true },
+    { user_id: "user-1", login_id: "one", email: "one@example.test", has_email: true, state: "active", protected: false },
+  ];
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ password_change_required: false, is_system_admin: true }),
+    getUsers: async () => users,
+  }, ".admin-membership-role-");
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    const roleCells = findElements(view.container, (node) => node.getAttribute?.("class") === "admin-user-role-list");
+    assert.deepEqual(roleCells.map((node) => node.textContent), [
+      "실제 membership 역할은 현재 목록에서 제공되지 않음",
+      "실제 membership 역할은 현재 목록에서 제공되지 않음",
+    ]);
+    await view.act(async () => { buttonByText(view.container, "수정").dispatchEvent(new MinimalEvent("click")); });
+    assert.equal(findElements(view.container, (node) => node.getAttribute?.("class") === "admin-user-role-fields").length, 0);
+    assert.doesNotMatch(view.container.textContent, /전문가|역할 정책은 현재 계정 권한 계약/u);
+    assert.match(view.container.textContent, /실제 membership 역할은 현재 목록에서 제공되지 않음/u);
+  } finally { await view.cleanup(); }
+});
+
 test("admin console의 단일 삭제는 확인 취소와 보호 계정을 차단한다", async () => {
   const users = [
     { user_id: "admin", login_id: "admin", email: "admin@example.test", has_email: true, state: "active", protected: true },
