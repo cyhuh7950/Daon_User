@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { changeCurrentPassword } from "../../apps/web/lib/auth-api.js";
-import { changeAdminUserState, listAdminUsers, requestAdminUserPasswordReset } from "../../apps/web/lib/admin-users-api.js";
+import { changeAdminUserState, deleteAdminUser, listAdminUsers, requestAdminUserPasswordReset } from "../../apps/web/lib/admin-users-api.js";
 
 const user = Object.freeze({ user_id: "user-1", login_id: "person", email: "person@example.test", has_email: true, state: "active", protected: false });
 const pendingEmailUser = Object.freeze({ user_id: "user-2", login_id: "pending-person", email: "pending@example.test", has_email: true, state: "pending_email", protected: false });
@@ -75,6 +75,20 @@ test("admin user client는 비밀번호 reset 응답에 status와 replayed만 �
   await assert.rejects(requestAdminUserPasswordReset("user-1", {
     fetchImpl: async () => Response.json({ data: { status: "accepted", replayed: false, token: "blocked" }, meta }),
     idempotencyKey: "admin-reset-user-0002",
+  }), /ADMIN_USERS_RESPONSE_INVALID/u);
+});
+
+test("admin user client는 삭제를 same-origin BFF로 보내고 비밀 필드 응답을 거부한다", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, method: init.method, credentials: init.credentials, body: init.body });
+    return Response.json({ data: { user_id: "user-1", replayed: false }, meta });
+  };
+  assert.deepEqual(await deleteAdminUser("user-1", { fetchImpl, idempotencyKey: "admin-delete-user-0001" }), { user_id: "user-1", replayed: false });
+  assert.deepEqual(calls, [{ url: "/bff/api/admin/users/user-1", method: "DELETE", credentials: "same-origin", body: "{}" }]);
+  await assert.rejects(deleteAdminUser("user-1", {
+    fetchImpl: async () => Response.json({ data: { user_id: "user-1", replayed: false, token: "blocked" }, meta }),
+    idempotencyKey: "admin-delete-user-0002",
   }), /ADMIN_USERS_RESPONSE_INVALID/u);
 });
 
