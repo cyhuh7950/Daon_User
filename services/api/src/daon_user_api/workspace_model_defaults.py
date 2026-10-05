@@ -10,7 +10,12 @@ from typing import Any, Iterator, Mapping, Sequence, cast
 from psycopg.types.json import Jsonb
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
-from .provider_credentials import EncryptedCredential, ProviderCredentialCipher, ProviderCredentialError
+from .provider_credentials import (
+    PERSONAL_CREDENTIAL_SCHEMA_VERSION,
+    EncryptedCredential,
+    ProviderCredentialCipher,
+    ProviderCredentialError,
+)
 from .user_provider_credentials import PostgresUserProviderCredentialService
 from .provider_settings import ProviderSettingsError, provider_requires_credential, validate_provider_base_url
 from .data_canon import canonical_json_bytes
@@ -81,6 +86,7 @@ class PostgresWorkspaceModelDefaultsService:
             "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
             "LEFT JOIN user_provider_credentials u ON u.connection_id=c.connection_id "
             "AND u.tenant_id=%s AND u.user_id=%s AND u.verification_status='verified' "
+            f"AND u.credential_schema_version={PERSONAL_CREDENTIAL_SCHEMA_VERSION} "
             "WHERE c.enabled=true AND m.catalog_status='ready' "
             "AND ((c.access_mode='public' AND c.verification_status='verified') "
             "OR (c.access_mode='personal' AND u.connection_id IS NOT NULL)) "
@@ -174,6 +180,7 @@ class PostgresWorkspaceModelDefaultsService:
                     "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
                     "LEFT JOIN user_provider_credentials u ON u.connection_id=c.connection_id "
                     "AND u.tenant_id=%s AND u.user_id=%s AND u.verification_status='verified' "
+                    f"AND u.credential_schema_version={PERSONAL_CREDENTIAL_SCHEMA_VERSION} "
                     "WHERE c.connection_id=%s AND m.model_id=%s AND c.enabled=true "
                     "AND ((c.access_mode='public' AND c.verification_status='verified') "
                     "OR (c.access_mode='personal' AND u.connection_id IS NOT NULL)) "

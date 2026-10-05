@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { providerSettingsApi } from "../lib/provider-settings-api.js";
 import { summarizeConnectionUsage } from "./provider-settings-usage.js";
+import { projectPersonalCredentialView } from "./provider-personal-credential-view.js";
 
 const MANAGED_MODEL_PROVIDERS = new Set();
 const CREDENTIAL_REQUIRED_PROVIDERS = new Set([
@@ -92,8 +93,7 @@ export function projectProviderConnection(connection, userCredential = null) {
     (connection.models ?? []).some((model) => model.model_id === modelId && model.catalog_status === "ready"
       && (model.effective_capabilities ?? []).includes("text_generation")));
   if (connection?.access_mode === "personal") {
-    const verified = connection.enabled === true && routeReady && userCredential?.verification_status === "verified";
-    return { label: `비공용 · 개인 Key 필요 · ${verified ? "사용 가능" : "사용 대기"}`, verified };
+    return projectPersonalCredentialView({ ...connection, routeReady }, userCredential);
   }
   if (connection?.access_mode === "public" && connection?.credential_requirement === "none") {
     const verified = connection.enabled === true && routeReady && connection.verification_status === "verified";
@@ -193,6 +193,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(() => emptyConnectionDraft());
   const [credential, setCredential] = useState("");
+  const [ownPersonalCredential, setOwnPersonalCredential] = useState("");
   const [previewModelIds, setPreviewModelIds] = useState([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [healthSettings, setHealthSettings] = useState({ interval_minutes: 60, version: 0 });
@@ -203,6 +204,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     setSelectedId(connection.connection_id);
     setDraft(draftFromConnection(connection));
     setCredential("");
+    setOwnPersonalCredential("");
     setPreviewModelIds([]);
     setConfirmDelete(false);
   }, []);
@@ -340,6 +342,29 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     }
   }
 
+  async function replaceOwnPersonalCredential() {
+    const connectionId = selectedConnection?.connection_id;
+    const current = userCredentials[connectionId];
+    const needsReentry = projectProviderConnection(selectedConnection, current).needsReentry === true;
+    if (!isSystemAdmin || selectedConnection?.access_mode !== "personal" || !needsReentry
+      || !ownPersonalCredential.trim()) return;
+    setStatus({ kind: "saving", message: "내 개인 Provider 키를 다시 검증하는 중입니다." });
+    try {
+      const result = await providerSettingsApi.replaceUserCredential(connectionId, {
+        credential: ownPersonalCredential,
+        expected_version: current.credential_version,
+      });
+      setUserCredentials((items) => ({ ...items, [connectionId]: result.payload.data }));
+      setOwnPersonalCredential("");
+      setStatus({ kind: "ready", message: result.payload.data.verification_status === "verified"
+        ? "개인 Key 연결 시험에 성공했습니다. 이제 이 계정에서 사용할 수 있습니다."
+        : "개인 Key 연결 시험이 확인되지 않았습니다." });
+    } catch (error) {
+      setOwnPersonalCredential("");
+      setStatus({ kind: "error", message: safeProviderErrorMessage("credential", error) });
+    }
+  }
+
   async function previewModels() {
     if (!isSystemAdmin || draft.provider_code !== "CUSTOM" || !Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type) || (draft.credential_requirement === "required" && !credential.trim())) return;
     setStatus({ kind: "saving", message: "모델 목록을 조회하는 중입니다." });
@@ -471,7 +496,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const adminSystemKeyAllowed = draft.credential_requirement === "required"
     && !(draft.provider_code === "OMNIROUTE" && draft.access_mode === "personal");
   const credentialField = (isSystemAdmin ? adminSystemKeyAllowed : selectedConnection?.access_mode === "personal")
-    ? <label>API Key 또는 Client Key{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}{isSystemAdmin && compatible && draft.access_mode === "personal" ? <small>개인 연결의 시험 Key는 저장하지 않습니다.</small> : null}{personalCustomWithoutModels ? <small>관리자가 사용할 모델을 허용한 뒤 Key를 시험할 수 있습니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} onChange={(event) => setCredential(event.target.value)} /></label>
+    ? <label>API Key 또는 Client Key{!isSystemAdmin && projectProviderConnection(selectedConnection, userCredentials[selectedConnection?.connection_id]).needsReentry ? <small>기존 Key는 사용할 수 없습니다. 새 Key를 다시 입력해 주세요.</small> : null}{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}{isSystemAdmin && compatible && draft.access_mode === "personal" ? <small>개인 연결의 시험 Key는 저장하지 않습니다.</small> : null}{personalCustomWithoutModels ? <small>관리자가 사용할 모델을 허용한 뒤 Key를 시험할 수 있습니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} onChange={(event) => setCredential(event.target.value)} /></label>
     : null;
   const Root = embedded ? "div" : "main";
 
@@ -539,6 +564,14 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
               </> : <div className="provider-field-wide"><p>연결 이름과 허용 모델은 읽기 전용입니다.</p><p>Endpoint: {selectedConnection?.base_url ?? ""}</p><p>사용 허용 모델: {(selectedConnection?.allowed_model_ids ?? []).join(", ") || "없음"}</p></div>}
               {!isSystemAdmin ? credentialField : null}
             </div>
+            {isSystemAdmin && selectedConnection?.access_mode === "personal"
+              && projectProviderConnection(selectedConnection, userCredentials[selectedConnection.connection_id]).needsReentry
+              ? <div className="provider-field-wide">
+                <label>내 계정 개인 Key 재입력<input type="password" value={ownPersonalCredential} autoComplete="new-password" disabled={busy} onChange={(event) => setOwnPersonalCredential(event.target.value)} /></label>
+                <small>이 Key는 본인 계정에만 저장하며 시스템 Key를 변경하지 않습니다.</small>
+                <button className="primary-button" type="button" onClick={replaceOwnPersonalCredential} disabled={busy || !ownPersonalCredential.trim()}>내 개인 Key 재입력 및 검증</button>
+              </div>
+              : null}
             {isSystemAdmin ? <><label className="styled-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>사용 후보에 포함</span></label><label className="styled-check"><input type="checkbox" checked={draft.access_mode === "public"} disabled={draft.credential_requirement === "none"} onChange={(event) => setDraft((current) => ({ ...current, access_mode: event.target.checked ? "public" : "personal" }))} /><span>공용 사용{draft.credential_requirement === "none" ? " (Key 불필요 연결은 항상 공용)" : ""}</span></label></> : null}
             <div className="provider-detail-actions">
               {isSystemAdmin && compatible ? <span className="provider-test-cost">{pendingCompatible ? "시험 없이 사용 대기 연결을 등록합니다. Provider 호출과 사용료가 없습니다." : `시험 대상 ${customProbeCount}개 모델 · 실제 시험 시 사용료가 발생할 수 있습니다.`}</span> : null}

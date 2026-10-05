@@ -33,6 +33,51 @@ def test_cipher_round_trips_credential_without_exposing_plaintext(
     assert sealed.credential_version == 1
 
 
+def test_personal_credential_round_trip_is_bound_to_tenant_and_user(
+    cipher: ProviderCredentialCipher,
+) -> None:
+    sealed = cipher.encrypt(
+        "personal-route", "OPENROUTER", 1, b"personal-key",
+        tenant_id="tenant-a", user_id="user-a",
+    )
+
+    assert sealed.schema_version == 2
+    assert cipher.decrypt(
+        "personal-route", "OPENROUTER", 1, sealed,
+        tenant_id="tenant-a", user_id="user-a",
+    ) == b"personal-key"
+    for tenant_id, user_id in (("tenant-b", "user-a"), ("tenant-a", "user-b")):
+        with pytest.raises(ProviderCredentialError, match="^CREDENTIAL_DECRYPTION_FAILED$"):
+            cipher.decrypt(
+                "personal-route", "OPENROUTER", 1, sealed,
+                tenant_id=tenant_id, user_id=user_id,
+            )
+
+
+def test_legacy_personal_v1_is_not_rebound_and_system_v1_remains_compatible(
+    cipher: ProviderCredentialCipher,
+) -> None:
+    legacy = cipher.encrypt("personal-route", "OPENROUTER", 1, b"legacy-key")
+    system = cipher.encrypt("system-route", "OPENROUTER", 1, b"system-key")
+
+    with pytest.raises(ProviderCredentialError, match="^CREDENTIAL_DECRYPTION_FAILED$"):
+        cipher.decrypt(
+            "personal-route", "OPENROUTER", 1, legacy,
+            tenant_id="tenant-a", user_id="user-a",
+        )
+    assert cipher.decrypt("system-route", "OPENROUTER", 1, system) == b"system-key"
+
+
+def test_personal_scope_is_required_and_cannot_be_omitted_or_partial(
+    cipher: ProviderCredentialCipher,
+) -> None:
+    with pytest.raises(ProviderCredentialError, match="^PROVIDER_CREDENTIAL_SCOPE_REQUIRED$"):
+        cipher.encrypt(
+            "personal-route", "OPENROUTER", 1, b"personal-key",
+            tenant_id="tenant-a",
+        )
+
+
 def test_cipher_rejects_cross_connection_replay(
     cipher: ProviderCredentialCipher,
 ) -> None:

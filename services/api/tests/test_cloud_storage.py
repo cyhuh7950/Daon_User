@@ -30,7 +30,40 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 class CloudStorageContractTests(unittest.TestCase):
     def test_readiness_tracks_the_router_auto_schema_revision(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0052")
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0053")
+
+    def test_readiness_accepts_the_c8_personal_credential_schema_head(self) -> None:
+        class Result:
+            def __init__(self, row):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class Connection:
+            def execute(self, query, _params=()):
+                if query == "SELECT version_num FROM alembic_version":
+                    return Result(("0053",))
+                if "FROM pg_extension" in query:
+                    return Result(("0.8.2",))
+                raise AssertionError(f"unexpected readiness query: {query}")
+
+        class Pool:
+            closed = False
+
+            @contextmanager
+            def connection(self, *, timeout):
+                self.timeout = timeout
+                yield Connection()
+
+        store = object.__new__(PostgresCloudStore)
+        store._pool = Pool()
+
+        status = store.readiness()
+
+        self.assertTrue(status.ready)
+        self.assertEqual(status.schema_revision, "0053")
+        self.assertEqual(status.vector_version, "0.8.2")
 
     def test_postgres_major_version_range_accepts_packaging_suffix(self) -> None:
         for value in ("15.13", "16.9 (Debian 16.9-1.pgdg12+1)", "17.5", "18.4"):
