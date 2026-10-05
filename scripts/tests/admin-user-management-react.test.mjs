@@ -315,6 +315,30 @@ test("admin console의 복수 삭제 실패는 후속 요청을 중단한다", a
   } finally { globalThis.window.confirm = previousConfirm; await view.cleanup(); }
 });
 
+test("admin console의 복수 삭제는 부분 성공 뒤 실패·미처리 계정만 선택해 남긴다", async () => {
+  const users = ["one", "two", "three"].map((name, index) => ({ user_id: `user-${index + 1}`, login_id: name, email: `${name}@example.test`, has_email: true, state: "active", protected: false }));
+  const removed = [];
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ password_change_required: false, is_system_admin: true }),
+    getUsers: async () => users,
+    removeUser: async (id) => { removed.push(id); if (id === "user-2") throw new Error("ADMIN_USER_DELETE_FAILED"); },
+  }, ".admin-bulk-partial-failure-");
+  const previousConfirm = globalThis.window.confirm;
+  globalThis.window.confirm = () => true;
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    const selectAll = findElements(view.container, (node) => node.tagName === "INPUT" && reactProps(node)?.["aria-label"] === "전체 사용자 선택")[0];
+    await view.act(async () => { reactProps(selectAll).onChange({ target: { checked: true } }); });
+    await view.act(async () => { buttonByText(view.container, "선택 삭제").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(removed, ["user-1", "user-2"]);
+    const selectedUsers = findElements(view.container, (node) => node.tagName === "INPUT" && reactProps(node)?.type === "checkbox" && reactProps(node)?.["aria-label"] !== "전체 사용자 선택" && reactProps(node)?.checked)
+      .map((node) => reactProps(node)["aria-label"]);
+    assert.deepEqual(selectedUsers, ["two 선택", "three 선택"]);
+    assert.match(view.container.textContent, /선택 2건/u);
+    assert.match(view.container.textContent, /ADMIN_USER_DELETE_FAILED/u);
+  } finally { globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+});
+
 test("admin console의 복수 삭제는 요청 대기 중 재클릭해도 같은 계정을 한 번만 삭제한다", async () => {
   const users = ["one", "two"].map((name, index) => ({ user_id: `user-${index + 1}`, login_id: name, email: `${name}@example.test`, has_email: true, state: "active", protected: false }));
   const removed = []; let release;
