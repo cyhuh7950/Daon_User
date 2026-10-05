@@ -26,8 +26,21 @@ from daon_user_api.provider_settings import (
     ServerCredentialPresenceResolver,
     ProviderConnectionStatus,
 )
-from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
+from daon_user_api.runtime import (
+    WEB_SESSION_COOKIE, ProviderConnectionUpdateBody, RuntimeDependencies, RuntimeSettings, create_app,
+)
 from test_identity_support import FakeVerifiedOidcProvider, POLICY_VERSION, TRACE_ID, create_service
+
+
+def test_provider_update_body_distinguishes_omitted_auto_from_explicit_null() -> None:
+    body = {
+        "display_name": "Router", "base_url": "https://router.example/v1",
+        "enabled": True, "expected_version": 1,
+    }
+    omitted = ProviderConnectionUpdateBody.model_validate(body)
+    cleared = ProviderConnectionUpdateBody.model_validate({**body, "auto_model_id": None})
+    assert "auto_model_id" not in omitted.model_fields_set
+    assert "auto_model_id" in cleared.model_fields_set
 
 
 class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
@@ -347,13 +360,88 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "connection_id": "ollama-lan", "provider_code": "OLLAMA",
                 "display_name": "LAN Ollama", "base_url": "http://ollama.internal:11434",
                 "enabled": True, "expected_version": 0,
-                "step_up_authorization_id": "not-a-grant",
             },
         )
         self.assertEqual(listed.status_code, 200, listed.text)
         self.assertEqual(created.status_code, 403)
 
-    async def test_authenticated_workspace_user_can_rotate_shared_provider_credential(self) -> None:
+    async def test_preview_is_admin_only_and_read_only(self) -> None:
+        class PreviewService:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def preview_models(self, context, **kwargs):
+                self.calls.append((context, kwargs))
+                return ("listed-model",)
+
+        service = PreviewService()
+        self.dependencies.provider_connection_service = service
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        path = "/api/v1/admin/provider-connections/model-preview"
+        body = {
+            "connection_id": "custom-1", "provider_code": "CUSTOM",
+            "adapter_type": "anthropic_compatible", "base_url": "https://models.example/v1",
+            "credential": "fixture-preview-key",
+        }
+        denied = await self.client.post(path, json=body)
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(service.calls, [])
+
+        self.dependencies.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION,
+            system_admin_user_ids=frozenset({self.credentials.user_id}),
+        )
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        preview = await self.client.post(path, json=body)
+
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(preview.json()["data"], {"model_ids": ["listed-model"]})
+        self.assertNotIn("fixture-preview-key", preview.text)
+        self.assertEqual(len(service.calls), 1)
+        self.assertEqual(service.calls[0][1]["adapter_type"], "anthropic_compatible")
+        reused = await self.client.post(path, json=body)
+        self.assertEqual(reused.status_code, 200)
+        self.assertEqual(len(service.calls), 2)
+
+    async def test_system_admin_can_preview_provider_models_without_step_up(self) -> None:
+        class PreviewService:
+            def preview_models(self, context, **kwargs):
+                return ("listed-model",)
+
+        self.dependencies.provider_connection_service = PreviewService()
+        self.dependencies.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION,
+            system_admin_user_ids=frozenset({self.credentials.user_id}),
+        )
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        response = await self.client.post(
+            "/api/v1/admin/provider-connections/model-preview",
+            json={
+                "connection_id": "custom-1", "provider_code": "CUSTOM",
+                "adapter_type": "anthropic_compatible", "base_url": "https://models.example/v1",
+                "credential": "fixture-preview-key",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["model_ids"], ["listed-model"])
+        self.assertNotIn("fixture-preview-key", response.text)
+
+    async def test_authenticated_workspace_user_cannot_rotate_shared_provider_credential(self) -> None:
         class SafeProviderService:
             def replace_credential(self, context, connection_id, body, idempotency_key):
                 return {
@@ -375,25 +463,18 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             base_url="https://app.example.com",
             cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
         )
-        grant = self.identity.issue_step_up(
-            access_token=self.credentials.access_token,
-            action_group="organization_security_or_connector_policy_change",
-            target_id="provider-connection:shared-ollama",
-            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
-        )
         response = await self.client.post(
             "/api/v1/admin/provider-connections/shared-ollama/credential",
             headers={"Idempotency-Key": "provider-credential-replace-user-0001"},
             json={
                 "credential": "user-rotated-secret",
                 "expected_version": 1,
-                "step_up_authorization_id": grant.authorization,
             },
         )
-        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.status_code, 403, response.text)
         self.assertNotIn("user-rotated-secret", response.text)
 
-    async def test_system_admin_connection_crud_is_step_up_versioned_and_secret_safe(self) -> None:
+    async def test_system_admin_connection_crud_uses_session_role_version_and_secret_safety(self) -> None:
         class ProviderAdminService:
             def __init__(self) -> None:
                 self.item = None
@@ -429,14 +510,10 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 if expected_version != self.item["version"]:
                     from daon_user_api.runtime import ProviderConnectionAdminError
                     raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
-                self.item = {
-                    **self.item, "configured": False,
-                    "credential_version": self.item["credential_version"] + 1,
-                    "verification_status": "unverified", "verified_at": None,
-                    "version": expected_version + 1,
-                }
-                self.deleted_replay = self.item
-                return self.item, False
+                self.deleted_replay = {"connection_id": connection_id, "deleted": True,
+                                       "version": expected_version}
+                self.item = None
+                return self.deleted_replay, False
 
             def refresh_catalog(self, context, connection_id, expected_version, idempotency_key):
                 self.item = {**self.item, "version": expected_version + 1, "catalog_version": 2}
@@ -462,12 +539,6 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
 
         secret = "raw-provider-secret-must-not-return"
-        create_step = self.identity.issue_step_up(
-            access_token=self.credentials.access_token,
-            action_group="organization_security_or_connector_policy_change",
-            target_id="provider-connection:ollama-lan",
-            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
-        )
         created = await self.client.post(
             "/api/v1/admin/provider-connections",
             headers={"Idempotency-Key": "provider-create-admin-0001"},
@@ -475,7 +546,6 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "connection_id": "ollama-lan", "provider_code": "OLLAMA",
                 "display_name": "LAN Ollama", "base_url": "http://ollama.internal:11434",
                 "credential": secret, "enabled": True, "expected_version": 0,
-                "step_up_authorization_id": create_step.authorization,
             },
         )
         self.assertEqual(created.status_code, 201, created.text)
@@ -490,7 +560,6 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "connection_id": "ollama-lan", "provider_code": "OLLAMA",
                 "display_name": "LAN Ollama", "base_url": "http://ollama.internal:11434",
                 "credential": secret, "enabled": True, "expected_version": 0,
-                "step_up_authorization_id": create_step.authorization,
             },
         )
         self.assertEqual(replay.status_code, 200, replay.text)
@@ -504,47 +573,40 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(secret, listed.text)
         self.assertNotIn("base_url", listed.text)
 
-        stale_step = self.identity.issue_step_up(
-            access_token=self.credentials.access_token,
-            action_group="organization_security_or_connector_policy_change",
-            target_id="provider-connection:ollama-lan",
-            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
-        )
         stale = await self.client.put(
             "/api/v1/admin/provider-connections/ollama-lan",
             headers={"Idempotency-Key": "provider-update-admin-0001"},
             json={"display_name": "LAN Ollama 2", "base_url": "http://ollama.internal:11434",
-                  "enabled": True, "expected_version": 2,
-                  "step_up_authorization_id": stale_step.authorization},
+                  "enabled": True, "expected_version": 2},
         )
         self.assertEqual(stale.status_code, 409, stale.text)
 
-        delete_step = self.identity.issue_step_up(
-            access_token=self.credentials.access_token,
-            action_group="organization_security_or_connector_policy_change",
-            target_id="provider-connection:ollama-lan",
-            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
-        )
         deleted = await self.client.request(
             "DELETE", "/api/v1/admin/provider-connections/ollama-lan",
             headers={"Idempotency-Key": "provider-credential-delete-0001"},
-            json={"expected_version": 1, "step_up_authorization_id": delete_step.authorization},
+            json={"expected_version": 1},
         )
         self.assertEqual(deleted.status_code, 204, deleted.text)
-        self.assertEqual(deleted.headers["etag"], '"projection-d12d910806b0e61fe29bd7ae"')
-        self.assertIsNotNone(service.item)
-        self.assertFalse(service.item["configured"])
-        self.assertEqual(service.item["credential_version"], 2)
-        self.assertEqual(service.item["version"], 2)
+        self.assertIsNone(service.item)
         delete_replay = await self.client.request(
             "DELETE", "/api/v1/admin/provider-connections/ollama-lan",
             headers={"Idempotency-Key": "provider-credential-delete-0001"},
-            json={"expected_version": 1, "step_up_authorization_id": delete_step.authorization},
+            json={"expected_version": 1},
         )
         self.assertEqual(delete_replay.status_code, 204, delete_replay.text)
-        self.assertEqual(delete_replay.headers["etag"], deleted.headers["etag"])
+        self.assertIsNone(service.item)
 
-    async def test_catalog_refresh_and_capability_correction_require_step_up(self) -> None:
+    async def test_catalog_refresh_and_capability_correction_require_system_admin(self) -> None:
+        class ProviderAdminService:
+            def refresh_catalog(self, context, connection_id, expected_version, idempotency_key):
+                return {"connection_id": connection_id, "version": 2, "catalog_version": 2}, False
+
+            def correct_capabilities(self, context, connection_id, model_id, body, idempotency_key):
+                return {"connection_id": connection_id, "model_id": model_id,
+                        "effective_capabilities": body.effective_capabilities,
+                        "catalog_version": 2}, False
+
+        self.dependencies.provider_connection_service = ProviderAdminService()
         self.dependencies.settings = RuntimeSettings.for_test(
             database_path=self.db_path, policy_version=POLICY_VERSION,
             system_admin_user_ids=frozenset({self.credentials.user_id}),
@@ -558,16 +620,45 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         refresh = await self.client.post(
             "/api/v1/admin/provider-catalog/ollama-lan/refresh",
             headers={"Idempotency-Key": "provider-refresh-admin-0001"},
-            json={"expected_version": 1, "step_up_authorization_id": "missing"},
+            json={"expected_version": 1},
         )
         correction = await self.client.patch(
             "/api/v1/admin/provider-models/ollama-lan/qwen3/capabilities",
             headers={"Idempotency-Key": "provider-capability-admin-0001"},
-            json={"effective_capabilities": ["text_generation"], "expected_version": 1,
-                  "step_up_authorization_id": "missing"},
+            json={"effective_capabilities": ["text_generation"], "expected_version": 1},
         )
-        self.assertEqual(refresh.status_code, 403)
-        self.assertEqual(correction.status_code, 403)
+        self.assertEqual(refresh.status_code, 200, refresh.text)
+        self.assertEqual(correction.status_code, 200, correction.text)
+
+    async def test_connection_delete_reports_reference_counts_without_deleting(self) -> None:
+        class ReferencedService:
+            def delete_connection(self, context, connection_id, expected_version, idempotency_key):
+                from daon_user_api.runtime import ProviderConnectionAdminError
+                raise ProviderConnectionAdminError(
+                    "PROVIDER_CONNECTION_REFERENCED", 409,
+                    references={"user_credentials": 1, "workspace_defaults": 2},
+                )
+
+        self.dependencies.provider_connection_service = ReferencedService()
+        self.dependencies.settings = RuntimeSettings.for_test(
+            database_path=self.db_path, policy_version=POLICY_VERSION,
+            system_admin_user_ids=frozenset({self.credentials.user_id}),
+        )
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        response = await self.client.request(
+            "DELETE", "/api/v1/admin/provider-connections/upstage-primary",
+            headers={"Idempotency-Key": "provider-delete-referenced-0001"},
+            json={"expected_version": 3},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "PROVIDER_CONNECTION_REFERENCED")
+        self.assertEqual(response.json()["error"]["details"]["references"],
+                         {"user_credentials": 1, "workspace_defaults": 2})
 
     async def test_system_admin_replaces_only_provider_credential_without_endpoint_reentry(self) -> None:
         class ProviderAdminService:
@@ -603,12 +694,6 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             base_url="https://app.example.com",
             cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
         )
-        grant = self.identity.issue_step_up(
-            access_token=self.credentials.access_token,
-            action_group="organization_security_or_connector_policy_change",
-            target_id="provider-connection:upstage-primary",
-            policy_version=POLICY_VERSION, trace_id=TRACE_ID,
-        )
         secret = "replacement-provider-secret"
         response = await self.client.post(
             "/api/v1/admin/provider-connections/upstage-primary/credential",
@@ -616,7 +701,6 @@ class ProviderSettingsRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             json={
                 "credential": secret,
                 "expected_version": 7,
-                "step_up_authorization_id": grant.authorization,
             },
         )
         self.assertEqual(response.status_code, 200, response.text)

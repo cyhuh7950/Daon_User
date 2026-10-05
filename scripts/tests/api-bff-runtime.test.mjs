@@ -924,6 +924,10 @@ test("BFF exposes safe named connection credential and Workspace model default r
     "https://app.example.com/bff/api/admin/provider-connections/upstage-primary/credential",
     { method: "POST", headers: mutationHeaders, body: JSON.stringify({ credential: "fixture-only" }) },
   ), ["admin", "provider-connections", "upstage-primary", "credential"]);
+  const removed = await proxy(new Request(
+    "https://app.example.com/bff/api/admin/provider-connections/upstage-primary/credential",
+    { method: "DELETE", headers: mutationHeaders, body: JSON.stringify({ expected_version: 2 }) },
+  ), ["admin", "provider-connections", "upstage-primary", "credential"]);
   const read = await proxy(new Request(
     "https://app.example.com/bff/api/workspaces/workspace-001/model-defaults",
   ), ["workspaces", "workspace-001", "model-defaults"]);
@@ -936,12 +940,67 @@ test("BFF exposes safe named connection credential and Workspace model default r
     },
   ), ["workspaces", "workspace-001", "model-defaults"]);
 
-  assert.deepEqual([replaced.status, read.status, saved.status], [200, 200, 200]);
+  assert.deepEqual([replaced.status, removed.status, read.status, saved.status], [200, 200, 200, 200]);
   assert.deepEqual(captured, [
     { url: "https://api.example.com/api/v1/admin/provider-connections/upstage-primary/credential", method: "POST" },
+    { url: "https://api.example.com/api/v1/admin/provider-connections/upstage-primary/credential", method: "DELETE" },
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-defaults", method: "GET" },
     { url: "https://api.example.com/api/v1/workspaces/workspace-001/model-defaults", method: "PATCH" },
   ]);
+});
+
+test("BFF permits only exact same-origin admin model preview POST", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method, body: JSON.parse(await new Response(init.body).text()) });
+      return Response.json({ data: { model_ids: ["manual-a"] } });
+    },
+  });
+  const path = "https://app.example.com/bff/api/admin/provider-connections/model-preview";
+  const segments = ["admin", "provider-connections", "model-preview"];
+  const body = { connection_id: "custom-1", provider_code: "CUSTOM", adapter_type: "anthropic_compatible", base_url: "https://models.example/v1", credential: "fixture-key", step_up_authorization_id: "fixture-step-up" };
+  const post = (url, origin = "https://app.example.com", pathSegments = segments) => proxy(new Request(url, {
+    method: "POST", headers: { Origin: origin, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }), pathSegments);
+
+  const accepted = await post(path);
+  const wrongMethod = await proxy(new Request(path), segments);
+  const ignoredQuery = await post(`${path}?raw=true`);
+  const wrongPath = await post(`${path}/extra`, "https://app.example.com", [...segments, "extra"]);
+  const crossOrigin = await post(path, "https://other.example.com");
+
+  assert.deepEqual([accepted.status, wrongMethod.status, ignoredQuery.status, wrongPath.status, crossOrigin.status], [200, 405, 200, 404, 403]);
+  assert.deepEqual(captured, [0, 1].map(() => ({
+    url: "https://api.example.com/api/v1/admin/provider-connections/model-preview", method: "POST", body,
+  })));
+});
+
+test("BFF keeps named connection model-preview PUT and DELETE separate from preview POST", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method, body: JSON.parse(await new Response(init.body).text()) });
+      return Response.json({ data: { connection_id: "model-preview", version: 3 } });
+    },
+  });
+  const url = "https://app.example.com/bff/api/admin/provider-connections/model-preview";
+  const segments = ["admin", "provider-connections", "model-preview"];
+  const body = { expected_version: 2, step_up_authorization_id: "fixture-grant" };
+  for (const method of ["PUT", "DELETE"]) {
+    const result = await proxy(new Request(url, {
+      method,
+      headers: { Origin: "https://app.example.com", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }), segments);
+    assert.equal(result.status, 200, `${method} named connection should remain available`);
+  }
+  assert.deepEqual(captured, ["PUT", "DELETE"].map((method) => ({
+    url: "https://api.example.com/api/v1/admin/provider-connections/model-preview", method, body,
+  })));
 });
 
 test("BFF는 검증된 Workspace Knowledge 목록 GET만 same-origin으로 노출한다", async () => {

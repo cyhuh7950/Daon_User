@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING, Sequence
 
-from .provider_credentials import EncryptedCredential, ProviderCredentialCipher, ProviderCredentialError
+from .provider_connection_adapters import AdapterError, AdapterRegistry
+from .provider_credentials import EncryptedCredential, ProviderConnection, ProviderCredentialCipher, ProviderCredentialError
 
 if TYPE_CHECKING:
     from .cloud_storage import CloudAccessContext, PostgresCloudStore
@@ -24,6 +25,7 @@ class UserProviderCredentialView:
     provider_code: str
     configured: bool
     credential_version: int
+    verification_status: str = "unverified"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,11 +36,11 @@ class UserProviderCredentialResult:
 
 
 def resolve_credential_candidates(
-    system_credential: bytes | None, user_credential: bytes | None,
+    system_credential: bytes | None, user_credential: bytes | None, *, access_mode: str = "public",
 ) -> UserProviderCredentialResult:
-    if system_credential:
+    if access_mode == "public" and system_credential:
         return UserProviderCredentialResult(system_credential, "system")
-    if user_credential:
+    if access_mode == "personal" and user_credential:
         return UserProviderCredentialResult(user_credential, "user")
     return UserProviderCredentialResult(None, "none")
 
@@ -46,8 +48,8 @@ def resolve_credential_candidates(
 def _sealed(row: Sequence[Any]) -> EncryptedCredential:
     return EncryptedCredential(
         ciphertext=bytes(row[0]), nonce=bytes(row[1]),
-        encryption_key_version=int(row[2]), credential_version=int(row[3]),
-        schema_version=int(row[4]),
+        encryption_key_version=int(row[2]), credential_version=int(row[4]),
+        schema_version=int(row[3]),
     )
 
 
@@ -71,29 +73,32 @@ class PostgresUserProviderCredentialService:
     def list_credentials(self, *, tenant_id: str, user_id: str) -> list[UserProviderCredentialView]:
         with self._store._transaction(self._cloud(tenant_id, user_id, "provider_credential.read")) as connection:
             rows = connection.execute(
-                "SELECT connection_id,provider_code,credential_version "
+                "SELECT connection_id,provider_code,credential_version,verification_status "
                 "FROM user_provider_credentials WHERE tenant_id=%s AND user_id=%s "
                 "ORDER BY connection_id",
                 (tenant_id, user_id),
             ).fetchall()
-        return [UserProviderCredentialView(str(row[0]), str(row[1]), True, int(row[2])) for row in rows]
+        return [UserProviderCredentialView(str(row[0]), str(row[1]), True, int(row[2]), str(row[3])) for row in rows]
 
     def replace_credential(
         self, *, tenant_id: str, user_id: str, connection_id: str, credential: str,
         expected_version: int,
     ) -> UserProviderCredentialView:
         self._validate_version(expected_version)
-        if not credential or len(credential) > 16384:
+        if not credential.strip() or len(credential) > 16384:
             raise UserProviderCredentialError("PROVIDER_CREDENTIAL_INVALID")
         with self._store._transaction(self._cloud(tenant_id, user_id, "provider_credential.write")) as connection:
             provider = connection.execute(
-                "SELECT provider_code FROM system_provider_connections "
+                "SELECT provider_code,base_url,access_mode,credential_requirement,enabled,adapter_type "
+                "FROM system_provider_connections "
                 "WHERE connection_id=%s AND enabled=true",
                 (connection_id,),
             ).fetchone()
             if provider is None:
                 raise UserProviderCredentialError("PROVIDER_CONNECTION_NOT_FOUND", 404)
             provider_code = str(provider[0])
+            if str(provider[2]) != "personal" or str(provider[3]) != "required":
+                raise UserProviderCredentialError("PROVIDER_PERSONAL_KEY_NOT_ALLOWED", 409)
             current = connection.execute(
                 "SELECT credential_version FROM user_provider_credentials "
                 "WHERE tenant_id=%s AND user_id=%s AND connection_id=%s FOR UPDATE",
@@ -102,22 +107,48 @@ class PostgresUserProviderCredentialService:
             actual = 0 if current is None else int(current[0])
             if actual != expected_version:
                 raise UserProviderCredentialError("VERSION_CONFLICT", 409)
+            profile = ProviderConnection(
+                connection_id, provider_code, provider_code, str(provider[1]), None,
+                bool(provider[4]), 1,
+            )
+            try:
+                if provider_code in {"CUSTOM", "OMNIROUTE"}:
+                    allowed = connection.execute(
+                        "SELECT model_id FROM system_provider_allowed_models "
+                        "WHERE connection_id=%s ORDER BY model_id",
+                        (connection_id,),
+                    ).fetchall()
+                    model_ids = tuple(str(row[0]) for row in allowed)
+                    if provider_code == "CUSTOM":
+                        if not model_ids:
+                            raise UserProviderCredentialError("PROVIDER_MODEL_IDS_INVALID", 409)
+                        AdapterRegistry().adapter(provider_code, str(provider[5])).verify_models(
+                            profile, credential, model_ids,
+                        )
+                    else:
+                        AdapterRegistry(logical_models={connection_id: model_ids}).adapter(
+                            provider_code,
+                        ).verify(profile, credential)
+                else:
+                    AdapterRegistry().adapter(provider_code).verify(profile, credential)
+            except AdapterError as error:
+                raise UserProviderCredentialError(error.code, error.status) from None
             next_version = actual + 1
             sealed = self._cipher.encrypt(connection_id, provider_code, next_version, credential.encode("utf-8"))
             connection.execute(
                 "INSERT INTO user_provider_credentials "
                 "(tenant_id,user_id,connection_id,provider_code,encrypted_credential,credential_nonce,"
-                "encryption_key_version,credential_schema_version,credential_version) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "encryption_key_version,credential_schema_version,credential_version,verification_status,verified_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'verified',now()) "
                 "ON CONFLICT (tenant_id,user_id,connection_id) DO UPDATE SET "
                 "provider_code=excluded.provider_code,encrypted_credential=excluded.encrypted_credential,"
                 "credential_nonce=excluded.credential_nonce,encryption_key_version=excluded.encryption_key_version,"
                 "credential_schema_version=excluded.credential_schema_version,credential_version=excluded.credential_version,"
-                "updated_at=now()",
+                "verification_status='verified',verified_at=now(),updated_at=now()",
                 (tenant_id, user_id, connection_id, provider_code, sealed.ciphertext, sealed.nonce,
                  sealed.encryption_key_version, sealed.schema_version, next_version),
             )
-        return UserProviderCredentialView(connection_id, provider_code, True, next_version)
+        return UserProviderCredentialView(connection_id, provider_code, True, next_version, "verified")
 
     def delete_credential(self, *, tenant_id: str, user_id: str, connection_id: str, expected_version: int) -> bool:
         self._validate_version(expected_version)
@@ -140,32 +171,36 @@ class PostgresUserProviderCredentialService:
     def resolve_credential(
         self, *, tenant_id: str, user_id: str, connection_id: str, prefer_user: bool = False,
     ) -> UserProviderCredentialResult:
-        """Resolve system credential first; personal key is strictly same-user fallback."""
+        """Resolve only the credential source selected by the connection policy."""
         with self._store._transaction(self._cloud(tenant_id, user_id, "provider_credential.resolve")) as connection:
             system = connection.execute(
                 "SELECT provider_code,encrypted_credential,credential_nonce,encryption_key_version,"
-                "credential_schema_version,credential_version FROM system_provider_connections "
+                "credential_schema_version,credential_version,access_mode,credential_requirement "
+                "FROM system_provider_connections "
                 "WHERE connection_id=%s AND enabled=true",
                 (connection_id,),
             ).fetchone()
             if system is None:
                 raise UserProviderCredentialError("PROVIDER_CONNECTION_NOT_FOUND", 404)
             provider_code = str(system[0])
-            if system[1] is not None and not prefer_user:
+            access_mode = str(system[6])
+            if access_mode == "public" and system[1] is not None:
                 try:
                     system_value = self._cipher.decrypt(
                         connection_id, provider_code, int(system[5]), _sealed(system[1:6])
                     )
                     return UserProviderCredentialResult(system_value, "system", int(system[5]))
                 except ProviderCredentialError:
-                    pass
+                    return resolve_credential_candidates(None, None, access_mode="public")
+            if access_mode != "personal":
+                return resolve_credential_candidates(None, None, access_mode="public")
             personal = connection.execute(
                 "SELECT encrypted_credential,credential_nonce,encryption_key_version,"
-                "credential_schema_version,credential_version FROM user_provider_credentials "
+                "credential_schema_version,credential_version,verification_status FROM user_provider_credentials "
                 "WHERE tenant_id=%s AND user_id=%s AND connection_id=%s",
                 (tenant_id, user_id, connection_id),
             ).fetchone()
-            if personal is not None:
+            if personal is not None and str(personal[5]) == "verified":
                 try:
                     user_value = self._cipher.decrypt(
                         connection_id, provider_code, int(personal[4]), _sealed(personal)
@@ -173,4 +208,4 @@ class PostgresUserProviderCredentialService:
                     return UserProviderCredentialResult(user_value, "user", int(personal[4]))
                 except ProviderCredentialError:
                     pass
-        return resolve_credential_candidates(None, None)
+        return resolve_credential_candidates(None, None, access_mode="personal")

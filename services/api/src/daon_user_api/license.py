@@ -14,10 +14,9 @@ from typing import Callable, Mapping, Protocol
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_RESOURCE_CODES = frozenset({
-    "users", "notebooks", "storage_bytes", "generation_runs",
-    "source_versions", "studio_outputs",
-})
+_RESOURCE_CODES = frozenset({"users", "notebooks"})
+_DEFAULT_RESOURCE_LIMITS = {"users": 1, "notebooks": 1}
+_DEFAULT_FEATURES = ("llm_access",)
 _DIGEST_INFO_SHA256 = bytes.fromhex("3031300d060960864801650304020105000420")
 _ENVELOPE_KEYS = frozenset({"schema_version", "key_id", "algorithm", "claims", "signature"})
 _CLAIM_KEYS = frozenset({
@@ -25,8 +24,7 @@ _CLAIM_KEYS = frozenset({
     "issued_at", "expires_at", "features", "resource_limits",
 })
 _CREATION_ACTIONS = {
-    "studio.generate": ("studio_generation", frozenset({"generation_runs", "studio_outputs"})),
-    "source.create": ("citation", frozenset({"source_versions", "storage_bytes"})),
+    "studio.generate": ("llm_access", frozenset()),
     "notebook.create": ("notebook_management", frozenset({"notebooks"})),
 }
 
@@ -313,12 +311,26 @@ class LicenseService:
     def get(self, context: LicenseContext) -> dict[str, object]:
         stored = self._repository.current(context)
         if stored is None:
+            usage = dict(self._usage_reader(context))
+            resources = []
+            for resource, limit in _DEFAULT_RESOURCE_LIMITS.items():
+                used = usage.get(resource, 0)
+                if not isinstance(used, int) or isinstance(used, bool) or used < 0:
+                    raise LicenseError("LICENSE_USAGE_UNAVAILABLE", 503)
+                resources.append({
+                    "resource": resource,
+                    "limit": limit,
+                    "used": used,
+                    "remaining": max(0, limit - used),
+                    "status": "limit_reached" if used >= limit else "available",
+                })
             return {
                 "product": self._product_code, "edition": None, "license_id_hint": None,
                 "issued_at": None, "expires_at": None, "status": "not_configured",
-                "features": [], "resources": [],
+                "features": list(_DEFAULT_FEATURES), "resources": resources,
                 "warning": {"code": "LICENSE_NOT_CONFIGURED", "action": "조직 관리자에게 라이선스 적용을 요청하세요."},
-                "creation_allowed": False, "existing_read_allowed": True, "existing_export_allowed": True,
+                "creation_allowed": usage.get("notebooks", 0) < _DEFAULT_RESOURCE_LIMITS["notebooks"],
+                "existing_read_allowed": True, "existing_export_allowed": True,
             }
         return self._view(context, stored)
 
@@ -358,13 +370,35 @@ class LicenseService:
         }
 
     def require_new_generation(self, context: LicenseContext) -> None:
-        self.require_creation(
-            context, "studio.generate", {"generation_runs": 1, "studio_outputs": 1},
-        )
+        self.require_llm_access(context)
+
+    def require_llm_access(self, context: LicenseContext) -> None:
+        stored = self._repository.current(context)
+        if stored is None:
+            return
+        if stored.expires_at <= self._clock().astimezone(timezone.utc):
+            raise LicenseError("LICENSE_EXPIRED", 409)
+        if "llm_access" not in stored.features:
+            raise LicenseError("LICENSE_FEATURE_NOT_ALLOWED", 409)
+
+    def require_user_capacity(self, context: LicenseContext) -> None:
+        usage = dict(self._usage_reader(context))
+        used = usage.get("users", 0)
+        if not isinstance(used, int) or isinstance(used, bool) or used < 0:
+            raise LicenseError("LICENSE_USAGE_UNAVAILABLE", 503)
+        stored = self._repository.current(context)
+        limit = _DEFAULT_RESOURCE_LIMITS["users"] if stored is None else dict(stored.resource_limits).get("users")
+        if limit is not None and used + 1 > limit:
+            raise LicenseError("LICENSE_RESOURCE_LIMIT_REACHED", 409)
 
     def require_creation(
         self, context: LicenseContext, action: str, increments: Mapping[str, int],
     ) -> None:
+        if action == "source.create":
+            return
+        if action == "studio.generate":
+            self.require_llm_access(context)
+            return
         requirement = _CREATION_ACTIONS.get(action)
         if requirement is None or not isinstance(increments, Mapping) or not increments:
             raise LicenseError("LICENSE_CREATION_ACTION_INVALID")
@@ -377,7 +411,11 @@ class LicenseService:
             raise LicenseError("LICENSE_CREATION_ACTION_INVALID")
         stored = self._repository.current(context)
         if stored is None:
-            raise LicenseError("LICENSE_NOT_CONFIGURED", 409)
+            usage = dict(self._usage_reader(context))
+            for resource, amount in increments.items():
+                if usage.get(resource, 0) + amount > _DEFAULT_RESOURCE_LIMITS[resource]:
+                    raise LicenseError("LICENSE_RESOURCE_LIMIT_REACHED", 409)
+            return
         if stored.expires_at <= self._clock().astimezone(timezone.utc):
             raise LicenseError("LICENSE_EXPIRED", 409)
         if feature not in stored.features:

@@ -64,6 +64,17 @@ def test_openrouter_catalog_accepts_non_secret_tokenizer_metadata() -> None:
     assert models[0].model_id == "vendor/text-model"
 
 
+def test_openrouter_listed_auto_is_not_duplicated() -> None:
+    models = ProviderCatalog.from_payload(
+        "openrouter-primary", "OPENROUTER",
+        {"data": [{"id": "openrouter/auto", "architecture": {"output_modalities": ["text"]}}]},
+    )
+    logical = ProviderCatalog.logical_auto_model("openrouter-primary", "OPENROUTER", "openrouter/auto")
+    merged = {model.model_id: model for model in (logical, *models)}
+    assert len(merged) == 1
+    assert merged["openrouter/auto"].catalog_origin == "upstream"
+
+
 @pytest.mark.parametrize("code", ["OMNIROUTE", "EOUL_GATEWAY"])
 def test_gateway_logical_models_are_explicit_and_never_provider_native(
     code: str,
@@ -109,3 +120,37 @@ def test_duplicate_logical_model_is_rejected_instead_of_silently_reordered() -> 
             "EOUL_GATEWAY",
             ("assistant-default", "assistant-default"),
         )
+
+
+def test_verified_manual_models_are_scoped_text_models_in_given_order() -> None:
+    models = ProviderCatalog.from_verified_text_models(
+        "custom-primary", "CUSTOM", ("manual-b", "manual-a"),
+    )
+
+    assert [(item.connection_id, item.provider_code, item.model_id) for item in models] == [
+        ("custom-primary", "CUSTOM", "manual-b"),
+        ("custom-primary", "CUSTOM", "manual-a"),
+    ]
+    assert all(item.reported_capabilities == ("text_generation",) for item in models)
+    assert all(item.routing_owner == "provider" and item.daon_fallback_allowed for item in models)
+
+
+@pytest.mark.parametrize("model_ids", [(), ("",), ("manual id",), ("same", "same")])
+def test_verified_manual_models_reject_empty_invalid_or_duplicate_ids(model_ids: tuple[str, ...]) -> None:
+    with pytest.raises(ProviderCatalogError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        ProviderCatalog.from_verified_text_models("custom-primary", "CUSTOM", model_ids)
+
+
+def test_verified_manual_models_reject_non_custom_provider() -> None:
+    with pytest.raises(ProviderCatalogError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        ProviderCatalog.from_verified_text_models("router", "OPENROUTER", ("manual",))
+
+
+def test_verified_manual_models_limit_probe_count() -> None:
+    model_ids = tuple(f"manual-{index}" for index in range(5))
+    with pytest.raises(ProviderCatalogError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        ProviderCatalog.from_verified_text_models("custom-primary", "CUSTOM", model_ids)
+
+    assert len(ProviderCatalog.from_verified_text_models(
+        "custom-primary", "CUSTOM", model_ids[:4],
+    )) == 4

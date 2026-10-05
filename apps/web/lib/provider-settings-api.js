@@ -26,6 +26,11 @@ export const providerSettingsApi = Object.freeze({
   listConnections() {
     return request("/bff/api/admin/provider-connections");
   },
+  previewModels(input) {
+    return request("/bff/api/admin/provider-connections/model-preview", {
+      method: "POST", body: input,
+    });
+  },
   getHealthSettings() {
     return request("/bff/api/admin/provider-health-settings");
   },
@@ -63,6 +68,11 @@ export const providerSettingsApi = Object.freeze({
     });
   },
   deleteCredential(connectionId, input, idempotencyKey) {
+    return request(`/bff/api/admin/provider-connections/${encodeURIComponent(connectionId)}/credential`, {
+      method: "DELETE", body: input, headers: { "Idempotency-Key": idempotencyKey }
+    });
+  },
+  deleteConnection(connectionId, input, idempotencyKey) {
     return request(`/bff/api/admin/provider-connections/${encodeURIComponent(connectionId)}`, {
       method: "DELETE", body: input, headers: { "Idempotency-Key": idempotencyKey }
     });

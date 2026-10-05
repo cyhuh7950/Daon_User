@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Mapping, cast
 
 from psycopg.types.json import Jsonb
@@ -21,6 +22,9 @@ from .notebook import (
     NotebookSourceDeletionView,
     _selected_context,
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _enforce_creation_if_configured(
@@ -176,6 +180,7 @@ class PostgresNotebookRepository:
         except NotebookError:
             raise
         except CloudDatabaseError as error:
+            LOGGER.error("notebook_create_database_failure code=%s", error.code)
             raise NotebookError("NOTEBOOK_UNAVAILABLE", 503) from error
 
     def list(self, context: NotebookContext) -> tuple[NotebookHomeView, ...]:

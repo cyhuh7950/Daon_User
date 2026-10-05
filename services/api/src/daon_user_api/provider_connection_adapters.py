@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Mapping, Protocol, Sequence
 import urllib.error
@@ -64,6 +64,13 @@ class ConnectionAdapter(Protocol):
         self,
         connection: ProviderConnection,
         credential: str | bytes | None,
+    ) -> tuple[DiscoveredModel, ...]: ...
+
+    def verify_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes,
+        model_ids: Sequence[str],
     ) -> tuple[DiscoveredModel, ...]: ...
 
 
@@ -132,6 +139,14 @@ class _BaseAdapter:
 
     def __init__(self, transport: AdapterTransport) -> None:
         self._transport = transport
+
+    def verify_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes,
+        model_ids: Sequence[str],
+    ) -> tuple[DiscoveredModel, ...]:
+        raise AdapterError("PROVIDER_ADAPTER_UNSUPPORTED")
 
     def _validate_connection(self, connection: ProviderConnection) -> str:
         if connection.provider_code != self.provider_code or not connection.enabled:
@@ -243,6 +258,101 @@ class OpenRouterAdapter(_BaseAdapter):
         return self._ready(connection)
 
 
+class _CustomCompatibleAdapter(OpenRouterAdapter):
+    provider_code = "CUSTOM"
+
+    def _headers(self, secret: str | None) -> Mapping[str, str]:
+        raise NotImplementedError
+
+    def _probe_path(self) -> str:
+        raise NotImplementedError
+
+    def _has_text(self, payload: object) -> bool:
+        raise NotImplementedError
+
+    def discover_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> tuple[DiscoveredModel, ...]:
+        base = self._validate_connection(connection)
+        secret = _credential_text(credential) if credential is not None else None
+        payload = self._request("GET", _append_path(base, "/models"), self._headers(secret))
+        try:
+            return ProviderCatalog.from_payload(connection.connection_id, self.provider_code, payload)
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 503) from None
+
+    def verify_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+        model_ids: Sequence[str],
+    ) -> tuple[DiscoveredModel, ...]:
+        base = self._validate_connection(connection)
+        try:
+            models = ProviderCatalog.from_verified_text_models(
+                connection.connection_id, self.provider_code, model_ids,
+            )
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 409) from None
+        headers = self._headers(_credential_text(credential) if credential is not None else None)
+        url = _append_path(base, self._probe_path())
+        for model in models:
+            payload = self._request(
+                "POST", url, headers,
+                {
+                    "model": model.model_id,
+                    "messages": [{"role": "user", "content": "connection test"}],
+                    "max_tokens": 16,
+                    "stream": False,
+                },
+            )
+            if not self._has_text(payload):
+                raise AdapterError("PROVIDER_PROBE_RESPONSE_INVALID", 503)
+        return models
+
+
+class CustomOpenAICompatibleAdapter(_CustomCompatibleAdapter):
+    def _headers(self, secret: str | None) -> Mapping[str, str]:
+        return {"authorization": f"Bearer {secret}"} if secret is not None else {}
+
+    def _probe_path(self) -> str:
+        return "/chat/completions"
+
+    def _has_text(self, payload: object) -> bool:
+        if not isinstance(payload, Mapping):
+            return False
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+            return False
+        message = choices[0].get("message")
+        if not isinstance(message, Mapping):
+            return False
+        content = message.get("content")
+        return isinstance(content, str) and bool(content.strip())
+
+
+class CustomAnthropicCompatibleAdapter(_CustomCompatibleAdapter):
+    def _headers(self, secret: str | None) -> Mapping[str, str]:
+        return {"x-api-key": secret, "anthropic-version": "2023-06-01"} if secret is not None else {"anthropic-version": "2023-06-01"}
+
+    def _probe_path(self) -> str:
+        return "/messages"
+
+    def _has_text(self, payload: object) -> bool:
+        if not isinstance(payload, Mapping):
+            return False
+        content = payload.get("content")
+        return isinstance(content, list) and any(
+            isinstance(block, Mapping)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+            and bool(block["text"].strip())
+            for block in content
+        )
+
+
 class FixedOpenAICompatibleAdapter(OpenRouterAdapter):
     _OFFICIAL_BASE_URLS = {
         "GROQ": "https://api.groq.com/openai/v1",
@@ -317,31 +427,79 @@ class _RoutingGatewayAdapter(_BaseAdapter):
 class OmniRouteAdapter(_RoutingGatewayAdapter):
     provider_code = "OMNIROUTE"
 
+    def discover_models(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> tuple[DiscoveredModel, ...]:
+        models, _rejected_ids = self.discover_models_with_rejected_ids(connection, credential)
+        return models
+
+    def discover_models_with_rejected_ids(
+        self,
+        connection: ProviderConnection,
+        credential: str | bytes | None,
+    ) -> tuple[tuple[DiscoveredModel, ...], tuple[str, ...]]:
+        base = self._validate_connection(connection)
+        secret = _credential_text(credential)
+        payload = self._request(
+            "GET", _append_path(base, "/v1/models"),
+            {"authorization": f"Bearer {secret}"},
+        )
+        try:
+            rows = ProviderCatalog.usable_omniroute_rows(payload, secret)
+            listed = ProviderCatalog.from_payload(connection.connection_id, "CUSTOM", {"data": rows})
+            specialty_ids = {
+                row["id"] for row in rows
+                if row.get("type") not in (None, "chat", "combo")
+                or row.get("subtype") not in (None, "")
+            }
+            # OpenAI-compatible catalogs often omit type, so untyped rows stay
+            # visible. Discovery never grants allowlist access: every selected
+            # model must pass a text-producing /v1/responses probe before use.
+            chat_ids = tuple(model.model_id for model in listed if model.model_id not in specialty_ids)
+            models = (
+                tuple(replace(model, catalog_origin="upstream") for model in ProviderCatalog.from_logical_models(
+                    connection.connection_id, self.provider_code, chat_ids,
+                )) if chat_ids else ()
+            )
+            return models, tuple(sorted(specialty_ids))
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 503) from None
+
     def verify(
         self,
         connection: ProviderConnection,
         credential: str | bytes | None,
     ) -> VerificationResult:
-        _credential_text(credential)
-        models = self.discover_models(connection, credential)
-        if not models:
-            return self._probe(
-                connection,
-                credential,
-                "/v1/responses",
-                {"model": "health-check", "input": "health-check", "max_output_tokens": 1, "stream": False},
+        base = self._validate_connection(connection)
+        secret = _credential_text(credential)
+        try:
+            configured = self._logical_models.get(connection.connection_id, ())
+            # New create/update requests enforce the four-model cap before
+            # reaching this adapter. Stored legacy allowlists may be larger or
+            # contain auto beside explicit IDs; every runnable ID must be
+            # probed, including auto, during Key replacement and health checks.
+            models = (
+                ProviderCatalog.from_logical_models(connection.connection_id, self.provider_code, configured)
+                if configured else ()
             )
-        return self._probe(
-            connection,
-            credential,
-            "/v1/responses",
-            {
-                "model": models[0].model_id,
-                "input": "health-check",
-                "max_output_tokens": 1,
-                "stream": False,
-            },
-        )
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 409) from None
+        for model in models or (None,):
+            body: dict[str, object] = {"input": "Reply OK.", "max_output_tokens": 16, "stream": False}
+            if model is not None:
+                body["model"] = model.model_id
+            payload = self._request(
+                "POST", _append_path(base, "/v1/responses"),
+                {"authorization": f"Bearer {secret}"},
+                body,
+            )
+            if (not isinstance(payload, Mapping)
+                    or not isinstance(payload.get("output_text"), str)
+                    or not payload["output_text"].strip()):
+                raise AdapterError("PROVIDER_PROBE_RESPONSE_INVALID", 503)
+        return self._ready(connection)
 
 
 class EoulGatewayAdapter(_RoutingGatewayAdapter):
@@ -354,7 +512,7 @@ class EoulGatewayAdapter(_RoutingGatewayAdapter):
     ) -> VerificationResult:
         models = self.discover_models(connection, credential)
         if not models:
-            return self._ready(connection)
+            raise AdapterError("PROVIDER_LOGICAL_MODEL_INVALID", 409)
         return self._probe(
             connection,
             credential,
@@ -369,7 +527,7 @@ class EoulGatewayAdapter(_RoutingGatewayAdapter):
 
 
 class MediaBridgeAdapter(OpenRouterAdapter):
-    """Media Bridge owns its model and credential management."""
+    """Read Media Bridge's OpenAI-compatible model catalog."""
 
     provider_code = "MEDIA_BRIDGE"
 
@@ -378,15 +536,22 @@ class MediaBridgeAdapter(OpenRouterAdapter):
         connection: ProviderConnection,
         credential: str | bytes | None,
     ) -> tuple[DiscoveredModel, ...]:
-        self._validate_connection(connection)
-        return ()
+        base = self._validate_connection(connection)
+        headers = {} if credential is None else {
+            "authorization": f"Bearer {_credential_text(credential)}"
+        }
+        payload = self._request("GET", _append_path(base, "/models"), headers)
+        try:
+            return ProviderCatalog.from_payload(connection.connection_id, self.provider_code, payload)
+        except ProviderCatalogError as error:
+            raise AdapterError(error.args[0], 503) from None
 
     def verify(
         self,
         connection: ProviderConnection,
         credential: str | bytes | None,
     ) -> VerificationResult:
-        self._validate_connection(connection)
+        self.discover_models(connection, credential)
         return self._ready(connection)
 
 
@@ -421,13 +586,20 @@ class AdapterRegistry:
             "UPSTAGE": UpstageAdapter(actual_transport),
             "OLLAMA": OllamaAdapter(actual_transport),
             "OPENROUTER": OpenRouterAdapter(actual_transport),
+            "CUSTOM": CustomOpenAICompatibleAdapter(actual_transport),
             "OMNIROUTE": OmniRouteAdapter(actual_transport, configured_models),
             "EOUL_GATEWAY": EoulGatewayAdapter(actual_transport, configured_models),
             "MEDIA_BRIDGE": MediaBridgeAdapter(actual_transport),
             "SENTENCE_TRANSFORMERS": SentenceTransformersAdapter(actual_transport, configured_models),
         }
+        self._custom_anthropic = CustomAnthropicCompatibleAdapter(actual_transport)
 
-    def adapter(self, provider_code: str) -> ConnectionAdapter:
+    def adapter(self, provider_code: str, adapter_type: str = "") -> ConnectionAdapter:
+        if provider_code == "CUSTOM":
+            if adapter_type == "anthropic_compatible":
+                return self._custom_anthropic
+            if adapter_type not in {"", "CUSTOM", "openai_compatible"}:
+                raise AdapterError("PROVIDER_ADAPTER_UNSUPPORTED")
         try:
             return self._adapters[provider_code]
         except KeyError:

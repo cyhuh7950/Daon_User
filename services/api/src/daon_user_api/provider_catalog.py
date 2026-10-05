@@ -5,6 +5,7 @@ from typing import Literal, Mapping, Sequence
 
 
 RoutingOwner = Literal["provider", "gateway", "local_runtime"]
+MAX_COMPATIBLE_PROBE_MODELS = 4
 
 
 class ProviderCatalogError(ValueError):
@@ -19,6 +20,7 @@ class DiscoveredModel:
     reported_capabilities: tuple[str, ...]
     routing_owner: RoutingOwner
     daon_fallback_allowed: bool
+    catalog_origin: Literal["upstream", "logical"] = "upstream"
 
 
 def _valid_model_id(value: object) -> str:
@@ -54,6 +56,65 @@ def _contains_sensitive_key(value: object) -> bool:
 
 class ProviderCatalog:
     @staticmethod
+    def logical_auto_model(connection_id: str, provider_code: str, auto_model_id: str) -> DiscoveredModel:
+        return DiscoveredModel(
+            connection_id=connection_id, provider_code=provider_code,
+            model_id=_valid_model_id(auto_model_id),
+            reported_capabilities=("text_generation",),
+            routing_owner="gateway" if provider_code == "OMNIROUTE" else "provider",
+            daon_fallback_allowed=provider_code != "OMNIROUTE",
+            catalog_origin="logical",
+        )
+
+    @staticmethod
+    def usable_omniroute_rows(payload: object, credential: str) -> list[Mapping[object, object]]:
+        """Keep selectable catalog IDs without weakening stored model-ID validation."""
+        if not isinstance(payload, Mapping) or _contains_sensitive_key(payload):
+            raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+        rows = payload.get("data")
+        if not isinstance(rows, list):
+            raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+        usable: list[Mapping[object, object]] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+            model_id = row.get("id")
+            if isinstance(model_id, str) and credential in model_id:
+                raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+            try:
+                _valid_model_id(model_id)
+            except ProviderCatalogError:
+                continue
+            usable.append(row)
+        return usable
+
+    @staticmethod
+    def from_verified_text_models(
+        connection_id: str,
+        provider_code: str,
+        model_ids: Sequence[str],
+    ) -> tuple[DiscoveredModel, ...]:
+        if provider_code != "CUSTOM" or not model_ids or len(model_ids) > MAX_COMPATIBLE_PROBE_MODELS:
+            raise ProviderCatalogError("PROVIDER_MODEL_IDS_INVALID")
+        try:
+            normalized = tuple(_valid_model_id(model_id) for model_id in model_ids)
+        except ProviderCatalogError:
+            raise ProviderCatalogError("PROVIDER_MODEL_IDS_INVALID") from None
+        if len(set(normalized)) != len(normalized):
+            raise ProviderCatalogError("PROVIDER_MODEL_IDS_INVALID")
+        return tuple(
+            DiscoveredModel(
+                connection_id=connection_id,
+                provider_code=provider_code,
+                model_id=model_id,
+                reported_capabilities=("text_generation",),
+                routing_owner="provider",
+                daon_fallback_allowed=True,
+            )
+            for model_id in normalized
+        )
+
+    @staticmethod
     def from_payload(
         connection_id: str,
         provider_code: str,
@@ -65,7 +126,7 @@ class ProviderCatalog:
             return ProviderCatalog._from_ollama(connection_id, payload)
         if provider_code == "OPENROUTER":
             return ProviderCatalog._from_openrouter(connection_id, payload)
-        if provider_code in {"GROQ", "MISTRAL", "UPSTAGE", "MEDIA_BRIDGE"}:
+        if provider_code in {"GROQ", "MISTRAL", "UPSTAGE", "MEDIA_BRIDGE", "CUSTOM"}:
             return ProviderCatalog._from_openai_compatible(
                 connection_id, provider_code, payload,
             )
@@ -98,6 +159,7 @@ class ProviderCatalog:
                     "local_runtime" if provider_code == "SENTENCE_TRANSFORMERS" else "gateway"
                 ),
                 daon_fallback_allowed=False,
+                catalog_origin="logical",
             )
             for model_id in normalized
         )

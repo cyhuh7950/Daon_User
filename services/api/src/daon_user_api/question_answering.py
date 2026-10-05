@@ -102,6 +102,10 @@ class TextGenerationTransport(Protocol):
     def post_json_no_auth(
         self, *, url: str, payload: dict[str, object], timeout_seconds: float,
     ) -> dict[str, object]: ...
+    def post_json_headers(
+        self, *, url: str, headers: Mapping[str, str], payload: dict[str, object],
+        timeout_seconds: float,
+    ) -> dict[str, object]: ...
 
 
 def resolve_text_model_selection(snapshot: ProviderSettingsSnapshot) -> TextModelSelection:
@@ -166,17 +170,17 @@ class OpenAICompatibleTextGenerationAdapter:
     }
 
     def __init__(
-        self, *, transport: TextGenerationTransport, api_key: str,
+        self, *, transport: TextGenerationTransport, api_key: str | None,
         timeout_seconds: float = 60.0,
     ) -> None:
-        if not api_key or not 1 <= timeout_seconds <= 120:
+        if (api_key is not None and not api_key) or not 1 <= timeout_seconds <= 120:
             raise ValueError("TEXT_ADAPTER_CONFIG_INVALID")
         self._transport = transport
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(credential_configured=True, timeout_seconds={self._timeout_seconds})"
+        return f"{type(self).__name__}(credential_configured={self._api_key is not None}, timeout_seconds={self._timeout_seconds})"
 
     @staticmethod
     def _base_url(selection: TextModelSelection) -> str:
@@ -186,7 +190,7 @@ class OpenAICompatibleTextGenerationAdapter:
         )
         if (
             selection.provider_code not in {
-                "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY",
+                "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY", "CUSTOM",
             }
             or parsed.scheme not in (
                 {"http", "https"} if selection.provider_code == "EOUL_GATEWAY" else {"https"}
@@ -227,22 +231,14 @@ class OpenAICompatibleTextGenerationAdapter:
         self, request: GroundedQuestionRequest, selection: TextModelSelection,
         *, provider_payload: dict[str, object] | None = None,
     ) -> GroundedTextResult:
-        response = self._transport.post_json(
-            url=_append_provider_path(
-                self._base_url(selection),
-                "/v1/chat/completions" if selection.provider_code == "EOUL_GATEWAY"
-                else "/chat/completions",
-            ),
-            api_key=self._api_key,
-            payload=provider_payload or self.provider_payload(request, selection),
-            timeout_seconds=self._timeout_seconds,
-        )
+        response = self._post(selection, provider_payload or self.provider_payload(request, selection))
         try:
             choices = cast(list[object], response["choices"])
             message = cast(dict[str, object], cast(dict[str, object], choices[0])["message"])
             raw = message["content"]
             value = json.loads(raw) if isinstance(raw, str) else raw
             parsed = cast(dict[str, object], value)
+            self._validate_response_fields(parsed, grounded=True)
             answer = str(parsed["answer"]).strip()
             cited = tuple(str(item) for item in cast(list[object], parsed["cited_chunk_ids"]))
             insufficient = bool(parsed["insufficient"])
@@ -266,6 +262,29 @@ class OpenAICompatibleTextGenerationAdapter:
             raise ValueError("TEXT_GENERATION_GROUNDING_INVALID")
         return GroundedTextResult(answer, cited, insufficient, usage)
 
+    def _post(self, selection: TextModelSelection, payload: dict[str, object]) -> dict[str, object]:
+        if self._api_key is None:
+            if selection.provider_code != "CUSTOM":
+                raise ValueError("TEXT_ADAPTER_CONFIG_INVALID")
+            return self._transport.post_json_no_auth(
+                url=_append_provider_path(self._base_url(selection), "/chat/completions"),
+                payload=payload,
+                timeout_seconds=self._timeout_seconds,
+            )
+        return self._transport.post_json(
+            url=_append_provider_path(
+                self._base_url(selection),
+                "/v1/chat/completions" if selection.provider_code == "EOUL_GATEWAY"
+                else "/chat/completions",
+            ),
+            api_key=self._api_key,
+            payload=payload,
+            timeout_seconds=self._timeout_seconds,
+        )
+
+    def _validate_response_fields(self, parsed: object, *, grounded: bool) -> None:
+        """Provider-specific response validation hook; legacy parsing is unchanged."""
+
     @classmethod
     def general_provider_payload(
         cls, request: GeneralConversationRequest, selection: TextModelSelection,
@@ -286,21 +305,13 @@ class OpenAICompatibleTextGenerationAdapter:
         self, request: GeneralConversationRequest, selection: TextModelSelection,
         *, provider_payload: dict[str, object] | None = None,
     ) -> GroundedTextResult:
-        response = self._transport.post_json(
-            url=_append_provider_path(
-                self._base_url(selection),
-                "/v1/chat/completions" if selection.provider_code == "EOUL_GATEWAY"
-                else "/chat/completions",
-            ),
-            api_key=self._api_key,
-            payload=provider_payload or self.general_provider_payload(request, selection),
-            timeout_seconds=self._timeout_seconds,
-        )
+        response = self._post(selection, provider_payload or self.general_provider_payload(request, selection))
         try:
             choices = cast(list[object], response["choices"])
             message = cast(dict[str, object], cast(dict[str, object], choices[0])["message"])
             raw = message["content"]
             parsed = cast(dict[str, object], json.loads(raw) if isinstance(raw, str) else raw)
+            self._validate_response_fields(parsed, grounded=False)
             if set(parsed) != {"answer"}:
                 raise ValueError
             answer = str(parsed["answer"]).strip()
@@ -311,6 +322,75 @@ class OpenAICompatibleTextGenerationAdapter:
         if not answer or len(answer) > 8_000:
             raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
         return GroundedTextResult(answer, (), False, usage)
+
+
+class AnthropicMessagesTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
+    """CUSTOM Messages protocol, with the same answer and grounding validation."""
+
+    _MAX_OUTPUT_TOKENS = 2048
+
+    def _validate_response_fields(self, parsed: object, *, grounded: bool) -> None:
+        if not isinstance(parsed, dict):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        if grounded:
+            cited = parsed.get("cited_chunk_ids")
+            valid = (
+                set(parsed) == {"answer", "cited_chunk_ids", "insufficient"}
+                and isinstance(parsed.get("answer"), str)
+                and isinstance(cited, list)
+                and all(isinstance(item, str) for item in cited)
+                and type(parsed.get("insufficient")) is bool
+            )
+        else:
+            valid = set(parsed) == {"answer"} and isinstance(parsed.get("answer"), str)
+        if not valid:
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+
+    @classmethod
+    def _messages_payload(cls, chat: dict[str, object]) -> dict[str, object]:
+        messages = cast(list[dict[str, object]], chat["messages"])
+        response_format = cast(dict[str, object], chat["response_format"])
+        schema = cast(dict[str, object], response_format["json_schema"])["schema"]
+        return {
+            "model": chat["model"],
+            "system": (
+                str(messages[0]["content"])
+                + " Return only a JSON object matching this schema: "
+                + json.dumps(schema, separators=(",", ":"))
+            ),
+            "messages": messages[1:],
+            "max_tokens": cls._MAX_OUTPUT_TOKENS,
+        }
+
+    @classmethod
+    def provider_payload(cls, request: GroundedQuestionRequest, selection: TextModelSelection) -> dict[str, object]:
+        return cls._messages_payload(super().provider_payload(request, selection))
+
+    @classmethod
+    def general_provider_payload(cls, request: GeneralConversationRequest, selection: TextModelSelection) -> dict[str, object]:
+        return cls._messages_payload(super().general_provider_payload(request, selection))
+
+    def _post(self, selection: TextModelSelection, payload: dict[str, object]) -> dict[str, object]:
+        if selection.provider_code != "CUSTOM":
+            raise ValueError("TEXT_PROVIDER_ENDPOINT_INVALID")
+        response = self._transport.post_json_headers(
+            url=_append_provider_path(self._base_url(selection), "/messages"),
+            headers=({"x-api-key": self._api_key, "anthropic-version": "2023-06-01"}
+                     if self._api_key is not None else {"anthropic-version": "2023-06-01"}),
+            payload=payload,
+            timeout_seconds=self._timeout_seconds,
+        )
+        content = response.get("content")
+        if not isinstance(content, list) or not content:
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        blocks = [block["text"] for block in content if isinstance(block, dict)
+                  and block.get("type") == "text" and isinstance(block.get("text"), str)]
+        if not blocks or len(blocks) != len(content):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+        return {
+            "choices": [{"message": {"content": "".join(blocks)}}],
+            "usage": response.get("usage", {}),
+        }
 
 
 class UpstageTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):

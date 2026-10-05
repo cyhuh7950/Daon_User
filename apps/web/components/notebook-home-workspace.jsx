@@ -9,6 +9,12 @@ import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-ro
 const SAFE_ERRORS = new Set(["NOTEBOOK_UNAVAILABLE", "SESSION_UNAVAILABLE", "SESSION_RESPONSE_INVALID"]);
 const replaceLocation = (path) => window.location.replace(path);
 
+function notebookOperationKey(prefix) {
+  if (typeof globalThis.crypto?.getRandomValues !== "function") throw new Error("NOTEBOOK_CRYPTO_UNAVAILABLE");
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  return `${prefix}-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export function NotebookHomeWorkspace({
   getSession = getCurrentNotebookSession,
   getNotebooks = listNotebooks,
@@ -95,7 +101,7 @@ export function NotebookHomeWorkspace({
 
   const handleCreate = async (input) => {
     if (!workspaceId) throw new Error("NOTEBOOK_UNAVAILABLE");
-    const result = await createNotebook(workspaceId, input, { idempotencyKey: `notebook-${crypto.randomUUID()}` });
+    const result = await createNotebook(workspaceId, input, { idempotencyKey: notebookOperationKey("notebook") });
     setNotebooks((current) => [result.data, ...current.filter((item) => item.notebook_id !== result.data.notebook_id)]);
     return result.data;
   };
@@ -103,7 +109,7 @@ export function NotebookHomeWorkspace({
   const handleDelete = async (notebook, titleConfirmation) => {
     if (!workspaceId) throw new Error("NOTEBOOK_UNAVAILABLE");
     const result = await requestNotebookDeletion(workspaceId, notebook.notebook_id, titleConfirmation, {
-      idempotencyKey: `notebook-delete-${crypto.randomUUID()}`, etag: notebook.etag,
+      idempotencyKey: notebookOperationKey("notebook-delete"), etag: notebook.etag,
     });
     let current = result.data;
     while (current.status === "accepted" || current.status === "deleting") {

@@ -8,7 +8,7 @@ const VIEW_KEYS = Object.freeze([
 ]);
 const RESOURCE_KEYS = Object.freeze(["resource", "limit", "used", "remaining", "status"]);
 const STATUSES = Object.freeze(["not_configured", "active", "expiring_soon", "expired", "limit_reached"]);
-const RESOURCES = Object.freeze(["users", "notebooks", "storage_bytes", "generation_runs", "source_versions", "studio_outputs"]);
+const RESOURCES = Object.freeze(["users", "notebooks"]);
 const FEATURE = /^[a-z][a-z0-9_]{0,63}$/u;
 const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
 const WARNING_CODES = Object.freeze(["LICENSE_NOT_CONFIGURED", "LICENSE_EXPIRED", "LICENSE_RESOURCE_LIMIT_REACHED", "LICENSE_EXPIRES_WITHIN_30_DAYS"]);

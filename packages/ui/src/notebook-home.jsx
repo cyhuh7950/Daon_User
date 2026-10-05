@@ -8,7 +8,11 @@ const STATUS_LABEL = Object.freeze({ empty: "비어 있음", active: "작업 중
 const SAFE_CREATE_ERRORS = new Set([
   "NOTEBOOK_UNAVAILABLE", "NOTEBOOK_TITLE_INVALID", "IDEMPOTENCY_KEY_REUSED",
   "LICENSE_REQUIRED", "LICENSE_EXPIRED", "LICENSE_RESOURCE_LIMIT_REACHED",
+  "AUTHENTICATION_REQUIRED", "FORBIDDEN", "RESOURCE_UNAVAILABLE", "INVALID_REQUEST",
+  "INTERNAL_ERROR", "NOTEBOOK_RESPONSE_INVALID", "SESSION_RESPONSE_INVALID",
 ]);
+const safeCreateError = (value) => SAFE_CREATE_ERRORS.has(value)
+  || (typeof value === "string" && /^(?:BFF|NOTEBOOK|LICENSE|AUTHENTICATION|FORBIDDEN|RESOURCE|INVALID|INTERNAL|GATEWAY|UPSTREAM|CSRF|SESSION)_[A-Z0-9_]+$/u.test(value));
 const SAFE_DELETE_ERRORS = new Set(["NOTEBOOK_TITLE_CONFIRMATION_MISMATCH", "NOTEBOOK_ETAG_MISMATCH", "NOTEBOOK_DELETION_IN_PROGRESS", "DELETE_SHARED_DATA_BLOCKED", "RETENTION_HOLD"]);
 const safeText = (value) => typeof value === "string" ? value : "";
 
@@ -43,7 +47,7 @@ function CreateDialog({ onClose, onCreate }) {
       await onCreate?.({ title, description: description || null });
       onClose();
     } catch (error) {
-      setSafeError(SAFE_CREATE_ERRORS.has(error?.message) ? error.message : "NOTEBOOK_CREATE_FAILED");
+      setSafeError(safeCreateError(error?.message) ? error.message : "NOTEBOOK_CREATE_FAILED");
     } finally {
       pendingRef.current = false;
       setSaving(false);

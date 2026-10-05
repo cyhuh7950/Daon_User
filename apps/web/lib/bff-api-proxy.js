@@ -170,6 +170,9 @@ function routeFor(method, segments) {
       ? { path: "/api/v1/admin/provider-connections", query: null }
       : { methodRejected: true };
   }
+  if (method === "POST" && segments.length === 3 && segments[0] === "admin" && segments[1] === "provider-connections" && segments[2] === "model-preview") {
+    return { path: "/api/v1/admin/provider-connections/model-preview", query: null };
+  }
   if (segments.length === 2 && segments[0] === "admin" && segments[1] === "provider-health-settings") {
     return new Set(["GET", "PATCH"]).has(method)
       ? { path: "/api/v1/admin/provider-health-settings", query: null }
@@ -187,7 +190,7 @@ function routeFor(method, segments) {
     segments.length === 4 && segments[0] === "admin" && segments[1] === "provider-connections"
     && SAFE_SEGMENT.test(segments[2]) && segments[3] === "credential"
   ) {
-    return method === "POST"
+    return new Set(["POST", "DELETE"]).has(method)
       ? { path: `/api/v1/admin/provider-connections/${encodeURIComponent(segments[2])}/credential`, query: null }
       : { methodRejected: true };
   }

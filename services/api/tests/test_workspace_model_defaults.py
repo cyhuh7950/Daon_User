@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import pytest
 
 from daon_user_api.provider_credentials import ProviderCredentialCipher
+from daon_user_api.user_provider_credentials import UserProviderCredentialResult
 from daon_user_api.workspace_model_defaults import (
     PostgresWorkspaceModelDefaultsService,
     PostgresWorkspaceModelResolver,
@@ -64,19 +65,23 @@ def row(
     capability: str = "text_generation", enabled: bool = True,
     verification_status: str = "verified", catalog_status: str = "ready",
     effective_capabilities: list[str] | None = None, credential_version: int = 4,
+    access_mode: str = "public", credential_requirement: str = "required",
+    adapter_type: str = "",
+    model_id: str = "assistant-default",
+    base_url: str = "https://gateway.example.com",
 ):
     sealed = None if credential is None else cipher.encrypt(
         connection_id, provider_code, credential_version, credential,
     )
     return (
-        3, connection_id, "assistant-default", provider_code,
-        "https://gateway.example.com", None if sealed is None else sealed.ciphertext,
+        3, connection_id, model_id, provider_code,
+        base_url, None if sealed is None else sealed.ciphertext,
         None if sealed is None else sealed.nonce,
         None if sealed is None else sealed.encryption_key_version,
         None if sealed is None else sealed.schema_version,
         credential_version, enabled, verification_status,
         effective_capabilities if effective_capabilities is not None else [capability],
-        catalog_status, 9,
+        catalog_status, 9, access_mode, credential_requirement, adapter_type,
     )
 
 
@@ -100,7 +105,57 @@ def test_resolve_revalidates_workspace_default_and_releases_latest_credential() 
         resolved.credential_text()
     assert database.contexts[0].tenant_id == "tenant-001"
     assert database.contexts[0].workspace_id == "workspace-001"
-    assert database.queries[0][1] == ("text_generation",)
+    assert database.queries[0][1] == ("tenant-001", "workspace-001", "text_generation")
+
+
+@pytest.mark.parametrize(("provider_code", "auto_model_id"), [
+    ("OMNIROUTE", "auto"), ("OPENROUTER", "openrouter/auto"), ("CUSTOM", "auto"),
+])
+def test_resolver_preserves_router_auto_id_when_chosen_as_workspace_default(
+    provider_code: str, auto_model_id: str,
+) -> None:
+    cipher = ProviderCredentialCipher(b"a" * 32, encryption_key_version=1)
+    database = Database(row(
+        cipher, connection_id="router-default", provider_code=provider_code,
+        model_id=auto_model_id, adapter_type="openai_compatible" if provider_code == "CUSTOM" else provider_code,
+        base_url="https://openrouter.ai/api/v1" if provider_code == "OPENROUTER" else "https://gateway.example.com",
+    ))
+    with PostgresWorkspaceModelResolver(Store(database), cipher).resolve(context(), "text_generation") as resolved:
+        assert resolved.model_id == auto_model_id
+        assert resolved.provider_code == provider_code
+
+
+def test_auto_can_be_saved_as_workspace_default_only_when_in_allowed_catalog() -> None:
+    database = DefaultsDatabase()
+    database.models = [(
+        "router-default", "OPENROUTER", "OpenRouter", True, 1, "verified", 3,
+        "openrouter/auto", ["text_generation"], "ready", 2,
+    )]
+    service = PostgresWorkspaceModelDefaultsService(DefaultsStore(database))
+    initial = service.read(defaults_context())
+    result, replayed = service.save(
+        defaults_context(), capability="text_generation", connection_id="router-default",
+        model_id="openrouter/auto", expected_version=0, expected_etag=initial["etag"],
+        idempotency_key="workspace-auto-default-001",
+    )
+    assert replayed is False
+    assert result["defaults"] == [{
+        "capability": "text_generation", "connection_id": "router-default",
+        "model_id": "openrouter/auto", "version": 1,
+    }]
+
+
+def test_custom_resolver_propagates_saved_anthropic_adapter_type() -> None:
+    cipher = ProviderCredentialCipher(b"x" * 32, encryption_key_version=1)
+    database = Database(row(
+        cipher, connection_id="custom-anthropic", provider_code="CUSTOM",
+        adapter_type="anthropic_compatible",
+    ))
+    with PostgresWorkspaceModelResolver(Store(database), cipher).resolve(
+        context(), "text_generation",
+    ) as resolved:
+        assert resolved.adapter_type == "anthropic_compatible"
+        assert "c.adapter_type" in database.queries[0][0]
 
 
 def test_resolve_reads_latest_credential_version_on_each_request() -> None:
@@ -167,6 +222,44 @@ def test_ollama_default_allows_nullable_credential_without_legacy_fallback() -> 
         assert resolved.daon_fallback_allowed is True
 
 
+def test_custom_keyless_default_allows_nullable_credential() -> None:
+    cipher = ProviderCredentialCipher(b"k" * 32, encryption_key_version=1)
+    database = Database(row(
+        cipher, credential=None, credential_version=0,
+        connection_id="custom-keyless", provider_code="CUSTOM",
+        credential_requirement="none", adapter_type="openai_compatible",
+    ))
+    resolver = PostgresWorkspaceModelResolver(Store(database), cipher)
+
+    with resolver.resolve(context(), "text_generation") as resolved:
+        assert resolved.credential_text(required=False) is None
+        assert resolved.adapter_type == "openai_compatible"
+
+
+def test_personal_model_uses_only_verified_own_key_even_if_system_key_exists() -> None:
+    cipher = ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1)
+    database = Database(row(
+        cipher, connection_id="upstage-personal", provider_code="UPSTAGE",
+        access_mode="personal", verification_status="unverified",
+    ))
+    database.row = tuple(
+        "https://api.upstage.ai/v1" if index == 4 else value
+        for index, value in enumerate(database.row)
+    )
+
+    class PersonalKeys:
+        def resolve_credential(self, **kwargs):
+            assert kwargs["user_id"] == "actor-001"
+            return UserProviderCredentialResult(bytes(range(8)), "user", 2)
+
+    resolver = PostgresWorkspaceModelResolver(Store(database), cipher, PersonalKeys())
+    with resolver.resolve(context(), "text_generation") as selected:
+        assert selected.credential_text() == bytes(range(8)).decode("utf-8")
+        assert selected.credential_version == 2
+
+    assert "JOIN system_provider_allowed_models" in database.queries[0][0]
+
+
 @pytest.mark.parametrize(
     ("provider_code", "base_url"),
     [
@@ -211,6 +304,9 @@ class DefaultsConnection:
     def execute(self, sql, params=()):
         normalized = " ".join(sql.split())
         if normalized.startswith("SELECT c.connection_id,c.provider_code,c.display_name"):
+            assert "JOIN system_provider_allowed_models" in normalized
+            assert "c.access_mode='public'" in normalized
+            assert "user_provider_credentials" in normalized
             return CursorRows(self.database.models)
         if normalized.startswith("SELECT capability,connection_id,model_id,version"):
             return CursorRows(list(self.database.defaults))
@@ -223,7 +319,8 @@ class DefaultsConnection:
             item = next((row for row in self.database.defaults if row[0] == capability), None)
             return Cursor(None if item is None else (item[3],))
         if normalized.startswith("SELECT 1 FROM system_provider_connections"):
-            connection_id, model_id, capability = params
+            assert "JOIN system_provider_allowed_models" in normalized
+            _, _, connection_id, model_id, capability = params
             allowed = any(
                 row[0] == connection_id and row[7] == model_id and capability in row[8]
                 for row in self.database.models

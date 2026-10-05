@@ -15,6 +15,7 @@ from .document_processing import DocumentProcessingContext
 from .document_index_postgres import IndexedEvidenceChunk
 from .document_understanding_adapter import DocumentUnderstandingError, _evidence_anchors
 from .question_answering import (
+    AnthropicMessagesTextGenerationAdapter,
     GeneralConversationRequest, GroundedQuestionRequest, GroundedTextResult, TextGenerationTransport,
     OllamaTextGenerationAdapter, OpenAICompatibleTextGenerationAdapter,
     TextModelSelection,
@@ -84,6 +85,13 @@ class QuestionEgressPort(Protocol):
 class QuestionAdapterRegistry:
     """Selects the grounded generator; local fixture is explicit and never calls a provider."""
 
+    @staticmethod
+    def _validate_custom_adapter_type(selection: ResolvedModel) -> None:
+        if selection.provider_code == "CUSTOM" and selection.adapter_type not in {
+            "", "CUSTOM", "openai_compatible", "anthropic_compatible",
+        }:
+            raise ValueError("TEXT_PROVIDER_UNAVAILABLE")
+
     @dataclass(frozen=True, slots=True)
     class Prepared:
         request: GroundedQuestionRequest | GeneralConversationRequest
@@ -96,6 +104,7 @@ class QuestionAdapterRegistry:
         transport: TextGenerationTransport,
     ) -> "QuestionAdapterRegistry.Prepared":
         request = GroundedQuestionRequest(question.strip(), evidence, trace_id)
+        self._validate_custom_adapter_type(selection)
         if selection.provider_code == "OLLAMA":
             adapter = OllamaTextGenerationAdapter(transport=transport)
             return self.Prepared(request, selection, adapter, adapter.provider_payload(request, selection))
@@ -105,11 +114,16 @@ class QuestionAdapterRegistry:
             )
             return self.Prepared(request, selection, adapter, adapter.provider_payload(request, selection))
         if selection.provider_code not in {
-            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY",
+            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY", "CUSTOM",
         }:
             raise ValueError("TEXT_PROVIDER_UNAVAILABLE")
-        api_key = selection.credential_text()
-        external_adapter = OpenAICompatibleTextGenerationAdapter(
+        api_key = selection.credential_text(required=selection.provider_code != "CUSTOM")
+        adapter_type = (
+            AnthropicMessagesTextGenerationAdapter
+            if selection.provider_code == "CUSTOM" and selection.adapter_type == "anthropic_compatible"
+            else OpenAICompatibleTextGenerationAdapter
+        )
+        external_adapter = adapter_type(
             transport=transport, api_key=api_key
         )
         return self.Prepared(
@@ -129,6 +143,7 @@ class QuestionAdapterRegistry:
         transport: TextGenerationTransport,
     ) -> "QuestionAdapterRegistry.Prepared":
         request = GeneralConversationRequest(question.strip(), trace_id)
+        self._validate_custom_adapter_type(selection)
         if selection.provider_code == "OLLAMA":
             adapter = OllamaTextGenerationAdapter(transport=transport)
         elif selection.provider_code == "OMNIROUTE":
@@ -136,10 +151,15 @@ class QuestionAdapterRegistry:
                 transport=transport, api_key=cast(str, selection.credential_text()),
             )
         elif selection.provider_code in {
-            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY",
+            "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "EOUL_GATEWAY", "CUSTOM",
         }:
-            adapter = OpenAICompatibleTextGenerationAdapter(
-                transport=transport, api_key=cast(str, selection.credential_text()),
+            adapter_type = (
+                AnthropicMessagesTextGenerationAdapter
+                if selection.provider_code == "CUSTOM" and selection.adapter_type == "anthropic_compatible"
+                else OpenAICompatibleTextGenerationAdapter
+            )
+            adapter = adapter_type(
+                transport=transport, api_key=selection.credential_text(required=selection.provider_code != "CUSTOM"),
             )
         else:
             raise ValueError("TEXT_PROVIDER_UNAVAILABLE")

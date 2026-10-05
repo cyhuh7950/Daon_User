@@ -4,7 +4,7 @@
 .provider-settings-shell h2, .provider-settings-shell h3 { font-size: 14px; }
 .provider-settings-shell h3 { margin: 0; }
 .provider-settings-shell p, .provider-settings-shell label, .provider-settings-shell input, .provider-settings-shell select, .provider-settings-shell button { font-size: 12px; }
-.provider-status { margin: 12px 0; padding: 8px; border: 1px solid #8ca0bf; border-radius: 6px; background: #fff; }
+.provider-status { margin: 6px 0 4px; padding: 8px; border: 1px solid #8ca0bf; border-radius: 6px; background: #fff; }
 .provider-status.error { border-color: #b42318; color: #b42318; }
 .provider-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .provider-card, .role-bindings { display: grid; gap: 8px; padding: 12px; border: 1px solid #ccd5e3; border-radius: 8px; background: #fff; }
@@ -18,5 +18,29 @@
 .provider-card button, .role-bindings button, .provider-settings-shell header button { padding: 6px 10px; border: 1px solid #4668a7; border-radius: 4px; background: #315d9d; color: #fff; }
 .role-bindings { margin-top: 14px; }
 .role-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.provider-admin-panel { display: grid; gap: 6px; padding-top: 4px; }
+.provider-admin-panel > .studio-section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+.provider-admin-panel .studio-section-heading h2 { margin: 0; }
+.provider-admin-panel .studio-section-heading small { display: block; }
+.provider-settings-shell .provider-status { margin-bottom: 4px; }
+.provider-admin-panel > .studio-section-heading > div,
+.workspace-model-defaults > .studio-section-heading > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; }
+.provider-admin-panel > .studio-section-heading small,
+.workspace-model-defaults > .studio-section-heading small { display: inline; }
+.provider-admin-panel > .studio-section-heading .section-kicker,
+.workspace-model-defaults > .studio-section-heading .section-kicker { display: none; }
+.workspace-model-defaults > .studio-section-heading h2 { margin: 0; }
+.provider-heading-actions { display: flex; align-items: flex-end; gap: 6px; }
+.provider-heading-actions label { display: inline-flex; align-items: center; gap: 4px; }
+.provider-settings-layout { align-items: start; }
+.provider-connection-list, .provider-detail { box-sizing: border-box; max-height: min(760px, calc(100dvh - 260px)); overflow-y: auto; overscroll-behavior: contain; }
+.provider-connection-list { display: grid; align-content: start; gap: 4px; padding-right: 4px; }
+.provider-detail { align-content: start; }
+.provider-detail-grid { align-items: start; }
+.provider-configuration-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px; }
+.provider-configuration-settings { display: grid; align-content: start; gap: 8px; }
+@media (max-width: 760px) { .provider-configuration-columns { grid-template-columns: 1fr; } }
+.provider-card { min-height: 0; padding: 5px 7px; line-height: 1.25; }
+.provider-card small { line-height: 1.25; }
 @media (max-width: 1439px) { .provider-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 1023px) { .provider-grid, .role-grid { grid-template-columns: 1fr; } }

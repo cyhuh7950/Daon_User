@@ -84,7 +84,7 @@ class FakeTransport:
             "https://api.groq.com/openai/v1/models": TransportResponse(200, {"data": [{"id": "llama-3.3-70b-versatile"}]}),
             "https://api.mistral.ai/v1/models": TransportResponse(200, {"data": [{"id": "mistral-large-latest"}]}),
             "https://api.upstage.ai/v1/models": TransportResponse(200, {"data": [{"id": "solar-pro3"}]}),
-            "https://omniroute.example/v1/responses": TransportResponse(200, {}),
+            "https://omniroute.example/v1/responses": TransportResponse(200, {"output_text": "ready"}),
             "http://eoul-gateway:8080/v1/chat/completions": TransportResponse(200, {}),
             "http://media-bridge.internal:8080/v1/models": TransportResponse(
                 200, {"data": [{"id": "media-bridge-vision"}]}
@@ -120,6 +120,26 @@ class FakeTransport:
 @pytest.fixture
 def fake_transport() -> FakeTransport:
     return FakeTransport()
+
+
+def test_custom_openai_compatible_endpoint_uses_non_generating_probe() -> None:
+    transport = FakeTransport()
+    transport.responses["https://models.example.com/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "sample-model"}]},
+    )
+    profile = ProviderConnection(
+        "custom-1", "CUSTOM", "My provider", "https://models.example.com/v1",
+        None, True, 1,
+    )
+
+    result = AdapterRegistry(transport).adapter("CUSTOM").verify(profile, "".join(chr(n) for n in range(97, 101)))
+
+    assert result.status == "ready"
+    assert [(item.method, item.url) for item in transport.requests] == [
+        ("GET", "https://models.example.com/v1/models")
+    ]
+    with pytest.raises(ProviderSettingsError, match="^PROVIDER_BASE_URL_INVALID$"):
+        validate_provider_base_url("CUSTOM", "http://127.0.0.1:9000/v1")
 
 
 @pytest.fixture
@@ -172,8 +192,44 @@ def test_media_bridge_catalog_and_verification_do_not_require_api_key(
 ) -> None:
     result = registry.adapter("MEDIA_BRIDGE").verify(connection("MEDIA_BRIDGE"), None)
 
-    assert fake_transport.requests == []
+    assert [(request.method, request.url, request.headers) for request in fake_transport.requests] == [
+        ("GET", "http://media-bridge.internal:8080/v1/models", {})
+    ]
     assert result.status == "ready"
+
+
+def test_media_bridge_failed_probe_never_returns_verified(fake_transport: FakeTransport) -> None:
+    local_endpoint = "http://127.0.0.1:8642/v1/models"
+    fake_transport.responses[local_endpoint] = TimeoutError(
+        TEST_CREDENTIAL
+    )
+    adapter = AdapterRegistry(fake_transport).adapter("MEDIA_BRIDGE")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_UNAVAILABLE$") as captured:
+        adapter.verify(connection("MEDIA_BRIDGE", base_url="http://127.0.0.1:8642/v1"), None)
+
+    assert len(fake_transport.requests) == 1
+    assert fake_transport.requests[0].url == local_endpoint
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+def test_media_bridge_malformed_probe_response_is_not_verified(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["http://media-bridge.internal:8080/v1/models"] = TransportResponse(200, {})
+    adapter = AdapterRegistry(fake_transport).adapter("MEDIA_BRIDGE")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_RESPONSE_INVALID$"):
+        adapter.verify(connection("MEDIA_BRIDGE"), None)
+
+
+def test_eoul_gateway_empty_discovery_cannot_be_verified(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = FakeTransport()
+    adapter = AdapterRegistry(transport, logical_models={"eoul_gateway": ("assistant-default",)}).adapter("EOUL_GATEWAY")
+    monkeypatch.setattr(adapter, "discover_models", lambda _connection, _credential: ())
+
+    with pytest.raises(AdapterError, match="^PROVIDER_LOGICAL_MODEL_INVALID$"):
+        adapter.verify(connection("EOUL_GATEWAY"), TEST_CREDENTIAL)
+
+    assert transport.requests == []
 
 
 def test_omniroute_verification_requires_api_key_even_without_provider_models(
@@ -184,6 +240,174 @@ def test_omniroute_verification_requires_api_key_even_without_provider_models(
         registry.adapter("OMNIROUTE").verify(connection("OMNIROUTE"), None)
 
     assert fake_transport.requests == []
+
+
+def test_omniroute_model_lookup_uses_authenticated_official_catalog(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "cc/claude-sonnet"}, {"id": "combo-writing"}]},
+    )
+    adapter = AdapterRegistry(fake_transport).adapter("OMNIROUTE")
+
+    models = adapter.discover_models(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert [item.model_id for item in models] == ["cc/claude-sonnet", "combo-writing"]
+    assert [item.routing_owner for item in models] == ["gateway", "gateway"]
+    assert [(item.method, item.url, item.headers, item.body) for item in fake_transport.requests] == [
+        ("GET", "https://omniroute.example/v1/models", {"authorization": f"Bearer {TEST_CREDENTIAL}"}, None)
+    ]
+    assert fake_transport.requests[0].follow_redirects is False
+
+
+def test_omniroute_lookup_keeps_valid_models_when_catalog_has_whitespace_ids(
+    fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [
+            {"id": "aihorde/A Zovya RPG Inpainting", "type": "chat"},
+            {"id": "combo-writing", "type": "combo"},
+            {"id": "cc/claude-sonnet", "type": "chat"},
+        ]},
+    )
+
+    models = AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+        connection("OMNIROUTE"), TEST_CREDENTIAL,
+    )
+
+    assert [model.model_id for model in models] == ["cc/claude-sonnet", "combo-writing"]
+    assert [request.method for request in fake_transport.requests] == ["GET"]
+
+
+@pytest.mark.parametrize("specialty_type", ["embedding", "image", "audio"])
+def test_omniroute_lookup_excludes_typed_non_chat_models(
+    fake_transport: FakeTransport, specialty_type: str,
+) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [
+            {"id": "cc/claude-sonnet", "type": "chat"},
+            {"id": "combo-writing", "type": "combo"},
+            {"id": "legacy-chat"},
+            {"id": f"specialty-{specialty_type}", "type": specialty_type},
+        ]},
+    )
+
+    models = AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+        connection("OMNIROUTE"), TEST_CREDENTIAL,
+    )
+
+    assert [model.model_id for model in models] == ["cc/claude-sonnet", "combo-writing", "legacy-chat"]
+
+
+def test_omniroute_lookup_excludes_generic_sibling_of_typed_specialty(
+    fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [
+            {"id": "openai/whisper-1"},
+            {"id": "cc/claude-sonnet", "type": "chat"},
+            {"id": "openai/whisper-1", "type": "audio", "subtype": "transcription"},
+            {"id": "veo-free/veo"},
+            {"id": "veo-free/veo", "type": "video"},
+        ]},
+    )
+
+    models = AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+        connection("OMNIROUTE"), TEST_CREDENTIAL,
+    )
+
+    assert [model.model_id for model in models] == ["cc/claude-sonnet"]
+
+
+def test_omniroute_omitted_model_probes_provider_default_without_catalog_lookup(fake_transport: FakeTransport) -> None:
+    adapter = AdapterRegistry(fake_transport).adapter("OMNIROUTE")
+
+    result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert result.status == "ready"
+    assert [(item.method, item.url, item.body.get("model") if item.body else None)
+            for item in fake_transport.requests] == [
+        ("POST", "https://omniroute.example/v1/responses", None)
+    ]
+
+
+def test_omniroute_verification_probes_every_allowed_model(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(
+        200, {"output_text": "ready"},
+    )
+    adapter = AdapterRegistry(fake_transport, logical_models={
+        "omniroute": ("cc/claude-sonnet", "combo-writing"),
+    }).adapter("OMNIROUTE")
+
+    result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert result.status == "ready"
+    assert [request.body["model"] for request in fake_transport.requests] == [
+        "cc/claude-sonnet", "combo-writing",
+    ]
+    assert [request.body["max_output_tokens"] for request in fake_transport.requests] == [16, 16]
+
+
+def test_omniroute_verification_probes_all_five_legacy_allowed_models(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(
+        200, {"output_text": "ready"},
+    )
+    adapter = AdapterRegistry(fake_transport, logical_models={
+        "omniroute": ("m1", "m2", "m3", "m4", "m5"),
+    }).adapter("OMNIROUTE")
+
+    result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert result.status == "ready"
+    assert [request.body["model"] for request in fake_transport.requests] == ["m1", "m2", "m3", "m4", "m5"]
+
+
+def test_omniroute_verification_legacy_auto_plus_four_explicit_probes_all_five(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(
+        200, {"output_text": "ready"},
+    )
+    adapter = AdapterRegistry(fake_transport, logical_models={
+        "omniroute": ("auto", "m1", "m2", "m3", "m4"),
+    }).adapter("OMNIROUTE")
+
+    result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert result.status == "ready"
+    assert [request.body["model"] for request in fake_transport.requests] == ["auto", "m1", "m2", "m3", "m4"]
+
+
+@pytest.mark.parametrize("body", [{}, {"output_text": ""}, {"output_text": "  "}, {"output_text": 123}])
+def test_omniroute_verification_rejects_empty_or_non_text_responses(
+    fake_transport: FakeTransport, body: object,
+) -> None:
+    fake_transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(200, body)
+
+    with pytest.raises(AdapterError, match="^PROVIDER_PROBE_RESPONSE_INVALID$"):
+        AdapterRegistry(fake_transport).adapter("OMNIROUTE").verify(
+            connection("OMNIROUTE"), TEST_CREDENTIAL,
+        )
+
+
+def test_omniroute_catalog_failure_hides_secret(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TimeoutError(TEST_CREDENTIAL)
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_UNAVAILABLE$") as captured:
+        AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+            connection("OMNIROUTE"), TEST_CREDENTIAL,
+        )
+
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+def test_omniroute_catalog_rejects_model_id_containing_secret(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": f"model-{TEST_CREDENTIAL}"}]},
+    )
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_RESPONSE_INVALID$") as captured:
+        AdapterRegistry(fake_transport).adapter("OMNIROUTE").discover_models(
+            connection("OMNIROUTE"), TEST_CREDENTIAL,
+        )
+
+    assert TEST_CREDENTIAL not in repr(captured.value)
 
 
 @pytest.mark.parametrize(
@@ -232,7 +456,7 @@ def test_openrouter_catalog_probe_is_bounded_and_does_not_follow_redirects(
     assert models[0].model_id == "openai/gpt-4.1"
 
 
-def test_media_bridge_owns_its_models_and_does_not_query_a_remote_catalog(
+def test_media_bridge_discovers_models_from_its_openai_compatible_catalog(
     registry: AdapterRegistry,
     fake_transport: FakeTransport,
 ) -> None:
@@ -240,8 +464,10 @@ def test_media_bridge_owns_its_models_and_does_not_query_a_remote_catalog(
         connection("MEDIA_BRIDGE"), TEST_CREDENTIAL
     )
 
-    assert models == ()
-    assert fake_transport.requests == []
+    assert [model.model_id for model in models] == ["media-bridge-vision"]
+    assert [(request.method, request.url, request.headers) for request in fake_transport.requests] == [
+        ("GET", "http://media-bridge.internal:8080/v1/models", {"authorization": f"Bearer {TEST_CREDENTIAL}"})
+    ]
 
 
 @pytest.mark.parametrize(
@@ -341,3 +567,206 @@ def test_sentence_transformers_is_a_local_logical_model_provider() -> None:
     connection_value = connection("SENTENCE_TRANSFORMERS", connection_id="sentence-local")
     assert adapter.verify(connection_value, None).routing_owner == "local_runtime"
     assert adapter.discover_models(connection_value, None)[0].model_id == "all-MiniLM-L6-v2"
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "expected_headers"),
+    [
+        ("openai_compatible", {"authorization": f"Bearer {TEST_CREDENTIAL}"}),
+        ("anthropic_compatible", {"x-api-key": TEST_CREDENTIAL, "anthropic-version": "2023-06-01"}),
+    ],
+)
+def test_compatible_catalog_uses_protocol_headers_and_models_path(
+    adapter_type: str, expected_headers: dict[str, str], fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses["https://models.example/v1/models"] = TransportResponse(
+        200, {"data": [{"id": "listed-model"}]},
+    )
+    profile = connection("CUSTOM", base_url="https://models.example/v1")
+
+    models = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type).discover_models(
+        profile, TEST_CREDENTIAL,
+    )
+
+    assert [item.model_id for item in models] == ["listed-model"]
+    assert [(item.method, item.url, item.headers, item.follow_redirects) for item in fake_transport.requests] == [
+        ("GET", "https://models.example/v1/models", expected_headers, False),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "probe_path", "probe_payload", "expected_headers"),
+    [
+        (
+            "openai_compatible", "/chat/completions",
+            {"choices": [{"message": {"content": "ready"}}]},
+            {"authorization": f"Bearer {TEST_CREDENTIAL}"},
+        ),
+        (
+            "anthropic_compatible", "/messages",
+            {"content": [{"type": "text", "text": "ready"}]},
+            {"x-api-key": TEST_CREDENTIAL, "anthropic-version": "2023-06-01"},
+        ),
+    ],
+)
+@pytest.mark.parametrize("catalog_status", [404, 405])
+def test_manual_model_works_without_catalog(
+    adapter_type: str, probe_path: str, probe_payload: object,
+    expected_headers: dict[str, str], catalog_status: int, fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses["https://models.example/v1/models"] = TransportResponse(catalog_status, {})
+    fake_transport.responses[f"https://models.example/v1{probe_path}"] = TransportResponse(200, probe_payload)
+    profile = connection("CUSTOM", base_url="https://models.example/v1")
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type)
+
+    with pytest.raises(AdapterError):
+        adapter.discover_models(profile, TEST_CREDENTIAL)
+    models = adapter.verify_models(profile, TEST_CREDENTIAL, ("manual-model",))
+
+    assert [item.model_id for item in models] == ["manual-model"]
+    probe = fake_transport.requests[-1]
+    assert (probe.method, probe.url, probe.headers) == (
+        "POST", f"https://models.example/v1{probe_path}", expected_headers,
+    )
+    assert probe.timeout_seconds == 5.0 and probe.follow_redirects is False
+    assert probe.body is not None
+    assert probe.body["model"] == "manual-model"
+    assert probe.body["messages"] == [{"role": "user", "content": "connection test"}]
+    assert probe.body["max_tokens"] == 16
+    assert probe.body["stream"] is False
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "path", "bad_payload"),
+    [
+        ("openai_compatible", "/chat/completions", {"choices": [{"message": {"content": ""}}]}),
+        ("openai_compatible", "/chat/completions", {"choices": []}),
+        ("anthropic_compatible", "/messages", {"content": [{"type": "tool_use", "text": "hidden"}]}),
+        ("anthropic_compatible", "/messages", {"content": [{"type": "text", "text": " "}]}),
+    ],
+)
+def test_compatible_probe_rejects_2xx_without_nonempty_text(
+    adapter_type: str, path: str, bad_payload: object, fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses[f"https://models.example/v1{path}"] = TransportResponse(200, bad_payload)
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type)
+
+    with pytest.raises(AdapterError, match="^PROVIDER_PROBE_RESPONSE_INVALID$"):
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL, ("manual",))
+
+    assert len(fake_transport.requests) == 1
+
+
+def test_probe_all_models_fails_closed() -> None:
+    class SecondModelFails(FakeTransport):
+        def request(self, method, url, headers, body, timeout_seconds, *, follow_redirects):
+            self.requests.append(RequestRecord(method, url, dict(headers), dict(body) if body else None,
+                                               timeout_seconds, follow_redirects))
+            if body and body["model"] == "second":
+                return TransportResponse(401, {"error": TEST_CREDENTIAL})
+            return TransportResponse(200, {"choices": [{"message": {"content": "ready"}}]})
+
+    transport = SecondModelFails()
+    adapter = AdapterRegistry(transport).adapter("CUSTOM", "openai_compatible")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_AUTHENTICATION_FAILED$") as captured:
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL,
+                              ("first", "second"))
+
+    assert [item.body["model"] for item in transport.requests if item.body] == ["first", "second"]
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+@pytest.mark.parametrize("adapter_type", ["openai_compatible", "anthropic_compatible"])
+def test_compatible_probe_rejects_five_models_before_network(
+    adapter_type: str, fake_transport: FakeTransport,
+) -> None:
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type)
+    model_ids = tuple(f"manual-{index}" for index in range(5))
+
+    with pytest.raises(AdapterError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        adapter.verify_models(
+            connection("CUSTOM", base_url="https://models.example/v1"),
+            TEST_CREDENTIAL, model_ids,
+        )
+
+    assert fake_transport.requests == []
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "path"),
+    [("openai_compatible", "/chat/completions"), ("anthropic_compatible", "/messages")],
+)
+def test_compatible_probe_auth_failure_is_safe(
+    adapter_type: str, path: str, fake_transport: FakeTransport,
+) -> None:
+    fake_transport.responses[f"https://models.example/v1{path}"] = TransportResponse(
+        401, {"error": TEST_CREDENTIAL},
+    )
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", adapter_type)
+
+    with pytest.raises(AdapterError, match="^PROVIDER_AUTHENTICATION_FAILED$") as captured:
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"),
+                              TEST_CREDENTIAL, ("manual",))
+
+    assert len(fake_transport.requests) == 1
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+@pytest.mark.parametrize("status", [302, 307])
+def test_compatible_probe_blocks_redirect_without_retry(status: int, fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://models.example/v1/messages"] = TransportResponse(status, {})
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", "anthropic_compatible")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_REDIRECT_BLOCKED$"):
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL, ("manual",))
+
+    assert len(fake_transport.requests) == 1
+    assert fake_transport.requests[0].follow_redirects is False
+
+
+def test_compatible_probe_timeout_is_safe_and_does_not_retry(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://models.example/v1/chat/completions"] = TimeoutError(TEST_CREDENTIAL)
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", "openai_compatible")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_CATALOG_UNAVAILABLE$") as captured:
+        adapter.verify_models(connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL, ("manual",))
+
+    assert len(fake_transport.requests) == 1
+    assert TEST_CREDENTIAL not in repr(captured.value)
+
+
+@pytest.mark.parametrize("base_url", ["http://127.0.0.1:9000/v1", "https://169.254.169.254/v1"])
+def test_compatible_probe_rejects_ssrf_before_request(base_url: str, fake_transport: FakeTransport) -> None:
+    adapter = AdapterRegistry(fake_transport).adapter("CUSTOM", "anthropic_compatible")
+
+    with pytest.raises(AdapterError, match="^PROVIDER_BASE_URL_INVALID$"):
+        adapter.verify_models(connection("CUSTOM", base_url=base_url), TEST_CREDENTIAL, ("manual",))
+
+    assert fake_transport.requests == []
+
+
+def test_unsupported_adapter_cannot_verify_models(registry: AdapterRegistry) -> None:
+    with pytest.raises(AdapterError, match="^PROVIDER_ADAPTER_UNSUPPORTED$"):
+        registry.adapter("OPENROUTER").verify_models(connection("OPENROUTER"), TEST_CREDENTIAL, ("manual",))
+
+
+def test_unknown_custom_protocol_cannot_fall_back_to_openai(registry: AdapterRegistry) -> None:
+    with pytest.raises(AdapterError, match="^PROVIDER_ADAPTER_UNSUPPORTED$"):
+        registry.adapter("CUSTOM", "unknown_protocol")
+
+
+def test_migrated_custom_adapter_type_keeps_openai_probe(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://models.example/v1/chat/completions"] = TransportResponse(
+        200, {"choices": [{"message": {"content": "ready"}}]},
+    )
+
+    models = AdapterRegistry(fake_transport).adapter("CUSTOM", "CUSTOM").verify_models(
+        connection("CUSTOM", base_url="https://models.example/v1"), TEST_CREDENTIAL,
+        ("legacy-model",),
+    )
+
+    assert [item.model_id for item in models] == ["legacy-model"]
+    assert [(item.method, item.url) for item in fake_transport.requests] == [
+        ("POST", "https://models.example/v1/chat/completions"),
+    ]

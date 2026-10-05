@@ -15,26 +15,21 @@ test("LLM 설정은 Notebook 복귀 링크와 선택되지 않은 카드의 읽�
   assert.match(providerStyles, /\.provider-card:not\(\[aria-pressed="true"\]\) small.*color:/u);
 });
 
-test("provider connection draft exposes a provider endpoint and removes legacy default-model controls", () => {
+test("provider connection draft keeps endpoint and read-only user boundary without admin password", () => {
   assert.match(source, /base_url:\s*connection\.base_url\s*\|\|\s*""/u);
-  assert.match(source, /API Key를 저장했습니다/u);
-  assert.doesNotMatch(source, /API Key를 저장했습니다\. 이제 모델 조회를 눌러/u);
-  assert.match(source, /API Key 저장과 모델 조회는 선택 사항입니다/u);
   assert.match(source, /canRefreshCatalog\(selectedConnection, busy\)/u);
   assert.doesNotMatch(source, /NO_CREDENTIAL_PROVIDERS/u);
   assert.match(source, /MANAGED_MODEL_PROVIDERS/u);
-  assert.match(source, /모델을 직접 관리하므로 Daon에서 모델을 선택하지 않습니다/u);
-  assert.match(source, /연결할 모델 \(선택\)/u);
-  assert.match(source, /Provider 기준 모델을 사용합니다/u);
+  assert.match(source, /이 Provider가 모델을 직접 관리합니다/u);
   assert.match(source, /저장된 API Key로 모델 목록을 수동 조회합니다/u);
   assert.match(source, /canSaveCredential\(selectedConnection, draft, credential, busy\)/u);
-  assert.match(source, /onClick=\{\(\) => saveConnection\(false\)\} disabled=\{!canMutate\}/u);
   assert.match(source, /CREDENTIAL_REQUIRED_PROVIDERS/u);
-  assert.match(source, /연결 저장 선택 · 사용 시 필수/u);
   assert.match(source, /providerRequiresCredential\(providerCode, baseUrl/u);
-  assert.match(source, /canSaveCredential\(selectedConnection, draft, credential, busy\)/u);
+  assert.doesNotMatch(source, /관리자 재인증 비밀번호/u);
+  assert.match(source, /연결 이름과 허용 모델은 읽기 전용입니다/u);
+  assert.match(source, /호환 방식/u);
+  assert.match(source, /모델 ID 직접 입력/u);
   assert.doesNotMatch(source, /기능별 모델 선택|모델 기능 보정/u);
-  assert.doesNotMatch(source, /stepUp|step_up|관리자 확인|관리자 비밀번호|현재 비밀번호|추가 암호/u);
 });
 
 test("provider catalog defaults use the installed OmniRoute and Media Bridge endpoints", () => {
