@@ -8,6 +8,7 @@ import pytest
 
 
 MIGRATION = Path(__file__).parents[1] / "migrations/versions/0047_user_provider_credentials.py"
+PERSONAL_V2_MIGRATION = Path(__file__).parents[1] / "migrations/versions/0053_personal_credential_schema_v2.py"
 
 
 class RecordingOperations:
@@ -20,6 +21,14 @@ class RecordingOperations:
 
 def load_migration():  # type: ignore[no-untyped-def]
     spec = importlib.util.spec_from_file_location("user_provider_credentials_0047", MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_personal_v2_migration():  # type: ignore[no-untyped-def]
+    spec = importlib.util.spec_from_file_location("personal_credential_schema_v2_0053", PERSONAL_V2_MIGRATION)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -56,3 +65,39 @@ def test_0047_is_forward_only() -> None:
 
     with pytest.raises(RuntimeError, match="^USER_PROVIDER_CREDENTIALS_DOWNGRADE_BLOCKED$"):
         module.downgrade()
+
+
+def test_0053_additively_allows_personal_schema_v2_idempotently() -> None:
+    module = load_personal_v2_migration()
+    operations = RecordingOperations()
+
+    with patch.object(module, "op", operations):
+        module.upgrade()
+
+    sql = " ".join("\n".join(operations.statements).lower().split())
+    assert module.revision == "0053"
+    assert module.down_revision == "0052"
+    assert "pg_constraint" in sql and "personal_credential_schema_v2_check" in sql
+    assert "check (credential_schema_version in (1, 2))" in sql
+    assert "drop constraint if exists user_provider_credentials_credential_schema_version_check;" in sql
+    assert "update user_provider_credentials" not in sql
+    assert "delete from user_provider_credentials" not in sql
+    assert len(operations.statements) == 1
+
+
+def test_0053_downgrade_refuses_v2_rows_before_changing_constraint() -> None:
+    module = load_personal_v2_migration()
+    operations = RecordingOperations()
+
+    with patch.object(module, "op", operations):
+        module.downgrade()
+
+    sql = " ".join("\n".join(operations.statements).lower().split())
+    assert "credential_schema_version = 2" in sql
+    assert "raise exception 'c8_personal_credential_v2_downgrade_blocked'" in sql
+    guard = sql.index("credential_schema_version = 2")
+    refusal = sql.index("raise exception 'c8_personal_credential_v2_downgrade_blocked'")
+    restore = sql.index("add constraint user_provider_credentials_credential_schema_version_check ")
+    assert guard < refusal < restore
+    assert "drop constraint if exists user_provider_credentials_personal_credential_schema_v2_check" in sql
+    assert len(operations.statements) == 1
