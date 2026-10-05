@@ -55,7 +55,7 @@ async function click(act, button) {
   await act(async () => { button.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
 }
 
-function adminFixture({ previewModels = [], previewFails = false, saveFailures = 0, existingConnections = [], refreshResult = null } = {}) {
+function adminFixture({ previewModels = [], previewFails = false, saveFailures = 0, existingConnections = [], refreshResult = null, userCredentials = [] } = {}) {
   const requests = [];
   let connections = existingConnections;
   let pendingSaveFailures = saveFailures;
@@ -68,7 +68,12 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
       requests.push({ path, method, body });
       if (path === "/bff/api/session") return Response.json({ data: { workspace_id: "workspace-001", is_system_admin: true } });
       if (path === "/bff/api/admin/provider-connections" && method === "GET") return Response.json({ data: connections });
-      if (path === "/bff/api/provider-credentials") return Response.json({ data: { credentials: [] } });
+      if (path === "/bff/api/provider-credentials" && method === "GET") return Response.json({ data: { credentials: userCredentials } });
+      if (path.startsWith("/bff/api/provider-credentials/") && method === "PUT") {
+        const credential = userCredentials.find((item) => path.endsWith(encodeURIComponent(item.connection_id)));
+        if (!credential) return Response.json({ error: { code: "PROVIDER_CONNECTION_NOT_FOUND" } }, { status: 404 });
+        return Response.json({ data: { ...credential, configured: true, credential_version: body.expected_version + 1, verification_status: "verified" } });
+      }
       if (path === "/bff/api/admin/provider-health-settings") return Response.json({ data: { interval_minutes: 60, version: 1 } });
       if (path === "/bff/api/admin/provider-connections/model-preview") {
         return previewFails
@@ -875,6 +880,62 @@ test("personal key readiness and UPSTAGE selected models stay separate from the 
     assert.match(container.textContent, /내 계정 키 시험 및 저장|내 계정 키 삭제/u);
     assert.match(container.textContent, /solar-pro4/u);
     assert.doesNotMatch(container.textContent, /other-model/u);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    globalThis.fetch = originalFetch; dom.restore();
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("system admin can re-enter their own legacy personal Key without replacing the system Key", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, "node_modules", ".provider-admin-personal-reentry-"));
+  const dom = installMinimalDom();
+  const originalFetch = globalThis.fetch;
+  const connection = {
+    connection_id: "upstage-admin-personal", provider_code: "UPSTAGE", provider_name: "Upstage",
+    display_name: "Admin personal connection", base_url: "https://api.upstage.ai/v1", short_code: "AP",
+    access_mode: "personal", credential_requirement: "required", adapter_type: "UPSTAGE",
+    enabled: true, configured: false, verification_status: "unverified", version: 3,
+    catalog_status: "ready", catalog_version: 4, allowed_model_ids: ["solar-pro4"], auto_model_id: "",
+    models: [{ model_id: "solar-pro4", catalog_status: "ready", catalog_version: 4, effective_capabilities: ["text_generation"] }],
+  };
+  const fixture = adminFixture({
+    existingConnections: [connection],
+    userCredentials: [{
+      connection_id: connection.connection_id, provider_code: "UPSTAGE", configured: false,
+      credential_version: 7, verification_status: "unverified",
+    }],
+  });
+  let reactRoot;
+  try {
+    globalThis.fetch = fixture.fetch;
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { ProviderSettingsWorkspace } = await bundleProvider(root, output, "provider-admin-personal-reentry");
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
+
+    assert.deepEqual(fixture.requests.map(({ path, method }) => [path, method]), [
+      ["/bff/api/session", "GET"],
+      ["/bff/api/admin/provider-connections", "GET"],
+      ["/bff/api/provider-credentials", "GET"],
+      ["/bff/api/admin/provider-health-settings", "GET"],
+    ]);
+    assert.match(container.textContent, /Key 재입력 필요/u);
+    assert.ok(buttonByText(container, "시스템 키 시험 및 저장"));
+    await fill(act, controlFor(container, "내 계정 개인 Key 재입력"), "owner-personal-key");
+    await click(act, buttonByText(container, "내 개인 Key 재입력 및 검증"));
+
+    assert.deepEqual(fixture.requests.filter((item) => item.method === "PUT"), [{
+      path: "/bff/api/provider-credentials/upstage-admin-personal",
+      method: "PUT",
+      body: { credential: "owner-personal-key", expected_version: 7 },
+    }]);
+    assert.equal(fixture.requests.some((item) => item.path.includes("/admin/provider-connections/") && item.method === "POST"), false);
+    assert.match(container.textContent, /개인 Key 연결 시험에 성공했습니다/u);
+    assert.doesNotMatch(container.textContent, /Key 재입력 필요/u);
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     globalThis.fetch = originalFetch; dom.restore();
