@@ -41,12 +41,17 @@ test("admin과 password-change routes는 조직 console 없이 보호된 독립 
   ]);
   assert.match(adminPage, /AdminUserConsole/u);
   assert.doesNotMatch(adminPage, /OrganizationAdminConsole|organization-admin/u);
+  assert.match(adminPage, /getServerAdminAccess\(sessionCookie\)/u);
+  assert.match(adminPage, /if \(access !== "authorized"\) forbidden\(\)/u);
   assert.match(passwordPage, /PasswordChangeWorkspace/u);
   for (const source of [adminPage, passwordPage]) {
     assert.match(source, /cookies\(\)/u);
-    assert.match(source, /__Host-daon_session/u);
+    assert.match(source, /import \{ webSessionCookieName \} from ["'][^"']*\/web-session-cookie\.js["']/u);
+    assert.match(source, /cookieStore\.get\(webSessionCookieName\(\)\)\?\.value/u);
     assert.match(source, /redirect\("\/"\)/u);
   }
+  assert.match(adminPage, /if \(!sessionCookie\) redirect\("\/"\)/u);
+  assert.match(passwordPage, /if \(!cookieStore\.get\(webSessionCookieName\(\)\)\?\.value\) redirect\("\/"\)/u);
 });
 
 test("현재 Web 탐색은 organization admin과 join 링크를 노출하지 않는다", async () => {
@@ -131,8 +136,8 @@ test("Notebook 보호 페이지는 인증 쿠키가 없으면 서버에서 로�
   const productPage = await read("apps/web/app/notebooks/[notebook_id]/page.jsx");
   for (const source of [page, productPage]) {
     assert.match(source, /cookies\(\)/u);
-    assert.match(source, /__Host-daon_session/u);
-    assert.match(source, /redirect\("\/"\)/u);
+    assert.match(source, /import \{ webSessionCookieName \} from ["'][^"']*\/web-session-cookie\.js["']/u);
+    assert.match(source, /if \(!cookieStore\.get\(webSessionCookieName\(\)\)\?\.value\) redirect\("\/"\)/u);
   }
 });
 
