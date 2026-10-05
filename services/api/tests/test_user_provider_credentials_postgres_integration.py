@@ -77,14 +77,28 @@ def test_postgres_personal_v1_reentry_v2_scope_and_system_v1_rollback(monkeypatc
             with connection.transaction():
                 revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
                 assert revision is not None and revision[0] == "0053", "C8 integration requires schema revision 0053"
+                existing_short_codes = {
+                    row[0] for row in connection.execute(
+                        "SELECT short_code FROM system_provider_connections",
+                    ).fetchall()
+                }
+                available_short_codes = [
+                    f"{first}{second}"
+                    for first in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    for second in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    if f"{first}{second}" not in existing_short_codes
+                ]
+                assert len(available_short_codes) >= 2, "no unique provider short codes available for fixture"
+                personal_short_code, system_short_code = available_short_codes[:2]
 
                 connection.execute(
                     "INSERT INTO system_provider_connections "
                     "(connection_id,provider_code,display_name,base_url,access_mode,credential_requirement,"
-                    "enabled,updated_by,trace_id,policy_version) "
-                    "VALUES (%s,%s,%s,%s,'personal','required',true,%s,%s,%s)",
+                    "enabled,short_code,adapter_type,provider_name,updated_by,trace_id,policy_version) "
+                    "VALUES (%s,%s,%s,%s,'personal','required',true,%s,%s,%s,%s,%s,%s)",
                     (connection_id, provider_code, "C8 synthetic personal", "https://provider.invalid/v1",
-                     "c8-integration", f"trace-{suffix}", "policy-c8-integration"),
+                     personal_short_code, provider_code, "C8 synthetic personal", "c8-integration",
+                     f"trace-{suffix}", "policy-c8-integration"),
                 )
                 legacy_v1 = cipher.encrypt(connection_id, provider_code, 1, legacy_credential)
                 connection.execute(
@@ -101,11 +115,13 @@ def test_postgres_personal_v1_reentry_v2_scope_and_system_v1_rollback(monkeypatc
                     "INSERT INTO system_provider_connections "
                     "(connection_id,provider_code,display_name,base_url,encrypted_credential,credential_nonce,"
                     "encryption_key_version,credential_schema_version,credential_version,enabled,verification_status,"
-                    "verified_at,version,updated_by,trace_id,policy_version,access_mode,credential_requirement) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,true,'verified',now(),1,%s,%s,%s,'public','required')",
+                    "verified_at,version,updated_by,trace_id,policy_version,access_mode,credential_requirement,"
+                    "short_code,adapter_type,provider_name) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,true,'verified',now(),1,%s,%s,%s,'public','required',%s,%s,%s)",
                     (system_connection_id, provider_code, "C8 synthetic system", "https://provider.invalid/v1",
                      system_v1.ciphertext, system_v1.nonce, system_v1.encryption_key_version,
-                     system_v1.schema_version, "c8-integration", f"trace-system-{suffix}", "policy-c8-integration"),
+                     system_v1.schema_version, "c8-integration", f"trace-system-{suffix}", "policy-c8-integration",
+                     system_short_code, provider_code, "C8 synthetic system"),
                 )
 
                 service = PostgresUserProviderCredentialService(_SharedTransactionStore(connection), cipher)
