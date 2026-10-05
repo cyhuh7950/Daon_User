@@ -122,7 +122,7 @@ export async function deleteAdminUser(userId, { fetchImpl = fetch, signal, idemp
   });
   const payload = await bodyOf(response);
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "ADMIN_USER_DELETE_FAILED");
-  if (!validEnvelope(payload) || !payload.data || typeof payload.data.user_id !== "string"
+  if (!validEnvelope(payload) || !exact(payload.data, ["user_id", "replayed"]) || typeof payload.data.user_id !== "string"
       || typeof payload.data.replayed !== "boolean") throw new Error("ADMIN_USERS_RESPONSE_INVALID");
   return payload.data;
 }

@@ -130,12 +130,17 @@ export function AdminUserConsole({
       setUsers((current) => current.map((item) => item.user_id === updated.user_id ? updated : item));
     } catch (caught) { setError(caught?.message || "ADMIN_USER_APPROVAL_FAILED"); }
   };
-  const remove = async (user) => {
-    if (user.protected || !window.confirm(`${user.login_id ?? user.user_id} 계정을 삭제하시겠습니까?`)) return;
+  const deleteConfirmedUser = async (user) => {
+    if (user.protected) return false;
     try {
       await removeUser(user.user_id, { idempotencyKey: operationKey("admin-delete") });
       setUsers((current) => current.filter((item) => item.user_id !== user.user_id));
-    } catch (caught) { setError(caught?.message || "ADMIN_USER_DELETE_FAILED"); }
+      return true;
+    } catch (caught) { setError(caught?.message || "ADMIN_USER_DELETE_FAILED"); return false; }
+  };
+  const remove = async (user) => {
+    if (user.protected || !window.confirm(`${user.login_id ?? user.user_id} 계정을 삭제하시겠습니까?`)) return;
+    await deleteConfirmedUser(user);
   };
 
   const reset = async (user) => {
@@ -154,8 +159,10 @@ export function AdminUserConsole({
   const removeSelected = async () => {
     const targets = visibleUsers.filter((user) => selected.has(user.user_id) && !user.protected);
     if (!targets.length || !window.confirm(`${targets.length}명의 계정을 삭제하시겠습니까?`)) return;
-    for (const user of targets) await remove(user);
-    setSelected(new Set());
+    for (const user of targets) {
+      if (!(await deleteConfirmedUser(user))) break;
+      setSelected((current) => { const next = new Set(current); next.delete(user.user_id); return next; });
+    }
   };
   const openEdit = (user) => {
     setForm({ login_id: user.login_id ?? "", email: user.email ?? "", initial_password: "", state: user.state, roles: rolesFor(user) });

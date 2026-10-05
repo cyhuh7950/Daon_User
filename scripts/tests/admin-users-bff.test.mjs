@@ -93,6 +93,32 @@ test("system user BFF maps list and administrator mutations through same-origin 
   ]);
 });
 
+test("admin delete/reset BFF는 교차 출처 요청을 차단하고 upstream 권한 거부를 전달한다", async () => {
+  const forwarded = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url) => { forwarded.push(String(url)); return Response.json({ error: { code: "FORBIDDEN" } }, { status: 403 }); },
+  });
+  const makeRequest = (path, origin) => new Request(`https://app.example.com/bff/api/admin/users/user-001${path}`, {
+    method: path ? "POST" : "DELETE",
+    headers: { Origin: origin, "Sec-Fetch-Site": origin === "https://app.example.com" ? "same-origin" : "cross-site", "Idempotency-Key": "admin-action-user-0001" },
+    body: "{}",
+  });
+  for (const path of ["", "/password-reset"]) {
+    const segments = ["admin", "users", "user-001", ...(path ? ["password-reset"] : [])];
+    assert.equal((await proxy(makeRequest(path, "https://attacker.example"), segments)).status, 403);
+    assert.equal(forwarded.length, path ? 1 : 0);
+    const denied = await proxy(makeRequest(path, "https://app.example.com"), segments);
+    assert.equal(denied.status, 403);
+    assert.equal((await denied.json()).error.code, "FORBIDDEN");
+  }
+  assert.deepEqual(forwarded, [
+    "https://api.example.com/api/v1/admin/users/user-001",
+    "https://api.example.com/api/v1/admin/users/user-001/password-reset",
+  ]);
+});
+
 test("authenticated password change BFF validates referer and forwards exact CSRF provenance", async () => {
   const captured = [];
   const proxy = createBffProxy({
