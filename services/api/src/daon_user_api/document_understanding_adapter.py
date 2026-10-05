@@ -280,12 +280,14 @@ class UrlLibDocumentUnderstandingTransport:
         timeout_seconds: float,
     ) -> dict[str, object]:
         if (
-            set(headers) != {"x-api-key", "anthropic-version"}
+            set(headers) not in ({"anthropic-version"}, {"x-api-key", "anthropic-version"})
             or headers.get("anthropic-version") != "2023-06-01"
-            or not isinstance(headers.get("x-api-key"), str)
-            or not headers["x-api-key"]
-            or len(headers["x-api-key"]) > 16384
-            or any(not 33 <= ord(character) <= 126 for character in headers["x-api-key"])
+            or ("x-api-key" in headers and (
+                not isinstance(headers["x-api-key"], str)
+                or not headers["x-api-key"]
+                or len(headers["x-api-key"]) > 16384
+                or any(not 33 <= ord(character) <= 126 for character in headers["x-api-key"])
+            ))
             or not 1 <= timeout_seconds <= 120
         ):
             raise DocumentUnderstandingError("UNDERSTANDING_PROVIDER_HEADERS_INVALID", status=502)

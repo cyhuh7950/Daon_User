@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import unittest
@@ -10,6 +11,7 @@ from daon_user_api.document_understanding_adapter import (
     DocumentUnderstandingRequest,
     ServerProviderCredentialResolver,
     UpstageDocumentUnderstandingAdapter,
+    UrlLibDocumentUnderstandingTransport,
     resolve_document_model_selection,
 )
 from daon_user_api.provider_settings import (
@@ -103,6 +105,42 @@ class DocumentModelSelectionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(DocumentUnderstandingError, "DOCUMENT_PARSER_MODEL_NOT_SELECTED"):
             resolve_document_model_selection(snapshot)
+
+
+class AnthropicHeaderTransportTests(unittest.TestCase):
+    def test_keyless_messages_reach_transport_without_auth_header(self) -> None:
+        captured = []
+
+        class Opener:
+            def open(self, request, timeout):
+                captured.append((request, timeout))
+                return io.BytesIO(b'{"content":[{"type":"text","text":"ok"}]}')
+
+        with patch("daon_user_api.document_understanding_adapter.urllib.request.build_opener", return_value=Opener()):
+            result = UrlLibDocumentUnderstandingTransport().post_json_headers(
+                url="https://models.example.com/v1/messages",
+                headers={"anthropic-version": "2023-06-01"},
+                payload={"model": "manual-a"}, timeout_seconds=5,
+            )
+
+        self.assertEqual(result["content"][0]["text"], "ok")
+        self.assertEqual(len(captured), 1)
+        request, timeout = captured[0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Anthropic-version"), "2023-06-01")
+        self.assertIsNone(request.get_header("X-api-key"))
+        self.assertIsNone(request.get_header("Authorization"))
+        self.assertEqual(timeout, 5)
+
+    def test_malformed_provided_key_is_rejected_before_transport(self) -> None:
+        with patch("daon_user_api.document_understanding_adapter.urllib.request.build_opener") as build:
+            with self.assertRaisesRegex(DocumentUnderstandingError, "UNDERSTANDING_PROVIDER_HEADERS_INVALID"):
+                UrlLibDocumentUnderstandingTransport().post_json_headers(
+                    url="https://models.example.com/v1/messages",
+                    headers={"x-api-key": "bad\r\nInjected: value", "anthropic-version": "2023-06-01"},
+                    payload={"model": "manual-a"}, timeout_seconds=5,
+                )
+        build.assert_not_called()
 
 
 class UpstageDocumentUnderstandingAdapterTests(unittest.TestCase):
