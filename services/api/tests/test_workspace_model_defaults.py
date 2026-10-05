@@ -295,6 +295,7 @@ class DefaultsDatabase:
         self.defaults = []
         self.idempotency = {}
         self.contexts = []
+        self.query_sql = []
 
 
 class DefaultsConnection:
@@ -303,11 +304,17 @@ class DefaultsConnection:
 
     def execute(self, sql, params=()):
         normalized = " ".join(sql.split())
+        self.database.query_sql.append(normalized)
         if normalized.startswith("SELECT c.connection_id,c.provider_code,c.display_name"):
             assert "JOIN system_provider_allowed_models" in normalized
             assert "c.access_mode='public'" in normalized
             assert "user_provider_credentials" in normalized
-            return CursorRows(self.database.models)
+            models = self.database.models
+            if "u.credential_schema_version=2" in normalized:
+                models = [item for item in models if len(item) <= 11 or item[11] != "personal" or (
+                    item[12] == 2 and item[13] == "verified"
+                )]
+            return CursorRows(models)
         if normalized.startswith("SELECT capability,connection_id,model_id,version"):
             return CursorRows(list(self.database.defaults))
         if normalized.startswith("SELECT pg_advisory_xact_lock"):
@@ -323,6 +330,10 @@ class DefaultsConnection:
             _, _, connection_id, model_id, capability = params
             allowed = any(
                 row[0] == connection_id and row[7] == model_id and capability in row[8]
+                and (len(row) <= 11 or row[11] != "personal" or (
+                    "u.credential_schema_version=2" in normalized
+                    and row[12] == 2 and row[13] == "verified"
+                ))
                 for row in self.database.models
             )
             return Cursor((1,) if allowed else None)
@@ -409,11 +420,46 @@ def test_workspace_model_defaults_reject_reused_key_and_unavailable_model() -> N
             model_id="different", expected_version=0, expected_etag=initial["etag"],
             idempotency_key="workspace-default-0002",
         )
-
     next_snapshot = service.read(defaults_context())
     with pytest.raises(WorkspaceModelDefaultsError, match="^WORKSPACE_MODEL_DEFAULT_UNAVAILABLE$"):
         service.save(
             defaults_context(), capability="text_generation", connection_id="ollama-lan",
             model_id="missing-model", expected_version=1, expected_etag=next_snapshot["etag"],
             idempotency_key="workspace-default-0003",
+        )
+
+
+def test_workspace_model_defaults_require_v2_for_personal_but_keep_system_v1() -> None:
+    database = DefaultsDatabase()
+    system_v1 = ("system-v1", "UPSTAGE", "System v1", True, 1, "verified", 1,
+                 "solar", ["text_generation"], "ready", 1, "public", None, None)
+    personal_v1 = ("personal-v1", "UPSTAGE", "Legacy personal", False, 0, "unverified", 1,
+                   "solar", ["text_generation"], "ready", 1, "personal", 1, "verified")
+    personal_v2 = ("personal-v2", "UPSTAGE", "Personal v2", False, 0, "unverified", 1,
+                   "solar", ["text_generation"], "ready", 1, "personal", 2, "verified")
+    database.models = [system_v1, personal_v1, personal_v2]
+    service = PostgresWorkspaceModelDefaultsService(DefaultsStore(database))
+
+    snapshot = service.read(defaults_context())
+    assert {item["connection_id"] for item in snapshot["available_models"]} == {
+        "system-v1", "personal-v2",
+    }
+    assert all("u.credential_schema_version=2" in sql for sql in database.query_sql
+               if "user_provider_credentials" in sql)
+
+    with pytest.raises(WorkspaceModelDefaultsError, match="^WORKSPACE_MODEL_DEFAULT_UNAVAILABLE$"):
+        service.save(
+            defaults_context(), capability="text_generation", connection_id="personal-v1",
+            model_id="solar", expected_version=0, expected_etag=snapshot["etag"],
+            idempotency_key="legacy-personal-default",
+        )
+    for connection_id in ("personal-v2", "system-v1"):
+        isolated = DefaultsDatabase()
+        isolated.models = [system_v1, personal_v1, personal_v2]
+        isolated_service = PostgresWorkspaceModelDefaultsService(DefaultsStore(isolated))
+        current = isolated_service.read(defaults_context())
+        isolated_service.save(
+            defaults_context(), capability="text_generation", connection_id=connection_id,
+            model_id="solar", expected_version=0, expected_etag=current["etag"],
+            idempotency_key=f"allowed-{connection_id}",
         )
