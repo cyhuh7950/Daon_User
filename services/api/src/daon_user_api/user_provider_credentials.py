@@ -120,6 +120,8 @@ class PostgresUserProviderCredentialService:
                     ).fetchall()
                     model_ids = tuple(str(row[0]) for row in allowed)
                     if provider_code == "CUSTOM":
+                        if not model_ids:
+                            raise UserProviderCredentialError("PROVIDER_MODEL_IDS_INVALID", 409)
                         AdapterRegistry().adapter(provider_code, str(provider[5])).verify_models(
                             profile, credential, model_ids,
                         )

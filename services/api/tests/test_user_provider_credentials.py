@@ -205,6 +205,59 @@ def test_pending_custom_without_allowed_models_cannot_verify_personal_key(monkey
     assert not any(sql.startswith("INSERT INTO user_provider_credentials") for sql in calls)
 
 
+def test_custom_empty_allowlist_is_rejected_before_a_noop_verifier_can_mark_key_verified(monkeypatch) -> None:
+    calls = []
+
+    class Cursor:
+        def __init__(self, row=None, rows=()):
+            self.row, self.rows = row, rows
+
+        def fetchone(self):
+            return self.row
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def execute(self, sql, _params=()):
+            calls.append(sql)
+            if sql.startswith("SELECT provider_code"):
+                return Cursor(("CUSTOM", "https://models.example/v1", "personal", "required", True, "openai_compatible"))
+            if sql.startswith("SELECT credential_version"):
+                return Cursor(None)
+            if sql.startswith("SELECT model_id FROM system_provider_allowed_models"):
+                return Cursor(rows=())
+            return Cursor()
+
+    class Store:
+        @contextmanager
+        def _transaction(self, _context):
+            yield Connection()
+
+    class NoopVerifier:
+        def verify_models(self, _profile, _credential, model_ids):
+            calls.append(("verify_models", tuple(model_ids)))
+            return ()
+
+    class Registry:
+        def adapter(self, _provider_code, _adapter_type=""):
+            return NoopVerifier()
+
+    monkeypatch.setattr(module, "AdapterRegistry", Registry)
+    service = module.PostgresUserProviderCredentialService(
+        Store(), ProviderCredentialCipher(bytes(range(32)), encryption_key_version=1),
+    )
+
+    with pytest.raises(module.UserProviderCredentialError, match="^PROVIDER_MODEL_IDS_INVALID$"):
+        service.replace_credential(
+            tenant_id="tenant-1", user_id="user-1", connection_id="custom-1",
+            credential="fixture-personal-secret", expected_version=0,
+        )
+
+    assert ("verify_models", ()) not in calls
+    assert not any(sql.startswith("INSERT INTO user_provider_credentials") for sql in calls)
+
+
 def test_migrated_custom_personal_key_replacement_uses_openai_probe(monkeypatch) -> None:
     calls = []
 
