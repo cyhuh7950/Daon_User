@@ -371,12 +371,15 @@ class SqliteAuthorizationRepository:
         self._path = Path(path)
         self._lock = RLock()
         self._closed = False
+        connection = None
         try:
             connection = self._connect()
             self._create_schema(connection)
-            connection.close()
         except sqlite3.Error as error:
             raise AuthorizationError("PERSISTENCE_UNAVAILABLE", 503) from error
+        finally:
+            if connection is not None:
+                connection.close()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(str(self._path), isolation_level=None, check_same_thread=False)
@@ -484,6 +487,27 @@ class SqliteAuthorizationRepository:
         }
         if "role_scope" not in columns:
             connection.execute("ALTER TABLE auth_access_decisions ADD COLUMN role_scope TEXT")
+        # CREATE TABLE IF NOT EXISTS cannot add a CHECK to an already existing SQLite table.
+        for operation in ("INSERT", "UPDATE"):
+            trigger_name = f"auth_admin_role_reason_{operation.lower()}_guard"
+            trigger_sql = (
+                f"CREATE TRIGGER IF NOT EXISTS {trigger_name} "
+                f"BEFORE {operation} ON auth_admin_role_operations FOR EACH ROW "
+                "WHEN NEW.reason IS NULL OR NEW.reason NOT IN ("
+                "'ROLE_DUTY_CHANGE','ACCESS_REVIEW','SECURITY_RESTRICTION','CORRECTION','OTHER') "
+                "BEGIN SELECT RAISE(ABORT, 'INVALID_AUDIT_REASON'); END"
+            )
+            existing = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (trigger_name,)
+            ).fetchone()
+            if existing is not None and str(existing[0]).replace("IF NOT EXISTS ", "") != trigger_sql.replace("IF NOT EXISTS ", ""):
+                raise AuthorizationError("AUDIT_REASON_GUARD_INVALID", 503)
+            connection.execute(trigger_sql)
+        if connection.execute(
+            "SELECT 1 FROM auth_admin_role_operations WHERE reason IS NULL OR reason NOT IN ("
+            "'ROLE_DUTY_CHANGE','ACCESS_REVIEW','SECURITY_RESTRICTION','CORRECTION','OTHER') LIMIT 1"
+        ).fetchone() is not None:
+            raise AuthorizationError("AUDIT_REASON_LEGACY_INVALID", 503)
         connection.execute(
             "UPDATE auth_schema_metadata SET schema_version=? WHERE singleton=1",
             (AUTHORIZATION_SCHEMA_VERSION,),

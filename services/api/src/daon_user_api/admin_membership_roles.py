@@ -78,17 +78,35 @@ class AdminMembershipRoleService:
             raise AuthorizationError("ACTION_DENIED", 403)
         return actor_id
 
+    def list_tenants(self, actor: IdentityPrincipal) -> tuple[tuple[str, str], ...]:
+        self._actor(actor)
+        from .postgres_adapters import PostgresAuthorizationRepository
+
+        with self._repository.transaction() as connection:
+            rows = connection.execute(
+                "SELECT tenant_id FROM auth_workspaces "
+                "UNION SELECT tenant_id FROM auth_tenant_roles WHERE state='active' "
+                "ORDER BY tenant_id"
+            ).fetchall()
+            if isinstance(self._repository, PostgresAuthorizationRepository):
+                result = []
+                for row in rows:
+                    tenant_id = str(row["tenant_id"])
+                    # Foundation tenants has forced tenant RLS; scope each trusted auth tenant separately.
+                    connection.execute("SELECT set_config('app.tenant_id', ?, true)", (tenant_id,))
+                    name_row = connection.execute(
+                        "SELECT display_name FROM tenants WHERE tenant_id=?", (tenant_id,)
+                    ).fetchone()
+                    result.append((tenant_id, str(name_row["display_name"]) if name_row else tenant_id))
+                return tuple(result)
+            return tuple((str(row["tenant_id"]), str(row["tenant_id"])) for row in rows)
+
     def list_effective_memberships(
         self, actor: IdentityPrincipal, tenant_id: str, user_id: str,
     ) -> EffectiveMemberships:
         self._actor(actor)
         tenant_id, user_id = _input_id(tenant_id), _input_id(user_id)
         with self._repository.transaction() as connection:
-            # The tenant is resolved from persisted workspace rows, never from actor claims.
-            if connection.execute(
-                "SELECT 1 FROM auth_workspaces WHERE tenant_id=? LIMIT 1", (tenant_id,)
-            ).fetchone() is None:
-                raise AuthorizationError("RESOURCE_UNAVAILABLE", 404)
             tenant_row = connection.execute(
                 "SELECT role,state,version FROM auth_tenant_roles "
                 "WHERE tenant_id=? AND user_id=? AND state='active'",

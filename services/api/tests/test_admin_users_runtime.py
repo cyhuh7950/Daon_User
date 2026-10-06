@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
-from daon_user_api.identity import PASSWORD_HASHER
+from daon_user_api.authorization import Role
+from daon_user_api.admin_membership_roles import AdminMembershipRoleService
+from daon_user_api.identity import IdentityPrincipal, PASSWORD_HASHER
+from daon_user_api.postgres_adapters import PostgresAuthorizationRepository
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeSettings, build_dependencies, create_app
 
 
@@ -51,6 +56,231 @@ async def _admin_cookie(client: httpx.AsyncClient) -> str:
     )
     assert login.status_code == 200
     return login.cookies[WEB_SESSION_COOKIE]
+
+
+def test_admin_membership_http_cross_tenant_projection_and_change(tmp_path: Path) -> None:
+    asyncio.run(_admin_membership_http_cross_tenant_projection_and_change(tmp_path))
+
+
+def test_admin_tenants_list_only_auth_scopes_with_id_fallback(tmp_path: Path) -> None:
+    asyncio.run(_admin_tenants_list_only_auth_scopes_with_id_fallback(tmp_path))
+
+
+def test_admin_tenant_postgres_query_scopes_each_foundation_name() -> None:
+    # Contract test for SQL sequencing; actual PostgreSQL RLS still requires an isolated DB.
+    class FakeConnection:
+        scope = None
+
+        def execute(self, sql, params=()):
+            if sql.startswith("SELECT tenant_id FROM auth_workspaces UNION SELECT tenant_id FROM auth_tenant_roles WHERE state='active'"):
+                return SimpleNamespace(fetchall=lambda: [
+                    {"tenant_id": "tenant-a"}, {"tenant_id": "tenant-b"},
+                ])
+            if sql.startswith("SELECT set_config"):
+                self.scope = params[0]
+                return SimpleNamespace()
+            assert sql == "SELECT display_name FROM tenants WHERE tenant_id=?"
+            assert params == (self.scope,)
+            return SimpleNamespace(fetchone=lambda: (
+                {"display_name": "Tenant A"} if self.scope == "tenant-a" else None
+            ))
+
+    repository = object.__new__(PostgresAuthorizationRepository)
+    connection = FakeConnection()
+
+    @contextmanager
+    def transaction():
+        yield connection
+
+    repository.transaction = transaction
+    service = AdminMembershipRoleService(
+        repository=repository, system_admin_user_ids=frozenset({"admin"}), clock=lambda: None,
+    )
+    assert service.list_tenants(IdentityPrincipal("admin", "session", "device", "admin")) == (
+        ("tenant-a", "Tenant A"), ("tenant-b", "tenant-b"),
+    )
+
+
+async def _admin_tenants_list_only_auth_scopes_with_id_fallback(tmp_path: Path) -> None:
+    settings = replace(
+        RuntimeSettings.for_test(database_path=tmp_path / "runtime.sqlite3", policy_version="identity-policy-v1"),
+        system_admin_user_ids=frozenset({"admin"}),
+    )
+    dependencies = build_dependencies(settings)
+    _add_user(dependencies, user_id="identity-only", password=secrets.token_urlsafe(24))
+    ordinary_password = secrets.token_urlsafe(24)
+    _add_user(dependencies, user_id="ordinary", password=ordinary_password)
+    dependencies.authorization_repository.bootstrap_workspace(
+        tenant_id="tenant-b", workspace_id="workspace-b", owner_user_id="owner-b",
+        owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",
+        data_area="cloud_sync", cost_limit_cents=100, now=dependencies.admin_user_service._clock(),
+    )
+    with dependencies.authorization_repository.transaction() as connection:
+        connection.execute(
+            "INSERT INTO auth_tenant_roles(tenant_id,user_id,role,state,version,updated_at) "
+            "VALUES (?,?,?,?,?,?)",
+            ("tenant-a", "role-owner", "organization_admin", "active", 1, "2026-10-06T00:00:00+00:00"),
+        )
+        connection.execute(
+            "INSERT INTO auth_tenant_roles(tenant_id,user_id,role,state,version,updated_at) "
+            "VALUES (?,?,?,?,?,?)",
+            ("tenant-c", "inactive-owner", "organization_admin", "revoked", 1, "2026-10-06T00:00:00+00:00"),
+        )
+        connection.execute(
+            "INSERT INTO auth_workspaces(workspace_id,tenant_id,workspace_kind,data_area,cost_limit_cents,"
+            "acl_version,version,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            ("workspace-d", "tenant-d", "organization", "cloud_sync", 100, 1, 1,
+             "2026-10-06T00:00:00+00:00"),
+        )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(dependencies)), base_url="https://app.example.com",
+    ) as client:
+        assert (await client.get("/api/v1/admin/tenants")).status_code == 401
+        normal = await client.post(
+            "/api/v1/auth/login", json={"login_id": "ordinary", "password": ordinary_password},
+        )
+        assert normal.status_code == 200
+        assert (await client.get("/api/v1/admin/tenants")).status_code == 403
+        client.cookies.set(WEB_SESSION_COOKIE, await _admin_cookie(client))
+        listed = await client.get("/api/v1/admin/tenants")
+        assert listed.status_code == 200
+        assert listed.json()["data"] == {"tenants": [
+            {"tenant_id": "admin", "name": "admin"},
+            {"tenant_id": "ordinary", "name": "ordinary"},
+            {"tenant_id": "tenant-a", "name": "tenant-a"},
+            {"tenant_id": "tenant-b", "name": "tenant-b"},
+            {"tenant_id": "tenant-d", "name": "tenant-d"},
+        ]}
+        assert listed.json()["meta"]["trace_id"]
+        role_only = await client.get(
+            "/api/v1/admin/tenants/tenant-a/users/role-owner/memberships"
+        )
+        assert role_only.status_code == 200
+        assert role_only.json()["data"] == {
+            "tenant": {"tenant_id": "tenant-a", "role": "organization_admin", "state": "active", "version": 1},
+            "workspaces": [],
+        }
+        assert (await client.get(
+            "/api/v1/admin/tenants/tenant-a/users/missing/memberships"
+        )).status_code == 404
+        assert (await client.get(
+            "/api/v1/admin/tenants/tenant-c/users/inactive-owner/memberships"
+        )).status_code == 404
+        assert (await client.get(
+            "/api/v1/admin/tenants/unknown/users/role-owner/memberships"
+        )).status_code == 404
+    dependencies.close()
+
+
+async def _admin_membership_http_cross_tenant_projection_and_change(tmp_path: Path) -> None:
+    settings = replace(
+        RuntimeSettings.for_test(database_path=tmp_path / "runtime.sqlite3", policy_version="identity-policy-v1"),
+        system_admin_user_ids=frozenset({"admin"}),
+    )
+    dependencies = build_dependencies(settings)
+    dependencies.authorization_repository.bootstrap_workspace(
+        tenant_id="tenant-b", workspace_id="workspace-b", owner_user_id="owner-b",
+        owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",
+        data_area="cloud_sync", cost_limit_cents=100, now=dependencies.admin_user_service._clock(),
+    )
+    with dependencies.authorization_repository.transaction() as connection:
+        connection.execute(
+            "INSERT INTO auth_memberships(tenant_id,workspace_id,user_id,role,state,version,updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("tenant-b", "workspace-b", "target-b", "viewer", "active", 1, "2026-10-06T00:00:00+00:00"),
+        )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_app(dependencies)), base_url="https://app.example.com",
+    ) as client:
+        client.cookies.set(WEB_SESSION_COOKIE, await _admin_cookie(client))
+        listed = await client.get("/api/v1/admin/tenants/tenant-b/users/target-b/memberships")
+        assert listed.status_code == 200
+        assert listed.json()["data"] == {
+            "tenant": None,
+            "workspaces": [{"workspace_id": "workspace-b", "role": "viewer", "state": "active", "version": 1}],
+        }
+        assert listed.json()["meta"]["trace_id"]
+        changed = await client.patch(
+            "/api/v1/admin/tenants/tenant-b/workspaces/workspace-b/memberships/target-b/role",
+            headers={
+                "X-Daon-Bff-Transport": "internal",
+                "X-Daon-Csrf-Origin": "https://app.example.com",
+                "X-Daon-Csrf-Referer": "https://app.example.com/admin/users",
+                "Idempotency-Key": "membership-change-0001",
+            },
+            json={"role": "editor", "expected_version": 1, "reason": "ROLE_DUTY_CHANGE"},
+        )
+        assert changed.status_code == 200
+        assert changed.json()["data"] == {
+            "tenant_id": "tenant-b", "workspace_id": "workspace-b", "user_id": "target-b",
+            "role": "editor", "state": "active", "version": 2, "acl_version": 2, "replayed": False,
+        }
+        assert changed.json()["meta"]["trace_id"]
+        role_path = "/api/v1/admin/tenants/tenant-b/workspaces/workspace-b/memberships/target-b/role"
+        headers = {
+            "X-Daon-Bff-Transport": "internal",
+            "X-Daon-Csrf-Origin": "https://app.example.com",
+            "X-Daon-Csrf-Referer": "https://app.example.com/admin/users",
+            "Idempotency-Key": "membership-change-0001",
+        }
+        same_body = {"role": "editor", "expected_version": 1, "reason": "ROLE_DUTY_CHANGE"}
+        replayed = await client.patch(role_path, headers=headers, json=same_body)
+        assert replayed.status_code == 200
+        assert replayed.json()["data"]["replayed"] is True
+        assert replayed.json()["data"]["version"] == 2
+        reused = await client.patch(
+            role_path, headers=headers,
+            json={"role": "editor", "expected_version": 1, "reason": "ACCESS_REVIEW"},
+        )
+        assert reused.status_code == 409
+        stale = await client.patch(
+            role_path, headers={**headers, "Idempotency-Key": "membership-change-0002"},
+            json={"role": "viewer", "expected_version": 1, "reason": "CORRECTION"},
+        )
+        assert stale.status_code == 412
+        assert (await client.get(
+            "/api/v1/admin/tenants/tenant-b/users/not-a-member/memberships"
+        )).status_code == 404
+        assert (await client.get(
+            "/api/v1/admin/tenants/unknown/users/target-b/memberships"
+        )).status_code == 404
+        assert (await client.patch(
+            role_path, headers=headers,
+            json={"role": "viewer", "expected_version": 2, "reason": "free text"},
+        )).status_code == 422
+        assert (await client.patch(
+            role_path, headers=headers,
+            json={"role": "viewer", "expected_version": 2, "reason": "OTHER", "note": "not allowed"},
+        )).status_code == 422
+        assert (await client.patch(
+            role_path, headers={"Idempotency-Key": "membership-change-0003"},
+            json={"role": "viewer", "expected_version": 2, "reason": "OTHER"},
+        )).status_code == 403
+        after = await client.get("/api/v1/admin/tenants/tenant-b/users/target-b/memberships")
+        assert after.json()["data"]["workspaces"] == [
+            {"workspace_id": "workspace-b", "role": "editor", "state": "active", "version": 2}
+        ]
+        with dependencies.authorization_repository.transaction() as connection:
+            connection.execute(
+                "CREATE TRIGGER fail_admin_role_audit BEFORE INSERT ON auth_admin_role_operations "
+                "BEGIN SELECT RAISE(FAIL, 'isolated audit failure'); END"
+            )
+        failed = await client.patch(
+            role_path, headers={**headers, "Idempotency-Key": "membership-change-0004"},
+            json={"role": "viewer", "expected_version": 2, "reason": "CORRECTION"},
+        )
+        assert failed.status_code == 503
+        with dependencies.authorization_repository.transaction() as connection:
+            role_row = connection.execute(
+                "SELECT role,version FROM auth_memberships WHERE tenant_id=? AND workspace_id=? AND user_id=?",
+                ("tenant-b", "workspace-b", "target-b"),
+            ).fetchone()
+            acl_row = connection.execute(
+                "SELECT acl_version FROM auth_workspaces WHERE tenant_id=? AND workspace_id=?",
+                ("tenant-b", "workspace-b"),
+            ).fetchone()
+            assert (role_row["role"], role_row["version"], acl_row["acl_version"]) == ("editor", 2, 2)
+    dependencies.close()
 
 
 def test_system_admin_user_api_denies_normal_user_and_protects_admin(tmp_path: Path) -> None:
@@ -105,6 +335,20 @@ async def _system_admin_user_api_denies_normal_user_and_protects_admin(tmp_path:
         denied = await client.get("/api/v1/admin/users")
         assert denied.status_code == 403
         assert denied.json()["error"]["code"] == "FORBIDDEN"
+        assert (await client.get("/api/v1/admin/tenants")).status_code == 403
+        assert (await client.get(
+            "/api/v1/admin/tenants/admin/users/admin/memberships"
+        )).status_code == 403
+        assert (await client.patch(
+            "/api/v1/admin/tenants/admin/workspaces/admin/memberships/admin/role",
+            headers={
+                "X-Daon-Bff-Transport": "internal",
+                "X-Daon-Csrf-Origin": "https://app.example.com",
+                "X-Daon-Csrf-Referer": "https://app.example.com/admin/users",
+                "Idempotency-Key": "normal-membership-denied-0001",
+            },
+            json={"role": "viewer", "expected_version": 1, "reason": "OTHER"},
+        )).status_code == 403
         denied_patch = await client.patch(
             "/api/v1/admin/users/normal-user/state",
             headers={

@@ -4,6 +4,43 @@ import test from "node:test";
 import { createBffProxy } from "../../apps/web/lib/bff-api-proxy.js";
 
 
+test("membership BFF forwards only exact admin routes with same-origin CSRF provenance", async () => {
+  const captured = [];
+  const proxy = createBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    publicOrigin: new URL("https://app.example.com"),
+    fetchImpl: async (url, init) => {
+      captured.push({ url: String(url), method: init.method, key: init.headers.get("idempotency-key"),
+        csrfOrigin: init.headers.get("x-daon-csrf-origin"), csrfReferer: init.headers.get("x-daon-csrf-referer") });
+      return Response.json({ data: {}, meta: {} });
+    },
+  });
+  const get = await proxy(new Request("https://app.example.com/bff/api/admin/tenants/tenant-b/users/target/memberships"),
+    ["admin", "tenants", "tenant-b", "users", "target", "memberships"]);
+  const tenants = await proxy(new Request("https://app.example.com/bff/api/admin/tenants"), ["admin", "tenants"]);
+  const patchRequest = (origin, referer) => new Request(
+    "https://app.example.com/bff/api/admin/tenants/tenant-b/workspaces/workspace-b/memberships/target/role",
+    { method: "PATCH", headers: { Origin: origin, "Sec-Fetch-Site": origin === "https://app.example.com" ? "same-origin" : "cross-site",
+      ...(referer ? { Referer: referer } : {}), "Content-Type": "application/json", "Idempotency-Key": "role-key-00000001" },
+      body: JSON.stringify({ role: "editor", expected_version: 1, reason: "ROLE_DUTY_CHANGE" }) },
+  );
+  const patchSegments = ["admin", "tenants", "tenant-b", "workspaces", "workspace-b", "memberships", "target", "role"];
+  assert.equal((await proxy(patchRequest("https://attacker.example", "https://app.example.com/admin/users"), patchSegments)).status, 403);
+  assert.equal((await proxy(patchRequest("https://app.example.com", undefined), patchSegments)).status, 403);
+  const patched = await proxy(patchRequest("https://app.example.com", "https://app.example.com/admin/users"), patchSegments);
+  assert.deepEqual([tenants.status, get.status, patched.status], [200, 200, 200]);
+  assert.deepEqual(captured, [
+    { url: "https://api.example.com/api/v1/admin/tenants/tenant-b/users/target/memberships", method: "GET", key: null, csrfOrigin: null, csrfReferer: null },
+    { url: "https://api.example.com/api/v1/admin/tenants", method: "GET", key: null, csrfOrigin: null, csrfReferer: null },
+    { url: "https://api.example.com/api/v1/admin/tenants/tenant-b/workspaces/workspace-b/memberships/target/role", method: "PATCH", key: "role-key-00000001", csrfOrigin: "https://app.example.com", csrfReferer: "https://app.example.com/admin/users" },
+  ]);
+  assert.equal((await proxy(new Request("https://app.example.com/bff/api/admin/tenants/tenant-b/users/target/memberships", { method: "DELETE", headers: { Origin: "https://app.example.com" } }),
+    ["admin", "tenants", "tenant-b", "users", "target", "memberships"])).status, 405);
+  assert.equal((await proxy(new Request("https://app.example.com/bff/api/admin/tenants/tenant-b/workspaces/workspace-b/memberships/target/approve"),
+    ["admin", "tenants", "tenant-b", "workspaces", "workspace-b", "memberships", "target", "approve"])).status, 404);
+});
+
+
 test("system user BFF maps list and administrator mutations through same-origin routes", async () => {
   const captured = [];
   const proxy = createBffProxy({

@@ -35,6 +35,7 @@ from .audit import (
     AuditValidationError,
 )
 from .admin_users import AdminUserService
+from .admin_membership_roles import AdminMembershipRoleService, REASON_CODES
 from .cloud_storage import CloudAccessContext, PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .authorization import (
@@ -47,6 +48,7 @@ from .authorization import (
     Permission,
     Role,
     SqliteAuthorizationRepository,
+    WORKSPACE_ROLES,
 )
 from .identity import (
     ClientKind,
@@ -502,6 +504,7 @@ class RuntimeDependencies:
     identity_repository: SqliteIdentityRepository
     authorization_repository: SqliteAuthorizationRepository
     admin_user_service: AdminUserService | None = None
+    admin_membership_role_service: AdminMembershipRoleService | None = None
     notification_service: NotificationService | None = None
     cloud_store: PostgresCloudStore | None = None
     object_storage: ObjectStoragePort | None = None
@@ -2594,6 +2597,83 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     }
                     for user in users
                 ]
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        }
+
+    @app.get("/api/v1/admin/tenants")
+    async def list_admin_tenants(request: Request) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        service = dependencies.admin_membership_role_service
+        if service is None:
+            raise AuthorizationError("PERSISTENCE_UNAVAILABLE", 503)
+        tenants = service.list_tenants(principal)
+        return {
+            "data": {"tenants": [{"tenant_id": tenant_id, "name": name} for tenant_id, name in tenants]},
+            "meta": {"trace_id": request.state.trace_id},
+        }
+
+    @app.get("/api/v1/admin/tenants/{tenant_id}/users/{user_id}/memberships")
+    async def list_admin_effective_memberships(
+        tenant_id: str, user_id: str, request: Request,
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        principal = _principal(request, dependencies)
+        service = dependencies.admin_membership_role_service
+        if service is None:
+            raise AuthorizationError("PERSISTENCE_UNAVAILABLE", 503)
+        result = service.list_effective_memberships(principal, tenant_id, user_id)
+        return {
+            "data": {
+                "tenant": None if result.tenant is None else {
+                    "tenant_id": result.tenant.tenant_id, "role": result.tenant.role.value,
+                    "state": result.tenant.state, "version": result.tenant.version,
+                },
+                "workspaces": [{
+                    "workspace_id": item.workspace_id, "role": item.role.value,
+                    "state": item.state, "version": item.version,
+                } for item in result.workspaces],
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        }
+
+    @app.patch("/api/v1/admin/tenants/{tenant_id}/workspaces/{workspace_id}/memberships/{user_id}/role")
+    async def change_admin_workspace_role(
+        tenant_id: str, workspace_id: str, user_id: str, request: Request,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        _require_validated_web_csrf(request, dependencies.settings)
+        principal = _principal(request, dependencies)
+        if principal.user_id not in dependencies.settings.system_admin_user_ids:
+            raise AuthorizationError("ACTION_DENIED", 403)
+        service = dependencies.admin_membership_role_service
+        if service is None:
+            raise AuthorizationError("PERSISTENCE_UNAVAILABLE", 503)
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError) as error:
+            raise AuthorizationError("INVALID_INPUT", 422) from error
+        if not isinstance(body, dict) or set(body) != {"role", "expected_version", "reason"}:
+            raise AuthorizationError("INVALID_INPUT", 422)
+        role_name, version, reason = body["role"], body["expected_version"], body["reason"]
+        if not isinstance(role_name, str) or role_name not in {item.value for item in WORKSPACE_ROLES}:
+            raise AuthorizationError("INVALID_ROLE_SCOPE", 422)
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise AuthorizationError("INVALID_INPUT", 422)
+        if not isinstance(reason, str) or reason not in REASON_CODES or idempotency_key is None:
+            raise AuthorizationError("INVALID_INPUT", 422)
+        result = service.change_existing_workspace_role(
+            principal, tenant_id, workspace_id, user_id, Role(role_name), version,
+            idempotency_key, reason,
+        )
+        return {
+            "data": {
+                "tenant_id": result.tenant_id, "workspace_id": result.workspace_id,
+                "user_id": result.user_id, "role": result.role.value, "state": result.state,
+                "version": result.version, "acl_version": result.acl_version,
+                "replayed": result.replayed,
             },
             "meta": {"trace_id": request.state.trace_id},
         }
@@ -5776,6 +5856,11 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         clock=lambda: datetime.now(timezone.utc),
         password_reset_requester=identity_service.request_password_reset,
     )
+    admin_membership_role_service = AdminMembershipRoleService(
+        repository=authorization_repository,
+        system_admin_user_ids=settings.system_admin_user_ids,
+        clock=lambda: datetime.now(timezone.utc),
+    )
     authorization_repository.bootstrap_workspace(
         tenant_id="admin",
         workspace_id=_personal_workspace_id("admin"),
@@ -5907,6 +5992,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         identity_repository=identity_repository,
         authorization_repository=authorization_repository,
         admin_user_service=admin_user_service,
+        admin_membership_role_service=admin_membership_role_service,
         notification_service=notification_service,
         cloud_store=cloud_store,
         object_storage=object_storage,

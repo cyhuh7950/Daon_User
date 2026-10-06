@@ -152,6 +152,24 @@ function routeFor(method, segments) {
       ? { path: "/api/v1/admin/users", query: null }
       : { methodRejected: true };
   }
+  if (segments.length === 2 && segments[0] === "admin" && segments[1] === "tenants") {
+    return method === "GET" ? { path: "/api/v1/admin/tenants", query: null } : { methodRejected: true };
+  }
+  if (segments.length === 6 && segments[0] === "admin" && segments[1] === "tenants"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "users"
+    && SAFE_SEGMENT.test(segments[4]) && segments[5] === "memberships") {
+    return method === "GET"
+      ? { path: `/api/v1/admin/tenants/${encodeURIComponent(segments[2])}/users/${encodeURIComponent(segments[4])}/memberships`, query: null }
+      : { methodRejected: true };
+  }
+  if (segments.length === 8 && segments[0] === "admin" && segments[1] === "tenants"
+    && SAFE_SEGMENT.test(segments[2]) && segments[3] === "workspaces"
+    && SAFE_SEGMENT.test(segments[4]) && segments[5] === "memberships"
+    && SAFE_SEGMENT.test(segments[6]) && segments[7] === "role") {
+    return method === "PATCH"
+      ? { path: `/api/v1/admin/tenants/${encodeURIComponent(segments[2])}/workspaces/${encodeURIComponent(segments[4])}/memberships/${encodeURIComponent(segments[6])}/role`, query: null, csrfProvenanceRequired: true }
+      : { methodRejected: true };
+  }
   if (segments.length === 1 && segments[0] === "provider-credentials") {
     return method === "GET"
       ? { path: "/api/v1/provider-credentials", query: null }

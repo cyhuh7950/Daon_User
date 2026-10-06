@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import sqlite3
 
 import pytest
 
@@ -59,6 +60,40 @@ def test_cross_tenant_admin_changes_existing_role_without_expanding_ordinary_pat
         )
     assert denied.value.http_status == 404
     assert repository.membership_version("tenant-b", "workspace-b", "target") == 2
+
+
+def test_active_tenant_role_without_workspace_is_read_only_and_hidden_outside_its_tenant(tmp_path):
+    repository, _, service = fixture(tmp_path)
+    with repository.transaction() as connection:
+        connection.execute(
+            "INSERT INTO auth_tenant_roles(tenant_id,user_id,role,state,version,updated_at) "
+            "VALUES (?,?,?,?,?,?)",
+            ("tenant-role-only", "role-target", "organization_admin", "active", 4,
+             FixedClock()().isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO auth_tenant_roles(tenant_id,user_id,role,state,version,updated_at) "
+            "VALUES (?,?,?,?,?,?)",
+            ("tenant-inactive-only", "inactive-target", "organization_admin", "revoked", 1,
+             FixedClock()().isoformat()),
+        )
+    result = service.list_effective_memberships(
+        principal("admin", "tenant-a"), "tenant-role-only", "role-target",
+    )
+    assert result.tenant is not None
+    assert (result.tenant.tenant_id, result.tenant.role, result.tenant.state,
+            result.tenant.version) == ("tenant-role-only", Role.ORGANIZATION_ADMIN, "active", 4)
+    assert result.workspaces == ()
+    for tenant, user in (
+        ("tenant-role-only", "missing"), ("tenant-inactive-only", "inactive-target"),
+        ("tenant-missing", "role-target"), ("tenant-a", "role-target"),
+    ):
+        with pytest.raises(AuthorizationError) as hidden:
+            service.list_effective_memberships(principal("admin", "tenant-a"), tenant, user)
+        assert hidden.value.http_status == 404
+    with pytest.raises(AuthorizationError) as no_workspace:
+        change(service, tenant="tenant-role-only", workspace="workspace-b", target="role-target")
+    assert no_workspace.value.http_status == 404
 
 
 def test_nonadmin_hidden_targets_and_inactive_membership(tmp_path):
@@ -185,6 +220,93 @@ def test_sqlite_audit_reason_check_rejects_unapproved_value(tmp_path):
     assert rejected.value.http_status == 409
     with repository.transaction() as connection:
         assert connection.execute("SELECT reason FROM auth_admin_role_operations").fetchone()[0] == "ROLE_DUTY_CHANGE"
+
+
+def _legacy_reason_database(path, reasons):
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE auth_admin_role_operations ("
+            "actor_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, "
+            "request_fingerprint TEXT NOT NULL, event_id TEXT NOT NULL UNIQUE, "
+            "tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, "
+            "old_role TEXT NOT NULL, new_role TEXT NOT NULL, "
+            "old_version INTEGER NOT NULL, new_version INTEGER NOT NULL, acl_version INTEGER NOT NULL, "
+            "reason TEXT NOT NULL, outcome TEXT NOT NULL CHECK(outcome IN ('changed','unchanged')), "
+            "created_at TEXT NOT NULL, delivered_at TEXT, PRIMARY KEY(actor_id,idempotency_key))"
+        )
+        for number, reason in enumerate(reasons):
+            connection.execute(
+                "INSERT INTO auth_admin_role_operations ("
+                "actor_id,idempotency_key,request_fingerprint,event_id,tenant_id,workspace_id,user_id,"
+                "old_role,new_role,old_version,new_version,acl_version,reason,outcome,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("actor", f"key-{number}", "fingerprint", f"event-{number}", "tenant", "workspace", "user",
+                 "viewer", "editor", 1, 2, 2, reason, "changed", "2026-10-06T00:00:00+00:00"),
+            )
+
+
+def test_legacy_sqlite_reason_guard_rejects_direct_insert_update_and_preserves_valid_rows(tmp_path):
+    path = tmp_path / "legacy-auth.sqlite3"
+    _legacy_reason_database(path, ["ROLE_DUTY_CHANGE"])
+    repository = SqliteAuthorizationRepository(path)
+    repository.close()
+    with sqlite3.connect(path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO auth_admin_role_operations ("
+                "actor_id,idempotency_key,request_fingerprint,event_id,tenant_id,workspace_id,user_id,"
+                "old_role,new_role,old_version,new_version,acl_version,reason,outcome,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("actor", "bad-key", "fingerprint", "bad-event", "tenant", "workspace", "user",
+                 "viewer", "editor", 1, 2, 2, "free text", "changed", "2026-10-06T00:00:00+00:00"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE auth_admin_role_operations SET reason='free text' WHERE event_id='event-0'")
+        assert connection.execute(
+            "SELECT event_id,reason FROM auth_admin_role_operations ORDER BY event_id"
+        ).fetchall() == [("event-0", "ROLE_DUTY_CHANGE")]
+        connection.execute("UPDATE auth_admin_role_operations SET reason='ACCESS_REVIEW' WHERE event_id='event-0'")
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT event_id,reason FROM auth_admin_role_operations"
+        ).fetchall() == [("event-0", "ACCESS_REVIEW")]
+
+
+def test_legacy_sqlite_with_existing_unapproved_reason_fails_closed_without_rewriting_rows(tmp_path):
+    path = tmp_path / "legacy-invalid.sqlite3"
+    _legacy_reason_database(path, ["ROLE_DUTY_CHANGE", "free text"])
+    with pytest.raises(AuthorizationError) as blocked:
+        SqliteAuthorizationRepository(path)
+    assert blocked.value.code == "AUDIT_REASON_LEGACY_INVALID"
+    assert blocked.value.http_status == 503
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT event_id,reason FROM auth_admin_role_operations ORDER BY event_id"
+        ).fetchall() == [("event-0", "ROLE_DUTY_CHANGE"), ("event-1", "free text")]
+
+
+def test_legacy_sqlite_rejects_conflicting_reason_guard_instead_of_silently_skipping_it(tmp_path):
+    path = tmp_path / "legacy-conflicting-trigger.sqlite3"
+    _legacy_reason_database(path, ["ROLE_DUTY_CHANGE"])
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TRIGGER auth_admin_role_reason_insert_guard "
+            "BEFORE INSERT ON auth_admin_role_operations BEGIN SELECT 1; END"
+        )
+    with pytest.raises(AuthorizationError) as blocked:
+        SqliteAuthorizationRepository(path)
+    assert blocked.value.code == "AUDIT_REASON_GUARD_INVALID"
+    assert blocked.value.http_status == 503
+
+
+def test_legacy_sqlite_reason_guard_survives_repository_restart(tmp_path):
+    path = tmp_path / "legacy-restart.sqlite3"
+    _legacy_reason_database(path, ["ROLE_DUTY_CHANGE"])
+    SqliteAuthorizationRepository(path).close()
+    SqliteAuthorizationRepository(path).close()
+    with sqlite3.connect(path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE auth_admin_role_operations SET reason='free text'")
 
 
 def test_role_guards_version_replay_and_noop(tmp_path):
