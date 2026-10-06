@@ -39,6 +39,10 @@ class _CursorProxy:
     def __iter__(self):
         return (_compat_row(row) for row in self._cursor)
 
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
 
 class PostgresCompatConnection:
     def __init__(self, dsn: str, prefixes: Iterable[str]) -> None:
@@ -94,6 +98,12 @@ class PostgresAuthorizationRepository(SqliteAuthorizationRepository):
 
     def _connect(self) -> PostgresCompatConnection:
         return PostgresCompatConnection(self._dsn, ("auth_",))
+
+    def lock_admin_workspace(self, connection: PostgresCompatConnection, tenant_id: str, workspace_id: str):
+        return connection.execute(
+            "SELECT * FROM auth_workspaces WHERE tenant_id=? AND workspace_id=? FOR UPDATE",
+            (tenant_id, workspace_id),
+        ).fetchone()
 
 
 class PostgresOrganizationRepository(SqliteOrganizationRepository):

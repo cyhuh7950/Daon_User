@@ -23,7 +23,7 @@ from .audit import ActorType, AuditEventDraft, AuditOutcome
 from .identity import IdentityPrincipal
 
 
-AUTHORIZATION_SCHEMA_VERSION = 2
+AUTHORIZATION_SCHEMA_VERSION = 3
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
@@ -409,6 +409,18 @@ class SqliteAuthorizationRepository:
               PRIMARY KEY(tenant_id,workspace_id,user_id),
               FOREIGN KEY(tenant_id,workspace_id) REFERENCES auth_workspaces(tenant_id,workspace_id)
             );
+            CREATE TABLE IF NOT EXISTS auth_admin_role_operations (
+              actor_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+              request_fingerprint TEXT NOT NULL, event_id TEXT NOT NULL UNIQUE,
+              tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL,
+              old_role TEXT NOT NULL, new_role TEXT NOT NULL,
+              old_version INTEGER NOT NULL, new_version INTEGER NOT NULL,
+              acl_version INTEGER NOT NULL, reason TEXT NOT NULL,
+              outcome TEXT NOT NULL CHECK(outcome IN ('changed','unchanged')),
+              created_at TEXT NOT NULL, delivered_at TEXT,
+              PRIMARY KEY(actor_id,idempotency_key),
+              FOREIGN KEY(tenant_id,workspace_id) REFERENCES auth_workspaces(tenant_id,workspace_id)
+            );
             CREATE TABLE IF NOT EXISTS auth_tenant_policies (
               tenant_id TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at TEXT NOT NULL
             );
@@ -478,6 +490,13 @@ class SqliteAuthorizationRepository:
     def _ensure_open(self) -> None:
         if self._closed:
             raise AuthorizationError("PERSISTENCE_UNAVAILABLE", 503)
+
+    def lock_admin_workspace(self, connection: sqlite3.Connection, tenant_id: str, workspace_id: str):
+        # BEGIN IMMEDIATE already serializes SQLite writers before this read.
+        return connection.execute(
+            "SELECT * FROM auth_workspaces WHERE tenant_id=? AND workspace_id=?",
+            (tenant_id, workspace_id),
+        ).fetchone()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
