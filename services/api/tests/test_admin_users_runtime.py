@@ -110,6 +110,7 @@ async def _admin_tenants_list_only_auth_scopes_with_id_fallback(tmp_path: Path) 
     _add_user(dependencies, user_id="identity-only", password=secrets.token_urlsafe(24))
     ordinary_password = secrets.token_urlsafe(24)
     _add_user(dependencies, user_id="ordinary", password=ordinary_password)
+    _add_user(dependencies, user_id="role-owner", password=secrets.token_urlsafe(24))
     dependencies.authorization_repository.bootstrap_workspace(
         tenant_id="tenant-b", workspace_id="workspace-b", owner_user_id="owner-b",
         owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",
@@ -191,6 +192,8 @@ async def _admin_membership_http_cross_tenant_projection_and_change(tmp_path: Pa
         system_admin_user_ids=frozenset({"admin", "owner-b"}),
     )
     dependencies = build_dependencies(settings)
+    _add_user(dependencies, user_id="owner-b", password=secrets.token_urlsafe(24))
+    _add_user(dependencies, user_id="target-b", password=secrets.token_urlsafe(24))
     dependencies.authorization_repository.bootstrap_workspace(
         tenant_id="tenant-b", workspace_id="workspace-b", owner_user_id="owner-b",
         owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",

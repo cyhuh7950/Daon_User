@@ -39,11 +39,18 @@ def test_postgres_role_change_concurrency_and_audit_rollback():
     marker = f"c9r1-{suffix}"
     constraint = f"c9_r1_fail_audit_{suffix}"
     repository = PostgresAuthorizationRepository(dsn)
+    inserted_identity = False
     clock = lambda: datetime.now(timezone.utc)
     service = AdminMembershipRoleService(
         repository=repository, system_admin_user_ids=frozenset({"c9-r1-admin"}), clock=clock,
     )
     try:
+        with repository.transaction() as connection:
+            inserted_identity = connection.execute(
+                "INSERT INTO identity_users(user_id,subject,state) VALUES (?,?,?) "
+                "ON CONFLICT DO NOTHING",
+                ("c9-r1-target", "c9-r1-target", "active"),
+            ).rowcount == 1
         repository.bootstrap_workspace(
             tenant_id=marker, workspace_id=marker, owner_user_id="c9-r1-owner",
             owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",
@@ -121,4 +128,6 @@ def test_postgres_role_change_concurrency_and_audit_rollback():
             connection.execute("DELETE FROM auth_tenant_policies WHERE tenant_id=?", (marker,))
             connection.execute("DELETE FROM auth_tenant_roles WHERE tenant_id=?", (marker,))
             connection.execute("DELETE FROM auth_workspaces WHERE tenant_id=?", (marker,))
+            if inserted_identity:
+                connection.execute("DELETE FROM identity_users WHERE user_id=?", ("c9-r1-target",))
         repository.close()

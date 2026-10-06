@@ -8,11 +8,20 @@ import pytest
 from daon_user_api.admin_membership_roles import AdminMembershipRoleService
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import AuthorizationError, AuthorizationService, Role, SqliteAuthorizationRepository
+from daon_user_api.identity import SqliteIdentityRepository
 from test_authorization_support import FixedClock, POLICY_VERSION, TRACE_ID, principal
 
 
 def fixture(tmp_path):
     repository = SqliteAuthorizationRepository(tmp_path / "auth.sqlite3")
+    identity = SqliteIdentityRepository(tmp_path / "auth.sqlite3")
+    with identity.transaction() as connection:
+        for user_id in ("admin", "owner-a", "owner-b", "target", "role-target",
+                        "inactive-target", "other-admin", "second-admin"):
+            connection.execute(
+                "INSERT INTO users(user_id,subject,state) VALUES (?,?,?)",
+                (user_id, user_id, "active"),
+            )
     clock = FixedClock()
     for tenant in ("a", "b"):
         repository.bootstrap_workspace(
@@ -60,6 +69,58 @@ def test_cross_tenant_admin_changes_existing_role_without_expanding_ordinary_pat
         )
     assert denied.value.http_status == 404
     assert repository.membership_version("tenant-b", "workspace-b", "target") == 2
+
+
+def test_deleted_identity_with_stale_auth_role_is_hidden_and_patch_has_no_side_effect(tmp_path):
+    repository, _, service = fixture(tmp_path)
+    with repository.transaction() as connection:
+        connection.execute("DELETE FROM users WHERE user_id='target'")
+        before = connection.execute(
+            "SELECT role,version FROM auth_memberships WHERE tenant_id='tenant-b' "
+            "AND workspace_id='workspace-b' AND user_id='target'"
+        ).fetchone()
+        acl_before = connection.execute(
+            "SELECT acl_version FROM auth_workspaces WHERE workspace_id='workspace-b'"
+        ).fetchone()[0]
+    with pytest.raises(AuthorizationError) as hidden_get:
+        service.list_effective_memberships(principal("admin", "tenant-a"), "tenant-b", "target")
+    assert hidden_get.value.http_status == 404
+    with pytest.raises(AuthorizationError) as hidden_patch:
+        change(service)
+    assert hidden_patch.value.http_status == 404
+    with repository.transaction() as connection:
+        after = connection.execute(
+            "SELECT role,version FROM auth_memberships WHERE tenant_id='tenant-b' "
+            "AND workspace_id='workspace-b' AND user_id='target'"
+        ).fetchone()
+        acl_after = connection.execute(
+            "SELECT acl_version FROM auth_workspaces WHERE workspace_id='workspace-b'"
+        ).fetchone()[0]
+        operation_count = connection.execute(
+            "SELECT COUNT(*) FROM auth_admin_role_operations WHERE user_id='target'"
+        ).fetchone()[0]
+    assert tuple(after) == tuple(before)
+    assert acl_after == acl_before
+    assert operation_count == 0
+
+
+def test_deleted_identity_cannot_replay_prior_role_change(tmp_path):
+    repository, _, service = fixture(tmp_path)
+    change(service)
+    with repository.transaction() as connection:
+        connection.execute("DELETE FROM users WHERE user_id='target'")
+    with pytest.raises(AuthorizationError) as hidden:
+        change(service)
+    assert hidden.value.http_status == 404
+    with repository.transaction() as connection:
+        role = connection.execute(
+            "SELECT role,version FROM auth_memberships WHERE workspace_id='workspace-b' AND user_id='target'"
+        ).fetchone()
+        operations = connection.execute(
+            "SELECT COUNT(*) FROM auth_admin_role_operations WHERE user_id='target'"
+        ).fetchone()[0]
+    assert tuple(role) == ("editor", 2)
+    assert operations == 1
 
 
 def test_active_tenant_role_without_workspace_is_read_only_and_hidden_outside_its_tenant(tmp_path):

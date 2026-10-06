@@ -7,7 +7,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
 from .authorization import (
     AuthorizationError, Role, SqliteAuthorizationRepository, WORKSPACE_ROLES, _checked_id,
@@ -78,6 +78,16 @@ class AdminMembershipRoleService:
             raise AuthorizationError("ACTION_DENIED", 403)
         return actor_id
 
+    def _require_target_user(self, connection: Any, user_id: str) -> None:
+        from .postgres_adapters import PostgresAuthorizationRepository
+
+        if isinstance(self._repository, PostgresAuthorizationRepository):
+            statement = "SELECT 1 FROM identity_users WHERE user_id=? FOR KEY SHARE"
+        else:
+            statement = "SELECT 1 FROM users WHERE user_id=?"
+        if connection.execute(statement, (user_id,)).fetchone() is None:
+            raise AuthorizationError("RESOURCE_UNAVAILABLE", 404)
+
     def list_tenants(self, actor: IdentityPrincipal) -> tuple[tuple[str, str], ...]:
         self._actor(actor)
         from .postgres_adapters import PostgresAuthorizationRepository
@@ -107,6 +117,7 @@ class AdminMembershipRoleService:
         self._actor(actor)
         tenant_id, user_id = _input_id(tenant_id), _input_id(user_id)
         with self._repository.transaction() as connection:
+            self._require_target_user(connection, user_id)
             tenant_row = connection.execute(
                 "SELECT role,state,version FROM auth_tenant_roles "
                 "WHERE tenant_id=? AND user_id=? AND state='active'",
@@ -161,6 +172,7 @@ class AdminMembershipRoleService:
             workspace = self._repository.lock_admin_workspace(connection, tenant_id, workspace_id)
             if workspace is None:
                 raise AuthorizationError("RESOURCE_UNAVAILABLE", 404)
+            self._require_target_user(connection, user_id)
             prior = connection.execute(
                 "SELECT * FROM auth_admin_role_operations WHERE actor_id=? AND idempotency_key=?",
                 (actor_id, idempotency_key),

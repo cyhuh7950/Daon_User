@@ -18,9 +18,10 @@ class IdentitySessionTests(unittest.TestCase):
     def test_admin_role_downgrade_rechecks_existing_access_and_rotated_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            identity, _, _, clock = create_service(root / "identity.sqlite3")
+            database_path = root / "runtime.sqlite3"
+            identity, _, _, clock = create_service(database_path)
             credentials = native_login(identity)
-            repository = SqliteAuthorizationRepository(root / "authorization.sqlite3")
+            repository = SqliteAuthorizationRepository(database_path)
             repository.bootstrap_workspace(
                 tenant_id="tenant-001", workspace_id="workspace-001", owner_user_id="admin",
                 owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",

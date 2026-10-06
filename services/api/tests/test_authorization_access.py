@@ -17,12 +17,20 @@ from daon_user_api.authorization import (
     Role,
     SqliteAuthorizationRepository,
 )
+from daon_user_api.identity import SqliteIdentityRepository
 
 
 class AuthorizationHistoricalAccessTests(unittest.TestCase):
     def test_admin_role_downgrade_rechecks_historical_access_and_acl_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            repository = SqliteAuthorizationRepository(Path(directory) / "auth.sqlite3")
+            database_path = Path(directory) / "auth.sqlite3"
+            repository = SqliteAuthorizationRepository(database_path)
+            identity_repository = SqliteIdentityRepository(database_path)
+            with identity_repository.transaction() as connection:
+                connection.execute(
+                    "INSERT INTO users(user_id,subject,state) VALUES (?,?,?)",
+                    ("target", "target", "active"),
+                )
             clock = FixedClock()
             repository.bootstrap_workspace(
                 tenant_id="tenant-001", workspace_id="workspace-001", owner_user_id="owner",
