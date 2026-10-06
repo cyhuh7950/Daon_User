@@ -537,7 +537,7 @@ test("admin console은 조직을 명시 선택한 뒤에만 유효 역할을 조
     await view.act(async () => { buttonByText(view.container, "역할 조회").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     assert.deepEqual(calls, []);
     assert.match(view.container.textContent, /역할 미조회/u);
-    assert.match(view.container.textContent, /시스템 관리자 여부.*조회하지 않음/u);
+    assert.match(view.container.textContent, /시스템 관리자 여부.*미조회/u);
     const select = (label) => findElements(view.container, (node) => node.tagName === "SELECT" && reactProps(node)?.["aria-label"] === label)[0];
     await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-a" } }); await Promise.resolve(); });
     assert.deepEqual(calls, [["read", "tenant-a", "user-1"]]);
@@ -555,6 +555,43 @@ test("admin console은 조직을 명시 선택한 뒤에만 유효 역할을 조
     assert.match(view.container.textContent, /역할 변경 완료/u);
     assert.match(view.container.textContent, /version 3/u);
   } finally { globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+});
+
+test("대상 시스템 관리자 여부는 선택 조직의 성공 조회값만 표시하고 실패·대상 전환 때 숨긴다", async () => {
+  const users = [
+    { user_id: "one", login_id: "one", email: null, has_email: false, state: "active", protected: false },
+    { user_id: "two", login_id: "two", email: null, has_email: false, state: "active", protected: true },
+  ];
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+    getUsers: async () => users,
+    getTenants: async () => [{ tenant_id: "tenant-a", name: "Tenant A" }, { tenant_id: "tenant-b", name: "Tenant B" }],
+    getMemberships: async (tenantId, userId) => {
+      if (tenantId === "tenant-b") throw new Error("ADMIN_MEMBERSHIP_UNAVAILABLE");
+      return { tenant: null, workspaces: [{ workspace_id: "workspace-a", role: "viewer", state: "active", version: 1 }],
+        target_is_system_admin: userId === "one" };
+    },
+  }, ".admin-role-system-admin-projection-");
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    const buttons = findElements(view.container, (node) => node.tagName === "BUTTON" && node.textContent === "역할 조회");
+    const adminStatus = () => findElements(view.container, (node) => node.tagName === "P"
+      && node.textContent.startsWith("시스템 관리자 여부 (별도 권한):"))[0]?.textContent;
+    const selectTenant = async (tenantId) => {
+      const select = findElements(view.container, (node) => node.tagName === "SELECT" && reactProps(node)?.["aria-label"] === "조직 선택")[0];
+      await view.act(async () => { reactProps(select).onChange({ target: { value: tenantId } }); await Promise.resolve(); });
+    };
+    await view.act(async () => { buttons[0].dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 미조회");
+    await selectTenant("tenant-a");
+    assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 예");
+    await selectTenant("tenant-b");
+    assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 미조회");
+    await view.act(async () => { buttons[1].dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 미조회");
+    await selectTenant("tenant-a");
+    assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 아니요");
+  } finally { await view.cleanup(); }
 });
 
 test("admin console은 412 후 입력을 보존하고 최신 역할을 비교하며 보호·자기 계정 변경을 막는다", async () => {

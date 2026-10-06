@@ -2634,6 +2634,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     "workspace_id": item.workspace_id, "role": item.role.value,
                     "state": item.state, "version": item.version,
                 } for item in result.workspaces],
+                "target_is_system_admin": user_id in dependencies.settings.system_admin_user_ids,
             },
             "meta": {"trace_id": request.state.trace_id},
         }

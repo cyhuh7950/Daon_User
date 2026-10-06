@@ -301,7 +301,9 @@ export function AdminUserConsole({
         if (roleInFlight.current) return;
         roleRequestId.current += 1; setRolePanel(null);
       }}>닫기</button>
-      <p>시스템 관리자 여부 (별도 권한): 이 화면에서 조회하지 않음</p>
+      <p>시스템 관리자 여부 (별도 권한): {rolePanel.tenantId && rolePanel.membership && !rolePanel.error
+        && typeof rolePanel.membership.target_is_system_admin === "boolean"
+        ? (rolePanel.membership.target_is_system_admin ? "예" : "아니요") : "미조회"}</p>
       {rolePanel.error && <p role="alert">{rolePanel.error}</p>}
       {rolePanel.notice && <p role="status">{rolePanel.notice}</p>}
       <label>조직 선택<select aria-label="조직 선택" value={rolePanel.tenantId}

@@ -83,7 +83,8 @@ export async function getAdminEffectiveMemberships(tenantId, userId, { fetchImpl
   });
   const payload = await bodyOf(response);
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "ADMIN_MEMBERSHIP_UNAVAILABLE");
-  if (!validEnvelope(payload) || !exact(payload.data, ["tenant", "workspaces"])
+  if (!validEnvelope(payload) || !exact(payload.data, ["tenant", "workspaces", "target_is_system_admin"])
+      || typeof payload.data.target_is_system_admin !== "boolean"
       || (payload.data.tenant !== null && (!validMembershipRole(payload.data.tenant, "tenant")
         || payload.data.tenant.tenant_id !== tenantId))
       || !Array.isArray(payload.data.workspaces) || payload.data.workspaces.length > 5000

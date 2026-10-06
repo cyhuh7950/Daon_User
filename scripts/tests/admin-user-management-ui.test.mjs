@@ -35,6 +35,7 @@ test("admin membership client는 명시 scope와 고정 reason만 same-origin으
     if (init.method === "GET") return Response.json({ data: {
       tenant: { tenant_id: "tenant-a", role: "organization_admin", state: "active", version: 3 },
       workspaces: [{ workspace_id: "workspace-a", role: "viewer", state: "active", version: 4 }],
+      target_is_system_admin: true,
     }, meta });
     return Response.json({ data: {
       tenant_id: "tenant-a", workspace_id: "workspace-a", user_id: "user-1",
@@ -45,6 +46,7 @@ test("admin membership client는 명시 scope와 고정 reason만 same-origin으
   assert.deepEqual(await getAdminEffectiveMemberships("tenant-a", "user-1", { fetchImpl }), {
     tenant: { tenant_id: "tenant-a", role: "organization_admin", state: "active", version: 3 },
     workspaces: [{ workspace_id: "workspace-a", role: "viewer", state: "active", version: 4 }],
+    target_is_system_admin: true,
   });
   assert.equal((await changeAdminMembershipRole("tenant-a", "workspace-a", "user-1", {
     role: "editor", expected_version: 4, reason: "ACCESS_REVIEW",
@@ -64,8 +66,14 @@ test("admin membership client는 명시 scope와 고정 reason만 same-origin으
   }, { fetchImpl: blockedFetch, idempotencyKey: "admin-role-change-0002" }), /ADMIN_MEMBERSHIP_INPUT_INVALID/u);
   assert.equal(blockedCalls, 0);
   await assert.rejects(getAdminEffectiveMemberships("tenant-a", "user-1", { fetchImpl: async () => Response.json({ data: {
-    tenant: { tenant_id: "tenant-b", role: "organization_admin", state: "active", version: 1 }, workspaces: [],
+    tenant: { tenant_id: "tenant-b", role: "organization_admin", state: "active", version: 1 }, workspaces: [], target_is_system_admin: false,
   }, meta }) }), /ADMIN_MEMBERSHIP_RESPONSE_INVALID/u);
+  for (const extra of [{}, { target_is_system_admin: "false" }, { target_is_system_admin: null },
+    { target_is_system_admin: false, protected: true }]) {
+    await assert.rejects(getAdminEffectiveMemberships("tenant-a", "user-1", { fetchImpl: async () => Response.json({ data: {
+      tenant: null, workspaces: [], ...extra,
+    }, meta }) }), /ADMIN_MEMBERSHIP_RESPONSE_INVALID/u);
+  }
   await assert.rejects(listAdminMembershipTenants({ fetchImpl: async () => Response.json({ data: {
     tenants: [{ tenant_id: "tenant-a", name: "A", secret: "blocked" }],
   }, meta }) }), /ADMIN_MEMBERSHIP_RESPONSE_INVALID/u);

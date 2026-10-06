@@ -136,11 +136,21 @@ async def _admin_tenants_list_only_auth_scopes_with_id_fallback(tmp_path: Path) 
         transport=httpx.ASGITransport(app=create_app(dependencies)), base_url="https://app.example.com",
     ) as client:
         assert (await client.get("/api/v1/admin/tenants")).status_code == 401
+        unauthenticated = await client.get(
+            "/api/v1/admin/tenants/tenant-a/users/role-owner/memberships"
+        )
+        assert unauthenticated.status_code == 401
+        assert "target_is_system_admin" not in unauthenticated.json().get("data", {})
         normal = await client.post(
             "/api/v1/auth/login", json={"login_id": "ordinary", "password": ordinary_password},
         )
         assert normal.status_code == 200
         assert (await client.get("/api/v1/admin/tenants")).status_code == 403
+        forbidden = await client.get(
+            "/api/v1/admin/tenants/tenant-a/users/role-owner/memberships"
+        )
+        assert forbidden.status_code == 403
+        assert "target_is_system_admin" not in forbidden.json().get("data", {})
         client.cookies.set(WEB_SESSION_COOKIE, await _admin_cookie(client))
         listed = await client.get("/api/v1/admin/tenants")
         assert listed.status_code == 200
@@ -159,10 +169,13 @@ async def _admin_tenants_list_only_auth_scopes_with_id_fallback(tmp_path: Path) 
         assert role_only.json()["data"] == {
             "tenant": {"tenant_id": "tenant-a", "role": "organization_admin", "state": "active", "version": 1},
             "workspaces": [],
+            "target_is_system_admin": False,
         }
-        assert (await client.get(
+        hidden = await client.get(
             "/api/v1/admin/tenants/tenant-a/users/missing/memberships"
-        )).status_code == 404
+        )
+        assert hidden.status_code == 404
+        assert "target_is_system_admin" not in hidden.json().get("data", {})
         assert (await client.get(
             "/api/v1/admin/tenants/tenant-c/users/inactive-owner/memberships"
         )).status_code == 404
@@ -175,7 +188,7 @@ async def _admin_tenants_list_only_auth_scopes_with_id_fallback(tmp_path: Path) 
 async def _admin_membership_http_cross_tenant_projection_and_change(tmp_path: Path) -> None:
     settings = replace(
         RuntimeSettings.for_test(database_path=tmp_path / "runtime.sqlite3", policy_version="identity-policy-v1"),
-        system_admin_user_ids=frozenset({"admin"}),
+        system_admin_user_ids=frozenset({"admin", "owner-b"}),
     )
     dependencies = build_dependencies(settings)
     dependencies.authorization_repository.bootstrap_workspace(
@@ -198,8 +211,15 @@ async def _admin_membership_http_cross_tenant_projection_and_change(tmp_path: Pa
         assert listed.json()["data"] == {
             "tenant": None,
             "workspaces": [{"workspace_id": "workspace-b", "role": "viewer", "state": "active", "version": 1}],
+            "target_is_system_admin": False,
         }
         assert listed.json()["meta"]["trace_id"]
+        owner = await client.get("/api/v1/admin/tenants/tenant-b/users/owner-b/memberships")
+        assert owner.status_code == 200
+        assert owner.json()["data"]["target_is_system_admin"] is True
+        users = await client.get("/api/v1/admin/users")
+        assert users.status_code == 200
+        assert all("target_is_system_admin" not in item for item in users.json()["data"]["users"])
         changed = await client.patch(
             "/api/v1/admin/tenants/tenant-b/workspaces/workspace-b/memberships/target-b/role",
             headers={
@@ -238,12 +258,16 @@ async def _admin_membership_http_cross_tenant_projection_and_change(tmp_path: Pa
             json={"role": "viewer", "expected_version": 1, "reason": "CORRECTION"},
         )
         assert stale.status_code == 412
-        assert (await client.get(
+        missing = await client.get(
             "/api/v1/admin/tenants/tenant-b/users/not-a-member/memberships"
-        )).status_code == 404
-        assert (await client.get(
+        )
+        assert missing.status_code == 404
+        assert "target_is_system_admin" not in missing.json().get("data", {})
+        unknown_tenant = await client.get(
             "/api/v1/admin/tenants/unknown/users/target-b/memberships"
-        )).status_code == 404
+        )
+        assert unknown_tenant.status_code == 404
+        assert "target_is_system_admin" not in unknown_tenant.json().get("data", {})
         assert (await client.patch(
             role_path, headers=headers,
             json={"role": "viewer", "expected_version": 2, "reason": "free text"},
