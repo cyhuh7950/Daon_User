@@ -216,6 +216,8 @@ from .notebook_postgres import PostgresNotebookRepository
 
 WEB_SESSION_COOKIE = "__Host-daon_session"
 WEB_SESSION_COOKIE_MAX_AGE = 10 * 365 * 24 * 60 * 60
+_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS = 60.0
+_ADMIN_AUDIT_RETRY_SHUTDOWN_SECONDS = 5.0
 _TRACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _TRACEPARENT = re.compile(
     r"^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$"
@@ -1798,6 +1800,21 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             lambda: provider_health_settings_service.get(health_context),
         )
 
+    async def admin_audit_retry_loop(stop: asyncio.Event) -> None:
+        service = dependencies.admin_membership_role_service
+        if service is None:
+            return
+        while not stop.is_set():
+            try:
+                await asyncio.to_thread(service._dispatch_pending_audit)
+            except Exception:
+                # The committed operation remains pending for the next bounded batch.
+                pass
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS)
+            except TimeoutError:
+                pass
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # Resume durable deletion requests after the process is ready. The
@@ -1809,9 +1826,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         nonlocal provider_health_task
         if provider_connection_service is not None and provider_health_settings_service is not None:
             provider_health_task = asyncio.create_task(provider_health_loop())
+        admin_audit_stop = asyncio.Event()
+        admin_audit_task = (
+            asyncio.create_task(admin_audit_retry_loop(admin_audit_stop))
+            if dependencies.admin_membership_role_service is not None else None
+        )
         try:
             yield
         finally:
+            admin_audit_stop.set()
+            if admin_audit_task is not None:
+                try:
+                    await asyncio.wait_for(admin_audit_task, timeout=_ADMIN_AUDIT_RETRY_SHUTDOWN_SECONDS)
+                except TimeoutError:
+                    admin_audit_task.cancel()
             provider_health_stop.set()
             if provider_health_task is not None:
                 await provider_health_task
@@ -5861,6 +5889,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         repository=authorization_repository,
         system_admin_user_ids=settings.system_admin_user_ids,
         clock=lambda: datetime.now(timezone.utc),
+        audit_store=audit_store,
     )
     authorization_repository.bootstrap_workspace(
         tenant_id="admin",

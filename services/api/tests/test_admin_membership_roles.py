@@ -12,7 +12,7 @@ from daon_user_api.identity import SqliteIdentityRepository
 from test_authorization_support import FixedClock, POLICY_VERSION, TRACE_ID, principal
 
 
-def fixture(tmp_path):
+def fixture(tmp_path, *, audit_store=None):
     repository = SqliteAuthorizationRepository(tmp_path / "auth.sqlite3")
     identity = SqliteIdentityRepository(tmp_path / "auth.sqlite3")
     with identity.transaction() as connection:
@@ -38,6 +38,7 @@ def fixture(tmp_path):
     )
     service = AdminMembershipRoleService(
         repository=repository, system_admin_user_ids=frozenset({"admin"}), clock=clock,
+        audit_store=audit_store,
     )
     return repository, ordinary, service
 
@@ -50,6 +51,109 @@ def change(service, *, actor=None, target="target", role=Role.EDITOR, version=1,
         workspace_id=workspace, user_id=target, role=role,
         expected_version=version, idempotency_key=key, reason=reason,
     )
+
+
+def test_role_change_projects_one_approved_audit_event_and_marks_delivery(tmp_path):
+    audit_store = AuditEventStore()
+    repository, _, service = fixture(tmp_path, audit_store=audit_store)
+    result = change(service)
+    assert result.replayed is False
+    with repository.transaction() as connection:
+        operation = connection.execute(
+            "SELECT event_id,delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
+        ).fetchone()
+    assert operation["delivered_at"] is not None
+    event = audit_store.read(str(operation["event_id"]))
+    assert event is not None
+    assert event.trace_id == "not-recorded"
+    assert event.policy_version == "not-recorded"
+    assert (event.actor_id, event.tenant_id, event.workspace_id, event.target_id,
+            event.target_type, event.action) == (
+        "admin", "tenant-b", "workspace-b", "target", "membership",
+        "authorization.membership.changed",
+    )
+    assert dict(event.before) == {"role": "viewer", "version": 1}
+    assert dict(event.after) == {"role": "editor", "version": 2}
+    assert dict(event.metadata) == {
+        "reason_code": "ROLE_DUTY_CHANGE", "outcome": "changed", "acl_version": 3,
+    }
+    assert len(audit_store.list(tenant_id="tenant-b").items) == 1
+    assert change(service).replayed is True
+    assert len(audit_store.list(tenant_id="tenant-b").items) == 1
+
+
+def test_temporary_audit_failure_keeps_committed_role_and_retries_once(tmp_path):
+    class ToggleAuditStore(AuditEventStore):
+        available = False
+
+        def append(self, draft):
+            if not self.available:
+                raise OSError("temporary audit outage")
+            return super().append(draft)
+
+    audit_store = ToggleAuditStore()
+    repository, _, service = fixture(tmp_path, audit_store=audit_store)
+    result = change(service)
+    assert (result.role, result.version, result.acl_version) == (Role.EDITOR, 2, 3)
+    with repository.transaction() as connection:
+        operation = connection.execute(
+            "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
+        ).fetchone()
+        role = connection.execute(
+            "SELECT role,version FROM auth_memberships WHERE workspace_id='workspace-b' AND user_id='target'"
+        ).fetchone()
+    assert operation["delivered_at"] is None
+    assert tuple(role) == ("editor", 2)
+    assert audit_store.list(tenant_id="tenant-b").items == ()
+    audit_store.available = True
+    assert change(service).replayed is True
+    with repository.transaction() as connection:
+        delivered_at = connection.execute(
+            "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
+        ).fetchone()[0]
+    assert delivered_at is not None
+    assert len(audit_store.list(tenant_id="tenant-b").items) == 1
+
+
+def test_delivery_marker_failure_retries_without_duplicate_projection(tmp_path):
+    audit_store = AuditEventStore()
+    repository, _, service = fixture(tmp_path, audit_store=audit_store)
+    with repository.transaction() as connection:
+        connection.execute(
+            "CREATE TRIGGER fail_role_delivery BEFORE UPDATE OF delivered_at "
+            "ON auth_admin_role_operations BEGIN SELECT RAISE(FAIL, 'temporary marker failure'); END"
+        )
+    assert change(service).version == 2
+    with repository.transaction() as connection:
+        assert connection.execute(
+            "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
+        ).fetchone()[0] is None
+        connection.execute("DROP TRIGGER fail_role_delivery")
+    assert len(audit_store.list(tenant_id="tenant-b").items) == 1
+    assert change(service).replayed is True
+    with repository.transaction() as connection:
+        assert connection.execute(
+            "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
+        ).fetchone()[0] is not None
+    assert len(audit_store.list(tenant_id="tenant-b").items) == 1
+
+
+def test_unchanged_role_has_one_audit_outcome_without_acl_increment(tmp_path):
+    audit_store = AuditEventStore()
+    repository, _, service = fixture(tmp_path, audit_store=audit_store)
+    result = change(service, role=Role.VIEWER)
+    assert (result.version, result.acl_version) == (1, 2)
+    event = audit_store.list(tenant_id="tenant-b").items[0]
+    assert (event.action, event.target_type) == (
+        "authorization.membership.unchanged", "membership",
+    )
+    assert dict(event.before) == {"role": "viewer", "version": 1}
+    assert dict(event.after) == {"role": "viewer", "version": 1}
+    assert dict(event.metadata) == {
+        "reason_code": "ROLE_DUTY_CHANGE", "outcome": "unchanged", "acl_version": 2,
+    }
+    assert change(service, role=Role.VIEWER).replayed is True
+    assert len(audit_store.list(tenant_id="tenant-b").items) == 1
 
 
 def test_cross_tenant_admin_changes_existing_role_without_expanding_ordinary_path(tmp_path):

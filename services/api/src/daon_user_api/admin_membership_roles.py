@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from .audit import ActorType, AuditDuplicateEventError, AuditEventDraft, AuditEventStore, AuditOutcome
 from .authorization import (
     AuthorizationError, Role, SqliteAuthorizationRepository, WORKSPACE_ROLES, _checked_id,
 )
@@ -65,10 +66,12 @@ class AdminMembershipRoleService:
     def __init__(
         self, *, repository: SqliteAuthorizationRepository,
         system_admin_user_ids: frozenset[str], clock: Callable[[], datetime],
+        audit_store: AuditEventStore | None = None,
     ) -> None:
         self._repository = repository
         self._system_admin_user_ids = system_admin_user_ids
         self._clock = clock
+        self._audit_store = audit_store
 
     def _actor(self, actor: IdentityPrincipal) -> str:
         if not isinstance(actor, IdentityPrincipal):
@@ -142,6 +145,75 @@ class AdminMembershipRoleService:
             return EffectiveMemberships(tenant, workspaces)
 
     def change_existing_workspace_role(
+        self, actor: IdentityPrincipal, tenant_id: str, workspace_id: str,
+        user_id: str, role: Role, expected_version: int,
+        idempotency_key: str, reason: str,
+    ) -> WorkspaceRoleChange:
+        result = self._change_existing_workspace_role(
+            actor, tenant_id, workspace_id, user_id, role, expected_version,
+            idempotency_key, reason,
+        )
+        if self._audit_store is not None:
+            event_id = "auth-admin-role-" + hashlib.sha256(
+                f"{actor.user_id}|{idempotency_key}".encode()
+            ).hexdigest()
+            self._dispatch_pending_audit(event_id=event_id)
+            self._dispatch_pending_audit()
+        return result
+
+    def _dispatch_pending_audit(self, *, event_id: str | None = None) -> None:
+        if self._audit_store is None:
+            return
+        try:
+            with self._repository.transaction() as connection:
+                if event_id is None:
+                    rows = connection.execute(
+                        "SELECT * FROM auth_admin_role_operations WHERE delivered_at IS NULL "
+                        "ORDER BY created_at,event_id LIMIT 32"
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT * FROM auth_admin_role_operations "
+                        "WHERE event_id=? AND delivered_at IS NULL",
+                        (event_id,),
+                    ).fetchall()
+        except AuthorizationError:
+            return
+        for row in rows:
+            try:
+                self._audit_store.append(AuditEventDraft(
+                    event_id=str(row["event_id"]),
+                    occurred_at=datetime.fromisoformat(str(row["created_at"])).astimezone(timezone.utc),
+                    actor_id=str(row["actor_id"]), actor_type=ActorType.USER,
+                    tenant_id=str(row["tenant_id"]), workspace_id=str(row["workspace_id"]),
+                    action=("authorization.membership.changed" if row["outcome"] == "changed"
+                            else "authorization.membership.unchanged"),
+                    target_type="membership",
+                    target_id=str(row["user_id"]), outcome=AuditOutcome.SUCCEEDED,
+                    # The operation row has no request trace or policy snapshot.
+                    trace_id="not-recorded", policy_version="not-recorded",
+                    before={"role": str(row["old_role"]), "version": int(row["old_version"])},
+                    after={"role": str(row["new_role"]), "version": int(row["new_version"])},
+                    metadata={
+                        "reason_code": str(row["reason"]), "outcome": str(row["outcome"]),
+                        "acl_version": int(row["acl_version"]),
+                    },
+                ))
+            except AuditDuplicateEventError:
+                pass
+            except Exception:
+                continue
+            try:
+                with self._repository.transaction() as connection:
+                    connection.execute(
+                        "UPDATE auth_admin_role_operations SET delivered_at=? "
+                        "WHERE event_id=? AND delivered_at IS NULL",
+                        (self._clock().astimezone(timezone.utc).isoformat(), str(row["event_id"])),
+                    )
+            except (AuthorizationError, ValueError, TypeError):
+                continue
+
+    def _change_existing_workspace_role(
         self, actor: IdentityPrincipal, tenant_id: str, workspace_id: str,
         user_id: str, role: Role, expected_version: int,
         idempotency_key: str, reason: str,

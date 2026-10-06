@@ -4,6 +4,7 @@ import asyncio
 import secrets
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from daon_user_api.authorization import Role
 from daon_user_api.admin_membership_roles import AdminMembershipRoleService
 from daon_user_api.identity import IdentityPrincipal, PASSWORD_HASHER
 from daon_user_api.postgres_adapters import PostgresAuthorizationRepository
+from daon_user_api import runtime as runtime_module
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeSettings, build_dependencies, create_app
 
 
@@ -60,6 +62,105 @@ async def _admin_cookie(client: httpx.AsyncClient) -> str:
 
 def test_admin_membership_http_cross_tenant_projection_and_change(tmp_path: Path) -> None:
     asyncio.run(_admin_membership_http_cross_tenant_projection_and_change(tmp_path))
+
+
+def _seed_admin_role_retry_target(dependencies) -> None:
+    with dependencies.identity_repository.transaction() as connection:
+        connection.execute(
+            "INSERT INTO users(user_id,subject,state) VALUES (?,?,?)",
+            ("retry-target", "retry-target", "active"),
+        )
+    dependencies.authorization_repository.bootstrap_workspace(
+        tenant_id="retry-tenant", workspace_id="retry-workspace", owner_user_id="admin",
+        owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",
+        data_area="cloud_sync", cost_limit_cents=100, now=datetime.now(timezone.utc),
+    )
+    with dependencies.authorization_repository.transaction() as connection:
+        connection.execute(
+            "INSERT INTO auth_memberships(tenant_id,workspace_id,user_id,role,state,version,updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("retry-tenant", "retry-workspace", "retry-target", "viewer", "active", 1,
+             datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def _change_retry_role(dependencies) -> None:
+    dependencies.admin_membership_role_service.change_existing_workspace_role(
+        actor=IdentityPrincipal("admin", "admin-session", "admin-device", "admin"),
+        tenant_id="retry-tenant", workspace_id="retry-workspace", user_id="retry-target",
+        role=Role.EDITOR, expected_version=1, idempotency_key="retry-background-key-0001",
+        reason="ACCESS_REVIEW",
+    )
+
+
+async def _wait_for_role_audit_delivery(dependencies) -> None:
+    async def delivered() -> None:
+        while True:
+            with dependencies.authorization_repository.transaction() as connection:
+                marker = connection.execute(
+                    "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='retry-target'"
+                ).fetchone()[0]
+            if marker is not None and len(dependencies.audit_store.list(tenant_id="retry-tenant").items) == 1:
+                return
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(delivered(), timeout=3.0)
+
+
+def test_admin_role_audit_background_retry_needs_no_later_patch(tmp_path: Path, monkeypatch) -> None:
+    asyncio.run(_admin_role_audit_background_retry_needs_no_later_patch(tmp_path, monkeypatch))
+
+
+async def _admin_role_audit_background_retry_needs_no_later_patch(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS", 0.02, raising=False)
+    dependencies = build_dependencies(RuntimeSettings.for_test(
+        database_path=tmp_path / "runtime.sqlite3", policy_version="identity-policy-v1",
+    ))
+    _seed_admin_role_retry_target(dependencies)
+    original_append = dependencies.audit_store.append
+    available = False
+
+    def temporary_failure(draft):
+        if not available:
+            raise OSError("temporary audit outage")
+        return original_append(draft)
+
+    monkeypatch.setattr(dependencies.audit_store, "append", temporary_failure)
+    app = create_app(dependencies)
+    async with app.router.lifespan_context(app):
+        _change_retry_role(dependencies)
+        with dependencies.authorization_repository.transaction() as connection:
+            assert connection.execute(
+                "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='retry-target'"
+            ).fetchone()[0] is None
+        available = True
+        await _wait_for_role_audit_delivery(dependencies)
+        await asyncio.sleep(0.05)
+        assert len(dependencies.audit_store.list(tenant_id="retry-tenant").items) == 1
+
+
+def test_admin_role_audit_startup_recovers_existing_pending_row(tmp_path: Path, monkeypatch) -> None:
+    asyncio.run(_admin_role_audit_startup_recovers_existing_pending_row(tmp_path, monkeypatch))
+
+
+async def _admin_role_audit_startup_recovers_existing_pending_row(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS", 0.02, raising=False)
+    settings = RuntimeSettings.for_test(
+        database_path=tmp_path / "runtime.sqlite3", policy_version="identity-policy-v1",
+    )
+    first = build_dependencies(settings)
+    _seed_admin_role_retry_target(first)
+    def unavailable_append(draft):
+        raise OSError("temporary audit outage")
+
+    monkeypatch.setattr(first.audit_store, "append", unavailable_append)
+    _change_retry_role(first)
+    first.close()
+    restarted = build_dependencies(settings)
+    app = create_app(restarted)
+    async with app.router.lifespan_context(app):
+        await _wait_for_role_audit_delivery(restarted)
+        assert len(restarted.audit_store.list(tenant_id="retry-tenant").items) == 1
 
 
 def test_admin_tenants_list_only_auth_scopes_with_id_fallback(tmp_path: Path) -> None:
@@ -244,6 +345,16 @@ async def _admin_membership_http_cross_tenant_projection_and_change(tmp_path: Pa
             "role": "editor", "state": "active", "version": 2, "acl_version": 2, "replayed": False,
         }
         assert changed.json()["meta"]["trace_id"]
+        projected = dependencies.audit_store.list(tenant_id="tenant-b").items
+        assert len(projected) == 1
+        assert dict(projected[0].metadata) == {
+            "reason_code": "ROLE_DUTY_CHANGE", "outcome": "changed", "acl_version": 2,
+        }
+        with dependencies.authorization_repository.transaction() as connection:
+            delivered_at = connection.execute(
+                "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target-b'"
+            ).fetchone()[0]
+        assert delivered_at is not None
         role_path = "/api/v1/admin/tenants/tenant-b/workspaces/workspace-b/memberships/target-b/role"
         headers = {
             "X-Daon-Bff-Transport": "internal",
@@ -256,6 +367,7 @@ async def _admin_membership_http_cross_tenant_projection_and_change(tmp_path: Pa
         assert replayed.status_code == 200
         assert replayed.json()["data"]["replayed"] is True
         assert replayed.json()["data"]["version"] == 2
+        assert len(dependencies.audit_store.list(tenant_id="tenant-b").items) == 1
         reused = await client.patch(
             role_path, headers=headers,
             json={"role": "editor", "expected_version": 1, "reason": "ACCESS_REVIEW"},
