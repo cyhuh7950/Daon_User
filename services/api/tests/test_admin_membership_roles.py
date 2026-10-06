@@ -33,11 +33,12 @@ def fixture(tmp_path):
 
 
 def change(service, *, actor=None, target="target", role=Role.EDITOR, version=1,
-           key="role-change-key-0001", tenant="tenant-b", workspace="workspace-b"):
+           key="role-change-key-0001", tenant="tenant-b", workspace="workspace-b",
+           reason="ROLE_DUTY_CHANGE"):
     return service.change_existing_workspace_role(
         actor=actor or principal("admin", "tenant-a"), tenant_id=tenant,
         workspace_id=workspace, user_id=target, role=role,
-        expected_version=version, idempotency_key=key, reason="approved-role-change",
+        expected_version=version, idempotency_key=key, reason=reason,
     )
 
 
@@ -128,6 +129,64 @@ def test_invalid_scope_and_idempotency_key_are_422(tmp_path):
     assert key.value.http_status == 422
 
 
+@pytest.mark.parametrize("reason", [
+    "approved-role-change", "ROLE_DUTY_CHANGE ", "role_duty_change",
+    "qa@example.invalid", "sk-test-placeholder", "UNKNOWN", "", None,
+])
+def test_unapproved_reason_is_rejected_before_role_or_audit_write(tmp_path, reason):
+    repository, _, service = fixture(tmp_path)
+    with repository.transaction() as connection:
+        before_acl = connection.execute(
+            "SELECT acl_version FROM auth_workspaces WHERE workspace_id='workspace-b'"
+        ).fetchone()[0]
+    with pytest.raises(AuthorizationError) as invalid:
+        change(service, reason=reason)
+    assert invalid.value.http_status == 422
+    with repository.transaction() as connection:
+        row = connection.execute(
+            "SELECT role,version FROM auth_memberships WHERE workspace_id='workspace-b' AND user_id='target'"
+        ).fetchone()
+        assert tuple(row) == ("viewer", 1)
+        assert connection.execute(
+            "SELECT acl_version FROM auth_workspaces WHERE workspace_id='workspace-b'"
+        ).fetchone()[0] == before_acl
+        assert connection.execute("SELECT COUNT(*) FROM auth_admin_role_operations").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("reason", [
+    "ROLE_DUTY_CHANGE", "ACCESS_REVIEW", "SECURITY_RESTRICTION", "CORRECTION", "OTHER",
+])
+def test_approved_reason_code_is_the_only_audit_reason(tmp_path, reason):
+    repository, _, service = fixture(tmp_path)
+    change(service, reason=reason)
+    with repository.transaction() as connection:
+        stored = connection.execute("SELECT reason FROM auth_admin_role_operations").fetchone()[0]
+        assert stored == reason
+
+
+def test_same_idempotency_key_with_different_reason_code_is_409(tmp_path):
+    repository, _, service = fixture(tmp_path)
+    first = change(service, reason="ROLE_DUTY_CHANGE")
+    with pytest.raises(AuthorizationError) as reused:
+        change(service, reason="ACCESS_REVIEW")
+    assert reused.value.http_status == 409
+    with repository.transaction() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM auth_admin_role_operations").fetchone()[0] == 1
+        assert connection.execute("SELECT reason FROM auth_admin_role_operations").fetchone()[0] == "ROLE_DUTY_CHANGE"
+        assert connection.execute("SELECT acl_version FROM auth_workspaces WHERE workspace_id='workspace-b'").fetchone()[0] == first.acl_version
+
+
+def test_sqlite_audit_reason_check_rejects_unapproved_value(tmp_path):
+    repository, _, service = fixture(tmp_path)
+    change(service)
+    with pytest.raises(AuthorizationError) as rejected:
+        with repository.transaction() as connection:
+            connection.execute("UPDATE auth_admin_role_operations SET reason='free text'")
+    assert rejected.value.http_status == 409
+    with repository.transaction() as connection:
+        assert connection.execute("SELECT reason FROM auth_admin_role_operations").fetchone()[0] == "ROLE_DUTY_CHANGE"
+
+
 def test_role_guards_version_replay_and_noop(tmp_path):
     repository, _, service = fixture(tmp_path)
     for role in (Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN):
@@ -152,7 +211,7 @@ def test_role_guards_version_replay_and_noop(tmp_path):
             "SELECT old_role,new_role,old_version,new_version,reason,outcome,delivered_at "
             "FROM auth_admin_role_operations WHERE actor_id='admin' AND idempotency_key='role-change-key-0001'"
         ).fetchone()
-        assert tuple(event) == ("viewer", "editor", 1, 2, "approved-role-change", "changed", None)
+        assert tuple(event) == ("viewer", "editor", 1, 2, "ROLE_DUTY_CHANGE", "changed", None)
     replay = change(service)
     assert replay.replayed and replay.version == first.version
     with pytest.raises(AuthorizationError) as reused:

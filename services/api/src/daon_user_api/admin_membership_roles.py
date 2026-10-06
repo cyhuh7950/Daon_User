@@ -15,6 +15,11 @@ from .authorization import (
 from .identity import IdentityPrincipal, INITIAL_ADMIN_USER_ID
 
 
+REASON_CODES = frozenset({
+    "ROLE_DUTY_CHANGE", "ACCESS_REVIEW", "SECURITY_RESTRICTION", "CORRECTION", "OTHER",
+})
+
+
 def _input_id(value: str) -> str:
     try:
         return _checked_id(value)
@@ -123,9 +128,8 @@ class AdminMembershipRoleService:
         if not isinstance(idempotency_key, str) or not 16 <= len(idempotency_key) <= 128:
             raise AuthorizationError("INVALID_INPUT", 422)
         _input_id(idempotency_key)
-        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 256 or any(ord(c) < 32 for c in reason):
+        if not isinstance(reason, str) or reason not in REASON_CODES:
             raise AuthorizationError("INVALID_INPUT", 422)
-        reason = reason.strip()
         request = [actor_id, tenant_id, workspace_id, user_id, role.value, expected_version, reason]
         fingerprint = hashlib.sha256(json.dumps(request, separators=(",", ":")).encode()).hexdigest()
         now = self._clock()

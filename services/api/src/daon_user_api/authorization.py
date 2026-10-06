@@ -415,7 +415,9 @@ class SqliteAuthorizationRepository:
               tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL,
               old_role TEXT NOT NULL, new_role TEXT NOT NULL,
               old_version INTEGER NOT NULL, new_version INTEGER NOT NULL,
-              acl_version INTEGER NOT NULL, reason TEXT NOT NULL,
+              acl_version INTEGER NOT NULL,
+              reason TEXT NOT NULL CHECK(reason IN (
+                'ROLE_DUTY_CHANGE','ACCESS_REVIEW','SECURITY_RESTRICTION','CORRECTION','OTHER')),
               outcome TEXT NOT NULL CHECK(outcome IN ('changed','unchanged')),
               created_at TEXT NOT NULL, delivered_at TEXT,
               PRIMARY KEY(actor_id,idempotency_key),

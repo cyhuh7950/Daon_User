@@ -14,6 +14,9 @@ def test_0054_migration_follows_0053_and_keeps_auth_outbox_additive():
     assert "identity_auth_admin_role_operations" in source
     assert "delivered_at" in source
     assert "UPDATE identity_auth_memberships" not in source
+    assert "reason text NOT NULL CHECK (reason IN" in source
+    for reason in ("ROLE_DUTY_CHANGE", "ACCESS_REVIEW", "SECURITY_RESTRICTION", "CORRECTION", "OTHER"):
+        assert f"'{reason}'" in source
 
 
 @pytest.mark.skipif(
@@ -58,13 +61,26 @@ def test_postgres_role_change_concurrency_and_audit_rollback():
                     actor=principal("c9-r1-admin", "outside-tenant"), tenant_id=marker,
                     workspace_id=marker, user_id="c9-r1-target", role=role,
                     expected_version=1, idempotency_key=f"c9-r1-{role.value}-race-0001",
-                    reason="isolated-pg-race",
+                    reason="ACCESS_REVIEW",
                 )
                 return 200
             except AuthorizationError as error:
                 return error.http_status
         with ThreadPoolExecutor(max_workers=2) as pool:
             assert sorted(pool.map(attempt, (Role.EDITOR, Role.REVIEWER))) == [200, 412]
+        # Only this disposable, isolated DB may receive the deliberately invalid INSERT.
+        with pytest.raises(AuthorizationError) as rejected:
+            with repository.transaction() as connection:
+                connection.execute(
+                    "INSERT INTO auth_admin_role_operations("
+                    "actor_id,idempotency_key,request_fingerprint,event_id,tenant_id,workspace_id,user_id,"
+                    "old_role,new_role,old_version,new_version,acl_version,reason,outcome,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("c9-r1-admin", f"c9-r1-invalid-{suffix}", "0" * 64, f"c9-r1-invalid-{suffix}",
+                     marker, marker, "c9-r1-target", "viewer", "editor", 1, 2, 3,
+                     "free text", "changed", clock().isoformat()),
+                )
+        assert rejected.value.http_status == 503
         with repository.transaction() as connection:
             row = connection.execute(
                 "SELECT role,version FROM auth_memberships WHERE tenant_id=? AND workspace_id=? AND user_id=?",
@@ -78,13 +94,13 @@ def test_postgres_role_change_concurrency_and_audit_rollback():
         with repository.transaction() as connection:
             connection.execute(
                 f"ALTER TABLE auth_admin_role_operations ADD CONSTRAINT {constraint} "
-                "CHECK (reason <> 'isolated-pg-failure') NOT VALID"
+                "CHECK (reason <> 'CORRECTION') NOT VALID"
             )
         with pytest.raises(AuthorizationError) as failed:
             service.change_existing_workspace_role(
                 actor=principal("c9-r1-admin", "outside-tenant"), tenant_id=marker,
                 workspace_id=marker, user_id="c9-r1-target", role=Role.APPROVER,
-                expected_version=2, idempotency_key="c9-r1-audit-fail-0001", reason="isolated-pg-failure",
+                expected_version=2, idempotency_key="c9-r1-audit-fail-0001", reason="CORRECTION",
             )
         assert failed.value.http_status == 503
         with repository.transaction() as connection:

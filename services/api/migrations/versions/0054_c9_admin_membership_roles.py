@@ -34,7 +34,8 @@ def upgrade() -> None:
           old_version integer NOT NULL CHECK (old_version >= 1),
           new_version integer NOT NULL CHECK (new_version >= old_version),
           acl_version integer NOT NULL CHECK (acl_version >= 1),
-          reason text NOT NULL CHECK (length(reason) BETWEEN 1 AND 256),
+          reason text NOT NULL CHECK (reason IN
+            ('ROLE_DUTY_CHANGE','ACCESS_REVIEW','SECURITY_RESTRICTION','CORRECTION','OTHER')),
           outcome text NOT NULL CHECK (outcome IN ('changed','unchanged')),
           created_at timestamptz NOT NULL,
           delivered_at timestamptz,
