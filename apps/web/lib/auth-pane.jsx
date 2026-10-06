@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { authApi } from "./auth-api.js";
 
 const initial = { login_id: "", email: "", password: "", token: "" };
+const SAFE_AUTH_ERROR_CODES = new Set([
+  "AUTHENTICATION_REQUIRED", "EMAIL_TOKEN_INVALID", "PASSWORD_RESET_TOKEN_INVALID",
+  "PASSWORD_POLICY_FAILED", "EMAIL_VERIFICATION_REQUIRED", "USER_EMAIL_REQUIRED",
+  "EMAIL_DELIVERY_UNAVAILABLE", "CSRF_VALIDATION_FAILED", "PASSWORD_CHANGE_REQUIRED",
+  "INVALID_REQUEST",
+]);
 
 export function AuthPane() {
   const [screen, setScreen] = useState("login");
@@ -18,11 +24,11 @@ export function AuthPane() {
 
   const update = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }));
   const clearSensitive = () => setForm((current) => ({ ...current, password: "", token: "" }));
-  const changeScreen = (nextScreen) => {
+  const changeScreen = (nextScreen, nextSignupStep = "signup") => {
     if (busy) return;
     clearSensitive();
     setMessage("");
-    if (nextScreen === "signup") setSignupStep("signup");
+    if (nextScreen === "signup") setSignupStep(nextSignupStep);
     if (nextScreen === "password-reset") setResetStep("request");
     setScreen(nextScreen);
   };
@@ -49,7 +55,7 @@ export function AuthPane() {
       }
     }
     catch (error) {
-      setMessage(error?.code || error?.message || "처리 실패: 요청을 완료하지 못했습니다.");
+      setMessage(SAFE_AUTH_ERROR_CODES.has(error?.code) ? error.code : "처리 실패: 요청을 완료하지 못했습니다.");
     }
     finally {
       clearSensitive();
@@ -72,6 +78,7 @@ export function AuthPane() {
           <div className="daon-auth-actions">
             <button type="button" disabled={busy} onClick={() => run("login", { login_id: form.login_id, password: form.password }, "로그인했습니다.")}>로그인</button>
             <button className="daon-auth-link" type="button" disabled={busy} onClick={() => changeScreen("signup")}>가입하기</button>
+            <button className="daon-auth-link" type="button" disabled={busy} onClick={() => changeScreen("signup", "verify")}>이메일 인증하기</button>
             <button className="daon-auth-link" type="button" disabled={busy} onClick={() => changeScreen("password-reset")}>비밀번호를 잊으셨나요?</button>
           </div>
         </form>
