@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from test_authorization_support import FixedClock, POLICY_VERSION, TRACE_ID, SelectiveFailAuditStore, principal
+from daon_user_api.admin_membership_roles import AdminMembershipRoleService
 from daon_user_api.audit import AuditEventStore
 from daon_user_api.authorization import (
     AccessAction,
@@ -19,6 +20,55 @@ from daon_user_api.authorization import (
 
 
 class AuthorizationHistoricalAccessTests(unittest.TestCase):
+    def test_admin_role_downgrade_rechecks_historical_access_and_acl_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SqliteAuthorizationRepository(Path(directory) / "auth.sqlite3")
+            clock = FixedClock()
+            repository.bootstrap_workspace(
+                tenant_id="tenant-001", workspace_id="workspace-001", owner_user_id="owner",
+                owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization",
+                data_area="cloud_sync", cost_limit_cents=100, now=clock(),
+            )
+            authorization = AuthorizationService(
+                repository=repository, audit_store=AuditEventStore(), clock=clock,
+            )
+            authorization.set_membership(
+                principal=principal("owner"), workspace_id="workspace-001", user_id="target",
+                role=Role.EDITOR, expected_version=0, trace_id=TRACE_ID,
+                policy_version=POLICY_VERSION,
+            )
+            authorization.register_historical_result(
+                principal=principal("owner"), descriptor=self.descriptor(),
+                trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+            )
+            before = authorization.evaluate_historical_access(
+                principal=principal("target"), result_id="output-001", action=AccessAction.RERUN,
+                trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+            )
+            self.assertEqual((before.state, before.membership_version, before.acl_version),
+                             (AccessState.AVAILABLE, 1, 2))
+
+            AdminMembershipRoleService(
+                repository=repository, system_admin_user_ids=frozenset({"admin"}), clock=clock,
+            ).change_existing_workspace_role(
+                actor=principal("admin", "tenant-other"), tenant_id="tenant-001",
+                workspace_id="workspace-001", user_id="target", role=Role.VIEWER,
+                expected_version=1, idempotency_key="r5-historical-access-0001",
+                reason="ACCESS_REVIEW",
+            )
+            after = authorization.evaluate_historical_access(
+                principal=principal("target"), result_id="output-001", action=AccessAction.RERUN,
+                trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+            )
+            self.assertEqual((after.state, after.membership_version, after.acl_version),
+                             (AccessState.ACCESS_BLOCKED, 2, 3))
+            with self.assertRaises(AuthorizationError) as denied:
+                authorization.require_historical_access(
+                    principal=principal("target"), result_id="output-001", action=AccessAction.RERUN,
+                    trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+                )
+            self.assertEqual(denied.exception.code, "CURRENT_ACCESS_DENIED")
+
     def make_service(self, path: Path, audit_store=None):
         owner = principal("owner")
         repository = SqliteAuthorizationRepository(path)

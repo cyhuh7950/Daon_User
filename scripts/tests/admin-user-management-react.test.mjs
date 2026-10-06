@@ -430,14 +430,204 @@ test("admin console은 membership 역할을 추정하거나 편집 가능한 역
     await view.act(async () => { await Promise.resolve(); });
     const roleCells = findElements(view.container, (node) => node.getAttribute?.("class") === "admin-user-role-list");
     assert.deepEqual(roleCells.map((node) => node.textContent), [
-      "실제 membership 역할은 현재 목록에서 제공되지 않음",
-      "실제 membership 역할은 현재 목록에서 제공되지 않음",
+      "역할 미조회",
+      "역할 미조회",
     ]);
     await view.act(async () => { buttonByText(view.container, "수정").dispatchEvent(new MinimalEvent("click")); });
     assert.equal(findElements(view.container, (node) => node.getAttribute?.("class") === "admin-user-role-fields").length, 0);
     assert.doesNotMatch(view.container.textContent, /전문가|역할 정책은 현재 계정 권한 계약/u);
-    assert.match(view.container.textContent, /실제 membership 역할은 현재 목록에서 제공되지 않음/u);
+    assert.match(view.container.textContent, /역할 미조회/u);
   } finally { await view.cleanup(); }
+});
+
+test("역할 목록·상세·변경의 인증 만료는 기존 사용자와 역할을 즉시 숨기고 로그인으로 이동한다", async () => {
+  const user = { user_id: "user-1", login_id: "one", email: "one@example.test", has_email: true, state: "active", protected: false };
+  const membership = { tenant: null, workspaces: [{ workspace_id: "workspace-a", role: "viewer", state: "active", version: 2 }] };
+  for (const stage of ["tenants", "memberships", "patch", "reread"]) {
+    const redirects = []; let reads = 0;
+    const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+      getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+      getUsers: async () => [user],
+      getTenants: async () => { if (stage === "tenants") throw new Error("AUTHENTICATION_REQUIRED"); return [{ tenant_id: "tenant-a", name: "Tenant A" }]; },
+      getMemberships: async () => { reads += 1; if (stage === "memberships" || (stage === "reread" && reads > 1)) throw new Error("AUTHENTICATION_REQUIRED"); return membership; },
+      setMembershipRole: async () => { if (stage === "patch") throw new Error("AUTHENTICATION_REQUIRED"); return { version: 2 }; },
+      navigate: (path) => redirects.push(path),
+    }, `.admin-role-auth-${stage}-`);
+    const previousConfirm = globalThis.window.confirm; globalThis.window.confirm = () => true;
+    try {
+      await view.act(async () => { await Promise.resolve(); });
+      assert.match(view.container.textContent, /one@example\.test/u);
+      await view.act(async () => { buttonByText(view.container, "역할 조회").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+      const select = (label) => findElements(view.container, (node) => node.tagName === "SELECT" && reactProps(node)?.["aria-label"] === label)[0];
+      if (stage !== "tenants") await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-a" } }); await Promise.resolve(); });
+      if (stage === "patch" || stage === "reread") {
+        await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "workspace-a" } }); });
+        await view.act(async () => { reactProps(select("변경 사유")).onChange({ target: { value: "ACCESS_REVIEW" } }); });
+        await view.act(async () => { buttonByText(view.container, "역할 변경").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+      }
+      assert.deepEqual(redirects, ["/"], stage);
+      const protectedArea = findElements(view.container, (node) => node.getAttribute?.("data-session-validated") !== null)[0];
+      assert.equal(protectedArea.hidden, true, stage);
+      assert.doesNotMatch(protectedArea.textContent, /one@example\.test|workspace-a|viewer/u, stage);
+    } finally { globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+  }
+});
+
+test("역할 저장 중 닫기를 막고 저장 완료 후 서버 재조회 결과를 보여준다", async () => {
+  const user = { user_id: "user-1", login_id: "one", email: null, has_email: false, state: "active", protected: false };
+  let releaseWrite; let reads = 0;
+  const writePending = new Promise((resolve) => { releaseWrite = resolve; });
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+    getUsers: async () => [user],
+    getTenants: async () => [{ tenant_id: "tenant-a", name: "Tenant A" }],
+    getMemberships: async () => { reads += 1; return { tenant: null, workspaces: [{ workspace_id: "workspace-a", role: reads === 1 ? "viewer" : "editor", state: "active", version: reads === 1 ? 2 : 3 }] }; },
+    setMembershipRole: async () => { await writePending; return { version: 3 }; },
+  }, ".admin-role-close-pending-");
+  const previousConfirm = globalThis.window.confirm; globalThis.window.confirm = () => true;
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    await view.act(async () => { buttonByText(view.container, "역할 조회").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    const select = (label) => findElements(view.container, (node) => node.tagName === "SELECT" && reactProps(node)?.["aria-label"] === label)[0];
+    await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-a" } }); await Promise.resolve(); });
+    await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "workspace-a" } }); });
+    await view.act(async () => { reactProps(select("변경할 역할")).onChange({ target: { value: "editor" } }); reactProps(select("변경 사유")).onChange({ target: { value: "ACCESS_REVIEW" } }); });
+    await view.act(async () => { buttonByText(view.container, "역할 변경").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    const close = buttonByText(view.container, "닫기");
+    assert.equal(close.disabled, true);
+    await view.act(async () => { reactProps(close).onClick(); await Promise.resolve(); });
+    assert.match(view.container.textContent, /처리 중…/u);
+    await view.act(async () => { releaseWrite(); await writePending; await Promise.resolve(); });
+    assert.equal(reads, 2);
+    assert.match(view.container.textContent, /역할 변경 완료.*version 3/su);
+  } finally { releaseWrite(); globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+});
+
+test("사용자별 역할 조회 버튼은 대상 이름을 접근성 이름에 포함한다", async () => {
+  const users = ["one", "two"].map((login_id) => ({ user_id: login_id, login_id, email: null, has_email: false, state: "active", protected: false }));
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+    getUsers: async () => users,
+  }, ".admin-role-aria-label-");
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    const buttons = findElements(view.container, (node) => node.tagName === "BUTTON" && node.textContent === "역할 조회");
+    assert.deepEqual(buttons.map((button) => reactProps(button)["aria-label"]), ["one 역할 조회", "two 역할 조회"]);
+  } finally { await view.cleanup(); }
+});
+
+test("admin console은 조직을 명시 선택한 뒤에만 유효 역할을 조회하고 확인 후 변경·재조회한다", async () => {
+  const user = { user_id: "user-1", login_id: "one", email: "one@example.test", has_email: true, state: "active", protected: false };
+  const calls = []; let reads = 0;
+  const membership = (role, version) => ({
+    tenant: { tenant_id: "tenant-a", role: "organization_admin", state: "active", version: 1 },
+    workspaces: [{ workspace_id: "workspace-a", role, state: "active", version }],
+  });
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+    getUsers: async () => [user],
+    getTenants: async () => [{ tenant_id: "tenant-a", name: "Tenant A" }, { tenant_id: "tenant-b", name: "Tenant B" }],
+    getMemberships: async (tenantId, userId) => { calls.push(["read", tenantId, userId]); reads += 1; return membership(reads === 1 ? "viewer" : "editor", reads === 1 ? 2 : 3); },
+    setMembershipRole: async (...args) => { calls.push(["write", ...args]); return { version: 3 }; },
+  }, ".admin-role-flow-");
+  const previousConfirm = globalThis.window.confirm; globalThis.window.confirm = () => true;
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    assert.match(view.container.textContent, /역할 미조회/u);
+    await view.act(async () => { buttonByText(view.container, "역할 조회").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(calls, []);
+    assert.match(view.container.textContent, /역할 미조회/u);
+    assert.match(view.container.textContent, /시스템 관리자 여부.*조회하지 않음/u);
+    const select = (label) => findElements(view.container, (node) => node.tagName === "SELECT" && reactProps(node)?.["aria-label"] === label)[0];
+    await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-a" } }); await Promise.resolve(); });
+    assert.deepEqual(calls, [["read", "tenant-a", "user-1"]]);
+    assert.match(view.container.textContent, /organization_admin|조직 관리자/u);
+    await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "workspace-a" } }); });
+    assert.match(view.container.textContent, /viewer|열람자/u);
+    await view.act(async () => {
+      reactProps(select("변경할 역할")).onChange({ target: { value: "editor" } });
+      reactProps(select("변경 사유")).onChange({ target: { value: "ACCESS_REVIEW" } });
+    });
+    await view.act(async () => { buttonByText(view.container, "역할 변경").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(calls[1][0], "write");
+    assert.deepEqual(calls[1].slice(1, 5), ["tenant-a", "workspace-a", "user-1", { role: "editor", expected_version: 2, reason: "ACCESS_REVIEW" }]);
+    assert.deepEqual(calls[2], ["read", "tenant-a", "user-1"]);
+    assert.match(view.container.textContent, /역할 변경 완료/u);
+    assert.match(view.container.textContent, /version 3/u);
+  } finally { globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+});
+
+test("admin console은 412 후 입력을 보존하고 최신 역할을 비교하며 보호·자기 계정 변경을 막는다", async () => {
+  const users = [
+    { user_id: "admin", login_id: "admin", email: null, has_email: false, state: "active", protected: true },
+    { user_id: "user-1", login_id: "one", email: "one@example.test", has_email: true, state: "active", protected: false },
+  ];
+  let reads = 0; let writes = 0;
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+    getUsers: async () => users,
+    getTenants: async () => [{ tenant_id: "tenant-a", name: "Tenant A" }],
+    getMemberships: async () => { reads += 1; return { tenant: null, workspaces: [
+      { workspace_id: "workspace-a", role: reads === 1 ? "viewer" : "reviewer", state: "active", version: reads === 1 ? 2 : 3 },
+    ] }; },
+    setMembershipRole: async () => { writes += 1; throw new Error("VERSION_CONFLICT"); },
+  }, ".admin-role-conflict-");
+  const previousConfirm = globalThis.window.confirm; globalThis.window.confirm = () => true;
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    const roleButtons = findElements(view.container, (node) => node.tagName === "BUTTON" && node.textContent === "역할 조회");
+    await view.act(async () => { roleButtons[1].dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    const select = (label) => findElements(view.container, (node) => node.tagName === "SELECT" && reactProps(node)?.["aria-label"] === label)[0];
+    await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-a" } }); await Promise.resolve(); });
+    await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "workspace-a" } }); });
+    await view.act(async () => {
+      reactProps(select("변경할 역할")).onChange({ target: { value: "editor" } });
+      reactProps(select("변경 사유")).onChange({ target: { value: "CORRECTION" } });
+    });
+    await view.act(async () => { buttonByText(view.container, "역할 변경").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(writes, 1); assert.equal(reads, 2);
+    assert.equal(reactProps(select("변경할 역할")).value, "editor");
+    assert.equal(reactProps(select("변경 사유")).value, "CORRECTION");
+    assert.match(view.container.textContent, /VERSION_CONFLICT/u);
+    assert.match(view.container.textContent, /최신.*reviewer.*version 3/su);
+    await view.act(async () => { buttonByText(view.container, "닫기").dispatchEvent(new MinimalEvent("click")); });
+    await view.act(async () => { roleButtons[0].dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-a" } }); await Promise.resolve(); });
+    await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "workspace-a" } }); });
+    assert.equal(buttonByText(view.container, "역할 변경").disabled, true);
+    assert.equal(writes, 1);
+  } finally { globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+});
+
+test("admin console은 조직 전환의 오래된 응답을 숨기고 서버의 관리자 보호 거부를 안전하게 표시한다", async () => {
+  const user = { user_id: "user-1", login_id: "one", email: null, has_email: false, state: "active", protected: false };
+  let finishOldRead; let writes = 0;
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+    getUsers: async () => [user],
+    getTenants: async () => [{ tenant_id: "tenant-a", name: "Tenant A" }, { tenant_id: "tenant-b", name: "Tenant B" }],
+    getMemberships: async (tenantId) => tenantId === "tenant-a"
+      ? new Promise((resolve) => { finishOldRead = resolve; })
+      : { tenant: null, workspaces: [{ workspace_id: "workspace-b", role: "viewer", state: "active", version: 2 }] },
+    setMembershipRole: async () => { writes += 1; throw new Error("FORBIDDEN"); },
+  }, ".admin-role-scope-");
+  const previousConfirm = globalThis.window.confirm; globalThis.window.confirm = () => true;
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    await view.act(async () => { buttonByText(view.container, "역할 조회").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    const select = (label) => findElements(view.container, (node) => node.tagName === "SELECT" && reactProps(node)?.["aria-label"] === label)[0];
+    await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-a" } }); await Promise.resolve(); });
+    await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-b" } }); await Promise.resolve(); });
+    await view.act(async () => { finishOldRead({ tenant: null, workspaces: [{ workspace_id: "workspace-a", role: "editor", state: "active", version: 9 }] }); await Promise.resolve(); });
+    assert.doesNotMatch(view.container.textContent, /workspace-a/u);
+    assert.match(view.container.textContent, /workspace-b/u);
+    await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "workspace-b" } }); });
+    await view.act(async () => { reactProps(select("변경 사유")).onChange({ target: { value: "ACCESS_REVIEW" } }); });
+    await view.act(async () => { buttonByText(view.container, "역할 변경").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(writes, 1);
+    assert.match(view.container.textContent, /FORBIDDEN/u);
+    assert.equal(reactProps(select("변경 사유")).value, "ACCESS_REVIEW");
+  } finally { globalThis.window.confirm = previousConfirm; await view.cleanup(); }
 });
 
 test("admin console의 단일 삭제는 확인 취소와 보호 계정을 차단한다", async () => {

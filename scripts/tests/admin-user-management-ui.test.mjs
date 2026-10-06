@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { changeCurrentPassword } from "../../apps/web/lib/auth-api.js";
-import { changeAdminUserState, deleteAdminUser, listAdminUsers, requestAdminUserPasswordReset } from "../../apps/web/lib/admin-users-api.js";
+import {
+  changeAdminUserState, deleteAdminUser, listAdminUsers, requestAdminUserPasswordReset,
+  listAdminMembershipTenants, getAdminEffectiveMemberships, changeAdminMembershipRole,
+} from "../../apps/web/lib/admin-users-api.js";
 
 const user = Object.freeze({ user_id: "user-1", login_id: "person", email: "person@example.test", has_email: true, state: "active", protected: false });
 const pendingEmailUser = Object.freeze({ user_id: "user-2", login_id: "pending-person", email: "pending@example.test", has_email: true, state: "pending_email", protected: false });
@@ -22,6 +25,50 @@ test("admin user client는 pending_email 사용자가 포함된 실제 목록 �
   await assert.rejects(listAdminUsers({
     fetchImpl: async () => Response.json({ data: { users: [{ ...user, has_email: false }] }, meta }),
   }), /ADMIN_USERS_RESPONSE_INVALID/u);
+});
+
+test("admin membership client는 명시 scope와 고정 reason만 same-origin으로 전송하고 응답을 좁게 검증한다", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (url === "/bff/api/admin/tenants") return Response.json({ data: { tenants: [{ tenant_id: "tenant-a", name: "Tenant A" }] }, meta });
+    if (init.method === "GET") return Response.json({ data: {
+      tenant: { tenant_id: "tenant-a", role: "organization_admin", state: "active", version: 3 },
+      workspaces: [{ workspace_id: "workspace-a", role: "viewer", state: "active", version: 4 }],
+    }, meta });
+    return Response.json({ data: {
+      tenant_id: "tenant-a", workspace_id: "workspace-a", user_id: "user-1",
+      role: "editor", state: "active", version: 5, acl_version: 8, replayed: false,
+    }, meta });
+  };
+  assert.deepEqual(await listAdminMembershipTenants({ fetchImpl }), [{ tenant_id: "tenant-a", name: "Tenant A" }]);
+  assert.deepEqual(await getAdminEffectiveMemberships("tenant-a", "user-1", { fetchImpl }), {
+    tenant: { tenant_id: "tenant-a", role: "organization_admin", state: "active", version: 3 },
+    workspaces: [{ workspace_id: "workspace-a", role: "viewer", state: "active", version: 4 }],
+  });
+  assert.equal((await changeAdminMembershipRole("tenant-a", "workspace-a", "user-1", {
+    role: "editor", expected_version: 4, reason: "ACCESS_REVIEW",
+  }, { fetchImpl, idempotencyKey: "admin-role-change-0001" })).version, 5);
+  assert.deepEqual(calls.map(({ url, init }) => [url, init.method, init.credentials]), [
+    ["/bff/api/admin/tenants", "GET", "same-origin"],
+    ["/bff/api/admin/tenants/tenant-a/users/user-1/memberships", "GET", "same-origin"],
+    ["/bff/api/admin/tenants/tenant-a/workspaces/workspace-a/memberships/user-1/role", "PATCH", "same-origin"],
+  ]);
+  assert.equal(calls[2].init.headers["Idempotency-Key"], "admin-role-change-0001");
+  assert.equal(calls[2].init.body, '{"role":"editor","expected_version":4,"reason":"ACCESS_REVIEW"}');
+  let blockedCalls = 0;
+  const blockedFetch = async () => { blockedCalls += 1; throw new Error("MUST_NOT_CALL"); };
+  await assert.rejects(getAdminEffectiveMemberships("../tenant", "user-1", { fetchImpl: blockedFetch }), /ADMIN_MEMBERSHIP_INPUT_INVALID/u);
+  await assert.rejects(changeAdminMembershipRole("tenant-a", "workspace-a", "user-1", {
+    role: "editor", expected_version: 4, reason: "free text",
+  }, { fetchImpl: blockedFetch, idempotencyKey: "admin-role-change-0002" }), /ADMIN_MEMBERSHIP_INPUT_INVALID/u);
+  assert.equal(blockedCalls, 0);
+  await assert.rejects(getAdminEffectiveMemberships("tenant-a", "user-1", { fetchImpl: async () => Response.json({ data: {
+    tenant: { tenant_id: "tenant-b", role: "organization_admin", state: "active", version: 1 }, workspaces: [],
+  }, meta }) }), /ADMIN_MEMBERSHIP_RESPONSE_INVALID/u);
+  await assert.rejects(listAdminMembershipTenants({ fetchImpl: async () => Response.json({ data: {
+    tenants: [{ tenant_id: "tenant-a", name: "A", secret: "blocked" }],
+  }, meta }) }), /ADMIN_MEMBERSHIP_RESPONSE_INVALID/u);
 });
 
 test("admin user client는 exact same-origin 목록과 상태 변경 계약만 수용한다", async () => {
