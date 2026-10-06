@@ -217,6 +217,11 @@ async def _admin_membership_http_cross_tenant_projection_and_change(tmp_path: Pa
         owner = await client.get("/api/v1/admin/tenants/tenant-b/users/owner-b/memberships")
         assert owner.status_code == 200
         assert owner.json()["data"]["target_is_system_admin"] is True
+        admin_without_membership = await client.get(
+            "/api/v1/admin/tenants/tenant-b/users/admin/memberships"
+        )
+        assert admin_without_membership.status_code == 404
+        assert "target_is_system_admin" not in admin_without_membership.json().get("data", {})
         users = await client.get("/api/v1/admin/users")
         assert users.status_code == 200
         assert all("target_is_system_admin" not in item for item in users.json()["data"]["users"])

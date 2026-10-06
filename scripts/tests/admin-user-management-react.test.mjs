@@ -594,6 +594,46 @@ test("대상 시스템 관리자 여부는 선택 조직의 성공 조회값만 
   } finally { await view.cleanup(); }
 });
 
+test("역할 저장 중·412 실패 후 작업공간 재선택은 과거 관리자 여부를 되살리지 않는다", async () => {
+  const user = { user_id: "user-1", login_id: "one", email: null, has_email: false, state: "active", protected: false };
+  let rejectWrite; let reads = 0;
+  const pendingWrite = new Promise((resolve, reject) => { rejectWrite = reject; });
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+    getUsers: async () => [user],
+    getTenants: async () => [{ tenant_id: "tenant-a", name: "Tenant A" }],
+    getMemberships: async () => {
+      reads += 1;
+      return { tenant: null, workspaces: [{ workspace_id: "workspace-a", role: reads === 1 ? "viewer" : "reviewer", state: "active", version: reads === 1 ? 2 : 3 }],
+        target_is_system_admin: true };
+    },
+    setMembershipRole: async () => pendingWrite,
+  }, ".admin-role-status-stale-");
+  const previousConfirm = globalThis.window.confirm; globalThis.window.confirm = () => true;
+  try {
+    await view.act(async () => { await Promise.resolve(); });
+    await view.act(async () => { buttonByText(view.container, "역할 조회").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    const select = (label) => findElements(view.container, (node) => node.tagName === "SELECT" && reactProps(node)?.["aria-label"] === label)[0];
+    const adminStatus = () => findElements(view.container, (node) => node.tagName === "P"
+      && node.textContent.startsWith("시스템 관리자 여부 (별도 권한):"))[0]?.textContent;
+    await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-a" } }); await Promise.resolve(); });
+    assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 예");
+    await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "workspace-a" } }); });
+    await view.act(async () => { reactProps(select("변경할 역할")).onChange({ target: { value: "editor" } }); reactProps(select("변경 사유")).onChange({ target: { value: "CORRECTION" } }); });
+    await view.act(async () => { buttonByText(view.container, "역할 변경").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 미조회");
+    await view.act(async () => { rejectWrite(new Error("VERSION_CONFLICT")); await pendingWrite.catch(() => {}); await Promise.resolve(); });
+    assert.equal(reads, 2);
+    assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 미조회");
+    assert.match(view.container.textContent, /최신.*reviewer.*version 3/su);
+    assert.equal(reactProps(select("변경할 역할")).value, "editor");
+    await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "" } }); });
+    await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "workspace-a" } }); });
+    assert.equal(reads, 2);
+    assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 미조회");
+  } finally { rejectWrite(new Error("TEST_CLEANUP")); globalThis.window.confirm = previousConfirm; await view.cleanup(); }
+});
+
 test("admin console은 412 후 입력을 보존하고 최신 역할을 비교하며 보호·자기 계정 변경을 막는다", async () => {
   const users = [
     { user_id: "admin", login_id: "admin", email: null, has_email: false, state: "active", protected: true },

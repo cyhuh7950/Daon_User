@@ -212,7 +212,7 @@ export function AdminUserConsole({
   const openRole = async (user) => {
     if (roleInFlight.current) return;
     const requestId = ++roleRequestId.current;
-    setRolePanel({ user, tenants: [], tenantId: "", membership: null, workspaceId: "", role: "",
+    setRolePanel({ user, tenants: [], tenantId: "", membership: null, membershipVerified: false, workspaceId: "", role: "",
       reason: "", latest: null, error: null, notice: null, loading: true, saving: false });
     try {
       const tenants = await getTenants();
@@ -225,12 +225,14 @@ export function AdminUserConsole({
   const selectTenant = async (tenantId) => {
     const requestId = ++roleRequestId.current;
     const userId = rolePanel?.user.user_id;
-    setRolePanel((current) => current && { ...current, tenantId, membership: null, workspaceId: "",
+    setRolePanel((current) => current && { ...current, tenantId, membership: null, membershipVerified: false, workspaceId: "",
       role: "", reason: "", latest: null, error: null, notice: null, loading: Boolean(tenantId) });
     if (!tenantId || !userId) return;
     try {
       const membership = await getMemberships(tenantId, userId);
-      if (roleRequestId.current === requestId) setRolePanel((current) => current && { ...current, membership, loading: false });
+      if (roleRequestId.current === requestId) setRolePanel((current) => current && {
+        ...current, membership, membershipVerified: true, loading: false,
+      });
     } catch (caught) {
       if (handleRoleAuthentication(caught)) return;
       if (roleRequestId.current === requestId) setRolePanel((current) => current && {
@@ -253,7 +255,7 @@ export function AdminUserConsole({
     if (!window.confirm(`${displayNameFor(panel.user)}의 ${panel.workspaceId} 역할을 변경하시겠습니까?`)) return;
     const requestId = roleRequestId.current;
     roleInFlight.current = true;
-    setRolePanel((current) => current && { ...current, saving: true, error: null, notice: null });
+    setRolePanel((current) => current && { ...current, saving: true, membershipVerified: false, error: null, notice: null });
     try {
       const result = await setMembershipRole(panel.tenantId, panel.workspaceId, panel.user.user_id, {
         role: panel.role, expected_version: (latestRole ?? currentRole).version, reason: panel.reason,
@@ -262,7 +264,7 @@ export function AdminUserConsole({
       const confirmed = membership.workspaces.find((item) => item.workspace_id === panel.workspaceId);
       if (!confirmed || confirmed.role !== panel.role || confirmed.version < result.version) throw new Error("ADMIN_MEMBERSHIP_RESPONSE_INVALID");
       if (roleRequestId.current === requestId) setRolePanel((current) => current && {
-        ...current, membership, latest: null, reason: "", notice: "역할 변경 완료", error: null,
+        ...current, membership, membershipVerified: true, latest: null, reason: "", notice: "역할 변경 완료", error: null,
       });
     } catch (caught) {
       if (handleRoleAuthentication(caught)) return;
@@ -301,7 +303,7 @@ export function AdminUserConsole({
         if (roleInFlight.current) return;
         roleRequestId.current += 1; setRolePanel(null);
       }}>닫기</button>
-      <p>시스템 관리자 여부 (별도 권한): {rolePanel.tenantId && rolePanel.membership && !rolePanel.error
+      <p>시스템 관리자 여부 (별도 권한): {rolePanel.tenantId && rolePanel.membership && rolePanel.membershipVerified && !rolePanel.error
         && typeof rolePanel.membership.target_is_system_admin === "boolean"
         ? (rolePanel.membership.target_is_system_admin ? "예" : "아니요") : "미조회"}</p>
       {rolePanel.error && <p role="alert">{rolePanel.error}</p>}
