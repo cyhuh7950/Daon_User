@@ -30,9 +30,9 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 class CloudStorageContractTests(unittest.TestCase):
     def test_readiness_tracks_the_router_auto_schema_revision(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0053")
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0054")
 
-    def test_readiness_accepts_the_c8_personal_credential_schema_head(self) -> None:
+    def test_readiness_accepts_c9_schema_head_and_rejects_prior_head(self) -> None:
         class Result:
             def __init__(self, row):
                 self.row = row
@@ -41,9 +41,12 @@ class CloudStorageContractTests(unittest.TestCase):
                 return self.row
 
         class Connection:
+            def __init__(self, revision):
+                self.revision = revision
+
             def execute(self, query, _params=()):
                 if query == "SELECT version_num FROM alembic_version":
-                    return Result(("0053",))
+                    return Result((self.revision,))
                 if "FROM pg_extension" in query:
                     return Result(("0.8.2",))
                 raise AssertionError(f"unexpected readiness query: {query}")
@@ -51,19 +54,21 @@ class CloudStorageContractTests(unittest.TestCase):
         class Pool:
             closed = False
 
+            def __init__(self, revision):
+                self.revision = revision
+
             @contextmanager
             def connection(self, *, timeout):
                 self.timeout = timeout
-                yield Connection()
+                yield Connection(self.revision)
 
         store = object.__new__(PostgresCloudStore)
-        store._pool = Pool()
-
-        status = store.readiness()
-
-        self.assertTrue(status.ready)
-        self.assertEqual(status.schema_revision, "0053")
-        self.assertEqual(status.vector_version, "0.8.2")
+        for revision, expected_ready in (("0054", True), ("0053", False)):
+            store._pool = Pool(revision)
+            status = store.readiness()
+            self.assertEqual(status.ready, expected_ready)
+            self.assertEqual(status.schema_revision, revision)
+            self.assertEqual(status.vector_version, "0.8.2")
 
     def test_postgres_major_version_range_accepts_packaging_suffix(self) -> None:
         for value in ("15.13", "16.9 (Debian 16.9-1.pgdg12+1)", "17.5", "18.4"):
@@ -169,7 +174,7 @@ class PostgresCloudIntegrationTests(unittest.TestCase):
     def test_readiness_requires_migration_and_vector(self) -> None:
         status = self.store.readiness()
         self.assertTrue(status.ready)
-        self.assertEqual(status.schema_revision, "0052")
+        self.assertEqual(status.schema_revision, "0054")
         self.assertEqual(status.vector_version, "0.8.2")
 
     def test_rls_blocks_cross_tenant_and_context_does_not_leak(self) -> None:
