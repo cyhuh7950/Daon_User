@@ -13,6 +13,7 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -29,6 +30,17 @@ MAX_JSON_DEPTH = 8
 MAX_JSON_BYTES = 16_384
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 200
+_ADMIN_ROLE_AUDIT_LOCK_TIMEOUT_SECONDS = 2.0
+
+
+@contextmanager
+def _bounded_admin_role_lock(lock: Any):
+    if not lock.acquire(timeout=_ADMIN_ROLE_AUDIT_LOCK_TIMEOUT_SECONDS):
+        raise TimeoutError("ADMIN_ROLE_AUDIT_LOCK_UNAVAILABLE")
+    try:
+        yield
+    finally:
+        lock.release()
 
 _FORBIDDEN_KEY_PARTS = (
     "password",
@@ -569,10 +581,13 @@ class PostgresSecurityAuditStore(AuditEventStore):
         self._open_lock = Lock()
         self._lock = Lock()
 
-    def _ensure_open(self) -> None:
+    def _ensure_open(self, *, bound_admin_role: bool = False) -> None:
         if not self._pool.closed:
             return
-        with self._open_lock:
+        lock_context = (
+            _bounded_admin_role_lock(self._open_lock) if bound_admin_role else self._open_lock
+        )
+        with lock_context:
             if self._pool.closed:
                 self._pool.open(wait=False)
 
@@ -622,14 +637,27 @@ class PostgresSecurityAuditStore(AuditEventStore):
         )
 
     def append(self, draft: AuditEventDraft) -> AuditEvent:
+        return self._append(draft, bound_admin_role=False)
+
+    def _append_admin_role(self, draft: AuditEventDraft) -> AuditEvent:
+        return self._append(draft, bound_admin_role=True)
+
+    def _append(self, draft: AuditEventDraft, *, bound_admin_role: bool) -> AuditEvent:
         from psycopg.errors import UniqueViolation
         from psycopg.types.json import Jsonb
 
         validated = _validate_draft(draft)
-        self._ensure_open()
+        self._ensure_open(bound_admin_role=bound_admin_role)
+        if bound_admin_role:
+            lock_context = _bounded_admin_role_lock(self._lock)
+        else:
+            lock_context = self._lock
         try:
-            with self._lock, self._pool.connection(timeout=2.0) as connection:
+            with lock_context, self._pool.connection(timeout=2.0) as connection:
                 with connection.transaction():
+                    if bound_admin_role:
+                        connection.execute("SET LOCAL statement_timeout = '5s'")
+                        connection.execute("SET LOCAL lock_timeout = '2s'")
                     tenant_id = validated["tenant_id"]
                     connection.execute("SET LOCAL ROLE daon_app")
                     connection.execute(

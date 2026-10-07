@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import contextmanager
 from threading import RLock
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import psycopg
 from psycopg.rows import dict_row
 
 from .authorization import AuthorizationError, SqliteAuthorizationRepository
 from .organization_membership import OrganizationWorkflowError, SqliteOrganizationRepository
+
+_ADMIN_ROLE_AUDIT_LOCK_TIMEOUT_SECONDS = 2.0
 
 
 class _RowProxy(dict[str, Any]):
@@ -45,8 +48,16 @@ class _CursorProxy:
 
 
 class PostgresCompatConnection:
-    def __init__(self, dsn: str, prefixes: Iterable[str]) -> None:
-        self._conn = psycopg.connect(dsn, row_factory=dict_row)
+    def __init__(
+        self, dsn: str, prefixes: Iterable[str], *,
+        connect_timeout: int | None = None, options: str | None = None,
+    ) -> None:
+        connection_options: dict[str, Any] = {}
+        if connect_timeout is not None:
+            connection_options["connect_timeout"] = connect_timeout
+        if options is not None:
+            connection_options["options"] = options
+        self._conn = psycopg.connect(dsn, row_factory=dict_row, **connection_options)
         self._prefixes = tuple(prefixes)
 
     def _sql(self, statement: str) -> str:
@@ -98,6 +109,40 @@ class PostgresAuthorizationRepository(SqliteAuthorizationRepository):
 
     def _connect(self) -> PostgresCompatConnection:
         return PostgresCompatConnection(self._dsn, ("auth_",))
+
+    @contextmanager
+    def _admin_audit_transaction(self) -> Iterator[PostgresCompatConnection]:
+        """Bound only C9 outbox projection I/O, not ordinary authorization calls."""
+        if not self._lock.acquire(timeout=_ADMIN_ROLE_AUDIT_LOCK_TIMEOUT_SECONDS):
+            raise AuthorizationError("PERSISTENCE_UNAVAILABLE", 503)
+        try:
+            self._ensure_open()
+            connection: PostgresCompatConnection | None = None
+            try:
+                connection = PostgresCompatConnection(
+                    self._dsn, ("auth_",), connect_timeout=2,
+                    options="-c statement_timeout=5000 -c lock_timeout=2000",
+                )
+                connection.execute("BEGIN")
+                yield connection
+                connection.execute("COMMIT")
+            except sqlite3.IntegrityError as error:
+                if connection is not None:
+                    connection.execute("ROLLBACK")
+                raise AuthorizationError("PERSISTENCE_CONFLICT", 409) from error
+            except (sqlite3.Error, psycopg.Error) as error:
+                if connection is not None:
+                    connection.execute("ROLLBACK")
+                raise AuthorizationError("PERSISTENCE_UNAVAILABLE", 503) from error
+            except Exception:
+                if connection is not None:
+                    connection.execute("ROLLBACK")
+                raise
+            finally:
+                if connection is not None:
+                    connection.close()
+        finally:
+            self._lock.release()
 
     def lock_admin_workspace(self, connection: PostgresCompatConnection, tenant_id: str, workspace_id: str):
         return connection.execute(

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from datetime import datetime, timezone
 import sqlite3
+import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
 from daon_user_api.admin_membership_roles import AdminMembershipRoleService
-from daon_user_api.audit import AuditEventStore
+from daon_user_api import audit as audit_module
+from daon_user_api.audit import ActorType, AuditEventDraft, AuditEventStore, AuditOutcome, PostgresSecurityAuditStore
 from daon_user_api.authorization import AuthorizationError, AuthorizationService, Role, SqliteAuthorizationRepository
 from daon_user_api.identity import SqliteIdentityRepository
+from daon_user_api import postgres_adapters
 from test_authorization_support import FixedClock, POLICY_VERSION, TRACE_ID, principal
 
 
@@ -62,7 +69,13 @@ def test_role_change_projects_one_approved_audit_event_and_marks_delivery(tmp_pa
         operation = connection.execute(
             "SELECT event_id,delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
         ).fetchone()
-    assert operation["delivered_at"] is not None
+    assert operation["delivered_at"] is None
+    assert audit_store.list(tenant_id="tenant-b").items == ()
+    service._dispatch_pending_audit()
+    with repository.transaction() as connection:
+        assert connection.execute(
+            "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
+        ).fetchone()[0] is not None
     event = audit_store.read(str(operation["event_id"]))
     assert event is not None
     assert event.trace_id == "not-recorded"
@@ -107,6 +120,7 @@ def test_temporary_audit_failure_keeps_committed_role_and_retries_once(tmp_path)
     assert audit_store.list(tenant_id="tenant-b").items == ()
     audit_store.available = True
     assert change(service).replayed is True
+    service._dispatch_pending_audit()
     with repository.transaction() as connection:
         delivered_at = connection.execute(
             "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
@@ -124,6 +138,7 @@ def test_delivery_marker_failure_retries_without_duplicate_projection(tmp_path):
             "ON auth_admin_role_operations BEGIN SELECT RAISE(FAIL, 'temporary marker failure'); END"
         )
     assert change(service).version == 2
+    service._dispatch_pending_audit()
     with repository.transaction() as connection:
         assert connection.execute(
             "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
@@ -131,6 +146,7 @@ def test_delivery_marker_failure_retries_without_duplicate_projection(tmp_path):
         connection.execute("DROP TRIGGER fail_role_delivery")
     assert len(audit_store.list(tenant_id="tenant-b").items) == 1
     assert change(service).replayed is True
+    service._dispatch_pending_audit()
     with repository.transaction() as connection:
         assert connection.execute(
             "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target'"
@@ -143,6 +159,7 @@ def test_unchanged_role_has_one_audit_outcome_without_acl_increment(tmp_path):
     repository, _, service = fixture(tmp_path, audit_store=audit_store)
     result = change(service, role=Role.VIEWER)
     assert (result.version, result.acl_version) == (1, 2)
+    service._dispatch_pending_audit()
     event = audit_store.list(tenant_id="tenant-b").items[0]
     assert (event.action, event.target_type) == (
         "authorization.membership.unchanged", "membership",
@@ -154,6 +171,337 @@ def test_unchanged_role_has_one_audit_outcome_without_acl_increment(tmp_path):
     }
     assert change(service, role=Role.VIEWER).replayed is True
     assert len(audit_store.list(tenant_id="tenant-b").items) == 1
+
+
+def test_failed_first_batch_does_not_starve_thirty_third_pending_event(tmp_path):
+    class SelectiveAuditStore(AuditEventStore):
+        def append(self, draft):
+            if draft.event_id != "pending-32":
+                raise OSError("older tenant audit outage")
+            return super().append(draft)
+
+    audit_store = SelectiveAuditStore()
+    repository, _, service = fixture(tmp_path, audit_store=audit_store)
+    with repository.transaction() as connection:
+        for number in range(33):
+            connection.execute(
+                "INSERT INTO auth_admin_role_operations("
+                "actor_id,idempotency_key,request_fingerprint,event_id,tenant_id,workspace_id,user_id,"
+                "old_role,new_role,old_version,new_version,acl_version,reason,outcome,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("admin", f"pending-key-{number:02d}", "fingerprint", f"pending-{number:02d}",
+                 "tenant-b", "workspace-b", "target", "viewer", "editor", 1, 2, 3,
+                 "ACCESS_REVIEW", "changed", f"2026-10-06T00:00:{number:02d}+00:00"),
+            )
+    service._dispatch_pending_audit()
+    service._dispatch_pending_audit()
+    with repository.transaction() as connection:
+        rows = connection.execute(
+            "SELECT event_id,delivered_at FROM auth_admin_role_operations ORDER BY created_at,event_id"
+        ).fetchall()
+    assert all(row["delivered_at"] is None for row in rows[:32])
+    assert rows[32]["delivered_at"] is not None
+    assert len(audit_store.list(tenant_id="tenant-b").items) == 1
+
+
+def test_continuous_new_outbox_rows_do_not_starve_failed_older_row(tmp_path):
+    class SelectiveAuditStore(AuditEventStore):
+        old_attempts = 0
+
+        def append(self, draft):
+            if draft.event_id == "rolling-old":
+                self.old_attempts += 1
+                raise OSError("older event temporarily unavailable")
+            return super().append(draft)
+
+    audit_store = SelectiveAuditStore()
+    repository, _, service = fixture(tmp_path, audit_store=audit_store)
+
+    def insert_operation(number, event_id):
+        with repository.transaction() as connection:
+            connection.execute(
+                "INSERT INTO auth_admin_role_operations("
+                "actor_id,idempotency_key,request_fingerprint,event_id,tenant_id,workspace_id,user_id,"
+                "old_role,new_role,old_version,new_version,acl_version,reason,outcome,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("admin", f"rolling-key-{number:02d}", "fingerprint", event_id,
+                 "tenant-b", "workspace-b", "target", "viewer", "editor", 1, 2, 3,
+                 "ACCESS_REVIEW", "changed", f"2026-10-06T00:00:{number:02d}+00:00"),
+            )
+
+    insert_operation(0, "rolling-old")
+    for number in range(1, 6):
+        insert_operation(number, f"rolling-new-{number}")
+        service._dispatch_pending_audit()
+
+    with repository.transaction() as connection:
+        rows = connection.execute(
+            "SELECT event_id,delivered_at FROM auth_admin_role_operations ORDER BY created_at,event_id"
+        ).fetchall()
+    assert rows[0]["delivered_at"] is None
+    assert audit_store.old_attempts >= 2
+    assert sum(row["delivered_at"] is not None for row in rows[1:]) >= 3
+    assert len(audit_store.list(tenant_id="tenant-b").items) >= 3
+
+
+def test_c9_keyset_cursor_keeps_postgres_timestamptz_as_datetime():
+    timestamp = datetime(2026, 10, 6, tzinfo=timezone.utc)
+    operation = {
+        "event_id": "auth-admin-role-cursor", "created_at": timestamp,
+        "actor_id": "admin", "tenant_id": "tenant-b", "workspace_id": "workspace-b",
+        "user_id": "target", "outcome": "changed", "old_role": "viewer", "new_role": "editor",
+        "old_version": 1, "new_version": 2, "reason": "ACCESS_REVIEW", "acl_version": 3,
+    }
+    queries = []
+    batch_reads = 0
+
+    class FakeConnection:
+        def execute(self, sql, params=()):
+            nonlocal batch_reads
+            if sql.startswith("SELECT"):
+                queries.append((sql, params))
+                if "DESC LIMIT 1" in sql:
+                    return SimpleNamespace(fetchone=lambda: operation)
+                batch_reads += 1
+                return SimpleNamespace(fetchall=lambda: [operation] if batch_reads == 1 else [])
+            raise AssertionError("failed append must not update delivery marker")
+
+    class FakeRepository:
+        @contextmanager
+        def transaction(self):
+            yield FakeConnection()
+
+        _admin_audit_transaction = transaction
+
+    class FailingStore:
+        def append(self, draft):
+            raise OSError("temporary audit outage")
+
+    service = AdminMembershipRoleService(
+        repository=FakeRepository(), system_admin_user_ids=frozenset({"admin"}),
+        clock=lambda: timestamp, audit_store=FailingStore(),
+    )
+    service._dispatch_pending_audit()
+    service._dispatch_pending_audit()
+    keyset_queries = [(sql, params) for sql, params in queries if "(created_at,event_id) >" in sql]
+    assert len(keyset_queries) == 1
+    assert keyset_queries[0][1] == (
+        timestamp, "auth-admin-role-cursor", timestamp, "auth-admin-role-cursor",
+    )
+    sent = []
+
+    class FakePostgresConnection:
+        def execute(self, sql, params):
+            sent.append((sql, params))
+            return SimpleNamespace(fetchall=lambda: [])
+
+    adapter = object.__new__(postgres_adapters.PostgresCompatConnection)
+    adapter._conn = FakePostgresConnection()
+    adapter._prefixes = ("auth_",)
+    adapter.execute(*keyset_queries[0])
+    assert "identity_auth_admin_role_operations" in sent[0][0]
+    assert "(created_at,event_id) > (%s,%s)" in sent[0][0]
+    assert sent[0][1][0] is timestamp
+    assert sent[0][1][2] is timestamp
+
+
+def test_c9_auth_outbox_postgres_connection_and_sql_are_bounded(monkeypatch):
+    connects = []
+    statements = []
+
+    class FakeConnection:
+        def execute(self, statement, params=()):
+            statements.append(statement)
+            return SimpleNamespace(fetchone=lambda: None)
+
+        def close(self):
+            pass
+
+    def fake_connect(dsn, **kwargs):
+        connects.append(kwargs)
+        return FakeConnection()
+
+    monkeypatch.setattr(postgres_adapters.psycopg, "connect", fake_connect)
+    repository = postgres_adapters.PostgresAuthorizationRepository("postgresql://audit-test")
+    with repository._admin_audit_transaction() as connection:
+        connection.execute("SELECT 1")
+    assert len(connects) == 2
+    assert "connect_timeout" not in connects[0]
+    assert connects[1]["connect_timeout"] <= 2
+    assert "statement_timeout" in connects[1]["options"]
+    assert "lock_timeout" in connects[1]["options"]
+    assert statements[-2:] == ["SELECT 1", "COMMIT"]
+
+
+def test_c9_postgres_audit_append_bounds_lock_and_sql_without_changing_normal_append():
+    statements = []
+
+    class FakeConnection:
+        @contextmanager
+        def transaction(self):
+            yield self
+
+        def execute(self, statement, params=()):
+            statements.append(statement)
+            return SimpleNamespace(fetchone=lambda: None)
+
+    class FakePool:
+        closed = False
+
+        @contextmanager
+        def connection(self, timeout=None):
+            yield FakeConnection()
+
+    store = PostgresSecurityAuditStore("postgresql://audit-test")
+    store._pool = FakePool()
+    draft = AuditEventDraft(
+        event_id="auth-admin-role-test", occurred_at=datetime(2026, 10, 6, tzinfo=timezone.utc),
+        actor_id="admin", actor_type=ActorType.USER, tenant_id="tenant-b",
+        workspace_id="workspace-b", action="authorization.membership.changed",
+        target_type="membership", target_id="target", outcome=AuditOutcome.SUCCEEDED,
+        trace_id="not-recorded", policy_version="not-recorded",
+        before={"role": "viewer", "version": 1}, after={"role": "editor", "version": 2},
+        metadata={"reason_code": "ACCESS_REVIEW", "outcome": "changed", "acl_version": 3},
+    )
+    store._append_admin_role(draft)
+    assert any("SET LOCAL statement_timeout" in sql for sql in statements)
+    assert any("SET LOCAL lock_timeout" in sql for sql in statements)
+    statements.clear()
+    store.append(draft)
+    assert not any("SET LOCAL statement_timeout" in sql or "SET LOCAL lock_timeout" in sql
+                   for sql in statements)
+
+
+def test_c9_postgres_auth_outbox_does_not_wait_indefinitely_for_shared_lock(monkeypatch):
+    monkeypatch.setattr(postgres_adapters, "_ADMIN_ROLE_AUDIT_LOCK_TIMEOUT_SECONDS", 0.02, raising=False)
+    class FakeConnection:
+        def execute(self, statement, params=()):
+            return SimpleNamespace(fetchone=lambda: None)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(postgres_adapters.psycopg, "connect", lambda *args, **kwargs: FakeConnection())
+    repository = postgres_adapters.PostgresAuthorizationRepository("postgresql://audit-test")
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_repository_lock():
+        with repository._lock:
+            entered.set()
+            release.wait(0.5)
+
+    holder = threading.Thread(target=hold_repository_lock)
+    holder.start()
+    try:
+        assert entered.wait(1.0)
+        started = time.monotonic()
+        with pytest.raises(AuthorizationError) as unavailable:
+            with repository._admin_audit_transaction():
+                pass
+        assert unavailable.value.http_status == 503
+        assert time.monotonic() - started < 0.2
+    finally:
+        release.set()
+        holder.join(1.0)
+
+
+def test_c9_postgres_audit_append_does_not_wait_indefinitely_for_shared_lock(monkeypatch):
+    monkeypatch.setattr(audit_module, "_ADMIN_ROLE_AUDIT_LOCK_TIMEOUT_SECONDS", 0.02, raising=False)
+    store = PostgresSecurityAuditStore("postgresql://audit-test")
+    class FakeConnection:
+        @contextmanager
+        def transaction(self):
+            yield self
+
+        def execute(self, statement, params=()):
+            return SimpleNamespace(fetchone=lambda: None)
+
+    class FakePool:
+        closed = False
+
+        @contextmanager
+        def connection(self, timeout=None):
+            yield FakeConnection()
+
+    store._pool = FakePool()
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_audit_lock():
+        with store._lock:
+            entered.set()
+            release.wait(0.5)
+
+    holder = threading.Thread(target=hold_audit_lock)
+    holder.start()
+    try:
+        assert entered.wait(1.0)
+        draft = AuditEventDraft(
+            event_id="auth-admin-role-lock-test", occurred_at=datetime(2026, 10, 6, tzinfo=timezone.utc),
+            actor_id="admin", actor_type=ActorType.USER, tenant_id="tenant-b",
+            workspace_id="workspace-b", action="authorization.membership.changed",
+            target_type="membership", target_id="target", outcome=AuditOutcome.SUCCEEDED,
+            trace_id="not-recorded", policy_version="not-recorded",
+            before={"role": "viewer", "version": 1}, after={"role": "editor", "version": 2},
+            metadata={"reason_code": "ACCESS_REVIEW", "outcome": "changed", "acl_version": 3},
+        )
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            store._append_admin_role(draft)
+        assert time.monotonic() - started < 0.2
+    finally:
+        release.set()
+        holder.join(1.0)
+
+
+def test_c9_postgres_audit_pool_open_lock_is_bounded(monkeypatch):
+    monkeypatch.setattr(audit_module, "_ADMIN_ROLE_AUDIT_LOCK_TIMEOUT_SECONDS", 0.02)
+    store = PostgresSecurityAuditStore("postgresql://audit-test")
+    class FakeConnection:
+        @contextmanager
+        def transaction(self):
+            yield self
+
+        def execute(self, statement, params=()):
+            return SimpleNamespace(fetchone=lambda: None)
+
+    class FakePool:
+        closed = True
+
+        def open(self, wait=False):
+            self.closed = False
+
+        @contextmanager
+        def connection(self, timeout=None):
+            yield FakeConnection()
+
+    store._pool = FakePool()
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_open_lock():
+        with store._open_lock:
+            entered.set()
+            release.wait(0.5)
+
+    holder = threading.Thread(target=hold_open_lock)
+    holder.start()
+    try:
+        assert entered.wait(1.0)
+        draft = AuditEventDraft(
+            event_id="auth-admin-role-open-lock", occurred_at=datetime(2026, 10, 6, tzinfo=timezone.utc),
+            actor_id="admin", actor_type=ActorType.USER, tenant_id="tenant-b",
+            workspace_id="workspace-b", action="authorization.membership.changed",
+            target_type="membership", target_id="target", outcome=AuditOutcome.SUCCEEDED,
+            trace_id="not-recorded", policy_version="not-recorded",
+            before={"role": "viewer", "version": 1}, after={"role": "editor", "version": 2},
+            metadata={"reason_code": "ACCESS_REVIEW", "outcome": "changed", "acl_version": 3},
+        )
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            store._append_admin_role(draft)
+        assert time.monotonic() - started < 0.2
+    finally:
+        release.set()
+        holder.join(1.0)
 
 
 def test_cross_tenant_admin_changes_existing_role_without_expanding_ordinary_path(tmp_path):

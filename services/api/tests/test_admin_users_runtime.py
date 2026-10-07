@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import threading
+import time
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -161,6 +163,111 @@ async def _admin_role_audit_startup_recovers_existing_pending_row(tmp_path, monk
     async with app.router.lifespan_context(app):
         await _wait_for_role_audit_delivery(restarted)
         assert len(restarted.audit_store.list(tenant_id="retry-tenant").items) == 1
+
+
+def test_slow_audit_append_does_not_block_patch_or_unrelated_health(tmp_path: Path, monkeypatch) -> None:
+    asyncio.run(_slow_audit_append_does_not_block_patch_or_unrelated_health(tmp_path, monkeypatch))
+
+
+async def _slow_audit_append_does_not_block_patch_or_unrelated_health(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS", 0.02)
+    dependencies = build_dependencies(RuntimeSettings.for_test(
+        database_path=tmp_path / "runtime.sqlite3", policy_version="identity-policy-v1",
+    ))
+    _seed_admin_role_retry_target(dependencies)
+    append_entered, release_append = threading.Event(), threading.Event()
+    original_append = dependencies.audit_store.append
+
+    def slow_append(draft):
+        append_entered.set()
+        release_append.wait(1.0)
+        return original_append(draft)
+
+    monkeypatch.setattr(dependencies.audit_store, "append", slow_append)
+    app = create_app(dependencies)
+    timer = threading.Timer(0.5, release_append.set)
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="https://app.example.com",
+            ) as client:
+                client.cookies.set(WEB_SESSION_COOKIE, await _admin_cookie(client))
+                timer.start()
+                started = time.monotonic()
+                changed = await client.patch(
+                    "/api/v1/admin/tenants/retry-tenant/workspaces/retry-workspace/"
+                    "memberships/retry-target/role",
+                    headers={
+                        "X-Daon-Bff-Transport": "internal",
+                        "X-Daon-Csrf-Origin": "https://app.example.com",
+                        "X-Daon-Csrf-Referer": "https://app.example.com/admin/users",
+                        "Idempotency-Key": "retry-health-key-0001",
+                    },
+                    json={"role": "editor", "expected_version": 1, "reason": "ACCESS_REVIEW"},
+                )
+                health = await client.get("/health/live")
+                elapsed = time.monotonic() - started
+                assert changed.status_code == 200
+                assert health.status_code == 200
+                assert elapsed < 0.35
+                assert await asyncio.to_thread(append_entered.wait, 1.0)
+    finally:
+        release_append.set()
+        if timer.is_alive():
+            timer.join()
+
+
+def test_lifespan_waits_for_real_audit_thread_before_closing_dependencies(tmp_path: Path, monkeypatch) -> None:
+    asyncio.run(_lifespan_waits_for_real_audit_thread_before_closing_dependencies(tmp_path, monkeypatch))
+
+
+async def _lifespan_waits_for_real_audit_thread_before_closing_dependencies(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(runtime_module, "_ADMIN_AUDIT_RETRY_SHUTDOWN_SECONDS", 0.02)
+    dependencies = build_dependencies(RuntimeSettings.for_test(
+        database_path=tmp_path / "runtime.sqlite3", policy_version="identity-policy-v1",
+    ))
+    _seed_admin_role_retry_target(dependencies)
+    original_append = dependencies.audit_store.append
+    append_entered, release_append = threading.Event(), threading.Event()
+
+    def initially_unavailable(draft):
+        raise OSError("temporary audit outage")
+
+    monkeypatch.setattr(dependencies.audit_store, "append", initially_unavailable)
+    _change_retry_role(dependencies)
+
+    def blocked_append(draft):
+        append_entered.set()
+        release_append.wait(1.0)
+        return original_append(draft)
+
+    monkeypatch.setattr(dependencies.audit_store, "append", blocked_append)
+    closed_while_running = False
+    close_observed = threading.Event()
+    original_close = runtime_module.RuntimeDependencies.close
+
+    def checked_close(self):
+        nonlocal closed_while_running
+        if self is dependencies:
+            closed_while_running = append_entered.is_set() and not release_append.is_set()
+        original_close(self)
+        if self is dependencies:
+            close_observed.set()
+
+    monkeypatch.setattr(runtime_module.RuntimeDependencies, "close", checked_close)
+    app = create_app(dependencies)
+    timer = threading.Timer(0.2, release_append.set)
+    try:
+        async with app.router.lifespan_context(app):
+            assert await asyncio.to_thread(append_entered.wait, 1.0)
+            timer.start()
+    finally:
+        release_append.set()
+        if timer.is_alive():
+            timer.join()
+    assert await asyncio.to_thread(close_observed.wait, 1.0)
+    assert closed_while_running is False
 
 
 def test_admin_tenants_list_only_auth_scopes_with_id_fallback(tmp_path: Path) -> None:
@@ -345,6 +452,11 @@ async def _admin_membership_http_cross_tenant_projection_and_change(tmp_path: Pa
             "role": "editor", "state": "active", "version": 2, "acl_version": 2, "replayed": False,
         }
         assert changed.json()["meta"]["trace_id"]
+        with dependencies.authorization_repository.transaction() as connection:
+            assert connection.execute(
+                "SELECT delivered_at FROM auth_admin_role_operations WHERE user_id='target-b'"
+            ).fetchone()[0] is None
+        await asyncio.to_thread(dependencies.admin_membership_role_service._dispatch_pending_audit)
         projected = dependencies.audit_store.list(tenant_id="tenant-b").items
         assert len(projected) == 1
         assert dict(projected[0].metadata) == {

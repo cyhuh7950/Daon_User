@@ -7,6 +7,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import Event
 from typing import Any, Callable
 
 from .audit import ActorType, AuditDuplicateEventError, AuditEventDraft, AuditEventStore, AuditOutcome
@@ -72,6 +73,8 @@ class AdminMembershipRoleService:
         self._system_admin_user_ids = system_admin_user_ids
         self._clock = clock
         self._audit_store = audit_store
+        self._audit_cursor: tuple[datetime | str, str] | None = None
+        self._audit_high_watermark: tuple[datetime | str, str] | None = None
 
     def _actor(self, actor: IdentityPrincipal) -> str:
         if not isinstance(actor, IdentityPrincipal):
@@ -149,39 +152,56 @@ class AdminMembershipRoleService:
         user_id: str, role: Role, expected_version: int,
         idempotency_key: str, reason: str,
     ) -> WorkspaceRoleChange:
-        result = self._change_existing_workspace_role(
+        return self._change_existing_workspace_role(
             actor, tenant_id, workspace_id, user_id, role, expected_version,
             idempotency_key, reason,
         )
-        if self._audit_store is not None:
-            event_id = "auth-admin-role-" + hashlib.sha256(
-                f"{actor.user_id}|{idempotency_key}".encode()
-            ).hexdigest()
-            self._dispatch_pending_audit(event_id=event_id)
-            self._dispatch_pending_audit()
-        return result
 
-    def _dispatch_pending_audit(self, *, event_id: str | None = None) -> None:
+    def _dispatch_pending_audit(self, *, stop: Event | None = None) -> None:
         if self._audit_store is None:
             return
+        transaction = getattr(self._repository, "_admin_audit_transaction", self._repository.transaction)
         try:
-            with self._repository.transaction() as connection:
-                if event_id is None:
-                    rows = connection.execute(
-                        "SELECT * FROM auth_admin_role_operations WHERE delivered_at IS NULL "
-                        "ORDER BY created_at,event_id LIMIT 32"
-                    ).fetchall()
-                else:
-                    rows = connection.execute(
-                        "SELECT * FROM auth_admin_role_operations "
-                        "WHERE event_id=? AND delivered_at IS NULL",
-                        (event_id,),
-                    ).fetchall()
+            with transaction() as connection:
+                rows = []
+                for _ in range(2):
+                    if self._audit_high_watermark is None:
+                        last = connection.execute(
+                            "SELECT created_at,event_id FROM auth_admin_role_operations "
+                            "WHERE delivered_at IS NULL ORDER BY created_at DESC,event_id DESC LIMIT 1"
+                        ).fetchone()
+                        if last is None:
+                            self._audit_cursor = None
+                            return
+                        self._audit_high_watermark = (last["created_at"], str(last["event_id"]))
+                    if self._audit_cursor is None:
+                        rows = connection.execute(
+                            "SELECT * FROM auth_admin_role_operations WHERE delivered_at IS NULL "
+                            "AND (created_at,event_id) <= (?,?) "
+                            "ORDER BY created_at,event_id LIMIT 32",
+                            self._audit_high_watermark,
+                        ).fetchall()
+                    else:
+                        rows = connection.execute(
+                            "SELECT * FROM auth_admin_role_operations WHERE delivered_at IS NULL "
+                            "AND (created_at,event_id) > (?,?) AND (created_at,event_id) <= (?,?) "
+                            "ORDER BY created_at,event_id LIMIT 32",
+                            (*self._audit_cursor, *self._audit_high_watermark),
+                        ).fetchall()
+                    if rows:
+                        self._audit_cursor = (rows[-1]["created_at"], str(rows[-1]["event_id"]))
+                        break
+                    # Finish this finite sweep before taking a fresh upper bound.
+                    self._audit_high_watermark = None
+                    if self._audit_cursor is not None:
+                        self._audit_cursor = None
         except AuthorizationError:
             return
         for row in rows:
+            if stop is not None and stop.is_set():
+                return
             try:
-                self._audit_store.append(AuditEventDraft(
+                draft = AuditEventDraft(
                     event_id=str(row["event_id"]),
                     occurred_at=datetime.fromisoformat(str(row["created_at"])).astimezone(timezone.utc),
                     actor_id=str(row["actor_id"]), actor_type=ActorType.USER,
@@ -198,13 +218,17 @@ class AdminMembershipRoleService:
                         "reason_code": str(row["reason"]), "outcome": str(row["outcome"]),
                         "acl_version": int(row["acl_version"]),
                     },
-                ))
+                )
+                append = getattr(self._audit_store, "_append_admin_role", self._audit_store.append)
+                append(draft)
             except AuditDuplicateEventError:
                 pass
             except Exception:
                 continue
+            if stop is not None and stop.is_set():
+                return
             try:
-                with self._repository.transaction() as connection:
+                with transaction() as connection:
                     connection.execute(
                         "UPDATE auth_admin_role_operations SET delivered_at=? "
                         "WHERE event_id=? AND delivered_at IS NULL",

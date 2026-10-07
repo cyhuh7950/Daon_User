@@ -14,6 +14,7 @@ import re
 import secrets
 import threading
 import time
+from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timedelta, timezone
@@ -1800,20 +1801,20 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             lambda: provider_health_settings_service.get(health_context),
         )
 
-    async def admin_audit_retry_loop(stop: asyncio.Event) -> None:
+    def admin_audit_retry_loop(stop: threading.Event, finished: Future[None]) -> None:
         service = dependencies.admin_membership_role_service
-        if service is None:
-            return
-        while not stop.is_set():
-            try:
-                await asyncio.to_thread(service._dispatch_pending_audit)
-            except Exception:
-                # The committed operation remains pending for the next bounded batch.
-                pass
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS)
-            except TimeoutError:
-                pass
+        try:
+            if service is None:
+                return
+            while not stop.is_set():
+                try:
+                    service._dispatch_pending_audit(stop=stop)
+                except Exception:
+                    # The committed operation remains pending for the next bounded batch.
+                    pass
+                stop.wait(_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS)
+        finally:
+            finished.set_result(None)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -1826,24 +1827,31 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         nonlocal provider_health_task
         if provider_connection_service is not None and provider_health_settings_service is not None:
             provider_health_task = asyncio.create_task(provider_health_loop())
-        admin_audit_stop = asyncio.Event()
-        admin_audit_task = (
-            asyncio.create_task(admin_audit_retry_loop(admin_audit_stop))
+        admin_audit_stop = threading.Event()
+        admin_audit_finished: Future[None] = Future()
+        admin_audit_thread = (
+            threading.Thread(
+                target=admin_audit_retry_loop, args=(admin_audit_stop, admin_audit_finished),
+                name="admin-role-audit-outbox", daemon=True,
+            )
             if dependencies.admin_membership_role_service is not None else None
         )
+        if admin_audit_thread is not None:
+            admin_audit_thread.start()
         try:
             yield
         finally:
             admin_audit_stop.set()
-            if admin_audit_task is not None:
-                try:
-                    await asyncio.wait_for(admin_audit_task, timeout=_ADMIN_AUDIT_RETRY_SHUTDOWN_SECONDS)
-                except TimeoutError:
-                    admin_audit_task.cancel()
             provider_health_stop.set()
             if provider_health_task is not None:
                 await provider_health_task
-            dependencies.close()
+            if admin_audit_thread is not None:
+                await asyncio.to_thread(admin_audit_thread.join, _ADMIN_AUDIT_RETRY_SHUTDOWN_SECONDS)
+            if admin_audit_thread is not None and admin_audit_thread.is_alive():
+                # A running thread still owns its stores; close only after it exits.
+                admin_audit_finished.add_done_callback(lambda _future: dependencies.close())
+            else:
+                dependencies.close()
 
     class TimedApiRoute(APIRoute):
         def get_route_handler(self) -> Any:
