@@ -1177,7 +1177,7 @@ class IdentityService:
                 PASSWORD_HASHER.verify(str(row["password_digest"]), secret)
             except Exception as error:
                 raise IdentityError("AUTHENTICATION_REQUIRED", 401) from error
-            user_id = str(row["user_id"]); tenant = connection.execute("SELECT tenant_id FROM memberships WHERE user_id=? ORDER BY tenant_id LIMIT 1", (user_id,)).fetchone()
+            user_id = str(row["user_id"]); tenant = connection.execute("SELECT tenant_id FROM memberships WHERE user_id=? ORDER BY CASE WHEN role='personal_owner' THEN 0 ELSE 1 END, tenant_id LIMIT 1", (user_id,)).fetchone()
             if tenant is None:
                 raise IdentityError("AUTHENTICATION_REQUIRED", 401)
             tenant_id = str(tenant[0]); device_id, session_id, access = _id("dev"), _id("ses"), _opaque()
@@ -1208,7 +1208,7 @@ class IdentityService:
                 raise IdentityError("AUTHENTICATION_REQUIRED", 401) from error
             user_id = str(row["user_id"])
             tenant = connection.execute(
-                "SELECT tenant_id FROM memberships WHERE user_id=? ORDER BY tenant_id LIMIT 1",
+                "SELECT tenant_id FROM memberships WHERE user_id=? ORDER BY CASE WHEN role='personal_owner' THEN 0 ELSE 1 END, tenant_id LIMIT 1",
                 (user_id,),
             ).fetchone()
             if tenant is None:

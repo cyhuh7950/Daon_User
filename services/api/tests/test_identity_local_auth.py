@@ -95,6 +95,81 @@ def test_local_native_login_issues_windows_native_rotating_credentials_without_c
     repo.close()
 
 
+def test_web_login_keeps_personal_tenant_when_organization_id_sorts_first(tmp_path):
+    identity, repo, sender = service(tmp_path)
+    identity.signup(login_id="alice", email="alice@example.com", password="correct horse battery staple", trace_id="t1", policy_version="p1")
+    identity.verify_email(token=sender.messages[-1]["body"].split(": ", 1)[1].splitlines()[0], trace_id="t2", policy_version="p1")
+    connection = repo._connect()
+    try:
+        row = connection.execute("SELECT tenant_id,user_id FROM memberships WHERE role='personal_owner'").fetchone()
+        personal_tenant, user_id = str(row["tenant_id"]), str(row["user_id"])
+    finally:
+        connection.close()
+    repo.add_tenant_membership(tenant_id="qa-organization", user_id=user_id, role="member")
+
+    credentials = identity.local_login(login_id="alice", password="correct horse battery staple", platform=DevicePlatform.WEB, trace_id="t3", policy_version="p1")
+
+    assert credentials.tenant_id == personal_tenant
+    connection = repo._connect()
+    try:
+        session = connection.execute("SELECT tenant_id FROM sessions WHERE session_id=?", (credentials.session_id,)).fetchone()
+        organization = connection.execute("SELECT role FROM memberships WHERE tenant_id='qa-organization' AND user_id=?", (user_id,)).fetchone()
+    finally:
+        connection.close()
+    assert session["tenant_id"] == personal_tenant
+    assert organization["role"] == "member"
+    repo.close()
+
+
+def test_native_login_and_refresh_keep_personal_tenant_when_organization_id_sorts_first(tmp_path):
+    identity, repo, sender = service(tmp_path)
+    identity.signup(login_id="alice", email="alice@example.com", password="correct horse battery staple", trace_id="t1", policy_version="p1")
+    identity.verify_email(token=sender.messages[-1]["body"].split(": ", 1)[1].splitlines()[0], trace_id="t2", policy_version="p1")
+    connection = repo._connect()
+    try:
+        row = connection.execute("SELECT tenant_id,user_id FROM memberships WHERE role='personal_owner'").fetchone()
+        personal_tenant, user_id = str(row["tenant_id"]), str(row["user_id"])
+    finally:
+        connection.close()
+    repo.add_tenant_membership(tenant_id="qa-organization", user_id=user_id, role="member")
+
+    credentials = identity.local_native_login(login_id="alice", password="correct horse battery staple", trace_id="t3", policy_version="p1")
+    refreshed = identity.rotate_refresh(credentials.refresh_token, trace_id="t4", policy_version="p1")
+
+    assert credentials.tenant_id == personal_tenant
+    assert refreshed.tenant_id == personal_tenant
+    repo.close()
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_local_login_without_personal_membership_preserves_organization_fallback(tmp_path, native):
+    identity, repo, sender = service(tmp_path)
+    identity.signup(login_id="alice", email="alice@example.com", password="correct horse battery staple", trace_id="t1", policy_version="p1")
+    identity.verify_email(token=sender.messages[-1]["body"].split(": ", 1)[1].splitlines()[0], trace_id="t2", policy_version="p1")
+    connection = repo._connect()
+    try:
+        user_id = str(connection.execute("SELECT user_id FROM users WHERE login_id='alice'").fetchone()[0])
+    finally:
+        connection.close()
+    repo.add_tenant_membership(tenant_id="qa-organization", user_id=user_id, role="member")
+    with repo.transaction() as connection:
+        connection.execute("DELETE FROM memberships WHERE user_id=? AND role='personal_owner'", (user_id,))
+
+    if native:
+        credentials = identity.local_native_login(login_id="alice", password="correct horse battery staple", trace_id="t3", policy_version="p1")
+    else:
+        credentials = identity.local_login(login_id="alice", password="correct horse battery staple", platform=DevicePlatform.WEB, trace_id="t3", policy_version="p1")
+
+    assert credentials.tenant_id == "qa-organization"
+    connection = repo._connect()
+    try:
+        session = connection.execute("SELECT tenant_id FROM sessions WHERE session_id=?", (credentials.session_id,)).fetchone()
+    finally:
+        connection.close()
+    assert session["tenant_id"] == "qa-organization"
+    repo.close()
+
+
 def test_smtp_missing_configuration_is_explicit(tmp_path):
     identity, repo, _ = service(tmp_path)
     identity._email_sender = type("Unavailable", (), {"send": lambda self, **kwargs: (_ for _ in ()).throw(IdentityError("EMAIL_DELIVERY_UNAVAILABLE", 503))})()
