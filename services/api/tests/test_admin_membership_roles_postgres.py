@@ -7,6 +7,19 @@ from urllib.parse import urlsplit
 import pytest
 
 
+def _assert_isolated_c9_r1_database(dsn: str) -> None:
+    import psycopg
+
+    location = urlsplit(dsn)
+    assert location.hostname == "127.0.0.1" and location.path == "/daon_user_c9_r1_qa", (
+        "isolated C9 R1 database DSN is required"
+    )
+    with psycopg.connect(dsn) as guard:
+        assert guard.execute("SELECT current_database()").fetchone()[0] == "daon_user_c9_r1_qa"
+        assert guard.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0054"
+        assert guard.execute("SELECT COUNT(*) FROM security_audit_events").fetchone()[0] == 0
+
+
 def test_0054_migration_follows_0053_and_keeps_auth_outbox_additive():
     source = (Path(__file__).resolve().parents[1] / "migrations" / "versions" /
               "0054_c9_admin_membership_roles.py").read_text(encoding="utf-8")
@@ -18,6 +31,22 @@ def test_0054_migration_follows_0053_and_keeps_auth_outbox_additive():
     assert "reason text NOT NULL CHECK (reason IN" in source
     for reason in ("ROLE_DUTY_CHANGE", "ACCESS_REVIEW", "SECURITY_RESTRICTION", "CORRECTION", "OTHER"):
         assert f"'{reason}'" in source
+
+
+@pytest.mark.parametrize("dsn", (
+    "postgresql://localhost/daon_user_c9_r1_qa",
+    "postgresql://127.0.0.1/daon_user",
+))
+def test_postgres_role_change_rejects_shared_dsn_before_repository_access(monkeypatch, dsn):
+    from daon_user_api import postgres_adapters
+
+    def unexpected_repository(_dsn):
+        raise RuntimeError("repository reached before isolated database guard")
+
+    monkeypatch.setenv("DAON_C9_R1_ISOLATED_POSTGRES_DSN", dsn)
+    monkeypatch.setattr(postgres_adapters, "PostgresAuthorizationRepository", unexpected_repository)
+    with pytest.raises(AssertionError, match="isolated"):
+        test_postgres_role_change_concurrency_and_audit_rollback()
 
 
 @pytest.mark.skipif(
@@ -36,6 +65,7 @@ def test_postgres_role_change_concurrency_and_audit_rollback():
     from test_authorization_support import principal
 
     dsn = os.environ["DAON_C9_R1_ISOLATED_POSTGRES_DSN"]
+    _assert_isolated_c9_r1_database(dsn)
     suffix = uuid4().hex[:12]
     marker = f"c9r1-{suffix}"
     constraint = f"c9_r1_fail_audit_{suffix}"
@@ -152,12 +182,7 @@ def test_postgres_role_audit_outbox_projects_once_retries_and_cleans_up():
     from test_authorization_support import principal
 
     dsn = os.environ["DAON_C9_R1_ISOLATED_POSTGRES_DSN"]
-    location = urlsplit(dsn)
-    assert location.hostname == "127.0.0.1" and location.path == "/daon_user_c9_r1_qa"
-    with psycopg.connect(dsn) as guard:
-        assert guard.execute("SELECT current_database()").fetchone()[0] == "daon_user_c9_r1_qa"
-        assert guard.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0054"
-        assert guard.execute("SELECT COUNT(*) FROM security_audit_events").fetchone()[0] == 0
+    _assert_isolated_c9_r1_database(dsn)
 
     suffix = uuid4().hex[:12]
     marker = f"c9-r5-audit-{suffix}"
