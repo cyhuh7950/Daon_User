@@ -21,6 +21,7 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 def upgrade() -> None:
+    escaped_canonical_text = DEFAULT_DENY_CANONICAL_TEXT.replace(":", r"\:")
     op.execute(
         f"""
         DO $$
@@ -111,13 +112,13 @@ def upgrade() -> None:
           digest_sha256, created_by, trace_id
         )
         SELECT tenant.tenant_id, tenant.tenant_id, NULL,
-          'egress-backfill-policy:' || md5(tenant_id || ':organization'),
+          'egress-backfill-policy:' || md5(tenant_id || '\\:organization'),
           'organization', 1, 'active',
-          '{DEFAULT_DENY_CANONICAL_TEXT}'::jsonb,
-          '{DEFAULT_DENY_CANONICAL_TEXT}',
+          '{escaped_canonical_text}'::jsonb,
+          '{escaped_canonical_text}',
           '{DEFAULT_DENY_DIGEST}',
           'migration:0044',
-          'migration:0044:' || md5(tenant_id || ':organization')
+          'migration:0044:' || md5(tenant_id || '\\:organization')
         FROM tenants AS tenant
         WHERE NOT EXISTS (
           SELECT 1
@@ -136,11 +137,11 @@ def upgrade() -> None:
           trace_id
         )
         SELECT tenant.tenant_id, tenant.tenant_id, NULL,
-          'egress-backfill-binding:' || md5(tenant_id || ':organization'),
+          'egress-backfill-binding:' || md5(tenant_id || '\\:organization'),
           'organization',
-          'egress-backfill-policy:' || md5(tenant_id || ':organization'),
+          'egress-backfill-policy:' || md5(tenant_id || '\\:organization'),
           1, true, true, 'migration:0044',
-          'migration:0044:' || md5(tenant_id || ':organization')
+          'migration:0044:' || md5(tenant_id || '\\:organization')
         FROM tenants AS tenant
         WHERE NOT EXISTS (
           SELECT 1
@@ -163,8 +164,8 @@ def upgrade() -> None:
           'egress-backfill-policy:' ||
             md5(tenant_id || ':' || workspace_id),
           'workspace', 1, 'active',
-          '{DEFAULT_DENY_CANONICAL_TEXT}'::jsonb,
-          '{DEFAULT_DENY_CANONICAL_TEXT}',
+          '{escaped_canonical_text}'::jsonb,
+          '{escaped_canonical_text}',
           '{DEFAULT_DENY_DIGEST}',
           'migration:0044',
           'migration:0044:' || md5(tenant_id || ':' || workspace_id)

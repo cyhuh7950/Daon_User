@@ -5,6 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.dialects import postgresql
 
 
 MIGRATION = (
@@ -40,6 +42,17 @@ def migration_sql() -> str:
     return "\n".join(operations.statements)
 
 
+def test_migration_0044_op_execute_sql_has_no_sqlalchemy_bind_requirements() -> None:
+    module = load_migration()
+    compiled = text(migration_sql()).compile(dialect=postgresql.dialect())
+
+    assert compiled.params == {}
+    assert compiled.string.count("md5(tenant_id || ':organization')") == 5
+    assert compiled.string.count(f"'{module.DEFAULT_DENY_CANONICAL_TEXT}'::jsonb") == 2
+    assert compiled.string.count(f"'{module.DEFAULT_DENY_CANONICAL_TEXT}'") == 4
+    assert compiled.string.count(f"'{module.DEFAULT_DENY_DIGEST}'") == 2
+
+
 def test_migration_0044_restores_only_egress_version_fk_lock_privilege() -> None:
     source = MIGRATION.read_text("utf-8")
     sql = migration_sql()
@@ -73,7 +86,7 @@ def test_migration_0044_fails_closed_without_egress_guards() -> None:
 
 def test_migration_0044_backfills_only_scopes_without_current_policy() -> None:
     module = load_migration()
-    sql = migration_sql()
+    sql = text(migration_sql()).compile(dialect=postgresql.dialect()).string
     compact_sql = " ".join(sql.split())
 
     assert module.DEFAULT_DENY_CANONICAL_TEXT == (
