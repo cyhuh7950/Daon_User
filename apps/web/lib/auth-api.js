@@ -44,6 +44,46 @@ export async function logoutCurrentSession(options = {}) {
   return Object.freeze({ status: body.data.status, replayed: body.data.replayed });
 }
 
+export async function listSessionTenants(options = {}) {
+  const response = await (options.fetchImpl ?? fetch)("/bff/api/session/tenants", {
+    method: "GET", credentials: "same-origin", cache: "no-store", signal: options.signal,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (response.status === 401) throw new Error("AUTHENTICATION_REQUIRED");
+  if (!response.ok) throw new Error(response.status === 503 ? "TENANT_SCOPE_UNAVAILABLE" : "TENANT_SCOPE_FAILED");
+  const validItem = (item) => exact(item, ["tenant_id", "display_name", "kind", "workspace_id"])
+    && SAFE_TRACE_ID.test(item.tenant_id) && SAFE_TRACE_ID.test(item.workspace_id)
+    && typeof item.display_name === "string" && item.display_name.trim().length > 0
+    && item.display_name.length <= 256 && new Set(["personal", "organization"]).has(item.kind);
+  if (!exact(body, ["data", "meta"]) || !exact(body.data, ["current_tenant_id", "tenants"])
+      || !exact(body.meta, ["trace_id"]) || !SAFE_TRACE_ID.test(body.meta.trace_id)
+      || !SAFE_TRACE_ID.test(body.data.current_tenant_id)
+      || !Array.isArray(body.data.tenants) || body.data.tenants.length > 1000
+      || !body.data.tenants.every(validItem)
+      || new Set(body.data.tenants.map((item) => item.tenant_id)).size !== body.data.tenants.length) {
+    throw new Error("TENANT_SCOPE_RESPONSE_INVALID");
+  }
+  return Object.freeze({ current_tenant_id: body.data.current_tenant_id,
+    tenants: Object.freeze(body.data.tenants.map((item) => Object.freeze({ ...item }))) });
+}
+
+export async function switchSessionTenant(tenantId, options = {}) {
+  if (typeof tenantId !== "string" || !SAFE_TRACE_ID.test(tenantId)) throw new Error("TENANT_SCOPE_INPUT_INVALID");
+  const response = await (options.fetchImpl ?? fetch)("/bff/api/session/tenant", {
+    method: "POST", credentials: "same-origin", cache: "no-store", headers: JSON_HEADERS,
+    body: JSON.stringify({ tenant_id: tenantId }), signal: options.signal,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (response.status === 401) throw new Error("AUTHENTICATION_REQUIRED");
+  if (!response.ok) throw new Error(new Set([403, 404, 422, 503]).has(response.status)
+    ? `TENANT_SCOPE_${response.status}` : "TENANT_SCOPE_FAILED");
+  if (!exact(body, ["data", "meta"]) || !exact(body.data, ["user_id", "tenant_id", "workspace_id", "session_id"])
+      || !exact(body.meta, ["trace_id"]) || !SAFE_TRACE_ID.test(body.meta.trace_id)
+      || !["user_id", "tenant_id", "workspace_id", "session_id"].every((key) => SAFE_TRACE_ID.test(body.data[key]))
+      || body.data.tenant_id !== tenantId) throw new Error("TENANT_SCOPE_RESPONSE_INVALID");
+  return Object.freeze({ ...body.data });
+}
+
 export async function changeCurrentPassword(currentPassword, newPassword, options = {}) {
   if (typeof currentPassword !== "string" || typeof newPassword !== "string") throw new Error("PASSWORD_CHANGE_INPUT_INVALID");
   const response = await (options.fetchImpl ?? fetch)("/bff/api/auth/password/change", {

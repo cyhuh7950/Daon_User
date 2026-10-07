@@ -29,6 +29,35 @@ function reactProps(element) {
   return element[key];
 }
 
+test("조직이 있는 계정만 현재 작업 범위와 선택 가능한 조직을 보여준다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".notebook-home-scope-react-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { NotebookHome } = await bundle(output);
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    const selected = [];
+    await act(async () => { reactRoot.render(createElement(NotebookHome, {
+      notebooks: [], tenantScope: { current_tenant_id: "personal-001", tenants: [
+        { tenant_id: "personal-001", display_name: "내 공간", kind: "personal", workspace_id: "personal-workspace" },
+        { tenant_id: "organization-001", display_name: "조직 공간", kind: "organization", workspace_id: "organization-workspace" },
+      ] }, onSwitchTenant: (tenantId) => selected.push(tenantId),
+    })); });
+    await act(async () => { buttonByText(container, "⚙ 설정").dispatchEvent(new MinimalEvent("click")); });
+    assert.ok(findElements(container, (node) => node.textContent?.includes("현재 범위: 내 공간")).length > 0);
+    assert.equal(buttonByText(container, "개인 · 내 공간").disabled, true);
+    await act(async () => { buttonByText(container, "조직 · 조직 공간").dispatchEvent(new MinimalEvent("click")); });
+    assert.deepEqual(selected, ["organization-001"]);
+  } finally {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+});
+
 test("새 Notebook dialog는 initial focus·Tab trap·Escape·inert·opener focus return을 실제 적용한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".notebook-home-react-"));

@@ -30,7 +30,7 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 class CloudStorageContractTests(unittest.TestCase):
     def test_readiness_tracks_the_router_auto_schema_revision(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0054")
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0055")
 
     def test_readiness_accepts_c9_schema_head_and_rejects_prior_head(self) -> None:
         class Result:
@@ -63,7 +63,7 @@ class CloudStorageContractTests(unittest.TestCase):
                 yield Connection(self.revision)
 
         store = object.__new__(PostgresCloudStore)
-        for revision, expected_ready in (("0054", True), ("0053", False)):
+        for revision, expected_ready in (("0055", True), ("0054", False)):
             store._pool = Pool(revision)
             status = store.readiness()
             self.assertEqual(status.ready, expected_ready)

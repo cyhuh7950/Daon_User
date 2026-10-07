@@ -1912,7 +1912,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                         return _error_response(400, "SOURCE_FILENAME_INVALID", trace_id)
                     if content_type != expected_type:
                         return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
-                elif content_type != "application/json":
+                elif content_type != "application/json" and not (
+                    request.method == "POST" and request.url.path == "/api/v1/session/tenant"
+                ):
                     return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
                 declared = request.headers.get("content-length")
                 if declared is not None:
@@ -2451,7 +2453,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
-        workspace_id = dependencies.authorization_repository.primary_workspace_id(
+        accessible = dependencies.identity_service.selectable_tenant_workspaces(
+            user_id=credentials.user_id,
+        )
+        workspace_id = next(
+            (workspace for tenant, _, workspace in accessible if tenant == credentials.tenant_id),
+            None,
+        ) or dependencies.authorization_repository.primary_workspace_id(
             credentials.tenant_id
         ) or _personal_workspace_id(credentials.tenant_id)
         session = dependencies.identity_service.describe_access(
@@ -3792,6 +3800,118 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             headers=headers,
         )
 
+    @app.get("/api/v1/session/tenants")
+    async def list_session_tenants(request: Request) -> dict[str, object]:
+        token, expected_kind = _credential(request)
+        view = dependencies.identity_service.describe_access(
+            token, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if view.client_kind is not expected_kind:
+            raise IdentityError("ACCESS_INVALID", 401)
+        if request.query_params or await request.body():
+            raise IdentityError("INVALID_INPUT", 422)
+        candidates = dependencies.identity_service.selectable_tenant_workspaces(
+            user_id=view.principal.user_id,
+        )
+        names: dict[str, str] = {}
+        try:
+            with dependencies.authorization_repository.transaction() as connection:
+                for tenant_id, _, _ in candidates:
+                    if isinstance(dependencies.authorization_repository, PostgresAuthorizationRepository):
+                        connection.execute("SELECT set_config('app.tenant_id', ?, true)", (tenant_id,))
+                    row = connection.execute(
+                        "SELECT display_name FROM tenants WHERE tenant_id=?", (tenant_id,),
+                    ).fetchone()
+                    if row is None or not str(row["display_name"]).strip():
+                        raise IdentityError("TENANT_NAME_UNAVAILABLE", 503)
+                    names[tenant_id] = str(row["display_name"])
+        except IdentityError:
+            raise
+        except Exception as error:
+            raise IdentityError("TENANT_NAME_UNAVAILABLE", 503) from error
+        return {
+            "data": {
+                "current_tenant_id": view.principal.tenant_id,
+                "tenants": [
+                    {"tenant_id": tenant_id, "display_name": names[tenant_id],
+                     "kind": kind, "workspace_id": workspace_id}
+                    for tenant_id, kind, workspace_id in candidates
+                ],
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        }
+
+    @app.post("/api/v1/session/tenant")
+    async def switch_session_tenant(request: Request) -> JSONResponse:
+        token, expected_kind = _credential(request)
+        view = dependencies.identity_service.describe_access(
+            token, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if view.client_kind is not expected_kind:
+            raise IdentityError("ACCESS_INVALID", 401)
+        target_tenant_id = None
+        try:
+            if expected_kind is ClientKind.WEB:
+                _require_validated_web_csrf(request, dependencies.settings)
+            if request.query_params or request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+                raise IdentityError("INVALID_INPUT", 422)
+            try:
+                body = await request.json()
+            except (ValueError, UnicodeDecodeError) as error:
+                raise IdentityError("INVALID_INPUT", 422) from error
+            if (
+                not isinstance(body, dict) or set(body) != {"tenant_id"}
+                or not isinstance(body["tenant_id"], str)
+                or _TRACE_ID.fullmatch(body["tenant_id"]) is None
+            ):
+                raise IdentityError("INVALID_INPUT", 422)
+            target_tenant_id = body["tenant_id"]
+            credentials, workspace_id = dependencies.identity_service.switch_session_tenant(
+                access_token=token, tenant_id=target_tenant_id,
+                trace_id=request.state.trace_id,
+                policy_version=dependencies.settings.policy_version,
+            )
+        except IdentityError as error:
+            if error.code in {"TENANT_UNAVAILABLE", "INVALID_INPUT", "CSRF_VALIDATION_FAILED"}:
+                dependencies.identity_service.audit_tenant_switch_denied(
+                    principal=view.principal, target_tenant_id=target_tenant_id,
+                    reason_code=error.code, trace_id=request.state.trace_id,
+                    policy_version=dependencies.settings.policy_version,
+                )
+            raise
+        if expected_kind is ClientKind.WEB:
+            response = JSONResponse({
+                "data": {
+                    "user_id": credentials.user_id, "tenant_id": credentials.tenant_id,
+                    "workspace_id": workspace_id, "session_id": credentials.session_id,
+                },
+                "meta": {"trace_id": request.state.trace_id},
+            })
+            if credentials.session_id != view.principal.session_id:
+                response.set_cookie(
+                    WEB_SESSION_COOKIE, credentials.access_token,
+                    max_age=WEB_SESSION_COOKIE_MAX_AGE, httponly=True,
+                    secure=True, samesite="lax", path="/",
+                )
+            return response
+        new_view = dependencies.identity_service.describe_access(
+            credentials.access_token, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        data = {
+            "user_id": credentials.user_id, "tenant_id": credentials.tenant_id,
+            "workspace_id": workspace_id, "session_id": credentials.session_id,
+            "device_id": credentials.device_id, "client_kind": ClientKind.NATIVE.value,
+            "delivery": "native_https_opaque_bearer",
+            "expires_at": new_view.expires_at.isoformat(),
+        }
+        if credentials.session_id != view.principal.session_id:
+            data["access_credential"] = credentials.access_token
+            data["refresh_credential"] = credentials.refresh_token
+        return JSONResponse({"data": data, "meta": {"trace_id": request.state.trace_id}})
+
     @app.get("/api/v1/session")
     async def session(request: Request) -> dict[str, object]:
         if dependencies.settings.dev_auth_bypass and dependencies.settings.profile in {"test", "development"}:
@@ -3832,9 +3952,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         if view.client_kind is not expected_kind:
             raise IdentityError("ACCESS_INVALID", 401)
         principal = view.principal
-        workspace_id = dependencies.authorization_repository.primary_workspace_id(
-            principal.tenant_id
+        accessible = dependencies.identity_service.selectable_tenant_workspaces(
+            user_id=principal.user_id,
         )
+        workspace_id = next(
+            (workspace for tenant, _, workspace in accessible if tenant == principal.tenant_id),
+            None,
+        ) or dependencies.authorization_repository.primary_workspace_id(principal.tenant_id)
         recovery_operations: list[str] = []
         try:
             dependencies.authorization_service.authorize_action(

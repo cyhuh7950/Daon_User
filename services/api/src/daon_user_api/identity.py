@@ -438,6 +438,21 @@ class SqliteIdentityRepository:
           created_at TEXT NOT NULL,
           UNIQUE(session_id, action)
         );
+        CREATE TABLE IF NOT EXISTS session_tenant_switch_outbox (
+          event_id TEXT PRIMARY KEY,
+          prior_session_id TEXT NOT NULL UNIQUE,
+          new_session_id TEXT NOT NULL UNIQUE,
+          prior_tenant_id TEXT NOT NULL,
+          target_tenant_id TEXT NOT NULL,
+          actor_id TEXT NOT NULL,
+          outcome TEXT NOT NULL CHECK(outcome='succeeded'),
+          reason_code TEXT NOT NULL CHECK(reason_code='USER_SELECTED'),
+          occurred_at TEXT NOT NULL,
+          trace_id TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          delivered_at TEXT,
+          created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS admin_audit_outbox (
           event_id TEXT PRIMARY KEY,
           operation TEXT NOT NULL,
@@ -535,6 +550,18 @@ class SqliteIdentityRepository:
             CREATE TRIGGER IF NOT EXISTS session_audit_outbox_delete_blocked
             BEFORE DELETE ON session_audit_outbox
             BEGIN SELECT RAISE(ABORT, 'session_audit_outbox delete is blocked'); END;
+            CREATE TRIGGER IF NOT EXISTS session_tenant_switch_outbox_intent_immutable
+            BEFORE UPDATE OF event_id,prior_session_id,new_session_id,prior_tenant_id,
+              target_tenant_id,actor_id,outcome,reason_code,occurred_at,trace_id,
+              policy_version,created_at ON session_tenant_switch_outbox
+            BEGIN SELECT RAISE(ABORT, 'session tenant switch intent is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS session_tenant_switch_outbox_delivery_one_way
+            BEFORE UPDATE OF delivered_at ON session_tenant_switch_outbox
+            WHEN NOT (OLD.delivered_at IS NULL AND NEW.delivered_at IS NOT NULL)
+            BEGIN SELECT RAISE(ABORT, 'session tenant switch delivery is one-way'); END;
+            CREATE TRIGGER IF NOT EXISTS session_tenant_switch_outbox_delete_blocked
+            BEFORE DELETE ON session_tenant_switch_outbox
+            BEGIN SELECT RAISE(ABORT, 'session tenant switch intent deletion is blocked'); END;
             CREATE TRIGGER IF NOT EXISTS admin_audit_outbox_intent_immutable
             BEFORE UPDATE OF event_id,operation,idempotency_scope,request_fingerprint,actor_id,
               actor_type,tenant_id,action,target_type,target_id,occurred_at,trace_id,
@@ -627,6 +654,31 @@ class SqliteIdentityRepository:
         with self.transaction() as connection:
             connection.execute(
                 "UPDATE session_audit_outbox SET delivered_at=? WHERE event_id=? AND delivered_at IS NULL",
+                (_iso(delivered_at), event_id),
+            )
+
+    def pending_tenant_switch_audits(self) -> tuple[sqlite3.Row, ...]:
+        with self._lock:
+            self._ensure_open()
+            connection = self._connect()
+            try:
+                return tuple(connection.execute(
+                    "SELECT event_id,prior_session_id,new_session_id,prior_tenant_id,"
+                    "target_tenant_id,actor_id,occurred_at,trace_id,policy_version,reason_code "
+                    "FROM session_tenant_switch_outbox WHERE delivered_at IS NULL "
+                    "ORDER BY created_at,event_id LIMIT ?",
+                    (SELF_LOGOUT_DISPATCH_LIMIT,),
+                ).fetchall())
+            except sqlite3.Error as error:
+                raise IdentityError("PERSISTENCE_UNAVAILABLE", 503) from error
+            finally:
+                connection.close()
+
+    def mark_tenant_switch_audit_delivered(self, event_id: str, delivered_at: datetime) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "UPDATE session_tenant_switch_outbox SET delivered_at=? "
+                "WHERE event_id=? AND delivered_at IS NULL",
                 (_iso(delivered_at), event_id),
             )
 
@@ -857,6 +909,7 @@ class IdentityService:
         if dispatch_pending_audits:
             self.dispatch_pending_self_logout_audits()
             self.dispatch_pending_admin_audits()
+            self.dispatch_pending_tenant_switch_audits()
 
     def _now(self) -> datetime:
         return _checked_utc(self._clock())
@@ -936,6 +989,41 @@ class IdentityService:
 
     def _project_self_logout_audit(self, session_id: str) -> None:
         self.dispatch_pending_self_logout_audits(session_id)
+
+    def dispatch_pending_tenant_switch_audits(self) -> None:
+        """Retry durable successful switch intents with deterministic event IDs."""
+        deadline = monotonic() + SELF_LOGOUT_DISPATCH_SECONDS
+        try:
+            pending = self._repository.pending_tenant_switch_audits()
+        except IdentityError:
+            return
+        for row in pending:
+            if monotonic() > deadline:
+                break
+            try:
+                self._audit_store.append(AuditEventDraft(
+                    event_id=str(row["event_id"]), occurred_at=_dt(str(row["occurred_at"])),
+                    actor_id=str(row["actor_id"]), actor_type=ActorType.USER,
+                    tenant_id=str(row["target_tenant_id"]), workspace_id=None,
+                    action="identity.session.tenant_switched", target_type="session",
+                    target_id=str(row["new_session_id"]), outcome=AuditOutcome.SUCCEEDED,
+                    trace_id=str(row["trace_id"]), policy_version=str(row["policy_version"]),
+                    metadata={
+                        "prior_session_id": str(row["prior_session_id"]),
+                        "prior_tenant_id": str(row["prior_tenant_id"]),
+                        "reason_code": str(row["reason_code"]),
+                    },
+                ))  # type: ignore[attr-defined]
+            except AuditDuplicateEventError:
+                pass
+            except Exception:
+                continue
+            try:
+                self._repository.mark_tenant_switch_audit_delivered(
+                    str(row["event_id"]), self._now(),
+                )
+            except IdentityError:
+                continue
 
     def dispatch_pending_admin_audits(self, event_id: str | None = None) -> None:
         dispatch_admin_audit_outbox(
@@ -1492,6 +1580,154 @@ class IdentityService:
                 expires_at=_dt(str(row["access_expires_at"])),
                 password_change_required=bool(row["password_change_required"]),
             )
+
+    def _selectable_tenant_workspaces(
+        self, connection: sqlite3.Connection, user_id: str,
+    ) -> tuple[tuple[str, str, str], ...]:
+        rows = connection.execute(
+                "SELECT m.tenant_id,m.role,w.workspace_id,w.workspace_kind "
+                "FROM memberships m JOIN users u ON u.user_id=m.user_id "
+                "JOIN auth_workspaces w ON w.tenant_id=m.tenant_id "
+                "WHERE m.user_id=? AND u.state='active' "
+                "AND ((m.role='personal_owner' AND w.workspace_kind='personal') "
+                "OR (m.role<>'personal_owner' AND w.workspace_kind='organization')) "
+                "AND (EXISTS (SELECT 1 FROM auth_tenant_roles r "
+                "WHERE r.tenant_id=w.tenant_id AND r.user_id=m.user_id "
+                "AND r.state='active' AND ((w.workspace_kind='personal' AND r.role='personal_owner') "
+                "OR (w.workspace_kind='organization' AND r.role='organization_admin'))) "
+                "OR EXISTS (SELECT 1 FROM auth_memberships a "
+                "WHERE a.tenant_id=w.tenant_id AND a.workspace_id=w.workspace_id "
+                "AND a.user_id=m.user_id AND a.state='active')) "
+                "ORDER BY m.tenant_id,w.workspace_id",
+            (_checked_text(user_id),),
+        ).fetchall()
+        selected: dict[str, tuple[str, str, str]] = {}
+        for row in rows:
+            tenant_id = str(row["tenant_id"])
+            if tenant_id not in selected:
+                selected[tenant_id] = (
+                    tenant_id, "personal" if str(row["role"]) == "personal_owner" else "organization",
+                    str(row["workspace_id"]),
+                )
+        return tuple(selected.values())
+
+    def selectable_tenant_workspaces(
+        self, *, user_id: str,
+    ) -> tuple[tuple[str, str, str], ...]:
+        """Identity membership intersected with current effective auth bindings."""
+        with self._repository.transaction() as connection:
+            return self._selectable_tenant_workspaces(connection, user_id)
+
+    def audit_tenant_switch_denied(
+        self, *, principal: IdentityPrincipal, target_tenant_id: str | None,
+        reason_code: str, trace_id: str, policy_version: str,
+    ) -> None:
+        if reason_code not in {"TENANT_UNAVAILABLE", "INVALID_INPUT", "CSRF_VALIDATION_FAILED"}:
+            raise IdentityError("INVALID_INPUT", 422)
+        target = "unknown-tenant" if target_tenant_id is None else _checked_text(target_tenant_id)
+        self._audit(
+            action="identity.session.tenant_switch_denied", outcome=AuditOutcome.DENIED,
+            trace_id=trace_id, policy_version=policy_version,
+            tenant_id=principal.tenant_id, actor_id=principal.user_id,
+            target_type="tenant", target_id=target,
+            metadata={
+                "prior_session_id": principal.session_id,
+                "prior_tenant_id": principal.tenant_id,
+                "target_tenant_id": target,
+                "reason_code": reason_code,
+            },
+        )
+
+    def switch_session_tenant(
+        self, *, access_token: str, tenant_id: str, trace_id: str,
+        policy_version: str,
+    ) -> tuple[SessionCredentials, str]:
+        target_tenant = _checked_text(tenant_id)
+        _checked_text(trace_id); _checked_text(policy_version)
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            from .identity_postgres import PostgresIdentityRepository
+            if isinstance(self._repository, PostgresIdentityRepository):
+                connection.execute(
+                    "SELECT session_id FROM sessions WHERE access_digest=? FOR UPDATE",
+                    (_digest(access_token),),
+                ).fetchone()
+            prior = self._principal(connection, access_token, now)
+            user_id = str(prior["user_id"])
+            choices = self._selectable_tenant_workspaces(connection, user_id)
+            workspace_id = next(
+                (workspace for candidate, _, workspace in choices if candidate == target_tenant),
+                None,
+            )
+            if workspace_id is None:
+                raise IdentityError("TENANT_UNAVAILABLE", 404)
+            kind = ClientKind(str(prior["client_kind"]))
+            if target_tenant == str(prior["tenant_id"]):
+                return (
+                    SessionCredentials(
+                        access_token, None, user_id, str(prior["session_id"]),
+                        str(prior["device_id"]), target_tenant, kind,
+                        "native_https_opaque_bearer" if kind is ClientKind.NATIVE
+                        else "web_session_cookie_boundary_m4_05",
+                    ),
+                    workspace_id,
+                )
+            old_device = connection.execute(
+                "SELECT platform FROM devices WHERE device_id=? AND user_id=?",
+                (str(prior["device_id"]), user_id),
+            ).fetchone()
+            if old_device is None:
+                raise IdentityError("ACCESS_INVALID", 401)
+            device_id, session_id, access = _id("dev"), _id("ses"), _opaque()
+            access_expiry = WEB_SESSION_EXPIRY if kind is ClientKind.WEB else now + ACCESS_TTL
+            connection.execute(
+                "INSERT INTO devices(device_id,tenant_id,user_id,platform,state,last_seen_at,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (device_id, target_tenant, user_id, str(old_device["platform"]), "registered",
+                 _iso(now), _iso(now), _iso(now)),
+            )
+            connection.execute(
+                "INSERT INTO sessions(session_id,tenant_id,user_id,device_id,client_kind,access_digest,"
+                "access_expires_at,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (session_id, target_tenant, user_id, device_id, kind.value, _digest(access),
+                 _iso(access_expiry), "active", _iso(now), _iso(now)),
+            )
+            refresh = None
+            if kind is ClientKind.NATIVE:
+                family_id, refresh = _id("fam"), _opaque()
+                connection.execute(
+                    "INSERT INTO refresh_families(family_id,session_id,state,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (family_id, session_id, "active", _iso(now), _iso(now)),
+                )
+                connection.execute(
+                    "INSERT INTO refresh_tokens(refresh_id,family_id,refresh_digest,expires_at,used_at,created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (_id("ref"), family_id, _digest(refresh), _iso(now + REFRESH_TTL), None, _iso(now)),
+                )
+            connection.execute(
+                "UPDATE sessions SET state='revoked',updated_at=? WHERE session_id=? AND state='active'",
+                (_iso(now), str(prior["session_id"])),
+            )
+            connection.execute(
+                "UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id=?",
+                (_iso(now), str(prior["session_id"])),
+            )
+            connection.execute(
+                "INSERT INTO session_tenant_switch_outbox(event_id,prior_session_id,new_session_id,"
+                "prior_tenant_id,target_tenant_id,actor_id,outcome,reason_code,occurred_at,trace_id,"
+                "policy_version,delivered_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (_id("audit"), str(prior["session_id"]), session_id,
+                 str(prior["tenant_id"]), target_tenant, user_id, "succeeded", "USER_SELECTED",
+                 _iso(now), trace_id, policy_version, None, _iso(now)),
+            )
+            credentials = SessionCredentials(
+                access, refresh, user_id, session_id, device_id, target_tenant, kind,
+                "web_session_cookie_boundary_m4_05" if kind is ClientKind.WEB
+                else "native_opaque_refresh_rotation",
+            )
+        self.dispatch_pending_tenant_switch_audits()
+        return credentials, workspace_id
 
     def change_current_password(
         self,

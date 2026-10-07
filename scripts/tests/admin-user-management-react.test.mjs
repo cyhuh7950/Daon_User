@@ -87,6 +87,130 @@ test("비밀번호 제한 session은 Notebook home 목록 API를 호출하지 �
   } finally { await view.cleanup(); }
 });
 
+test("현재 workspace 조회가 거부돼도 본인 조직 전환 메뉴로 복구할 수 있다", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, method: options?.method });
+    if (url === "/bff/api/session/tenants") return Response.json({
+      data: { current_tenant_id: "organization-old", tenants: [
+        { tenant_id: "organization-new", display_name: "이동할 조직", kind: "organization", workspace_id: "workspace-new" },
+      ] }, meta: { trace_id: "trace-scope-test" },
+    });
+    if (url === "/bff/api/session/tenant") return Response.json({
+      data: { user_id: "qa-user", tenant_id: "organization-new", workspace_id: "workspace-new", session_id: "new-session" },
+      meta: { trace_id: "trace-switch-test" },
+    });
+    throw new Error("unexpected request");
+  };
+  let view;
+  try {
+    view = await render("apps/web/components/notebook-home-workspace.jsx", "NotebookHomeWorkspace", {
+      getSession: async () => ({ workspace_id: "workspace-old", user_id: "qa-user", is_system_admin: false,
+        password_change_required: false }),
+      getNotebooks: async () => { throw new Error("NOTEBOOK_UNAVAILABLE"); },
+    }, ".notebook-scope-recovery-");
+    const redirects = [];
+    globalThis.window.location.replace = (path) => redirects.push(path);
+    assert.match(view.container.textContent, /NOTEBOOK_UNAVAILABLE/u);
+    await view.act(async () => { buttonByText(view.container, "⚙ 설정").dispatchEvent(new MinimalEvent("click")); });
+    assert.ok(buttonByText(view.container, "조직 · 이동할 조직"));
+    await view.act(async () => { buttonByText(view.container, "조직 · 이동할 조직").dispatchEvent(new MinimalEvent("click")); });
+    assert.deepEqual(redirects, ["/notebooks"]);
+    assert.deepEqual(calls.map((call) => call.url), ["/bff/api/session/tenants", "/bff/api/session/tenant"]);
+  } finally {
+    if (view) await view.cleanup();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("전환 commit 뒤 응답 본문이 깨지면 이전 조직 노트북을 즉시 숨기고 재로그인한다", async () => {
+  const originalFetch = globalThis.fetch;
+  let serverTenant = "organization-old";
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, method: options?.method, credentials: options?.credentials });
+    if (url === "/bff/api/session/tenants") return Response.json({
+      data: { current_tenant_id: serverTenant, tenants: [
+        { tenant_id: "organization-old", display_name: "이전 조직", kind: "organization", workspace_id: "workspace-old" },
+        { tenant_id: "organization-new", display_name: "새 조직", kind: "organization", workspace_id: "workspace-new" },
+      ] }, meta: { trace_id: "trace-scope-test" },
+    });
+    if (url === "/bff/api/session/tenant") {
+      serverTenant = "organization-new";
+      return Response.json({ data: { tenant_id: "organization-new" }, meta: { trace_id: "trace-switch-test" } });
+    }
+    throw new Error("unexpected request");
+  };
+  let view;
+  try {
+    view = await render("apps/web/components/notebook-home-workspace.jsx", "NotebookHomeWorkspace", {
+      getSession: async () => ({ workspace_id: "workspace-old", user_id: "qa-user", is_system_admin: false,
+        password_change_required: false }),
+      getNotebooks: async () => ({ data: [{ notebook_id: "notebook-old", title: "이전 노트북", source_count: 0,
+        output_count: 0, updated_at: "2026-10-08T00:00:00Z", status: "empty", etag: '"notebook:1"' }] }),
+    }, ".notebook-scope-uncertain-body-");
+    const redirects = [];
+    globalThis.window.location.replace = (path) => redirects.push(path);
+    assert.match(view.container.textContent, /이전 노트북/u);
+    await view.act(async () => { buttonByText(view.container, "⚙ 설정").dispatchEvent(new MinimalEvent("click")); });
+    await view.act(async () => { buttonByText(view.container, "조직 · 새 조직").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    const protectedRoot = view.container.firstChild;
+    assert.equal(serverTenant, "organization-new");
+    assert.equal(protectedRoot.hidden, true);
+    assert.equal(protectedRoot.inert, true);
+    assert.doesNotMatch(view.container.textContent, /이전 노트북|이전 조직/u);
+    assert.deepEqual(redirects, ["/"]);
+    assert.deepEqual(requests.map(({ url, method, credentials }) => [url, method, credentials]), [
+      ["/bff/api/session/tenants", "GET", "same-origin"],
+      ["/bff/api/session/tenant", "POST", "same-origin"],
+    ]);
+  } finally { if (view) await view.cleanup(); globalThis.fetch = originalFetch; }
+});
+
+test("전환 네트워크 유실은 이전 화면을 숨기고, 명시적 403·404·422는 기존 화면을 보존한다", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+  for (const [outcome, expectedRedirect, status] of [
+    ["lost", true, null], ["denied-403", false, 403],
+    ["denied-404", false, 404], ["denied-422", false, 422],
+  ]) {
+    let view;
+    globalThis.fetch = async (url) => {
+      if (url === "/bff/api/session/tenants") return Response.json({
+        data: { current_tenant_id: "organization-old", tenants: [
+          { tenant_id: "organization-old", display_name: "이전 조직", kind: "organization", workspace_id: "workspace-old" },
+          { tenant_id: "organization-new", display_name: "새 조직", kind: "organization", workspace_id: "workspace-new" },
+        ] }, meta: { trace_id: "trace-scope-test" },
+      });
+      if (outcome === "lost") throw new TypeError("network response lost");
+      return Response.json({ error: { code: "TENANT_UNAVAILABLE" } }, { status });
+    };
+    try {
+      view = await render("apps/web/components/notebook-home-workspace.jsx", "NotebookHomeWorkspace", {
+        getSession: async () => ({ workspace_id: "workspace-old", user_id: "qa-user", is_system_admin: false,
+          password_change_required: false }),
+        getNotebooks: async () => ({ data: [{ notebook_id: "notebook-old", title: "이전 노트북", source_count: 0,
+          output_count: 0, updated_at: "2026-10-08T00:00:00Z", status: "empty", etag: '"notebook:1"' }] }),
+      }, `.notebook-scope-${outcome}-`);
+      const redirects = [];
+      globalThis.window.location.replace = (path) => redirects.push(path);
+      await view.act(async () => { buttonByText(view.container, "⚙ 설정").dispatchEvent(new MinimalEvent("click")); });
+      await view.act(async () => { buttonByText(view.container, "조직 · 새 조직").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+      const protectedRoot = view.container.firstChild;
+      assert.equal(protectedRoot.hidden, expectedRedirect);
+      assert.equal(protectedRoot.inert, expectedRedirect);
+      assert.equal(view.container.textContent.includes("이전 노트북"), !expectedRedirect);
+      assert.deepEqual(redirects, expectedRedirect ? ["/"] : []);
+      if (!expectedRedirect) {
+        await view.act(async () => { buttonByText(view.container, "⚙ 설정").dispatchEvent(new MinimalEvent("click")); });
+        assert.match(view.container.textContent, /조직 범위를 확인할 수 없습니다/u);
+      }
+    } finally { if (view) await view.cleanup(); }
+  }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("HTTP 테스트 화면은 randomUUID 없이도 새 Notebook 요청을 전송한다", async () => {
   const view = await render("apps/web/components/notebook-home-workspace.jsx", "NotebookHomeWorkspace", {
     getSession: async () => ({

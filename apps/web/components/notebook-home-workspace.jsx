@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NotebookHome } from "@daon-user/ui/notebook-home";
 import { createNotebook, getCurrentNotebookSession, listNotebooks, requestNotebookDeletion, getNotebookDeletion } from "../lib/notebook-api.js";
-import { logoutCurrentSession } from "../lib/auth-api.js";
+import { listSessionTenants, logoutCurrentSession, switchSessionTenant } from "../lib/auth-api.js";
 import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-route-guard.js";
 
 const SAFE_ERRORS = new Set(["NOTEBOOK_UNAVAILABLE", "SESSION_UNAVAILABLE", "SESSION_RESPONSE_INVALID"]);
@@ -29,6 +29,9 @@ export function NotebookHomeWorkspace({
   const [isSystemAdmin, setIsSystemAdmin] = useState(false);
   const [userId, setUserId] = useState(null);
   const [errorCode, setErrorCode] = useState(null);
+  const [tenantScope, setTenantScope] = useState(null);
+  const [scopeError, setScopeError] = useState(null);
+  const [switchingScope, setSwitchingScope] = useState(false);
 
   const conceal = useCallback(() => {
     concealProtectedRoute(protectedRoot.current);
@@ -49,12 +52,26 @@ export function NotebookHomeWorkspace({
         navigate("/password-change");
         return;
       }
-      const result = await getNotebooks(session.workspace_id, { signal });
+      const [scopeResult, notebookResult] = await Promise.allSettled([
+        listSessionTenants({ signal }), getNotebooks(session.workspace_id, { signal }),
+      ]);
+      if (signal?.aborted) return;
+      if ([scopeResult, notebookResult].some((result) => result.status === "rejected"
+        && result.reason?.message === "AUTHENTICATION_REQUIRED")) {
+        navigate("/");
+        return;
+      }
       setWorkspaceId(session.workspace_id);
       setUserId(session.login_id ?? session.user_id);
       setIsSystemAdmin(session.is_system_admin);
-      setNotebooks(result.data);
-      setState("ready");
+      setTenantScope(scopeResult.status === "fulfilled" ? scopeResult.value : null);
+      setScopeError(scopeResult.status === "rejected"
+        ? scopeResult.reason?.message ?? "TENANT_SCOPE_FAILED" : null);
+      setNotebooks(notebookResult.status === "fulfilled" ? notebookResult.value.data : []);
+      setErrorCode(notebookResult.status === "rejected"
+        ? SAFE_ERRORS.has(notebookResult.reason?.message)
+          ? notebookResult.reason.message : "NOTEBOOK_UNAVAILABLE" : null);
+      setState(notebookResult.status === "fulfilled" ? "ready" : "error");
       reveal();
     } catch (error) {
       if (signal?.aborted) return;
@@ -66,6 +83,8 @@ export function NotebookHomeWorkspace({
       setUserId(null);
       setIsSystemAdmin(false);
       setNotebooks([]);
+      setTenantScope(null);
+      setScopeError(null);
       setErrorCode(SAFE_ERRORS.has(error?.message) ? error.message : "NOTEBOOK_UNAVAILABLE");
       setState("error");
       reveal();
@@ -150,6 +169,35 @@ export function NotebookHomeWorkspace({
     }
   };
 
+  const handleSwitchTenant = async (tenantId) => {
+    if (switchingScope) return;
+    setSwitchingScope(true);
+    setScopeError(null);
+    try {
+      await switchSessionTenant(tenantId);
+      conceal();
+      setNotebooks([]);
+      setWorkspaceId(null);
+      setTenantScope(null);
+      window.location.replace("/notebooks");
+    } catch (error) {
+      if (["TENANT_SCOPE_403", "TENANT_SCOPE_404", "TENANT_SCOPE_422"].includes(error?.message)) {
+        setScopeError(error.message);
+        return;
+      }
+      conceal();
+      setNotebooks([]);
+      setWorkspaceId(null);
+      setTenantScope(null);
+      setUserId(null);
+      setIsSystemAdmin(false);
+      setScopeError(null);
+      window.location.replace("/");
+    } finally {
+      setSwitchingScope(false);
+    }
+  };
+
   return <div ref={protectedRoot} hidden={!sessionValidated} inert={!sessionValidated}
     aria-hidden={!sessionValidated ? "true" : undefined} data-session-validated={sessionValidated ? "true" : "false"}>
   <NotebookHome
@@ -159,6 +207,10 @@ export function NotebookHomeWorkspace({
     showUserManagement={isSystemAdmin}
     showOrganizationPolicy={isSystemAdmin}
     displayIdentity={userId ? `${userId}${isSystemAdmin ? " · 시스템 관리자" : ""}` : null}
+    tenantScope={tenantScope}
+    scopeError={scopeError}
+    switchingScope={switchingScope}
+    onSwitchTenant={(tenantId) => void handleSwitchTenant(tenantId)}
     onReload={() => void load()}
     onCreate={handleCreate}
     onDelete={handleDelete}

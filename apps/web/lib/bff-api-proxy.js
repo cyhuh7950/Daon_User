@@ -706,6 +706,14 @@ function routeFor(method, segments) {
   if (segments.length === 1 && segments[0] === "session") {
     return method === "GET" ? { path: "/api/v1/session", query: null } : { methodRejected: true };
   }
+  if (segments.length === 2 && segments[0] === "session" && segments[1] === "tenants") {
+    return method === "GET" ? { path: "/api/v1/session/tenants", query: null } : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "session" && segments[1] === "tenant") {
+    return method === "POST"
+      ? { path: "/api/v1/session/tenant", query: null, csrfProvenanceRequired: true }
+      : { methodRejected: true };
+  }
   if (segments.length === 2 && segments[0] === "session" && segments[1] === "logout") {
     return method === "POST"
       ? { path: "/api/v1/session/logout", query: null, csrfProvenanceRequired: true }
@@ -755,6 +763,12 @@ function nativeRouteFor(method, segments, requestUrl) {
     matched = method === "POST" ? route("/api/v1/session/refresh", { protected: false, requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 1 && segments[0] === "session") {
     matched = method === "GET" ? route("/api/v1/session") : { methodRejected: true };
+  } else if (segments.length === 2 && segments[0] === "session" && segments[1] === "tenants") {
+    matched = method === "GET" ? route("/api/v1/session/tenants") : { methodRejected: true };
+  } else if (segments.length === 2 && segments[0] === "session" && segments[1] === "tenant") {
+    matched = method === "POST"
+      ? route("/api/v1/session/tenant", { requestMediaType: "application/json" })
+      : { methodRejected: true };
   } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "sources") {
     matched = new Set(["GET", "POST"]).has(method)
       ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaType: "application/pdf" } : {})
@@ -1006,8 +1020,10 @@ export function createBffProxy({
     if (route.csrfProvenanceRequired && !csrfRefererIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
     }
-
     const destination = new URL(route.path, baseUrl);
+    if (new Set(["/api/v1/session/tenants", "/api/v1/session/tenant"]).has(route.path)) {
+      destination.search = new URL(request.url).search;
+    }
     if (route.query) {
       const incoming = new URL(request.url);
       for (const [key, value] of incoming.searchParams) {
@@ -1115,6 +1131,9 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
     const bearer = route.protected ? nativeBearer(request) : null;
     if (route.protected && !bearer) return createBffSafeError(401, "AUTHENTICATION_REQUIRED", trace);
     const destination = new URL(route.path, baseUrl);
+    if (new Set(["/api/v1/session/tenants", "/api/v1/session/tenant"]).has(route.path)) {
+      destination.search = new URL(request.url).search;
+    }
     if (route.query) {
       const incoming = new URL(request.url);
       for (const [key, value] of incoming.searchParams) {
@@ -1145,7 +1164,8 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
           return createBffSafeError(413, "REQUEST_TOO_LARGE", trace);
         }
         sensitiveValues.push(...nativeSensitiveBodyValues(body));
-        if (body.byteLength > 0 && exactMediaType(request.headers.get("content-type")) !== route.requestMediaType) {
+        if (body.byteLength > 0 && exactMediaType(request.headers.get("content-type")) !== route.requestMediaType
+          && route.path !== "/api/v1/session/tenant") {
           return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
         }
         init.body = body;
