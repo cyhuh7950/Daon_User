@@ -63,7 +63,7 @@ class CloudStorageContractTests(unittest.TestCase):
                 yield Connection(self.revision)
 
         store = object.__new__(PostgresCloudStore)
-        for revision, expected_ready in (("0056", True), ("0055", False)):
+        for revision, expected_ready in (("0056", True), ("0055", False), ("0054", False)):
             store._pool = Pool(revision)
             status = store.readiness()
             self.assertEqual(status.ready, expected_ready)
@@ -174,7 +174,7 @@ class PostgresCloudIntegrationTests(unittest.TestCase):
     def test_readiness_requires_migration_and_vector(self) -> None:
         status = self.store.readiness()
         self.assertTrue(status.ready)
-        self.assertEqual(status.schema_revision, "0054")
+        self.assertEqual(status.schema_revision, "0056")
         self.assertEqual(status.vector_version, "0.8.2")
 
     def test_rls_blocks_cross_tenant_and_context_does_not_leak(self) -> None:

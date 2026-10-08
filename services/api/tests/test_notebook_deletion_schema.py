@@ -2,6 +2,7 @@ from pathlib import Path
 import importlib.util
 import os
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,14 @@ def _load_0056_migration():
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
     return migration
+
+
+def test_0056_downgrade_executes_reverse_migration(monkeypatch):
+    migration = _load_0056_migration()
+    statements = []
+    monkeypatch.setattr(migration, "op", SimpleNamespace(execute=statements.append))
+    migration.downgrade()
+    assert len(statements) == 1
 
 
 @pytest.mark.skipif(
@@ -52,37 +61,104 @@ def test_0056_migration_applies_to_exact_clone_and_rolls_back(monkeypatch):
 
 @pytest.mark.skipif(
     not all(os.environ.get(name) for name in (
-        "DAON_C9_0056_CLONE_DSN", "DAON_C9_0056_QA_TENANT",
+        "DAON_C9_0056_DOWNGRADE_DSN", "DAON_C9_0056_QA_TENANT",
         "DAON_C9_0056_QA_WORKSPACE", "DAON_C9_0056_QA_NOTEBOOK",
     )),
-    reason="privileged isolated C9 clone and exact QA Notebook scope required",
+    reason="privileged isolated C9 0056 clone and exact QA Notebook scope required",
 )
-def test_0056_scoped_notebook_delete_succeeds_without_app_direct_delete(monkeypatch):
+def test_0056_scoped_notebook_delete_succeeds_without_app_direct_delete():
     import psycopg
 
-    migration = _load_0056_migration()
     tenant = os.environ["DAON_C9_0056_QA_TENANT"]
     workspace = os.environ["DAON_C9_0056_QA_WORKSPACE"]
     notebook = os.environ["DAON_C9_0056_QA_NOTEBOOK"]
-    with psycopg.connect(os.environ["DAON_C9_0056_CLONE_DSN"]) as connection:
+    with psycopg.connect(os.environ["DAON_C9_0056_DOWNGRADE_DSN"]) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT current_database(), (SELECT version_num FROM alembic_version)")
-            assert cursor.fetchone() == ("daon_user_c9_acl_0056_20261008", "0055")
+            assert cursor.fetchone() == ("daon_user_c9_acl_0056_20261008", "0056")
+            cursor.execute("SELECT count(*) FROM public.notebooks WHERE notebook_id <> %s", (notebook,))
+            other_scope_before = cursor.fetchone()[0]
+            assert other_scope_before > 0
+            cursor.execute("SET LOCAL ROLE daon_app")
+            cursor.execute("SELECT set_config('app.tenant_id', %s, true), set_config('app.workspace_id', %s, true)", (tenant, workspace))
+            cursor.execute("SELECT count(*) FROM notebooks WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s", (tenant, workspace, notebook))
+            assert cursor.fetchone() == (1,)
+            for statement in (
+                "DELETE FROM public.knowledge_registrations WHERE false",
+                "UPDATE public.notebook_idempotency SET tenant_id=tenant_id WHERE false",
+            ):
+                cursor.execute("SAVEPOINT c9_direct_acl")
+                try:
+                    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                        cursor.execute(statement)
+                finally:
+                    cursor.execute("ROLLBACK TO SAVEPOINT c9_direct_acl")
+                    cursor.execute("RELEASE SAVEPOINT c9_direct_acl")
+            cursor.execute("SELECT * FROM delete_notebook_scope(%s,%s,%s)", (tenant, workspace, notebook))
+            cursor.fetchall()
+            cursor.execute("SELECT count(*) FROM notebooks WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s", (tenant, workspace, notebook))
+            assert cursor.fetchone() == (0,)
+            cursor.execute("RESET ROLE")
+            cursor.execute("SELECT count(*) FROM public.notebooks WHERE notebook_id <> %s", (notebook,))
+            assert cursor.fetchone() == (other_scope_before,)
+            cursor.execute("SELECT has_table_privilege('daon_app','public.knowledge_registrations','DELETE')")
+            assert cursor.fetchone() == (False,)
+        connection.rollback()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DAON_C9_0056_DOWNGRADE_DSN"),
+    reason="privileged isolated C9 0056 clone DSN required",
+)
+def test_0056_downgrade_restores_0055_owner_acl_and_reupgrade(monkeypatch):
+    import psycopg
+
+    migration = _load_0056_migration()
+    with psycopg.connect(os.environ["DAON_C9_0056_DOWNGRADE_DSN"]) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT current_database(), (SELECT version_num FROM public.alembic_version)")
+            assert cursor.fetchone() == ("daon_user_c9_acl_0056_20261008", "0056")
+            cursor.execute(
+                "SELECT relname FROM pg_class WHERE relowner='daon_notebook_delete'::regrole "
+                "AND relkind='r' ORDER BY relname"
+            )
+            fk_tables = [row[0] for row in cursor.fetchall()]
+            assert len(fk_tables) == 19
+
             class DatabaseOp:
                 def execute(self, statement):
                     cursor.execute(statement)
 
             monkeypatch.setattr(migration, "op", DatabaseOp())
-            migration.upgrade()
-            cursor.execute("SELECT set_config('app.tenant_id', %s, true), set_config('app.workspace_id', %s, true)", (tenant, workspace))
-            cursor.execute("SELECT count(*) FROM notebooks WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s", (tenant, workspace, notebook))
-            assert cursor.fetchone() == (1,)
-            cursor.execute("SELECT * FROM delete_notebook_scope(%s,%s,%s)", (tenant, workspace, notebook))
-            cursor.fetchall()
-            cursor.execute("SELECT count(*) FROM notebooks WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s", (tenant, workspace, notebook))
+            migration.downgrade()
+            cursor.execute("SELECT count(*) FROM pg_roles WHERE rolname='daon_notebook_delete'")
             assert cursor.fetchone() == (0,)
-            cursor.execute("SELECT has_table_privilege('daon_app','public.knowledge_registrations','DELETE')")
-            assert cursor.fetchone() == (False,)
+            cursor.execute(
+                "SELECT relname, pg_get_userbyid(relowner), relacl::text "
+                "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid=c.relnamespace "
+                "WHERE n.nspname='public' AND c.relname=ANY(%s) AND c.relkind='r' "
+                "ORDER BY c.relname",
+                (fk_tables,),
+            )
+            assert cursor.fetchall() == [
+                (name, "daon_app", "{daon_app=arDxt/daon_app}") for name in fk_tables
+            ]
+            cursor.execute(
+                "SELECT pg_get_userbyid(proowner), proconfig, "
+                "has_function_privilege('daon_app', oid, 'EXECUTE') "
+                "FROM pg_proc WHERE oid='public.delete_notebook_scope(text,text,text)'::regprocedure"
+            )
+            owner, config, executable = cursor.fetchone()
+            assert (owner, executable) == ("daon_app", True)
+            assert "search_path=public" in config
+            for table, privilege in (("notebook_idempotency", "UPDATE"), ("notebooks", "DELETE")):
+                cursor.execute("SELECT has_table_privilege('daon_app', %s, %s)", (f"public.{table}", privilege))
+                assert cursor.fetchone() == (False,)
+            cursor.execute("UPDATE public.alembic_version SET version_num='0055' WHERE version_num='0056'")
+            assert cursor.rowcount == 1
+            migration.upgrade()
+            cursor.execute("SELECT count(*) FROM pg_roles WHERE rolname='daon_notebook_delete'")
+            assert cursor.fetchone() == (1,)
         connection.rollback()
 
 
@@ -116,9 +192,23 @@ WHERE relkind='r' AND relowner='daon_notebook_delete'::regrole;
 SELECT has_table_privilege('daon_app','public.knowledge_registrations','DELETE');
 SET LOCAL app.tenant_id='qa-c9-r5-tenant-20261007';
 SET LOCAL app.workspace_id='qa-c9-r5-workspace-20261007';
+SET LOCAL ROLE daon_app;
+DO $denied$ BEGIN
+  BEGIN
+    DELETE FROM public.knowledge_registrations WHERE false;
+    RAISE EXCEPTION 'C9_DELETE_UNEXPECTEDLY_ALLOWED';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  BEGIN
+    UPDATE public.notebook_idempotency SET tenant_id=tenant_id WHERE false;
+    RAISE EXCEPTION 'C9_UPDATE_UNEXPECTEDLY_ALLOWED';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $denied$;
 SELECT count(*) FROM public.delete_notebook_scope(
   'qa-c9-r5-tenant-20261007','qa-c9-r5-workspace-20261007','{qa_notebook}'
 );
+RESET ROLE;
 SELECT count(*) FROM notebooks WHERE notebook_id='{qa_notebook}';
 DO $stamp$ BEGIN
   UPDATE alembic_version SET version_num='0056' WHERE version_num='0055';

@@ -21,7 +21,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # The function may already have permanently deleted Notebook data. Reverting
-    # ownership cannot recover those rows or object-store content, and a 0055
-    # API image is not ready against a 0056 database.
-    raise RuntimeError("NOTEBOOK_DELETE_ACL_DOWNGRADE_BLOCKED")
+    # Schema/ACL recovery only: Notebook rows deleted while 0056 was active
+    # cannot be restored by a migration. Alembic stamps 0055 in this transaction.
+    op.execute(Path(__file__).with_name("0056_notebook_delete_acl_downgrade.sql").read_text(encoding="utf-8"))
