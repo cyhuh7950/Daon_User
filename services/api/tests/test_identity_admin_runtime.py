@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -20,6 +23,60 @@ from daon_user_api.runtime import (
 
 
 class IdentityAdminRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_switch_audit_backlog_retries_after_recovery_and_stops_at_shutdown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dependencies = build_dependencies(RuntimeSettings.for_test(
+                database_path=Path(directory) / "runtime.sqlite3",
+                policy_version="identity-policy-v1",
+            ))
+            with dependencies.identity_repository.transaction() as connection:
+                for index in range(33):
+                    connection.execute(
+                        "INSERT INTO session_tenant_switch_outbox "
+                        "(event_id,prior_session_id,new_session_id,prior_tenant_id,target_tenant_id,"
+                        "actor_id,outcome,reason_code,occurred_at,trace_id,policy_version,created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (f"switch-{index:02d}", f"old-{index:02d}", f"new-{index:02d}",
+                         "tenant-001", "tenant-002", "user-001", "succeeded", "USER_SELECTED",
+                         datetime.now(timezone.utc).isoformat(), "switch-retry", "identity-policy-v1",
+                         datetime.now(timezone.utc).isoformat()),
+                    )
+            original_append = dependencies.audit_store.append
+            available = False
+
+            def append_after_recovery(draft):
+                if not available:
+                    raise OSError("temporary audit outage")
+                return original_append(draft)
+
+            with patch.object(dependencies.audit_store, "append", side_effect=append_after_recovery), \
+                    patch("daon_user_api.runtime._ADMIN_AUDIT_RETRY_INTERVAL_SECONDS", 0.02):
+                app = create_app(dependencies)
+                async with app.router.lifespan_context(app):
+                    await asyncio.sleep(0.05)
+                    with dependencies.identity_repository.transaction() as connection:
+                        self.assertEqual(connection.execute(
+                            "SELECT COUNT(*) FROM session_tenant_switch_outbox WHERE delivered_at IS NULL"
+                        ).fetchone()[0], 33)
+                    available = True
+
+                    async def wait_for_delivery() -> None:
+                        while True:
+                            with dependencies.identity_repository.transaction() as connection:
+                                remaining = connection.execute(
+                                    "SELECT COUNT(*) FROM session_tenant_switch_outbox WHERE delivered_at IS NULL"
+                                ).fetchone()[0]
+                            if remaining == 0:
+                                return
+                            await asyncio.sleep(0.02)
+
+                    await asyncio.wait_for(wait_for_delivery(), timeout=5.0)
+                    self.assertEqual(len(dependencies.audit_store.list(tenant_id="tenant-002").items), 33)
+                self.assertFalse(any(
+                    thread.name == "admin-role-audit-outbox" and thread.is_alive()
+                    for thread in threading.enumerate()
+                ))
+
     async def test_session_tenant_list_and_web_native_switch_use_own_active_scope(self) -> None:
         directory = tempfile.TemporaryDirectory()
         settings = RuntimeSettings.for_test(

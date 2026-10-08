@@ -1804,13 +1804,17 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     def admin_audit_retry_loop(stop: threading.Event, finished: Future[None]) -> None:
         service = dependencies.admin_membership_role_service
         try:
-            if service is None:
-                return
             while not stop.is_set():
+                if service is not None:
+                    try:
+                        service._dispatch_pending_audit(stop=stop)
+                    except Exception:
+                        # The committed operation remains pending for the next bounded batch.
+                        pass
                 try:
-                    service._dispatch_pending_audit(stop=stop)
+                    dependencies.identity_service.dispatch_pending_tenant_switch_audits()
                 except Exception:
-                    # The committed operation remains pending for the next bounded batch.
+                    # A committed switch remains pending until the next bounded batch.
                     pass
                 stop.wait(_ADMIN_AUDIT_RETRY_INTERVAL_SECONDS)
         finally:
@@ -1834,7 +1838,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 target=admin_audit_retry_loop, args=(admin_audit_stop, admin_audit_finished),
                 name="admin-role-audit-outbox", daemon=True,
             )
-            if dependencies.admin_membership_role_service is not None else None
+            if dependencies.admin_membership_role_service is not None
+            or dependencies.identity_service is not None else None
         )
         if admin_audit_thread is not None:
             admin_audit_thread.start()
