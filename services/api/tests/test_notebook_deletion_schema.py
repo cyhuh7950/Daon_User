@@ -410,3 +410,188 @@ SELECT CASE WHEN NOT EXISTS
     assert result.stdout.splitlines()[-3:] == [
         "1", "C9_SCOPE_ASSERTIONS_OK", "C9_SCOPE_ROLLBACK_OK"
     ]
+
+
+@pytest.mark.skipif(
+    os.environ.get("DAON_C9_OBJECT_CLONE_PSQL") != "1",
+    reason="explicit opt-in required for the isolated C9 object scope clone",
+)
+def test_0056_object_scope_cleanup_shared_reference_and_hold_roll_back():
+    """Exercise actual object rows through the app role in the named disposable clone."""
+    clone = "daon_user_c9_object_20261008"
+    sql = r"""
+BEGIN;
+DO $guard$ BEGIN
+  IF current_database() <> 'daon_user_c9_object_20261008'
+     OR (SELECT version_num FROM public.alembic_version) <> '0056'
+     OR (SELECT pg_get_userbyid(proowner) FROM pg_proc
+         WHERE oid='public.delete_notebook_scope(text,text,text)'::regprocedure)
+        <> 'daon_notebook_delete'
+     OR EXISTS (SELECT 1 FROM public.tenants WHERE tenant_id='qa-c9-object-20261008')
+  THEN RAISE EXCEPTION 'C9_OBJECT_CLONE_PRECONDITION_FAILED'; END IF;
+END $guard$;
+
+INSERT INTO public.tenants (tenant_id,display_name)
+VALUES ('qa-c9-object-20261008','QA C9 isolated object scope');
+INSERT INTO public.workspaces (tenant_id,workspace_id,display_name)
+VALUES ('qa-c9-object-20261008','qa-c9-object-workspace','QA C9 isolated object scope');
+INSERT INTO public.notebooks (tenant_id,workspace_id,notebook_id,created_by,created_at)
+SELECT 'qa-c9-object-20261008','qa-c9-object-workspace',v.id,'qa-c9-object-actor',now()
+FROM (VALUES ('qa-c9-object-solo'),('qa-c9-object-shared-a'),
+             ('qa-c9-object-shared-b'),('qa-c9-object-held')) AS v(id);
+INSERT INTO public.object_records
+  (tenant_id,workspace_id,object_id,area,staging_key,object_key,digest_sha256,
+   byte_size,content_type,status,created_by,trace_id,idempotency_key,
+   request_fingerprint,created_at)
+SELECT 'qa-c9-object-20261008','qa-c9-object-workspace',v.id,'source',
+       'qa-c9-stage/'||v.id,'qa-c9-object/'||v.id,
+       repeat('a',64),1,'text/plain','completed','qa-c9-object-actor',
+       'qa-c9-object-trace',v.id,repeat('b',64),now()
+FROM (VALUES ('qa-c9-object-record-solo'),('qa-c9-object-record-shared'),
+             ('qa-c9-object-record-held')) AS v(id);
+INSERT INTO public.object_outbox_events
+  (tenant_id,workspace_id,event_id,object_id,event_kind,payload_reference,
+   schema_version,status,trace_id,created_at)
+SELECT 'qa-c9-object-20261008','qa-c9-object-workspace','qa-c9-event-'||v.id,
+       v.id,'object.promote','{}'::jsonb,1,'completed','qa-c9-object-trace',now()
+FROM (VALUES ('qa-c9-object-record-solo'),('qa-c9-object-record-shared'),
+             ('qa-c9-object-record-held')) AS v(id);
+INSERT INTO public.durable_jobs
+  (tenant_id,workspace_id,job_id,event_id,job_kind,payload_reference,
+   payload_schema_version,deduplication_key,state,max_attempts,next_attempt_at,
+   created_by,trace_id,created_at)
+VALUES ('qa-c9-object-20261008','qa-c9-object-workspace','qa-c9-job-solo',
+        'qa-c9-event-qa-c9-object-record-solo','object.promote','{}'::jsonb,
+        1,'qa-c9-object-dedupe-solo','completed',3,now(),
+        'qa-c9-object-actor','qa-c9-object-trace',now());
+INSERT INTO public.job_attempts
+  (tenant_id,workspace_id,job_id,attempt_number,worker_id,outcome,trace_id,
+   started_at,finished_at)
+VALUES ('qa-c9-object-20261008','qa-c9-object-workspace','qa-c9-job-solo',
+        1,'qa-c9-object-worker','completed','qa-c9-object-trace',now(),now());
+INSERT INTO public.sources
+  (tenant_id,workspace_id,record_id,aggregate_id,digest_sha256,created_by,trace_id)
+SELECT 'qa-c9-object-20261008','qa-c9-object-workspace',v.id,v.id,
+       encode(sha256(convert_to('{}','UTF8')),'hex'),
+       'qa-c9-object-actor','qa-c9-object-trace'
+FROM (VALUES ('qa-c9-source-solo'),('qa-c9-source-shared-a'),
+             ('qa-c9-source-shared-b'),('qa-c9-source-held')) AS v(id);
+INSERT INTO public.source_versions
+  (tenant_id,workspace_id,record_id,aggregate_id,source_id,object_id,
+   digest_sha256,created_by,trace_id)
+SELECT 'qa-c9-object-20261008','qa-c9-object-workspace',v.id,v.id,
+       v.source_id,v.object_id,encode(sha256(convert_to('{}','UTF8')),'hex'),
+       'qa-c9-object-actor',
+       'qa-c9-object-trace'
+FROM (VALUES
+  ('qa-c9-version-solo','qa-c9-source-solo','qa-c9-object-record-solo'),
+  ('qa-c9-version-shared-a','qa-c9-source-shared-a','qa-c9-object-record-shared'),
+  ('qa-c9-version-shared-b','qa-c9-source-shared-b','qa-c9-object-record-shared'),
+  ('qa-c9-version-held','qa-c9-source-held','qa-c9-object-record-held')
+) AS v(id,source_id,object_id);
+INSERT INTO public.processing_runs
+  (tenant_id,workspace_id,record_id,aggregate_id,source_version_id,modality,
+   trigger_type,digest_sha256,created_by,trace_id)
+VALUES ('qa-c9-object-20261008','qa-c9-object-workspace',
+        'qa-c9-run-solo','qa-c9-run-solo','qa-c9-version-solo',
+        'document','initial',encode(sha256(convert_to('{}','UTF8')),'hex'),
+        'qa-c9-object-actor','qa-c9-object-trace');
+INSERT INTO public.index_versions
+  (tenant_id,workspace_id,record_id,aggregate_id,source_version_id,object_id,
+   digest_sha256,created_by,trace_id)
+VALUES ('qa-c9-object-20261008','qa-c9-object-workspace',
+        'qa-c9-index-solo','qa-c9-index-solo','qa-c9-version-solo',
+        'qa-c9-object-record-solo',encode(sha256(convert_to('{}','UTF8')),'hex'),
+        'qa-c9-object-actor','qa-c9-object-trace');
+INSERT INTO public.notebook_bindings
+  (tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,
+   created_by,created_at)
+VALUES
+  ('qa-c9-object-20261008','qa-c9-object-workspace','qa-c9-object-solo',
+   'source','qa-c9-source-solo','qa-c9-version-solo','qa-c9-object-actor',now()),
+  ('qa-c9-object-20261008','qa-c9-object-workspace','qa-c9-object-shared-a',
+   'source','qa-c9-source-shared-a','qa-c9-version-shared-a','qa-c9-object-actor',now()),
+  ('qa-c9-object-20261008','qa-c9-object-workspace','qa-c9-object-shared-b',
+   'source','qa-c9-source-shared-b','qa-c9-version-shared-b','qa-c9-object-actor',now()),
+  ('qa-c9-object-20261008','qa-c9-object-workspace','qa-c9-object-held',
+   'source','qa-c9-source-held','qa-c9-version-held','qa-c9-object-actor',now());
+INSERT INTO public.legal_holds
+  (tenant_id,workspace_id,hold_id,source_id,actor_id,state,version,policy_version,
+   idempotency_key,request_fingerprint,trace_id,created_at)
+VALUES ('qa-c9-object-20261008','qa-c9-object-workspace','qa-c9-object-hold',
+        'qa-c9-source-held','qa-c9-object-actor','active',1,'qa-c9-object-policy',
+        'qa-c9-object-hold-key',repeat('a',64),'qa-c9-object-trace',now());
+
+SET LOCAL ROLE daon_app;
+SELECT set_config('app.tenant_id','qa-c9-object-20261008',true),
+       set_config('app.workspace_id','qa-c9-object-workspace',true);
+DO $inventory$ DECLARE item record; BEGIN
+  SELECT * INTO STRICT item FROM public.delete_notebook_scope(
+    'qa-c9-object-20261008','qa-c9-object-workspace','qa-c9-object-solo');
+  IF item.source_id IS DISTINCT FROM 'qa-c9-source-solo'
+     OR item.source_version_id IS DISTINCT FROM 'qa-c9-version-solo'
+     OR item.object_id IS DISTINCT FROM 'qa-c9-object-record-solo'
+     OR item.object_key IS DISTINCT FROM 'qa-c9-object/qa-c9-object-record-solo'
+  THEN RAISE EXCEPTION 'C9_OBJECT_INVENTORY_MISMATCH'; END IF;
+END $inventory$;
+DO $blocked$ BEGIN
+  BEGIN
+    PERFORM public.delete_notebook_scope('qa-c9-object-20261008',
+      'qa-c9-object-workspace','qa-c9-object-shared-a');
+    RAISE EXCEPTION 'C9_SHARED_OBJECT_UNEXPECTEDLY_DELETED';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    IF SQLERRM <> 'DELETE_SHARED_DATA_BLOCKED' THEN RAISE; END IF;
+  END;
+  BEGIN
+    PERFORM public.delete_notebook_scope('qa-c9-object-20261008',
+      'qa-c9-object-workspace','qa-c9-object-held');
+    RAISE EXCEPTION 'C9_HELD_OBJECT_UNEXPECTEDLY_DELETED';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    IF SQLERRM <> 'RETENTION_HOLD' THEN RAISE; END IF;
+  END;
+END $blocked$;
+RESET ROLE;
+DO $verify$ BEGIN
+  IF EXISTS (SELECT 1 FROM public.notebooks WHERE notebook_id='qa-c9-object-solo')
+     OR EXISTS (SELECT 1 FROM public.sources WHERE record_id='qa-c9-source-solo')
+     OR EXISTS (SELECT 1 FROM public.source_versions WHERE record_id='qa-c9-version-solo')
+     OR EXISTS (SELECT 1 FROM public.object_records WHERE object_id='qa-c9-object-record-solo')
+     OR EXISTS (SELECT 1 FROM public.object_outbox_events WHERE event_id='qa-c9-event-qa-c9-object-record-solo')
+     OR EXISTS (SELECT 1 FROM public.durable_jobs WHERE job_id='qa-c9-job-solo')
+     OR EXISTS (SELECT 1 FROM public.job_attempts WHERE job_id='qa-c9-job-solo')
+     OR EXISTS (SELECT 1 FROM public.processing_runs WHERE record_id='qa-c9-run-solo')
+     OR EXISTS (SELECT 1 FROM public.index_versions WHERE record_id='qa-c9-index-solo')
+     OR EXISTS (SELECT 1 FROM public.notebook_bindings WHERE notebook_id='qa-c9-object-solo')
+  THEN RAISE EXCEPTION 'C9_SOLO_OBJECT_SCOPE_NOT_CLEANED'; END IF;
+  IF (SELECT count(*) FROM public.notebooks
+      WHERE notebook_id IN ('qa-c9-object-shared-a','qa-c9-object-shared-b','qa-c9-object-held')) <> 3
+     OR (SELECT count(*) FROM public.notebook_bindings
+         WHERE notebook_id IN ('qa-c9-object-shared-a','qa-c9-object-shared-b','qa-c9-object-held')) <> 3
+     OR (SELECT count(*) FROM public.sources
+         WHERE record_id IN ('qa-c9-source-shared-a','qa-c9-source-shared-b','qa-c9-source-held')) <> 3
+     OR (SELECT count(*) FROM public.source_versions
+         WHERE record_id IN ('qa-c9-version-shared-a','qa-c9-version-shared-b','qa-c9-version-held')) <> 3
+     OR (SELECT count(*) FROM public.object_records
+         WHERE object_id IN ('qa-c9-object-record-shared','qa-c9-object-record-held')) <> 2
+     OR (SELECT count(*) FROM public.object_outbox_events
+         WHERE object_id IN ('qa-c9-object-record-shared','qa-c9-object-record-held')) <> 2
+     OR (SELECT count(*) FROM public.legal_holds
+         WHERE hold_id='qa-c9-object-hold' AND state='active') <> 1
+  THEN RAISE EXCEPTION 'C9_BLOCKED_OBJECT_SCOPE_CHANGED'; END IF;
+END $verify$;
+SELECT 'C9_OBJECT_ASSERTIONS_OK';
+ROLLBACK;
+SELECT CASE WHEN NOT EXISTS
+  (SELECT 1 FROM public.tenants WHERE tenant_id='qa-c9-object-20261008')
+  THEN 'C9_OBJECT_ROLLBACK_OK' ELSE 'C9_OBJECT_ROLLBACK_FAILED' END;
+"""
+    result = subprocess.run(
+        ["ssh", "WSL-server",
+         f"docker exec -i -u postgres local-postgres psql -U postgres -d {clone} "
+         "-v ON_ERROR_STOP=1 -X -q -At -f -"],
+        input=sql, text=True, capture_output=True, check=False, timeout=90,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-2:] == [
+        "C9_OBJECT_ASSERTIONS_OK", "C9_OBJECT_ROLLBACK_OK"
+    ]
