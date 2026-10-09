@@ -11,5 +11,5 @@ export const metadata = {
 const screenThemeEarlyPaint = `(()=>{try{const key="daon.screen-preference.v1";const value=localStorage.getItem(key);const preference=value==="light"||value==="dark"||value==="system"?value:"system";const dark=matchMedia("(prefers-color-scheme: dark)").matches;const theme=preference==="system"?(dark?"dark":"light"):preference;document.documentElement.setAttribute("data-theme",theme);document.documentElement.style.colorScheme=theme}catch(_){document.documentElement.setAttribute("data-theme","light");document.documentElement.style.colorScheme="light"}})();`;
 
 export default function RootLayout({ children }) {
-  return <html lang="ko"><body><script dangerouslySetInnerHTML={{ __html: screenThemeEarlyPaint }} /><WebShellRuntimeStatus /><ScreenThemeRuntime>{children}</ScreenThemeRuntime></body></html>;
+  return <html lang="ko" suppressHydrationWarning><body><script dangerouslySetInnerHTML={{ __html: screenThemeEarlyPaint }} /><WebShellRuntimeStatus /><ScreenThemeRuntime>{children}</ScreenThemeRuntime></body></html>;
 }
