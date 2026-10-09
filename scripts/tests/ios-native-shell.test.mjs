@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +15,19 @@ async function read(relativePath) {
 
 async function readJson(relativePath) {
   return JSON.parse(await read(relativePath));
+}
+
+function assertResolvedReactNativePath(workspaceRoot, reactNativePath) {
+  const appRoot = path.join(workspaceRoot, "apps/mobile");
+  const expectedLocations = [
+    path.join(appRoot, "node_modules/react-native"),
+    path.join(workspaceRoot, "node_modules/react-native")
+  ];
+  const actualPath = path.resolve(reactNativePath);
+  assert.ok(expectedLocations.includes(actualPath), `unexpected React Native location: ${actualPath}`);
+  const appRequire = createRequire(path.join(appRoot, "package.json"));
+  assert.equal(actualPath, path.dirname(appRequire.resolve("react-native/package.json")));
+  assert.equal(appRequire("react-native/package.json").name, "react-native");
 }
 
 function privateFixturePath(suffix = "") {
@@ -156,8 +170,27 @@ test("Podfile Autolinking은 호출 CWD와 무관하게 Monorepo Mobile App Root
   }));
   assert.equal(path.resolve(config.root), path.join(root, "apps/mobile"));
   assert.equal(path.resolve(config.project.ios.sourceDir), iosRoot);
-  assert.equal(path.resolve(config.reactNativePath), path.join(root, "apps/mobile/node_modules/react-native"));
+  assertResolvedReactNativePath(root, config.reactNativePath);
   assert.deepEqual(config.dependencies, {});
+});
+
+test("Podfile Autolinking은 app-local과 workspace-hoisted React Native만 허용한다", async () => {
+  for (const location of ["app-local", "workspace-hoisted"]) {
+    const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "daon-ios-rn-path-"));
+    const appRoot = path.join(fixtureRoot, "apps/mobile");
+    const reactNativePath = location === "app-local"
+      ? path.join(appRoot, "node_modules/react-native")
+      : path.join(fixtureRoot, "node_modules/react-native");
+    try {
+      await mkdir(reactNativePath, { recursive: true });
+      await writeFile(path.join(reactNativePath, "package.json"), '{"name":"react-native"}');
+      assertResolvedReactNativePath(fixtureRoot, reactNativePath);
+      assert.throws(() => assertResolvedReactNativePath(fixtureRoot, appRoot));
+      assert.throws(() => assertResolvedReactNativePath(fixtureRoot, path.join(fixtureRoot, "unrelated/react-native")));
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }
 });
 
 test("Info.plist는 최소 권한 설명과 URL Scheme만 선언하고 내부 Network 예외를 금지한다", async () => {
