@@ -13,6 +13,7 @@ const DAON_PATH_PATTERN = /(?:[a-z]:[\\/][^\s"'`]*[\\/]daon(?:2(?:\.5)?|3)(?:[\\
 const DIRECT_URL_PATTERN = /(?:https?:\/\/|\blocalhost(?::\d+)?\b|\b127\.0\.0\.1(?::\d+)?\b|NEXT_PUBLIC_API_BASE_URL)/i;
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const CONNECTOR_PATTERN = /(?:daon(?:2(?:\.5)?|3)[-_/]?(?:client|sdk|internal|endpoint)|daon[-_/](?:internal|sdk|client|endpoint))/i;
+const GENERATED_DIRECTORIES = new Set([".venv", ".cxx"]);
 
 function withoutLoopbackHostnameGuard(line) {
   return line.replace(/new\s+Set\(\s*\[([^\n]*?)\]\s*\)\.has\(\s*hostname\s*\)/g, (expression, members) => {
@@ -42,7 +43,7 @@ async function walk(root, relative, policy, output) {
   for (const entry of await readdir(absolute, { withFileTypes: true })) {
     const child = normalize(path.join(relative, entry.name));
     if (entry.isDirectory()) {
-      if (!policy.excluded_directories.includes(entry.name)) await walk(root, child, policy, output);
+      if (!policy.excluded_directories.includes(entry.name) && !GENERATED_DIRECTORIES.has(entry.name)) await walk(root, child, policy, output);
     } else if (entry.isFile()) {
       output.push(child);
     }

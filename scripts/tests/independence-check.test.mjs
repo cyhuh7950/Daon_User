@@ -70,6 +70,15 @@ test("Python 테스트 Cache는 Source 독립성 검사 대상이 아니다", as
   assert.match(result.stdout, /violations=0/);
 });
 
+test("Git 제외 Python 가상환경과 Android CMake 생성물은 Source 독립성 검사 대상이 아니다", async () => {
+  const root = await fixture();
+  await put(root, "services/api/.venv/Lib/site-packages/foreign.py", "from daon2.internal import Foreign\n");
+  await put(root, "apps/web/.cxx/generated/foreign.py", "from daon2.internal import Foreign\n");
+  const result = run(root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /violations=0/);
+});
+
 test("pytest pythonpath 도구 설정을 Package 경로 의존으로 오인하지 않는다", async () => {
   const root = await fixture();
   await rm(path.join(root, "services", "api", "package.json"));
