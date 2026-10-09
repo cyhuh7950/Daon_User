@@ -66,6 +66,13 @@
 - 확인 원인·정리: 현재 Windows PATH의 `cargo`가 없고 기본 사용자 Cargo 위치에도 실행 파일이 없다. wrapper가 실패한 임시 `daon-user-desktop-installer-*` target과 생성 sidecar를 정리했고, Tauri `gen`도 남지 않았다. 빌드 과정에서 Cargo.toml의 작업트리 변경 표시가 생겼으나 blob이 원본과 일치함을 확인하고 인덱스 메타데이터를 새로고침해 tracked 변경 0으로 복귀했다. 기존 미추적 `.pytest-tmp/`는 보존했다.
 - 영향·재개: 이 Windows 환경에서는 NSIS 설치본 생성·설치 실행 Gate를 판정할 수 없다. 승인된 Rust toolchain과 Windows 빌드 전제조건을 갖춘 독립 환경에서 정확 SHA로 다시 제작하고, 생성된 EXE/NSIS 서명·설치·WebView/Local Service 실제 클릭을 별도 확인해야 한다. 48건 계약 PASS를 설치판 PASS로 바꾸지 않는다. 다른 독립 계획 검증은 계속한다.
 
+### M4/M5 현재 작업본의 실제 통합 증거 경계
+
+- 실행한 대안: 누락된 Git 제외 evidence JSON 때문에 기본 wrapper가 실패한 뒤, Identity/Authorization은 `--check-only` 순차 실행으로 41 PASS·2 격리 PostgreSQL SKIP 및 26 PASS를 확인했다. API Runtime도 기존 유효한 프로젝트 `.venv`를 지정해 `--check-only`로 실제 격리 API/Next process, same-origin, 종료·재시작, Web build/TypeScript/479파일 경계를 PASS했다. Audit 13건은 현재 SHA의 결정론 증거를 `--write` 생성 후 `--no-write` 비교 PASS, OpenAPI는 불변 legacy 요약을 변경하지 않고 지원되는 현행 `r1-m8-10` profile로 95 path/123 operation 계약을 생성·비교 PASS했다. 생성된 summary는 이 C9 worktree의 Git 제외 시험 산출물이며 제품/공유 DB를 변경하지 않는다.
+- 남은 실제 차단 조건: Cloud 계약 17건 중 9건, Object/Queue 계약 17건 중 9건은 격리 PostgreSQL DSN/S3 endpoint가 없는 이번 실행에서 SKIP되었다. C9 Native 0056의 정확한 PostgreSQL 2건은 앞서 별도 클러스터에서 PASS했지만 M5 전체 Cloud/Object/Queue·Windows Local 손상/Backup/Restore를 대신하지 않는다. 공유 QA DB/실사용자 자료/운영 Object를 테스트용으로 변경하거나 파괴적 복구 주입하지 않는다. 재작업은 격리 데이터·소유·정리 방법을 정한 M5 별도 Stage에서 각 테스트의 정확 DSN/S3와 Fixture를 준비하고, 실제 Windows 설치본·Browser Network Gate를 뒤따르게 한다.
+- 재현성 제한: `r1-m5-07` 기본 OpenAPI wrapper의 legacy evidence JSON은 현재 C9 worktree에 없고 프로필 자체가 `--write`를 금지한다. 정본 소스와 별도 역사적 증거 파일을 C9 stage에 어떤 방식으로 결속할지는 M5 분리 작업에서 판단하며, 현행 profile PASS를 그 legacy manifest PASS로 승격하지 않는다. 병렬 wrapper가 공용 임시 uv env를 충돌시킨 초회 실행 오류는 순차·기존 `.venv`로 해결했으므로 이 환경 오류를 제품 실패나 미해결 차단으로 남기지 않는다.
+- 격리 자원 확보 시도: 기존 WSL-server의 PostgreSQL/S3 이미지 목록을 SSH로 읽기 전용 확인하려 했으나 응답이 없어 중단했다. `BatchMode=yes`/짧은 `ConnectTimeout`의 단순 ready 조회도 응답하지 않아 중단했다. 로컬 Windows에는 Docker CLI/설치 경로가 없다. 따라서 이번 환경에서 새로운 격리 PostgreSQL/S3를 안전하게 준비해 남은 18개 통합 SKIP을 실행할 수 없다. 기존 공유 DB/운영 Object에 시험용 행·객체를 넣는 우회는 하지 않았다. WSL 연결 또는 동등한 격리 자원이 복구되면 정확 이미지/DB·버킷 소유/정리 계획을 선언하고 재작업한다.
+
 ### C6a 1920×1080 배치 시험 실행기의 측정 출력 부재
 
 - 시도·증거: C9 브랜치에서 Provider 화면 계약 4파일 37건 실행, 35 PASS·2 FAIL. 실패는 모델/Provider 목록의 실제 크기·스크롤 값이 아닌 `--headless --dump-dom`의 `<output id="result">` 미출력이다. 설치된 Edge와 Chrome 각각에 최소 `data:` DOM을 출력하도록 시도해도 exit 0·stdout 빈 값이었다.
