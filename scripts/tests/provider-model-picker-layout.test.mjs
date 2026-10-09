@@ -216,3 +216,46 @@ test("세 해상도에서 Provider 목록과 상세는 내부 스크롤을 사�
     rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
+
+test("Provider 상세 스크롤바 전환에도 공통 필드 위치가 고정된다", { skip: !browser }, async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), "daon-provider-gutter-"));
+  try {
+    const html = `<!doctype html><html><head><meta charset="utf-8">
+      <link rel="stylesheet" href="${stylesheetUrl}">
+      <link rel="stylesheet" href="${pathToFileURL(path.join(repoRoot, "apps/web/app/settings/model-connections/provider-settings.css")).href}">
+      </head><body><main class="provider-settings-shell"><header class="provider-settings-header"><h1>Provider 설정</h1></header>
+      <div class="provider-status ready">연결됨</div><section class="provider-admin-panel">
+      <div class="studio-section-heading"><div><h2>시스템 Provider 연결</h2></div></div>
+      <div class="provider-settings-layout"><div class="provider-connection-list"><button class="provider-card">Router</button></div>
+      <div class="provider-detail"><header><h2>연결 상세</h2></header><div class="provider-detail-grid">
+      ${["호환 방식", "Provider 방식", "Provider 표시 이름", "연결 이름", "두 글자 약어", "Endpoint"].map((name) => `<label>${name}<input value="공통 값"></label>`).join("")}
+      <div class="provider-field-wide provider-configuration-columns"><div class="provider-configuration-settings">
+      ${["인증 유형", "Key", "상태", "공용"].map((name) => `<label>${name}<input value="설정값"></label>`).join("")}</div>
+      <fieldset class="provider-model-picker"><legend>사용 허용 모델</legend><p>모델 선택</p><div class="provider-model-options"></div></fieldset></div>
+      ${["추가 설정 1", "추가 설정 2", "추가 설정 3", "추가 설정 4"].map((name) => `<label>${name}<input value="설정값"></label>`).join("")}
+      </div><div class="provider-detail-actions"><button>저장</button></div></div></div></section></main>
+      <output id="result"></output><script>
+      const detail = document.querySelector('.provider-detail');
+      const options = document.querySelector('.provider-model-options');
+      const fields = [...document.querySelectorAll('.provider-detail-grid > label')].slice(0, 6);
+      const measure = (count) => {
+        options.innerHTML = Array.from({ length: count }, (_, index) => '<label><input type="checkbox"><span>model-' + index + '</span></label>').join('');
+        return { overflow: detail.scrollHeight > detail.clientHeight,
+          positions: fields.map((field) => ({ left: field.getBoundingClientRect().left, top: field.getBoundingClientRect().top })),
+          pageHeight: document.documentElement.scrollHeight, viewportHeight: innerHeight };
+      };
+      document.querySelector('#result').textContent = JSON.stringify({ many: measure(120), one: measure(1) });
+      </script></body></html>`;
+    const fixture = path.join(tempDir, "index.html");
+    writeFileSync(fixture, html);
+    for (const [width, height] of [[1920, 1080], [1440, 900], [430, 844]]) {
+      const { many, one } = await measureLayout(fixture, { width, height });
+      assert.deepEqual(many.positions, one.positions, `${width}×${height} 공통 필드 위치`);
+      assert.ok(many.pageHeight <= many.viewportHeight && one.pageHeight <= one.viewportHeight,
+        `${width}×${height} 외부 이중 스크롤이 없어야 합니다`);
+      if (width === 1920) assert.ok(many.overflow && !one.overflow, "desktop에서 상세 스크롤바가 전환되어야 합니다");
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});

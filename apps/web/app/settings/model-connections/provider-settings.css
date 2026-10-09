@@ -36,7 +36,7 @@
 .provider-settings-layout { align-items: start; }
 .provider-connection-list, .provider-detail { box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; }
 .provider-connection-list { max-height: min(640px, max(120px, calc(100dvh - 314px - var(--provider-outer-header, 0px)))); }
-.provider-detail { max-height: min(760px, max(120px, calc(100dvh - 314px - var(--provider-outer-header, 0px)))); }
+.provider-detail { max-height: min(760px, max(120px, calc(100dvh - 314px - var(--provider-outer-header, 0px)))); scrollbar-gutter: stable; }
 .workspace-model-defaults { box-sizing: border-box; height: 120px; overflow-y: auto; overscroll-behavior: contain; }
 .provider-connection-list { display: grid; align-content: start; gap: 4px; padding-right: 4px; }
 .provider-detail { align-content: start; }
