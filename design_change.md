@@ -47,6 +47,13 @@
 
 정본 계획 §30.3 R5의 4개와 §30.4의 5개 미완료 체크는 위 C9 기록과 `WORK_STATUS`의 이미 수행한 로컬·격리 DB·이전 image Chrome·현 image 기본 smoke 증거로 **각각의 실행 가능성**을 분리한다. 현재-image 인증 브라우저/권한·중앙 감사 실제 장애 재시도처럼 별도 공유 QA 조작 승인이 필요한 부분만 기록으로 처리하고, 승인 범위 안의 독립 검증은 계속한다. forward recovery·PR, 승인 정합성 문서 drift, 실제 current-image 전환/Native·인수는 여전히 UNVERIFIED 또는 별도 승인 대기다. 따라서 원문 체크박스를 시험 PASS로 바꾸거나 PR/병합을 강행하지 않는다.
 
+### M1 현재 HEAD 재검증의 실제 실패
+
+- 시도: C9 `62e4be6b`에서 Foundation 11건은 8 PASS·3 FAIL(exit 1)로, 3건 모두 Git 이력 `d83507b2`에서 삭제된 `.github/workflows/release-1-quality-gate.yml`을 요구한다. Toolchain baseline 검사는 exit 1 `Next mismatch`: 정본 baseline은 Next `16.3.3`, 현재 `apps/web/package.json`/lockfile 및 설치본은 `16.3.6`이다.
+- 독립성 검사: `verify:independence`는 2,461파일 중 위반 248(exit 1)을 보고했다. 생성된 Android `.cxx`/Python `.venv` 등 무시된 빌드·의존성 파일의 절대 경로 247건과 실제 소스 `provider-settings-workspace.jsx:145`의 localhost 문자열 1건으로 분리했다. 유일한 소스 표기는 `providerRequiresCredential`에서 localhost인지 판정하는 거부 조건이지 브라우저의 직접 API 호출이 아니다. 실제 브라우저 Network 위반으로 단정하지 않는다. 검사기에서 생성물 제외/문맥 판정이 필요하지만 현재 실패 결과를 PASS로 숨기지 않는다.
+- 재작업 조건: C9 Stage의 필수 Gate/PR 경계를 정상 종료하거나 명시적인 독립 M1/M3 브랜치 예외가 생기면, 삭제된 workflow가 현 설계상 필요했던 것인지 Git 이력과 승인 계약을 대조하고 baseline Next 버전의 승인값을 확정한 뒤 코드·lock·시험을 같은 commit으로 정합화한다. 생성물 스캔 범위는 tracked-source 기준으로 고쳐 false positive를 제거하되 실제 직접 API 사용을 놓치지 않도록 음성 시험을 추가한다. 현재 승인 없이 workflow를 복원하거나 baseline 수치만 고치지 않는다.
+- 전체 Gate 재확인: `verify:quality-gate`를 현재 SHA `62e4be6b`에서 1회 실행해 `Overall ERROR / Exit Code 2`, lint·type·unit·contract·build·security·independence 전 범주 FAIL/총 37 finding을 얻었다. 17 `COMMAND_FAILED`, 8 `PRIVATE_KEY_BLOCK`, 6 `SECRET_ASSIGNMENT`, 3 `BROWSER_INTERNAL_ADDRESS`, 1씩 `COMMAND_EXECUTION_UNAVAILABLE`·`HIGH_RISK_PRODUCTION_DEPENDENCY`·`MISSING_REQUIRED_CAPABILITY`. 생성된 격리 report의 일부 security 경로는 `.venv` 제3자 패키지 test fixture이고, 나머지 source/의존성 finding은 개별 조사 전까지 오탐이나 PASS로 묶지 않는다. 이 결과로 **현 HEAD 공식 Gate는 NO_GO**이며 PR/병합/Release를 진행할 수 없다. 재작업은 생성물 제외와 각 실패 command/의존성 결과를 독립 M1 또는 해당 Stage에서 분류·수정 후 같은 SHA Gate 재실행이다.
+
 ### M3 현재 실행의 정확한 실패·재개 조건
 
 - 시도: 활성 C9 브랜치 `054d2206`에서 `node --test scripts/tests/web-runtime-shell.test.mjs scripts/tests/web-runtime-shell-hydration.test.mjs scripts/tests/mobile-shared-shell.test.mjs scripts/tests/android-native-shell.test.mjs scripts/tests/ios-native-shell.test.mjs` 실행, exit 1, 91개 중 81 PASS·10 FAIL. 제품 코드는 변경하지 않았다.
@@ -87,3 +94,21 @@
 | R1-M9-01~10, V01~V02 | 정본 계획 §19의 M9-01은 M8-13, M9-03~10은 선행 M9 작업·M5-07이 필요하다. 현재 M3 Web/iOS 계약 10 FAIL, M8 전체 5종 수명주기와 M9 선행 Gate 미완료이므로 이번 턴에 정식 G9 체인을 실행할 입력이 없다. WSL C9 API 기본 health와 Web 200은 M9 선행 충족이 아니다. | **M9 Release 검증은 NO_GO**. 해당 선행 Task의 실제 제품·시험 증거를 먼저 채우고, 외부 접근 배포는 G9-DEPLOY, 운영 대상 DR 훈련은 G9-DRILL, Oracle 인수는 별도 승인 후 정확 SHA로 진행한다. 단순 미착수 전체를 기록 완료로 계산하지 않는다. |
 | C11-01~05 | 정본 계획 §31은 상세설계 §36 초안을 실행 승인·구현 완료로 보지 않으며, 사용자 Key 우선/권한·DB migration·공개 API·비용/wire 계약을 별도 Gate로 둔다. 현 사용자 화면·Key/추론 등급 코드는 미구현이다. | **설계/정책/DB/비용 승인 전 선구현 금지**. 결정이 확정되면 C9 브랜치 정리 또는 예외 승인 뒤 별도 Stage·검증 경계에서 구현한다. 기록은 새 권한·비용 승인을 만들지 않는다. |
 | C12-01~05 | 정본 계획 §33은 독립 후속 Stage를 `PLANNED / NOT_STARTED / EXECUTION_APPROVAL_PENDING`으로 고정한다. 허가 QA 원본·접근/보존·표본군 분모·품질/지연/비용 기준선, collector/SDK와 외부 평가 모델·전송/비용 결정이 없다. 앞선 합성 fixture 시험은 실제 품질 평가가 아니다. | 실제 자료 추출·OpenTelemetry collector 설치·Ragas 유료/외부 호출·제품 경로 변경을 시행하지 않는다. 필요한 자료/수치/보안/비용 승인을 각각 받고, 세 표본군의 실제 baseline 확보 후 독립 Stage를 시작한다. 이번 Release 1 기술 PASS에 포함하지 않는다. |
+
+## 2026-10-09 이번 작업계획 처리 종결 — 재작업 등록 범위
+
+신산님의 13:12·13:25·13:38 직접 지시에 따른 **이번 작업계획의 처리 기준**은 실행 가능한 작업을 수행하고, 지금 더 진행할 수 없는 개별 작업은 이 파일에 남겨 다음 반복에서 재작업하는 것이다. 아래 `기록 처리`는 기능 구현·실기기/사용자 인수·공식 Gate PASS가 아니라 **이번 반복의 작업 항목 처리**를 뜻한다. 원문 `[ ]`, Stage의 기술 판정, Release `NO_GO`는 그대로 둔다. 설계 변경을 승인한 것으로 해석하지 않는다.
+
+| 작업 범위 | 이번 반복에 실제 수행·확인한 범위 | 더 진행할 수 없는 정확한 조건과 재작업 단위 |
+| --- | --- | --- |
+| M0~M2 / M1 현재 SHA | 과거 M0/G0·M2/G2 승인 증거 유지. 현 C9에서 M1 Foundation 8/11, Toolchain Next mismatch, 독립성 248 finding 및 공식 Gate 37 finding을 직접 실행·분류했다. | 삭제된 CI workflow 두 개와 현행 Next pin 16.3.3↔16.3.6 충돌, 생성물까지 스캔하는 규칙 및 미분류 명령/보안/의존성 지적을 위 M1 절에 기록. C9 미종결 branch에 타 Stage 코드를 섞지 않고 분리 M1 재작업 후 같은 SHA 전체 Gate를 재실행한다. |
+| R1-M3-01~06 / C1·C2 | Web/Mobile 계약 81/91, Desktop Node 48 PASS; Android lint/type/15 action·JS 양 플랫폼 bundle 및 Native 11 PASS, 실제 debug APK 45,949,071 byte 생성·해시 확인. | Web 2 FAIL, iOS Native 9 FAIL, Windows Rust `cargo` 부재, Android 연결 기기 0, iOS macOS Host/Signing/기기 미검증을 위 M3 절별로 기록. Windows NSIS·iOS Archive·실기기/오프라인 E2E는 해당 도구·기기와 분리 Stage가 준비된 반복에서 수행한다. |
+| R1-M4-01~07 / C9 인증·권한 | OpenAPI 현행 M8 profile·Audit 결정론 증거·Authorization 26 PASS, 로컬 Identity 41 PASS/2 SKIP, API/Next 실제 격리 Process와 BFF same-origin·종료/재시작 PASS, 이번 반복 초반 WSL image 건강 상태/기본 200 확인(이후 SSH 접근 무응답). | 현재 image의 인증 브라우저 개인→조직→역할 축소·구 세션 거부·복귀, 중앙 감사 실제 장애 회복, Native 설치판/step-up 전체 행렬은 위 C9 절의 공유 QA 영향 및 브라우저 도구 장애/기기 부족으로 미실행. 정식 공유 QA 권한·세션을 임의 변경하지 않고 정확 대상/원복과 측정 가능 브라우저에서 재작업한다. |
+| R1-M5-01~07 / C4 | Cloud/Object/Queue 계약 각각 17건 중 9건 통합 SKIP, C4 삭제 계약 4 PASS; 앞선 별도 격리 PostgreSQL 0056 Native 2 PASS를 범위 한정으로 유지. | 18개 PostgreSQL/S3 통합 SKIP과 Windows Local Backup/Restore·손상 복구/객체 실제 cleanup은 위 M4/M5 절: 현재 WSL SSH 2회 무응답·Windows Docker 없음·NSIS 미제작. 격리 저장소·정확 fixture/정리, Windows 설치본 확보 후 같은 Stage에서 재작업한다. |
+| R1-M6-01~16 / C6·C6a·C7·C8 | Provider catalog/credential/adapter 계약 100 PASS, 설정 화면 계약 35/37 PASS 및 C6a 브라우저 측정 장애 분리. 이전 WSL 일부 CP3/Provider 증거를 현재 새 실행으로 표시하지 않는다. | 정본 M6은 M5 정본/CP3→확장 순서와 실제 모델·Provider·Source/Connector/계보가 필요하다. WSL 접근 무응답, C6a Browser stdout/kernel 실패, 정확 QA Key·외부 모델 비용/License 범위 및 정본 §29의 C8 개인 Key AAD/실제 Network 지적에 대한 현행 재판정이 없어 전체 실경로를 현 반복에서 확인할 수 없다. 각 exact-SHA·비용/Key 영향·QA Source를 정한 분리 Stage와 1920×1080 실제 DOM으로 재작업한다. 비용 호출·Key/권한 저장은 이 기록으로 승인되지 않는다. |
+| R1-M7-01~06 / C3·C5 | Source/근거 질문/Studio Export 일부 API 계약 8 PASS, C3 Desktop build 후 경계 5 PASS와 root의 역사적 Evidence 21 PASS를 서로 다른 checkout으로 분리 기록했다. | 실제 Web/Windows/Android/iOS 파일·이미지·음성 여정과 Citation 원문, 혼입 방지·권한/오류/cleanup은 M3 설치/기기 및 M5·M6 실제 Source/모델 선행 불충족, 현 브라우저 접근 실패. 동일 SourceVersion과 정확 SHA의 각 Client 실파일 Gate에서 재작업한다. |
+| R1-M8-01~13 / C5 | Studio React/워크플로 계약 24 PASS 및 일부 이전 실제 Job 증거 유지, 현행 OpenAPI 95 path/123 operation 정본 요약 생성·비교 PASS. | 5종 파일 실제 열기·편집/Version·검토·승인·전달·Step-up/Egress·Web/Windows/Mobile E2E는 M7-06 및 설치판/기기/브라우저 선행 불충족. 실제 파일/QA 권한/반출 영향이 확정된 분리 반복에서 종류별 증거를 채운다. 계약 PASS를 파일 품질 PASS로 승격하지 않는다. |
+| R1-M9-01~10·V01~V02 / C10 | WSL API 기본 healthy/200과 현 SHA 공식 Gate 실행 결과를 확인했다. | M8-13와 M9 연쇄 선행 불충족, 공식 Gate `ERROR`/37 finding, Windows/iOS 서명·Android 기기, Oracle staging/rollback·DR/독립 검증·G9 승인 부재. 위 M9 절대로 `NO_GO`. 선행 기술 Gate를 재작업한 뒤 정확 SHA/이미지·승인된 환경에서 검증한다. 현재 PR/병합/외부 배포 금지. |
+| C11-01~05 / C12-01~05 | 정본 계획 §31·§33의 미구현/별도 실행 승인 경계를 재확인했다. | C11은 권한·개인 Key 우선·DB/API/비용 및 wire 설계 승인, C12는 QA 원본·표본/수치·collector/외부 전송/비용 조건이 없으므로 각 위 표의 정확 사유로 기록 처리한다. 선구현·외부 비용 호출/실자료 추출을 하지 않는다. |
+
+현재 반복에서 제품 source 수정 0, 정식 DB/권한/Secret/운영·Oracle 변경 0, PR/병합 0. 남은 항목은 이 표와 위 상세 원인에 따라 다음 반복의 입력으로 보존한다. 현 C9 branch는 기술 Gate 실패 때문에 합격 PR로 제출할 수 없으며, 안전 commit/원격 branch를 보존한 **재작업 소유: 어울1 / 재개: M1·M3·C9 Gate의 정확한 실패 해소 및 QA 환경 복구** 상태다. 이번 문서상 처리 완료가 branch 정리·Release 승인 조건을 면제하지 않는다.
