@@ -53,6 +53,7 @@
 - 확인 원인: iOS 8건은 파일 부재 `ENOENT(.github/workflows/release-1-ios-phase-a.yml)`로 동일 실패하며 Git 이력 `3f42fdfe`에서 해당 workflow가 삭제됐다. Web 2건은 `apps/web/app/layout.jsx`에 시험이 기대한 `WebShellRuntimeStatus`가 없고, `packages/ui/src/operations-recovery-model.js`의 실제 SHA-256이 시험의 고정 hash와 다르다. 이것을 Windows/macOS 실행 환경의 실패나 iOS 실기기 결함으로 단정하지 않는다.
 - 영향: M3 Web/iOS 계약 Gate 0 FAIL 조건 미충족. 현재 C9 Stage 미종결·미병합 브랜치 정책상 M3 구현 브랜치를 병렬 신설하거나 C9 PR에 M3 수정을 섞지 않는다. 다른 Stage의 비파괴적 독립 검증은 계속 가능하다.
 - 재개: C9 Stage의 승인된 기술/PR 경계를 정리해 브랜치를 정상 종료하거나, 현재 브랜치와 분리된 M3 작업 브랜치 예외를 신산님이 직접 승인한 뒤, 설계·현재 UI 의도를 확인하고 실패를 RED 시험으로 삼아 최소 정합화·전체 회귀를 수행한다. 삭제된 workflow를 이유 없이 복원하거나 hash 기대값만 맹목적으로 바꾸지 않는다.
+- Android 별도 진도: 이 항목의 Web/iOS FAIL과 구분하여 기존 C9 worktree에서 lockfile 지정 React Native Gradle plugin 누락을 보충하고, Git 제외 로컬 디버그 서명 파일을 일시 생성하여 `assembleDebug` 최종 exit 0·APK(45,949,071 byte, SHA-256 `7706A5A79CAB87E73FCC1DF51CEEAEF78DA147DA6224CD3BBBFDBD3621897269`) 생성을 확인했다. 빌드용 서명 파일은 제거하고 APK는 보존했다. `adb devices`에 연결 기기 0개여서 실제 설치·로그인·오프라인/복구 여정은 미검증이며, 장치 또는 격리 에뮬레이터가 준비되면 같은 정확 SHA의 APK로 별도 재개한다. Android 빌드 PASS를 M3 전체 PASS로 승격하지 않는다.
 
 ### M4~M8·C6~C8은 일괄 기록 완료가 아닌 계속 작업 대상
 
