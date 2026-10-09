@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
+import struct
 import unittest
 import zipfile
-import struct
 from io import BytesIO
 
 from daon_user_api.studio_export import StudioExportError, export_studio_output
-
+from pypdf import PdfReader
 
 METADATA = {
     "output_version_id": "version-1", "created_at": "2026-08-13T00:00:00Z",
@@ -31,8 +31,9 @@ class StudioExportTests(unittest.TestCase):
                     self.assertIn(b"version-1", joined)
             elif format_name == "pdf":
                 self.assertTrue(exported.content.startswith(b"%PDF-"))
-                self.assertIn("version-1".encode("utf-16-be").hex().upper().encode(), exported.content)
-                self.assertIn("근거 부록".encode("utf-16-be").hex().upper().encode(), exported.content)
+                extracted = "\n".join(page.extract_text() for page in PdfReader(BytesIO(exported.content)).pages)
+                self.assertIn("version-1", extracted)
+                self.assertIn("근거 부록", extracted)
             elif format_name == "png":
                 self.assertTrue(exported.content.startswith(b"\x89PNG\r\n\x1a\n"))
                 self.assertIn(b"version-1", exported.content)
@@ -46,6 +47,17 @@ class StudioExportTests(unittest.TestCase):
             export_studio_output("html", "제목", "내용", METADATA)
         with self.assertRaisesRegex(StudioExportError, "EXPORT_TOO_LARGE"):
             export_studio_output("csv", "제목", "x" * (8 * 1024 * 1024 + 1), METADATA)
+
+    def test_pdf_wraps_and_paginates_long_korean_content(self) -> None:
+        content = "긴 한국어 문장과 Citation page 2를 포함한 합성 본문입니다. " * 1200
+        result = export_studio_output("pdf", "긴 산출물", content, METADATA, output_type="business_draft")
+        pages = PdfReader(BytesIO(result.content)).pages
+        self.assertGreater(len(pages), 1)
+        self.assertIn("긴 산출물", pages[0].extract_text())
+        self.assertIn("근거 부록", pages[-1].extract_text())
+        font_refs = pages[0]["/Resources"]["/Font"].values()
+        self.assertTrue(any(font.get_object().get("/FontDescriptor") and "/FontFile2" in font.get_object()["/FontDescriptor"].get_object() for font in font_refs))
+        self.assertNotIn("Cit\nation", pages[0].extract_text())
 
     def test_tabular_and_graph_exports_preserve_real_structure_without_truncation(self) -> None:
         structured = {"rows": [

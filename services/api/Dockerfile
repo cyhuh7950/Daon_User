@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir \
     fastapi==0.139.2 \
     minio==7.2.20 \
     'psycopg[binary,pool]==3.3.4' \
+    reportlab==4.4.9 \
     uvicorn==0.51.0
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1

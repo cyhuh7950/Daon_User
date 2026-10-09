@@ -5,11 +5,11 @@ import csv
 import hashlib
 import json
 import struct
-import zlib
 import zipfile
+import zlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO, StringIO
-from typing import Mapping
 from xml.sax.saxutils import escape
 
 MAX_EXPORT_BYTES = 8 * 1024 * 1024
@@ -113,22 +113,59 @@ def _xlsx(rows_data: list[list[str]]) -> bytes:
 
 
 def _pdf(text: str) -> bytes:
-    encoded = text.encode("utf-16-be").hex().upper()
-    stream = f"BT /F1 9 Tf 40 800 Td <{encoded}> Tj ET".encode()
-    objects = [
-        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj",
-        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj",
-        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>endobj",
-        b"4 0 obj<</Length " + str(len(stream)).encode() + b">>stream\n" + stream + b"\nendstream endobj",
-        b"5 0 obj<</Type/Font/Subtype/Type0/BaseFont/HYSMyeongJo-Medium/Encoding/UniKS-UCS2-H/DescendantFonts[6 0 R]>>endobj",
-        b"6 0 obj<</Type/Font/Subtype/CIDFontType0/BaseFont/HYSMyeongJo-Medium/CIDSystemInfo<</Registry(Adobe)/Ordering(Korea1)/Supplement 2>>>>endobj",
-    ]
-    result = bytearray(b"%PDF-1.4\n"); offsets = [0]
-    for item in objects: offsets.append(len(result)); result.extend(item + b"\n")
-    xref = len(result); result.extend(f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n".encode())
-    for offset in offsets[1:]: result.extend(f"{offset:010d} 00000 n \n".encode())
-    result.extend(f"trailer<</Size {len(objects)+1}/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF".encode())
-    return bytes(result)
+    from pathlib import Path
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen.canvas import Canvas
+
+    font_name = "DaonNanumGothic"
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        font_path = Path(__file__).parent / "assets" / "NanumGothic-Regular.ttf"
+        pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+
+    output = BytesIO()
+    page = Canvas(output, pagesize=A4, pageCompression=1, invariant=1)
+    page.setFont(font_name, 9)
+    page_width, page_height = A4
+    margin = 40
+    line_height = 14
+    y = page_height - margin
+
+    def emit(line: str) -> None:
+        nonlocal y
+        if y < margin + line_height:
+            page.showPage()
+            page.setFont(font_name, 9)
+            y = page_height - margin
+        page.drawString(margin, y, line)
+        y -= line_height
+
+    for paragraph in text.split("\n"):
+        words = paragraph.expandtabs(4).split(" ")
+        line = ""
+        line_width = 0.0
+        for index, word in enumerate(words):
+            token = word + (" " if index < len(words) - 1 else "")
+            token_width = pdfmetrics.stringWidth(token, font_name, 9)
+            if line and line_width + token_width > page_width - 2 * margin:
+                emit(line.rstrip())
+                line = ""
+                line_width = 0.0
+            if not line:
+                token = token.lstrip()
+            for character in token:
+                character_width = pdfmetrics.stringWidth(character, font_name, 9)
+                if line and line_width + character_width > page_width - 2 * margin:
+                    emit(line.rstrip())
+                    line = ""
+                    line_width = 0.0
+                line += character
+                line_width += character_width
+        emit(line.rstrip())
+    page.save()
+    return output.getvalue()
 
 
 def _chunk(kind: bytes, data: bytes) -> bytes:
