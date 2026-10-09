@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,7 +16,88 @@ const browserCandidates = process.platform === "win32"
   : ["/usr/bin/chromium", "/usr/bin/google-chrome"];
 const browser = browserCandidates.find(existsSync);
 
-test("1920×1080 모델 목록은 페이지가 아닌 목록 내부에서 스크롤된다", { skip: !browser }, () => {
+async function measureLayout(fixture, { width = 1920, height = 1080 } = {}) {
+  const profile = mkdtempSync(path.join(tmpdir(), "daon-layout-browser-"));
+  const child = spawn(browser, [
+    "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+    "--remote-debugging-port=0", `--user-data-dir=${profile}`, pathToFileURL(fixture).href,
+  ], { stdio: "ignore", windowsHide: true });
+  let socket;
+  let send;
+  try {
+    let port;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      try {
+        port = Number(readFileSync(path.join(profile, "DevToolsActivePort"), "utf8").split(/\r?\n/u)[0]);
+        break;
+      } catch { /* Browser is still starting. */ }
+    }
+    assert.ok(port, "격리 브라우저의 CDP 포트가 열려야 합니다");
+    const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+    assert.equal(response.status, 200);
+    const target = (await response.json()).find((entry) => entry.type === "page");
+    assert.ok(target?.webSocketDebuggerUrl);
+    socket = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve, { once: true });
+      socket.addEventListener("error", reject, { once: true });
+    });
+    let sequence = 0;
+    const pending = new Map();
+    socket.addEventListener("message", ({ data }) => {
+      const message = JSON.parse(data);
+      const request = pending.get(message.id);
+      if (!request) return;
+      pending.delete(message.id);
+      message.error ? request.reject(new Error(JSON.stringify(message.error))) : request.resolve(message.result);
+    });
+    send = (method, params = {}) => new Promise((resolve, reject) => {
+      const id = ++sequence;
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`CDP command timed out: ${method}`));
+      }, 10_000);
+      timeout.unref();
+      pending.set(id, {
+        resolve: (value) => { clearTimeout(timeout); resolve(value); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      socket.send(JSON.stringify({ id, method, params }));
+    });
+    await send("Page.enable");
+    await send("Runtime.enable");
+    await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+    await send("Page.navigate", { url: pathToFileURL(fixture).href });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const result = await send("Runtime.evaluate", {
+        expression: "document.querySelector('#result')?.textContent || ''", returnByValue: true,
+      });
+      if (result.result.value) return JSON.parse(result.result.value);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.fail("브라우저가 실제 배치 크기를 출력해야 합니다");
+  } finally {
+    if (send) await Promise.race([
+      send("Browser.close").catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 1000)),
+    ]);
+    socket?.close();
+    child.kill();
+    assert.ok(profile.startsWith(`${tmpdir()}${path.sep}`));
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      try {
+        rmSync(profile, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+        break;
+      } catch (error) {
+        if (attempt === 19) throw error;
+      }
+    }
+  }
+}
+
+test("1920×1080 모델 목록은 페이지가 아닌 목록 내부에서 스크롤된다", { skip: !browser }, async () => {
   const tempDir = mkdtempSync(path.join(tmpdir(), "daon-model-picker-"));
   try {
     const models = Array.from({ length: 840 }, (_, index) =>
@@ -40,16 +121,7 @@ test("1920×1080 모델 목록은 페이지가 아닌 목록 내부에서 스크
       </script></body></html>`;
     const fixture = path.join(tempDir, "index.html");
     writeFileSync(fixture, html);
-    const result = spawnSync(browser, [
-      "--headless", "--disable-gpu", "--disable-software-rasterizer", "--no-sandbox",
-      "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-      `--user-data-dir=${path.join(tempDir, "browser")}`,
-      "--window-size=1920,1080", "--dump-dom", pathToFileURL(fixture).href,
-    ], { encoding: "utf8", timeout: 20_000 });
-    assert.equal(result.status, 0, result.stderr);
-    const match = result.stdout.match(/<output id="result">([^<]+)<\/output>/);
-    assert.ok(match, "브라우저가 실제 배치 크기를 출력해야 합니다");
-    const sizes = JSON.parse(match[1].replaceAll("&quot;", '"'));
+    const sizes = await measureLayout(fixture);
     assert.ok(sizes.viewportWidth >= 1800, JSON.stringify(sizes));
     assert.ok(sizes.viewportHeight >= 900, JSON.stringify(sizes));
     assert.ok(sizes.listHeight <= 320, `목록 높이: ${sizes.listHeight}px`);
@@ -61,7 +133,7 @@ test("1920×1080 모델 목록은 페이지가 아닌 목록 내부에서 스크
   }
 });
 
-test("1920×1080 Provider 목록은 압축된 카드와 내부 스크롤을 사용한다", { skip: !browser }, () => {
+test("세 해상도에서 Provider 목록과 상세는 내부 스크롤을 사용한다", { skip: !browser }, async () => {
   const tempDir = mkdtempSync(path.join(tmpdir(), "daon-provider-list-"));
   try {
     const cards = Array.from({ length: 15 }, (_, index) =>
@@ -91,6 +163,8 @@ test("1920×1080 Provider 목록은 압축된 카드와 내부 스크롤을 사�
       list.scrollTop = 200;
       detail.scrollTop = 200;
       document.querySelector('#result').textContent = JSON.stringify({
+        viewportHeight: innerHeight,
+        pageHeight: document.documentElement.scrollHeight,
         listHeight: list.clientHeight,
         listContentHeight: list.scrollHeight,
         listScrollTop: list.scrollTop,
@@ -103,24 +177,18 @@ test("1920×1080 Provider 목록은 압축된 카드와 내부 스크롤을 사�
       </script></body></html>`;
     const fixture = path.join(tempDir, "index.html");
     writeFileSync(fixture, html);
-    const result = spawnSync(browser, [
-      "--headless", "--disable-gpu", "--disable-software-rasterizer", "--no-sandbox",
-      "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-      `--user-data-dir=${path.join(tempDir, "browser")}`,
-      "--window-size=1920,1080", "--dump-dom", pathToFileURL(fixture).href,
-    ], { encoding: "utf8", timeout: 20_000 });
-    assert.equal(result.status, 0, result.stderr);
-    const match = result.stdout.match(/<output id="result">([^<]+)<\/output>/);
-    assert.ok(match, "브라우저가 실제 배치 크기를 출력해야 합니다");
-    const sizes = JSON.parse(match[1].replaceAll("&quot;", '"'));
-    assert.ok(sizes.listHeight <= 760, `목록 높이: ${sizes.listHeight}px`);
-    assert.ok(sizes.listContentHeight > sizes.listHeight, "Provider 목록이 넘쳐야 합니다");
-    assert.ok(sizes.listScrollTop > 0, "Provider 목록 자체가 스크롤되어야 합니다");
-    assert.ok(sizes.detailHeight <= 800, `상세 패널 높이: ${sizes.detailHeight}px`);
-    assert.ok(sizes.detailContentHeight > sizes.detailHeight, "상세 패널에 내부 overflow가 있어야 합니다");
-    assert.ok(sizes.detailScrollTop > 0, "상세 패널 자체가 스크롤되어야 합니다");
-    assert.ok(sizes.cardHeight <= 70, `카드 높이: ${sizes.cardHeight}px`);
-    assert.ok(sizes.gapAfterStatus <= 80, `상단 여백: ${sizes.gapAfterStatus}px`);
+    for (const [width, height] of [[1920, 1080], [1440, 900], [430, 844]]) {
+      const sizes = await measureLayout(fixture, { width, height });
+      assert.ok(sizes.pageHeight <= sizes.viewportHeight, `${width}×${height} 페이지 높이: ${sizes.pageHeight}px`);
+      assert.ok(sizes.listHeight <= 640, `${width}×${height} Provider 목록 높이: ${sizes.listHeight}px`);
+      assert.ok(sizes.listContentHeight > sizes.listHeight, `${width}×${height} Provider 목록이 넘쳐야 합니다`);
+      assert.ok(sizes.listScrollTop > 0, `${width}×${height} Provider 목록 자체가 스크롤되어야 합니다`);
+      assert.ok(sizes.detailHeight <= 800, `${width}×${height} 상세 패널 높이: ${sizes.detailHeight}px`);
+      assert.ok(sizes.detailContentHeight > sizes.detailHeight, `${width}×${height} 상세 패널에 내부 overflow가 있어야 합니다`);
+      assert.ok(sizes.detailScrollTop > 0, `${width}×${height} 상세 패널 자체가 스크롤되어야 합니다`);
+      assert.ok(sizes.cardHeight <= 70, `${width}×${height} 카드 높이: ${sizes.cardHeight}px`);
+      assert.ok(sizes.gapAfterStatus <= 80, `${width}×${height} 상단 여백: ${sizes.gapAfterStatus}px`);
+    }
   } finally {
     rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
