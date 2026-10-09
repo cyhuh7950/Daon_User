@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 import tempfile
 import threading
@@ -76,6 +77,104 @@ class IdentityAdminRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     thread.name == "admin-role-audit-outbox" and thread.is_alive()
                     for thread in threading.enumerate()
                 ))
+
+    @unittest.skipUnless(
+        os.environ.get("DAON_C9_AUDIT_ISOLATED_POSTGRES_DSN"),
+        "dedicated disposable C9 audit PostgreSQL database is not configured",
+    )
+    async def test_switch_audit_backlog_retries_with_postgres_storage(self) -> None:
+        from urllib.parse import urlsplit
+
+        import psycopg
+
+        from daon_user_api.audit import PostgresSecurityAuditStore
+        from daon_user_api.identity import IdentityService
+        from daon_user_api.identity_postgres import PostgresIdentityRepository
+
+        dsn = os.environ["DAON_C9_AUDIT_ISOLATED_POSTGRES_DSN"]
+        location = urlsplit(dsn)
+        self.assertEqual(location.hostname, "127.0.0.1")
+        self.assertEqual(location.path, "/daon_user_c9_audit_test")
+        with psycopg.connect(dsn) as connection:
+            self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0], "0055")
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM identity_session_tenant_switch_outbox"
+            ).fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM security_audit_events").fetchone()[0], 0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            dependencies = build_dependencies(RuntimeSettings.for_test(
+                database_path=Path(directory) / "runtime.sqlite3",
+                policy_version="identity-policy-v1",
+            ))
+            dependencies.identity_repository.close()
+            repository = PostgresIdentityRepository(dsn)
+            audit_store = PostgresSecurityAuditStore(dsn)
+            dependencies.identity_repository = repository
+            dependencies.audit_store = audit_store
+            dependencies.identity_service = IdentityService(
+                repository=repository, audit_store=audit_store, oidc_policies=(),
+                clock=lambda: datetime.now(timezone.utc),
+            )
+            dependencies.admin_membership_role_service = None
+            try:
+                with repository.transaction() as connection:
+                    for index in range(33):
+                        connection.execute(
+                            "INSERT INTO session_tenant_switch_outbox "
+                            "(event_id,prior_session_id,new_session_id,prior_tenant_id,target_tenant_id,"
+                            "actor_id,outcome,reason_code,occurred_at,trace_id,policy_version,created_at) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (f"pg-switch-{index:02d}", f"pg-old-{index:02d}", f"pg-new-{index:02d}",
+                             "tenant-001", "tenant-002", "user-001", "succeeded", "USER_SELECTED",
+                             datetime.now(timezone.utc).isoformat(), "identity-pg-retry", "identity-policy-v1",
+                             datetime.now(timezone.utc).isoformat()),
+                        )
+                original_append = audit_store.append
+                available = False
+
+                def append_after_recovery(draft):
+                    if not available:
+                        raise OSError("temporary audit outage")
+                    return original_append(draft)
+
+                with patch.object(audit_store, "append", side_effect=append_after_recovery), \
+                        patch("daon_user_api.runtime._ADMIN_AUDIT_RETRY_INTERVAL_SECONDS", 0.02):
+                    app = create_app(dependencies)
+                    async with app.router.lifespan_context(app):
+                        await asyncio.sleep(0.05)
+                        with psycopg.connect(dsn) as connection:
+                            self.assertEqual(connection.execute(
+                                "SELECT COUNT(*) FROM identity_session_tenant_switch_outbox "
+                                "WHERE delivered_at IS NULL"
+                            ).fetchone()[0], 33)
+                        available = True
+
+                        async def wait_for_delivery() -> None:
+                            while True:
+                                with psycopg.connect(dsn) as connection:
+                                    remaining = connection.execute(
+                                        "SELECT COUNT(*) FROM identity_session_tenant_switch_outbox "
+                                        "WHERE delivered_at IS NULL"
+                                    ).fetchone()[0]
+                                if remaining == 0:
+                                    return
+                                await asyncio.sleep(0.02)
+
+                        await asyncio.wait_for(wait_for_delivery(), timeout=10.0)
+                        dependencies.identity_service.dispatch_pending_tenant_switch_audits()
+                        with psycopg.connect(dsn) as connection:
+                            self.assertEqual(connection.execute(
+                                "SELECT COUNT(*), COUNT(DISTINCT event_id) FROM security_audit_events "
+                                "WHERE action='identity.session.tenant_switched'"
+                            ).fetchone(), (33, 33))
+                    self.assertFalse(any(
+                        thread.name == "admin-role-audit-outbox" and thread.is_alive()
+                        for thread in threading.enumerate()
+                    ))
+            finally:
+                dependencies.close()
+                audit_store.close()
 
     async def test_session_tenant_list_and_web_native_switch_use_own_active_scope(self) -> None:
         directory = tempfile.TemporaryDirectory()
