@@ -11,7 +11,16 @@ const WINDOWS_ABSOLUTE_PATH_PATTERN = /[a-z]:[\\/](?:users|project|workspaces?)[
 const POSIX_ABSOLUTE_PATH_PATTERN = /(?:^|[\s"'`=:(])\/(?:[Uu]sers|home|opt|srv)\/[^\s"'`]+/;
 const DAON_PATH_PATTERN = /(?:[a-z]:[\\/][^\s"'`]*[\\/]daon(?:2(?:\.5)?|3)(?:[\\/]|\b)|\/(?:[^\s"'`]+\/)*daon(?:2(?:\.5)?|3)(?:\/|\b))/i;
 const DIRECT_URL_PATTERN = /(?:https?:\/\/|\blocalhost(?::\d+)?\b|\b127\.0\.0\.1(?::\d+)?\b|NEXT_PUBLIC_API_BASE_URL)/i;
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const CONNECTOR_PATTERN = /(?:daon(?:2(?:\.5)?|3)[-_/]?(?:client|sdk|internal|endpoint)|daon[-_/](?:internal|sdk|client|endpoint))/i;
+
+function withoutLoopbackHostnameGuard(line) {
+  return line.replace(/new\s+Set\(\s*\[([^\n]*?)\]\s*\)\.has\(\s*hostname\s*\)/g, (expression, members) => {
+    const values = members.split(",").map((member) => member.trim());
+    return values.length > 0 && values.every((value) =>
+      /^(["'])(.*?)\1$/.test(value) && LOOPBACK_HOSTNAMES.has(value.slice(1, -1))) ? "" : expression;
+  });
+}
 
 const normalize = (value) => value.replaceAll("\\", "/").replace(/^\.\//, "");
 
@@ -277,7 +286,7 @@ function inspectGeneralFile(file, text, policy, components, packageNames, violat
     if ((path.basename(lower).startsWith("dockerfile") || /(?:compose|\.github\/workflows)/.test(lower)) && /(?:^\s*from\s+|\bimage\s*:).*daon(?:2(?:\.5)?|3)/i.test(line)) {
       violations.push(violation("RUNTIME_IMAGE_DAON", file, index + 1, "다른 Daon 제품 Runtime Image를 제거하십시오.", line));
     }
-    if (classifyRuntime(file, text, policy) === "browser" && DIRECT_URL_PATTERN.test(line)) {
+    if (classifyRuntime(file, text, policy) === "browser" && DIRECT_URL_PATTERN.test(withoutLoopbackHostnameGuard(line))) {
       violations.push(violation("BROWSER_DIRECT_API", file, index + 1, "Browser API 호출은 same-origin 상대 경로를 사용하십시오.", line));
     }
     if (!normalize(file).startsWith(`${policy.approved_connector_prefix}/`) && CONNECTOR_PATTERN.test(line) && !/^\s*(?:\/\/|#|\*)/.test(line)) {

@@ -182,6 +182,18 @@ test("Browser의 API 절대주소 호출을 차단한다", async () => {
   await expectViolation("BROWSER_DIRECT_API", async (root) => put(root, "apps/web/client/page.tsx", "'use client';\nfetch('http://localhost:8000/api/items');\n"));
 });
 
+test("Browser의 loopback hostname 거부 가드는 API 호출로 오인하지 않는다", async () => {
+  const root = await fixture();
+  await put(root, "apps/web/client/guard.ts", "'use client';\nreturn !new Set(['localhost', '127.0.0.1', '[::1]', '::1']).has(hostname);\n");
+  const result = run(root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /violations=0/);
+});
+
+test("loopback 거부 가드와 같은 줄의 실제 절대주소 호출은 차단한다", async () => {
+  await expectViolation("BROWSER_DIRECT_API", async (root) => put(root, "apps/web/client/guard.ts", "'use client';\nif (!new Set(['localhost', '127.0.0.1']).has(hostname)) fetch('http://localhost:8000/api/items');\n"));
+});
+
 test("승인 Adapter 밖 Connector 우회를 차단한다", async () => {
   await expectViolation("CONNECTOR_BYPASS", async (root) => put(root, "apps/web/client/connector.ts", "import client from 'daon-internal-client';\n"));
 });
