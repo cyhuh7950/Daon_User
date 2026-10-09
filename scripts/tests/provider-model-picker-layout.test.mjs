@@ -189,6 +189,14 @@ test("세 해상도에서 Provider 목록과 상세는 내부 스크롤을 사�
       assert.ok(sizes.cardHeight <= 70, `${width}×${height} 카드 높이: ${sizes.cardHeight}px`);
       assert.ok(sizes.gapAfterStatus <= 80, `${width}×${height} 상단 여백: ${sizes.gapAfterStatus}px`);
     }
+    writeFileSync(fixture, html
+      .replace('class="provider-settings-shell"', 'class="provider-settings-shell is-embedded"')
+      .replace('<body><main', '<body><div style="height:60px">Workspace navigation</div><main'));
+    for (const [width, height] of [[1920, 1080], [430, 844]]) {
+      const sizes = await measureLayout(fixture, { width, height });
+      assert.ok(sizes.pageHeight <= sizes.viewportHeight, `${width}×${height} 임베디드 페이지 높이: ${sizes.pageHeight}px`);
+      assert.ok(sizes.listScrollTop > 0 && sizes.detailScrollTop > 0, `${width}×${height} 임베디드 내부 스크롤`);
+    }
   } finally {
     rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
