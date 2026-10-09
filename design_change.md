@@ -12,3 +12,4 @@
 - 브라우저 도구 장애: Browser Use `getState()`가 Windows sandbox `helper_unknown_error: apply deny-read ACLs`로 종료되어 kernel reset 후 한 번 재시도했으나 동일 오류였다. 브라우저 입력/QA 사용자·DB 변경은 0. 이 도구 장애는 제품 실패가 아니며, 새 API image의 실제 브라우저 E2E는 여전히 UNVERIFIED다. 다른 안전한 브라우저 시험 경로는 기존 QA 자료·인증 제한과 자원 소유를 확인한 뒤 진행한다.
 - Native 계약 재확인: 현재 C9 브랜치의 `test_identity_sessions.py`는 5 PASS/2 SKIP/0 FAIL이다. SKIP 2건은 PostgreSQL opt-in 환경 부재로 이번 실행의 PASS가 아니다. 이전 격리 0056 PostgreSQL 2 PASS는 별도 증거이며 Windows 설치판/운영 HTTPS 실경로를 증명하지 않는다.
 - 정적 Gate: 현재 C9 브랜치에서 `npm run lint:workspace` 16파일 PASS/exit 0. 제품 코드 수정은 없으며 이 결과는 공유 QA 실경로 검증을 대신하지 않는다.
+- 관리자 UI/BFF 독립 회귀: `admin-user-management-react`, `admin-user-management-ui`, `admin-user-idempotency-key` 합계 40 PASS/0 FAIL, `admin-users-bff`와 `organization-admin-role-label` 합계 8 PASS/0 FAIL. 이는 같은 SHA의 로컬 계약 증거이며 정식 QA 계정의 실제 브라우저 역할 변경 재실행은 아니다.
