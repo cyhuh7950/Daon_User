@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { providerSettingsApi } from "../lib/provider-settings-api.js";
 import { summarizeConnectionUsage } from "./provider-settings-usage.js";
 import { projectPersonalCredentialView } from "./provider-personal-credential-view.js";
+import "../app/settings/model-connections/provider-settings.css";
 
 const MANAGED_MODEL_PROVIDERS = new Set();
 const CREDENTIAL_REQUIRED_PROVIDERS = new Set([

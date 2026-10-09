@@ -37,3 +37,8 @@ test("model checkboxes keep native compact dimensions inside the detail grid", (
   assert.equal(checkbox["min-height"], "16px");
   assert.equal(checkbox.padding, "0");
 });
+
+test("provider styles load with the shared component for standalone and embedded entry points", () => {
+  const component = readFileSync(fileURLToPath(new URL("./provider-settings-workspace.jsx", import.meta.url)), "utf8");
+  assert.match(component, /import ["']\.\.\/app\/settings\/model-connections\/provider-settings\.css["']/u);
+});

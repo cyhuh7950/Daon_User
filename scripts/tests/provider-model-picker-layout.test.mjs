@@ -198,6 +198,9 @@ test("세 해상도에서 Provider 목록과 상세는 내부 스크롤을 사�
       assert.ok(sizes.cardHeight <= 70, `${width}×${height} 카드 높이: ${sizes.cardHeight}px`);
       assert.ok(sizes.gapAfterStatus <= 80, `${width}×${height} 상단 여백: ${sizes.gapAfterStatus}px`);
     }
+    const shortMobile = await measureLayout(fixture, { width: 430, height: 450 });
+    assert.ok(shortMobile.detailHeight >= 118 && shortMobile.detailHeight <= 122 && shortMobile.detailScrollTop > 0,
+      `낮은 모바일 화면에서도 상세 패널이 자체 스크롤되어야 합니다: ${JSON.stringify(shortMobile)}`);
     writeFileSync(fixture, html
       .replace('class="provider-settings-shell"', 'class="provider-settings-shell is-embedded"')
       .replace('<body><main', '<body><div style="height:60px">Workspace navigation</div><main'));
@@ -206,6 +209,9 @@ test("세 해상도에서 Provider 목록과 상세는 내부 스크롤을 사�
       assert.ok(sizes.pageHeight <= sizes.viewportHeight, `${width}×${height} 임베디드 페이지 높이: ${sizes.pageHeight}px`);
       assert.ok(sizes.listScrollTop > 0 && sizes.detailScrollTop > 0, `${width}×${height} 임베디드 내부 스크롤`);
     }
+    const shortEmbedded = await measureLayout(fixture, { width: 430, height: 500 });
+    assert.ok(shortEmbedded.detailHeight >= 118 && shortEmbedded.detailHeight <= 122 && shortEmbedded.detailScrollTop > 0,
+      `낮은 임베디드 화면에서도 상세 패널이 자체 스크롤되어야 합니다: ${JSON.stringify(shortEmbedded)}`);
   } finally {
     rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
