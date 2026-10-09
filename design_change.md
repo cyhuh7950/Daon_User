@@ -58,6 +58,12 @@
 
 2026-10-09 활성 C9 코드 기준으로 기존 격리 Python 3.14.3과 임시 패키지 경로에서 M4 관리자 권한 계약 6 PASS, M5~M8의 Sync·Source·근거 질문·Studio Export 계약 8 PASS, C6~C8 Provider catalog·개인 credential·Adapter 계약 100 PASS를 확인했다. 시스템 Python/초기 격리 Python의 두 수집 오류는 패키지 경로 보정으로 해결했다. 이 실행은 위 추적표의 실제 브라우저·DB 복구·외부 Provider·장치·실파일·승인/반출을 증명하지 않는다. **해당 Stage는 미실행이라는 이유로 처리 완료하지 않았고**, 승인 범위의 독립 시험·기능 검증을 계속한다.
 
+### M3 Windows 설치본 제작의 로컬 Rust 도구 부재
+
+- 시도: 기존 C9 격리 worktree에서 Desktop Shell/Local Service Node 계약 48건 PASS 후 `npm run build:desktop-installer`를 1회 실행했다. Local Service sidecar 생성까지 진행했으나 Tauri가 `cargo metadata`를 호출할 때 `program not found`로 종료(exit 1)했다.
+- 확인 원인·정리: 현재 Windows PATH의 `cargo`가 없고 기본 사용자 Cargo 위치에도 실행 파일이 없다. wrapper가 실패한 임시 `daon-user-desktop-installer-*` target과 생성 sidecar를 정리했고, Tauri `gen`도 남지 않았다. 빌드 과정에서 Cargo.toml의 작업트리 변경 표시가 생겼으나 blob이 원본과 일치함을 확인하고 인덱스 메타데이터를 새로고침해 tracked 변경 0으로 복귀했다. 기존 미추적 `.pytest-tmp/`는 보존했다.
+- 영향·재개: 이 Windows 환경에서는 NSIS 설치본 생성·설치 실행 Gate를 판정할 수 없다. 승인된 Rust toolchain과 Windows 빌드 전제조건을 갖춘 독립 환경에서 정확 SHA로 다시 제작하고, 생성된 EXE/NSIS 서명·설치·WebView/Local Service 실제 클릭을 별도 확인해야 한다. 48건 계약 PASS를 설치판 PASS로 바꾸지 않는다. 다른 독립 계획 검증은 계속한다.
+
 ### C6a 1920×1080 배치 시험 실행기의 측정 출력 부재
 
 - 시도·증거: C9 브랜치에서 Provider 화면 계약 4파일 37건 실행, 35 PASS·2 FAIL. 실패는 모델/Provider 목록의 실제 크기·스크롤 값이 아닌 `--headless --dump-dom`의 `<output id="result">` 미출력이다. 설치된 Edge와 Chrome 각각에 최소 `data:` DOM을 출력하도록 시도해도 exit 0·stdout 빈 값이었다.
