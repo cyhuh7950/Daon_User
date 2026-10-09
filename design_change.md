@@ -69,6 +69,7 @@
 - 시도·증거: C9 브랜치에서 Provider 화면 계약 4파일 37건 실행, 35 PASS·2 FAIL. 실패는 모델/Provider 목록의 실제 크기·스크롤 값이 아닌 `--headless --dump-dom`의 `<output id="result">` 미출력이다. 설치된 Edge와 Chrome 각각에 최소 `data:` DOM을 출력하도록 시도해도 exit 0·stdout 빈 값이었다.
 - 영향·판정: 현 명령으로는 1920×1080 내부 스크롤을 판정할 수 없다. 이는 **시험 실행기 측정 미완료**이며 제품 레이아웃의 PASS/FAIL이 아니다. 나머지 Provider 설정 계약 35건의 PASS만 유지한다.
 - 재개 조건: 별도 브라우저 세션·CDP로 DOM 크기를 직접 읽고, 모델 목록/Provider 목록의 고정 박스·내부 스크롤·페이지 바깥 스크롤 0 조건을 같은 1920×1080 기준으로 재실행한다. 현재 C9의 인증 QA 세션·Key/권한은 변경하지 않는다. 이 도구 경계만 기록하고 다른 독립 작업을 계속한다.
+- 추가 시도: WSL-server의 표준 `chromium`/`chromium-browser`/`google-chrome` 실행 파일은 검색되지 않았다. Browser Use 초기화 `getState()`도 신뢰 프로세스 종료·kernel reset으로 2회 실패하여 이 경로에서 현재 실제 DOM 측정은 얻지 못했다. 브라우저 입력·인증/Key·제품 코드 변경은 없으며 측정 가능 브라우저 세션이 확보되면 위 조건으로 재개한다.
 
 ### M9·C11·C12의 개별 선행·승인 Gate
 
