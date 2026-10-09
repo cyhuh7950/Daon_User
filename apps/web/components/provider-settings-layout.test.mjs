@@ -29,3 +29,11 @@ test("section headings use one compact row at desktop width", () => {
   assert.equal(catalog.display, "flex");
   assert.equal(declarations(".provider-settings-shell .provider-status")["margin-bottom"], "4px");
 });
+
+test("model checkboxes keep native compact dimensions inside the detail grid", () => {
+  const checkbox = declarations(".provider-settings-shell .provider-model-options input[type=\"checkbox\"]");
+  assert.equal(checkbox.width, "16px");
+  assert.equal(checkbox.height, "16px");
+  assert.equal(checkbox["min-height"], "16px");
+  assert.equal(checkbox.padding, "0");
+});

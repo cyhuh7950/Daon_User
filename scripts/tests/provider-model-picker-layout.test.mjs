@@ -155,13 +155,17 @@ test("세 해상도에서 Provider 목록과 상세는 내부 스크롤을 사�
       <legend>사용 허용 모델</legend><div class="provider-model-options">${Array.from({ length: 840 }, (_, index) => `<label><input type="checkbox"><span>provider/model-${index}</span></label>`).join("")}</div>
       </fieldset>${Array.from({ length: 18 }, (_, index) => `<label>추가 설정 ${index}<input value="설정값"></label>`).join("")}
       </div><div class="provider-detail-actions"><button>연결 시험 및 저장</button></div>
-      </div></div></section></main><output id="result"></output><script>
+      </div></div></section><section class="workspace-model-defaults"><div class="studio-section-heading"><div>
+      <h2>사용 허용 모델</h2><small>조회된 카탈로그와 사용 허용 목록을 구분해 관리합니다.</small></div></div>
+      <div class="provider-model-grid">${Array.from({ length: 4 }, (_, index) => `<article class="provider-model-card"><header><div><strong>Provider · model-${index}</strong><small>Catalog v1</small></div></header><div class="model-capabilities"><span class="capability-chip is-active">텍스트 생성</span></div></article>`).join("")}</div></section></main><output id="result"></output><script>
       const list = document.querySelector('.provider-connection-list');
       const card = document.querySelector('.provider-card');
       const status = document.querySelector('.provider-status');
       const detail = document.querySelector('.provider-detail');
+      const catalog = document.querySelector('.workspace-model-defaults');
       list.scrollTop = 200;
       detail.scrollTop = 200;
+      catalog.scrollTop = 40;
       document.querySelector('#result').textContent = JSON.stringify({
         viewportHeight: innerHeight,
         pageHeight: document.documentElement.scrollHeight,
@@ -171,6 +175,9 @@ test("세 해상도에서 Provider 목록과 상세는 내부 스크롤을 사�
         detailHeight: detail.clientHeight,
         detailContentHeight: detail.scrollHeight,
         detailScrollTop: detail.scrollTop,
+        catalogHeight: catalog.clientHeight,
+        catalogContentHeight: catalog.scrollHeight,
+        catalogScrollTop: catalog.scrollTop,
         cardHeight: card.getBoundingClientRect().height,
         gapAfterStatus: card.getBoundingClientRect().top - status.getBoundingClientRect().bottom,
       });
@@ -186,6 +193,8 @@ test("세 해상도에서 Provider 목록과 상세는 내부 스크롤을 사�
       assert.ok(sizes.detailHeight <= 800, `${width}×${height} 상세 패널 높이: ${sizes.detailHeight}px`);
       assert.ok(sizes.detailContentHeight > sizes.detailHeight, `${width}×${height} 상세 패널에 내부 overflow가 있어야 합니다`);
       assert.ok(sizes.detailScrollTop > 0, `${width}×${height} 상세 패널 자체가 스크롤되어야 합니다`);
+      assert.ok(sizes.catalogContentHeight > sizes.catalogHeight, `${width}×${height} 카탈로그는 내부 스크롤이어야 합니다`);
+      assert.ok(sizes.catalogScrollTop > 0, `${width}×${height} 카탈로그 자체가 스크롤되어야 합니다`);
       assert.ok(sizes.cardHeight <= 70, `${width}×${height} 카드 높이: ${sizes.cardHeight}px`);
       assert.ok(sizes.gapAfterStatus <= 80, `${width}×${height} 상단 여백: ${sizes.gapAfterStatus}px`);
     }
