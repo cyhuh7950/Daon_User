@@ -54,6 +54,7 @@
 - 영향: M3 Web/iOS 계약 Gate 0 FAIL 조건 미충족. 현재 C9 Stage 미종결·미병합 브랜치 정책상 M3 구현 브랜치를 병렬 신설하거나 C9 PR에 M3 수정을 섞지 않는다. 다른 Stage의 비파괴적 독립 검증은 계속 가능하다.
 - 재개: C9 Stage의 승인된 기술/PR 경계를 정리해 브랜치를 정상 종료하거나, 현재 브랜치와 분리된 M3 작업 브랜치 예외를 신산님이 직접 승인한 뒤, 설계·현재 UI 의도를 확인하고 실패를 RED 시험으로 삼아 최소 정합화·전체 회귀를 수행한다. 삭제된 workflow를 이유 없이 복원하거나 hash 기대값만 맹목적으로 바꾸지 않는다.
 - Android 별도 진도: 이 항목의 Web/iOS FAIL과 구분하여 기존 C9 worktree에서 lockfile 지정 React Native Gradle plugin 누락을 보충하고, Git 제외 로컬 디버그 서명 파일을 일시 생성하여 `assembleDebug` 최종 exit 0·APK(45,949,071 byte, SHA-256 `7706A5A79CAB87E73FCC1DF51CEEAEF78DA147DA6224CD3BBBFDBD3621897269`) 생성을 확인했다. 빌드용 서명 파일은 제거하고 APK는 보존했다. `adb devices`에 연결 기기 0개여서 실제 설치·로그인·오프라인/복구 여정은 미검증이며, 장치 또는 격리 에뮬레이터가 준비되면 같은 정확 SHA의 APK로 별도 재개한다. Android 빌드 PASS를 M3 전체 PASS로 승격하지 않는다.
+- 추가 iOS 계약: `verify:ios-native` 전체 69건은 60 PASS·9 FAIL(exit 1). 8건은 위 삭제된 macOS workflow 파일 부재가 동일 원인이고, 1건은 Podfile autolinking 시험이 `apps/mobile/node_modules/react-native` 고정 위치를 요구하지만 현재 npm 설치본은 허용된 monorepo hoist에 따라 root `node_modules/react-native`에 있다. Podfile은 실제로 `require.resolve(..., {paths: [app_root]})`와 `config[:reactNativePath]`를 사용하므로 위치 기대값과 실행 계약의 정합성을 별도 M3 코드 Stage에서 판단한다. iOS production JS bundle 및 Android native 11건은 PASS이나 macOS 시뮬레이터/실기기 build·권한/오프라인 여정은 Windows에서 증명하지 못했다.
 
 ### M4~M8·C6~C8은 일괄 기록 완료가 아닌 계속 작업 대상
 
