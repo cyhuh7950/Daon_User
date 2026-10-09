@@ -1,6 +1,6 @@
 # 설계 변경·미진사항 보조 기록부
 
-이 파일은 신산님의 2026-10-09 12:05 지시와 12:06 파일명 정정에 따른 보조 기록부다. 12:35 직접 지시에 따라 막힌 항목은 원인·영향·미충족 조건을 여기에 기록하면 **이번 작업계획의 처리 완료**로 간주한다. 승인된 상세 설계 `docs/daon-user-program-design.md`, 작업계획 `docs/daon_user_program_development_plan.md`, 진행 현황 `docs/WORK_STATUS.md`를 대체하지 않는다. 기록에 따른 처리 완료는 기능 구현·실경로 검증 PASS, Release/사용자 인수, 설계·권한·DB·배포 변경 승인과 구분한다.
+이 파일은 신산님의 2026-10-09 12:05 지시와 12:06 파일명 정정에 따른 보조 기록부다. 12:35·12:38 직접 지시에 따라 **실제로 진도를 더 낼 수 없는 개별 항목**의 시도·원인·영향·미충족 조건·재개 조건을 여기에 기록하면 그 항목은 이번 작업계획에서 기록으로 처리하고 다음 실행 가능 항목으로 진행한다. 단순 미실행·미검증은 진행 불가가 아니며, 아래 광범위한 미진 목록 전체를 일괄 완료로 보지 않는다. 승인된 상세 설계 `docs/daon-user-program-design.md`, 작업계획 `docs/daon_user_program_development_plan.md`, 진행 현황 `docs/WORK_STATUS.md`를 대체하지 않는다. 기록에 따른 처리는 기능 구현·실경로 검증 PASS, Release/사용자 인수, 설계·권한·DB·배포 변경 승인과 구분한다.
 
 ## 2026-10-09 C9 §30.3 R5 / §30.4 — de73 WSL QA 잔여 검증
 
@@ -23,13 +23,13 @@
 - 대안 B: 공유 QA 자격증명/권한을 바꾸지 않고 현 로컬 계약과 기본 smoke만 유지한다. 운영 영향은 없지만 현재 image 브라우저 Gate와 Stage PR은 UNVERIFIED/보류다.
 - 중앙 감사 장애→재시도: 현재 outbox 0건이므로 정식 공유 환경에서 인위 장애/행 주입은 API-only 승인 밖이다. 우선 격리 합성 환경의 실패→복구 계약 증거를 유지하고, 정식 실경로가 필수라면 별도 대상·일시적 영향·복구 승인 후 수행한다.
 
-## 2026-10-09 작업계획 전체의 미진 처리 목록
+## 2026-10-09 작업계획 미진 추적 목록 — 실행 가능성 재판정 중
 
-아래 항목은 정본 계획 §9.1·§29·§30~33과 `WORK_STATUS`의 확인된 증거 수준을 대조한 **처리 완료 기록**이다. 이미 구현된 부분은 보존하고, 미실행·미검증을 성공으로 추정하지 않는다. 다음 사이클의 새 설계·계획은 신산님의 별도 지시와 각 승인 경계를 따른다.
+아래 항목은 정본 계획 §9.1·§29·§30~33과 `WORK_STATUS`의 증거 수준을 대조한 **추적 목록**이다. 미실행·미검증이라는 이유만으로 처리 완료하지 않는다. M3~M8·C3~C8의 독립 실행 가능 부분은 계획 작업을 계속하고, 실제 승인·환경 경계가 확인된 개별 항목만 구체적 장애 기록으로 분리한다. 이미 구현된 부분은 보존하며 다음 사이클의 새 설계·계획은 신산님의 별도 지시와 각 승인 경계를 따른다.
 
 | Stage/Task | 확인된 상태와 진도 제한 | 영향·남은 조건 / 다음 사이클 조치 |
 | --- | --- | --- |
-| M3 / R1-M3-01~06, C1~C2 | Web Shell·일부 브라우저 계약은 존재하나 설치 Windows WebView·오프라인 복구와 Android/iOS 실기기 전체 여정 증거가 없다. | Client Shell·복구의 실제 기기 PASS와 제품 배포 판정은 UNVERIFIED. 설치판/실기기·서명·오프라인→재연결을 별도 QA로 검증한다. |
+| M3 / R1-M3-01~06, C1~C2 | 2026-10-09 현재 C9 브랜치에서 Web/Mobile Shell 계약 91건 재실행: 81 PASS·10 FAIL. iOS 8건은 현재 브랜치에 없는 `.github/workflows/release-1-ios-phase-a.yml`을 요구하고, Web 2건은 현 layout의 `WebShellRuntimeStatus` 부재와 M2 파일 hash 변경으로 실패했다. 설치 Windows WebView·오프라인 복구와 Android/iOS 실기기 전체 여정 증거도 없다. | 전체 M3는 **진행 중/FAIL**, 일괄 기록 완료가 아니다. 실패 10건은 현행 설계와 삭제 이력(`3f42fdfe`) 대조 후 승인된 Stage의 단일 writer가 시험·제품 계약을 정합화해야 한다. 현 C9 미종결 브랜치에서 다른 Stage 코드로 섞지 않는다. 실제 장치·서명·오프라인→재연결은 별도 QA. |
 | M4 / R1-M4-01~07, C1·C9 | API/BFF·인증·권한 계약 및 C9 로컬/WSL 일부 실증은 있다. 현 `de73` 인증 브라우저 역할 축소와 전체 역할·세션 행렬은 미재현이다. | 권한 누출 0·Native/브라우저 실제 흐름·복구 Gate는 UNVERIFIED. 기존 QA 계정의 한시 권한·원복 범위를 확정한 뒤 정확 SHA로 재시험한다. |
 | M5 / R1-M5-01~07, C2·C4 | PostgreSQL/Local 계약과 격리 migration 시험은 있으나 Windows Backup/Restore·손상 복구·Sync 충돌/DR 전체 실측이 없다. | 데이터 복구 Exit는 UNVERIFIED/NO_GO. 실제 설치판·격리 복구 자원으로 무손실/rollback을 증명한다. 공유 DB 전체 복원은 이 기록으로 승인되지 않는다. |
 | M6 / R1-M6-01~16, C6~C8 | Provider/Router·검색/Connector 계약과 일부 WSL 시험은 있으나 M6 Evidence Manifest, 실제 전체 Provider·Source·권한/계보 여정 및 C8 개인 Key/AAD 독립 Gate가 남았다. | 실제 비용·Key/모델·외부 Source의 운영 PASS는 UNVERIFIED. 허가 QA Key·비용 상한·정확 SHA로 경로별 검증하고 미해결 Important를 재판정한다. |
@@ -45,4 +45,15 @@
 
 ### C9 미완료 체크의 처리 기준
 
-정본 계획 §30.3 R5의 4개와 §30.4의 5개 미완료 체크는 위 C9 기록과 `WORK_STATUS`의 이미 수행한 로컬·격리 DB·이전 image Chrome·현 image 기본 smoke 증거로 범위를 분리해 **계획 처리 완료**로 분류한다. §30.3 R5의 실제 현재-image 브라우저/권한·forward recovery·PR과 §30.4의 승인 정합성 문서 drift, 실제 current-image 전환/Native·인수는 여전히 UNVERIFIED 또는 별도 승인 대기다. 따라서 원문 체크박스를 시험 PASS로 바꾸거나 PR/병합을 강행하지 않는다.
+정본 계획 §30.3 R5의 4개와 §30.4의 5개 미완료 체크는 위 C9 기록과 `WORK_STATUS`의 이미 수행한 로컬·격리 DB·이전 image Chrome·현 image 기본 smoke 증거로 **각각의 실행 가능성**을 분리한다. 현재-image 인증 브라우저/권한·중앙 감사 실제 장애 재시도처럼 별도 공유 QA 조작 승인이 필요한 부분만 기록으로 처리하고, 승인 범위 안의 독립 검증은 계속한다. forward recovery·PR, 승인 정합성 문서 drift, 실제 current-image 전환/Native·인수는 여전히 UNVERIFIED 또는 별도 승인 대기다. 따라서 원문 체크박스를 시험 PASS로 바꾸거나 PR/병합을 강행하지 않는다.
+
+### M3 현재 실행의 정확한 실패·재개 조건
+
+- 시도: 활성 C9 브랜치 `054d2206`에서 `node --test scripts/tests/web-runtime-shell.test.mjs scripts/tests/web-runtime-shell-hydration.test.mjs scripts/tests/mobile-shared-shell.test.mjs scripts/tests/android-native-shell.test.mjs scripts/tests/ios-native-shell.test.mjs` 실행, exit 1, 91개 중 81 PASS·10 FAIL. 제품 코드는 변경하지 않았다.
+- 확인 원인: iOS 8건은 파일 부재 `ENOENT(.github/workflows/release-1-ios-phase-a.yml)`로 동일 실패하며 Git 이력 `3f42fdfe`에서 해당 workflow가 삭제됐다. Web 2건은 `apps/web/app/layout.jsx`에 시험이 기대한 `WebShellRuntimeStatus`가 없고, `packages/ui/src/operations-recovery-model.js`의 실제 SHA-256이 시험의 고정 hash와 다르다. 이것을 Windows/macOS 실행 환경의 실패나 iOS 실기기 결함으로 단정하지 않는다.
+- 영향: M3 Web/iOS 계약 Gate 0 FAIL 조건 미충족. 현재 C9 Stage 미종결·미병합 브랜치 정책상 M3 구현 브랜치를 병렬 신설하거나 C9 PR에 M3 수정을 섞지 않는다. 다른 Stage의 비파괴적 독립 검증은 계속 가능하다.
+- 재개: C9 Stage의 승인된 기술/PR 경계를 정리해 브랜치를 정상 종료하거나, 현재 브랜치와 분리된 M3 작업 브랜치 예외를 신산님이 직접 승인한 뒤, 설계·현재 UI 의도를 확인하고 실패를 RED 시험으로 삼아 최소 정합화·전체 회귀를 수행한다. 삭제된 workflow를 이유 없이 복원하거나 hash 기대값만 맹목적으로 바꾸지 않는다.
+
+### M4~M8·C6~C8은 일괄 기록 완료가 아닌 계속 작업 대상
+
+2026-10-09 활성 C9 코드 기준으로 기존 격리 Python 3.14.3과 임시 패키지 경로에서 M4 관리자 권한 계약 6 PASS, M5~M8의 Sync·Source·근거 질문·Studio Export 계약 8 PASS, C6~C8 Provider catalog·개인 credential·Adapter 계약 100 PASS를 확인했다. 시스템 Python/초기 격리 Python의 두 수집 오류는 패키지 경로 보정으로 해결했다. 이 실행은 위 추적표의 실제 브라우저·DB 복구·외부 Provider·장치·실파일·승인/반출을 증명하지 않는다. **해당 Stage는 미실행이라는 이유로 처리 완료하지 않았고**, 승인 범위의 독립 시험·기능 검증을 계속한다.
