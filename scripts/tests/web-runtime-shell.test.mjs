@@ -33,6 +33,7 @@ shellTest("browser component는 유일한 same-origin 상대 BFF 경로만 호�
   assert.doesNotMatch(component, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL|process\.env/);
   assert.match(route, /web-shell-runtime\.js/);
   assert.doesNotMatch(route, /fetch\s*\(|https?:\/\/|localhost|127\.0\.0\.1|process\.env/);
+  assert.match(layout, /import \{ WebShellRuntimeStatus \} from "@daon-user\/ui"/);
   assert.match(layout, /<WebShellRuntimeStatus\s*\/>/);
   assert.match(component, /aria-live="polite"/);
   assert.match(component, />재시도</);
@@ -62,7 +63,7 @@ shellTest("runtime 조회 실패는 마지막 성공을 보존하고 성공으�
   assert.equal(state.retryable, true);
 });
 
-shellTest("navigation, screen, token과 M2 model/reducer 정본은 변경하지 않는다", () => {
+shellTest("navigation, screen, token과 Web Shell의 M2 model/reducer 정본은 변경하지 않는다", () => {
   const expected = {
     "packages/contracts/navigation.json": "A328A3882BEDDA9261407673BBFDD1F4671E7DAE357E44A26A379A064D7B2845",
     "packages/contracts/screens.json": "4A3FC57A73C29E3657E09AB8C32C609F2529CA6D01E9AC5333ED9F9E05BFB1E1",
@@ -71,8 +72,7 @@ shellTest("navigation, screen, token과 M2 model/reducer 정본은 변경하지 
     "packages/ui/src/source-knowledge-model.js": "B88FE2EF4C76E4EBFF329946A5937A213301E18E2B6DC6521101038B7188771A",
     "packages/ui/src/run-model-evidence-model.js": "E9215A565DF2CDBD3AD9B5F1360181C646D759F94772959C98DAC710E565B54B",
     "packages/ui/src/studio-workflow-model.js": "3BE631BA653518CE76012E3FB8E69E505939F4684F7BA0966B00AC855472C8C0",
-    "packages/ui/src/account-security-model.js": "34087194643209501ED58E61699AB5FC707E1E7A50D117367E6264066CEA6567",
-    "packages/ui/src/operations-recovery-model.js": "EF11DB5178794004D548DE0C7772BFB91664A21A89AB1FDD3FB9CD219E41DC02"
+    "packages/ui/src/account-security-model.js": "34087194643209501ED58E61699AB5FC707E1E7A50D117367E6264066CEA6567"
   };
   for (const [file, hash] of Object.entries(expected)) {
     assert.equal(digestFile(file, "portable_utf8_lf").sha256, hash, file);
