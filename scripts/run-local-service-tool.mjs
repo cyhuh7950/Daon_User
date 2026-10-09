@@ -53,7 +53,7 @@ export function runLocalServiceTool(action, { spawnImpl = spawnSync } = {}) {
       path.join(os.tmpdir(), "daon-user-local-service-uv-python"),
     UV_PROJECT_ENVIRONMENT:
       process.env.UV_PROJECT_ENVIRONMENT ??
-      path.join(os.tmpdir(), `${path.basename(repositoryRoot)}-local-service-uv-env-r1`),
+      path.join(repositoryRoot, "services", "local-service", ".venv"),
     TMP: pytestTempRoot,
     TEMP: pytestTempRoot,
     TMPDIR: pytestTempRoot,
