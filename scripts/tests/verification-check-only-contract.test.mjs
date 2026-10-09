@@ -31,8 +31,12 @@ test("authorization check-only는 실제 identity·authorization을 검증하고
     maxBuffer: 16 * 1024 * 1024,
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /api identity verified: tests=34 actions=7/u);
-  assert.match(result.stdout, /api authorization verified: tests=25 roles=7 permissions=8/u);
+  const identity = result.stdout.match(/api identity verified: tests=(\d+) actions=7 sha256=[A-F0-9]{64}/u);
+  const authorization = result.stdout.match(/api authorization verified: tests=(\d+) roles=7 permissions=8 sha256=[A-F0-9]{64}/u);
+  assert.ok(identity, result.stdout);
+  assert.ok(authorization, result.stdout);
+  assert.ok(Number(identity[1]) >= 34, "Identity 회귀 시험 수가 승인 기준보다 적습니다.");
+  assert.ok(Number(authorization[1]) >= 25, "Authorization 회귀 시험 수가 승인 기준보다 적습니다.");
   for (const relative of privateEvidence) {
     assert.deepEqual(snapshotEvidence(relative), before[relative], `${relative} was changed`);
   }
