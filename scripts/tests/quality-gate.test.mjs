@@ -147,10 +147,10 @@ test("Local Service Runtime과 전체 Python 환경 감사는 명시적 필수�
   assert.match(serialized, /local-service-full-environment-audit/);
 });
 
-test("생성 Cache와 compiler target은 보안 Source scan에서 제외한다", async (t) => {
+test("생성 Cache·compiler target·Python 가상환경은 보안 Source scan에서 제외한다", async (t) => {
   const root = await makeFixture();
   t.after(() => rm(root, { recursive: true, force: true }));
-  for (const directory of ["__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", "target"]) {
+  for (const directory of ["__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", "target", ".venv"]) {
     const generated = path.join(root, ".github", directory);
     await mkdir(generated, { recursive: true });
     await writeFile(path.join(generated, "generated.bin"), "http://127.0.0.1:9999");
