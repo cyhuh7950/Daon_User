@@ -196,6 +196,7 @@ async function scanSecurity(root, security) {
       scanned.push(relative);
       const content = await readFile(absolute, "utf8");
       for (const rule of rules) {
+        if (rule.id === "BROWSER_INTERNAL_ADDRESS" && relative.startsWith("services/")) continue;
         rule.regex.lastIndex = 0;
         if (rule.regex.test(content)) violations.push({ rule_id: rule.id, path: relative });
       }

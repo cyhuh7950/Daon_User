@@ -171,6 +171,29 @@ test("테스트 픽스처의 내부 주소와 더미 비밀값은 보안 Source 
   assert.equal(report.categories.security.status, "PASS");
 });
 
+test("서버 전용 Provider URL은 Browser 내부주소 위반이 아니지만 Browser URL은 차단한다", async (t) => {
+  const root = await makeFixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const policy = fixturePolicy();
+  policy.security.scan_roots = ["apps", "services"];
+  policy.security.forbidden_runtime_patterns = [
+    { id: "BROWSER_INTERNAL_ADDRESS", pattern: "https?://(?:localhost|127\\.0\\.0\\.1)(?::\\d+)?" }
+  ];
+  const server = path.join(root, "services", "api", "src", "provider.py");
+  await mkdir(path.dirname(server), { recursive: true });
+  await writeFile(server, 'DEFAULT_ENDPOINT = "http://localhost:8642/v1"\n', "utf8");
+  const serverResult = await runFixture(root, policy);
+  assert.equal(serverResult.report.categories.security.status, "PASS");
+
+  const browser = path.join(root, "apps", "web", "components", "provider.jsx");
+  await mkdir(path.dirname(browser), { recursive: true });
+  await writeFile(browser, 'fetch("http://127.0.0.1:8642/v1/models");\n', "utf8");
+  const browserResult = await runFixture(root, policy);
+  assert.equal(browserResult.report.categories.security.status, "FAIL");
+  assert.ok(browserResult.report.categories.security.checks.some((check) =>
+    check.id === "security-static-scan" && check.violations.some((item) => item.path === "apps/web/components/provider.jsx")));
+});
+
 test("Runtime Source가 등장했는데 필수 Capability 명령이 없으면 Exit 1이다", async (t) => {
   const root = await makeFixture();
   t.after(() => rm(root, { recursive: true, force: true }));
