@@ -43,23 +43,53 @@ class IdentityAdminRuntimeTests(unittest.IsolatedAsyncioTestCase):
                          datetime.now(timezone.utc).isoformat()),
                     )
             original_append = dependencies.audit_store.append
-            available = False
+            original_mark_delivered = (
+                dependencies.identity_repository.mark_tenant_switch_audit_delivered
+            )
+            available = threading.Event()
+            retried_during_outage = threading.Event()
+            delivery_mark_failed = threading.Event()
+            first_event_outage_attempts = 0
+            first_event_recovery_attempts = 0
 
             def append_after_recovery(draft):
-                if not available:
+                nonlocal first_event_outage_attempts, first_event_recovery_attempts
+                if not available.is_set():
+                    if draft.event_id == "switch-00":
+                        first_event_outage_attempts += 1
+                        if first_event_outage_attempts >= 2:
+                            retried_during_outage.set()
                     raise OSError("temporary audit outage")
+                if draft.event_id == "switch-00":
+                    first_event_recovery_attempts += 1
                 return original_append(draft)
 
+            def mark_after_recovery(event_id, delivered_at):
+                if event_id == "switch-00" and not delivery_mark_failed.is_set():
+                    delivery_mark_failed.set()
+                    raise IdentityError("PERSISTENCE_UNAVAILABLE", 503)
+                return original_mark_delivered(event_id, delivered_at)
+
             with patch.object(dependencies.audit_store, "append", side_effect=append_after_recovery), \
+                    patch.object(dependencies.identity_repository, "mark_tenant_switch_audit_delivered",
+                                 side_effect=mark_after_recovery), \
                     patch("daon_user_api.runtime._ADMIN_AUDIT_RETRY_INTERVAL_SECONDS", 0.02):
                 app = create_app(dependencies)
                 async with app.router.lifespan_context(app):
-                    await asyncio.sleep(0.05)
+                    async def wait_for_outage_retry() -> None:
+                        while not retried_during_outage.is_set():
+                            await asyncio.sleep(0.01)
+
+                    await asyncio.wait_for(wait_for_outage_retry(), timeout=5.0)
+                    self.assertGreaterEqual(first_event_outage_attempts, 2)
                     with dependencies.identity_repository.transaction() as connection:
                         self.assertEqual(connection.execute(
                             "SELECT COUNT(*) FROM session_tenant_switch_outbox WHERE delivered_at IS NULL"
                         ).fetchone()[0], 33)
-                    available = True
+                    self.assertEqual(dependencies.audit_store.list(
+                        tenant_id="tenant-002", action="identity.session.tenant_switched",
+                    ).items, ())
+                    available.set()
 
                     async def wait_for_delivery() -> None:
                         while True:
@@ -72,7 +102,16 @@ class IdentityAdminRuntimeTests(unittest.IsolatedAsyncioTestCase):
                             await asyncio.sleep(0.02)
 
                     await asyncio.wait_for(wait_for_delivery(), timeout=5.0)
-                    self.assertEqual(len(dependencies.audit_store.list(tenant_id="tenant-002").items), 33)
+                    self.assertTrue(delivery_mark_failed.is_set())
+                    self.assertGreaterEqual(first_event_recovery_attempts, 2)
+                    events = dependencies.audit_store.list(
+                        tenant_id="tenant-002", action="identity.session.tenant_switched",
+                    ).items
+                    event_ids = [event.event_id for event in events]
+                    self.assertEqual(len(event_ids), 33)
+                    self.assertEqual(set(event_ids), {
+                        f"switch-{index:02d}" for index in range(33)
+                    })
                 self.assertFalse(any(
                     thread.name == "admin-role-audit-outbox" and thread.is_alive()
                     for thread in threading.enumerate()
@@ -162,12 +201,14 @@ class IdentityAdminRuntimeTests(unittest.IsolatedAsyncioTestCase):
                                 await asyncio.sleep(0.02)
 
                         await asyncio.wait_for(wait_for_delivery(), timeout=10.0)
-                        dependencies.identity_service.dispatch_pending_tenant_switch_audits()
                         with psycopg.connect(dsn) as connection:
-                            self.assertEqual(connection.execute(
-                                "SELECT COUNT(*), COUNT(DISTINCT event_id) FROM security_audit_events "
-                                "WHERE action='identity.session.tenant_switched'"
-                            ).fetchone(), (33, 33))
+                            event_ids = [row[0] for row in connection.execute(
+                                "SELECT event_id FROM security_audit_events "
+                                "WHERE action='identity.session.tenant_switched' ORDER BY event_id"
+                            ).fetchall()]
+                            self.assertEqual(event_ids, [
+                                f"pg-switch-{index:02d}" for index in range(33)
+                            ])
                     self.assertFalse(any(
                         thread.name == "admin-role-audit-outbox" and thread.is_alive()
                         for thread in threading.enumerate()
