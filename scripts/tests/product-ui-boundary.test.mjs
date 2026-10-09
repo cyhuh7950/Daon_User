@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -319,6 +320,7 @@ test("Web production build는 Next 산출 직후 Web 제품 경계 Gate를 실�
 test("account·organization 실제 React Route는 Safe 화면을 렌더하고 Network·Adapter·Tauri 호출이 0이다", async () => {
   const output = await mkdtemp(path.join(root, ".task8-c01-react-"));
   const originalFetch = globalThis.fetch;
+  const originalRequire = globalThis.require;
   const originalTauri = globalThis.__TAURI_INTERNALS__;
   let networkCalls = 0;
   let adapterCalls = 0;
@@ -349,6 +351,7 @@ test("account·organization 실제 React Route는 Safe 화면을 렌더하고 Ne
       networkCalls += 1;
       throw new Error("NETWORK_CALL_NOT_ALLOWED");
     };
+    globalThis.require = createRequire(import.meta.url);
     globalThis.__TAURI_INTERNALS__ = {
       invoke: async () => {
         tauriCalls += 1;
@@ -368,13 +371,16 @@ test("account·organization 실제 React Route는 Safe 화면을 렌더하고 Ne
 
     assert.match(accountHtml, /계정 설정/);
     assert.match(organizationHtml, /조직 설정/);
+    assert.match(accountHtml, /RESOURCE_UNAVAILABLE/);
+    assert.match(organizationHtml, /조직 설정을 불러오는 중입니다/);
     for (const html of [accountHtml, organizationHtml]) {
-      assert.match(html, /RESOURCE_UNAVAILABLE/);
       assert.doesNotMatch(html, /Evidence|Prototype|Mock|prototype_fixture|deferred_actual/);
     }
     assert.deepEqual({ networkCalls, adapterCalls, tauriCalls }, { networkCalls: 0, adapterCalls: 0, tauriCalls: 0 });
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalRequire === undefined) delete globalThis.require;
+    else globalThis.require = originalRequire;
     if (originalTauri === undefined) delete globalThis.__TAURI_INTERNALS__;
     else globalThis.__TAURI_INTERNALS__ = originalTauri;
     await rm(output, { recursive: true, force: true });
