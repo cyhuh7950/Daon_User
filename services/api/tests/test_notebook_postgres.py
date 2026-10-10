@@ -1721,6 +1721,7 @@ def test_actual_postgres_http_local_question_replay_revalidates_binding_before_p
             body = {"notebook_id": selected.notebook_id, "question": "안녕하세요!"}
             with patch.object(identity, "describe_access", return_value=SimpleNamespace(
                 client_kind=ClientKind.WEB, principal=principal,
+                password_change_required=False,
             )):
                 with TestClient(create_app(dependencies)) as client:
                     first = client.post(
