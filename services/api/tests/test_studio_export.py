@@ -5,6 +5,7 @@ import struct
 import unittest
 import zipfile
 from io import BytesIO
+from xml.etree import ElementTree
 
 from daon_user_api.studio_export import StudioExportError, export_studio_output
 from pypdf import PdfReader
@@ -75,6 +76,27 @@ class StudioExportTests(unittest.TestCase):
             "edges": [{"id": "e1", "source": "n1", "target": "n2", "condition": "확인"}],
         }, METADATA, output_type="knowledge_map")
         self.assertEqual(len(json.loads(graph.content)["content"]["nodes"]), 2)
+
+    def test_xlsx_metadata_labels_and_values_have_readable_column_widths(self) -> None:
+        exported = export_studio_output(
+            "xlsx", "비교표", {"rows": [{"key": "항목 A", "baseline": "기준 A"}]},
+            METADATA, output_type="comparison_table",
+        )
+        with zipfile.ZipFile(BytesIO(exported.content)) as archive:
+            root = ElementTree.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        columns = root.findall("x:cols/x:col", ns)
+        widths = {index: float(column.attrib["width"])
+                  for column in columns
+                  for index in range(int(column.attrib["min"]), int(column.attrib["max"]) + 1)}
+        self.assertGreaterEqual(widths[1], 22)
+        self.assertGreaterEqual(widths[2], 22)
+        cells = {cell.attrib["r"]: cell.findtext("x:is/x:t", namespaces=ns)
+                 for cell in root.findall("x:sheetData/x:row/x:c", ns)}
+        self.assertEqual(cells["A6"], "output_version_id")
+        self.assertEqual(cells["B6"], "version-1")
+        self.assertEqual(cells["A9"], "evidence_appendix")
+        self.assertEqual(cells["B9"], "Citation page 2")
 
     def test_graph_svg_and_png_render_actual_nodes_and_edges(self) -> None:
         content = {
