@@ -323,9 +323,26 @@ def test_omniroute_omitted_model_probes_provider_default_without_catalog_lookup(
     result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
 
     assert result.status == "ready"
-    assert [(item.method, item.url, item.body.get("model") if item.body else None)
-            for item in fake_transport.requests] == [
-        ("POST", "https://omniroute.example/v1/responses", None)
+    assert [(item.method, item.url, item.body) for item in fake_transport.requests] == [
+        ("POST", "https://omniroute.example/v1/responses", {
+            "input": "Reply OK.", "max_output_tokens": 16, "stream": False,
+        }),
+    ]
+
+
+def test_omniroute_explicit_auto_is_a_model_id_without_reasoning_fields(fake_transport: FakeTransport) -> None:
+    fake_transport.responses["https://omniroute.example/v1/responses"] = TransportResponse(
+        200, {"output_text": "ready"},
+    )
+    adapter = AdapterRegistry(fake_transport, logical_models={"omniroute": ("auto",)}).adapter("OMNIROUTE")
+
+    result = adapter.verify(connection("OMNIROUTE"), TEST_CREDENTIAL)
+
+    assert result.status == "ready"
+    assert [(item.method, item.url, item.body) for item in fake_transport.requests] == [
+        ("POST", "https://omniroute.example/v1/responses", {
+            "input": "Reply OK.", "max_output_tokens": 16, "stream": False, "model": "auto",
+        }),
     ]
 
 
@@ -641,8 +658,12 @@ def test_manual_model_works_without_catalog(
     [
         ("openai_compatible", "/chat/completions", {"choices": [{"message": {"content": ""}}]}),
         ("openai_compatible", "/chat/completions", {"choices": []}),
+        ("openai_compatible", "/chat/completions", {"choices": [{"message": {"content": None}}]}),
+        ("openai_compatible", "/chat/completions", {"choices": [{"message": {"content": "  "}}]}),
         ("anthropic_compatible", "/messages", {"content": [{"type": "tool_use", "text": "hidden"}]}),
         ("anthropic_compatible", "/messages", {"content": [{"type": "text", "text": " "}]}),
+        ("anthropic_compatible", "/messages", {"content": [{"type": "text", "text": None}]}),
+        ("anthropic_compatible", "/messages", {"content": {"type": "text", "text": "ready"}}),
     ],
 )
 def test_compatible_probe_rejects_2xx_without_nonempty_text(

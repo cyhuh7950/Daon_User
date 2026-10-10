@@ -145,6 +145,26 @@ def test_auto_can_be_saved_as_workspace_default_only_when_in_allowed_catalog() -
     }]
 
 
+def test_openrouter_auto_not_in_allowed_catalog_cannot_be_saved_as_default() -> None:
+    database = DefaultsDatabase()
+    database.models = [(
+        "router-default", "OPENROUTER", "OpenRouter", True, 1, "verified", 3,
+        "openai/gpt-4.1", ["text_generation"], "ready", 2,
+    )]
+    service = PostgresWorkspaceModelDefaultsService(DefaultsStore(database))
+    initial = service.read(defaults_context())
+
+    with pytest.raises(WorkspaceModelDefaultsError, match="^WORKSPACE_MODEL_DEFAULT_UNAVAILABLE$"):
+        service.save(
+            defaults_context(), capability="text_generation", connection_id="router-default",
+            model_id="openrouter/auto", expected_version=0, expected_etag=initial["etag"],
+            idempotency_key="unallowed-router-auto-001",
+        )
+
+    assert database.defaults == []
+    assert database.idempotency == {}
+
+
 def test_custom_resolver_propagates_saved_anthropic_adapter_type() -> None:
     cipher = ProviderCredentialCipher(b"x" * 32, encryption_key_version=1)
     database = Database(row(
