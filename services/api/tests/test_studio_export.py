@@ -113,6 +113,33 @@ class StudioExportTests(unittest.TestCase):
         self.assertGreaterEqual(height, 240)
         self.assertGreater(len(png.content), 1000)
 
+    def test_knowledge_map_svg_visibly_shows_condition_evidence_and_confidence(self) -> None:
+        content = {
+            "nodes": [
+                {"id": "n1", "label": "합성 근거", "evidence": "인용 A", "confidence": "verified"},
+                {"id": "n2", "label": "합성 결론", "evidence": "인용 B & 보강", "confidence": "uncertain"},
+            ],
+            "edges": [{"id": "e1", "source": "n1", "target": "n2", "condition": "검증 & 확인"}],
+        }
+        svg = export_studio_output("svg", "지식 구조도", content, METADATA, output_type="knowledge_map")
+        root = ElementTree.fromstring(svg.content)
+        texts = [element.text for element in root.findall("{http://www.w3.org/2000/svg}text")]
+        for expected in ("합성 근거", "합성 결론", "조건: 검증 & 확인", "근거: 인용 A",
+                         "근거: 인용 B & 보강", "신뢰: verified", "신뢰: uncertain"):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, texts)
+
+    def test_knowledge_map_svg_footer_shows_each_metadata_value_on_its_own_line(self) -> None:
+        svg = export_studio_output("svg", "지식 구조도", {"nodes": [], "edges": []}, METADATA,
+                                   output_type="knowledge_map")
+        root = ElementTree.fromstring(svg.content)
+        texts = root.findall("{http://www.w3.org/2000/svg}text")
+        for key, value in METADATA.items():
+            with self.subTest(key=key):
+                matches = [element for element in texts if element.text == f"{key}: {value}"]
+                self.assertEqual(len(matches), 1)
+                self.assertLessEqual(int(matches[0].attrib["y"]), 600)
+
     def test_knowledge_map_png_shows_korean_node_labels_and_edge_condition(self) -> None:
         content = {
             "nodes": [{"id": "n1", "label": "합성 근거"}, {"id": "n2", "label": "합성 결론"}],

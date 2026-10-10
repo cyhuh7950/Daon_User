@@ -188,16 +188,23 @@ def _graph_positions(nodes: list[Mapping[str, object]], width: int, height: int)
 def _svg_graph(title: str, content: object, metadata: Mapping[str, str]) -> bytes:
     nodes, edges = _graph(content); positions = _graph_positions(nodes, 800, 600)
     lines = []
+    edge_labels = []
     for edge in edges:
         source, target = positions.get(str(edge.get("source"))), positions.get(str(edge.get("target")))
         if source and target:
             lines.append(f'<line x1="{source[0]}" y1="{source[1]}" x2="{target[0]}" y2="{target[1]}" stroke="#475569" stroke-width="3"/>')
+            condition = edge.get("condition")
+            if condition is not None and condition != "":
+                edge_labels.append(f'<text x="{(source[0] + target[0]) // 2}" y="{(source[1] + target[1]) // 2 - 17}" text-anchor="middle" font-size="13">조건: {escape(str(condition))}</text>')
     circles = []
     for index, node in enumerate(nodes):
         x, y = positions[str(node.get("id", index))]
         circles.append(f'<circle cx="{x}" cy="{y}" r="34" fill="#dbeafe" stroke="#1d4ed8" stroke-width="3"/><text x="{x}" y="{y + 5}" text-anchor="middle">{escape(str(node.get("label", node.get("id", ""))))}</text>')
-    appendix = " · ".join(f"{key}: {value}" for key, value in metadata.items())
-    return f'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><title>{escape(title)}</title>{"".join(lines)}{"".join(circles)}<text x="20" y="580">{escape(appendix)}</text></svg>'.encode()
+        for offset, name, value in ((58, "근거", node.get("evidence")), (75, "신뢰", node.get("confidence"))):
+            if value is not None and value != "":
+                circles.append(f'<text x="{x}" y="{y + offset}" text-anchor="middle" font-size="12">{name}: {escape(str(value))}</text>')
+    appendix = [f'<text x="20" y="{580 - 16 * (len(metadata) - index - 1)}" font-size="12">{escape(str(key))}: {escape(str(value))}</text>' for index, (key, value) in enumerate(metadata.items())]
+    return f'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><title>{escape(title)}</title>{"".join(lines)}{"".join(edge_labels)}{"".join(circles)}{"".join(appendix)}</svg>'.encode()
 
 
 def _png_graph(text: str, content: object) -> bytes:
