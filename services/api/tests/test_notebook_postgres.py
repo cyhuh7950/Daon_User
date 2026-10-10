@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
 from daon_user_api.cloud_storage import CloudAccessContext, PostgresCloudStore
-from daon_user_api.notebook import NotebookContext, NotebookError
+from daon_user_api.notebook import NotebookContext, NotebookError, NotebookService
 from daon_user_api.notebook_postgres import PostgresNotebookRepository
 from daon_user_api.license import LicenseContext, LicenseError, VerifiedLicense
 from daon_user_api.license_postgres import PostgresLicenseRepository, enforce_license_creation
@@ -1575,6 +1575,139 @@ def test_actual_postgres_source_registration_binds_only_after_canonical_commit()
             assert connection.execute(
                 "SELECT count(*) FROM sources WHERE record_id='source-phase-e-rejected'",
             ).fetchone()[0] == 0
+    finally:
+        canon.close()
+        store.close()
+
+
+def test_actual_postgres_source_registration_selected_notebook_and_foreign_scope() -> None:
+    assert DSN is not None
+    store = PostgresCloudStore(DSN, min_size=1, max_size=2)
+    notebooks = PostgresNotebookRepository(store, creation_enforcer=enforce_license_creation)
+    licenses = PostgresLicenseRepository(store)
+    canon = PostgresDataCanonStore(DSN, min_size=1, max_size=1)
+    context = NotebookContext(
+        "tenant-source-standalone", "workspace-source-standalone",
+        "user-source-standalone", "trace-source-standalone", "policy-v1",
+    )
+    foreign = NotebookContext(
+        "tenant-source-standalone-foreign", "workspace-source-standalone-foreign",
+        "user-source-standalone-foreign", "trace-source-standalone-foreign", "policy-v1",
+    )
+    now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    payload = b"%PDF-1.4\nstandalone-source\n"
+    notebook_service = NotebookService(notebooks, clock=lambda: now)
+    digest = hashlib.sha256(payload).hexdigest()
+    source_id = "source-standalone-actual"
+    version_id = "source-version-standalone-actual"
+    rejected_source_id = "source-standalone-foreign-rejected"
+    rejected_version_id = "source-version-standalone-foreign-rejected"
+    object_id = "object-source-standalone"
+    try:
+        for item in (context, foreign):
+            store.seed_scope(CloudAccessContext(
+                item.tenant_id, item.workspace_id, item.actor_id, "source.test",
+            ))
+        licenses.apply(
+            LicenseContext(
+                context.tenant_id, context.workspace_id, context.actor_id,
+                context.trace_id, context.policy_version,
+            ),
+            VerifiedLicense(
+                license_id="license-source-standalone-001", product="daon-user",
+                edition="enterprise", organization_id=context.tenant_id,
+                issued_at=now - timedelta(days=1), expires_at=now + timedelta(days=365),
+                features=("notebook_management",), resource_limits=(("notebooks", 10),),
+                claims_digest="a" * 64, key_id="release-1",
+            ),
+            idempotency_key="license-source-standalone-apply",
+            request_fingerprint="b" * 64,
+        )
+        selected, _ = notebooks.create(
+            context, title="Standalone selected", description=None,
+            idempotency_key="source-standalone-selected-create",
+            request_fingerprint="c" * 64, now=now,
+        )
+        other, _ = notebooks.create(
+            context, title="Standalone other", description=None,
+            idempotency_key="source-standalone-other-create",
+            request_fingerprint="d" * 64, now=now,
+        )
+        with store._transaction(CloudAccessContext(
+            context.tenant_id, context.workspace_id, context.actor_id, "source.test",
+        )) as connection:
+            connection.execute(
+                "INSERT INTO object_records "
+                "(tenant_id,workspace_id,object_id,area,staging_key,object_key,"
+                "digest_sha256,byte_size,content_type,status,cleanup_pending,created_by,"
+                "trace_id,idempotency_key,request_fingerprint,created_at,completed_at) "
+                "VALUES (%s,%s,%s,'source',%s,%s,%s,%s,'application/pdf','completed',"
+                "false,%s,%s,%s,%s,%s,%s)",
+                (
+                    context.tenant_id, context.workspace_id, object_id,
+                    "staging/source-standalone",
+                    f"{context.tenant_id}/{context.workspace_id}/source/{object_id}",
+                    digest, len(payload), context.actor_id, context.trace_id,
+                    "source-object-standalone-0001", "e" * 64, now, now,
+                ),
+            )
+        canon.register_uploaded_source(
+            CanonicalContext(
+                context.tenant_id, context.workspace_id, context.actor_id,
+                "source.create", context.trace_id,
+            ),
+            notebook_id=selected.notebook_id, source_id=source_id,
+            source_version_id=version_id, object_id=object_id,
+            filename="standalone.pdf", digest_sha256=digest,
+            byte_size=len(payload), created_at=now,
+        )
+        with store._transaction(CloudAccessContext(
+            context.tenant_id, context.workspace_id, context.actor_id, "source.test",
+        )) as connection:
+            assert connection.execute(
+                "SELECT source_id,object_id FROM source_versions WHERE record_id=%s",
+                (version_id,),
+            ).fetchone() == (source_id, object_id)
+        assert notebooks.read_selected_context(context, selected.notebook_id).sources == (
+            (source_id, version_id),
+        )
+        assert notebooks.read_selected_context(context, other.notebook_id).sources == ()
+        assert notebook_service.require_selected_bindings(
+            context, selected.notebook_id, (("source", source_id, version_id),),
+        ).sources == ((source_id, version_id),)
+        with pytest.raises(NotebookError, match="NOTEBOOK_SCOPE_MISMATCH"):
+            notebook_service.require_selected_bindings(
+                context, other.notebook_id, (("source", source_id, version_id),),
+            )
+        with pytest.raises(CanonError, match="NOTEBOOK_NOT_FOUND"):
+            canon.register_uploaded_source(
+                CanonicalContext(
+                    foreign.tenant_id, foreign.workspace_id, foreign.actor_id,
+                    "source.create", foreign.trace_id,
+                ),
+                notebook_id=selected.notebook_id, source_id=rejected_source_id,
+                source_version_id=rejected_version_id, object_id=object_id,
+                filename="standalone.pdf", digest_sha256=digest,
+                byte_size=len(payload), created_at=now,
+            )
+        for item in (foreign, context):
+            with store._transaction(CloudAccessContext(
+                item.tenant_id, item.workspace_id, item.actor_id, "source.test",
+            )) as connection:
+                assert connection.execute(
+                    "SELECT count(*) FROM sources WHERE record_id=%s", (rejected_source_id,),
+                ).fetchone()[0] == 0
+                assert connection.execute(
+                    "SELECT count(*) FROM source_versions WHERE record_id=%s",
+                    (rejected_version_id,),
+                ).fetchone()[0] == 0
+                assert connection.execute(
+                    "SELECT count(*) FROM notebook_bindings WHERE record_id=%s AND version_id=%s",
+                    (rejected_source_id, rejected_version_id),
+                ).fetchone()[0] == 0
+        assert notebooks.read_selected_context(context, selected.notebook_id).sources == (
+            (source_id, version_id),
+        )
     finally:
         canon.close()
         store.close()
