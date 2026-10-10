@@ -41,7 +41,7 @@ function runPython(arguments_, { capture = false } = {}) {
       PYTHONPATH: sourceRoot,
       UV_CACHE_DIR: process.env.UV_CACHE_DIR ?? path.join(tmpdir(), "daon-user-uv-cache"),
       UV_PYTHON_INSTALL_DIR: process.env.UV_PYTHON_INSTALL_DIR ?? path.join(tmpdir(), "daon-user-uv-python"),
-      UV_PROJECT_ENVIRONMENT: process.env.UV_PROJECT_ENVIRONMENT ?? path.join(tmpdir(), "daon-user-api-uv-env")
+      UV_PROJECT_ENVIRONMENT: process.env.UV_PROJECT_ENVIRONMENT ?? path.join(apiRoot, ".venv")
     },
     stdio: capture ? "pipe" : "inherit"
   });
@@ -71,7 +71,7 @@ async function main() {
         ...process.env,
         UV_CACHE_DIR: process.env.UV_CACHE_DIR ?? path.join(tmpdir(), "daon-user-uv-cache"),
         UV_PYTHON_INSTALL_DIR: process.env.UV_PYTHON_INSTALL_DIR ?? path.join(tmpdir(), "daon-user-uv-python"),
-        UV_PROJECT_ENVIRONMENT: process.env.UV_PROJECT_ENVIRONMENT ?? path.join(tmpdir(), "daon-user-api-uv-env")
+        UV_PROJECT_ENVIRONMENT: process.env.UV_PROJECT_ENVIRONMENT ?? path.join(apiRoot, ".venv")
       },
       stdio: "inherit"
     }
