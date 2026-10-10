@@ -293,13 +293,20 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   assert.equal(approvedToolchains.npm, "11.12.1");
   assert.equal(approvedToolchains.corepack, "0.35.0");
   assert.equal(approvedToolchains.uv, "0.11.2");
-  assert.deepEqual(workflow.on.pull_request.branches, ["codex/release-1"]);
-  assert.ok(workflow.on.workflow_dispatch);
+  assert.deepEqual(workflow.on, {
+    pull_request: { branches: ["master"] },
+    workflow_dispatch: {}
+  });
   assert.deepEqual(workflow.permissions, { contents: "read" });
   const job = workflow.jobs["release-1-quality-gate"];
   assert.ok(job);
+  assert.equal(job["runs-on"], "ubuntu-latest");
+  assert.equal(job["continue-on-error"], undefined);
   assert.equal(job["timeout-minutes"], 60);
   const stepsById = new Map(job.steps.filter((step) => step.id).map((step) => [step.id, step]));
+  assert.equal(stepsById.get("checkout").with.ref, undefined, "PR merge SHA와 수동 실행 SHA를 기본 checkout해야 한다");
+  for (const step of job.steps)
+    assert.notEqual(step["continue-on-error"], true, `${step.id} must fail closed`);
   const requiredStepIds = ["checkout", "clear-evidence", "setup-node", "toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate", "fallback-evidence", "upload-evidence"];
   for (const id of requiredStepIds) assert.ok(stepsById.has(id), `missing workflow step id ${id}`);
   const clearEvidenceIndex = job.steps.findIndex((step) => step.id === "clear-evidence");
@@ -334,6 +341,11 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   assert.ok(uses.includes("actions/upload-artifact@v6"));
   const upload = job.steps.find((step) => step.uses === "actions/upload-artifact@v6");
   assert.equal(upload.if, "${{ always() }}");
+  assert.equal(upload.with["if-no-files-found"], "error");
+  assert.deepEqual(upload.with.path.split("\n"), [
+    "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json",
+    "docs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md"
+  ]);
   const fallbackIndex = job.steps.findIndex((step) => step.id === "fallback-evidence");
   const uploadIndex = job.steps.findIndex((step) => step.id === "upload-evidence");
   const fallback = stepsById.get("fallback-evidence");
