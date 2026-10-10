@@ -4,6 +4,7 @@ import os
 import hashlib
 import json
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,11 +40,7 @@ from daon_user_api.document_processing import DocumentProcessingContext
 from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
 from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
 from daon_user_api.egress_policy import EffectiveEgressPolicy
-from daon_user_api.provider_settings import (
-    ModelDeploymentView,
-    ProviderProfileView,
-    ProviderSettingsSnapshot,
-)
+from daon_user_api.workspace_model_defaults import ResolvedModel
 from daon_user_api.question_answering_service import (
     QuestionAnsweringError,
     QuestionAnsweringService,
@@ -133,20 +130,26 @@ def test_actual_postgres_external_full_service_persists_complete_run_and_http_re
     )
     now = datetime(2026, 8, 21, tzinfo=timezone.utc)
 
-    class ProviderSettings:
-        def snapshot(self, _context):  # type: ignore[no-untyped-def]
-            return ProviderSettingsSnapshot(
-                scope.workspace_id,
-                (ProviderProfileView(
-                    "profile-upstage", "UPSTAGE", "external_api",
-                    "https://api.upstage.ai/v1", True, True, 1,
-                ),),
-                (ModelDeploymentView(
-                    "deployment-upstage", "profile-upstage", "UPSTAGE", "solar-pro",
-                    ("text",), True, True, 1,
-                ),),
-                {"text": "deployment-upstage"}, 1,
+    class Resolver:
+        @contextmanager
+        def resolve(self, context, capability):  # type: ignore[no-untyped-def]
+            assert (
+                context.tenant_id, context.workspace_id, context.actor_id, capability,
+            ) == (
+                scope.tenant_id, scope.workspace_id, scope.actor_id, "text_generation",
             )
+            model = ResolvedModel(
+                connection_id="profile-upstage", provider_code="UPSTAGE",
+                model_id="solar-pro", capability=capability,
+                base_url="https://api.upstage.ai/v1", credential_version=1,
+                default_version=1, catalog_version=1, provider_kind="external_api",
+                routing_owner="provider", daon_fallback_allowed=True,
+                _credential=bytearray(b"test-only-secret"),
+            )
+            try:
+                yield model
+            finally:
+                model.release()
 
     class Credential:
         def resolve(self, _provider_code: str) -> str:
@@ -228,7 +231,7 @@ def test_actual_postgres_external_full_service_persists_complete_run_and_http_re
         policy = PolicyBoundary()
         transport = Transport()
         question_service = QuestionAnsweringService(
-            ProviderSettings(), repository, EmptyIndex(), Credential(), transport,
+            Resolver(), repository, EmptyIndex(), Credential(), transport,
             PostgresQuestionEgressAuthorizer(store, policy),  # type: ignore[arg-type]
         )
         binding = BindingBoundary()
@@ -265,6 +268,7 @@ def test_actual_postgres_external_full_service_persists_complete_run_and_http_re
             body = {"notebook_id": notebook.notebook_id, "question": "안녕하세요!"}
             with patch.object(identity, "describe_access", return_value=SimpleNamespace(
                 client_kind=ClientKind.WEB, principal=principal,
+                password_change_required=False,
             )):
                 with TestClient(create_app(dependencies)) as client:
                     first = client.post(
@@ -302,7 +306,11 @@ def test_actual_postgres_external_full_service_persists_complete_run_and_http_re
                     prepared.provider_payload,
                 ).hexdigest(),
                 "provider_kind": "external_api",
-                "deployment_id": "deployment-upstage",
+                "deployment_id": "profile-upstage:solar-pro",
+                "connection_id": "profile-upstage",
+                "credential_version": "1",
+                "default_version": "1",
+                "catalog_version": "1",
             }
             transport.block = True
             transport.started.clear()
@@ -1708,6 +1716,216 @@ def test_actual_postgres_source_registration_selected_notebook_and_foreign_scope
         assert notebooks.read_selected_context(context, selected.notebook_id).sources == (
             (source_id, version_id),
         )
+    finally:
+        canon.close()
+        store.close()
+
+
+def test_actual_postgres_registered_source_question_citation_share_selected_version() -> None:
+    assert DSN is not None
+    store = PostgresCloudStore(DSN, min_size=1, max_size=2)
+    canon = PostgresDataCanonStore(DSN, min_size=1, max_size=1)
+    notebooks = PostgresNotebookRepository(store, creation_enforcer=enforce_license_creation)
+    licenses = PostgresLicenseRepository(store)
+    scope = NotebookContext(
+        "tenant-m7-lineage", "workspace-m7-lineage", "user-m7-lineage",
+        "trace-m7-lineage", "policy-v1",
+    )
+    foreign = NotebookContext(
+        "tenant-m7-lineage-foreign", "workspace-m7-lineage-foreign",
+        "user-m7-lineage-foreign", "trace-m7-lineage-foreign", "policy-v1",
+    )
+    now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    source_id = "source-m7-lineage"
+    version_id = "source-version-m7-lineage"
+    object_id = "object-m7-lineage"
+    evidence_id = "evidence-m7-lineage"
+    chunk_id = "chunk-m7-lineage"
+    run_id = "run-m7-lineage"
+    payload = b"%PDF-1.4\nsynthetic M7 lineage\n"
+    digest = hashlib.sha256(payload).hexdigest()
+
+    class UnusedObjectStorage:
+        def get(self, _key: str) -> bytes:
+            raise AssertionError("question persistence must not read object storage")
+
+    try:
+        for item in (scope, foreign):
+            store.seed_scope(CloudAccessContext(
+                item.tenant_id, item.workspace_id, item.actor_id, "source.test",
+            ))
+        licenses.apply(
+            LicenseContext(
+                scope.tenant_id, scope.workspace_id, scope.actor_id,
+                scope.trace_id, scope.policy_version,
+            ),
+            VerifiedLicense(
+                license_id="license-m7-lineage", product="daon-user",
+                edition="enterprise", organization_id=scope.tenant_id,
+                issued_at=now - timedelta(days=1), expires_at=now + timedelta(days=365),
+                features=("notebook_management",), resource_limits=(("notebooks", 10),),
+                claims_digest="a" * 64, key_id="release-1",
+            ),
+            idempotency_key="license-m7-lineage-apply",
+            request_fingerprint="b" * 64,
+        )
+        selected, _ = notebooks.create(
+            scope, title="M7 selected", description=None,
+            idempotency_key="m7-lineage-selected-create",
+            request_fingerprint="c" * 64, now=now,
+        )
+        other, _ = notebooks.create(
+            scope, title="M7 other", description=None,
+            idempotency_key="m7-lineage-other-create",
+            request_fingerprint="d" * 64, now=now,
+        )
+        with store._transaction(CloudAccessContext(
+            scope.tenant_id, scope.workspace_id, scope.actor_id, "source.test",
+        )) as connection:
+            connection.execute(
+                "INSERT INTO object_records "
+                "(tenant_id,workspace_id,object_id,area,staging_key,object_key,"
+                "digest_sha256,byte_size,content_type,status,cleanup_pending,created_by,"
+                "trace_id,idempotency_key,request_fingerprint,created_at,completed_at) "
+                "VALUES (%s,%s,%s,'source',%s,%s,%s,%s,'application/pdf','completed',"
+                "false,%s,%s,%s,%s,%s,%s)",
+                (
+                    scope.tenant_id, scope.workspace_id, object_id,
+                    "staging/m7-lineage",
+                    f"{scope.tenant_id}/{scope.workspace_id}/source/{object_id}",
+                    digest, len(payload), scope.actor_id, scope.trace_id,
+                    "m7-lineage-object-create", "e" * 64, now, now,
+                ),
+            )
+        canon.register_uploaded_source(
+            CanonicalContext(
+                scope.tenant_id, scope.workspace_id, scope.actor_id,
+                "source.create", scope.trace_id,
+            ),
+            notebook_id=selected.notebook_id, source_id=source_id,
+            source_version_id=version_id, object_id=object_id,
+            filename="m7-lineage.pdf", digest_sha256=digest,
+            byte_size=len(payload), created_at=now,
+        )
+        with store._transaction(CloudAccessContext(
+            scope.tenant_id, scope.workspace_id, scope.actor_id, "question.test",
+        )) as connection:
+            source_version = 1
+            for state in ("security_check", "processing", "indexing", "ready"):
+                transition = connection.execute(
+                    "SELECT state,version,outcome FROM transition_canon_state("
+                    "'Source',%s,%s,%s,%s,'source.test',%s,%s)",
+                    (
+                        source_id, source_version, state,
+                        f"m7-lineage-source-{state}", scope.trace_id,
+                        scope.policy_version,
+                    ),
+                ).fetchone()
+                assert transition is not None and transition[2] == "succeeded"
+                source_version = int(transition[1])
+            connection.execute(
+                "INSERT INTO evidence_spans "
+                "(tenant_id,workspace_id,record_id,aggregate_id,digest_sha256,"
+                "source_version_id,created_by,trace_id,created_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    scope.tenant_id, scope.workspace_id, evidence_id, evidence_id,
+                    hashlib.sha256(b"{}").hexdigest(),
+                    version_id, scope.actor_id, scope.trace_id, now,
+                ),
+            )
+        assert notebooks.read_selected_context(scope, selected.notebook_id).sources == (
+            (source_id, version_id),
+        )
+        assert notebooks.read_selected_context(scope, other.notebook_id).sources == ()
+
+        repository = PostgresQuestionAnsweringRepository(store, UnusedObjectStorage())  # type: ignore[arg-type]
+        selection = TextModelSelection(
+            "UPSTAGE", "https://api.upstage.ai/v1", "profile-m7-lineage",
+            "deployment-m7-lineage", "synthetic-model", 1,
+        )
+        evidence = (IndexedEvidenceChunk(
+            chunk_id, source_id, version_id, 2, "synthetic cited sentence",
+            evidence_id, 1.0,
+        ),)
+        result = GroundedTextResult(
+            "synthetic cited sentence", (chunk_id,), False, {"total_tokens": 8},
+        )
+        selected_question = QuestionContext(
+            scope.tenant_id, scope.workspace_id, scope.actor_id,
+            scope.trace_id, scope.policy_version, selected.notebook_id,
+        )
+        stored = repository.persist_completed(
+            selected_question, run_id=run_id, source_id=source_id,
+            source_version_id=version_id, question="What does this source say?",
+            selection=selection, evidence=evidence, result=result,
+        )
+        assert repository.load_completed(selected_question, run_id) == stored
+        assert len(stored.citations) == 1
+        assert (
+            stored.citations[0].source_id,
+            stored.citations[0].source_version_id,
+            stored.citations[0].evidence_span_id,
+            stored.citations[0].page,
+        ) == (source_id, version_id, evidence_id, 2)
+        projection = notebooks.read_selected_context(scope, selected.notebook_id)
+        assert projection.conversation is not None
+        assert projection.conversation.run_id == run_id
+        assert len(projection.conversation.citations) == 1
+        assert (
+            projection.conversation.citations[0].source_id,
+            projection.conversation.citations[0].source_version_id,
+            projection.conversation.citations[0].evidence_span_id,
+            projection.conversation.citations[0].page,
+        ) == (source_id, version_id, evidence_id, 2)
+        assert notebooks.read_selected_context(scope, other.notebook_id).conversation is None
+
+        with store._transaction(CloudAccessContext(
+            scope.tenant_id, scope.workspace_id, scope.actor_id, "question.test",
+        )) as connection:
+            assert connection.execute(
+                "SELECT source_id,object_id FROM source_versions WHERE record_id=%s",
+                (version_id,),
+            ).fetchone() == (source_id, object_id)
+            assert connection.execute(
+                "SELECT source_version_id FROM evidence_spans WHERE record_id=%s",
+                (evidence_id,),
+            ).fetchone() == (version_id,)
+            assert connection.execute(
+                "SELECT canonical_json->'source_version_ids' FROM run_snapshots "
+                "WHERE run_id=%s", (run_id,),
+            ).fetchone()[0] == [version_id]
+            assert connection.execute(
+                "SELECT source_version_id,evidence_span_id FROM citations "
+                "WHERE run_result_id=%s", (stored.run_result_id,),
+            ).fetchone() == (version_id, evidence_id)
+
+        for item, notebook_id, rejected_run in (
+            (scope, other.notebook_id, "run-m7-lineage-other"),
+            (foreign, selected.notebook_id, "run-m7-lineage-foreign"),
+        ):
+            rejected_context = QuestionContext(
+                item.tenant_id, item.workspace_id, item.actor_id,
+                item.trace_id, item.policy_version, notebook_id,
+            )
+            with pytest.raises(QuestionRepositoryError, match="NOTEBOOK_SCOPE_MISMATCH"):
+                repository.persist_completed(
+                    rejected_context, run_id=rejected_run,
+                    source_id=source_id, source_version_id=version_id,
+                    question="Must be rejected", selection=selection,
+                    evidence=evidence, result=result,
+                )
+            assert repository.load_completed(rejected_context, run_id) is None
+            with store._transaction(CloudAccessContext(
+                item.tenant_id, item.workspace_id, item.actor_id, "question.test",
+            )) as connection:
+                assert connection.execute(
+                    "SELECT count(*) FROM runs WHERE record_id=%s", (rejected_run,),
+                ).fetchone()[0] == 0
+                assert connection.execute(
+                    "SELECT count(*) FROM audit_events WHERE action='question.answer' "
+                    "AND target_id=%s", (rejected_run,),
+                ).fetchone()[0] == 0
     finally:
         canon.close()
         store.close()
