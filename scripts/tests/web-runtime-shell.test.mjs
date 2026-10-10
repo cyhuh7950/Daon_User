@@ -16,13 +16,13 @@ shellTest("server-only runtime descriptor는 shell 준비와 downstream 미구�
   const descriptor = createWebShellRuntimeDescriptor({ now: "2026-07-23T01:00:00.000Z" });
   assert.deepEqual(descriptor, {
     code: "WEB_SHELL_READY", ready: true, shell_version: "r1-m3-01", build_id: "r1-m3-01",
-    downstream_state: "deferred_actual", observed_at: "2026-07-23T01:00:00.000Z"
+    downstream_state: "deferred_actual", downstream_ready: false, observed_at: "2026-07-23T01:00:00.000Z"
   });
   assert.doesNotMatch(JSON.stringify(descriptor), /https?:\/\/|localhost|127\.0\.0\.1|host|port|secret|token|password|stack|provider/i);
 });
 
 shellTest("허용하지 않은 method는 내부 정보 없는 안정 오류로 거부한다", () => {
-  assert.deepEqual(runtimeMethodNotAllowed(), { code: "METHOD_NOT_ALLOWED", ready: false, downstream_state: "deferred_actual", retryable: false });
+  assert.deepEqual(runtimeMethodNotAllowed(), { code: "METHOD_NOT_ALLOWED", ready: false, downstream_state: "deferred_actual", downstream_ready: false, retryable: false });
 });
 
 shellTest("browser component는 유일한 same-origin 상대 BFF 경로만 호출한다", () => {
@@ -33,10 +33,14 @@ shellTest("browser component는 유일한 same-origin 상대 BFF 경로만 호�
   assert.doesNotMatch(component, /https?:\/\/|localhost|127\.0\.0\.1|NEXT_PUBLIC_API_BASE_URL|process\.env/);
   assert.match(route, /web-shell-runtime\.js/);
   assert.doesNotMatch(route, /fetch\s*\(|https?:\/\/|localhost|127\.0\.0\.1|process\.env/);
-  assert.match(layout, /import \{ WebShellRuntimeStatus \} from "@daon-user\/ui"/);
+  assert.match(layout, /import \{ WebShellRuntimeStatus \} from "@daon-user\/ui\/web-shell-runtime-status"/);
   assert.match(layout, /<WebShellRuntimeStatus\s*\/>/);
   assert.match(component, /aria-live="polite"/);
   assert.match(component, />재시도</);
+  assert.match(component, /실제 연결 확인 전/);
+  assert.doesNotMatch(component, /deferred_actual|prototype_fixture/);
+  const uiPackage = JSON.parse(fs.readFileSync("packages/ui/package.json", "utf8"));
+  assert.equal(uiPackage.exports["./web-shell-runtime-status"], "./src/web-shell-runtime-status.jsx");
 });
 
 shellTest("실제 route handler는 no-store GET과 안전한 405를 반환한다", async () => {
@@ -44,11 +48,28 @@ shellTest("실제 route handler는 no-store GET과 안전한 405를 반환한다
   const getResponse = await route.GET();
   assert.equal(getResponse.status, 200);
   assert.equal(getResponse.headers.get("cache-control"), "no-store");
-  assert.equal((await getResponse.json()).downstream_state, "deferred_actual");
+  const getDescriptor = await getResponse.json();
+  assert.equal(getDescriptor.downstream_state, "deferred_actual");
+  assert.equal(getDescriptor.downstream_ready, false);
   const postResponse = await route.POST();
   assert.equal(postResponse.status, 405);
   assert.equal(postResponse.headers.get("allow"), "GET, HEAD");
   assert.deepEqual(await postResponse.json(), runtimeMethodNotAllowed());
+});
+
+shellTest("downstream_ready가 명시적으로 false일 때만 Shell 준비로 인정한다", () => {
+  const descriptor = createWebShellRuntimeDescriptor({ now: "2026-07-23T01:00:00.000Z" });
+  const starting = createWebShellRuntimeState();
+  const safe = transitionWebShellRuntime(starting, { type: "request-succeeded", descriptor: { ...descriptor, downstream_ready: false } });
+  assert.equal(safe.status, "ready");
+  assert.equal(safe.ready, true);
+  for (const unsafe of [{ ...descriptor, downstream_ready: true }, (({ downstream_ready, ...rest }) => rest)(descriptor)]) {
+    const state = transitionWebShellRuntime(starting, { type: "request-succeeded", descriptor: unsafe });
+    assert.equal(state.status, "unavailable");
+    assert.equal(state.ready, false);
+    assert.equal(state.retryable, true);
+  }
+  assert.doesNotMatch(JSON.stringify(safe), /deferred_actual|prototype_fixture/);
 });
 
 shellTest("runtime 조회 실패는 마지막 성공을 보존하고 성공으로 표시하지 않는다", () => {

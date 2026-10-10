@@ -1,6 +1,6 @@
 import "@daon-user/design-tokens/tokens.css";
 import "./globals.css";
-import { WebShellRuntimeStatus } from "@daon-user/ui";
+import { WebShellRuntimeStatus } from "@daon-user/ui/web-shell-runtime-status";
 import { ScreenThemeRuntime } from "../components/screen-theme-runtime.jsx";
 
 export const metadata = {

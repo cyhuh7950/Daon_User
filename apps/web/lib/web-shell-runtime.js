@@ -8,6 +8,7 @@ export function createWebShellRuntimeDescriptor({ now = new Date().toISOString()
     shell_version: SHELL_VERSION,
     build_id: BUILD_ID,
     downstream_state: "deferred_actual",
+    downstream_ready: false,
     observed_at: now
   });
 }
@@ -17,6 +18,7 @@ export function runtimeMethodNotAllowed() {
     code: "METHOD_NOT_ALLOWED",
     ready: false,
     downstream_state: "deferred_actual",
+    downstream_ready: false,
     retryable: false
   });
 }
