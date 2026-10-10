@@ -201,6 +201,10 @@ def _svg_graph(title: str, content: object, metadata: Mapping[str, str]) -> byte
 
 
 def _png_graph(text: str, content: object) -> bytes:
+    from pathlib import Path
+
+    from PIL import Image, ImageDraw, ImageFont
+
     width, height = 640, 480; nodes, edges = _graph(content); positions = _graph_positions(nodes, width, height)
     pixels = bytearray(b"\xff\xff\xff" * width * height)
     def point(x: int, y: int, color: tuple[int, int, int] = (30, 64, 175)) -> None:
@@ -223,6 +227,20 @@ def _png_graph(text: str, content: object) -> bytes:
             for x in range(cx - 24, cx + 25):
                 distance = (x - cx) ** 2 + (y - cy) ** 2
                 if distance <= 24 ** 2: point(x, y, (219, 234, 254) if distance < 21 ** 2 else (29, 78, 216))
+    image = Image.frombytes("RGB", (width, height), bytes(pixels))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype(str(Path(__file__).parent / "assets" / "NanumGothic-Regular.ttf"), 14)
+    for edge in edges:
+        source, target = positions.get(str(edge.get("source"))), positions.get(str(edge.get("target")))
+        condition = str(edge.get("condition", ""))
+        if source and target and condition:
+            draw.text(((source[0] + target[0]) // 2, (source[1] + target[1]) // 2 - 28), condition,
+                      font=font, fill=(15, 23, 42), anchor="mm")
+    for index, node in enumerate(nodes):
+        cx, cy = positions[str(node.get("id", index))]
+        draw.text((cx, cy + 29), str(node.get("label", node.get("id", ""))),
+                  font=font, fill=(15, 23, 42), anchor="mt")
+    pixels = image.tobytes()
     scanlines = b"".join(b"\x00" + pixels[row * width * 3:(row + 1) * width * 3] for row in range(height))
     return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + _chunk(b"tEXt", b"Studio\x00" + text.encode("utf-8")) + _chunk(b"IDAT", zlib.compress(scanlines)) + _chunk(b"IEND", b"")
 

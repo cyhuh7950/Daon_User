@@ -9,6 +9,7 @@ from xml.etree import ElementTree
 
 from daon_user_api.studio_export import StudioExportError, export_studio_output
 from pypdf import PdfReader
+from PIL import Image
 
 METADATA = {
     "output_version_id": "version-1", "created_at": "2026-08-13T00:00:00Z",
@@ -111,6 +112,18 @@ class StudioExportTests(unittest.TestCase):
         self.assertGreaterEqual(width, 320)
         self.assertGreaterEqual(height, 240)
         self.assertGreater(len(png.content), 1000)
+
+    def test_knowledge_map_png_shows_korean_node_labels_and_edge_condition(self) -> None:
+        content = {
+            "nodes": [{"id": "n1", "label": "합성 근거"}, {"id": "n2", "label": "합성 결론"}],
+            "edges": [{"id": "e1", "source": "n1", "target": "n2", "condition": "검증"}],
+        }
+        png = export_studio_output("png", "지식 구조도", content, METADATA, output_type="knowledge_map")
+        image = Image.open(BytesIO(png.content)).convert("RGB")
+        for box in ((30, 346, 130, 372), (510, 186, 610, 212), (285, 200, 355, 220)):
+            with self.subTest(box=box):
+                crop = image.crop(box)
+                self.assertGreater(sum(pixel != (255, 255, 255) for pixel in crop.get_flattened_data()), 10)
 
 
 if __name__ == "__main__":
