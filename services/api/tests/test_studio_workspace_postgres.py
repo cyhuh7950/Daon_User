@@ -525,6 +525,7 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("DAON_STUDIO_TEST_DSN"), "dedicated PostgreSQL test DSN required")
 class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
     dsn = os.environ.get("DAON_STUDIO_TEST_DSN", "")
+    notebook_id = "notebook-it"
 
     @staticmethod
     def _canonical(connection, table, record_id, payload, *, state=None, extra=()):
@@ -536,6 +537,15 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
         for column, value in extra:
             columns.append(column); values.append(value)
         connection.execute(f"INSERT INTO {table} ({','.join(columns)}) VALUES ({','.join(['%s'] * len(values))})", values)
+
+    def _bind_output(self, connection, output_id, version_id):
+        for kind, record_id in (("studio_output", output_id), ("output_version", version_id)):
+            connection.execute(
+                "INSERT INTO notebook_bindings "
+                "(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) "
+                "VALUES ('tenant-it','workspace-it',%s,%s,%s,NULL,'actor-it',now())",
+                (self.notebook_id, kind, record_id),
+            )
 
     def setUp(self):
         with psycopg.connect(self.dsn) as connection:
@@ -558,6 +568,11 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
             connection.execute("SELECT set_config('app.tenant_id','tenant-it',true)")
             connection.execute("SELECT set_config('app.workspace_id','workspace-it',true)")
             connection.execute("SELECT set_config('app.actor_id','actor-it',true)")
+            connection.execute(
+                "INSERT INTO notebooks (tenant_id,workspace_id,notebook_id,created_by,created_at) "
+                "VALUES ('tenant-it','workspace-it',%s,'actor-it',now())",
+                (self.notebook_id,),
+            )
             self._canonical(connection, "generation_settings_snapshots", "settings-it", {"purpose": "통합"})
             self._canonical(connection, "generation_requests", "generation-it", {"purpose": "통합"}, state="configuring", extra=(("generation_settings_snapshot_id", "settings-it"),))
             connection.execute("SELECT * FROM transition_canon_state('GenerationRequest','generation-it',1,'confirmed','transition-generation-confirmed','IT','trace-it','policy-it')")
@@ -585,6 +600,7 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
             for target in ("draft", "review_requested", "in_review", "approved"):
                 connection.execute("SELECT * FROM transition_canon_state('OutputVersion','output-version-it',%s,%s,%s,'IT','trace-it','policy-it')", (output_version, target, f"transition-output-{target}"))
                 output_version += 1
+            self._bind_output(connection, "output-it", "output-version-it")
             self._canonical(connection, "evidence_spans", "span-original", {"text": "원본 근거", "page": 2}, extra=(("source_version_id", "source-version-original"),))
             self._canonical(connection, "evidence_references", "evidence-original", {
                 "citation_id": "citation-original", "source_version_id": "source-version-original",
@@ -612,7 +628,7 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
         store = PostgresCloudStore(self.dsn)
         try:
             result, replayed = PostgresStudioWorkspaceRepository(store).record_action(
-                StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it"),
+                StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id),
                 "knowledge_registration", {"output_version_id": "output-version-it", "explicit": True},
                 "knowledge-real-pg-0001",
             )
@@ -681,7 +697,7 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
             concurrent_store = PostgresCloudStore(self.dsn)
             try:
                 return PostgresStudioWorkspaceRepository(concurrent_store).create_version(
-                    StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it"),
+                    StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id),
                     "output-it",
                     {"previous_version_id": "output-version-it", "revision_type": "user_edit", "change_reason": "동시 재시도", "content": "동일 내용"},
                     "revision-concurrent-key-0001",
@@ -708,7 +724,7 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
         object_storage = ObjectStorage()
         try:
             repository = PostgresStudioWorkspaceRepository(lifecycle_store, object_storage)
-            lifecycle_context = StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it")
+            lifecycle_context = StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id)
             review, _ = repository.record_action(
                 lifecycle_context, "review", {"output_version_id": latest_version_id}, "review-real-pg-0001",
             )
@@ -767,6 +783,7 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
                     "citation_id": "citation-original", "source_version_id": "source-version-original",
                     "evidence_span_id": "span-original", "origin": "raw_source", "locator": {"kind": "page", "value": "2"},
                 }, extra=(("output_version_id", "output-version-compliance-it"), ("source_version_id", "source-version-original"), ("evidence_span_id", "span-original")))
+                self._bind_output(connection, "output-compliance-it", "output-version-compliance-it")
             compliance_versions = repository.list_versions(lifecycle_context, "output-compliance-it")
             self.assertEqual(compliance_versions[0]["content"]["items"][0]["judgement"], "needs_review")
             self.assertEqual(compliance_versions[0]["content"]["lineage"]["ruleset_id"], "ruleset-v3")
@@ -810,6 +827,7 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
                     "citation_id": "citation-original", "source_version_id": "source-version-original",
                     "evidence_span_id": "span-original", "origin": "raw_source", "locator": {"kind": "page", "value": "2"},
                 }, extra=(("output_version_id", "output-version-comparison-it"), ("source_version_id", "source-version-original"), ("evidence_span_id", "span-original")))
+                self._bind_output(connection, "output-comparison-it", "output-version-comparison-it")
             comparison_versions = repository.list_versions(lifecycle_context, "output-comparison-it")
             self.assertEqual(comparison_versions[0]["content"]["rows"][0]["state"], "changed")
             self.assertEqual(comparison_versions[0]["content"]["rows"][0]["evidence"], ["citation-original page 2", "citation-original page 2"])
@@ -853,6 +871,7 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
                     "citation_id": "citation-original", "source_version_id": "source-version-original",
                     "evidence_span_id": "span-original", "origin": "raw_source", "locator": {"kind": "page", "value": "2"},
                 }, extra=(("output_version_id", "output-version-map-it"), ("source_version_id", "source-version-original"), ("evidence_span_id", "span-original")))
+                self._bind_output(connection, "output-map-it", "output-version-map-it")
             map_versions = repository.list_versions(lifecycle_context, "output-map-it")
             self.assertEqual(map_versions[0]["content"]["nodes"][0]["confidence"], "verified")
             self.assertEqual(map_versions[0]["content"]["nodes"][0]["evidence"], "page 2")
@@ -896,6 +915,7 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
                     "citation_id": "citation-original", "source_version_id": "source-version-original",
                     "evidence_span_id": "span-original", "origin": "raw_source", "locator": {"kind": "page", "value": "2"},
                 }, extra=(("output_version_id", "output-version-draft-it"), ("source_version_id", "source-version-original"), ("evidence_span_id", "span-original")))
+                self._bind_output(connection, "output-draft-it", "output-version-draft-it")
             draft_versions = repository.list_versions(lifecycle_context, "output-draft-it")
             self.assertEqual(draft_versions[0]["content"]["review_state"], "draft")
             self.assertEqual(draft_versions[0]["content"]["sections"][0]["evidence"], ["citation-original page 2"])
