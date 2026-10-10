@@ -4,13 +4,15 @@ import unittest
 import os
 import hashlib
 import json
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch as mock_patch
 
 import psycopg
 
 from daon_user_api.studio_workspace import (
-    StudioContext, StudioGenerationRequest, StudioWorkspaceService, build_structured_output,
+    StudioContext, StudioError, StudioGenerationRequest, StudioWorkspaceService, build_structured_output,
 )
 from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
 from daon_user_api.object_queue import StagedObject, StoredObject
@@ -206,6 +208,25 @@ class ObjectStorage:
 
 
 class StudioWorkspacePostgresContractTests(unittest.TestCase):
+    def test_app_role_fixture_seeds_with_admin_and_runs_with_app_dsn(self) -> None:
+        case = StudioWorkspaceAppRolePostgresIntegrationTests("test_app_role_review_approval_export_and_scope_denial")
+        case.admin_dsn = "admin-only"
+        case.app_dsn = "app-only"
+        with mock_patch("psycopg.connect") as connect, mock_patch("daon_user_api.cloud_storage.PostgresCloudStore") as store:
+            connection = MagicMock()
+            connect.return_value.__enter__.return_value = connection
+            case.setUp()
+            case.doCleanups()
+        connect.assert_called_once_with("admin-only")
+        store.assert_called_once_with("app-only")
+        for table in ("studio_outputs", "output_versions"):
+            seeded_tenants = {
+                call.args[1][0]
+                for call in connection.execute.call_args_list
+                if call.args[0].startswith(f"INSERT INTO {table} (")
+            }
+            self.assertEqual(seeded_tenants, {case.tenant_id, case.other_tenant_id})
+
     def test_transactional_license_capability_requires_postgres_enforcer(self) -> None:
         cloud = Cloud()
         plain = StudioWorkspaceService(PostgresStudioWorkspaceRepository(cloud))
@@ -952,6 +973,254 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
                 with connection.transaction():
                     connection.execute("UPDATE run_snapshots SET canonical_text='{}' WHERE record_id='run-snapshot-a2'")
             self.assertEqual(connection.execute("SELECT count(*) FROM run_snapshots WHERE record_id='run-snapshot-a2'").fetchone()[0], 1)
+
+
+@unittest.skipUnless(
+    os.environ.get("DAON_STUDIO_TEST_DSN") and os.environ.get("DAON_STUDIO_TEST_APP_DSN"),
+    "dedicated admin and app PostgreSQL test DSNs required",
+)
+class StudioWorkspaceAppRolePostgresIntegrationTests(unittest.TestCase):
+    admin_dsn = os.environ.get("DAON_STUDIO_TEST_DSN", "")
+    app_dsn = os.environ.get("DAON_STUDIO_TEST_APP_DSN", "")
+
+    @staticmethod
+    def _seed_canonical(connection, tenant_id, workspace_id, table, record_id, payload, *, state=None, extra=()):
+        canonical_text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        columns = ["tenant_id", "workspace_id", "record_id", "aggregate_id", "version", "schema_version", "canonical_json", "canonical_text", "digest_sha256", "created_by", "trace_id"]
+        values = [tenant_id, workspace_id, record_id, record_id, 1, 1, psycopg.types.json.Jsonb(payload), canonical_text, hashlib.sha256(canonical_text.encode()).hexdigest(), "actor-m8-app", "trace-m8-app"]
+        if state is not None:
+            columns.append("state"); values.append(state)
+        for column, value in extra:
+            columns.append(column); values.append(value)
+        connection.execute(f"INSERT INTO {table} ({','.join(columns)}) VALUES ({','.join(['%s'] * len(values))})", values)
+
+    def setUp(self):
+        from daon_user_api.cloud_storage import PostgresCloudStore
+
+        unique = uuid.uuid4().hex
+        self.tenant_id = f"tenant-m8-app-{unique}"
+        self.other_tenant_id = f"tenant-m8-other-{unique}"
+        self.workspace_id = f"workspace-m8-app-{unique}"
+        self.other_workspace_id = f"workspace-m8-other-{unique}"
+        self.notebook_id = f"notebook-m8-app-{unique}"
+        self.wrong_notebook_id = f"notebook-m8-wrong-{unique}"
+        self.other_notebook_id = f"notebook-m8-other-{unique}"
+        self.settings_id = f"settings-m8-app-{unique}"
+        self.generation_id = f"generation-m8-app-{unique}"
+        self.output_id = f"output-m8-app-{unique}"
+        self.version_id = f"output-version-m8-app-{unique}"
+        self.other_output_id = f"output-m8-other-{unique}"
+        self.other_version_id = f"output-version-m8-other-{unique}"
+        self.context = StudioContext(self.tenant_id, self.workspace_id, "actor-m8-app", "trace-m8-app", "policy-m8-app", self.notebook_id)
+        self.app_store = PostgresCloudStore(self.app_dsn)
+        self.addCleanup(self.app_store.close)
+
+        with psycopg.connect(self.admin_dsn) as connection:
+            connection.execute(
+                "INSERT INTO tenants (tenant_id,display_name) VALUES (%s,'M8 app fixture'),(%s,'M8 other fixture')",
+                (self.tenant_id, self.other_tenant_id),
+            )
+            connection.execute(
+                "INSERT INTO workspaces (tenant_id,workspace_id,display_name) VALUES "
+                "(%s,%s,'M8 app workspace'),(%s,%s,'M8 other workspace')",
+                (self.tenant_id, self.workspace_id, self.other_tenant_id, self.other_workspace_id),
+            )
+            connection.execute("SELECT set_config('app.tenant_id',%s,true)", (self.tenant_id,))
+            connection.execute("SELECT set_config('app.workspace_id',%s,true)", (self.workspace_id,))
+            connection.execute("SELECT set_config('app.actor_id','actor-m8-app',true)")
+            connection.execute(
+                "INSERT INTO notebooks (tenant_id,workspace_id,notebook_id,created_by,created_at) "
+                "VALUES (%s,%s,%s,'actor-m8-app',now()),(%s,%s,%s,'actor-m8-app',now())",
+                (self.tenant_id, self.workspace_id, self.notebook_id,
+                 self.tenant_id, self.workspace_id, self.wrong_notebook_id),
+            )
+            connection.execute(
+                "INSERT INTO notebooks (tenant_id,workspace_id,notebook_id,created_by,created_at) "
+                "VALUES (%s,%s,%s,'actor-m8-app',now())",
+                (self.other_tenant_id, self.other_workspace_id, self.other_notebook_id),
+            )
+            self._seed_canonical(connection, self.tenant_id, self.workspace_id,
+                                 "generation_settings_snapshots", self.settings_id, {"purpose": "M8 앱 역할 시험"})
+            self._seed_canonical(connection, self.tenant_id, self.workspace_id,
+                                 "generation_requests", self.generation_id, {"purpose": "M8 앱 역할 시험"},
+                                 state="configuring", extra=(("generation_settings_snapshot_id", self.settings_id),))
+            for version, target in ((1, "confirmed"), (2, "submitted")):
+                connection.execute(
+                    "SELECT * FROM transition_canon_state('GenerationRequest',%s,%s,%s,%s,'M8_APP_FIXTURE','trace-m8-app','policy-m8-app')",
+                    (self.generation_id, version, target, f"transition-{unique}-{target}"),
+                )
+            self._seed_canonical(connection, self.tenant_id, self.workspace_id,
+                                 "studio_outputs", self.output_id,
+                                 {"output_type": "evidence_report", "title": "M8 앱 역할 산출물", "purpose": "RLS 검증"},
+                                 extra=(("generation_request_id", self.generation_id),))
+            self._seed_canonical(connection, self.tenant_id, self.workspace_id,
+                                 "output_versions", self.version_id,
+                                 {"output_type": "evidence_report", "purpose": "RLS 검증", "source_version_ids": [],
+                                  "revision_type": "initial", "change_reason": "initial_generation",
+                                  "content": {"title": "M8 앱 역할 산출물", "sections": [{"heading": "검증", "body": "분리된 앱 역할 저장소 실행"}]}},
+                                 state="generating", extra=(("studio_output_id", self.output_id),
+                                                            ("generation_settings_snapshot_id", self.settings_id)))
+            connection.execute(
+                "SELECT * FROM transition_canon_state('OutputVersion',%s,1,'draft',%s,'M8_APP_FIXTURE','trace-m8-app','policy-m8-app')",
+                (self.version_id, f"transition-{unique}-draft"),
+            )
+            connection.execute(
+                "INSERT INTO notebook_bindings "
+                "(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) "
+                "VALUES (%s,%s,%s,'studio_output',%s,NULL,'actor-m8-app',now()),"
+                "(%s,%s,%s,'output_version',%s,NULL,'actor-m8-app',now())",
+                (self.tenant_id, self.workspace_id, self.notebook_id, self.output_id,
+                 self.tenant_id, self.workspace_id, self.notebook_id, self.version_id),
+            )
+            connection.execute("SELECT set_config('app.tenant_id',%s,true)", (self.other_tenant_id,))
+            connection.execute("SELECT set_config('app.workspace_id',%s,true)", (self.other_workspace_id,))
+            other_settings_id = f"settings-m8-other-{unique}"
+            other_generation_id = f"generation-m8-other-{unique}"
+            self._seed_canonical(connection, self.other_tenant_id, self.other_workspace_id,
+                                 "generation_settings_snapshots", other_settings_id, {"purpose": "타 tenant RLS 시험"})
+            self._seed_canonical(connection, self.other_tenant_id, self.other_workspace_id,
+                                 "generation_requests", other_generation_id, {"purpose": "타 tenant RLS 시험"},
+                                 state="configuring", extra=(("generation_settings_snapshot_id", other_settings_id),))
+            for version, target in ((1, "confirmed"), (2, "submitted")):
+                connection.execute(
+                    "SELECT * FROM transition_canon_state('GenerationRequest',%s,%s,%s,%s,'M8_APP_FIXTURE','trace-m8-app','policy-m8-app')",
+                    (other_generation_id, version, target, f"transition-other-{unique}-{target}"),
+                )
+            self._seed_canonical(connection, self.other_tenant_id, self.other_workspace_id,
+                                 "studio_outputs", self.other_output_id,
+                                 {"output_type": "evidence_report", "title": "타 tenant 산출물", "purpose": "RLS 검증"},
+                                 extra=(("generation_request_id", other_generation_id),))
+            self._seed_canonical(connection, self.other_tenant_id, self.other_workspace_id,
+                                 "output_versions", self.other_version_id,
+                                 {"output_type": "evidence_report", "purpose": "RLS 검증", "source_version_ids": [],
+                                  "revision_type": "initial", "change_reason": "initial_generation",
+                                  "content": {"title": "타 tenant 산출물", "sections": []}},
+                                 state="generating", extra=(("studio_output_id", self.other_output_id),
+                                                            ("generation_settings_snapshot_id", other_settings_id)))
+            connection.execute(
+                "SELECT * FROM transition_canon_state('OutputVersion',%s,1,'draft',%s,'M8_APP_FIXTURE','trace-m8-app','policy-m8-app')",
+                (self.other_version_id, f"transition-other-{unique}-draft"),
+            )
+            connection.execute(
+                "INSERT INTO notebook_bindings "
+                "(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) "
+                "VALUES (%s,%s,%s,'studio_output',%s,NULL,'actor-m8-app',now()),"
+                "(%s,%s,%s,'output_version',%s,NULL,'actor-m8-app',now())",
+                (self.other_tenant_id, self.other_workspace_id, self.other_notebook_id, self.other_output_id,
+                 self.other_tenant_id, self.other_workspace_id, self.other_notebook_id, self.other_version_id),
+            )
+
+    def test_app_role_review_approval_export_and_scope_denial(self):
+        with psycopg.connect(self.admin_dsn) as connection:
+            admin_role = connection.execute("SELECT current_user").fetchone()[0]
+            self.assertEqual(connection.execute(
+                "SELECT count(*) FROM workspaces WHERE workspace_id=ANY(%s)",
+                ([self.workspace_id, self.other_workspace_id],),
+            ).fetchone()[0], 2)
+            for table, own_id, foreign_id in (("studio_outputs", self.output_id, self.other_output_id),
+                                              ("output_versions", self.version_id, self.other_version_id)):
+                self.assertEqual(connection.execute(
+                    f"SELECT count(*) FROM {table} WHERE record_id=ANY(%s)",
+                    ([own_id, foreign_id],),
+                ).fetchone()[0], 2)
+        with psycopg.connect(self.app_dsn) as connection:
+            role, bypass_rls, superuser = connection.execute(
+                "SELECT rolname,rolbypassrls,rolsuper FROM pg_roles WHERE rolname=current_user",
+            ).fetchone()
+            self.assertNotEqual(role, admin_role)
+            self.assertFalse(bypass_rls)
+            self.assertFalse(superuser)
+            self.assertEqual(connection.execute(
+                "SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class "
+                "WHERE relname=ANY(%s) AND relkind='r' ORDER BY relname",
+                (["studio_outputs", "output_versions"],),
+            ).fetchall(), [("output_versions", True, True), ("studio_outputs", True, True)])
+            connection.execute("SELECT set_config('app.tenant_id',%s,true)", (self.tenant_id,))
+            connection.execute("SELECT set_config('app.workspace_id',%s,true)", (self.workspace_id,))
+            connection.execute("SELECT set_config('app.actor_id','actor-m8-app',true)")
+            visible = connection.execute(
+                "SELECT workspace_id FROM workspaces WHERE workspace_id=ANY(%s)",
+                ([self.workspace_id, self.other_workspace_id],),
+            ).fetchall()
+            self.assertEqual(visible, [(self.workspace_id,)])
+            for table, own_id, foreign_id in (("studio_outputs", self.output_id, self.other_output_id),
+                                              ("output_versions", self.version_id, self.other_version_id)):
+                self.assertEqual(connection.execute(
+                    f"SELECT record_id FROM {table} WHERE record_id=ANY(%s) ORDER BY record_id",
+                    ([own_id, foreign_id],),
+                ).fetchall(), [(own_id,)])
+
+        object_storage = ObjectStorage()
+        repository = PostgresStudioWorkspaceRepository(self.app_store, object_storage)
+        self.assertEqual(repository.list_versions(self.context, self.output_id)[0]["status"], "draft")
+        with self.assertRaises(StudioError) as error:
+            repository.export_output(self.context, self.output_id, self.version_id, "pdf")
+        self.assertEqual(error.exception.code, "APPROVAL_REQUIRED")
+        self.assertEqual((object_storage.content, object_storage.final_key), (b"", ""))
+        review, replayed = repository.record_action(
+            self.context, "review", {"output_version_id": self.version_id}, f"review-{self.version_id}",
+        )
+        self.assertFalse(replayed)
+        self.assertEqual(repository.list_versions(self.context, self.output_id)[0]["status"], "in_review")
+        with self.assertRaises(StudioError) as error:
+            repository.export_output(self.context, self.output_id, self.version_id, "pdf")
+        self.assertEqual(error.exception.code, "APPROVAL_REQUIRED")
+        self.assertEqual((object_storage.content, object_storage.final_key), (b"", ""))
+        approval_request, replayed = repository.record_action(
+            self.context, "approval_request",
+            {"output_version_id": self.version_id, "review_request_id": review["record_id"]},
+            f"approval-request-{self.version_id}",
+        )
+        self.assertFalse(replayed)
+        approval, replayed = repository.record_action(
+            self.context, "approval",
+            {"output_version_id": self.version_id, "approval_request_id": approval_request["record_id"],
+             "decision": "approved", "step_up_verified": True},
+            f"approval-{self.version_id}",
+        )
+        self.assertFalse(replayed)
+        version = repository.list_versions(self.context, self.output_id)[0]
+        self.assertEqual(version["status"], "approved")
+        self.assertEqual(version["review_request_id"], review["record_id"])
+        self.assertEqual(version["approval_request_id"], approval_request["record_id"])
+        self.assertEqual(version["approval_id"], approval["record_id"])
+        exported = repository.export_output(self.context, self.output_id, self.version_id, "pdf")
+        self.assertTrue(exported.content.startswith(b"%PDF-"))
+        self.assertEqual(hashlib.sha256(exported.content).hexdigest(), exported.checksum_sha256)
+        self.assertEqual(object_storage.content, exported.content)
+        self.assertTrue(object_storage.final_key)
+
+        wrong_notebook = StudioContext(self.tenant_id, self.workspace_id, "actor-m8-app", "trace-m8-app", "policy-m8-app", self.wrong_notebook_id)
+        other_tenant = StudioContext(self.other_tenant_id, self.other_workspace_id, "actor-m8-app", "trace-m8-app", "policy-m8-app", self.other_notebook_id)
+        for context in (wrong_notebook, other_tenant):
+            with self.assertRaises(StudioError) as error:
+                repository.record_action(context, "review", {"output_version_id": self.version_id}, f"denied-{context.tenant_id}-{context.notebook_id}")
+            self.assertEqual(error.exception.code, "RESOURCE_UNAVAILABLE")
+            with self.assertRaises(StudioError) as error:
+                repository.list_versions(context, self.output_id)
+            self.assertEqual(error.exception.code, "RESOURCE_UNAVAILABLE")
+            with self.assertRaises(StudioError) as error:
+                repository.export_output(context, self.output_id, self.version_id, "pdf")
+            self.assertEqual(error.exception.code, "RESOURCE_UNAVAILABLE")
+
+        with psycopg.connect(self.admin_dsn) as connection:
+            row = connection.execute(
+                "SELECT state,version FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
+                (self.tenant_id, self.workspace_id, self.version_id),
+            ).fetchone()
+            self.assertEqual(row, ("approved", 5))
+            for table, record_id in (("review_requests", review["record_id"]),
+                                     ("approval_requests", approval_request["record_id"]),
+                                     ("approvals", approval["record_id"])):
+                self.assertEqual(connection.execute(
+                    f"SELECT count(*) FROM {table} WHERE tenant_id=%s AND workspace_id=%s "
+                    "AND record_id=%s AND output_version_id=%s",
+                    (self.tenant_id, self.workspace_id, record_id, self.version_id),
+                ).fetchone()[0], 1)
+            self.assertEqual(connection.execute(
+                "SELECT count(*) FROM review_requests WHERE output_version_id=%s",
+                (self.version_id,),
+            ).fetchone()[0], 1)
 
 
 if __name__ == "__main__":
