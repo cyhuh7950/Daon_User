@@ -6,10 +6,14 @@ import subprocess
 import sys
 import time
 import unittest
+from http.client import HTTPConnection
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from unittest.mock import patch
 
 from runtime_process_probe import (
+    NativeFramingUpstream,
     ProcessTreeShutdownError,
     force_cleanup_process_tree,
     next_exit_is_graceful,
@@ -70,6 +74,28 @@ class NextLauncherContractTests(unittest.TestCase):
 
 @unittest.skipIf(os.name == "nt", "POSIX process group contract")
 class PosixProcessLifecycleTests(unittest.TestCase):
+    def test_closed_http_upstream_port_is_reusable_after_response(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), NativeFramingUpstream)
+        port = int(server.server_address[1])
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = HTTPConnection("127.0.0.1", port, timeout=2)
+            connection.request(
+                "GET", "/api/v1/backups?workspace_id=workspace-probe",
+                headers={"Authorization": "Bearer runtime-probe"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            response.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(port_is_released(port))
+
     def test_parent_exit_cannot_leave_pipe_and_listener_child_until_fixture_timeout(self) -> None:
         port = free_port()
         process = start_fixture("parent", "normal", port)
