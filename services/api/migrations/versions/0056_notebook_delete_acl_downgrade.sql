@@ -8,6 +8,11 @@ DECLARE
   v_fk_tables text[];
   v_fk_count integer;
   v_revision text;
+  v_expected_acl text := CASE
+    WHEN current_setting('server_version_num')::integer >= 170000
+      THEN '{daon_app=arDxtm/daon_app}'
+    ELSE '{daon_app=arDxt/daon_app}'
+  END;
   v_delete_tables text[] := ARRAY[
     'citations', 'document_processing_job_attempts', 'document_processing_jobs',
     'durable_jobs', 'evidence_references', 'evidence_spans',
@@ -87,10 +92,17 @@ BEGIN
   FOREACH v_table IN ARRAY v_fk_tables LOOP
     EXECUTE format('ALTER TABLE public.%I OWNER TO daon_app', v_table);
     EXECUTE format('REVOKE ALL ON TABLE public.%I FROM daon_app', v_table);
-    EXECUTE format(
-      'GRANT SELECT, INSERT, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.%I TO daon_app',
-      v_table
-    );
+    IF current_setting('server_version_num')::integer >= 170000 THEN
+      EXECUTE format(
+        'GRANT SELECT, INSERT, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN ON TABLE public.%I TO daon_app',
+        v_table
+      );
+    ELSE
+      EXECUTE format(
+        'GRANT SELECT, INSERT, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.%I TO daon_app',
+        v_table
+      );
+    END IF;
     -- One FK child (external_references) is outside the 27 DELETE targets.
     EXECUTE format('REVOKE ALL ON TABLE public.%I FROM daon_notebook_delete', v_table);
   END LOOP;
@@ -107,7 +119,7 @@ BEGIN
     ) <> 'daon_app' OR
        (SELECT relacl::text FROM pg_catalog.pg_class
          WHERE oid = format('public.%I', v_table)::regclass)
-         <> '{daon_app=arDxt/daon_app}' OR
+         <> v_expected_acl OR
        pg_catalog.has_table_privilege('daon_app', format('public.%I', v_table), 'UPDATE') OR
        pg_catalog.has_table_privilege('daon_app', format('public.%I', v_table), 'DELETE') THEN
       RAISE EXCEPTION 'NOTEBOOK_DELETE_ACL_REVERSE_TABLE_POSTCONDITION:%', v_table

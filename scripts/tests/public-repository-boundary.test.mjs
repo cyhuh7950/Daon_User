@@ -49,6 +49,17 @@ function isPublicManual(relativePath) {
   return publicManualRoots.some((prefix) => relativePath.startsWith(prefix));
 }
 
+function readReviewedWorkingOrIndexBytes(relativePath) {
+  try {
+    return readFileSync(path.join(root, relativePath));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    // A locally removed file can still be tracked in the index. Verify the
+    // exact reviewed index bytes without restoring the user's working tree.
+    return execFileSync("git", ["show", `:${relativePath}`], { cwd: root });
+  }
+}
+
 function isNonManualDocument(relativePath, contentBytes, stagedBytes) {
   const lowerCasePath = relativePath.toLowerCase();
   if (lowerCasePath.endsWith(".keystore") || lowerCasePath.endsWith(".jks")) {
@@ -56,7 +67,7 @@ function isNonManualDocument(relativePath, contentBytes, stagedBytes) {
   }
   if (reviewedHistoricalDocuments.has(relativePath)) {
     const expectedHash = reviewedHistoricalDocuments.get(relativePath);
-    const workingContent = contentBytes ?? readFileSync(path.join(root, relativePath));
+    const workingContent = contentBytes ?? readReviewedWorkingOrIndexBytes(relativePath);
     const canonicalContent = Buffer.from(workingContent.toString("utf8").replace(/\r\n/g, "\n"));
     const stagedContent = stagedBytes ?? (contentBytes === undefined
       ? execFileSync("git", ["show", `:${relativePath}`], { cwd: root })
@@ -103,7 +114,7 @@ test("only the 19 reviewed document paths are grandfathered", () => {
   assert.deepEqual([...reviewedHistoricalDocuments.keys()], reviewed);
   for (const relativePath of reviewed) {
     assert.equal(
-      isNonManualDocument(relativePath, readFileSync(path.join(root, relativePath))),
+      isNonManualDocument(relativePath, readReviewedWorkingOrIndexBytes(relativePath)),
       false,
       relativePath,
     );
@@ -124,7 +135,7 @@ test("only the 19 reviewed document paths are grandfathered", () => {
 
 test("a content change to any grandfathered document requires review", () => {
   for (const relativePath of reviewedHistoricalDocuments.keys()) {
-    const current = readFileSync(path.join(root, relativePath));
+    const current = readReviewedWorkingOrIndexBytes(relativePath);
     const changed = Buffer.concat([current, Buffer.from("\nreview-required\n")]);
     assert.equal(isNonManualDocument(relativePath, changed), true, relativePath);
   }

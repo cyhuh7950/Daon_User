@@ -12,6 +12,11 @@ DECLARE
   v_denied_delete_count integer;
   v_revision text;
   v_existing boolean;
+  v_expected_acl text := CASE
+    WHEN current_setting('server_version_num')::integer >= 170000
+      THEN '{daon_app=arDxtm/daon_app}'
+    ELSE '{daon_app=arDxt/daon_app}'
+  END;
   v_delete_tables text[] := ARRAY[
     'citations', 'document_processing_job_attempts', 'document_processing_jobs',
     'durable_jobs', 'evidence_references', 'evidence_spans',
@@ -65,7 +70,7 @@ BEGIN
      AND child_ns.nspname = 'public' AND parent_ns.nspname = 'public'
      AND parent.relname = ANY(v_delete_tables)
      AND (
-       child.relacl::text = '{daon_app=arDxt/daon_app}'
+       child.relacl::text = v_expected_acl
        OR (v_existing AND pg_catalog.pg_get_userbyid(child.relowner) = 'daon_notebook_delete')
      );
   v_fk_table_count := coalesce(array_length(v_fk_tables, 1), 0);
