@@ -21,6 +21,8 @@ const REQUIRED_MANDATORY_CHECKS = new Map([
   ["public-repository-boundary", { category: "security", kind: null }],
   ["quality-gate-runner-tests", { category: "unit", kind: null }],
   ["toolchain-baseline", { category: "build", kind: null }],
+  ["braces-patch-behavior", { category: "security", kind: null, command: ["node", "--test", "scripts/tests/braces-patch.test.mjs"] }],
+  ["braces-patch-integrity", { category: "security", kind: null, command: ["npm", "run", "verify:braces-patch"] }],
   ["production-dependency-audit", { category: "security", kind: "npm_audit" }],
   ["repository-independence", { category: "independence", kind: null }],
   ["local-service-runtime-verifier-tests", { category: "unit", kind: null }],
@@ -121,6 +123,8 @@ function validatePolicy(policy, root) {
     else {
       if (check.category !== approved.category) errors.push(`${check.id}.category must be ${approved.category}`);
       if ((check.kind ?? null) !== approved.kind) errors.push(`${check.id}.kind must be ${approved.kind ?? "unset"}`);
+      if (approved.command && JSON.stringify(check.command) !== JSON.stringify(approved.command))
+        errors.push(`${check.id}.command must match the approved patch verifier`);
     }
     if (!isCommand(check?.command)) errors.push(`${check?.id ?? "mandatory check"}.command must be a non-empty string array`);
   }
@@ -205,17 +209,87 @@ async function scanSecurity(root, security) {
   return { scanned, violations };
 }
 
-function parseAudit(result) {
+function bracesOnlyAdvisory(vulnerabilities) {
+  if (!vulnerabilities || typeof vulnerabilities !== "object" || Array.isArray(vulnerabilities)) return null;
+  const riskNames = Object.entries(vulnerabilities)
+    .filter(([, finding]) => ["high", "critical"].includes(finding?.severity))
+    .map(([name]) => name);
+  if (!riskNames.length) return null;
+  function reachesOnlyBraces(name) {
+    const visited = new Set();
+    const pending = [name];
+    let advisoryFound = false;
+    while (pending.length) {
+      const current = pending.pop();
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const finding = vulnerabilities[current];
+      if (!finding || !Array.isArray(finding.via) || !finding.via.length) return false;
+      for (const via of finding.via) {
+        if (typeof via === "string") pending.push(via);
+        else if (via && via.name === "braces" && via.severity === "high"
+          && via.url === "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm") advisoryFound = true;
+        else return false;
+      }
+    }
+    return advisoryFound;
+  }
+  return riskNames.every((name) => reachesOnlyBraces(name)) ? riskNames : null;
+}
+
+function auditFindingEvidence(vulnerabilities) {
+  if (!vulnerabilities || typeof vulnerabilities !== "object" || Array.isArray(vulnerabilities)) return [];
+  const safeName = (value) => typeof value === "string" && /^[A-Za-z0-9@/._-]{1,128}$/.test(value) ? value : "UNAVAILABLE";
+  return Object.entries(vulnerabilities)
+    .filter(([, finding]) => ["high", "critical"].includes(finding?.severity))
+    .map(([name, finding]) => ({
+      name: safeName(name),
+      severity: finding.severity,
+      via: Array.isArray(finding.via) ? finding.via.map((via) => {
+        if (typeof via === "string") return safeName(via);
+        const advisory = typeof via?.url === "string" ? via.url.match(/GHSA-[A-Za-z0-9-]{1,80}/)?.[0] : null;
+        return advisory ?? "UNAVAILABLE";
+      }) : []
+    }));
+}
+
+function parseAudit(result, patchVerified) {
   if (result.spawnError) return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
   let payload;
   try { payload = JSON.parse(result.stdout); }
   catch { return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" }; }
-  const vulnerabilities = payload?.metadata?.vulnerabilities;
-  if (!vulnerabilities) return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
-  const highRisk = Number(vulnerabilities.high ?? 0) + Number(vulnerabilities.critical ?? 0);
-  if (highRisk > 0) return { status: "FAIL", code: "HIGH_RISK_PRODUCTION_DEPENDENCY", highRisk };
+  const counts = payload?.metadata?.vulnerabilities;
+  const findings = payload?.vulnerabilities;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)
+    || Object.hasOwn(payload, "error") || Object.hasOwn(payload, "errors")
+    || !counts || typeof counts !== "object" || Array.isArray(counts)
+    || !findings || typeof findings !== "object" || Array.isArray(findings)
+    || !["high", "critical"].every((severity) => Number.isSafeInteger(counts[severity]) && counts[severity] >= 0)
+    || ![0, 1].includes(result.exitCode))
+    return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
+  const reported = { high: 0, critical: 0 };
+  for (const finding of Object.values(findings)) {
+    if (!finding || typeof finding !== "object" || Array.isArray(finding)
+      || !["info", "low", "moderate", "high", "critical"].includes(finding.severity))
+      return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
+    if (finding.severity === "high" || finding.severity === "critical") reported[finding.severity]++;
+  }
+  if (reported.high !== counts.high || reported.critical !== counts.critical)
+    return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
+  const highRisk = counts.high + counts.critical;
+  const riskNames = bracesOnlyAdvisory(payload.vulnerabilities);
+  const remediated = patchVerified && riskNames?.length === highRisk && result.exitCode === 1 ? highRisk : 0;
+  const audit = {
+    raw_high_risk: highRisk,
+    remediated_high_risk: remediated,
+    remaining_high_risk: highRisk - remediated,
+    advisory: remediated ? "GHSA-vfj7-8cjw-p6xm" : null,
+    affected_packages: remediated ? riskNames.sort() : [],
+    raw_findings: auditFindingEvidence(payload.vulnerabilities)
+  };
+  if (highRisk > 0) return { status: remediated ? "PASS" : "FAIL", code: remediated ? null : "HIGH_RISK_PRODUCTION_DEPENDENCY", audit };
   if (result.exitCode !== 0) return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
-  return { status: "PASS", code: null, highRisk: 0 };
+  return { status: "PASS", code: null, audit };
 }
 
 function renderSummary(report) {
@@ -233,6 +307,15 @@ function renderSummary(report) {
   for (const category of REQUIRED_CATEGORIES) {
     const item = report.categories[category];
     lines.push(`| ${category} | ${item.status} | ${item.checks.length} |`);
+  }
+  const audit = report.categories.security?.checks.find((check) => check.id === "production-dependency-audit")?.audit;
+  if (audit) {
+    lines.push("", `Raw high/critical: ${audit.raw_high_risk}`,
+      `Remediated high/critical: ${audit.remediated_high_risk}`,
+      `Remaining high/critical: ${audit.remaining_high_risk}`);
+    if (audit.advisory) lines.push(`Bounded advisory: ${audit.advisory} (patched installation and behavior verified)`);
+    for (const finding of audit.raw_findings)
+      lines.push(`- ${finding.name} (${finding.severity}) ← ${finding.via.join(", ") || "UNAVAILABLE"}`);
   }
   lines.push("", `Failures: ${report.failures.length}`, "", "Secret values and raw credential-bearing command output are intentionally excluded.", "");
   return lines.join("\n");
@@ -453,10 +536,15 @@ export async function runQualityGate({ root, policy, policyPath, commandRunner =
     const result = await commandRunner(check, { root: resolvedRoot });
     let status = "PASS";
     let code = null;
+    let auditSummary = null;
     if (check.kind === "npm_audit") {
-      const audit = parseAudit(result);
+      const previous = categories.security.checks;
+      const patchVerified = ["braces-patch-behavior", "braces-patch-integrity"]
+        .every((id) => previous.some((item) => item.id === id && item.status === "PASS"));
+      const audit = parseAudit(result, patchVerified);
       status = audit.status;
       code = audit.code;
+      auditSummary = audit.audit ?? null;
     } else if (result.spawnError) {
       status = "ERROR";
       code = "COMMAND_EXECUTION_UNAVAILABLE";
@@ -474,6 +562,7 @@ export async function runQualityGate({ root, policy, policyPath, commandRunner =
       ended_at: result.endedAt ?? nowIso(),
       evidence_files: await fileEvidence(resolvedRoot, check.evidence_files)
     };
+    if (auditSummary) record.audit = auditSummary;
     categories[check.category].checks.push(record);
     if (status !== "PASS") failures.push(failureRecord({ category: check.category, code, checkId: check.id, component: check.component }));
   }

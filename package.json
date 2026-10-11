@@ -18,6 +18,7 @@
     "verify:toolchain": "node scripts/verify-toolchain-baseline.mjs",
     "verify:independence": "node scripts/verify-repository-independence.mjs",
     "verify:public-repository-boundary": "node --test scripts/tests/public-repository-boundary.test.mjs",
+    "verify:braces-patch": "node scripts/verify-braces-patch.mjs",
     "verify:product-foundation": "node --test scripts/tests/product-foundation.test.mjs",
     "verify:openapi-contract": "node scripts/verify-openapi-contract.mjs",
     "verify:api-audit": "node scripts/verify-api-audit.mjs",
@@ -52,7 +53,11 @@
   "devDependencies": {
     "typescript": "7.0.2"
   },
+  "dependencies": {
+    "braces": "file:vendor/braces-3.0.3.tgz"
+  },
   "overrides": {
+    "braces": "file:vendor/braces-3.0.3.tgz",
     "compression": "1.8.2",
     "postcss": "8.5.23",
     "qs": "6.16.0",

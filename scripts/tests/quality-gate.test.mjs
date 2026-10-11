@@ -46,6 +46,8 @@ function fixturePolicy({ commands = {} } = {}) {
     mandatory_checks: [
       { id: "quality-gate-runner-tests", category: "unit", command: ["stub", "runner-tests"], failure_kind: "quality" },
       { id: "toolchain-baseline", category: "build", command: ["stub", "toolchain"], failure_kind: "quality" },
+      { id: "braces-patch-behavior", category: "security", command: ["node", "--test", "scripts/tests/braces-patch.test.mjs"], failure_kind: "quality" },
+      { id: "braces-patch-integrity", category: "security", command: ["npm", "run", "verify:braces-patch"], failure_kind: "quality" },
       { id: "production-dependency-audit", category: "security", command: ["stub", "audit"], kind: "npm_audit", failure_kind: "execution" },
       { id: "repository-independence", category: "independence", command: ["stub", "independence"], failure_kind: "quality" },
       { id: "local-service-runtime-verifier-tests", category: "unit", command: ["stub", "local-runtime"], failure_kind: "quality" },
@@ -86,7 +88,7 @@ function passingCommandRunner(overrides = {}) {
   return async (check) => overrides[check.id] ?? {
     exitCode: 0,
     stdout: check.kind === "npm_audit"
-      ? JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } } })
+      ? JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } }, vulnerabilities: {} })
       : "ok",
     stderr: "",
     spawnError: null
@@ -238,7 +240,7 @@ test("승인 Policy Matrix와 필수 Check 변형은 모두 Fail-close Exit 2다
     ["필수 Check 중복", (policy) => policy.mandatory_checks.push(structuredClone(policy.mandatory_checks[0]))],
     ["필수 Check 삭제", (policy) => policy.mandatory_checks.pop()],
     ["필수 Check 범주 변경", (policy) => { policy.mandatory_checks[0].category = "build"; }],
-    ["Audit kind 변경", (policy) => { policy.mandatory_checks[2].kind = "custom"; }],
+    ["Audit kind 변경", (policy) => { policy.mandatory_checks.find((item) => item.id === "production-dependency-audit").kind = "custom"; }],
     ["Foundation 상태 변경", (policy) => { policy.foundation_status = "PASS"; }],
     ["필수 Check 빈 명령", (policy) => { policy.mandatory_checks[0].command = []; }],
     ["Capability 빈 명령", (policy) => { policy.components[0].capabilities.lint.command = []; }],
@@ -270,6 +272,109 @@ test("Registry/Network 불능 Audit는 성공으로 처리하지 않고 Exit 2�
   assert.equal(exitCode, 2);
   assert.equal(report.overall_status, "ERROR");
   assert.ok(report.failures.some((item) => item.code === "AUDIT_EXECUTION_UNAVAILABLE"));
+});
+
+const bracesAdvisory = {
+  name: "braces", severity: "high", source: 1100000,
+  url: "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm",
+  title: "Uncontrolled resource consumption in braces", range: "<=3.0.3"
+};
+
+function auditWith(vulnerabilities) {
+  const high = Object.values(vulnerabilities).filter((item) => item.severity === "high").length;
+  const critical = Object.values(vulnerabilities).filter((item) => item.severity === "critical").length;
+  return {
+    exitCode: high + critical > 0 ? 1 : 0,
+    stdout: JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high, critical, total: high + critical } }, vulnerabilities }),
+    stderr: "", spawnError: null
+  };
+}
+
+test("verified braces-only advisory chain preserves raw count and passes only the bounded finding", async (t) => {
+  const root = await makeFixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vulnerabilities = {
+    braces: { severity: "high", via: [bracesAdvisory] },
+    micromatch: { severity: "high", via: ["braces"] },
+    "fast-glob": { severity: "high", via: ["micromatch"] }
+  };
+  const runner = passingCommandRunner({ "production-dependency-audit": auditWith(vulnerabilities) });
+  const { exitCode, report, summary } = await runFixture(root, fixturePolicy(), runner);
+  assert.equal(exitCode, 0);
+  const audit = report.categories.security.checks.find((item) => item.id === "production-dependency-audit");
+  assert.equal(audit.audit.raw_high_risk, 3);
+  assert.equal(audit.audit.remediated_high_risk, 3);
+  assert.equal(audit.audit.remaining_high_risk, 0);
+  assert.equal(audit.audit.advisory, "GHSA-vfj7-8cjw-p6xm");
+  assert.match(summary, /Raw high\/critical: 3/);
+  assert.match(summary, /Remediated high\/critical: 3/);
+  assert.match(summary, /fast-glob.*micromatch/);
+});
+
+test("a cycle in a known dependency chain remains bounded when every branch reaches the same advisory", async (t) => {
+  const root = await makeFixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vulnerabilities = {
+    braces: { severity: "high", via: [bracesAdvisory] },
+    micromatch: { severity: "high", via: ["braces"] },
+    metro: { severity: "high", via: ["metro-config", "micromatch"] },
+    "metro-config": { severity: "high", via: ["metro"] }
+  };
+  const { exitCode, report } = await runFixture(root, fixturePolicy(), passingCommandRunner({ "production-dependency-audit": auditWith(vulnerabilities) }));
+  const audit = report.categories.security.checks.find((item) => item.id === "production-dependency-audit");
+  assert.equal(exitCode, 0);
+  assert.equal(audit.audit.remediated_high_risk, 4);
+});
+
+test("an unrelated or ambiguous high-risk advisory remains a failure", async (t) => {
+  const cases = [
+    { braces: { severity: "high", via: [bracesAdvisory] }, other: { severity: "high", via: [{ name: "other", severity: "high", url: "https://github.com/advisories/GHSA-other" }] } },
+    { braces: { severity: "high", via: [bracesAdvisory] }, unclear: { severity: "high", via: ["missing-node"] } },
+    { cycleA: { severity: "high", via: ["cycleB"] }, cycleB: { severity: "high", via: ["cycleA"] } }
+  ];
+  for (const vulnerabilities of cases) {
+    const root = await makeFixture();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const { exitCode, report } = await runFixture(root, fixturePolicy(), passingCommandRunner({ "production-dependency-audit": auditWith(vulnerabilities) }));
+    assert.equal(exitCode, 1);
+    assert.ok(report.failures.some((item) => item.check_id === "production-dependency-audit"));
+    const audit = report.categories.security.checks.find((item) => item.id === "production-dependency-audit").audit;
+    assert.equal(audit.raw_findings.length, Object.keys(vulnerabilities).length);
+  }
+});
+
+test("incomplete or contradictory npm audit JSON fails closed", async (t) => {
+  const cases = [
+    { metadata: { vulnerabilities: { high: 0 } }, vulnerabilities: {} },
+    { metadata: { vulnerabilities: { high: 0, critical: 0 } } },
+    { metadata: { vulnerabilities: { high: 1, critical: 0 } }, vulnerabilities: {} },
+    { metadata: { vulnerabilities: { high: 0, critical: 0 } }, vulnerabilities: { mystery: { severity: "high", via: [bracesAdvisory] } } },
+    { metadata: { vulnerabilities: { high: "0", critical: 0 } }, vulnerabilities: {} },
+    { metadata: { vulnerabilities: { high: 0, critical: 0 } }, vulnerabilities: {}, error: { code: "EAUDIT" } },
+    { metadata: { vulnerabilities: { high: 1, critical: 0 } }, vulnerabilities: { braces: { severity: "high", via: [bracesAdvisory] } }, error: { code: "EAUDIT" } }
+  ];
+  for (const payload of cases) {
+    const root = await makeFixture();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const runner = passingCommandRunner({
+      "production-dependency-audit": { exitCode: payload.metadata.vulnerabilities.high ? 1 : 0, stdout: JSON.stringify(payload), stderr: "", spawnError: null }
+    });
+    const { report } = await runFixture(root, fixturePolicy(), runner);
+    const audit = report.categories.security.checks.find((item) => item.id === "production-dependency-audit");
+    assert.equal(audit.status, "ERROR", JSON.stringify(payload));
+  }
+});
+
+test("a failed patch check forbids remediation even when npm audit hides the finding", async (t) => {
+  const root = await makeFixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const runner = passingCommandRunner({
+    "braces-patch-integrity": { exitCode: 1, stdout: "", stderr: "tampered", spawnError: null },
+    "production-dependency-audit": auditWith({})
+  });
+  const { exitCode, report } = await runFixture(root, fixturePolicy(), runner);
+  assert.equal(exitCode, 1);
+  assert.ok(report.failures.some((item) => item.check_id === "braces-patch-integrity"));
 });
 
 test("Secret 의심값은 실패하되 Artifact에 원문 값을 남기지 않는다", async (t) => {

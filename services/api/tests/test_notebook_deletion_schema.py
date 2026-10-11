@@ -10,6 +10,20 @@ import pytest
 VERSIONS = Path(__file__).parents[1] / "migrations" / "versions"
 
 
+def test_0056_acl_checks_preserve_exact_pg15_and_pg17_plus_owner_bits():
+    for name in (
+        "0056_notebook_delete_acl.sql",
+        "0056_notebook_delete_acl_downgrade.sql",
+    ):
+        sql = (VERSIONS / name).read_text(encoding="utf-8")
+        assert "server_version_num" in sql
+        assert "{daon_app=arDxt/daon_app}" in sql
+        assert "{daon_app=arDxtm/daon_app}" in sql
+        assert "v_expected_acl" in sql
+    reverse_sql = (VERSIONS / "0056_notebook_delete_acl_downgrade.sql").read_text(encoding="utf-8")
+    assert "GRANT SELECT, INSERT, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN" in reverse_sql
+
+
 def _load_0056_migration():
     migration_path = VERSIONS / "0056_notebook_delete_acl.py"
     spec = importlib.util.spec_from_file_location("notebook_delete_acl_0056", migration_path)
@@ -140,8 +154,15 @@ def test_0056_downgrade_restores_0055_owner_acl_and_reupgrade(monkeypatch):
                 "ORDER BY c.relname",
                 (fk_tables,),
             )
-            assert cursor.fetchall() == [
-                (name, "daon_app", "{daon_app=arDxt/daon_app}") for name in fk_tables
+            actual_acl_rows = cursor.fetchall()
+            cursor.execute("SELECT current_setting('server_version_num')::integer")
+            expected_acl = (
+                "{daon_app=arDxtm/daon_app}"
+                if cursor.fetchone()[0] >= 170000
+                else "{daon_app=arDxt/daon_app}"
+            )
+            assert actual_acl_rows == [
+                (name, "daon_app", expected_acl) for name in fk_tables
             ]
             cursor.execute(
                 "SELECT pg_get_userbyid(proowner), proconfig, "
