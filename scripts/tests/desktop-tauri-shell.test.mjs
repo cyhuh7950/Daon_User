@@ -1754,15 +1754,14 @@ test("desktop cargo wrapper fails closed when gen state cannot be probed", async
 test("PostCSS 보정 이력은 고정 Successor Blob으로, 현재 Checkout은 핵심 Pin으로 검증한다", async () => {
   const root = JSON.parse(await read("package.json"));
   const lock = JSON.parse(await read("package-lock.json"));
-  const successorCommit = "8fafe2fd1a4a828ea7d90e44c2de4320f4b9a0aa";
   const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
-  const readSuccessorJson = (artifactPath) => {
-    const result = spawnSync("git", ["show", `${successorCommit}:${artifactPath}`], { cwd: repositoryRoot, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return JSON.parse(result.stdout);
-  };
-  const successorRoot = readSuccessorJson("package.json");
-  const successorLock = readSuccessorJson("package-lock.json");
+  // Historical 8fafe2f is not reachable from origin/master; keep the exact blobs in the checkout for CI.
+  const successorRootSource = await read("scripts/tests/postcss-successor-package.json");
+  const successorLockSource = await read("scripts/tests/postcss-successor-package-lock.json");
+  assert.equal(createHash("sha256").update(successorRootSource).digest("hex"), "624b3070d2115be9ec7f55f92d4193b6d748e7cf948c90d05873850f98f9ca68");
+  assert.equal(createHash("sha256").update(successorLockSource).digest("hex"), "3cde46eb31aa7c2a3c8a231ff2607d6d0ae823ff1ca1e458ba4182ced7a67b4c");
+  const successorRoot = JSON.parse(successorRootSource);
+  const successorLock = JSON.parse(successorLockSource);
 
   assert.deepEqual(successorRoot.overrides, { postcss: "8.5.23" });
   assert.equal(successorLock.packages["node_modules/next"].version, "16.3.0-canary.93");
