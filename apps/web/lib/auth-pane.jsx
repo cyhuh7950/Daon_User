@@ -11,7 +11,7 @@ const SAFE_AUTH_ERROR_CODES = new Set([
   "INVALID_REQUEST",
 ]);
 
-export function AuthPane() {
+export function AuthPane({ onLoginComplete } = {}) {
   const [screen, setScreen] = useState("login");
   const [signupStep, setSignupStep] = useState("signup");
   const [resetStep, setResetStep] = useState("request");
@@ -49,7 +49,8 @@ export function AuthPane() {
       setMessage(success);
       afterSuccess?.();
       if (path === "login" && result?.data?.workspace_id) {
-        window.location.assign("/notebooks");
+        if (typeof onLoginComplete === "function") await onLoginComplete();
+        else window.location.assign("/notebooks");
       } else if (path === "login") {
         setMessage("WORKSPACE_REQUIRED");
       }

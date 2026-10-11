@@ -1,4 +1,6 @@
 const MAX_REQUEST_BYTES = 65_536;
+const MAX_ANDROID_AUTH_FORM_BYTES = 512;
+const MAX_ANDROID_AUTH_RESPONSE_BYTES = 4_096;
 const MAX_SOURCE_UPLOAD_BYTES = 25 * 1024 * 1024;
 const MAX_NATIVE_RESPONSE_BYTES = 128 * 1024;
 const MAX_NATIVE_RECOVERY_RESPONSE_BYTES = 1024 * 1024;
@@ -714,6 +716,12 @@ function routeFor(method, segments) {
       ? { path: "/api/v1/session/tenant", query: null, csrfProvenanceRequired: true }
       : { methodRejected: true };
   }
+  if (segments.length === 3 && segments[0] === "session" && segments[1] === "android" && segments[2] === "authorize") {
+    return method === "POST"
+      ? { path: "/api/v1/session/android/authorize", query: null, csrfProvenanceRequired: true,
+        requiresSessionCookie: true, androidFormAuthorization: true, maxRequestBytes: MAX_ANDROID_AUTH_FORM_BYTES }
+      : { methodRejected: true };
+  }
   if (segments.length === 2 && segments[0] === "session" && segments[1] === "logout") {
     return method === "POST"
       ? { path: "/api/v1/session/logout", query: null, csrfProvenanceRequired: true }
@@ -759,6 +767,11 @@ function nativeRouteFor(method, segments, requestUrl) {
   let matched = null;
   if (segments.length === 3 && segments[0] === "auth" && segments[1] === "native" && segments[2] === "login") {
     matched = method === "POST" ? route("/api/v1/auth/native/login", { protected: false, requestMediaType: "application/json" }) : { methodRejected: true };
+  } else if (segments.length === 3 && segments[0] === "session" && segments[1] === "android"
+    && new Set(["transactions", "exchange"]).has(segments[2])) {
+    matched = method === "POST"
+      ? route(`/api/v1/session/android/${segments[2]}`, { protected: false, requestMediaType: "application/json" })
+      : { methodRejected: true };
   } else if (segments.length === 2 && segments[0] === "session" && segments[1] === "refresh") {
     matched = method === "POST" ? route("/api/v1/session/refresh", { protected: false, requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 1 && segments[0] === "session") {
@@ -831,11 +844,13 @@ function nativeBearer(request) {
   return bytes >= MIN_NATIVE_BEARER_BYTES && bytes <= MAX_NATIVE_BEARER_BYTES ? match[1] : null;
 }
 
-function nativeSensitiveBodyValues(body) {
+function nativeSensitiveBodyValues(body, routePath) {
   try {
     const parsed = JSON.parse(Buffer.from(body).toString("utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-    return ["password", "credential", "access_credential", "refresh_credential"]
+    const sensitiveKeys = ["password", "credential", "access_credential", "refresh_credential"];
+    if (routePath === "/api/v1/session/android/exchange") sensitiveKeys.push("code", "code_verifier");
+    return sensitiveKeys
       .map((key) => parsed[key])
       .filter((value) => typeof value === "string" && value.length > 0);
   } catch {
@@ -845,6 +860,19 @@ function nativeSensitiveBodyValues(body) {
 
 function exactMediaType(rawValue) {
   return rawValue?.split(";", 1)[0].trim().toLowerCase() ?? "";
+}
+
+function androidAuthorizationLocation(value) {
+  if (typeof value !== "string" || value.includes("#") || /[\x00-\x1f\x7f]/u.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.hash
+      || url.searchParams.getAll("code").length !== 1 || !url.searchParams.get("code")
+      || url.searchParams.getAll("state").length !== 1 || !url.searchParams.get("state")) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 export function createBffTraceId(request) {
@@ -1039,6 +1067,16 @@ export function createBffProxy({
     } catch {
       return createBffSafeError(400, "INVALID_SESSION_COOKIE", trace);
     }
+    if (route.requiresSessionCookie && !credential) {
+      return createBffSafeError(401, "AUTHENTICATION_REQUIRED", trace);
+    }
+    if (route.androidFormAuthorization && (
+      request.headers.get("sec-fetch-mode") !== "navigate"
+      || request.headers.get("sec-fetch-dest") !== "document"
+    )) return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
+    if (route.androidFormAuthorization && new URL(request.url).search) {
+      return createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
+    }
     if (credential) headers.set("cookie", credential);
     headers.set("x-trace-id", trace);
     headers.set("x-daon-bff-transport", "internal");
@@ -1065,7 +1103,22 @@ export function createBffProxy({
         if (body.byteLength > (route.maxRequestBytes ?? MAX_REQUEST_BYTES)) {
           return createBffSafeError(413, "REQUEST_TOO_LARGE", trace);
         }
-        init.body = body;
+        if (route.androidFormAuthorization) {
+          if (exactMediaType(request.headers.get("content-type")) !== "application/x-www-form-urlencoded") {
+            return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
+          }
+          let entries;
+          try {
+            entries = [...new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body))];
+          } catch {
+            return createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
+          }
+          if (entries.length !== 1 || entries[0][0] !== "transaction_id" || !SAFE_SEGMENT.test(entries[0][1])) {
+            return createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
+          }
+          headers.set("content-type", "application/json");
+          init.body = JSON.stringify({ transaction_id: entries[0][1] });
+        } else init.body = body;
       }
 
       let upstream;
@@ -1080,6 +1133,37 @@ export function createBffProxy({
       }
       if (upstream.status >= 300 && upstream.status < 400) {
         return createBffSafeError(502, "UPSTREAM_REDIRECT_REJECTED", trace);
+      }
+      if (route.androidFormAuthorization) {
+        if (upstream.status !== 200) {
+          const status = new Set([400, 401, 403, 404, 409, 410, 422, 429]).has(upstream.status)
+            ? upstream.status : 502;
+          return createBffSafeError(status, "ANDROID_AUTHORIZATION_FAILED", trace);
+        }
+        if (upstream.headers.has("set-cookie")
+          || exactMediaType(upstream.headers.get("content-type")) !== "application/json") {
+          return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
+        const declaredLength = upstream.headers.get("content-length");
+        if (declaredLength !== null && (!/^\d+$/u.test(declaredLength)
+          || Number(declaredLength) > MAX_ANDROID_AUTH_RESPONSE_BYTES)) {
+          return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
+        let payload;
+        try {
+          const body = await waitWithAbort(upstream.arrayBuffer(), abortScope.signal, () => upstream.body?.cancel());
+          if (body.byteLength > MAX_ANDROID_AUTH_RESPONSE_BYTES) throw new Error("ANDROID_AUTH_RESPONSE_TOO_LARGE");
+          payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+        } catch {
+          return cancellationError(abortScope, trace)
+            ?? createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        }
+        const location = androidAuthorizationLocation(payload?.data?.authorization_url);
+        if (!location) return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
+        return new Response(null, { status: 303, headers: {
+          Location: location, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+          "X-Trace-Id": trace,
+        } });
       }
       const responseHeaders = new Headers();
       for (const [key, value] of upstream.headers) {
@@ -1162,7 +1246,7 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
         if (body.byteLength > (route.maxRequestBytes ?? MAX_REQUEST_BYTES)) {
           return createBffSafeError(413, "REQUEST_TOO_LARGE", trace);
         }
-        sensitiveValues.push(...nativeSensitiveBodyValues(body));
+        sensitiveValues.push(...nativeSensitiveBodyValues(body, route.path));
         if (body.byteLength > 0 && exactMediaType(request.headers.get("content-type")) !== route.requestMediaType
           && route.path !== "/api/v1/session/tenant") {
           return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
