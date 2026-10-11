@@ -78,6 +78,7 @@ async function physicalInstallPaths(root) {
     visited.add(canonical);
     const entries = await readdir(moduleDir, { withFileTypes: true });
     for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       const packageDirs = entry.name.startsWith("@")
         ? (await readdir(path.join(moduleDir, entry.name), { withFileTypes: true })).map((child) => path.join(moduleDir, entry.name, child.name))
         : [path.join(moduleDir, entry.name)];

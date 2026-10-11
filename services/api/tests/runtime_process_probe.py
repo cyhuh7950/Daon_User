@@ -105,6 +105,8 @@ def free_port() -> int:
 def port_is_released(port: int) -> bool:
     try:
         with socket.socket() as listener:
+            if os.name != "nt":
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", port))
         return True
     except OSError:

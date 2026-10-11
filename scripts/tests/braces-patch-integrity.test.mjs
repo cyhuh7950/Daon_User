@@ -34,6 +34,14 @@ test("verified source, tarball, lock and installed bytes are accepted", async (t
   assert.ok(result.fileCount >= 8);
 });
 
+test("npm's hidden package-lock metadata is not traversed as a package", async (t) => {
+  const root = await fixture(t);
+  await writeFile(path.join(root, "node_modules/.package-lock.json"), "{}\n");
+  const { verifyBracesPatch } = await import("../verify-braces-patch.mjs");
+  const result = await verifyBracesPatch({ root, npmTree: tree, npmPaths: paths(root) });
+  assert.equal(result.installCount, 1);
+});
+
 test("a changed installed parser is rejected", async (t) => {
   const root = await fixture(t);
   await writeFile(path.join(root, "node_modules/braces/lib/parse.js"), "module.exports = () => null;\n");

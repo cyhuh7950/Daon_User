@@ -184,7 +184,60 @@ pub fn run() {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let session_runtime = native_session_runtime();
-    tauri::Builder::default()
+    macro_rules! desktop_invoke_handler {
+        ($($platform_command:ident),* $(,)?) => {
+            tauri::generate_handler![
+                local_service_status,
+                local_service_retry,
+                native_login,
+                native_logout,
+                native_session_status,
+                native_recovery_authorization_status,
+                offline_studio_list_models,
+                offline_studio_list_raw_sources,
+                offline_studio_import_raw_source,
+                offline_studio_prepare_context,
+                offline_studio_confirm_settings,
+                offline_studio_generate_draft,
+                offline_studio_get_draft,
+                offline_studio_append_edit,
+                offline_studio_queue_sync,
+                offline_knowledge_list,
+                offline_knowledge_provision,
+                offline_knowledge_refresh,
+                offline_sync_preview,
+                offline_sync_status,
+                offline_sync_approve,
+                offline_sync_transfer,
+                offline_sync_resolve,
+                recovery_cloud_create_backup,
+                recovery_cloud_list_backups,
+                recovery_cloud_get_backup,
+                recovery_cloud_preview_restore,
+                recovery_cloud_get_restore,
+                recovery_cloud_execute_restore,
+                recovery_cloud_cancel_restore,
+                recovery_local_start_scan,
+                recovery_local_get_job,
+                recovery_local_repair_job,
+                notebook_list,
+                notebook_create,
+                notebook_get,
+                notebook_context,
+                workspace_list_sources,
+                workspace_upload_pdf,
+                workspace_processing_status,
+                workspace_ask_question,
+                workspace_citation_content,
+                workspace_create_report,
+                workspace_list_studio_outputs,
+                workspace_get_license,
+                workspace_apply_license,
+                $($platform_command),*
+            ]
+        };
+    }
+    let builder = tauri::Builder::default()
         .setup(move |app| {
             let manager = LocalServiceManager::new();
             manager.start();
@@ -193,58 +246,16 @@ pub fn run() {
             app.manage(NativeRecoveryRuntime::new());
             app.manage(OfflineSyncRuntime::new());
             Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            local_service_status,
-            local_service_retry,
-            native_login,
-            native_logout,
-            native_session_status,
-            native_recovery_authorization_status,
-            screen_preferences_get,
-            screen_preferences_save,
-            screen_preferences_reset,
-            offline_studio_list_models,
-            offline_studio_list_raw_sources,
-            offline_studio_import_raw_source,
-            offline_studio_prepare_context,
-            offline_studio_confirm_settings,
-            offline_studio_generate_draft,
-            offline_studio_get_draft,
-            offline_studio_append_edit,
-            offline_studio_queue_sync,
-            offline_knowledge_list,
-            offline_knowledge_provision,
-            offline_knowledge_refresh,
-            offline_sync_preview,
-            offline_sync_status,
-            offline_sync_approve,
-            offline_sync_transfer,
-            offline_sync_resolve,
-            recovery_cloud_create_backup,
-            recovery_cloud_list_backups,
-            recovery_cloud_get_backup,
-            recovery_cloud_preview_restore,
-            recovery_cloud_get_restore,
-            recovery_cloud_execute_restore,
-            recovery_cloud_cancel_restore,
-            recovery_local_start_scan,
-            recovery_local_get_job,
-            recovery_local_repair_job,
-            notebook_list,
-            notebook_create,
-            notebook_get,
-            notebook_context,
-            workspace_list_sources,
-            workspace_upload_pdf,
-            workspace_processing_status,
-            workspace_ask_question,
-            workspace_citation_content,
-            workspace_create_report,
-            workspace_list_studio_outputs,
-            workspace_get_license,
-            workspace_apply_license
-        ])
+        });
+    #[cfg(windows)]
+    let builder = builder.invoke_handler(desktop_invoke_handler![
+        screen_preferences_get,
+        screen_preferences_save,
+        screen_preferences_reset
+    ]);
+    #[cfg(not(windows))]
+    let builder = builder.invoke_handler(desktop_invoke_handler![]);
+    builder
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window.state::<LocalServiceManager>().shutdown();

@@ -954,7 +954,6 @@ function createAbortScope(clientSignal, timeoutMs) {
     cause = "timeout";
     controller.abort(new DOMException("Gateway timeout", "TimeoutError"));
   }, timeoutMs);
-  timer.unref?.();
   return {
     signal: controller.signal,
     get cause() { return cause; },
