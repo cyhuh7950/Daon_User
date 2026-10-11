@@ -22,6 +22,16 @@ test("root landing sends an existing authenticated session to Notebook Home", as
   assert.doesNotMatch(landing, /localStorage|sessionStorage|document\.cookie|https?:\/\/|localhost|127\.0\.0\.1/iu);
 });
 
+test("root landing does not redirect without a server-visible session cookie", async () => {
+  const page = await read("apps/web/app/page.jsx");
+  const landing = await read("apps/web/components/auth-landing.jsx");
+  assert.match(page, /cookies\(\)/u);
+  assert.match(page, /webSessionCookieName\(\)/u);
+  assert.match(page, /hasSessionCookie=\{hasSessionCookie\}/u);
+  assert.match(landing, /if \(!hasSessionCookie\) return/u);
+  assert.match(landing, /hasSessionCookie \? "checking" : "login"/u);
+});
+
 test("production exposes authenticated Notebook Home but no evidence harness route", async () => {
   const page = await read("apps/web/app/notebooks/page.jsx");
   const client = await read("apps/web/components/notebook-home-workspace.jsx");
