@@ -52,7 +52,11 @@
   "devDependencies": {
     "typescript": "7.0.2"
   },
+  "dependencies": {
+    "braces": "file:vendor/braces-3.0.3.tgz"
+  },
   "overrides": {
+    "braces": "file:vendor/braces-3.0.3.tgz",
     "compression": "1.8.2",
     "postcss": "8.5.23",
     "qs": "6.16.0",
