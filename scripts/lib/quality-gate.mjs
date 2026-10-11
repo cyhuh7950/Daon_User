@@ -27,7 +27,7 @@ const REQUIRED_MANDATORY_CHECKS = new Map([
   ["public-check-only-verifier-contract", { category: "unit", kind: null }],
   ["local-service-full-environment-audit", { category: "security", kind: null }]
 ]);
-export const CI_FALLBACK_STEP_IDS = ["toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate"];
+export const CI_FALLBACK_STEP_IDS = ["toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate"];
 const CI_STEP_OUTCOMES = new Set(["success", "failure", "cancelled", "skipped"]);
 const DEFAULT_RESULT_PATH = "docs/03_evidence/release_1/R1-M1-05/quality-gate-result.json";
 const DEFAULT_SUMMARY_PATH = "docs/03_evidence/release_1/R1-M1-05/quality-gate-summary.md";

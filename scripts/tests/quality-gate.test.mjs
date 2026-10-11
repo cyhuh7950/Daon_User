@@ -358,7 +358,7 @@ test("GitHub Workflow는 JSON으로도 유효한 YAML 1.2이며 공통 Runner �
   assert.match(qualityGateCli, /GITHUB_STEP_SUMMARY/);
   assert.match(qualityGateCli, /appendFile\(process\.env\.GITHUB_STEP_SUMMARY/);
   assert.equal(fallback.env.CI_GIT_SHA, "${{ github.sha }}");
-  for (const id of ["toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate"])
+  for (const id of ["toolchain-pins", "npm-corepack", "setup-uv", "toolchain-versions", "verify-toolchain", "tauri-linux-prerequisites", "npm-ci", "desktop-rust-type-diagnostic", "quality-gate"])
     assert.equal(fallback.env[`CI_STEP_${id.replaceAll("-", "_").toUpperCase()}`], `\${{ steps.${id}.outcome }}`);
   assert.ok(job.steps.findIndex((step) => step.id === "quality-gate") < fallbackIndex && fallbackIndex < uploadIndex);
 });
@@ -393,7 +393,7 @@ test("CI Fallback Evidence는 현재 SHA의 유효한 결과만 보존하고 나
   const invoke = () => ensureCiFallbackEvidence({
     root,
     gitSha: "candidate-sha",
-    stepOutcomes: { "npm-ci": "success", "desktop-rust-type-diagnostic": "failure", "quality-gate": "skipped token=do-not-record", unknown: "credential-raw-value" }
+    stepOutcomes: { "tauri-linux-prerequisites": "failure", "npm-ci": "success", "desktop-rust-type-diagnostic": "failure", "quality-gate": "skipped token=do-not-record", unknown: "credential-raw-value" }
   });
   const assertFallback = async (result) => {
     assert.equal(result.created, true);
@@ -402,11 +402,14 @@ test("CI Fallback Evidence는 현재 SHA의 유효한 결과만 보존하고 나
     assert.equal(report.git_sha, "candidate-sha");
     assert.equal(report.overall_status, "ERROR");
     assert.equal(report.exit_code, 2);
+    assert.equal(report.ci_fallback.step_outcomes["tauri-linux-prerequisites"], "failure");
+    assert.deepEqual(report.failures[0].evidence.filter((item) => item.startsWith("tauri-linux-prerequisites:")), ["tauri-linux-prerequisites:failure"]);
     assert.equal(report.ci_fallback.step_outcomes["npm-ci"], "success");
     assert.equal(report.ci_fallback.step_outcomes["desktop-rust-type-diagnostic"], "failure");
     assert.equal(report.ci_fallback.step_outcomes["quality-gate"], "unknown");
     assert.equal(report.ci_fallback.step_outcomes.unknown, undefined);
     assert.match(summary, /candidate-sha/);
+    assert.match(summary, /\| tauri-linux-prerequisites \| failure \|/);
     assert.doesNotMatch(JSON.stringify(report) + summary, /do-not-record|credential-raw-value/);
   };
 
@@ -448,6 +451,34 @@ test("CI Fallback Evidence는 현재 SHA의 유효한 결과만 보존하고 나
     await writeFile(summaryPath, "invalid-contract-summary\n");
     await assertFallback(await invoke());
   });
+
+  await t.test("Tauri 단계의 오염된 outcome은 원문을 남기지 않고 unknown으로 기록한다", async () => {
+    await rm(resultPath, { force: true });
+    await rm(summaryPath, { force: true });
+    await ensureCiFallbackEvidence({
+      root,
+      gitSha: "candidate-sha",
+      stepOutcomes: { "tauri-linux-prerequisites": "skipped token=tauri-secret" }
+    });
+    const report = JSON.parse(await readFile(resultPath, "utf8"));
+    const summary = await readFile(summaryPath, "utf8");
+    assert.equal(report.ci_fallback.step_outcomes["tauri-linux-prerequisites"], "unknown");
+    assert.deepEqual(report.failures[0].evidence.filter((item) => item.startsWith("tauri-linux-prerequisites:")), ["tauri-linux-prerequisites:unknown"]);
+    assert.match(summary, /\| tauri-linux-prerequisites \| unknown \|/);
+    assert.doesNotMatch(JSON.stringify(report) + summary, /tauri-secret/);
+  });
+
+  for (const outcome of ["skipped", "cancelled"]) {
+    await t.test(`Tauri 단계 ${outcome}는 success로 바뀌지 않는다`, async () => {
+      await rm(resultPath, { force: true });
+      await rm(summaryPath, { force: true });
+      await ensureCiFallbackEvidence({ root, gitSha: "candidate-sha", stepOutcomes: { "tauri-linux-prerequisites": outcome } });
+      const report = JSON.parse(await readFile(resultPath, "utf8"));
+      const summary = await readFile(summaryPath, "utf8");
+      assert.equal(report.ci_fallback.step_outcomes["tauri-linux-prerequisites"], outcome);
+      assert.match(summary, new RegExp(`\\| tauri-linux-prerequisites \\| ${outcome} \\|`));
+    });
+  }
 });
 
 test("CI Quality 진단은 현재 SHA Allowlist만 결정적으로 출력하고 나머지는 Fail-close한다", async (t) => {

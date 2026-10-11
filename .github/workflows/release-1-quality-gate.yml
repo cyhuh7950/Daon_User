@@ -99,6 +99,7 @@
             "CI_STEP_SETUP_UV": "${{ steps.setup-uv.outcome }}",
             "CI_STEP_TOOLCHAIN_VERSIONS": "${{ steps.toolchain-versions.outcome }}",
             "CI_STEP_VERIFY_TOOLCHAIN": "${{ steps.verify-toolchain.outcome }}",
+            "CI_STEP_TAURI_LINUX_PREREQUISITES": "${{ steps.tauri-linux-prerequisites.outcome }}",
             "CI_STEP_NPM_CI": "${{ steps.npm-ci.outcome }}",
             "CI_STEP_DESKTOP_RUST_TYPE_DIAGNOSTIC": "${{ steps.desktop-rust-type-diagnostic.outcome }}",
             "CI_STEP_QUALITY_GATE": "${{ steps.quality-gate.outcome }}"
