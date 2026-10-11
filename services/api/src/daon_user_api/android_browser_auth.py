@@ -108,10 +108,10 @@ class AndroidBrowserAuthService:
             or _PKCE_TEXT.fullmatch(code_challenge) is None
         ):
             raise IdentityError("INVALID_INPUT", 422)
-        now = self._now()
         transaction_id = _id("and")
-        expires_at = now + TRANSACTION_TTL
         with self._repository.transaction() as connection:
+            now = self._now()
+            expires_at = now + TRANSACTION_TTL
             connection.execute(
                 "DELETE FROM android_auth_transactions WHERE transaction_id IN "
                 "(SELECT transaction_id FROM android_auth_transactions "
@@ -123,6 +123,12 @@ class AndroidBrowserAuthService:
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (transaction_id, client_id, redirect_uri, state, code_challenge,
                  "S256", _iso(expires_at), _iso(now)),
+            )
+            now = self._now()
+            expires_at = now + TRANSACTION_TTL
+            connection.execute(
+                "UPDATE android_auth_transactions SET expires_at=?,created_at=? WHERE transaction_id=?",
+                (_iso(expires_at), _iso(now), transaction_id),
             )
         return AndroidAuthStart(
             transaction_id,
@@ -137,8 +143,12 @@ class AndroidBrowserAuthService:
         transaction_id = _checked_text(transaction_id)
         selected_tenant_id = _checked_text(selected_tenant_id)
         _checked_text(trace_id)
-        now = self._now()
         with self._repository.transaction() as connection:
+            connection.execute(
+                "UPDATE android_auth_transactions SET transaction_id=transaction_id WHERE transaction_id=?",
+                (transaction_id,),
+            )
+            now = self._now()
             row = connection.execute(
                 "SELECT * FROM android_auth_transactions WHERE transaction_id=?",
                 (transaction_id,),
@@ -155,13 +165,15 @@ class AndroidBrowserAuthService:
                 raise IdentityError("AUTHENTICATION_REQUIRED", 401)
             user_id = str(principal["user_id"])
             self._require_user_and_tenant(connection, user_id, selected_tenant_id)
+            now = self._now()
             code = _opaque()
             code_expiry = min(now + CODE_TTL, _dt(str(row["expires_at"])))
             updated = connection.execute(
                 "UPDATE android_auth_transactions SET code_digest=?,code_expires_at=?,user_id=?,"
-                "tenant_id=?,authorized_at=? WHERE transaction_id=? AND code_digest IS NULL",
+                "tenant_id=?,authorized_at=? WHERE transaction_id=? AND code_digest IS NULL "
+                "AND expires_at>?",
                 (_digest(code), _iso(code_expiry), user_id, selected_tenant_id,
-                 _iso(now), transaction_id),
+                 _iso(now), transaction_id, _iso(now)),
             )
             if updated.rowcount != 1:
                 raise IdentityError("ANDROID_AUTH_TRANSACTION_INVALID", 400)
@@ -183,8 +195,12 @@ class AndroidBrowserAuthService:
             or not isinstance(redirect_uri, str)
         ):
             raise IdentityError("INVALID_INPUT", 422)
-        now = self._now()
         with self._repository.transaction() as connection:
+            connection.execute(
+                "UPDATE android_auth_transactions SET transaction_id=transaction_id WHERE transaction_id=?",
+                (transaction_id,),
+            )
+            now = self._now()
             row = connection.execute(
                 "SELECT * FROM android_auth_transactions WHERE transaction_id=?",
                 (transaction_id,),
@@ -205,9 +221,11 @@ class AndroidBrowserAuthService:
                 raise IdentityError("ANDROID_AUTH_CODE_INVALID", 400)
             user_id, tenant_id = str(row["user_id"]), str(row["tenant_id"])
             self._require_user_and_tenant(connection, user_id, tenant_id)
+            now = self._now()
             updated = connection.execute(
-                "UPDATE android_auth_transactions SET used_at=? WHERE transaction_id=? AND used_at IS NULL",
-                (_iso(now), transaction_id),
+                "UPDATE android_auth_transactions SET used_at=? WHERE transaction_id=? AND used_at IS NULL "
+                "AND expires_at>? AND code_expires_at>?",
+                (_iso(now), transaction_id, _iso(now), _iso(now)),
             )
             if updated.rowcount != 1:
                 raise IdentityError("ANDROID_AUTH_CODE_INVALID", 400)

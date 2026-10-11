@@ -1,7 +1,9 @@
 """Android browser bridge storage and one-time exchange contract."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from threading import Event
 import base64
 import hashlib
 
@@ -92,6 +94,61 @@ def exchange(service, start, redirect, verifier=VERIFIER):
                             code_verifier=verifier, redirect_uri=REDIRECT, trace_id="qa")
 
 
+def run_after_lock_wait(service, repo, clock, operation, **advance):
+    entered, sampled = Event(), Event()
+    original_clock = service._clock
+
+    def observed_clock():
+        sampled.set()
+        return original_clock()
+
+    def run():
+        entered.set()
+        return operation()
+
+    service._clock = observed_clock
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with repo.transaction():
+                future = pool.submit(run)
+                assert entered.wait(timeout=5)
+                sampled.wait(timeout=1)
+                assert not future.done()
+                clock.advance(**advance)
+            return future.result(timeout=5)
+    finally:
+        service._clock = original_clock
+
+
+def run_after_sql_wait(service, repo, clock, operation, statement_prefix, **advance):
+    class DelayedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.delayed = False
+
+        def execute(self, statement, params=()):
+            if not self.delayed and statement.startswith(statement_prefix):
+                self.delayed = True
+                clock.advance(**advance)
+            return self.connection.execute(statement, params)
+
+    class DelayedRepository:
+        @contextmanager
+        def transaction(self):
+            with repo.transaction() as connection:
+                yield DelayedConnection(connection)
+
+        def __getattr__(self, name):
+            return getattr(repo, name)
+
+    original_repository = service._repository
+    service._repository = DelayedRepository()
+    try:
+        return operation()
+    finally:
+        service._repository = original_repository
+
+
 def test_begin_requires_registered_https_client_redirect_and_s256(setup):
     service, _, _, _, _ = setup
     start = begin(service)
@@ -153,6 +210,116 @@ def test_transaction_and_code_have_separate_expiry(setup):
     clock.advance(seconds=60)
     with pytest.raises(IdentityError):
         exchange(service, second, redirect)
+
+
+def test_begin_starts_five_minute_ttl_after_repository_lock_wait(setup):
+    service, _, repo, _, clock = setup
+    start = run_after_lock_wait(service, repo, clock, lambda: begin(service), minutes=5)
+    assert start.expires_at == clock.now + timedelta(minutes=5)
+
+
+def test_authorize_rejects_transaction_expired_during_repository_lock_wait(setup):
+    service, _, repo, web, clock = setup
+    start = begin(service)
+    with pytest.raises(IdentityError) as failure:
+        run_after_lock_wait(
+            service, repo, clock,
+            lambda: service.authorize(transaction_id=start.transaction_id,
+                                      web_session=web.access_token,
+                                      selected_tenant_id=web.tenant_id, trace_id="qa"),
+            minutes=5,
+        )
+    assert failure.value.code == "ANDROID_AUTH_TRANSACTION_INVALID"
+
+
+def test_exchange_rejects_code_expired_during_repository_lock_wait(setup):
+    service, _, repo, web, clock = setup
+    start, redirect = approve(service, web)
+    with pytest.raises(IdentityError) as failure:
+        run_after_lock_wait(service, repo, clock,
+                            lambda: exchange(service, start, redirect), seconds=60)
+    assert failure.value.code == "ANDROID_AUTH_CODE_INVALID"
+    with repo.transaction() as connection:
+        row = connection.execute("SELECT used_at FROM android_auth_transactions WHERE transaction_id=?",
+                                 (start.transaction_id,)).fetchone()
+        count = connection.execute("SELECT count(*) FROM sessions WHERE client_kind='native'").fetchone()[0]
+    assert row["used_at"] is None and count == 0
+
+
+def test_authorize_rechecks_transaction_expiry_before_update(setup, monkeypatch):
+    service, _, repo, web, clock = setup
+    start = begin(service)
+    require_user_and_tenant = service._require_user_and_tenant
+
+    def advance_during_user_check(connection, user_id, tenant_id):
+        require_user_and_tenant(connection, user_id, tenant_id)
+        clock.advance(minutes=5)
+
+    monkeypatch.setattr(service, "_require_user_and_tenant", advance_during_user_check)
+    with pytest.raises(IdentityError) as failure:
+        service.authorize(transaction_id=start.transaction_id, web_session=web.access_token,
+                          selected_tenant_id=web.tenant_id, trace_id="qa")
+    assert failure.value.code == "ANDROID_AUTH_TRANSACTION_INVALID"
+    with repo.transaction() as connection:
+        row = connection.execute("SELECT code_digest FROM android_auth_transactions WHERE transaction_id=?",
+                                 (start.transaction_id,)).fetchone()
+    assert row["code_digest"] is None
+
+
+def test_exchange_rechecks_code_expiry_before_consuming(setup, monkeypatch):
+    service, _, repo, web, clock = setup
+    start, redirect = approve(service, web)
+    require_user_and_tenant = service._require_user_and_tenant
+
+    def advance_during_user_check(connection, user_id, tenant_id):
+        require_user_and_tenant(connection, user_id, tenant_id)
+        clock.advance(seconds=60)
+
+    monkeypatch.setattr(service, "_require_user_and_tenant", advance_during_user_check)
+    with pytest.raises(IdentityError) as failure:
+        exchange(service, start, redirect)
+    assert failure.value.code == "ANDROID_AUTH_CODE_INVALID"
+    with repo.transaction() as connection:
+        row = connection.execute("SELECT used_at FROM android_auth_transactions WHERE transaction_id=?",
+                                 (start.transaction_id,)).fetchone()
+        count = connection.execute("SELECT count(*) FROM sessions WHERE client_kind='native'").fetchone()[0]
+    assert row["used_at"] is None and count == 0
+
+
+def test_begin_starts_ttl_after_insert_wait(setup):
+    service, _, repo, _, clock = setup
+    start = run_after_sql_wait(service, repo, clock, lambda: begin(service),
+                               "INSERT INTO android_auth_transactions", minutes=5)
+    assert start.expires_at == clock.now + timedelta(minutes=5)
+
+
+def test_authorize_rejects_transaction_expired_during_row_lock_wait(setup):
+    service, _, repo, web, clock = setup
+    start = begin(service)
+    with pytest.raises(IdentityError) as failure:
+        run_after_sql_wait(
+            service, repo, clock,
+            lambda: service.authorize(transaction_id=start.transaction_id,
+                                      web_session=web.access_token,
+                                      selected_tenant_id=web.tenant_id, trace_id="qa"),
+            "UPDATE android_auth_transactions", minutes=5,
+        )
+    assert failure.value.code == "ANDROID_AUTH_TRANSACTION_INVALID"
+
+
+def test_exchange_rejects_code_expired_during_row_lock_wait(setup):
+    service, _, repo, web, clock = setup
+    start, redirect = approve(service, web)
+    with pytest.raises(IdentityError) as failure:
+        run_after_sql_wait(service, repo, clock,
+                           lambda: exchange(service, start, redirect),
+                           "UPDATE android_auth_transactions", seconds=60)
+    assert failure.value.code == "ANDROID_AUTH_CODE_INVALID"
+    with repo.transaction() as connection:
+        row = connection.execute("SELECT used_at FROM android_auth_transactions WHERE transaction_id=?",
+                                 (start.transaction_id,)).fetchone()
+        count = connection.execute("SELECT count(*) FROM sessions WHERE client_kind='native'").fetchone()[0]
+    assert row["used_at"] is None and count == 0
 
 
 def test_wrong_verifier_redirect_and_replay_do_not_issue_session(setup):
