@@ -88,7 +88,7 @@ function passingCommandRunner(overrides = {}) {
   return async (check) => overrides[check.id] ?? {
     exitCode: 0,
     stdout: check.kind === "npm_audit"
-      ? JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } } })
+      ? JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } }, vulnerabilities: {} })
       : "ok",
     stderr: "",
     spawnError: null
@@ -324,6 +324,28 @@ test("an unrelated or ambiguous high-risk advisory remains a failure", async (t)
     assert.ok(report.failures.some((item) => item.check_id === "production-dependency-audit"));
     const audit = report.categories.security.checks.find((item) => item.id === "production-dependency-audit").audit;
     assert.equal(audit.raw_findings.length, Object.keys(vulnerabilities).length);
+  }
+});
+
+test("incomplete or contradictory npm audit JSON fails closed", async (t) => {
+  const cases = [
+    { metadata: { vulnerabilities: { high: 0 } }, vulnerabilities: {} },
+    { metadata: { vulnerabilities: { high: 0, critical: 0 } } },
+    { metadata: { vulnerabilities: { high: 1, critical: 0 } }, vulnerabilities: {} },
+    { metadata: { vulnerabilities: { high: 0, critical: 0 } }, vulnerabilities: { mystery: { severity: "high", via: [bracesAdvisory] } } },
+    { metadata: { vulnerabilities: { high: "0", critical: 0 } }, vulnerabilities: {} },
+    { metadata: { vulnerabilities: { high: 0, critical: 0 } }, vulnerabilities: {}, error: { code: "EAUDIT" } },
+    { metadata: { vulnerabilities: { high: 1, critical: 0 } }, vulnerabilities: { braces: { severity: "high", via: [bracesAdvisory] } }, error: { code: "EAUDIT" } }
+  ];
+  for (const payload of cases) {
+    const root = await makeFixture();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const runner = passingCommandRunner({
+      "production-dependency-audit": { exitCode: payload.metadata.vulnerabilities.high ? 1 : 0, stdout: JSON.stringify(payload), stderr: "", spawnError: null }
+    });
+    const { report } = await runFixture(root, fixturePolicy(), runner);
+    const audit = report.categories.security.checks.find((item) => item.id === "production-dependency-audit");
+    assert.equal(audit.status, "ERROR", JSON.stringify(payload));
   }
 });
 

@@ -31,6 +31,8 @@ test("normal and escaped brace patterns preserve their results", () => {
   assert.deepEqual(braces.expand("src/{a,b}.js"), ["src/a.js", "src/b.js"]);
   assert.deepEqual(braces.expand("src/\\{literal\\}.js"), ["src/{literal}.js"]);
   assert.deepEqual(braces.expand("{a,{b,c}}"), ["a", "b", "c"]);
+  assert.deepEqual(braces.expand('src/{"a,b",c}.js'), ["src/a,b.js", "src/c.js"]);
+  assert.deepEqual(braces.expand("src/{*.ts,*.tsx}"), ["src/*.ts", "src/*.tsx"]);
 });
 
 test("the existing maximum-length rejection remains active", () => {

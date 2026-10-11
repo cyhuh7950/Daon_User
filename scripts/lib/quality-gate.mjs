@@ -254,10 +254,25 @@ function parseAudit(result, patchVerified) {
   let payload;
   try { payload = JSON.parse(result.stdout); }
   catch { return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" }; }
-  const vulnerabilities = payload?.metadata?.vulnerabilities;
-  if (!vulnerabilities) return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
-  const highRisk = Number(vulnerabilities.high ?? 0) + Number(vulnerabilities.critical ?? 0);
-  if (!Number.isSafeInteger(highRisk) || highRisk < 0) return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
+  const counts = payload?.metadata?.vulnerabilities;
+  const findings = payload?.vulnerabilities;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)
+    || Object.hasOwn(payload, "error") || Object.hasOwn(payload, "errors")
+    || !counts || typeof counts !== "object" || Array.isArray(counts)
+    || !findings || typeof findings !== "object" || Array.isArray(findings)
+    || !["high", "critical"].every((severity) => Number.isSafeInteger(counts[severity]) && counts[severity] >= 0)
+    || ![0, 1].includes(result.exitCode))
+    return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
+  const reported = { high: 0, critical: 0 };
+  for (const finding of Object.values(findings)) {
+    if (!finding || typeof finding !== "object" || Array.isArray(finding)
+      || !["info", "low", "moderate", "high", "critical"].includes(finding.severity))
+      return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
+    if (finding.severity === "high" || finding.severity === "critical") reported[finding.severity]++;
+  }
+  if (reported.high !== counts.high || reported.critical !== counts.critical)
+    return { status: "ERROR", code: "AUDIT_EXECUTION_UNAVAILABLE" };
+  const highRisk = counts.high + counts.critical;
   const riskNames = bracesOnlyAdvisory(payload.vulnerabilities);
   const remediated = patchVerified && riskNames?.length === highRisk && result.exitCode === 1 ? highRisk : 0;
   const audit = {
