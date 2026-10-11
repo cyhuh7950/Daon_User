@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY packages packages
+COPY vendor/braces-3.0.3.tgz vendor/braces-3.0.3.tgz
 RUN npm ci --ignore-scripts
 
 FROM node:22-bookworm-slim AS builder
