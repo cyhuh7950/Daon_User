@@ -37,6 +37,7 @@ _TABLES = (
     "auth_memberships",
     "admin_audit_outbox",
     "oidc_transactions",
+    "android_auth_transactions",
     "tenant_step_up_actions",
     "step_up_authorizations",
     "step_up_idempotency",
@@ -69,6 +70,10 @@ class _CursorProxy:
 
     def __iter__(self):
         return (_compat_row(row) for row in self._cursor)
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
 
 
 class _PostgresCompatConnection:

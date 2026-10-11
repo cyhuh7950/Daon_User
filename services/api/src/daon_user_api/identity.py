@@ -489,6 +489,24 @@ class SqliteIdentityRepository:
           used_at TEXT,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS android_auth_transactions (
+          transaction_id TEXT PRIMARY KEY,
+          client_id TEXT NOT NULL,
+          redirect_uri TEXT NOT NULL,
+          state TEXT NOT NULL,
+          code_challenge TEXT NOT NULL,
+          code_challenge_method TEXT NOT NULL CHECK(code_challenge_method='S256'),
+          expires_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          code_digest TEXT UNIQUE,
+          code_expires_at TEXT,
+          user_id TEXT,
+          tenant_id TEXT,
+          authorized_at TEXT,
+          used_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS android_auth_transactions_expiry_idx
+          ON android_auth_transactions(expires_at);
         CREATE TABLE IF NOT EXISTS tenant_step_up_actions (
           tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
           action_group TEXT NOT NULL,
