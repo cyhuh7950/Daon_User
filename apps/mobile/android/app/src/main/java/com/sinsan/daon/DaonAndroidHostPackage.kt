@@ -7,7 +7,7 @@ import com.facebook.react.uimanager.ViewManager
 
 class DaonAndroidHostPackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
-      listOf(DaonAndroidHostModule(reactContext))
+      listOf(DaonAndroidHostModule(reactContext), DaonAndroidAuthModule(reactContext))
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> = emptyList()
 }

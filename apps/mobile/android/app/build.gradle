@@ -78,12 +78,38 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace "com.sinsan.daon"
+    buildFeatures { buildConfig true }
     defaultConfig {
         applicationId "com.sinsan.daon"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+        def authOrigin = (project.findProperty("daonAndroidAuthOrigin") ?: System.getenv("DAON_ANDROID_AUTH_ORIGIN") ?: "").toString()
+        def authClient = (project.findProperty("daonAndroidAuthClientId") ?: System.getenv("DAON_ANDROID_AUTH_CLIENT_ID") ?: "").toString()
+        def authRedirect = (project.findProperty("daonAndroidAuthRedirectUri") ?: System.getenv("DAON_ANDROID_AUTH_REDIRECT_URI") ?: "").toString()
+        def publicHttps = { value ->
+            try {
+                def uri = new java.net.URI(value)
+                return uri.scheme == "https" && uri.host != null && uri.host != "localhost" &&
+                    !uri.host.endsWith(".localhost") && !(uri.host ==~ /[0-9.]+/) &&
+                    !uri.host.contains(":") && uri.port == -1 && uri.userInfo == null && uri.fragment == null
+            } catch (Exception ignored) { return false }
+        }
+        if ([authOrigin, authClient, authRedirect].any { it }) {
+            if (!publicHttps(authOrigin) || !publicHttps(authRedirect) ||
+                authOrigin != new java.net.URI(authOrigin).scheme + "://" + new java.net.URI(authOrigin).host ||
+                !authClient.matches("[A-Za-z0-9._-]{3,128}") ||
+                new java.net.URI(authRedirect).rawQuery != null ||
+                !new java.net.URI(authRedirect).path.startsWith("/")) {
+                throw new GradleException("Invalid Android browser auth public configuration")
+            }
+        }
+        buildConfigField "String", "ANDROID_AUTH_ORIGIN", "\"${authOrigin}\""
+        buildConfigField "String", "ANDROID_AUTH_CLIENT_ID", "\"${authClient}\""
+        buildConfigField "String", "ANDROID_AUTH_REDIRECT_URI", "\"${authRedirect}\""
+        manifestPlaceholders = [androidAuthHost: authRedirect ? new java.net.URI(authRedirect).host : "unconfigured.invalid",
+                                androidAuthPath: authRedirect ? new java.net.URI(authRedirect).path : "/android-auth-unconfigured"]
     }
     signingConfigs {
         debug {
@@ -109,6 +135,8 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    implementation("androidx.browser:browser:1.9.0")
+    testImplementation("junit:junit:4.13.2")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
