@@ -1,14 +1,13 @@
 """Linux descriptor-boundary regressions for local encrypted storage."""
 
+from importlib import import_module
 import os
 from pathlib import Path
 
 import pytest
 
-import daon_user_local_service_safe_file_posix as safe_file
-
-
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX-only file boundary")
+safe_file = import_module("daon_user_local_service_safe_file_posix")
 
 
 def test_directory_validation_rejects_outside_and_symlink(tmp_path: Path) -> None:
@@ -101,11 +100,11 @@ def test_atomic_write_tolerates_destination_removed_before_rollback(
 def test_file_descriptor_rejects_non_regular_and_replaced_name(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    os.mkfifo(root / "pipe")
+    getattr(os, "mkfifo")(root / "pipe")
     directory_descriptor = safe_file._open_directory(root, root)
     try:
         with pytest.raises(safe_file.UnsafePathError, match="unexpected file type"):
-            safe_file._open_file(directory_descriptor, "pipe", safe_file._FILE_READ_FLAGS | os.O_NONBLOCK)
+            safe_file._open_file(directory_descriptor, "pipe", safe_file._FILE_READ_FLAGS | getattr(os, "O_NONBLOCK"))
 
         original = root / "original"
         original.write_bytes(b"old")
@@ -114,7 +113,7 @@ def test_file_descriptor_rejects_non_regular_and_replaced_name(tmp_path: Path) -
             original.rename(root / "retained")
             with pytest.raises(FileNotFoundError):
                 safe_file._validate_name_matches_descriptor(directory_descriptor, original.name, descriptor)
-            os.mkfifo(original)
+            getattr(os, "mkfifo")(original)
             with pytest.raises(safe_file.UnsafePathError, match="unexpected file type"):
                 safe_file._validate_name_matches_descriptor(directory_descriptor, original.name, descriptor)
             original.unlink()
