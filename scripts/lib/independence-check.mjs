@@ -7,6 +7,7 @@ const JS_CODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"
 const JS_IMPORT_PATTERN = /(?:\b(?:import|export)\s+(?:[^"'`\r\n;]*?\s+from\s+)?|\bimport\s*\(\s*|\brequire\s*\(\s*)["']([^"']+)["']/g;
 const DAON_PRODUCT_PATTERN = /(?:^|[\\/@._-])daon(?:2(?:\.5)?|3)(?:$|[\\/@._-])/i;
 const LOCAL_PACKAGE_PATTERN = /^(?:file:|link:|\.\.?[\\/]|[a-z]:[\\/]|\\\\)/i;
+const PATCHED_BRACES_ARCHIVE = "file:vendor/braces-3.0.3.tgz";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /[a-z]:[\\/](?:users|project|workspaces?)[\\/][^\s"'`]+/i;
 const POSIX_ABSOLUTE_PATH_PATTERN = /(?:^|[\s"'`=:(])\/(?:[Uu]sers|home|opt|srv)\/[^\s"'`]+/;
 const DAON_PATH_PATTERN = /(?:[a-z]:[\\/][^\s"'`]*[\\/]daon(?:2(?:\.5)?|3)(?:[\\/]|\b)|\/(?:[^\s"'`]+\/)*daon(?:2(?:\.5)?|3)(?:\/|\b))/i;
@@ -109,7 +110,10 @@ function findCycles(componentIds, edges) {
 function inspectNpmDependencies(file, data, violations, onDependency = () => {}) {
   for (const key of DEP_KEYS) {
     for (const [name, spec] of Object.entries(data[key] || {})) {
-      if (DAON_PRODUCT_PATTERN.test(name) || DAON_PRODUCT_PATTERN.test(String(spec)) || LOCAL_PACKAGE_PATTERN.test(String(spec))) {
+      const approvedBraces = (file === "package.json" || file === "package-lock.json")
+        && key === "dependencies" && name === "braces" && spec === PATCHED_BRACES_ARCHIVE;
+      if (DAON_PRODUCT_PATTERN.test(name) || DAON_PRODUCT_PATTERN.test(String(spec))
+        || (LOCAL_PACKAGE_PATTERN.test(String(spec)) && !approvedBraces)) {
         violations.push(violation("PACKAGE_DAON_INTERNAL", file, 1, "다른 Daon 제품 또는 저장소 경로 Package 직접 의존을 제거하십시오.", `${name}: ${spec}`));
       }
       onDependency(name, spec, key);
@@ -137,8 +141,10 @@ function inspectLockfile(file, data, components, violations) {
     if (typeof entry.resolved === "string") {
       const resolved = normalize(entry.resolved);
       const approvedWorkspaceLink = entry.link === true && workspacePaths.has(resolved);
+      const approvedBraces = lockPath === "node_modules/braces" && entry.link !== true
+        && entry.version === "3.0.3" && entry.resolved === PATCHED_BRACES_ARCHIVE;
       const forbiddenResolved = DAON_PRODUCT_PATTERN.test(resolved) || LOCAL_PACKAGE_PATTERN.test(entry.resolved) || (entry.link === true && !approvedWorkspaceLink);
-      if (!approvedWorkspaceLink && forbiddenResolved) {
+      if (!approvedWorkspaceLink && !approvedBraces && forbiddenResolved) {
         violations.push(violation("PACKAGE_DAON_INTERNAL", file, 1, "Lockfile의 승인되지 않은 저장소 경로 Package를 제거하십시오.", `${lockPath}: ${entry.resolved}`));
       }
     }

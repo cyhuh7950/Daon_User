@@ -132,6 +132,22 @@ test("정상 Root Manifest와 Workspace Lockfile은 Exit 0이다", async () => {
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
+test("검증 대상인 braces 로컬 tarball만 Root와 Lockfile에서 허용한다", async () => {
+  const root = await fixture();
+  const exact = "file:vendor/braces-3.0.3.tgz";
+  await put(root, "package.json", JSON.stringify({ name: "@fixture/root", dependencies: { braces: exact }, overrides: { braces: exact } }));
+  await put(root, "package-lock.json", JSON.stringify({ lockfileVersion: 3, packages: {
+    "": { dependencies: { braces: exact } },
+    "node_modules/braces": { version: "3.0.3", resolved: exact, integrity: "sha512-test" }
+  } }));
+  const result = run(root);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  await put(root, "apps/web/package.json", JSON.stringify({ name: "@fixture/web", dependencies: { braces: exact } }));
+  const forbidden = run(root);
+  assert.equal(forbidden.status, 1);
+  assert.match(forbidden.stderr, /PACKAGE_DAON_INTERNAL/);
+});
+
 test("Root package.json의 다른 Daon 내부 Package를 차단한다", async () => {
   await expectViolation("PACKAGE_DAON_INTERNAL", async (root) => put(root, "package.json", JSON.stringify({ name: "@fixture/root", dependencies: { "@daon2/internal": "1.0.0" } })));
 });

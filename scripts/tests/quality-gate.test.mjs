@@ -311,10 +311,26 @@ test("verified braces-only advisory chain preserves raw count and passes only th
   assert.match(summary, /fast-glob.*micromatch/);
 });
 
+test("a cycle in a known dependency chain remains bounded when every branch reaches the same advisory", async (t) => {
+  const root = await makeFixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const vulnerabilities = {
+    braces: { severity: "high", via: [bracesAdvisory] },
+    micromatch: { severity: "high", via: ["braces"] },
+    metro: { severity: "high", via: ["metro-config", "micromatch"] },
+    "metro-config": { severity: "high", via: ["metro"] }
+  };
+  const { exitCode, report } = await runFixture(root, fixturePolicy(), passingCommandRunner({ "production-dependency-audit": auditWith(vulnerabilities) }));
+  const audit = report.categories.security.checks.find((item) => item.id === "production-dependency-audit");
+  assert.equal(exitCode, 0);
+  assert.equal(audit.audit.remediated_high_risk, 4);
+});
+
 test("an unrelated or ambiguous high-risk advisory remains a failure", async (t) => {
   const cases = [
     { braces: { severity: "high", via: [bracesAdvisory] }, other: { severity: "high", via: [{ name: "other", severity: "high", url: "https://github.com/advisories/GHSA-other" }] } },
-    { braces: { severity: "high", via: [bracesAdvisory] }, unclear: { severity: "high", via: ["missing-node"] } }
+    { braces: { severity: "high", via: [bracesAdvisory] }, unclear: { severity: "high", via: ["missing-node"] } },
+    { cycleA: { severity: "high", via: ["cycleB"] }, cycleB: { severity: "high", via: ["cycleA"] } }
   ];
   for (const vulnerabilities of cases) {
     const root = await makeFixture();

@@ -215,20 +215,24 @@ function bracesOnlyAdvisory(vulnerabilities) {
     .filter(([, finding]) => ["high", "critical"].includes(finding?.severity))
     .map(([name]) => name);
   if (!riskNames.length) return null;
-  const checked = new Set();
-  function reachesOnlyBraces(name, visiting = new Set()) {
-    if (checked.has(name)) return true;
-    if (visiting.has(name)) return false;
-    const finding = vulnerabilities[name];
-    if (!finding || !Array.isArray(finding.via) || !finding.via.length) return false;
-    visiting.add(name);
-    const safe = finding.via.every((via) => typeof via === "string"
-      ? reachesOnlyBraces(via, visiting)
-      : via && via.name === "braces" && via.severity === "high"
-        && via.url === "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm");
-    visiting.delete(name);
-    if (safe) checked.add(name);
-    return safe;
+  function reachesOnlyBraces(name) {
+    const visited = new Set();
+    const pending = [name];
+    let advisoryFound = false;
+    while (pending.length) {
+      const current = pending.pop();
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const finding = vulnerabilities[current];
+      if (!finding || !Array.isArray(finding.via) || !finding.via.length) return false;
+      for (const via of finding.via) {
+        if (typeof via === "string") pending.push(via);
+        else if (via && via.name === "braces" && via.severity === "high"
+          && via.url === "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm") advisoryFound = true;
+        else return false;
+      }
+    }
+    return advisoryFound;
   }
   return riskNames.every((name) => reachesOnlyBraces(name)) ? riskNames : null;
 }
