@@ -60,6 +60,7 @@ from .identity import (
     SqliteIdentityRepository,
 )
 from .identity_postgres import PostgresIdentityRepository
+from .android_browser_auth import AndroidBrowserAuthService
 from .organization_api import OrganizationApi
 from .organization_membership import OrganizationWorkflowError, SqliteOrganizationRepository
 from .postgres_adapters import PostgresAuthorizationRepository, PostgresOrganizationRepository
@@ -292,6 +293,7 @@ class RuntimeSettings:
     object_storage_provision_bucket: bool = False
     policy_version: str = "runtime-policy-v1"
     public_gateway_url: str | None = None
+    android_auth_clients: Mapping[str, frozenset[str]] = field(default_factory=dict)
     allow_private_http_gateway: bool = False
     trusted_proxy_ips: tuple[str, ...] = ()
     max_body_bytes: int = 65_536
@@ -378,6 +380,19 @@ class RuntimeSettings:
     def from_env(cls) -> "RuntimeSettings":
         profile = os.environ.get("DAON_RUNTIME_PROFILE", "development")
         database = os.environ.get("DAON_API_DATABASE_PATH")
+        try:
+            android_clients_raw = json.loads(os.environ.get("DAON_ANDROID_AUTH_CLIENTS_JSON", "{}"))
+            if not isinstance(android_clients_raw, dict) or any(
+                not isinstance(client, str) or not isinstance(redirects, list)
+                or not redirects or any(not isinstance(uri, str) for uri in redirects)
+                for client, redirects in android_clients_raw.items()
+            ):
+                raise ValueError
+            android_clients = {
+                client: frozenset(redirects) for client, redirects in android_clients_raw.items()
+            }
+        except (ValueError, TypeError) as error:
+            raise ValueError("ANDROID_AUTH_POLICY_INVALID") from error
         proxies = tuple(
             value.strip()
             for value in os.environ.get("DAON_TRUSTED_PROXY_IPS", "").split(",")
@@ -428,6 +443,7 @@ class RuntimeSettings:
             ),
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
+            android_auth_clients=android_clients,
             allow_private_http_gateway=(
                 os.environ.get("DAON_ALLOW_PRIVATE_HTTP_GATEWAY", "false").lower() == "true"
             ),
@@ -608,6 +624,28 @@ class NativeLocalLoginBody(BaseModel):
 class NativeRefreshBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     refresh_credential: str
+
+
+class AndroidTransactionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    client_id: str
+    redirect_uri: str
+    state: str
+    code_challenge: str
+    code_challenge_method: str
+
+
+class AndroidAuthorizeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transaction_id: str
+
+
+class AndroidExchangeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transaction_id: str
+    code: str
+    code_verifier: str
+    redirect_uri: str
 
 
 class TokenBody(BaseModel):
@@ -1576,6 +1614,38 @@ def _organization_provisioner(dependencies: RuntimeDependencies) -> Any:
 
 
 def create_app(dependencies: RuntimeDependencies) -> FastAPI:
+    android_origin = dependencies.settings.public_gateway_url
+    if android_origin is not None and urlsplit(android_origin).scheme != "https":
+        android_origin = None
+    android_auth = AndroidBrowserAuthService(
+        repository=dependencies.identity_repository,
+        identity=dependencies.identity_service,
+        clock=lambda: datetime.now(timezone.utc),
+        clients=dependencies.settings.android_auth_clients,
+        authorization_origin=android_origin,
+    )
+    android_rate_lock = threading.Lock()
+    android_start_times: dict[str, tuple[float, int]] = {}
+
+    def android_start_allowed(request: Request) -> bool:
+        peer = request.client.host if request.client is not None else "unknown"
+        now = time.monotonic()
+        with android_rate_lock:
+            window, count = android_start_times.get(peer, (now, 0))
+            if now - window >= 60:
+                window, count = now, 0
+            if peer not in android_start_times and len(android_start_times) >= 1024:
+                expired = [key for key, (started, _) in android_start_times.items()
+                           if now - started >= 60]
+                for key in expired:
+                    del android_start_times[key]
+                if len(android_start_times) >= 1024:
+                    return False
+            if count >= 10:
+                return False
+            android_start_times[peer] = (window, count + 1)
+            return True
+
     notification_service = dependencies.notification_service or NotificationService(
         repository=ReferenceNotificationRepository(),
         authorization_service=dependencies.authorization_service,
@@ -2445,6 +2515,80 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 "access_credential": credentials.access_token,
                 "refresh_credential": credentials.refresh_token,
                 "expires_at": session.expires_at.isoformat(),
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        }
+
+    @app.post("/api/v1/session/android/transactions", status_code=201)
+    async def begin_android_transaction(
+        body: AndroidTransactionBody, request: Request,
+    ) -> Any:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("cookie") or request.headers.get("authorization"):
+            raise IdentityError("INVALID_INPUT", 400)
+        if not android_start_allowed(request):
+            return _error_response(429, "RATE_LIMITED", request.state.trace_id, retryable=True)
+        started = android_auth.begin(
+            body.client_id, body.redirect_uri, body.state, body.code_challenge,
+            body.code_challenge_method, request.state.trace_id,
+        )
+        return {
+            "data": {
+                "transaction_id": started.transaction_id,
+                "authorization_url": started.authorization_url,
+                "expires_at": started.expires_at.isoformat(),
+            },
+            "meta": {"trace_id": request.state.trace_id},
+        }
+
+    @app.post("/api/v1/session/android/authorize")
+    async def authorize_android_transaction(
+        body: AndroidAuthorizeBody, request: Request,
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        token, expected_kind = _credential(request)
+        if expected_kind is not ClientKind.WEB:
+            raise IdentityError("ACCESS_INVALID", 401)
+        _require_validated_web_csrf(request, dependencies.settings)
+        view = dependencies.identity_service.describe_access(
+            token, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        if view.client_kind is not ClientKind.WEB:
+            raise IdentityError("ACCESS_INVALID", 401)
+        redirect = android_auth.authorize(
+            body.transaction_id, token, view.principal.tenant_id,
+            request.state.trace_id,
+        )
+        return {
+            "data": {"authorization_url": redirect.url},
+            "meta": {"trace_id": request.state.trace_id},
+        }
+
+    @app.post("/api/v1/session/android/exchange", status_code=201)
+    async def exchange_android_code(
+        body: AndroidExchangeBody, request: Request,
+    ) -> dict[str, object]:
+        _require_query_keys(request, frozenset())
+        if request.headers.get("cookie") or request.headers.get("authorization"):
+            raise IdentityError("INVALID_INPUT", 400)
+        exchanged = android_auth.exchange_with_projection(
+            body.transaction_id, body.code, body.code_verifier, body.redirect_uri,
+            request.state.trace_id,
+        )
+        credentials = exchanged.credentials
+        return {
+            "data": {
+                "user_id": credentials.user_id,
+                "tenant_id": credentials.tenant_id,
+                "workspace_id": exchanged.workspace_id,
+                "session_id": credentials.session_id,
+                "device_id": credentials.device_id,
+                "client_kind": ClientKind.NATIVE.value,
+                "delivery": "native_https_opaque_bearer",
+                "access_credential": credentials.access_token,
+                "refresh_credential": credentials.refresh_token,
+                "expires_at": exchanged.expires_at.isoformat(),
             },
             "meta": {"trace_id": request.state.trace_id},
         }

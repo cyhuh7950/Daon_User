@@ -3339,6 +3339,67 @@
         "description": "Windows Native 계층만 HTTPS로 호출하며 opaque credential은 브라우저 JavaScript에 전달하지 않는다."
       }
     },
+    "/api/v1/session/android/transactions": {
+      "post": {
+        "operationId": "beginAndroidBrowserAuthorization",
+        "tags": ["Identity"],
+        "summary": "Android 브라우저 인증 거래 시작",
+        "x-implementation-owner": "ANDROID-BROWSER-AUTH-20261012-T2",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidTransactionRequest"}}}},
+        "responses": {
+          "201": {"$ref": "#/components/responses/AndroidTransactionResponse"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "412": {"$ref": "#/components/responses/PreconditionFailed"},
+          "429": {"$ref": "#/components/responses/AndroidRateLimited"},
+          "500": {"$ref": "#/components/responses/SafeFailure"}
+        },
+        "description": "등록된 Android client와 HTTPS App Link redirect만 허용한다. Cookie와 Bearer를 받지 않는다."
+      }
+    },
+    "/api/v1/session/android/authorize": {
+      "post": {
+        "operationId": "authorizeAndroidBrowserTransaction",
+        "tags": ["Identity"],
+        "summary": "Web 브라우저 세션으로 Android 거래 승인",
+        "x-implementation-owner": "ANDROID-BROWSER-AUTH-20261012-T2",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidAuthorizeRequest"}}}},
+        "responses": {
+          "200": {"$ref": "#/components/responses/AndroidAuthorizeResponse"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "412": {"$ref": "#/components/responses/PreconditionFailed"},
+          "500": {"$ref": "#/components/responses/SafeFailure"}
+        },
+        "description": "현재 Web Cookie와 same-origin BFF CSRF 검증 후 등록 App Link URL만 반환한다."
+      }
+    },
+    "/api/v1/session/android/exchange": {
+      "post": {
+        "operationId": "exchangeAndroidBrowserCode",
+        "tags": ["Identity"],
+        "summary": "Android 일회용 코드와 PKCE 교환",
+        "x-implementation-owner": "ANDROID-BROWSER-AUTH-20261012-T2",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidExchangeRequest"}}}},
+        "responses": {
+          "201": {"$ref": "#/components/responses/AndroidCredentialSessionResponse"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "412": {"$ref": "#/components/responses/PreconditionFailed"},
+          "500": {"$ref": "#/components/responses/SafeFailure"}
+        },
+        "description": "Cookie 없이 Android Native Session credential을 발급한다."
+      }
+    },
     "/api/v1/session/oidc/transactions": {
       "post": {
         "operationId": "beginOidcLogin",
@@ -4730,6 +4791,26 @@
             }
           }
         }
+      },
+      "AndroidTransactionResponse": {
+        "description": "Android 브라우저 인증 거래",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidTransactionEnvelope"}}}
+      },
+      "AndroidAuthorizeResponse": {
+        "description": "등록된 Android App Link 승인 URL",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AndroidAuthorizeEnvelope"}}}
+      },
+      "AndroidCredentialSessionResponse": {
+        "description": "Android Native opaque credential과 Session projection",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NativeCredentialSessionEnvelope"}}}
+      },
+      "AndroidRateLimited": {
+        "description": "Android 거래 시작 속도 제한",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SafeErrorEnvelope"}}}
       },
       "OidcLoginStartResponse": {
         "description": "OIDC PKCE 거래 생성",
@@ -6569,6 +6650,58 @@
             "type": "object",
             "additionalProperties": true
           }
+        }
+      },
+      "AndroidTransactionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method"],
+        "properties": {
+          "client_id": {"type": "string", "minLength": 1},
+          "redirect_uri": {"type": "string", "format": "uri"},
+          "state": {"type": "string", "minLength": 16, "maxLength": 512, "writeOnly": true},
+          "code_challenge": {"type": "string", "minLength": 43, "maxLength": 43, "writeOnly": true},
+          "code_challenge_method": {"type": "string", "const": "S256"}
+        }
+      },
+      "AndroidAuthorizeRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["transaction_id"],
+        "properties": {"transaction_id": {"$ref": "#/components/schemas/OpaqueId"}}
+      },
+      "AndroidExchangeRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["transaction_id", "code", "code_verifier", "redirect_uri"],
+        "properties": {
+          "transaction_id": {"$ref": "#/components/schemas/OpaqueId"},
+          "code": {"type": "string", "minLength": 1, "maxLength": 512, "writeOnly": true},
+          "code_verifier": {"type": "string", "minLength": 43, "maxLength": 128, "writeOnly": true},
+          "redirect_uri": {"type": "string", "format": "uri"}
+        }
+      },
+      "AndroidTransactionEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": {
+            "type": "object", "additionalProperties": false,
+            "required": ["transaction_id", "authorization_url", "expires_at"],
+            "properties": {
+              "transaction_id": {"$ref": "#/components/schemas/OpaqueId"},
+              "authorization_url": {"type": "string", "format": "uri"},
+              "expires_at": {"type": "string", "format": "date-time"}
+            }
+          },
+          "meta": {"type": "object", "required": ["trace_id"], "properties": {"trace_id": {"type": "string"}}}
+        }
+      },
+      "AndroidAuthorizeEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": {
+            "type": "object", "additionalProperties": false,
+            "required": ["authorization_url"],
+            "properties": {"authorization_url": {"type": "string", "format": "uri"}}
+          },
+          "meta": {"type": "object", "required": ["trace_id"], "properties": {"trace_id": {"type": "string"}}}
         }
       },
       "OidcLoginStartRequest": {

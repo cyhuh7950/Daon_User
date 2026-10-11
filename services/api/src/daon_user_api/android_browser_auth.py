@@ -40,6 +40,13 @@ class AndroidAuthRedirect:
     url: str
 
 
+@dataclass(frozen=True, slots=True)
+class AndroidAuthExchange:
+    credentials: SessionCredentials
+    workspace_id: str
+    expires_at: datetime
+
+
 def _https_uri(uri: str) -> bool:
     if not isinstance(uri, str) or any(ord(char) < 33 or ord(char) > 126 for char in uri):
         return False
@@ -186,6 +193,14 @@ class AndroidBrowserAuthService:
         self, transaction_id: str, code: str, code_verifier: str,
         redirect_uri: str, trace_id: str,
     ) -> SessionCredentials:
+        return self.exchange_with_projection(
+            transaction_id, code, code_verifier, redirect_uri, trace_id,
+        ).credentials
+
+    def exchange_with_projection(
+        self, transaction_id: str, code: str, code_verifier: str,
+        redirect_uri: str, trace_id: str,
+    ) -> AndroidAuthExchange:
         transaction_id = _checked_text(transaction_id)
         _checked_text(trace_id)
         if (
@@ -229,8 +244,17 @@ class AndroidBrowserAuthService:
             )
             if updated.rowcount != 1:
                 raise IdentityError("ANDROID_AUTH_CODE_INVALID", 400)
+            workspace_id = next(
+                (workspace for tenant, _, workspace in
+                 self._identity._selectable_tenant_workspaces(connection, user_id)
+                 if tenant == tenant_id),
+                None,
+            )
+            if workspace_id is None:
+                raise IdentityError("TENANT_UNAVAILABLE", 403)
             device_id, session_id, family_id = _id("dev"), _id("ses"), _id("fam")
             access, refresh = _opaque(), _opaque()
+            access_expires_at = now + ACCESS_TTL
             connection.execute(
                 "INSERT INTO devices(device_id,tenant_id,user_id,platform,state,last_seen_at,created_at,updated_at) "
                 "VALUES (?,?,?,?,?,?,?,?)",
@@ -241,7 +265,7 @@ class AndroidBrowserAuthService:
                 "INSERT INTO sessions(session_id,tenant_id,user_id,device_id,client_kind,access_digest,"
                 "access_expires_at,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (session_id, tenant_id, user_id, device_id, ClientKind.NATIVE.value,
-                 _digest(access), _iso(now + ACCESS_TTL), "active", _iso(now), _iso(now)),
+                 _digest(access), _iso(access_expires_at), "active", _iso(now), _iso(now)),
             )
             connection.execute(
                 "INSERT INTO refresh_families(family_id,session_id,state,created_at,updated_at) VALUES (?,?,?,?,?)",
@@ -252,8 +276,11 @@ class AndroidBrowserAuthService:
                 "VALUES (?,?,?,?,?,?)",
                 (_id("ref"), family_id, _digest(refresh), _iso(now + REFRESH_TTL), None, _iso(now)),
             )
-        return SessionCredentials(access, refresh, user_id, session_id, device_id,
-                                  tenant_id, ClientKind.NATIVE, "native_opaque_refresh_rotation")
+        return AndroidAuthExchange(
+            SessionCredentials(access, refresh, user_id, session_id, device_id,
+                               tenant_id, ClientKind.NATIVE, "native_opaque_refresh_rotation"),
+            workspace_id, access_expires_at,
+        )
 
     def _require_user_and_tenant(self, connection, user_id: str, tenant_id: str) -> None:
         user = connection.execute(
