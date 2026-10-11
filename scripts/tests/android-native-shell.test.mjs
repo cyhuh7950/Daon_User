@@ -24,6 +24,29 @@ async function listFiles(directory) {
   return output;
 }
 
+function assertNoUnsafeAndroidSource(source) {
+  // Suppress the two localhost literals only in the approved, complete safe(uri) predicate.
+  const approvedSafeUri = new RegExp([
+    String.raw`\bfun safe\(uri:\s*URI\):\s*Boolean\s*\{\s*`,
+    String.raw`val host\s*=\s*uri\.host\?\.lowercase\(\)\s*\?:\s*return false\s*`,
+    String.raw`val ipLiteral\s*=\s*host\.matches\(Regex\("\[0-9\.\]\+"\)\)\s*\|\|\s*host\.contains\(':'\)\s*`,
+    String.raw`return uri\.scheme\s*==\s*"https"\s*&&\s*host\.isNotBlank\(\)\s*&&\s*!ipLiteral\s*&&\s*uri\.port\s*==\s*-1\s*&&\s*`,
+    String.raw`uri\.userInfo\s*==\s*null\s*&&\s*uri\.fragment\s*==\s*null\s*&&\s*host\s*!=\s*"localhost"\s*&&\s*!host\.endsWith\("\.localhost"\)\s*\}`,
+  ].join(""), "g");
+  const checkedSource = source.replace(approvedSafeUri, (safeUri, offset) => {
+    const before = source.slice(0, offset);
+    const inRawString = ((before.match(/"""/g) ?? []).length % 2) !== 0;
+    let blockCommentDepth = 0;
+    for (const marker of before.match(/\/\*|\*\//g) ?? []) {
+      blockCommentDepth = marker === "/*" ? blockCommentDepth + 1 : Math.max(0, blockCommentDepth - 1);
+    }
+    const inLineComment = before.slice(before.lastIndexOf("\n") + 1).includes("//");
+    if (inRawString || blockCommentDepth > 0 || inLineComment) return safeUri;
+    return safeUri.replace(/\bhost\s*!=\s*"localhost"\s*&&\s*!host\.endsWith\("\.localhost"\)/, "true");
+  });
+  assert.doesNotMatch(checkedSource, /https?:\/\/|localhost|127\.0\.0\.1|host\.docker\.internal|NEXT_PUBLIC_API_BASE_URL|api[_-]?key\s*[:=]|client[_-]?secret\s*[:=]/i);
+}
+
 test("Android Project는 승인 Application ID·표시명·Android 12+ 계약을 고정한다", async () => {
   const appGradle = await read("apps/mobile/android/app/build.gradle");
   const rootGradle = await read("apps/mobile/android/build.gradle");
@@ -135,5 +158,34 @@ test("Android Source와 Manifest에 내부 API·Provider URL·Secret이 없다",
   const files = (await listFiles(path.join(androidRoot, "app/src/main/java"))).filter((file) => /\.(?:kt|java)$/.test(file));
   files.push(path.join(androidRoot, "app/src/main/AndroidManifest.xml"));
   const source = (await Promise.all(files.map((file) => readFile(file, "utf8")))).join("\n").replace("http://schemas.android.com/apk/res/android", "");
-  assert.doesNotMatch(source, /https?:\/\/|localhost|127\.0\.0\.1|host\.docker\.internal|NEXT_PUBLIC_API_BASE_URL|api[_-]?key\s*[:=]|client[_-]?secret\s*[:=]/i);
+  assertNoUnsafeAndroidSource(source);
+});
+
+test("Kotlin localhost 차단 비교만 허용하고 내부 주소·Secret 사용은 거부한다", () => {
+  const approvedSafeUri = `
+fun safe(uri: URI): Boolean {
+  val host = uri.host?.lowercase() ?: return false
+  val ipLiteral = host.matches(Regex("[0-9.]+")) || host.contains(':')
+  return uri.scheme == "https" && host.isNotBlank() && !ipLiteral && uri.port == -1 &&
+    uri.userInfo == null && uri.fragment == null && host != "localhost" && !host.endsWith(".localhost")
+}`;
+  assert.doesNotThrow(() => assertNoUnsafeAndroidSource(approvedSafeUri));
+  for (const unsafe of [
+    'return host != "localhost" && !host.endsWith(".localhost")',
+    'val host = "localhost"',
+    'return uri.host == "localhost"',
+    'return uri.host != "localhost" || allowAnyHost',
+    'return allowAnyHost || host != "localhost" && !host.endsWith(".localhost")',
+    'return allowAnyHost ||\n  host != "localhost" && !host.endsWith(".localhost")',
+    'return host != "localhost" && !host.endsWith(".localhost")\n  || allowAnyHost',
+    'fun safe(uri: URI, allowAnyHost: Boolean): Boolean { val host = uri.host ?: return false; return run { host != "localhost" && !host.endsWith(".localhost") } || allowAnyHost }',
+    'fun safe(uri: URI, allowAnyHost: Boolean): Boolean { val host = uri.host ?: return false; return listOf(host).any { host != "localhost" && !host.endsWith(".localhost") } || allowAnyHost }',
+    'fun safe(uri: URI, allowAnyHost: Boolean): Boolean { val host = uri.host ?: return false; return (host != "localhost" && !host.endsWith(".localhost")) || allowAnyHost }',
+    `val copiedPredicate = """${approvedSafeUri}"""`,
+    `/*${approvedSafeUri}*/`,
+    'return host != "localhost" && host.endsWith(".localhost")',
+    'val endpoint = "http://127.0.0.1:8000/api"',
+    'val endpoint = "https://internal.example.test/api"',
+    'client_secret = "synthetic-secret"',
+  ]) assert.throws(() => assertNoUnsafeAndroidSource(unsafe), undefined, unsafe);
 });

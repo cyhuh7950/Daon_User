@@ -18,6 +18,9 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/session",
   "/api/v1/session/logout",
   "/api/v1/session/step-up",
+  "/api/v1/session/android/transactions",
+  "/api/v1/session/android/authorize",
+  "/api/v1/session/android/exchange",
   "/api/v1/session/oidc/transactions",
   "/api/v1/session/oidc/callback",
   "/api/v1/session/refresh",
@@ -105,6 +108,11 @@ export const REQUIRED_PATHS = Object.freeze([
 ]);
 
 const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete"]);
+const ANDROID_BROWSER_AUTH_POST_PATHS = new Set([
+  "/api/v1/session/android/transactions",
+  "/api/v1/session/android/authorize",
+  "/api/v1/session/android/exchange",
+]);
 const COMMON_ERROR_STATUSES = ["400", "401", "403", "404", "409", "412", "500"];
 const BODY_VERSIONED_MUTATIONS = new Set([
   "DELETE /api/v1/admin/provider-connections/{connection_id}",
@@ -524,6 +532,10 @@ export function validateOpenApiDocument(document) {
   const actualPaths = Object.keys(document.paths);
   for (const requiredPath of REQUIRED_PATHS) if (!(requiredPath in document.paths)) fail(`required path missing ${requiredPath}`);
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
+  for (const apiPath of ANDROID_BROWSER_AUTH_POST_PATHS) {
+    const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method));
+    if (JSON.stringify(actualMethods) !== JSON.stringify(["post"])) fail(`Android method mismatch ${apiPath}`);
+  }
   const knowledgeMethods = new Map([
     ["/api/v1/workspaces/{id}/knowledge-packages", ["get"]],
     ["/api/v1/workspaces/{id}/operations/status", ["get"]],
@@ -634,7 +646,7 @@ export function validateOpenApiDocument(document) {
         "/api/v1/session/refresh",
         "/api/v1/session/logout"
       ]);
-      if (method === "post" && !idempotencyExemptPosts.has(apiPath) && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
+      if (method === "post" && !idempotencyExemptPosts.has(apiPath) && !ANDROID_BROWSER_AUTH_POST_PATHS.has(apiPath) && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
       if ((method === "patch" || method === "delete") && !refs.has("#/components/parameters/IfMatch")) {
         const mutationKey = `${method.toUpperCase()} ${apiPath}`;
         const schema = requestSchema(document, operation);
@@ -657,7 +669,7 @@ export function validateOpenApiDocument(document) {
       const [successStatus, successResponse] = success;
       const resolvedSuccess = responseObject(document, successResponse);
       const isSse = apiPath === "/api/v1/runs/{id}/events" && method === "get";
-      if (!isSse && !isObject(resolvedSuccess.headers?.ETag)) fail(`${operationId} response ${successStatus} missing ETag`);
+      if (!isSse && !(method === "post" && ANDROID_BROWSER_AUTH_POST_PATHS.has(apiPath)) && !isObject(resolvedSuccess.headers?.ETag)) fail(`${operationId} response ${successStatus} missing ETag`);
     }
   }
 

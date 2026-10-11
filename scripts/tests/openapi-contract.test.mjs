@@ -39,6 +39,50 @@ test("OpenAPI 검증기는 누락 Path를 fail-close 거부한다", async () => 
   assert.throws(() => validateOpenApiDocument(document), /required path/i);
 });
 
+test("승인된 Android 인증 세 경로는 각각 필수이고 다른 Android 경로는 거부한다", async () => {
+  const approved = [
+    "/api/v1/session/android/transactions",
+    "/api/v1/session/android/authorize",
+    "/api/v1/session/android/exchange",
+  ];
+  for (const apiPath of approved) {
+    const missing = clone(await loadContract());
+    delete missing.paths[apiPath];
+    assert.throws(() => validateOpenApiDocument(missing), new RegExp(`required path missing ${apiPath}`));
+  }
+  const extra = clone(await loadContract());
+  extra.paths["/api/v1/session/android/unknown"] = clone(extra.paths[approved[0]]);
+  assert.throws(() => validateOpenApiDocument(extra), /unapproved path \/api\/v1\/session\/android\/unknown/);
+});
+
+test("Android 인증 세 POST만 Idempotency-Key 없이 허용하고 일반 POST는 계속 요구한다", async () => {
+  const document = await loadContract();
+  assert.doesNotThrow(() => validateOpenApiDocument(document));
+  const ordinary = clone(document);
+  ordinary.paths["/api/v1/workspaces/{id}/questions/authorization"].post.parameters = ordinary.paths[
+    "/api/v1/workspaces/{id}/questions/authorization"
+  ].post.parameters.filter((parameter) => parameter.$ref !== "#/components/parameters/IdempotencyKey");
+  assert.throws(() => validateOpenApiDocument(ordinary), /missing Idempotency-Key/);
+});
+
+test("Android 인증 응답은 Trace를 요구하고 일반 성공 응답은 ETag를 계속 요구한다", async () => {
+  const document = await loadContract();
+  assert.doesNotThrow(() => validateOpenApiDocument(document));
+  const noTrace = clone(document);
+  delete noTrace.components.responses.AndroidTransactionResponse.headers["X-Trace-Id"];
+  assert.throws(() => validateOpenApiDocument(noTrace), /missing X-Trace-Id/);
+  const noEtag = clone(document);
+  delete noEtag.components.responses.IdentitySessionResponse.headers.ETag;
+  assert.throws(() => validateOpenApiDocument(noEtag), /missing ETag/);
+});
+
+test("Android 인증 경로는 추가 GET 없이 POST만 허용한다", async () => {
+  const document = clone(await loadContract());
+  document.paths["/api/v1/session/android/transactions"].get = clone(document.paths["/api/v1/session"].get);
+  document.paths["/api/v1/session/android/transactions"].get.operationId = "unexpectedAndroidGet";
+  assert.throws(() => validateOpenApiDocument(document), /Android method mismatch/);
+});
+
 test("OpenAPI 검증기는 중복 operationId를 fail-close 거부한다", async () => {
   const document = clone(await loadContract());
   const operations = Object.values(document.paths).flatMap((item) => Object.values(item).filter((value) => value?.operationId));

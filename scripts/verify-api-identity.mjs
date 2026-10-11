@@ -23,7 +23,8 @@ function fail(message) {
 
 function runPython(arguments_, { capture = false } = {}) {
   const projectPython = path.join(
-    root, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python"
+    path.resolve(root, process.env.UV_PROJECT_ENVIRONMENT ?? path.join(apiRoot, ".venv")),
+    process.platform === "win32" ? "Scripts/python.exe" : "bin/python"
   );
   const projectPythonAvailable = existsSync(projectPython)
     && spawnSync(projectPython, ["--version"], { cwd: root, stdio: "ignore" }).status === 0;
