@@ -122,6 +122,32 @@
         "responses": {"200": {"$ref": "#/components/responses/SuccessResponse"}, "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "500": {"$ref": "#/components/responses/SafeFailure"}}
       }
     },
+    "/api/v1/session/native/logout": {
+      "post": {
+        "operationId": "logoutCurrentNativeSession",
+        "tags": ["Identity"],
+        "summary": "현재 Native Bearer Session과 Refresh family 철회",
+        "x-implementation-owner": "R1-AND-NATIVE-SELF-LOGOUT-20261013",
+        "description": "Authorization Bearer만 허용하며 Web Cookie 및 혼합 credential은 거부한다. 만료된 access도 digest가 현재 Native Session과 일치하면 본인 철회를 허용한다. 재시도에는 replayed=true를 반환한다.",
+        "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "maxProperties": 0}}}
+        },
+        "responses": {
+          "200": {"$ref": "#/components/responses/NativeSelfLogoutResponse"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "412": {"$ref": "#/components/responses/PreconditionFailed"},
+          "431": {"$ref": "#/components/responses/RequestHeaderFieldsTooLarge"},
+          "500": {"$ref": "#/components/responses/SafeFailure"},
+          "503": {"$ref": "#/components/responses/ServiceUnavailable"}
+        }
+      }
+    },
     "/api/v1/session/logout": {
       "post": {
         "operationId": "logoutCurrentWebSession",
@@ -4876,6 +4902,11 @@
           "Set-Cookie": { "description": "HttpOnly Secure SameSite Session cookie 만료", "schema": { "type": "string", "writeOnly": true } }
         },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CurrentSessionLogoutEnvelope" } } }
+      },
+      "NativeSelfLogoutResponse": {
+        "description": "현재 Native Session과 Refresh family 철회; Cookie를 설정하지 않음",
+        "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CurrentSessionLogoutEnvelope"}}}
       },
       "KnowledgePackageListResponse": {
         "description": "현재 접근 가능한 승인 Knowledge Package",

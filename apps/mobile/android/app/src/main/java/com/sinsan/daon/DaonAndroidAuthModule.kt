@@ -110,6 +110,18 @@ internal object AndroidAuthFlow {
   fun workspaceFailure(httpStatus: Int?): String =
     if (httpStatus == 401 || httpStatus == 403) "signed_out" else "workspace_unavailable"
 
+  fun clearAfterRefreshFailure(httpStatus: Int?): Boolean = httpStatus == 401 || httpStatus == 403
+
+  fun logoutConfirmed(data: Map<String, String>): Boolean {
+    require(data["status"] == "logged_out" && data["replayed"] in setOf("true", "false"))
+    return true
+  }
+
+  fun logoutWith(revoke: () -> Map<String, String>, clearVault: () -> Unit) {
+    logoutConfirmed(revoke())
+    clearVault()
+  }
+
   fun switchedSession(prior: AndroidAuthSessionData, tenantId: String, data: Map<String, String>): AndroidAuthSessionData {
     require(data["client_kind"] == "native" && data["user_id"] == prior.userId &&
       data["tenant_id"] == tenantId && !data["workspace_id"].isNullOrBlank())
@@ -238,10 +250,15 @@ class DaonAndroidAuthModule(private val context: ReactApplicationContext) : Reac
   private fun current(): AndroidAuthSessionData? {
     AndroidAuthState.session?.takeIf { Instant.now().isBefore(it.expiresAt.minusSeconds(15)) }?.let { return it }
     val sealed = prefs.getString("refresh_ciphertext", null) ?: return null
+    val credential = AndroidAuthVaultCodec.decrypt(sealed, key())
     return try {
-      val credential = AndroidAuthVaultCodec.decrypt(sealed, key())
       sessionFrom(request("/api/v1/session/refresh", JSONObject().put("refresh_credential", credential))).also(::store)
-    } catch (_: Exception) { clear(); null }
+    } catch (error: Exception) {
+      if (AndroidAuthFlow.clearAfterRefreshFailure((error as? AndroidAuthHttpFailure)?.status)) {
+        clear()
+        null
+      } else throw error
+    }
   }
 
   private fun workspaces(session: AndroidAuthSessionData): List<Map<String, String>> {
@@ -327,7 +344,8 @@ class DaonAndroidAuthModule(private val context: ReactApplicationContext) : Reac
     if (!AndroidAuthProtocol.validConfig(origin, client, redirect))
       projection(mapOf("status" to "unavailable"))
     else {
-      val session = current()
+      val session = try { current() }
+      catch (_: Exception) { return@run projection(mapOf("status" to "workspace_unavailable")) }
       if (session == null) projection(mapOf("status" to AndroidAuthFlow.status(false,
         AndroidAuthState.pending != null, AndroidAuthState.callbackLink != null)))
       else try { projection(session.publicProjection(), workspaces(session)) }
@@ -374,7 +392,16 @@ class DaonAndroidAuthModule(private val context: ReactApplicationContext) : Reac
   }
 
   @ReactMethod fun logout(promise: Promise) = run(promise) {
-    clear()
+    val session = AndroidAuthState.session
+    if (session == null) {
+      if (prefs.contains("refresh_ciphertext")) throw IllegalStateException("SESSION_UNAVAILABLE")
+      clear()
+      return@run projection(mapOf("status" to "signed_out"))
+    }
+    AndroidAuthFlow.logoutWith({
+      val response = request("/api/v1/session/native/logout", JSONObject(), session.access)
+      mapOf("status" to response.getString("status"), "replayed" to response.getString("replayed"))
+    }, ::clear)
     projection(mapOf("status" to "signed_out"))
   }
 }

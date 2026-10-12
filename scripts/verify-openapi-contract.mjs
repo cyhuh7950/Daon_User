@@ -17,6 +17,7 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/organizations/{id}/license",
   "/api/v1/session",
   "/api/v1/session/logout",
+  "/api/v1/session/native/logout",
   "/api/v1/session/step-up",
   "/api/v1/session/android/transactions",
   "/api/v1/session/android/authorize",
@@ -430,6 +431,7 @@ function validateIdentityContract(document) {
     "/api/v1/auth/native/login": ["post", "NativeCredentialSessionResponse"],
     "/api/v1/session": ["get", "IdentitySessionResponse"],
     "/api/v1/session/logout": ["post", "CurrentSessionLogoutResponse"],
+    "/api/v1/session/native/logout": ["post", "NativeSelfLogoutResponse"],
     "/api/v1/session/step-up": ["post", "StepUpAuthorizationResponse"],
     "/api/v1/session/oidc/transactions": ["post", "OidcLoginStartResponse"],
     "/api/v1/session/oidc/callback": ["post", "IdentitySessionResponse"],
@@ -644,7 +646,8 @@ export function validateOpenApiDocument(document) {
       const idempotencyExemptPosts = new Set([
         "/api/v1/auth/native/login",
         "/api/v1/session/refresh",
-        "/api/v1/session/logout"
+        "/api/v1/session/logout",
+        "/api/v1/session/native/logout"
       ]);
       if (method === "post" && !idempotencyExemptPosts.has(apiPath) && !ANDROID_BROWSER_AUTH_POST_PATHS.has(apiPath) && !refs.has("#/components/parameters/IdempotencyKey")) fail(`${operationId} missing Idempotency-Key`);
       if ((method === "patch" || method === "delete") && !refs.has("#/components/parameters/IfMatch")) {

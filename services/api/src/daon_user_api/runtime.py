@@ -1988,7 +1988,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     if content_type != expected_type:
                         return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
                 elif content_type != "application/json" and not (
-                    request.method == "POST" and request.url.path == "/api/v1/session/tenant"
+                    request.method == "POST" and request.url.path in {
+                        "/api/v1/session/tenant", "/api/v1/session/native/logout",
+                    }
                 ):
                     return _error_response(415, "UNSUPPORTED_MEDIA_TYPE", trace_id)
                 declared = request.headers.get("content-length")
@@ -2011,6 +2013,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 ("GET", "/api/v1/session"),
                 ("POST", "/api/v1/auth/password/change"),
                 ("POST", "/api/v1/session/logout"),
+                ("POST", "/api/v1/session/native/logout"),
             }
             if not is_health and not allowed_restricted_request:
                 try:
@@ -2652,6 +2655,33 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response.delete_cookie(
             WEB_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax",
         )
+        response.headers["ETag"] = '"session:logged-out"'
+        return response
+
+    @app.post("/api/v1/session/native/logout")
+    async def logout_current_native_session(request: Request) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        body = await request.body()
+        if body:
+            if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+                raise HTTPException(status_code=400)
+            try:
+                parsed_body = json.loads(body)
+            except (UnicodeDecodeError, ValueError) as error:
+                raise HTTPException(status_code=400) from error
+            if parsed_body != {} or not isinstance(parsed_body, dict):
+                raise HTTPException(status_code=400)
+        token, expected_kind = _credential(request)
+        if expected_kind is not ClientKind.NATIVE:
+            raise IdentityError("ACCESS_INVALID", 401)
+        result = dependencies.identity_service.revoke_current_native_session(
+            access_token=token, trace_id=request.state.trace_id,
+            policy_version=dependencies.settings.policy_version,
+        )
+        response = JSONResponse({
+            "data": {"status": "logged_out", "replayed": result.replayed},
+            "meta": {"trace_id": request.state.trace_id},
+        })
         response.headers["ETag"] = '"session:logged-out"'
         return response
 

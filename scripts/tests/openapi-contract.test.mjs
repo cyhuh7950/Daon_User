@@ -55,6 +55,18 @@ test("승인된 Android 인증 세 경로는 각각 필수이고 다른 Android 
   assert.throws(() => validateOpenApiDocument(extra), /unapproved path \/api\/v1\/session\/android\/unknown/);
 });
 
+test("Native 본인 로그아웃은 필수 경로이며 응답 ETag 없이는 거부한다", async () => {
+  const apiPath = "/api/v1/session/native/logout";
+  const document = await loadContract();
+  assert.doesNotThrow(() => validateOpenApiDocument(document));
+  const missing = clone(document);
+  delete missing.paths[apiPath];
+  assert.throws(() => validateOpenApiDocument(missing), /required path missing \/api\/v1\/session\/native\/logout/);
+  const noEtag = clone(document);
+  delete noEtag.components.responses.NativeSelfLogoutResponse.headers.ETag;
+  assert.throws(() => validateOpenApiDocument(noEtag), /logoutCurrentNativeSession response 200 missing ETag/);
+});
+
 test("Android 인증 세 POST만 Idempotency-Key 없이 허용하고 일반 POST는 계속 요구한다", async () => {
   const document = await loadContract();
   assert.doesNotThrow(() => validateOpenApiDocument(document));

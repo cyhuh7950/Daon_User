@@ -442,6 +442,86 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(item.action == "identity.session.self_revoked" for item in events), 1)
         self.assertNotIn(self.web.access_token, first.text + replay.text)
 
+    async def test_native_self_logout_revokes_only_presented_session_and_refresh_once(self) -> None:
+        headers = {"Authorization": f"Bearer {self.native.access_token}"}
+        other = self.identity.begin_oidc_login(
+            issuer="https://login.example.com", client_id="daon-native",
+            audience="daon-user-api", redirect_uri="com.sinsan.daon:/oidc/callback",
+            client_kind=ClientKind.NATIVE, tenant_id="tenant-001",
+            trace_id=TRACE_ID, policy_version=POLICY_VERSION,
+        )
+        provider = FakeVerifiedOidcProvider()
+        provider.expected_nonce = other.nonce
+        second = self.identity.complete_oidc_login(
+            state=other.state, authorization_code=provider.authorization_code,
+            code_verifier=other.code_verifier, client_id="daon-native",
+            redirect_uri="com.sinsan.daon:/oidc/callback", provider=provider,
+            platform=DevicePlatform.ANDROID, trace_id=TRACE_ID,
+            policy_version=POLICY_VERSION,
+        )
+        first = await self.client.post("/api/v1/session/native/logout", headers=headers, json={})
+        replay = await self.client.post("/api/v1/session/native/logout", headers=headers)
+        denied = await self.client.get("/api/v1/session", headers=headers)
+        refresh = await self.client.post(
+            "/api/v1/session/refresh", json={"refresh_credential": self.native.refresh_token},
+        )
+        other_session = await self.client.get(
+            "/api/v1/session", headers={"Authorization": f"Bearer {second.access_token}"},
+        )
+        self.assertEqual((first.status_code, replay.status_code), (200, 200))
+        self.assertEqual(first.json()["data"], {"status": "logged_out", "replayed": False})
+        self.assertEqual(replay.json()["data"], {"status": "logged_out", "replayed": True})
+        self.assertTrue(first.json()["meta"]["trace_id"])
+        self.assertEqual(first.headers.get_list("set-cookie"), [])
+        self.assertEqual(first.headers["etag"], '"session:logged-out"')
+        self.assertEqual(replay.headers["etag"], '"session:logged-out"')
+        self.assertEqual((denied.status_code, refresh.status_code, other_session.status_code), (401, 401, 200))
+        events = self.audit.list(tenant_id=self.native.tenant_id, limit=200).items
+        self.assertEqual(sum(event.action == "identity.session.self_revoked" for event in events), 1)
+        self.assertNotIn(self.native.access_token, first.text + replay.text)
+        self.assertNotIn(self.native.refresh_token, first.text + replay.text)
+
+    async def test_native_self_logout_rejects_non_native_credentials_and_input(self) -> None:
+        path = "/api/v1/session/native/logout"
+        bearer = {"Authorization": f"Bearer {self.native.access_token}"}
+        cookie = {WEB_SESSION_COOKIE: self.web.access_token}
+        for response in (
+            await self.client.post(path, cookies=cookie, json={}),
+            await self.client.post(path, headers=bearer, cookies=cookie, json={}),
+            await self.client.post(path, headers={"Authorization": "Bearer bad"}, json={}),
+        ):
+            self.assertEqual(response.status_code, 401)
+        for response in (
+            await self.client.post(path + "?session_id=x", headers=bearer, json={}),
+            await self.client.post(path, headers=bearer, json={"session_id": self.native.session_id}),
+            await self.client.post(path, headers=bearer, json={"refresh_credential": self.native.refresh_token}),
+            await self.client.post(path, headers={**bearer, "Content-Type": "text/plain"}, content="{}"),
+        ):
+            self.assertEqual(response.status_code, 400)
+        self.identity.validate_access(self.native.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        whitespace = await self.client.post(
+            path, headers={**bearer, "Content-Type": "application/json"}, content=b"{ }",
+        )
+        self.assertEqual(whitespace.status_code, 200)
+
+    async def test_native_self_logout_allows_expired_access_without_restoring_access(self) -> None:
+        self.clock.advance(hours=2)
+        headers = {"Authorization": f"Bearer {self.native.access_token}"}
+        expired = await self.client.get("/api/v1/session", headers=headers)
+        logout = await self.client.post("/api/v1/session/native/logout", headers=headers, json={})
+        self.assertEqual(expired.status_code, 401)
+        self.assertEqual(logout.status_code, 200)
+        self.assertEqual(logout.json()["data"], {"status": "logged_out", "replayed": False})
+
+    async def test_native_self_logout_allows_password_change_required(self) -> None:
+        with self.identity_repository.transaction() as connection:
+            connection.execute("UPDATE users SET password_change_required=1 WHERE user_id=?", (self.native.user_id,))
+        response = await self.client.post(
+            "/api/v1/session/native/logout",
+            headers={"Authorization": f"Bearer {self.native.access_token}"}, json={},
+        )
+        self.assertEqual(response.status_code, 200)
+
     async def test_current_web_session_logout_rejects_referer_mismatch_and_input_fields(self) -> None:
         base = {
             "Content-Type": "application/json",

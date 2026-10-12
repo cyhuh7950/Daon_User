@@ -2219,6 +2219,45 @@ class IdentityService:
         self._project_self_logout_audit(session_id)
         return CurrentSessionLogoutEvent(replayed=replayed)
 
+    def revoke_current_native_session(
+        self, *, access_token: str, policy_version: str, trace_id: str,
+    ) -> CurrentSessionLogoutEvent:
+        """Revoke the one native session identified by the presented access digest."""
+        _checked_text(policy_version); _checked_text(trace_id)
+        try:
+            checked_access = _checked_text(access_token, opaque=True)
+        except IdentityError as error:
+            raise IdentityError("ACCESS_INVALID", 401) from error
+        now = self._now()
+        with self._lock, self._repository.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM sessions WHERE access_digest = ?", (_digest(checked_access),)
+            ).fetchone()
+            if row is None or str(row["client_kind"]) != ClientKind.NATIVE.value:
+                raise IdentityError("ACCESS_INVALID", 401)
+            session_id = str(row["session_id"])
+            replayed = str(row["state"]) != "active"
+            if not replayed:
+                connection.execute(
+                    "UPDATE sessions SET state='revoked',updated_at=? WHERE session_id=? AND state='active'",
+                    (_iso(now), session_id),
+                )
+                connection.execute(
+                    "UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id=?",
+                    (_iso(now), session_id),
+                )
+                event_id = "audit-self-logout-" + hashlib.sha256(
+                    f"SELF_LOGOUT\0{session_id}".encode("utf-8")
+                ).hexdigest()[:32]
+                connection.execute(
+                    "INSERT INTO session_audit_outbox(event_id,session_id,action,tenant_id,actor_id,occurred_at,trace_id,policy_version,delivered_at,created_at) "
+                    "VALUES (?,?, 'identity.session.self_revoked',?,?,?,?,?,?,?)",
+                    (event_id, session_id, str(row["tenant_id"]), str(row["user_id"]),
+                     _iso(now), trace_id, policy_version, None, _iso(now)),
+                )
+        self._project_self_logout_audit(session_id)
+        return CurrentSessionLogoutEvent(replayed=replayed)
+
     def revoke_device(self, *, access_token: str, device_id: str,
                       step_up_authorization: str | None, policy_version: str,
                       trace_id: str) -> DeviceRevocationEvent:

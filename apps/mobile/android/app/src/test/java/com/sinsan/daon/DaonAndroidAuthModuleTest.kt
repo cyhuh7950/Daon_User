@@ -6,6 +6,35 @@ import java.time.Instant
 import javax.crypto.spec.SecretKeySpec
 
 class DaonAndroidAuthModuleTest {
+  @Test fun nativeLogoutRequiresConfirmedServerRevocation() {
+    assertEquals(true, AndroidAuthFlow.logoutConfirmed(mapOf("status" to "logged_out", "replayed" to "false")))
+    assertEquals(true, AndroidAuthFlow.logoutConfirmed(mapOf("status" to "logged_out", "replayed" to "true")))
+    assertThrows(Exception::class.java) {
+      AndroidAuthFlow.logoutConfirmed(mapOf("status" to "pending", "replayed" to "false"))
+    }
+    assertThrows(Exception::class.java) {
+      AndroidAuthFlow.logoutConfirmed(mapOf("status" to "logged_out"))
+    }
+  }
+  @Test fun nativeLogoutPreservesVaultUnlessServerConfirms() {
+    var cleared = false
+    assertThrows(Exception::class.java) {
+      AndroidAuthFlow.logoutWith({ throw IllegalStateException("NETWORK_UNAVAILABLE") }, { cleared = true })
+    }
+    assertFalse(cleared)
+    assertThrows(Exception::class.java) {
+      AndroidAuthFlow.logoutWith({ mapOf("status" to "pending", "replayed" to "false") }, { cleared = true })
+    }
+    assertFalse(cleared)
+    AndroidAuthFlow.logoutWith({ mapOf("status" to "logged_out", "replayed" to "true") }, { cleared = true })
+    assertTrue(cleared)
+  }
+  @Test fun transientRefreshFailureMustNotEraseServerBackedSession() {
+    assertFalse(AndroidAuthFlow.clearAfterRefreshFailure(null))
+    assertFalse(AndroidAuthFlow.clearAfterRefreshFailure(503))
+    assertTrue(AndroidAuthFlow.clearAfterRefreshFailure(401))
+    assertTrue(AndroidAuthFlow.clearAfterRefreshFailure(403))
+  }
   @Test fun tenantSwitchRequiresRotatedCredentialsAndPreservesSameTenantSession() {
     val prior = AndroidAuthSessionData("user-1", "personal-1", "workspace-1", "session-1", "device-1",
       "old-access", "", Instant.parse("2026-10-12T01:00:00Z"))
