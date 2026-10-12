@@ -197,7 +197,7 @@ export function ProductStudioPane({ state, adapter }) {
         for (let attempt = 0; attempt < 120; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 500));
           const currentJob = await adapter.getGenerationJob(job.job_id);
-          if (["queued", "leased"].includes(currentJob.status)) continue;
+          if (["queued", "leased", "generating"].includes(currentJob.status)) continue;
           if (currentJob.status === "unavailable") throw new Error(currentJob.error_code ?? "STUDIO_OUTPUT_UNAVAILABLE");
           if (currentJob.status !== "completed" || !currentJob.output) throw new Error(currentJob.error_code ?? "STUDIO_CREATE_FAILED");
           output = { ...currentJob.output, studio_output_id: currentJob.studio_output_id, output_version_id: currentJob.output_version_id, status: "draft" };

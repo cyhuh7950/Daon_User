@@ -9,13 +9,14 @@ export function AndroidAuthScreen({ authenticatedContent }: { authenticatedConte
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const restorerRef = useRef<ReturnType<typeof createAndroidAuthRestorer> | null>(null);
+  const switchingRef = useRef(false);
 
   useEffect(() => {
     const restorer = createAndroidAuthRestorer(androidAuth, setState, setError);
     restorerRef.current = restorer;
     void restorer.restore();
     const listener = AppState.addEventListener("change", (next) => {
-      if (next === "active") void restorer.restore();
+      if (next === "active" && !switchingRef.current) void restorer.restore();
     });
     return () => { restorer.dispose(); restorerRef.current = null; listener.remove(); };
   }, []);
@@ -36,14 +37,36 @@ export function AndroidAuthScreen({ authenticatedContent }: { authenticatedConte
     finally { setBusy(false); }
   };
 
+  const selectWorkspace = async (tenantId: string) => {
+    restorerRef.current?.invalidate();
+    switchingRef.current = true;
+    setState(null);
+    setBusy(true);
+    setError(false);
+    try { setState(await androidAuth.switchWorkspace(tenantId)); }
+    catch { setState({ status: "workspace_unavailable" }); }
+    finally { switchingRef.current = false; setBusy(false); }
+  };
+
   if (canEnterAndroidShell(state)) return <SafeAreaView style={styles.page}>
     <View style={styles.authenticatedHeader}>
-      <Text>Workspace: {workspaceSummary(state)}</Text>
+      <Text>현재 소속: {workspaceSummary(state)}</Text>
       <Pressable disabled={busy} accessibilityRole="button" onPress={() => void leave()} style={styles.button}>
         <Text style={styles.buttonText}>로그아웃</Text>
       </Pressable>
     </View>
-    <View style={styles.shell}>{authenticatedContent}</View>
+    <Text>접근 가능한 소속별 기본 Workspace</Text>
+    <ScrollView style={styles.workspaceListScroll} contentContainerStyle={styles.workspaceList}>
+      {state?.workspaces?.map((workspace) => <Pressable key={workspace.tenant_id}
+        disabled={busy || workspace.tenant_id === state?.tenant_id}
+        accessibilityRole="button"
+        accessibilityState={{ selected: workspace.tenant_id === state?.tenant_id,
+          disabled: busy || workspace.tenant_id === state?.tenant_id }}
+        onPress={() => void selectWorkspace(workspace.tenant_id)} style={styles.button}>
+        <Text style={styles.buttonText}>{workspace.display_name}{workspace.tenant_id === state?.tenant_id ? " · 선택됨" : ""}</Text>
+      </Pressable>)}
+    </ScrollView>
+    <View key={state?.session_id ?? "authenticated"} style={styles.shell}>{authenticatedContent}</View>
     {error && <Text accessibilityRole="alert">로그아웃을 완료할 수 없습니다.</Text>}
   </SafeAreaView>;
 
@@ -79,6 +102,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 20, fontWeight: "700" },
   authenticatedHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 8 },
   shell: { flex: 1 },
+  workspaceListScroll: { flexGrow: 0, maxHeight: 180 },
+  workspaceList: { padding: 8, gap: 8 },
   button: { backgroundColor: "#1d356a", padding: 12, borderRadius: 4 },
   buttonText: { color: "#fff", textAlign: "center" },
 });

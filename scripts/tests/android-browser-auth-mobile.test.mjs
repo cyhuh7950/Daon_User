@@ -115,10 +115,27 @@ test("저장된 공용 Navigation과 무관하게 인증 직후 Workspace 표시
   const { workspaceSummary } = await import(pathToFileURL(
     path.join(root, "apps/mobile/src/android-workspace-client.ts")
   ).href);
-  assert.equal(workspaceSummary({ status: "authenticated", workspaces: [
+  assert.equal(workspaceSummary({ status: "authenticated", tenant_id: "t-1", workspace_id: "w-1", workspaces: [
     { tenant_id: "t-1", workspace_id: "w-1", display_name: "합성 Workspace" },
   ] }), "합성 Workspace");
   assert.equal(workspaceSummary({ status: "signed_out" }), null);
   const screen = readFileSync(path.join(root, "apps/mobile/src/AndroidAuthScreen.tsx"), "utf8");
   assert.match(screen, /workspaceSummary\(state\)/u);
+});
+
+test("Android Workspace 전환은 Native 세션 회전과 재조회 뒤에만 선택 상태를 표시한다", async () => {
+  const native = readFileSync(path.join(root, "apps/mobile/android/app/src/main/java/com/sinsan/daon/DaonAndroidAuthModule.kt"), "utf8");
+  const adapter = readFileSync(path.join(root, "apps/mobile/src/android-auth-adapter.ts"), "utf8");
+  const screen = readFileSync(path.join(root, "apps/mobile/src/AndroidAuthScreen.tsx"), "utf8");
+  assert.match(native, /@ReactMethod fun switchWorkspace/u);
+  assert.match(native, /request\("\/api\/v1\/session\/tenant", JSONObject\(\)\.put\("tenant_id", tenantId\), session\.access\)/u);
+  assert.match(native, /if \(it\.sessionId != session\.sessionId\) store\(it\)/u);
+  assert.match(native, /workspaces\(next\)/u);
+  assert.match(adapter, /switchWorkspace: \(tenantId: string\)/u);
+  assert.match(screen, /androidAuth\.switchWorkspace\(tenantId\)/u);
+  assert.match(screen, /setState\(null\);[\s\S]*androidAuth\.switchWorkspace\(tenantId\)/u);
+  assert.match(screen, /catch \{ setState\(\{ status: "workspace_unavailable" \}\); \}/u);
+  assert.match(screen, /접근 가능한 소속별 기본 Workspace/u);
+  assert.match(screen, /state\?\.session_id/u);
+  assert.doesNotMatch(`${screen}\n${adapter}`, /access_credential|refresh_credential|code_verifier|fetch\(/u);
 });

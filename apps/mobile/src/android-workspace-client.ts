@@ -7,8 +7,9 @@ export function canEnterAndroidShell(state: AndroidAuthState | null): boolean {
 
 export function workspaceSummary(state: AndroidAuthState | null): string | null {
   if (!canEnterAndroidShell(state)) return null;
-  const names = state?.workspaces?.map((item) => item.display_name) ?? [];
-  return names.length ? names.join(" · ") : "Workspace 없음";
+  const selected = state?.workspaces?.find((item) => item.tenant_id === state.tenant_id &&
+    item.workspace_id === state.workspace_id);
+  return selected?.display_name ?? "Workspace 없음";
 }
 
 const unavailable = (): PublicApiResult => ({

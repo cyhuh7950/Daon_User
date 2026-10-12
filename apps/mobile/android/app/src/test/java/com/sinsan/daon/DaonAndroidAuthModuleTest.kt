@@ -6,6 +6,31 @@ import java.time.Instant
 import javax.crypto.spec.SecretKeySpec
 
 class DaonAndroidAuthModuleTest {
+  @Test fun tenantSwitchRequiresRotatedCredentialsAndPreservesSameTenantSession() {
+    val prior = AndroidAuthSessionData("user-1", "personal-1", "workspace-1", "session-1", "device-1",
+      "old-access", "", Instant.parse("2026-10-12T01:00:00Z"))
+    val rotated = mapOf("user_id" to "user-1", "tenant_id" to "organization-1",
+      "workspace_id" to "workspace-2", "session_id" to "session-2", "device_id" to "device-2",
+      "client_kind" to "native", "access_credential" to "new-access",
+      "refresh_credential" to "new-refresh", "expires_at" to "2026-10-12T02:00:00Z")
+    val next = AndroidAuthFlow.switchedSession(prior, "organization-1", rotated)
+    assertEquals("new-access", next.access)
+    assertEquals("new-refresh", next.refresh)
+    assertEquals("session-2", next.sessionId)
+    assertThrows(Exception::class.java) {
+      AndroidAuthFlow.switchedSession(prior, "organization-1", rotated - "refresh_credential")
+    }
+    assertThrows(Exception::class.java) {
+      AndroidAuthFlow.switchedSession(prior, "organization-1", rotated + ("user_id" to "other-user"))
+    }
+    val same = mapOf("user_id" to "user-1", "tenant_id" to "personal-1",
+      "workspace_id" to "workspace-1", "session_id" to "session-1", "device_id" to "device-1",
+      "client_kind" to "native", "expires_at" to "2026-10-12T01:00:00Z")
+    assertEquals(prior, AndroidAuthFlow.switchedSession(prior, "personal-1", same))
+    assertThrows(Exception::class.java) {
+      AndroidAuthFlow.switchedSession(prior, "organization-1", same)
+    }
+  }
   @Test fun browserLaunchRequiresSelectedOsBrowserCustomTabsProvider() {
     assertEquals("os.browser", AndroidBrowserPolicy.acceptProvider(
       "os.browser", listOf("os.browser"), "os.browser", "com.sinsan.daon"))
@@ -28,6 +53,7 @@ class DaonAndroidAuthModuleTest {
   @Test fun transientWorkspaceFailureRetainsVaultButUnauthorizedClearsIt() {
     assertEquals("workspace_unavailable", AndroidAuthFlow.workspaceFailure(null))
     assertEquals("workspace_unavailable", AndroidAuthFlow.workspaceFailure(503))
+    assertEquals("workspace_unavailable", AndroidAuthFlow.workspaceFailure(404))
     assertEquals("signed_out", AndroidAuthFlow.workspaceFailure(401))
     assertEquals("signed_out", AndroidAuthFlow.workspaceFailure(403))
   }

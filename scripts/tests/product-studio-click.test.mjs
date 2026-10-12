@@ -5,6 +5,40 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
 
+test("생성 클릭은 queued·leased·generating 동안 진행을 유지하고 completed 산출물을 표시한다", async () => {
+  const rootPath = path.resolve(import.meta.dirname, "../.."); const output = await mkdtemp(path.join(rootPath, ".product-studio-generating-react-")); const dom = installMinimalDom(); let reactRoot;
+  try {
+    const { build } = await import("vite"); const { createElement, act } = await import("react"); const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root: rootPath, build: { outDir: output, emptyOutDir: false, lib: { entry: path.join(rootPath, "packages/ui/src/product-studio-pane.jsx"), formats: ["es"], fileName: "product-studio" }, rollupOptions: { external: ["react", "react-dom", "react-dom/client"] } } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("product-studio") && /\.m?js$/u.test(name)); const { ProductStudioPane } = await import(`${pathToFileURL(path.join(output, entry)).href}?v=${Date.now()}`);
+    const settings = { purpose: "근거 요약", audience: "검토자", language: "ko", sourceVersionIds: ["source-version-1"], length: "short", structure: "summary-body-conclusion", outputFormat: "pdf", reviewCondition: "review_required" };
+    const state = { status: "ready", workspaceId: "workspace-1", grounded: null, sources: [{ sourceId: "source-1", sourceVersionId: "source-version-1", filename: "자료.pdf", ready: true }], locks: [], selectedOutputType: "evidence_report", settings, settingsConfirmed: true, settingsSnapshot: settings, outputs: [], selectedOutputId: null, pending: false, safeError: null };
+    let poll = 0; let sawGenerating;
+    const generatingSeen = new Promise((resolve) => { sawGenerating = resolve; });
+    const adapter = {
+      createGeneration: async () => ({ job_id: "job-1", status: "queued" }),
+      getGenerationJob: async () => {
+        poll += 1;
+        if (poll === 3) { sawGenerating(); return { job_id: "job-1", status: "generating" }; }
+        if (poll < 3) return { job_id: "job-1", status: poll === 1 ? "queued" : "leased" };
+        return { job_id: "job-1", status: "completed", studio_output_id: "output-1", output_version_id: "version-1", output: { output_type: "evidence_report", title: "생성된 보고서", content: { summary: "완성된 근거 요약" }, settings_snapshot_id: "settings-1" } };
+      },
+    };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductStudioPane, { state, adapter })); });
+    assert.equal(buttonByText(container, "생성").disabled, false);
+    const form = findElements(container, (element) => element.tagName === "FORM")[0];
+    await act(async () => { buttonByText(container, "생성").dispatchEvent(new MinimalEvent("click")); form.dispatchEvent(new MinimalEvent("submit")); await Promise.resolve(); });
+    await act(async () => { await generatingSeen; await Promise.resolve(); });
+    assert.equal(findElements(container, (element) => element.getAttribute?.("data-generation-state") === "pending").length, 1);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    assert.match(container.textContent, /생성된 보고서/);
+    assert.match(container.textContent, /완성된 근거 요약/);
+    assert.equal(findElements(container, (element) => element.getAttribute?.("data-generation-state") === "completed").length, 1);
+    assert.doesNotMatch(container.textContent, /생성을 완료하지 못했습니다/);
+  } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
+});
+
 test("실제 React click은 저장 구조 산출물을 선택하고 검토·승인요청 adapter를 호출한다", async () => {
   const rootPath = path.resolve(import.meta.dirname, "../.."); const output = await mkdtemp(path.join(rootPath, ".product-studio-click-react-")); const dom = installMinimalDom(); let reactRoot;
   try {

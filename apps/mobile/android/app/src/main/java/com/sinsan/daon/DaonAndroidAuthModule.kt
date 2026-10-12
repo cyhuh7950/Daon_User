@@ -109,6 +109,24 @@ internal object AndroidAuthFlow {
   }
   fun workspaceFailure(httpStatus: Int?): String =
     if (httpStatus == 401 || httpStatus == 403) "signed_out" else "workspace_unavailable"
+
+  fun switchedSession(prior: AndroidAuthSessionData, tenantId: String, data: Map<String, String>): AndroidAuthSessionData {
+    require(data["client_kind"] == "native" && data["user_id"] == prior.userId &&
+      data["tenant_id"] == tenantId && !data["workspace_id"].isNullOrBlank())
+    val sessionId = data["session_id"]?.takeIf { it.isNotBlank() } ?: error("SESSION_MISSING")
+    val deviceId = data["device_id"]?.takeIf { it.isNotBlank() } ?: error("DEVICE_MISSING")
+    val expiresAt = Instant.parse(data["expires_at"] ?: error("EXPIRY_MISSING"))
+    if (tenantId == prior.tenantId) {
+      require(sessionId == prior.sessionId && deviceId == prior.deviceId &&
+        !data.containsKey("access_credential") && !data.containsKey("refresh_credential"))
+      return prior.copy(workspaceId = data.getValue("workspace_id"), expiresAt = expiresAt)
+    }
+    require(sessionId != prior.sessionId && deviceId != prior.deviceId)
+    val access = data["access_credential"]?.takeIf { it.isNotBlank() } ?: error("ACCESS_MISSING")
+    val refresh = data["refresh_credential"]?.takeIf { it.isNotBlank() } ?: error("REFRESH_MISSING")
+    return AndroidAuthSessionData(prior.userId, tenantId, data.getValue("workspace_id"),
+      sessionId, deviceId, access, refresh, expiresAt)
+  }
 }
 
 internal object AndroidBrowserPolicy {
@@ -228,12 +246,17 @@ class DaonAndroidAuthModule(private val context: ReactApplicationContext) : Reac
 
   private fun workspaces(session: AndroidAuthSessionData): List<Map<String, String>> {
     val data = request("/api/v1/session/tenants", null, session.access)
+    require(data.getString("current_tenant_id") == session.tenantId)
     val items = data.getJSONArray("tenants")
-    return (0 until items.length()).map { index ->
+    val available = (0 until items.length()).map { index ->
       val item = items.getJSONObject(index)
+      val kind = item.getString("kind")
+      require(kind == "personal" || kind == "organization")
       mapOf("tenant_id" to item.getString("tenant_id"), "workspace_id" to item.getString("workspace_id"),
-        "display_name" to item.getString("display_name"))
+        "display_name" to item.getString("display_name"), "kind" to kind)
     }
+    require(available.any { it["tenant_id"] == session.tenantId && it["workspace_id"] == session.workspaceId })
+    return available
   }
 
   private fun run(promise: Promise, operation: () -> Any) {
@@ -312,6 +335,40 @@ class DaonAndroidAuthModule(private val context: ReactApplicationContext) : Reac
         val status = AndroidAuthFlow.workspaceFailure((error as? AndroidAuthHttpFailure)?.status)
         if (status == "signed_out") clear()
         projection(mapOf("status" to status))
+      }
+    }
+  }
+
+  @ReactMethod fun switchWorkspace(tenantId: String, promise: Promise) = run(promise) {
+    if (!AndroidAuthProtocol.validConfig(origin, client, redirect)) projection(mapOf("status" to "unavailable"))
+    else {
+      val session = current()
+      if (session == null) projection(mapOf("status" to "signed_out"))
+      else {
+        val response = try {
+          request("/api/v1/session/tenant", JSONObject().put("tenant_id", tenantId), session.access)
+        } catch (error: Exception) {
+          val status = AndroidAuthFlow.workspaceFailure((error as? AndroidAuthHttpFailure)?.status)
+          if (status == "signed_out") clear()
+          return@run projection(mapOf("status" to status))
+        }
+        val next = try {
+          val fields = listOf("user_id", "tenant_id", "workspace_id", "session_id", "device_id",
+            "client_kind", "expires_at", "access_credential", "refresh_credential")
+            .filter(response::has).associateWith(response::getString)
+          AndroidAuthFlow.switchedSession(session, tenantId, fields).also {
+            if (it.sessionId != session.sessionId) store(it)
+          }
+        } catch (_: Exception) {
+          clear()
+          return@run projection(mapOf("status" to "signed_out"))
+        }
+        try { projection(next.publicProjection(), workspaces(next)) }
+        catch (error: Exception) {
+          val status = AndroidAuthFlow.workspaceFailure((error as? AndroidAuthHttpFailure)?.status)
+          if (status == "signed_out") clear()
+          projection(mapOf("status" to status))
+        }
       }
     }
   }
