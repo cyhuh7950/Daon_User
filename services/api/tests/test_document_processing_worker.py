@@ -78,6 +78,33 @@ class FakeIndex:
 
 
 class DocumentProcessingWorkerTests(unittest.TestCase):
+    def test_xlsx_worker_indexes_only_cell_verified_native_completion(self):
+        from contextlib import contextmanager
+        from daon_user_api.workspace_model_defaults import ResolvedModel
+        from daon_user_api.document_processing import DocumentProcessingService
+        from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
+        from daon_user_api.xlsx_document_understanding import OllamaXlsxDocumentAdapter
+        from test_document_processing_postgres import FakeCloudStore, FakeObjectStorage
+        from test_xlsx_document_understanding import Transport, original
+        class Resolver:
+            @contextmanager
+            def resolve(self, context, capability):
+                yield ResolvedModel('ollama-1', 'OLLAMA', 'llama3.2:3b', capability, 'https://ollama.example', 0, 1, 1, 'server_internal', 'provider', True, None)
+        for mismatch in (False, True):
+            with self.subTest(mismatch=mismatch):
+                store = FakeCloudStore(); storage = FakeObjectStorage(); transport = Transport(); queue = FakeQueue(job())
+                store.connection.filename = 'qa.xlsx'; store.connection.content_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                store.connection.content = storage.content = original()
+                store.connection.states = {'ProcessingRun': 'vision_llm_understanding', 'Source': 'processing'}
+                store.connection.versions = {'ProcessingRun': 2, 'Source': 3}
+                if mismatch: transport.value['key_facts'][0]['text'] = 'ORANGE-99'
+                service = DocumentProcessingService(PostgresDocumentProcessingRepository(store, storage), Resolver(), AdapterFactory(Adapter()), xlsx_adapter=OllamaXlsxDocumentAdapter(transport))
+                worker = DocumentProcessingWorker('worker-cp3', queue, service, FakeIndex(queue.events), clock=lambda: NOW)
+                self.assertTrue(worker.run_once())
+                self.assertEqual(sum(event[0] == 'index' for event in queue.events), 0 if mismatch else 1)
+                self.assertEqual(queue.events[-1], ('complete', 'run-cp3'))
+                self.assertEqual(store.connection.states['Source'], 'needs_review' if mismatch else 'processing')
+
     def test_needs_review_result_never_indexes_or_becomes_ready(self):
         from dataclasses import replace
         queue = FakeQueue(job())

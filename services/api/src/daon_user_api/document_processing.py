@@ -35,6 +35,10 @@ def image_source_format(filename: str, content_type: str) -> bool:
     return {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(suffix) == content_type
 
 
+def xlsx_source_format(filename: str, content_type: str) -> bool:
+    return filename.lower().endswith('.xlsx') and content_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentProcessingContext:
     tenant_id: str
@@ -218,6 +222,7 @@ class DocumentProcessingService:
         *, text_adapter: TextDocumentUnderstandingPort | None = None,
         egress_guard: OriginalDocumentEgressGuard | None = None,
         image_adapter=None,
+        xlsx_adapter=None,
     ) -> None:
         self._repository = repository
         self._model_resolver = model_resolver
@@ -231,6 +236,10 @@ class DocumentProcessingService:
             from .image_document_understanding import OllamaImageDocumentAdapter
             image_adapter = OllamaImageDocumentAdapter(UrlLibDocumentUnderstandingTransport())
         self._image_adapter = image_adapter
+        if xlsx_adapter is None:
+            from .xlsx_document_understanding import OllamaXlsxDocumentAdapter
+            xlsx_adapter = OllamaXlsxDocumentAdapter(UrlLibDocumentUnderstandingTransport())
+        self._xlsx_adapter = xlsx_adapter
 
     def process(
         self, context: DocumentProcessingContext, *, source_id: str,
@@ -253,6 +262,12 @@ class DocumentProcessingService:
         processing_run_id: str,
     ) -> DocumentUnderstandingResult:
         try:
+            if xlsx_source_format(document.filename, document.content_type):
+                with self._model_resolver.resolve(context.model_context(), "text_generation") as model:
+                    self._egress_guard.authorize(context, (model,))
+                    result = self._xlsx_adapter.understand(document, model, context)
+                self._repository.complete(context, processing_run_id, result)
+                return result
             if image_source_format(document.filename, document.content_type):
                 with self._model_resolver.resolve(context.model_context(), "image_understanding") as image_model:
                     self._egress_guard.authorize(context, (image_model,))

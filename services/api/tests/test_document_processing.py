@@ -117,6 +117,32 @@ class FixtureOutboundGuard:
 
 
 class DocumentProcessingServiceTests(unittest.TestCase):
+    def test_bound_xlsx_uses_text_selection_and_original_egress_guard(self):
+        from test_xlsx_document_understanding import Transport, original
+        from daon_user_api.xlsx_document_understanding import OllamaXlsxDocumentAdapter
+        class Repository(RecordingRepository):
+            bound_run = None
+            def load_source_document(self, context, source_id, *, processing_run_id=None):
+                self.events.append(('load', source_id)); self.bound_run = processing_run_id
+                return StoredSourceDocument(source_id, 'source-version-cp3', 'qa.xlsx', original(), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        class Resolver:
+            def __init__(self, kind): self.kind = kind; self.capabilities = []
+            @contextmanager
+            def resolve(self, context, capability):
+                self.capabilities.append(capability)
+                yield ResolvedModel('ollama-1', 'OLLAMA', 'llama3.2:3b', capability, 'https://ollama.example', 0, 1, 1, self.kind, 'provider', True, None)
+        for kind in ('server_internal', 'external_api', 'unknown'):
+            with self.subTest(kind=kind):
+                repository = Repository(); resolver = Resolver(kind); transport = Transport(); factory = AdapterFactory(Adapter())
+                service = DocumentProcessingService(repository, resolver, factory, xlsx_adapter=OllamaXlsxDocumentAdapter(transport))
+                if kind == 'server_internal':
+                    self.assertEqual(service.process_existing(self.context, source_id='source-cp3', processing_run_id='run-bound').status, 'ready')
+                    self.assertEqual(repository.events[-1], ('complete', ('run-bound', 'ready')))
+                else:
+                    with self.assertRaises(DocumentUnderstandingError): service.process_existing(self.context, source_id='source-cp3', processing_run_id='run-bound')
+                    self.assertEqual(transport.events, []); self.assertEqual(repository.events[-1][0], 'fail')
+                self.assertEqual(repository.bound_run, 'run-bound'); self.assertEqual(resolver.capabilities, ['text_generation']); self.assertEqual(factory.calls, [])
+
     def setUp(self) -> None:
         self.context = DocumentProcessingContext(
             "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1",

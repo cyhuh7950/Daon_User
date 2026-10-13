@@ -29,8 +29,11 @@ class FakeConnection:
         self.index_payload = None
         self.understanding_exists = True
         self.understanding_payload = None
+        self.extraction_payload = None
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
+        if sql.startswith("SELECT canonical_json FROM extraction_evidence"):
+            return Cursor(None if self.extraction_payload is None else (self.extraction_payload,))
         if sql.startswith("SELECT record_id,canonical_json FROM understanding_results"):
             if not self.understanding_exists:
                 return Cursor()
@@ -103,6 +106,47 @@ def paraphrased_ready_result() -> DocumentUnderstandingResult:
 
 
 class PostgresDocumentIndexTests(unittest.TestCase):
+    def xlsx_fixture(self):
+        from dataclasses import replace
+        from copy import deepcopy
+        result = ready_result()
+        cells = ({"text": "계약 기간은 12개월", "sheet": "계약", "range": "A1:B1", "locator_value": '{"sheet":"계약","range":"A1:B1"}'},
+                 {"text": "해지 통보는 30일 전", "sheet": "계약", "range": "A2:B2", "locator_value": '{"sheet":"계약","range":"A2:B2"}'})
+        result = replace(result, parser=ParserValidation("", "", "", (), cell_evidence=cells), lineage={"source_format": "xlsx", "source_digest": "a" * 64, "native_input_digest": "b" * 64, "serialization_version": "xlsx-structure-v1", "reconciliation": "matched"})
+        self.cloud.connection.understanding_payload = deepcopy({"source_id": result.source_id, "source_version_id": result.source_version_id, "status": "ready", "semantic": {"key_facts": list(result.semantic.key_facts)}, "parser_validation": {"cell_evidence": list(cells)}, "lineage": dict(result.lineage)})
+        self.cloud.connection.extraction_payload = deepcopy({"source_version_id": result.source_version_id, "understanding_result_id": "understanding-cp3", "parser_role": "validation_only", "cell_evidence": list(cells)})
+        return result
+
+    def test_xlsx_cells_index_without_pages_and_search_exact_locator(self):
+        result = self.xlsx_fixture()
+        self.index.index_result(self.context, result)
+        payload = self.cloud.connection.index_payload
+        self.assertEqual(payload['strategy'], 'native_xlsx_facts_with_cell_validation')
+        self.assertTrue(all(c['evidence_kind'] == 'xlsx_cell_fact' for c in payload['chunks']))
+        chunks = self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='계약 기간')
+        self.assertEqual((chunks[0].locator_kind, chunks[0].locator_value), ('sheet_cell', '{"sheet":"계약","range":"A1:B1"}'))
+
+    def test_xlsx_canonical_or_extraction_tampering_has_zero_writes(self):
+        from copy import deepcopy
+        for scope, field in [('understanding', 'source_version_id'), ('understanding', 'cell_evidence'), ('understanding', 'lineage'), ('extraction', 'cell_evidence'), ('extraction', 'source_version_id')]:
+            with self.subTest(scope=scope, field=field):
+                self.setUp(); result = self.xlsx_fixture()
+                payload = self.cloud.connection.understanding_payload if scope == 'understanding' else self.cloud.connection.extraction_payload
+                if field == 'cell_evidence' and scope == 'understanding': payload = payload['parser_validation']
+                payload[field] = [] if field == 'cell_evidence' else 'tampered'
+                with self.assertRaises(DocumentUnderstandingError): self.index.index_result(self.context, result)
+                self.assertEqual(self.cloud.connection.inserts, []); self.assertEqual(self.cloud.connection.source_state, 'processing')
+
+    def test_xlsx_page_fallback_and_invalid_cell_locator_never_index(self):
+        from dataclasses import replace
+        for malformed in ('pages', 'locator'):
+            with self.subTest(malformed=malformed):
+                self.setUp(); result = self.xlsx_fixture()
+                if malformed == 'pages': result = replace(result, parser=replace(result.parser, pages=(1,), page_texts=((1, 'whole workbook fallback'),)))
+                else: result.parser.cell_evidence[0]['locator_value'] = '{"sheet":"契約","range":"A1:A257"}'
+                with self.assertRaises(DocumentUnderstandingError): self.index.index_result(self.context, result)
+                self.assertEqual(self.cloud.connection.inserts, []); self.assertEqual(self.cloud.connection.source_state, 'processing')
+
     def test_image_region_is_indexed_and_search_preserves_exact_locator(self):
         from dataclasses import replace
         result = ready_result()

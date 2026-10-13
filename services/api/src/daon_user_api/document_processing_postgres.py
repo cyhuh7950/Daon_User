@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .document_processing import (
-    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format, image_source_format,
+    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format, image_source_format, xlsx_source_format,
 )
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
@@ -128,6 +128,7 @@ class PostgresDocumentProcessingRepository:
                 (content_type == "application/pdf" and filename.lower().endswith(".pdf"))
                 or text_source_format(filename, content_type) is not None
                 or image_source_format(filename, content_type)
+                or xlsx_source_format(filename, content_type)
             )
             if (
                 str(row[7]) != "completed" or not original_format
@@ -147,6 +148,13 @@ class PostgresDocumentProcessingRepository:
                 try:
                     normalize_image(content, content_type)
                 except DocumentUnderstandingError:
+                    raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409) from None
+            if xlsx_source_format(filename, content_type):
+                from .xlsx_source import read_xlsx
+                from .source_ingest import SourceRejected
+                try:
+                    read_xlsx(content)
+                except SourceRejected:
                     raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409) from None
             return StoredSourceDocument(source_id, str(row[0]), filename, content, content_type)
         except Exception as error:
@@ -443,6 +451,10 @@ class PostgresDocumentProcessingRepository:
         self, context: DocumentProcessingContext, processing_run_id: str,
         result: DocumentUnderstandingResult,
     ) -> None:
+        cell_source = result.lineage.get('source_format') == 'xlsx'
+        if cell_source and result.status == 'ready':
+            from .xlsx_document_understanding import validate_cell_evidence
+            validate_cell_evidence(result.parser.cell_evidence, result.semantic.key_facts)
         understanding_id = self._opaque_id("ur", processing_run_id, result.source_version_id)
         payload: dict[str, object] = {
             "source_id": result.source_id,
@@ -466,8 +478,20 @@ class PostgresDocumentProcessingRepository:
             "conflict": result.conflict,
         }
         text, digest = self._snapshot(payload)
+        if cell_source:
+            payload['parser_validation']['cell_evidence'] = list(result.parser.cell_evidence)
+            text, digest = self._snapshot(payload)
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
+                if cell_source:
+                    bound = connection.execute(
+                        "SELECT pr.state,pr.version,pr.source_version_id,sv.source_id FROM processing_runs pr "
+                        "JOIN source_versions sv ON sv.tenant_id=pr.tenant_id AND sv.workspace_id=pr.workspace_id "
+                        "AND sv.record_id=pr.source_version_id WHERE pr.record_id=%s",
+                        (processing_run_id,),
+                    ).fetchone()
+                    if bound is None or str(bound[0]) != 'vision_llm_understanding' or int(bound[1]) != 2 or str(bound[2]) != result.source_version_id or str(bound[3]) != result.source_id:
+                        raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
                 version = self._transition(
                     connection, context, entity_type="ProcessingRun",
                     aggregate_id=processing_run_id,
@@ -493,13 +517,15 @@ class PostgresDocumentProcessingRepository:
                         context.trace_id, processing_run_id, result.source_version_id,
                     ),
                 )
-                for page in result.parser.pages:
-                    evidence_id = self._opaque_id("ev", understanding_id, str(page))
-                    evidence = {
+                evidence_items = [{'source_version_id': result.source_version_id,
+                    'understanding_result_id': understanding_id, 'parser_role': 'validation_only',
+                    'cell_evidence': list(result.parser.cell_evidence)}] if cell_source else [{
                         "page": page, "source_version_id": result.source_version_id,
                         "understanding_result_id": understanding_id,
                         "parser_role": "validation_only",
-                    }
+                    } for page in result.parser.pages]
+                for evidence in evidence_items:
+                    evidence_id = self._opaque_id("ev", understanding_id, 'cells' if cell_source else str(evidence['page']))
                     if result.parser.regions:
                         evidence["regions"] = list(result.parser.regions)
                     evidence_text, evidence_digest = self._snapshot(evidence)

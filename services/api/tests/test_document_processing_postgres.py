@@ -43,6 +43,8 @@ class FakeConnection:
         self.statements: list[tuple[str, tuple[object, ...]]] = []
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
+        if sql.startswith("SELECT pr.state,pr.version,pr.source_version_id,sv.source_id"):
+            return Cursor((self.states["ProcessingRun"], self.versions["ProcessingRun"], self.source_version_id, "source-cp3"))
         self.statements.append((sql, tuple(params)))
         if sql.startswith("SELECT sv.record_id"):
             return Cursor((
@@ -142,6 +144,43 @@ class BoundConnection(FakeConnection):
 
 
 class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
+    def test_xlsx_original_and_completion_preserve_exact_cells_without_fake_pages(self):
+        from test_xlsx_source import parts, zipped
+        connection = self.cloud.connection
+        connection.filename, connection.content_type, connection.content = 'qa.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', zipped(parts())
+        self.repository._object_storage.content = connection.content
+        document = self.repository.load_source_document(self.context, 'source-cp3')
+        self.assertEqual(document.content, connection.content)
+        run_id = self.repository.start(self.context, document.source_version_id)
+        cells = ({'text': 'ORANGE-42', 'sheet': '납품 "계획"', 'range': 'B2', 'locator_value': '{"sheet":"납품 \\"계획\\"","range":"B2"}'.replace('\\\\', '\\')},)
+        result = DocumentUnderstandingResult(document.source_id, document.source_version_id, 'ready', ('vision_llm_understanding', 'parser_ocr_validation', 'evidence_reconciliation'), SemanticUnderstanding('QA', 'ORANGE-42', ('ORANGE-42',)), ParserValidation('', '', '', (), cell_evidence=cells), {'source_format': 'xlsx', 'source_digest': hashlib.sha256(document.content).hexdigest()})
+        self.repository.complete(self.context, run_id, result)
+        payload = next(params[4].obj for sql, params in connection.statements if sql.startswith('INSERT INTO understanding_results'))
+        extraction = [params[4].obj for sql, params in connection.statements if sql.startswith('INSERT INTO extraction_evidence')]
+        self.assertEqual(payload['parser_validation']['cell_evidence'], list(cells))
+        self.assertEqual(len(extraction), 1); self.assertEqual(extraction[0]['cell_evidence'], list(cells))
+        self.assertNotIn('page', extraction[0]); self.assertEqual(connection.states['Source'], 'processing')
+
+    def test_xlsx_completion_bound_version_mismatch_has_no_state_write(self):
+        result = DocumentUnderstandingResult('source-cp3', 'wrong-version', 'ready', (), SemanticUnderstanding('QA', 'ORANGE-42', ('ORANGE-42',)), ParserValidation('', '', '', (), cell_evidence=({'text': 'ORANGE-42', 'sheet': 's', 'range': 'A1', 'locator_value': '{"sheet":"s","range":"A1"}'},)), {'source_format': 'xlsx'})
+        self.cloud.connection.states['ProcessingRun'] = 'vision_llm_understanding'; self.cloud.connection.versions['ProcessingRun'] = 2
+        with self.assertRaises(DocumentUnderstandingError): self.repository.complete(self.context, 'run-cp3', result)
+        self.assertEqual(self.cloud.connection.inserts, []); self.assertEqual(self.cloud.connection.states['ProcessingRun'], 'vision_llm_understanding')
+
+    def test_bound_xlsx_read_keeps_claimed_version_and_scope_failure_writes_zero(self):
+        from test_xlsx_source import parts, zipped
+        raw = zipped(parts()); connection = self._bound_fixture()
+        connection.db.execute('UPDATE source_versions SET canonical_json=?', (json.dumps({'filename': 'qa.xlsx'}),))
+        connection.db.execute('UPDATE object_records SET digest_sha256=?,byte_size=?,content_type=?', (hashlib.sha256(raw).hexdigest(), len(raw), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))
+        self.repository._object_storage.content = raw
+        document = self.repository.load_source_document(self.context, 'source-cp3', processing_run_id='run-cp3')
+        self.assertEqual(document.source_version_id, 'source-version-cp3')
+        self.assertEqual(document.content, raw)
+        for source, run in [('source-other', 'run-cp3'), ('source-cp3', 'run-other')]:
+            with self.assertRaisesRegex(DocumentUnderstandingError, 'SOURCE_NOT_FOUND'): self.repository.load_source_document(self.context, source, processing_run_id=run)
+        self.assertFalse(any('transition_canon_state' in sql for sql, _ in connection.statements))
+
+
     def setUp(self) -> None:
         self.context = DocumentProcessingContext(
             "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1",

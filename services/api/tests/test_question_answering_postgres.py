@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import sqlite3
 import unittest
 from contextlib import contextmanager
 
@@ -52,6 +54,14 @@ class FakeConnection:
         if sql.startswith("SELECT s.record_id,sv.record_id,s.state"):
             if "nb.binding_kind='source'" in sql and not self.source_binding_active:
                 return Cursor()
+            if "COALESCE(sv.canonical_json" in sql:
+                if self.ready_row is None: return Cursor()
+                # This method's SELECT is distinct from _row's object-byte DTO.
+                kind = self.ready_row[4] if len(self.ready_row) == 5 else 'uploaded'
+                row = (*self.ready_row[:4], kind)
+                if 'o.content_type,o.status' in sql.split(' FROM sources', 1)[0]:
+                    row += (self.ready_row[8], self.ready_row[9]) if len(self.ready_row) == 10 else (None, None)
+                return Cursor(row)
             return Cursor(self.ready_row)
         if sql.startswith("SELECT rr.record_id,rr.canonical_json"):
             return Cursor(rows=self.completed_rows)
@@ -92,6 +102,69 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_xlsx_ready_metadata_matches_real_select_row_shape_and_scope_guards(self):
+        from dataclasses import replace
+        class SqlConnection:
+            def __init__(self):
+                self.db = sqlite3.connect(':memory:'); self.columns = (); self.rows = []
+                self.db.executescript('''
+                    CREATE TABLE sources(tenant_id,workspace_id,record_id,state,canonical_json);
+                    CREATE TABLE source_versions(tenant_id,workspace_id,record_id,source_id,object_id,version,canonical_json);
+                    CREATE TABLE object_records(tenant_id,workspace_id,object_id,content_type,status);
+                    CREATE TABLE index_versions(tenant_id,workspace_id,source_version_id);
+                    CREATE TABLE deletion_requests(tenant_id,workspace_id,source_id,source_active);
+                    CREATE TABLE notebook_bindings(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id);
+                    CREATE TABLE notebook_source_unbindings(tenant_id,workspace_id,notebook_id,source_id,source_version_id);
+                ''')
+                scope = ('tenant-cp3', 'workspace-cp3')
+                self.db.execute('INSERT INTO sources VALUES(?,?,?,?,?)', (*scope, 'source-cp3', 'ready', json.dumps({'kind': 'uploaded'})))
+                self.db.execute('INSERT INTO source_versions VALUES(?,?,?,?,?,?,?)', (*scope, 'source-version-cp3', 'source-cp3', 'object-xlsx', 1, json.dumps({'filename': 'qa.xlsx'})))
+                self.db.execute('INSERT INTO object_records VALUES(?,?,?,?,?)', (*scope, 'object-xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'completed'))
+                self.db.execute('INSERT INTO index_versions VALUES(?,?,?)', (*scope, 'source-version-cp3'))
+                self.db.execute('INSERT INTO notebook_bindings VALUES(?,?,?,?,?,?)', (*scope, 'notebook-cp3', 'source', 'source-cp3', 'source-version-cp3'))
+            def execute(self, sql, params=()):
+                cursor = self.db.execute(sql.replace('%s', '?'), params)
+                self.columns = tuple(column[0] for column in cursor.description)
+                row = cursor.fetchone(); self.rows.append(row)
+                return Cursor(row)
+        context = replace(self.context, notebook_id='notebook-cp3')
+        for scenario in ('ready', 'wrong-mime', 'incomplete', 'missing-manifest', 'other-object-scope', 'unbound', 'old-version', 'deleted', 'other-notebook'):
+            with self.subTest(scenario=scenario):
+                connection = SqlConnection(); self.cloud.connection = connection
+                try:
+                    if scenario == 'wrong-mime': connection.db.execute("UPDATE object_records SET content_type='text/plain'")
+                    if scenario == 'incomplete': connection.db.execute("UPDATE object_records SET status='pending'")
+                    if scenario == 'missing-manifest': connection.db.execute('DELETE FROM object_records')
+                    if scenario == 'other-object-scope': connection.db.execute("UPDATE object_records SET workspace_id='workspace-other'")
+                    if scenario == 'unbound': connection.db.execute('DELETE FROM notebook_bindings')
+                    if scenario == 'old-version': connection.db.execute("INSERT INTO source_versions SELECT tenant_id,workspace_id,'new-version',source_id,object_id,2,canonical_json FROM source_versions")
+                    if scenario == 'deleted': connection.db.execute("INSERT INTO deletion_requests VALUES('tenant-cp3','workspace-cp3','source-cp3',false)")
+                    selected_context = replace(context, notebook_id='notebook-other') if scenario == 'other-notebook' else context
+                    if scenario == 'ready':
+                        source = self.repository.load_ready_source(selected_context, 'source-cp3', 'source-version-cp3')
+                        self.assertEqual((source.source_id, source.source_version_id, source.filename), ('source-cp3', 'source-version-cp3', 'qa.xlsx'))
+                        self.assertEqual(connection.rows[-1], ('source-cp3', 'source-version-cp3', 'ready', 'qa.xlsx', 'uploaded', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'completed'))
+                        self.assertEqual(connection.columns[-2:], ('content_type', 'status'))
+                    else:
+                        with self.assertRaisesRegex(QuestionRepositoryError, '^QUESTION_SOURCE_UNAVAILABLE$'):
+                            self.repository.load_ready_source(selected_context, 'source-cp3', 'source-version-cp3')
+                finally: connection.db.close()
+
+    def test_xlsx_ready_source_and_answer_preserve_sheet_cell_locator(self):
+        from test_xlsx_source import parts, zipped
+        raw = zipped(parts()); row = list(self.cloud.connection.ready_row)
+        row[3], row[6], row[7], row[8] = 'qa.xlsx', hashlib.sha256(raw).hexdigest(), len(raw), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        self.cloud.connection.ready_row = tuple(row); self.repository._object_storage.content = raw
+        self.repository.load_ready_source(self.context, 'source-cp3', 'source-version-cp3')
+        locator = '{"sheet":"예산","range":"A1"}'
+        evidence = (IndexedEvidenceChunk('chunk-cell', 'source-cp3', 'source-version-cp3', 1, '57000', 'span-cell', 1.0, 'sheet_cell', locator),)
+        stored = self.repository.persist_completed(self.context, run_id='run-cell', source_id='source-cp3', source_version_id='source-version-cp3', question='예산?', selection=TextModelSelection('OLLAMA', 'https://ollama.example', 'profile', 'deployment', 'llama3.2:3b', 1), evidence=evidence, result=GroundedTextResult('57000', ('chunk-cell',), False, {'total_tokens': 10}))
+        self.assertEqual(stored.citations[0].locator, {'kind': 'sheet_cell', 'value': locator})
+        self.cloud.connection.completed_rows = [('rr-cell', {'answer': '57000', 'insufficient': False}, stored.citations[0].citation_id,
+            {'source_id': 'source-cp3', 'source_version_id': 'source-version-cp3', 'evidence_span_id': 'span-cell', 'page': 1, 'locator': {'kind': 'sheet_cell', 'value': locator}}, 'local', None)]
+        reread = self.repository.load_completed(self.context, 'run-cell')
+        self.assertEqual(reread.citations[0].locator, {'kind': 'sheet_cell', 'value': locator})
+
     def test_image_citation_returns_original_mime_and_bound_display_region(self):
         from test_image_document_understanding import image_bytes
         from dataclasses import replace

@@ -102,12 +102,13 @@ class PostgresDocumentIndex:
             (page, text) for page, text in result.parser.page_texts
             if page > 0 and text.strip()
         )
-        if not page_texts:
+        cell_source = result.lineage.get('source_format') == 'xlsx'
+        if not page_texts and not cell_source:
             raise DocumentUnderstandingError("PAGE_EVIDENCE_UNAVAILABLE", status=409)
 
         chunks: list[dict[str, object]] = []
         all_facts_located = True
-        for ordinal, fact in enumerate(result.semantic.key_facts, start=1):
+        for ordinal, fact in (() if cell_source else enumerate(result.semantic.key_facts, start=1)):
             normalized_fact = self._normalized(fact)
             page = next((
                 page_number for page_number, page_text in page_texts
@@ -129,6 +130,17 @@ class PostgresDocumentIndex:
             })
         text_source = result.lineage.get("source_format") in {"txt", "md", "csv"}
         image_source = result.lineage.get("source_format") == "image"
+        if cell_source:
+            from .xlsx_document_understanding import validate_cell_evidence
+            validate_cell_evidence(result.parser.cell_evidence, result.semantic.key_facts)
+            if result.parser.pages or result.parser.page_texts or result.parser.regions:
+                raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
+            for ordinal, cell in enumerate(result.parser.cell_evidence, 1):
+                chunk_id = self._opaque_id('chunk', result.source_version_id, str(ordinal), cell['text'])
+                chunks.append({'chunk_id': chunk_id, 'source_id': result.source_id,
+                    'source_version_id': result.source_version_id, 'page': 1, 'text': cell['text'],
+                    'evidence_span_id': self._opaque_id('span', chunk_id, cell['locator_value']),
+                    'evidence_kind': 'xlsx_cell_fact', 'locator_value': cell['locator_value']})
         if image_source:
             from .image_document_understanding import validate_image_region
             if len(result.parser.regions) != len(result.semantic.key_facts):
@@ -152,6 +164,8 @@ class PostgresDocumentIndex:
         strategy = "text_llm_facts_with_original_validation" if text_source else "vision_llm_facts_with_parser_page_validation"
         if image_source:
             strategy = "native_image_facts_with_ocr_region_validation"
+        if cell_source:
+            strategy = 'native_xlsx_facts_with_cell_validation'
         if not all_facts_located:
             if text_source:
                 raise DocumentUnderstandingError("TEXT_UNDERSTANDING_UNGROUNDED", status=409)
@@ -193,6 +207,19 @@ class PostgresDocumentIndex:
                 ):
                     raise DocumentUnderstandingError("UNDERSTANDING_RESULT_MISMATCH", status=409)
                 canonical_lineage = understanding_payload.get("lineage")
+                if cell_source or isinstance(canonical_lineage, dict) and canonical_lineage.get('source_format') == 'xlsx':
+                    parser_payload = understanding_payload.get('parser_validation')
+                    if not cell_source or understanding_payload.get('source_version_id') != result.source_version_id or not isinstance(parser_payload, dict) or parser_payload.get('cell_evidence') != list(result.parser.cell_evidence) or canonical_lineage != dict(result.lineage) or any(not re.fullmatch(r'[0-9a-f]{64}', str(result.lineage.get(key, ''))) for key in ('source_digest', 'native_input_digest')) or result.lineage.get('reconciliation') != 'matched':
+                        raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
+                    extraction = connection.execute(
+                        'SELECT canonical_json FROM extraction_evidence WHERE source_version_id=%s AND understanding_result_id=%s ORDER BY created_at DESC,record_id DESC LIMIT 1',
+                        (result.source_version_id, str(understanding_row[0])),
+                    ).fetchone()
+                    expected = {'source_version_id': result.source_version_id,
+                        'understanding_result_id': str(understanding_row[0]), 'parser_role': 'validation_only',
+                        'cell_evidence': list(result.parser.cell_evidence)}
+                    if extraction is None or extraction[0] != expected:
+                        raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
                 if image_source or isinstance(canonical_lineage, dict) and canonical_lineage.get("source_format") == "image":
                     parser_payload = understanding_payload.get("parser_validation")
                     if (
@@ -229,7 +256,7 @@ class PostgresDocumentIndex:
                     "SELECT s.state,s.version,sv.source_id FROM source_versions sv "
                     "JOIN sources s ON s.tenant_id=sv.tenant_id AND "
                     "s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
-                    "WHERE sv.record_id=%s",
+                    "WHERE sv.record_id=%s" + (" AND sv.version=(SELECT MAX(newer.version) FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id)" if cell_source else ""),
                     (result.source_version_id,),
                 ).fetchone()
                 if source_row is None or str(source_row[2]) != result.source_id:
@@ -251,6 +278,8 @@ class PostgresDocumentIndex:
                     }
                     if image_source:
                         evidence_payload["locator"] = {"kind": "image_region", "value": chunk["locator_value"]}
+                    if cell_source:
+                        evidence_payload['locator'] = {'kind': 'sheet_cell', 'value': chunk['locator_value']}
                     evidence_text, evidence_digest = self._snapshot(evidence_payload)
                     connection.execute(
                         "INSERT INTO evidence_spans "
@@ -315,6 +344,16 @@ class PostgresDocumentIndex:
                 if not overlap:
                     continue
                 image_region = raw.get("evidence_kind") == "image_region_fact"
+                sheet_cell = raw.get('evidence_kind') == 'xlsx_cell_fact'
+                if sheet_cell:
+                    from .xlsx_source import decode_sheet_cell
+                    from .source_ingest import SourceRejected
+                    try:
+                        decode_sheet_cell(raw.get('locator_value'))
+                    except SourceRejected:
+                        raise DocumentUnderstandingError('DOCUMENT_INDEX_SNAPSHOT_INVALID', status=409) from None
+                    if raw.get('source_id') != source_id:
+                        raise DocumentUnderstandingError('DOCUMENT_INDEX_SNAPSHOT_INVALID', status=409)
                 if image_region:
                     from .image_document_understanding import validate_image_region
                     validate_image_region(raw.get("locator_value"))
@@ -324,8 +363,8 @@ class PostgresDocumentIndex:
                     str(raw["chunk_id"]), source_id, source_version_id,
                     int(raw["page"]), str(raw["text"]), str(raw["evidence_span_id"]),
                     len(overlap) / len(query_tokens),
-                    "image_region" if image_region else "section" if raw.get("evidence_kind") == "text_source_verbatim_fact" else "page",
-                    str(raw["locator_value"]) if image_region else None,
+                    'sheet_cell' if sheet_cell else "image_region" if image_region else "section" if raw.get("evidence_kind") == "text_source_verbatim_fact" else "page",
+                    str(raw["locator_value"]) if image_region or sheet_cell else None,
                 ))
             return tuple(sorted(
                 matches, key=lambda item: (-item.score, item.page, item.chunk_id),
