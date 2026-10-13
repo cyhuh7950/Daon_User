@@ -418,6 +418,52 @@ test("근거 보고서는 Raw·Daon 혼합 Context의 sufficient Citation 답변
   assert.equal(canCreateGroundedReport({ ...daonOnly, answer: { ...daonOnly.answer, citations: [{ ...daonOnly.answer.citations[0], source_version_id: "" }] } }), false);
 });
 
+test("재진입은 명시 선택이 없을 때만 최근 Citation의 정확한 ready Notebook Source를 복원한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-citation-selection-react-"));
+  const dom = installMinimalDom(); let reactRoot;
+  try {
+    const { build } = await import("vite"); const { createElement, act } = await import("react"); const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "citation-selection" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] } } });
+    const entry = (await readdir(output)).find((name) => /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(pathToFileURL(path.join(output, entry)).href);
+    const first = { source_id: "source-original", source_version_id: "version-original", filename: "original.txt", source_state: "ready", processing_state: "completed", job_state: "completed" };
+    const knowledge = { ...first, source_id: "source-knowledge", source_version_id: "version-knowledge", filename: "registered.json" };
+    const citation = { citation_id: "citation-1", source_id: knowledge.source_id, source_version_id: knowledge.source_version_id,
+      evidence_span_id: "span-1", page: 1, origin: "raw_source", context_item_id: knowledge.source_id, locator: { kind: "page", value: "1" } };
+    for (const scenario of [
+      { name: "restore", expected: knowledge, citation },
+      { name: "wrong-version", expected: first, citation: { ...citation, source_version_id: "old-version" } },
+      { name: "not-in-notebook", expected: first, citation: { ...citation, source_id: "private-source" } },
+      { name: "unready", expected: first, citation, unready: true },
+      { name: "history-failed", expected: first, failure: true },
+      { name: "explicit", expected: first, citation, explicit: first },
+      { name: "explicit-knowledge", expected: knowledge, citation: { ...citation, source_id: first.source_id, source_version_id: first.source_version_id }, explicit: knowledge },
+    ]) {
+      const effectAdapter = { ...adapter,
+        async listSources() { return [first, scenario.unready ? { ...knowledge, job_state: "pending" } : knowledge]; },
+        async listStudioOutputs() { return []; },
+        async loadNotebookConversation() { if (scenario.failure) throw new Error("CONVERSATION_UNAVAILABLE");
+          return { run_id: "run-1", run_result_id: "result-1", answer: "저장된 지식 답변", insufficient: false, citations: [scenario.citation] }; },
+      };
+      const state = createProductWorkspaceState({ status: "loading" });
+      if (scenario.explicit) state.selectedSource = { sourceId: scenario.explicit.source_id, sourceVersionId: scenario.explicit.source_version_id, ready: true };
+      const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
+      await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter, state })); await Promise.resolve(); await Promise.resolve(); });
+      const sourceButton = (filename) => findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.includes(filename) && node.getAttribute("aria-pressed") !== null)[0];
+      assert.equal(sourceButton(scenario.expected.filename).getAttribute("aria-pressed"), "true", scenario.name);
+      if (scenario.name === "restore") {
+        assert.match(container.textContent, /빠른 근거 보고서/);
+        await act(async () => { sourceButton(first.filename).dispatchEvent(new MinimalEvent("click")); });
+        assert.equal(sourceButton(first.filename).getAttribute("aria-pressed"), "true", "explicit click must select original Source");
+      }
+      await act(async () => reactRoot.unmount()); reactRoot = null; dom.document.body.removeChild(container);
+    }
+  } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
+});
+
 test("생산 지식 등록 성공은 실제 Notebook Source 재조회 후 새 자료를 선택 가능하게 한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".workspace-knowledge-link-react-"));
@@ -446,6 +492,10 @@ test("생산 지식 등록 성공은 실제 Notebook Source 재조회 후 새 �
     const click = async (label) => { const button = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.trim() === label)[0]; assert.ok(button, label);
       await act(async () => { button.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); await Promise.resolve(); }); };
     assert.equal(listCalls, 1); assert.doesNotMatch(container.textContent, /approved\.knowledge\.json/);
+    const originalButton = () => findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.includes("original.txt") && node.getAttribute("aria-pressed") !== null)[0];
+    await act(async () => { originalButton().dispatchEvent(new MinimalEvent("click")); });
+    await act(async () => { originalButton().dispatchEvent(new MinimalEvent("click")); });
+    assert.equal(originalButton().getAttribute("aria-pressed"), "true");
     await click("승인 보고서"); await click("생산 지식 등록");
     const label = findElements(container, (node) => node.tagName === "LABEL" && node.textContent.includes("추가 인증 비밀번호"))[0];
     const input = findElements(label, (node) => node.tagName === "INPUT")[0];
@@ -455,6 +505,7 @@ test("생산 지식 등록 성공은 실제 Notebook Source 재조회 후 새 �
     assert.equal(writes.length, 1); assert.equal(writes[0][0], "knowledge-registrations");
     assert.equal(writes[0][1].step_up_authorization, "fixture-grant");
     assert.equal(listCalls, 2);
+    assert.equal(originalButton().getAttribute("aria-pressed"), "true", "same-adapter Source refresh must preserve explicit selection");
     assert.match(container.textContent, /생산 지식이 등록되었습니다/);
     assert.match(container.textContent, /approved\.knowledge\.json/);
     const sourceButton = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.includes("approved.knowledge.json") && node.getAttribute("aria-pressed") !== null)[0];

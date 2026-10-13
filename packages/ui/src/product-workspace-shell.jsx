@@ -648,6 +648,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           : projected.find((source) => source.ready
             && source.sourceId === current.selectedSource?.sourceId
             && source.sourceVersionId === current.selectedSource?.sourceVersionId)
+            ?? (current.selectedSource == null && conversationResult.status === "fulfilled"
+              && Array.isArray(conversationResult.value?.citations)
+              ? projected.find((source) => source.ready && conversationResult.value.citations.some((citation) =>
+                citation?.source_id === source.sourceId && citation?.source_version_id === source.sourceVersionId))
+              : null)
             ?? projected.find((source) => source.ready) ?? null,
       }));
 
