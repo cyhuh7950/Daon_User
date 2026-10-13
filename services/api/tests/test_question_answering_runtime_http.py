@@ -72,10 +72,19 @@ class FakeCitationContent:
     def __init__(self) -> None:
         self.text_mode = False
         self.image_mode = False
+        self.xlsx_mode = False
 
     def read_citation_content(self, context, citation_id):  # type: ignore[no-untyped-def]
         if citation_id != "citation-cp3":
             raise AssertionError(citation_id)
+        if self.xlsx_mode:
+            import json
+            from test_xlsx_source import parts, zipped
+            from daon_user_api.xlsx_source import read_xlsx, read_sheet_cell_view, encode_sheet_cell
+            value = encode_sheet_cell('납품 "계획"', 'B2:C3')
+            view = read_sheet_cell_view(read_xlsx(zipped(parts())), value)
+            view['source_version_id'] = 'source-version-cp3'
+            return CitationContent('source-cp3', 'source-version-cp3', 'qa.xlsx', json.dumps(view, ensure_ascii=False).encode(), 'application/json'), {'kind': 'sheet_cell', 'value': value}
         if self.image_mode:
             from test_image_document_understanding import image_bytes
             return CitationContent("source-cp3", "source-version-cp3", "qa.png", image_bytes(), "image/png"), {"kind": "image_region", "value": "5,7,80,20,120,60"}
@@ -412,6 +421,21 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["x-citation-region"], "5,7,80,20,120,60")
         self.assertEqual(response.headers["x-citation-locator-kind"], "image_region")
         self.assertNotIn("x-citation-page", response.headers)
+
+    async def test_xlsx_original_is_raw_json_with_existing_safe_headers(self) -> None:
+        self.dependencies.citation_content_repository.xlsx_mode = True
+        with self._authenticated():
+            response = await self.client.get('/api/v1/workspaces/workspace-001/citations/citation-cp3/content?notebook_id=notebook-001', cookies={WEB_SESSION_COOKIE: 'opaque-session'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['content-type'], 'application/json')
+        self.assertEqual(response.headers['x-citation-locator-kind'], 'sheet_cell')
+        self.assertIn('inline', response.headers['content-disposition'])
+        self.assertIn('etag', response.headers)
+        self.assertNotIn('x-citation-page', response.headers)
+        self.assertNotIn('x-citation-region', response.headers)
+        self.assertEqual(response.json()['source_version_id'], 'source-version-cp3')
+        self.assertEqual(response.json()['selected_range'], 'B2:C3')
+        self.assertNotIn('data', response.json())
 
 
 if __name__ == "__main__":

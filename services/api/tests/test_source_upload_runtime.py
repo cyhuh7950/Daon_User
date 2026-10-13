@@ -87,6 +87,21 @@ class ExistingNotebookService:
         return object()
 
 class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_registered_xlsx_bytes_keep_existing_upload_and_queue_boundary(self) -> None:
+        from test_xlsx_source import parts, zipped
+        raw = zipped(parts())
+        mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        with self._authenticated():
+            response = await self.client.post('/api/v1/workspaces/workspace-001/sources', content=raw,
+                cookies={WEB_SESSION_COOKIE: 'opaque-session'}, headers={'Content-Type': mime,
+                'X-Source-Filename': 'qa.xlsx', 'X-Notebook-Id': 'notebook-001', 'Idempotency-Key': 'xlsx-upload-001'})
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(len(self.uploads.calls), 1)
+        self.assertEqual(self.uploads.calls[0]['content'], raw)
+        self.assertEqual(self.uploads.calls[0]['content_type'], mime)
+        self.assertEqual(len(self.processing.submissions), 1)
+        self.assertEqual(self.processing.submissions[0][1:], ('source-version-001', 'notebook-001'))
+
     async def test_ooxml_security_rejection_precedes_storage_and_processing_submission(self) -> None:
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:

@@ -34,6 +34,16 @@ test("저장된 Image Region은 Notebook context에서 같은 출처 원문 URL�
   assert.throws(() => projectNotebookSelectedContext({ ...context, conversation: { ...context.conversation, answer: { ...context.conversation.answer, citations: [{ ...citation, locator: { kind: "image_region", value: "5,7,180,20,120,60" } }] } } }), /NOTEBOOK_CONTEXT_INVALID/);
 });
 
+test("저장된 sheet_cell은 같은 Notebook 원문 URL과 locator를 복원하고 변조를 거부한다", async () => {
+  const citation = { citation_id: 'citation-cell', source_id: 'source-bound', source_version_id: 'source-version-bound', evidence_span_id: 'span-cell', page: 1, origin: 'raw_source', context_item_id: 'source-bound', locator: { kind: 'sheet_cell', value: '{"sheet":"예산","range":"A1"}' } };
+  const context = { ...EXISTING_CONTEXT, conversation: { ...EXISTING_CONTEXT.conversation, answer: { ...EXISTING_CONTEXT.conversation.answer, citations: [citation] } } };
+  const { citationContentUrl } = await import('../../apps/web/lib/question-answering-api.js');
+  const restored = await createNotebookContextWorkspaceAdapter({ citationUrl: (value, options) => citationContentUrl('workspace-1', value, options) }, context).loadNotebookConversation();
+  assert.equal(restored.citations[0].content_url, '/bff/api/workspaces/workspace-1/citations/citation-cell/content?notebook_id=notebook-existing');
+  assert.deepEqual(restored.citations[0].locator, citation.locator);
+  assert.throws(() => projectNotebookSelectedContext({ ...context, conversation: { ...context.conversation, answer: { ...context.conversation.answer, citations: [{ ...citation, locator: { kind: 'sheet_cell', value: '{"sheet":"예산","range":"A1:Q16"}' } }] } } }), /NOTEBOOK_CONTEXT_INVALID/);
+});
+
 async function bundle(output) {
   const root = path.resolve(import.meta.dirname, "../..");
   const { build } = await import("vite");

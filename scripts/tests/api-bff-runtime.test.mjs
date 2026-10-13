@@ -9,6 +9,41 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("XLSX BFF forwards upload and exact original-cell JSON through existing scoped routes", async () => {
+  const calls = [];
+  const body = { source_version_id: "version-1", source_sha256: "a".repeat(64), sheet_name: "예산", sheet_visibility: "visible", selected_range: "A1", view_range: "A1:B2", cells: [], merged_ranges: [] };
+  const proxy = createBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl: async (url, init) => {
+    calls.push({ url: String(url), init });
+    return init.method === "POST" ? Response.json({ data: {} }, { status: 202 }) : Response.json(body, { headers: { "X-Citation-Locator-Kind": "sheet_cell" } });
+  } });
+  const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const uploaded = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/sources", { method: "POST", headers: { Origin: "https://app.example.com", Cookie: "__Host-daon_session=fixture", "Content-Type": mime, "Idempotency-Key": "xlsx-upload-1", "X-Source-Filename": "qa.xlsx", "X-Notebook-Id": "notebook-1" }, body: new Uint8Array([80, 75, 3, 4]) }), ["workspaces", "workspace-1", "sources"]);
+  assert.equal(uploaded.status, 202);
+  assert.equal(new Headers(calls[0].init.headers).get("content-type"), mime);
+  const content = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1", { headers: { Cookie: "__Host-daon_session=fixture" } }), ["workspaces", "workspace-1", "citations", "citation-1", "content"]);
+  assert.equal(content.status, 200);
+  assert.deepEqual(await content.json(), body);
+  assert.equal(content.headers.get("x-citation-locator-kind"), "sheet_cell");
+  assert.equal(calls[1].url, "https://api.example.com/api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1");
+});
+
+test("Native XLSX BFF permits only registered upload MIME and scoped JSON content", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const calls = [];
+  const proxy = createNativeBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl: async (url, init) => {
+    calls.push(String(url));
+    return init.method === "POST" ? Response.json({ data: {} }, { status: 202 }) : Response.json({ source_version_id: "version-1" }, { headers: { "X-Citation-Locator-Kind": "sheet_cell" } });
+  } });
+  const headers = { Authorization: "Bearer opaque-native-credential" };
+  const upload = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources", { method: "POST", headers: { ...headers, "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "X-Source-Filename": "qa.xlsx" }, body: new Uint8Array([80, 75, 3, 4]) }), ["workspaces", "workspace-1", "sources"]);
+  assert.equal(upload.status, 202);
+  const content = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1", { headers }), ["workspaces", "workspace-1", "citations", "citation-1", "content"]);
+  assert.equal(content.status, 200);
+  assert.equal((await content.json()).source_version_id, "version-1");
+  assert.equal(content.headers.get("x-citation-locator-kind"), "sheet_cell");
+  assert.equal(calls.length, 2);
+});
+
 test("Image BFF는 PNG/JPEG 업로드와 Region 원문 header를 기존 인증 경계로 연결한다", async () => {
   for (const mime of ["image/png", "image/jpeg"]) {
     const calls = [];

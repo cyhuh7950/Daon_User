@@ -42,6 +42,15 @@ const request = (payload) => askGroundedQuestion(
   { idempotencyKey: "question-1", fetchImpl: async () => Response.json(payload) }
 );
 
+test("sheet_cell question citation validates canonical bounds and preserves scoped URL", async () => {
+  const cell = { ...citation, page: 1, locator: { kind: 'sheet_cell', value: '{"sheet":"납품 \\"계획\\"","range":"B2:C3"}' } };
+  assert.deepEqual((await request(envelope({ ...answerData, citations: [cell] }))).citations, [cell]);
+  assert.equal(citationContentUrl('workspace-1', cell, { notebookId: 'notebook-1' }), '/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1');
+  for (const value of ['{"sheet":"시트","range":"A1:Q16"}', '{"sheet":"시트","range":"XFE1"}', '{"sheet":"시트", "range":"A1"}', '{"sheet":"시트","range":"A1","extra":1}']) {
+    await assert.rejects(request(envelope({ ...answerData, citations: [{ ...cell, locator: { kind: 'sheet_cell', value } }] })), /QUESTION_RESPONSE_INVALID/);
+  }
+});
+
 test("Image Region Citation은 6개 정수·표시 크기 경계를 검증한다", async () => {
   const imageCitation = { ...citation, page: 1, locator: { kind: "image_region", value: "5,7,80,20,120,60" } };
   assert.deepEqual((await request(envelope({ ...answerData, citations: [imageCitation] }))).citations, [imageCitation]);

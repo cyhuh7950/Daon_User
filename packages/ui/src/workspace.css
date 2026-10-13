@@ -410,3 +410,9 @@ select { width: 100%; min-height: var(--daon-target-desktop-control); margin-top
 .citation-image-frame { position: relative; width: fit-content; max-width: 100%; }
 .citation-image-frame > img { display: block; max-width: 100%; height: auto; image-orientation: from-image; }
 .citation-image-region { position: absolute; box-sizing: border-box; border: 2px solid #e68900; background: #ffb30026; pointer-events: none; }
+.citation-sheet-view { min-width: 0; max-width: 100%; }
+.citation-sheet-scroll { max-width: 100%; max-height: 360px; overflow: auto; margin-block: 8px; }
+.citation-sheet-scroll table { border-collapse: collapse; width: max-content; min-width: 100%; }
+.citation-sheet-scroll td { border: 1px solid var(--border, #d8dce3); min-width: 96px; max-width: 240px; padding: 6px; vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
+.citation-sheet-scroll td > * { display: block; }
+.citation-sheet-scroll td[aria-selected="true"] { background: #ffb30026; outline: 2px solid #e68900; outline-offset: -2px; }

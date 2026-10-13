@@ -556,6 +556,38 @@ class PostgresQuestionAnsweringRepository:
             raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404) from None
         if page < 1 or page != evidence_page or source_state != "ready":
             raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+        stored_locator = row[9] if len(row) > 9 else None
+        if evidence.get("kind") == "xlsx_cell_fact" or isinstance(stored_locator, dict) and stored_locator.get("kind") == "sheet_cell":
+            from .source_ingest import SourceRejected
+            from .xlsx_source import read_xlsx, read_sheet_cell_view
+            locator = evidence.get("locator")
+            if (
+                context.notebook_id is None or evidence.get("kind") != "xlsx_cell_fact"
+                or evidence.get("source_id") != source_id
+                or evidence.get("source_version_id") != source_version_id
+                or not isinstance(locator, dict) or set(locator) != {"kind", "value"}
+                or locator.get("kind") != "sheet_cell" or locator != stored_locator
+            ):
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+            original = self._row(context, source_id, source_version_id, "citation.read", require_notebook_binding=True)
+            if (
+                str(original[3]) != filename or not filename.lower().endswith(".xlsx")
+                or str(original[8]) != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                or str(original[9]) != "completed"
+            ):
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+            try:
+                ObjectKeyPolicy().validate_final(self._cloud_context(context, "object.read"), "source", str(original[5]))
+                content = self._object_storage.get(str(original[5]))
+                if len(content) != int(original[7]) or hashlib.sha256(content).hexdigest() != str(original[6]):
+                    raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
+                view = read_sheet_cell_view(read_xlsx(content), locator["value"])
+                view["source_version_id"] = source_version_id
+            except SourceRejected:
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409) from None
+            except (ObjectQueueError, ObjectStorageError):
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=503) from None
+            return CitationContent(source_id, source_version_id, filename, canonical_json_bytes(view), "application/json"), locator
         if evidence.get("kind") == "image_region_fact":
             from .image_document_understanding import normalize_image, validate_image_region
             if context.notebook_id is None or evidence.get("source_id") != source_id or evidence.get("source_version_id") != source_version_id:

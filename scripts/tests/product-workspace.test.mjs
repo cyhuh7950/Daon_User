@@ -150,6 +150,60 @@ const sourceRetryPayload = {
   source_state: "ready", processing_state: "completed", job_state: "completed",
 };
 
+test("sheet_cell 실제 React 원문 표는 재진입·강조·safe text·늦은 응답 결속을 유지한다", async (t) => {
+  for (const scenario of ['success', 'sheet-markup', 'invalid', 'late-selection', 'late-other-source', 'late-close']) await t.test(scenario, async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = deferred(); const calls = []; let workspace;
+    const sheetName = scenario === 'sheet-markup' ? '<img src=x>' : '납품 계획';
+    const locator = { kind: 'sheet_cell', value: JSON.stringify({ sheet: sheetName, range: 'A1' }) };
+    const citation = { citation_id: 'citation-cell', source_id: 'source-1', source_version_id: 'version-1', evidence_span_id: 'span-cell', page: 1, origin: 'raw_source', context_item_id: 'source-1', locator };
+    const content = { source_version_id: 'version-1', source_sha256: 'a'.repeat(64), sheet_name: sheetName, sheet_visibility: 'visible', selected_range: 'A1', view_range: 'A1:B2', cells: ['A1','B1','A2','B2'].map(address => ({ address, value_type: 'blank', raw_value: null, display_value: null, formula: null, cached_value: null, number_format: null, hidden_row: false, hidden_column: false })), merged_ranges: ['A1:B1'] };
+    content.cells[0] = { ...content.cells[0], value_type: 'string', raw_value: '<img onerror=evil()>', display_value: '<script>literal</script>', formula: 'HYPERLINK("https://evil",1)', cached_value: 'saved original' };
+    if (scenario === 'invalid') content.source_version_id = 'version-other';
+    globalThis.fetch = async (url, init) => { calls.push({ url, init }); if (scenario.startsWith('late-')) await pending.promise; return Response.json(content); };
+    try {
+      workspace = await mountSourceRetryWorkspace({ ...adapter, async listSources() { return [{ ...sourceRetryPayload, filename: 'qa.xlsx' }, { ...sourceRetryPayload, source_id: 'source-other', source_version_id: 'version-other', filename: 'other.xlsx' }]; }, async listStudioOutputs() { return []; }, citationUrl(value) { return citationContentUrl('workspace-1', value, { notebookId: 'notebook-1' }); }, async loadNotebookConversation() { return { run_id: 'run-cell', run_result_id: 'result-cell', answer: '저장된 셀 근거 답변', insufficient: false, citations: [{ ...citation, content_url: citationContentUrl('workspace-1', citation, { notebookId: 'notebook-1' }) }] }; } }, `xlsx-${scenario}`);
+      const link = findElements(workspace.container, node => node.tagName === 'A' && node.textContent.includes('Citation'))[0];
+      assert.ok(link, '저장된 셀 citation이 실제 DOM에 복원되어야 한다');
+      assert.ok(link.textContent.includes(`${sheetName} · A1`));
+      await workspace.act(async () => link.dispatchEvent(new MinimalEvent('click')));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, '/bff/api/workspaces/workspace-1/citations/citation-cell/content?notebook_id=notebook-1');
+      assert.equal(calls[0].init.credentials, 'same-origin');
+      if (scenario === 'late-selection') {
+        const selected = findElements(workspace.container, node => node.tagName === 'BUTTON' && node.getAttribute?.('aria-pressed') === 'true' && node.textContent.includes('qa.xlsx'))[0];
+        await workspace.act(async () => selected.dispatchEvent(new MinimalEvent('click')));
+      }
+      if (scenario === 'late-other-source') {
+        const other = findElements(workspace.container, node => node.tagName === 'BUTTON' && node.textContent.includes('other.xlsx'))[0];
+        await workspace.act(async () => other.dispatchEvent(new MinimalEvent('click')));
+        assert.equal(other.getAttribute('aria-pressed'), 'true');
+      }
+      if (scenario === 'late-close') {
+        const close = findElements(workspace.container, node => node.tagName === 'BUTTON' && node.textContent === '원문 닫기')[0];
+        assert.ok(close); await workspace.act(async () => close.dispatchEvent(new MinimalEvent('click')));
+      }
+      if (scenario.startsWith('late-')) await workspace.act(async () => { pending.resolve(); await Promise.resolve(); });
+      const tables = findElements(workspace.container, node => node.tagName === 'TABLE');
+      if (['success', 'sheet-markup'].includes(scenario)) {
+        assert.equal(tables.length, 1);
+        assert.equal(findElements(tables[0], node => node.tagName === 'TD').length, 4);
+        assert.equal(findElements(tables[0], node => node.getAttribute?.('aria-selected') === 'true').length, 1);
+        assert.match(tables[0].textContent, /<script>literal<\/script>/);
+        assert.match(tables[0].textContent, /HYPERLINK\("https:\/\/evil",1\)/);
+        assert.equal(findElements(tables[0], node => ['IMG','SCRIPT','A'].includes(node.tagName)).length, 0);
+        const viewer = findElements(workspace.container, node => node.getAttribute?.('aria-label') === '셀 원문')[0];
+        assert.ok(viewer.textContent.includes(sheetName));
+        assert.equal(findElements(viewer, node => ['IMG','SCRIPT','A'].includes(node.tagName)).length, 0);
+        assert.match(workspace.container.textContent, /cached.*재계산/);
+        assert.match(workspace.container.textContent, /A1:B1/);
+        assert.ok(findElements(workspace.container, node => node.getAttribute?.('class') === 'citation-sheet-scroll').length);
+      } else { assert.equal(tables.length, 0); if (scenario === 'invalid') assert.match(workspace.container.textContent, /CITATION_CONTENT_UNAVAILABLE/); }
+      if (!['late-selection', 'late-other-source'].includes(scenario)) assert.match(workspace.container.textContent, /저장된 셀 근거 답변/);
+    } finally { pending.resolve(); if (workspace) await workspace.cleanup(); globalThis.fetch = originalFetch; }
+  });
+});
+
 test("Image Citation은 같은 출처 원문과 EXIF 표시 기준 Region을 화면에서 연다", async () => {
   const citation = { citation_id: "citation-image", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-image", page: 1, origin: "raw_source", context_item_id: "source-1", locator: { kind: "image_region", value: "5,7,80,20,120,60" } };
   const workspace = await mountSourceRetryWorkspace({ ...adapter,
@@ -268,8 +322,11 @@ test("HTTP QA React TXT 선택은 randomUUID 없이 실제 Source POST를 전송
     await workspace.act(async () => addButton.dispatchEvent(new MinimalEvent("click")));
     assert.match(workspace.container.textContent, /질문·Studio 처리 지원: PDF\(문서 모델 필요\), TXT\/MD\/CSV/u);
     assert.match(workspace.container.textContent, /PNG\/JPG\/JPEG\(내부 Vision 모델·OCR 필요\)/u);
-    assert.match(workspace.container.textContent, /Office·오디오는 이 화면에서 아직 미지원/u);
+    assert.match(workspace.container.textContent, /XLSX\(내부 모델·셀 검증 필요\)/u);
+    assert.match(workspace.container.textContent, /DOCX·PPTX·오디오는 이 화면에서 아직 미지원/u);
     const fileInput = findElements(workspace.container, (node) => node.tagName === "INPUT" && node.getAttribute?.("accept")?.includes(".txt"))[0];
+    assert.ok(fileInput.getAttribute('accept').split(',').includes('.xlsx'));
+    assert.equal(fileInput.getAttribute('accept').split(',').some(type => ['.docx','.pptx','.mp3'].includes(type)), false);
     Object.defineProperty(fileInput, "files", {
       configurable: true, value: [new File(["ORANGE-COMPASS-42"], "notes.txt", { type: "text/plain" })],
     });

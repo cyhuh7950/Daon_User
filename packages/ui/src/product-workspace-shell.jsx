@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
-import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState, parseImageRegion } from "./product-workspace-model.js";
+import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState, parseImageRegion, parseSheetCell, isSheetCellContent } from "./product-workspace-model.js";
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
 import { classifyConversationIntent } from "./conversation-intent.js";
@@ -347,7 +347,8 @@ export function projectSafeQuestionAnswer(answer, workspaceId, citationUrl, sele
       && citation.locator.value.length >= 1
       && citation.locator.value.length <= 255
       && !/[\u0000-\u001f\u007f]/u.test(citation.locator.value)
-      && (citation.locator.kind !== "image_region" || parseImageRegion(citation.locator.value) !== null);
+      && (citation.locator.kind !== "image_region" || parseImageRegion(citation.locator.value) !== null)
+      && (citation.locator.kind !== "sheet_cell" || parseSheetCell(citation.locator.value) !== null);
     const validCitation = hasExactKeys(citation, ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page", "origin", "context_item_id", "locator"])
       && isSafeDtoId(citation.citation_id)
       && isSafeDtoId(citation.source_id)
@@ -488,6 +489,30 @@ function workspaceAdapterKey(adapter) {
   return WORKSPACE_ADAPTER_KEYS.get(adapter);
 }
 
+function SheetOriginalTable({ content }) {
+  const position = address => {
+    const [, letters, row] = /^([A-Z]+)([0-9]+)$/u.exec(address);
+    return [[...letters].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0), Number(row)];
+  };
+  const selectedRange = content.selected_range.split(":");
+  const selected = [...position(selectedRange[0]), ...position(selectedRange.at(-1))];
+  const rows = new Map();
+  for (const cell of content.cells) {
+    const [col, row] = position(cell.address);
+    if (!rows.has(row)) rows.set(row, []);
+    rows.get(row).push({ cell, col, row });
+  }
+  return <><p>{content.sheet_name} · {content.selected_range} · {content.sheet_visibility === "visible" ? "표시 시트" : "숨김 시트"}</p>
+    <small>원본에 저장된 cached 값이며 재계산하지 않습니다. 수식은 실행하지 않습니다.</small>
+    <div className="citation-sheet-scroll" tabIndex="0" aria-label="원문 셀 표 스크롤"><table aria-label="원문 셀 표"><tbody>{[...rows].sort(([a], [b]) => a - b).map(([row, cells]) => <tr key={row}>{cells.sort((a, b) => a.col - b.col).map(({ cell, col }) => <td key={cell.address} data-address={cell.address} aria-selected={col >= selected[0] && col <= selected[2] && row >= selected[1] && row <= selected[3]}>
+      <strong>{cell.address}</strong><span>{cell.display_value ?? "—"}</span>
+      {cell.formula !== null ? <small>수식 {cell.formula} · cached {cell.cached_value ?? "없음"}</small> : null}
+      {cell.hidden_row || cell.hidden_column ? <small>{cell.hidden_row ? "숨김 행 " : ""}{cell.hidden_column ? "숨김 열" : ""}</small> : null}
+    </td>)}</tr>)}</tbody></table></div>
+    {content.merged_ranges.length ? <small>병합 영역: {content.merged_ranges.join(", ")}</small> : null}
+  </>;
+}
+
 function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, onLogout = null }) {
   const [viewState, setViewState] = useState(() => normalizeProductWorkspaceState(state));
   const [processing, setProcessing] = useState(null);
@@ -541,6 +566,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [imageCitation, setImageCitation] = useState(null);
   const [imageCitationLoaded, setImageCitationLoaded] = useState(false);
   const [imageCitationError, setImageCitationError] = useState(null);
+  const [sheetCitation, setSheetCitation] = useState(null);
+  const sheetRequestRef = useRef(null);
   const sourceRetryKeysRef = useRef(new Map());
   const pollControllerRef = useRef(null);
   const reportIdempotencyRef = useRef(null);
@@ -1326,7 +1353,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <nav className="source-add-tabs" aria-label="Source 유형">
               {[['file', '파일 업로드'], ['website', '웹사이트'], ['drive', 'Drive'], ['text', '복사한 텍스트'], ['mcp', 'MCP 연결']].map(([mode, label]) => <button key={mode} type="button" aria-pressed={sourceAddMode === mode} onClick={() => { setSourceAddMode(mode); setSourceAddError(null); }} disabled={sourceAddPending}>{label}</button>)}
             </nav>
-            {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV, PNG/JPG/JPEG(내부 Vision 모델·OCR 필요). Office·오디오는 이 화면에서 아직 미지원</small><input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.m4a,.wav,.mp3" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
+            {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV, XLSX(내부 모델·셀 검증 필요), PNG/JPG/JPEG(내부 Vision 모델·OCR 필요). DOCX·PPTX·오디오는 이 화면에서 아직 미지원</small><input type="file" accept=".pdf,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
             {sourceAddMode === "text" ? <><textarea value={sourceAddText} onChange={(event) => setSourceAddText(event.target.value)} placeholder="복사한 텍스트를 붙여 넣으세요" disabled={sourceAddPending} /><button type="button" className="primary-button" onClick={() => void submitPastedText()} disabled={sourceAddPending || !sourceAddText.trim()}>{sourceAddPending ? "등록 중" : "텍스트 등록"}</button></> : null}
             {sourceAddMode === "mcp" ? <div className="source-add-unavailable"><strong>국가법령정보센터 MCP</strong><small>연결을 등록하면 연결형 Source에서 상태를 확인하고 선택할 수 있습니다.</small><button type="button" className="primary-button" onClick={() => void registerMcpConnector()} disabled={sourceAddPending}>{sourceAddPending ? "등록 중" : "MCP 연결 등록"}</button></div> : null}
             {sourceAddMode === "website" || sourceAddMode === "drive" ? <div className="source-add-unavailable" role="status"><strong>{sourceAddMode === "website" ? "웹사이트" : "Drive"} 연결 준비 필요</strong><small>외부 원본을 가져오는 Connector가 연결되면 이 흐름에서 등록할 수 있습니다.</small></div> : null}
@@ -1430,8 +1457,36 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">대화를 불러오지 못했습니다. ({viewState.conversationSafeError}) 다시 시도해 주세요.</div> : null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
+              if (citation.locator.kind === "sheet_cell") {
+                event.preventDefault();
+                setImageCitation(null);
+                const requestId = Symbol("sheet-citation");
+                sheetRequestRef.current = requestId;
+                setSheetCitation({ citation, requestId, content: null, error: null });
+                void (async () => {
+                  try {
+                    const expected = `/bff/api/workspaces/${encodeURIComponent(workspaceId)}/citations/${encodeURIComponent(citation.citation_id)}/content?notebook_id=`;
+                    if (!parseSheetCell(citation.locator.value) || typeof citation.content_url !== "string"
+                        || !citation.content_url.startsWith(expected)
+                        || !isSafeDtoId(citation.content_url.slice(expected.length))
+                        || citation.content_url !== adapter.citationUrl(citation)) throw new Error("CITATION_CONTENT_UNAVAILABLE");
+                    const response = await globalThis.fetch(citation.content_url, { credentials: "same-origin", cache: "no-store", signal: lifetimeControllerRef.current?.signal });
+                    if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0].trim() !== "application/json") throw new Error("CITATION_CONTENT_UNAVAILABLE");
+                    const text = await response.text();
+                    if (new TextEncoder().encode(text).length > 262144) throw new Error("CITATION_CONTENT_UNAVAILABLE");
+                    const content = JSON.parse(text);
+                    if (!isSheetCellContent(content, citation.locator.value, citation.source_version_id)) throw new Error("CITATION_CONTENT_UNAVAILABLE");
+                    if (sheetRequestRef.current === requestId && workspaceMountedRef.current) setSheetCitation(current => current?.requestId === requestId ? { ...current, content } : current);
+                  } catch {
+                    if (sheetRequestRef.current === requestId && workspaceMountedRef.current) setSheetCitation(current => current?.requestId === requestId ? { ...current, error: "CITATION_CONTENT_UNAVAILABLE" } : current);
+                  }
+                })();
+                return;
+              }
               if (citation.locator.kind === "image_region") {
                 event.preventDefault();
+                sheetRequestRef.current = null;
+                setSheetCitation(null);
                 setImageCitationLoaded(false);
                 setImageCitationError(null);
                 setImageCitation({ ...citation, region: parseImageRegion(citation.locator.value) });
@@ -1446,8 +1501,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               }).catch((error) => {
                 setViewState((current) => ({ ...current, status: "error", safeError: safeErrorCode(error, "CITATION_RESPONSE_INVALID") }));
               });
-            }}>Citation · {citation.locator.kind === "page" ? `${citation.page}쪽` : citation.locator.kind === "image_region" ? "이미지 영역" : "지식 구간"}</a>
+            }}>Citation · {citation.locator.kind === "sheet_cell" ? `${parseSheetCell(citation.locator.value)?.sheet} · ${parseSheetCell(citation.locator.value)?.range}` : citation.locator.kind === "page" ? `${citation.page}쪽` : citation.locator.kind === "image_region" ? "이미지 영역" : "지식 구간"}</a>
           ))}</div>
+          {sheetCitation && viewState.answer?.citations?.some(current => current.citation_id === sheetCitation.citation.citation_id && current.source_id === sheetCitation.citation.source_id && current.source_version_id === sheetCitation.citation.source_version_id && current.locator.kind === "sheet_cell" && current.locator.value === sheetCitation.citation.locator.value) ? <section className="citation-sheet-view" aria-label="셀 원문">
+            <button type="button" onClick={() => { sheetRequestRef.current = null; setSheetCitation(null); }}>원문 닫기</button>
+            {sheetCitation.error ? <p role="alert">셀 원문을 확인할 수 없습니다. ({sheetCitation.error})</p> : sheetCitation.content ? <SheetOriginalTable content={sheetCitation.content} /> : <p role="status">셀 원문을 불러오는 중입니다.</p>}
+          </section> : null}
           {imageCitation?.region && viewState.answer?.citations?.some((current) => current.citation_id === imageCitation.citation_id && current.source_version_id === imageCitation.source_version_id && current.locator.kind === "image_region" && current.locator.value === imageCitation.locator.value) ? <section className="citation-image-view" aria-label="이미지 원문">
             <button type="button" onClick={() => setImageCitation(null)}>원문 닫기</button>
             {imageCitationError ? <p role="alert">이미지 원문을 확인할 수 없습니다. ({imageCitationError})</p> : <div className="citation-image-frame">
@@ -1501,7 +1560,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                 <span>{output.status}</span>
                 <ul aria-label={`${output.title} Citation 계보`}>
                   {(Array.isArray(output.citations) ? output.citations : []).map((citation) => (
-                    <li key={citation.citation_id}>{citation.locator?.kind === "image_region" ? `Citation 이미지 영역 ${citation.locator.value}` : `Citation page ${citation.page}`}</li>
+                    <li key={citation.citation_id}>{citation.locator?.kind === "sheet_cell" ? `Citation ${parseSheetCell(citation.locator.value)?.sheet} · ${parseSheetCell(citation.locator.value)?.range}` : citation.locator?.kind === "image_region" ? `Citation 이미지 영역 ${citation.locator.value}` : `Citation page ${citation.page}`}</li>
                   ))}
                 </ul>
               </li>

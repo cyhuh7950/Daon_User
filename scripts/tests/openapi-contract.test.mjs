@@ -18,6 +18,26 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("XLSX original-cell content declares exact nullable cell contract and preserves old media", async () => {
+  const doc = await loadContract();
+  const response = doc.paths["/api/v1/workspaces/{id}/citations/{citation_id}/content"].get.responses["200"];
+  assert.equal(response.content["application/json"]?.schema.$ref, "#/components/schemas/SheetCellContent");
+  for (const name of ["CitationLocator", "StudioCitationLocator"]) {
+    assert.ok(doc.components.schemas[name].properties.kind.enum.includes("sheet_cell"));
+    assert.ok(doc.components.schemas[name].allOf.some(rule => rule.if?.properties?.kind?.const === 'sheet_cell' && rule.then?.properties?.value?.$ref === '#/components/schemas/SheetCellLocatorValue'));
+  }
+  const schema = doc.components.schemas.SheetCellContent;
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, ["source_version_id", "source_sha256", "sheet_name", "sheet_visibility", "selected_range", "view_range", "cells", "merged_ranges"]);
+  assert.equal(schema.properties.cells.maxItems, 324);
+  const cell = doc.components.schemas.SheetCellOriginal;
+  assert.equal(cell.additionalProperties, false);
+  assert.deepEqual(cell.required, ["address", "value_type", "raw_value", "display_value", "formula", "cached_value", "number_format", "hidden_row", "hidden_column"]);
+  for (const key of ["raw_value", "display_value", "formula", "cached_value", "number_format"]) assert.deepEqual(cell.properties[key].type, ["string", "null"]);
+  for (const mime of ["application/pdf", "text/plain", "image/png", "image/jpeg"]) assert.ok(response.content[mime]);
+  assert.ok(doc.paths["/api/v1/workspaces/{id}/sources"].post.requestBody.content["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
+});
+
 function clone(value) {
   return structuredClone(value);
 }
@@ -196,7 +216,7 @@ test("Product Studio Version 상세는 Citation과 lifecycle 재진입 계약을
     "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format",
   ]);
   assert.deepEqual(document.components.schemas.StudioCitationProjection.properties.origin.enum, ["raw_source", "daon_knowledge"]);
-  assert.deepEqual(document.components.schemas.StudioCitationLocator.properties.kind.enum, ["page", "section", "image_region"]);
+  assert.deepEqual(document.components.schemas.StudioCitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell"]);
 });
 
 test("Provider 연결 확인은 비밀·Endpoint 없는 안전 상태 계약이다", async () => {
@@ -479,11 +499,11 @@ test("Question Citation 계약은 원본 페이지와 Daon 지식 구간을 같�
   assert.ok(citation.required.includes("locator"));
   assert.equal(citation.properties.locator.$ref, "#/components/schemas/CitationLocator");
   assert.deepEqual(document.components.schemas.CitationLocator.required, ["kind", "value"]);
-  assert.deepEqual(document.components.schemas.CitationLocator.properties.kind.enum, ["page", "section", "image_region"]);
+  assert.deepEqual(document.components.schemas.CitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell"]);
   const response = document.paths["/api/v1/workspaces/{id}/citations/{citation_id}/content"].get.responses["200"];
   assert.ok(response.content["application/pdf"]);
   assert.ok(response.content["text/plain"]);
-  assert.equal(response.headers["X-Citation-Locator-Kind"].schema.enum.join(","), "page,section,image_region");
+  assert.equal(response.headers["X-Citation-Locator-Kind"].schema.enum.join(","), "page,section,image_region,sheet_cell");
   assert.ok(response.content["image/png"]);
   assert.ok(response.content["image/jpeg"]);
   assert.ok(response.headers["X-Citation-Region"].schema.pattern);

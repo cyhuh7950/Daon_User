@@ -102,6 +102,44 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_xlsx_citation_content_is_bound_original_cell_json(self):
+        from dataclasses import replace
+        from test_xlsx_source import parts, zipped
+        from daon_user_api.xlsx_source import read_xlsx, read_sheet_cell_view, encode_sheet_cell
+        self.context = replace(self.context, notebook_id='notebook-cp3')
+        raw = zipped(parts())
+        locator = {'kind': 'sheet_cell', 'value': encode_sheet_cell('납품 "계획"', 'B2:C3')}
+        evidence = {'kind': 'xlsx_cell_fact', 'source_id': 'source-cp3', 'source_version_id': 'source-version-cp3', 'locator': locator, 'text': 'ORANGE-42'}
+        citation = ('source-cp3', 'source-version-cp3', '1', '1', evidence, 'uploaded', 'qa.xlsx', 'ready', 'span-cell', locator)
+        original = list(self.cloud.connection.ready_row)
+        original[3], original[6], original[7], original[8] = 'qa.xlsx', hashlib.sha256(raw).hexdigest(), len(raw), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        self.cloud.connection.ready_row = tuple(original)
+        self.cloud.connection.citation_row = citation
+        self.repository._object_storage.content = raw
+        content, actual_locator = self.repository.read_citation_content(self.context, 'citation-cell')
+        expected = read_sheet_cell_view(read_xlsx(raw), locator['value'])
+        expected['source_version_id'] = 'source-version-cp3'
+        self.assertEqual(json.loads(content.content), expected)
+        self.assertEqual(content.media_type, 'application/json')
+        self.assertEqual(actual_locator, locator)
+        for scenario in ('digest', 'size', 'mime', 'manifest', 'binding', 'citation', 'evidence', 'range', 'source-version'):
+            with self.subTest(scenario=scenario):
+                row = list(original); ev = dict(evidence); stored_locator = locator
+                self.cloud.connection.source_binding_active = True
+                if scenario == 'digest': row[6] = '0' * 64
+                if scenario == 'size': row[7] += 1
+                if scenario == 'mime': row[8] = 'text/plain'
+                if scenario == 'manifest': row[9] = 'pending'
+                if scenario == 'binding': self.cloud.connection.source_binding_active = False
+                if scenario == 'citation': stored_locator = {'kind': 'sheet_cell', 'value': encode_sheet_cell('예산', 'A1')}
+                if scenario == 'evidence': ev['kind'] = 'xlsx_not_evidence'
+                if scenario == 'range': ev['locator'] = stored_locator = {'kind': 'sheet_cell', 'value': encode_sheet_cell('예산', 'Z99')}
+                if scenario == 'source-version': ev['source_version_id'] = 'source-version-other'
+                self.cloud.connection.ready_row = tuple(row)
+                self.cloud.connection.citation_row = (*citation[:4], ev, *citation[5:9], stored_locator)
+                with self.assertRaises(QuestionRepositoryError):
+                    self.repository.read_citation_content(self.context, 'citation-cell')
+
     def test_xlsx_ready_metadata_matches_real_select_row_shape_and_scope_guards(self):
         from dataclasses import replace
         class SqlConnection:

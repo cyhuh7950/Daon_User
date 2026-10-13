@@ -727,7 +727,8 @@
               }
             },
             "image/png": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } },
-            "image/jpeg": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } }
+            "image/jpeg": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } },
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } }
           }
         }
       }
@@ -900,7 +901,7 @@
                 "schema": { "type": "integer", "minimum": 1 }
               },
               "X-Citation-Locator-Kind": {
-                "schema": { "type": "string", "enum": ["page", "section", "image_region"] }
+                "schema": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell"] }
               },
               "X-Citation-Region": {
                 "schema": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 크기와 영역 경계는 서버에서 검증한다." }
@@ -910,7 +911,8 @@
               "application/pdf": { "schema": { "type": "string", "format": "binary" } },
               "text/plain": { "schema": { "type": "string", "maxLength": 1048576 } },
               "image/png": { "schema": { "type": "string", "format": "binary" } },
-              "image/jpeg": { "schema": { "type": "string", "format": "binary" } }
+              "image/jpeg": { "schema": { "type": "string", "format": "binary" } },
+              "application/json": { "schema": { "$ref": "#/components/schemas/SheetCellContent" } }
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -5598,10 +5600,10 @@
       "StudioCitationLocator": {
         "type": "object", "additionalProperties": false, "required": ["kind", "value"],
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section", "image_region"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 500 }
         },
-        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }]
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }]
       },
       "StudioCitationProjection": {
         "type": "object", "additionalProperties": false,
@@ -5950,10 +5952,44 @@
         "additionalProperties": false,
         "required": ["kind", "value"],
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section", "image_region"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 255 }
         },
-        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }]
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }]
+      },
+      "SheetCellLocatorValue": {
+        "type": "string", "minLength": 1, "maxLength": 255,
+        "description": "정확 원본 시트명과 대문자 A1 범위를 키 순서 sheet,range의 compact canonical JSON으로 인코딩한다(UTF-8 512bytes 이내). 단일 셀은 A1, 범위는 B2:C3. 중복/추가키·공백·외부참조·정의명·절대주소·역방향을 거부한다. Excel XFD/1048576, 실제 시트 및 선택 256셀/확장 preview 324셀 상한은 동일 X1 계약으로 검증한다."
+      },
+      "SheetCellOriginal": {
+        "type": "object", "additionalProperties": false,
+        "required": ["address", "value_type", "raw_value", "display_value", "formula", "cached_value", "number_format", "hidden_row", "hidden_column"],
+        "properties": {
+          "address": { "type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]{0,6}$" },
+          "value_type": { "type": "string", "enum": ["blank", "string", "number", "date", "boolean", "error"] },
+          "raw_value": { "type": ["string", "null"] },
+          "display_value": { "type": ["string", "null"] },
+          "formula": { "type": ["string", "null"] },
+          "cached_value": { "type": ["string", "null"] },
+          "number_format": { "type": ["string", "null"] },
+          "hidden_row": { "type": "boolean" },
+          "hidden_column": { "type": "boolean" }
+        }
+      },
+      "SheetCellContent": {
+        "type": "object", "additionalProperties": false,
+        "description": "원본 hash·SourceVersion·Notebook·완료 manifest 결속 후 X1 읽기 전용 투영. 선택 영역 256셀, 주변 한 행/열 확장 preview 324셀 상한. Excel XFD/1048576 및 실제 시트 범위 검증, 중복 주소 금지. formula 실행·cached 값 재계산 없음.",
+        "required": ["source_version_id", "source_sha256", "sheet_name", "sheet_visibility", "selected_range", "view_range", "cells", "merged_ranges"],
+        "properties": {
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "sheet_name": { "type": "string", "minLength": 1, "maxLength": 31 },
+          "sheet_visibility": { "type": "string", "enum": ["visible", "hidden", "veryHidden"] },
+          "selected_range": { "type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]{0,6}(:[A-Z]{1,3}[1-9][0-9]{0,6})?$" },
+          "view_range": { "type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]{0,6}(:[A-Z]{1,3}[1-9][0-9]{0,6})?$" },
+          "cells": { "type": "array", "minItems": 1, "maxItems": 324, "items": { "$ref": "#/components/schemas/SheetCellOriginal" } },
+          "merged_ranges": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]{0,6}(:[A-Z]{1,3}[1-9][0-9]{0,6})?$" } }
+        }
       },
       "GroundedAnswer": {
         "type": "object",

@@ -1,3 +1,4 @@
+import { parseSheetCell, parseImageRegion } from "./product-workspace-model.js";
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const CONTEXT_KEYS = Object.freeze([
   "notebook_id", "sources", "knowledge_context_ids", "conversation_thread_ids",
@@ -28,11 +29,12 @@ function validCitation(value) {
     && Number.isSafeInteger(value.page) && value.page >= 1
     && ["raw_source", "daon_knowledge"].includes(value.origin)
     && exact(value.locator, ["kind", "value"])
-    && ["page", "section", "image_region"].includes(value.locator.kind)
+    && ["page", "section", "image_region", "sheet_cell"].includes(value.locator.kind)
     && typeof value.locator.value === "string" && value.locator.value.length >= 1
     && value.locator.value.length <= 255
     && (value.locator.kind !== "page" || value.locator.value === String(value.page))
-    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null);
+    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null)
+    && (value.locator.kind !== "sheet_cell" || parseSheetCell(value.locator.value) !== null);
 }
 
 function projectCitation(value) {
@@ -143,8 +145,8 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
   const loadNotebookConversation = async (options) => {
     if (context.conversation === null || context.conversation_thread_ids.length !== 1) return null;
     const answer = context.conversation.answer;
-    if (!answer.citations.some((citation) => citation.locator.kind === "image_region")) return answer;
-    return { ...answer, citations: answer.citations.map((citation) => citation.locator.kind === "image_region"
+    if (!answer.citations.some((citation) => ["image_region", "sheet_cell"].includes(citation.locator.kind))) return answer;
+    return { ...answer, citations: answer.citations.map((citation) => ["image_region", "sheet_cell"].includes(citation.locator.kind)
       ? { ...citation, content_url: baseAdapter.citationUrl(citation, { notebookId: context.notebook_id }) }
       : citation) };
   };
@@ -247,4 +249,3 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
   if (bindingEtag !== undefined) Object.defineProperty(adapter, "bindingEtag", { enumerable: false, value: bindingEtag });
   return Object.freeze(adapter);
 }
-import { parseImageRegion } from "./product-workspace-model.js";
