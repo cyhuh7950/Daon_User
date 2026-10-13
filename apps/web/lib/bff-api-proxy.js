@@ -459,6 +459,11 @@ function routeFor(method, segments) {
   if (segments.length === 2 && segments[0] === "session" && segments[1] === "step-up") {
     return method === "POST" ? { path: "/api/v1/session/step-up", query: null } : { methodRejected: true };
   }
+  if (segments.length === 2 && segments[0] === "studio-generation-jobs" && SAFE_SEGMENT.test(segments[1])) {
+    return method === "GET"
+      ? { path: `/api/v1/studio-generation-jobs/${encodeURIComponent(segments[1])}`, query: STUDIO_QUERY, requiredQuery: STUDIO_QUERY }
+      : { methodRejected: true };
+  }
   if (segments.length === 1 && new Set([
     "studio-generation-requests", "studio-outputs", "reviews", "approval-requests",
     "approvals", "deliveries", "knowledge-registrations",
@@ -1050,6 +1055,13 @@ export function createBffProxy({
     }
     if (route.csrfProvenanceRequired && !csrfRefererIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
+    }
+    if (route.requiredQuery) {
+      const query = new URL(request.url).searchParams;
+      if ([...query.keys()].some((key) => !route.requiredQuery.has(key))
+        || [...route.requiredQuery].some((key) => query.getAll(key).length !== 1 || !SAFE_SEGMENT.test(query.get(key)))) {
+        return createBffSafeError(400, "INVALID_REQUEST", trace);
+      }
     }
     const destination = new URL(route.path, baseUrl);
     if (new Set(["/api/v1/session/tenants", "/api/v1/session/tenant"]).has(route.path)) {

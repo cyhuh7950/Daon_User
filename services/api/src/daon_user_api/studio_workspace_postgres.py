@@ -481,6 +481,8 @@ class PostgresStudioWorkspaceRepository:
             job = self._generation_queue.get(self._cloud(context, "studio.read"), job_id)
         except StudioGenerationQueueError as error:
             raise StudioError(error.code, 404 if error.code == "STUDIO_JOB_NOT_FOUND" else 503) from error
+        if context.notebook_id is None or job.request_json.get("notebook_id") != context.notebook_id:
+            raise StudioError("RESOURCE_UNAVAILABLE", 404)
         result = {
             "job_id": job.job_id, "status": job.state, "output_type": job.request_json.get("output_type"),
             "title": job.request_json.get("purpose"), "studio_output_id": job.studio_output_id,

@@ -15,8 +15,43 @@ from daon_user_api.studio_workspace import (
     StudioContext, StudioError, StudioGenerationRequest, StudioWorkspaceService, build_structured_output,
 )
 from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+from daon_user_api.studio_generation_queue import PostgresStudioGenerationQueue
 from daon_user_api.object_queue import StagedObject, StoredObject
 from daon_user_api.license import LicenseError
+
+
+class StudioJobNotebookBoundaryTests(unittest.TestCase):
+    def repository(self, notebook_id="notebook-1"):
+        store = MagicMock()
+        row = (
+            "tenant-1", "workspace-1", "studio-job-1", "actor-1", "trace-1", "policy-1",
+            "key-1", {"notebook_id": notebook_id, "output_type": "evidence_report", "purpose": "QA"},
+            "failed", 1, 3, "POLICY_PROJECTION_MISMATCH", None, None, None, None,
+        )
+        store._transaction.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = row
+        queue = object.__new__(PostgresStudioGenerationQueue)
+        queue._cloud_store = store
+        repository = PostgresStudioWorkspaceRepository(None)
+        repository._generation_queue = queue
+        return repository, store
+
+    def test_failed_job_in_selected_notebook_returns_current_safe_error(self):
+        repository, store = self.repository()
+        context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
+        result = repository.get_generation_job(context, "studio-job-1")
+        self.assertEqual((result["status"], result["error_code"]), ("failed", "POLICY_PROJECTION_MISMATCH"))
+        query, params = store._transaction.return_value.__enter__.return_value.execute.call_args.args
+        self.assertIn("tenant_id=%s AND workspace_id=%s AND job_id=%s", query)
+        self.assertEqual(params, ("tenant-1", "workspace-1", "studio-job-1"))
+
+    def test_other_or_missing_notebook_cannot_read_job(self):
+        for selected, stored in (("notebook-2", "notebook-1"), (None, "notebook-1"), ("notebook-1", None)):
+            with self.subTest(selected=selected, stored=stored):
+                repository, _ = self.repository(stored)
+                context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", selected)
+                with self.assertRaises(StudioError) as denied:
+                    repository.get_generation_job(context, "studio-job-1")
+                self.assertEqual((denied.exception.status, denied.exception.code), (404, "RESOURCE_UNAVAILABLE"))
 
 
 class Result:
