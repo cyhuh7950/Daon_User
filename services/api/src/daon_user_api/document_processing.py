@@ -74,6 +74,7 @@ class DocumentProcessingRepository(Protocol):
 
     def load_source_document(
         self, context: DocumentProcessingContext, source_id: str,
+        *, processing_run_id: str | None = None,
     ) -> StoredSourceDocument: ...
 
     def start(
@@ -194,7 +195,9 @@ class DocumentProcessingService:
         self, context: DocumentProcessingContext, *, source_id: str,
         processing_run_id: str,
     ) -> DocumentUnderstandingResult:
-        document = self._repository.load_source_document(context, source_id)
+        document = self._repository.load_source_document(
+            context, source_id, processing_run_id=processing_run_id,
+        )
         return self._execute(context, document, processing_run_id)
 
     def _execute(

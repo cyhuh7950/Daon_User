@@ -29,7 +29,7 @@ class RecordingRepository:
     def __init__(self) -> None:
         self.events: list[tuple[str, object]] = []
 
-    def load_source_document(self, context: DocumentProcessingContext, source_id: str) -> StoredSourceDocument:
+    def load_source_document(self, context: DocumentProcessingContext, source_id: str, *, processing_run_id=None) -> StoredSourceDocument:
         self.events.append(("load", source_id))
         return StoredSourceDocument(source_id, "source-version-cp3", "contract.pdf", PDF)
 
@@ -161,9 +161,22 @@ class DocumentProcessingServiceTests(unittest.TestCase):
         self.assertEqual([event[0] for event in repository.events], ["load", "complete"])
         self.assertEqual(repository.events[-1][1], ("processing-run-existing", "ready"))
 
+    def test_existing_run_passes_its_binding_to_original_loader(self) -> None:
+        class BoundRepository(RecordingRepository):
+            bound_run_id = None
+
+            def load_source_document(self, context, source_id, *, processing_run_id=None):
+                self.bound_run_id = processing_run_id
+                return super().load_source_document(context, source_id)
+
+        repository = BoundRepository()
+        service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(Adapter()))
+        service.process_existing(self.context, source_id="source-cp3", processing_run_id="run-bound")
+        self.assertEqual(repository.bound_run_id, "run-bound")
+
     def test_txt_uses_only_selected_text_model_and_persists_real_result(self) -> None:
         class TextRepository(RecordingRepository):
-            def load_source_document(self, context, source_id):  # type: ignore[no-untyped-def]
+            def load_source_document(self, context, source_id, *, processing_run_id=None):  # type: ignore[no-untyped-def]
                 self.events.append(("load", source_id))
                 return StoredSourceDocument(source_id, "source-version-txt", "notes.txt", b"Real TXT fact", "text/plain")
 
@@ -204,7 +217,7 @@ class DocumentProcessingServiceTests(unittest.TestCase):
         for filename, mime in (("notes.md", "text/markdown"), ("notes.csv", "text/csv")):
             with self.subTest(filename=filename):
                 class TextRepository(RecordingRepository):
-                    def load_source_document(self, context, source_id):  # type: ignore[no-untyped-def]
+                    def load_source_document(self, context, source_id, *, processing_run_id=None):  # type: ignore[no-untyped-def]
                         self.events.append(("load", source_id))
                         return StoredSourceDocument(source_id, "source-version-text", filename, b"Real source fact", mime)
 

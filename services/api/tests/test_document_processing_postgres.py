@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import sqlite3
 import unittest
 from contextlib import contextmanager
 
-from daon_user_api.document_processing import DocumentProcessingContext
+from daon_user_api.document_processing import DocumentProcessingContext, DocumentProcessingService
+from daon_user_api.cloud_storage import CloudDatabaseError
+from daon_user_api.object_queue import ObjectStorageError
 from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
 from daon_user_api.document_understanding_adapter import (
     DocumentUnderstandingResult,
+    DocumentUnderstandingError,
     ParserValidation,
     SemanticUnderstanding,
 )
@@ -99,6 +104,43 @@ class FakeObjectStorage:
         return self.content
 
 
+class BoundConnection(FakeConnection):
+    """Execute the production read SQL against two real version rows."""
+    def __init__(self):
+        super().__init__()
+        self.states = {"ProcessingRun": "vision_llm_understanding", "Source": "processing"}
+        self.versions = {"ProcessingRun": 2, "Source": 3}
+        self.db = sqlite3.connect(":memory:")
+        self.db.executescript("""
+            CREATE TABLE sources (tenant_id,workspace_id,record_id);
+            CREATE TABLE source_versions (tenant_id,workspace_id,record_id,source_id,object_id,canonical_json,version);
+            CREATE TABLE processing_runs (tenant_id,workspace_id,record_id,source_version_id,state);
+            CREATE TABLE object_records (tenant_id,workspace_id,object_id,object_key,digest_sha256,byte_size,content_type,status);
+        """)
+        self.db.execute("INSERT INTO sources VALUES (?,?,?)", ("tenant-cp3", "workspace-cp3", "source-cp3"))
+        for version, version_id in ((1, "source-version-cp3"), (2, "source-version-newer")):
+            self.db.execute("INSERT INTO source_versions VALUES (?,?,?,?,?,?,?)", (
+                "tenant-cp3", "workspace-cp3", version_id, "source-cp3", OBJECT_ID,
+                json.dumps({"filename": "contract.pdf"}), version,
+            ))
+        self.db.execute("INSERT INTO processing_runs VALUES (?,?,?,?,?)", (
+            "tenant-cp3", "workspace-cp3", "run-cp3", "source-version-cp3", "vision_llm_understanding",
+        ))
+        self.db.execute("INSERT INTO object_records VALUES (?,?,?,?,?,?,?,?)", (
+            "tenant-cp3", "workspace-cp3", OBJECT_ID, OBJECT_KEY,
+            hashlib.sha256(PDF).hexdigest(), len(PDF), "application/pdf", "completed",
+        ))
+
+    def execute(self, sql, params=()):
+        if sql.startswith("SELECT sv.record_id"):
+            self.statements.append((sql, tuple(params)))
+            row = self.db.execute(sql.replace("%s", "?"), params).fetchone()
+            if row is not None:
+                row = (*row[:2], json.loads(row[2]), *row[3:])
+            return Cursor(row)
+        return super().execute(sql, params)
+
+
 class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.context = DocumentProcessingContext(
@@ -106,6 +148,107 @@ class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
         )
         self.cloud = FakeCloudStore()
         self.repository = PostgresDocumentProcessingRepository(self.cloud, FakeObjectStorage())  # type: ignore[arg-type]
+
+    def _bound_fixture(self):
+        self.cloud.connection = BoundConnection()
+        self.addCleanup(self.cloud.connection.db.close)
+        return self.cloud.connection
+
+    def test_bound_read_keeps_queued_version_while_initial_read_uses_latest(self) -> None:
+        self._bound_fixture()
+        bound = self.repository.load_source_document(self.context, "source-cp3", processing_run_id="run-cp3")
+        latest = self.repository.load_source_document(self.context, "source-cp3")
+        self.assertEqual(bound.source_version_id, "source-version-cp3")
+        self.assertEqual(latest.source_version_id, "source-version-newer")
+
+    def test_missing_or_wrong_bound_scope_never_transitions_run_or_reads_object(self) -> None:
+        connection = self._bound_fixture()
+        class UnreadableStorage:
+            def get(self, key):
+                raise AssertionError("unbound request must not read objects")
+        self.repository._object_storage = UnreadableStorage()
+        for source_id, run_id, tenant, workspace in (
+            ("source-other", "run-cp3", "tenant-cp3", "workspace-cp3"),
+            ("source-cp3", "run-other", "tenant-cp3", "workspace-cp3"),
+            ("source-cp3", "run-cp3", "tenant-other", "workspace-cp3"),
+            ("source-cp3", "run-cp3", "tenant-cp3", "workspace-other"),
+        ):
+            with self.subTest(source=source_id, run=run_id, tenant=tenant, workspace=workspace):
+                context = DocumentProcessingContext(tenant, workspace, "actor-cp3", "trace-cp3", "policy-v1")
+                with self.assertRaisesRegex(DocumentUnderstandingError, "SOURCE_NOT_FOUND"):
+                    self.repository.load_source_document(context, source_id, processing_run_id=run_id)
+                self.assertEqual(connection.states, {"ProcessingRun": "vision_llm_understanding", "Source": "processing"})
+                self.assertFalse(any("transition_canon_state" in sql for sql, _ in connection.statements))
+
+    def test_bound_query_database_failure_never_transitions_run(self) -> None:
+        connection = self._bound_fixture()
+        original = connection.execute
+        def unavailable(sql, params=()):
+            if sql.startswith("SELECT sv.record_id"):
+                raise CloudDatabaseError("DATABASE_UNAVAILABLE", retryable=True)
+            return original(sql, params)
+        connection.execute = unavailable
+        with self.assertRaisesRegex(DocumentUnderstandingError, "DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE"):
+            self.repository.load_source_document(self.context, "source-cp3", processing_run_id="run-cp3")
+        self.assertEqual(self.cloud.capabilities, ["source.read"])
+
+    def test_completed_or_failed_bound_run_checksum_error_never_writes_state(self) -> None:
+        for state, source_state in (("completed", "ready"), ("failed", "failed")):
+            with self.subTest(state=state):
+                connection = self._bound_fixture()
+                connection.db.execute("UPDATE processing_runs SET state=?", (state,))
+                connection.states = {"ProcessingRun": state, "Source": source_state}
+                self.repository._object_storage.content = b"corrupt"
+                with self.assertRaisesRegex(DocumentUnderstandingError, "SOURCE_OBJECT_CHECKSUM_MISMATCH"):
+                    self.repository.load_source_document(self.context, "source-cp3", processing_run_id="run-cp3")
+                self.assertEqual(connection.states, {"ProcessingRun": state, "Source": source_state})
+                self.assertFalse(any("transition_canon_state" in sql for sql, _ in connection.statements))
+
+    def test_late_failure_of_terminal_run_never_changes_processing_source(self) -> None:
+        for state in ("completed", "failed", "policy_blocked"):
+            with self.subTest(state=state):
+                connection = self._bound_fixture()
+                connection.states = {"ProcessingRun": state, "Source": "processing"}
+                self.repository.fail(self.context, "run-cp3", "SOURCE_OBJECT_CHECKSUM_MISMATCH", retryable=False)
+                self.assertEqual(connection.states, {"ProcessingRun": state, "Source": "processing"})
+                self.assertFalse(any("transition_canon_state" in sql for sql, _ in connection.statements))
+
+    def test_existing_document_active_states_can_still_fail(self) -> None:
+        for state in ("accepted", "vision_llm_understanding", "parser_ocr_validation", "evidence_reconciliation"):
+            with self.subTest(state=state):
+                connection = self._bound_fixture()
+                connection.states = {"ProcessingRun": state, "Source": "processing"}
+                self.repository.fail(self.context, "run-cp3", "SOURCE_OBJECT_CHECKSUM_MISMATCH", retryable=False)
+                self.assertEqual(connection.states, {"ProcessingRun": "failed", "Source": "failed"})
+
+    def test_bound_original_failures_terminate_run_before_any_model_or_result(self) -> None:
+        for kind, expected_code, source_state in (
+            ("format", "SOURCE_OBJECT_NOT_READY", "failed"),
+            ("digest", "SOURCE_OBJECT_CHECKSUM_MISMATCH", "failed"),
+            ("missing", "OBJECT_NOT_FOUND", "failed"),
+            ("transient", "OBJECT_STORAGE_UNAVAILABLE", "waiting_model"),
+        ):
+            with self.subTest(kind=kind):
+                connection = self._bound_fixture()
+                self.repository._object_storage = FakeObjectStorage()
+                if kind == "format":
+                    connection.db.execute("UPDATE source_versions SET canonical_json=?", (json.dumps({"filename": "notes.png"}),))
+                    connection.db.execute("UPDATE object_records SET content_type='image/png'")
+                elif kind == "digest":
+                    self.repository._object_storage.content = b"corrupt"
+                else:
+                    class FailingStorage:
+                        def get(self, key):
+                            raise ObjectStorageError(expected_code, retryable=kind == "transient")
+                    self.repository._object_storage = FailingStorage()
+                class NoModel:
+                    def resolve(self, *args):
+                        raise AssertionError("original failure must precede model resolution")
+                service = DocumentProcessingService(self.repository, NoModel(), None)
+                with self.assertRaisesRegex(DocumentUnderstandingError, expected_code):
+                    service.process_existing(self.context, source_id="source-cp3", processing_run_id="run-cp3")
+                self.assertEqual(connection.states, {"ProcessingRun": "failed", "Source": source_state})
+                self.assertEqual(connection.inserts, [])
 
     def test_load_start_and_complete_write_canonical_lineage_in_order(self) -> None:
         document = self.repository.load_source_document(self.context, "source-cp3")

@@ -82,20 +82,44 @@ class PostgresDocumentProcessingRepository:
 
     def load_source_document(
         self, context: DocumentProcessingContext, source_id: str,
+        *, processing_run_id: str | None = None,
     ) -> StoredSourceDocument:
+        bound_verified = False
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.read")) as connection:
-                row = connection.execute(
+                select = (
                     "SELECT sv.record_id,sv.object_id,sv.canonical_json,o.object_key,"
                     "o.digest_sha256,o.byte_size,o.content_type,o.status "
-                    "FROM source_versions sv JOIN object_records o ON "
+                    "FROM source_versions sv "
+                )
+                if processing_run_id is not None:
+                    select += (
+                        "JOIN processing_runs pr ON pr.tenant_id=sv.tenant_id "
+                        "AND pr.workspace_id=sv.workspace_id AND pr.source_version_id=sv.record_id "
+                        "JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id "
+                        "AND s.record_id=sv.source_id "
+                    )
+                select += ("LEFT JOIN " if processing_run_id is not None else "JOIN ") + (
+                    "object_records o ON "
                     "o.tenant_id=sv.tenant_id AND o.workspace_id=sv.workspace_id "
-                    "AND o.object_id=sv.object_id WHERE sv.source_id=%s "
-                    "ORDER BY sv.version DESC LIMIT 1",
-                    (source_id,),
-                ).fetchone()
+                    "AND o.object_id=sv.object_id "
+                )
+                if processing_run_id is not None:
+                    select += (
+                        "WHERE pr.record_id=%s AND sv.source_id=%s "
+                        "AND pr.tenant_id=%s AND pr.workspace_id=%s"
+                    )
+                    params = (processing_run_id, source_id, context.tenant_id, context.workspace_id)
+                else:
+                    select += "WHERE sv.source_id=%s ORDER BY sv.version DESC LIMIT 1"
+                    params = (source_id,)
+                row = connection.execute(select, params).fetchone()
             if row is None:
                 raise DocumentUnderstandingError("SOURCE_NOT_FOUND", status=404)
+            # Only an exact scoped Run -> SourceVersion -> Source match can
+            # authorize failure handling after original-object validation.
+            # fail() rechecks current Run state, including terminal protection.
+            bound_verified = processing_run_id is not None
             payload = cast(Mapping[str, object], row[2])
             filename = str(payload.get("filename", ""))
             object_key = str(row[3])
@@ -118,14 +142,15 @@ class PostgresDocumentProcessingRepository:
             ):
                 raise DocumentUnderstandingError("SOURCE_OBJECT_CHECKSUM_MISMATCH", status=409)
             return StoredSourceDocument(source_id, str(row[0]), filename, content, content_type)
-        except DocumentUnderstandingError:
-            raise
-        except ObjectStorageError as error:
-            raise DocumentUnderstandingError(
-                error.code, status=503 if error.retryable else 409, retryable=error.retryable,
-            ) from None
         except Exception as error:
-            raise self._database_error(error) from None
+            mapped = (
+                DocumentUnderstandingError(
+                    error.code, status=503 if error.retryable else 409, retryable=error.retryable,
+                ) if isinstance(error, ObjectStorageError) else self._database_error(error)
+            )
+            if bound_verified:
+                self.fail(context, cast(str, processing_run_id), mapped.code, retryable=mapped.retryable)
+            raise mapped from None
 
     def reprocess(
         self, context: DocumentProcessingContext, source_id: str, source_version_id: str,
@@ -526,6 +551,10 @@ class PostgresDocumentProcessingRepository:
                 ).fetchone()
                 if row is None:
                     raise DocumentUnderstandingError("PROCESSING_RUN_NOT_FOUND", status=404)
+                if str(row[0]) in {"completed", "failed", "policy_blocked"}:
+                    # A late notification for an old Run must not fail a Source
+                    # that a newer manual Run is currently processing.
+                    return
                 if str(row[0]) != "failed":
                     self._transition(
                         connection, context, entity_type="ProcessingRun",
