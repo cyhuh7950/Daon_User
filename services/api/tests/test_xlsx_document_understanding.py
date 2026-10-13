@@ -53,6 +53,83 @@ class XlsxUnderstandingTests(unittest.TestCase):
         self.model = ResolvedModel('ollama-1', 'OLLAMA', 'llama3.2:3b', 'text_generation', 'https://ollama.example', 0, 1, 1, 'server_internal', 'provider', True, None)
         self.transport = Transport()
 
+    def test_native_payload_constrains_nonempty_original_cell_facts_without_changing_limits(self):
+        result = OllamaXlsxDocumentAdapter(self.transport).understand(self.document, self.model, self.context)
+        self.assertEqual(result.status, 'ready')
+        request = self.transport.requests[0]
+        schema = request['payload']['format']
+        for field, maximum in [('title', 255), ('summary', 4000)]:
+            with self.subTest(field=field):
+                self.assertEqual(schema['properties'][field]['minLength'], 1)
+                self.assertEqual(schema['properties'][field]['maxLength'], maximum)
+        facts = schema['properties']['key_facts']
+        self.assertEqual((facts['minItems'], facts['maxItems']), (1, 5))
+        for field, maximum in [('text', 2000), ('sheet', 31), ('range', 21)]:
+            with self.subTest(field=field):
+                self.assertEqual(facts['items']['properties'][field]['minLength'], 1)
+                self.assertEqual(facts['items']['properties'][field]['maxLength'], maximum)
+        self.assertEqual(schema['properties']['sheet_coverage']['items']['minLength'], 1)
+        self.assertEqual(request['timeout_seconds'], 90)
+        self.assertEqual(request['payload']['options'], {'temperature': 0, 'num_predict': 512})
+        self.assertEqual(request['payload']['messages'][1]['content'], read_xlsx(self.document.content).native_json)
+        self.assertEqual(result.lineage['prompt_version'], 'xlsx-understanding-v2')
+
+    def test_native_prompt_requires_ordered_verbatim_cells_and_fact_only_nonempty_summary(self):
+        result = OllamaXlsxDocumentAdapter(self.transport).understand(self.document, self.model, self.context)
+        self.assertEqual(result.status, 'ready')
+        request = self.transport.requests[0]
+        prompt = request['payload']['messages'][0]['content']
+        for instruction in ('Prefer a single cell', 'upper-left to lower-right', 'nonempty summary',
+                            'only the copied key_facts', 'punctuation or colons', 'display_value'):
+            with self.subTest(instruction=instruction): self.assertIn(instruction, prompt)
+
+    def test_captured_invalid_native_response_is_never_repaired_or_ready(self):
+        # MAIN's captured response is a negative unit fixture, not a model call.
+        captured = {'title': 'Project Plan', 'summary': '', 'key_facts': [
+            {'text': 'Project code: ORANGE-COMPASS-XLSX-42', 'sheet': '납품 계획', 'range': 'B2:A3'},
+            {'text': 'Budget: 57000 KRW', 'sheet': '예산', 'range': 'B3:C4'},
+        ], 'sheet_coverage': ['납품 계획', '예산']}
+        self.transport.value = captured
+        with self.assertRaisesRegex(DocumentUnderstandingError, '^UNDERSTANDING_PROVIDER_RESPONSE_INVALID$'):
+            OllamaXlsxDocumentAdapter(self.transport).understand(self.document, self.model, self.context)
+        self.assertEqual(self.transport.value, captured)
+        # Separate the valid-JSON but unsupported punctuation/order/range cases
+        # from the empty-summary rejection so each original-cell guard is exercised.
+        cases = [('reverse', {'text': 'ORANGE-42', 'sheet': '납품 계획', 'range': 'B1:A1'}),
+                 ('colon', {'text': '프로젝트 코드: ORANGE-42', 'sheet': '납품 계획', 'range': 'A1:B1'}),
+                 ('unit-order', {'text': '57000 예산 원', 'sheet': '예산', 'range': 'A1:B1'})]
+        for name, fact in cases:
+            with self.subTest(case=name):
+                transport = Transport(); transport.value['key_facts'][0] = fact
+                unchanged = copy.deepcopy(transport.value)
+                result = OllamaXlsxDocumentAdapter(transport).understand(self.document, self.model, self.context)
+                self.assertEqual(result.status, 'needs_review')
+                self.assertEqual(result.conflict, 'UNDERSTANDING_PARSER_CONFLICT')
+                self.assertEqual(result.parser.cell_evidence, ())
+                self.assertEqual(result.semantic.key_facts[0], fact['text'])
+                self.assertEqual(transport.value, unchanged)
+
+    def test_empty_or_whitespace_response_strings_remain_strictly_rejected(self):
+        for field in ('title', 'summary', 'text', 'sheet', 'range'):
+            for empty in ('', ' \t\n'):
+                with self.subTest(field=field, value=empty):
+                    transport = Transport()
+                    if field in ('title', 'summary'): transport.value[field] = empty
+                    else: transport.value['key_facts'][0][field] = empty
+                    with self.assertRaisesRegex(DocumentUnderstandingError, '^UNDERSTANDING_PROVIDER_RESPONSE_INVALID$'):
+                        OllamaXlsxDocumentAdapter(transport).understand(self.document, self.model, self.context)
+
+    def test_single_cell_verbatim_facts_and_nonempty_summary_validate_after_native(self):
+        self.transport.value = {'title': '납품 계획', 'summary': 'ORANGE-42 2025-12-09 57000',
+            'key_facts': [{'text': 'ORANGE-42', 'sheet': '납품 계획', 'range': 'B1'},
+                          {'text': '2025-12-09', 'sheet': '납품 계획', 'range': 'B2'},
+                          {'text': '57000', 'sheet': '예산', 'range': 'B1'}],
+            'sheet_coverage': ['납품 계획', '예산']}
+        result = OllamaXlsxDocumentAdapter(self.transport).understand(self.document, self.model, self.context)
+        self.assertEqual(result.status, 'ready')
+        self.assertEqual([item['range'] for item in result.parser.cell_evidence], ['B1', 'B2', 'B1'])
+        self.assertEqual(result.semantic.summary, 'ORANGE-42 2025-12-09 57000')
+
     def test_xlsx_native_then_cell_validation(self):
         def validate(*args):
             self.assertIn('native', self.transport.events)
