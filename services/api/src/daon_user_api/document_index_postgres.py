@@ -336,15 +336,18 @@ class PostgresDocumentIndex:
             raw_chunks = payload.get("chunks")
             if not isinstance(raw_chunks, list):
                 raise DocumentUnderstandingError("DOCUMENT_INDEX_SNAPSHOT_INVALID", status=500)
+            cell_context = payload.get("strategy") == "native_xlsx_facts_with_cell_validation"
             matches: list[IndexedEvidenceChunk] = []
             for raw in raw_chunks:
                 if not isinstance(raw, dict) or str(raw.get("source_version_id", "")) != source_version_id:
                     continue
                 overlap = query_tokens.intersection(self._tokens(str(raw.get("text", ""))))
-                if not overlap:
+                sheet_cell = raw.get('evidence_kind') == 'xlsx_cell_fact'
+                if cell_context and not sheet_cell:
+                    raise DocumentUnderstandingError("DOCUMENT_INDEX_SNAPSHOT_INVALID", status=409)
+                if not overlap and not (cell_context and sheet_cell):
                     continue
                 image_region = raw.get("evidence_kind") == "image_region_fact"
-                sheet_cell = raw.get('evidence_kind') == 'xlsx_cell_fact'
                 if sheet_cell:
                     from .xlsx_source import decode_sheet_cell
                     from .source_ingest import SourceRejected
@@ -368,6 +371,6 @@ class PostgresDocumentIndex:
                 ))
             return tuple(sorted(
                 matches, key=lambda item: (-item.score, item.page, item.chunk_id),
-            )[:limit])
+            )[:min(limit, 5) if cell_context else limit])
         except Exception as error:
             raise self._database_error(error) from None

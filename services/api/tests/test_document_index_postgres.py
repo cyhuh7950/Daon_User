@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import json
 from contextlib import contextmanager
 
 from daon_user_api.document_index_postgres import PostgresDocumentIndex
@@ -106,6 +107,63 @@ def paraphrased_ready_result() -> DocumentUnderstandingResult:
 
 
 class PostgresDocumentIndexTests(unittest.TestCase):
+    def single_cell_fixture(self):
+        from dataclasses import replace
+        from copy import deepcopy
+        result = self.xlsx_fixture()
+        values = [('REF-ALPHA-17', '계획', 'B2'), ('2026-11-04', '계획', 'B3'), ('57000', '예산', 'B3'), ('KRW', '예산', 'B2'), ('Budget', '예산', 'A3')]
+        cells = tuple({'text': text, 'sheet': sheet, 'range': address, 'locator_value': json.dumps({'sheet': sheet, 'range': address}, ensure_ascii=False, separators=(',', ':'))} for text, sheet, address in values)
+        result = replace(result, semantic=SemanticUnderstanding('계획', '값', tuple(item[0] for item in values)), parser=replace(result.parser, cell_evidence=cells))
+        self.cloud.connection.understanding_payload['semantic']['key_facts'] = list(result.semantic.key_facts)
+        self.cloud.connection.understanding_payload['parser_validation']['cell_evidence'] = deepcopy(list(cells))
+        self.cloud.connection.extraction_payload['cell_evidence'] = deepcopy(list(cells))
+        self.index.index_result(self.context, result)
+        return result
+
+    def test_xlsx_no_overlap_query_returns_only_bound_original_five_cell_facts(self):
+        result = self.single_cell_fixture()
+        for query in ('project code delivery date budget amount currency', 'unrelated weather forecast'):
+            with self.subTest(query=query):
+                chunks = self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query=query)
+                self.assertEqual({c.text for c in chunks}, {'REF-ALPHA-17', '2026-11-04', '57000', 'KRW', 'Budget'})
+                self.assertEqual(len(chunks), 5)
+                self.assertTrue(all(c.locator_kind == 'sheet_cell' and c.source_version_id == result.source_version_id for c in chunks))
+                if query.startswith('project'): self.assertEqual(chunks[0].text, 'Budget'); self.assertGreater(chunks[0].score, 0)
+                else: self.assertTrue(all(c.score == 0 for c in chunks))
+        self.assertEqual(len(self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='amount', limit=2)), 2)
+        self.assertEqual(self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query=''), ())
+        self.assertEqual(self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='amount', limit=0), ())
+        # Even an oversized snapshot cannot expand the XLSX bounded context.
+        payload = self.cloud.connection.index_payload
+        payload['chunks'].append({**payload['chunks'][0], 'chunk_id': 'chunk-extra'})
+        self.assertEqual(len(self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='amount', limit=99)), 5)
+
+    def test_xlsx_no_overlap_still_validates_locator_and_source_binding(self):
+        from copy import deepcopy
+        result = self.single_cell_fixture()
+        original = deepcopy(self.cloud.connection.index_payload)
+        for field, wrong in [('locator_value', '{"sheet":"계획","range":"B2:A1"}'), ('source_id', 'source-other')]:
+            with self.subTest(field=field):
+                self.cloud.connection.index_payload = deepcopy(original)
+                self.cloud.connection.index_payload['chunks'][0][field] = wrong
+                with self.assertRaises(DocumentUnderstandingError):
+                    self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='unrelated')
+        self.cloud.connection.index_payload = original
+        self.assertEqual(self.index.search(self.context, source_id='source-other', source_version_id=result.source_version_id, query='amount'), ())
+        for chunk in original['chunks']: chunk['source_version_id'] = 'version-other'
+        self.assertEqual(self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='amount'), ())
+
+    def test_xlsx_strategy_rejects_noncell_snapshot_even_with_query_overlap(self):
+        from copy import deepcopy
+        result = self.single_cell_fixture()
+        original = deepcopy(self.cloud.connection.index_payload)
+        for kind in ('parser_page_validated_semantic_fact', 'text_source_verbatim_fact', 'image_region_fact'):
+            with self.subTest(kind=kind):
+                self.cloud.connection.index_payload = deepcopy(original)
+                self.cloud.connection.index_payload['chunks'][0]['evidence_kind'] = kind
+                with self.assertRaisesRegex(DocumentUnderstandingError, '^DOCUMENT_INDEX_SNAPSHOT_INVALID$'):
+                    self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='REF ALPHA')
+
     def xlsx_fixture(self):
         from dataclasses import replace
         from copy import deepcopy
@@ -163,6 +221,7 @@ class PostgresDocumentIndexTests(unittest.TestCase):
         self.assertEqual(chunks[0].locator_kind, "image_region")
         self.assertEqual(chunks[0].locator_value, "10,20,100,30,1000,200")
         self.assertEqual(self.cloud.connection.index_payload["strategy"], "native_image_facts_with_ocr_region_validation")
+        self.assertEqual(self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query="unrelated weather"), ())
 
     def test_image_canonical_binding_mismatch_has_no_writes_or_ready_transition(self):
         from copy import deepcopy
@@ -232,6 +291,7 @@ class PostgresDocumentIndexTests(unittest.TestCase):
             source_version_id=result.source_version_id, query="해지 통보",
         )
         self.assertEqual(chunks[0].locator_kind, "section")
+        self.assertEqual(self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query="unrelated weather"), ())
         self.assertEqual(
             self.cloud.connection.index_payload["chunks"][0]["evidence_kind"],
             "text_source_verbatim_fact",
@@ -275,6 +335,7 @@ class PostgresDocumentIndexTests(unittest.TestCase):
         self.assertEqual(results[0].page, 2)
         self.assertTrue(results[0].evidence_span_id.startswith("span-"))
         self.assertEqual(wrong_version, ())
+        self.assertEqual(self.index.search(self.context, source_id="source-cp3", source_version_id="source-version-cp3", query="unrelated weather"), ())
 
     def test_ready_paraphrase_uses_parser_page_text_as_grounded_fallback(self) -> None:
         self.index.index_result(self.context, paraphrased_ready_result())
