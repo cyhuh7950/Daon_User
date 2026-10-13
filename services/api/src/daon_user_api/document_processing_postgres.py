@@ -219,7 +219,7 @@ class PostgresDocumentProcessingRepository:
                     raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
                 filename, mime = str(source[4]), str(source[5])
                 if not ((mime == "application/pdf" and filename.lower().endswith(".pdf"))
-                        or text_source_format(filename, mime) is not None or image_source_format(filename, mime)):
+                        or text_source_format(filename, mime) is not None or image_source_format(filename, mime) or xlsx_source_format(filename, mime)):
                     raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409)
                 replay = connection.execute(
                     "SELECT request_fingerprint,result FROM idempotency_records "

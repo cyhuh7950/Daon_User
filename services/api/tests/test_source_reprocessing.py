@@ -164,3 +164,51 @@ def test_retry_rejects_completed_or_still_leased_previous_run_and_unsupported_fo
     with pytest.raises(DocumentUnderstandingError, match="SOURCE_OBJECT_NOT_READY"):
         retry(store)
     assert store.writes == []
+
+
+def test_xlsx_manual_retry_preserves_six_column_source_failed_run_and_exact_replay():
+    store = Store()
+    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    store.source = ("source-1", "waiting_model", 4, "version-1", "qa.xlsx", mime)
+    result = retry(store)
+    assert result["source_version_id"] == "version-1"
+    assert result["processing_run_id"] != "run-failed-1"
+    assert result["retry_of_processing_run_id"] == "run-failed-1"
+    assert store.old_run == ("run-failed-1", "failed", "dead_letter")
+    _, run_params = next(item for item in store.writes if item[0].startswith("INSERT INTO processing_runs"))
+    payload = next(value.obj for value in run_params if hasattr(value, "obj"))
+    assert payload["source_version_id"] == "version-1"
+    assert payload["trigger_type"] == "manual_request"
+    assert payload["retry_of_processing_run_id"] == "run-failed-1"
+    assert len([sql for sql, _ in store.writes if sql.startswith("INSERT INTO document_processing_jobs")]) == 1
+    assert not any(sql.startswith("UPDATE") or "INSERT INTO source_versions" in sql for sql, _ in store.writes)
+    _, receipt_params = next(item for item in store.writes if item[0].startswith("INSERT INTO idempotency_records"))
+    store.replay = (receipt_params[5], result)
+    store.writes.clear()
+    assert retry(store)["replayed"] is True
+    assert store.writes == []
+    store.replay = ("different-request", result)
+    with pytest.raises(DocumentUnderstandingError, match="IDEMPOTENCY_KEY_REUSED"):
+        retry(store)
+    assert store.writes == []
+
+
+@pytest.mark.parametrize("scenario,code", [
+    ("wrong-mime", "SOURCE_OBJECT_NOT_READY"), ("wrong-filename", "SOURCE_OBJECT_NOT_READY"),
+    ("missing-source", "SOURCE_NOT_FOUND"), ("disabled", "SOURCE_NOT_FOUND"),
+    ("wrong-version", "SOURCE_VERSION_CONFLICT"), ("active", "SOURCE_PROCESSING_ACTIVE"),
+    ("completed", "SOURCE_REPROCESSING_STATE_INVALID"), ("leased", "SOURCE_REPROCESSING_STATE_INVALID"),
+])
+def test_xlsx_manual_retry_rejects_format_scope_version_and_terminal_mismatch_without_writes(scenario, code):
+    store = Store()
+    store.source = ("source-1", "failed", 4, "version-1", "qa.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if scenario == "wrong-mime": store.source = (*store.source[:5], "text/plain")
+    if scenario == "wrong-filename": store.source = (*store.source[:4], "qa.docx", store.source[5])
+    if scenario == "missing-source": store.source = None
+    if scenario == "disabled": store.source = (store.source[0], "disabled", *store.source[2:])
+    if scenario == "active": store.active = (1,)
+    if scenario == "completed": store.old_run = ("run-failed-1", "completed", "completed")
+    if scenario == "leased": store.old_run = ("run-failed-1", "failed", "leased")
+    with pytest.raises(DocumentUnderstandingError, match=code):
+        retry(store, version="version-other" if scenario == "wrong-version" else "version-1")
+    assert store.writes == []
