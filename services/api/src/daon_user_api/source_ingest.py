@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import io
 import re
+import zipfile
+import zlib
 from typing import ClassVar
 from uuid import uuid4
 
@@ -99,6 +102,33 @@ class SourceIngestor:
             return len(content) >= 12 and content[4:8] == b"ftyp"
         return True
 
+    @staticmethod
+    def _validate_ooxml(content: bytes) -> None:
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                members = archive.infolist()
+                # Preflight every member before decompressing any content.
+                for member in members:
+                    local_flags = int.from_bytes(
+                        content[member.header_offset + 6:member.header_offset + 8], "little",
+                    )
+                    if (member.flag_bits | local_flags) & 0x41:
+                        raise SourceRejected("ENCRYPTED_SOURCE")
+                for member in members:
+                    if member.file_size > 100 * member.compress_size:
+                        raise SourceRejected("COMPRESSION_BOMB")
+                for member in members:
+                    # Reading to EOF checks the member's CRC without retaining
+                    # decompressed files or extracting anything to disk.
+                    with archive.open(member) as stream:
+                        while stream.read(64 * 1024):
+                            pass
+        except SourceRejected:
+            raise
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, OSError,
+                ValueError, RuntimeError, NotImplementedError, zlib.error):
+            raise SourceRejected("CORRUPTED_SOURCE") from None
+
     def register_file(
         self,
         filename: str,
@@ -128,6 +158,8 @@ class SourceIngestor:
             raise SourceRejected("COMPRESSION_BOMB")
         if malware_signature:
             raise SourceRejected("MALWARE_DETECTED")
+        if extension in {".docx", ".pptx", ".xlsx"}:
+            self._validate_ooxml(content)
         return SourceRecord(
             source_id=f"src-{uuid4().hex}",
             tenant_id="file-upload",

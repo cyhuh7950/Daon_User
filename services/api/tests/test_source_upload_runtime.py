@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import tempfile
+import io
+import zipfile
+import struct
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -84,6 +87,33 @@ class ExistingNotebookService:
         return object()
 
 class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ooxml_security_rejection_precedes_storage_and_processing_submission(self) -> None:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", b"A" * 200000)
+        encrypted = bytearray(buffer.getvalue())
+        struct.pack_into("<H", encrypted, 6, 1)
+        struct.pack_into("<H", encrypted, encrypted.index(b"PK\x01\x02") + 8, 1)
+        # The existing HTTP safe-error mapper exposes corruption, but masks
+        # encryption/bomb internals. Exact internal codes are tested at ingest.
+        for content, code, public_code in (
+            (buffer.getvalue()[:-22], "CORRUPTED_SOURCE", "CORRUPTED_SOURCE"),
+            (bytes(encrypted), "ENCRYPTED_SOURCE", "INVALID_REQUEST"),
+            (buffer.getvalue(), "COMPRESSION_BOMB", "INVALID_REQUEST"),
+        ):
+            with self.subTest(code=code), self._authenticated():
+                response = await self.client.post(
+                    "/api/v1/workspaces/workspace-001/sources", content=content,
+                    cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                    headers={"Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                             "X-Source-Filename": "source.docx", "X-Notebook-Id": "notebook-001",
+                             "Idempotency-Key": f"upload-{code}"},
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"]["code"], public_code)
+                self.assertEqual(self.uploads.calls, [])
+                self.assertEqual(self.processing.submissions, [])
+
     async def test_source_reprocessing_rejects_unbound_notebook_and_unknown_attributes(self) -> None:
         from daon_user_api.notebook import NotebookError
         body = {"kind": "processing_run", "attributes": {"workspace_id": "workspace-001", "notebook_id": "notebook-001", "source_version_id": "source-version-001"}}
