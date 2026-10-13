@@ -415,7 +415,7 @@ class PostgresQuestionAnsweringRepository:
         filename = str(row[3])
         if str(row[2]) != "ready" or (
             str(row[4]) != "studio_output"
-            and not filename.lower().endswith((".pdf", ".txt", ".md", ".csv"))
+            and not filename.lower().endswith((".pdf", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg"))
         ):
             raise QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE", status=404)
         return ReadyQuestionSource(str(row[0]), str(row[1]), filename)

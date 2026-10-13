@@ -159,6 +159,37 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
                 self.context, "source-cp3", "source-version-old",
             )
 
+    def test_indexed_ready_images_are_accepted_with_existing_notebook_version_guards(self) -> None:
+        from dataclasses import replace
+        self.context = replace(self.context, notebook_id="notebook-cp3")
+        for suffix in ("png", "jpg", "jpeg"):
+            with self.subTest(suffix=suffix):
+                self.cloud.connection.ready_row = ("source-cp3", "source-version-cp3", "ready", "qa." + suffix, "uploaded")
+                source = self.repository.load_ready_source(self.context, "source-cp3", "source-version-cp3")
+                self.assertEqual((source.source_id, source.source_version_id, source.filename),
+                                 ("source-cp3", "source-version-cp3", "qa." + suffix))
+                sql = self.cloud.connection.queries[-1]
+                for guard in ("s.state='ready'", "FROM index_versions iv", "iv.source_version_id=sv.record_id",
+                              "newer.version>sv.version", "dr.source_active=false", "nb.binding_kind='source'",
+                              "nb.version_id=sv.record_id", "nb.notebook_id=%s", "FROM notebook_source_unbindings u"):
+                    self.assertIn(guard, sql)
+
+    def test_image_ready_context_preserves_unready_unbound_and_unsupported_rejections(self) -> None:
+        from dataclasses import replace
+        self.context = replace(self.context, notebook_id="notebook-cp3")
+        for filename, state, bound in (
+            ("qa.png", "processing", True), ("qa.jpg", "needs_review", True),
+            ("qa.jpeg", "ready", False), ("qa.png", "failed", True),
+            ("qa.docx", "ready", True), ("qa.pptx", "ready", True),
+            ("qa.xlsx", "ready", True), ("qa.wav", "ready", True),
+            ("qa.mp3", "ready", True), ("qa.m4a", "ready", True),
+        ):
+            with self.subTest(filename=filename, state=state, bound=bound):
+                self.cloud.connection.ready_row = ("source-cp3", "source-version-cp3", state, filename, "uploaded")
+                self.cloud.connection.source_binding_active = bound
+                with self.assertRaisesRegex(QuestionRepositoryError, "^QUESTION_SOURCE_UNAVAILABLE$"):
+                    self.repository.load_ready_source(self.context, "source-cp3", "source-version-cp3")
+
     def test_question_rejects_source_unbound_from_selected_notebook(self) -> None:
         self.context = QuestionContext(
             "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1", "notebook-other",
