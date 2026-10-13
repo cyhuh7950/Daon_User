@@ -30,21 +30,25 @@ class Transport:
         self.vision = True
         self.model_info = {"general.architecture": "qwen3vl"}
         self.digest = "a" * 64
+        self.thinking = False
+        self.model_id = "qwen3-vl:latest"
+        self.native_request = None
 
     def get_json_no_auth(self, *, url, timeout_seconds):
         self.events.append("tags")
-        return {"models": [{"name": "qwen3-vl:latest", "digest": self.digest,
+        return {"models": [{"name": self.model_id, "digest": self.digest,
                             "remote_host": "https://cloud.example" if self.remote else None}]}
 
     def post_json_no_auth(self, *, url, payload, timeout_seconds):
         if url.endswith("/api/show"):
             self.events.append("show")
-            return {"capabilities": ["vision"] if self.vision else ["completion"], "model_info": self.model_info}
+            return {"capabilities": (["vision"] if self.vision else ["completion"]) + (["thinking"] if self.thinking else []), "model_info": self.model_info}
         self.events.append("native")
+        self.native_request = (payload, timeout_seconds)
         image = Image.open(io.BytesIO(base64.b64decode(payload["messages"][1]["images"][0])))
         assert image.size == (120, 60)
         assert "OCR" not in payload["messages"][1]["content"]
-        return {"model": "qwen3-vl:latest", "message": {"content": json.dumps({
+        return {"model": self.model_id, "message": {"content": json.dumps({
             "title": "QA image", "summary": "ORANGE-42", "key_facts": ["ORANGE-42"],
         })}}
 
@@ -74,6 +78,48 @@ class ImageDocumentTests(unittest.TestCase):
         self.assertEqual(result.parser.regions[0]["value"], "5,7,80,20,120,60")
         self.assertEqual(result.lineage["semantic_model_digest"], "a" * 64)
         self.assertEqual(result.lineage["parser_role"], "validation_only")
+
+    def test_thinking_model_native_payload_disables_thinking_before_strict_ocr_result(self):
+        from dataclasses import replace
+        events = []
+        transport = Transport(events)
+        transport.thinking = True
+        transport.model_id = "qwen3.5:latest"
+        model = replace(self.model, model_id="qwen3.5:latest")
+        result = OllamaImageDocumentAdapter(transport, Ocr(events)).understand(self.document, model, self.context)
+        payload, timeout = transport.native_request
+        self.assertIs(payload.get("think"), False)
+        self.assertEqual(payload["model"], "qwen3.5:latest")
+        self.assertEqual(timeout, 90)
+        self.assertEqual(payload["options"], {"temperature": 0, "num_predict": 1024})
+        self.assertEqual(events, ["tags", "show", "tags", "native", "ocr"])
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(result.semantic.key_facts, ("ORANGE-42",))
+        self.assertEqual(result.parser.regions, ({"text": "ORANGE-42", "value": "5,7,80,20,120,60"},))
+
+    def test_nonthinking_model_omits_think_without_changing_native_budget(self):
+        events = []
+        transport = Transport(events)
+        result = OllamaImageDocumentAdapter(transport, Ocr(events)).understand(self.document, self.model, self.context)
+        payload, timeout = transport.native_request
+        self.assertNotIn("think", payload)
+        self.assertEqual(timeout, 90)
+        self.assertEqual(payload["options"], {"temperature": 0, "num_predict": 1024})
+        self.assertEqual(result.status, "ready")
+
+    def test_empty_content_never_uses_thinking_json_as_native_semantics(self):
+        events = []
+        class EmptyContent(Transport):
+            def post_json_no_auth(self, **kwargs):
+                response = super().post_json_no_auth(**kwargs)
+                if kwargs["url"].endswith("/api/chat"):
+                    response["message"] = {"content": "", "thinking": response["message"]["content"]}
+                return response
+        transport = EmptyContent(events)
+        transport.thinking = True
+        with self.assertRaisesRegex(DocumentUnderstandingError, "^IMAGE_UNDERSTANDING_RESPONSE_INVALID$"):
+            OllamaImageDocumentAdapter(transport, Ocr(events)).understand(self.document, self.model, self.context)
+        self.assertEqual(events, ["tags", "show", "tags", "native"])
 
     def test_remote_nonvision_missing_metadata_or_digest_never_send_image(self):
         for field, value in (("remote", True), ("vision", False), ("model_info", {}), ("digest", "")):
