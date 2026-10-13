@@ -28,6 +28,9 @@ class Cursor:
 
 class FakeConnection:
     def __init__(self) -> None:
+        self.filename = "contract.pdf"
+        self.content_type = "application/pdf"
+        self.content = PDF
         self.states = {"ProcessingRun": "accepted", "Source": "registered"}
         self.versions = {"ProcessingRun": 1, "Source": 1}
         self.source_version_id = "source-version-cp3"
@@ -38,9 +41,9 @@ class FakeConnection:
         self.statements.append((sql, tuple(params)))
         if sql.startswith("SELECT sv.record_id"):
             return Cursor((
-                self.source_version_id, OBJECT_ID, {"filename": "contract.pdf"},
-                OBJECT_KEY, hashlib.sha256(PDF).hexdigest(), len(PDF),
-                "application/pdf", "completed",
+                self.source_version_id, OBJECT_ID, {"filename": self.filename},
+                OBJECT_KEY, hashlib.sha256(self.content).hexdigest(), len(self.content),
+                self.content_type, "completed",
             ))
         if sql.startswith("INSERT INTO processing_runs"):
             self.inserts.append("processing_runs")
@@ -88,10 +91,12 @@ class FakeCloudStore:
 
 
 class FakeObjectStorage:
+    content = PDF
+
     def get(self, key: str) -> bytes:
         if key != OBJECT_KEY:
             raise AssertionError(key)
-        return PDF
+        return self.content
 
 
 class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
@@ -123,6 +128,36 @@ class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
             "extraction_evidence", "extraction_evidence",
         ])
         self.assertEqual(self.cloud.capabilities, ["source.read", "source.process", "source.process"])
+
+    def test_loads_exact_txt_object_and_rejects_mime_or_digest_mismatch(self) -> None:
+        content = b"Actual TXT fact\n"
+        self.cloud.connection.filename = "notes.txt"
+        self.cloud.connection.content_type = "text/plain"
+        self.cloud.connection.content = content
+        self.repository._object_storage.content = content
+        document = self.repository.load_source_document(self.context, "source-cp3")
+        self.assertEqual((document.content, document.content_type), (content, "text/plain"))
+        self.cloud.connection.content_type = "application/pdf"
+        with self.assertRaisesRegex(Exception, "SOURCE_OBJECT_NOT_READY"):
+            self.repository.load_source_document(self.context, "source-cp3")
+        self.cloud.connection.content_type = "text/plain"
+        self.repository._object_storage.content = b"tampered"
+        with self.assertRaisesRegex(Exception, "SOURCE_OBJECT_CHECKSUM_MISMATCH"):
+            self.repository.load_source_document(self.context, "source-cp3")
+
+    def test_loads_registered_markdown_and_csv_but_rejects_cross_mime(self) -> None:
+        for filename, content_type in (("notes.md", "text/markdown"), ("notes.csv", "text/csv")):
+            with self.subTest(filename=filename):
+                content = b"ORANGE-COMPASS-42,active\n"
+                self.cloud.connection.filename = filename
+                self.cloud.connection.content_type = content_type
+                self.cloud.connection.content = content
+                self.repository._object_storage.content = content
+                document = self.repository.load_source_document(self.context, "source-cp3")
+                self.assertEqual((document.content, document.content_type), (content, content_type))
+                self.cloud.connection.content_type = "text/plain"
+                with self.assertRaisesRegex(Exception, "SOURCE_OBJECT_NOT_READY"):
+                    self.repository.load_source_document(self.context, "source-cp3")
 
     def test_failure_transitions_started_run_without_writing_false_result(self) -> None:
         run_id = self.repository.start(self.context, "source-version-cp3")

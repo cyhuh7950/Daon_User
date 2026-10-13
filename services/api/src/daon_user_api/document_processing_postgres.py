@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .document_processing import (
-    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument,
+    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format,
 )
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
@@ -99,9 +99,13 @@ class PostgresDocumentProcessingRepository:
             payload = cast(Mapping[str, object], row[2])
             filename = str(payload.get("filename", ""))
             object_key = str(row[3])
+            content_type = str(row[6])
+            original_format = (
+                (content_type == "application/pdf" and filename.lower().endswith(".pdf"))
+                or text_source_format(filename, content_type) is not None
+            )
             if (
-                str(row[7]) != "completed" or str(row[6]) != "application/pdf"
-                or not filename.lower().endswith(".pdf")
+                str(row[7]) != "completed" or not original_format
             ):
                 raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409)
             object_context = self._cloud_context(context, "object.read")
@@ -110,10 +114,10 @@ class PostgresDocumentProcessingRepository:
             if (
                 len(content) != int(row[5])
                 or hashlib.sha256(content).hexdigest() != str(row[4])
-                or not content.startswith(b"%PDF-")
+                or (content_type == "application/pdf" and not content.startswith(b"%PDF-"))
             ):
                 raise DocumentUnderstandingError("SOURCE_OBJECT_CHECKSUM_MISMATCH", status=409)
-            return StoredSourceDocument(source_id, str(row[0]), filename, content)
+            return StoredSourceDocument(source_id, str(row[0]), filename, content, content_type)
         except DocumentUnderstandingError:
             raise
         except ObjectStorageError as error:

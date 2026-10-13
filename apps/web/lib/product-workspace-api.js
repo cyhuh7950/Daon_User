@@ -1,5 +1,7 @@
 "use client";
 
+import { secureUuid } from "@daon-user/ui/secure-uuid";
+
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const SAFE_FILENAME = /^[^/\\\u0000-\u001f]{1,255}$/u;
 const URL_SEPARATOR = String.fromCharCode(58, 47, 47);
@@ -361,7 +363,7 @@ export async function getWorkspaceOutputVersionSettings(
 
 export async function saveWorkspaceOutputVersionSettings(
   workspaceId, settings,
-  { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {},
+  { fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {},
 ) {
   const workspace = requiredWorkspace(workspaceId, "OUTPUT_VERSION_SETTINGS_INPUT_INVALID");
   if (!record(settings) || !exact(settings, ["default_formats", "version", "etag"])
@@ -395,7 +397,7 @@ function validCreateRequest(request) {
 }
 
 export async function createGroundedReport(
-  workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {},
+  workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {},
 ) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   if (!safeId(notebookId) || !validCreateRequest(request) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
@@ -438,7 +440,7 @@ const STUDIO_OUTPUT_TYPES = new Set([
 ]);
 const STUDIO_ACTIONS = new Set(["reviews", "approval-requests", "approvals", "deliveries", "knowledge-registrations"]);
 
-export async function issueStudioStepUp(actionGroup, targetId, password, { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function issueStudioStepUp(actionGroup, targetId, password, { fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
   if (!new Set(["final_approval_or_knowledge_registration", "external_transfer", "data_area_move"]).has(actionGroup) || !safeId(targetId) || typeof password !== "string" || password.length < 12 || password.length > 1024) throw new Error("STUDIO_INPUT_INVALID");
   const response = await fetchImpl("/bff/api/session/step-up", {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
@@ -464,7 +466,7 @@ function validGeneration(request, workspaceId) {
     && (request.workspace_id === undefined || request.workspace_id === null || request.workspace_id === workspaceId);
 }
 
-export async function createStudioGeneration(workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function createStudioGeneration(workspaceId, request, { notebookId, fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!validGeneration(request, workspace) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
@@ -502,7 +504,7 @@ export async function listProductStudioOutputs(workspaceId, { notebookId, fetchI
   return { outputs: payload.data.outputs, studioLocks: payload.data.studio_locks };
 }
 
-export async function createStudioVersion(workspaceId, outputId, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function createStudioVersion(workspaceId, outputId, request, { notebookId, fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!safeId(outputId) || !record(request) || !safeId(request.previous_version_id)
@@ -573,7 +575,7 @@ export async function listStudioVersions(workspaceId, outputId, { notebookId, fe
   return payload.data.versions;
 }
 
-export async function createStudioAction(workspaceId, action, request, { notebookId, fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), signal } = {}) {
+export async function createStudioAction(workspaceId, action, request, { notebookId, fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
   if (!STUDIO_ACTIONS.has(action) || !record(request) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");

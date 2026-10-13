@@ -176,6 +176,63 @@ test("Native BFF exact Workspace·Recovery Route와 query만 허용하고 다른
   assert.equal(captured.length, acceptedCalls);
 });
 
+test("Native BFF permits exact TXT upload and original-text Citation without relaxing other media", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const calls = [];
+  const proxy = createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), type: init.headers.get("content-type") });
+      return String(url).endsWith("/sources")
+        ? Response.json({ data: {}, meta: {} }, { status: 202 })
+        : new Response("Original TXT fact", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    },
+  });
+  const bearer = { Authorization: "Bearer opaque-native-credential" };
+  const upload = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources", {
+    method: "POST", headers: { ...bearer, "Content-Type": "text/plain", "X-Source-Filename": "notes.txt" },
+    body: "Original TXT fact",
+  }), ["workspaces", "workspace-1", "sources"]);
+  const citation = await proxy(new Request(
+    "https://app.example.com/api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1",
+    { headers: bearer },
+  ), ["workspaces", "workspace-1", "citations", "citation-1", "content"]);
+  assert.equal(upload.status, 202);
+  assert.equal(citation.status, 200);
+  assert.equal(citation.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(await citation.text(), "Original TXT fact");
+  assert.equal(calls.length, 2);
+  const unsupported = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources", {
+    method: "POST", headers: { ...bearer, "Content-Type": "application/msword" }, body: "a,b",
+  }), ["workspaces", "workspace-1", "sources"]);
+  assert.equal(unsupported.status, 415);
+  assert.equal(calls.length, 2);
+});
+
+test("Native BFF forwards registered Markdown and CSV upload media exactly", async () => {
+  const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
+  const seen = [];
+  const proxy = createNativeBffProxy({
+    baseUrl: new URL("https://api.example.com"),
+    fetchImpl: async (_url, init) => {
+      seen.push(init.headers.get("content-type"));
+      return Response.json({ data: {}, meta: {} }, { status: 202 });
+    },
+  });
+  for (const [filename, mime] of [["notes.md", "text/markdown"], ["notes.csv", "text/csv"]]) {
+    const response = await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer opaque-native-credential", "Content-Type": mime,
+        "X-Source-Filename": filename,
+      },
+      body: "ORANGE-COMPASS-42,active",
+    }), ["workspaces", "workspace-1", "sources"]);
+    assert.equal(response.status, 202);
+  }
+  assert.deepEqual(seen, ["text/markdown", "text/csv"]);
+});
+
 test("Native BFF는 Set-Cookie·redirect·oversize·Credential 반사를 fail-close한다", async () => {
   const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
   assert.equal(typeof createNativeBffProxy, "function");

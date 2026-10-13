@@ -45,10 +45,13 @@ class FakeConnection:
         self.citation_row = None
         self.notebook_scope_row = None
         self.notebook_scope_rows: list[tuple[int] | None] = []
+        self.source_binding_active = True
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
         self.queries.append(sql)
         if sql.startswith("SELECT s.record_id,sv.record_id,s.state"):
+            if "nb.binding_kind='source'" in sql and not self.source_binding_active:
+                return Cursor()
             return Cursor(self.ready_row)
         if sql.startswith("SELECT rr.record_id,rr.canonical_json"):
             return Cursor(rows=self.completed_rows)
@@ -80,10 +83,12 @@ class FakeCloudStore:
 
 
 class FakeObjectStorage:
+    content = PDF
+
     def get(self, key: str) -> bytes:
         if key != "tenant-cp3/workspace-cp3/source/0123456789abcdef0123456789abcdef":
             raise AssertionError(key)
-        return PDF
+        return self.content
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
@@ -120,6 +125,15 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
             self.repository.load_ready_source(
                 self.context, "source-cp3", "source-version-old",
             )
+
+    def test_question_rejects_source_unbound_from_selected_notebook(self) -> None:
+        self.context = QuestionContext(
+            "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1", "notebook-other",
+        )
+        self.cloud.connection.source_binding_active = False
+        with self.assertRaisesRegex(QuestionRepositoryError, "QUESTION_SOURCE_UNAVAILABLE"):
+            self.repository.load_ready_source(self.context, "source-cp3", "source-version-cp3")
+        self.assertIn("nb.binding_kind='source'", " ".join(self.cloud.connection.queries))
 
     def test_completed_answer_appends_canon_run_attempt_result_citation_and_audit(self) -> None:
         evidence = (IndexedEvidenceChunk(
@@ -333,6 +347,60 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         self.assertEqual(content.media_type, "text/plain; charset=utf-8")
         self.assertEqual(content.content.decode("utf-8"), "Daon이 생성하고 승인한 일반 텍스트 지식")
         self.assertEqual(locator, {"kind": "section", "value": "span-knowledge"})
+
+    def test_uploaded_txt_citation_reads_current_bound_original_not_model_text(self) -> None:
+        original = b"ORANGE-COMPASS-42 is the source marker.\n"
+        self.context = QuestionContext(
+            "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1", "notebook-cp3",
+        )
+        self.cloud.connection.citation_row = (
+            "source-cp3", "source-version-cp3", "1", "1",
+            {"kind": "text_source_verbatim_fact", "text": "ORANGE-COMPASS-42"},
+            "uploaded", "report.txt", "ready", "span-txt",
+        )
+        self.cloud.connection.ready_row = (
+            "source-cp3", "source-version-cp3", "ready", "report.txt",
+            "0123456789abcdef0123456789abcdef",
+            "tenant-cp3/workspace-cp3/source/0123456789abcdef0123456789abcdef",
+            hashlib.sha256(original).hexdigest(), len(original), "text/plain", "completed",
+        )
+        self.repository._object_storage.content = original
+
+        content, locator = self.repository.read_citation_content(self.context, "citation-txt")
+        self.assertEqual((content.content, content.media_type), (original, "text/plain; charset=utf-8"))
+        self.assertEqual(locator, {"kind": "section", "value": "span-txt"})
+        self.assertIn("nb.binding_kind='source'", " ".join(self.cloud.connection.queries))
+
+        self.repository._object_storage.content = b"tampered"
+        with self.assertRaisesRegex(QuestionRepositoryError, "CITATION_CONTENT_UNAVAILABLE"):
+            self.repository.read_citation_content(self.context, "citation-txt")
+
+    def test_uploaded_markdown_and_csv_citation_reads_exact_current_bound_original(self) -> None:
+        self.context = QuestionContext(
+            "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1", "notebook-cp3",
+        )
+        for filename, object_mime in (("report.md", "text/markdown"), ("report.csv", "text/csv")):
+            with self.subTest(filename=filename):
+                original = b"ORANGE-COMPASS-42 is the source marker.\n"
+                self.cloud.connection.citation_row = (
+                    "source-cp3", "source-version-cp3", "1", "1",
+                    {"kind": "text_source_verbatim_fact", "text": "ORANGE-COMPASS-42"},
+                    "uploaded", filename, "ready", "span-text",
+                )
+                self.cloud.connection.ready_row = (
+                    "source-cp3", "source-version-cp3", "ready", filename,
+                    "0123456789abcdef0123456789abcdef",
+                    "tenant-cp3/workspace-cp3/source/0123456789abcdef0123456789abcdef",
+                    hashlib.sha256(original).hexdigest(), len(original), object_mime, "completed",
+                )
+                self.repository._object_storage.content = original
+                content, locator = self.repository.read_citation_content(self.context, "citation-text")
+                self.assertEqual((content.content, content.media_type), (original, "text/plain; charset=utf-8"))
+                self.assertEqual(locator, {"kind": "section", "value": "span-text"})
+                self.cloud.connection.source_binding_active = False
+                with self.assertRaisesRegex(QuestionRepositoryError, "QUESTION_SOURCE_UNAVAILABLE"):
+                    self.repository.read_citation_content(self.context, "citation-text")
+                self.cloud.connection.source_binding_active = True
 
 
 if __name__ == "__main__":

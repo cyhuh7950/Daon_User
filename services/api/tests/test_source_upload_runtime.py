@@ -211,6 +211,24 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.uploads.calls[0]["filename"], "notes.txt")
         self.assertEqual(self.uploads.calls[0]["content_type"], "text/plain")
 
+    async def test_authenticated_markdown_and_csv_upload_use_exact_registered_mime(self) -> None:
+        for filename, mime in (("notes.md", "text/markdown"), ("notes.csv", "text/csv")):
+            with self.subTest(filename=filename), self._authenticated():
+                response = await self.client.post(
+                    "/api/v1/workspaces/workspace-001/sources",
+                    content=b"ORANGE-COMPASS-42,active",
+                    cookies={WEB_SESSION_COOKIE: "opaque-session"},
+                    headers={
+                        "Content-Type": mime,
+                        "X-Source-Filename": filename,
+                        "X-Notebook-Id": "notebook-001",
+                        "Idempotency-Key": f"upload-{filename}",
+                        "X-Trace-Id": TRACE_ID,
+                    },
+                )
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual(self.uploads.calls[-1]["content_type"], mime)
+
     async def test_upload_rejects_supported_extension_with_wrong_content_type(self) -> None:
         with self._authenticated():
             response = await self.client.post(

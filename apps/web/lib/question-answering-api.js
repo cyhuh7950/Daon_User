@@ -1,3 +1,5 @@
+import { secureUuid } from "@daon-user/ui/secure-uuid";
+
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
 function requiredId(value) {
@@ -158,7 +160,7 @@ async function responseData(response) {
 export async function askGroundedQuestion(
   workspaceId,
   { notebookId, sourceId, sourceVersionId, knowledgeContext, question },
-  { fetchImpl = fetch, idempotencyKey = crypto.randomUUID(), stepUpAuthorizationId } = {},
+  { fetchImpl = fetch, idempotencyKey = secureUuid(), stepUpAuthorizationId } = {},
 ) {
   const workspace = requiredId(workspaceId);
   const notebook = requiredId(notebookId);

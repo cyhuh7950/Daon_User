@@ -5,6 +5,7 @@ import unittest
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from daon_user_api.cloud_storage import (
     CloudAccessContext,
@@ -29,10 +30,10 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 class CloudStorageContractTests(unittest.TestCase):
-    def test_readiness_tracks_c9_notebook_acl_schema_revision(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0056")
+    def test_readiness_tracks_canon_owner_migration_head(self) -> None:
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0058")
 
-    def test_readiness_accepts_c9_schema_head_and_rejects_prior_head(self) -> None:
+    def test_readiness_accepts_canon_owner_head_and_rejects_prior_head(self) -> None:
         class Result:
             def __init__(self, row):
                 self.row = row
@@ -63,12 +64,52 @@ class CloudStorageContractTests(unittest.TestCase):
                 yield Connection(self.revision)
 
         store = object.__new__(PostgresCloudStore)
-        for revision, expected_ready in (("0056", True), ("0055", False), ("0054", False)):
+        for revision, expected_ready in (("0058", True), ("0057", False), ("0056", False)):
             store._pool = Pool(revision)
             status = store.readiness()
             self.assertEqual(status.ready, expected_ready)
             self.assertEqual(status.schema_revision, revision)
             self.assertEqual(status.vector_version, "0.8.2")
+
+    def test_closed_pool_opens_only_after_canon_owner_head_is_ready(self) -> None:
+        class Result:
+            def __init__(self, row):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class Connection:
+            def __init__(self, revision):
+                self.revision = revision
+
+            def execute(self, query, _params=()):
+                if query == "SELECT version_num FROM alembic_version":
+                    return Result((self.revision,))
+                if "FROM pg_extension" in query:
+                    return Result(("0.8.2",))
+                raise AssertionError(query)
+
+        class Pool:
+            closed = True
+
+        store = object.__new__(PostgresCloudStore)
+        store._pool = Pool()
+        opened = []
+        store._ensure_pool_open = lambda: opened.append(True)
+
+        for revision, expected_ready in (("0057", False), ("0058", True)):
+            @contextmanager
+            def connect_stub(_dsn, *, connect_timeout):
+                self.assertEqual(connect_timeout, 1)
+                yield Connection(revision)
+
+            store._dsn = "unused-test-dsn"
+            with patch("daon_user_api.cloud_storage.connect", connect_stub):
+                status = store.readiness()
+            self.assertEqual(status.ready, expected_ready)
+            self.assertEqual(status.schema_revision, revision)
+            self.assertEqual(len(opened), int(expected_ready))
 
     def test_postgres_major_version_range_accepts_packaging_suffix(self) -> None:
         for value in ("15.13", "16.9 (Debian 16.9-1.pgdg12+1)", "17.5", "18.4"):
@@ -174,7 +215,7 @@ class PostgresCloudIntegrationTests(unittest.TestCase):
     def test_readiness_requires_migration_and_vector(self) -> None:
         status = self.store.readiness()
         self.assertTrue(status.ready)
-        self.assertEqual(status.schema_revision, "0056")
+        self.assertEqual(status.schema_revision, "0058")
         self.assertEqual(status.vector_version, "0.8.2")
 
     def test_rls_blocks_cross_tenant_and_context_does_not_leak(self) -> None:

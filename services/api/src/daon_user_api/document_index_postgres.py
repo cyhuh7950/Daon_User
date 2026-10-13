@@ -27,6 +27,7 @@ class IndexedEvidenceChunk:
     text: str
     evidence_span_id: str
     score: float = 0.0
+    locator_kind: str = "page"
 
 
 class PostgresDocumentIndex:
@@ -125,8 +126,14 @@ class PostgresDocumentIndex:
                 "evidence_span_id": evidence_span_id,
                 "evidence_kind": "parser_page_validated_semantic_fact",
             })
-        strategy = "vision_llm_facts_with_parser_page_validation"
+        text_source = result.lineage.get("source_format") in {"txt", "md", "csv"}
+        if text_source:
+            for chunk in chunks:
+                chunk["evidence_kind"] = "text_source_verbatim_fact"
+        strategy = "text_llm_facts_with_original_validation" if text_source else "vision_llm_facts_with_parser_page_validation"
         if not all_facts_located:
+            if text_source:
+                raise DocumentUnderstandingError("TEXT_UNDERSTANDING_UNGROUNDED", status=409)
             strategy = "vision_llm_facts_with_parser_page_fallback"
             chunks = []
             for page, page_text in page_texts:
@@ -268,6 +275,7 @@ class PostgresDocumentIndex:
                     str(raw["chunk_id"]), source_id, source_version_id,
                     int(raw["page"]), str(raw["text"]), str(raw["evidence_span_id"]),
                     len(overlap) / len(query_tokens),
+                    "section" if raw.get("evidence_kind") == "text_source_verbatim_fact" else "page",
                 ))
             return tuple(sorted(
                 matches, key=lambda item: (-item.score, item.page, item.chunk_id),

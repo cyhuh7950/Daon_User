@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
+import { createStudioAction, createStudioVersion } from "../../apps/web/lib/product-workspace-api.js";
 
 test("생성 클릭은 queued·leased·generating 동안 진행을 유지하고 completed 산출물을 표시한다", async () => {
   const rootPath = path.resolve(import.meta.dirname, "../.."); const output = await mkdtemp(path.join(rootPath, ".product-studio-generating-react-")); const dom = installMinimalDom(); let reactRoot;
@@ -41,20 +42,37 @@ test("생성 클릭은 queued·leased·generating 동안 진행을 유지하고 
 
 test("실제 React click은 저장 구조 산출물을 선택하고 검토·승인요청 adapter를 호출한다", async () => {
   const rootPath = path.resolve(import.meta.dirname, "../.."); const output = await mkdtemp(path.join(rootPath, ".product-studio-click-react-")); const dom = installMinimalDom(); let reactRoot;
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
   try {
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: { getRandomValues(bytes) { bytes.fill(7); return bytes; } } });
     const { build } = await import("vite"); const { createElement, act } = await import("react"); const { createRoot } = await import("react-dom/client");
     await build({ configFile: false, logLevel: "silent", root: rootPath, build: { outDir: output, emptyOutDir: false, lib: { entry: path.join(rootPath, "packages/ui/src/product-studio-pane.jsx"), formats: ["es"], fileName: "product-studio" }, rollupOptions: { external: ["react", "react-dom", "react-dom/client"] } } });
     const entry = (await readdir(output)).find((name) => name.startsWith("product-studio") && /\.m?js$/u.test(name)); const { ProductStudioPane } = await import(`${pathToFileURL(path.join(output, entry)).href}?v=${Date.now()}`);
-    const calls = []; const adapter = { createStudioVersion: async (_id, payload) => { calls.push(["version", payload.revision_type]); return { output_version_id: "version-2", status: "draft" }; }, createStudioAction: async (action, payload) => { calls.push([action, payload.decision]); return { record_id: `${action}-1` }; }, issueStudioStepUp: async (_group, _target, password) => { calls.push(["step-up", password]); return "grant"; } };
+    const calls = []; const requestKeys = []; const fetchImpl = async (url, init) => {
+      requestKeys.push(init.headers["Idempotency-Key"]);
+      return Response.json({ data: String(url).endsWith("/versions")
+        ? { output_version_id: "version-2", status: "draft" }
+        : { record_id: "action-1" }, meta: { trace_id: "trace-1", workspace_id: "workspace-1", replayed: false } }, { status: 201 });
+    };
+    const adapter = { createStudioVersion: async (id, payload) => { calls.push(["version", payload.revision_type]); return createStudioVersion("workspace-1", id, payload, { notebookId: "notebook-1", fetchImpl }); }, createStudioAction: async (action, payload) => { calls.push([action, payload.decision]); return createStudioAction("workspace-1", action, payload, { notebookId: "notebook-1", fetchImpl }); }, issueStudioStepUp: async (_group, _target, password) => { calls.push(["step-up", password]); return "grant"; } };
     const state = { status: "ready", workspaceId: "workspace-1", grounded: null, locks: [], selectedOutputType: null, settings: {}, settingsConfirmed: false, settingsSnapshot: null, outputs: [{ studio_output_id: "output-1", output_version_id: "version-1", title: "반려 보고서", status: "revision_requested", citations: 1, review_request_id: "review-old", approval_request_id: "approval-old", content: { summary: "반려" } }], selectedOutputId: "output-1", pending: false, safeError: null };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container); await act(async () => { reactRoot.render(createElement(ProductStudioPane, { state, adapter })); });
     await act(async () => { buttonByText(container, "반려 보고서").dispatchEvent(new MinimalEvent("click")); });
     assert.match(container.textContent, /반려/);
     assert.doesNotMatch(container.textContent, /추가 인증 비밀번호/);
+    const reason = findElements(container, (node) => node.tagName === "LABEL" && node.textContent.includes("변경 사유"))[0];
+    const reasonInput = findElements(reason, (node) => node.tagName === "INPUT")[0];
+    const contentLabel = findElements(container, (node) => node.tagName === "LABEL" && node.textContent.includes("편집 내용"))[0];
+    const contentInput = findElements(contentLabel, (node) => node.tagName === "TEXTAREA")[0];
+    const reactProps = (element) => element[Object.keys(element).find((key) => key.startsWith("__reactProps"))];
+    await act(async () => { reactProps(reasonInput).onChange({ currentTarget: { value: "내용 수정" } }); reactProps(contentInput).onChange({ currentTarget: { value: "새 내용" } }); });
+    await act(async () => { buttonByText(container, "편집 새 Version").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     await act(async () => { buttonByText(container, "검토 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); }); await act(async () => { buttonByText(container, "승인 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     await act(async () => { buttonByText(container, "승인").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
-    assert.deepEqual(calls.map((item) => item[0]), ["reviews", "approval-requests", "approvals"]);
-  } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
+    assert.deepEqual(calls.map((item) => item[0]), ["version", "reviews", "approval-requests", "approvals"]);
+    assert.equal(requestKeys.length, 4);
+    for (const key of requestKeys) assert.match(key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto); else delete globalThis.crypto; dom.restore(); await rm(output, { recursive: true, force: true }); }
 });
 
 test("Library 재진입은 Version 이력과 Raw·Daon Citation을 실제 DOM에 복원한다", async () => {

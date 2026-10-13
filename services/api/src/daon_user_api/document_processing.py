@@ -20,6 +20,12 @@ from .workspace_model_defaults import (
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+_TEXT_SOURCE_MIMES = {"txt": "text/plain", "md": "text/markdown", "csv": "text/csv"}
+
+
+def text_source_format(filename: str, content_type: str) -> str | None:
+    suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return suffix if _TEXT_SOURCE_MIMES.get(suffix) == content_type else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +52,7 @@ class StoredSourceDocument:
     source_version_id: str
     filename: str
     content: bytes
+    content_type: str = "application/pdf"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +130,13 @@ class DocumentAdapterFactory(Protocol):
     ) -> DocumentUnderstandingPort: ...
 
 
+class TextDocumentUnderstandingPort(Protocol):
+    def understand(
+        self, document: StoredSourceDocument, selection: ResolvedModel,
+        context: DocumentProcessingContext,
+    ) -> DocumentUnderstandingResult: ...
+
+
 class DefaultDocumentAdapterFactory:
     def create(
         self, selection: DocumentModelSelection,
@@ -142,10 +156,15 @@ class DocumentProcessingService:
         repository: DocumentProcessingRepository,
         model_resolver: WorkspaceModelResolverPort,
         adapter_factory: DocumentAdapterFactory,
+        *, text_adapter: TextDocumentUnderstandingPort | None = None,
     ) -> None:
         self._repository = repository
         self._model_resolver = model_resolver
         self._adapter_factory = adapter_factory
+        if text_adapter is None:
+            from .text_document_understanding import OllamaTextDocumentAdapter
+            text_adapter = OllamaTextDocumentAdapter(UrlLibDocumentUnderstandingTransport())
+        self._text_adapter = text_adapter
 
     def process(
         self, context: DocumentProcessingContext, *, source_id: str,
@@ -166,6 +185,13 @@ class DocumentProcessingService:
         processing_run_id: str,
     ) -> DocumentUnderstandingResult:
         try:
+            if text_source_format(document.filename, document.content_type) is not None:
+                with self._model_resolver.resolve(
+                    context.model_context(), "text_generation",
+                ) as text_model:
+                    result = self._text_adapter.understand(document, text_model, context)
+                self._repository.complete(context, processing_run_id, result)
+                return result
             with self._model_resolver.resolve(
                 context.model_context(), "image_understanding",
             ) as semantic, self._model_resolver.resolve(

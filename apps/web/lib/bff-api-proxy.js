@@ -784,7 +784,7 @@ function nativeRouteFor(method, segments, requestUrl) {
       : { methodRejected: true };
   } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "sources") {
     matched = new Set(["GET", "POST"]).has(method)
-      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaType: "application/pdf" } : {})
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaTypes: ["application/pdf", "text/plain", "text/markdown", "text/csv"] } : {})
       : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs" && SAFE_SEGMENT.test(segments[3])) {
     matched = method === "GET"
@@ -796,7 +796,7 @@ function nativeRouteFor(method, segments, requestUrl) {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, { requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "citations" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "content") {
     matched = method === "GET"
-      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { expectsPdf: true, maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { responseMediaTypes: ["application/pdf", "text/plain"], maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
       : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "reports") {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/reports`, { requestMediaType: "application/json" }) : { methodRejected: true };
@@ -1247,7 +1247,7 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
           return createBffSafeError(413, "REQUEST_TOO_LARGE", trace);
         }
         sensitiveValues.push(...nativeSensitiveBodyValues(body, route.path));
-        if (body.byteLength > 0 && exactMediaType(request.headers.get("content-type")) !== route.requestMediaType
+        if (body.byteLength > 0 && !(route.requestMediaTypes ?? [route.requestMediaType]).includes(exactMediaType(request.headers.get("content-type")))
           && route.path !== "/api/v1/session/tenant") {
           return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
         }
@@ -1287,8 +1287,8 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
       let body = null;
       if (upstream.status !== 204) {
         const contentType = upstream.headers.get("content-type")?.toLowerCase() ?? "";
-        const expectedType = route.expectsPdf ? "application/pdf" : "application/json";
-        if (exactMediaType(contentType) !== expectedType) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
+        const expectedTypes = route.responseMediaTypes ?? [route.expectsPdf ? "application/pdf" : "application/json"];
+        if (!expectedTypes.includes(exactMediaType(contentType))) return createBffSafeError(502, "GATEWAY_RESPONSE_REJECTED", trace);
         try {
           body = await waitWithAbort(upstream.arrayBuffer(), abortScope.signal, () => upstream.body?.cancel());
         } catch {

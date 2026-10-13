@@ -12,6 +12,7 @@ import {
   projectQuestionFailureState,
 } from "../../packages/ui/src/product-workspace-model.js";
 import { classifyConversationIntent, buildSourceScopeMismatch } from "../../packages/ui/src/conversation-intent.js";
+import { uploadSource } from "../../apps/web/lib/source-upload-api.js";
 
 const adapter = Object.freeze({
   listSources() {}, uploadPdf() {}, getProcessingStatus() {}, askQuestion() {},
@@ -86,6 +87,91 @@ const sourceRetryPayload = {
   source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf",
   source_state: "ready", processing_state: "completed", job_state: "completed",
 };
+
+test("HTTP QA React 질문은 randomUUID 없이 실제 adapter와 secure idempotency key를 사용한다", async () => {
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const calls = [];
+  let workspace;
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { getRandomValues(bytes) { bytes.fill(7); return bytes; } },
+    });
+    workspace = await mountSourceRetryWorkspace({
+      ...adapter,
+      async listSources() { return []; },
+      async listStudioOutputs() { return []; },
+      async askQuestion(input, options) {
+        calls.push({ input, options });
+        return { run_id: "run-1", run_result_id: "result-1", answer: "응답", insufficient: false, citations: [] };
+      },
+    }, "http-qa-question");
+    const textarea = findElements(workspace.container, (node) => node.tagName === "TEXTAREA")[0];
+    const textareaProps = textarea[Object.keys(textarea).find((key) => key.startsWith("__reactProps$"))];
+    textarea.value = "다음 작업은?";
+    await workspace.act(async () => textareaProps.onChange({ currentTarget: textarea, target: textarea }));
+    const form = findElements(workspace.container, (node) => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
+    const formProps = form[Object.keys(form).find((key) => key.startsWith("__reactProps$"))];
+    await workspace.act(async () => formProps.onSubmit({ preventDefault() {} }));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].input.question, "다음 작업은?");
+    assert.match(calls[0].options.idempotencyKey, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  } finally {
+    if (workspace) await workspace.cleanup();
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+  }
+});
+
+test("HTTP QA React TXT 선택은 randomUUID 없이 실제 Source POST를 전송한다", async () => {
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const calls = [];
+  let workspace;
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { getRandomValues(bytes) { bytes.fill(7); return bytes; } },
+    });
+    workspace = await mountSourceRetryWorkspace({
+      ...adapter,
+      async listSources() { return []; },
+      async listStudioOutputs() { return []; },
+      async uploadPdf(file) {
+        return uploadSource("workspace-1", file, {
+          notebookId: "notebook-1",
+          fetchImpl: async (url, init) => {
+            calls.push({ url, init });
+            return Response.json({ data: {
+              source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32),
+              digest_sha256: "b".repeat(64), byte_size: file.size, status: "accepted", replayed: false,
+              processing_run_id: "processing-1", processing_state: "processing", job_state: "queued",
+            }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } }, { status: 202 });
+          },
+        });
+      },
+      async getProcessingStatus() { return {
+        processing_run_id: "processing-1", source_id: "source-1", source_version_id: "version-1",
+        processing_state: "completed", source_state: "ready", job_state: "completed", safe_error_code: null,
+      }; },
+    }, "http-qa-upload");
+    const addButton = findElements(workspace.container, (node) => node.tagName === "BUTTON" && node.getAttribute?.("class") === "source-add-button")[0];
+    await workspace.act(async () => addButton.dispatchEvent(new MinimalEvent("click")));
+    assert.match(workspace.container.textContent, /질문·Studio 처리 지원: PDF\(문서 모델 필요\), TXT\/MD\/CSV/u);
+    assert.match(workspace.container.textContent, /이미지·Office·오디오는 현재 보관 등록만 가능/u);
+    const fileInput = findElements(workspace.container, (node) => node.tagName === "INPUT" && node.getAttribute?.("accept")?.includes(".txt"))[0];
+    Object.defineProperty(fileInput, "files", {
+      configurable: true, value: [new File(["ORANGE-COMPASS-42"], "notes.txt", { type: "text/plain" })],
+    });
+    await workspace.act(async () => { fileInput.dispatchEvent(new MinimalEvent("change")); await Promise.resolve(); await Promise.resolve(); });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/sources");
+    assert.match(calls[0].init.headers["Idempotency-Key"], /^source-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  } finally {
+    if (workspace) await workspace.cleanup();
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+  }
+});
 
 test("같은 PDF를 다시 선택해도 Source 업로드 change가 재실행된다", async () => {
   let uploadCalls = 0;
@@ -275,8 +361,12 @@ test("Source 작업은 Notebook 연결 해제와 즉시 삭제를 분리한다",
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".workspace-source-actions-react-"));
   const dom = installMinimalDom();
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
   let reactRoot;
   try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true, value: { getRandomValues(bytes) { bytes.fill(7); return bytes; } },
+    });
     const { build } = await import("vite");
     const { createElement, act } = await import("react");
     const { createRoot } = await import("react-dom/client");
@@ -294,7 +384,7 @@ test("Source 작업은 Notebook 연결 해제와 즉시 삭제를 분리한다",
       async listSources() { return [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }]; },
       async listStudioOutputs() { return []; },
       async unbindSource(source, options) { calls.push(["unbind", source.sourceId, options.bindingEtag]); },
-      async requestSourceDeletion(source) { calls.push(["request", source.sourceId]); return { data: { request_id: "request-1", source_id: source.sourceId, state: "purged" }, etag: '"deletion:request-1:1"' }; },
+      async requestSourceDeletion(source, options) { calls.push(["request", source.sourceId, options.idempotencyKey]); return { data: { request_id: "request-1", source_id: source.sourceId, state: "purged" }, etag: '"deletion:request-1:1"' }; },
     };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
     reactRoot = createRoot(container);
@@ -306,12 +396,16 @@ test("Source 작업은 Notebook 연결 해제와 즉시 삭제를 분리한다",
     await act(async () => deletion.dispatchEvent(new MinimalEvent("click")));
     const confirm = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 확인")[0];
     await act(async () => { confirm.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
-    assert.deepEqual(calls, [["request", "source-1"]]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].slice(0, 2), ["request", "source-1"]);
+    assert.match(calls[0][2], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
     assert.match(container.textContent, /Source가 즉시 삭제되었습니다/u);
     assert.equal(findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소").length, 0);
-    assert.deepEqual(calls, [["request", "source-1"]]);
+    assert.equal(calls.length, 1);
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
     dom.restore(); await rm(output, { recursive: true, force: true });
   }
 });

@@ -126,6 +126,46 @@ class PostgresDocumentIndexTests(unittest.TestCase):
             "understanding-cp3",
         )
 
+    def test_txt_semantic_fact_creates_section_locator_without_pdf_fallback(self) -> None:
+        result = ready_result()
+        result = DocumentUnderstandingResult(
+            result.source_id, result.source_version_id, result.status, result.substates,
+            result.semantic, result.parser,
+            {"provider_code": "OLLAMA", "source_format": "txt"},
+        )
+        self.index.index_result(self.context, result)
+        chunks = self.index.search(
+            self.context, source_id=result.source_id,
+            source_version_id=result.source_version_id, query="해지 통보",
+        )
+        self.assertEqual(chunks[0].locator_kind, "section")
+        self.assertEqual(
+            self.cloud.connection.index_payload["chunks"][0]["evidence_kind"],
+            "text_source_verbatim_fact",
+        )
+
+    def test_markdown_and_csv_semantic_facts_create_original_text_sections(self) -> None:
+        for source_format in ("md", "csv"):
+            with self.subTest(source_format=source_format):
+                self.cloud = FakeCloudStore()
+                self.index = PostgresDocumentIndex(self.cloud)
+                original = ready_result()
+                result = DocumentUnderstandingResult(
+                    original.source_id, original.source_version_id, original.status,
+                    original.substates, original.semantic, original.parser,
+                    {"provider_code": "OLLAMA", "source_format": source_format},
+                )
+                self.index.index_result(self.context, result)
+                self.assertEqual(
+                    self.cloud.connection.index_payload["chunks"][0]["evidence_kind"],
+                    "text_source_verbatim_fact",
+                )
+                self.assertEqual(
+                    self.index.search(self.context, source_id=result.source_id,
+                                      source_version_id=result.source_version_id, query="해지 통보")[0].locator_kind,
+                    "section",
+                )
+
     def test_search_is_fixed_to_source_version_and_keeps_page_evidence(self) -> None:
         self.index.index_result(self.context, ready_result())
 

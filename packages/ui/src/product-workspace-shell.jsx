@@ -6,6 +6,7 @@ import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductW
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
 import { classifyConversationIntent } from "./conversation-intent.js";
+import { secureUuid } from "./secure-uuid.js";
 import "./workspace.css";
 
 const STATE_LABELS = Object.freeze({
@@ -420,7 +421,7 @@ export async function submitGroundedReport({ adapter, state, title, purpose, ide
 }
 
 export async function submitGroundedReportForm(event, {
-  adapter, state, title, purpose, idempotencyRef, uuid = () => crypto.randomUUID(), signal,
+  adapter, state, title, purpose, idempotencyRef, uuid = secureUuid, signal,
 }) {
   event?.preventDefault();
   const normalized = {
@@ -887,7 +888,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     try {
       await adapter.unbindSource(sourceAction, {
         bindingEtag: adapter.bindingEtag,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: secureUuid(),
         signal: lifetimeControllerRef.current?.signal,
       });
       setSourceAction(null);
@@ -904,7 +905,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     setSourceActionPending(true);
     setSourceActionSafeError(null);
     try {
-      const result = await adapter.requestSourceDeletion(sourceAction, { idempotencyKey: crypto.randomUUID(), signal: lifetimeControllerRef.current?.signal });
+      const result = await adapter.requestSourceDeletion(sourceAction, { idempotencyKey: secureUuid(), signal: lifetimeControllerRef.current?.signal });
       setSourceAction({ ...sourceAction, deletionRequest: result });
       setLoadRevision((current) => current + 1);
     } catch (error) {
@@ -922,7 +923,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     try {
       const result = await adapter.cancelSourceDeletionRequest(request.data.request_id, {
         etag: request.etag,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: secureUuid(),
         signal: lifetimeControllerRef.current?.signal,
       });
       setSourceAction({ ...sourceAction, deletionRequest: result });
@@ -946,7 +947,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       }
       const signal = lifetimeControllerRef.current.signal;
       if (!signal || signal.aborted) return;
-      const idempotencyKey = crypto.randomUUID();
+      const idempotencyKey = secureUuid();
       const knowledgeContext = viewState.selectedSource || selectedKnowledgeId
         ? buildQuestionKnowledgeContext(viewState.selectedSource, selectedKnowledgeId)
         : null;
@@ -1103,7 +1104,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     setSyncPending(true);
     setSyncSafeError(null);
     try {
-      const idempotencyKey = crypto.randomUUID();
+      const idempotencyKey = secureUuid();
       const stepUpAuthorizationId = await adapter.issueStudioStepUp(
         "data_area_move", operation.operation_id, password,
         { idempotencyKey, signal: lifetimeControllerRef.current?.signal },
@@ -1167,7 +1168,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     try {
       const document = JSON.parse(await file.text());
       const saved = await adapter.applyLicense(document, password, {
-        idempotencyKey: crypto.randomUUID(), signal: lifetimeControllerRef.current?.signal,
+        idempotencyKey: secureUuid(), signal: lifetimeControllerRef.current?.signal,
       });
       setLicenseView(saved);
     } catch (error) {
@@ -1290,7 +1291,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <nav className="source-add-tabs" aria-label="Source 유형">
               {[['file', '파일 업로드'], ['website', '웹사이트'], ['drive', 'Drive'], ['text', '복사한 텍스트'], ['mcp', 'MCP 연결']].map(([mode, label]) => <button key={mode} type="button" aria-pressed={sourceAddMode === mode} onClick={() => { setSourceAddMode(mode); setSourceAddError(null); }} disabled={sourceAddPending}>{label}</button>)}
             </nav>
-            {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>PDF, 이미지, 문서, 오디오 등 지원 형식</small><input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.m4a,.wav,.mp3" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
+            {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV. 이미지·Office·오디오는 현재 보관 등록만 가능</small><input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.m4a,.wav,.mp3" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
             {sourceAddMode === "text" ? <><textarea value={sourceAddText} onChange={(event) => setSourceAddText(event.target.value)} placeholder="복사한 텍스트를 붙여 넣으세요" disabled={sourceAddPending} /><button type="button" className="primary-button" onClick={() => void submitPastedText()} disabled={sourceAddPending || !sourceAddText.trim()}>{sourceAddPending ? "등록 중" : "텍스트 등록"}</button></> : null}
             {sourceAddMode === "mcp" ? <div className="source-add-unavailable"><strong>국가법령정보센터 MCP</strong><small>연결을 등록하면 연결형 Source에서 상태를 확인하고 선택할 수 있습니다.</small><button type="button" className="primary-button" onClick={() => void registerMcpConnector()} disabled={sourceAddPending}>{sourceAddPending ? "등록 중" : "MCP 연결 등록"}</button></div> : null}
             {sourceAddMode === "website" || sourceAddMode === "drive" ? <div className="source-add-unavailable" role="status"><strong>{sourceAddMode === "website" ? "웹사이트" : "Drive"} 연결 준비 필요</strong><small>외부 원본을 가져오는 Connector가 연결되면 이 흐름에서 등록할 수 있습니다.</small></div> : null}

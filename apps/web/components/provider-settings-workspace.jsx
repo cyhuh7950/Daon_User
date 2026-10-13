@@ -200,6 +200,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const [healthSettings, setHealthSettings] = useState({ interval_minutes: 60, version: 0 });
   const [healthIntervalDraft, setHealthIntervalDraft] = useState(60);
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
+  const [modelDefaults, setModelDefaults] = useState(null);
+  const [textModelChoice, setTextModelChoice] = useState("");
+  const [defaultStatus, setDefaultStatus] = useState("");
+  const [savingDefault, setSavingDefault] = useState(false);
 
   const selectConnection = useCallback((connection) => {
     setSelectedId(connection.connection_id);
@@ -247,6 +251,19 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
         setHealthSettings(health.payload.data);
         setHealthIntervalDraft(health.payload.data.interval_minutes);
       }
+      try {
+        const defaultsResult = await providerSettingsApi.getModelDefaults(activeWorkspaceId);
+        const snapshot = defaultsResult.payload?.data;
+        if (!snapshot || snapshot.workspace_id !== activeWorkspaceId || !defaultsResult.etag) throw new Error("MODEL_DEFAULTS_INVALID");
+        setModelDefaults({ ...snapshot, etag: defaultsResult.etag });
+        const currentText = snapshot.defaults?.find((item) => item.capability === "text_generation");
+        setTextModelChoice(currentText ? modelKey(currentText.connection_id, currentText.model_id) : "");
+        setDefaultStatus("");
+      } catch {
+        setModelDefaults(null);
+        setTextModelChoice("");
+        setDefaultStatus("기본 모델을 불러오지 못했습니다. 새로고침 후 다시 시도해 주세요.");
+      }
       setStatus({ kind: "ready", message: systemAdmin ? "시스템 연결과 모델 목록을 조회했습니다." : "공유 Provider 연결과 개인 키 설정을 조회했습니다." });
     } catch {
       setStatus({ kind: "error", message: "Provider 설정을 불러오지 못했습니다. 다시 시도해 주세요." });
@@ -264,6 +281,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
       ? []
       : connection.models.filter((model) => model.catalog_status === "ready" && (connection.allowed_model_ids ?? []).includes(model.model_id)).map((model) => ({ connection, model }))
   )), [connections, userCredentials]);
+  const textModelOptions = useMemo(() => (modelDefaults?.available_models ?? []).filter(
+    (model) => model.catalog_status === "ready" && model.effective_capabilities?.includes("text_generation"),
+  ), [modelDefaults]);
+  const savedTextModel = modelDefaults?.defaults?.find((item) => item.capability === "text_generation") ?? null;
   const availableModels = useMemo(() => (
     [...new Set([
       ...(draft.auto_model_id.trim() ? [draft.auto_model_id.trim()] : []),
@@ -275,6 +296,29 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   ), [draft.auto_model_id, selectedConnection, previewModelIds]);
   const selectedModelIds = useMemo(() => normalizedLogicalModels(draft.logical_model_ids), [draft.logical_model_ids]);
   const customProbeCount = selectedModelIds.length + (draft.auto_model_id.trim() && !selectedModelIds.includes(draft.auto_model_id.trim()) ? 1 : 0);
+
+  async function saveTextModelDefault() {
+    if (!resolvedWorkspaceId || !modelDefaults?.etag || !textModelChoice || savingDefault) return;
+    const selected = textModelOptions.find((item) => modelKey(item.connection_id, item.model_id) === textModelChoice);
+    if (!selected) return;
+    setSavingDefault(true);
+    setDefaultStatus("기본 모델을 저장하는 중입니다.");
+    try {
+      const result = await providerSettingsApi.saveModelDefault(resolvedWorkspaceId, {
+        capability: "text_generation", connection_id: selected.connection_id,
+        model_id: selected.model_id, expected_version: savedTextModel?.version ?? 0,
+      }, modelDefaults.etag, operationKey("text-model-default"));
+      if (!result.payload?.data || !result.etag) throw new Error("MODEL_DEFAULTS_INVALID");
+      setModelDefaults({ ...result.payload.data, etag: result.etag });
+      setDefaultStatus("텍스트 생성 기본 모델을 저장했습니다. 실제 모델 호출 결과는 문서 처리나 질문에서 확인해 주세요.");
+    } catch (error) {
+      setDefaultStatus(error?.code === "VERSION_CONFLICT" || error?.code === "PRECONDITION_FAILED"
+        ? "기본 모델 설정이 다른 변경과 충돌했습니다. 새로고침 후 다시 선택해 주세요."
+        : "기본 모델을 저장하지 못했습니다. 연결과 권한을 확인한 뒤 다시 시도해 주세요.");
+    } finally {
+      setSavingDefault(false);
+    }
+  }
 
   async function saveConnection(includeCredential) {
     const connectionId = draft.connection_id.trim();
@@ -592,6 +636,11 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
 
       <section className="workspace-model-defaults" aria-labelledby="provider-models-title">
         <div className="studio-section-heading"><div><span className="section-kicker">MODEL CATALOG</span><h2 id="provider-models-title">사용 허용 모델</h2><small>{isSystemAdmin ? "조회된 카탈로그와 사용 허용 목록을 구분해 관리합니다." : "시스템 관리자가 허용한 모델만 표시합니다."}</small></div></div>
+        <div className="workspace-default-controls">
+          <label>텍스트 생성 기본 모델<select value={textModelChoice} onChange={(event) => setTextModelChoice(event.target.value)} disabled={!modelDefaults || savingDefault}><option value="">선택해 주세요</option>{textModelOptions.map((model) => <option key={modelKey(model.connection_id, model.model_id)} value={modelKey(model.connection_id, model.model_id)}>{model.display_name} · {model.model_id}</option>)}</select></label>
+          <button type="button" className="secondary-button" onClick={saveTextModelDefault} disabled={!modelDefaults || !textModelChoice || savingDefault || textModelChoice === (savedTextModel ? modelKey(savedTextModel.connection_id, savedTextModel.model_id) : "")}>기본 모델 저장</button>
+          <small role="status">{defaultStatus || (savedTextModel ? "현재 Workspace 기본 모델이 저장되어 있습니다." : "현재 Workspace 기본 모델이 없습니다.")}</small>
+        </div>
         <div className="provider-model-grid">
           {adminAvailableModels.map(({ connection, model }) => (
             <article className="provider-model-card" key={modelKey(connection.connection_id, model.model_id)}><header><div><strong>{formatModelChoice(connection, model)}</strong><small>Catalog v{model.catalog_version}</small></div><span className="connection-badge is-ready">사용 가능</span></header><div className="model-capabilities">{model.effective_capabilities.map((capability) => <span className="capability-chip is-active" key={capability}>{CAPABILITY_LABELS[capability] ?? capability}</span>)}</div></article>

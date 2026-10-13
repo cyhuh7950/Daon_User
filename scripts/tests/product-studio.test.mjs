@@ -32,6 +32,37 @@ test("Product Studio는 혼합 Context의 모든 Citation Source Version을 생�
   assert.deepEqual(createStudioGenerationInput(state).source_version_ids, mixed.sourceVersionIds);
 });
 
+test("HTTP QA Studio version과 review action은 randomUUID 없이 secure key로 호출한다", async () => {
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const calls = [];
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { getRandomValues(bytes) { bytes.fill(7); return bytes; } },
+    });
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, key: init.headers["Idempotency-Key"] });
+      return Response.json({ data: { output_version_id: "version-2", status: "draft" }, meta: {
+        trace_id: "trace-1", workspace_id: "workspace-1", replayed: false,
+      } }, { status: 201 });
+    };
+    await createStudioVersion("workspace-1", "output-1", {
+      previous_version_id: "version-1", revision_type: "user_edit",
+      change_reason: "내용 정리", content: "검토할 내용",
+    }, { notebookId: "notebook-1", fetchImpl });
+    await createStudioAction("workspace-1", "reviews", {
+      output_version_id: "version-2",
+    }, { notebookId: "notebook-1", fetchImpl });
+    assert.deepEqual(calls.map((call) => call.url), [
+      "/bff/api/studio-outputs/output-1/versions", "/bff/api/reviews",
+    ]);
+    for (const call of calls) assert.match(call.key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  } finally {
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+  }
+});
+
 test("Product Studio는 11개 실제 산출물과 생성 전 확인을 강제한다", () => {
   assert.deepEqual(OUTPUT_TYPES.map((item) => item.id), [
     "evidence_report", "compliance_checklist", "comparison_table", "knowledge_map", "business_draft",

@@ -15,6 +15,7 @@ from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloud
 from .object_queue import ObjectKeyPolicy, ObjectQueueError, ObjectStorageError, ObjectStoragePort
 from .data_canon import canonical_json_bytes
 from .document_index_postgres import IndexedEvidenceChunk
+from .document_processing import text_source_format
 from .question_answering import GroundedTextResult, TextModelSelection
 
 
@@ -204,7 +205,7 @@ class PostgresQuestionAnsweringRepository:
 
     def _row(
         self, context: QuestionContext, source_id: str, source_version_id: str,
-        capability: str,
+        capability: str, *, require_notebook_binding: bool = False,
     ) -> tuple[object, ...]:
         if not _SAFE_ID.fullmatch(source_id) or not _SAFE_ID.fullmatch(source_version_id):
             raise QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE", status=404)
@@ -212,6 +213,17 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, capability),
             ) as connection:
+                notebook_clause = (
+                    " AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE "
+                    "nb.tenant_id=sv.tenant_id AND nb.workspace_id=sv.workspace_id "
+                    "AND nb.notebook_id=%s AND nb.binding_kind='source' "
+                    "AND nb.record_id=sv.source_id AND nb.version_id=sv.record_id "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE "
+                    "u.tenant_id=nb.tenant_id AND u.workspace_id=nb.workspace_id "
+                    "AND u.notebook_id=nb.notebook_id AND u.source_id=nb.record_id "
+                    "AND u.source_version_id=nb.version_id))"
+                    if require_notebook_binding and context.notebook_id is not None else ""
+                )
                 row = connection.execute(
                     "SELECT s.record_id,sv.record_id,s.state,sv.canonical_json->>'filename',"
                     "o.object_id,o.object_key,o.digest_sha256,o.byte_size,o.content_type,o.status "
@@ -228,8 +240,9 @@ class PostgresQuestionAnsweringRepository:
                     "AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id "
                     "AND newer.version>sv.version) AND NOT EXISTS (SELECT 1 FROM deletion_requests dr "
                     "WHERE dr.tenant_id=s.tenant_id AND dr.workspace_id=s.workspace_id "
-                    "AND dr.source_id=s.record_id AND dr.source_active=false)",
-                    (source_id, source_version_id),
+                    "AND dr.source_id=s.record_id AND dr.source_active=false)" + notebook_clause,
+                    (source_id, source_version_id, context.notebook_id)
+                    if notebook_clause else (source_id, source_version_id),
                 ).fetchone()
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
@@ -363,6 +376,18 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "question.read"),
             ) as connection:
+                notebook_clause = (
+                    " AND (s.canonical_json->>'kind'='studio_output' OR EXISTS ("
+                    "SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=sv.tenant_id "
+                    "AND nb.workspace_id=sv.workspace_id AND nb.notebook_id=%s "
+                    "AND nb.binding_kind='source' AND nb.record_id=sv.source_id "
+                    "AND nb.version_id=sv.record_id AND NOT EXISTS ("
+                    "SELECT 1 FROM notebook_source_unbindings u WHERE "
+                    "u.tenant_id=nb.tenant_id AND u.workspace_id=nb.workspace_id "
+                    "AND u.notebook_id=nb.notebook_id AND u.source_id=nb.record_id "
+                    "AND u.source_version_id=nb.version_id)))"
+                    if context.notebook_id is not None else ""
+                )
                 row = connection.execute(
                     "SELECT s.record_id,sv.record_id,s.state,"
                     "COALESCE(sv.canonical_json->>'filename',s.canonical_json->>'filename',sv.record_id),"
@@ -376,8 +401,9 @@ class PostgresQuestionAnsweringRepository:
                     "AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id "
                     "AND newer.version>sv.version) AND NOT EXISTS (SELECT 1 FROM deletion_requests dr "
                     "WHERE dr.tenant_id=s.tenant_id AND dr.workspace_id=s.workspace_id "
-                    "AND dr.source_id=s.record_id AND dr.source_active=false)",
-                    (source_id, source_version_id),
+                    "AND dr.source_id=s.record_id AND dr.source_active=false)" + notebook_clause,
+                    (source_id, source_version_id, context.notebook_id)
+                    if notebook_clause else (source_id, source_version_id),
                 ).fetchone()
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
@@ -387,7 +413,8 @@ class PostgresQuestionAnsweringRepository:
             raise QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE", status=404)
         filename = str(row[3])
         if str(row[2]) != "ready" or (
-            str(row[4]) != "studio_output" and not filename.lower().endswith(".pdf")
+            str(row[4]) != "studio_output"
+            and not filename.lower().endswith((".pdf", ".txt", ".md", ".csv"))
         ):
             raise QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE", status=404)
         return ReadyQuestionSource(str(row[0]), str(row[1]), filename)
@@ -536,6 +563,36 @@ class PostgresQuestionAnsweringRepository:
                 source_id, source_version_id, filename, content,
                 "text/plain; charset=utf-8",
             ), {"kind": "section", "value": evidence_span_id}
+        if evidence.get("kind") == "text_source_verbatim_fact":
+            if context.notebook_id is None:
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+            original = self._row(
+                context, source_id, source_version_id, "citation.read",
+                require_notebook_binding=True,
+            )
+            if str(original[3]) != filename or text_source_format(filename, str(original[8])) is None or str(original[9]) != "completed":
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+            try:
+                ObjectKeyPolicy().validate_final(
+                    self._cloud_context(context, "object.read"), "source", str(original[5]),
+                )
+                content = self._object_storage.get(str(original[5]))
+            except (ObjectQueueError, ObjectStorageError):
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=503) from None
+            if (
+                len(content) > 1024 * 1024 or len(content) != int(original[7])
+                or hashlib.sha256(content).hexdigest() != str(original[6])
+            ):
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
+            try:
+                text = content.decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409) from None
+            if not text.strip() or not isinstance(evidence.get("text"), str) or evidence["text"] not in text:
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
+            return CitationContent(
+                source_id, source_version_id, filename, content, "text/plain; charset=utf-8",
+            ), {"kind": "section", "value": evidence_span_id}
         pdf, pdf_page = self.read_citation_pdf(context, citation_id)
         return CitationContent(
             pdf.source_id, pdf.source_version_id, pdf.filename,
@@ -624,12 +681,12 @@ class PostgresQuestionAnsweringRepository:
                     evidence_by_id[chunk_id].source_version_id,
                 )].context_item_id),
                 {
-                    "kind": "section" if str(source_context[(
+                    "kind": "section" if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
                         evidence_by_id[chunk_id].source_id,
                         evidence_by_id[chunk_id].source_version_id,
                     )].origin) == "daon_knowledge" else "page",
                     "value": evidence_by_id[chunk_id].evidence_span_id
-                    if str(source_context[(
+                    if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
                         evidence_by_id[chunk_id].source_id,
                         evidence_by_id[chunk_id].source_version_id,
                     )].origin) == "daon_knowledge"

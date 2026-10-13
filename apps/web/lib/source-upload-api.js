@@ -1,5 +1,7 @@
 "use client";
 
+import { secureUuid } from "@daon-user/ui/secure-uuid";
+
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const SAFE_DIGEST = /^[0-9a-f]{64}$/u;
 const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
@@ -35,7 +37,7 @@ export async function uploadSource(workspaceId, file, { notebookId, idempotencyK
       || file.size < 1 || file.size > MAX_SOURCE_BYTES) {
     throw new Error("SOURCE_UPLOAD_INPUT_INVALID");
   }
-  const key = idempotencyKey ?? `source-${crypto.randomUUID()}`;
+  const key = idempotencyKey ?? `source-${secureUuid()}`;
   const response = await fetchImpl(
     `/bff/api/workspaces/${encodeURIComponent(workspaceId)}/sources`,
     {

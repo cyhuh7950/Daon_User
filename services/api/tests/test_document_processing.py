@@ -161,6 +161,86 @@ class DocumentProcessingServiceTests(unittest.TestCase):
         self.assertEqual([event[0] for event in repository.events], ["load", "complete"])
         self.assertEqual(repository.events[-1][1], ("processing-run-existing", "ready"))
 
+    def test_txt_uses_only_selected_text_model_and_persists_real_result(self) -> None:
+        class TextRepository(RecordingRepository):
+            def load_source_document(self, context, source_id):  # type: ignore[no-untyped-def]
+                self.events.append(("load", source_id))
+                return StoredSourceDocument(source_id, "source-version-txt", "notes.txt", b"Real TXT fact", "text/plain")
+
+        class TextResolver:
+            def __init__(self):
+                self.capabilities = []
+
+            @contextmanager
+            def resolve(self, context, capability):  # type: ignore[no-untyped-def]
+                self.capabilities.append(capability)
+                if capability != "text_generation":
+                    raise AssertionError(capability)
+                yield ResolvedModel(
+                    "ollama-public", "OLLAMA", "llama3.2:3b", capability,
+                    "http://ollama.internal:11434", 0, 1, 1, "local", "provider", True, None,
+                )
+
+        class TextAdapter:
+            def understand(self, document, selection, context):  # type: ignore[no-untyped-def]
+                return DocumentUnderstandingResult(
+                    document.source_id, document.source_version_id, "ready", (),
+                    SemanticUnderstanding("notes", "Real TXT fact", ("Real TXT fact",)),
+                    ParserValidation("Real TXT fact", "Real TXT fact", "", (1,), ((1, "Real TXT fact"),)),
+                    {"provider_code": selection.provider_code, "source_format": "txt"},
+                )
+
+        repository = TextRepository()
+        resolver = TextResolver()
+        service = DocumentProcessingService(repository, resolver, AdapterFactory(Adapter()), text_adapter=TextAdapter())
+        result = service.process_existing(
+            self.context, source_id="source-txt", processing_run_id="processing-run-txt",
+        )
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(resolver.capabilities, ["text_generation"])
+        self.assertEqual([event[0] for event in repository.events], ["load", "complete"])
+
+    def test_markdown_and_csv_use_text_generation_not_pdf_capabilities(self) -> None:
+        for filename, mime in (("notes.md", "text/markdown"), ("notes.csv", "text/csv")):
+            with self.subTest(filename=filename):
+                class TextRepository(RecordingRepository):
+                    def load_source_document(self, context, source_id):  # type: ignore[no-untyped-def]
+                        self.events.append(("load", source_id))
+                        return StoredSourceDocument(source_id, "source-version-text", filename, b"Real source fact", mime)
+
+                class TextResolver:
+                    def __init__(self):
+                        self.capabilities = []
+
+                    @contextmanager
+                    def resolve(self, context, capability):  # type: ignore[no-untyped-def]
+                        self.capabilities.append(capability)
+                        if capability != "text_generation":
+                            raise AssertionError(capability)
+                        yield ResolvedModel(
+                            "ollama-public", "OLLAMA", "llama3.2:3b", capability,
+                            "http://ollama.internal:11434", 0, 1, 1, "local", "provider", True, None,
+                        )
+
+                class TextAdapter:
+                    def understand(self, document, selection, context):  # type: ignore[no-untyped-def]
+                        return DocumentUnderstandingResult(
+                            document.source_id, document.source_version_id, "ready", (),
+                            SemanticUnderstanding("notes", "Real source fact", ("Real source fact",)),
+                            ParserValidation("Real source fact", "Real source fact", "", (1,), ((1, "Real source fact"),)),
+                            {"provider_code": selection.provider_code, "source_format": filename.rsplit(".", 1)[1]},
+                        )
+
+                repository = TextRepository()
+                resolver = TextResolver()
+                service = DocumentProcessingService(repository, resolver, AdapterFactory(Adapter()), text_adapter=TextAdapter())
+                result = service.process_existing(
+                    self.context, source_id="source-text", processing_run_id="processing-run-text",
+                )
+                self.assertEqual(result.status, "ready")
+                self.assertEqual(resolver.capabilities, ["text_generation"])
+                self.assertEqual([event[0] for event in repository.events], ["load", "complete"])
+
 
 if __name__ == "__main__":
     unittest.main()

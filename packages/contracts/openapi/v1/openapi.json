@@ -623,7 +623,7 @@
         "tags": [
           "Source"
         ],
-        "summary": "단일 PDF Workspace Source 등록",
+        "summary": "단일 PDF/TXT/Markdown/CSV Workspace Source 등록",
         "x-implementation-owner": "R1-M6-10-C01",
         "responses": {
           "202": {
@@ -688,7 +688,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[^/\\\\\\u0000-\\u001f]{1,251}\\.pdf$",
+              "pattern": "^[^/\\\\\\u0000-\\u001f]{1,251}\\.(pdf|txt|md|csv)$",
               "maxLength": 255
             }
           },
@@ -703,6 +703,24 @@
           "required": true,
           "content": {
             "application/pdf": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "text/markdown": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "text/csv": {
               "schema": {
                 "type": "string",
                 "format": "binary"

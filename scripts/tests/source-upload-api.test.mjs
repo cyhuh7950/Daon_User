@@ -6,6 +6,7 @@ import {
   listWorkspaceSources,
 } from "../../apps/web/lib/product-workspace-api.js";
 import { uploadPdfSource } from "../../apps/web/lib/source-upload-api.js";
+import { secureUuid } from "@daon-user/ui/secure-uuid";
 
 const source = Object.freeze({
   source_id: "source-1", source_version_id: "version-1", filename: "approved.pdf",
@@ -106,6 +107,72 @@ test("PDF upload은 same-origin PDF 계약과 processing metadata를 보존한�
   });
   assert.equal(result.processing_run_id, "processing-1");
   assert.equal(result.status, "accepted");
+});
+
+test("HTTP QA Source upload은 randomUUID 없이 secure UUID 키로 실제 전송한다", async () => {
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const calls = [];
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: { getRandomValues(bytes) { bytes.fill(7); return bytes; } },
+    });
+    const file = new File(["ORANGE-COMPASS-42"], "notes.txt", { type: "text/plain" });
+    await uploadPdfSource("workspace-1", file, {
+      notebookId: "notebook-1",
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return Response.json({ data: {
+          source_id: "source-1", source_version_id: "version-1", object_id: "a".repeat(32),
+          digest_sha256: "b".repeat(64), byte_size: file.size, status: "accepted", replayed: false,
+          processing_run_id: "processing-1", processing_state: "processing", job_state: "queued",
+        }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } }, { status: 202 });
+      },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/sources");
+    assert.match(calls[0].init.headers["Idempotency-Key"], /^source-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  } finally {
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+  }
+});
+
+test("Source upload은 보안 난수 API가 모두 없으면 전송 전 명확히 실패한다", async () => {
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  let calls = 0;
+  try {
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: {} });
+    const file = new File(["source"], "notes.txt", { type: "text/plain" });
+    await assert.rejects(
+      () => uploadPdfSource("workspace-1", file, {
+        notebookId: "notebook-1",
+        fetchImpl: async () => { calls += 1; return Response.json({}); },
+      }),
+      { message: "SECURE_RANDOM_UNAVAILABLE" },
+    );
+    assert.equal(calls, 0);
+  } finally {
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+  }
+});
+
+test("HTTPS secure UUID 경로는 기존 browser randomUUID를 그대로 사용한다", () => {
+  const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: {
+        randomUUID() { return "01234567-89ab-4cde-8f01-23456789abcd"; },
+        getRandomValues() { throw new Error("FALLBACK_MUST_NOT_RUN"); },
+      },
+    });
+    assert.equal(secureUuid(), "01234567-89ab-4cde-8f01-23456789abcd");
+  } finally {
+    if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    else delete globalThis.crypto;
+  }
 });
 
 test("Source upload 응답이 invalid이면 안전하게 fail-close한다", async () => {
