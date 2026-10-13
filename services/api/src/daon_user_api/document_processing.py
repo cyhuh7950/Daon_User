@@ -17,6 +17,8 @@ from .document_understanding_adapter import (
 from .workspace_model_defaults import (
     ResolvedModel, WorkspaceModelContext, WorkspaceModelUnavailable,
 )
+from .egress_policy import EgressPolicyContext, EgressPolicyError, EgressPolicyService
+from .cloud_storage import CloudDatabaseError
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
@@ -168,6 +170,40 @@ class DefaultDocumentAdapterFactory:
         )
 
 
+class OriginalDocumentEgressGuard:
+    """This processing contract supplies no original-transfer approval."""
+
+    def __init__(self, policy_service: EgressPolicyService | None = None) -> None:
+        self._policy_service = policy_service
+
+    def authorize(
+        self, context: DocumentProcessingContext, selections: tuple[ResolvedModel, ...],
+    ) -> None:
+        internal_kinds = {"local", "server_internal", "local_runtime"}
+        if any(model.provider_kind not in internal_kinds | {"external_api"} for model in selections):
+            raise DocumentUnderstandingError("EGRESS_POLICY_DENIED", status=403)
+        if not any(model.provider_kind == "external_api" for model in selections):
+            return
+        if self._policy_service is None:
+            raise DocumentUnderstandingError("EGRESS_POLICY_UNAVAILABLE", status=503, retryable=True)
+        try:
+            effective = self._policy_service.get_effective(EgressPolicyContext(
+                context.tenant_id, context.tenant_id, context.workspace_id,
+                context.actor_id, context.trace_id, context.policy_version,
+            ))
+        except EgressPolicyError as error:
+            raise DocumentUnderstandingError(
+                error.code, status=error.status, retryable=error.status >= 500,
+            ) from None
+        except CloudDatabaseError:
+            raise DocumentUnderstandingError("EGRESS_POLICY_UNAVAILABLE", status=503, retryable=True) from None
+        if effective.mode != "allow_approved_external":
+            raise DocumentUnderstandingError("EGRESS_POLICY_DENIED", status=403)
+        # Policy allow is not approval bound to this SourceVersion/Run/payload.
+        # No such approval is provided; never infer it from settings or raw size.
+        raise DocumentUnderstandingError("EGRESS_POLICY_DENIED", status=403)
+
+
 class DocumentProcessingService:
     def __init__(
         self,
@@ -175,6 +211,7 @@ class DocumentProcessingService:
         model_resolver: WorkspaceModelResolverPort,
         adapter_factory: DocumentAdapterFactory,
         *, text_adapter: TextDocumentUnderstandingPort | None = None,
+        egress_guard: OriginalDocumentEgressGuard | None = None,
     ) -> None:
         self._repository = repository
         self._model_resolver = model_resolver
@@ -183,6 +220,7 @@ class DocumentProcessingService:
             from .text_document_understanding import OllamaTextDocumentAdapter
             text_adapter = OllamaTextDocumentAdapter(UrlLibDocumentUnderstandingTransport())
         self._text_adapter = text_adapter
+        self._egress_guard = egress_guard if egress_guard is not None else OriginalDocumentEgressGuard()
 
     def process(
         self, context: DocumentProcessingContext, *, source_id: str,
@@ -209,6 +247,7 @@ class DocumentProcessingService:
                 with self._model_resolver.resolve(
                     context.model_context(), "text_generation",
                 ) as text_model:
+                    self._egress_guard.authorize(context, (text_model,))
                     result = self._text_adapter.understand(document, text_model, context)
                 self._repository.complete(context, processing_run_id, result)
                 return result
@@ -217,6 +256,7 @@ class DocumentProcessingService:
             ) as semantic, self._model_resolver.resolve(
                 context.model_context(), "document_parsing",
             ) as parser:
+                self._egress_guard.authorize(context, (semantic, parser))
                 if semantic.provider_code != "UPSTAGE" or parser.provider_code != "UPSTAGE":
                     raise DocumentUnderstandingError(
                         "DOCUMENT_PROVIDER_ADAPTER_UNAVAILABLE", status=503,

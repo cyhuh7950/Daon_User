@@ -3,9 +3,13 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
+from contextlib import ExitStack
+from pathlib import Path
 
 from daon_user_api.document_processing_queue import DocumentProcessingJob
-from daon_user_api.document_processing_worker import DocumentProcessingWorker, DocumentWorkerSettings
+from daon_user_api.document_processing_worker import DocumentProcessingWorker, DocumentWorkerSettings, build_worker
+from daon_user_api.egress_policy import EgressPolicyContext, EgressPolicyPayload, ReferenceEgressPolicyRepository
+from test_document_processing import RecordingRepository, ModelResolver, Adapter, AdapterFactory
 from daon_user_api.document_understanding_adapter import (
     DocumentUnderstandingError,
     DocumentUnderstandingResult,
@@ -74,6 +78,37 @@ class FakeIndex:
 
 
 class DocumentProcessingWorkerTests(unittest.TestCase):
+    def test_built_worker_consumes_real_policy_service_before_external_adapter(self) -> None:
+        settings = DocumentWorkerSettings("worker-cp3", "unused-fixture-dsn", "unused-fixture-storage",
+            "fixture-bucket", Path("fixture-access"), Path("fixture-secret"), Path("fixture-provider"), True, 600, 0.5)
+        queue = FakeQueue(job())
+        repository = RecordingRepository()
+        adapter = Adapter()
+        factory = AdapterFactory(adapter)
+        policy_repository = ReferenceEgressPolicyRepository()
+        context = EgressPolicyContext("tenant-cp3", "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+        for scope in ("organization", "workspace"):
+            policy_repository.seed(context, scope_type=scope, payload=EgressPolicyPayload.deny_external())
+        prefix = "daon_user_api.document_processing_worker."
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(Path, "read_text", return_value="fixture-only"))
+            stack.enter_context(patch.object(Path, "read_bytes", return_value=b"x" * 32))
+            for name, value in (
+                ("PostgresCloudStore", object()), ("MinioObjectStorageAdapter", object()),
+                ("ProviderCredentialCipher", object()), ("PostgresDocumentProcessingRepository", repository),
+                ("PostgresWorkspaceModelResolver", ModelResolver()), ("DefaultDocumentAdapterFactory", factory),
+                ("PostgresDocumentProcessingQueue", queue), ("PostgresDocumentIndex", FakeIndex(queue.events)),
+                ("PostgresEgressPolicyRepository", policy_repository),
+            ):
+                stack.enter_context(patch(prefix + name, return_value=value, create=True))
+            worker, _, _ = build_worker(settings)
+            worker._clock = lambda: NOW
+            self.assertTrue(worker.run_once())
+        self.assertEqual(factory.calls, [])
+        self.assertEqual(adapter.calls, 0)
+        self.assertEqual(queue.events, [("claim", "worker-cp3"), ("dead_letter", "EGRESS_POLICY_DENIED")])
+        self.assertEqual(repository.events, [("load", "source-cp3"), ("fail", ("run-cp3", "EGRESS_POLICY_DENIED", False))])
+
     def test_default_lease_covers_bounded_semantic_parser_and_database_work(self) -> None:
         with patch.dict("os.environ", {
             "DAON_CLOUD_DATABASE_DSN": "postgresql://worker@database/app",

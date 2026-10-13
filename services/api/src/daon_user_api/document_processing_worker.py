@@ -16,6 +16,7 @@ from .document_processing import (
     DefaultDocumentAdapterFactory,
     DocumentProcessingContext,
     DocumentProcessingService,
+    OriginalDocumentEgressGuard,
 )
 from .document_processing_postgres import PostgresDocumentProcessingRepository
 from .document_processing_queue import PostgresDocumentProcessingQueue
@@ -25,6 +26,8 @@ from .document_understanding_adapter import (
 from .object_queue import MinioObjectStorageAdapter
 from .provider_credentials import ProviderCredentialCipher
 from .workspace_model_defaults import PostgresWorkspaceModelResolver
+from .egress_policy import EgressPolicyService
+from .egress_policy_postgres import PostgresEgressPolicyRepository
 
 
 class QueuePort(Protocol):
@@ -150,6 +153,9 @@ def build_worker(settings: DocumentWorkerSettings) -> tuple[DocumentProcessingWo
             cloud_store, ProviderCredentialCipher(provider_key, encryption_key_version=1),
         ),
         DefaultDocumentAdapterFactory(),
+        egress_guard=OriginalDocumentEgressGuard(
+            EgressPolicyService(PostgresEgressPolicyRepository(cloud_store)),
+        ),
     )
     queue = PostgresDocumentProcessingQueue(settings.database_dsn, cloud_store)
     worker = DocumentProcessingWorker(

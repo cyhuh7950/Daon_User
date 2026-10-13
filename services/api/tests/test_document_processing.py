@@ -15,6 +15,11 @@ from daon_user_api.document_understanding_adapter import (
     SemanticUnderstanding,
 )
 from daon_user_api.workspace_model_defaults import ResolvedModel
+from daon_user_api.egress_policy import (
+    EgressPolicyContext, EgressPolicyError, EgressPolicyPayload,
+    EgressPolicyService, ReferenceEgressPolicyRepository,
+)
+from daon_user_api.cloud_storage import CloudDatabaseError
 try:
     from tests.test_document_understanding_adapter import provider_snapshot
 except ModuleNotFoundError:
@@ -104,6 +109,13 @@ class AdapterFactory:
         return self.adapter
 
 
+class FixtureOutboundGuard:
+    """Only for fake adapter contract tests; never permits a real HTTP call."""
+    def authorize(self, context, selections):
+        if context.tenant_id != "tenant-cp3" or any(model.provider_code != "UPSTAGE" for model in selections):
+            raise AssertionError("unexpected fake-adapter security fixture")
+
+
 class DocumentProcessingServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.context = DocumentProcessingContext(
@@ -115,7 +127,7 @@ class DocumentProcessingServiceTests(unittest.TestCase):
         snapshots = ModelResolver()
         adapter = Adapter()
         factory = AdapterFactory(adapter)
-        service = DocumentProcessingService(repository, snapshots, factory)
+        service = DocumentProcessingService(repository, snapshots, factory, egress_guard=FixtureOutboundGuard())
 
         result = service.process(self.context, source_id="source-cp3")
 
@@ -136,7 +148,7 @@ class DocumentProcessingServiceTests(unittest.TestCase):
             "UNDERSTANDING_PROVIDER_UNAVAILABLE", status=503, retryable=True,
         ))
         service = DocumentProcessingService(
-            repository, ModelResolver(), AdapterFactory(adapter),
+            repository, ModelResolver(), AdapterFactory(adapter), egress_guard=FixtureOutboundGuard(),
         )
 
         with self.assertRaisesRegex(DocumentUnderstandingError, "UNDERSTANDING_PROVIDER_UNAVAILABLE"):
@@ -150,7 +162,7 @@ class DocumentProcessingServiceTests(unittest.TestCase):
     def test_worker_processes_an_existing_run_without_creating_a_second_run(self) -> None:
         repository = RecordingRepository()
         service = DocumentProcessingService(
-            repository, ModelResolver(), AdapterFactory(Adapter()),
+            repository, ModelResolver(), AdapterFactory(Adapter()), egress_guard=FixtureOutboundGuard(),
         )
 
         result = service.process_existing(
@@ -170,9 +182,113 @@ class DocumentProcessingServiceTests(unittest.TestCase):
                 return super().load_source_document(context, source_id)
 
         repository = BoundRepository()
-        service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(Adapter()))
+        service = DocumentProcessingService(repository, ModelResolver(), AdapterFactory(Adapter()), egress_guard=FixtureOutboundGuard())
         service.process_existing(self.context, source_id="source-cp3", processing_run_id="run-bound")
         self.assertEqual(repository.bound_run_id, "run-bound")
+
+    def test_default_guard_rejects_external_before_factory_or_understanding(self) -> None:
+        repository = RecordingRepository()
+        adapter = Adapter()
+        factory = AdapterFactory(adapter)
+        service = DocumentProcessingService(repository, ModelResolver(), factory)
+        with self.assertRaisesRegex(DocumentUnderstandingError, "EGRESS_POLICY_UNAVAILABLE"):
+            service.process_existing(self.context, source_id="source-cp3", processing_run_id="run-bound")
+        self.assertEqual(factory.calls, [])
+        self.assertEqual(adapter.calls, 0)
+        self.assertEqual(repository.events, [("load", "source-cp3"), ("fail", ("run-bound", "EGRESS_POLICY_UNAVAILABLE", True))])
+
+    def test_external_policy_denials_and_absent_approval_never_reach_adapter(self) -> None:
+        from daon_user_api.document_processing import OriginalDocumentEgressGuard
+        for scenario, expected_code, retryable in (
+            ("deny", "EGRESS_POLICY_DENIED", False),
+            ("missing", "EGRESS_POLICY_UNAVAILABLE", True),
+            ("stale", "EGRESS_POLICY_STALE", True),
+            ("database", "EGRESS_POLICY_UNAVAILABLE", True),
+            ("allow_without_original_approval", "EGRESS_POLICY_DENIED", False),
+        ):
+            with self.subTest(scenario=scenario):
+                policy_repository = ReferenceEgressPolicyRepository()
+                policy_context = EgressPolicyContext("tenant-cp3", "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1")
+                policy = EgressPolicyPayload.deny_external() if scenario != "allow_without_original_approval" else EgressPolicyPayload(
+                    "allow_approved_external", ("external_api",), ("api.upstage.ai",), "internal", 1000000, True, True, "workspace_manager",
+                )
+                if scenario != "missing":
+                    for scope in ("organization", "workspace"):
+                        policy_repository.seed(policy_context, scope_type=scope, payload=policy)
+                if scenario == "stale":
+                    policy_repository.corrupt_current(policy_context, "workspace", active=False)
+                if scenario == "database":
+                    def unavailable(*args):
+                        raise CloudDatabaseError("DATABASE_UNAVAILABLE", retryable=True)
+                    policy_repository.current = unavailable
+                repository = RecordingRepository()
+                adapter = Adapter()
+                factory = AdapterFactory(adapter)
+                service = DocumentProcessingService(repository, ModelResolver(), factory,
+                    egress_guard=OriginalDocumentEgressGuard(EgressPolicyService(policy_repository)))
+                with self.assertRaisesRegex(DocumentUnderstandingError, expected_code):
+                    service.process_existing(self.context, source_id="source-cp3", processing_run_id="run-bound")
+                self.assertEqual(factory.calls, [])
+                self.assertEqual(adapter.calls, 0)
+                self.assertEqual(repository.events, [("load", "source-cp3"), ("fail", ("run-bound", expected_code, retryable))])
+
+    def test_both_pdf_selections_are_guarded_and_unknown_kind_is_denied(self) -> None:
+        for semantic_kind, parser_kind in (
+            ("external_api", "server_internal"), ("server_internal", "external_api"),
+            ("unknown", "server_internal"), ("server_internal", "unknown"),
+        ):
+            with self.subTest(semantic=semantic_kind, parser=parser_kind):
+                class MixedResolver(ModelResolver):
+                    @contextmanager
+                    def resolve(self, context, capability):
+                        with super().resolve(context, capability) as model:
+                            model.provider_kind = semantic_kind if capability == "image_understanding" else parser_kind
+                            yield model
+                repository = RecordingRepository()
+                resolver = MixedResolver()
+                adapter = Adapter()
+                factory = AdapterFactory(adapter)
+                service = DocumentProcessingService(repository, resolver, factory)
+                with self.assertRaises(DocumentUnderstandingError):
+                    service.process_existing(self.context, source_id="source-cp3", processing_run_id="run-bound")
+                self.assertEqual(resolver.capabilities, ["image_understanding", "document_parsing"])
+                self.assertEqual(factory.calls, [])
+                self.assertEqual(adapter.calls, 0)
+                self.assertEqual([event[0] for event in repository.events], ["load", "fail"])
+
+    def test_text_preserves_existing_internal_kinds_but_denies_external_and_unknown(self) -> None:
+        for kind in ("local", "server_internal", "local_runtime", "external_api", "unknown"):
+            with self.subTest(kind=kind):
+                class TextRepository(RecordingRepository):
+                    def load_source_document(self, context, source_id, *, processing_run_id=None):
+                        self.events.append(("load", source_id))
+                        return StoredSourceDocument(source_id, "source-version-cp3", "notes.txt", b"Real TXT fact", "text/plain")
+                class TextResolver:
+                    @contextmanager
+                    def resolve(self, context, capability):
+                        yield ResolvedModel("ollama-public", "OLLAMA", "llama3.2:3b", capability,
+                            "https://ollama.example.test", 0, 1, 1, kind, "provider", True, None)
+                class TextAdapter:
+                    calls = 0
+                    def understand(self, document, selection, context):
+                        self.calls += 1
+                        return DocumentUnderstandingResult(document.source_id, document.source_version_id,
+                            "ready", (), SemanticUnderstanding("notes", "Real TXT fact", ("Real TXT fact",)),
+                            ParserValidation("Real TXT fact", "", "", (1,)), {"source_format": "txt"})
+                repository = TextRepository()
+                text_adapter = TextAdapter()
+                service = DocumentProcessingService(repository, TextResolver(), AdapterFactory(Adapter()), text_adapter=text_adapter)
+                if kind in {"local", "server_internal", "local_runtime"}:
+                    result = service.process_existing(self.context, source_id="source-cp3", processing_run_id="run-bound")
+                    self.assertEqual(result.status, "ready")
+                    self.assertEqual(text_adapter.calls, 1)
+                    self.assertEqual([event[0] for event in repository.events], ["load", "complete"])
+                else:
+                    expected = "EGRESS_POLICY_UNAVAILABLE" if kind == "external_api" else "EGRESS_POLICY_DENIED"
+                    with self.assertRaisesRegex(DocumentUnderstandingError, expected):
+                        service.process_existing(self.context, source_id="source-cp3", processing_run_id="run-bound")
+                    self.assertEqual(text_adapter.calls, 0)
+                    self.assertEqual([event[0] for event in repository.events], ["load", "fail"])
 
     def test_txt_uses_only_selected_text_model_and_persists_real_result(self) -> None:
         class TextRepository(RecordingRepository):
