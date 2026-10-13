@@ -191,6 +191,36 @@ class StudioReportPostgresTests(unittest.TestCase):
         self.assertIn("ORDER BY created_at DESC,record_id DESC", connection.statement)
         self.assertIn("processing_run_id=pr.record_id", connection.statement)
 
+    def test_registered_knowledge_projection_requires_verified_catalog_flag_and_ready_source(self) -> None:
+        class ProjectionConnection(FakeConnection):
+            def execute(self, sql, params=()):
+                self.statements.append((sql, params))
+                rows = self.source_rows if "AS approved_knowledge" in sql else [row[:6] for row in self.source_rows]
+                return FakeResult(rows=rows)
+        connection = ProjectionConnection(source_rows=(
+            ("source-k", "version-k", "knowledge.json", "ready", "accepted", "pending", True),
+            ("source-no-registration", "version-2", "knowledge.json", "ready", "accepted", "pending", False),
+            ("source-not-ready", "version-3", "knowledge.json", "processing", "accepted", "pending", True),
+            ("source-delivered", "version-4", "knowledge.json", "ready", "accepted", "pending", True),
+            ("source-no-approval", "version-5", "knowledge.json", "ready", "accepted", "pending", False),
+            ("source-untrusted-flag", "version-6", "knowledge.json", "ready", "accepted", "pending", "true"),
+            ("source-legacy", "version-7", "knowledge.json", "ready", "accepted", "pending"),
+        ))
+        sources = PostgresStudioReportRepository(FakeCloud(connection)).list_sources(self.context)
+        self.assertEqual((sources[0].processing_state, sources[0].job_state), ("completed", "completed"))
+        self.assertEqual((sources[1].processing_state, sources[1].job_state), ("accepted", "pending"))
+        self.assertEqual((sources[2].processing_state, sources[2].job_state), ("accepted", "pending"))
+        self.assertEqual((sources[3].processing_state, sources[3].job_state), ("completed", "completed"))
+        self.assertEqual((sources[4].processing_state, sources[4].job_state), ("accepted", "pending"))
+        self.assertEqual((sources[5].processing_state, sources[5].job_state), ("accepted", "pending"))
+        self.assertEqual((sources[6].processing_state, sources[6].job_state), ("accepted", "pending"))
+        sql = connection.statements[0][0]
+        for predicate in ("kr.state='registered'", "kr.registered_source_version_id=sv.record_id", "ov.state IN ('approved','delivered')",
+            "approval.output_version_id=ov.record_id", "approval.decision='approved'",
+            "bound.notebook_id=nb.notebook_id", "bound.binding_kind='output_version'", "index_versions", "evidence_spans",
+            "approved_knowledge_snapshot", "pr.record_id IS NULL", "oq.state IS NULL"):
+            self.assertIn(predicate, sql)
+
     def test_idempotency_replay_has_zero_generation_transition_insert_audit_or_provider_side_effects(self) -> None:
         replay = ({
             "notebook_id": self.context.notebook_id,

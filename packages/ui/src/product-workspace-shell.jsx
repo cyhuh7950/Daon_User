@@ -1440,6 +1440,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {desktopStudio ? desktopStudio : <><ProductStudioPane
             key={`${viewState.answer?.run_id ?? "no-run"}:${viewState.selectedSource?.sourceVersionId ?? "no-source"}`}
             adapter={adapter}
+            onKnowledgeRegistered={() => setLoadRevision((current) => current + 1)}
             state={createProductStudioState({
               workspaceId,
               sources: viewState.sources,

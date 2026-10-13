@@ -456,6 +456,17 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         self.assertEqual(evidence_insert[6].obj["kind"], "approved_knowledge_snapshot")
         self.assertIn("검증된 지식 본문", evidence_insert[6].obj["text"])
         self.assertEqual(index_insert[6].obj["chunks"][0]["text"], evidence_insert[6].obj["text"])
+        bindings = [(sql, params) for sql, params in cloud.connection.statements if "INSERT INTO notebook_bindings" in sql]
+        self.assertEqual(len(bindings), 1)
+        sql, params = bindings[0]
+        self.assertIn("'source'", sql)
+        self.assertIn("ON CONFLICT DO NOTHING", sql)
+        self.assertIn("INSERT INTO notebook_activities", sql)
+        self.assertIn("'context_bound'", sql)
+        self.assertEqual(params[:3], ("tenant-1", "workspace-1", "notebook-1"))
+        self.assertIn(result["registered_source_version_id"], params)
+        source_id = next(params[2] for sql, params in cloud.connection.statements if sql.startswith("INSERT INTO sources"))
+        self.assertIn(source_id, params)
 
     def test_ai_and_settings_revisions_create_new_request_snapshot_and_resubmit_rejection(self) -> None:
         for revision_type in ("ai_regeneration", "settings_change"):
@@ -656,6 +667,8 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
             for target in ("draft", "review_requested", "in_review", "approved"):
                 connection.execute("SELECT * FROM transition_canon_state('OutputVersion','output-version-it',%s,%s,%s,'IT','trace-it','policy-it')", (output_version, target, f"transition-output-{target}"))
                 output_version += 1
+            self._canonical(connection, "approvals", "approval-knowledge-it", {"decision": "approved"},
+                extra=(("output_version_id", "output-version-it"), ("decision", "approved")))
             self._bind_output(connection, "output-it", "output-version-it")
             self._canonical(connection, "evidence_spans", "span-original", {"text": "원본 근거", "page": 2}, extra=(("source_version_id", "source-version-original"),))
             self._canonical(connection, "evidence_references", "evidence-original", {
@@ -690,6 +703,40 @@ class StudioWorkspaceRealPostgresIntegrationTests(unittest.TestCase):
             )
             self.assertFalse(replayed)
             self.assertTrue(result["searchable"])
+            from daon_user_api.studio_report_postgres import PostgresStudioReportRepository
+            from daon_user_api.studio_report import StudioReportContext
+            sources = PostgresStudioReportRepository(store).list_sources(StudioReportContext(
+                "tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id,
+            ))
+            derived = next(item for item in sources if item.source_version_id == result["registered_source_version_id"])
+            self.assertEqual((derived.source_state, derived.processing_state, derived.job_state), ("ready", "completed", "completed"))
+            other_sources = PostgresStudioReportRepository(store).list_sources(StudioReportContext(
+                "tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", "other-notebook",
+            ))
+            self.assertFalse(any(item.source_version_id == derived.source_version_id for item in other_sources))
+            replay, replayed = PostgresStudioWorkspaceRepository(store).record_action(
+                StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id),
+                "knowledge_registration", {"output_version_id": "output-version-it", "explicit": True},
+                "knowledge-real-pg-0001",
+            )
+            self.assertTrue(replayed)
+            self.assertEqual(replay, result)
+            from daon_user_api.cloud_storage import CloudAccessContext
+            with store._transaction(CloudAccessContext("tenant-it", "workspace-it", "actor-it", "studio.verify")) as scoped:
+                self.assertEqual(scoped.execute(
+                    "SELECT count(*) FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s "
+                    "AND binding_kind='source' AND version_id=%s",
+                    ("tenant-it", "workspace-it", self.notebook_id, derived.source_version_id),
+                ).fetchone()[0], 1)
+                version = scoped.execute("SELECT version FROM output_versions WHERE record_id='output-version-it'").fetchone()[0]
+                PostgresStudioWorkspaceRepository._transition(scoped,
+                    StudioContext("tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id),
+                    "OutputVersion", "output-version-it", version, "delivered", "transition-knowledge-delivered-it")
+            delivered = PostgresStudioReportRepository(store).list_sources(StudioReportContext(
+                "tenant-it", "workspace-it", "actor-it", "trace-it", "policy-it", self.notebook_id,
+            ))
+            self.assertTrue(any(item.source_version_id == derived.source_version_id
+                and item.processing_state == item.job_state == "completed" for item in delivered))
             with psycopg.connect(self.dsn) as connection:
                 self.assertIsNotNone(connection.execute("SELECT 1 FROM source_versions WHERE record_id=%s", (result["registered_source_version_id"],)).fetchone())
                 self.assertIsNotNone(connection.execute("SELECT 1 FROM knowledge_registrations WHERE registered_source_version_id=%s AND state='registered'", (result["registered_source_version_id"],)).fetchone())

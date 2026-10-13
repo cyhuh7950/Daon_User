@@ -173,10 +173,11 @@ function StudioOutputContent({ output }) {
   return <p className="studio-output-content">{studioContentText(content)}</p>;
 }
 
-export function ProductStudioPane({ state, adapter }) {
+export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   const [view, setView] = useState(state);
   const [revisionContent, setRevisionContent] = useState("");
   const [changeReason, setChangeReason] = useState("");
+  const [knowledgeNotice, setKnowledgeNotice] = useState(null);
   const [stepUp, setStepUp] = useState(null);
   const [password, setPassword] = useState("");
   const stepUpRef = useRef(null);
@@ -279,7 +280,7 @@ export function ProductStudioPane({ state, adapter }) {
         output_version_id: target.output_version_id, ...payload,
         ...(token ? { step_up_authorization: token } : {}),
       });
-      const linkField = { reviews: "review_request_id", "approval-requests": "approval_request_id", approvals: "approval_id" }[action];
+      const linkField = { reviews: "review_request_id", "approval-requests": "approval_request_id", approvals: "approval_id", "knowledge-registrations": "knowledge_registration_id" }[action];
       const lifecycleStatus = {
         reviews: "in_review", "approval-requests": "in_review",
         approvals: payload.decision === "rejected" ? "revision_requested" : "approved",
@@ -287,6 +288,11 @@ export function ProductStudioPane({ state, adapter }) {
       }[action];
       updateSelectedOutput({ ...(linkField ? { [linkField]: result.record_id } : {}), status: lifecycleStatus ?? target.status }, target.studio_output_id);
       setView((current) => ({ ...current, pending: false }));
+      if (action === "knowledge-registrations" && result.status === "registered"
+        && typeof result.registered_source_version_id === "string" && result.searchable === true) {
+        setKnowledgeNotice("생산 지식이 등록되었습니다. 자료 목록을 새로고침합니다.");
+        onKnowledgeRegistered?.();
+      }
     } catch (error) {
       setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_ACTION_FAILED" }));
     }
@@ -335,6 +341,7 @@ export function ProductStudioPane({ state, adapter }) {
   };
   return (
     <div className="product-studio" data-studio-state={view.status}>
+      {knowledgeNotice ? <p role="status">{knowledgeNotice}</p> : null}
       {stepUp ? <section role="dialog" aria-label="Studio 추가 인증">
         <p>선택한 Version의 민감 작업을 위해 추가 인증이 필요합니다.</p>
         {view.safeError ? <p role="alert">{safeStudioErrorMessage(view.safeError)}</p> : null}

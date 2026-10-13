@@ -418,6 +418,52 @@ test("근거 보고서는 Raw·Daon 혼합 Context의 sufficient Citation 답변
   assert.equal(canCreateGroundedReport({ ...daonOnly, answer: { ...daonOnly.answer, citations: [{ ...daonOnly.answer.citations[0], source_version_id: "" }] } }), false);
 });
 
+test("생산 지식 등록 성공은 실제 Notebook Source 재조회 후 새 자료를 선택 가능하게 한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-knowledge-link-react-"));
+  const dom = installMinimalDom(); let reactRoot;
+  try {
+    const { build } = await import("vite"); const { createElement, act } = await import("react"); const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: { outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "knowledge-link" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] } } });
+    const entry = (await readdir(output)).find((name) => /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(pathToFileURL(path.join(output, entry)).href);
+    let registered = false; let listCalls = 0; const writes = [];
+    const source = { source_id: "source-1", source_version_id: "version-1", filename: "original.txt", source_state: "ready", processing_state: "completed", job_state: "completed" };
+    const knowledge = { source_id: "source-k", source_version_id: "version-k", filename: "approved.knowledge.json", source_state: "ready", processing_state: "completed", job_state: "completed" };
+    const effectAdapter = { ...adapter,
+      async listSources() { listCalls++; return registered ? [source, knowledge] : [source]; },
+      async listStudioOutputs() { return []; },
+      async listProductStudioOutputs() { return { outputs: [{ studio_output_id: "output-1", output_version_id: "output-version-1", output_type: "evidence_report", title: "승인 보고서", status: "approved" }], studioLocks: [] }; },
+      async listStudioVersions() { return [{ output_version_id: "output-version-1", status: "approved", content: { summary: "승인 본문" } }]; },
+      async issueStudioStepUp(group, target) { assert.equal(group, "final_approval_or_knowledge_registration"); assert.equal(target, "output-version-1"); return "fixture-grant"; },
+      async createStudioAction(action, payload) { writes.push([action, payload]); registered = true;
+        return { record_id: "registration-1", status: "registered", registered_source_version_id: "version-k", searchable: true }; },
+    };
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
+    await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
+    const click = async (label) => { const button = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.trim() === label)[0]; assert.ok(button, label);
+      await act(async () => { button.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); await Promise.resolve(); }); };
+    assert.equal(listCalls, 1); assert.doesNotMatch(container.textContent, /approved\.knowledge\.json/);
+    await click("승인 보고서"); await click("생산 지식 등록");
+    const label = findElements(container, (node) => node.tagName === "LABEL" && node.textContent.includes("추가 인증 비밀번호"))[0];
+    const input = findElements(label, (node) => node.tagName === "INPUT")[0];
+    const props = input[Object.keys(input).find((key) => key.startsWith("__reactProps"))];
+    await act(async () => props.onChange({ currentTarget: { value: "fixture password only" } }));
+    await click("추가 인증 확인");
+    assert.equal(writes.length, 1); assert.equal(writes[0][0], "knowledge-registrations");
+    assert.equal(writes[0][1].step_up_authorization, "fixture-grant");
+    assert.equal(listCalls, 2);
+    assert.match(container.textContent, /생산 지식이 등록되었습니다/);
+    assert.match(container.textContent, /approved\.knowledge\.json/);
+    const sourceButton = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent.includes("approved.knowledge.json") && node.getAttribute("aria-pressed") !== null)[0];
+    assert.ok(sourceButton); assert.equal(sourceButton.disabled, false);
+    await act(async () => sourceButton.dispatchEvent(new MinimalEvent("click")));
+    assert.equal(sourceButton.getAttribute("aria-pressed"), "true");
+  } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
+});
+
 test("Source 작업은 Notebook 연결 해제와 즉시 삭제를 분리한다", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(root, ".workspace-source-actions-react-"));

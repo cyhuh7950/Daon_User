@@ -104,7 +104,35 @@ class PostgresStudioReportRepository:
             with self._cloud_store._transaction(self._cloud(context, "source.read")) as connection:
                 rows = connection.execute(
                     "SELECT s.record_id,sv.record_id,sv.canonical_json->>'filename',s.state,"
-                    "COALESCE(pr.state,'accepted'),COALESCE(oq.state,'pending') FROM sources s "
+                    "COALESCE(pr.state,'accepted'),COALESCE(oq.state,'pending'), "
+                    "(s.state='ready' AND s.canonical_json->>'kind'='studio_output' "
+                    "AND pr.record_id IS NULL AND oq.state IS NULL AND EXISTS ("
+                    "SELECT 1 FROM knowledge_registrations kr JOIN output_versions ov "
+                    "ON ov.tenant_id=kr.tenant_id AND ov.workspace_id=kr.workspace_id AND ov.record_id=kr.output_version_id "
+                    "JOIN notebook_bindings bound ON bound.tenant_id=ov.tenant_id AND bound.workspace_id=ov.workspace_id "
+                    "AND bound.notebook_id=nb.notebook_id AND bound.binding_kind='output_version' AND bound.record_id=ov.record_id "
+                    "WHERE kr.tenant_id=sv.tenant_id AND kr.workspace_id=sv.workspace_id "
+                    "AND kr.registered_source_version_id=sv.record_id AND kr.state='registered' AND ov.state IN ('approved','delivered') "
+                    "AND EXISTS (SELECT 1 FROM approvals approval WHERE approval.tenant_id=ov.tenant_id "
+                    "AND approval.workspace_id=ov.workspace_id AND approval.output_version_id=ov.record_id AND approval.decision='approved') "
+                    "AND kr.canonical_json->>'explicit'='true' "
+                    "AND s.canonical_json->>'derived_output_version_id'=ov.record_id "
+                    "AND sv.canonical_json->>'derived_output_version_id'=ov.record_id "
+                    "AND EXISTS (SELECT 1 FROM index_versions iv JOIN evidence_spans es "
+                    "ON es.tenant_id=iv.tenant_id AND es.workspace_id=iv.workspace_id AND es.source_version_id=iv.source_version_id "
+                    "WHERE iv.tenant_id=sv.tenant_id AND iv.workspace_id=sv.workspace_id AND iv.source_version_id=sv.record_id "
+                    "AND iv.canonical_json->>'strategy'='approved_knowledge_snapshot' "
+                    "AND iv.canonical_json->'lineage'->>'knowledge_registration_id'=kr.record_id "
+                    "AND iv.canonical_json->'lineage'->>'output_version_id'=ov.record_id "
+                    "AND es.canonical_json->>'kind'='approved_knowledge_snapshot' "
+                    "AND es.canonical_json->>'source_id'=s.record_id "
+                    "AND es.canonical_json->>'output_version_id'=ov.record_id "
+                    "AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(iv.canonical_json->'chunks')='array' "
+                    "THEN iv.canonical_json->'chunks' ELSE '[]'::jsonb END) chunk "
+                    "WHERE chunk->>'evidence_span_id'=es.record_id AND chunk->>'source_id'=s.record_id "
+                    "AND chunk->>'source_version_id'=sv.record_id "
+                    "AND length(chunk->>'text')>0 AND chunk->>'text'=es.canonical_json->>'text')))) AS approved_knowledge "
+                    "FROM sources s "
                     "JOIN source_versions sv ON sv.tenant_id=s.tenant_id AND sv.workspace_id=s.workspace_id "
                     "AND sv.source_id=s.record_id JOIN notebook_bindings nb ON nb.tenant_id=sv.tenant_id "
                     "AND nb.workspace_id=sv.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='source' "
@@ -127,7 +155,15 @@ class PostgresStudioReportRepository:
                 ).fetchall()
         except CloudDatabaseError as error:
             raise StudioReportError("STUDIO_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable) from None
-        return tuple(WorkspaceSourceProjection(*(str(item) for item in row)) for row in rows)
+        # Approved knowledge is a directly registered/indexed OutputVersion
+        # snapshot, not a document-processing job. Reuse the existing public
+        # completion projection only when the catalog proves that exact path;
+        # never create a fake ProcessingRun/job or upgrade an unready upload.
+        return tuple(WorkspaceSourceProjection(
+            *(str(item) for item in row[:4]),
+            *(('completed', 'completed') if len(row) == 7 and row[6] is True and row[3] == 'ready'
+              else (str(row[4]), str(row[5]))),
+        ) for row in rows)
 
     def create_report(self, context: StudioReportContext, request: StudioReportCreateRequest,
                       idempotency_key: str) -> tuple[StudioOutputProjection, bool]:

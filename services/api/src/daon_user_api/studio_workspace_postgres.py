@@ -816,6 +816,27 @@ class PostgresStudioWorkspaceRepository:
                     self._transition(connection, context, "OutputVersion", clean["output_version_id"], output_version, "delivered", self._opaque("transition", *scope, "delivered"))
                 elif action == "knowledge_registration":
                     self._transition(connection, context, "KnowledgeRegistration", record_id, 1, "registered", self._opaque("transition", *scope, "registered"))
+                    # Bind the newly stored immutable snapshot in this same
+                    # transaction. The output binding above already verified
+                    # the selected Notebook; do not publish a workspace-wide
+                    # Source or duplicate activity on idempotent replay.
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                        (f"{context.tenant_id}|{context.workspace_id}|{context.notebook_id}|binding",),
+                    )
+                    connection.execute(
+                        "WITH inserted AS (INSERT INTO notebook_bindings "
+                        "(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id,created_by,created_at) "
+                        "VALUES (%s,%s,%s,'source',%s,%s,%s,now()) ON CONFLICT DO NOTHING RETURNING 1) "
+                        "INSERT INTO notebook_activities (tenant_id,workspace_id,notebook_id,sequence,activity_kind,actor_id,occurred_at) "
+                        "SELECT %s,%s,%s,coalesce((SELECT max(sequence) FROM notebook_activities "
+                        "WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s),0)+1,'context_bound',%s,now() "
+                        "WHERE EXISTS (SELECT 1 FROM inserted)",
+                        (context.tenant_id, context.workspace_id, context.notebook_id,
+                         source_id, registered_source_version_id, context.actor_id,
+                         context.tenant_id, context.workspace_id, context.notebook_id,
+                         context.tenant_id, context.workspace_id, context.notebook_id, context.actor_id),
+                    )
                 result = {"record_id": record_id, "action": action, "status": "accepted", "output_version_id": clean["output_version_id"]}
                 if registered_source_version_id is not None:
                     result = {**result, "status": "registered", "registered_source_version_id": registered_source_version_id, "searchable": True}
