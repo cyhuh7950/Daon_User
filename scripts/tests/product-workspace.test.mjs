@@ -13,6 +13,67 @@ import {
 } from "../../packages/ui/src/product-workspace-model.js";
 import { classifyConversationIntent, buildSourceScopeMismatch } from "../../packages/ui/src/conversation-intent.js";
 import { uploadSource } from "../../apps/web/lib/source-upload-api.js";
+import * as sourceRetryApi from "../../apps/web/lib/source-upload-api.js";
+
+test("실패 Source 실제 React 재처리 클릭은 새 Run POST 후 상태를 조회한다", async () => {
+  for (const failsAgain of [false, true]) {
+    let workspace;
+    let state = "waiting_model";
+    const calls = [];
+    try {
+      workspace = await mountSourceRetryWorkspace({
+        ...adapter,
+        async listSources() { return [{ source_id: "source-1", source_version_id: "version-1", filename: "notes.txt", source_state: state,
+          processing_state: state === "ready" ? "completed" : "failed", job_state: state === "ready" ? "completed" : "dead_letter" }]; },
+        async listStudioOutputs() { return []; },
+        async reprocessSource(source, options) {
+          return sourceRetryApi.reprocessSource("workspace-1", source, { ...options, notebookId: "notebook-1", fetchImpl: async (url, init) => {
+            calls.push({ url, init });
+            return Response.json({ data: { id: "run-retry-1", kind: "processing_run", version: "2", attributes: {
+              processing_run_id: "run-retry-1", source_id: "source-1", source_version_id: "version-1", retry_of_processing_run_id: "run-old-1",
+              processing_state: "vision_llm_understanding", source_state: "processing", job_state: "pending", replayed: false,
+            } }, trace_id: "trace-1" }, { status: 201 });
+          } });
+        },
+        async getProcessingStatus(runId) {
+          calls.push({ runId });
+          state = failsAgain ? "waiting_model" : "ready";
+          return { processing_run_id: runId, source_id: "source-1", source_version_id: "version-1", source_state: state,
+            processing_state: failsAgain ? "failed" : "completed", job_state: failsAgain ? "dead_letter" : "completed", safe_error_code: failsAgain ? "UNDERSTANDING_PROVIDER_UNAVAILABLE" : null };
+        },
+      }, `source-manual-retry-${failsAgain}`);
+      const retry = findElements(workspace.container, (node) => node.tagName === "BUTTON" && node.textContent === "재처리")[0];
+      assert.ok(retry, "failed Source must expose manual reprocessing");
+      await workspace.act(async () => { retry.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); await Promise.resolve(); });
+      assert.equal(calls[0].url, "/bff/api/sources/source-1/processing-runs");
+      assert.match(calls[0].init.headers["Idempotency-Key"], /^source-retry-/u);
+      assert.equal(calls[1].runId, "run-retry-1");
+      assert.match(workspace.container.textContent, /notes.txt/u);
+      if (failsAgain) assert.match(workspace.container.textContent, /모델 대기/u);
+      else assert.match(workspace.container.textContent, /사용 가능/u);
+    } finally { if (workspace) await workspace.cleanup(); }
+  }
+});
+
+test("재처리 응답 유실 뒤 다시 클릭하면 같은 멱등 키를 보존한다", async () => {
+  let workspace;
+  const keys = [];
+  try {
+    workspace = await mountSourceRetryWorkspace({ ...adapter,
+      async listSources() { return [{ source_id: "source-1", source_version_id: "version-1", filename: "notes.txt", source_state: "waiting_model", processing_state: "failed", job_state: "dead_letter" }]; },
+      async listStudioOutputs() { return []; },
+      async reprocessSource(_source, options) { keys.push(options.idempotencyKey); throw new Error("SOURCE_REPROCESS_FAILED"); },
+    }, "source-retry-lost-response");
+    for (let index = 0; index < 2; index += 1) {
+      const retry = findElements(workspace.container, (node) => node.tagName === "BUTTON" && node.textContent === "재처리")[0];
+      await workspace.act(async () => { retry.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); await Promise.resolve(); });
+      assert.match(workspace.container.textContent, /재처리를 요청하지 못했습니다/u);
+    }
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0], keys[1]);
+    assert.doesNotMatch(workspace.container.textContent, /처리 완료/u);
+  } finally { if (workspace) await workspace.cleanup(); }
+});
 
 const adapter = Object.freeze({
   listSources() {}, uploadPdf() {}, getProcessingStatus() {}, askQuestion() {},

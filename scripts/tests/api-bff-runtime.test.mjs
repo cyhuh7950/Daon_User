@@ -9,6 +9,25 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("실패 Source 재처리 BFF는 기존 POST 경로와 Cookie·Origin 경계를 유지한다", async () => {
+  const calls = [];
+  const proxy = createBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl: async (url, init) => {
+    calls.push({ url: String(url), init });
+    return Response.json({ data: { id: "run-2", kind: "processing_run", version: "2", attributes: {} }, trace_id: "trace-1" }, { status: 201 });
+  } });
+  const request = (origin) => new Request("https://app.example.com/bff/api/sources/source-1/processing-runs", {
+    method: "POST", headers: { Origin: origin, Cookie: "__Host-daon_session=fixture", "Content-Type": "application/json", "Idempotency-Key": "retry-1" },
+    body: JSON.stringify({ kind: "processing_run", attributes: { workspace_id: "workspace-1", notebook_id: "notebook-1", source_version_id: "version-1" } }),
+  });
+  const result = await proxy(request("https://app.example.com"), ["sources", "source-1", "processing-runs"]);
+  assert.equal(result.status, 201);
+  assert.equal(calls[0].url, "https://api.example.com/api/v1/sources/source-1/processing-runs");
+  assert.equal(new Headers(calls[0].init.headers).get("Idempotency-Key"), "retry-1");
+  const rejected = await proxy(request("https://other.example.com"), ["sources", "source-1", "processing-runs"]);
+  assert.equal(rejected.status, 403);
+  assert.equal(calls.length, 1);
+});
+
 test("BFF local_test public origin은 exact loopback HTTP만 허용하고 production은 계속 HTTPS를 강제한다", () => {
   assert.equal(parsePublicGatewayOrigin("http://localhost:3080", "local_test").origin, "http://localhost:3080");
   assert.equal(parsePublicGatewayOrigin("http://127.0.0.1:3080", "local_test").origin, "http://127.0.0.1:3080");

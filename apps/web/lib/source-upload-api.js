@@ -68,6 +68,33 @@ export async function uploadSource(workspaceId, file, { notebookId, idempotencyK
 
 export const uploadPdfSource = uploadSource;
 
+export async function reprocessSource(workspaceId, source, { notebookId, idempotencyKey, signal, fetchImpl = fetch } = {}) {
+  if (!SAFE_ID.test(workspaceId ?? "") || !SAFE_ID.test(notebookId ?? "")
+      || !SAFE_ID.test(source?.sourceId ?? "") || !SAFE_ID.test(source?.sourceVersionId ?? "")) {
+    throw new Error("SOURCE_REPROCESS_INPUT_INVALID");
+  }
+  const key = idempotencyKey ?? `source-retry-${secureUuid()}`;
+  const response = await fetchImpl(`/bff/api/sources/${encodeURIComponent(source.sourceId)}/processing-runs`, {
+    method: "POST", credentials: "same-origin", cache: "no-store", signal,
+    headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+    body: JSON.stringify({ kind: "processing_run", attributes: {
+      workspace_id: workspaceId, notebook_id: notebookId, source_version_id: source.sourceVersionId,
+    } }),
+  });
+  let payload;
+  try { payload = await response.json(); } catch { throw new Error("SOURCE_REPROCESS_RESPONSE_INVALID"); }
+  if (!response.ok) throw uploadResponseError(payload, "SOURCE_REPROCESS_FAILED");
+  const data = payload?.data;
+  const result = data?.attributes;
+  if (data?.kind !== "processing_run" || data?.version !== "2" || !result
+      || data.id !== result.processing_run_id || !SAFE_ID.test(result.processing_run_id)
+      || !SAFE_ID.test(result.retry_of_processing_run_id) || result.source_id !== source.sourceId
+      || result.source_version_id !== source.sourceVersionId || result.source_state !== "processing"
+      || result.processing_state !== "vision_llm_understanding" || result.job_state !== "pending"
+      || typeof result.replayed !== "boolean") throw new Error("SOURCE_REPROCESS_RESPONSE_INVALID");
+  return result;
+}
+
 export async function getDocumentProcessingStatus(workspaceId, processingRunId, { notebookId, signal } = {}) {
   if (!workspaceId || !processingRunId || !notebookId) {
     throw new Error("PROCESSING_STATUS_INPUT_INVALID");

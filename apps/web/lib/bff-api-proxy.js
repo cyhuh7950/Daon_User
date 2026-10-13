@@ -486,6 +486,10 @@ function routeFor(method, segments) {
       ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions/${encodeURIComponent(segments[3])}/exports/${segments[5]}`, query: STUDIO_QUERY }
       : { methodRejected: true };
   }
+  if (segments.length === 3 && segments[0] === "sources" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs") {
+    return method === "POST" ? { path: `/api/v1/sources/${encodeURIComponent(segments[1])}/processing-runs`, query: null }
+      : { methodRejected: true };
+  }
   if (
     segments.length === 4
     && segments[0] === "workspaces"

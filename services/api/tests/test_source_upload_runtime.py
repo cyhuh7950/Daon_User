@@ -23,6 +23,7 @@ from daon_user_api.runtime import (
 )
 from daon_user_api.source_upload import SourceUploadResult
 from daon_user_api.document_processing import DocumentProcessingStatus
+from daon_user_api.egress_policy import EgressPolicyContext, EgressPolicyPayload, EgressPolicyService, ReferenceEgressPolicyRepository
 
 
 class RecordingSourceUploadService:
@@ -61,6 +62,15 @@ class RecordingDocumentSubmissionService:
             "vision_llm_understanding", "processing", "leased", None,
         )
 
+    def reprocess(self, context, source_id, source_version_id, *, notebook_id, idempotency_key, authorization_snapshot):  # type: ignore[no-untyped-def]
+        self.submissions.append((context, source_version_id, notebook_id))
+        assert source_id == "src-001" and idempotency_key == "retry-001"
+        assert authorization_snapshot["acl_version"] >= 1
+        return {"processing_run_id": "run-retry-001", "source_id": source_id,
+                "source_version_id": source_version_id, "retry_of_processing_run_id": "run-001",
+                "processing_state": "vision_llm_understanding", "source_state": "processing",
+                "job_state": "pending", "replayed": False}
+
 
 class ExistingNotebookService:
     def get(self, context, notebook_id):  # type: ignore[no-untyped-def]
@@ -74,6 +84,44 @@ class ExistingNotebookService:
         return object()
 
 class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_source_reprocessing_rejects_unbound_notebook_and_unknown_attributes(self) -> None:
+        from daon_user_api.notebook import NotebookError
+        body = {"kind": "processing_run", "attributes": {"workspace_id": "workspace-001", "notebook_id": "notebook-001", "source_version_id": "source-version-001"}}
+        with self._authenticated(), patch.object(self.dependencies.notebook_service, "require_selected_bindings", side_effect=NotebookError("NOTEBOOK_BINDING_NOT_FOUND", 404)):
+            response = await self.client.post("/api/v1/sources/src-001/processing-runs", json=body,
+                headers={"Cookie": f"{WEB_SESSION_COOKIE}=opaque-session", "Idempotency-Key": "retry-001"})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.processing.submissions, [])
+        body["attributes"]["tenant_id"] = "other-tenant"
+        with self._authenticated():
+            response = await self.client.post("/api/v1/sources/src-001/processing-runs", json=body,
+                headers={"Cookie": f"{WEB_SESSION_COOKIE}=opaque-session", "Idempotency-Key": "retry-001"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(self.processing.submissions, [])
+
+    async def test_source_reprocessing_uses_declared_resource_contract_and_verified_scope(self) -> None:
+        with self._authenticated():
+            response = await self.client.post(
+                "/api/v1/sources/src-001/processing-runs", headers={"Cookie": f"{WEB_SESSION_COOKIE}=opaque-session", "Idempotency-Key": "retry-001"},
+                json={"kind": "processing_run", "attributes": {"workspace_id": "workspace-001", "notebook_id": "notebook-001", "source_version_id": "source-version-001"}},
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["data"]["id"], "run-retry-001")
+        self.assertEqual(response.json()["data"]["attributes"]["retry_of_processing_run_id"], "run-001")
+        self.assertIn("ETag", response.headers)
+        context = self.processing.submissions[0][0]
+        self.assertEqual((context.tenant_id, context.actor_id), ("tenant-001", "user-001"))
+
+    async def test_source_reprocessing_rejects_unauthenticated_and_cross_workspace(self) -> None:
+        body = {"kind": "processing_run", "attributes": {"workspace_id": "other-workspace", "notebook_id": "notebook-001", "source_version_id": "source-version-001"}}
+        response = await self.client.post("/api/v1/sources/src-001/processing-runs", json=body, headers={"Idempotency-Key": "retry-001"})
+        self.assertEqual(response.status_code, 401)
+        with self._authenticated():
+            response = await self.client.post("/api/v1/sources/src-001/processing-runs", json=body, headers={"Cookie": f"{WEB_SESSION_COOKIE}=opaque-session", "Idempotency-Key": "retry-001"})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.processing.submissions, [])
+
     async def asyncSetUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
         db_path = Path(self.directory.name) / "runtime.sqlite3"
@@ -101,6 +149,10 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.uploads = RecordingSourceUploadService()
         self.processing = RecordingDocumentSubmissionService()
+        policy_repository = ReferenceEgressPolicyRepository()
+        policy_context = EgressPolicyContext("tenant-001", "tenant-001", "workspace-001", "user-001", TRACE_ID, POLICY_VERSION)
+        for scope in ("organization", "workspace"):
+            policy_repository.seed(policy_context, scope_type=scope, payload=EgressPolicyPayload.deny_external())
         self.settings = RuntimeSettings.for_test(
             database_path=db_path, policy_version=POLICY_VERSION
         )
@@ -114,6 +166,7 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
             source_upload_service=self.uploads,
             document_processing_service=self.processing,
             notebook_service=ExistingNotebookService(),  # type: ignore[arg-type]
+            egress_policy_service=EgressPolicyService(policy_repository),
         )
         self.app = create_app(self.dependencies)
         self.client = httpx.AsyncClient(

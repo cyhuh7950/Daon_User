@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Mapping, cast
 
 from psycopg.types.json import Jsonb
@@ -124,6 +124,141 @@ class PostgresDocumentProcessingRepository:
             raise DocumentUnderstandingError(
                 error.code, status=503 if error.retryable else 409, retryable=error.retryable,
             ) from None
+        except Exception as error:
+            raise self._database_error(error) from None
+
+    def reprocess(
+        self, context: DocumentProcessingContext, source_id: str, source_version_id: str,
+        *, notebook_id: str, idempotency_key: str, authorization_snapshot: Mapping[str, object],
+    ) -> dict[str, object]:
+        operation = "source.manual_reprocess"
+        _, fingerprint = self._snapshot({"source_id": source_id, "source_version_id": source_version_id,
+                                         "notebook_id": notebook_id})
+        run_id = self._opaque_id("pr", context.tenant_id, context.workspace_id,
+                                 context.actor_id, operation, idempotency_key)
+        try:
+            with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
+                # Use the same locks as Notebook deletion/unbinding and Source
+                # retention, so those boundaries cannot change during submission.
+                for lock in (
+                    f"reprocess-key|{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{idempotency_key}",
+                    f"notebook-delete|{context.tenant_id}|{context.workspace_id}|{notebook_id}",
+                    f"unbind-notebook|{context.tenant_id}|{context.workspace_id}|{notebook_id}",
+                    f"retention-source|{context.tenant_id}|{context.workspace_id}|{source_id}",
+                ):
+                    connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (lock,))
+                source = connection.execute(
+                    "SELECT s.record_id,s.state,s.version,latest.record_id,"
+                    "latest.canonical_json->>'filename',o.content_type "
+                    "FROM sources s JOIN LATERAL (SELECT sv.record_id,sv.object_id,sv.canonical_json "
+                    "FROM source_versions sv WHERE sv.tenant_id=s.tenant_id AND sv.workspace_id=s.workspace_id "
+                    "AND sv.source_id=s.record_id ORDER BY sv.version DESC LIMIT 1) latest ON true "
+                    "JOIN object_records o ON o.tenant_id=s.tenant_id AND o.workspace_id=s.workspace_id "
+                    "AND o.object_id=latest.object_id AND o.status='completed' "
+                    "JOIN notebooks n ON n.tenant_id=s.tenant_id AND n.workspace_id=s.workspace_id AND n.notebook_id=%s "
+                    "JOIN notebook_bindings nb ON nb.tenant_id=n.tenant_id AND nb.workspace_id=n.workspace_id "
+                    "AND nb.notebook_id=n.notebook_id AND nb.binding_kind='source' "
+                    "AND nb.record_id=s.record_id AND nb.version_id=latest.record_id "
+                    "WHERE s.tenant_id=%s AND s.workspace_id=%s AND s.record_id=%s "
+                    "AND (s.created_by=%s OR %s) "
+                    "AND NOT EXISTS (SELECT 1 FROM identity_auth_source_access sa WHERE sa.tenant_id=s.tenant_id "
+                    "AND sa.workspace_id=s.workspace_id AND sa.source_version_id=latest.record_id AND sa.user_id=%s AND sa.allowed=0) "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=nb.tenant_id "
+                    "AND u.workspace_id=nb.workspace_id AND u.notebook_id=nb.notebook_id "
+                    "AND u.source_id=nb.record_id AND u.source_version_id=nb.version_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_deletion_requests nd WHERE nd.tenant_id=n.tenant_id "
+                    "AND nd.workspace_id=n.workspace_id AND nd.notebook_id=n.notebook_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=s.tenant_id "
+                    "AND dr.workspace_id=s.workspace_id AND dr.source_id=s.record_id AND dr.source_active=false)",
+                    (notebook_id, context.tenant_id, context.workspace_id, source_id, context.actor_id,
+                     authorization_snapshot.get("role") in {"personal_owner", "organization_admin", "workspace_admin"}, context.actor_id),
+                ).fetchone()
+                if source is None or str(source[1]) in {"disabled", "expired", "deleting", "deleted"}:
+                    raise DocumentUnderstandingError("SOURCE_NOT_FOUND", status=404)
+                if str(source[3]) != source_version_id:
+                    raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
+                filename, mime = str(source[4]), str(source[5])
+                if not ((mime == "application/pdf" and filename.lower().endswith(".pdf"))
+                        or text_source_format(filename, mime) is not None):
+                    raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409)
+                replay = connection.execute(
+                    "SELECT request_fingerprint,result FROM idempotency_records "
+                    "WHERE tenant_id=%s AND workspace_id=%s AND actor_id=%s AND operation=%s AND idempotency_key=%s",
+                    (context.tenant_id, context.workspace_id, context.actor_id, operation, idempotency_key),
+                ).fetchone()
+                if replay is not None:
+                    if str(replay[0]) != fingerprint:
+                        raise DocumentUnderstandingError("IDEMPOTENCY_KEY_REUSED", status=409)
+                    return {**cast(dict[str, object], replay[1]), "replayed": True}
+                active = connection.execute(
+                    "SELECT 1 FROM processing_runs pr LEFT JOIN document_processing_jobs job "
+                    "ON job.tenant_id=pr.tenant_id AND job.workspace_id=pr.workspace_id AND job.processing_run_id=pr.record_id "
+                    "WHERE pr.source_version_id=%s AND (pr.state NOT IN ('completed','failed','policy_blocked') "
+                    "OR job.state IN ('pending','leased','retry_wait')) LIMIT 1",
+                    (source_version_id,),
+                ).fetchone()
+                if active is not None:
+                    raise DocumentUnderstandingError("SOURCE_PROCESSING_ACTIVE", status=409)
+                previous = connection.execute(
+                    "SELECT pr.record_id,pr.state,job.state FROM processing_runs pr "
+                    "JOIN document_processing_jobs job ON job.tenant_id=pr.tenant_id AND job.workspace_id=pr.workspace_id "
+                    "AND job.processing_run_id=pr.record_id WHERE pr.source_version_id=%s "
+                    "ORDER BY pr.created_at DESC,pr.record_id DESC LIMIT 1", (source_version_id,),
+                ).fetchone()
+                if (str(source[1]) not in {"failed", "waiting_model"} or previous is None
+                        or str(previous[1]) != "failed" or str(previous[2]) != "dead_letter"):
+                    raise DocumentUnderstandingError("SOURCE_REPROCESSING_STATE_INVALID", status=409)
+                policy = connection.execute(
+                    "SELECT data_area,cost_limit_cents,acl_version FROM identity_auth_workspaces WHERE tenant_id=%s AND workspace_id=%s",
+                    (context.tenant_id, context.workspace_id),
+                ).fetchone()
+                if policy is None or int(policy[2]) != authorization_snapshot.get("acl_version"):
+                    raise DocumentUnderstandingError("CURRENT_ACCESS_DENIED", status=403)
+                previous_id = str(previous[0])
+                payload = {"source_version_id": source_version_id, "modality": "document",
+                           "trigger_type": "manual_request", "retry_of_processing_run_id": previous_id,
+                           "trigger_event_id": run_id, "notebook_id": notebook_id,
+                           "vision_llm_first": True, "parser_role": "validation_only",
+                           "authorization_snapshot": dict(authorization_snapshot),
+                           "policy_snapshot": {"data_area": str(policy[0]), "cost_limit_cents": int(policy[1]),
+                                               "routing_policy_version": context.policy_version}}
+                text, digest = self._snapshot(payload)
+                connection.execute(
+                    "INSERT INTO processing_runs (tenant_id,workspace_id,record_id,aggregate_id,version,schema_version,"
+                    "canonical_json,canonical_text,digest_sha256,state,created_by,trace_id,source_version_id,"
+                    "modality,trigger_type,retry_of_processing_run_id,trigger_event_id) "
+                    "VALUES (%s,%s,%s,%s,1,1,%s,%s,%s,'accepted',%s,%s,%s,'document','manual_request',%s,%s)",
+                    (context.tenant_id, context.workspace_id, run_id, run_id, Jsonb(payload), text, digest,
+                     context.actor_id, context.trace_id, source_version_id, previous_id, run_id),
+                )
+                self._transition(connection, context, entity_type="Source", aggregate_id=source_id,
+                                 expected_version=int(source[2]), target_state="processing", reason_code="MANUAL_REPROCESSING_REQUESTED")
+                self._transition(connection, context, entity_type="ProcessingRun", aggregate_id=run_id,
+                                 expected_version=1, target_state="vision_llm_understanding", reason_code="MANUAL_REPROCESSING_STARTED")
+                connection.execute(
+                    "INSERT INTO document_processing_jobs (tenant_id,workspace_id,job_id,source_id,source_version_id,"
+                    "processing_run_id,state,created_by,trace_id,policy_version) VALUES (%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s)",
+                    (context.tenant_id, context.workspace_id, self._opaque_id("dpj", run_id), source_id,
+                     source_version_id, run_id, context.actor_id, context.trace_id, context.policy_version),
+                )
+                result = {"processing_run_id": run_id, "source_id": source_id, "source_version_id": source_version_id,
+                          "retry_of_processing_run_id": previous_id, "processing_state": "vision_llm_understanding",
+                          "source_state": "processing", "job_state": "pending", "replayed": False}
+                connection.execute(
+                    "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,"
+                    "outcome,trace_id,policy_version,metadata) VALUES (%s,%s,%s,%s,'source.manual_reprocess',"
+                    "'processing_run',%s,'succeeded',%s,%s,%s)",
+                    (self._opaque_id("audit", run_id), context.tenant_id, context.workspace_id, context.actor_id,
+                     run_id, context.trace_id, context.policy_version, Jsonb({"retry_of_processing_run_id": previous_id,
+                                                                            "source_version_id": source_version_id, "trigger_type": "manual_request"})),
+                )
+                connection.execute(
+                    "INSERT INTO idempotency_records (tenant_id,workspace_id,actor_id,operation,idempotency_key,"
+                    "request_fingerprint,result,status,expires_at) VALUES (%s,%s,%s,%s,%s,%s,%s,'completed',%s)",
+                    (context.tenant_id, context.workspace_id, context.actor_id, operation, idempotency_key,
+                     fingerprint, Jsonb(result), datetime.now(timezone.utc) + timedelta(hours=24)),
+                )
+                return result
         except Exception as error:
             raise self._database_error(error) from None
 

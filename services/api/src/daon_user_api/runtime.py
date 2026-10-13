@@ -589,6 +589,20 @@ class AuthorizationEvaluationBody(BaseModel):
     requested_permissions: list[Permission]
 
 
+class SourceReprocessingAttributes(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    notebook_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    source_version_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
+class SourceReprocessingBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str
+    attributes: SourceReprocessingAttributes
+    step_up_authorization_id: str | None = None
+
+
 class EgressPolicyVersionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: str
@@ -3186,6 +3200,51 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             status_code=202,
         )
         response.headers["ETag"] = f'"source:{result.source_id}:1"'
+        return response
+
+    @app.post("/api/v1/sources/{id}/processing-runs", status_code=201)
+    async def reprocess_source(
+        id: str, body: SourceReprocessingBody, request: Request,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        if body.kind != "processing_run" or body.step_up_authorization_id is not None:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+        attributes = body.attributes
+        grant = dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=attributes.workspace_id, action=Action.EDIT,
+            trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
+        )
+        await asyncio.to_thread(notebook_service.get, notebook_context(principal, attributes.workspace_id, request), attributes.notebook_id)
+        await asyncio.to_thread(
+            notebook_service.require_selected_bindings,
+            notebook_context(principal, attributes.workspace_id, request), attributes.notebook_id,
+            required=(("source", id, attributes.source_version_id),),
+        )
+        if dependencies.document_processing_service is None:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_UNAVAILABLE", status=503, retryable=True)
+        if egress_policy_service is None:
+            raise DocumentUnderstandingError("EGRESS_POLICY_UNAVAILABLE", status=503, retryable=True)
+        effective = await asyncio.to_thread(
+            egress_policy_service.get_effective,
+            _egress_policy_context(principal, attributes.workspace_id, request, dependencies),
+        )
+        snapshot = {"acl_version": grant.acl_version, "membership_version": grant.membership_version,
+                    "role": grant.role.value, "policy_version": grant.policy_version,
+                    "external_transfer_policy": effective.frozen_context()}
+        result = await asyncio.to_thread(
+            dependencies.document_processing_service.reprocess,
+            DocumentProcessingContext(principal.tenant_id, attributes.workspace_id, principal.user_id,
+                                      request.state.trace_id, dependencies.settings.policy_version),
+            id, attributes.source_version_id, notebook_id=attributes.notebook_id,
+            idempotency_key=idempotency_key, authorization_snapshot=snapshot,
+        )
+        response = JSONResponse({"data": {"id": result["processing_run_id"], "kind": "processing_run",
+                                         "version": "2", "attributes": result},
+                                 "trace_id": request.state.trace_id}, status_code=201)
+        response.headers["ETag"] = f'"processing-run:{result["processing_run_id"]}:2"'
         return response
 
     @app.get("/api/v1/workspaces/{id}/processing-runs/{processing_run_id}")

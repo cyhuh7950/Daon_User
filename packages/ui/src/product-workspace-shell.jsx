@@ -536,6 +536,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [sourceAddText, setSourceAddText] = useState("");
   const [sourceAddError, setSourceAddError] = useState(null);
   const [sourceAddPending, setSourceAddPending] = useState(false);
+  const [sourceRetryError, setSourceRetryError] = useState(null);
+  const sourceRetryKeysRef = useRef(new Map());
   const pollControllerRef = useRef(null);
   const reportIdempotencyRef = useRef(null);
   const lifetimeControllerRef = useRef(null);
@@ -743,6 +745,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     const file = fileInput?.files?.[0] ?? eventOrFile;
     if (fileInput) fileInput.value = "";
     if (!adapter || !file) return;
+    return runSourceSubmission((signal) => typeof adapter.uploadSource === "function"
+      ? adapter.uploadSource(file, { signal }) : adapter.uploadPdf(file, { signal }));
+  };
+
+  const runSourceSubmission = async (submit, onSubmissionFailure = null) => {
     setSourceAddPending(true);
     setSourceAddError(null);
     pollControllerRef.current?.abort();
@@ -764,7 +771,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     let acceptedSubmission = false;
     try {
       const submission = await awaitAbortable(
-        (typeof adapter.uploadSource === "function" ? adapter.uploadSource(file, { signal: controller.signal }) : adapter.uploadPdf(file, { signal: controller.signal })),
+        submit(controller.signal),
         controller.signal
       );
       if (!isSafeDtoId(submission?.processing_run_id) || !isSafeDtoId(submission?.source_id) || !isSafeDtoId(submission?.source_version_id)) {
@@ -833,6 +840,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         return;
       }
       const errorCode = deadlineExpired ? "PROCESSING_TIMEOUT" : safeErrorCode(error, "SOURCE_UPLOAD_FAILED");
+      if (onSubmissionFailure) {
+        onSubmissionFailure(errorCode);
+        setLoadRevision((current) => current + 1);
+        return;
+      }
       setSourceAddError(errorCode);
       setViewState(createProductWorkspaceState({
         status: "error",
@@ -843,6 +855,20 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       if (pollControllerRef.current === controller) pollControllerRef.current = null;
       setSourceAddPending(false);
     }
+  };
+
+  const retrySource = async (source) => {
+    if (sourceAddPending || typeof adapter?.reprocessSource !== "function") return;
+    setSourceRetryError(null);
+    const retryIdentity = `${source.sourceId}:${source.sourceVersionId}`;
+    try {
+      if (!sourceRetryKeysRef.current.has(retryIdentity)) sourceRetryKeysRef.current.set(retryIdentity, `source-retry-${secureUuid()}`);
+      await runSourceSubmission(async (signal) => {
+        const result = await adapter.reprocessSource(source, { signal, idempotencyKey: sourceRetryKeysRef.current.get(retryIdentity) });
+        sourceRetryKeysRef.current.delete(retryIdentity);
+        return result;
+      }, (code) => setSourceRetryError(code));
+    } catch (error) { setSourceRetryError(safeErrorCode(error, "SOURCE_REPROCESS_FAILED")); }
   };
 
   const submitPastedText = async () => {
@@ -1338,9 +1364,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                   <span className="source-file-icon" aria-hidden="true">FILE</span><span className="source-row-copy"><strong>{source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {SOURCE_STATE_LABELS[source.sourceState] ?? "상태 확인 필요"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
                 </button>
                 <button type="button" className="source-action-trigger" title="Source 작업" aria-label={`${source.filename ?? source.sourceId} 작업`} onClick={() => { setSourceAction(source); setSourceActionKind("unbind"); setSourceActionSafeError(null); }}>⋮</button>
+                {new Set(["failed", "waiting_model"]).has(source.sourceState) && typeof adapter?.reprocessSource === "function"
+                  ? <button type="button" disabled={sourceAddPending} onClick={() => void retrySource(source)}>재처리</button> : null}
               </li>
             ))}
           </ul>
+          {sourceRetryError ? <div className="inline-alert compact" role="alert">재처리를 요청하지 못했습니다. 연결과 처리 상태를 확인한 뒤 다시 시도하세요. ({sourceRetryError})</div> : null}
           <ul className="source-list" aria-label="삭제 요청 Source 목록">
             {sourceDeletionRequests.map((request) => (
               <li className="source-list-row" key={request.request_id}>

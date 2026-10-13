@@ -3,7 +3,7 @@
 import { createProductWorkspaceState } from "@daon-user/ui/product-workspace-model";
 import { ProductWorkspaceShell } from "@daon-user/ui/product-workspace-shell";
 import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
-import { getDocumentProcessingStatus, uploadSource } from "../lib/source-upload-api.js";
+import { getDocumentProcessingStatus, reprocessSource, uploadSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
 import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, registerWorkspaceConnector, unregisterWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
@@ -43,6 +43,7 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     downloadManual: (documentId, format, manifest, options) => downloadManualAsset(documentId, format, { ...options, manifest }),
     uploadSource: (file, options) => uploadSource(workspaceId, file, notebookOptions(options)),
     uploadPdf: (file, options) => uploadSource(workspaceId, file, notebookOptions(options)),
+    reprocessSource: (source, options) => reprocessSource(workspaceId, source, notebookOptions(options)),
     getProcessingStatus: (processingRunId, options) => getDocumentProcessingStatus(workspaceId, processingRunId, notebookOptions(options)),
     askQuestion: (input, options) => askGroundedQuestion(workspaceId, notebookInput(input), options),
     authorizeQuestion: (input, options) => authorizeGroundedQuestion(workspaceId, notebookInput(input), options),

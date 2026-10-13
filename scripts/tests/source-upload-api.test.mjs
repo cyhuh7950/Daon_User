@@ -7,6 +7,37 @@ import {
 } from "../../apps/web/lib/product-workspace-api.js";
 import { uploadPdfSource } from "../../apps/web/lib/source-upload-api.js";
 import { secureUuid } from "@daon-user/ui/secure-uuid";
+import * as sourceApi from "../../apps/web/lib/source-upload-api.js";
+
+test("실패 Source 재처리는 기존 Resource 계약으로 same-origin POST하고 새 Run을 반환한다", async () => {
+  assert.equal(typeof sourceApi.reprocessSource, "function");
+  let call;
+  const result = await sourceApi.reprocessSource("workspace-1", { sourceId: "source-1", sourceVersionId: "version-1" }, {
+    notebookId: "notebook-1", idempotencyKey: "retry-1", fetchImpl: async (url, init) => {
+      call = { url, init };
+      return Response.json({ data: { id: "run-2", kind: "processing_run", version: "2", attributes: {
+        processing_run_id: "run-2", source_id: "source-1", source_version_id: "version-1", retry_of_processing_run_id: "run-1",
+        processing_state: "vision_llm_understanding", source_state: "processing", job_state: "pending", replayed: false,
+      } }, trace_id: "trace-1" }, { status: 201, headers: { ETag: '"processing-run:run-2:2"' } });
+    },
+  });
+  assert.equal(call.url, "/bff/api/sources/source-1/processing-runs");
+  assert.equal(call.init.method, "POST");
+  assert.equal(call.init.headers["Idempotency-Key"], "retry-1");
+  assert.deepEqual(JSON.parse(call.init.body), { kind: "processing_run", attributes: { workspace_id: "workspace-1", notebook_id: "notebook-1", source_version_id: "version-1" } });
+  assert.equal(result.processing_run_id, "run-2");
+});
+
+test("Source 재처리 adapter는 다른 Source 응답과 안전 HTTP 실패를 거부한다", async () => {
+  const source = { sourceId: "source-1", sourceVersionId: "version-1" };
+  const options = { notebookId: "notebook-1", idempotencyKey: "retry-1" };
+  await assert.rejects(sourceRetryApiCall({ data: { id: "run-2", kind: "processing_run", version: "2", attributes: {
+    processing_run_id: "run-2", source_id: "other-source", source_version_id: "version-1", retry_of_processing_run_id: "run-1",
+    processing_state: "vision_llm_understanding", source_state: "processing", job_state: "pending", replayed: false,
+  } }, trace_id: "trace-1" }), /SOURCE_REPROCESS_RESPONSE_INVALID/u);
+  await assert.rejects(sourceApi.reprocessSource("workspace-1", source, { ...options, fetchImpl: async () => Response.json({ error: { code: "SOURCE_PROCESSING_ACTIVE", retryable: false } }, { status: 409 }) }), /SOURCE_PROCESSING_ACTIVE/u);
+  function sourceRetryApiCall(payload) { return sourceApi.reprocessSource("workspace-1", source, { ...options, fetchImpl: async () => Response.json(payload, { status: 201 }) }); }
+});
 
 const source = Object.freeze({
   source_id: "source-1", source_version_id: "version-1", filename: "approved.pdf",

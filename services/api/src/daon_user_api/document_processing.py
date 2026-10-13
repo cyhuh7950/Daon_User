@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import ContextManager, Protocol, cast
+from typing import ContextManager, Mapping, Protocol, cast
 
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
@@ -67,6 +67,11 @@ class DocumentProcessingStatus:
 
 
 class DocumentProcessingRepository(Protocol):
+    def reprocess(
+        self, context: DocumentProcessingContext, source_id: str, source_version_id: str,
+        *, notebook_id: str, idempotency_key: str, authorization_snapshot: Mapping[str, object],
+    ) -> dict[str, object]: ...
+
     def load_source_document(
         self, context: DocumentProcessingContext, source_id: str,
     ) -> StoredSourceDocument: ...
@@ -94,6 +99,18 @@ class DocumentProcessingRepository(Protocol):
 class DocumentProcessingSubmissionService:
     def __init__(self, repository: DocumentProcessingRepository) -> None:
         self._repository = repository
+
+    def reprocess(
+        self, context: DocumentProcessingContext, source_id: str, source_version_id: str,
+        *, notebook_id: str, idempotency_key: str, authorization_snapshot: Mapping[str, object],
+    ) -> dict[str, object]:
+        if any(not isinstance(value, str) or not _SAFE_ID.fullmatch(value)
+               for value in (source_id, source_version_id, notebook_id)) or not idempotency_key:
+            raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
+        return self._repository.reprocess(
+            context, source_id, source_version_id, notebook_id=notebook_id,
+            idempotency_key=idempotency_key, authorization_snapshot=authorization_snapshot,
+        )
 
     def submit(
         self, context: DocumentProcessingContext, source_version_id: str, *, notebook_id: str,
