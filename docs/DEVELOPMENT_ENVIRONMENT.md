@@ -1,5 +1,13 @@
 # Daon_User 개발·정식 WSL 검증 환경
 
+## 현재 실행 확인 — 2026-10-14 내부 이미지 연결
+
+- 실행 제품/WSL Git `a39ab0856812cee368f02628c3baae24303e0089`. API/document/studio `sha256:1d559550750dd6851aacbf85be4ae105a67b7612ec7d8238b1079712cfb9cb50`, Web `sha256:761f420eae01dbef5fd087888175658636b458a00e7882eddbe862f5a9ecea21`. ready200·실제DB0060 불변. 아래 a078/8300/11ea 및 과거 설명은 이력이다.
+- PNG/JPEG·Native→OCR·Region 저장/색인·질문 locator·동일 출처 원문 강조 코드 연결. main Python222/74subtests, Node158, Webbuild/TypeScript/UIboundary504 위반0. 실제 실행 image Pillow12.3.0·Tesseract5.5.0/kor+eng의 합성 코드/날짜 OCR 실행 확인. 실제 Vision→ready→질문→이미지 원문 화면은 NOT RUN으로 이미지 전체 기능의 실제 확인을 뜻하지 않는다.
+- 실제 차단: QA a는 시스템 관리자가 아니고 정상 모델 목록 갱신 API가403으로 거부됐다. 목록 GET은 모든 로그인 사용자에게 허용되므로200을 관리자 권한으로 계산하지 않는다. qwen3-vl:latest의 앱 등록은 text_generation뿐이고 QA image default 없음. text default llama3.2:3b 유지·catalog/default/auth/policy변경0. 기존 관리자는 active/강제 비밀번호 변경 false이나 현재 QA Secret에 관리자 자격증명이 없다. 기존 관리자 정상 로그인으로 목록 갱신 또는 별도 승인된 임시 QA 관리자 권한이 필요한 상태다. 비밀번호 복구·권한 우회0.
+- 기존 Compose env·readonly Secret mount·네트워크·PG/MinIO/runtime 영속 유지. schema/migration·실제 사용자 자료·외부 송신·새 모델 다운로드·ysna/Oracle·PR/병합0. 관리자 자격으로 목록 갱신 후 QA Workspace image default만 정상 API로 저장하고 합성 QA 이미지 한 건의 실제 여정/접근 경계를 실행한다. 현재 이미지 업로드·모델 추론0, 시험 API 세션 철회·기존 Chrome QA 세션 보존. 재진입의 기존 Source3·저장 답변·승인 Studio6 확인.
+- 이미지 코드 복구는 DB0060·자료를 유지하고 직전 API b766e73d/Web54787f3d image로 기존 Compose를 기동한다. 환경변수 이름·영속·백업/복구·기동 방법은 아래 기존 항목을 재사용하며 최신 MinIO/runtime 일관복구·브라우저 직접 텍스트 원문/파일저장·실기기 미확인을 유지한다. 새로운 전체 Gate는 추가하지 않는다.
+
 기준: 2026-10-04 신산님의 `3330 정식 검증 승인`. 이 문서는 Router Auto PR #39의 WSL 검증 대상과 복구 경계를 기록한다. Secret 값은 기록하지 않는다.
 
 ## 정식 WSL 대상
