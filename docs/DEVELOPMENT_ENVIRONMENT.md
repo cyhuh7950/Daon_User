@@ -41,9 +41,9 @@
 
 ## 2026-10-13 최신 WSL 기능 구현·이전 인계 기준 (진행 중)
 
-**최신 제품 기준:** `dc3c3a8b48f97c2c81f17990711e2bce97e4faf5`의 Studio 추가 인증 연결·결과 마크업 보정이다. 실제 API/화면·이미지 대조는 아래 최신 확인에 기록한다. 신산님 승인 후 0060 소유권 보정을 격리 DB의 upgrade/downgrade·RLS·직접 UPDATE/DELETE 거부로 검증하고 WSL 개발 DB에 적용했다. 실제 저장 질문·원문 citation·Studio 5종의 버전·검토·비밀번호 재인증 승인·파일 내보내기는 `9a229569` API/BFF에서 확인했다. 이후 변경은 보고서 마크업 2파일뿐이며 기존 API 테스트/여정 근거를 불필요하게 반복하지 않는다. TXT/MD/CSV 이해는 기존 Ollama Llama3.2:3b 연결을 사용하며, Office·이미지·오디오 Source 이해는 부분 구현이다. ysna 실제 이전은 실행하지 않았다.
+**최신 제품 기준:** `29e6d4dbb82194abe295c7d1dc39c0e3b333252c`. Studio 추가 인증·결과 마크업에 이어 생산 지식 등록의 Notebook 결속·완료 투영·화면 실제 목록 갱신을 보정했다. 신산님 승인 후0060을 격리 DB의 upgrade/downgrade·RLS·직접 UPDATE/DELETE 거부로 검증하고 WSL 개발 DB에 적용했다. 실제 저장 질문·원문 citation·Studio5종의 버전·검토·재인증 승인·파일 내보내기는9a229569 API/BFF에서 확인했고, 29e6d4db의 실제 새 등록→목록/선택→질문→등록지식 원문 조회도 확인했다. TXT/MD/CSV 이해는 기존 Ollama Llama3.2:3b 연결을 사용하며 Office·이미지·오디오 Source 이해는 부분 구현이다. ysna 실제 이전은 실행하지 않았다.
 
-**현재 실행 이미지:** API/document/studio `sha256:ff3c5d845bdae74d2ce42604f0e29bfde3edc3e39275617d1298aa5dfd932fcd`, Web `sha256:913a090ad367da4701bec5c695314195ce95986928a27247b7079e628624edf8`, 네 서비스의 소스/revision label은 위 `dc3c3a8b`. WSL exact Git fast-forward·API/Web build·TypeScript·UI boundary502파일 위반0·ready200을 확인했다. DB는0060이며 영속 위치/Secret 참조/network는 기존과 같다. 승인된0060이후 DB 변경0. UI 보정은 보고서 본문을 기존 가변 폭 열에 놓는 마크업 변경이며 auth/API 동작은9a229569와 동일하다. 환경 문서만 후속 저장한 checkpoint SHA와 실제 이미지의 제품 SHA를 구분한다.
+**현재 실행 이미지:** API/document/studio `sha256:eee97404e59200aa9eac7d1790eac45f6b3f4c818159d5f22478f3bb132ef053`, Web `sha256:b124da9b4a811406c72b850f64f6deb102c95811151db0e8b019e14223927bf8`, 네 서비스의 소스/revision label은 위29e6d4db. WSL exact Git fast-forward·API/Web build·TypeScript·UI boundary502파일 위반0·ready200을 확인했다. DB0060이며 영속 위치/Secret 참조/network는 기존과 같다. 승인된0060 이후 schema/migration 변경0. 환경 문서만 후속 저장한 checkpoint SHA와 실제 이미지의 제품 SHA를 구분한다.
 
 위 10월 4~7일 정보와 아래 540c427f/753f63f1 단락은 이력이다. 최신 이미지·DB와 기능 판정은 이 절 마지막의 최신 확인을 따른다. ysna-server 접속·이전은 실행하지 않았다.
 
@@ -59,5 +59,7 @@
 
 - 최신 핵심 여정 확인(`9a229569`): QA 계정 두 명으로 Notebook/Source/Citation/질문·Studio job/Version/export 접근 경계를 실행했다. 타인 조회404, 본인 미결속 Notebook409, 추가 인증 없는 승인403, 같은 토큰/요청 replay200·다른 요청 재사용403. Studio5종 각2version·citation 유지·검토·재인증 승인과 PDF/XLSX/CSV/JSON/DOCX bytes 구조를 실제 검증했다. Chrome 동일 세션에서도 검토→승인요청→재인증→승인됨을 확인했다. 브라우저 다운로드 이벤트는 timeout이고 다운로드 목록 접근은 정책 거절이므로 브라우저 파일 저장은 NOT CONFIRMED; API 파일 내용 검증과 별개다. 실제 Word/Excel 앱에서 열기는 NOT RUN. 모델 신규 호출이 아니라 저장된 답변의 구조화·결정적 재생성인 Studio 경로를 구분한다.
 - 추가 백업·정리: `daon_user.before-question-owner-cbf58af4.dump`, SHA256 `d1aef685cf5f010e1c1a6b77e05872062b1bbe256ac370e16ad493526b3bb85b`, mode600. 실제 격리 restore 및 0059→0060→0059→0060 권한·저장 시험을 확인했다. 전용 `daon_user_r1_qa_20261013`은 연결0 확인 후 제거, 실제 `daon_user`와 dump는 보존했다. QA Notebook과6개 산출물은 사용자 기능 확인용으로 보존하고 시험 API 세션은 철회했다. MinIO/runtime 일관 백업·새 서버 복구와 `.env` 단독 재기동은 미확인으로 유지한다.
+- 생산 지식 실제 확인(29e6d4db): 이전 등록은 그대로 보존하고 새 QA 등록을 실행했다. source-version-0223f1891ed7dd0fc8d6db8aac2911ad의 Notebook binding1·registered 지식/evidence/index 저장, 화면 Source2→3·사용 가능·선택 확인. 해당 Source로 실제 Llama 답변 `ORANGE-COMPASS-42, 2026년 10월 20일`과 citation-508be66abec480183e2b478174068331 저장 및 원문 BFF200을 확인했다. 타인 조회/질문/인용403/404, 본인의 다른Notebook에 자료 미노출. 지식은 승인된 Version의 직접 snapshot 등록으로서 실제 문서 ProcessingRun/job을 만들거나 실행한 것이 아니다. 기존 public 완료 projection을 엄격한 승인·등록·Notebook·근거/index 조건에만 적용했다.
+- 브라우저 경계: 등록 지식의 Citation 링크를 Chrome에서 직접 열면 `ERR_BLOCKED_BY_CLIENT`가 표시됐다. API 원문 조회200과 별개로 브라우저 직접 열기는 미확인이다. 차단 원인을 브라우저 확장·서버 설정 중 하나로 단정하지 않았고 보호 설정 변경·차단 우회는 하지 않았다. 브라우저 파일저장 역시 이벤트 timeout으로 NOT CONFIRMED. 이 두 경계를 실행 성공으로 계산하지 않는다.
 
 - 빌드 보안 경고 분리: 이번 production 의존성 raw `npm audit --omit=dev`는 braces GHSA-vfj7-8cjw-p6xm high 1건/exit1을 반환했다. 기존 vendored 패치의 archive·lock·실제 설치 동일성과 100/101 깊이 경계 포함 8시험은 같은 빌드 이미지에서 통과했다. 원시 감사 발견0/공식 전체 Gate PASS라고 바꾸지 않는다. Node22 이미지와 root Node24 engine 차이 경고도 그대로 기록하며 이번 재처리 Web build·TypeScript·UI boundary502파일/위반0은 실제 통과했다.
