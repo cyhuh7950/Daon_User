@@ -1,5 +1,6 @@
 "use client";
 import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
+import { parseSheetCell } from "./sheet-cell-locator.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const VIEW_KEYS = Object.freeze(["notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"]);
@@ -76,10 +77,11 @@ function validCitation(value) {
     && Number.isSafeInteger(value.page) && value.page >= 1
     && ["raw_source", "daon_knowledge"].includes(value.origin)
     && exact(value.locator, ["kind", "value"])
-    && ["page", "section", "image_region"].includes(value.locator.kind)
+    && ["page", "section", "image_region", "sheet_cell"].includes(value.locator.kind)
     && typeof value.locator.value === "string" && value.locator.value.length >= 1 && value.locator.value.length <= 255
     && (value.locator.kind !== "page" || value.locator.value === String(value.page))
-    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null);
+    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null)
+    && (value.locator.kind !== "sheet_cell" || parseSheetCell(value.locator.value) !== null);
 }
 
 function validContext(value, notebookId) {
@@ -97,7 +99,11 @@ function validContext(value, notebookId) {
     && typeof value.conversation.answer.insufficient === "boolean"
     && Array.isArray(value.conversation.answer.citations)
     && value.conversation.answer.citations.length <= 20
-    && value.conversation.answer.citations.every(validCitation)
+    && value.conversation.answer.citations.every(citation => validCitation(citation)
+      && (citation.locator.kind !== "sheet_cell" || citation.origin !== "raw_source"
+        || (citation.context_item_id === citation.source_id && Array.isArray(value.sources)
+          && value.sources.some(source => source?.source_id === citation.source_id
+            && source?.source_version_id === citation.source_version_id))))
   );
   return exact(value, CONTEXT_KEYS) && value.notebook_id === notebookId
     && Array.isArray(value.sources) && value.sources.length <= 1_000

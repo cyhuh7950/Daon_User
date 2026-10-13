@@ -8,6 +8,44 @@ const VIEW = Object.freeze({ notebook_id: "notebook-1", title: "Notebook", sourc
 const META = Object.freeze({ trace_id: "trace-1", workspace_id: "workspace-1" });
 const json = (body, init = {}) => Response.json(body, init);
 
+test("Web saved sheet_cell context preserves exact Notebook SourceVersion and rejects bad locator/binding", async () => {
+  const citations = ['B2','B3','B3','B2','A3'].map((range, index) => ({
+    citation_id: `citation-cell-${index}`, source_id: 'source-1', source_version_id: 'source-version-1',
+    evidence_span_id: `span-cell-${index}`, page: 1, origin: 'raw_source', context_item_id: 'source-1',
+    locator: { kind: 'sheet_cell', value: JSON.stringify({ sheet: index < 2 ? '납품 계획' : '예산', range }) },
+  }));
+  const data = { notebook_id: 'notebook-1', sources: [{ source_id: 'source-1', source_version_id: 'source-version-1' }],
+    knowledge_context_ids: [], conversation_thread_ids: ['thread-1'], studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], source_deletion_requests: [],
+    conversation: { conversation_thread_id: 'thread-1', answer: { run_id: 'run-cell', run_result_id: 'result-cell', answer: '저장된 코드·날짜·예산 답변', insufficient: false, citations } } };
+  const calls = [];
+  const result = await getNotebookContext('workspace-1', 'notebook-1', { fetchImpl: async (url, init) => {
+    calls.push({ url, init }); return json({ data, meta: META }, { headers: { ETag: '"notebook-binding:4"' } });
+  } });
+  assert.deepEqual(result.data, data);
+  assert.equal(result.data.bindingEtag, '"notebook-binding:4"');
+  assert.equal(calls[0].url, '/bff/api/workspaces/workspace-1/notebooks/notebook-1/context');
+  assert.equal(calls[0].init.credentials, 'same-origin');
+  const { createNotebookContextWorkspaceAdapter } = await import('../../packages/ui/src/notebook-context-adapter.js');
+  const { citationContentUrl } = await import('../../apps/web/lib/question-answering-api.js');
+  const restored = await createNotebookContextWorkspaceAdapter({ citationUrl: (citation, options) => citationContentUrl('workspace-1', citation, options) }, result.data).loadNotebookConversation();
+  assert.equal(restored.citations.length, 5);
+  assert.deepEqual(restored.citations[0].locator, citations[0].locator);
+  assert.equal(restored.citations[0].content_url, '/bff/api/workspaces/workspace-1/citations/citation-cell-0/content?notebook_id=notebook-1');
+  const invalids = [
+    value => value.conversation.answer.citations[0].locator.value = '{"sheet":"납품 계획","range":"A1:Q16"}',
+    value => value.conversation.answer.citations[0].locator.value = '{"sheet":"납품 계획", "range":"B2"}',
+    value => value.conversation.answer.citations[0].locator.value = '{"sheet":"납품 계획","range":"XFE1"}',
+    value => value.sources = [], value => value.sources[0].source_version_id = 'version-other',
+    value => value.sources[0].source_id = 'source-other', value => value.notebook_id = 'notebook-other',
+    value => value.conversation.answer.citations[0].context_item_id = 'source-other',
+  ];
+  for (const mutate of invalids) {
+    const invalid = structuredClone(data); mutate(invalid);
+    await assert.rejects(getNotebookContext('workspace-1', 'notebook-1', { fetchImpl: async () => json({ data: invalid, meta: META }, { headers: { ETag: '"notebook-binding:4"' } }) }), /NOTEBOOK_CONTEXT_INVALID/);
+  }
+  await assert.rejects(getNotebookContext('workspace-1', 'notebook-1', { fetchImpl: async () => json({ data, meta: META }, { headers: { ETag: '"notebook:4"' } }) }), /NOTEBOOK_CONTEXT_INVALID/);
+});
+
 test("Notebook client는 same-origin 경로와 exact write headers만 사용한다", async () => {
   const captured = [];
   const fetchImpl = async (url, init) => {
