@@ -96,7 +96,9 @@ class QuestionAnsweringContractTests(unittest.TestCase):
         result = OllamaTextGenerationAdapter(transport=Transport()).generate(request, selection)
         self.assertEqual(result.cited_chunk_ids, ('cell-0','cell-1','cell-2','cell-3'))
         payload = calls[0]['payload']
-        self.assertEqual(payload['format']['properties']['cited_chunk_ids']['items'], {'type': 'string', 'enum': ['cell-0','cell-1','cell-2','cell-3']})
+        self.assertEqual(payload['format']['properties']['cited_chunk_ids'], {'anyOf': [{'const': ['cell-0','cell-1','cell-2','cell-3']}, {'const': []}]})
+        self.assertNotIn('anyOf', payload['format'])
+        self.assertEqual(payload['format']['properties']['insufficient'], {'type': 'boolean'})
         user = json.loads(payload['messages'][1]['content'])
         self.assertEqual(user['evidence'][0], {'chunk_id': 'cell-0', 'page': 1, 'text': 'REF-DELTA-17', 'locator': {'sheet': '계획', 'range': 'B2'}})
         self.assertEqual(user['evidence'][2]['locator'], {'sheet': '예산', 'range': 'B3'})
@@ -111,7 +113,7 @@ class QuestionAnsweringContractTests(unittest.TestCase):
         self.assertEqual(payload['options'], {'num_predict': 512, 'temperature': 0})
         self.assertEqual(calls[0]['timeout_seconds'], 90.0)
         self.assertEqual(UpstageTextGenerationAdapter._SCHEMA, before)
-        payload['format']['properties']['cited_chunk_ids']['items']['enum'].append('mutated')
+        payload['format']['properties']['cited_chunk_ids']['anyOf'][0]['const'].append('mutated')
         self.assertEqual(UpstageTextGenerationAdapter._SCHEMA, before)
 
     def test_xlsx_invalid_locator_fails_before_question_http(self):
@@ -142,7 +144,7 @@ class QuestionAnsweringContractTests(unittest.TestCase):
         cases = [tuple(replace(item, locator_kind=kind) for item in request.evidence) for kind in ('page', 'section', 'image_region')]
         for evidence in (request.evidence[:1], (*request.evidence, replace(request.evidence[0], chunk_id='cell-extra'))):
             payload = OllamaTextGenerationAdapter.provider_payload(replace(request, evidence=evidence), selection)
-            self.assertEqual(payload['format']['properties']['cited_chunk_ids']['items']['enum'], [item.chunk_id for item in evidence])
+            self.assertEqual(payload['format']['properties']['cited_chunk_ids'], {'anyOf': [{'const': [item.chunk_id for item in evidence]}, {'const': []}]})
             self.assertTrue(all('locator' in item for item in json.loads(payload['messages'][1]['content'])['evidence']))
         cases += [(replace(request.evidence[0], locator_kind='page'), *request.evidence[1:]),
                   (replace(request.evidence[0], source_id='source-other'), *request.evidence[1:]),
@@ -160,6 +162,41 @@ class QuestionAnsweringContractTests(unittest.TestCase):
         self.assertEqual(general, {'model': 'llama3.2:3b', 'stream': False, 'keep_alive': '5m', 'options': {'num_predict': 64, 'temperature': 0},
             'format': OpenAICompatibleTextGenerationAdapter._GENERAL_SCHEMA['json_schema']['schema'],
             'messages': [{'role': 'system', 'content': "Answer the user's question naturally and briefly without claiming to use Sources. For current external information, suggest a web search and wait for explicit user approval."}, {'role': 'user', 'content': 'Hello'}]})
+
+    def test_xlsx_all_or_empty_ids_survive_canonical_freeze_and_independent_grounding(self):
+        from daon_user_api.data_canon import canonical_json_bytes
+        request = self.cell_request()
+        selection = TextModelSelection('OLLAMA', 'http://ollama.internal:11434', 'local-unit', 'local-unit', 'llama3.2:3b', 1)
+        payload = OllamaTextGenerationAdapter.provider_payload(request, selection)
+        payload['messages'][1]['content'] = canonical_json_bytes(json.loads(payload['messages'][1]['content'])).decode()
+        frozen = json.loads(canonical_json_bytes(payload))
+        self.assertEqual(frozen['format']['properties']['cited_chunk_ids'], {'anyOf': [{'const': ['cell-0','cell-1','cell-2','cell-3']}, {'const': []}]})
+        self.assertEqual(json.loads(frozen['messages'][1]['content'])['evidence'][0]['locator'], {'sheet': '계획', 'range': 'B2'})
+        all_ids = ['cell-0','cell-1','cell-2','cell-3']
+        cases = [('REF-DELTA-17; 2026-12-08; 57000 KRW.', all_ids, False, True),
+                 ('Insufficient evidence.', [], True, True),
+                 ('Insufficient evidence.', all_ids, True, False),
+                 ('REF-DELTA-17', [], False, False),
+                 ('REF-DELTA-17', ['cell-1','cell-2','cell-3'], False, False),
+                 ('REF-DELTA-17', ['unknown'], False, False),
+                 ('999999 KRW', all_ids, False, False)]
+        for answer, cited, insufficient, valid in cases:
+            with self.subTest(cited=cited, insufficient=insufficient, valid=valid):
+                calls = []
+                class Transport:
+                    def post_json_no_auth(self, **kwargs):
+                        calls.append(kwargs)
+                        return {'message': {'content': json.dumps({'answer': answer, 'cited_chunk_ids': cited, 'insufficient': insufficient})}}
+                adapter = OllamaTextGenerationAdapter(transport=Transport())
+                if valid:
+                    result = adapter.generate(request, selection, provider_payload=frozen)
+                    self.assertEqual(result.cited_chunk_ids, tuple(cited))
+                    self.assertEqual(result.insufficient, insufficient)
+                else:
+                    with self.assertRaisesRegex(ValueError, '^TEXT_GENERATION_GROUNDING_INVALID$'):
+                        adapter.generate(request, selection, provider_payload=frozen)
+                self.assertEqual(calls[0]['payload'], frozen)
+                self.assertEqual(calls[0]['timeout_seconds'], 90.0)
 
     def test_ollama_grounded_consumer_sends_512_budget_with_ten_evidence_ids(self) -> None:
         calls = []

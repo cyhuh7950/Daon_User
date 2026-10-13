@@ -454,8 +454,8 @@ class OllamaTextGenerationAdapter:
             except SourceRejected:
                 raise ValueError("TEXT_GENERATION_GROUNDING_INVALID") from None
             schema = deepcopy(UpstageTextGenerationAdapter._SCHEMA["json_schema"]["schema"])
-            schema["properties"]["cited_chunk_ids"]["items"] = {
-                "type": "string", "enum": [item.chunk_id for item in request.evidence],
+            schema["properties"]["cited_chunk_ids"] = {
+                "anyOf": [{"const": [item.chunk_id for item in request.evidence]}, {"const": []}],
             }
             payload["format"] = schema
             payload["messages"] = [
