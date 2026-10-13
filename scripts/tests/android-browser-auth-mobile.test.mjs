@@ -54,6 +54,9 @@ test("Android 인증 App Link는 별도 네이티브 Activity에서만 받고 JS
   assert.match(native, /AndroidAuthFlow\.status\(false,/u);
   assert.match(screen, /createAndroidAuthRestorer/u);
   assert.match(screen, /workspace_unavailable[\s\S]*androidAuth\.getSessionState\(\)/u);
+  const unavailableUi = screen.split('{state?.status === "workspace_unavailable" && <>')[1]?.split('</>}')[0];
+  assert.ok(unavailableUi);
+  assert.match(unavailableUi, /onPress=\{\(\) => void leave\(\)\}/u);
   assert.match(adapter, /consumeAuthorizationLink\(""\)/u);
   assert.doesNotMatch(`${screen}\n${adapter}`, /access_credential|refresh_credential|code_verifier|fetch\(/u);
 });
@@ -138,4 +141,11 @@ test("Android Workspace 전환은 Native 세션 회전과 재조회 뒤에만 �
   assert.match(screen, /접근 가능한 소속별 기본 Workspace/u);
   assert.match(screen, /state\?\.session_id/u);
   assert.doesNotMatch(`${screen}\n${adapter}`, /access_credential|refresh_credential|code_verifier|fetch\(/u);
+});
+
+test("Workspace 오류 화면의 로그아웃 실패 안내와 signed_out 로그인 실패 안내를 구분한다", () => {
+  const screen = readFileSync(path.join(root, "apps/mobile/src/AndroidAuthScreen.tsx"), "utf8");
+  assert.match(screen, /catch \{ setLogoutFailed\(true\); setError\(true\); \}/u);
+  assert.match(screen, /error && <Text accessibilityRole="alert">\{logoutFailed \? "로그아웃을 완료할 수 없습니다\. 연결을 확인한 뒤 다시 시도해 주세요\." : "인증을 완료할 수 없습니다\. 새 거래로 다시 시도해 주세요\."\}<\/Text>/u);
+  assert.match(screen, /state\?\.status === "signed_out"/u);
 });

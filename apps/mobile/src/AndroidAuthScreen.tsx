@@ -8,6 +8,7 @@ export function AndroidAuthScreen({ authenticatedContent }: { authenticatedConte
   const [state, setState] = useState<AndroidAuthState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
+  const [logoutFailed, setLogoutFailed] = useState(false);
   const restorerRef = useRef<ReturnType<typeof createAndroidAuthRestorer> | null>(null);
   const switchingRef = useRef(false);
 
@@ -16,7 +17,7 @@ export function AndroidAuthScreen({ authenticatedContent }: { authenticatedConte
     restorerRef.current = restorer;
     void restorer.restore();
     const listener = AppState.addEventListener("change", (next) => {
-      if (next === "active" && !switchingRef.current) void restorer.restore();
+      if (next === "active" && !switchingRef.current) { setLogoutFailed(false); void restorer.restore(); }
     });
     return () => { restorer.dispose(); restorerRef.current = null; listener.remove(); };
   }, []);
@@ -25,6 +26,7 @@ export function AndroidAuthScreen({ authenticatedContent }: { authenticatedConte
     restorerRef.current?.invalidate();
     setBusy(true);
     setError(false);
+    setLogoutFailed(false);
     try { setState(await androidAuth.beginLogin()); }
     catch { setError(true); }
     finally { setBusy(false); }
@@ -32,8 +34,9 @@ export function AndroidAuthScreen({ authenticatedContent }: { authenticatedConte
   const leave = async () => {
     restorerRef.current?.invalidate();
     setBusy(true);
+    setLogoutFailed(false);
     try { setState(await androidAuth.logout()); setError(false); }
-    catch { setError(true); }
+    catch { setLogoutFailed(true); setError(true); }
     finally { setBusy(false); }
   };
 
@@ -43,6 +46,7 @@ export function AndroidAuthScreen({ authenticatedContent }: { authenticatedConte
     setState(null);
     setBusy(true);
     setError(false);
+    setLogoutFailed(false);
     try { setState(await androidAuth.switchWorkspace(tenantId)); }
     catch { setState({ status: "workspace_unavailable" }); }
     finally { switchingRef.current = false; setBusy(false); }
@@ -87,12 +91,16 @@ export function AndroidAuthScreen({ authenticatedContent }: { authenticatedConte
       <Pressable disabled={busy} accessibilityRole="button" onPress={() => {
         restorerRef.current?.invalidate();
         setBusy(true);
+        setLogoutFailed(false);
         void androidAuth.getSessionState().then((result) => { setState(result); setError(false); })
           .catch(() => setError(true)).finally(() => setBusy(false));
       }} style={styles.button}><Text style={styles.buttonText}>Workspace 다시 확인</Text></Pressable>
+      <Pressable disabled={busy} accessibilityRole="button" onPress={() => void leave()} style={styles.button}>
+        <Text style={styles.buttonText}>로그아웃</Text>
+      </Pressable>
     </>}
     {busy && <Text>처리 중입니다.</Text>}
-    {error && <Text accessibilityRole="alert">인증을 완료할 수 없습니다. 새 거래로 다시 시도해 주세요.</Text>}
+    {error && <Text accessibilityRole="alert">{logoutFailed ? "로그아웃을 완료할 수 없습니다. 연결을 확인한 뒤 다시 시도해 주세요." : "인증을 완료할 수 없습니다. 새 거래로 다시 시도해 주세요."}</Text>}
   </ScrollView></SafeAreaView>;
 }
 

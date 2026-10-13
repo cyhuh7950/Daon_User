@@ -29,6 +29,47 @@ class DaonAndroidAuthModuleTest {
     AndroidAuthFlow.logoutWith({ mapOf("status" to "logged_out", "replayed" to "true") }, { cleared = true })
     assertTrue(cleared)
   }
+  @Test fun nativeLogoutRestoresSessionBeforeRevokingAndOnlyThenClearsVault() {
+    val restored = AndroidAuthSessionData("user-1", "tenant-1", "workspace-1", "session-1", "device-1",
+      "synthetic-access", "", Instant.parse("2026-10-13T01:00:00Z"))
+    val order = mutableListOf<String>()
+    val status = AndroidAuthFlow.logoutWithCurrent(
+      { order += "restore"; restored }, { true },
+      { session ->
+        assertEquals("synthetic-access", session.access)
+        order += "revoke"
+        mapOf("status" to "logged_out", "replayed" to "false")
+      }, { order += "clear" })
+    assertEquals("signed_out", status)
+    assertEquals(listOf("restore", "revoke", "clear"), order)
+  }
+  @Test fun nativeLogoutAfterRefreshUnauthorizedIsSignedOutWithoutServerRevoke() {
+    var revoked = false
+    var cleared = false
+    val status = AndroidAuthFlow.logoutWithCurrent(
+      { cleared = true; null }, { false },
+      { revoked = true; mapOf("status" to "logged_out", "replayed" to "false") },
+      { cleared = true })
+    assertEquals("signed_out", status)
+    assertFalse(revoked)
+    assertTrue(cleared)
+  }
+  @Test fun nativeLogoutKeepsVaultWhenSessionRestoreOrServerRevokeFails() {
+    var cleared = false
+    assertThrows(Exception::class.java) {
+      AndroidAuthFlow.logoutWithCurrent(
+        { throw IllegalStateException("NETWORK_UNAVAILABLE") }, { true },
+        { mapOf("status" to "logged_out", "replayed" to "false") }, { cleared = true })
+    }
+    assertFalse(cleared)
+    val restored = AndroidAuthSessionData("user-1", "tenant-1", "workspace-1", "session-1", "device-1",
+      "synthetic-access", "", Instant.parse("2026-10-13T01:00:00Z"))
+    assertThrows(Exception::class.java) {
+      AndroidAuthFlow.logoutWithCurrent(
+        { restored }, { true }, { throw IllegalStateException("REVOKE_FAILED") }, { cleared = true })
+    }
+    assertFalse(cleared)
+  }
   @Test fun transientRefreshFailureMustNotEraseServerBackedSession() {
     assertFalse(AndroidAuthFlow.clearAfterRefreshFailure(null))
     assertFalse(AndroidAuthFlow.clearAfterRefreshFailure(503))
