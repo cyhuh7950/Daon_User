@@ -75,6 +75,92 @@ class RecordingTransport:
 
 
 class QuestionAnsweringContractTests(unittest.TestCase):
+    def cell_request(self):
+        return GroundedQuestionRequest('What are the code, date, amount and currency?', tuple(
+            IndexedEvidenceChunk(f'cell-{index}', 'source-unit', 'version-unit', 1, text, f'span-{index}', 0.0, 'sheet_cell', json.dumps({'sheet': sheet, 'range': address}, ensure_ascii=False, separators=(',', ':')))
+            for index, (text, sheet, address) in enumerate([
+                ('REF-DELTA-17', '계획', 'B2'), ('2026-12-08', '계획', 'B3'),
+                ('57000', '예산', 'B3'), ('KRW', '예산', 'B2')])
+        ), 'trace-unit')
+
+    def test_xlsx_question_payload_binds_exact_locator_enum_and_prompt_without_global_mutation(self):
+        import copy
+        request = self.cell_request()
+        selection = TextModelSelection('OLLAMA', 'http://ollama.internal:11434', 'local-unit', 'local-unit', 'llama3.2:3b', 1)
+        before = copy.deepcopy(UpstageTextGenerationAdapter._SCHEMA)
+        calls = []
+        class Transport:
+            def post_json_no_auth(self, **kwargs):
+                calls.append(kwargs)
+                return {'message': {'content': json.dumps({'answer': 'REF-DELTA-17; 2026-12-08; 57000 KRW.', 'cited_chunk_ids': ['cell-0','cell-1','cell-2','cell-3'], 'insufficient': False})}}
+        result = OllamaTextGenerationAdapter(transport=Transport()).generate(request, selection)
+        self.assertEqual(result.cited_chunk_ids, ('cell-0','cell-1','cell-2','cell-3'))
+        payload = calls[0]['payload']
+        self.assertEqual(payload['format']['properties']['cited_chunk_ids']['items'], {'type': 'string', 'enum': ['cell-0','cell-1','cell-2','cell-3']})
+        user = json.loads(payload['messages'][1]['content'])
+        self.assertEqual(user['evidence'][0], {'chunk_id': 'cell-0', 'page': 1, 'text': 'REF-DELTA-17', 'locator': {'sheet': '계획', 'range': 'B2'}})
+        self.assertEqual(user['evidence'][2]['locator'], {'sheet': '예산', 'range': 'B3'})
+        self.assertEqual(payload['messages'][0]['content'], 'The supplied evidence contains at most five validated original workbook cells. Each text is an exact cell value and locator identifies its sheet and address. '
+            'Answer EVERY requested part using those cell values: identifiers, dates, amounts and currency. Do not answer with field labels alone. '
+            'If the evidence answers the question, return insufficient=false and cite ALL supplied chunk_id strings so every used value is grounded. '
+            'Copy chunk_id strings exactly, never invent or shorten them. If evidence cannot answer the question, return insufficient=true and cited_chunk_ids=[]. '
+            'Never invent facts, change values, calculate or execute formulas. Return only JSON answer, cited_chunk_ids and insufficient. '
+            'For a question requesting several values, answer in a complete descriptive sentence covering every requested part, not a single identifier. '
+            'Format example only with unrelated fictional values: "Project ID: ATLAS-99; date: 2027-04-05; amount: 230 USD." '
+            'Never copy example values. Use the actual identifier, date, amount and currency from the supplied evidence when asked for those fields.')
+        self.assertEqual(payload['options'], {'num_predict': 512, 'temperature': 0})
+        self.assertEqual(calls[0]['timeout_seconds'], 90.0)
+        self.assertEqual(UpstageTextGenerationAdapter._SCHEMA, before)
+        payload['format']['properties']['cited_chunk_ids']['items']['enum'].append('mutated')
+        self.assertEqual(UpstageTextGenerationAdapter._SCHEMA, before)
+
+    def test_xlsx_invalid_locator_fails_before_question_http(self):
+        from dataclasses import replace
+        request = self.cell_request(); calls = []
+        class Transport:
+            def post_json_no_auth(self, **kwargs): calls.append(kwargs); raise AssertionError('HTTP forbidden')
+        selection = TextModelSelection('OLLAMA', 'http://ollama.internal:11434', 'local-unit', 'local-unit', 'llama3.2:3b', 1)
+        bad = replace(request.evidence[0], locator_value='{"sheet":"계획","range":"B2:A1"}')
+        with self.assertRaisesRegex(ValueError, '^TEXT_GENERATION_GROUNDING_INVALID$'):
+            OllamaTextGenerationAdapter(transport=Transport()).generate(replace(request, evidence=(bad, *request.evidence[1:])), selection)
+        self.assertEqual(calls, [])
+
+    def test_xlsx_producer_still_rejects_missing_value_citation_unknown_id_or_invented_value(self):
+        request = self.cell_request()
+        selection = TextModelSelection('OLLAMA', 'http://ollama.internal:11434', 'local-unit', 'local-unit', 'llama3.2:3b', 1)
+        for answer, cited in [('REF-DELTA-17', ['cell-1','cell-2','cell-3']), ('REF-DELTA-17', ['unknown']), ('999999 KRW', ['cell-0','cell-1','cell-2','cell-3'])]:
+            with self.subTest(answer=answer, cited=cited):
+                class Transport:
+                    def post_json_no_auth(self, **kwargs): return {'message': {'content': json.dumps({'answer': answer, 'cited_chunk_ids': cited, 'insufficient': False})}}
+                with self.assertRaisesRegex(ValueError, '^TEXT_GENERATION_GROUNDING_INVALID$'):
+                    OllamaTextGenerationAdapter(transport=Transport()).generate(request, selection)
+
+    def test_ollama_non_xlsx_and_mixed_payloads_preserve_legacy_wire_bytes(self):
+        from dataclasses import replace
+        request = self.cell_request()
+        selection = TextModelSelection('OLLAMA', 'http://ollama.internal:11434', 'local-unit', 'local-unit', 'llama3.2:3b', 1)
+        cases = [tuple(replace(item, locator_kind=kind) for item in request.evidence) for kind in ('page', 'section', 'image_region')]
+        for evidence in (request.evidence[:1], (*request.evidence, replace(request.evidence[0], chunk_id='cell-extra'))):
+            payload = OllamaTextGenerationAdapter.provider_payload(replace(request, evidence=evidence), selection)
+            self.assertEqual(payload['format']['properties']['cited_chunk_ids']['items']['enum'], [item.chunk_id for item in evidence])
+            self.assertTrue(all('locator' in item for item in json.loads(payload['messages'][1]['content'])['evidence']))
+        cases += [(replace(request.evidence[0], locator_kind='page'), *request.evidence[1:]),
+                  (replace(request.evidence[0], source_id='source-other'), *request.evidence[1:]),
+                  (replace(request.evidence[0], source_version_id='version-other'), *request.evidence[1:]),
+                  (*request.evidence, replace(request.evidence[0], chunk_id='cell-4'), replace(request.evidence[1], chunk_id='cell-5'))]
+        for evidence in cases:
+            with self.subTest(kinds=[item.locator_kind for item in evidence], count=len(evidence)):
+                payload = OllamaTextGenerationAdapter.provider_payload(replace(request, evidence=evidence), selection)
+                expected = {'model': 'llama3.2:3b', 'stream': False, 'keep_alive': '5m', 'options': {'num_predict': 512, 'temperature': 0},
+                    'format': UpstageTextGenerationAdapter._SCHEMA['json_schema']['schema'],
+                    'messages': [{'role': 'system', 'content': 'Answer only from evidence JSON. Return answer, cited_chunk_ids and insufficient.'},
+                                 {'role': 'user', 'content': json.dumps({'question': request.question, 'evidence': [{'chunk_id': c.chunk_id, 'page': c.page, 'text': c.text} for c in evidence]}, ensure_ascii=False, separators=(',', ':'))}]}
+                self.assertEqual(json.dumps(payload).encode(), json.dumps(expected).encode())
+        general = OllamaTextGenerationAdapter.general_provider_payload(GeneralConversationRequest('Hello', 'trace-unit'), selection)
+        self.assertEqual(general, {'model': 'llama3.2:3b', 'stream': False, 'keep_alive': '5m', 'options': {'num_predict': 64, 'temperature': 0},
+            'format': OpenAICompatibleTextGenerationAdapter._GENERAL_SCHEMA['json_schema']['schema'],
+            'messages': [{'role': 'system', 'content': "Answer the user's question naturally and briefly without claiming to use Sources. For current external information, suggest a web search and wait for explicit user approval."}, {'role': 'user', 'content': 'Hello'}]})
+
     def test_ollama_grounded_consumer_sends_512_budget_with_ten_evidence_ids(self) -> None:
         calls = []
         evidence = tuple(IndexedEvidenceChunk(

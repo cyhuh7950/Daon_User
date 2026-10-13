@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Mapping, Protocol, cast
 from urllib.parse import urlsplit
@@ -423,7 +424,7 @@ class OllamaTextGenerationAdapter:
             {"chunk_id": item.chunk_id, "page": item.page, "text": item.text}
             for item in request.evidence
         ]
-        return {
+        payload = {
                 "model": selection.model_id,
                 "stream": False,
                 "keep_alive": "5m",
@@ -439,6 +440,41 @@ class OllamaTextGenerationAdapter:
                     )},
                 ],
             }
+        if (
+            1 <= len(request.evidence) <= 5
+            and all(item.locator_kind == "sheet_cell" for item in request.evidence)
+            and len({(item.source_id, item.source_version_id) for item in request.evidence}) == 1
+        ):
+            from .xlsx_source import decode_sheet_cell
+            from .source_ingest import SourceRejected
+            try:
+                for item, original in zip(request.evidence, evidence, strict=True):
+                    sheet, cell_range = decode_sheet_cell(item.locator_value)
+                    original["locator"] = {"sheet": sheet, "range": cell_range}
+            except SourceRejected:
+                raise ValueError("TEXT_GENERATION_GROUNDING_INVALID") from None
+            schema = deepcopy(UpstageTextGenerationAdapter._SCHEMA["json_schema"]["schema"])
+            schema["properties"]["cited_chunk_ids"]["items"] = {
+                "type": "string", "enum": [item.chunk_id for item in request.evidence],
+            }
+            payload["format"] = schema
+            payload["messages"] = [
+                {"role": "system", "content": (
+                    "The supplied evidence contains at most five validated original workbook cells. Each text is an exact cell value and locator identifies its sheet and address. "
+                    "Answer EVERY requested part using those cell values: identifiers, dates, amounts and currency. Do not answer with field labels alone. "
+                    "If the evidence answers the question, return insufficient=false and cite ALL supplied chunk_id strings so every used value is grounded. "
+                    "Copy chunk_id strings exactly, never invent or shorten them. If evidence cannot answer the question, return insufficient=true and cited_chunk_ids=[]. "
+                    "Never invent facts, change values, calculate or execute formulas. Return only JSON answer, cited_chunk_ids and insufficient. "
+                    "For a question requesting several values, answer in a complete descriptive sentence covering every requested part, not a single identifier. "
+                    'Format example only with unrelated fictional values: "Project ID: ATLAS-99; date: 2027-04-05; amount: 230 USD." '
+                    "Never copy example values. Use the actual identifier, date, amount and currency from the supplied evidence when asked for those fields."
+                )},
+                {"role": "user", "content": json.dumps(
+                    {"question": request.question, "evidence": evidence},
+                    ensure_ascii=False, separators=(",", ":"),
+                )},
+            ]
+        return payload
 
     def generate(
         self, request: GroundedQuestionRequest, selection: TextModelSelection,
