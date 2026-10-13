@@ -427,7 +427,7 @@ class OllamaTextGenerationAdapter:
                 "model": selection.model_id,
                 "stream": False,
                 "keep_alive": "5m",
-                "options": {"num_predict": 64, "temperature": 0},
+                "options": {"num_predict": 512, "temperature": 0},
                 "format": UpstageTextGenerationAdapter._SCHEMA["json_schema"]["schema"],
                 "messages": [
                     {"role": "system", "content": (

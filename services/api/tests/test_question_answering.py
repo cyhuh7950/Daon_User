@@ -19,6 +19,7 @@ from daon_user_api.question_answering import (
     GeneralConversationRequest,
     GroundedQuestionRequest,
     OpenAICompatibleTextGenerationAdapter,
+    OllamaTextGenerationAdapter,
     TextModelSelection,
     UpstageTextGenerationAdapter,
     classify_question_intent,
@@ -74,6 +75,63 @@ class RecordingTransport:
 
 
 class QuestionAnsweringContractTests(unittest.TestCase):
+    def test_ollama_grounded_consumer_sends_512_budget_with_ten_evidence_ids(self) -> None:
+        calls = []
+        evidence = tuple(IndexedEvidenceChunk(
+            f"chunk-{index}-0123456789abcdef0123456789abcdef", "source-unit", "version-unit", index + 1,
+            "납품 예정일은 2026-11-03이며 승인 조건은 검토 완료입니다.", f"span-{index}", 1.0,
+        ) for index in range(10))
+        chunk_ids = [chunk.chunk_id for chunk in evidence]
+
+        class Transport:
+            def post_json_no_auth(self, **kwargs):
+                calls.append(kwargs)
+                return {"message": {"content": json.dumps({
+                    "answer": "납품 예정일은 2026-11-03이며 승인 조건은 검토 완료입니다.",
+                    "cited_chunk_ids": chunk_ids, "insufficient": False,
+                }, ensure_ascii=False)}, "done_reason": "stop", "prompt_eval_count": 100, "eval_count": 128}
+
+        selection = TextModelSelection("OLLAMA", "http://ollama.internal:11434", "local-unit", "local-unit", "llama3.2:3b", 1)
+        request = GroundedQuestionRequest("납품 예정일과 승인 조건은?", evidence, "trace-unit")
+        result = OllamaTextGenerationAdapter(transport=Transport()).generate(request, selection)
+        self.assertEqual(result.cited_chunk_ids, tuple(chunk_ids))
+        self.assertEqual(result.usage["completion_tokens"], 128)  # unit transport metadata, not model evidence
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["payload"]["options"], {"num_predict": 512, "temperature": 0})
+        self.assertEqual(calls[0]["url"], "http://ollama.internal:11434/api/chat")
+        self.assertEqual(calls[0]["timeout_seconds"], 90.0)
+        self.assertEqual(calls[0]["payload"]["format"]["required"], ["answer", "cited_chunk_ids", "insufficient"])
+        self.assertFalse(calls[0]["payload"]["format"]["additionalProperties"])
+        self.assertEqual(json.loads(calls[0]["payload"]["messages"][1]["content"])["evidence"][9]["chunk_id"], chunk_ids[9])
+
+    def test_ollama_larger_budget_still_rejects_truncated_json_and_unknown_citation(self) -> None:
+        selection = TextModelSelection("OLLAMA", "http://ollama.internal:11434", "local-unit", "local-unit", "llama3.2:3b", 1)
+        request = GroundedQuestionRequest("내용은?", (IndexedEvidenceChunk(
+            "chunk-unit", "source-unit", "version-unit", 1, "검토 완료가 필요합니다.", "span-unit", 1.0,
+        ),), "trace-unit")
+        cases = (
+            ('{"answer":"검토 완료가 필요', "length", "TEXT_GENERATION_RESPONSE_INVALID"),
+            (json.dumps({"answer": "검토 완료가 필요합니다.", "cited_chunk_ids": ["unknown-chunk"], "insufficient": False}), "stop", "TEXT_GENERATION_GROUNDING_INVALID"),
+        )
+        for content, done_reason, code in cases:
+            with self.subTest(code=code):
+                class Transport:
+                    def post_json_no_auth(self, **_kwargs):
+                        return {"message": {"content": content}, "done_reason": done_reason, "eval_count": 64}
+                with self.assertRaisesRegex(ValueError, f"^{code}$"):
+                    OllamaTextGenerationAdapter(transport=Transport()).generate(request, selection)
+
+    def test_ollama_general_consumer_keeps_64_budget(self) -> None:
+        calls = []
+        class Transport:
+            def post_json_no_auth(self, **kwargs):
+                calls.append(kwargs)
+                return {"message": {"content": '{"answer":"안녕하세요."}'}}
+        selection = TextModelSelection("OLLAMA", "http://ollama.internal:11434", "local-unit", "local-unit", "llama3.2:3b", 1)
+        result = OllamaTextGenerationAdapter(transport=Transport()).generate_general(GeneralConversationRequest("안녕하세요", "trace-unit"), selection)
+        self.assertEqual(result.answer, "안녕하세요.")
+        self.assertEqual(calls[0]["payload"]["options"], {"num_predict": 64, "temperature": 0})
+
     def test_messages_header_transport_is_bounded_and_rejects_extra_headers(self) -> None:
         captured = []
 

@@ -755,7 +755,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 1)
         self.assertEqual(transport.calls[0]["url"], "http://ollama.internal:11434/api/chat")
         self.assertEqual(transport.calls[0]["payload"]["model"], "llama3.2:3b")
-        self.assertEqual(transport.calls[0]["payload"]["options"], {"num_predict": 64, "temperature": 0})
+        self.assertEqual(transport.calls[0]["payload"]["options"], {"num_predict": 512, "temperature": 0})
         self.assertEqual(transport.calls[0]["payload"]["keep_alive"], "5m")
         self.assertEqual(transport.calls[0]["timeout_seconds"], 90.0)
         self.assertNotIn("api_key", transport.calls[0])
