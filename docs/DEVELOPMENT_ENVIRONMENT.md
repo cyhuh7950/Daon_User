@@ -41,6 +41,8 @@
 
 ## 2026-10-13 최신 WSL 기능 구현·이전 인계 기준 (진행 중)
 
+**2026-10-14 후속 제품 기준:** `45bbe97febc44e4e79465ee625426107f29c8c14`. 실제 OOXML ZIP 손상·암호화·압축비 보안 검사를 저장 전에 연결했다. API/document/studio 실행 image `sha256:1978ef1c86d27a73032d63e558ed8001fde69ef43a3e0f02c46536f8e45c1158`, revision45bbe97f. Web은 소스 불변으로 아래11ea64eb image를 유지한다. DB0060·ready200, 정상 로그인 후 기존 Notebook/답변/인용/Source 조회와 타 사용자404를 확인했다. Source 관련26시험/12하위사례 및 실행 이미지의 실제 ZIP byte validator를 검증했으며 Office 이해·실제 외부 Provider 호출 성공은 아니다. QA default는 text_generation/OLLAMA/llama3.2:3b만 확인됐고 Office·이미지·오디오 Native 처리 연결은 여전히 부분 구현/미구현이다. 후속 제품 변경은 DB/저장 자료를 바꾸지 않아 아래11ea64eb snapshot 자료 기준이 유지되지만, 최신 image의 전체 복구 검증을 했다는 뜻은 아니다. 기존 Secret/영속 위치 보존, ysna 이전0.
+
 **최신 제품 기준:** `11ea64ebf67c57fc7b66df07c6c67a1027510133`. Studio 추가 인증·결과 마크업·생산 지식 등록의 Notebook 결속/완료 투영/목록 갱신에 이어 첫 재진입의 최근 Citation Source 선택 복원을 보정했다. 신산님 승인 후0060을 격리 DB의 upgrade/downgrade·RLS·직접 UPDATE/DELETE 거부로 검증하고 WSL 개발 DB에 적용했다. 실제 저장 질문·원문 citation·Studio5종의 버전·검토·재인증 승인·파일 내보내기는9a229569 API/BFF에서 확인했고, 29e6d4db의 실제 새 등록→목록/선택→질문→등록지식 원문 조회도 확인했다. 11ea64eb은 UI5행·직접시험만 바뀌었으며 재진입 후 정확한 등록 지식 선택·저장 답변/인용·Studio 활성 상태를 실제 확인했다. TXT/MD/CSV 이해는 기존 Ollama Llama3.2:3b 연결을 사용하며 Office·이미지·오디오 Source 이해는 부분 구현이다. ysna 실제 이전은 실행하지 않았다.
 
 **현재 실행 이미지:** API/document/studio `sha256:43b9f6920b7aad3087c7c25e3b35bf8d7b159d42c0a8ff5e8e06583f7e94f667`, Web `sha256:54787f3dce1d155f133e7e630e309bb2c330f9f84d2cb1fcc6e6493685da830c`, 네 서비스의 소스/revision label은 위11ea64eb. WSL exact Git fast-forward·API/Web build·TypeScript·UI boundary502파일 위반0·ready200을 확인했다. DB0060이며 영속 위치/Secret 참조/network는 기존과 같다. 승인된0060 이후 schema/migration 변경0. API 소스는29e6d4db와 동일하며 cached layers를 재사용했다. 환경 문서만 후속 저장한 checkpoint SHA와 실제 이미지의 제품 SHA를 구분한다.
