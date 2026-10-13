@@ -37,6 +37,17 @@ test("생성 클릭은 queued·leased·generating 동안 진행을 유지하고 
     assert.match(container.textContent, /완성된 근거 요약/);
     assert.match(container.textContent, /승인됨/);
     assert.equal(findElements(container, (element) => element.getAttribute?.("aria-label") === "근거 보고서 결과").length, 1);
+    const report = findElements(container, (element) => element.getAttribute?.("aria-label") === "근거 보고서 결과")[0];
+    const sections = findElements(report, (element) => element.tagName === "ARTICLE");
+    assert.equal(sections.length, 3);
+    for (const [index, section] of sections.entries()) {
+      const columns = section.childNodes.filter((node) => node.nodeType === 1);
+      assert.equal(columns.length, 2, "report body must occupy the flexible second grid column");
+      assert.equal(columns[0].getAttribute("class"), "document-section-number");
+      assert.equal(columns[0].textContent, String(index + 1).padStart(2, "0"));
+      assert.equal(columns[1].tagName, "DIV");
+      assert.equal(findElements(columns[1], (element) => element.tagName === "P").length, 1);
+    }
     assert.match(container.textContent, /요약.*완성된 근거 요약.*본문.*실제 보고서 본문.*결론.*근거 결론/);
     assert.doesNotMatch(container.textContent, /internal-reference/);
     assert.equal(findElements(container, (element) => element.getAttribute?.("data-generation-state") === "completed").length, 1);

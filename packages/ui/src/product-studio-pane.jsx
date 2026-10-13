@@ -72,8 +72,8 @@ function StudioOutputContent({ output }) {
   if (output.output_type === "evidence_report" && content && typeof content === "object" && !Array.isArray(content)) {
     return <section className="studio-document-result" aria-label="근거 보고서 결과">
       <h4>근거 보고서 결과</h4>
-      <div className="document-section-list">{[["요약", content.summary], ["본문", content.body], ["결론", content.conclusion]].map(([label, text]) =>
-        text ? <article key={label}><div><h5>{label}</h5><p>{studioContentText(text)}</p></div></article> : null
+      <div className="document-section-list">{[["요약", content.summary], ["본문", content.body], ["결론", content.conclusion]].map(([label, text], index) =>
+        text ? <article key={label}><span className="document-section-number">{String(index + 1).padStart(2, "0")}</span><div><h5>{label}</h5><p>{studioContentText(text)}</p></div></article> : null
       )}</div>
       {Array.isArray(content.warnings) && content.warnings.length ? <p className="document-warning">확인 필요 · {content.warnings.join(", ")}</p> : null}
     </section>;
