@@ -56,6 +56,37 @@ def test_ollama_discovery_budget_includes_tags_before_metadata():
     assert [r.timeout_seconds for r in shows] == [0.5]
 
 
+def test_ollama_image_family_candidate_is_shown_before_eight_recent_text_models():
+    transport = FakeTransport()
+    base = "http://192.168.220.180:11434"
+    rows = [{"name": f"probe-{i}", "digest": "a" * 64, "details": {"family": "bert", "families": ["bert"]}} for i in range(10)]
+    rows.append({"name": "qwen3-vl:latest", "digest": "b" * 64, "details": {"family": "qwen3vl", "families": ["qwen3vl"]}})
+    transport.responses[base + "/api/tags"] = TransportResponse(200, {"models": rows})
+    transport.responses[base + "/api/show"] = TransportResponse(200, {"capabilities": ["vision"], "model_info": {
+        "general.architecture": "qwen3vl", "tokenizer.ggml.add_eos_token": True,
+        "tokenizer.ggml.add_bos_token": False, "tokenizer.ggml.add_padding_token": False,
+        "tokenizer.ggml.add_unknown_token": True}})
+    with patch("time.monotonic", return_value=0):
+        models = AdapterRegistry(transport=transport).adapter("OLLAMA").discover_models(connection("OLLAMA"), None)
+    shows = [r for r in transport.requests if r.method == "POST"]
+    assert len(shows) == 8
+    assert shows[0].body["model"] == "qwen3-vl:latest"
+    assert len(models) == 11
+    assert next(m for m in models if m.model_id == "qwen3-vl:latest").reported_capabilities == ("image_understanding", "text_generation")
+    assert next(m for m in models if m.model_id == "probe-9").reported_capabilities == ("text_generation",)
+
+
+@pytest.mark.parametrize("metadata", [{"capabilities": ["completion"], "model_info": {"architecture": "x"}},
+    {"capabilities": ["vision"], "model_info": {"architecture": "x"}, "remote_model": "remote"}])
+def test_ollama_candidate_family_alone_never_grants_image_capability(metadata):
+    transport = FakeTransport()
+    base = "http://192.168.220.180:11434"
+    transport.responses[base + "/api/tags"] = TransportResponse(200, {"models": [{"name": "opaque", "digest": "a" * 64, "details": {"family": "qwen3vl"}}]})
+    transport.responses[base + "/api/show"] = TransportResponse(200, metadata)
+    models = AdapterRegistry(transport=transport).adapter("OLLAMA").discover_models(connection("OLLAMA"), None)
+    assert models[0].reported_capabilities == ("text_generation",)
+
+
 def connection(
     provider_code: str,
     *,

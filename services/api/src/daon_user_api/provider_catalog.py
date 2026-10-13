@@ -54,6 +54,31 @@ def _contains_sensitive_key(value: object) -> bool:
     return False
 
 
+def _ollama_catalog_projection(payload: Mapping[object, object]) -> Mapping[object, object]:
+    """Remove only typed tokenizer switches at the exact show.model_info path.
+
+    All other fields still pass through the unchanged recursive secret guard.
+    Do not mutate the upstream payload or accept string/integer token values.
+    """
+    raw_models = payload.get("models")
+    if not isinstance(raw_models, list):
+        return payload
+    options = {"tokenizer.ggml.add_eos_token", "tokenizer.ggml.add_bos_token",
+               "tokenizer.ggml.add_padding_token", "tokenizer.ggml.add_unknown_token"}
+    rows = []
+    for raw in raw_models:
+        row = dict(raw) if isinstance(raw, Mapping) else raw
+        metadata = row.get("native_metadata") if isinstance(row, Mapping) else None
+        info = metadata.get("model_info") if isinstance(metadata, Mapping) else None
+        if isinstance(info, Mapping):
+            row["native_metadata"] = {**metadata, "model_info": {
+                key: value for key, value in info.items()
+                if not (key in options and type(value) is bool)
+            }}
+        rows.append(row)
+    return {**payload, "models": rows}
+
+
 class ProviderCatalog:
     @staticmethod
     def logical_auto_model(connection_id: str, provider_code: str, auto_model_id: str) -> DiscoveredModel:
@@ -120,7 +145,11 @@ class ProviderCatalog:
         provider_code: str,
         payload: object,
     ) -> tuple[DiscoveredModel, ...]:
-        if not isinstance(payload, Mapping) or _contains_sensitive_key(payload):
+        if not isinstance(payload, Mapping):
+            raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+        if provider_code == "OLLAMA":
+            payload = _ollama_catalog_projection(payload)
+        if _contains_sensitive_key(payload):
             raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
         if provider_code == "OLLAMA":
             return ProviderCatalog._from_ollama(connection_id, payload)

@@ -216,17 +216,26 @@ class OllamaAdapter(_BaseAdapter):
         credential: str | bytes | None,
     ) -> tuple[DiscoveredModel, ...]:
         base = self._validate_connection(connection)
-        # Include tags in the existing five-second discovery budget so optional
-        # metadata cannot outlive the normal Provider/BFF request boundary.
+        # Tags and optional metadata share the existing five-second budget.
         deadline = time.monotonic() + _TIMEOUT_SECONDS
         payload = self._request("GET", _append_path(base, "/api/tags"), {})
         # Tags without a real digest preserve the legacy text-only catalog.
         # Vision is registered only from show metadata, never from a name.
         if isinstance(payload, dict) and isinstance(payload.get("models"), list):
-            rows = []
+            rows = [dict(raw) if isinstance(raw, dict) else raw for raw in payload["models"]]
+            def image_candidate(row):
+                details = row.get("details") if isinstance(row, dict) else None
+                if not isinstance(details, dict):
+                    return False
+                families = details.get("families")
+                families = families if isinstance(families, list) else []
+                # Family is only a lookup hint; show + digest + offload checks
+                # below and in ProviderCatalog alone can grant image capability.
+                return any(isinstance(family, str) and (family.lower().endswith("vl")
+                    or family.lower() in {"clip", "mllama", "qwen35", "gemma3"})
+                    for family in [details.get("family"), *families])
             show_count = 0
-            for raw in payload["models"]:
-                row = dict(raw) if isinstance(raw, dict) else raw
+            for row in sorted(rows, key=lambda row: not image_candidate(row)):
                 if (isinstance(row, dict) and isinstance(row.get("digest"), str)
                         and len(row["digest"].removeprefix("sha256:")) == 64
                         and not any(row.get(k) for k in ("remote_host", "remote_model", "remote", "cloud"))
@@ -239,7 +248,6 @@ class OllamaAdapter(_BaseAdapter):
                             row["native_metadata"] = self._request("POST", _append_path(base, "/api/show"), {}, {"model": name}, timeout_seconds=min(_TIMEOUT_SECONDS, remaining))
                         except AdapterError:
                             pass  # unavailable metadata never enables image execution
-                rows.append(row)
             payload = {**payload, "models": rows}
         try:
             return ProviderCatalog.from_payload(connection.connection_id, self.provider_code, payload)
