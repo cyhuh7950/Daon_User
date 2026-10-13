@@ -406,3 +406,7 @@ select { width: 100%; min-height: var(--daon-target-desktop-control); margin-top
 .manual-reader-empty strong { color: var(--workspace-text); }
 .manual-reader-empty small { font-size: 9px; }
 @media (max-width: 760px) { .manual-hub { min-height: 0; }.manual-hub-toolbar { align-items: stretch; flex-direction: column; }.manual-hub-toolbar label { width: 100%; }.manual-hub-layout { grid-template-columns: 1fr; }.manual-reader { min-height: 360px; } }
+.citation-image-view { max-width: 100%; }
+.citation-image-frame { position: relative; width: fit-content; max-width: 100%; }
+.citation-image-frame > img { display: block; max-width: 100%; height: auto; image-orientation: from-image; }
+.citation-image-region { position: absolute; box-sizing: border-box; border: 2px solid #e68900; background: #ffb30026; pointer-events: none; }

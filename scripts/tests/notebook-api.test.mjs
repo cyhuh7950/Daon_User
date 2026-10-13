@@ -131,6 +131,13 @@ test("Notebook selected Context는 exact same-origin projection만 수용한다"
   };
   assert.deepEqual((await getNotebookContext("workspace-1", "notebook-1", { fetchImpl })).data, data);
   assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/notebooks/notebook-1/context");
+  for (const value of ["5,7,80,20,120,60", "5,7,120,20,120,60"]) {
+    const imageContext = { ...data, conversation: { ...data.conversation, answer: { ...data.conversation.answer,
+      citations: [{ ...citation, page: 1, locator: { kind: "image_region", value } }] } } };
+    const operation = getNotebookContext("workspace-1", "notebook-1", { fetchImpl: async () => json({ data: imageContext, meta: META }, { headers: { ETag: '"notebook-binding:1"' } }) });
+    if (value === "5,7,80,20,120,60") assert.deepEqual((await operation).data, imageContext);
+    else await assert.rejects(operation, /NOTEBOOK_CONTEXT_INVALID/u);
+  }
   for (const availableContext of [
     { ...data, conversation_thread_ids: ["thread-1", "thread-2"], conversation: null },
     { ...data, conversation_thread_ids: ["thread-1", "thread-2"] },

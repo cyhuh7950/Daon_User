@@ -82,3 +82,12 @@ export function canCreateGroundedReport(state) {
       ))
     ));
 }
+// Coordinates use the EXIF-transposed display basis, never encoded pixel order.
+export function parseImageRegion(value) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$/u.test(value)) return null;
+  const coordinates = value.split(",").map(Number);
+  const [x, y, width, height, imageWidth, imageHeight] = coordinates;
+  if (!coordinates.every(Number.isSafeInteger) || Math.min(width, height, imageWidth, imageHeight) < 1
+      || imageWidth * imageHeight > 16_777_216 || x + width > imageWidth || y + height > imageHeight) return null;
+  return { x, y, width, height, imageWidth, imageHeight };
+}

@@ -92,6 +92,39 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_image_citation_returns_original_mime_and_bound_display_region(self):
+        from test_image_document_understanding import image_bytes
+        from dataclasses import replace
+        self.context = replace(self.context, notebook_id="notebook-cp3")
+        original = image_bytes()
+        locator = {"kind": "image_region", "value": "5,7,80,20,120,60"}
+        self.cloud.connection.citation_row = ("source-cp3", "source-version-cp3", "1", "1",
+            {"kind": "image_region_fact", "text": "ORANGE-42", "source_id": "source-cp3", "source_version_id": "source-version-cp3", "locator": locator},
+            "uploaded", "qa.png", "ready", "span-image", locator)
+        row = list(self.cloud.connection.ready_row)
+        row[3], row[6], row[7], row[8] = "qa.png", hashlib.sha256(original).hexdigest(), len(original), "image/png"
+        self.cloud.connection.ready_row = tuple(row)
+        self.repository._object_storage.content = original
+        content, actual_locator = self.repository.read_citation_content(self.context, "citation-image")
+        self.assertEqual((content.content, content.media_type, actual_locator), (original, "image/png", locator))
+        self.assertIn("es.source_version_id=c.source_version_id", " ".join(self.cloud.connection.queries))
+        for run_state in ("failed", "accepted", "vision_llm_understanding"):
+            with self.subTest(run_state=run_state):
+                self.cloud.connection.ready_row = (*row[:9], run_state)
+                with self.assertRaisesRegex(QuestionRepositoryError, "CITATION_CONTENT_UNAVAILABLE"):
+                    self.repository.read_citation_content(self.context, "citation-image")
+        self.cloud.connection.ready_row = tuple(row)
+        for invalid in ("5,7,180,20,120,60", "5,7,80,20,121,60"):
+            with self.subTest(region=invalid):
+                wrong_locator = {"kind": "image_region", "value": invalid}
+                saved = self.cloud.connection.citation_row
+                self.cloud.connection.citation_row = (*saved[:4], {**saved[4], "locator": wrong_locator}, *saved[5:9], wrong_locator)
+                with self.assertRaisesRegex(QuestionRepositoryError, "CITATION_CONTENT_UNAVAILABLE"):
+                    self.repository.read_citation_content(self.context, "citation-image")
+                self.cloud.connection.citation_row = saved
+        self.cloud.connection.source_binding_active = False
+        with self.assertRaises(QuestionRepositoryError):
+            self.repository.read_citation_content(self.context, "citation-image")
     def setUp(self) -> None:
         self.cloud = FakeCloudStore()
         self.repository = PostgresQuestionAnsweringRepository(
@@ -177,6 +210,14 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         ):
             self.assertIn(f"INSERT INTO {table}", sql)
         self.assertEqual(sql.count("transition_canon_state"), 5)
+
+    def test_completed_image_answer_persists_exact_region_not_page_locator(self) -> None:
+        evidence = (IndexedEvidenceChunk("chunk-image", "source-cp3", "source-version-cp3", 1, "ORANGE-42", "span-image", 1.0, "image_region", "5,7,80,20,120,60"),)
+        stored = self.repository.persist_completed(self.context, run_id="run-image", source_id="source-cp3", source_version_id="source-version-cp3", question="image fact?",
+            selection=TextModelSelection("OLLAMA", "https://ollama.example", "profile", "deployment", "llama3.2:3b", 1), evidence=evidence,
+            result=GroundedTextResult("ORANGE-42", ("chunk-image",), False, {"total_tokens": 10}))
+        self.assertEqual(stored.citations[0].locator, {"kind": "image_region", "value": "5,7,80,20,120,60"})
+        self.assertEqual(stored.citations[0].source_version_id, "source-version-cp3")
 
     def test_completed_notebook_answer_atomically_validates_source_and_binds_conversation(self) -> None:
         self.context = QuestionContext(

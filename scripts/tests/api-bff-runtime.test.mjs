@@ -9,6 +9,23 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("Image BFF는 PNG/JPEG 업로드와 Region 원문 header를 기존 인증 경계로 연결한다", async () => {
+  for (const mime of ["image/png", "image/jpeg"]) {
+    const calls = [];
+    const proxy = createBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return init.method === "POST" ? Response.json({ data: {} }, { status: 202 }) : new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": mime, "X-Citation-Locator-Kind": "image_region", "X-Citation-Region": "5,7,80,20,120,60" } });
+    } });
+    const uploaded = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/sources", { method: "POST", headers: { Origin: "https://app.example.com", Cookie: "__Host-daon_session=fixture", "Content-Type": mime, "Idempotency-Key": "image-upload-1", "X-Source-Filename": mime === "image/png" ? "qa.png" : "qa.jpg", "X-Notebook-Id": "notebook-1" }, body: new Uint8Array([1, 2, 3]) }), ["workspaces", "workspace-1", "sources"]);
+    assert.equal(uploaded.status, 202);
+    const content = await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1", { headers: { Cookie: "__Host-daon_session=fixture" } }), ["workspaces", "workspace-1", "citations", "citation-1", "content"]);
+    assert.equal(content.status, 200);
+    assert.equal(content.headers.get("content-type"), mime);
+    assert.equal(content.headers.get("x-citation-region"), "5,7,80,20,120,60");
+    assert.equal(calls.length, 2);
+  }
+});
+
 test("실패 Source 재처리 BFF는 기존 POST 경로와 Cookie·Origin 경계를 유지한다", async () => {
   const calls = [];
   const proxy = createBffProxy({ baseUrl: new URL("https://api.example.com"), fetchImpl: async (url, init) => {

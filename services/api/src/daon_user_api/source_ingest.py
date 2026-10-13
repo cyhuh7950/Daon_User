@@ -160,6 +160,13 @@ class SourceIngestor:
             raise SourceRejected("MALWARE_DETECTED")
         if extension in {".docx", ".pptx", ".xlsx"}:
             self._validate_ooxml(content)
+        if extension in {".png", ".jpg", ".jpeg"}:
+            from .image_document_understanding import normalize_image
+            from .document_understanding_adapter import DocumentUnderstandingError
+            try:
+                normalize_image(content, declared_mime)
+            except DocumentUnderstandingError:
+                raise SourceRejected("CORRUPTED_SOURCE") from None
         return SourceRecord(
             source_id=f"src-{uuid4().hex}",
             tenant_id="file-upload",

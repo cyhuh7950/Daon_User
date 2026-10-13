@@ -5,6 +5,18 @@ import pytest
 from daon_user_api.provider_catalog import ProviderCatalog, ProviderCatalogError
 
 
+def test_ollama_vision_uses_verified_show_metadata_not_model_name():
+    rows = [
+        {"name": "opaque-id", "digest": "a" * 64, "native_metadata": {"capabilities": ["vision"], "model_info": {"architecture": "x"}}},
+        {"name": "vision-name-only", "digest": "b" * 64},
+        {"name": "remote-vision", "digest": "c" * 64, "remote_host": "https://cloud.example",
+         "native_metadata": {"capabilities": ["vision"], "model_info": {"architecture": "x"}}},
+    ]
+    models = ProviderCatalog.from_payload("ollama-1", "OLLAMA", {"models": rows})
+    assert models[0].reported_capabilities == ("image_understanding", "text_generation")
+    assert all("image_understanding" not in m.reported_capabilities for m in models[1:])
+
+
 def test_ollama_catalog_preserves_connection_scope_and_normalizes_duplicate_models() -> None:
     models = ProviderCatalog.from_payload(
         "ollama-lan",

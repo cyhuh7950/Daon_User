@@ -14,6 +14,7 @@ import {
 import { classifyConversationIntent, buildSourceScopeMismatch } from "../../packages/ui/src/conversation-intent.js";
 import { uploadSource } from "../../apps/web/lib/source-upload-api.js";
 import * as sourceRetryApi from "../../apps/web/lib/source-upload-api.js";
+import { citationContentUrl } from "../../apps/web/lib/question-answering-api.js";
 
 test("실패 Source 실제 React 재처리 클릭은 새 Run POST 후 상태를 조회한다", async () => {
   for (const failsAgain of [false, true]) {
@@ -149,6 +150,54 @@ const sourceRetryPayload = {
   source_state: "ready", processing_state: "completed", job_state: "completed",
 };
 
+test("Image Citation은 같은 출처 원문과 EXIF 표시 기준 Region을 화면에서 연다", async () => {
+  const citation = { citation_id: "citation-image", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-image", page: 1, origin: "raw_source", context_item_id: "source-1", locator: { kind: "image_region", value: "5,7,80,20,120,60" } };
+  const workspace = await mountSourceRetryWorkspace({ ...adapter,
+    citationUrl(value) { return citationContentUrl("workspace-1", value, { notebookId: "notebook-1" }); },
+    async listSources() { return [{ ...sourceRetryPayload, filename: "qa.png" }]; },
+    async listStudioOutputs() { return []; },
+    async loadNotebookConversation() { return { run_id: "run-image", run_result_id: "result-image", answer: "이미지의 근거 답변", insufficient: false, citations: [{ ...citation, content_url: citationContentUrl("workspace-1", citation, { notebookId: "notebook-1" }) }] }; },
+  }, "image-region");
+  try {
+    const link = findElements(workspace.container, (node) => node.tagName === "A" && node.textContent.includes("Citation"))[0];
+    assert.ok(link);
+    await workspace.act(async () => link.dispatchEvent(new MinimalEvent("click")));
+    const image = findElements(workspace.container, (node) => node.tagName === "IMG")[0];
+    assert.ok(image, "원문 이미지가 실제 DOM에 있어야 한다");
+    assert.equal(image.getAttribute("src"), link.getAttribute("href"));
+    assert.match(image.getAttribute("src"), /^\/bff\//u);
+    Object.defineProperties(image, { naturalWidth: { value: 120 }, naturalHeight: { value: 60 } });
+    await workspace.act(async () => image.dispatchEvent(new MinimalEvent("load")));
+    const highlight = findElements(workspace.container, (node) => node.getAttribute?.("class") === "citation-image-region")[0];
+    assert.ok(highlight);
+    assert.equal(highlight.style.left, `${5 / 120 * 100}%`);
+    assert.equal(highlight.style.top, `${7 / 60 * 100}%`);
+    assert.equal(highlight.style.width, `${80 / 120 * 100}%`);
+    assert.equal(highlight.style.height, `${20 / 60 * 100}%`);
+    assert.match(workspace.container.textContent, /이미지의 근거 답변/u);
+    const selection = findElements(workspace.container, (node) => node.tagName === "BUTTON" && node.getAttribute?.("aria-pressed") === "true" && node.textContent.includes("qa.png"))[0];
+    assert.ok(selection);
+    await workspace.act(async () => selection.dispatchEvent(new MinimalEvent("click")));
+    assert.equal(findElements(workspace.container, (node) => node.tagName === "IMG").length, 0, "선택 해제 후 이전 원문 영역이 남지 않아야 한다");
+  } finally { await workspace.cleanup(); }
+});
+
+test("Image Citation 닫기는 원문 표시만 제거한다", async () => {
+  const citation = { citation_id: "citation-image", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-image", page: 1, origin: "raw_source", context_item_id: "source-1", locator: { kind: "image_region", value: "5,7,80,20,120,60" }, content_url: "/bff/api/workspaces/workspace-1/citations/citation-image/content?notebook_id=notebook-1" };
+  const workspace = await mountSourceRetryWorkspace({ ...adapter,
+    async listSources() { return [sourceRetryPayload]; }, async listStudioOutputs() { return []; },
+    async loadNotebookConversation() { return { run_id: "run-image", run_result_id: "result-image", answer: "원문 근거 답변", insufficient: false, citations: [citation] }; },
+  }, "image-close");
+  try {
+    const link = findElements(workspace.container, (node) => node.tagName === "A" && node.textContent.includes("Citation"))[0];
+    await workspace.act(async () => link.dispatchEvent(new MinimalEvent("click")));
+    const close = findElements(workspace.container, (node) => node.tagName === "BUTTON" && node.textContent === "원문 닫기")[0];
+    await workspace.act(async () => close.dispatchEvent(new MinimalEvent("click")));
+    assert.equal(findElements(workspace.container, (node) => node.tagName === "IMG").length, 0);
+    assert.match(workspace.container.textContent, /원문 근거 답변/u);
+  } finally { await workspace.cleanup(); }
+});
+
 test("HTTP QA React 질문은 randomUUID 없이 실제 adapter와 secure idempotency key를 사용한다", async () => {
   const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
   const calls = [];
@@ -218,7 +267,8 @@ test("HTTP QA React TXT 선택은 randomUUID 없이 실제 Source POST를 전송
     const addButton = findElements(workspace.container, (node) => node.tagName === "BUTTON" && node.getAttribute?.("class") === "source-add-button")[0];
     await workspace.act(async () => addButton.dispatchEvent(new MinimalEvent("click")));
     assert.match(workspace.container.textContent, /질문·Studio 처리 지원: PDF\(문서 모델 필요\), TXT\/MD\/CSV/u);
-    assert.match(workspace.container.textContent, /이미지·Office·오디오는 현재 보관 등록만 가능/u);
+    assert.match(workspace.container.textContent, /PNG\/JPG\/JPEG\(내부 Vision 모델·OCR 필요\)/u);
+    assert.match(workspace.container.textContent, /Office·오디오는 이 화면에서 아직 미지원/u);
     const fileInput = findElements(workspace.container, (node) => node.tagName === "INPUT" && node.getAttribute?.("accept")?.includes(".txt"))[0];
     Object.defineProperty(fileInput, "files", {
       configurable: true, value: [new File(["ORANGE-COMPASS-42"], "notes.txt", { type: "text/plain" })],

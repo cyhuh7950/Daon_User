@@ -688,7 +688,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "pattern": "^[^/\\\\\\u0000-\\u001f]{1,251}\\.(pdf|txt|md|csv)$",
+              "pattern": "^[^/\\\\\\u0000-\\u001f]{1,251}\\.(pdf|txt|md|csv|png|jpg|jpeg)$",
               "maxLength": 255
             }
           },
@@ -725,7 +725,9 @@
                 "type": "string",
                 "format": "binary"
               }
-            }
+            },
+            "image/png": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } },
+            "image/jpeg": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } }
           }
         }
       }
@@ -898,12 +900,17 @@
                 "schema": { "type": "integer", "minimum": 1 }
               },
               "X-Citation-Locator-Kind": {
-                "schema": { "type": "string", "enum": ["page", "section"] }
+                "schema": { "type": "string", "enum": ["page", "section", "image_region"] }
+              },
+              "X-Citation-Region": {
+                "schema": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 크기와 영역 경계는 서버에서 검증한다." }
               }
             },
             "content": {
               "application/pdf": { "schema": { "type": "string", "format": "binary" } },
-              "text/plain": { "schema": { "type": "string", "maxLength": 1048576 } }
+              "text/plain": { "schema": { "type": "string", "maxLength": 1048576 } },
+              "image/png": { "schema": { "type": "string", "format": "binary" } },
+              "image/jpeg": { "schema": { "type": "string", "format": "binary" } }
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -5591,9 +5598,10 @@
       "StudioCitationLocator": {
         "type": "object", "additionalProperties": false, "required": ["kind", "value"],
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 500 }
-        }
+        },
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }]
       },
       "StudioCitationProjection": {
         "type": "object", "additionalProperties": false,
@@ -5942,9 +5950,10 @@
         "additionalProperties": false,
         "required": ["kind", "value"],
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 255 }
-        }
+        },
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }]
       },
       "GroundedAnswer": {
         "type": "object",

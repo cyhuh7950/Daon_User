@@ -1,6 +1,7 @@
 "use client";
 
 import { secureUuid } from "@daon-user/ui/secure-uuid";
+import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const SAFE_FILENAME = /^[^/\\\u0000-\u001f]{1,255}$/u;
@@ -538,8 +539,9 @@ function validStudioCitation(value) {
     && safeId(value.citation_id) && safeId(value.source_version_id) && safeId(value.evidence_span_id)
     && new Set(["raw_source", "daon_knowledge"]).has(value.origin)
     && record(value.locator) && exact(value.locator, ["kind", "value"])
-    && new Set(["page", "section"]).has(value.locator.kind)
-    && safeText(value.locator.value, 1, 500);
+    && new Set(["page", "section", "image_region"]).has(value.locator.kind)
+    && safeText(value.locator.value, 1, 500)
+    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null);
 }
 
 function validStudioVersion(value) {

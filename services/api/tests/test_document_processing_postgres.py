@@ -272,6 +272,25 @@ class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
         ])
         self.assertEqual(self.cloud.capabilities, ["source.read", "source.process", "source.process"])
 
+    def test_image_completion_preserves_regions_and_display_lineage_in_canonical_records(self) -> None:
+        from test_image_document_understanding import image_bytes
+        connection = self.cloud.connection
+        connection.filename, connection.content_type, connection.content = "qa.png", "image/png", image_bytes()
+        self.repository._object_storage.content = connection.content
+        document = self.repository.load_source_document(self.context, "source-cp3")
+        run_id = self.repository.start(self.context, document.source_version_id)
+        regions = ({"text": "ORANGE-42", "value": "5,7,80,20,120,60"},)
+        lineage = {"source_format": "image", "source_digest": hashlib.sha256(document.content).hexdigest(), "image_width": "120", "image_height": "60", "exif_orientation": "1"}
+        result = DocumentUnderstandingResult(document.source_id, document.source_version_id, "ready", ("vision_llm_understanding", "parser_ocr_validation", "evidence_reconciliation"),
+            SemanticUnderstanding("QA", "ORANGE-42", ("ORANGE-42",)), ParserValidation("ORANGE-42", "", "", (1,), ((1, "ORANGE-42"),), "validation_only", regions), lineage)
+        self.repository.complete(self.context, run_id, result)
+        payload = next(params[4].obj for sql, params in connection.statements if sql.startswith("INSERT INTO understanding_results"))
+        self.assertEqual(payload["source_version_id"], document.source_version_id)
+        self.assertEqual(payload["parser_validation"]["regions"], list(regions))
+        self.assertEqual(payload["lineage"], lineage)
+        self.assertEqual(connection.states["ProcessingRun"], "completed")
+        self.assertEqual(connection.states["Source"], "processing", "ready requires actual indexing, not completion alone")
+
     def test_loads_exact_txt_object_and_rejects_mime_or_digest_mismatch(self) -> None:
         content = b"Actual TXT fact\n"
         self.cloud.connection.filename = "notes.txt"

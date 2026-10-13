@@ -173,16 +173,27 @@ class ProviderCatalog:
         if not isinstance(raw_models, list):
             raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
         model_ids: list[str] = []
+        vision_ids: set[str] = set()
         for raw_model in raw_models:
             if not isinstance(raw_model, Mapping):
                 raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
             model_ids.append(_valid_model_id(raw_model.get("name") or raw_model.get("model")))
+            metadata = raw_model.get("native_metadata")
+            digest = raw_model.get("digest")
+            if (isinstance(metadata, Mapping) and isinstance(metadata.get("capabilities"), list)
+                    and "vision" in metadata["capabilities"] and isinstance(metadata.get("model_info"), Mapping)
+                    and metadata["model_info"] and isinstance(digest, str)
+                    and len(digest.removeprefix("sha256:")) == 64
+                    and all(c in "0123456789abcdef" for c in digest.removeprefix("sha256:"))
+                    and not any(raw_model.get(k) or metadata.get(k) or metadata["model_info"].get(k)
+                                for k in ("remote_host", "remote_model", "remote", "cloud"))):
+                vision_ids.add(model_ids[-1])
         return tuple(
             DiscoveredModel(
                 connection_id=connection_id,
                 provider_code="OLLAMA",
                 model_id=model_id,
-                reported_capabilities=("text_generation",),
+                reported_capabilities=("image_understanding", "text_generation") if model_id in vision_ids else ("text_generation",),
                 routing_owner="provider",
                 daon_fallback_allowed=True,
             )

@@ -42,6 +42,15 @@ const request = (payload) => askGroundedQuestion(
   { idempotencyKey: "question-1", fetchImpl: async () => Response.json(payload) }
 );
 
+test("Image Region Citation은 6개 정수·표시 크기 경계를 검증한다", async () => {
+  const imageCitation = { ...citation, page: 1, locator: { kind: "image_region", value: "5,7,80,20,120,60" } };
+  assert.deepEqual((await request(envelope({ ...answerData, citations: [imageCitation] }))).citations, [imageCitation]);
+  assert.equal(citationContentUrl("workspace-1", imageCitation, { notebookId: "notebook-1" }), "/bff/api/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1");
+  for (const value of ["-1,7,80,20,120,60", "5,7,0,20,120,60", "5,7,120,20,120,60", "5,7,80,20,120", "5.5,7,80,20,120,60", "05,7,80,20,120,60", "0,0,1,1,4097,4097"]) {
+    await assert.rejects(request(envelope({ ...answerData, citations: [{ ...imageCitation, locator: { kind: "image_region", value } }] })), /QUESTION_RESPONSE_INVALID/);
+  }
+});
+
 test("Question API는 exact outer/data와 Citation Safe DTO만 반환한다", async () => {
   assert.deepEqual(await request(envelope()), answerData);
   assert.equal(

@@ -27,6 +27,7 @@ const RESPONSE_HEADERS = new Set([
   "x-trace-id",
   "x-citation-locator-kind",
   "x-citation-page",
+  "x-citation-region",
   "x-content-type-options",
 ]);
 const NATIVE_RESPONSE_HEADERS = new Set([
@@ -38,6 +39,7 @@ const NATIVE_RESPONSE_HEADERS = new Set([
   "x-trace-id",
   "x-citation-locator-kind",
   "x-citation-page",
+  "x-citation-region",
 ]);
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SESSION_COOKIE_NAME = "__Host-daon_session";
@@ -793,7 +795,7 @@ function nativeRouteFor(method, segments, requestUrl) {
       : { methodRejected: true };
   } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "sources") {
     matched = new Set(["GET", "POST"]).has(method)
-      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaTypes: ["application/pdf", "text/plain", "text/markdown", "text/csv"] } : {})
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaTypes: ["application/pdf", "text/plain", "text/markdown", "text/csv", "image/png", "image/jpeg"] } : {})
       : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs" && SAFE_SEGMENT.test(segments[3])) {
     matched = method === "GET"
@@ -805,7 +807,7 @@ function nativeRouteFor(method, segments, requestUrl) {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, { requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "citations" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "content") {
     matched = method === "GET"
-      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { responseMediaTypes: ["application/pdf", "text/plain"], maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { responseMediaTypes: ["application/pdf", "text/plain", "image/png", "image/jpeg"], maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
       : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "reports") {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/reports`, { requestMediaType: "application/json" }) : { methodRejected: true };

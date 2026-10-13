@@ -78,6 +78,14 @@ class FakeIndex:
 
 
 class DocumentProcessingWorkerTests(unittest.TestCase):
+    def test_needs_review_result_never_indexes_or_becomes_ready(self):
+        from dataclasses import replace
+        queue = FakeQueue(job())
+        service = FakeProcessingService()
+        service.process_existing = lambda *args, **kwargs: replace(result(), status="needs_review", conflict="UNDERSTANDING_PARSER_CONFLICT")
+        worker = DocumentProcessingWorker("worker-cp3", queue, service, FakeIndex(queue.events), clock=lambda: NOW)
+        self.assertTrue(worker.run_once())
+        self.assertEqual(queue.events, [("claim", "worker-cp3"), ("complete", "run-cp3")])
     def test_built_worker_consumes_real_policy_service_before_external_adapter(self) -> None:
         settings = DocumentWorkerSettings("worker-cp3", "unused-fixture-dsn", "unused-fixture-storage",
             "fixture-bucket", Path("fixture-access"), Path("fixture-secret"), Path("fixture-provider"), True, 600, 0.5)

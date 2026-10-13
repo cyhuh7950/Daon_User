@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
-import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState } from "./product-workspace-model.js";
+import { canCreateGroundedReport, createProductWorkspaceState, normalizeProductWorkspaceState, projectQuestionFailureState, parseImageRegion } from "./product-workspace-model.js";
 import { createProductStudioState } from "./product-studio-model.js";
 import { ProductStudioPane } from "./product-studio-pane.jsx";
 import { classifyConversationIntent } from "./conversation-intent.js";
@@ -346,7 +346,8 @@ export function projectSafeQuestionAnswer(answer, workspaceId, citationUrl, sele
       && typeof citation.locator.value === "string"
       && citation.locator.value.length >= 1
       && citation.locator.value.length <= 255
-      && !/[\u0000-\u001f\u007f]/u.test(citation.locator.value);
+      && !/[\u0000-\u001f\u007f]/u.test(citation.locator.value)
+      && (citation.locator.kind !== "image_region" || parseImageRegion(citation.locator.value) !== null);
     const validCitation = hasExactKeys(citation, ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page", "origin", "context_item_id", "locator"])
       && isSafeDtoId(citation.citation_id)
       && isSafeDtoId(citation.source_id)
@@ -537,6 +538,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [sourceAddError, setSourceAddError] = useState(null);
   const [sourceAddPending, setSourceAddPending] = useState(false);
   const [sourceRetryError, setSourceRetryError] = useState(null);
+  const [imageCitation, setImageCitation] = useState(null);
+  const [imageCitationLoaded, setImageCitationLoaded] = useState(false);
+  const [imageCitationError, setImageCitationError] = useState(null);
   const sourceRetryKeysRef = useRef(new Map());
   const pollControllerRef = useRef(null);
   const reportIdempotencyRef = useRef(null);
@@ -1322,7 +1326,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <nav className="source-add-tabs" aria-label="Source 유형">
               {[['file', '파일 업로드'], ['website', '웹사이트'], ['drive', 'Drive'], ['text', '복사한 텍스트'], ['mcp', 'MCP 연결']].map(([mode, label]) => <button key={mode} type="button" aria-pressed={sourceAddMode === mode} onClick={() => { setSourceAddMode(mode); setSourceAddError(null); }} disabled={sourceAddPending}>{label}</button>)}
             </nav>
-            {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV. 이미지·Office·오디오는 현재 보관 등록만 가능</small><input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.m4a,.wav,.mp3" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
+            {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV, PNG/JPG/JPEG(내부 Vision 모델·OCR 필요). Office·오디오는 이 화면에서 아직 미지원</small><input type="file" accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.m4a,.wav,.mp3" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
             {sourceAddMode === "text" ? <><textarea value={sourceAddText} onChange={(event) => setSourceAddText(event.target.value)} placeholder="복사한 텍스트를 붙여 넣으세요" disabled={sourceAddPending} /><button type="button" className="primary-button" onClick={() => void submitPastedText()} disabled={sourceAddPending || !sourceAddText.trim()}>{sourceAddPending ? "등록 중" : "텍스트 등록"}</button></> : null}
             {sourceAddMode === "mcp" ? <div className="source-add-unavailable"><strong>국가법령정보센터 MCP</strong><small>연결을 등록하면 연결형 Source에서 상태를 확인하고 선택할 수 있습니다.</small><button type="button" className="primary-button" onClick={() => void registerMcpConnector()} disabled={sourceAddPending}>{sourceAddPending ? "등록 중" : "MCP 연결 등록"}</button></div> : null}
             {sourceAddMode === "website" || sourceAddMode === "drive" ? <div className="source-add-unavailable" role="status"><strong>{sourceAddMode === "website" ? "웹사이트" : "Drive"} 연결 준비 필요</strong><small>외부 원본을 가져오는 Connector가 연결되면 이 흐름에서 등록할 수 있습니다.</small></div> : null}
@@ -1426,6 +1430,13 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">대화를 불러오지 못했습니다. ({viewState.conversationSafeError}) 다시 시도해 주세요.</div> : null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
+              if (citation.locator.kind === "image_region") {
+                event.preventDefault();
+                setImageCitationLoaded(false);
+                setImageCitationError(null);
+                setImageCitation({ ...citation, region: parseImageRegion(citation.locator.value) });
+                return;
+              }
               void openNativeCitation(event, {
                 adapter,
                 citation,
@@ -1435,8 +1446,19 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               }).catch((error) => {
                 setViewState((current) => ({ ...current, status: "error", safeError: safeErrorCode(error, "CITATION_RESPONSE_INVALID") }));
               });
-            }}>Citation · {citation.locator.kind === "page" ? `${citation.page}쪽` : "지식 구간"}</a>
-          ))}</div></div><form className="conversation-composer" onSubmit={askQuestion}>
+            }}>Citation · {citation.locator.kind === "page" ? `${citation.page}쪽` : citation.locator.kind === "image_region" ? "이미지 영역" : "지식 구간"}</a>
+          ))}</div>
+          {imageCitation?.region && viewState.answer?.citations?.some((current) => current.citation_id === imageCitation.citation_id && current.source_version_id === imageCitation.source_version_id && current.locator.kind === "image_region" && current.locator.value === imageCitation.locator.value) ? <section className="citation-image-view" aria-label="이미지 원문">
+            <button type="button" onClick={() => setImageCitation(null)}>원문 닫기</button>
+            {imageCitationError ? <p role="alert">이미지 원문을 확인할 수 없습니다. ({imageCitationError})</p> : <div className="citation-image-frame">
+              <img key={imageCitation.citation_id} src={imageCitation.content_url} alt="Citation 원문 이미지" onError={() => setImageCitationError("CITATION_CONTENT_UNAVAILABLE")} onLoad={(event) => {
+                if (event.currentTarget.naturalWidth !== imageCitation.region.imageWidth || event.currentTarget.naturalHeight !== imageCitation.region.imageHeight) {
+                  setImageCitationError("CITATION_REGION_MISMATCH");
+                } else setImageCitationLoaded(true);
+              }} />
+              {imageCitationLoaded ? <span className="citation-image-region" aria-label="근거 영역" style={{ left: `${imageCitation.region.x / imageCitation.region.imageWidth * 100}%`, top: `${imageCitation.region.y / imageCitation.region.imageHeight * 100}%`, width: `${imageCitation.region.width / imageCitation.region.imageWidth * 100}%`, height: `${imageCitation.region.height / imageCitation.region.imageHeight * 100}%` }} /> : null}
+            </div>}
+          </section> : null}</div><form className="conversation-composer" onSubmit={askQuestion}>
             <label><span className="sr-only">질문</span><textarea rows="2" placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "작업 내용이나 궁금한 점을 질문하세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
             <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={!question.trim()}>↑</button>
           </form></div>}
@@ -1479,7 +1501,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                 <span>{output.status}</span>
                 <ul aria-label={`${output.title} Citation 계보`}>
                   {(Array.isArray(output.citations) ? output.citations : []).map((citation) => (
-                    <li key={citation.citation_id}>Citation page {citation.page}</li>
+                    <li key={citation.citation_id}>{citation.locator?.kind === "image_region" ? `Citation 이미지 영역 ${citation.locator.value}` : `Citation page ${citation.page}`}</li>
                   ))}
                 </ul>
               </li>

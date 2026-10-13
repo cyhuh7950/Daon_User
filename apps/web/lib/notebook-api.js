@@ -1,4 +1,5 @@
 "use client";
+import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const VIEW_KEYS = Object.freeze(["notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"]);
@@ -75,9 +76,10 @@ function validCitation(value) {
     && Number.isSafeInteger(value.page) && value.page >= 1
     && ["raw_source", "daon_knowledge"].includes(value.origin)
     && exact(value.locator, ["kind", "value"])
-    && ["page", "section"].includes(value.locator.kind)
+    && ["page", "section", "image_region"].includes(value.locator.kind)
     && typeof value.locator.value === "string" && value.locator.value.length >= 1 && value.locator.value.length <= 255
-    && (value.locator.kind !== "page" || value.locator.value === String(value.page));
+    && (value.locator.kind !== "page" || value.locator.value === String(value.page))
+    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null);
 }
 
 function validContext(value, notebookId) {

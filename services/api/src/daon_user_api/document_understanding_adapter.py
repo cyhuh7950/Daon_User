@@ -161,6 +161,7 @@ class ParserValidation:
     pages: tuple[int, ...]
     page_texts: tuple[tuple[int, str], ...] = ()
     role: str = "validation_only"
+    regions: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +275,9 @@ class UrlLibDocumentUnderstandingTransport:
             headers={"Content-Type": "application/json"}, method="POST",
         )
         return self._request(request, timeout_seconds)
+
+    def get_json_no_auth(self, *, url: str, timeout_seconds: float) -> dict[str, object]:
+        return self._request(urllib.request.Request(url, method="GET"), timeout_seconds)
 
     def post_json_headers(
         self, *, url: str, headers: Mapping[str, str], payload: dict[str, object],

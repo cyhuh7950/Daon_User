@@ -30,6 +30,11 @@ def text_source_format(filename: str, content_type: str) -> str | None:
     return suffix if _TEXT_SOURCE_MIMES.get(suffix) == content_type else None
 
 
+def image_source_format(filename: str, content_type: str) -> bool:
+    suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}.get(suffix) == content_type
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentProcessingContext:
     tenant_id: str
@@ -212,6 +217,7 @@ class DocumentProcessingService:
         adapter_factory: DocumentAdapterFactory,
         *, text_adapter: TextDocumentUnderstandingPort | None = None,
         egress_guard: OriginalDocumentEgressGuard | None = None,
+        image_adapter=None,
     ) -> None:
         self._repository = repository
         self._model_resolver = model_resolver
@@ -221,6 +227,10 @@ class DocumentProcessingService:
             text_adapter = OllamaTextDocumentAdapter(UrlLibDocumentUnderstandingTransport())
         self._text_adapter = text_adapter
         self._egress_guard = egress_guard if egress_guard is not None else OriginalDocumentEgressGuard()
+        if image_adapter is None:
+            from .image_document_understanding import OllamaImageDocumentAdapter
+            image_adapter = OllamaImageDocumentAdapter(UrlLibDocumentUnderstandingTransport())
+        self._image_adapter = image_adapter
 
     def process(
         self, context: DocumentProcessingContext, *, source_id: str,
@@ -243,6 +253,12 @@ class DocumentProcessingService:
         processing_run_id: str,
     ) -> DocumentUnderstandingResult:
         try:
+            if image_source_format(document.filename, document.content_type):
+                with self._model_resolver.resolve(context.model_context(), "image_understanding") as image_model:
+                    self._egress_guard.authorize(context, (image_model,))
+                    result = self._image_adapter.understand(document, image_model, context)
+                self._repository.complete(context, processing_run_id, result)
+                return result
             if text_source_format(document.filename, document.content_type) is not None:
                 with self._model_resolver.resolve(
                     context.model_context(), "text_generation",

@@ -28,10 +28,11 @@ function validCitation(value) {
     && Number.isSafeInteger(value.page) && value.page >= 1
     && ["raw_source", "daon_knowledge"].includes(value.origin)
     && exact(value.locator, ["kind", "value"])
-    && ["page", "section"].includes(value.locator.kind)
+    && ["page", "section", "image_region"].includes(value.locator.kind)
     && typeof value.locator.value === "string" && value.locator.value.length >= 1
     && value.locator.value.length <= 255
-    && (value.locator.kind !== "page" || value.locator.value === String(value.page));
+    && (value.locator.kind !== "page" || value.locator.value === String(value.page))
+    && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null);
 }
 
 function projectCitation(value) {
@@ -141,7 +142,11 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
 
   const loadNotebookConversation = async (options) => {
     if (context.conversation === null || context.conversation_thread_ids.length !== 1) return null;
-    return context.conversation.answer;
+    const answer = context.conversation.answer;
+    if (!answer.citations.some((citation) => citation.locator.kind === "image_region")) return answer;
+    return { ...answer, citations: answer.citations.map((citation) => citation.locator.kind === "image_region"
+      ? { ...citation, content_url: baseAdapter.citationUrl(citation, { notebookId: context.notebook_id }) }
+      : citation) };
   };
 
   const filterOutputs = (values) => {
@@ -242,3 +247,4 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
   if (bindingEtag !== undefined) Object.defineProperty(adapter, "bindingEtag", { enumerable: false, value: bindingEtag });
   return Object.freeze(adapter);
 }
+import { parseImageRegion } from "./product-workspace-model.js";

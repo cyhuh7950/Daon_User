@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 import pytest
+from unittest.mock import patch
 
 from daon_user_api.provider_connection_adapters import (
     AdapterError,
@@ -15,6 +16,44 @@ from daon_user_api.provider_settings import ProviderSettingsError, validate_prov
 
 
 TEST_CREDENTIAL = "fixture-credential-never-real"
+
+
+def test_ollama_metadata_is_bounded_and_remote_tags_never_show():
+    transport = FakeTransport()
+    base = "http://192.168.220.180:11434"
+    rows = [{"name": "remote", "digest": "a" * 64, "remote_host": "https://cloud.example"}]
+    rows += [{"name": f"opaque-{i}", "digest": "a" * 64} for i in range(20)]
+    transport.responses[base + "/api/tags"] = TransportResponse(200, {"models": rows})
+    transport.responses[base + "/api/show"] = TransportResponse(200, {"capabilities": ["vision"], "model_info": {"architecture": "x"}})
+    with patch("time.monotonic", return_value=0):
+        models = AdapterRegistry(transport=transport).adapter("OLLAMA").discover_models(connection("OLLAMA"), None)
+    shows = [r for r in transport.requests if r.method == "POST"]
+    assert len(shows) == 8
+    assert all(r.body["model"] != "remote" for r in shows)
+    assert len(models) == 21
+    assert sum("image_understanding" in m.reported_capabilities for m in models) == 8
+
+
+def test_ollama_metadata_total_budget_caps_individual_timeout():
+    transport = FakeTransport()
+    base = "http://192.168.220.180:11434"
+    transport.responses[base + "/api/tags"] = TransportResponse(200, {"models": [{"name": f"m{i}", "digest": "a" * 64} for i in range(5)]})
+    transport.responses[base + "/api/show"] = TransportResponse(200, {"capabilities": ["vision"], "model_info": {"architecture": "x"}})
+    with patch("time.monotonic", side_effect=[0, 0, 4, 5, 6, 7]):
+        AdapterRegistry(transport=transport).adapter("OLLAMA").discover_models(connection("OLLAMA"), None)
+    shows = [r for r in transport.requests if r.method == "POST"]
+    assert [r.timeout_seconds for r in shows] == [5, 1]
+
+
+def test_ollama_discovery_budget_includes_tags_before_metadata():
+    transport = FakeTransport()
+    base = "http://192.168.220.180:11434"
+    transport.responses[base + "/api/tags"] = TransportResponse(200, {"models": [{"name": "m", "digest": "a" * 64}]})
+    transport.responses[base + "/api/show"] = TransportResponse(200, {"capabilities": ["vision"], "model_info": {"architecture": "x"}})
+    with patch("time.monotonic", side_effect=[0, 4.5]):
+        AdapterRegistry(transport=transport).adapter("OLLAMA").discover_models(connection("OLLAMA"), None)
+    shows = [r for r in transport.requests if r.method == "POST"]
+    assert [r.timeout_seconds for r in shows] == [0.5]
 
 
 def connection(

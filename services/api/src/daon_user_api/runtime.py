@@ -4044,6 +4044,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             }
         if locator["kind"] == "page":
             headers["X-Citation-Page"] = locator["value"]
+        elif locator["kind"] == "image_region":
+            headers["X-Citation-Region"] = locator["value"]
         return Response(
             content=content.content, media_type=content.media_type,
             headers=headers,

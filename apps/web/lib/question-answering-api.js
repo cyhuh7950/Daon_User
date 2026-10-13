@@ -1,4 +1,5 @@
 import { secureUuid } from "@daon-user/ui/secure-uuid";
+import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
@@ -31,7 +32,8 @@ function isCitationLocator(value) {
     && typeof value.value === "string"
     && value.value.length >= 1
     && value.value.length <= 255
-    && !/[\u0000-\u001f\u007f]/u.test(value.value);
+    && !/[\u0000-\u001f\u007f]/u.test(value.value)
+    && (value.kind !== "image_region" || parseImageRegion(value.value) !== null);
 }
 
 function isGroundedCitation(value) {

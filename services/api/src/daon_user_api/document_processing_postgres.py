@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .document_processing import (
-    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format,
+    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format, image_source_format,
 )
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
@@ -127,6 +127,7 @@ class PostgresDocumentProcessingRepository:
             original_format = (
                 (content_type == "application/pdf" and filename.lower().endswith(".pdf"))
                 or text_source_format(filename, content_type) is not None
+                or image_source_format(filename, content_type)
             )
             if (
                 str(row[7]) != "completed" or not original_format
@@ -141,6 +142,12 @@ class PostgresDocumentProcessingRepository:
                 or (content_type == "application/pdf" and not content.startswith(b"%PDF-"))
             ):
                 raise DocumentUnderstandingError("SOURCE_OBJECT_CHECKSUM_MISMATCH", status=409)
+            if image_source_format(filename, content_type):
+                from .image_document_understanding import normalize_image
+                try:
+                    normalize_image(content, content_type)
+                except DocumentUnderstandingError:
+                    raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409) from None
             return StoredSourceDocument(source_id, str(row[0]), filename, content, content_type)
         except Exception as error:
             mapped = (
@@ -204,7 +211,7 @@ class PostgresDocumentProcessingRepository:
                     raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
                 filename, mime = str(source[4]), str(source[5])
                 if not ((mime == "application/pdf" and filename.lower().endswith(".pdf"))
-                        or text_source_format(filename, mime) is not None):
+                        or text_source_format(filename, mime) is not None or image_source_format(filename, mime)):
                     raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409)
                 replay = connection.execute(
                     "SELECT request_fingerprint,result FROM idempotency_records "
@@ -453,6 +460,7 @@ class PostgresDocumentProcessingRepository:
                     for page, page_text in result.parser.page_texts
                 ],
                 "role": result.parser.role,
+                "regions": list(result.parser.regions),
             },
             "lineage": dict(result.lineage),
             "conflict": result.conflict,
@@ -492,6 +500,8 @@ class PostgresDocumentProcessingRepository:
                         "understanding_result_id": understanding_id,
                         "parser_role": "validation_only",
                     }
+                    if result.parser.regions:
+                        evidence["regions"] = list(result.parser.regions)
                     evidence_text, evidence_digest = self._snapshot(evidence)
                     connection.execute(
                         "INSERT INTO extraction_evidence "

@@ -229,6 +229,14 @@ test("Web Studio Adapter는 same-origin 공통 계약과 파일 bytes만 사용�
       review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null,
     }] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
   } });
+  for (const region of ["5,7,80,20,120,60", "5,7,180,20,120,60"]) {
+    const operation = listStudioVersions("workspace-1", "output-1", { notebookId: "notebook-1", fetchImpl: async () => Response.json({ data: { output_id: "output-1", versions: [{
+      output_version_id: "version-1", content_version: 1, previous_version_id: null, status: "draft", content: { body: "이미지 근거" }, revision_type: "initial", change_reason: "initial_generation", settings_snapshot_id: "settings-1", output_format: "pdf",
+      citations: [{ citation_id: "citation-image", source_version_id: "source-version-1", evidence_span_id: "span-image", origin: "raw_source", locator: { kind: "image_region", value: region } }], review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null,
+    }] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } }) });
+    if (region === "5,7,80,20,120,60") assert.equal((await operation)[0].citations[0].locator.value, region);
+    else await assert.rejects(operation, /STUDIO_RESPONSE_INVALID/);
+  }
   await createStudioAction("workspace-1", "reviews", { output_version_id: "version-1" }, { notebookId: "notebook-1", fetchImpl, idempotencyKey: "review-key-000001" });
   const exported = await downloadStudioExport("workspace-1", "output-1", "version-1", "pdf", { notebookId: "notebook-1", fetchImpl });
   assert.deepEqual(exported.bytes, [0x25, 0x50, 0x44, 0x46, 0x2d]);

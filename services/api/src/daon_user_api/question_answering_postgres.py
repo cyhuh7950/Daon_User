@@ -16,6 +16,7 @@ from .object_queue import ObjectKeyPolicy, ObjectQueueError, ObjectStorageError,
 from .data_canon import canonical_json_bytes
 from .document_index_postgres import IndexedEvidenceChunk
 from .document_processing import text_source_format
+from .document_understanding_adapter import DocumentUnderstandingError
 from .question_answering import GroundedTextResult, TextModelSelection
 
 
@@ -512,9 +513,9 @@ class PostgresQuestionAnsweringRepository:
                     "c.canonical_json->>'page',es.canonical_json->>'page',"
                     "es.canonical_json,s.canonical_json->>'kind',"
                     "COALESCE(sv.canonical_json->>'filename',s.canonical_json->>'filename',sv.record_id),"
-                    "s.state,es.record_id FROM citations c JOIN evidence_spans es ON "
+                    "s.state,es.record_id,c.canonical_json->'locator' FROM citations c JOIN evidence_spans es ON "
                     "es.tenant_id=c.tenant_id AND es.workspace_id=c.workspace_id "
-                    "AND es.record_id=c.evidence_span_id JOIN source_versions sv ON "
+                    "AND es.record_id=c.evidence_span_id AND es.source_version_id=c.source_version_id JOIN source_versions sv ON "
                     "sv.tenant_id=c.tenant_id AND sv.workspace_id=c.workspace_id "
                     "AND sv.record_id=c.source_version_id JOIN sources s ON "
                     "s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id "
@@ -550,6 +551,30 @@ class PostgresQuestionAnsweringRepository:
             raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404) from None
         if page < 1 or page != evidence_page or source_state != "ready":
             raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+        if evidence.get("kind") == "image_region_fact":
+            from .image_document_understanding import normalize_image, validate_image_region
+            if context.notebook_id is None or evidence.get("source_id") != source_id or evidence.get("source_version_id") != source_version_id:
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+            locator = evidence.get("locator")
+            if not isinstance(locator, dict) or set(locator) != {"kind", "value"} or locator.get("kind") != "image_region" or len(row) < 10 or row[9] != locator:
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
+            original = self._row(context, source_id, source_version_id, "citation.read", require_notebook_binding=True)
+            if original[3] != filename or str(original[8]) not in {"image/png", "image/jpeg"} or str(original[9]) != "completed":
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
+            try:
+                ObjectKeyPolicy().validate_final(self._cloud_context(context, "object.read"), "source", str(original[5]))
+                content = self._object_storage.get(str(original[5]))
+                if len(content) != int(original[7]) or hashlib.sha256(content).hexdigest() != str(original[6]):
+                    raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
+                image = normalize_image(content, str(original[8]))
+                coordinates = validate_image_region(locator["value"])
+                if coordinates[4:] != (image.width, image.height):
+                    raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
+            except DocumentUnderstandingError:
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409) from None
+            except (ObjectQueueError, ObjectStorageError):
+                raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=503) from None
+            return CitationContent(source_id, source_version_id, filename, content, str(original[8])), locator
         if source_kind == "studio_output":
             if evidence.get("kind") != "approved_knowledge_snapshot":
                 raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=409)
@@ -681,11 +706,11 @@ class PostgresQuestionAnsweringRepository:
                     evidence_by_id[chunk_id].source_version_id,
                 )].context_item_id),
                 {
-                    "kind": "section" if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
+                    "kind": "image_region" if evidence_by_id[chunk_id].locator_kind == "image_region" else "section" if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
                         evidence_by_id[chunk_id].source_id,
                         evidence_by_id[chunk_id].source_version_id,
                     )].origin) == "daon_knowledge" else "page",
-                    "value": evidence_by_id[chunk_id].evidence_span_id
+                    "value": evidence_by_id[chunk_id].locator_value if evidence_by_id[chunk_id].locator_kind == "image_region" else evidence_by_id[chunk_id].evidence_span_id
                     if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
                         evidence_by_id[chunk_id].source_id,
                         evidence_by_id[chunk_id].source_version_id,

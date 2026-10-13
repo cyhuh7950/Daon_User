@@ -23,6 +23,17 @@ const EXISTING_CONTEXT = Object.freeze({
   source_deletion_requests: Object.freeze([]),
 });
 
+test("저장된 Image Region은 Notebook context에서 같은 출처 원문 URL을 복원한다", async () => {
+  const citation = { citation_id: "citation-image", source_id: "source-bound", source_version_id: "source-version-bound", evidence_span_id: "span-image", page: 1, origin: "raw_source", context_item_id: "source-bound", locator: { kind: "image_region", value: "5,7,80,20,120,60" } };
+  const context = { ...EXISTING_CONTEXT, conversation: { ...EXISTING_CONTEXT.conversation, answer: { ...EXISTING_CONTEXT.conversation.answer, citations: [citation] } } };
+  const { citationContentUrl } = await import("../../apps/web/lib/question-answering-api.js");
+  const base = { citationUrl: (value, options) => citationContentUrl("workspace-1", value, options) };
+  const answer = await createNotebookContextWorkspaceAdapter(base, context).loadNotebookConversation();
+  assert.equal(answer.citations[0].content_url, "/bff/api/workspaces/workspace-1/citations/citation-image/content?notebook_id=notebook-existing");
+  assert.equal(answer.citations[0].locator.value, citation.locator.value);
+  assert.throws(() => projectNotebookSelectedContext({ ...context, conversation: { ...context.conversation, answer: { ...context.conversation.answer, citations: [{ ...citation, locator: { kind: "image_region", value: "5,7,180,20,120,60" } }] } } }), /NOTEBOOK_CONTEXT_INVALID/);
+});
+
 async function bundle(output) {
   const root = path.resolve(import.meta.dirname, "../..");
   const { build } = await import("vite");

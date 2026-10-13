@@ -75,7 +75,8 @@ class DocumentProcessingWorker:
                 context, source_id=job.source_id,
                 processing_run_id=job.processing_run_id,
             )
-            self._index.index_result(context, result)
+            if result.status == "ready":
+                self._index.index_result(context, result)
             self._queue.complete(job, self._worker_id, now=self._clock())
         except DocumentUnderstandingError as error:
             self._queue.fail_terminal(

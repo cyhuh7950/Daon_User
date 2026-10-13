@@ -26,7 +26,7 @@ _ACTIVE_PROVIDERS = {
     "text_generation": frozenset({
         "OLLAMA", "GROQ", "MISTRAL", "UPSTAGE", "OPENROUTER", "OMNIROUTE", "EOUL_GATEWAY", "CUSTOM",
     }),
-    "image_understanding": frozenset({"UPSTAGE"}),
+    "image_understanding": frozenset({"UPSTAGE", "OLLAMA"}),
     "document_parsing": frozenset({"UPSTAGE"}),
     "embedding": frozenset({"SENTENCE_TRANSFORMERS"}),
 }

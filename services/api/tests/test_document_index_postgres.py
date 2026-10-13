@@ -28,12 +28,13 @@ class FakeConnection:
         self.inserts: list[str] = []
         self.index_payload = None
         self.understanding_exists = True
+        self.understanding_payload = None
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
         if sql.startswith("SELECT record_id,canonical_json FROM understanding_results"):
             if not self.understanding_exists:
                 return Cursor()
-            return Cursor(("understanding-cp3", {
+            return Cursor(("understanding-cp3", self.understanding_payload or {
                 "source_id": "source-cp3",
                 "status": "ready",
                 "semantic": {
@@ -102,6 +103,54 @@ def paraphrased_ready_result() -> DocumentUnderstandingResult:
 
 
 class PostgresDocumentIndexTests(unittest.TestCase):
+    def test_image_region_is_indexed_and_search_preserves_exact_locator(self):
+        from dataclasses import replace
+        result = ready_result()
+        regions = ({"text": "계약 기간은 12개월", "value": "10,20,100,30,1000,200"},
+                   {"text": "해지 통보는 30일 전", "value": "10,80,100,30,1000,200"})
+        result = replace(result, parser=replace(result.parser, regions=regions), lineage={"source_format": "image", "image_width": "1000", "image_height": "200", "source_digest": "a" * 64, "exif_orientation": "1"})
+        self.cloud.connection.understanding_payload = {
+            "source_id": result.source_id, "source_version_id": result.source_version_id,
+            "status": "ready", "semantic": {"key_facts": list(result.semantic.key_facts)},
+            "parser_validation": {"regions": list(regions)}, "lineage": dict(result.lineage),
+        }
+        self.index.index_result(self.context, result)
+        chunks = self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query="계약 기간")
+        self.assertEqual(chunks[0].locator_kind, "image_region")
+        self.assertEqual(chunks[0].locator_value, "10,20,100,30,1000,200")
+        self.assertEqual(self.cloud.connection.index_payload["strategy"], "native_image_facts_with_ocr_region_validation")
+
+    def test_image_canonical_binding_mismatch_has_no_writes_or_ready_transition(self):
+        from copy import deepcopy
+        for field in ("source_version_id", "regions", "image_width", "image_height", "source_digest", "exif_orientation"):
+            with self.subTest(field=field):
+                self.setUp()
+                self.test_image_region_is_indexed_and_search_preserves_exact_locator()
+                payload = deepcopy(self.cloud.connection.understanding_payload)
+                result_lineage = dict(payload["lineage"])
+                regions = tuple(deepcopy(payload["parser_validation"]["regions"]))
+                from dataclasses import replace
+                result = replace(ready_result(), parser=replace(ready_result().parser, regions=regions), lineage=result_lineage)
+                if field == "source_version_id":
+                    payload[field] = "source-version-other"
+                elif field == "regions":
+                    payload["parser_validation"][field][0]["value"] = "11,20,100,30,1000,200"
+                else:
+                    payload["lineage"][field] = "different"
+                self.cloud.connection.understanding_payload = payload
+                self.cloud.connection.inserts.clear()
+                self.cloud.connection.source_state = "processing"
+                with self.assertRaisesRegex(DocumentUnderstandingError, "UNDERSTANDING_RESULT_MISMATCH"):
+                    self.index.index_result(self.context, result)
+                self.assertEqual(self.cloud.connection.inserts, [])
+                self.assertEqual(self.cloud.connection.source_state, "processing")
+
+    def test_image_without_region_never_falls_back_to_page(self):
+        from dataclasses import replace
+        with self.assertRaisesRegex(DocumentUnderstandingError, "IMAGE_REGION_INVALID"):
+            self.index.index_result(self.context, replace(ready_result(), lineage={"source_format": "image"}))
+        self.assertEqual(self.cloud.connection.inserts, [])
+
     def setUp(self) -> None:
         self.context = DocumentProcessingContext(
             "tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1",

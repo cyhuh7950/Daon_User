@@ -28,6 +28,7 @@ class IndexedEvidenceChunk:
     evidence_span_id: str
     score: float = 0.0
     locator_kind: str = "page"
+    locator_value: str | None = None
 
 
 class PostgresDocumentIndex:
@@ -127,10 +128,30 @@ class PostgresDocumentIndex:
                 "evidence_kind": "parser_page_validated_semantic_fact",
             })
         text_source = result.lineage.get("source_format") in {"txt", "md", "csv"}
+        image_source = result.lineage.get("source_format") == "image"
+        if image_source:
+            from .image_document_understanding import validate_image_region
+            if len(result.parser.regions) != len(result.semantic.key_facts):
+                raise DocumentUnderstandingError("IMAGE_REGION_INVALID", status=409)
+            chunks = []
+            for ordinal, fact in enumerate(result.semantic.key_facts, start=1):
+                matches = [r for r in result.parser.regions if r.get("text") == fact]
+                if len(matches) != 1:
+                    raise DocumentUnderstandingError("IMAGE_REGION_INVALID", status=409)
+                value = matches[0].get("value")
+                validate_image_region(value)
+                chunk_id = self._opaque_id("chunk", result.source_version_id, str(ordinal), fact)
+                chunks.append({"chunk_id": chunk_id, "source_id": result.source_id,
+                    "source_version_id": result.source_version_id, "page": 1, "text": fact,
+                    "evidence_span_id": self._opaque_id("span", chunk_id, value),
+                    "evidence_kind": "image_region_fact", "locator_value": value})
+            all_facts_located = True
         if text_source:
             for chunk in chunks:
                 chunk["evidence_kind"] = "text_source_verbatim_fact"
         strategy = "text_llm_facts_with_original_validation" if text_source else "vision_llm_facts_with_parser_page_validation"
+        if image_source:
+            strategy = "native_image_facts_with_ocr_region_validation"
         if not all_facts_located:
             if text_source:
                 raise DocumentUnderstandingError("TEXT_UNDERSTANDING_UNGROUNDED", status=409)
@@ -171,6 +192,26 @@ class PostgresDocumentIndex:
                     or semantic_payload.get("key_facts") != list(result.semantic.key_facts)
                 ):
                     raise DocumentUnderstandingError("UNDERSTANDING_RESULT_MISMATCH", status=409)
+                canonical_lineage = understanding_payload.get("lineage")
+                if image_source or isinstance(canonical_lineage, dict) and canonical_lineage.get("source_format") == "image":
+                    parser_payload = understanding_payload.get("parser_validation")
+                    if (
+                        not image_source
+                        or understanding_payload.get("source_version_id") != result.source_version_id
+                        or not isinstance(parser_payload, dict)
+                        or parser_payload.get("regions") != list(result.parser.regions)
+                        or not isinstance(canonical_lineage, dict)
+                        or canonical_lineage != dict(result.lineage)
+                        or not re.fullmatch(r"[0-9a-f]{64}", str(result.lineage.get("source_digest", "")))
+                        or result.lineage.get("exif_orientation") not in tuple(map(str, range(1, 9)))
+                    ):
+                        raise DocumentUnderstandingError("UNDERSTANDING_RESULT_MISMATCH", status=409)
+                    for region in result.parser.regions:
+                        coordinates = validate_image_region(region.get("value"))
+                        if (str(coordinates[4]), str(coordinates[5])) != (
+                            result.lineage.get("image_width"), result.lineage.get("image_height"),
+                        ):
+                            raise DocumentUnderstandingError("UNDERSTANDING_RESULT_MISMATCH", status=409)
                 understanding_result_id = str(understanding_row[0])
                 index_version_id = self._opaque_id(
                     "iv", result.source_version_id, understanding_result_id,
@@ -208,6 +249,8 @@ class PostgresDocumentIndex:
                         "text": chunk["text"],
                         "kind": chunk["evidence_kind"],
                     }
+                    if image_source:
+                        evidence_payload["locator"] = {"kind": "image_region", "value": chunk["locator_value"]}
                     evidence_text, evidence_digest = self._snapshot(evidence_payload)
                     connection.execute(
                         "INSERT INTO evidence_spans "
@@ -271,11 +314,18 @@ class PostgresDocumentIndex:
                 overlap = query_tokens.intersection(self._tokens(str(raw.get("text", ""))))
                 if not overlap:
                     continue
+                image_region = raw.get("evidence_kind") == "image_region_fact"
+                if image_region:
+                    from .image_document_understanding import validate_image_region
+                    validate_image_region(raw.get("locator_value"))
+                    if raw.get("source_id") != source_id:
+                        raise DocumentUnderstandingError("DOCUMENT_INDEX_SNAPSHOT_INVALID", status=409)
                 matches.append(IndexedEvidenceChunk(
                     str(raw["chunk_id"]), source_id, source_version_id,
                     int(raw["page"]), str(raw["text"]), str(raw["evidence_span_id"]),
                     len(overlap) / len(query_tokens),
-                    "section" if raw.get("evidence_kind") == "text_source_verbatim_fact" else "page",
+                    "image_region" if image_region else "section" if raw.get("evidence_kind") == "text_source_verbatim_fact" else "page",
+                    str(raw["locator_value"]) if image_region else None,
                 ))
             return tuple(sorted(
                 matches, key=lambda item: (-item.score, item.page, item.chunk_id),

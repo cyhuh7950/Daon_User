@@ -71,10 +71,14 @@ class FakeKnowledgePackages:
 class FakeCitationContent:
     def __init__(self) -> None:
         self.text_mode = False
+        self.image_mode = False
 
     def read_citation_content(self, context, citation_id):  # type: ignore[no-untyped-def]
         if citation_id != "citation-cp3":
             raise AssertionError(citation_id)
+        if self.image_mode:
+            from test_image_document_understanding import image_bytes
+            return CitationContent("source-cp3", "source-version-cp3", "qa.png", image_bytes(), "image/png"), {"kind": "image_region", "value": "5,7,80,20,120,60"}
         if self.text_mode:
             return CitationContent(
                 "source-knowledge", "version-knowledge", "approved-knowledge.txt",
@@ -396,6 +400,18 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.text, "승인된 Daon 일반 텍스트 지식")
         self.assertEqual(response.headers["content-type"], "text/plain; charset=utf-8")
         self.assertEqual(response.headers["x-citation-locator-kind"], "section")
+
+    async def test_image_citation_returns_inline_original_and_exact_region_header(self) -> None:
+        self.dependencies.citation_content_repository.image_mode = True
+        from test_image_document_understanding import image_bytes
+        with self._authenticated():
+            response = await self.client.get("/api/v1/workspaces/workspace-001/citations/citation-cp3/content?notebook_id=notebook-001", cookies={WEB_SESSION_COOKIE: "opaque-session"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, image_bytes())
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(response.headers["x-citation-region"], "5,7,80,20,120,60")
+        self.assertEqual(response.headers["x-citation-locator-kind"], "image_region")
+        self.assertNotIn("x-citation-page", response.headers)
 
 
 if __name__ == "__main__":

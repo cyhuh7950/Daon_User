@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Mapping, Protocol, Sequence
@@ -162,6 +163,7 @@ class _BaseAdapter:
         url: str,
         headers: Mapping[str, str],
         body: Mapping[str, object] | None = None,
+        *, timeout_seconds: float = _TIMEOUT_SECONDS,
     ) -> object:
         try:
             response = self._transport.request(
@@ -169,7 +171,7 @@ class _BaseAdapter:
                 url,
                 headers,
                 body,
-                _TIMEOUT_SECONDS,
+                timeout_seconds,
                 follow_redirects=False,
             )
         except AdapterError:
@@ -214,7 +216,31 @@ class OllamaAdapter(_BaseAdapter):
         credential: str | bytes | None,
     ) -> tuple[DiscoveredModel, ...]:
         base = self._validate_connection(connection)
+        # Include tags in the existing five-second discovery budget so optional
+        # metadata cannot outlive the normal Provider/BFF request boundary.
+        deadline = time.monotonic() + _TIMEOUT_SECONDS
         payload = self._request("GET", _append_path(base, "/api/tags"), {})
+        # Tags without a real digest preserve the legacy text-only catalog.
+        # Vision is registered only from show metadata, never from a name.
+        if isinstance(payload, dict) and isinstance(payload.get("models"), list):
+            rows = []
+            show_count = 0
+            for raw in payload["models"]:
+                row = dict(raw) if isinstance(raw, dict) else raw
+                if (isinstance(row, dict) and isinstance(row.get("digest"), str)
+                        and len(row["digest"].removeprefix("sha256:")) == 64
+                        and not any(row.get(k) for k in ("remote_host", "remote_model", "remote", "cloud"))
+                        and show_count < 8):
+                    name = row.get("name") or row.get("model")
+                    remaining = deadline - time.monotonic()
+                    if isinstance(name, str) and remaining > 0:
+                        show_count += 1
+                        try:
+                            row["native_metadata"] = self._request("POST", _append_path(base, "/api/show"), {}, {"model": name}, timeout_seconds=min(_TIMEOUT_SECONDS, remaining))
+                        except AdapterError:
+                            pass  # unavailable metadata never enables image execution
+                rows.append(row)
+            payload = {**payload, "models": rows}
         try:
             return ProviderCatalog.from_payload(connection.connection_id, self.provider_code, payload)
         except ProviderCatalogError as error:
