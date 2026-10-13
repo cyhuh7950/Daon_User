@@ -178,6 +178,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   const [revisionContent, setRevisionContent] = useState("");
   const [changeReason, setChangeReason] = useState("");
   const [knowledgeNotice, setKnowledgeNotice] = useState(null);
+  const [savedRevision, setSavedRevision] = useState(null);
   const [stepUp, setStepUp] = useState(null);
   const [password, setPassword] = useState("");
   const stepUpRef = useRef(null);
@@ -196,7 +197,9 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   }, [adapter]);
   const selected = OUTPUT_TYPES.find((item) => item.id === view.selectedOutputType);
   const selectedOutput = view.outputs.find((output) => output.studio_output_id === view.selectedOutputId) ?? null;
-  const generationState = view.pending ? "pending" : view.safeError ? "failed" : selectedOutput ? "completed" : "idle";
+  const revisionSaved = savedRevision?.outputId === selectedOutput?.studio_output_id
+    && savedRevision?.versionId === selectedOutput?.output_version_id && Boolean(savedRevision);
+  const generationState = view.pending ? "pending" : revisionSaved ? "completed" : view.safeError ? "failed" : selectedOutput ? "completed" : "idle";
   const setField = (field, value) => setView((current) => updateGenerationSettings(current, { [field]: value }));
   const openOutput = async (output) => {
     cancelStepUp();
@@ -253,10 +256,13 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   }));
   const revise = async (revisionType = "user_edit") => {
     if (!selectedOutput || !adapter?.createStudioVersion || !revisionContent.trim() || !changeReason.trim()) return;
+    const outputId = selectedOutput.studio_output_id;
     cancelStepUp();
+    setSavedRevision(null);
     setView((current) => ({ ...current, pending: true, safeError: null }));
+    let version;
     try {
-      const version = await adapter.createStudioVersion(selectedOutput.studio_output_id, {
+      version = await adapter.createStudioVersion(outputId, {
         previous_version_id: selectedOutput.output_version_id, revision_type: revisionType,
         change_reason: changeReason, content: revisionContent,
         ...(revisionType === "settings_change" ? { settings: {
@@ -266,11 +272,34 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
           review_condition: view.settings.reviewCondition,
         } } : {}),
       });
-      setView((current) => ({ ...current, outputs: current.outputs.map((output) => output.studio_output_id === current.selectedOutputId ? mergeStudioVersion(output, { ...version, approval_required: true }) : output) }));
-      setRevisionContent(""); setChangeReason("");
-      setView((current) => ({ ...current, pending: false }));
     } catch (error) {
       setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_VERSION_FAILED" }));
+      return;
+    }
+    // The write succeeded. Keep its receipt even if the canonical read fails;
+    // an old ordinal/history must not describe this new version.
+    setView((current) => ({ ...current, outputs: current.outputs.map((output) => {
+      if (output.studio_output_id !== outputId) return output;
+      const saved = mergeStudioVersion(output, { ...version, approval_required: true });
+      delete saved.content_version; delete saved.version; delete saved.versions;
+      return saved;
+    }) }));
+    setSavedRevision({ outputId, versionId: version.output_version_id });
+    setRevisionContent(""); setChangeReason("");
+    if (!adapter.listStudioVersions) {
+      setView((current) => ({ ...current, pending: false }));
+      return;
+    }
+    try {
+      const versions = await adapter.listStudioVersions(outputId);
+      const canonical = versions.find((item) => item.output_version_id === version.output_version_id);
+      if (!canonical) throw new Error("STUDIO_LIST_FAILED");
+      setView((current) => ({ ...current, pending: false, outputs: current.outputs.map((output) =>
+        output.studio_output_id === outputId && output.output_version_id === version.output_version_id
+          ? { ...mergeStudioVersion(output, canonical), version: canonical, versions }
+          : output) }));
+    } catch {
+      setView((current) => ({ ...current, pending: false, safeError: "STUDIO_LIST_FAILED" }));
     }
   };
   const performAction = async (action, payload, target, token) => {
@@ -349,7 +378,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
         <button type="button" disabled={view.pending || password.length < 12} onClick={() => void confirmStepUp()}>추가 인증 확인</button>
         <button type="button" onClick={cancelStepUp}>추가 인증 취소</button>
       </section> : null}
-      {view.safeError && !view.selectedOutputType ? <p className="inline-alert" role="alert">{safeStudioErrorMessage(view.safeError)}</p> : null}
+      {view.safeError && (!view.selectedOutputType || selectedOutput) ? <p className="inline-alert" role="alert">{safeStudioErrorMessage(view.safeError)}</p> : null}
       {!view.selectedOutputType ? <div className="studio-home" data-studio-view="home">
         <div className="studio-type-tiles" data-columns="3" aria-label="산출물 유형">
           {OUTPUT_TYPES.map((type) => <button className={`studio-type-tile tile-${TYPE_ICONS[type.id]}`} key={type.id} type="button" onClick={() => setView(selectOutputType(view, type.id))}>{type.label}</button>)}
@@ -398,6 +427,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
         <div className="studio-config-library"><span className="section-kicker">LIBRARY</span><h3>저장된 산출물</h3><small>{view.outputs.length ? `${view.outputs.length}개의 산출물이 저장되어 있습니다.` : "생성 완료 후 여기에 저장됩니다."}</small></div>
       </section>}
       {selectedOutput ? <section className="studio-output-detail" aria-label="선택 산출물 상세">
+        {revisionSaved ? <p role="status">새 Version이 저장되었습니다. ({savedRevision.versionId})</p> : null}
         <header className="studio-output-detail-header"><div><span className="section-kicker">{outputTypeLabel(selectedOutput.output_type)}</span><h3>{selectedOutput.title}</h3></div><span className={`output-status status-${selectedOutput.status ?? "saved"}`}>{outputStatusLabel(selectedOutput.status)}</span></header>
         <StudioOutputContent output={selectedOutput} />
         <p>Version {selectedOutput.content_version ?? selectedOutput.output_version_id} · 근거 {Array.isArray(selectedOutput.citations) ? selectedOutput.citations.length : selectedOutput.citations ?? 0} · 설정 {selectedOutput.settings_snapshot_id ?? "-"}</p>

@@ -4,7 +4,105 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
-import { createStudioAction, createStudioVersion } from "../../apps/web/lib/product-workspace-api.js";
+import { createStudioAction, createStudioVersion, listStudioVersions } from "../../apps/web/lib/product-workspace-api.js";
+
+test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복원하고 저장/조회 실패를 분리한다", async (t) => {
+  const rootPath = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(rootPath, ".product-studio-version-refresh-"));
+  try {
+    for (const scenario of ["success", "read-failure", "invalid-region", "missing-created", "write-failure", "no-getter", "selection-change", "read-selection-change"]) {
+      await t.test(scenario, async () => {
+        const dom = installMinimalDom(); let reactRoot;
+        try {
+          const { createElement, act } = await import("react"); const { createRoot } = await import("react-dom/client");
+          const { build } = await import("vite");
+          await build({ configFile: false, logLevel: "silent", root: rootPath, build: { outDir: output, emptyOutDir: false, lib: { entry: path.join(rootPath, "packages/ui/src/product-studio-pane.jsx"), formats: ["es"], fileName: "product-studio" }, rollupOptions: { external: ["react", "react-dom", "react-dom/client"] } } });
+          const entry = (await readdir(output)).find((name) => name.startsWith("product-studio") && /\.m?js$/u.test(name));
+          const { ProductStudioPane } = await import(`${pathToFileURL(path.join(output, entry)).href}?case=${scenario}`);
+          const citations = [
+            { citation_id: "citation-image", source_version_id: "source-version-image", evidence_span_id: "span-image", origin: "raw_source", locator: { kind: "image_region", value: "10,20,30,40,100,200" } },
+            { citation_id: "citation-page", source_version_id: "source-version-pdf", evidence_span_id: "span-page", origin: "raw_source", locator: { kind: "page", value: "2" } },
+            { citation_id: "citation-section", source_version_id: "source-version-text", evidence_span_id: "span-section", origin: "daon_knowledge", locator: { kind: "section", value: "핵심 요약" } },
+          ];
+          const v1 = { output_version_id: "version-1", content_version: 1, previous_version_id: null, status: "draft", content: { body: "이전 본문" }, revision_type: "initial", change_reason: "최초", settings_snapshot_id: "settings-1", citations, review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null, output_format: "pdf" };
+          const v2 = { ...v1, output_version_id: "version-2", content_version: 2, previous_version_id: "version-1", content: { body: "정식 새 본문" }, revision_type: "user_edit", change_reason: "편집 반영", settings_snapshot_id: "settings-2" };
+          // A newer history head must not replace the ID returned by this POST.
+          const v3 = { ...v2, output_version_id: "version-3", content_version: 3, previous_version_id: "version-2", content: { body: "다른 요청 본문" } };
+          const other = { ...v1, output_version_id: "version-other", content: { body: "다른 산출물 본문" }, citations: [] };
+          const calls = []; let releaseWrite;
+          const waitForWrite = new Promise((resolve) => { releaseWrite = resolve; });
+          const fetchImpl = async (url, init) => {
+            calls.push({ url, method: init.method, body: init.body ? JSON.parse(init.body) : null });
+            if (init.method === "POST") {
+              if (scenario === "write-failure") return Response.json({ error: { code: "STUDIO_VERSION_FAILED" } }, { status: 503 });
+              if (scenario === "selection-change") await waitForWrite;
+              return Response.json({ data: { output_version_id: "version-2", status: "draft", content: "편집 입력", settings_snapshot_id: "settings-2" }, meta: { trace_id: "trace-1" } }, { status: 201 });
+            }
+            if (url.includes("/output-other/")) return Response.json({ data: { output_id: "output-other", versions: [other] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
+            if (scenario === "read-failure") return Response.json({ error: { code: "STUDIO_LIST_FAILED" } }, { status: 503 });
+            if (scenario === "read-selection-change") await waitForWrite;
+            if (scenario === "invalid-region") return Response.json({ data: { output_id: "output-1", versions: [{ ...v2, citations: [{ ...citations[0], locator: { kind: "image_region", value: "90,20,30,40,100,200" } }] }] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
+            return Response.json({ data: { output_id: "output-1", versions: scenario === "missing-created" ? [v1] : [v3, v2, v1] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
+          };
+          const adapter = {
+            createStudioVersion: (id, input) => createStudioVersion("workspace-1", id, input, { notebookId: "notebook-1", fetchImpl, idempotencyKey: "revision-key-0001" }),
+            ...(scenario === "no-getter" ? {} : { listStudioVersions: (id) => listStudioVersions("workspace-1", id, { notebookId: "notebook-1", fetchImpl }) }),
+          };
+          const state = { status: "ready", workspaceId: "workspace-1", grounded: null, locks: [], selectedOutputType: "evidence_report", settings: {}, settingsConfirmed: false, outputs: [
+            { ...v1, studio_output_id: "output-1", title: "대상 보고서", output_type: "evidence_report", version: v1, versions: [v1] },
+            { ...other, studio_output_id: "output-other", title: "다른 보고서", output_type: "evidence_report" },
+          ], selectedOutputId: "output-1", pending: false, safeError: null };
+          const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
+          await act(async () => { reactRoot.render(createElement(ProductStudioPane, { state, adapter })); });
+          const change = (labelText, tag, value) => {
+            const label = findElements(container, (node) => node.tagName === "LABEL" && node.textContent.includes(labelText))[0];
+            const input = findElements(label, (node) => node.tagName === tag)[0];
+            input[Object.keys(input).find((key) => key.startsWith("__reactProps"))].onChange({ currentTarget: { value } });
+          };
+          await act(async () => { change("변경 사유", "INPUT", "편집 반영"); change("편집 내용", "TEXTAREA", "편집 입력"); });
+          await act(async () => { buttonByText(container, "편집 새 Version").dispatchEvent(new MinimalEvent("click")); });
+          if (["selection-change", "read-selection-change"].includes(scenario)) {
+            await act(async () => { buttonByText(container, "뒤로").dispatchEvent(new MinimalEvent("click")); });
+            await act(async () => { buttonByText(container, "다른 보고서").dispatchEvent(new MinimalEvent("click")); });
+            await act(async () => { releaseWrite(); });
+          }
+          const detail = findElements(container, (node) => node.getAttribute?.("aria-label") === "선택 산출물 상세")[0];
+          const posts = calls.filter((call) => call.method === "POST");
+          assert.equal(posts.length, 1);
+          assert.equal(posts[0].body.previous_version_id, "version-1");
+          if (scenario === "write-failure") {
+            assert.equal(calls.length, 1); assert.match(detail.textContent, /Version 1 · 근거 3 · 설정 settings-1/);
+            assert.doesNotMatch(detail.textContent, /새 Version이 저장되었습니다/);
+            assert.match(container.textContent, /새 버전을 저장하지 못했습니다/);
+          } else if (["selection-change", "read-selection-change"].includes(scenario)) {
+            assert.match(detail.textContent, /다른 산출물 본문/); assert.doesNotMatch(detail.textContent, /정식 새 본문|10,20,30,40,100,200/);
+            assert.doesNotMatch(detail.textContent, /새 Version이 저장되었습니다/);
+            const library = findElements(container, (node) => node.getAttribute?.("class") === "studio-library")[0];
+            const row = findElements(library, (node) => node.tagName === "LI" && node.textContent.includes("대상 보고서"))[0];
+            assert.match(row.textContent, /Version 2/);
+          } else if (scenario === "success") {
+            assert.match(detail.textContent, /새 Version이 저장되었습니다. \(version-2\)/);
+            assert.match(detail.textContent, /Version 2 · 근거 3 · 설정 settings-2/); assert.match(detail.textContent, /정식 새 본문/);
+            assert.doesNotMatch(detail.textContent, /다른 요청 본문/);
+            const history = findElements(detail, (node) => node.getAttribute?.("aria-label") === "Version 이력")[0];
+            for (const number of [3, 2, 1]) assert.match(history.textContent, new RegExp(`Version ${number}`));
+            for (const locator of ["10,20,30,40,100,200", "2쪽", "핵심 요약"]) assert.ok(detail.textContent.includes(locator));
+          } else {
+            assert.match(detail.textContent, /새 Version이 저장되었습니다. \(version-2\)/);
+            assert.match(detail.textContent, /Version version-2 · 근거 3 · 설정 settings-2/);
+            assert.equal(findElements(detail, (node) => node.getAttribute?.("aria-label") === "Version 이력").length, 0);
+            if (scenario !== "no-getter") assert.match(container.textContent, /저장된 산출물을 불러오지 못했습니다/);
+            assert.doesNotMatch(container.textContent, /새 버전을 저장하지 못했습니다/);
+            assert.doesNotMatch(container.textContent, /생성을 완료하지 못했습니다/);
+            const contentLabel = findElements(container, (node) => node.tagName === "LABEL" && node.textContent.includes("편집 내용"))[0];
+            assert.equal(findElements(contentLabel, (node) => node.tagName === "TEXTAREA")[0].value, "");
+          }
+          if (!["write-failure", "no-getter"].includes(scenario)) assert.equal(calls.filter((call) => call.method === "GET" && call.url.includes("/output-1/")).length, 1);
+        } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); }
+      });
+    }
+  } finally { await rm(output, { recursive: true, force: true }); }
+});
 
 test("생성 클릭은 queued·leased·generating 동안 진행을 유지하고 completed 산출물을 표시한다", async () => {
   const rootPath = path.resolve(import.meta.dirname, "../.."); const output = await mkdtemp(path.join(rootPath, ".product-studio-generating-react-")); const dom = installMinimalDom(); let reactRoot;
