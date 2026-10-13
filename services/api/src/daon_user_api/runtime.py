@@ -3896,12 +3896,23 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "delivery": Action.DELIVER, "knowledge_registration": Action.KNOWLEDGE_REGISTER,
         }[action_name]
         principal = _principal(request, dependencies)
-        dependencies.authorization_service.authorize_action(
+        grant = dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=body.workspace_id, action=permission_action,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
         if studio_workspace_service is None:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        if action_name in {"approval", "delivery", "knowledge_registration"}:
+            access_token, _ = _credential(request)
+            dependencies.identity_service.consume_step_up(
+                step_up_authorization=body.step_up_authorization,
+                access_token=access_token,
+                action_group=grant.required_step_up_action or "final_approval_or_knowledge_registration",
+                target_id=body.output_version_id,
+                policy_version=dependencies.settings.policy_version,
+                trace_id=request.state.trace_id,
+                operation=f"studio.{action_name}", idempotency_key=idempotency_key,
+            )
         result, replayed = await asyncio.to_thread(
             studio_workspace_service.action,
             _product_studio_context(principal, body.workspace_id, request, dependencies, body.notebook_id), action_name,

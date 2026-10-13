@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   OUTPUT_TYPES, canSubmitGeneration, confirmGenerationSettings, createStudioGenerationInput,
   mergeStudioVersion, selectOutputType, updateGenerationSettings,
@@ -33,6 +33,8 @@ function safeStudioErrorMessage(code) {
     STUDIO_EXPORT_FAILED: "파일을 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.",
     STUDIO_OUTPUT_UNAVAILABLE: "현재 연결된 provider에서 이 산출물을 지원하지 않습니다.",
     STUDIO_CREATE_TIMEOUT: "산출물 생성이 지연되고 있습니다. Library에서 상태를 다시 확인해 주세요.",
+    STEP_UP_REQUIRED: "추가 인증을 완료하지 못했습니다. 비밀번호를 확인한 뒤 다시 시도해 주세요.",
+    STUDIO_STEP_UP_UNAVAILABLE: "추가 인증 연결을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
   })[code] ?? "요청을 안전하게 완료하지 못했습니다. 운영상태에서 연결 상태를 확인해 주세요.";
 }
 
@@ -67,6 +69,15 @@ function draftReviewLabel(value) {
 
 function StudioOutputContent({ output }) {
   const content = output.content ?? output.version?.content;
+  if (output.output_type === "evidence_report" && content && typeof content === "object" && !Array.isArray(content)) {
+    return <section className="studio-document-result" aria-label="근거 보고서 결과">
+      <h4>근거 보고서 결과</h4>
+      <div className="document-section-list">{[["요약", content.summary], ["본문", content.body], ["결론", content.conclusion]].map(([label, text]) =>
+        text ? <article key={label}><div><h5>{label}</h5><p>{studioContentText(text)}</p></div></article> : null
+      )}</div>
+      {Array.isArray(content.warnings) && content.warnings.length ? <p className="document-warning">확인 필요 · {content.warnings.join(", ")}</p> : null}
+    </section>;
+  }
   if (output.output_type === "compliance_checklist" && Array.isArray(content?.items)) {
     return <section className="studio-compliance-result" aria-label="제약·준수 점검 결과">
       <h4>제약·준수 점검 결과</h4>
@@ -166,11 +177,28 @@ export function ProductStudioPane({ state, adapter }) {
   const [view, setView] = useState(state);
   const [revisionContent, setRevisionContent] = useState("");
   const [changeReason, setChangeReason] = useState("");
+  const [stepUp, setStepUp] = useState(null);
+  const [password, setPassword] = useState("");
+  const stepUpRef = useRef(null);
+  const cancelStepUp = () => {
+    stepUpRef.current = null; setStepUp(null); setPassword("");
+    setView((current) => ({ ...current, pending: false }));
+  };
+  useEffect(() => {
+    stepUpRef.current = null; setStepUp(null); setPassword("");
+    return () => {
+      if (stepUpRef.current) {
+        stepUpRef.current = null;
+        setView((current) => ({ ...current, pending: false }));
+      }
+    };
+  }, [adapter]);
   const selected = OUTPUT_TYPES.find((item) => item.id === view.selectedOutputType);
   const selectedOutput = view.outputs.find((output) => output.studio_output_id === view.selectedOutputId) ?? null;
   const generationState = view.pending ? "pending" : view.safeError ? "failed" : selectedOutput ? "completed" : "idle";
   const setField = (field, value) => setView((current) => updateGenerationSettings(current, { [field]: value }));
   const openOutput = async (output) => {
+    cancelStepUp();
     setView((current) => ({ ...current, selectedOutputId: output.studio_output_id, pending: Boolean(adapter?.listStudioVersions), safeError: null }));
     if (!adapter?.listStudioVersions) return;
     try {
@@ -200,7 +228,15 @@ export function ProductStudioPane({ state, adapter }) {
           if (["queued", "leased", "generating"].includes(currentJob.status)) continue;
           if (currentJob.status === "unavailable") throw new Error(currentJob.error_code ?? "STUDIO_OUTPUT_UNAVAILABLE");
           if (currentJob.status !== "completed" || !currentJob.output) throw new Error(currentJob.error_code ?? "STUDIO_CREATE_FAILED");
-          output = { ...currentJob.output, studio_output_id: currentJob.studio_output_id, output_version_id: currentJob.output_version_id, status: "draft" };
+          output = {
+            ...currentJob.output, output_type: currentJob.output_type, title: currentJob.title,
+            studio_output_id: currentJob.studio_output_id, output_version_id: currentJob.output_version_id,
+            source_version_ids: Array.isArray(currentJob.output.source_version_ids) && currentJob.output.source_version_ids.length
+              ? currentJob.output.source_version_ids
+              : Array.isArray(currentJob.lineage?.source_version_ids) && currentJob.lineage.source_version_ids.length
+                ? currentJob.lineage.source_version_ids
+                : [...new Set((currentJob.output.citations ?? []).map((citation) => citation.source_version_id).filter(Boolean))],
+          };
           break;
         }
         if (output === job) throw new Error("STUDIO_CREATE_TIMEOUT");
@@ -210,12 +246,13 @@ export function ProductStudioPane({ state, adapter }) {
       setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_CREATE_FAILED" }));
     }
   };
-  const updateSelectedOutput = (patch) => setView((current) => ({
+  const updateSelectedOutput = (patch, outputId = selectedOutput?.studio_output_id) => setView((current) => ({
     ...current,
-    outputs: current.outputs.map((output) => output.studio_output_id === current.selectedOutputId ? { ...output, ...patch } : output),
+    outputs: current.outputs.map((output) => output.studio_output_id === outputId ? { ...output, ...patch } : output),
   }));
   const revise = async (revisionType = "user_edit") => {
     if (!selectedOutput || !adapter?.createStudioVersion || !revisionContent.trim() || !changeReason.trim()) return;
+    cancelStepUp();
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
       const version = await adapter.createStudioVersion(selectedOutput.studio_output_id, {
@@ -235,21 +272,53 @@ export function ProductStudioPane({ state, adapter }) {
       setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_VERSION_FAILED" }));
     }
   };
-  const act = async (action, payload = {}) => {
-    if (!selectedOutput || !adapter?.createStudioAction) return;
+  const performAction = async (action, payload, target, token) => {
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
-      const result = await adapter.createStudioAction(action, { output_version_id: selectedOutput.output_version_id, ...payload });
+      const result = await adapter.createStudioAction(action, {
+        output_version_id: target.output_version_id, ...payload,
+        ...(token ? { step_up_authorization: token } : {}),
+      });
       const linkField = { reviews: "review_request_id", "approval-requests": "approval_request_id", approvals: "approval_id" }[action];
       const lifecycleStatus = {
         reviews: "in_review", "approval-requests": "in_review",
         approvals: payload.decision === "rejected" ? "revision_requested" : "approved",
         deliveries: "delivered",
       }[action];
-      updateSelectedOutput({ ...(linkField ? { [linkField]: result.record_id } : {}), status: lifecycleStatus ?? selectedOutput.status });
+      updateSelectedOutput({ ...(linkField ? { [linkField]: result.record_id } : {}), status: lifecycleStatus ?? target.status }, target.studio_output_id);
       setView((current) => ({ ...current, pending: false }));
     } catch (error) {
       setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_ACTION_FAILED" }));
+    }
+  };
+  const act = async (action, payload = {}) => {
+    if (!selectedOutput || !adapter?.createStudioAction || view.pending) return;
+    if (["approvals", "deliveries", "knowledge-registrations"].includes(action)) {
+      const challenge = { action, payload: { ...payload }, target: { ...selectedOutput }, issuing: false };
+      stepUpRef.current = challenge; setStepUp(challenge); setPassword("");
+      setView((current) => ({ ...current, safeError: null }));
+      return;
+    }
+    cancelStepUp();
+    await performAction(action, payload, selectedOutput);
+  };
+  const confirmStepUp = async () => {
+    const challenge = stepUpRef.current;
+    if (!challenge || challenge.issuing || password.length < 12) return;
+    const currentPassword = password;
+    setPassword(""); challenge.issuing = true;
+    setView((current) => ({ ...current, pending: true, safeError: null }));
+    try {
+      if (!adapter?.issueStudioStepUp) throw new Error("STUDIO_STEP_UP_UNAVAILABLE");
+      const token = await adapter.issueStudioStepUp("final_approval_or_knowledge_registration", challenge.target.output_version_id, currentPassword);
+      if (stepUpRef.current !== challenge) return;
+      if (typeof token !== "string" || !token) throw new Error("STEP_UP_REQUIRED");
+      stepUpRef.current = null; setStepUp(null);
+      await performAction(challenge.action, challenge.payload, challenge.target, token);
+    } catch (error) {
+      if (stepUpRef.current !== challenge) return;
+      challenge.issuing = false;
+      setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STEP_UP_REQUIRED" }));
     }
   };
   const download = async () => {
@@ -266,6 +335,13 @@ export function ProductStudioPane({ state, adapter }) {
   };
   return (
     <div className="product-studio" data-studio-state={view.status}>
+      {stepUp ? <section role="dialog" aria-label="Studio 추가 인증">
+        <p>선택한 Version의 민감 작업을 위해 추가 인증이 필요합니다.</p>
+        {view.safeError ? <p role="alert">{safeStudioErrorMessage(view.safeError)}</p> : null}
+        <label>추가 인증 비밀번호<input type="password" autoComplete="current-password" maxLength={1024} value={password} disabled={view.pending} onChange={(event) => setPassword(event.currentTarget.value)} /></label>
+        <button type="button" disabled={view.pending || password.length < 12} onClick={() => void confirmStepUp()}>추가 인증 확인</button>
+        <button type="button" onClick={cancelStepUp}>추가 인증 취소</button>
+      </section> : null}
       {view.safeError && !view.selectedOutputType ? <p className="inline-alert" role="alert">{safeStudioErrorMessage(view.safeError)}</p> : null}
       {!view.selectedOutputType ? <div className="studio-home" data-studio-view="home">
         <div className="studio-type-tiles" data-columns="3" aria-label="산출물 유형">

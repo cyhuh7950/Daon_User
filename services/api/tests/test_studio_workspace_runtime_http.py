@@ -13,7 +13,7 @@ from daon_user_api.identity import IdentityError, IdentityPrincipal
 from daon_user_api.runtime import WEB_SESSION_COOKIE, RuntimeDependencies, RuntimeSettings, create_app
 from daon_user_api.studio_export import export_studio_output
 from daon_user_api.studio_workspace import StudioError
-from test_identity_support import POLICY_VERSION, TRACE_ID, create_service, identity_session_view
+from test_identity_support import POLICY_VERSION, TRACE_ID, create_service, identity_session_view, native_login, FakeVerifiedOidcProvider
 
 
 class FakeStudioWorkspace:
@@ -80,6 +80,7 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         authorization = AuthorizationService(repository=authorization_repository, audit_store=audit, clock=clock, identity_service=identity)
         self.identity = identity
+        self.clock = clock
         self.studio = FakeStudioWorkspace()
         self.dependencies = RuntimeDependencies(
             settings=RuntimeSettings.for_test(database_path=db_path, policy_version=POLICY_VERSION),
@@ -135,16 +136,109 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(exported.headers["x-content-type-options"], "nosniff")
         self.assertEqual(exported.headers["cache-control"], "no-store")
 
-    async def test_sensitive_action_uses_login_session_without_step_up(self):
-        with self.authenticated(), patch.object(self.identity, "consume_step_up") as consume:
-            delivered = await self.client.post(
-                "/api/v1/deliveries", cookies={WEB_SESSION_COOKIE: "opaque"},
-                headers={"Idempotency-Key": "delivery-key-0001"},
-                json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_version_id": "version-1", "approval_id": "approval-1", "recipient": "workspace-recipient"},
-            )
-        self.assertEqual(delivered.status_code, 201)
+    def sensitive_session(self):
+        credentials = native_login(self.identity)
+        self.dependencies.authorization_repository.bootstrap_workspace(
+            tenant_id=credentials.tenant_id, workspace_id="workspace-sensitive", owner_user_id=credentials.user_id,
+            owner_role=Role.PERSONAL_OWNER, workspace_kind="personal", data_area="cloud_sync",
+            cost_limit_cents=1000, now=self.clock(),
+        )
+        return credentials
+
+    def step_up(self, credentials, **changes):
+        return self.identity.issue_step_up(**{
+            "access_token": credentials.access_token, "action_group": "final_approval_or_knowledge_registration",
+            "target_id": "version-1", "policy_version": POLICY_VERSION, "trace_id": TRACE_ID, **changes,
+        }).authorization
+
+    async def sensitive_post(self, credentials, resource, token=None, key="sensitive-key-0001"):
+        body = {"workspace_id": "workspace-sensitive", "notebook_id": "notebook-001", "output_version_id": "version-1"}
+        if token is not None:
+            body["step_up_authorization"] = token
+        return await self.client.post(f"/api/v1/{resource}",
+            headers={"Authorization": f"Bearer {credentials.access_token}", "Idempotency-Key": key}, json=body)
+
+    async def test_sensitive_actions_reject_missing_step_up_before_studio_write(self):
+        credentials = self.sensitive_session()
+        for resource in ("approvals", "deliveries", "knowledge-registrations"):
+            response = await self.sensitive_post(credentials, resource)
+            self.assertEqual((response.status_code, response.json().get("error", {}).get("code")), (403, "STEP_UP_REQUIRED"))
+        self.assertEqual(self.studio.calls, [])
+
+    async def test_sensitive_step_up_binding_expiry_and_reuse_reject_before_write(self):
+        credentials = self.sensitive_session()
+        other = native_login(self.identity, FakeVerifiedOidcProvider(subject="other-step-up-actor"))
+        other_session = native_login(self.identity)
+        cases = [
+            (" ", "INVALID_INPUT", 400),
+            ("unknown-token", "STEP_UP_REQUIRED", 403),
+            (self.step_up(other), "STEP_UP_BINDING_DENIED", 403),
+            (self.step_up(other_session), "STEP_UP_BINDING_DENIED", 403),
+            (self.step_up(credentials, target_id="other-version"), "STEP_UP_BINDING_DENIED", 403),
+            (self.step_up(credentials, action_group="external_transfer"), "STEP_UP_BINDING_DENIED", 403),
+            (self.step_up(credentials, policy_version="other-policy"), "STEP_UP_BINDING_DENIED", 403),
+        ]
+        expired = self.step_up(credentials, ttl_seconds=30)
+        self.clock.advance(seconds=31)
+        cases.append((expired, "STEP_UP_EXPIRED", 403))
+        used = self.step_up(credentials)
+        self.identity.consume_step_up(step_up_authorization=used, access_token=credentials.access_token,
+            action_group="final_approval_or_knowledge_registration", target_id="version-1", policy_version=POLICY_VERSION,
+            trace_id=TRACE_ID, operation="studio.approval", idempotency_key="other-key-00001")
+        cases.append((used, "STEP_UP_REUSED", 403))
+        for token, code, status in cases:
+            for resource in ("approvals", "deliveries", "knowledge-registrations"):
+                with self.subTest(code=code, resource=resource):
+                    raw_errors = []
+                    consume = self.identity.consume_step_up
+                    def observe(**kwargs):
+                        try:
+                            return consume(**kwargs)
+                        except IdentityError as error:
+                            raw_errors.append(error.code)
+                            raise
+                    with patch.object(self.identity, "consume_step_up", side_effect=observe):
+                        response = await self.sensitive_post(credentials, resource, token)
+                    self.assertEqual(raw_errors, [code])
+                    public_code = code if code == "STEP_UP_REQUIRED" else "INVALID_REQUEST"
+                    self.assertEqual((response.status_code, response.json().get("error", {}).get("code")), (status, public_code))
+        self.assertEqual(self.studio.calls, [])
+
+    async def test_sensitive_valid_tokens_bind_operation_target_and_do_not_enter_payload(self):
+        credentials = self.sensitive_session()
+        for resource, action in (("approvals", "approval"), ("deliveries", "delivery"), ("knowledge-registrations", "knowledge_registration")):
+            token = self.step_up(credentials)
+            with patch.object(self.identity, "consume_step_up", wraps=self.identity.consume_step_up) as consume:
+                response = await self.sensitive_post(credentials, resource, token)
+            self.assertEqual(response.status_code, 201, response.text)
+            self.assertTrue(consume.called)
+            self.assertEqual(consume.call_args.kwargs["operation"], f"studio.{action}")
+            self.assertEqual(consume.call_args.kwargs["target_id"], "version-1")
+            self.assertNotIn("step_up_authorization", self.studio.calls[-1][2])
+
+    async def test_review_and_approval_request_do_not_consume_step_up(self):
+        credentials = self.sensitive_session()
+        with patch.object(self.identity, "consume_step_up", wraps=self.identity.consume_step_up) as consume:
+            for resource in ("reviews", "approval-requests"):
+                response = await self.sensitive_post(credentials, resource)
+                self.assertEqual(response.status_code, 201)
         self.assertFalse(consume.called)
-        self.assertTrue(any(call[0] == "delivery" for call in self.studio.calls))
+        self.assertEqual([call[0] for call in self.studio.calls], ["review", "approval_request"])
+
+    async def test_consumed_token_survives_write_failure_and_exact_repeat_but_not_new_key(self):
+        credentials = self.sensitive_session()
+        token = self.step_up(credentials)
+        result = {"record_id": "approval-1", "action": "approval", "output_version_id": "version-1"}
+        with patch.object(self.studio, "action", side_effect=[StudioError("STUDIO_DATABASE_UNAVAILABLE", 503), (result, False), (result, True), (result, False)]) as writer:
+            failed = await self.sensitive_post(credentials, "approvals", token)
+            success = await self.sensitive_post(credentials, "approvals", token)
+            replay = await self.sensitive_post(credentials, "approvals", token)
+            changed = await self.sensitive_post(credentials, "approvals", token, key="different-key-0001")
+        self.assertEqual((failed.status_code, success.status_code, replay.status_code, changed.status_code), (503, 201, 200, 403))
+        self.assertEqual(changed.json()["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(writer.call_count, 3)
+        used = [event for event in self.dependencies.audit_store.list(tenant_id=credentials.tenant_id).items if event.action == "identity.step_up.used"]
+        self.assertEqual(len(used), 1)
 
     async def test_missing_default_policy_is_public_fail_closed_409(self):
         with self.authenticated(), patch.object(

@@ -22,7 +22,7 @@ test("생성 클릭은 queued·leased·generating 동안 진행을 유지하고 
         poll += 1;
         if (poll === 3) { sawGenerating(); return { job_id: "job-1", status: "generating" }; }
         if (poll < 3) return { job_id: "job-1", status: poll === 1 ? "queued" : "leased" };
-        return { job_id: "job-1", status: "completed", studio_output_id: "output-1", output_version_id: "version-1", output: { output_type: "evidence_report", title: "생성된 보고서", content: { summary: "완성된 근거 요약" }, settings_snapshot_id: "settings-1" } };
+        return { job_id: "job-1", status: "completed", output_type: "evidence_report", title: "생성된 보고서", studio_output_id: "output-1", output_version_id: "version-1", lineage: { source_version_ids: [] }, output: { status: "approved", content: { summary: "완성된 근거 요약", body: "실제 보고서 본문", conclusion: "근거 결론", lineage: { request_id: "internal-reference" } }, citations: [{ source_version_id: "source-version-1" }, { source_version_id: "source-version-2" }], settings_snapshot_id: "settings-1" } };
       },
     };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
@@ -35,8 +35,14 @@ test("생성 클릭은 queued·leased·generating 동안 진행을 유지하고 
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
     assert.match(container.textContent, /생성된 보고서/);
     assert.match(container.textContent, /완성된 근거 요약/);
+    assert.match(container.textContent, /승인됨/);
+    assert.equal(findElements(container, (element) => element.getAttribute?.("aria-label") === "근거 보고서 결과").length, 1);
+    assert.match(container.textContent, /요약.*완성된 근거 요약.*본문.*실제 보고서 본문.*결론.*근거 결론/);
+    assert.doesNotMatch(container.textContent, /internal-reference/);
     assert.equal(findElements(container, (element) => element.getAttribute?.("data-generation-state") === "completed").length, 1);
     assert.doesNotMatch(container.textContent, /생성을 완료하지 못했습니다/);
+    await act(async () => { buttonByText(container, "뒤로").dispatchEvent(new MinimalEvent("click")); });
+    assert.match(container.textContent, /Source 2/);
   } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
 });
 
@@ -69,7 +75,12 @@ test("실제 React click은 저장 구조 산출물을 선택하고 검토·승�
     await act(async () => { buttonByText(container, "편집 새 Version").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     await act(async () => { buttonByText(container, "검토 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); }); await act(async () => { buttonByText(container, "승인 요청").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
     await act(async () => { buttonByText(container, "승인").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
-    assert.deepEqual(calls.map((item) => item[0]), ["version", "reviews", "approval-requests", "approvals"]);
+    assert.deepEqual(calls.map((item) => item[0]), ["version", "reviews", "approval-requests"]);
+    const passwordLabel = findElements(container, (node) => node.tagName === "LABEL" && node.textContent.includes("추가 인증 비밀번호"))[0];
+    const passwordInput = findElements(passwordLabel, (node) => node.tagName === "INPUT")[0];
+    await act(async () => { reactProps(passwordInput).onChange({ currentTarget: { value: "fixture password only" } }); });
+    await act(async () => { buttonByText(container, "추가 인증 확인").dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
+    assert.deepEqual(calls.map((item) => item[0]), ["version", "reviews", "approval-requests", "step-up", "approvals"]);
     assert.equal(requestKeys.length, 4);
     for (const key of requestKeys) assert.match(key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
   } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto); else delete globalThis.crypto; dom.restore(); await rm(output, { recursive: true, force: true }); }
