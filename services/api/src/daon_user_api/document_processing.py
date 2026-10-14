@@ -102,7 +102,7 @@ class DocumentProcessingRepository(Protocol):
 
     def start(
         self, context: DocumentProcessingContext, source_version_id: str,
-        *, enqueue: bool = False,
+        *, enqueue: bool = False, notebook_id: str | None = None,
     ) -> str: ...
 
     def complete(
@@ -142,7 +142,7 @@ class DocumentProcessingSubmissionService:
         if not isinstance(notebook_id, str) or _SAFE_ID.fullmatch(notebook_id) is None:
             raise DocumentUnderstandingError("DOCUMENT_PROCESSING_CONTEXT_INVALID")
         processing_run_id = self._repository.start(
-            context, source_version_id, enqueue=True,
+            context, source_version_id, enqueue=True, notebook_id=notebook_id,
         )
         return self._repository.get_status(context, processing_run_id, notebook_id=notebook_id)
 
@@ -265,7 +265,7 @@ class DocumentProcessingService:
         self._pptx_adapter = pptx_adapter
         if audio_adapter is None:
             from .audio_document_understanding import AudioDocumentAdapter, LocalBaseAsrTranscriptionPort
-            audio_adapter = AudioDocumentAdapter(LocalBaseAsrTranscriptionPort(), UrlLibDocumentUnderstandingTransport(), egress_guard=self._egress_guard)
+            audio_adapter = AudioDocumentAdapter(LocalBaseAsrTranscriptionPort(), UrlLibDocumentUnderstandingTransport(disable_environment_proxy=True), egress_guard=self._egress_guard)
         self._audio_adapter = audio_adapter
 
     def process(
@@ -291,7 +291,12 @@ class DocumentProcessingService:
         try:
             if audio_source_format(document.filename, document.content_type):
                 with self._model_resolver.resolve(context.model_context(), 'speech_to_text') as asr_model, self._model_resolver.resolve(context.model_context(), 'text_generation') as text_model:
-                    result = self._audio_adapter.understand(document, asr_model, text_model, context)
+                    def authorize_source():
+                        authorize = getattr(self._repository, 'authorize_audio_source', None)
+                        if authorize is None:
+                            raise DocumentUnderstandingError('CURRENT_ACCESS_DENIED', status=403)
+                        authorize(context, document, processing_run_id)
+                    result = self._audio_adapter.understand(document, asr_model, text_model, context, authorize_source=authorize_source)
                 self._repository.complete(context, processing_run_id, result)
                 return result
             if pptx_source_format(document.filename, document.content_type):

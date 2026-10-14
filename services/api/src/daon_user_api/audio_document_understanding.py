@@ -7,7 +7,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from typing import Protocol
+from typing import Callable, Mapping, Protocol
 
 from .audio_source import AudioDocument, AudioTranscript, read_wav, validate_transcript, encode_audio_segment, read_audio_transcript_view
 from .document_understanding_adapter import DocumentUnderstandingError, DocumentUnderstandingResult, ParserValidation, SemanticUnderstanding, _evidence_anchors
@@ -42,7 +42,7 @@ def _anchors(text):
 
 
 class AudioTranscriptionPort(Protocol):
-    def transcribe(self, document: AudioDocument, selection, context) -> AudioTranscript: ...
+    def transcribe(self, document: AudioDocument, selection, context, *, before_send: Callable[[], None]) -> AudioTranscript: ...
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -73,7 +73,7 @@ class LocalBaseAsrTranscriptionPort:
         except (ValueError, UnicodeError):
             raise DocumentUnderstandingError('UNDERSTANDING_PROVIDER_RESPONSE_INVALID', status=502) from None
 
-    def transcribe(self, document, selection, context):
+    def transcribe(self, document, selection, context, *, before_send):
         if (selection.capability != 'speech_to_text' or selection.provider_kind not in {'local', 'server_internal', 'local_runtime'}
                 or selection.base_url != _ASR_BASE or selection.model_id != 'faster-whisper-base'
                 or selection.credential_text(required=False) is not None):
@@ -85,7 +85,11 @@ class LocalBaseAsrTranscriptionPort:
             expected = {'model_id': selection.model_id, 'model_digest': _ASR_DIGEST,
                         'revision': _ASR_REVISION, 'capability': 'speech_to_text', 'runtime': 'cpu-int8-local'}
             if metadata != expected or time.monotonic() > deadline: raise ValueError
+            before_send()
+            transcription_deadline = time.monotonic() + 120
             value = self._request('/v1/transcribe', 120, document.content)
+            if time.monotonic() > transcription_deadline:
+                raise DocumentUnderstandingError('UNDERSTANDING_PROVIDER_UNAVAILABLE', status=503, retryable=True)
             if not isinstance(value, dict) or set(value) != {'model_id', 'model_digest', 'source_sha256', 'segments'} or not isinstance(value['segments'], list): raise ValueError
             transcript = AudioTranscript(value['model_id'], value['model_digest'], value['source_sha256'], tuple(value['segments']))
             validate_transcript(document, transcript)
@@ -114,6 +118,7 @@ def validate_audio_evidence(evidence, key_facts, transcript):
 def read_canonical_audio_transcript(lineage):
     """이해 결과·색인의 동일 정규 전사 스냅샷 계약."""
     try:
+        if not isinstance(lineage, Mapping): raise ValueError
         raw = lineage.get('transcript_json')
         if not isinstance(raw, str) or len(raw.encode('utf-8')) > 65536: raise ValueError
         value = json.loads(raw, object_pairs_hook=_unique)
@@ -174,7 +179,9 @@ class AudioDocumentAdapter:
         self._transport = text_transport
         self._guard = egress_guard if egress_guard is not None else OriginalDocumentEgressGuard()
 
-    def understand(self, document, asr_selection, text_selection, context):
+    def understand(self, document, asr_selection, text_selection, context, *, authorize_source=None):
+        if authorize_source is None:
+            raise DocumentUnderstandingError('CURRENT_ACCESS_DENIED', status=403)
         if not document.filename.lower().endswith('.wav') or document.content_type != 'audio/wav':
             raise DocumentUnderstandingError('SOURCE_OBJECT_NOT_READY', status=409)
         if (text_selection.provider_code != 'OLLAMA' or text_selection.capability != 'text_generation'
@@ -182,8 +189,11 @@ class AudioDocumentAdapter:
             raise DocumentUnderstandingError('DOCUMENT_PROVIDER_ADAPTER_UNAVAILABLE', status=503)
         try:
             original = read_wav(document.content)
-            self._guard.authorize(context, (asr_selection,))
-            transcript = self._asr.transcribe(original, asr_selection, context)
+            authorize_source()
+            def before_audio_send():
+                authorize_source()
+                self._guard.authorize(context, (asr_selection,))
+            transcript = self._asr.transcribe(original, asr_selection, context, before_send=before_audio_send)
             validate_transcript(original, transcript)
             if transcript.model_id != asr_selection.model_id: raise ValueError
             canonical = _canonical(transcript)
@@ -194,7 +204,6 @@ class AudioDocumentAdapter:
             raise DocumentUnderstandingError('UNDERSTANDING_PROVIDER_UNAVAILABLE', status=503, retryable=True) from None
         except (SourceRejected, ValueError, TypeError):
             raise DocumentUnderstandingError('UNDERSTANDING_PROVIDER_RESPONSE_INVALID', status=502) from None
-        self._guard.authorize(context, (text_selection,))
         text_adapter = OllamaTextGenerationAdapter(transport=self._transport)
         try:
             digest, capabilities = text_adapter.verified_internal_metadata(text_selection)
@@ -210,6 +219,8 @@ class AudioDocumentAdapter:
             'segment_coverage': {'type': 'array', 'items': {'type': 'string', 'enum': expected}}},
             'required': ['key_facts', 'segment_coverage', 'title', 'summary'], 'additionalProperties': False}
         try:
+            authorize_source()
+            self._guard.authorize(context, (text_selection,))
             response = self._transport.post_json_no_auth(url=text_adapter._base_url(text_selection) + '/api/chat', timeout_seconds=90,
                 payload={'model': text_selection.model_id, 'stream': False, 'keep_alive': '5m',
                     **({'think': False} if 'thinking' in capabilities else {}), 'options': {'temperature': 0, 'num_predict': 512}, 'format': schema,
@@ -243,7 +254,7 @@ class AudioDocumentAdapter:
                 if segment['text'][fact['start']:fact['end']] != fact['text']: continue
                 evidence.append({'text': fact['text'], 'segment_id': fact['segment_id'], 'locator_value': locator})
             except (SourceRejected, StopIteration): continue
-        conflict = len(evidence) != len(facts) or not _anchors(summary).issubset(_anchors(' '.join(texts)))
+        conflict = len(evidence) != len(facts) or not _anchors(summary + ' ' + title).issubset(_anchors(' '.join(texts)))
         if conflict: evidence = []
         lineage = {'source_format': 'wav', 'source_digest': original.source_sha256, 'serialization_version': 'audio-transcript-v1',
             'transcript_json': canonical, 'transcript_sha256': hashlib.sha256(canonical.encode('utf-8')).hexdigest(),

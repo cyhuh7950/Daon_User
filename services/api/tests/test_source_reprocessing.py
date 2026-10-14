@@ -100,6 +100,20 @@ def test_manual_retry_creates_new_run_job_and_audit_without_mutating_failed_line
     assert "FROM identity_auth_workspaces" in policy_sql
 
 
+def test_failed_wav_retry_preserves_original_run_and_starts_asr_state():
+    store = Store()
+    store.source = ('source-1', 'waiting_model', 4, 'version-1', 'memo.wav', 'audio/wav')
+    result = retry(store)
+    assert result['processing_state'] == 'speech_to_text'
+    assert result['retry_of_processing_run_id'] == 'run-failed-1'
+    assert store.old_run == ('run-failed-1', 'failed', 'dead_letter')
+    payload = next(value.obj for sql, params in store.writes if sql.startswith('INSERT INTO processing_runs') for value in params if hasattr(value, 'obj'))
+    assert payload['modality'] == 'audio'
+    assert payload['asr_then_llm'] is True
+    assert 'vision_llm_first' not in payload
+    assert not any(sql.startswith('UPDATE') or 'INSERT INTO source_versions' in sql for sql, _ in store.writes)
+
+
 def test_retry_revalidates_scope_binding_latest_version_and_deletion_before_replay():
     store = Store()
     retry(store)

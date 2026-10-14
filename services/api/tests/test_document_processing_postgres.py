@@ -98,6 +98,59 @@ class FakeCloudStore:
 
 
 class AudioProcessingStorageTests(unittest.TestCase):
+    def test_audio_transmission_revalidates_current_access_binding_and_version_with_real_sql(self):
+        from test_audio_source import wav_bytes
+        from daon_user_api.document_processing import StoredSourceDocument
+        raw = wav_bytes();digest = hashlib.sha256(raw).hexdigest()
+        context = DocumentProcessingContext('tenant-cp3', 'workspace-cp3', 'actor-cp3', 'trace-cp3', 'policy-v1')
+        document = StoredSourceDocument('source-cp3', 'source-version-cp3', 'qa.wav', raw, 'audio/wav')
+        class Store:
+            def __init__(self):
+                self.db = sqlite3.connect(':memory:')
+                self.db.executescript('''
+                    CREATE TABLE processing_runs(tenant_id,workspace_id,record_id,source_version_id,state,created_by,canonical_json);
+                    CREATE TABLE sources(tenant_id,workspace_id,record_id,state,created_by);
+                    CREATE TABLE source_versions(tenant_id,workspace_id,record_id,source_id,version,object_id,canonical_json);
+                    CREATE TABLE object_records(tenant_id,workspace_id,object_id,digest_sha256,byte_size,content_type,status);
+                    CREATE TABLE notebooks(tenant_id,workspace_id,notebook_id);
+                    CREATE TABLE notebook_bindings(tenant_id,workspace_id,notebook_id,binding_kind,record_id,version_id);
+                    CREATE TABLE notebook_source_unbindings(tenant_id,workspace_id,notebook_id,source_id,source_version_id);
+                    CREATE TABLE notebook_deletion_requests(tenant_id,workspace_id,notebook_id);
+                    CREATE TABLE deletion_requests(tenant_id,workspace_id,source_id,source_active);
+                    CREATE TABLE identity_auth_workspaces(tenant_id,workspace_id,workspace_kind);
+                    CREATE TABLE identity_auth_memberships(tenant_id,workspace_id,user_id,role,state);
+                    CREATE TABLE identity_auth_tenant_roles(tenant_id,user_id,role,state);
+                    CREATE TABLE identity_auth_tenant_permission_rules(tenant_id,permission,effect,locked);
+                    CREATE TABLE identity_auth_workspace_permission_rules(tenant_id,workspace_id,permission,effect,locked);
+                    CREATE TABLE identity_auth_source_access(tenant_id,workspace_id,user_id,source_version_id,allowed);
+                ''')
+                scope = ('tenant-cp3', 'workspace-cp3')
+                self.db.execute('INSERT INTO processing_runs VALUES(?,?,?,?,?,?,?)', (*scope, 'pr-a', 'source-version-cp3', 'speech_to_text', 'actor-cp3', '{"notebook_id":"nb-a"}'))
+                self.db.execute('INSERT INTO sources VALUES(?,?,?,?,?)', (*scope, 'source-cp3', 'processing', 'actor-cp3'))
+                self.db.execute('INSERT INTO source_versions VALUES(?,?,?,?,?,?,?)', (*scope, 'source-version-cp3', 'source-cp3', 1, 'object-a', '{"filename":"qa.wav"}'))
+                self.db.execute('INSERT INTO object_records VALUES(?,?,?,?,?,?,?)', (*scope, 'object-a', digest, len(raw), 'audio/wav', 'completed'))
+                self.db.execute('INSERT INTO notebooks VALUES(?,?,?)', (*scope, 'nb-a'))
+                self.db.execute('INSERT INTO notebook_bindings VALUES(?,?,?,?,?,?)', (*scope, 'nb-a', 'source', 'source-cp3', 'source-version-cp3'))
+                self.db.execute('INSERT INTO identity_auth_workspaces VALUES(?,?,?)', (*scope, 'organization'))
+                self.db.execute('INSERT INTO identity_auth_memberships VALUES(?,?,?,?,?)', (*scope, 'actor-cp3', 'editor', 'active'))
+            @contextmanager
+            def _transaction(self, context): yield self
+            def execute(self, sql, params=()): return self.db.execute(sql.replace('%s', '?'), params)
+        mutations = ["UPDATE identity_auth_memberships SET state='inactive'", "UPDATE identity_auth_memberships SET role='viewer'",
+            "DELETE FROM notebook_bindings", "INSERT INTO notebook_source_unbindings VALUES('tenant-cp3','workspace-cp3','nb-a','source-cp3','source-version-cp3')",
+            "INSERT INTO identity_auth_workspace_permission_rules VALUES('tenant-cp3','workspace-cp3','local_internal_llm','deny',0)",
+            "INSERT INTO identity_auth_source_access VALUES('tenant-cp3','workspace-cp3','actor-cp3','source-version-cp3',0)",
+            "INSERT INTO source_versions VALUES('tenant-cp3','workspace-cp3','new-version','source-cp3',2,'object-a','{}')"]
+        for mutation in mutations:
+            store = Store()
+            try:
+                repository = PostgresDocumentProcessingRepository(store, object())
+                repository.authorize_audio_source(context, document, 'pr-a')
+                store.db.execute(mutation)
+                with self.subTest(mutation=mutation), self.assertRaises(DocumentUnderstandingError):
+                    repository.authorize_audio_source(context, document, 'pr-a')
+            finally: store.db.close()
+
     def test_audio_completion_rejects_tampered_snapshot_with_zero_result_writes(self):
         from dataclasses import replace
         from test_audio_document_understanding import ready_audio_result

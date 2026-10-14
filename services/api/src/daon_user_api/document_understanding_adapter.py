@@ -237,10 +237,13 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 class UrlLibDocumentUnderstandingTransport:
     """Bounded HTTPS transport with stable, secret-free upstream errors."""
 
-    @staticmethod
-    def _request(request: urllib.request.Request, timeout_seconds: float) -> dict[str, object]:
+    def __init__(self, *, disable_environment_proxy: bool = False) -> None:
+        self._disable_environment_proxy = disable_environment_proxy
+
+    def _request(self, request: urllib.request.Request, timeout_seconds: float) -> dict[str, object]:
         try:
-            opener = urllib.request.build_opener(_NoRedirectHandler())
+            handlers = (urllib.request.ProxyHandler({}), _NoRedirectHandler()) if self._disable_environment_proxy else (_NoRedirectHandler(),)
+            opener = urllib.request.build_opener(*handlers)
             with opener.open(request, timeout=timeout_seconds) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:

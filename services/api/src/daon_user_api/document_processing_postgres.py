@@ -29,6 +29,67 @@ class PostgresDocumentProcessingRepository:
         self._cloud_store = cloud_store
         self._object_storage = object_storage
 
+    def authorize_audio_source(self, context, document, processing_run_id) -> None:
+        """전송 직전 기존 역할·정책과 Run/Notebook/최신 원본 결속을 다시 읽는다."""
+        from .authorization import Action, Permission, Role, ROLE_ACTION_MATRIX, ROLE_PERMISSION_DEFAULTS
+        try:
+            with self._cloud_store._transaction(self._cloud_context(context, 'source.process')) as connection:
+                row = connection.execute(
+                    "SELECT CASE WHEN tr.user_id IS NOT NULL THEN CASE WHEN "
+                    "(w.workspace_kind='personal' AND tr.role='personal_owner') OR "
+                    "(w.workspace_kind='organization' AND tr.role='organization_admin') THEN tr.role END ELSE m.role END,"
+                    "s.created_by,tp.effect,tp.locked,wp.effect,o.digest_sha256,o.byte_size,sv.canonical_json->>'filename' "
+                    "FROM processing_runs pr JOIN source_versions sv ON sv.tenant_id=pr.tenant_id "
+                    "AND sv.workspace_id=pr.workspace_id AND sv.record_id=pr.source_version_id "
+                    "JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
+                    "JOIN object_records o ON o.tenant_id=sv.tenant_id AND o.workspace_id=sv.workspace_id AND o.object_id=sv.object_id "
+                    "JOIN notebooks n ON n.tenant_id=pr.tenant_id AND n.workspace_id=pr.workspace_id "
+                    "AND n.notebook_id=pr.canonical_json->>'notebook_id' "
+                    "JOIN notebook_bindings nb ON nb.tenant_id=n.tenant_id AND nb.workspace_id=n.workspace_id "
+                    "AND nb.notebook_id=n.notebook_id AND nb.binding_kind='source' AND nb.record_id=s.record_id AND nb.version_id=sv.record_id "
+                    "JOIN identity_auth_workspaces w ON w.tenant_id=pr.tenant_id AND w.workspace_id=pr.workspace_id "
+                    "LEFT JOIN identity_auth_tenant_roles tr ON tr.tenant_id=pr.tenant_id AND tr.user_id=pr.created_by AND tr.state='active' "
+                    "LEFT JOIN identity_auth_memberships m ON m.tenant_id=pr.tenant_id AND m.workspace_id=pr.workspace_id "
+                    "AND m.user_id=pr.created_by AND m.state='active' "
+                    "LEFT JOIN identity_auth_tenant_permission_rules tp ON tp.tenant_id=pr.tenant_id AND tp.permission='local_internal_llm' "
+                    "LEFT JOIN identity_auth_workspace_permission_rules wp ON wp.tenant_id=pr.tenant_id "
+                    "AND wp.workspace_id=pr.workspace_id AND wp.permission='local_internal_llm' "
+                    "WHERE pr.tenant_id=%s AND pr.workspace_id=%s AND pr.record_id=%s AND pr.created_by=%s "
+                    "AND sv.record_id=%s AND s.record_id=%s AND pr.state='speech_to_text' AND s.state='processing' "
+                    "AND o.status='completed' AND o.content_type='audio/wav' "
+                    "AND NOT EXISTS (SELECT 1 FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id "
+                    "AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id AND newer.version>sv.version) "
+                    "AND NOT EXISTS (SELECT 1 FROM identity_auth_source_access sa WHERE sa.tenant_id=pr.tenant_id "
+                    "AND sa.workspace_id=pr.workspace_id AND sa.user_id=pr.created_by AND sa.source_version_id=sv.record_id AND sa.allowed=0) "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=nb.tenant_id "
+                    "AND u.workspace_id=nb.workspace_id AND u.notebook_id=nb.notebook_id AND u.source_id=s.record_id AND u.source_version_id=sv.record_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM notebook_deletion_requests nd WHERE nd.tenant_id=n.tenant_id "
+                    "AND nd.workspace_id=n.workspace_id AND nd.notebook_id=n.notebook_id) "
+                    "AND NOT EXISTS (SELECT 1 FROM deletion_requests dr WHERE dr.tenant_id=s.tenant_id "
+                    "AND dr.workspace_id=s.workspace_id AND dr.source_id=s.record_id AND dr.source_active=false)",
+                    (context.tenant_id, context.workspace_id, processing_run_id, context.actor_id, document.source_version_id, document.source_id),
+                ).fetchone()
+            if row is None: raise ValueError
+            role = Role(str(row[0]))
+            if Action.ANALYZE not in ROLE_ACTION_MATRIX[role]: raise ValueError
+            if str(row[1]) != context.actor_id and role not in {Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN, Role.WORKSPACE_ADMIN}: raise ValueError
+            # Same precedence as AuthorizationService: tenant lock/deny, then workspace rule,
+            # then ordinary tenant grant, then the exported role default. No new policy.
+            if row[2] is not None and (bool(row[3]) or row[2] == 'deny'):
+                allowed = row[2] == 'grant'
+            elif row[4] is not None:
+                allowed = row[4] == 'grant'
+            elif row[2] is not None:
+                allowed = row[2] == 'grant'
+            else:
+                allowed = Permission.LOCAL_INTERNAL_LLM in ROLE_PERMISSION_DEFAULTS[role]
+            if (not allowed or str(row[5]).removeprefix('sha256:') != hashlib.sha256(document.content).hexdigest()
+                    or int(row[6]) != len(document.content) or str(row[7]) != document.filename): raise ValueError
+        except (ValueError, TypeError, KeyError):
+            raise DocumentUnderstandingError('CURRENT_ACCESS_DENIED', status=403) from None
+        except CloudDatabaseError:
+            raise DocumentUnderstandingError('CURRENT_ACCESS_UNAVAILABLE', status=503, retryable=True) from None
+
     @staticmethod
     def _cloud_context(context: DocumentProcessingContext, capability: str) -> CloudAccessContext:
         return CloudAccessContext(
@@ -246,7 +307,7 @@ class PostgresDocumentProcessingRepository:
                     raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
                 filename, mime = str(source[4]), str(source[5])
                 if not ((mime == "application/pdf" and filename.lower().endswith(".pdf"))
-                        or text_source_format(filename, mime) is not None or image_source_format(filename, mime) or xlsx_source_format(filename, mime) or docx_source_format(filename, mime) or pptx_source_format(filename, mime)):
+                        or text_source_format(filename, mime) is not None or image_source_format(filename, mime) or xlsx_source_format(filename, mime) or docx_source_format(filename, mime) or pptx_source_format(filename, mime) or audio_source_format(filename, mime)):
                     raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409)
                 replay = connection.execute(
                     "SELECT request_fingerprint,result FROM idempotency_records "
@@ -303,6 +364,8 @@ class PostgresDocumentProcessingRepository:
                 if policy is None or int(policy[2]) != authorization_snapshot.get("acl_version"):
                     raise DocumentUnderstandingError("CURRENT_ACCESS_DENIED", status=403)
                 previous_id = str(previous[0])
+                audio_source = audio_source_format(filename, mime)
+                initial_state = 'speech_to_text' if audio_source else 'vision_llm_understanding'
                 payload = {"source_version_id": source_version_id, "modality": "document",
                            "trigger_type": "manual_request", "retry_of_processing_run_id": previous_id,
                            "trigger_event_id": run_id, "notebook_id": notebook_id,
@@ -310,19 +373,23 @@ class PostgresDocumentProcessingRepository:
                            "authorization_snapshot": dict(authorization_snapshot),
                            "policy_snapshot": {"data_area": str(policy[0]), "cost_limit_cents": int(policy[1]),
                                                "routing_policy_version": context.policy_version}}
+                if audio_source:
+                    payload['modality'] = 'audio'
+                    payload['asr_then_llm'] = True
+                    payload.pop('vision_llm_first')
                 text, digest = self._snapshot(payload)
                 connection.execute(
                     "INSERT INTO processing_runs (tenant_id,workspace_id,record_id,aggregate_id,version,schema_version,"
                     "canonical_json,canonical_text,digest_sha256,state,created_by,trace_id,source_version_id,"
                     "modality,trigger_type,retry_of_processing_run_id,trigger_event_id) "
-                    "VALUES (%s,%s,%s,%s,1,1,%s,%s,%s,'accepted',%s,%s,%s,'document','manual_request',%s,%s)",
+                    "VALUES (%s,%s,%s,%s,1,1,%s,%s,%s,'accepted',%s,%s,%s,%s,'manual_request',%s,%s)",
                     (context.tenant_id, context.workspace_id, run_id, run_id, Jsonb(payload), text, digest,
-                     context.actor_id, context.trace_id, source_version_id, previous_id, run_id),
+                     context.actor_id, context.trace_id, source_version_id, 'audio' if audio_source else 'document', previous_id, run_id),
                 )
                 self._transition(connection, context, entity_type="Source", aggregate_id=source_id,
                                  expected_version=int(source[2]), target_state="processing", reason_code="MANUAL_REPROCESSING_REQUESTED")
                 self._transition(connection, context, entity_type="ProcessingRun", aggregate_id=run_id,
-                                 expected_version=1, target_state="vision_llm_understanding", reason_code="MANUAL_REPROCESSING_STARTED")
+                                 expected_version=1, target_state=initial_state, reason_code="MANUAL_REPROCESSING_STARTED")
                 connection.execute(
                     "INSERT INTO document_processing_jobs (tenant_id,workspace_id,job_id,source_id,source_version_id,"
                     "processing_run_id,state,created_by,trace_id,policy_version) VALUES (%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s)",
@@ -330,7 +397,7 @@ class PostgresDocumentProcessingRepository:
                      source_version_id, run_id, context.actor_id, context.trace_id, context.policy_version),
                 )
                 result = {"processing_run_id": run_id, "source_id": source_id, "source_version_id": source_version_id,
-                          "retry_of_processing_run_id": previous_id, "processing_state": "vision_llm_understanding",
+                          "retry_of_processing_run_id": previous_id, "processing_state": initial_state,
                           "source_state": "processing", "job_state": "pending", "replayed": False}
                 connection.execute(
                     "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,"
@@ -352,7 +419,7 @@ class PostgresDocumentProcessingRepository:
 
     def start(
         self, context: DocumentProcessingContext, source_version_id: str,
-        *, enqueue: bool = False,
+        *, enqueue: bool = False, notebook_id: str | None = None,
     ) -> str:
         processing_run_id = self._opaque_id(
             "pr", context.tenant_id, context.workspace_id, source_version_id, "initial",
@@ -364,6 +431,10 @@ class PostgresDocumentProcessingRepository:
             "vision_llm_first": True,
             "parser_role": "validation_only",
         }
+        if notebook_id is not None:
+            if not isinstance(notebook_id, str) or not _SAFE_NOTEBOOK_ID.fullmatch(notebook_id):
+                raise DocumentUnderstandingError('DOCUMENT_PROCESSING_CONTEXT_INVALID')
+            payload['notebook_id'] = notebook_id
         text, digest = self._snapshot(payload)
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
@@ -381,6 +452,8 @@ class PostgresDocumentProcessingRepository:
                 if audio_source:
                     payload = {'source_version_id': source_version_id, 'modality': 'audio',
                                'trigger_type': 'initial', 'asr_then_llm': True, 'parser_role': 'validation_only'}
+                    if notebook_id is not None:
+                        payload['notebook_id'] = notebook_id
                     text, digest = self._snapshot(payload)
                 connection.execute(
                     "INSERT INTO processing_runs "
