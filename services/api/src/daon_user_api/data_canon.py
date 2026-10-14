@@ -7,7 +7,7 @@ import json
 import re
 import threading
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, cast
@@ -233,10 +233,13 @@ class PostgresDataCanonStore:
         except Error as error:
             raise _database_error(error) from None
 
-    def create_source(self, context: CanonicalContext, source_id: str) -> None:
+    def create_source(
+        self, context: CanonicalContext, source_id: str, *,
+        _connection: Connection[tuple[Any, ...]] | None = None,
+    ) -> None:
         if not _SAFE_ID.fullmatch(source_id):
             raise CanonError("CANON_SNAPSHOT_INVALID")
-        with self._transaction(context) as connection:
+        with (self._transaction(context) if _connection is None else nullcontext(_connection)) as connection:
             connection.execute(
                 "INSERT INTO sources "
                 "(tenant_id, workspace_id, record_id, aggregate_id, state, version, "
@@ -246,6 +249,12 @@ class PostgresDataCanonStore:
                 (context.tenant_id, context.workspace_id, source_id, source_id,
                  context.actor_id, context.trace_id),
             )
+
+    def create_source_in_transaction(
+        self, connection: Connection[tuple[Any, ...]], context: CanonicalContext, source_id: str,
+    ) -> None:
+        """검증된 내부 작업의 connection에 참여하며 commit은 호출자에게 맡긴다."""
+        self.create_source(context, source_id, _connection=connection)
 
     def append_source_version(
         self,
@@ -258,6 +267,7 @@ class PostgresDataCanonStore:
         canonical_payload: Mapping[str, object],
         digest_sha256: str,
         created_at: datetime,
+        _connection: Connection[tuple[Any, ...]] | None = None,
     ) -> None:
         snapshot = CanonicalSnapshot(
             source_version_id, source_id, version_number, 1,
@@ -266,7 +276,7 @@ class PostgresDataCanonStore:
         object_id = canonical_payload.get("object_id")
         if object_id is not None and not isinstance(object_id, str):
             raise CanonError("CANON_SNAPSHOT_INVALID")
-        with self._transaction(context) as connection:
+        with (self._transaction(context) if _connection is None else nullcontext(_connection)) as connection:
             if self._creation_enforcer is not None:
                 self._creation_enforcer(
                     connection, context.tenant_id, "source.create", {"source_versions": 1},
@@ -287,6 +297,12 @@ class PostgresDataCanonStore:
                     source_id, object_id,
                 ),
             )
+
+    def append_source_version_in_transaction(
+        self, connection: Connection[tuple[Any, ...]], context: CanonicalContext, **kwargs: Any,
+    ) -> None:
+        """기존 snapshot 검증·creation enforcer를 동일 transaction에서 실행한다."""
+        self.append_source_version(context, _connection=connection, **kwargs)
 
     def register_uploaded_source(
         self,
