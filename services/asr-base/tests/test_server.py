@@ -31,6 +31,41 @@ class AudioBoundaryTests(unittest.TestCase):
             with self.subTest(items=items),self.assertRaises(ValueError):server.normalize_segments(items,1000)
 
 class HttpBoundaryTests(unittest.TestCase):
+    def test_busy_request_is_rejected_and_timeout_is_not_success(self):
+        entered=threading.Event();release=threading.Event()
+        class Engine:
+            def ready(self):return True
+            def transcribe(self,raw):
+                entered.set();release.wait(2);raise TimeoutError('ASR_TIMEOUT')
+        http=server.create_server(Engine(),'a'*64,('127.0.0.1',0))
+        thread=threading.Thread(target=http.serve_forever,daemon=True);thread.start()
+        base='http://127.0.0.1:'+str(http.server_port);statuses=[]
+        def request():
+            try:
+                urllib.request.urlopen(urllib.request.Request(base+'/v1/transcribe',data=wav(),headers={'Content-Type':'audio/wav'}),timeout=4).close()
+            except urllib.error.HTTPError as error:
+                statuses.append((error.code,json.load(error)['error']));error.close()
+        first=threading.Thread(target=request)
+        try:
+            first.start();self.assertTrue(entered.wait(1));request()
+            self.assertEqual(statuses,[(503,'ASR_BUSY')])
+            release.set();first.join(3)
+            self.assertEqual(statuses,[(503,'ASR_BUSY'),(504,'ASR_TIMEOUT')])
+        finally:release.set();first.join(3);http.shutdown();http.server_close();thread.join(2)
+    def test_worker_deadline_terminates_child(self):
+        class Connection:
+            closed=False
+            def send(self,raw):pass
+            def poll(self,seconds):self.seconds=seconds;return False
+            def close(self):self.closed=True
+        class Process:
+            alive=True
+            def is_alive(self):return self.alive
+            def terminate(self):self.alive=False
+            def join(self,timeout):self.timeout=timeout
+        worker=object.__new__(server.ModelWorker);worker.connection=Connection();worker.process=Process()
+        with self.assertRaises(TimeoutError):worker.transcribe(b'input')
+        self.assertEqual(worker.connection.seconds,120);self.assertTrue(worker.connection.closed);self.assertFalse(worker.ready())
     def test_actual_http_metadata_and_invalid_audio_call_zero(self):
         class Engine:
             calls=0
