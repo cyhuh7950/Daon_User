@@ -81,6 +81,9 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 class UrllibAdapterTransport:
+    def __init__(self, *, disable_environment_proxy: bool = False) -> None:
+        self._disable_environment_proxy = disable_environment_proxy
+
     def request(
         self,
         method: str,
@@ -98,7 +101,8 @@ class UrllibAdapterTransport:
         if encoded is not None:
             request_headers["content-type"] = "application/json"
         request = urllib.request.Request(url, data=encoded, headers=request_headers, method=method)
-        opener = urllib.request.build_opener(_NoRedirectHandler())
+        handlers = [urllib.request.ProxyHandler({})] if self._disable_environment_proxy else []
+        opener = urllib.request.build_opener(*handlers, _NoRedirectHandler())
         try:
             with opener.open(request, timeout=timeout_seconds) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
@@ -605,6 +609,42 @@ class SentenceTransformersAdapter(_RoutingGatewayAdapter):
         return self._ready(connection)
 
 
+class NativeBaseAsrAdapter(_BaseAdapter):
+    """고정 내부 ASR의 설치 상태를 확인한다. 음성/시험 전사를 보내지 않는다."""
+    provider_code = "CUSTOM"
+    routing_owner = "local_runtime"
+    daon_fallback_allowed = False
+
+    def discover_models(self, connection, credential):
+        if (connection.provider_code != "CUSTOM" or not connection.enabled
+                or connection.base_url != "http://asr-base:8080"
+                or credential is not None or connection.credential is not None):
+            raise AdapterError("PROVIDER_CONNECTION_INVALID", 409)
+        deadline = time.monotonic() + _TIMEOUT_SECONDS
+        metadata = self._request("GET", connection.base_url + "/v1/metadata", {},
+                                 timeout_seconds=max(0.001, deadline - time.monotonic()))
+        try:
+            models = ProviderCatalog.from_native_asr_metadata(connection.connection_id, metadata)
+        except ProviderCatalogError:
+            raise AdapterError("PROVIDER_CATALOG_RESPONSE_INVALID", 503) from None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AdapterError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
+        ready = self._request("GET", connection.base_url + "/health/ready", {}, timeout_seconds=remaining)
+        if ready != {"status": "ready"} or time.monotonic() > deadline:
+            raise AdapterError("PROVIDER_CATALOG_UNAVAILABLE", 503, retryable=True)
+        return models
+
+    def verify(self, connection, credential):
+        self.discover_models(connection, credential)
+        return self._ready(connection)
+
+    def verify_models(self, connection, credential, model_ids):
+        if tuple(model_ids) != ("faster-whisper-base",):
+            raise AdapterError("PROVIDER_MODEL_IDS_INVALID", 409)
+        return self.discover_models(connection, credential)
+
+
 class AdapterRegistry:
     def __init__(
         self,
@@ -627,9 +667,13 @@ class AdapterRegistry:
             "SENTENCE_TRANSFORMERS": SentenceTransformersAdapter(actual_transport, configured_models),
         }
         self._custom_anthropic = CustomAnthropicCompatibleAdapter(actual_transport)
+        self._native_asr = NativeBaseAsrAdapter(
+            transport if transport is not None else UrllibAdapterTransport(disable_environment_proxy=True))
 
     def adapter(self, provider_code: str, adapter_type: str = "") -> ConnectionAdapter:
         if provider_code == "CUSTOM":
+            if adapter_type == "asr_base_native":
+                return self._native_asr
             if adapter_type == "anthropic_compatible":
                 return self._custom_anthropic
             if adapter_type not in {"", "CUSTOM", "openai_compatible"}:

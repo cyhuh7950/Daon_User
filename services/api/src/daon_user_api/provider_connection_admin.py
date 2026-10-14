@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 import hashlib
 import re
+import os
 from typing import Any, Callable, Mapping, Sequence, TypeVar, cast
 
 from psycopg import Connection
@@ -297,6 +298,10 @@ def validate_connection_policy(
         raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
     if provider_code == "OLLAMA" and credential_requirement != "none":
         raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
+    if provider_code == "CUSTOM" and adapter_type == "asr_base_native":
+        if access_mode != "public" or credential_requirement != "none" or base_url != "http://asr-base:8080":
+            raise ProviderConnectionAdminError("PROVIDER_ACCESS_MODE_INVALID", 409)
+        return access_mode
     if (provider_code == "CUSTOM" and adapter_type not in (
         {"openai_compatible", "anthropic_compatible", "CUSTOM"}
         if allow_existing_legacy_custom else {"openai_compatible", "anthropic_compatible"}
@@ -506,7 +511,12 @@ class PostgresProviderConnectionService:
         test_credential: str | None = None, rejected_model_ids: list[str] | None = None,
     ) -> tuple[ProviderConnection, EncryptedCredential | None, tuple[object, ...]]:
         try:
-            normalized_url = validate_provider_base_url(provider_code, base_url)
+            if provider_code == "CUSTOM" and adapter_type == "asr_base_native":
+                if base_url != "http://asr-base:8080":
+                    raise AdapterError("PROVIDER_BASE_URL_INVALID", 409)
+                normalized_url = base_url
+            else:
+                normalized_url = validate_provider_base_url(provider_code, base_url)
             raw = credential
             if raw is None and previous_sealed is not None and (verify_required or discover_models or verified_model_ids is not None):
                 raw = self._cipher.decrypt(
@@ -665,6 +675,12 @@ class PostgresProviderConnectionService:
             command.provider_code, command.access_mode, command.credential_requirement,
             command.short_code, command.adapter_type, command.base_url,
         )
+        if command.adapter_type == "asr_base_native":
+            qa_workspace = os.environ.get("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "")
+            if (not qa_workspace
+                    or command.allowed_model_ids != ("faster-whisper-base",)
+                    or command.logical_model_ids or command.credential is not None):
+                raise ProviderConnectionAdminError("PROVIDER_CONNECTION_INVALID", 409)
         provider_name = command.provider_name.strip() or command.provider_code
         if (command.provider_name and not command.provider_name.strip()) or len(provider_name) > 256:
             raise ProviderConnectionAdminError("PROVIDER_NAME_INVALID", 409)
@@ -790,6 +806,12 @@ class PostgresProviderConnectionService:
                 raise ProviderConnectionAdminError("VERSION_CONFLICT", 409)
             if str(current[1]) == "CUSTOM" and str(current[16]) != command.adapter_type:
                 raise ProviderConnectionAdminError("PROVIDER_ADAPTER_IMMUTABLE", 409)
+            if command.adapter_type == "asr_base_native":
+                qa_workspace = os.environ.get("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "")
+                if (not qa_workspace
+                        or command.allowed_model_ids != ("faster-whisper-base",)
+                        or command.logical_model_ids or command.credential is not None):
+                    raise ProviderConnectionAdminError("PROVIDER_CONNECTION_INVALID", 409)
             if str(current[1]) != "CUSTOM" and command.test_credential is not None:
                 raise ProviderConnectionAdminError("PROVIDER_TEST_CREDENTIAL_FORBIDDEN", 409)
             validate_connection_policy(

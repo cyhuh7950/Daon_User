@@ -11,6 +11,23 @@ TOKENIZER_BOOLEAN_OPTIONS = (
 )
 
 
+def test_native_asr_catalog_requires_exact_installed_metadata():
+    metadata = {"model_id": "faster-whisper-base",
+        "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+        "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+        "capability": "speech_to_text", "runtime": "cpu-int8-local"}
+    models = ProviderCatalog.from_native_asr_metadata("asr-qa", metadata)
+    assert len(models) == 1
+    assert models[0].reported_capabilities == ("speech_to_text",)
+    assert models[0].routing_owner == "local_runtime"
+    assert models[0].daon_fallback_allowed is False
+    for field in metadata:
+        with pytest.raises(ProviderCatalogError):
+            ProviderCatalog.from_native_asr_metadata("asr-qa", {**metadata, field: "other"})
+    with pytest.raises(ProviderCatalogError):
+        ProviderCatalog.from_native_asr_metadata("asr-qa", {**metadata, "extra": True})
+
+
 def test_ollama_show_tokenizer_boolean_options_are_not_credentials():
     info = {"general.architecture": "qwen3vl", **dict(zip(TOKENIZER_BOOLEAN_OPTIONS, (True, False, True, False)))}
     payload = {"models": [{"name": "qwen3-vl:latest", "digest": "a" * 64,

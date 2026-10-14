@@ -24,6 +24,37 @@ from daon_user_api.provider_catalog import DiscoveredModel
 from daon_user_api.provider_connection_adapters import AdapterRegistry, TransportResponse
 
 
+def test_native_asr_connection_policy_keeps_fixed_internal_endpoint_without_key():
+    assert validate_connection_policy("CUSTOM", "public", "none", "AS", "asr_base_native",
+                                      "http://asr-base:8080") == "public"
+    for mode, requirement, endpoint in (("personal", "required", "http://asr-base:8080"),
+            ("public", "required", "http://asr-base:8080"), ("public", "none", "https://other.example")):
+        with pytest.raises(ProviderConnectionAdminError):
+            validate_connection_policy("CUSTOM", mode, requirement, "AS", "asr_base_native", endpoint)
+
+
+def test_native_asr_prepare_reads_installed_metadata_without_inference(monkeypatch):
+    from test_provider_connection_adapters import FakeTransport
+    transport = FakeTransport()
+    metadata = {"model_id": "faster-whisper-base",
+        "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+        "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+        "capability": "speech_to_text", "runtime": "cpu-int8-local"}
+    transport.responses["http://asr-base:8080/v1/metadata"] = TransportResponse(200, metadata)
+    transport.responses["http://asr-base:8080/health/ready"] = TransportResponse(200, {"status": "ready"})
+    monkeypatch.setattr(provider_connection_admin_module, "AdapterRegistry",
+                        lambda **kwargs: AdapterRegistry(transport=transport, **kwargs))
+    service = PostgresProviderConnectionService(Store(SharedDatabase()),
+        ProviderCredentialCipher(b"p" * 32, encryption_key_version=1))
+    profile, sealed, models = service._prepare(connection_id="asr-qa", provider_code="CUSTOM",
+        display_name="QA CPU base ASR", base_url="http://asr-base:8080", credential=None,
+        logical_model_ids=(), enabled=True, version=1, adapter_type="asr_base_native",
+        verified_model_ids=("faster-whisper-base",))
+    assert sealed is None and profile.base_url == "http://asr-base:8080"
+    assert models[0].reported_capabilities == ("speech_to_text",)
+    assert [r.method for r in transport.requests] == ["GET", "GET"]
+
+
 class Cursor:
     def __init__(self, row=None, rows=None):
         self._row = row

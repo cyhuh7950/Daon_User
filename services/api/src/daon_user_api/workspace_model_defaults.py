@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -32,6 +33,11 @@ _ACTIVE_PROVIDERS = {
 }
 _ROUTING_GATEWAYS = frozenset({"EOUL_GATEWAY", "OMNIROUTE"})
 _ACTIVE_CAPABILITIES = frozenset(_ACTIVE_PROVIDERS)
+
+
+def _qa_asr_enabled(workspace_id: str) -> bool:
+    target = os.environ.get("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "")
+    return bool(target and _SAFE_ID.fullmatch(target) and workspace_id == target)
 
 
 class WorkspaceModelUnavailable(RuntimeError):
@@ -81,7 +87,7 @@ class PostgresWorkspaceModelDefaultsService:
         models = connection.execute(
             "SELECT c.connection_id,c.provider_code,c.display_name,c.encrypted_credential IS NOT NULL,"
             "c.credential_version,c.verification_status,c.version,m.model_id,m.effective_capabilities,"
-            "m.catalog_status,m.catalog_version FROM system_provider_connections c "
+            "m.catalog_status,m.catalog_version,c.adapter_type,c.base_url,c.credential_requirement FROM system_provider_connections c "
             "JOIN system_provider_models m ON m.connection_id=c.connection_id "
             "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
             "LEFT JOIN user_provider_credentials u ON u.connection_id=c.connection_id "
@@ -98,24 +104,31 @@ class PostgresWorkspaceModelDefaultsService:
             "WHERE tenant_id=%s AND workspace_id=%s ORDER BY capability",
             (context.tenant_id, context.workspace_id),
         ).fetchall()
+        active = _ACTIVE_CAPABILITIES | ({"speech_to_text"} if _qa_asr_enabled(context.workspace_id) else set())
+        def capabilities(row):
+            items = set(row[8] or ()) & active
+            if "speech_to_text" in items and not (
+                    len(row) >= 14 and str(row[1]) == "CUSTOM" and str(row[7]) == "faster-whisper-base"
+                    and str(row[11]) == "asr_base_native" and str(row[12]) == "http://asr-base:8080"
+                    and str(row[13]) == "none" and not bool(row[3]) and int(row[4]) == 0):
+                items.remove("speech_to_text")
+            return [str(item) for item in (row[8] or ()) if item in items]
         available = [
             {
                 "connection_id": str(row[0]), "provider_code": str(row[1]),
                 "display_name": str(row[2]), "configured": bool(row[3]),
                 "credential_version": int(row[4]), "verification_status": str(row[5]),
                 "connection_version": int(row[6]), "model_id": str(row[7]),
-                "effective_capabilities": [
-                    str(item) for item in (row[8] or ()) if str(item) in _ACTIVE_CAPABILITIES
-                ],
+                "effective_capabilities": capabilities(row),
                 "catalog_status": str(row[9]), "catalog_version": int(row[10]),
             }
             for row in models
-            if set(row[8] or ()) & _ACTIVE_CAPABILITIES
+            if capabilities(row)
         ]
         default_views = [
             {"capability": str(row[0]), "connection_id": str(row[1]),
              "model_id": str(row[2]), "version": int(row[3])}
-            for row in defaults if str(row[0]) in _ACTIVE_CAPABILITIES
+            for row in defaults if str(row[0]) in active
         ]
         etag_payload = {"available_models": available, "defaults": default_views}
         etag = '"workspace-model-defaults-' + hashlib.sha256(
@@ -143,7 +156,8 @@ class PostgresWorkspaceModelDefaultsService:
         connection_id: str, model_id: str, expected_version: int,
         expected_etag: str, idempotency_key: str,
     ) -> tuple[dict[str, object], bool]:
-        if capability not in _ACTIVE_CAPABILITIES:
+        native_asr = capability == "speech_to_text" and _qa_asr_enabled(context.workspace_id)
+        if capability not in _ACTIVE_CAPABILITIES and not native_asr:
             raise WorkspaceModelDefaultsError("PROVIDER_CAPABILITY_UNSUPPORTED", 409)
         operation = "workspace_model_defaults.save"
         fingerprint = hashlib.sha256(canonical_json_bytes({
@@ -175,6 +189,12 @@ class PostgresWorkspaceModelDefaultsService:
                 current_version = 0 if current is None else int(current[0])
                 if current_version != expected_version:
                     raise WorkspaceModelDefaultsError("VERSION_CONFLICT", 409)
+                native_filter = (
+                    " AND c.provider_code='CUSTOM' AND c.adapter_type='asr_base_native' "
+                    "AND c.base_url='http://asr-base:8080' AND c.credential_requirement='none' "
+                    "AND c.access_mode='public' AND c.encrypted_credential IS NULL AND c.credential_version=0 "
+                    "AND m.model_id='faster-whisper-base'" if native_asr else ""
+                )
                 allowed = connection.execute(
                     "SELECT 1 FROM system_provider_connections c JOIN system_provider_models m ON m.connection_id=c.connection_id "
                     "JOIN system_provider_allowed_models a ON a.connection_id=m.connection_id AND a.model_id=m.model_id "
@@ -184,7 +204,7 @@ class PostgresWorkspaceModelDefaultsService:
                     "WHERE c.connection_id=%s AND m.model_id=%s AND c.enabled=true "
                     "AND ((c.access_mode='public' AND c.verification_status='verified') "
                     "OR (c.access_mode='personal' AND u.connection_id IS NOT NULL)) "
-                    "AND m.catalog_status='ready' AND %s=ANY(m.effective_capabilities)",
+                    "AND m.catalog_status='ready' AND %s=ANY(m.effective_capabilities)" + native_filter,
                     (context.tenant_id, context.actor_id, connection_id, model_id, capability),
                 ).fetchone()
                 if allowed is None:
@@ -297,7 +317,8 @@ class PostgresWorkspaceModelResolver:
     def resolve(
         self, context: WorkspaceModelContext, capability: str,
     ) -> Iterator[ResolvedModel]:
-        providers = _ACTIVE_PROVIDERS.get(capability)
+        native_asr = capability == "speech_to_text" and _qa_asr_enabled(context.workspace_id)
+        providers = frozenset({"CUSTOM"}) if native_asr else _ACTIVE_PROVIDERS.get(capability)
         if providers is None:
             raise WorkspaceModelUnavailable("PROVIDER_EXECUTION_NOT_READY")
         try:
@@ -335,7 +356,15 @@ class PostgresWorkspaceModelResolver:
         if capability not in set(values[12] or ()):
             raise WorkspaceModelUnavailable("PROVIDER_CAPABILITY_UNSUPPORTED")
         try:
-            base_url = validate_provider_base_url(provider_code, str(values[4]))
+            if native_asr:
+                if (str(values[17]) != "asr_base_native" or str(values[4]) != "http://asr-base:8080"
+                        or model_id != "faster-whisper-base" or access_mode != "public"
+                        or str(values[16]) != "none" or values[5] is not None
+                        or any(value is not None for value in values[6:9]) or int(values[9]) != 0):
+                    raise WorkspaceModelUnavailable("PROVIDER_CONNECTION_UNAVAILABLE")
+                base_url = "http://asr-base:8080"
+            else:
+                base_url = validate_provider_base_url(provider_code, str(values[4]))
         except ProviderSettingsError:
             raise WorkspaceModelUnavailable("PROVIDER_CONNECTION_UNAVAILABLE") from None
 
@@ -380,13 +409,13 @@ class PostgresWorkspaceModelResolver:
             connection_id=connection_id, provider_code=provider_code, model_id=model_id,
             capability=capability, base_url=base_url, credential_version=credential_version,
             default_version=int(values[0]), catalog_version=int(values[14]),
-            provider_kind="local" if provider_code in {"OLLAMA", "SENTENCE_TRANSFORMERS"} else "external_api",
+            provider_kind="server_internal" if native_asr else "local" if provider_code in {"OLLAMA", "SENTENCE_TRANSFORMERS"} else "external_api",
             routing_owner=(
-                "gateway" if provider_code in _ROUTING_GATEWAYS
+                "local_runtime" if native_asr else "gateway" if provider_code in _ROUTING_GATEWAYS
                 else "local_runtime" if provider_code == "SENTENCE_TRANSFORMERS"
                 else "provider"
             ),
-            daon_fallback_allowed=provider_code not in _ROUTING_GATEWAYS | {"SENTENCE_TRANSFORMERS"},
+            daon_fallback_allowed=not native_asr and provider_code not in _ROUTING_GATEWAYS | {"SENTENCE_TRANSFORMERS"},
             _credential=credential,
             adapter_type=str(values[17]),
         )

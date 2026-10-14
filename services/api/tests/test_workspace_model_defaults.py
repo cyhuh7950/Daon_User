@@ -59,6 +59,54 @@ def context() -> WorkspaceModelContext:
     )
 
 
+def test_native_asr_resolves_only_in_explicit_qa_workspace(monkeypatch):
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "workspace-001")
+    cipher = ProviderCredentialCipher(b"r" * 32, encryption_key_version=1)
+    database = Database(row(cipher, credential=None, provider_code="CUSTOM",
+        capability="speech_to_text", model_id="faster-whisper-base",
+        base_url="http://asr-base:8080", adapter_type="asr_base_native",
+        credential_requirement="none", credential_version=0))
+    resolver = PostgresWorkspaceModelResolver(Store(database), cipher)
+    with resolver.resolve(context(), "speech_to_text") as model:
+        assert model.provider_kind == "server_internal"
+        assert model.routing_owner == "local_runtime"
+        assert model.daon_fallback_allowed is False
+        assert model.credential_text(required=False) is None
+    database.queries.clear()
+    with pytest.raises(WorkspaceModelUnavailable):
+        with resolver.resolve(WorkspaceModelContext("tenant-001", "other-workspace", "actor-001"), "speech_to_text"):
+            pass
+    assert database.queries == []
+    for index, value in ((17, "openai_compatible"), (4, "https://other.example"),
+                         (2, "other-model"), (16, "required"), (15, "personal")):
+        altered = list(database.row); altered[index] = value
+        with pytest.raises(WorkspaceModelUnavailable):
+            with PostgresWorkspaceModelResolver(Store(Database(tuple(altered))), cipher).resolve(context(), "speech_to_text"):
+                pass
+
+
+def test_native_asr_default_catalog_is_qa_scoped_and_pinned(monkeypatch):
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "workspace-001")
+    database = DefaultsDatabase()
+    database.models = [("asr-qa", "CUSTOM", "CPU base ASR", False, 0, "verified", 1,
+        "faster-whisper-base", ["speech_to_text"], "ready", 1,
+        "asr_base_native", "http://asr-base:8080", "none")]
+    service = PostgresWorkspaceModelDefaultsService(DefaultsStore(database))
+    ctx = WorkspaceModelDefaultsContext("tenant-001", "workspace-001", "actor-001", "trace-001", "policy-v1")
+    initial = service.read(ctx)
+    assert initial["available_models"][0]["effective_capabilities"] == ["speech_to_text"]
+    other = WorkspaceModelDefaultsContext("tenant-001", "other-workspace", "actor-001", "trace-001", "policy-v1")
+    assert service.read(other)["available_models"] == []
+    saved, replay = service.save(ctx, capability="speech_to_text", connection_id="asr-qa", model_id="faster-whisper-base",
+        expected_version=0, expected_etag=initial["etag"], idempotency_key="asr-save-qa")
+    assert not replay and saved["defaults"][0]["capability"] == "speech_to_text"
+    assert any("c.adapter_type='asr_base_native'" in sql and "c.base_url='http://asr-base:8080'" in sql
+               for sql in database.query_sql)
+    with pytest.raises(WorkspaceModelDefaultsError, match="PROVIDER_CAPABILITY_UNSUPPORTED"):
+        service.save(other, capability="speech_to_text", connection_id="asr-qa", model_id="faster-whisper-base",
+                     expected_version=0, expected_etag=initial["etag"], idempotency_key="asr-save")
+
+
 def row(
     cipher: ProviderCredentialCipher, *, credential: bytes | None = b"client-key-v1",
     connection_id: str = "eoul-primary", provider_code: str = "EOUL_GATEWAY",

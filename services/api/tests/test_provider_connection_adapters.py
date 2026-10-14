@@ -18,6 +18,31 @@ from daon_user_api.provider_settings import ProviderSettingsError, validate_prov
 TEST_CREDENTIAL = "fixture-credential-never-real"
 
 
+def test_native_asr_registration_is_pinned_metadata_only():
+    transport = FakeTransport()
+    base = "http://asr-base:8080"
+    metadata = {"model_id": "faster-whisper-base",
+        "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+        "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+        "capability": "speech_to_text", "runtime": "cpu-int8-local"}
+    transport.responses[base + "/v1/metadata"] = TransportResponse(200, metadata)
+    transport.responses[base + "/health/ready"] = TransportResponse(200, {"status": "ready"})
+    adapter = AdapterRegistry(transport=transport).adapter("CUSTOM", "asr_base_native")
+    profile = connection("CUSTOM", base_url=base)
+    models = adapter.discover_models(profile, None)
+    assert models[0].reported_capabilities == ("speech_to_text",)
+    assert adapter.verify(profile, None).status == "ready"
+    assert all(r.method == "GET" and r.body is None and not r.headers for r in transport.requests)
+    assert all(r.timeout_seconds <= 5 and not r.follow_redirects for r in transport.requests)
+    transport.requests.clear()
+    for bad in (base + "/v1", "https://other.example"):
+        with pytest.raises(AdapterError):
+            adapter.discover_models(connection("CUSTOM", base_url=bad), None)
+    with pytest.raises(AdapterError):
+        adapter.discover_models(profile, TEST_CREDENTIAL)
+    assert transport.requests == []
+
+
 def test_ollama_metadata_is_bounded_and_remote_tags_never_show():
     transport = FakeTransport()
     base = "http://192.168.220.180:11434"

@@ -81,6 +81,20 @@ def _ollama_catalog_projection(payload: Mapping[object, object]) -> Mapping[obje
 
 class ProviderCatalog:
     @staticmethod
+    def from_native_asr_metadata(connection_id: str, payload: object) -> tuple[DiscoveredModel, ...]:
+        """설치된 CPU base의 메타데이터만 허용하며 실제 전사 성공을 뜻하지 않는다."""
+        expected = {
+            "model_id": "faster-whisper-base",
+            "model_digest": "d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9",
+            "revision": "ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66",
+            "capability": "speech_to_text", "runtime": "cpu-int8-local",
+        }
+        if not isinstance(payload, Mapping) or payload != expected:
+            raise ProviderCatalogError("PROVIDER_CATALOG_RESPONSE_INVALID")
+        return (DiscoveredModel(connection_id, "CUSTOM", "faster-whisper-base",
+                                ("speech_to_text",), "local_runtime", False),)
+
+    @staticmethod
     def logical_auto_model(connection_id: str, provider_code: str, auto_model_id: str) -> DiscoveredModel:
         return DiscoveredModel(
             connection_id=connection_id, provider_code=provider_code,
