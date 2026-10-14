@@ -158,6 +158,9 @@ class SourceIngestor:
             raise SourceRejected("COMPRESSION_BOMB")
         if malware_signature:
             raise SourceRejected("MALWARE_DETECTED")
+        if extension == ".wav":
+            from .audio_source import read_wav
+            read_wav(content)
         if extension == ".docx":
             from .docx_source import read_docx
             read_docx(content)

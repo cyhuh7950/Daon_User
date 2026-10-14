@@ -26,6 +26,24 @@ def encrypted_zip() -> bytes:
 
 
 class SourceIngestTests(unittest.TestCase):
+    def test_wav_preflight_rejects_signature_only_and_corrupted_frames(self) -> None:
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(16000)
+            writer.writeframes(b'\0\0' * 16000)
+        valid = buffer.getvalue()
+        result = self.ingestor.register_file('source.wav', 'audio/wav', valid)
+        self.assertEqual(result.status, 'accepted')
+        self.assertEqual(result.content_type, 'audio/wav')
+        for invalid in (b'RIFF\0\0\0\0WAVE', valid[:-1]):
+            with self.subTest(size=len(invalid)), self.assertRaises(SourceRejected):
+                self.ingestor.register_file('source.wav', 'audio/wav', invalid)
+        with self.assertRaisesRegex(SourceRejected, 'MIME_MISMATCH'):
+            self.ingestor.register_file('source.wav', 'audio/mpeg', valid)
+
     def test_pptx_preflight_member_limit_precedes_generic_crc_scan(self) -> None:
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
