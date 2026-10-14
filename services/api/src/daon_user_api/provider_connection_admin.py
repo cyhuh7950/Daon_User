@@ -745,7 +745,7 @@ class PostgresProviderConnectionService:
                 "encrypted_credential,credential_nonce,encryption_key_version,credential_schema_version,"
                 "credential_version,enabled,verification_status,verified_at,version,updated_by,trace_id,policy_version,"
                 "access_mode,credential_requirement,short_code,adapter_type,provider_name,auto_model_id) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (profile.connection_id, profile.provider_code, profile.display_name, profile.base_url,
                  None if sealed is None else sealed.ciphertext, None if sealed is None else sealed.nonce,
                  None if sealed is None else sealed.encryption_key_version,

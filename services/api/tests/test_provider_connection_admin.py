@@ -33,7 +33,7 @@ def test_native_asr_connection_policy_keeps_fixed_internal_endpoint_without_key(
             validate_connection_policy("CUSTOM", mode, requirement, "AS", "asr_base_native", endpoint)
 
 
-def test_native_asr_prepare_reads_installed_metadata_without_inference(monkeypatch):
+def test_native_asr_create_binds_sql_columns_and_reads_metadata_without_inference(monkeypatch):
     from test_provider_connection_adapters import FakeTransport
     transport = FakeTransport()
     metadata = {"model_id": "faster-whisper-base",
@@ -44,14 +44,32 @@ def test_native_asr_prepare_reads_installed_metadata_without_inference(monkeypat
     transport.responses["http://asr-base:8080/health/ready"] = TransportResponse(200, {"status": "ready"})
     monkeypatch.setattr(provider_connection_admin_module, "AdapterRegistry",
                         lambda **kwargs: AdapterRegistry(transport=transport, **kwargs))
-    service = PostgresProviderConnectionService(Store(SharedDatabase()),
+    monkeypatch.setenv("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "qa-workspace")
+    database = CompatibleDatabase()
+    service = PostgresProviderConnectionService(CompatibleStore(database),
         ProviderCredentialCipher(b"p" * 32, encryption_key_version=1))
-    profile, sealed, models = service._prepare(connection_id="asr-qa", provider_code="CUSTOM",
+    command = ProviderConnectionCreateCommand(connection_id="asr-qa", provider_code="CUSTOM",
         display_name="QA CPU base ASR", base_url="http://asr-base:8080", credential=None,
-        logical_model_ids=(), enabled=True, version=1, adapter_type="asr_base_native",
-        verified_model_ids=("faster-whisper-base",))
-    assert sealed is None and profile.base_url == "http://asr-base:8080"
-    assert models[0].reported_capabilities == ("speech_to_text",)
+        logical_model_ids=(), enabled=True, expected_version=0, adapter_type="asr_base_native",
+        access_mode="public", credential_requirement="none", short_code="AS",
+        provider_name="QA Native ASR", allowed_model_ids=("faster-whisper-base",))
+    saved, replayed = service.create_connection(context(), command, "native-asr-create")
+    assert replayed is False
+    assert saved["base_url"] == "http://asr-base:8080"
+    assert saved["allowed_model_ids"] == ["faster-whisper-base"]
+    assert saved["models"][0]["reported_capabilities"] == ["speech_to_text"]
+    assert {key: database.system_connection[key] for key in (
+        "version", "updated_by", "trace_id", "policy_version", "access_mode",
+        "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
+        "encrypted_credential", "credential_version", "verification_status",
+    )} == {
+        "version": 1, "updated_by": "system-admin", "trace_id": "trace-001",
+        "policy_version": "policy-v1", "access_mode": "public", "credential_requirement": "none",
+        "short_code": "AS", "adapter_type": "asr_base_native", "provider_name": "QA Native ASR",
+        "auto_model_id": None, "encrypted_credential": None, "credential_version": 0,
+        "verification_status": "verified",
+    }
+    assert database.system_connection["verified_at"] is not None
     assert [r.method for r in transport.requests] == ["GET", "GET"]
 
 
@@ -173,13 +191,21 @@ class CompatibleConnection(Connection):
                 "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
             )))
         if normalized.startswith("INSERT INTO system_provider_connections"):
-            self.database.system_connection = dict(zip((
+            columns_sql, values_sql = normalized.split(" VALUES ", 1)
+            columns = tuple(columns_sql.split("(", 1)[1].rstrip(")").split(","))
+            values = tuple(values_sql.removeprefix("(").removesuffix(")").split(","))
+            assert normalized.count("%s") == len(params), "SQL bound parameter count mismatch"
+            assert len(columns) == len(values), "SQL column/value count mismatch"
+            assert columns == (
                 "connection_id", "provider_code", "display_name", "base_url", "encrypted_credential",
                 "credential_nonce", "encryption_key_version", "credential_schema_version", "credential_version",
-                "enabled", "verification_status", "verified_at", "updated_by", "trace_id", "policy_version",
+                "enabled", "verification_status", "verified_at", "version", "updated_by", "trace_id", "policy_version",
                 "access_mode", "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
-            ), params))
-            self.database.system_connection.update(version=1, catalog_status="stale", catalog_version=0)
+            )
+            assert values[12] == "1" and all(value == "%s" for value in values[:12] + values[13:])
+            bound_values = (*params[:12], 1, *params[12:])
+            self.database.system_connection = dict(zip(columns, bound_values, strict=True))
+            self.database.system_connection.update(catalog_status="stale", catalog_version=0)
             return Cursor()
         if normalized.startswith("UPDATE system_provider_connections SET display_name="):
             if record is None or record["connection_id"] != params[-2] or record["version"] != params[-1]:
@@ -785,6 +811,14 @@ def test_update_omits_auto_model_id_preserves_existing_router(monkeypatch) -> No
     service, database = compatible_service(monkeypatch, transport)
     created, _ = service.create_connection(context(), route_command(), "route-auto-create")
     assert created["auto_model_id"] == "auto"
+    assert {key: database.system_connection[key] for key in (
+        "version", "updated_by", "trace_id", "policy_version", "access_mode",
+        "credential_requirement", "short_code", "adapter_type", "provider_name", "auto_model_id",
+    )} == {
+        "version": 1, "updated_by": "system-admin", "trace_id": "trace-001",
+        "policy_version": "policy-v1", "access_mode": "public", "credential_requirement": "required",
+        "short_code": "OM", "adapter_type": "OMNIROUTE", "provider_name": "OmniRoute", "auto_model_id": "auto",
+    }
     updated, _ = service.update_connection(context(), "route-1", ProviderConnectionUpdateCommand(
         display_name="OmniRoute renamed", base_url="https://omniroute.example/v1", credential=None,
         logical_model_ids=("auto",), enabled=True, expected_version=1,
