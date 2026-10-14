@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Mapping, Protocol, cast
 
 from .document_processing import DocumentProcessingContext, StoredSourceDocument, text_source_format
@@ -28,6 +29,7 @@ _SCHEMA: dict[str, object] = {
 
 
 class TextDocumentTransport(Protocol):
+    def get_json_no_auth(self, *, url: str, timeout_seconds: float) -> dict[str, object]: ...
     def post_json_no_auth(self, *, url: str, payload: dict[str, object], timeout_seconds: float) -> dict[str, object]: ...
 
 
@@ -60,10 +62,24 @@ class OllamaTextDocumentAdapter:
             base_url = OllamaTextGenerationAdapter._base_url(model)
         except ValueError:
             raise DocumentUnderstandingError("DOCUMENT_PROVIDER_ADAPTER_UNAVAILABLE", status=503) from None
+        # 기존 QA target과 일치할 때만 설치 모델/내부 kind를 검증한다.
+        # nonQA/일반 모델의 요청과 기본 선택·등급·결과 검증은 유지한다.
+        qa_target = os.environ.get("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", "")
+        thinking_payload: dict[str, object] = {}
+        if qa_target and qa_target == context.workspace_id:
+            try:
+                _, capabilities = OllamaTextGenerationAdapter(
+                    transport=self._transport,
+                ).verified_internal_metadata(selection)
+            except ValueError:
+                raise DocumentUnderstandingError("DOCUMENT_PROVIDER_ADAPTER_UNAVAILABLE", status=503) from None
+            if "thinking" in capabilities:
+                thinking_payload["think"] = False
         response = self._transport.post_json_no_auth(
             url=f"{base_url}/api/chat",
             payload={
                 "model": selection.model_id, "stream": False, "keep_alive": "5m",
+                **thinking_payload,
                 "options": {"temperature": 0, "num_predict": 512}, "format": _SCHEMA,
                 "messages": [
                     {"role": "system", "content": (
