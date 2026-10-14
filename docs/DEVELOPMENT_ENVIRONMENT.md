@@ -1,5 +1,15 @@
 # Daon_User 개발·정식 WSL 검증 환경
 
+## CPU base ASR 설치 확인 — 2026-10-14
+
+- 승인된 AU0 전용 서비스 `daon_user-asr-base`, 내부 `http://asr-base:8080`, hostport/publicproxy 없음. 기존 API/Web/두 worker/PostgreSQL 컨테이너 ID 불변, DB·Secret·모델 기본값 변경 없음.
+- 실행 소스 `ad12770b8b8a79eab2873f96558e8d5f4b4fe41d`, image `daon-user-r1:asr-base-ad12770b`, image ID `sha256:b6ed84ac6255aece15b9f35b62c965697dbee0de9ff6e48035cee125daf1aefc`, 크기 734246943 bytes. 후속 시험만 수정한 `e8dd38b681765d8e7cd11151f4161791b1a8c662` 때문에 이미지를 재빌드하지 않았다.
+- faster-whisper 1.2.1/CTranslate2 4.8.3, Systran/faster-whisper-base revision `ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66`. 공식 모델 4파일 총147882941 bytes·manifest 전부 해시 일치; model.bin SHA256 `d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9`.
+- 실제 resource CPU1·RAM1536MiB·MemorySwap=Memory·pids64·nonroot10001·read-only·tmpfs64MiB·cap-dropALL/no-new-privileges 확인. 준비 상태 healthy/ready200, 잘못된 WAV422·MIME400·이후 ready200. 대기 시점 CPU0.01%, 메모리321.5MiB는 순간 관측이며 전사 성능 보장이 아니다.
+- 모델은 image `/opt/asr-model`에 포함되며 음성 영속 volume 없음. `HF_HUB_OFFLINE=1`은 확인했지만 기존 network `internal=false`이므로 완전한 네트워크 차단으로 표시하지 않는다.
+- 기동은 정식 checkout에서 `DAON_ASR_IMAGE=daon-user-r1:asr-base-ad12770b docker compose -f deploy/daon-user/compose.asr-base.yaml up -d --no-build asr-base`로 실제 확인했다. 모델 deadline 초과 시 child 종료·ready503이며 자동 모델 재로딩은 없다. 해당 서비스만 restart 후 ready 재확인이 필요하다. 재시작 복구 자체는 NOT RUN. 중지는 같은 compose의 `stop asr-base`; 기존 제품 서비스에는 적용하지 않는다.
+- 정상 음성 전사·한국어 품질·사용자 WAV 업로드/근거 DB/질문/Studio 연결은 NOT RUN·AU1~AU4 미구현이며 AU0 설치 증거와 구분한다. Oracle/ysna 이전은 실행하지 않았다.
+
 ## 현재 실행 확인 — 2026-10-14 PPTX 원문·질문·Studio
 
 - 최종 실행 제품: Web `a3d079ad38752c7cab11b7c7f5dc0d33a83a883e`/image `sha256:998a1ff79aa4900f0b89b46045f690a272a1a7f6090b1ac122ebd2e21bfafa91`; API/document/studio `7c5a01e5ba89735516a873c421a3088665d17613`/image `sha256:bbc8538a94dd1f7ad8cc7c0f84aa78003d94ed5bad8360676aecd016f955767f`, DB0060。실제 PPTX 단일 등록·모델 이해·근거4/index1·정상/부족 질문·원문 강조/재진입·Studio V1/V2·접근경계를 확인했다. 아래 DOCX 및 PPTX 초기 차단 단락은 단계별 이력이다. 인계 문서 commit과 실행 제품 SHA는 구분한다. Oracle/ysna 이전·PR/병합은 하지 않았다.
