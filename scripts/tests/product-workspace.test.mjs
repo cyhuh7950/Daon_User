@@ -249,6 +249,7 @@ test("PPTX 실제 React 원문은 emoji codepoint 강조·표 위치·safe text�
       assert.ok(link);assert.match(link.textContent,/슬라이드 2 · 객체 3 · 표 행 1 · 열 2/);assert.doesNotMatch(link.getAttribute('href'),/#page/);
       await workspace.act(async()=>link.dispatchEvent(new MinimalEvent('click')));
       assert.equal(calls.length,1);assert.equal(calls[0].init.credentials,'same-origin');
+      if(scenario.startsWith('late')) assert.match(workspace.container.textContent,/PPTX 원문을 불러오는 중입니다/u);
       if(scenario==='late-selection'){const selected=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.getAttribute?.('aria-pressed')==='true'&&node.textContent.includes('qa.pptx'))[0];await workspace.act(async()=>selected.dispatchEvent(new MinimalEvent('click')));}
       if(scenario==='late-other-source'){const other=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent.includes('other.pptx'))[0];await workspace.act(async()=>other.dispatchEvent(new MinimalEvent('click')));assert.equal(other.getAttribute('aria-pressed'),'true');}
       if(scenario==='late-close'){const close=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원문 닫기')[0];await workspace.act(async()=>close.dispatchEvent(new MinimalEvent('click')));}
@@ -259,7 +260,10 @@ test("PPTX 실제 React 원문은 emoji codepoint 강조·표 위치·safe text�
         assert.equal(findElements(viewer,node=>node.tagName==='MARK')[0].textContent,'😀');
         assert.match(viewer.textContent,/<script>literal<\/script>/);assert.equal(findElements(viewer,node=>['A','SCRIPT','IMG'].includes(node.tagName)).length,0);
         assert.ok(findElements(viewer,node=>node.getAttribute?.('class')==='citation-docx-scroll').length);
-      }else if(scenario==='invalid')assert.match(viewer.textContent,/CITATION_CONTENT_UNAVAILABLE/);
+      }else if(scenario==='invalid'){
+        assert.match(viewer.textContent,/PPTX 원문을 확인할 수 없습니다/u);
+        assert.match(viewer.textContent,/CITATION_CONTENT_UNAVAILABLE/);
+      }
       else assert.equal(viewer,undefined);
     }finally{pending.resolve();if(workspace)await workspace.cleanup();globalThis.fetch=oldFetch;}
   });
