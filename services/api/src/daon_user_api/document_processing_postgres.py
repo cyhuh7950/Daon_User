@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .document_processing import (
-    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format, image_source_format, xlsx_source_format, docx_source_format,
+    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format, image_source_format, xlsx_source_format, docx_source_format, pptx_source_format,
 )
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
@@ -130,6 +130,7 @@ class PostgresDocumentProcessingRepository:
                 or image_source_format(filename, content_type)
                 or xlsx_source_format(filename, content_type)
                 or docx_source_format(filename, content_type)
+                or pptx_source_format(filename, content_type)
             )
             if (
                 str(row[7]) != "completed" or not original_format
@@ -139,7 +140,7 @@ class PostgresDocumentProcessingRepository:
             ObjectKeyPolicy().validate_final(object_context, "source", object_key)
             content = self._object_storage.get(object_key)
             expected_digest = str(row[4])
-            if docx_source_format(filename, content_type):
+            if docx_source_format(filename, content_type) or pptx_source_format(filename, content_type):
                 expected_digest = expected_digest.removeprefix('sha256:')
             if (
                 len(content) != int(row[5])
@@ -165,6 +166,13 @@ class PostgresDocumentProcessingRepository:
                 from .source_ingest import SourceRejected
                 try:
                     read_docx(content)
+                except SourceRejected:
+                    raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409) from None
+            if pptx_source_format(filename, content_type):
+                from .pptx_source import read_pptx
+                from .source_ingest import SourceRejected
+                try:
+                    read_pptx(content)
                 except SourceRejected:
                     raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409) from None
             return StoredSourceDocument(source_id, str(row[0]), filename, content, content_type)
@@ -230,7 +238,7 @@ class PostgresDocumentProcessingRepository:
                     raise DocumentUnderstandingError("SOURCE_VERSION_CONFLICT", status=409)
                 filename, mime = str(source[4]), str(source[5])
                 if not ((mime == "application/pdf" and filename.lower().endswith(".pdf"))
-                        or text_source_format(filename, mime) is not None or image_source_format(filename, mime) or xlsx_source_format(filename, mime) or docx_source_format(filename, mime)):
+                        or text_source_format(filename, mime) is not None or image_source_format(filename, mime) or xlsx_source_format(filename, mime) or docx_source_format(filename, mime) or pptx_source_format(filename, mime)):
                     raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409)
                 replay = connection.execute(
                     "SELECT request_fingerprint,result FROM idempotency_records "
@@ -259,7 +267,7 @@ class PostgresDocumentProcessingRepository:
                 failed_retry = (str(source[1]) in {"failed", "waiting_model"} and previous is not None
                                 and str(previous[1]) == "failed" and str(previous[2]) == "dead_letter")
                 review_retry = False
-                if (docx_source_format(filename, mime) and str(source[1]) == "needs_review"
+                if ((docx_source_format(filename, mime) or pptx_source_format(filename, mime)) and str(source[1]) == "needs_review"
                         and previous is not None and str(previous[1]) == "completed"
                         and str(previous[2]) == "completed"):
                     review = connection.execute(
@@ -276,7 +284,7 @@ class PostgresDocumentProcessingRepository:
                                     and value.get("source_version_id") == source_version_id
                                     and value.get("status") == "needs_review"
                                     and value.get("conflict") == "UNDERSTANDING_PARSER_CONFLICT"
-                                    and isinstance(lineage, dict) and lineage.get("source_format") == "docx"
+                                    and isinstance(lineage, dict) and lineage.get("source_format") == ("pptx" if pptx_source_format(filename, mime) else "docx")
                                     and lineage.get("reconciliation") == "mismatch")
                 if not (failed_retry or review_retry):
                     raise DocumentUnderstandingError("SOURCE_REPROCESSING_STATE_INVALID", status=409)
@@ -485,12 +493,19 @@ class PostgresDocumentProcessingRepository:
     ) -> None:
         cell_source = result.lineage.get('source_format') == 'xlsx'
         block_source = result.lineage.get('source_format') == 'docx'
+        slide_source = result.lineage.get('source_format') == 'pptx'
         if block_source:
             if result.parser.pages or result.parser.page_texts or result.parser.regions or result.parser.cell_evidence or result.parser.role != 'validation_only':
                 raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
             if result.status == 'ready':
                 from .docx_document_understanding import validate_block_evidence
                 validate_block_evidence(result.parser.block_evidence, result.semantic.key_facts)
+        if slide_source:
+            if result.parser.pages or result.parser.page_texts or result.parser.regions or result.parser.cell_evidence or result.parser.block_evidence or result.parser.role != 'validation_only':
+                raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
+            if result.status == 'ready':
+                from .pptx_document_understanding import validate_slide_evidence
+                validate_slide_evidence(result.parser.slide_evidence, result.semantic.key_facts)
         if cell_source and result.status == 'ready':
             from .xlsx_document_understanding import validate_cell_evidence
             validate_cell_evidence(result.parser.cell_evidence, result.semantic.key_facts)
@@ -523,9 +538,12 @@ class PostgresDocumentProcessingRepository:
         if block_source:
             payload['parser_validation']['block_evidence'] = list(result.parser.block_evidence)
             text, digest = self._snapshot(payload)
+        if slide_source:
+            payload['parser_validation']['slide_evidence'] = list(result.parser.slide_evidence)
+            text, digest = self._snapshot(payload)
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
-                if cell_source or block_source:
+                if cell_source or block_source or slide_source:
                     bound = connection.execute(
                         "SELECT pr.state,pr.version,pr.source_version_id,sv.source_id FROM processing_runs pr "
                         "JOIN source_versions sv ON sv.tenant_id=pr.tenant_id AND sv.workspace_id=pr.workspace_id "
@@ -570,8 +588,12 @@ class PostgresDocumentProcessingRepository:
                     evidence_items = [{'source_version_id': result.source_version_id,
                         'understanding_result_id': understanding_id, 'parser_role': 'validation_only',
                         'block_evidence': list(result.parser.block_evidence)}]
+                if slide_source:
+                    evidence_items = [{'source_version_id': result.source_version_id,
+                        'understanding_result_id': understanding_id, 'parser_role': 'validation_only',
+                        'slide_evidence': list(result.parser.slide_evidence)}]
                 for evidence in evidence_items:
-                    evidence_id = self._opaque_id("ev", understanding_id, 'blocks' if block_source else 'cells' if cell_source else str(evidence['page']))
+                    evidence_id = self._opaque_id("ev", understanding_id, 'slides' if slide_source else 'blocks' if block_source else 'cells' if cell_source else str(evidence['page']))
                     if result.parser.regions:
                         evidence["regions"] = list(result.parser.regions)
                     evidence_text, evidence_digest = self._snapshot(evidence)

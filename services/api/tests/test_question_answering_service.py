@@ -196,6 +196,9 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
         docx = tuple(replace(c, locator_kind='docx_block', locator_value=json.dumps(
             {'block': f'p:{i + 1}', 'start': 0, 'end': len(c.text)}, separators=(',', ':')))
             for i, c in enumerate(cells))
+        pptx = tuple(replace(c, locator_kind='pptx_block', locator_value=json.dumps(
+            {'block': f's:1:sp:2:p:{i + 1}', 'start': 0, 'end': len(c.text)}, separators=(',', ':')))
+            for i, c in enumerate(cells))
         selection = ResolvedModel(
             connection_id="local", provider_code="OLLAMA", model_id="fixture",
             capability="text_generation", base_url="http://models.example.com",
@@ -214,6 +217,10 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             ("workspace-qa", "workspace-qa", cells, False, True, 6),
             ("workspace-qa", "workspace-qa", docx, False, False, 6),
             ("workspace-qa", "workspace-qa", docx, False, True, 6),
+            ("workspace-qa", "workspace-qa", pptx, False, False, 6),
+            ("workspace-qa", "workspace-qa", pptx, False, True, 6),
+            ("workspace-other", "workspace-qa", pptx, False, False, 0),
+            ("workspace-qa", "workspace-qa", (pptx[0], docx[1]), False, False, 0),
             ("workspace-other", "workspace-qa", docx, False, False, 0),
             ("workspace-other", "workspace-qa", cells, False, False, 0),
             ("workspace-qa-suffix", "workspace-qa", cells, False, False, 0),
@@ -270,7 +277,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 self.assertEqual(egress.asserted_metadata_count, metadata_calls)
                 self.assertEqual(authorization.provider_payload, egress.wire)
                 self.assertEqual(egress.wire, canonical_json_bytes(chat["payload"]))
-                if evidence == docx and workspace == target:
+                if evidence in (docx, pptx) and workspace == target:
                     # Real service canonical roundtrip must not choose answer-first grammar.
                     frozen = json.loads(egress.wire)
                     for branch, wire_branch in zip(chat["payload"]["format"]["anyOf"], frozen["format"]["anyOf"], strict=True):

@@ -43,6 +43,10 @@ def docx_source_format(filename: str, content_type: str) -> bool:
     return filename.lower().endswith('.docx') and content_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
 
+def pptx_source_format(filename: str, content_type: str) -> bool:
+    return filename.lower().endswith('.pptx') and content_type == 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentProcessingContext:
     tenant_id: str
@@ -228,6 +232,7 @@ class DocumentProcessingService:
         image_adapter=None,
         xlsx_adapter=None,
         docx_adapter=None,
+        pptx_adapter=None,
     ) -> None:
         self._repository = repository
         self._model_resolver = model_resolver
@@ -249,6 +254,10 @@ class DocumentProcessingService:
             from .docx_document_understanding import OllamaDocxDocumentAdapter
             docx_adapter = OllamaDocxDocumentAdapter(UrlLibDocumentUnderstandingTransport())
         self._docx_adapter = docx_adapter
+        if pptx_adapter is None:
+            from .pptx_document_understanding import OllamaPptxDocumentAdapter
+            pptx_adapter = OllamaPptxDocumentAdapter(UrlLibDocumentUnderstandingTransport())
+        self._pptx_adapter = pptx_adapter
 
     def process(
         self, context: DocumentProcessingContext, *, source_id: str,
@@ -271,6 +280,12 @@ class DocumentProcessingService:
         processing_run_id: str,
     ) -> DocumentUnderstandingResult:
         try:
+            if pptx_source_format(document.filename, document.content_type):
+                with self._model_resolver.resolve(context.model_context(), 'text_generation') as model:
+                    self._egress_guard.authorize(context, (model,))
+                    result = self._pptx_adapter.understand(document, model, context)
+                self._repository.complete(context, processing_run_id, result)
+                return result
             if docx_source_format(document.filename, document.content_type):
                 with self._model_resolver.resolve(context.model_context(), "text_generation") as model:
                     self._egress_guard.authorize(context, (model,))

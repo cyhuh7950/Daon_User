@@ -78,6 +78,46 @@ class FakeIndex:
 
 
 class DocumentProcessingWorkerTests(unittest.TestCase):
+    def test_pptx_worker_preserves_bound_run_and_indexes_only_verified_blocks(self):
+        from contextlib import contextmanager
+        from daon_user_api.workspace_model_defaults import ResolvedModel
+        from daon_user_api.document_processing import DocumentProcessingService
+        from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
+        from daon_user_api.pptx_document_understanding import OllamaPptxDocumentAdapter
+        from test_document_processing_postgres import FakeCloudStore, FakeObjectStorage
+        from test_pptx_document_understanding import Transport, original, MIME, native_value
+
+        class Resolver:
+            @contextmanager
+            def resolve(self, context, capability):
+                self.capability = capability
+                yield ResolvedModel('local', 'OLLAMA', 'fixture-model', capability, 'https://models.example.com', 0, 1, 1, 'server_internal', 'provider', True, None)
+
+        for failure in ('none', 'mismatch', 'guard'):
+            with self.subTest(failure=failure):
+                store, storage, transport, queue, resolver = FakeCloudStore(), FakeObjectStorage(), Transport(), FakeQueue(job()), Resolver()
+                transport.value = native_value()
+                store.connection.filename = 'qa.pptx'; store.connection.content_type = MIME
+                store.connection.content = storage.content = original()
+                store.connection.states = {'ProcessingRun': 'vision_llm_understanding', 'Source': 'processing'}
+                store.connection.versions = {'ProcessingRun': 2, 'Source': 3}
+                if failure == 'mismatch': transport.value['key_facts'][0]['text'] = 'wrong'
+                service = DocumentProcessingService(PostgresDocumentProcessingRepository(store, storage), resolver,
+                    AdapterFactory(Adapter()), pptx_adapter=OllamaPptxDocumentAdapter(transport))
+                if failure == 'guard':
+                    class RejectGuard:
+                        def authorize(self, *args): raise DocumentUnderstandingError('EGRESS_POLICY_DENIED', status=403)
+                    service._egress_guard = RejectGuard()
+                worker = DocumentProcessingWorker('worker-cp3', queue, service, FakeIndex(queue.events), clock=lambda: NOW)
+                self.assertTrue(worker.run_once())
+                self.assertEqual(resolver.capability, 'text_generation')
+                self.assertEqual(sum(e[0] == 'index' for e in queue.events), 1 if failure == 'none' else 0)
+                if failure == 'guard':
+                    self.assertEqual(transport.events, [])
+                    self.assertEqual(queue.events[-1], ('dead_letter', 'EGRESS_POLICY_DENIED'))
+                    self.assertEqual(store.connection.states['ProcessingRun'], 'failed')
+                else: self.assertEqual(queue.events[-1], ('complete', 'run-cp3'))
+
     def test_docx_worker_preserves_bound_run_and_indexes_only_verified_blocks(self):
         from contextlib import contextmanager
         from daon_user_api.workspace_model_defaults import ResolvedModel

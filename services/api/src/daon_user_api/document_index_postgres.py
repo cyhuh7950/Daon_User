@@ -104,12 +104,13 @@ class PostgresDocumentIndex:
         )
         cell_source = result.lineage.get('source_format') == 'xlsx'
         block_source = result.lineage.get('source_format') == 'docx'
-        if not page_texts and not cell_source and not block_source:
+        slide_source = result.lineage.get('source_format') == 'pptx'
+        if not page_texts and not cell_source and not block_source and not slide_source:
             raise DocumentUnderstandingError("PAGE_EVIDENCE_UNAVAILABLE", status=409)
 
         chunks: list[dict[str, object]] = []
         all_facts_located = True
-        for ordinal, fact in (() if cell_source or block_source else enumerate(result.semantic.key_facts, start=1)):
+        for ordinal, fact in (() if cell_source or block_source or slide_source else enumerate(result.semantic.key_facts, start=1)):
             normalized_fact = self._normalized(fact)
             page = next((
                 page_number for page_number, page_text in page_texts
@@ -142,6 +143,17 @@ class PostgresDocumentIndex:
                     'source_version_id': result.source_version_id, 'page': 1, 'text': block['text'],
                     'evidence_span_id': self._opaque_id('span', chunk_id, block['locator_value']),
                     'evidence_kind': 'docx_block_fact', 'locator_value': block['locator_value']})
+        if slide_source:
+            from .pptx_document_understanding import validate_slide_evidence
+            validate_slide_evidence(result.parser.slide_evidence, result.semantic.key_facts)
+            if result.parser.pages or result.parser.page_texts or result.parser.regions or result.parser.cell_evidence or result.parser.block_evidence or result.parser.role != 'validation_only':
+                raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
+            for ordinal, block in enumerate(result.parser.slide_evidence, 1):
+                chunk_id = self._opaque_id('chunk', result.source_version_id, str(ordinal), block['text'])
+                chunks.append({'chunk_id': chunk_id, 'source_id': result.source_id,
+                    'source_version_id': result.source_version_id, 'page': 1, 'text': block['text'],
+                    'evidence_span_id': self._opaque_id('span', chunk_id, block['locator_value']),
+                    'evidence_kind': 'pptx_block_fact', 'locator_value': block['locator_value']})
         if cell_source:
             from .xlsx_document_understanding import validate_cell_evidence
             validate_cell_evidence(result.parser.cell_evidence, result.semantic.key_facts)
@@ -180,6 +192,8 @@ class PostgresDocumentIndex:
             strategy = 'native_xlsx_facts_with_cell_validation'
         if block_source:
             strategy = 'native_docx_facts_with_block_validation'
+        if slide_source:
+            strategy = 'native_pptx_facts_with_block_validation'
         if not all_facts_located:
             if text_source:
                 raise DocumentUnderstandingError("TEXT_UNDERSTANDING_UNGROUNDED", status=409)
@@ -240,6 +254,25 @@ class PostgresDocumentIndex:
                         'block_evidence': list(result.parser.block_evidence)}
                     if extraction is None or extraction[0] != expected:
                         raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
+                if slide_source or isinstance(canonical_lineage, dict) and canonical_lineage.get('source_format') == 'pptx':
+                    parser_payload = understanding_payload.get('parser_validation')
+                    if (not slide_source or understanding_payload.get('source_version_id') != result.source_version_id
+                        or not isinstance(parser_payload, dict) or parser_payload.get('slide_evidence') != list(result.parser.slide_evidence)
+                        or any(parser_payload.get(key) != [] for key in ('pages', 'page_texts', 'regions'))
+                        or parser_payload.get('cell_evidence', []) != [] or parser_payload.get('block_evidence', []) != [] or parser_payload.get('role') != 'validation_only'
+                        or canonical_lineage != dict(result.lineage)
+                        or any(not re.fullmatch(r'[0-9a-f]{64}', str(result.lineage.get(key, ''))) for key in ('source_digest', 'native_input_digest'))
+                        or result.lineage.get('reconciliation') != 'matched'):
+                        raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
+                    extraction = connection.execute(
+                        'SELECT canonical_json FROM extraction_evidence WHERE source_version_id=%s AND understanding_result_id=%s ORDER BY created_at DESC,record_id DESC LIMIT 1',
+                        (result.source_version_id, str(understanding_row[0])),
+                    ).fetchone()
+                    expected = {'source_version_id': result.source_version_id,
+                        'understanding_result_id': str(understanding_row[0]), 'parser_role': 'validation_only',
+                        'slide_evidence': list(result.parser.slide_evidence)}
+                    if extraction is None or extraction[0] != expected:
+                        raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
                 if cell_source or isinstance(canonical_lineage, dict) and canonical_lineage.get('source_format') == 'xlsx':
                     parser_payload = understanding_payload.get('parser_validation')
                     if not cell_source or understanding_payload.get('source_version_id') != result.source_version_id or not isinstance(parser_payload, dict) or parser_payload.get('cell_evidence') != list(result.parser.cell_evidence) or canonical_lineage != dict(result.lineage) or any(not re.fullmatch(r'[0-9a-f]{64}', str(result.lineage.get(key, ''))) for key in ('source_digest', 'native_input_digest')) or result.lineage.get('reconciliation') != 'matched':
@@ -289,7 +322,7 @@ class PostgresDocumentIndex:
                     "SELECT s.state,s.version,sv.source_id FROM source_versions sv "
                     "JOIN sources s ON s.tenant_id=sv.tenant_id AND "
                     "s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
-                    "WHERE sv.record_id=%s" + (" AND sv.version=(SELECT MAX(newer.version) FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id)" if cell_source or block_source else ""),
+                    "WHERE sv.record_id=%s" + (" AND sv.version=(SELECT MAX(newer.version) FROM source_versions newer WHERE newer.tenant_id=sv.tenant_id AND newer.workspace_id=sv.workspace_id AND newer.source_id=sv.source_id)" if cell_source or block_source or slide_source else ""),
                     (result.source_version_id,),
                 ).fetchone()
                 if source_row is None or str(source_row[2]) != result.source_id:
@@ -315,6 +348,8 @@ class PostgresDocumentIndex:
                         evidence_payload['locator'] = {'kind': 'sheet_cell', 'value': chunk['locator_value']}
                     if block_source:
                         evidence_payload['locator'] = {'kind': 'docx_block', 'value': chunk['locator_value']}
+                    if slide_source:
+                        evidence_payload['locator'] = {'kind': 'pptx_block', 'value': chunk['locator_value']}
                     evidence_text, evidence_digest = self._snapshot(evidence_payload)
                     connection.execute(
                         "INSERT INTO evidence_spans "
@@ -373,22 +408,28 @@ class PostgresDocumentIndex:
                 raise DocumentUnderstandingError("DOCUMENT_INDEX_SNAPSHOT_INVALID", status=500)
             cell_context = payload.get("strategy") == "native_xlsx_facts_with_cell_validation"
             block_context = payload.get('strategy') == 'native_docx_facts_with_block_validation'
+            slide_context = payload.get('strategy') == 'native_pptx_facts_with_block_validation'
+            if slide_context and (payload.get('source_version_id') != source_version_id or not 1 <= len(raw_chunks) <= 5):
+                raise DocumentUnderstandingError('DOCUMENT_INDEX_SNAPSHOT_INVALID', status=409)
             if block_context and payload.get('source_version_id') != source_version_id:
                 raise DocumentUnderstandingError('DOCUMENT_INDEX_SNAPSHOT_INVALID', status=409)
             matches: list[IndexedEvidenceChunk] = []
             for raw in raw_chunks:
-                if block_context and (not isinstance(raw, dict) or raw.get('source_version_id') != source_version_id):
+                if (block_context or slide_context) and (not isinstance(raw, dict) or raw.get('source_version_id') != source_version_id):
                     raise DocumentUnderstandingError('DOCUMENT_INDEX_SNAPSHOT_INVALID', status=409)
                 if not isinstance(raw, dict) or str(raw.get("source_version_id", "")) != source_version_id:
                     continue
                 overlap = query_tokens.intersection(self._tokens(str(raw.get("text", ""))))
                 sheet_cell = raw.get('evidence_kind') == 'xlsx_cell_fact'
                 docx_block = raw.get('evidence_kind') == 'docx_block_fact'
+                pptx_block = raw.get('evidence_kind') == 'pptx_block_fact'
+                if slide_context and not pptx_block:
+                    raise DocumentUnderstandingError('DOCUMENT_INDEX_SNAPSHOT_INVALID', status=409)
                 if block_context and not docx_block:
                     raise DocumentUnderstandingError('DOCUMENT_INDEX_SNAPSHOT_INVALID', status=409)
                 if cell_context and not sheet_cell:
                     raise DocumentUnderstandingError("DOCUMENT_INDEX_SNAPSHOT_INVALID", status=409)
-                if not overlap and not (cell_context and sheet_cell or block_context and docx_block):
+                if not overlap and not (cell_context and sheet_cell or block_context and docx_block or slide_context and pptx_block):
                     continue
                 image_region = raw.get("evidence_kind") == "image_region_fact"
                 if docx_block:
@@ -397,6 +438,15 @@ class PostgresDocumentIndex:
                     try:
                         _block, start, end = decode_docx_block(raw.get('locator_value'))
                         if not block_context or raw.get('source_id') != source_id or not isinstance(raw.get('text'), str) or end - start != len(raw['text']) or raw.get('page') != 1:
+                            raise SourceRejected('CORRUPTED_SOURCE')
+                    except SourceRejected:
+                        raise DocumentUnderstandingError('DOCUMENT_INDEX_SNAPSHOT_INVALID', status=409) from None
+                if pptx_block:
+                    from .pptx_source import decode_pptx_block
+                    from .source_ingest import SourceRejected
+                    try:
+                        _block, start, end = decode_pptx_block(raw.get('locator_value'))
+                        if not slide_context or raw.get('source_id') != source_id or not isinstance(raw.get('text'), str) or end - start != len(raw['text']) or raw.get('page') != 1:
                             raise SourceRejected('CORRUPTED_SOURCE')
                     except SourceRejected:
                         raise DocumentUnderstandingError('DOCUMENT_INDEX_SNAPSHOT_INVALID', status=409) from None
@@ -418,11 +468,11 @@ class PostgresDocumentIndex:
                     str(raw["chunk_id"]), source_id, source_version_id,
                     int(raw["page"]), str(raw["text"]), str(raw["evidence_span_id"]),
                     len(overlap) / len(query_tokens),
-                    'docx_block' if docx_block else 'sheet_cell' if sheet_cell else "image_region" if image_region else "section" if raw.get("evidence_kind") == "text_source_verbatim_fact" else "page",
-                    str(raw["locator_value"]) if image_region or sheet_cell or docx_block else None,
+                    'pptx_block' if pptx_block else 'docx_block' if docx_block else 'sheet_cell' if sheet_cell else "image_region" if image_region else "section" if raw.get("evidence_kind") == "text_source_verbatim_fact" else "page",
+                    str(raw["locator_value"]) if image_region or sheet_cell or docx_block or pptx_block else None,
                 ))
             return tuple(sorted(
                 matches, key=lambda item: (-item.score, item.page, item.chunk_id),
-            )[:min(limit, 5) if cell_context or block_context else limit])
+            )[:min(limit, 5) if cell_context or block_context or slide_context else limit])
         except Exception as error:
             raise self._database_error(error) from None

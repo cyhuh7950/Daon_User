@@ -107,6 +107,77 @@ def paraphrased_ready_result() -> DocumentUnderstandingResult:
 
 
 class PostgresDocumentIndexTests(unittest.TestCase):
+    def pptx_fixture(self):
+        from copy import deepcopy
+        from test_pptx_document_understanding import ready_pptx_result
+        result = ready_pptx_result()
+        self.cloud.connection.understanding_payload = deepcopy({
+            'source_id': result.source_id, 'source_version_id': result.source_version_id, 'status': 'ready',
+            'semantic': {'key_facts': list(result.semantic.key_facts)},
+            'parser_validation': {'text': '', 'markdown': '', 'html': '', 'pages': [], 'page_texts': [],
+                'regions': [], 'role': 'validation_only', 'slide_evidence': list(result.parser.slide_evidence)}, 'lineage': dict(result.lineage)})
+        self.cloud.connection.extraction_payload = deepcopy({'source_version_id': result.source_version_id,
+            'understanding_result_id': 'understanding-cp3', 'parser_role': 'validation_only',
+            'slide_evidence': list(result.parser.slide_evidence)})
+        return result
+
+    def test_pptx_index_search_preserves_only_original_block_locator_without_page_fallback(self):
+        result = self.pptx_fixture()
+        self.index.index_result(self.context, result)
+        payload = self.cloud.connection.index_payload
+        self.assertEqual(payload['strategy'], 'native_pptx_facts_with_block_validation')
+        self.assertTrue(all(c['evidence_kind'] == 'pptx_block_fact' for c in payload['chunks']))
+        chunks = self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='unrelated weather')
+        self.assertEqual({c.text for c in chunks}, {'REF-DELTA-17', '2026-12-08', '57000', 'KRW'})
+        self.assertTrue(all(c.locator_kind == 'pptx_block' and c.score == 0 and c.page == 1 for c in chunks))
+        self.assertEqual(len(self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='code', limit=2)), 2)
+        self.assertEqual(self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query=''), ())
+        self.assertEqual(self.index.search(self.context, source_id='other-source', source_version_id=result.source_version_id, query='code'), ())
+
+    def test_pptx_index_rejects_canonical_extraction_and_page_tampering_before_writes(self):
+        from dataclasses import replace
+        for scope in ('canonical', 'extraction', 'lineage', 'page', 'canonical-page'):
+            with self.subTest(scope=scope):
+                self.setUp(); result = self.pptx_fixture()
+                if scope == 'canonical': self.cloud.connection.understanding_payload['parser_validation']['slide_evidence'][0]['locator_value'] = '{"block":"p:3","start":6,"end":18}'
+                elif scope == 'extraction': self.cloud.connection.extraction_payload['source_version_id'] = 'other-version'
+                elif scope == 'lineage': result = replace(result, lineage={**result.lineage, 'source_digest': 'sha256:' + 'a' * 64})
+                elif scope == 'page': result = replace(result, parser=replace(result.parser, pages=(1,), page_texts=((1, 'fake page'),)))
+                else: self.cloud.connection.understanding_payload['parser_validation']['pages'] = [1]
+                with self.assertRaises(DocumentUnderstandingError): self.index.index_result(self.context, result)
+                self.assertEqual(self.cloud.connection.inserts, [])
+                self.assertEqual(self.cloud.connection.source_state, 'processing')
+
+    def test_pptx_search_tampered_kind_locator_and_source_is_invalid_snapshot(self):
+        for field, value in (('evidence_kind', 'parser_page_grounded_fallback'), ('locator_value', '{"block":"p:2","start":true,"end":18}'), ('source_id', 'other-source'), ('source_version_id', 'other-version')):
+            with self.subTest(field=field):
+                self.setUp(); result = self.pptx_fixture(); self.index.index_result(self.context, result)
+                self.cloud.connection.index_payload['chunks'][0][field] = value
+                with self.assertRaises(DocumentUnderstandingError):
+                    self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='REF')
+
+    def test_pptx_index_latest_source_select_runs_real_sql_and_rejects_old_version(self):
+        import sqlite3
+        result = self.pptx_fixture()
+        connection = self.cloud.connection
+        db = sqlite3.connect(':memory:'); self.addCleanup(db.close)
+        db.executescript('CREATE TABLE sources(tenant_id,workspace_id,record_id,state,version); CREATE TABLE source_versions(tenant_id,workspace_id,source_id,record_id,version);')
+        db.execute('INSERT INTO sources VALUES(?,?,?,?,?)', ('tenant-cp3', 'workspace-cp3', 'source-cp3', 'processing', 3))
+        db.execute('INSERT INTO source_versions VALUES(?,?,?,?,?)', ('tenant-cp3', 'workspace-cp3', 'source-cp3', 'source-version-cp3', 1))
+        db.execute('INSERT INTO source_versions VALUES(?,?,?,?,?)', ('tenant-cp3', 'workspace-cp3', 'source-cp3', 'new-version', 2))
+        execute = connection.execute
+
+        def actual_select(sql, params=()):
+            if sql.startswith('SELECT s.state,s.version,sv.source_id'):
+                return Cursor(db.execute(sql.replace('%s', '?'), params).fetchone())
+            return execute(sql, params)
+
+        connection.execute = actual_select
+        with self.assertRaisesRegex(DocumentUnderstandingError, 'SOURCE_NOT_FOUND'):
+            self.index.index_result(self.context, result)
+        self.assertEqual(connection.inserts, [])
+        self.assertEqual(connection.source_state, 'processing')
+
     def docx_fixture(self):
         from copy import deepcopy
         from test_docx_document_understanding import ready_docx_result

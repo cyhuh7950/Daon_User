@@ -59,6 +59,53 @@ def external_text_snapshot(provider_code: str, base_url: str) -> ProviderSetting
     )
 
 
+class PptxQuestionGroundingTests(unittest.TestCase):
+    def test_base_pptx_and_mixed_evidence_use_original_locator_not_fake_page(self):
+        pptx = IndexedEvidenceChunk('pptx','source','version',1,'ABC','span',0.0,
+            'pptx_block','{"block":"s:2:sp:3:p:1","start":0,"end":3}')
+        selection = TextModelSelection('OLLAMA','https://models.example.com','profile','deployment','fixture',1)
+        for others in ((), tuple(IndexedEvidenceChunk(kind,'source','version',7,'old text','span-'+kind,0.0,kind,value)
+            for kind,value in [('page','7'),('section','section'),('image_region','0,0,1,1,1,1'),('sheet_cell','{"sheet":"Plan","range":"A1"}')])):
+            with self.subTest(mixed=bool(others)):
+                request = GroundedQuestionRequest('read evidence',(pptx,*others),'trace')
+                payload = OllamaTextGenerationAdapter.provider_payload(request,selection)
+                supplied = json.loads(payload['messages'][1]['content'])['evidence']
+                self.assertEqual(supplied[0],{'chunk_id':'pptx','text':'ABC','locator':{'block':'s:2:sp:3:p:1','start':0,'end':3}})
+                self.assertEqual(supplied[1:],[{'chunk_id':c.chunk_id,'page':7,'text':'old text'} for c in others])
+                self.assertNotIn('think',payload)
+                if others:
+                    class NoMetadata:
+                        def get_json_no_auth(self,**kwargs):raise AssertionError('mixed must not call metadata')
+                        def post_json_no_auth(self,**kwargs):raise AssertionError('mixed must not call metadata')
+                    prepared = OllamaTextGenerationAdapter(transport=NoMetadata()).prepare_qa_structured_payload(request,selection,payload)
+                    self.assertEqual(prepared,payload)
+
+    def test_invalid_base_pptx_locator_fails_before_any_http(self):
+        selection = TextModelSelection('OLLAMA','https://models.example.com','profile','deployment','fixture',1)
+        for value in ('{"block":"s:2:sp:3:p:1","start":true,"end":3}', '{"block":"s:2:sp:3:p:1","start":0,"end":4}'):
+            chunk = IndexedEvidenceChunk('pptx','source','version',1,'ABC','span',0.0,'pptx_block',value)
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError,'TEXT_GENERATION_GROUNDING_INVALID'):
+                OllamaTextGenerationAdapter.provider_payload(GroundedQuestionRequest('read',(chunk,),'trace'),selection)
+
+    def test_pptx_currency_changes_are_rejected_by_real_adapter(self):
+        chunk = IndexedEvidenceChunk('c1','source','version',1,'57000 KRW','span',0.0,
+            'pptx_block','{"block":"s:1:sp:2:p:1","start":0,"end":9}')
+        request = GroundedQuestionRequest('amount and currency?',(chunk,),'trace')
+        selection = TextModelSelection('OLLAMA','https://models.example.com','profile','deployment','fixture',1)
+        class Transport:
+            answer='57000USD'
+            def post_json_no_auth(self, **kwargs):
+                return {'message':{'content':json.dumps({'answer':self.answer,'cited_chunk_ids':['c1'],'insufficient':False})}}
+        transport=Transport();adapter=OllamaTextGenerationAdapter(transport=transport)
+        for answer in ('57000 USD','57000 EUR','57000$','57000 GBP'):
+            transport.answer=answer
+            with self.subTest(answer=answer), self.assertRaisesRegex(ValueError,'TEXT_GENERATION_GROUNDING_INVALID'):
+                adapter.generate(request,selection)
+        for answer in ('57000 KRW','57000₩'):
+            transport.answer=answer
+            with self.subTest(answer=answer):self.assertEqual(adapter.generate(request,selection).answer,answer)
+
+
 class RecordingTransport:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, object]]] = []
