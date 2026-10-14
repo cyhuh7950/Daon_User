@@ -1,6 +1,12 @@
 # Daon_User 개발·정식 WSL 검증 환경
 
-## 현재 실행 확인 — 2026-10-14 제한형 XLSX 연결
+## 현재 실행 확인 — 2026-10-14 XLSX 질문 strict 응답 보정
+
+- 실제 제품/WSL Git `11d086fbf5019d8b3f3bcafb14173efd51809db0` clean. API/document/studio image `sha256:a355c45920e1f02c022b5cced0ae65d41281115034edd0fb2ef8e3069bac8cdb`, Web은 소스 불변인 c9dbf71e image `sha256:7c08abcae722bec0fc3237123555974a2de4e12f73a6119c3f2a70f7ac9a6a79` 유지. DB0060·기존 영속/Secret/권한/모델/설정 불변, 준비 API200 확인. 아래 c9dbf71e/40165066은 직전 실행 이력이다.
+- Ollama grounded 응답의 exact3keys·문자열 answer·문자열 배열 citations·정확 boolean 검증9행만 추가했다. main 직접 관련45PASS/56하위·diffcheck0. 실제 정상 BFF 질문 Run `run-9ac906da75dbdaebc1e672771c8ae4d6`/result `run-result-5c5912f708534ba503aadcc841c3cc82`에 기존 QA workbook code/date/57000KRW·같은SourceVersion sheet_cell5개가 저장되고 Notebook context 재조회로 일치했다. 이 추가 회귀는 API/DB 증거이며 새 브라우저 클릭 증거로 계산하지 않는다. 보조 인증 세션은 정상 철회했다.
+- 자료 밖 질문의 정상 부족 안내는 여전히 미확인/생성 모순으로 안전 거부다. 생성 schema/prompt 변경 후보는 정상 질문 퇴행 또는 모순 유지로 모두 폐기했으며 제품에 반영하지 않았다. conditional schema는 공식 llama.cpp grammar 미지원이므로 사용하지 않았다. 임시 진단 도구는 제거했고 기존 QA 자료/실패·미완료 Run은 보존했다. 새 서버 기동·일관 백업/복구·실기기·전체 Gate는 반복하지 않았고 ysna/Oracle 이전·PR/병합도 실행하지 않았다. 복구 후보는 직전 호환 API40165066/Webc9dbf71e 쌍이며 DB/자료 rollback은 수행하지 않는다.
+
+## 직전 실행 확인 — 2026-10-14 제한형 XLSX 연결
 
 - 제품 기준/실제 WSL Git은 `c9dbf71e822ec4a9161eae1c6487bd59861431d0`, branch `codex/r1-journey-evidence-20261012`, checkout `/home/daon/deploy/daon-user-r1-9522dc2c` clean이다. API/document/studio는 소스 불변을 Git diff로 확인해 `40165066f8707de400751b227367ce6b6d7390ff` image `sha256:a9f63f5fe9552b3d6b1bb3b6f38a385b6f858b041a7f64b30082dde04b6f91e7`를 유지한다. Web은 c9dbf71e image `sha256:7c08abcae722bec0fc3237123555974a2de4e12f73a6119c3f2a70f7ac9a6a79`이다. DB0060·기존 PG/MinIO/runtime 영속·읽기 전용 Secret·모델·권한은 불변이다. 인계 문서만 저장한 후속 Git SHA는 실행 제품/이미지 SHA와 구분한다. 아래 이미지 연결과 10월4~7일 환경 설명은 이력이며 현재 상태로 간주하지 않는다.
 - 실제 합성 `QA-internal-xlsx-20261014.xlsx` 4,599bytes/SHA256 `968186628ae61373a4337b465ece90ecb3360d77a11b557f43971f304d5bdbcb`를 기존 QA Notebook에 GUI 등록했다. Source `src-acc1b8e8445dab324e7bc90f2ec0c867`/SV `sv-acc1b8e8445dab324e7bc90f2ec0c867`, 정상 재처리 Run `pr-1ef135abdb0dae9faab5d296bd0583e3` completed/ready/index5. 초기 failed/dead_letter `pr-62abb1c8ad6e4f59d3d304d0e6e6ddf9`와 재처리 계보는 보존했다. 기존 내부 llama3.2:3b가 전체 구조 JSON을 읽어 중요 값을 선택하고 독립 원본 셀 검증 후 저장·색인했다. ZIP 자체를 텍스트 모델에 넣거나 Parser가 의미 요약을 만든 것이 아니다. 현재 생성은 원본 셀의 literal 값/시트/주소 선택을 제약하며 수식 실행·cached 재계산·외부 연결은 하지 않는다.
