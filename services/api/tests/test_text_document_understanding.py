@@ -218,3 +218,98 @@ def test_qa_request_fix_does_not_relax_strict_results(monkeypatch,mode,code):
     transport=MetadataTransport(response_mode=mode)
     with pytest.raises(DocumentUnderstandingError,match='^'+code+'$'):
         OllamaTextDocumentAdapter(transport).understand(_document(),thinking_selection(),_context())
+
+
+_EXACT_SOURCE_LINE = '내용: 복사한 텍스트를 Source로 등록하고 저장 후 다시 조회합니다.'
+
+
+class ExactFactTransport(MetadataTransport):
+    def __init__(self, fact):
+        super().__init__()
+        self.fact=fact
+
+    def post_json_no_auth(self,**kwargs):
+        response=super().post_json_no_auth(**kwargs)
+        if kwargs['url'].endswith('/api/chat'):
+            response['message']['content']=json.dumps({'title':'시험 자료','summary':'텍스트 등록 시험입니다.',
+                'key_facts':[self.fact]})
+        return response
+
+
+@pytest.mark.parametrize('target', ['workspace-t','different-workspace'])
+def test_source_spacing_change_remains_ungrounded_even_with_enum(monkeypatch,target):
+    monkeypatch.setenv('DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID',target)
+    transport=ExactFactTransport(_EXACT_SOURCE_LINE.replace('Source로','Source 로'))
+    document=replace(_document(),content=_EXACT_SOURCE_LINE.encode())
+    with pytest.raises(DocumentUnderstandingError,match='^TEXT_UNDERSTANDING_UNGROUNDED$'):
+        OllamaTextDocumentAdapter(transport).understand(document,thinking_selection(),_context())
+
+
+def test_qa_thinking_schema_offers_exact_lines_but_model_selects_fact(monkeypatch):
+    monkeypatch.setenv('DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID','workspace-t')
+    lines=['시험 제목',_EXACT_SOURCE_LINE,'값: 57000 KRW','내부  공백과\t탭 유지']
+    content=('\n\n'.join(lines)+'\n'+lines[1]+'\n').encode()
+    transport=ExactFactTransport(lines[2])
+    document=replace(_document(),content=content)
+    result=OllamaTextDocumentAdapter(transport).understand(document,thinking_selection(),_context())
+    schema=transport.calls[0]['payload']['format']
+    assert schema['properties']['key_facts']['items'].get('enum')==lines
+    assert schema['properties']['key_facts']['minItems']==1 and schema['properties']['key_facts']['maxItems']==5
+    assert schema['required']==['title','summary','key_facts'] and schema['additionalProperties'] is False
+    assert result.semantic.key_facts==('값: 57000 KRW',), '서버가 첫 후보/전체 후보로 응답을 덮어쓰지 않는다'
+    assert document.content==content
+    assert transport.calls[0]['payload']['messages'][1]['content']==content.decode().strip()
+    from daon_user_api.text_document_understanding import _SCHEMA
+    assert _SCHEMA['properties']['key_facts']=={'type':'array','items':{'type':'string'}}, '공유 schema 불변'
+
+
+def test_qa_line_candidates_include_2000_codepoints(monkeypatch):
+    monkeypatch.setenv('DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID','workspace-t')
+    short='가'*2000
+    transport=ExactFactTransport(_EXACT_SOURCE_LINE)
+    document=replace(_document(),content=(short+'\n'+_EXACT_SOURCE_LINE).encode())
+    OllamaTextDocumentAdapter(transport).understand(document,thinking_selection(),_context())
+    assert transport.calls[0]['payload']['format']['properties']['key_facts']['items'].get('enum')==[short,_EXACT_SOURCE_LINE]
+
+
+def test_qa_mixed_short_title_and_long_body_keeps_all_continuous_excerpts(monkeypatch):
+    from daon_user_api.text_document_understanding import _SCHEMA
+    monkeypatch.setenv('DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID','workspace-t')
+    long_line='나'*2001
+    content=('짧은 제목\n'+long_line).encode()
+    transport=ExactFactTransport('나'*20)
+    result=OllamaTextDocumentAdapter(transport).understand(
+        replace(_document(),content=content),thinking_selection(),_context())
+    payload=transport.calls[0]['payload']
+    assert payload['format']==_SCHEMA, '긴 본문의 핵심 사실을 enum 밖으로 누락하지 않는다'
+    assert payload['think'] is False
+    assert payload['messages'][1]['content']=='짧은 제목\n'+long_line
+    assert 'schema enum' not in payload['messages'][0]['content']
+    assert result.semantic.key_facts==('나'*20,)
+
+
+def test_qa_long_single_line_without_candidates_keeps_continuous_excerpt_contract(monkeypatch):
+    from daon_user_api.text_document_understanding import _SCHEMA
+    monkeypatch.setenv('DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID','workspace-t')
+    transport=ExactFactTransport('가'*20)
+    content=('가'*2001).encode()
+    document=replace(_document(),content=content)
+    result=OllamaTextDocumentAdapter(transport).understand(document,thinking_selection(),_context())
+    assert transport.calls[0]['payload']['format']==_SCHEMA
+    assert result.semantic.key_facts==('가'*20,) and document.content==content
+
+
+def test_qa_enum_does_not_allow_summary_extra_anchors(monkeypatch):
+    monkeypatch.setenv('DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID','workspace-t')
+    class ExtraSummaryTransport(ExactFactTransport):
+        def post_json_no_auth(self,**kwargs):
+            response=super().post_json_no_auth(**kwargs)
+            if kwargs['url'].endswith('/api/chat'):
+                value=json.loads(response['message']['content'])
+                value['summary']='지원되지 않은 금액은 58000 KRW입니다.'
+                response['message']['content']=json.dumps(value)
+            return response
+    transport=ExtraSummaryTransport(_EXACT_SOURCE_LINE)
+    document=replace(_document(),content=_EXACT_SOURCE_LINE.encode())
+    with pytest.raises(DocumentUnderstandingError,match='^TEXT_UNDERSTANDING_UNGROUNDED$'):
+        OllamaTextDocumentAdapter(transport).understand(document,thinking_selection(),_context())
