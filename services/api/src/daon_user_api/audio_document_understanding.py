@@ -111,6 +111,35 @@ def validate_audio_evidence(evidence, key_facts, transcript):
         raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409) from None
 
 
+def read_canonical_audio_transcript(lineage):
+    """이해 결과·색인의 동일 정규 전사 스냅샷 계약."""
+    try:
+        raw = lineage.get('transcript_json')
+        if not isinstance(raw, str) or len(raw.encode('utf-8')) > 65536: raise ValueError
+        value = json.loads(raw, object_pairs_hook=_unique)
+        if not isinstance(value, dict) or set(value) != {'model_id', 'model_digest', 'source_sha256', 'segments'} or not isinstance(value['segments'], list): raise ValueError
+        transcript = AudioTranscript(value['model_id'], value['model_digest'], value['source_sha256'], tuple(value['segments']))
+        duration = lineage.get('duration_ms')
+        if not isinstance(duration, str) or not re.fullmatch(r'[1-9][0-9]{3,5}', duration) or not 1000 <= int(duration) <= 120000: raise ValueError
+        if (lineage.get('source_format') != 'wav' or lineage.get('serialization_version') != 'audio-transcript-v1'
+                or not isinstance(transcript.model_id, str) or not transcript.model_id.strip()
+                or any(not isinstance(h, str) or not re.fullmatch(r'[0-9a-f]{64}', h) for h in (transcript.model_digest, transcript.source_sha256))
+                or _canonical(transcript) != raw or hashlib.sha256(raw.encode('utf-8')).hexdigest() != lineage.get('transcript_sha256')
+                or transcript.source_sha256 != lineage.get('source_digest') or transcript.model_id != lineage.get('asr_model_id')
+                or transcript.model_digest != lineage.get('asr_model_digest') or not 1 <= len(transcript.segments) <= 64): raise ValueError
+        previous, total = 0, 0
+        for ordinal, segment in enumerate(transcript.segments, 1):
+            if not isinstance(segment, dict) or set(segment) != {'segment_id', 'start_ms', 'end_ms', 'text'}: raise ValueError
+            if (segment['segment_id'] != f's:{ordinal}' or type(segment['start_ms']) is not int or type(segment['end_ms']) is not int
+                    or not previous <= segment['start_ms'] < segment['end_ms'] <= int(duration)
+                    or not isinstance(segment['text'], str) or not segment['text'].strip() or len(segment['text']) > 2000): raise ValueError
+            total += len(segment['text']);previous = segment['end_ms']
+            if total > 16000: raise ValueError
+        return transcript
+    except (SourceRejected, ValueError, TypeError, KeyError, UnicodeError):
+        raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409) from None
+
+
 def read_audio_result_transcript(document, result):
     """소비자가 다시 조회한 원본에 불변 전사 스냅샷을 대조한다."""
     try:
@@ -118,15 +147,10 @@ def read_audio_result_transcript(document, result):
                 or document.content_type != 'audio/wav' or not document.filename.lower().endswith('.wav')
                 or result.lineage.get('source_format') != 'wav' or result.lineage.get('serialization_version') != 'audio-transcript-v1'):
             raise ValueError
-        raw = result.lineage.get('transcript_json')
-        if not isinstance(raw, str) or len(raw.encode('utf-8')) > 65536: raise ValueError
-        value = json.loads(raw, object_pairs_hook=_unique)
-        if not isinstance(value, dict) or set(value) != {'model_id', 'model_digest', 'source_sha256', 'segments'} or not isinstance(value['segments'], list): raise ValueError
-        transcript = AudioTranscript(value['model_id'], value['model_digest'], value['source_sha256'], tuple(value['segments']))
+        transcript = read_canonical_audio_transcript(result.lineage)
         original = read_wav(document.content)
         validate_transcript(original, transcript)
-        if (_canonical(transcript) != raw or hashlib.sha256(raw.encode('utf-8')).hexdigest() != result.lineage.get('transcript_sha256')
-                or original.source_sha256 != result.lineage.get('source_digest')
+        if (original.source_sha256 != result.lineage.get('source_digest')
                 or str(original.duration_ms) != result.lineage.get('duration_ms')
                 or transcript.model_id != result.lineage.get('asr_model_id') or transcript.model_digest != result.lineage.get('asr_model_digest')):
             raise ValueError

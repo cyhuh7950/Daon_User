@@ -107,6 +107,49 @@ def paraphrased_ready_result() -> DocumentUnderstandingResult:
 
 
 class PostgresDocumentIndexTests(unittest.TestCase):
+    def audio_fixture(self):
+        from copy import deepcopy
+        from test_audio_document_understanding import ready_audio_result
+        result = ready_audio_result()
+        self.cloud.connection.understanding_payload = deepcopy({
+            'source_id': result.source_id, 'source_version_id': result.source_version_id, 'status': 'ready',
+            'semantic': {'key_facts': list(result.semantic.key_facts)},
+            'parser_validation': {'text': '', 'markdown': '', 'html': '', 'pages': [], 'page_texts': [],
+                'regions': [], 'role': 'validation_only', 'audio_evidence': list(result.parser.audio_evidence)}, 'lineage': dict(result.lineage)})
+        self.cloud.connection.extraction_payload = deepcopy({'source_version_id': result.source_version_id,
+            'understanding_result_id': 'understanding-cp3', 'parser_role': 'validation_only',
+            'transcript_sha256': result.lineage['transcript_sha256'], 'audio_evidence': list(result.parser.audio_evidence)})
+        return result
+
+    def test_audio_index_uses_verified_facts_and_exact_time_locator(self):
+        result = self.audio_fixture()
+        self.index.index_result(self.context, result)
+        payload = self.cloud.connection.index_payload
+        self.assertEqual(payload['strategy'], 'native_audio_facts_with_transcript_validation')
+        self.assertEqual([c['evidence_kind'] for c in payload['chunks']], ['audio_segment_fact'])
+        chunks = self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='unrelated weather')
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].locator_kind, 'audio_segment')
+        self.assertEqual(chunks[0].locator_value, result.parser.audio_evidence[0]['locator_value'])
+        self.assertEqual(chunks[0].text, 'Code REF-DELTA-17 57000 KRW')
+
+    def test_audio_index_rejects_tampered_canonical_or_extraction_without_writes(self):
+        for scope in ('canonical', 'extraction', 'transcript'):
+            self.setUp();result = self.audio_fixture()
+            if scope == 'canonical': self.cloud.connection.understanding_payload['parser_validation']['audio_evidence'][0]['text'] = 'invented'
+            elif scope == 'extraction': self.cloud.connection.extraction_payload['transcript_sha256'] = 'c' * 64
+            else: result.lineage['transcript_sha256'] = 'c' * 64
+            with self.subTest(scope=scope), self.assertRaises(DocumentUnderstandingError): self.index.index_result(self.context, result)
+            self.assertEqual(self.cloud.connection.inserts, [])
+            self.assertEqual(self.cloud.connection.source_state, 'processing')
+
+    def test_audio_search_rejects_wrong_kind_time_text_or_version(self):
+        for field, value in (('evidence_kind', 'parser_page_grounded_fallback'), ('locator_value', '{"segment":"s:1","start_ms":1,"end_ms":1000,"start":0,"end":27}'), ('text', 'invented'), ('source_version_id', 'other-version')):
+            self.setUp();result = self.audio_fixture();self.index.index_result(self.context, result)
+            self.cloud.connection.index_payload['chunks'][0][field] = value
+            with self.subTest(field=field), self.assertRaises(DocumentUnderstandingError):
+                self.index.search(self.context, source_id=result.source_id, source_version_id=result.source_version_id, query='code')
+
     def pptx_fixture(self):
         from copy import deepcopy
         from test_pptx_document_understanding import ready_pptx_result
