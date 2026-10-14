@@ -8,7 +8,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from daon_user_api.docx_document_understanding import OllamaDocxDocumentAdapter, validate_block_evidence
-from daon_user_api.docx_source import read_docx, read_docx_block_view, encode_docx_block
+from daon_user_api.docx_source import read_docx, read_docx_block_view, encode_docx_block, decode_docx_block
 from daon_user_api.document_processing import DocumentProcessingContext, StoredSourceDocument, docx_source_format
 from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
 from daon_user_api.workspace_model_defaults import ResolvedModel
@@ -95,6 +95,43 @@ class DocxUnderstandingTests(unittest.TestCase):
         self.assertEqual(result.status, 'ready')
         self.assertNotIn('think', self.transport.requests[3]['payload'])
         self.assertEqual(result.parser.block_evidence[0]['text'], '😀')
+
+    def test_docx_native_prompt_prefers_whole_paragraph_and_keeps_table_values_in_their_own_blocks(self):
+        text = 'Memo 😀 KEEP-81'
+        document = replace(self.document, content=docx_bytes(paragraph(text) + table([
+            [paragraph('Quantity'), paragraph('64')], [paragraph('Currency'), paragraph('EUR')]])))
+        self.transport.value = {'title': 'Memo', 'summary': 'KEEP-81 64 EUR', 'key_facts': [
+            {'text': text, 'block_id': 'p:1', 'start': 0, 'end': len(text)},
+            {'text': '64', 'block_id': 't:2:r:1:c:2:p:1', 'start': 0, 'end': 2},
+            {'text': 'EUR', 'block_id': 't:2:r:2:c:2:p:1', 'start': 0, 'end': 3}],
+            'block_coverage': ['p:1', 't:2:r:1:c:1:p:1', 't:2:r:1:c:2:p:1', 't:2:r:2:c:1:p:1', 't:2:r:2:c:2:p:1']}
+        result = OllamaDocxDocumentAdapter(self.transport).understand(document, self.model, self.context)
+        payload = self.transport.requests[3]['payload']
+        prompt = payload['messages'][0]['content']
+        self.assertIn('The safest choice is to copy the WHOLE original paragraph text unchanged, with start=0 and end equal to its Unicode code-point length.', prompt)
+        self.assertIn('Table labels and values in DIFFERENT block_id entries are separate paragraphs: never merge them into one fact.', prompt)
+        self.assertIn('For example, block p:7 text "Memo NOVA-73" gives {"text":"Memo NOVA-73","block_id":"p:7","start":0,"end":12}.', prompt)
+        self.assertIn('Do not copy example values or positions.', prompt)
+        self.assertEqual(payload['messages'][1]['content'], read_docx(document.content).native_json)
+        self.assertEqual((self.transport.requests[3]['timeout_seconds'], payload['options']['num_predict']), (90, 512))
+        self.assertEqual((payload['format']['properties']['key_facts']['minItems'], payload['format']['properties']['key_facts']['maxItems']), (1, 5))
+        self.assertEqual(result.status, 'ready')
+        self.assertEqual(result.parser.block_evidence[0]['text'], text)
+        self.assertEqual(decode_docx_block(result.parser.block_evidence[0]['locator_value']), ('p:1', 0, 14))
+
+    def test_docx_crossblock_label_value_combinations_remain_conflict_without_repair(self):
+        document = replace(self.document, content=docx_bytes(table([
+            [paragraph('Amount'), paragraph('64')], [paragraph('Currency'), paragraph('EUR')]])))
+        coverage = ['t:1:r:1:c:1:p:1', 't:1:r:1:c:2:p:1', 't:1:r:2:c:1:p:1', 't:1:r:2:c:2:p:1']
+        for text, block, end in [('Amount 64', coverage[0], 9), ('64 EUR', coverage[1], 6), ('Currency EUR', coverage[3], 12)]:
+            with self.subTest(text=text):
+                self.transport.value = {'title': 'Table', 'summary': text, 'key_facts': [
+                    {'text': text, 'block_id': block, 'start': 0, 'end': end}], 'block_coverage': coverage}
+                result = OllamaDocxDocumentAdapter(self.transport).understand(document, self.model, self.context)
+                self.assertEqual(result.status, 'needs_review')
+                self.assertEqual(result.conflict, 'UNDERSTANDING_PARSER_CONFLICT')
+                self.assertEqual(result.parser.block_evidence, ())
+                self.assertEqual(result.semantic.key_facts, (text,), 'rejected Native response must not be repaired')
 
     def test_docx_invalid_facts_never_become_ready(self):
         for field, value in (('text', '000'), ('text', 'USD'), ('block_id', 'p:1'), ('start', 7), ('end', 19), ('start', True)):
