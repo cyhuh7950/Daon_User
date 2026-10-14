@@ -430,13 +430,15 @@ class OllamaTextGenerationAdapter:
             and 1 <= len(request.evidence) <= 5
             and (all(item.locator_kind == "sheet_cell" for item in request.evidence)
                  or all(item.locator_kind == "docx_block" for item in request.evidence)
-                 or all(item.locator_kind == "pptx_block" for item in request.evidence))
+                 or all(item.locator_kind == "pptx_block" for item in request.evidence)
+                 or all(item.locator_kind == "audio_segment" for item in request.evidence))
             and len({(item.source_id, item.source_version_id) for item in request.evidence}) == 1
         ):
             return payload
         pptx = all(item.locator_kind == 'pptx_block' for item in request.evidence)
+        audio = all(item.locator_kind == 'audio_segment' for item in request.evidence)
         _digest, capabilities = self.verified_internal_metadata(selection)
-        if all(item.locator_kind == "docx_block" for item in request.evidence) or pptx:
+        if all(item.locator_kind == "docx_block" for item in request.evidence) or pptx or audio:
             # Caller has already matched the exact QA Workspace. Keep ordinary
             # DOCX/general/other-format payloads and the global schema untouched.
             payload = deepcopy(payload)
@@ -473,6 +475,10 @@ class OllamaTextGenerationAdapter:
             if pptx:
                 payload['messages'][0]['content'] = payload['messages'][0]['content'].replace(
                     'DOCX evidence', 'PPTX evidence').replace('not a Word page', 'not a rendered PowerPoint page')
+            if audio:
+                payload['messages'][0]['content'] = payload['messages'][0]['content'].replace(
+                    'DOCX evidence', 'ASR transcript evidence').replace('an original block and Unicode code-point start/end, not a Word page',
+                    'a transcript segment, millisecond start/end and Unicode code-point start/end, not an audio page')
         return {**payload, "think": False} if "thinking" in capabilities else payload
 
     def verified_internal_metadata(self, selection: TextModelSelection) -> tuple[str, tuple[str, ...]]:
@@ -534,6 +540,18 @@ class OllamaTextGenerationAdapter:
             {"chunk_id": item.chunk_id, "page": item.page, "text": item.text}
             for item in request.evidence
         ]
+        if any(item.locator_kind == 'audio_segment' for item in request.evidence):
+            from .audio_source import decode_audio_segment
+            from .source_ingest import SourceRejected
+            try:
+                for item, original in zip(request.evidence, evidence, strict=True):
+                    if item.locator_kind != 'audio_segment': continue
+                    segment, start_ms, end_ms, start, end = decode_audio_segment(item.locator_value)
+                    if end - start != len(item.text): raise SourceRejected('CORRUPTED_SOURCE')
+                    original.pop('page')
+                    original['locator'] = {'segment': segment, 'start_ms': start_ms, 'end_ms': end_ms, 'start': start, 'end': end}
+            except SourceRejected:
+                raise ValueError('TEXT_GENERATION_GROUNDING_INVALID') from None
         if any(item.locator_kind == 'docx_block' for item in request.evidence):
             from .docx_source import decode_docx_block
             from .source_ingest import SourceRejected
@@ -667,7 +685,7 @@ class OllamaTextGenerationAdapter:
             or not _evidence_anchors(answer).issubset(_evidence_anchors(cited_text))
         ):
             raise ValueError("TEXT_GENERATION_GROUNDING_INVALID")
-        if request.evidence and all(item.locator_kind == 'pptx_block' for item in request.evidence):
+        if request.evidence and (all(item.locator_kind == 'pptx_block' for item in request.evidence) or all(item.locator_kind == 'audio_segment' for item in request.evidence)):
             def currencies(text):
                 values = {code.upper() for code in re.findall(r'(?<![A-Za-z])(?:KRW|USD|EUR|GBP)(?![A-Za-z])', text, re.I)}
                 for symbol, code in (('₩', 'KRW'), ('$', 'USD'), ('€', 'EUR'), ('£', 'GBP')):

@@ -645,7 +645,8 @@ class QuestionAnsweringService:
             and isinstance(prepared.request, GroundedQuestionRequest)
             and 1 <= len(prepared.request.evidence) <= 5
             and (all(item.locator_kind == "docx_block" for item in prepared.request.evidence)
-                 or all(item.locator_kind == "pptx_block" for item in prepared.request.evidence))
+                 or all(item.locator_kind == "pptx_block" for item in prepared.request.evidence)
+                 or all(item.locator_kind == "audio_segment" for item in prepared.request.evidence))
             and len({(item.source_id, item.source_version_id) for item in prepared.request.evidence}) == 1
         ):
             # Canonical authorization remains sorted and immutable. Restore only

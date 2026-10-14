@@ -59,6 +59,31 @@ def external_text_snapshot(provider_code: str, base_url: str) -> ProviderSetting
     )
 
 
+class AudioQuestionGroundingTests(unittest.TestCase):
+    def test_audio_prompt_uses_time_locator_and_not_fake_page(self):
+        chunk = IndexedEvidenceChunk('audio', 'source', 'version', 1, 'ABC', 'span', 0.0,
+            'audio_segment', '{"segment":"s:1","start_ms":1000,"end_ms":2000,"start":0,"end":3}')
+        selection = TextModelSelection('OLLAMA', 'https://models.example.com', 'profile', 'deployment', 'fixture-model', 1, 'server_internal')
+        request = GroundedQuestionRequest('read evidence', (chunk,), 'trace')
+        payload = OllamaTextGenerationAdapter.provider_payload(request, selection)
+        evidence = json.loads(payload['messages'][1]['content'])['evidence']
+        self.assertEqual(evidence, [{'chunk_id': 'audio', 'text': 'ABC', 'locator': {'segment': 's:1', 'start_ms': 1000, 'end_ms': 2000, 'start': 0, 'end': 3}}])
+        from test_docx_document_understanding import Transport
+        prepared = OllamaTextGenerationAdapter(transport=Transport()).prepare_qa_structured_payload(request, selection, payload)
+        branches = prepared['format']['anyOf']
+        self.assertEqual(branches[0]['properties']['cited_chunk_ids']['const'], ['audio'])
+        self.assertEqual(branches[1]['properties']['cited_chunk_ids']['const'], [])
+        self.assertEqual(branches[1]['properties']['answer']['const'], '선택한 원문 근거에 질문에 답할 정보가 없습니다.')
+
+    def test_bad_audio_locator_is_rejected_before_http(self):
+        selection = TextModelSelection('OLLAMA', 'https://models.example.com', 'profile', 'deployment', 'fixture', 1)
+        for value in ('{"segment":"s:1","start_ms":true,"end_ms":2000,"start":0,"end":3}',
+                      '{"segment":"s:1","start_ms":1000,"end_ms":2000,"start":0,"end":4}'):
+            chunk = IndexedEvidenceChunk('audio', 'source', 'version', 1, 'ABC', 'span', 0.0, 'audio_segment', value)
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'TEXT_GENERATION_GROUNDING_INVALID'):
+                OllamaTextGenerationAdapter.provider_payload(GroundedQuestionRequest('read', (chunk,), 'trace'), selection)
+
+
 class PptxQuestionGroundingTests(unittest.TestCase):
     def test_base_pptx_and_mixed_evidence_use_original_locator_not_fake_page(self):
         pptx = IndexedEvidenceChunk('pptx','source','version',1,'ABC','span',0.0,

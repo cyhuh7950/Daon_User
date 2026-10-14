@@ -48,8 +48,11 @@ class FakeConnection:
         self.notebook_scope_row = None
         self.notebook_scope_rows: list[tuple[int] | None] = []
         self.source_binding_active = True
+        self.audio_understanding_row = None
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
+        if sql.startswith('SELECT record_id,canonical_json FROM understanding_results'):
+            return Cursor(self.audio_understanding_row)
         self.queries.append(sql)
         if sql.startswith("SELECT s.record_id,sv.record_id,s.state"):
             if "nb.binding_kind='source'" in sql and not self.source_binding_active:
@@ -102,6 +105,58 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_audio_citation_keeps_time_locator_and_reads_bound_transcript(self):
+        from dataclasses import replace
+        from test_audio_document_understanding import ready_audio_result
+        from test_audio_source import wav_bytes
+        result = ready_audio_result();raw = wav_bytes()
+        row = list(self.cloud.connection.ready_row)
+        row[3], row[6], row[7], row[8] = 'qa.wav', hashlib.sha256(raw).hexdigest(), len(raw), 'audio/wav'
+        self.cloud.connection.ready_row = tuple(row);self.repository._object_storage.content = raw
+        locator = {'kind': 'audio_segment', 'value': result.parser.audio_evidence[0]['locator_value']}
+        chunk = IndexedEvidenceChunk('chunk-audio', 'source-cp3', 'source-version-cp3', 1,
+            result.semantic.key_facts[0], 'span-audio', 1.0, 'audio_segment', locator['value'])
+        stored = self.repository.persist_completed(self.context, run_id='run-audio', source_id='source-cp3',
+            source_version_id='source-version-cp3', question='What code?',
+            selection=TextModelSelection('OLLAMA', 'https://models.example.com', 'profile', 'deployment', 'fixture-model', 1),
+            evidence=(chunk,), result=GroundedTextResult(result.semantic.key_facts[0], ('chunk-audio',), False, {}))
+        self.assertEqual(stored.citations[0].locator, locator)
+        payload = {'source_id': result.source_id, 'source_version_id': result.source_version_id, 'status': result.status,
+            'semantic': {'title': result.semantic.title, 'summary': result.semantic.summary, 'key_facts': list(result.semantic.key_facts)},
+            'parser_validation': {'text': '', 'markdown': '', 'html': '', 'pages': [], 'page_texts': [],
+                'regions': [], 'role': 'validation_only', 'audio_evidence': list(result.parser.audio_evidence)}, 'lineage': dict(result.lineage), 'conflict': None}
+        self.cloud.connection.audio_understanding_row = ('ur-audio', payload)
+        evidence = {'kind': 'audio_segment_fact', 'source_id': 'source-cp3', 'source_version_id': 'source-version-cp3',
+            'understanding_result_id': 'ur-audio', 'transcript_sha256': result.lineage['transcript_sha256'], 'locator': locator, 'text': result.semantic.key_facts[0]}
+        self.cloud.connection.citation_row = ('source-cp3', 'source-version-cp3', '1', '1', evidence, 'uploaded', 'qa.wav', 'ready', 'span-audio', locator)
+        context = replace(self.context, notebook_id='notebook-cp3')
+        content, actual = self.repository.read_citation_content(context, 'citation-audio')
+        view = json.loads(content.content)
+        self.assertEqual(actual, locator)
+        self.assertEqual(view['transcript_sha256'], result.lineage['transcript_sha256'])
+        self.assertEqual(view['segments'][0]['text'], result.semantic.key_facts[0])
+        self.assertEqual(view['source_version_id'], 'source-version-cp3')
+        self.assertEqual(self.repository.load_ready_source(context, 'source-cp3', 'source-version-cp3').filename, 'qa.wav')
+        from copy import deepcopy
+        citation = self.cloud.connection.citation_row
+        original_payload = deepcopy(payload)
+        for invalid in ('source-hash', 'transcript-hash', 'mime', 'binding', 'time', 'text', 'understanding', 'version', 'notebook'):
+            current = row.copy();ev = dict(evidence)
+            self.cloud.connection.audio_understanding_row = ('ur-audio', deepcopy(original_payload))
+            self.cloud.connection.source_binding_active = True
+            if invalid == 'source-hash': current[6] = 'c' * 64
+            if invalid == 'transcript-hash': ev['transcript_sha256'] = 'c' * 64
+            if invalid == 'mime': current[8] = 'text/plain'
+            if invalid == 'binding': self.cloud.connection.source_binding_active = False
+            if invalid == 'time': ev['locator'] = {'kind': 'audio_segment', 'value': '{"segment":"s:1","start_ms":1,"end_ms":1000,"start":0,"end":27}'}
+            if invalid == 'text': ev['text'] = 'invented'
+            if invalid == 'understanding': self.cloud.connection.audio_understanding_row = None
+            if invalid == 'version': self.cloud.connection.audio_understanding_row[1]['source_version_id'] = 'other-version'
+            self.cloud.connection.ready_row = tuple(current)
+            self.cloud.connection.citation_row = None if invalid == 'notebook' else (*citation[:4], ev, *citation[5:])
+            with self.subTest(invalid=invalid), self.assertRaises(QuestionRepositoryError):
+                self.repository.read_citation_content(context, 'citation-audio')
+
     def test_pptx_citation_storage_replay_and_original_view_keep_exact_block_and_scope(self):
         from dataclasses import replace
         from test_pptx_document_understanding import original, MIME

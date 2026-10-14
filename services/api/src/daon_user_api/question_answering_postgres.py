@@ -424,9 +424,11 @@ class PostgresQuestionAnsweringRepository:
         pptx_ready = (filename.lower().endswith('.pptx') and len(row) == 7
             and str(row[5]) == 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
             and str(row[6]) == 'completed')
+        audio_ready = (filename.lower().endswith('.wav') and len(row) == 7
+            and str(row[5]) == 'audio/wav' and str(row[6]) == 'completed')
         if str(row[2]) != "ready" or (
             str(row[4]) != "studio_output"
-            and not (filename.lower().endswith((".pdf", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg")) or xlsx_ready or docx_ready or pptx_ready)
+            and not (filename.lower().endswith((".pdf", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg")) or xlsx_ready or docx_ready or pptx_ready or audio_ready)
         ):
             raise QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE", status=404)
         return ReadyQuestionSource(str(row[0]), str(row[1]), filename)
@@ -563,6 +565,59 @@ class PostgresQuestionAnsweringRepository:
         if page < 1 or page != evidence_page or source_state != "ready":
             raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
         stored_locator = row[9] if len(row) > 9 else None
+        if evidence.get('kind') == 'audio_segment_fact' or isinstance(stored_locator, dict) and stored_locator.get('kind') == 'audio_segment':
+            from .audio_source import read_wav, read_audio_transcript_view
+            from .audio_document_understanding import read_audio_result_transcript
+            from .document_processing import StoredSourceDocument
+            from .document_understanding_adapter import DocumentUnderstandingResult, ParserValidation, SemanticUnderstanding
+            from .source_ingest import SourceRejected
+            locator = evidence.get('locator')
+            understanding_id = evidence.get('understanding_result_id')
+            if (context.notebook_id is None or evidence.get('kind') != 'audio_segment_fact'
+                or evidence.get('source_id') != source_id or evidence.get('source_version_id') != source_version_id
+                or not isinstance(locator, dict) or set(locator) != {'kind', 'value'} or locator.get('kind') != 'audio_segment'
+                or locator != stored_locator or page != 1 or not isinstance(understanding_id, str) or not _SAFE_ID.fullmatch(understanding_id)):
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=404)
+            original = self._row(context, source_id, source_version_id, 'citation.read', require_notebook_binding=True)
+            if str(original[3]) != filename or not filename.lower().endswith('.wav') or str(original[8]) != 'audio/wav' or str(original[9]) != 'completed':
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=404)
+            try:
+                with self._cloud_store._transaction(self._cloud_context(context, 'citation.read')) as connection:
+                    stored = connection.execute('SELECT record_id,canonical_json FROM understanding_results WHERE record_id=%s AND source_version_id=%s',
+                        (understanding_id, source_version_id)).fetchone()
+                if stored is None or str(stored[0]) != understanding_id or not isinstance(stored[1], dict):
+                    raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=404)
+                payload = stored[1];parser = payload.get('parser_validation');semantic = payload.get('semantic')
+                if (payload.get('source_id') != source_id or payload.get('source_version_id') != source_version_id
+                    or payload.get('status') != 'ready' or payload.get('conflict') is not None
+                    or not isinstance(parser, dict) or set(parser) != {'text', 'markdown', 'html', 'pages', 'page_texts', 'role', 'regions', 'audio_evidence'}
+                    or not isinstance(semantic, dict) or set(semantic) != {'title', 'summary', 'key_facts'}
+                    or not isinstance(semantic['key_facts'], list) or not all(isinstance(v, str) for v in semantic['key_facts'])
+                    or not isinstance(parser['audio_evidence'], list) or not isinstance(payload.get('lineage'), dict)):
+                    raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)
+                ObjectKeyPolicy().validate_final(self._cloud_context(context, 'object.read'), 'source', str(original[5]))
+                content = self._object_storage.get(str(original[5]))
+                if len(content) != int(original[7]) or hashlib.sha256(content).hexdigest() != str(original[6]).removeprefix('sha256:'):
+                    raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)
+                understanding = DocumentUnderstandingResult(source_id, source_version_id, 'ready', (),
+                    SemanticUnderstanding(semantic['title'], semantic['summary'], tuple(semantic['key_facts'])),
+                    ParserValidation(parser['text'], parser['markdown'], parser['html'], tuple(parser['pages']), tuple(parser['page_texts']),
+                        role=parser['role'], regions=tuple(parser['regions']), audio_evidence=tuple(parser['audio_evidence'])), payload['lineage'])
+                transcript = read_audio_result_transcript(StoredSourceDocument(source_id, source_version_id, filename, content, 'audio/wav'), understanding)
+                if payload['lineage']['transcript_sha256'] != evidence.get('transcript_sha256'):
+                    raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)
+                view = read_audio_transcript_view(read_wav(content), transcript, locator['value'])
+                selected = next(s for s in view['segments'] if s['segment_id'] == view['selected_segment_id'])
+                if selected['text'][view['selected_start']:view['selected_end']] != evidence.get('text'):
+                    raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)
+                view['source_version_id'] = source_version_id
+                body = canonical_json_bytes(view)
+                if len(body) > 32768: raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)
+                return CitationContent(source_id, source_version_id, filename, body, 'application/json'), locator
+            except (SourceRejected, DocumentUnderstandingError, ValueError, TypeError, KeyError, StopIteration):
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409) from None
+            except (CloudDatabaseError, ObjectQueueError, ObjectStorageError):
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=503) from None
         if evidence.get('kind') == 'docx_block_fact' or isinstance(stored_locator, dict) and stored_locator.get('kind') == 'docx_block':
             from .source_ingest import SourceRejected
             from .docx_source import read_docx, read_docx_block_view
@@ -813,11 +868,11 @@ class PostgresQuestionAnsweringRepository:
                     evidence_by_id[chunk_id].source_version_id,
                 )].context_item_id),
                 {
-                    "kind": evidence_by_id[chunk_id].locator_kind if evidence_by_id[chunk_id].locator_kind in {'image_region', 'sheet_cell', 'docx_block', 'pptx_block'} else "section" if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
+                    "kind": evidence_by_id[chunk_id].locator_kind if evidence_by_id[chunk_id].locator_kind in {'image_region', 'sheet_cell', 'docx_block', 'pptx_block', 'audio_segment'} else "section" if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
                         evidence_by_id[chunk_id].source_id,
                         evidence_by_id[chunk_id].source_version_id,
                     )].origin) == "daon_knowledge" else "page",
-                    "value": evidence_by_id[chunk_id].locator_value if evidence_by_id[chunk_id].locator_kind in {'image_region', 'sheet_cell', 'docx_block', 'pptx_block'} else evidence_by_id[chunk_id].evidence_span_id
+                    "value": evidence_by_id[chunk_id].locator_value if evidence_by_id[chunk_id].locator_kind in {'image_region', 'sheet_cell', 'docx_block', 'pptx_block', 'audio_segment'} else evidence_by_id[chunk_id].evidence_span_id
                     if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
                         evidence_by_id[chunk_id].source_id,
                         evidence_by_id[chunk_id].source_version_id,
