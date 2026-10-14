@@ -161,6 +161,9 @@ class SourceIngestor:
         if extension == ".docx":
             from .docx_source import read_docx
             read_docx(content)
+        if extension == ".pptx":
+            from .pptx_source import read_pptx
+            read_pptx(content)
         if extension in {".docx", ".pptx", ".xlsx"}:
             self._validate_ooxml(content)
         if extension in {".png", ".jpg", ".jpeg"}:

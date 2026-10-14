@@ -26,6 +26,15 @@ def encrypted_zip() -> bytes:
 
 
 class SourceIngestTests(unittest.TestCase):
+    def test_pptx_preflight_member_limit_precedes_generic_crc_scan(self) -> None:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for index in range(257):
+                archive.writestr(f"part{index}.xml", "<part/>")
+        with patch.object(SourceIngestor, "_validate_ooxml", side_effect=AssertionError("PPTX preflight must reject first")):
+            with self.assertRaises(SourceRejected):
+                self.ingestor.register_file("source.pptx", SourceIngestor._MIME_BY_EXTENSION[".pptx"], buffer.getvalue())
+
     def test_docx_preflight_member_limit_precedes_generic_crc_scan(self) -> None:
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
@@ -82,6 +91,9 @@ class SourceIngestTests(unittest.TestCase):
                 if extension == "docx":
                     from test_docx_source import docx_bytes
                     content = docx_bytes()
+                elif extension == "pptx":
+                    from test_pptx_source import pptx_bytes
+                    content = pptx_bytes()
                 else:
                     content = ooxml_zip()
                 result = self.ingestor.register_file(f"source.{extension}", mime, content)
@@ -126,7 +138,7 @@ class SourceIngestTests(unittest.TestCase):
         with patch.object(zipfile.ZipExtFile, "read", recording_read):
             # Keep the generic CRC contract on unchanged OOXML registration;
             # this payload is ZIP test data, not a Transitional DOCX document.
-            result = self.ingestor.register_file("source.pptx", SourceIngestor._MIME_BY_EXTENSION[".pptx"], content)
+            result = self.ingestor.register_file("source.xlsx", SourceIngestor._MIME_BY_EXTENSION[".xlsx"], content)
         self.assertEqual(result.status, "accepted")
         self.assertEqual(sum(reads), 200000)
         self.assertEqual(reads[-1], 0)
