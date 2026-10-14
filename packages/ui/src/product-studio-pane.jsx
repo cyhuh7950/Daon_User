@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { parseSheetCell } from "./product-workspace-model.js";
 import { parseDocxBlock } from "./shared-docx-block.js";
+import { pptxBlockLabel } from "./shared-pptx-block.js";
 import {
   OUTPUT_TYPES, canSubmitGeneration, confirmGenerationSettings, createStudioGenerationInput,
   mergeStudioVersion, selectOutputType, updateGenerationSettings,
@@ -437,7 +438,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
         {Array.isArray(selectedOutput.citations) && selectedOutput.citations.length ? <section className="studio-citation-list" aria-label="근거 Citation"><h4>근거 Citation</h4><ul>{selectedOutput.citations.map((citation) => {
           const cell = citation.locator?.kind === "sheet_cell" ? parseSheetCell(citation.locator.value) : null;
           const block = citation.locator?.kind === "docx_block" ? parseDocxBlock(citation.locator.value) : null;
-          return <li key={citation.citation_id}>{citation.origin === "daon_knowledge" ? "Daon 생성 지식" : "원본 지식"} · {block ? `문단·표 ${block.block} · ${block.start}–${block.end}` : cell ? `${cell.sheet} · ${cell.range}` : citation.locator?.kind === "page" ? `${citation.locator.value}쪽` : citation.locator?.value}</li>;
+          return <li key={citation.citation_id}>{citation.origin === "daon_knowledge" ? "Daon 생성 지식" : "원본 지식"} · {citation.locator?.kind === "pptx_block" ? pptxBlockLabel(citation.locator.value) : block ? `문단·표 ${block.block} · ${block.start}–${block.end}` : cell ? `${cell.sheet} · ${cell.range}` : citation.locator?.kind === "page" ? `${citation.locator.value}쪽` : citation.locator?.value}</li>;
         })}</ul></section> : null}
         <label>변경 사유<input value={changeReason} onChange={(event) => setChangeReason(event.currentTarget.value)} /></label>
         <label>편집 내용<textarea value={revisionContent} onChange={(event) => setRevisionContent(event.currentTarget.value)} /></label>

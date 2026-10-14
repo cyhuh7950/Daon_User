@@ -902,7 +902,7 @@
                 "schema": { "type": "integer", "minimum": 1 }
               },
               "X-Citation-Locator-Kind": {
-                "schema": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block"] }
+                "schema": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block"] }
               },
               "X-Citation-Region": {
                 "schema": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 크기와 영역 경계는 서버에서 검증한다." }
@@ -913,7 +913,7 @@
               "text/plain": { "schema": { "type": "string", "maxLength": 1048576 } },
               "image/png": { "schema": { "type": "string", "format": "binary" } },
               "image/jpeg": { "schema": { "type": "string", "format": "binary" } },
-              "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/SheetCellContent" }, { "$ref": "#/components/schemas/DocxBlockContent" }] } }
+              "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/SheetCellContent" }, { "$ref": "#/components/schemas/DocxBlockContent" }, { "$ref": "#/components/schemas/PptxBlockContent" }] } }
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -5601,10 +5601,10 @@
       "StudioCitationLocator": {
         "type": "object", "additionalProperties": false, "required": ["kind", "value"],
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 500 }
         },
-        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "docx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/DocxBlockLocatorValue" } } } }]
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "docx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/DocxBlockLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "pptx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/PptxBlockLocatorValue" } } } }]
       },
       "StudioCitationProjection": {
         "type": "object", "additionalProperties": false,
@@ -5953,10 +5953,10 @@
         "additionalProperties": false,
         "required": ["kind", "value"],
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 255 }
         },
-        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "docx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/DocxBlockLocatorValue" } } } }]
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "docx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/DocxBlockLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "pptx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/PptxBlockLocatorValue" } } } }]
       },
       "SheetCellLocatorValue": {
         "type": "string", "minLength": 1, "maxLength": 255,
@@ -6018,6 +6018,137 @@
           "blocks": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "$ref": "#/components/schemas/DocxOriginalBlock" } }
         }
       },
+        "PptxBlockLocatorValue": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Exact compact block,start,end JSON. Slide1..16, positive uint32 object, paragraph1..128, row/column1..64. Unicode codepoint0<=start<end<=2000; duplicate/extra keys rejected; compatibility page1 is not a slide."
+        },
+        "PptxOriginalBlock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "block_id",
+            "ordinal",
+            "slide",
+            "object_id",
+            "block_type",
+            "text",
+            "table"
+          ],
+          "properties": {
+            "block_id": {
+              "type": "string"
+            },
+            "ordinal": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            "slide": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            },
+            "object_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            "block_type": {
+              "type": "string",
+              "enum": [
+                "shape_paragraph",
+                "table_cell_paragraph"
+              ]
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "table": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "row",
+                    "column",
+                    "paragraph"
+                  ],
+                  "properties": {
+                    "row": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64
+                    },
+                    "column": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64
+                    },
+                    "paragraph": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 128
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "PptxBlockContent": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Actor/Notebook/SourceVersion/hash revalidated read-only PPTX original; max3 neighboring blocks on same slide, UTF8 JSON32KiB, codepoint ranges; no rendered PowerPoint page.",
+          "required": [
+            "source_version_id",
+            "source_sha256",
+            "serialization_version",
+            "selected_block_id",
+            "selected_start",
+            "selected_end",
+            "blocks"
+          ],
+          "properties": {
+            "source_version_id": {
+              "$ref": "#/components/schemas/OpaqueId"
+            },
+            "source_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "serialization_version": {
+              "type": "string",
+              "const": "pptx-structure-v1"
+            },
+            "selected_block_id": {
+              "type": "string"
+            },
+            "selected_start": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1999
+            },
+            "selected_end": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "blocks": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": {
+                "$ref": "#/components/schemas/PptxOriginalBlock"
+              }
+            }
+          }
+        },
       "SheetCellContent": {
         "type": "object", "additionalProperties": false,
         "description": "원본 hash·SourceVersion·Notebook·완료 manifest 결속 후 X1 읽기 전용 투영. 선택 영역 256셀, 주변 한 행/열 확장 preview 324셀 상한. Excel XFD/1048576 및 실제 시트 범위 검증, 중복 주소 금지. formula 실행·cached 값 재계산 없음.",

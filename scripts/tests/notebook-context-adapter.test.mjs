@@ -23,6 +23,16 @@ const EXISTING_CONTEXT = Object.freeze({
   source_deletion_requests: Object.freeze([]),
 });
 
+test('PPTX saved answer reentry restores same Notebook URL and rejects wrong Version',async()=>{
+ const citation={citation_id:'citation-pptx',source_id:'source-bound',source_version_id:'source-version-bound',evidence_span_id:'span-pptx',page:1,origin:'raw_source',context_item_id:'source-bound',locator:{kind:'pptx_block',value:'{"block":"s:1:sp:2:p:1","start":0,"end":5}'}};
+ const context={...EXISTING_CONTEXT,conversation:{...EXISTING_CONTEXT.conversation,answer:{...EXISTING_CONTEXT.conversation.answer,citations:[citation]}}};
+ const {citationContentUrl}=await import('../../apps/web/lib/question-answering-api.js');
+ const answer=await createNotebookContextWorkspaceAdapter({citationUrl:(value,options)=>citationContentUrl('workspace-1',value,options)},context).loadNotebookConversation();
+ assert.deepEqual(answer.citations[0].locator,citation.locator);
+ assert.equal(answer.citations[0].content_url,'/bff/api/workspaces/workspace-1/citations/citation-pptx/content?notebook_id=notebook-existing');
+ assert.throws(()=>projectNotebookSelectedContext({...context,sources:[]}),/NOTEBOOK_CONTEXT_INVALID/);
+});
+
 test("저장된 Image Region은 Notebook context에서 같은 출처 원문 URL을 복원한다", async () => {
   const citation = { citation_id: "citation-image", source_id: "source-bound", source_version_id: "source-version-bound", evidence_span_id: "span-image", page: 1, origin: "raw_source", context_item_id: "source-bound", locator: { kind: "image_region", value: "5,7,80,20,120,60" } };
   const context = { ...EXISTING_CONTEXT, conversation: { ...EXISTING_CONTEXT.conversation, answer: { ...EXISTING_CONTEXT.conversation.answer, citations: [citation] } } };

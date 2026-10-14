@@ -2,6 +2,7 @@ import { secureUuid } from "@daon-user/ui/secure-uuid";
 import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
 import { parseSheetCell } from "./sheet-cell-locator.js";
 import { parseDocxBlock } from "./docx-block-locator.js";
+import { parsePptxBlock } from "./pptx-block-locator.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
@@ -37,7 +38,8 @@ function isCitationLocator(value) {
     && !/[\u0000-\u001f\u007f]/u.test(value.value)
     && (value.kind !== "image_region" || parseImageRegion(value.value) !== null)
     && (value.kind !== "sheet_cell" || parseSheetCell(value.value) !== null)
-    && (value.kind !== "docx_block" || parseDocxBlock(value.value) !== null);
+    && (value.kind !== "docx_block" || parseDocxBlock(value.value) !== null)
+    && (value.kind !== "pptx_block" || parsePptxBlock(value.value) !== null);
 }
 
 function isGroundedCitation(value) {

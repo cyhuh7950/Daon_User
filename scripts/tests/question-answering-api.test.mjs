@@ -42,6 +42,15 @@ const request = (payload) => askGroundedQuestion(
   { idempotencyKey: "question-1", fetchImpl: async () => Response.json(payload) }
 );
 
+test('PPTX question locator preserves scoped URL and rejects noncanonical ranges',async()=>{
+ const locator={kind:'pptx_block',value:'{"block":"s:2:tb:3:r:1:c:2:p:1","start":0,"end":5}'};
+ const item={...citation,page:1,locator};
+ const answer=await request(envelope({...answerData,citations:[item]}));
+ assert.deepEqual(answer.citations[0].locator,locator);
+ assert.doesNotMatch(citationContentUrl('workspace-1',item,{notebookId:'notebook-1'}),/#page/u);
+ await assert.rejects(()=>request(envelope({...answerData,citations:[{...item,locator:{...locator,value:locator.value.replace('s:2','s:17')}}]})),/QUESTION_RESPONSE_INVALID/);
+});
+
 test("sheet_cell question citation validates canonical bounds and preserves scoped URL", async () => {
   const cell = { ...citation, page: 1, locator: { kind: 'sheet_cell', value: '{"sheet":"납품 \\"계획\\"","range":"B2:C3"}' } };
   assert.deepEqual((await request(envelope({ ...answerData, citations: [cell] }))).citations, [cell]);

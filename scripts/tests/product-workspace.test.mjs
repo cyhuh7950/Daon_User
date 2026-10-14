@@ -57,9 +57,9 @@ test("실패 Source 실제 React 재처리 클릭은 새 Run POST 후 상태를 
 });
 
 test("DOCX 검토 필요 completed 자료만 실제 재처리 클릭으로 새 Run을 요청한다",async(t)=>{
-  for(const scenario of ['docx','xlsx','pdf','text','image','active-job','active-run','ready'])await t.test(scenario,async()=>{
+  for(const scenario of ['docx','pptx','xlsx','pdf','text','image','active-job','active-run','ready'])await t.test(scenario,async()=>{
     let workspace;const calls=[];let finished=false;
-    const filenames={docx:'qa.docx',xlsx:'qa.xlsx',pdf:'qa.pdf',text:'qa.txt',image:'qa.png'};
+    const filenames={docx:'qa.docx',pptx:'qa.pptx',xlsx:'qa.xlsx',pdf:'qa.pdf',text:'qa.txt',image:'qa.png'};
     try{
       workspace=await mountSourceRetryWorkspace({...adapter,
         listSources:async()=>[{source_id:'source-review',source_version_id:'version-review',filename:filenames[scenario]??'qa.docx',
@@ -74,7 +74,7 @@ test("DOCX 검토 필요 completed 자료만 실제 재처리 클릭으로 새 R
         getProcessingStatus:async id=>{finished=true;calls.push({runId:id});return {processing_run_id:id,source_id:'source-review',source_version_id:'version-review',source_state:'ready',processing_state:'completed',job_state:'completed',safe_error_code:null};}
       },`docx-review-retry-${scenario}`);
       const retry=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='재처리')[0];
-      if(scenario==='docx'){
+      if(scenario==='docx'||scenario==='pptx'){
         assert.ok(retry);await workspace.act(async()=>retry.dispatchEvent(new MinimalEvent('click')));
         assert.equal(calls[0].url,'/bff/api/sources/source-review/processing-runs');
         assert.equal(calls[0].body.attributes.source_version_id,'version-review');
@@ -232,6 +232,39 @@ test("sheet_cell 실제 React 원문 표는 재진입·강조·safe text·늦은
   });
 });
 
+test("PPTX 실제 React 원문은 emoji codepoint 강조·표 위치·safe text·늦은 응답을 결속한다", async(t)=>{
+  for(const scenario of ['success','invalid','late-selection','late-other-source','late-close']) await t.test(scenario,async()=>{
+    const oldFetch=globalThis.fetch;const pending=deferred();const calls=[];let workspace;
+    const locator={kind:'pptx_block',value:'{"block":"s:2:tb:3:r:1:c:2:p:1","start":1,"end":2}'};
+    const citation={citation_id:'citation-pptx',source_id:'source-1',source_version_id:'version-1',evidence_span_id:'span-pptx',page:1,origin:'raw_source',context_item_id:'source-1',locator};
+    const content={source_version_id:'version-1',source_sha256:'a'.repeat(64),serialization_version:'pptx-structure-v1',selected_block_id:'s:2:tb:3:r:1:c:2:p:1',selected_start:1,selected_end:2,blocks:[
+      {block_id:'s:2:sp:2:p:1',ordinal:2,slide:2,object_id:2,block_type:'shape_paragraph',text:'',table:null},
+      {block_id:'s:2:tb:3:r:1:c:2:p:1',ordinal:3,slide:2,object_id:3,block_type:'table_cell_paragraph',text:'한😀글 <script>literal</script> https://evil',table:{row:1,column:2,paragraph:1}},
+    ]};
+    if(scenario==='invalid')content.source_version_id='wrong';
+    globalThis.fetch=async(url,init)=>{calls.push({url,init});if(scenario.startsWith('late'))await pending.promise;return Response.json(content);};
+    try{
+      workspace=await mountSourceRetryWorkspace({...adapter,listSources:async()=>[{...sourceRetryPayload,filename:'qa.pptx'},{...sourceRetryPayload,source_id:'other-source',source_version_id:'other-version',filename:'other.pptx'}],listStudioOutputs:async()=>[],citationUrl:value=>citationContentUrl('workspace-1',value,{notebookId:'notebook-1'}),loadNotebookConversation:async()=>({run_id:'run-pptx',run_result_id:'result-pptx',answer:'저장된 PPTX 답변',insufficient:false,citations:[{...citation,content_url:citationContentUrl('workspace-1',citation,{notebookId:'notebook-1'})}]})},`pptx-${scenario}`);
+      const link=findElements(workspace.container,node=>node.tagName==='A'&&node.textContent.includes('Citation'))[0];
+      assert.ok(link);assert.match(link.textContent,/슬라이드 2 · 객체 3 · 표 행 1 · 열 2/);assert.doesNotMatch(link.getAttribute('href'),/#page/);
+      await workspace.act(async()=>link.dispatchEvent(new MinimalEvent('click')));
+      assert.equal(calls.length,1);assert.equal(calls[0].init.credentials,'same-origin');
+      if(scenario==='late-selection'){const selected=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.getAttribute?.('aria-pressed')==='true'&&node.textContent.includes('qa.pptx'))[0];await workspace.act(async()=>selected.dispatchEvent(new MinimalEvent('click')));}
+      if(scenario==='late-other-source'){const other=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent.includes('other.pptx'))[0];await workspace.act(async()=>other.dispatchEvent(new MinimalEvent('click')));assert.equal(other.getAttribute('aria-pressed'),'true');}
+      if(scenario==='late-close'){const close=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원문 닫기')[0];await workspace.act(async()=>close.dispatchEvent(new MinimalEvent('click')));}
+      if(scenario.startsWith('late'))await workspace.act(async()=>{pending.resolve();await Promise.resolve();});
+      const viewer=findElements(workspace.container,node=>node.getAttribute?.('aria-label')==='PPTX 원문')[0];
+      if(scenario==='success'){
+        assert.ok(viewer);assert.match(viewer.textContent,/행 1 · 열 2/);assert.doesNotMatch(viewer.textContent,/1쪽|page=1/);
+        assert.equal(findElements(viewer,node=>node.tagName==='MARK')[0].textContent,'😀');
+        assert.match(viewer.textContent,/<script>literal<\/script>/);assert.equal(findElements(viewer,node=>['A','SCRIPT','IMG'].includes(node.tagName)).length,0);
+        assert.ok(findElements(viewer,node=>node.getAttribute?.('class')==='citation-docx-scroll').length);
+      }else if(scenario==='invalid')assert.match(viewer.textContent,/CITATION_CONTENT_UNAVAILABLE/);
+      else assert.equal(viewer,undefined);
+    }finally{pending.resolve();if(workspace)await workspace.cleanup();globalThis.fetch=oldFetch;}
+  });
+});
+
 test("DOCX 실제 React 원문은 emoji codepoint 강조·표 위치·safe text·늦은 응답을 결속한다", async(t)=>{
   for(const scenario of ['success','invalid','late-selection','late-other-source','late-close']) await t.test(scenario,async()=>{
     const oldFetch=globalThis.fetch;const pending=deferred();const calls=[];let workspace;
@@ -385,11 +418,13 @@ test("HTTP QA React TXT 선택은 randomUUID 없이 실제 Source POST를 전송
     assert.match(workspace.container.textContent, /PNG\/JPG\/JPEG\(내부 Vision 모델·OCR 필요\)/u);
     assert.match(workspace.container.textContent, /XLSX\(내부 모델·셀 검증 필요\)/u);
     assert.match(workspace.container.textContent, /DOCX\(제한형 문단·병합 없는 단순 표, 내부 모델·구간 검증 필요\)/u);
-    assert.match(workspace.container.textContent, /PPTX·오디오는 이 화면에서 아직 미지원/u);
+    assert.match(workspace.container.textContent, /PPTX\(제한형 텍스트·병합 없는 단순 표/u);
+    assert.match(workspace.container.textContent, /오디오는 이 화면에서 아직 미지원/u);
     const fileInput = findElements(workspace.container, (node) => node.tagName === "INPUT" && node.getAttribute?.("accept")?.includes(".txt"))[0];
     assert.ok(fileInput.getAttribute('accept').split(',').includes('.xlsx'));
     assert.ok(fileInput.getAttribute('accept').split(',').includes('.docx'));
-    assert.equal(fileInput.getAttribute('accept').split(',').some(type => ['.pptx','.mp3'].includes(type)), false);
+    assert.ok(fileInput.getAttribute('accept').split(',').includes('.pptx'));
+    assert.equal(fileInput.getAttribute('accept').split(',').includes('.mp3'), false);
     Object.defineProperty(fileInput, "files", {
       configurable: true, value: [new File(["ORANGE-COMPASS-42"], "notes.txt", { type: "text/plain" })],
     });

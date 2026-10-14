@@ -1,4 +1,5 @@
 "use client";
+import { parsePptxBlock, isPptxBlockContent, pptxBlockLabel } from "./shared-pptx-block.js";
 
 import { useEffect, useRef, useState } from "react";
 import "@daon-user/design-tokens/tokens.css";
@@ -9,6 +10,13 @@ import { classifyConversationIntent } from "./conversation-intent.js";
 import { secureUuid } from "./secure-uuid.js";
 import "./workspace.css";
 import { parseDocxBlock, isDocxBlockContent } from "./shared-docx-block.js";
+
+function PptxOriginalBlocks({ content }) {
+  return <div className="citation-docx-scroll"><p>읽기 전용 슬라이드 텍스트·표 원문입니다. PowerPoint 배치는 재현하지 않습니다.</p>{content.blocks.map(block => {
+    const points=Array.from(block.text), selected=block.block_id===content.selected_block_id;
+    return <article key={block.block_id}><small>{pptxBlockLabel(JSON.stringify({block:block.block_id,start:0,end:Math.max(1,points.length)}))}</small><p>{selected?<>{points.slice(0,content.selected_start).join("")}<mark>{points.slice(content.selected_start,content.selected_end).join("")}</mark>{points.slice(content.selected_end).join("")}</>:block.text}</p></article>;
+  })}</div>;
+}
 
 function DocxOriginalBlocks({ content }) {
   return <div className="citation-docx-scroll"><p>읽기 전용 문단·표 원문입니다. Word 페이지 배치는 재현하지 않습니다.</p>
@@ -360,7 +368,8 @@ export function projectSafeQuestionAnswer(answer, workspaceId, citationUrl, sele
       && !/[\u0000-\u001f\u007f]/u.test(citation.locator.value)
       && (citation.locator.kind !== "image_region" || parseImageRegion(citation.locator.value) !== null)
       && (citation.locator.kind !== "sheet_cell" || parseSheetCell(citation.locator.value) !== null)
-      && (citation.locator.kind !== "docx_block" || parseDocxBlock(citation.locator.value) !== null);
+      && (citation.locator.kind !== "docx_block" || parseDocxBlock(citation.locator.value) !== null)
+      && (citation.locator.kind !== "pptx_block" || parsePptxBlock(citation.locator.value) !== null);
     const validCitation = hasExactKeys(citation, ["citation_id", "source_id", "source_version_id", "evidence_span_id", "page", "origin", "context_item_id", "locator"])
       && isSafeDtoId(citation.citation_id)
       && isSafeDtoId(citation.source_id)
@@ -1367,7 +1376,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <nav className="source-add-tabs" aria-label="Source 유형">
               {[['file', '파일 업로드'], ['website', '웹사이트'], ['drive', 'Drive'], ['text', '복사한 텍스트'], ['mcp', 'MCP 연결']].map(([mode, label]) => <button key={mode} type="button" aria-pressed={sourceAddMode === mode} onClick={() => { setSourceAddMode(mode); setSourceAddError(null); }} disabled={sourceAddPending}>{label}</button>)}
             </nav>
-            {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV, XLSX(내부 모델·셀 검증 필요), DOCX(제한형 문단·병합 없는 단순 표, 내부 모델·구간 검증 필요), PNG/JPG/JPEG(내부 Vision 모델·OCR 필요). PPTX·오디오는 이 화면에서 아직 미지원</small><input type="file" accept=".pdf,.xlsx,.docx,.csv,.txt,.md,.png,.jpg,.jpeg" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
+            {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV, XLSX(내부 모델·셀 검증 필요), DOCX(제한형 문단·병합 없는 단순 표, 내부 모델·구간 검증 필요), PNG/JPG/JPEG(내부 Vision 모델·OCR 필요). PPTX(제한형 텍스트·병합 없는 단순 표, 내부 모델·원문 검증 필요). 오디오는 이 화면에서 아직 미지원</small><input type="file" accept=".pdf,.xlsx,.docx,.pptx,.csv,.txt,.md,.png,.jpg,.jpeg" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
             {sourceAddMode === "text" ? <><textarea value={sourceAddText} onChange={(event) => setSourceAddText(event.target.value)} placeholder="복사한 텍스트를 붙여 넣으세요" disabled={sourceAddPending} /><button type="button" className="primary-button" onClick={() => void submitPastedText()} disabled={sourceAddPending || !sourceAddText.trim()}>{sourceAddPending ? "등록 중" : "텍스트 등록"}</button></> : null}
             {sourceAddMode === "mcp" ? <div className="source-add-unavailable"><strong>국가법령정보센터 MCP</strong><small>연결을 등록하면 연결형 Source에서 상태를 확인하고 선택할 수 있습니다.</small><button type="button" className="primary-button" onClick={() => void registerMcpConnector()} disabled={sourceAddPending}>{sourceAddPending ? "등록 중" : "MCP 연결 등록"}</button></div> : null}
             {sourceAddMode === "website" || sourceAddMode === "drive" ? <div className="source-add-unavailable" role="status"><strong>{sourceAddMode === "website" ? "웹사이트" : "Drive"} 연결 준비 필요</strong><small>외부 원본을 가져오는 Connector가 연결되면 이 흐름에서 등록할 수 있습니다.</small></div> : null}
@@ -1415,7 +1424,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                 </button>
                 <button type="button" className="source-action-trigger" title="Source 작업" aria-label={`${source.filename ?? source.sourceId} 작업`} onClick={() => { setSourceAction(source); setSourceActionKind("unbind"); setSourceActionSafeError(null); }}>⋮</button>
                 {(new Set(["failed", "waiting_model"]).has(source.sourceState)
-                  || (typeof source.filename === "string" && source.filename.toLowerCase().endsWith(".docx")
+                  || (typeof source.filename === "string" && /\.(docx|pptx)$/u.test(source.filename.toLowerCase())
                     && source.sourceState === "needs_review" && source.processingState === "completed" && source.jobState === "completed")) && typeof adapter?.reprocessSource === "function"
                   ? <button type="button" disabled={sourceAddPending} onClick={() => void retrySource(source)}>재처리</button> : null}
               </li>
@@ -1473,7 +1482,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">대화를 불러오지 못했습니다. ({viewState.conversationSafeError}) 다시 시도해 주세요.</div> : null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
-              if (citation.locator.kind === "docx_block") {
+              if (["docx_block", "pptx_block"].includes(citation.locator.kind)) {
                 event.preventDefault();
                 sheetRequestRef.current=null;setSheetCitation(null);setImageCitation(null);
                 const requestId=Symbol("docx-citation"), requestEpoch=questionEpochRef.current;docxRequestRef.current=requestId;
@@ -1481,14 +1490,14 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                 void(async()=>{
                   try {
                     const expected=`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/citations/${encodeURIComponent(citation.citation_id)}/content?notebook_id=`;
-                    if (!parseDocxBlock(citation.locator.value) || typeof citation.content_url !== "string"
+                    if (!(citation.locator.kind === "pptx_block" ? parsePptxBlock(citation.locator.value) : parseDocxBlock(citation.locator.value)) || typeof citation.content_url !== "string"
                         || !citation.content_url.startsWith(expected) || !isSafeDtoId(citation.content_url.slice(expected.length))
                         || citation.content_url !== adapter.citationUrl(citation)) throw new Error("CITATION_CONTENT_UNAVAILABLE");
                     const response=await globalThis.fetch(citation.content_url,{credentials:"same-origin",cache:"no-store",signal:lifetimeControllerRef.current?.signal});
                     if (!response.ok || response.headers.get("content-type")?.split(";",1)[0].trim() !== "application/json") throw new Error("CITATION_CONTENT_UNAVAILABLE");
                     const text=await response.text();
                     if(new TextEncoder().encode(text).length>32768)throw new Error("CITATION_CONTENT_UNAVAILABLE");
-                    if(!isDocxBlockContent(text,citation.locator.value,citation.source_version_id))throw new Error("CITATION_CONTENT_UNAVAILABLE");
+                    if(!(citation.locator.kind === "pptx_block" ? isPptxBlockContent : isDocxBlockContent)(text,citation.locator.value,citation.source_version_id))throw new Error("CITATION_CONTENT_UNAVAILABLE");
                     const content=JSON.parse(text);
                     if(docxRequestRef.current===requestId&&questionEpochRef.current===requestEpoch&&workspaceMountedRef.current)setDocxCitation(current=>current?.requestId===requestId?{...current,content}:current);
                   }catch{
@@ -1542,11 +1551,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               }).catch((error) => {
                 setViewState((current) => ({ ...current, status: "error", safeError: safeErrorCode(error, "CITATION_RESPONSE_INVALID") }));
               });
-            }}>Citation · {citation.locator.kind === "docx_block" ? `${parseDocxBlock(citation.locator.value)?.block} · ${parseDocxBlock(citation.locator.value)?.start}–${parseDocxBlock(citation.locator.value)?.end}` : citation.locator.kind === "sheet_cell" ? `${parseSheetCell(citation.locator.value)?.sheet} · ${parseSheetCell(citation.locator.value)?.range}` : citation.locator.kind === "page" ? `${citation.page}쪽` : citation.locator.kind === "image_region" ? "이미지 영역" : "지식 구간"}</a>
+            }}>Citation · {citation.locator.kind === "pptx_block" ? pptxBlockLabel(citation.locator.value) : citation.locator.kind === "docx_block" ? `${parseDocxBlock(citation.locator.value)?.block} · ${parseDocxBlock(citation.locator.value)?.start}–${parseDocxBlock(citation.locator.value)?.end}` : citation.locator.kind === "sheet_cell" ? `${parseSheetCell(citation.locator.value)?.sheet} · ${parseSheetCell(citation.locator.value)?.range}` : citation.locator.kind === "page" ? `${citation.page}쪽` : citation.locator.kind === "image_region" ? "이미지 영역" : "지식 구간"}</a>
           ))}</div>
-          {docxCitation && docxCitation.requestEpoch===questionEpochRef.current && viewState.answer?.citations?.some(current=>current.citation_id===docxCitation.citation.citation_id&&current.source_id===docxCitation.citation.source_id&&current.source_version_id===docxCitation.citation.source_version_id&&current.locator.kind==="docx_block"&&current.locator.value===docxCitation.citation.locator.value)?<section className="citation-docx-view" aria-label="DOCX 원문">
+          {docxCitation && docxCitation.requestEpoch===questionEpochRef.current && viewState.answer?.citations?.some(current=>current.citation_id===docxCitation.citation.citation_id&&current.source_id===docxCitation.citation.source_id&&current.source_version_id===docxCitation.citation.source_version_id&&["docx_block","pptx_block"].includes(current.locator.kind)&&current.locator.value===docxCitation.citation.locator.value)?<section className="citation-docx-view" aria-label={docxCitation.citation.locator.kind==="pptx_block"?"PPTX 원문":"DOCX 원문"}>
             <button type="button" onClick={()=>{docxRequestRef.current=null;setDocxCitation(null);}}>원문 닫기</button>
-            {docxCitation.error?<p role="alert">DOCX 원문을 확인할 수 없습니다. ({docxCitation.error})</p>:docxCitation.content?<DocxOriginalBlocks content={docxCitation.content}/>:<p role="status">DOCX 원문을 불러오는 중입니다.</p>}
+            {docxCitation.error?<p role="alert">DOCX 원문을 확인할 수 없습니다. ({docxCitation.error})</p>:docxCitation.content?(docxCitation.citation.locator.kind==="pptx_block"?<PptxOriginalBlocks content={docxCitation.content}/>:<DocxOriginalBlocks content={docxCitation.content}/>):<p role="status">DOCX 원문을 불러오는 중입니다.</p>}
           </section>:null}
           {sheetCitation && viewState.answer?.citations?.some(current => current.citation_id === sheetCitation.citation.citation_id && current.source_id === sheetCitation.citation.source_id && current.source_version_id === sheetCitation.citation.source_version_id && current.locator.kind === "sheet_cell" && current.locator.value === sheetCitation.citation.locator.value) ? <section className="citation-sheet-view" aria-label="셀 원문">
             <button type="button" onClick={() => { sheetRequestRef.current = null; setSheetCitation(null); }}>원문 닫기</button>
@@ -1605,7 +1614,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                 <span>{output.status}</span>
                 <ul aria-label={`${output.title} Citation 계보`}>
                   {(Array.isArray(output.citations) ? output.citations : []).map((citation) => (
-                    <li key={citation.citation_id}>{citation.locator?.kind === "docx_block" ? `Citation 문단·표 구간 ${citation.locator.value}` : citation.locator?.kind === "sheet_cell" ? `Citation ${parseSheetCell(citation.locator.value)?.sheet} · ${parseSheetCell(citation.locator.value)?.range}` : citation.locator?.kind === "image_region" ? `Citation 이미지 영역 ${citation.locator.value}` : `Citation page ${citation.page}`}</li>
+                    <li key={citation.citation_id}>{citation.locator?.kind === "pptx_block" ? `Citation ${pptxBlockLabel(citation.locator.value)}` : citation.locator?.kind === "docx_block" ? `Citation 문단·표 구간 ${citation.locator.value}` : citation.locator?.kind === "sheet_cell" ? `Citation ${parseSheetCell(citation.locator.value)?.sheet} · ${parseSheetCell(citation.locator.value)?.range}` : citation.locator?.kind === "image_region" ? `Citation 이미지 영역 ${citation.locator.value}` : `Citation page ${citation.page}`}</li>
                   ))}
                 </ul>
               </li>

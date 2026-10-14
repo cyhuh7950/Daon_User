@@ -2,6 +2,7 @@
 import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
 import { parseSheetCell } from "./sheet-cell-locator.js";
 import { parseDocxBlock } from "./docx-block-locator.js";
+import { parsePptxBlock } from "./pptx-block-locator.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const VIEW_KEYS = Object.freeze(["notebook_id", "title", "source_count", "output_count", "updated_at", "status", "etag"]);
@@ -78,12 +79,13 @@ function validCitation(value) {
     && Number.isSafeInteger(value.page) && value.page >= 1
     && ["raw_source", "daon_knowledge"].includes(value.origin)
     && exact(value.locator, ["kind", "value"])
-    && ["page", "section", "image_region", "sheet_cell", "docx_block"].includes(value.locator.kind)
+    && ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block"].includes(value.locator.kind)
     && typeof value.locator.value === "string" && value.locator.value.length >= 1 && value.locator.value.length <= 255
     && (value.locator.kind !== "page" || value.locator.value === String(value.page))
     && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null)
     && (value.locator.kind !== "sheet_cell" || parseSheetCell(value.locator.value) !== null)
-    && (value.locator.kind !== "docx_block" || parseDocxBlock(value.locator.value) !== null);
+    && (value.locator.kind !== "docx_block" || parseDocxBlock(value.locator.value) !== null)
+    && (value.locator.kind !== "pptx_block" || parsePptxBlock(value.locator.value) !== null);
 }
 
 function validContext(value, notebookId) {
@@ -102,7 +104,7 @@ function validContext(value, notebookId) {
     && Array.isArray(value.conversation.answer.citations)
     && value.conversation.answer.citations.length <= 20
     && value.conversation.answer.citations.every(citation => validCitation(citation)
-      && (!["sheet_cell", "docx_block"].includes(citation.locator.kind) || citation.origin !== "raw_source"
+      && (!["sheet_cell", "docx_block", "pptx_block"].includes(citation.locator.kind) || citation.origin !== "raw_source"
         || (citation.context_item_id === citation.source_id && Array.isArray(value.sources)
           && value.sources.some(source => source?.source_id === citation.source_id
             && source?.source_version_id === citation.source_version_id))))

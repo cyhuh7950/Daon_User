@@ -4,6 +4,7 @@ import { secureUuid } from "@daon-user/ui/secure-uuid";
 import { parseImageRegion } from "@daon-user/ui/product-workspace-model";
 import { parseSheetCell } from "./sheet-cell-locator.js";
 import { parseDocxBlock } from "./docx-block-locator.js";
+import { parsePptxBlock } from "./pptx-block-locator.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const SAFE_FILENAME = /^[^/\\\u0000-\u001f]{1,255}$/u;
@@ -541,11 +542,12 @@ function validStudioCitation(value) {
     && safeId(value.citation_id) && safeId(value.source_version_id) && safeId(value.evidence_span_id)
     && new Set(["raw_source", "daon_knowledge"]).has(value.origin)
     && record(value.locator) && exact(value.locator, ["kind", "value"])
-    && new Set(["page", "section", "image_region", "sheet_cell", "docx_block"]).has(value.locator.kind)
+    && new Set(["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block"]).has(value.locator.kind)
     && safeText(value.locator.value, 1, 500)
     && (value.locator.kind !== "image_region" || parseImageRegion(value.locator.value) !== null)
     && (value.locator.kind !== "sheet_cell" || parseSheetCell(value.locator.value) !== null)
-    && (value.locator.kind !== "docx_block" || parseDocxBlock(value.locator.value) !== null);
+    && (value.locator.kind !== "docx_block" || parseDocxBlock(value.locator.value) !== null)
+    && (value.locator.kind !== "pptx_block" || parsePptxBlock(value.locator.value) !== null);
 }
 
 function validStudioVersion(value) {
