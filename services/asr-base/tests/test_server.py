@@ -7,6 +7,9 @@ import threading
 import urllib.request
 import urllib.error
 import json
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('asr_server',pathlib.Path(__file__).parents[1]/'server.py')
 server=importlib.util.module_from_spec(spec)
@@ -29,6 +32,39 @@ class AudioBoundaryTests(unittest.TestCase):
         self.assertEqual(values,[{'segment_id':'s:1','start_ms':0,'end_ms':500,'text':'한글 test'}])
         for items in ([(-1,.5,'bad')],[(0,2,'bad')],[(0,.8,'a'),(.5,1,'b')],[(0,.5,'')]):
             with self.subTest(items=items),self.assertRaises(ValueError):server.normalize_segments(items,1000)
+
+class InferenceBoundaryTests(unittest.TestCase):
+    def test_inference_word_alignment_emits_primitive_timestamps_for_strict_normalization(self):
+        class EngineTimestamp(float):
+            pass
+        requests=[]
+        class Engine:
+            def __init__(self,*args,**kwargs):pass
+            def transcribe(self,audio,**kwargs):
+                requests.append((audio.read(),kwargs))
+                return iter([SimpleNamespace(start=EngineTimestamp(.25),end=EngineTimestamp(.75),text='한글 test')]),None
+        class Pipe:
+            def __init__(self,raw):self.inputs=iter([raw]);self.sent=[]
+            def recv(self):
+                try:return next(self.inputs)
+                except StopIteration:raise EOFError
+            def send(self,value):self.sent.append(value)
+        raw=wav();pipe=Pipe(raw)
+        with patch.dict(sys.modules,{'faster_whisper':SimpleNamespace(WhisperModel=Engine)}):
+            server.inference_process(pipe,'/fixture/model')
+        self.assertEqual(pipe.sent[0],('ready',None))
+        self.assertEqual(pipe.sent[1][0],'ok')
+        self.assertEqual(len(pipe.sent),2)
+        self.assertEqual(requests[0][0],raw)
+        with self.subTest(boundary='word_alignment'):
+            self.assertEqual(requests[0][1],dict(beam_size=1,temperature=0,
+                condition_on_previous_text=False,vad_filter=False,word_timestamps=True))
+        with self.subTest(boundary='primitive_timestamps_and_normalized_result'):
+            result=pipe.sent[1][1]
+            self.assertIs(type(result[0][0]),float)
+            self.assertIs(type(result[0][1]),float)
+            self.assertEqual(server.normalize_segments(result,server.validate_wav(raw)),
+                [{'segment_id':'s:1','start_ms':250,'end_ms':750,'text':'한글 test'}])
 
 class HttpBoundaryTests(unittest.TestCase):
     def test_busy_request_is_rejected_and_timeout_is_not_success(self):

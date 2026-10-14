@@ -60,8 +60,8 @@ def inference_process(connection,model_path):
         while True:
             raw=connection.recv()
             try:
-                segments,_=model.transcribe(io.BytesIO(raw),beam_size=1,temperature=0,condition_on_previous_text=False,vad_filter=False)
-                result=[(s.start,s.end,s.text) for s in segments]
+                segments,_=model.transcribe(io.BytesIO(raw),beam_size=1,temperature=0,condition_on_previous_text=False,vad_filter=False,word_timestamps=True)
+                result=[(float(s.start),float(s.end),s.text) for s in segments]
                 connection.send(('ok',result))
             except Exception:connection.send(('error',None))
     except (EOFError,BrokenPipeError):pass
