@@ -39,6 +39,46 @@ test("Source 재처리 adapter는 다른 Source 응답과 안전 HTTP 실패를 
   function sourceRetryApiCall(payload) { return sourceApi.reprocessSource("workspace-1", source, { ...options, fetchImpl: async () => Response.json(payload, { status: 201 }) }); }
 });
 
+test("음성 Source 재처리는 speech_to_text 시작 응답과 replayed를 보존한다", async () => {
+  for (const replayed of [false, true]) {
+    const attributes = {
+      processing_run_id: "run-2", source_id: "source-1", source_version_id: "version-1",
+      retry_of_processing_run_id: "run-1", processing_state: "speech_to_text",
+      source_state: "processing", job_state: "pending", replayed,
+    };
+    const result = await sourceApi.reprocessSource("workspace-1", {
+      sourceId: "source-1", sourceVersionId: "version-1",
+    }, {
+      notebookId: "notebook-1", idempotencyKey: "audio-retry-1",
+      fetchImpl: async () => Response.json({
+        data: { id: "run-2", kind: "processing_run", version: "2", attributes },
+        trace_id: "trace-1",
+      }, { status: 201 }),
+    });
+    assert.deepEqual(result, attributes);
+  }
+});
+
+test("Source 재처리는 두 시작 상태 밖의 처리 단계와 unknown 상태를 거부한다", async () => {
+  for (const processing_state of [
+    "llm_semantic_understanding", "transcript_timecode_validation", "evidence_reconciliation",
+    "indexing", "completed", "processing", "unexpected", "", null,
+  ]) {
+    await assert.rejects(sourceApi.reprocessSource("workspace-1", {
+      sourceId: "source-1", sourceVersionId: "version-1",
+    }, {
+      notebookId: "notebook-1", idempotencyKey: "invalid-retry-1",
+      fetchImpl: async () => Response.json({ data: {
+        id: "run-2", kind: "processing_run", version: "2", attributes: {
+          processing_run_id: "run-2", source_id: "source-1", source_version_id: "version-1",
+          retry_of_processing_run_id: "run-1", processing_state,
+          source_state: "processing", job_state: "pending", replayed: false,
+        },
+      }, trace_id: "trace-1" }, { status: 201 }),
+    }), { message: "SOURCE_REPROCESS_RESPONSE_INVALID" }, String(processing_state));
+  }
+});
+
 const source = Object.freeze({
   source_id: "source-1", source_version_id: "version-1", filename: "approved.pdf",
   source_state: "ready", processing_state: "completed", job_state: "completed",

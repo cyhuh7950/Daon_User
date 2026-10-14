@@ -90,7 +90,7 @@ export async function reprocessSource(workspaceId, source, { notebookId, idempot
       || data.id !== result.processing_run_id || !SAFE_ID.test(result.processing_run_id)
       || !SAFE_ID.test(result.retry_of_processing_run_id) || result.source_id !== source.sourceId
       || result.source_version_id !== source.sourceVersionId || result.source_state !== "processing"
-      || result.processing_state !== "vision_llm_understanding" || result.job_state !== "pending"
+      || !["vision_llm_understanding", "speech_to_text"].includes(result.processing_state) || result.job_state !== "pending"
       || typeof result.replayed !== "boolean") throw new Error("SOURCE_REPROCESS_RESPONSE_INVALID");
   return result;
 }
