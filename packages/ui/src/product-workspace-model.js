@@ -1,5 +1,6 @@
 export { parseDocxBlock, isDocxBlockContent } from "./shared-docx-block.js";
 export { parsePptxBlock, isPptxBlockContent } from "./shared-pptx-block.js";
+export { parseAudioSegment, isAudioSegmentContent } from "./shared-audio-segment.js";
 export const PRODUCT_WORKSPACE_STATES = Object.freeze([
   "loading",
   "empty",

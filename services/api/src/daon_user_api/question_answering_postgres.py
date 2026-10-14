@@ -504,7 +504,10 @@ class PostgresQuestionAnsweringRepository:
 
     def read_citation_content(
         self, context: QuestionContext, citation_id: str,
+        *, representation: str | None = None,
     ) -> tuple[CitationContent, dict[str, str]]:
+        if representation not in {None, 'audio'}:
+            raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=422)
         if not _SAFE_ID.fullmatch(citation_id):
             raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
         try:
@@ -565,6 +568,8 @@ class PostgresQuestionAnsweringRepository:
         if page < 1 or page != evidence_page or source_state != "ready":
             raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
         stored_locator = row[9] if len(row) > 9 else None
+        if representation == 'audio' and not (isinstance(stored_locator, dict) and stored_locator.get('kind') == 'audio_segment'):
+            raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=422)
         if evidence.get('kind') == 'audio_segment_fact' or isinstance(stored_locator, dict) and stored_locator.get('kind') == 'audio_segment':
             from .audio_source import read_wav, read_audio_transcript_view
             from .audio_document_understanding import read_audio_result_transcript
@@ -577,6 +582,18 @@ class PostgresQuestionAnsweringRepository:
                 or evidence.get('source_id') != source_id or evidence.get('source_version_id') != source_version_id
                 or not isinstance(locator, dict) or set(locator) != {'kind', 'value'} or locator.get('kind') != 'audio_segment'
                 or locator != stored_locator or page != 1 or not isinstance(understanding_id, str) or not _SAFE_ID.fullmatch(understanding_id)):
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=404)
+            try:
+                with self._cloud_store._transaction(self._cloud_context(context, 'citation.read')) as connection:
+                    allowed = connection.execute(
+                        'SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access '
+                        'WHERE tenant_id=%s AND workspace_id=%s AND user_id=%s '
+                        'AND source_version_id=%s AND allowed=0)',
+                        (context.tenant_id, context.workspace_id, context.actor_id, source_version_id),
+                    ).fetchone()
+            except CloudDatabaseError:
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=503) from None
+            if allowed is None or not allowed[0]:
                 raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=404)
             original = self._row(context, source_id, source_version_id, 'citation.read', require_notebook_binding=True)
             if str(original[3]) != filename or not filename.lower().endswith('.wav') or str(original[8]) != 'audio/wav' or str(original[9]) != 'completed':
@@ -610,6 +627,8 @@ class PostgresQuestionAnsweringRepository:
                 selected = next(s for s in view['segments'] if s['segment_id'] == view['selected_segment_id'])
                 if selected['text'][view['selected_start']:view['selected_end']] != evidence.get('text'):
                     raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)
+                if representation == 'audio':
+                    return CitationContent(source_id, source_version_id, filename, content, 'audio/wav'), locator
                 view['source_version_id'] = source_version_id
                 body = canonical_json_bytes(view)
                 if len(body) > 32768: raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)

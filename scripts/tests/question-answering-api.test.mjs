@@ -115,6 +115,15 @@ test("DOCX Question client validates exact compact codepoint locator without inv
     await assert.rejects(request(envelope({...answerData,citations:[{...docx,locator:{kind:"docx_block",value}}]})),/QUESTION_RESPONSE_INVALID/);
 });
 
+test("audio Question client preserves real time locator without PDF anchor",async()=>{
+  const audio={...citation,page:1,locator:{kind:'audio_segment',value:'{"segment":"s:1","start_ms":0,"end_ms":1000,"start":0,"end":1}'}};
+  assert.deepEqual((await request(envelope({...answerData,citations:[audio]}))).citations[0],audio);
+  assert.doesNotMatch(citationContentUrl('workspace-1',audio,{notebookId:'notebook-1'}),/#page/);
+  for(const value of ['{"segment":"s:65","start_ms":0,"end_ms":1000,"start":0,"end":1}',
+      '{"segment":"s:1","start_ms":false,"end_ms":1000,"start":0,"end":1}'])
+    await assert.rejects(request(envelope({...answerData,citations:[{...audio,locator:{kind:'audio_segment',value}}]})),/QUESTION_RESPONSE_INVALID/);
+});
+
 test("Question API는 승인 지식과 Raw Source를 하나의 exact Knowledge Context로 전송한다", async () => {
   const calls = [];
   const knowledgeContext = {

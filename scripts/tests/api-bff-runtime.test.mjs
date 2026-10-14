@@ -9,6 +9,38 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test('audio BFF keeps same-origin Notebook scope and fixed binary MIME',async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),init});return new Response(new Uint8Array([82,73,70,70]),
+      {headers:{'Content-Type':'audio/wav','X-Citation-Locator-Kind':'audio_segment'}});
+  }});
+  const response=await proxy(new Request('https://app.example.com/bff/api/workspaces/workspace-1/citations/citation-audio/content?notebook_id=notebook-1&representation=audio'),
+    ['workspaces','workspace-1','citations','citation-audio','content']);
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('content-type'),'audio/wav');
+  assert.equal(response.headers.get('cache-control'),'private, no-store');
+  assert.match(calls[0].url,/notebook_id=notebook-1&representation=audio$/);
+});
+
+test('native audio BFF requires exact scope and refuses unknown or duplicate representation',async()=>{
+  const {createNativeBffProxy}=await import('../../apps/web/lib/bff-api-proxy.js');
+  const calls=[];
+  const proxy=createNativeBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push(String(url));return init.method==='POST'?Response.json({data:{}},{status:202}):new Response(new Uint8Array([82,73,70,70]),{headers:{'Content-Type':'audio/wav'}});
+  }});
+  const headers={Authorization:'Bearer opaque-native-credential'};
+  const path=['workspaces','workspace-1','citations','citation-audio','content'];
+  const base='https://app.example.com/api/v1/workspaces/workspace-1/citations/citation-audio/content?';
+  assert.equal((await proxy(new Request(base+'notebook_id=notebook-1&representation=audio',{headers}),path)).status,200);
+  const count=calls.length;
+  for(const query of ['notebook_id=notebook-1&representation=invalid','notebook_id=notebook-1&representation=audio&representation=audio','representation=audio'])
+    assert.notEqual((await proxy(new Request(base+query,{headers}),path)).status,200);
+  assert.equal(calls.length,count);
+  const uploaded=await proxy(new Request('https://app.example.com/api/v1/workspaces/workspace-1/sources',{method:'POST',headers:{...headers,'Content-Type':'audio/wav','X-Source-Filename':'qa.wav'},body:new Uint8Array([82,73,70,70])}),['workspaces','workspace-1','sources']);
+  assert.equal(uploaded.status,202);
+});
+
 test("DOCX BFF existing route permits exact MIME, scoped JSON and CSRF while retaining kind header", async () => {
   const calls=[];const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url,init)=>{
     calls.push({url:String(url),init});return init.method==="POST"?Response.json({data:{}},{status:202}):Response.json({source_version_id:"sv-docx"},{headers:{"X-Citation-Locator-Kind":"docx_block"}});

@@ -90,6 +90,10 @@ export function formatModelChoice(connection, model) {
 }
 
 export function projectProviderConnection(connection, userCredential = null) {
+  if(connection?.adapter_type === 'asr_base_native') {
+    const verified=connection.enabled===true && connection.verification_status==='verified';
+    return {label:`QA 내부 ASR · ${verified?'ready/metadata 확인':'준비 미확인'}`,verified};
+  }
   const routeReady = connection?.provider_code !== "OMNIROUTE" || (connection.allowed_model_ids ?? []).some((modelId) =>
     (connection.models ?? []).some((model) => model.model_id === modelId && model.catalog_status === "ready"
       && (model.effective_capabilities ?? []).includes("text_generation")));
@@ -202,6 +206,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const [status, setStatus] = useState({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
   const [modelDefaults, setModelDefaults] = useState(null);
   const [textModelChoice, setTextModelChoice] = useState("");
+  const [asrModelChoice, setAsrModelChoice] = useState("");
   const [defaultStatus, setDefaultStatus] = useState("");
   const [savingDefault, setSavingDefault] = useState(false);
 
@@ -258,10 +263,13 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
         setModelDefaults({ ...snapshot, etag: defaultsResult.etag });
         const currentText = snapshot.defaults?.find((item) => item.capability === "text_generation");
         setTextModelChoice(currentText ? modelKey(currentText.connection_id, currentText.model_id) : "");
+        const currentAsr=snapshot.defaults?.find(item=>item.capability==='speech_to_text');
+        setAsrModelChoice(currentAsr ? modelKey(currentAsr.connection_id,currentAsr.model_id) : '');
         setDefaultStatus("");
       } catch {
         setModelDefaults(null);
         setTextModelChoice("");
+        setAsrModelChoice("");
         setDefaultStatus("기본 모델을 불러오지 못했습니다. 새로고침 후 다시 시도해 주세요.");
       }
       setStatus({ kind: "ready", message: systemAdmin ? "시스템 연결과 모델 목록을 조회했습니다." : "공유 Provider 연결과 개인 키 설정을 조회했습니다." });
@@ -285,6 +293,9 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     (model) => model.catalog_status === "ready" && model.effective_capabilities?.includes("text_generation"),
   ), [modelDefaults]);
   const savedTextModel = modelDefaults?.defaults?.find((item) => item.capability === "text_generation") ?? null;
+  const asrModelOptions=(modelDefaults?.available_models??[]).filter(model=>model.catalog_status==='ready'
+    && model.model_id==='faster-whisper-base' && model.effective_capabilities?.includes('speech_to_text'));
+  const savedAsrModel=modelDefaults?.defaults?.find(item=>item.capability==='speech_to_text')??null;
   const availableModels = useMemo(() => (
     [...new Set([
       ...(draft.auto_model_id.trim() ? [draft.auto_model_id.trim()] : []),
@@ -320,8 +331,27 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     }
   }
 
+  async function saveAsrModelDefault(){
+    if(!isSystemAdmin || !resolvedWorkspaceId || !modelDefaults?.etag || !asrModelChoice || savingDefault)return;
+    const selected=asrModelOptions.find(item=>modelKey(item.connection_id,item.model_id)===asrModelChoice);
+    if(!selected)return;
+    setSavingDefault(true);setDefaultStatus('QA ASR 역할을 저장하는 중입니다.');
+    try{
+      const result=await providerSettingsApi.saveModelDefault(resolvedWorkspaceId,{
+        capability:'speech_to_text',connection_id:selected.connection_id,model_id:selected.model_id,
+        expected_version:savedAsrModel?.version??0,
+      },modelDefaults.etag,operationKey('qa-asr-model-default'));
+      if(!result.payload?.data || !result.etag || result.payload.data.workspace_id!==resolvedWorkspaceId)throw new Error('MODEL_DEFAULTS_INVALID');
+      setModelDefaults({...result.payload.data,etag:result.etag});
+      setDefaultStatus('QA 음성 인식 역할을 저장했습니다. 실제 전사는 WAV 처리 결과에서 확인하세요.');
+    }catch{setDefaultStatus('QA ASR 역할을 저장하지 못했습니다. 현재 Workspace와 연결·권한을 확인하세요.');}
+    finally{setSavingDefault(false);}
+  }
+
   async function saveConnection(includeCredential) {
     const connectionId = draft.connection_id.trim();
+    const nativeAsr=draft.provider_code==='CUSTOM' && draft.adapter_type==='asr_base_native';
+    if(nativeAsr && includeCredential)return;
     const compatible = draft.provider_code === "CUSTOM" && Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type);
     const route = draft.provider_code === "OMNIROUTE" || draft.provider_code === "OPENROUTER";
     const routeModelsUnchanged = unchangedRouteSelection(draft, selectedConnection);
@@ -360,8 +390,8 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
           display_name: draft.display_name.trim(),
           provider_name: draft.provider_name.trim(),
           base_url: draft.base_url.trim(),
-          logical_model_ids: modelIds,
-          allowed_model_ids: modelIds,
+          logical_model_ids: nativeAsr ? [] : modelIds,
+          allowed_model_ids: nativeAsr ? ['faster-whisper-base'] : modelIds,
           auto_model_id: draft.auto_model_id.trim() || null,
           short_code: draft.short_code.trim().toUpperCase(),
           access_mode: draft.credential_requirement === "none" ? "public" : draft.access_mode,
@@ -380,7 +410,8 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
       const item = result.payload.data;
       applyConnections([...connections.filter((connection) => connection.connection_id !== item.connection_id), item], item.connection_id);
       setCredential("");
-      setStatus({ kind: "ready", message: item.verification_status === "verified" ? "연결 시험에 성공했고 Provider 연결을 저장했습니다." : "Provider 연결을 사용 대기 상태로 저장했습니다." });
+      if(nativeAsr)await load();
+      setStatus({ kind: "ready", message: nativeAsr ? "ASR ready/metadata를 확인하고 등록했습니다. 실제 전사는 WAV 처리 결과에서 확인하세요." : item.verification_status === "verified" ? "연결 시험에 성공했고 Provider 연결을 저장했습니다." : "Provider 연결을 사용 대기 상태로 저장했습니다." });
     } catch (error) {
       if (!compatible) setCredential("");
       setStatus({ kind: "error", message: safeProviderErrorMessage(action, error) });
@@ -516,6 +547,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
 
   const busy = status.kind === "saving" || status.kind === "loading";
   const compatible = draft.provider_code === "CUSTOM" && Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type);
+  const nativeAsr = draft.provider_code==='CUSTOM' && draft.adapter_type==='asr_base_native';
   const pendingCompatible = compatible && draft.version === 0 && draft.access_mode === "personal"
     && !credential.trim() && selectedModelIds.length === 0 && !draft.auto_model_id.trim();
   const personalCustomProbeNeeded = compatible && draft.version > 0 && draft.access_mode === "personal"
@@ -566,27 +598,33 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
             <div className="provider-detail-grid">
               {isSystemAdmin ? <>
                 {draft.version > 0
-                  ? <label>호환 방식<input readOnly value={compatible ? COMPATIBLE_APIS[draft.adapter_type].label : draft.provider_code === "CUSTOM" ? "기존 CUSTOM (OpenAI 호환)" : "기존 Provider 방식"} /></label>
+                  ? <label>호환 방식<input readOnly value={nativeAsr ? "QA Native CPU base ASR" : compatible ? COMPATIBLE_APIS[draft.adapter_type].label : draft.provider_code === "CUSTOM" ? "기존 CUSTOM (OpenAI 호환)" : "기존 Provider 방식"} /></label>
                   : <label>호환 방식<select value={draft.adapter_type} onChange={(event) => {
                     const protocol = event.target.value;
                     setCredential(""); setPreviewModelIds([]);
+                    if(protocol==='asr_base_native'){
+                      setDraft(current=>({...current,provider_code:'CUSTOM',adapter_type:protocol,
+                        display_name:'QA CPU base ASR',provider_name:'CPU base ASR',short_code:'AS',
+                        base_url:'http://asr-base:8080',logical_model_ids:'faster-whisper-base',auto_model_id:'',
+                        credential_requirement:'none',access_mode:'public'}));return;
+                    }
                     setDraft((current) => ({ ...current, provider_code: "CUSTOM",
                       adapter_type: protocol, provider_name: "",
                       base_url: "", logical_model_ids: "", auto_model_id: "", credential_requirement: "required",
                       access_mode: "public" }));
-                  }}><option value="openai_compatible">OpenAI 호환</option><option value="anthropic_compatible">Anthropic 호환</option></select></label>}
+                  }}><option value="openai_compatible">OpenAI 호환</option><option value="anthropic_compatible">Anthropic 호환</option><option value="asr_base_native">QA Native CPU base ASR</option></select></label>}
                 {compatible
                   ? <label>API 유형<input readOnly value={COMPATIBLE_APIS[draft.adapter_type]?.apiType ?? "Chat Completions"} /></label>
                   : draft.provider_code === "CUSTOM"
-                    ? <label>Provider 방식<input readOnly value="CUSTOM" /></label>
+                    ? <label>Provider 방식<input readOnly value={nativeAsr ? "Native ASR (raw WAV)" : "CUSTOM"} /></label>
                   : <label>Provider 방식<input readOnly value={draft.provider_code} /></label>}
                 <label>Provider 표시 이름<input value={draft.provider_name} maxLength={256} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, provider_name: event.target.value }))} /></label>
                 <label>연결 이름<input value={draft.display_name} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} /></label>
                 <label>두 글자 약어<input aria-label="두 글자 약어" value={draft.short_code} maxLength={2} pattern="[A-Z]{2}" autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, short_code: event.target.value.toUpperCase() }))} /></label>
-                <label>Endpoint<input value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
+                <label>Endpoint<input readOnly={nativeAsr} value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
                 <div className="provider-field-wide provider-configuration-columns">
                   <div className="provider-configuration-settings">
-                    <label>인증 유형{draft.version > 0 && compatible ? <input readOnly value={draft.credential_requirement === "none" ? "Key 불필요" : "Key 필요"} /> : <select value={draft.credential_requirement} onChange={(event) => { if (event.target.value === "none") setCredential(""); setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode })); }}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>
+                    <label>인증 유형{nativeAsr || draft.version > 0 && compatible ? <input readOnly value={draft.credential_requirement === "none" ? "Key 불필요" : "Key 필요"} /> : <select value={draft.credential_requirement} onChange={(event) => { if (event.target.value === "none") setCredential(""); setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode })); }}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>
                     {Object.hasOwn(FIXED_AUTO_MODELS, draft.provider_code) ? <label>Auto 모델 ID<input readOnly value={draft.auto_model_id} /></label> : null}
                     {compatible && draft.adapter_type === "openai_compatible" ? <label className="styled-check"><input type="checkbox" checked={Boolean(draft.auto_model_id)} onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.checked ? "auto" : "" }))} /><span>라우터 Auto 사용</span></label> : null}
                     {compatible && draft.adapter_type === "openai_compatible" && draft.auto_model_id ? <label>Auto 모델 ID<input value={draft.auto_model_id} maxLength={256} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.value }))} /></label> : null}
@@ -595,7 +633,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                   <fieldset className="provider-model-picker">
                   <legend>사용 허용 모델</legend>
                   <p>체크한 모델만 사용 허용 목록에 저장합니다. 모델을 지정하지 않는 호출은 Provider의 기준 모델을 사용합니다.</p>
-                  {managedModels ? <small>이 Provider가 모델을 직접 관리합니다.</small> : availableModels.length
+                  {nativeAsr ? <p>고정 모델: faster-whisper-base · QA Workspace에서만 역할 지정 가능합니다.</p> : managedModels ? <small>이 Provider가 모델을 직접 관리합니다.</small> : availableModels.length
                     ? <div className="provider-model-options">{availableModels.map((modelId) => {
                       const model = selectedConnection?.models?.find((item) => item.model_id === modelId);
                       const isAuto = modelId === draft.auto_model_id;
@@ -603,7 +641,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                     })}</div>
                     : <small>{compatible ? "모델 조회는 선택 사항입니다. 모델 ID를 직접 입력해 시험할 수 있습니다." : "조회된 모델이 없습니다. 모델 조회 후 허용할 모델을 선택하세요."}</small>}
                   {compatible || draft.provider_code === "OMNIROUTE" ? <><label className="provider-manual-models">모델 ID 직접 입력<textarea value={draft.logical_model_ids} rows={3} onChange={(event) => setDraft((current) => ({ ...current, logical_model_ids: event.target.value }))} /></label><small>최대 4개 모델을 허용할 수 있습니다.{draft.adapter_type === "anthropic_compatible" ? " Anthropic 모델 목록은 첫 페이지만 표시될 수 있습니다." : ""}</small></> : null}
-                  {selectedModelIds.length ? <button type="button" className="provider-model-clear" onClick={() => setDraft((current) => ({ ...current, logical_model_ids: "" }))}>허용 목록 비우기</button> : null}
+                  {selectedModelIds.length && !nativeAsr ? <button type="button" className="provider-model-clear" onClick={() => setDraft((current) => ({ ...current, logical_model_ids: "" }))}>허용 목록 비우기</button> : null}
                   </fieldset>
                 </div>
               </> : <div className="provider-field-wide"><p>연결 이름과 허용 모델은 읽기 전용입니다.</p><p>Endpoint: {selectedConnection?.base_url ?? ""}</p><p>사용 허용 모델: {(selectedConnection?.allowed_model_ids ?? []).join(", ") || "없음"}</p></div>}
@@ -621,7 +659,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
             <div className="provider-detail-actions">
               {isSystemAdmin && compatible ? <span className="provider-test-cost">{pendingCompatible ? "시험 없이 사용 대기 연결을 등록합니다. Provider 호출과 사용료가 없습니다." : `시험 대상 ${customProbeCount}개 모델 · 실제 시험 시 사용료가 발생할 수 있습니다.`}</span> : null}
               {draft.provider_code === "OMNIROUTE" ? <span className="provider-test-cost">시험 대상 {omniRouteSelectedModelCount(draft.logical_model_ids) || 1}개 모델 · {selectedModelIds.length ? "선택한 모델을 각각 시험합니다." : "모델 미지정 기준 모델을 시험합니다."} 공용 연결은 정기 점검에서도 각각 호출되어 사용료가 발생할 수 있습니다.{selectedConnection?.provider_code === "OMNIROUTE" && (selectedConnection.allowed_model_ids ?? []).length > omniRouteSelectedModelCount(draft.logical_model_ids) ? ` 기존 허용 목록은 ${selectedConnection.allowed_model_ids.length}개 모델을 Key 재시험·정기 점검에서 각각 호출합니다.` : ""}</span> : null}
-              {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate || !/^[A-Z]{2}$/u.test(draft.short_code)}>{pendingCompatible ? "사용 대기 연결 등록" : "연결 시험 및 저장"}</button> : null}
+              {isSystemAdmin ? <button className="secondary-button" type="button" onClick={() => saveConnection(false)} disabled={!canMutate || !/^[A-Z]{2}$/u.test(draft.short_code)}>{nativeAsr ? "ASR 준비 확인 및 저장" : pendingCompatible ? "사용 대기 연결 등록" : "연결 시험 및 저장"}</button> : null}
               {(isSystemAdmin ? adminSystemKeyAllowed && !compatible : selectedConnection?.access_mode === "personal") ? <button className="primary-button" type="button" onClick={() => saveConnection(true)} disabled={!canSaveCredential(selectedConnection, draft, credential, busy) || !canUsePersonalCredential}>{isSystemAdmin ? "시스템 키 시험 및 저장" : "내 계정 키 시험 및 저장"}</button> : null}
               {!isSystemAdmin && selectedConnection?.access_mode === "personal" ? <button className="secondary-button danger-button" type="button" onClick={deleteUserCredential} disabled={busy || !canUsePersonalCredential || !userCredentials[selectedConnection?.connection_id]}>내 계정 키 삭제</button> : null}
               {isSystemAdmin ? <button className="secondary-button danger-button" type="button" onClick={deleteCredential} disabled={busy || !selectedConnection?.configured}>키 삭제</button> : null}
@@ -640,6 +678,12 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
           <label>텍스트 생성 기본 모델<select value={textModelChoice} onChange={(event) => setTextModelChoice(event.target.value)} disabled={!modelDefaults || savingDefault}><option value="">선택해 주세요</option>{textModelOptions.map((model) => <option key={modelKey(model.connection_id, model.model_id)} value={modelKey(model.connection_id, model.model_id)}>{model.display_name} · {model.model_id}</option>)}</select></label>
           <button type="button" className="secondary-button" onClick={saveTextModelDefault} disabled={!modelDefaults || !textModelChoice || savingDefault || textModelChoice === (savedTextModel ? modelKey(savedTextModel.connection_id, savedTextModel.model_id) : "")}>기본 모델 저장</button>
           <small role="status">{defaultStatus || (savedTextModel ? "현재 Workspace 기본 모델이 저장되어 있습니다." : "현재 Workspace 기본 모델이 없습니다.")}</small>
+          {isSystemAdmin && asrModelOptions.length ? <>
+            <label>QA 음성 인식 기본 모델<select value={asrModelChoice} onChange={event=>setAsrModelChoice(event.target.value)} disabled={savingDefault}>
+              <option value="">선택해 주세요</option>{asrModelOptions.map(model=><option key={modelKey(model.connection_id,model.model_id)} value={modelKey(model.connection_id,model.model_id)}>{model.display_name} · {model.model_id}</option>)}
+            </select></label>
+            <button type="button" className="secondary-button" onClick={saveAsrModelDefault} disabled={!asrModelChoice || savingDefault || asrModelChoice===(savedAsrModel?modelKey(savedAsrModel.connection_id,savedAsrModel.model_id):'')}>QA ASR 역할 저장</button>
+          </>:null}
         </div>
         <div className="provider-model-grid">
           {adminAvailableModels.map(({ connection, model }) => (

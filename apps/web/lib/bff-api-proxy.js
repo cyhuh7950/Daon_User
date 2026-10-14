@@ -600,7 +600,7 @@ function routeFor(method, segments) {
     return method === "GET"
       ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`,
-          query: new Set(["notebook_id"]),
+          query: new Set(["notebook_id", "representation"]),
         }
       : { methodRejected: true };
   }
@@ -795,7 +795,7 @@ function nativeRouteFor(method, segments, requestUrl) {
       : { methodRejected: true };
   } else if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "sources") {
     matched = new Set(["GET", "POST"]).has(method)
-      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaTypes: ["application/pdf", "text/plain", "text/markdown", "text/csv", "image/png", "image/jpeg", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"] } : {})
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, method === "POST" ? { maxRequestBytes: MAX_SOURCE_UPLOAD_BYTES, requestMediaTypes: ["application/pdf", "text/plain", "text/markdown", "text/csv", "image/png", "image/jpeg", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "audio/wav"] } : {})
       : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs" && SAFE_SEGMENT.test(segments[3])) {
     matched = method === "GET"
@@ -807,7 +807,7 @@ function nativeRouteFor(method, segments, requestUrl) {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/questions`, { requestMediaType: "application/json" }) : { methodRejected: true };
   } else if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "citations" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "content") {
     matched = method === "GET"
-      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { responseMediaTypes: ["application/pdf", "text/plain", "image/png", "image/jpeg", "application/json"], maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
+      ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/citations/${encodeURIComponent(segments[3])}/content`, { responseMediaTypes: ["application/pdf", "text/plain", "image/png", "image/jpeg", "application/json", "audio/wav"], maxResponseBytes: MAX_SOURCE_UPLOAD_BYTES })
       : { methodRejected: true };
   } else if (segments.length === 4 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "studio" && segments[3] === "reports") {
     matched = method === "POST" ? route(`/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio/reports`, { requestMediaType: "application/json" }) : { methodRejected: true };
@@ -835,8 +835,12 @@ function nativeRouteFor(method, segments, requestUrl) {
   );
   if (notebookScopedRead) {
     const entries = [...incoming.searchParams];
-    if (entries.length !== 1 || entries[0][0] !== "notebook_id" || !SAFE_SEGMENT.test(entries[0][1])) return null;
-    matched.query = new URLSearchParams([["notebook_id", entries[0][1]]]);
+    const audio=segments.length===5 && segments[2]==="citations" && incoming.searchParams.has("representation");
+    const allowed=audio?new Set(["notebook_id","representation"]):new Set(["notebook_id"]);
+    if(entries.length!==(audio?2:1) || new Set(entries.map(([key])=>key)).size!==entries.length
+        || entries.some(([key])=>!allowed.has(key)) || !SAFE_SEGMENT.test(incoming.searchParams.get("notebook_id")??"")
+        || (audio && incoming.searchParams.get("representation")!=="audio"))return null;
+    matched.query = new URLSearchParams(entries);
   } else if (method === "GET" && segments.length === 1 && segments[0] === "backups") {
     const entries = [...incoming.searchParams];
     if (entries.length !== 1 || entries[0][0] !== "workspace_id" || !SAFE_SEGMENT.test(entries[0][1])) return null;
@@ -1195,7 +1199,7 @@ export function createBffProxy({
           return createBffSafeError(502, "UPSTREAM_RESPONSE_INVALID", trace);
         }
       }
-      responseHeaders.set("Cache-Control", "no-store");
+      responseHeaders.set("Cache-Control", responseHeaders.get("Content-Type")?.split(";",1)[0].trim()==="audio/wav" ? "private, no-store" : "no-store");
       if (!responseHeaders.has("x-trace-id")) responseHeaders.set("x-trace-id", trace);
       let body = null;
       if (upstream.status !== 204) {
@@ -1326,7 +1330,7 @@ export function createNativeBffProxy({ baseUrl, publicOrigin, fetchImpl = fetch,
         if (NATIVE_RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders.set(key, value);
       }
       responseHeaders.set("Content-Length", String(body?.byteLength ?? 0));
-      responseHeaders.set("Cache-Control", "no-store");
+      responseHeaders.set("Cache-Control", responseHeaders.get("Content-Type")?.split(";",1)[0].trim()==="audio/wav" ? "private, no-store" : "no-store");
       if (!responseHeaders.has("x-trace-id")) responseHeaders.set("x-trace-id", trace);
       return new Response(body, { status: upstream.status, headers: responseHeaders });
     } finally {

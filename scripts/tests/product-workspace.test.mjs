@@ -269,6 +269,87 @@ test("PPTX 실제 React 원문은 emoji codepoint 강조·표 위치·safe text�
   });
 });
 
+test('audio React transcript keeps time, Unicode, lazy binary and stale-response boundary',async(t)=>{
+  for(const scenario of ['success','invalid','late-close','late-other-source'])await t.test(scenario,async()=>{
+    const oldFetch=globalThis.fetch,pending=deferred(),calls=[];let workspace;
+    const locator={kind:'audio_segment',value:'{"segment":"s:1","start_ms":0,"end_ms":1000,"start":1,"end":2}'};
+    const citation={citation_id:'citation-audio',source_id:'source-1',source_version_id:'version-1',evidence_span_id:'span-audio',page:1,origin:'raw_source',context_item_id:'source-1',locator};
+    const content={source_version_id:'version-1',source_sha256:'a'.repeat(64),transcript_sha256:'b'.repeat(64),duration_ms:1000,
+      selected_segment_id:'s:1',selected_start:1,selected_end:2,segments:[{segment_id:'s:1',start_ms:0,end_ms:1000,text:'한😀글 <script>literal</script>'}]};
+    if(scenario==='invalid')content.source_version_id='other';
+    globalThis.fetch=async(url,init)=>{calls.push({url,init});if(scenario.startsWith('late'))await pending.promise;return Response.json(content);};
+    try{
+      workspace=await mountSourceRetryWorkspace({...adapter,
+        listSources:async()=>[{...sourceRetryPayload,filename:'qa.wav'},{...sourceRetryPayload,source_id:'other-source',source_version_id:'other-version',filename:'other.wav'}],
+        listStudioOutputs:async()=>[],citationUrl:value=>citationContentUrl('workspace-1',value,{notebookId:'notebook-1'}),
+        loadNotebookConversation:async()=>({run_id:'run-audio',run_result_id:'result-audio',answer:'저장된 음성 답변',insufficient:false,
+          citations:[{...citation,content_url:citationContentUrl('workspace-1',citation,{notebookId:'notebook-1'})}]})},`audio-${scenario}`);
+      const link=findElements(workspace.container,node=>node.tagName==='A'&&node.textContent.includes('Citation'))[0];
+      assert.ok(link);assert.match(link.textContent,/음성 00:00.000–00:01.000/u);assert.equal(calls.length,0);
+      await workspace.act(async()=>link.dispatchEvent(new MinimalEvent('click')));
+      assert.equal(calls.length,1);assert.doesNotMatch(calls[0].url,/representation=audio/);
+      if(scenario==='late-close'){const close=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원문 닫기')[0];await workspace.act(async()=>close.dispatchEvent(new MinimalEvent('click')));}
+      if(scenario==='late-other-source'){const other=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent.includes('other.wav'))[0];await workspace.act(async()=>other.dispatchEvent(new MinimalEvent('click')));}
+      if(scenario.startsWith('late'))await workspace.act(async()=>{pending.resolve();await Promise.resolve();});
+      const viewer=findElements(workspace.container,node=>node.getAttribute?.('aria-label')==='음성 전사 원문')[0];
+      if(scenario==='success'){
+        assert.ok(viewer);assert.equal(findElements(viewer,node=>node.tagName==='MARK')[0].textContent,'😀');
+        assert.match(viewer.textContent,/<script>literal<\/script>/);assert.equal(findElements(viewer,node=>['SCRIPT','AUDIO'].includes(node.tagName)).length,0);
+        assert.doesNotMatch(viewer.textContent,/1쪽|page=1/);
+      }else if(scenario==='invalid')assert.match(viewer.textContent,/CITATION_CONTENT_UNAVAILABLE/);
+      else assert.equal(viewer,undefined);
+    }finally{pending.resolve();if(workspace)await workspace.cleanup();globalThis.fetch=oldFetch;}
+  });
+});
+
+test('audio React binary verifies SHA, seeks only after metadata, ends at bound and releases playback',async()=>{
+  const {createHash}=await import('node:crypto');
+  const raw=new Uint8Array([82,73,70,70]),hash=createHash('sha256').update(raw).digest('hex');
+  const oldFetch=globalThis.fetch,oldCreate=URL.createObjectURL,oldRevoke=URL.revokeObjectURL;
+  const oldTimer=globalThis.setTimeout;
+  const calls=[],revoked=[];let workspace,pauses=0,plays=0,stopAtEnd;
+  globalThis.setTimeout=(callback,delay,...args)=>{if(delay===600)stopAtEnd=callback;return oldTimer(callback,delay,...args);};
+  const locator={kind:'audio_segment',value:'{"segment":"s:1","start_ms":200,"end_ms":800,"start":0,"end":1}'};
+  const citation={citation_id:'citation-audio',source_id:'source-1',source_version_id:'version-1',evidence_span_id:'span-audio',page:1,origin:'raw_source',context_item_id:'source-1',locator};
+  const content={source_version_id:'version-1',source_sha256:hash,transcript_sha256:'b'.repeat(64),duration_ms:1000,
+    selected_segment_id:'s:1',selected_start:0,selected_end:1,segments:[{segment_id:'s:1',start_ms:200,end_ms:800,text:'fixture'}]};
+  URL.createObjectURL=()=> 'blob:audio-test';URL.revokeObjectURL=url=>revoked.push(url);
+  globalThis.fetch=async(url,init)=>{calls.push({url,init});return url.endsWith('&representation=audio')?
+    new Response(raw,{headers:{'Content-Type':'audio/wav'}}):Response.json(content);};
+  try{
+    workspace=await mountSourceRetryWorkspace({...adapter,listSources:async()=>[{...sourceRetryPayload,filename:'qa.wav'}],listStudioOutputs:async()=>[],
+      citationUrl:value=>citationContentUrl('workspace-1',value,{notebookId:'notebook-1'}),
+      loadNotebookConversation:async()=>({run_id:'run-audio',run_result_id:'result-audio',answer:'fixture',insufficient:false,
+        citations:[{...citation,content_url:citationContentUrl('workspace-1',citation,{notebookId:'notebook-1'})}]})},'audio-binary');
+    const link=findElements(workspace.container,node=>node.tagName==='A'&&node.textContent.includes('Citation'))[0];
+    await workspace.act(async()=>link.dispatchEvent(new MinimalEvent('click')));
+    const prepare=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원본 불러오기')[0];
+    assert.ok(prepare);assert.equal(calls.length,1);
+    await workspace.act(async()=>{prepare.dispatchEvent(new MinimalEvent('click'));await new Promise(resolve=>setTimeout(resolve,20));});
+    assert.equal(calls.length,2);assert.match(calls[1].url,/&representation=audio$/);
+    const player=findElements(workspace.container,node=>node.tagName==='AUDIO')[0];assert.ok(player);
+    player.pause=()=>pauses++;player.play=async()=>{plays++;};player.duration=1;player.currentTime=0;
+    assert.equal(plays,0);
+    await workspace.act(async()=>player.dispatchEvent(new MinimalEvent('loadedmetadata')));
+    assert.equal(player.currentTime,0.2);assert.equal(plays,0);
+    const play=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='선택 구간 재생')[0];
+    await workspace.act(async()=>play.dispatchEvent(new MinimalEvent('click')));assert.equal(plays,1);
+    assert.equal(typeof stopAtEnd,'function');
+    await workspace.act(async()=>stopAtEnd());
+    assert.equal(player.currentTime,0.8);assert.equal(pauses,1);
+    player.currentTime=0.9;await workspace.act(async()=>player.dispatchEvent(new MinimalEvent('timeupdate')));
+    assert.equal(player.currentTime,0.8);assert.equal(pauses,2);
+    player.duration=1.06;
+    await workspace.act(async()=>player.dispatchEvent(new MinimalEvent('loadedmetadata')));
+    assert.match(workspace.container.textContent,/AUDIO_DURATION_MISMATCH/);
+    await workspace.act(async()=>play.dispatchEvent(new MinimalEvent('click')));
+    assert.equal(plays,1);assert.equal(pauses,3);
+    const close=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원문 닫기')[0];
+    await workspace.act(async()=>close.dispatchEvent(new MinimalEvent('click')));
+    assert.equal(pauses,4);assert.deepEqual(revoked,['blob:audio-test']);
+  }finally{if(workspace)await workspace.cleanup();globalThis.fetch=oldFetch;URL.createObjectURL=oldCreate;URL.revokeObjectURL=oldRevoke;globalThis.setTimeout=oldTimer;}
+});
+
 test("DOCX 실제 React 원문은 emoji codepoint 강조·표 위치·safe text·늦은 응답을 결속한다", async(t)=>{
   for(const scenario of ['success','invalid','late-selection','late-other-source','late-close']) await t.test(scenario,async()=>{
     const oldFetch=globalThis.fetch;const pending=deferred();const calls=[];let workspace;
@@ -423,7 +504,9 @@ test("HTTP QA React TXT 선택은 randomUUID 없이 실제 Source POST를 전송
     assert.match(workspace.container.textContent, /XLSX\(내부 모델·셀 검증 필요\)/u);
     assert.match(workspace.container.textContent, /DOCX\(제한형 문단·병합 없는 단순 표, 내부 모델·구간 검증 필요\)/u);
     assert.match(workspace.container.textContent, /PPTX\(제한형 텍스트·병합 없는 단순 표/u);
-    assert.match(workspace.container.textContent, /오디오는 이 화면에서 아직 미지원/u);
+    assert.match(workspace.container.textContent, /WAV\(PCM16·1~120초·25MiB, QA 내부 ASR와 의미 모델 필요\)/u);
+    assert.match(workspace.container.textContent, /MP3\/M4A는 미지원/u);
+    assert.ok(findElements(workspace.container,node=>node.tagName==='INPUT'&&node.getAttribute?.('accept')?.split(',').includes('.wav')).length);
     const fileInput = findElements(workspace.container, (node) => node.tagName === "INPUT" && node.getAttribute?.("accept")?.includes(".txt"))[0];
     assert.ok(fileInput.getAttribute('accept').split(',').includes('.xlsx'));
     assert.ok(fileInput.getAttribute('accept').split(',').includes('.docx'));

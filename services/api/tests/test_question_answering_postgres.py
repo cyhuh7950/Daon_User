@@ -49,8 +49,15 @@ class FakeConnection:
         self.notebook_scope_rows: list[tuple[int] | None] = []
         self.source_binding_active = True
         self.audio_understanding_row = None
+        self.source_access_allowed = True
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
+        if sql.startswith('SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access'):
+            with sqlite3.connect(':memory:') as connection:
+                connection.execute('CREATE TABLE identity_auth_source_access(tenant_id TEXT,workspace_id TEXT,user_id TEXT,source_version_id TEXT,allowed INTEGER)')
+                connection.execute('INSERT INTO identity_auth_source_access VALUES(?,?,?,?,?)',
+                    (*params, int(self.source_access_allowed)))
+                return Cursor(connection.execute(sql.replace('%s','?'),params).fetchone())
         if sql.startswith('SELECT record_id,canonical_json FROM understanding_results'):
             return Cursor(self.audio_understanding_row)
         self.queries.append(sql)
@@ -134,6 +141,15 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
         view = json.loads(content.content)
         self.assertEqual(actual, locator)
         self.assertEqual(view['transcript_sha256'], result.lineage['transcript_sha256'])
+        binary, binary_locator = self.repository.read_citation_content(context, 'citation-audio', representation='audio')
+        self.assertEqual((binary.content, binary.media_type, binary_locator), (raw, 'audio/wav', locator))
+        self.cloud.connection.source_access_allowed = False
+        for representation in (None, 'audio'):
+            with self.subTest(revoked=representation), self.assertRaises(QuestionRepositoryError):
+                self.repository.read_citation_content(context, 'citation-audio', representation=representation)
+        self.cloud.connection.source_access_allowed = True
+        with self.assertRaises(QuestionRepositoryError):
+            self.repository.read_citation_content(context, 'citation-audio', representation='unsupported')
         self.assertEqual(view['segments'][0]['text'], result.semantic.key_facts[0])
         self.assertEqual(view['source_version_id'], 'source-version-cp3')
         self.assertEqual(self.repository.load_ready_source(context, 'source-cp3', 'source-version-cp3').filename, 'qa.wav')

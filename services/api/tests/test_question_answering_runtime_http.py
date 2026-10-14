@@ -100,9 +100,13 @@ class FakeCitationContent:
         self.xlsx_mode = False
         self.docx_mode = False
 
-    def read_citation_content(self, context, citation_id):  # type: ignore[no-untyped-def]
+    def read_citation_content(self, context, citation_id, *, representation=None):  # type: ignore[no-untyped-def]
         if citation_id != "citation-cp3":
             raise AssertionError(citation_id)
+        if representation == 'audio':
+            from test_audio_source import wav_bytes
+            return CitationContent('source-cp3', 'source-version-cp3', 'qa.wav', wav_bytes(), 'audio/wav'), {
+                'kind':'audio_segment', 'value':'{"segment":"s:1","start_ms":0,"end_ms":1000,"start":0,"end":1}'}
         if self.docx_mode:
             import json
             from test_docx_source import docx_bytes, paragraph
@@ -502,6 +506,22 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view['source_version_id'], 'source-version-cp3')
         self.assertEqual(view['blocks'][0]['text'][view['selected_start']:view['selected_end']], '😀')
         self.assertNotIn('data', view)
+
+    async def test_audio_representation_is_authenticated_no_store_binary_without_page_header(self):
+        from test_audio_source import wav_bytes
+        path='/api/v1/workspaces/workspace-001/citations/citation-cp3/content?notebook_id=notebook-001'
+        with self._authenticated():
+            response=await self.client.get(path+'&representation=audio',cookies={WEB_SESSION_COOKIE:'opaque-session'})
+            invalid=await self.client.get(path+'&representation=invalid',cookies={WEB_SESSION_COOKIE:'opaque-session'})
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.content,wav_bytes())
+        self.assertEqual(response.headers['content-type'],'audio/wav')
+        self.assertEqual(response.headers['cache-control'],'private, no-store')
+        self.assertEqual(response.headers['x-content-type-options'],'nosniff')
+        self.assertNotIn('x-citation-page',response.headers)
+        self.assertEqual(invalid.status_code,422)
+        denied=await self.client.get(path+'&representation=audio')
+        self.assertEqual(denied.status_code,401)
 
 
 if __name__ == "__main__":

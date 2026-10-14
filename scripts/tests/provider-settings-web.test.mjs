@@ -59,6 +59,7 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
   const requests = [];
   let connections = existingConnections;
   let pendingSaveFailures = saveFailures;
+  let nativeDefault=null;
   return {
     requests,
     async fetch(url, options = {}) {
@@ -76,8 +77,15 @@ function adminFixture({ previewModels = [], previewFails = false, saveFailures =
       }
       if (path === "/bff/api/admin/provider-health-settings") return Response.json({ data: { interval_minutes: 60, version: 1 } });
       if (path === "/bff/api/workspaces/workspace-001/model-defaults" && method === "GET") return Response.json({
-        data: { workspace_id: "workspace-001", available_models: [], defaults: [], version: 0 },
-      }, { headers: { etag: '"defaults-v0"' } });
+        data: { workspace_id: "workspace-001", available_models: connections.filter(item=>item.adapter_type==='asr_base_native').map(item=>({
+          connection_id:item.connection_id,model_id:'faster-whisper-base',display_name:item.display_name,
+          catalog_status:'ready',effective_capabilities:['speech_to_text']})), defaults: nativeDefault?[nativeDefault]:[], version:nativeDefault?1:0 },
+      }, { headers: { etag: nativeDefault?'"defaults-v1"':'"defaults-v0"' } });
+      if(path === '/bff/api/workspaces/workspace-001/model-defaults' && method==='PATCH'){
+        assert.equal(body.capability,'speech_to_text');
+        nativeDefault={capability:body.capability,connection_id:body.connection_id,model_id:body.model_id,version:1};
+        return Response.json({data:{workspace_id:'workspace-001',available_models:connections.filter(item=>item.adapter_type==='asr_base_native').map(item=>({connection_id:item.connection_id,model_id:'faster-whisper-base',display_name:item.display_name,catalog_status:'ready',effective_capabilities:['speech_to_text']})),defaults:[nativeDefault],version:1}},{headers:{etag:'"defaults-v1"'}});
+      }
       if (path === "/bff/api/admin/provider-connections/model-preview") {
         return previewFails
           ? Response.json({ error: { code: "PROVIDER_CATALOG_UNAVAILABLE" } }, { status: 503 })
@@ -143,12 +151,12 @@ test("admin can save zero minutes to disable periodic provider checks", async ()
   } finally { await view.cleanup(); }
 });
 
-test("new connection offers only OpenAI and Anthropic compatibility, not legacy providers", async () => {
+test("new connection offers OpenAI, Anthropic and approved pinned QA Native ASR, not legacy providers", async () => {
   const view = await mountAdminFixture(adminFixture(), "compatible-only-new");
   try {
     const mode = controlFor(view.container, "호환 방식");
     const options = findElements(mode, (node) => node.tagName === "OPTION");
-    assert.deepEqual(options.map((option) => option.value), ["openai_compatible", "anthropic_compatible"]);
+    assert.deepEqual(options.map((option) => option.value), ["openai_compatible", "anthropic_compatible", "asr_base_native"]);
     assert.equal(reactProps(mode).value, "openai_compatible");
     assert.equal(controlFor(view.container, "API 유형").value, "Chat Completions");
     assert.equal(findElements(view.container, (node) => node.tagName === "LABEL" && node.textContent.startsWith("Provider 방식")).length, 0);
@@ -178,6 +186,35 @@ test("new compatible connection can use no API Key", async () => {
     assert.deepEqual(create.body.allowed_model_ids, ["local-model"]);
     assert.equal(buttonByText(view.container, "모델 조회").disabled, false);
   } finally { await view.cleanup(); }
+});
+
+test('QA native ASR registration fixes endpoint model and keyless contract without chat probe',async()=>{
+  const fixture=adminFixture(),view=await mountAdminFixture(fixture,'qa-native-asr');
+  try{
+    const mode=controlFor(view.container,'호환 방식');
+    assert.ok(findElements(mode,node=>node.tagName==='OPTION'&&node.value==='asr_base_native').length);
+    await fill(view.act,mode,'asr_base_native');
+    assert.equal(controlFor(view.container,'Endpoint').value,'http://asr-base:8080');
+    assert.equal(reactProps(controlFor(view.container,'Endpoint')).readOnly,true);
+    assert.equal(controlFor(view.container,'인증 유형').value,'Key 불필요');
+    assert.equal(findElements(view.container,node=>node.tagName==='INPUT'&&node.getAttribute?.('type')==='password').length,0);
+    assert.equal(findElements(view.container,node=>node.tagName==='TEXTAREA').length,0);
+    await click(view.act,buttonByText(view.container,'ASR 준비 확인 및 저장'));
+    const saved=fixture.requests.find(item=>item.path==='/bff/api/admin/provider-connections'&&item.method==='POST');
+    assert.ok(saved);assert.equal(saved.body.adapter_type,'asr_base_native');
+    assert.equal(saved.body.base_url,'http://asr-base:8080');assert.equal(saved.body.credential_requirement,'none');
+    assert.equal(saved.body.access_mode,'public');assert.equal(saved.body.auto_model_id,null);
+    assert.deepEqual(saved.body.allowed_model_ids,['faster-whisper-base']);assert.deepEqual(saved.body.logical_model_ids,[]);
+    assert.equal(Object.hasOwn(saved.body,'credential'),false);
+    assert.equal(fixture.requests.some(item=>item.path.endsWith('/model-preview')),false);
+    assert.match(view.container.textContent,/ready\/metadata/u);
+    const asr=controlFor(view.container,'QA 음성 인식 기본 모델');
+    await fill(view.act,asr,JSON.stringify([saved.body.connection_id,'faster-whisper-base']));
+    await click(view.act,buttonByText(view.container,'QA ASR 역할 저장'));
+    const role=fixture.requests.find(item=>item.path.endsWith('/model-defaults')&&item.method==='PATCH');
+    assert.ok(role);assert.equal(role.body.capability,'speech_to_text');assert.equal(role.body.model_id,'faster-whisper-base');
+    assert.equal(role.body.connection_id,saved.body.connection_id);
+  }finally{await view.cleanup();}
 });
 
 test("custom router Auto is offered only after an admin enables it and saves its real ID", async () => {

@@ -2074,7 +2074,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     return _error_response(403, "ORGANIZATION_MEMBERSHIP_SUSPENDED", trace_id)
             response = cast(Response, await call_next(request))
             response.headers["X-Trace-Id"] = trace_id
-            response.headers["Cache-Control"] = "no-store"
+            response.headers["Cache-Control"] = "private, no-store" if response.headers.get("content-type", "").split(";", 1)[0] == "audio/wav" else "no-store"
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["Referrer-Policy"] = "no-referrer"
             return response
@@ -4025,8 +4025,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     @app.get("/api/v1/workspaces/{id}/citations/{citation_id}/content")
     async def get_citation_content(
         id: str, citation_id: str, request: Request, notebook_id: str = Query(),
+        representation: str | None = Query(default=None),
     ) -> Response:
-        _require_query_keys(request, frozenset({"notebook_id"}))
+        _require_query_keys(request, frozenset({"notebook_id", "representation"}))
+        if representation not in {None, "audio"}:
+            raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=422)
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
@@ -4045,12 +4048,15 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 notebook_id,
             ),
             citation_id,
+            **({"representation": "audio"} if representation == "audio" else {}),
         )
         filename = re.sub(r"[^A-Za-z0-9._-]", "_", content.filename) or "source.pdf"
         headers = {
                 "Content-Disposition": f'inline; filename="{filename}"',
                 "X-Citation-Locator-Kind": locator["kind"],
                 "ETag": f'"citation:{hashlib.sha256(content.content).hexdigest()}"',
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
             }
         if locator["kind"] == "page":
             headers["X-Citation-Page"] = locator["value"]

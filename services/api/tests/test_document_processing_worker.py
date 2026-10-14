@@ -21,6 +21,13 @@ from daon_user_api.document_understanding_adapter import (
 NOW = datetime(2026, 8, 6, 6, 0, tzinfo=timezone.utc)
 
 
+def test_document_worker_inherits_existing_qa_workspace_without_new_default():
+    compose = (Path(__file__).resolve().parents[3] / 'deploy/daon-user/compose.yaml').read_text(encoding='utf-8')
+    worker = compose.split('  document-worker:', 1)[1].split('  studio-worker:', 1)[0]
+    assert 'DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID: ${DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID-}' in worker
+    assert 'workspace-2edb96cb84a252046e67307d' not in worker
+
+
 def job() -> DocumentProcessingJob:
     return DocumentProcessingJob(
         "tenant-cp3", "workspace-cp3", "job-cp3", "source-cp3",
