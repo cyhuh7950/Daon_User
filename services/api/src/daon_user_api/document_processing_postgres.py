@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .data_canon import canonical_json_bytes
 from .document_processing import (
-    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format, image_source_format, xlsx_source_format, docx_source_format, pptx_source_format,
+    DocumentProcessingContext, DocumentProcessingStatus, StoredSourceDocument, text_source_format, image_source_format, xlsx_source_format, docx_source_format, pptx_source_format, audio_source_format,
 )
 from .document_understanding_adapter import (
     DocumentUnderstandingError,
@@ -131,6 +131,7 @@ class PostgresDocumentProcessingRepository:
                 or xlsx_source_format(filename, content_type)
                 or docx_source_format(filename, content_type)
                 or pptx_source_format(filename, content_type)
+                or audio_source_format(filename, content_type)
             )
             if (
                 str(row[7]) != "completed" or not original_format
@@ -140,7 +141,7 @@ class PostgresDocumentProcessingRepository:
             ObjectKeyPolicy().validate_final(object_context, "source", object_key)
             content = self._object_storage.get(object_key)
             expected_digest = str(row[4])
-            if docx_source_format(filename, content_type) or pptx_source_format(filename, content_type):
+            if docx_source_format(filename, content_type) or pptx_source_format(filename, content_type) or audio_source_format(filename, content_type):
                 expected_digest = expected_digest.removeprefix('sha256:')
             if (
                 len(content) != int(row[5])
@@ -175,6 +176,13 @@ class PostgresDocumentProcessingRepository:
                     read_pptx(content)
                 except SourceRejected:
                     raise DocumentUnderstandingError("SOURCE_OBJECT_NOT_READY", status=409) from None
+            if audio_source_format(filename, content_type):
+                from .audio_source import read_wav
+                from .source_ingest import SourceRejected
+                try:
+                    read_wav(content)
+                except SourceRejected:
+                    raise DocumentUnderstandingError('SOURCE_OBJECT_NOT_READY', status=409) from None
             return StoredSourceDocument(source_id, str(row[0]), filename, content, content_type)
         except Exception as error:
             mapped = (
@@ -359,17 +367,32 @@ class PostgresDocumentProcessingRepository:
         text, digest = self._snapshot(payload)
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
+                source_row = connection.execute(
+                    "SELECT sv.source_id,s.state,s.version,sv.canonical_json,o.content_type FROM source_versions sv "
+                    "JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
+                    "JOIN object_records o ON o.tenant_id=sv.tenant_id AND o.workspace_id=sv.workspace_id AND o.object_id=sv.object_id "
+                    "WHERE sv.record_id=%s", (source_version_id,),
+                ).fetchone()
+                if source_row is None:
+                    raise DocumentUnderstandingError('SOURCE_NOT_FOUND', status=404)
+                audio_source = (len(source_row) == 5 and isinstance(source_row[3], dict)
+                    and audio_source_format(str(source_row[3].get('filename', '')), str(source_row[4])))
+                initial_state = 'speech_to_text' if audio_source else 'vision_llm_understanding'
+                if audio_source:
+                    payload = {'source_version_id': source_version_id, 'modality': 'audio',
+                               'trigger_type': 'initial', 'asr_then_llm': True, 'parser_role': 'validation_only'}
+                    text, digest = self._snapshot(payload)
                 connection.execute(
                     "INSERT INTO processing_runs "
                     "(tenant_id,workspace_id,record_id,aggregate_id,version,schema_version,"
                     "canonical_json,canonical_text,digest_sha256,state,created_by,trace_id,"
                     "source_version_id,modality,trigger_type) "
-                    "VALUES (%s,%s,%s,%s,1,1,%s,%s,%s,'accepted',%s,%s,%s,'document','initial') "
+                    "VALUES (%s,%s,%s,%s,1,1,%s,%s,%s,'accepted',%s,%s,%s,%s,'initial') "
                     "ON CONFLICT (tenant_id,workspace_id,record_id) DO NOTHING",
                     (
                         context.tenant_id, context.workspace_id, processing_run_id,
                         processing_run_id, Jsonb(payload), text, digest, context.actor_id,
-                        context.trace_id, source_version_id,
+                        context.trace_id, source_version_id, 'audio' if audio_source else 'document',
                     ),
                 )
                 row = connection.execute(
@@ -378,15 +401,6 @@ class PostgresDocumentProcessingRepository:
                 ).fetchone()
                 if row is None or str(row[2]) != source_version_id:
                     raise DocumentUnderstandingError("PROCESSING_RUN_CONFLICT", status=409)
-                source_row = connection.execute(
-                    "SELECT sv.source_id,s.state,s.version FROM source_versions sv "
-                    "JOIN sources s ON s.tenant_id=sv.tenant_id AND "
-                    "s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id "
-                    "WHERE sv.record_id=%s",
-                    (source_version_id,),
-                ).fetchone()
-                if source_row is None:
-                    raise DocumentUnderstandingError("SOURCE_NOT_FOUND", status=404)
                 source_id, source_state, source_version = (
                     str(source_row[0]), str(source_row[1]), int(source_row[2])
                 )
@@ -424,10 +438,10 @@ class PostgresDocumentProcessingRepository:
                     self._transition(
                         connection, context, entity_type="ProcessingRun",
                         aggregate_id=processing_run_id,
-                        expected_version=1, target_state="vision_llm_understanding",
-                        reason_code="ORIGINAL_PDF_UNDERSTANDING_STARTED",
+                        expected_version=1, target_state=initial_state,
+                        reason_code="AUDIO_TRANSCRIPTION_STARTED" if audio_source else "ORIGINAL_PDF_UNDERSTANDING_STARTED",
                     )
-                elif str(row[0]) != "vision_llm_understanding":
+                elif str(row[0]) != initial_state:
                     raise DocumentUnderstandingError("PROCESSING_RUN_CONFLICT", status=409)
                 if enqueue:
                     job_id = self._opaque_id("dpj", processing_run_id)
@@ -494,6 +508,13 @@ class PostgresDocumentProcessingRepository:
         cell_source = result.lineage.get('source_format') == 'xlsx'
         block_source = result.lineage.get('source_format') == 'docx'
         slide_source = result.lineage.get('source_format') == 'pptx'
+        audio_source = result.lineage.get('source_format') == 'wav'
+        if audio_source:
+            from .audio_document_understanding import read_audio_result_transcript
+            original = self.load_source_document(context, result.source_id, processing_run_id=processing_run_id)
+            read_audio_result_transcript(original, result)
+            if result.lineage.get('policy_version') != context.policy_version or result.lineage.get('trace_id') != context.trace_id:
+                raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
         if block_source:
             if result.parser.pages or result.parser.page_texts or result.parser.regions or result.parser.cell_evidence or result.parser.role != 'validation_only':
                 raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
@@ -541,23 +562,29 @@ class PostgresDocumentProcessingRepository:
         if slide_source:
             payload['parser_validation']['slide_evidence'] = list(result.parser.slide_evidence)
             text, digest = self._snapshot(payload)
+        if audio_source:
+            payload['parser_validation']['audio_evidence'] = list(result.parser.audio_evidence)
+            text, digest = self._snapshot(payload)
         try:
             with self._cloud_store._transaction(self._cloud_context(context, "source.process")) as connection:
-                if cell_source or block_source or slide_source:
+                if cell_source or block_source or slide_source or audio_source:
                     bound = connection.execute(
                         "SELECT pr.state,pr.version,pr.source_version_id,sv.source_id FROM processing_runs pr "
                         "JOIN source_versions sv ON sv.tenant_id=pr.tenant_id AND sv.workspace_id=pr.workspace_id "
                         "AND sv.record_id=pr.source_version_id WHERE pr.record_id=%s",
                         (processing_run_id,),
                     ).fetchone()
-                    if bound is None or str(bound[0]) != 'vision_llm_understanding' or int(bound[1]) != 2 or str(bound[2]) != result.source_version_id or str(bound[3]) != result.source_id:
+                    if bound is None or str(bound[0]) != ('speech_to_text' if audio_source else 'vision_llm_understanding') or int(bound[1]) != 2 or str(bound[2]) != result.source_version_id or str(bound[3]) != result.source_id:
                         raise DocumentUnderstandingError('UNDERSTANDING_RESULT_MISMATCH', status=409)
                 version = self._transition(
                     connection, context, entity_type="ProcessingRun",
                     aggregate_id=processing_run_id,
-                    expected_version=2, target_state="parser_ocr_validation",
+                    expected_version=2, target_state="llm_semantic_understanding" if audio_source else "parser_ocr_validation",
                     reason_code="SEMANTIC_UNDERSTANDING_COMPLETED",
                 )
+                if audio_source:
+                    version = self._transition(connection, context, entity_type='ProcessingRun', aggregate_id=processing_run_id,
+                        expected_version=version, target_state='transcript_timecode_validation', reason_code='AUDIO_TRANSCRIPT_VALIDATED')
                 version = self._transition(
                     connection, context, entity_type="ProcessingRun",
                     aggregate_id=processing_run_id,
@@ -592,8 +619,12 @@ class PostgresDocumentProcessingRepository:
                     evidence_items = [{'source_version_id': result.source_version_id,
                         'understanding_result_id': understanding_id, 'parser_role': 'validation_only',
                         'slide_evidence': list(result.parser.slide_evidence)}]
+                if audio_source:
+                    evidence_items = [{'source_version_id': result.source_version_id,
+                        'understanding_result_id': understanding_id, 'parser_role': 'validation_only',
+                        'transcript_sha256': result.lineage['transcript_sha256'], 'audio_evidence': list(result.parser.audio_evidence)}]
                 for evidence in evidence_items:
-                    evidence_id = self._opaque_id("ev", understanding_id, 'slides' if slide_source else 'blocks' if block_source else 'cells' if cell_source else str(evidence['page']))
+                    evidence_id = self._opaque_id("ev", understanding_id, 'audio' if audio_source else 'slides' if slide_source else 'blocks' if block_source else 'cells' if cell_source else str(evidence['page']))
                     if result.parser.regions:
                         evidence["regions"] = list(result.parser.regions)
                     evidence_text, evidence_digest = self._snapshot(evidence)

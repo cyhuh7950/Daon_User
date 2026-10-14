@@ -97,6 +97,66 @@ class FakeCloudStore:
         yield self.connection
 
 
+class AudioProcessingStorageTests(unittest.TestCase):
+    def test_audio_completion_rejects_tampered_snapshot_with_zero_result_writes(self):
+        from dataclasses import replace
+        from test_audio_document_understanding import ready_audio_result
+        from test_audio_source import wav_bytes
+        for field, value in (('transcript_sha256', 'c' * 64), ('source_digest', 'c' * 64),
+                             ('duration_ms', '2000'), ('asr_model_digest', 'c' * 64), ('policy_version', 'other')):
+            cloud = FakeCloudStore();storage = FakeObjectStorage()
+            cloud.connection.filename = 'qa.wav';cloud.connection.content_type = 'audio/wav';cloud.connection.content = wav_bytes()
+            storage.content = cloud.connection.content
+            cloud.connection.states = {'ProcessingRun': 'speech_to_text', 'Source': 'processing'}
+            cloud.connection.versions = {'ProcessingRun': 2, 'Source': 3}
+            result = ready_audio_result();result = replace(result, lineage={**result.lineage, field: value})
+            context = DocumentProcessingContext('tenant-cp3', 'workspace-cp3', 'actor-cp3', 'trace-cp3', 'policy-v1')
+            with self.subTest(field=field), self.assertRaises(DocumentUnderstandingError):
+                PostgresDocumentProcessingRepository(cloud, storage).complete(context, 'run-cp3', result)
+            self.assertEqual(cloud.connection.inserts, [])
+            self.assertEqual(cloud.connection.states['ProcessingRun'], 'speech_to_text')
+
+    def test_audio_completion_persists_bound_transcript_and_time_evidence(self):
+        from test_audio_document_understanding import ready_audio_result
+        from test_audio_source import wav_bytes
+        cloud = FakeCloudStore()
+        cloud.connection.filename = 'qa.wav';cloud.connection.content_type = 'audio/wav';cloud.connection.content = wav_bytes()
+        cloud.connection.states = {'ProcessingRun': 'speech_to_text', 'Source': 'processing'}
+        cloud.connection.versions = {'ProcessingRun': 2, 'Source': 3}
+        storage = FakeObjectStorage();storage.content = cloud.connection.content
+        repository = PostgresDocumentProcessingRepository(cloud, storage)
+        context = DocumentProcessingContext('tenant-cp3', 'workspace-cp3', 'actor-cp3', 'trace-cp3', 'policy-v1')
+        result = ready_audio_result()
+        repository.complete(context, 'run-cp3', result)
+        payload = next(params[4].obj for sql, params in cloud.connection.statements if sql.startswith('INSERT INTO understanding_results'))
+        self.assertEqual(payload['parser_validation']['audio_evidence'], list(result.parser.audio_evidence))
+        self.assertEqual(payload['parser_validation']['pages'], [])
+        self.assertEqual(payload['lineage']['transcript_sha256'], result.lineage['transcript_sha256'])
+        self.assertEqual(cloud.connection.states['ProcessingRun'], 'completed')
+        targets = [params[3] for sql, params in cloud.connection.statements if sql.startswith('SELECT state,version,outcome,error_code FROM transition_canon_state')]
+        self.assertEqual(targets, ['llm_semantic_understanding', 'transcript_timecode_validation', 'evidence_reconciliation', 'completed'])
+        evidence = [params[4].obj for sql, params in cloud.connection.statements if sql.startswith('INSERT INTO extraction_evidence')]
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]['audio_evidence'], list(result.parser.audio_evidence))
+        self.assertNotIn('page', evidence[0])
+
+    def test_audio_start_uses_existing_speech_state_not_vision(self):
+        cloud = FakeCloudStore()
+        class Connection(FakeConnection):
+            def execute(self, sql, params=()):
+                if sql.startswith('SELECT sv.source_id,s.state,s.version'):
+                    return Cursor(('source-cp3', self.states['Source'], self.versions['Source'], {'filename': 'qa.wav'}, 'audio/wav'))
+                return super().execute(sql, params)
+        cloud.connection = Connection()
+        repository = PostgresDocumentProcessingRepository(cloud, FakeObjectStorage())
+        context = DocumentProcessingContext('tenant-cp3', 'workspace-cp3', 'actor-cp3', 'trace-cp3', 'policy-v1')
+        repository.start(context, 'source-version-cp3', enqueue=True)
+        self.assertEqual(cloud.connection.states['ProcessingRun'], 'speech_to_text')
+        payload = next(params[4].obj for sql, params in cloud.connection.statements if sql.startswith('INSERT INTO processing_runs'))
+        self.assertEqual(payload['modality'], 'audio')
+        self.assertNotIn('vision_llm_first', payload)
+
+
 class FakeObjectStorage:
     content = PDF
 

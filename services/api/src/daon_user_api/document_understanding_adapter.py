@@ -165,6 +165,7 @@ class ParserValidation:
     cell_evidence: tuple[dict[str, str], ...] = ()
     block_evidence: tuple[dict[str, str], ...] = ()
     slide_evidence: tuple[dict[str, str], ...] = ()
+    audio_evidence: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

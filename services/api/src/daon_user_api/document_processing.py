@@ -47,6 +47,10 @@ def pptx_source_format(filename: str, content_type: str) -> bool:
     return filename.lower().endswith('.pptx') and content_type == 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
 
 
+def audio_source_format(filename: str, content_type: str) -> bool:
+    return filename.lower().endswith('.wav') and content_type == 'audio/wav'
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentProcessingContext:
     tenant_id: str
@@ -233,6 +237,7 @@ class DocumentProcessingService:
         xlsx_adapter=None,
         docx_adapter=None,
         pptx_adapter=None,
+        audio_adapter=None,
     ) -> None:
         self._repository = repository
         self._model_resolver = model_resolver
@@ -258,6 +263,10 @@ class DocumentProcessingService:
             from .pptx_document_understanding import OllamaPptxDocumentAdapter
             pptx_adapter = OllamaPptxDocumentAdapter(UrlLibDocumentUnderstandingTransport())
         self._pptx_adapter = pptx_adapter
+        if audio_adapter is None:
+            from .audio_document_understanding import AudioDocumentAdapter, LocalBaseAsrTranscriptionPort
+            audio_adapter = AudioDocumentAdapter(LocalBaseAsrTranscriptionPort(), UrlLibDocumentUnderstandingTransport(), egress_guard=self._egress_guard)
+        self._audio_adapter = audio_adapter
 
     def process(
         self, context: DocumentProcessingContext, *, source_id: str,
@@ -280,6 +289,11 @@ class DocumentProcessingService:
         processing_run_id: str,
     ) -> DocumentUnderstandingResult:
         try:
+            if audio_source_format(document.filename, document.content_type):
+                with self._model_resolver.resolve(context.model_context(), 'speech_to_text') as asr_model, self._model_resolver.resolve(context.model_context(), 'text_generation') as text_model:
+                    result = self._audio_adapter.understand(document, asr_model, text_model, context)
+                self._repository.complete(context, processing_run_id, result)
+                return result
             if pptx_source_format(document.filename, document.content_type):
                 with self._model_resolver.resolve(context.model_context(), 'text_generation') as model:
                     self._egress_guard.authorize(context, (model,))
