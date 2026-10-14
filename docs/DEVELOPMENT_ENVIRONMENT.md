@@ -1,6 +1,14 @@
 # Daon_User 개발·정식 WSL 검증 환경
 
-## 현재 실행 확인 — 2026-10-14 XLSX 질문 strict 응답 보정
+## 현재 실행 확인 — 2026-10-14 QA 한정 XLSX 질문 적용
+
+- 실제 제품/WSL Git `4f7bd5b0738bbc49874db2935d5860088699ce55`, API/document/studio image `sha256:7e61875b764a30c1897b32fab96cc5cbe35049c0b7e0ad0dfe960be59f8be079`, Web은 c9dbf71e image `sha256:7c08abcae722bec0fc3237123555974a2de4e12f73a6119c3f2a70f7ac9a6a79` 유지. DB0060·runtime production·기존 영속/Secret/권한 불변, 준비 API200 확인. 아래 11d086fb는 직전 이력이다.
+- 신산님 `QA 한정 적용 승인`으로 기존 `/home/daon/deploy/daon-user/.env`에 비밀이 아닌 `DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID=workspace-2edb96cb84a252046e67307d` 하나만 추가했다. API Compose가 이 값을 전달하며 빈값은 OFF다. exact Workspace·내부 Ollama·동일 SourceVersion의 XLSX 셀 근거 1~5개만 설치 tags/show/tags의 Digest·completion·remote 부재를 총5초로 검증하고 thinking 모델의 구조화 질문에만 `think:false`를 적용한다. 다른 Workspace·일반 대화·다른 자료/provider는 요청 불변, 기존 generation90초/512·prompt/schema·strict grounding 유지. QA 외 환경에 이 변수를 임의 복사하지 않는다.
+- 정상 설정 API로 해당 QA `text_generation` 기본값만 qwen3.5:latest/version4로 변경·재조회했다. image_understanding qwen3.5:latest/version2 및 다른 기본값은 유지했다. 실제 GUI 자료 밖 질문 Run `run-d29b51e2ee6d09876f26c0d1331bb33a`/result `run-result-f2eb19bc8c4940095bd1d82acd7fb953`는 부족=true/인용0, 정상 질문 Run `run-a1a7633ee02b3a5dc32853dcc5aa1fd2`/result `run-result-ef6f54fde7393f168be6102c9ec10593`는 code/date/57,000KRW·인용5로 저장됐다. PostgreSQL의 두 Run completed·실제 선택 model_artifact qwen3.5:latest와 정상 QA 화면의 재진입·원문B2 셀 확인을 대조했다. QA 자료5/Studio9·과거 Run 보존, 새로운 Source 재처리는 하지 않았다.
+- main 직접 변경부68PASS/89하위·diffcheck0, 기존 httpx21경고 유지. 중간 브라우저 인증/로그인복귀 현상의 정확 원인은 미확인이다(세션 만료로 단정하지 않음). 동일 정상 브라우저 세션의 독립 재진입은 양응답 복원 확인했고 인증/보안 정책 변경0. 새 QA 자료 이해·일반 질문·실자료 품질·기기/전체 Gate·새 서버 일관 복구는 이번 결과로 확인하지 않았다. ysna/Oracle 이전·PR/병합0.
+- 복구는 정식 QA 모델 기본값 API로 text_generation을 이전 llama3.2:3b로 되돌리고 위 QA target 변수만 빈값으로 재기동한다. 버전은 정상 변경 이력으로 증가하며 과거 버전/자료를 덮어쓰지 않는다. 코드/이미지 복구가 필요하면 직전 API11d086fb image `sha256:a355c45920e1f02c022b5cced0ae65d41281115034edd0fb2ef8e3069bac8cdb`/Webc9 쌍을 사용한다. DB·원본·실패 Run 복구/삭제는 하지 않는다. 다른 기동·영속/백업 방법은 기존 아래 항목을 재사용한다.
+
+## 직전 실행 확인 — 2026-10-14 XLSX 질문 strict 응답 보정
 
 - 실제 제품/WSL Git `11d086fbf5019d8b3f3bcafb14173efd51809db0` clean. API/document/studio image `sha256:a355c45920e1f02c022b5cced0ae65d41281115034edd0fb2ef8e3069bac8cdb`, Web은 소스 불변인 c9dbf71e image `sha256:7c08abcae722bec0fc3237123555974a2de4e12f73a6119c3f2a70f7ac9a6a79` 유지. DB0060·기존 영속/Secret/권한/모델/설정 불변, 준비 API200 확인. 아래 c9dbf71e/40165066은 직전 실행 이력이다.
 - Ollama grounded 응답의 exact3keys·문자열 answer·문자열 배열 citations·정확 boolean 검증9행만 추가했다. main 직접 관련45PASS/56하위·diffcheck0. 실제 정상 BFF 질문 Run `run-9ac906da75dbdaebc1e672771c8ae4d6`/result `run-result-5c5912f708534ba503aadcc841c3cc82`에 기존 QA workbook code/date/57000KRW·같은SourceVersion sheet_cell5개가 저장되고 Notebook context 재조회로 일치했다. 이 추가 회귀는 API/DB 증거이며 새 브라우저 클릭 증거로 계산하지 않는다. 보조 인증 세션은 정상 철회했다.
