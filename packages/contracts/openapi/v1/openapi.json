@@ -728,7 +728,8 @@
             },
             "image/png": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } },
             "image/jpeg": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } },
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } }
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } },
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { "schema": { "type": "string", "format": "binary", "maxLength": 26214400 } }
           }
         }
       }
@@ -901,7 +902,7 @@
                 "schema": { "type": "integer", "minimum": 1 }
               },
               "X-Citation-Locator-Kind": {
-                "schema": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell"] }
+                "schema": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block"] }
               },
               "X-Citation-Region": {
                 "schema": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 크기와 영역 경계는 서버에서 검증한다." }
@@ -912,7 +913,7 @@
               "text/plain": { "schema": { "type": "string", "maxLength": 1048576 } },
               "image/png": { "schema": { "type": "string", "format": "binary" } },
               "image/jpeg": { "schema": { "type": "string", "format": "binary" } },
-              "application/json": { "schema": { "$ref": "#/components/schemas/SheetCellContent" } }
+              "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/SheetCellContent" }, { "$ref": "#/components/schemas/DocxBlockContent" }] } }
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -5600,10 +5601,10 @@
       "StudioCitationLocator": {
         "type": "object", "additionalProperties": false, "required": ["kind", "value"],
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 500 }
         },
-        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }]
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "docx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/DocxBlockLocatorValue" } } } }]
       },
       "StudioCitationProjection": {
         "type": "object", "additionalProperties": false,
@@ -5952,10 +5953,10 @@
         "additionalProperties": false,
         "required": ["kind", "value"],
         "properties": {
-          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell"] },
+          "kind": { "type": "string", "enum": ["page", "section", "image_region", "sheet_cell", "docx_block"] },
           "value": { "type": "string", "minLength": 1, "maxLength": 255 }
         },
-        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }]
+        "allOf": [{ "if": { "properties": { "kind": { "const": "image_region" } } }, "then": { "properties": { "value": { "pattern": "^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*)){5}$", "description": "EXIF 보정 표시 기준 x,y,width,height,image_width,image_height. 양수 크기 및 영역 경계는 서버에서 검증한다." } } } }, { "if": { "properties": { "kind": { "const": "sheet_cell" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/SheetCellLocatorValue" } } } }, { "if": { "properties": { "kind": { "const": "docx_block" } } }, "then": { "properties": { "value": { "$ref": "#/components/schemas/DocxBlockLocatorValue" } } } }]
       },
       "SheetCellLocatorValue": {
         "type": "string", "minLength": 1, "maxLength": 255,
@@ -5974,6 +5975,47 @@
           "number_format": { "type": ["string", "null"] },
           "hidden_row": { "type": "boolean" },
           "hidden_column": { "type": "boolean" }
+        }
+      },
+      "DocxBlockLocatorValue": {
+        "type": "string", "minLength": 1, "maxLength": 256,
+        "description": "block,start,end 순서의 compact canonical JSON. 문단 p:1..64 또는 표 t:body:r:row:c:column:p:paragraph(각 위치 1기반, body/row/column 최대64, paragraph128). offset은 Unicode code point, 0 <= start < end <= 2000. bool/문자열 숫자/중복키/추가키/비정규 ID 거부. 호환 page=1은 Word 페이지가 아니다."
+      },
+      "DocxOriginalBlock": {
+        "type": "object", "additionalProperties": false,
+        "required": ["block_id", "ordinal", "block_type", "text", "style_id", "outline_level", "table"],
+        "properties": {
+          "block_id": { "type": "string", "pattern": "^(p:[1-9][0-9]?|t:[1-9][0-9]?:r:[1-9][0-9]?:c:[1-9][0-9]?:p:[1-9][0-9]{0,2})$" },
+          "ordinal": { "type": "integer", "minimum": 1, "maximum": 128 },
+          "block_type": { "type": "string", "enum": ["paragraph", "table_cell_paragraph"] },
+          "text": { "type": "string", "maxLength": 2000 },
+          "style_id": { "type": ["string", "null"] },
+          "outline_level": { "type": ["integer", "null"], "minimum": 0, "maximum": 9 },
+          "table": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "object", "additionalProperties": false, "required": ["body_index", "row", "column", "paragraph"], "properties": {
+                "body_index": { "type": "integer", "minimum": 1, "maximum": 64 },
+                "row": { "type": "integer", "minimum": 1, "maximum": 64 },
+                "column": { "type": "integer", "minimum": 1, "maximum": 64 },
+                "paragraph": { "type": "integer", "minimum": 1, "maximum": 128 }
+              }}
+            ]
+          }
+        }
+      },
+      "DocxBlockContent": {
+        "type": "object", "additionalProperties": false,
+        "description": "Actor/Notebook/SourceVersion/Evidence/locator·완료 원본hash 재검증 후 읽기 전용 구조. 선택 문단과 원본 직전/직후 문단 최대3개, 최종 UTF8 JSON32KiB(절단 없음). code point 구간을 재검증하며 HTML/링크/Word 페이지 렌더링이나 다운로드 URL을 제공하지 않는다.",
+        "required": ["source_version_id", "source_sha256", "serialization_version", "selected_block_id", "selected_start", "selected_end", "blocks"],
+        "properties": {
+          "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "serialization_version": { "type": "string", "const": "docx-structure-v1" },
+          "selected_block_id": { "type": "string" },
+          "selected_start": { "type": "integer", "minimum": 0, "maximum": 1999 },
+          "selected_end": { "type": "integer", "minimum": 1, "maximum": 2000 },
+          "blocks": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "$ref": "#/components/schemas/DocxOriginalBlock" } }
         }
       },
       "SheetCellContent": {

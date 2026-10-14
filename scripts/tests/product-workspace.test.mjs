@@ -204,6 +204,39 @@ test("sheet_cell 실제 React 원문 표는 재진입·강조·safe text·늦은
   });
 });
 
+test("DOCX 실제 React 원문은 emoji codepoint 강조·표 위치·safe text·늦은 응답을 결속한다", async(t)=>{
+  for(const scenario of ['success','invalid','late-selection','late-other-source','late-close']) await t.test(scenario,async()=>{
+    const oldFetch=globalThis.fetch;const pending=deferred();const calls=[];let workspace;
+    const locator={kind:'docx_block',value:'{"block":"t:3:r:1:c:2:p:1","start":1,"end":2}'};
+    const citation={citation_id:'citation-docx',source_id:'source-1',source_version_id:'version-1',evidence_span_id:'span-docx',page:1,origin:'raw_source',context_item_id:'source-1',locator};
+    const content={source_version_id:'version-1',source_sha256:'a'.repeat(64),serialization_version:'docx-structure-v1',selected_block_id:'t:3:r:1:c:2:p:1',selected_start:1,selected_end:2,blocks:[
+      {block_id:'p:2',ordinal:2,block_type:'paragraph',text:'',style_id:null,outline_level:null,table:null},
+      {block_id:'t:3:r:1:c:2:p:1',ordinal:3,block_type:'table_cell_paragraph',text:'한😀글 <script>literal</script> https://evil',style_id:null,outline_level:null,table:{body_index:3,row:1,column:2,paragraph:1}},
+    ]};
+    if(scenario==='invalid')content.source_version_id='wrong';
+    globalThis.fetch=async(url,init)=>{calls.push({url,init});if(scenario.startsWith('late'))await pending.promise;return Response.json(content);};
+    try{
+      workspace=await mountSourceRetryWorkspace({...adapter,listSources:async()=>[{...sourceRetryPayload,filename:'qa.docx'},{...sourceRetryPayload,source_id:'other-source',source_version_id:'other-version',filename:'other.docx'}],listStudioOutputs:async()=>[],citationUrl:value=>citationContentUrl('workspace-1',value,{notebookId:'notebook-1'}),loadNotebookConversation:async()=>({run_id:'run-docx',run_result_id:'result-docx',answer:'저장된 DOCX 답변',insufficient:false,citations:[{...citation,content_url:citationContentUrl('workspace-1',citation,{notebookId:'notebook-1'})}]})},`docx-${scenario}`);
+      const link=findElements(workspace.container,node=>node.tagName==='A'&&node.textContent.includes('Citation'))[0];
+      assert.ok(link);assert.match(link.textContent,/t:3:r:1:c:2:p:1/);assert.doesNotMatch(link.getAttribute('href'),/#page/);
+      await workspace.act(async()=>link.dispatchEvent(new MinimalEvent('click')));
+      assert.equal(calls.length,1);assert.equal(calls[0].init.credentials,'same-origin');
+      if(scenario==='late-selection'){const selected=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.getAttribute?.('aria-pressed')==='true'&&node.textContent.includes('qa.docx'))[0];await workspace.act(async()=>selected.dispatchEvent(new MinimalEvent('click')));}
+      if(scenario==='late-other-source'){const other=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent.includes('other.docx'))[0];await workspace.act(async()=>other.dispatchEvent(new MinimalEvent('click')));assert.equal(other.getAttribute('aria-pressed'),'true');}
+      if(scenario==='late-close'){const close=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원문 닫기')[0];await workspace.act(async()=>close.dispatchEvent(new MinimalEvent('click')));}
+      if(scenario.startsWith('late'))await workspace.act(async()=>{pending.resolve();await Promise.resolve();});
+      const viewer=findElements(workspace.container,node=>node.getAttribute?.('aria-label')==='DOCX 원문')[0];
+      if(scenario==='success'){
+        assert.ok(viewer);assert.match(viewer.textContent,/행 1 · 열 2/);assert.doesNotMatch(viewer.textContent,/1쪽|page=1/);
+        assert.equal(findElements(viewer,node=>node.tagName==='MARK')[0].textContent,'😀');
+        assert.match(viewer.textContent,/<script>literal<\/script>/);assert.equal(findElements(viewer,node=>['A','SCRIPT','IMG'].includes(node.tagName)).length,0);
+        assert.ok(findElements(viewer,node=>node.getAttribute?.('class')==='citation-docx-scroll').length);
+      }else if(scenario==='invalid')assert.match(viewer.textContent,/CITATION_CONTENT_UNAVAILABLE/);
+      else assert.equal(viewer,undefined);
+    }finally{pending.resolve();if(workspace)await workspace.cleanup();globalThis.fetch=oldFetch;}
+  });
+});
+
 test("Image Citation은 같은 출처 원문과 EXIF 표시 기준 Region을 화면에서 연다", async () => {
   const citation = { citation_id: "citation-image", source_id: "source-1", source_version_id: "version-1", evidence_span_id: "span-image", page: 1, origin: "raw_source", context_item_id: "source-1", locator: { kind: "image_region", value: "5,7,80,20,120,60" } };
   const workspace = await mountSourceRetryWorkspace({ ...adapter,
@@ -323,10 +356,12 @@ test("HTTP QA React TXT 선택은 randomUUID 없이 실제 Source POST를 전송
     assert.match(workspace.container.textContent, /질문·Studio 처리 지원: PDF\(문서 모델 필요\), TXT\/MD\/CSV/u);
     assert.match(workspace.container.textContent, /PNG\/JPG\/JPEG\(내부 Vision 모델·OCR 필요\)/u);
     assert.match(workspace.container.textContent, /XLSX\(내부 모델·셀 검증 필요\)/u);
-    assert.match(workspace.container.textContent, /DOCX·PPTX·오디오는 이 화면에서 아직 미지원/u);
+    assert.match(workspace.container.textContent, /DOCX\(제한형 문단·병합 없는 단순 표, 내부 모델·구간 검증 필요\)/u);
+    assert.match(workspace.container.textContent, /PPTX·오디오는 이 화면에서 아직 미지원/u);
     const fileInput = findElements(workspace.container, (node) => node.tagName === "INPUT" && node.getAttribute?.("accept")?.includes(".txt"))[0];
     assert.ok(fileInput.getAttribute('accept').split(',').includes('.xlsx'));
-    assert.equal(fileInput.getAttribute('accept').split(',').some(type => ['.docx','.pptx','.mp3'].includes(type)), false);
+    assert.ok(fileInput.getAttribute('accept').split(',').includes('.docx'));
+    assert.equal(fileInput.getAttribute('accept').split(',').some(type => ['.pptx','.mp3'].includes(type)), false);
     Object.defineProperty(fileInput, "files", {
       configurable: true, value: [new File(["ORANGE-COMPASS-42"], "notes.txt", { type: "text/plain" })],
     });

@@ -9,6 +9,21 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test("DOCX BFF existing route permits exact MIME, scoped JSON and CSRF while retaining kind header", async () => {
+  const calls=[];const proxy=createBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),init});return init.method==="POST"?Response.json({data:{}},{status:202}):Response.json({source_version_id:"sv-docx"},{headers:{"X-Citation-Locator-Kind":"docx_block"}});
+  }});
+  const mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const upload=origin=>new Request("https://app.example.com/bff/api/workspaces/workspace-1/sources",{method:"POST",headers:{Origin:origin,Cookie:"__Host-daon_session=fixture","Content-Type":mime,"Idempotency-Key":"docx-1","X-Source-Filename":"qa.docx","X-Notebook-Id":"notebook-1"},body:new Uint8Array([80,75,3,4])});
+  assert.equal((await proxy(upload("https://app.example.com"),["workspaces","workspace-1","sources"])).status,202);
+  assert.equal(new Headers(calls[0].init.headers).get("content-type"),mime);
+  assert.equal((await proxy(upload("https://evil.example"),["workspaces","workspace-1","sources"])).status,403);
+  assert.equal(calls.length,1);
+  const content=await proxy(new Request("https://app.example.com/bff/api/workspaces/workspace-1/citations/citation-docx/content?notebook_id=notebook-1",{headers:{Cookie:"__Host-daon_session=fixture"}}),["workspaces","workspace-1","citations","citation-docx","content"]);
+  assert.equal(content.status,200);assert.equal(content.headers.get("x-citation-locator-kind"),"docx_block");
+  assert.equal(content.headers.get("x-citation-page"),null);assert.equal((await content.json()).source_version_id,"sv-docx");
+});
+
 test("XLSX BFF forwards upload and exact original-cell JSON through existing scoped routes", async () => {
   const calls = [];
   const body = { source_version_id: "version-1", source_sha256: "a".repeat(64), sheet_name: "예산", sheet_visibility: "visible", selected_range: "A1", view_range: "A1:B2", cells: [], merged_ranges: [] };
@@ -27,6 +42,12 @@ test("XLSX BFF forwards upload and exact original-cell JSON through existing sco
   assert.equal(calls[1].url, "https://api.example.com/api/v1/workspaces/workspace-1/citations/citation-1/content?notebook_id=notebook-1");
 });
 
+test("Native DOCX BFF permits approved exact MIME without changing authentication", async()=>{
+  const {createNativeBffProxy}=await import("../../apps/web/lib/bff-api-proxy.js");let calls=0;
+  const proxy=createNativeBffProxy({baseUrl:new URL("https://api.example.com"),fetchImpl:async()=>{calls++;return Response.json({data:{}},{status:202});}});
+  const response=await proxy(new Request("https://app.example.com/api/v1/workspaces/workspace-1/sources",{method:"POST",headers:{Authorization:"Bearer opaque-native-credential","Content-Type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","X-Source-Filename":"qa.docx"},body:new Uint8Array([80,75,3,4])}),["workspaces","workspace-1","sources"]);
+  assert.equal(response.status,202);assert.equal(calls,1);
+});
 test("Native XLSX BFF permits only registered upload MIME and scoped JSON content", async () => {
   const { createNativeBffProxy } = await import("../../apps/web/lib/bff-api-proxy.js");
   const calls = [];

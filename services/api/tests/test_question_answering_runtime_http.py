@@ -98,10 +98,19 @@ class FakeCitationContent:
         self.text_mode = False
         self.image_mode = False
         self.xlsx_mode = False
+        self.docx_mode = False
 
     def read_citation_content(self, context, citation_id):  # type: ignore[no-untyped-def]
         if citation_id != "citation-cp3":
             raise AssertionError(citation_id)
+        if self.docx_mode:
+            import json
+            from test_docx_source import docx_bytes, paragraph
+            from daon_user_api.docx_source import read_docx, read_docx_block_view, encode_docx_block
+            value = encode_docx_block('p:1', 1, 2)
+            view = read_docx_block_view(read_docx(docx_bytes(paragraph('한😀글'))), value)
+            view['source_version_id'] = 'source-version-cp3'
+            return CitationContent('source-cp3', 'source-version-cp3', 'qa.docx', json.dumps(view, ensure_ascii=False).encode(), 'application/json'), {'kind': 'docx_block', 'value': value}
         if self.xlsx_mode:
             import json
             from test_xlsx_source import parts, zipped
@@ -477,6 +486,22 @@ class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()['source_version_id'], 'source-version-cp3')
         self.assertEqual(response.json()['selected_range'], 'B2:C3')
         self.assertNotIn('data', response.json())
+
+    async def test_docx_original_is_raw_codepoint_json_without_fake_page_header(self) -> None:
+        self.dependencies.citation_content_repository.docx_mode = True
+        with self._authenticated():
+            response = await self.client.get('/api/v1/workspaces/workspace-001/citations/citation-cp3/content?notebook_id=notebook-001', cookies={WEB_SESSION_COOKIE: 'opaque-session'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['content-type'], 'application/json')
+        self.assertEqual(response.headers['x-citation-locator-kind'], 'docx_block')
+        self.assertIn('inline', response.headers['content-disposition'])
+        self.assertIn('etag', response.headers)
+        self.assertNotIn('x-citation-page', response.headers)
+        self.assertNotIn('x-citation-region', response.headers)
+        view = response.json()
+        self.assertEqual(view['source_version_id'], 'source-version-cp3')
+        self.assertEqual(view['blocks'][0]['text'][view['selected_start']:view['selected_end']], '😀')
+        self.assertNotIn('data', view)
 
 
 if __name__ == "__main__":

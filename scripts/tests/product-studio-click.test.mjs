@@ -10,7 +10,7 @@ test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복�
   const rootPath = path.resolve(import.meta.dirname, "../..");
   const output = await mkdtemp(path.join(rootPath, ".product-studio-version-refresh-"));
   try {
-    for (const scenario of ["success", "read-failure", "invalid-region", "invalid-cell", "missing-created", "write-failure", "no-getter", "selection-change", "read-selection-change"]) {
+    for (const scenario of ["success", "read-failure", "invalid-region", "invalid-cell", "invalid-docx", "missing-created", "write-failure", "no-getter", "selection-change", "read-selection-change"]) {
       await t.test(scenario, async () => {
         const dom = installMinimalDom(); let reactRoot;
         try {
@@ -24,6 +24,7 @@ test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복�
             { citation_id: "citation-page", source_version_id: "source-version-pdf", evidence_span_id: "span-page", origin: "raw_source", locator: { kind: "page", value: "2" } },
             { citation_id: "citation-section", source_version_id: "source-version-text", evidence_span_id: "span-section", origin: "daon_knowledge", locator: { kind: "section", value: "핵심 요약" } },
             { citation_id: "citation-cell", source_version_id: "source-version-xlsx", evidence_span_id: "span-cell", origin: "raw_source", locator: { kind: "sheet_cell", value: '{"sheet":"납품 계획","range":"B2:C3"}' } },
+            { citation_id: "citation-docx", source_version_id: "source-version-docx", evidence_span_id: "span-docx", origin: "raw_source", locator: { kind: "docx_block", value: '{"block":"p:2","start":1,"end":2}' } },
           ];
           const v1 = { output_version_id: "version-1", content_version: 1, previous_version_id: null, status: "draft", content: { body: "이전 본문" }, revision_type: "initial", change_reason: "최초", settings_snapshot_id: "settings-1", citations, review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null, output_format: "pdf" };
           const v2 = { ...v1, output_version_id: "version-2", content_version: 2, previous_version_id: "version-1", content: { body: "정식 새 본문" }, revision_type: "user_edit", change_reason: "편집 반영", settings_snapshot_id: "settings-2" };
@@ -44,6 +45,7 @@ test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복�
             if (scenario === "read-selection-change") await waitForWrite;
             if (scenario === "invalid-region") return Response.json({ data: { output_id: "output-1", versions: [{ ...v2, citations: [{ ...citations[0], locator: { kind: "image_region", value: "90,20,30,40,100,200" } }] }] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
             if (scenario === "invalid-cell") return Response.json({ data: { output_id: "output-1", versions: [{ ...v2, citations: [{ ...citations[3], locator: { kind: "sheet_cell", value: '{"sheet":"납품 계획","range":"A1:Q16"}' } }] }] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
+            if (scenario === "invalid-docx") return Response.json({ data: { output_id: "output-1", versions: [{ ...v2, citations: [{ ...citations[4], locator: { kind: "docx_block", value: '{"block":"p:2","start":true,"end":2}' } }] }] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
             return Response.json({ data: { output_id: "output-1", versions: scenario === "missing-created" ? [v1] : [v3, v2, v1] }, meta: { trace_id: "trace-1", workspace_id: "workspace-1" } });
           };
           const adapter = {
@@ -73,7 +75,7 @@ test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복�
           assert.equal(posts.length, 1);
           assert.equal(posts[0].body.previous_version_id, "version-1");
           if (scenario === "write-failure") {
-            assert.equal(calls.length, 1); assert.match(detail.textContent, /Version 1 · 근거 4 · 설정 settings-1/);
+            assert.equal(calls.length, 1); assert.match(detail.textContent, /Version 1 · 근거 5 · 설정 settings-1/);
             assert.doesNotMatch(detail.textContent, /새 Version이 저장되었습니다/);
             assert.match(container.textContent, /새 버전을 저장하지 못했습니다/);
           } else if (["selection-change", "read-selection-change"].includes(scenario)) {
@@ -84,14 +86,15 @@ test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복�
             assert.match(row.textContent, /Version 2/);
           } else if (scenario === "success") {
             assert.match(detail.textContent, /새 Version이 저장되었습니다. \(version-2\)/);
-            assert.match(detail.textContent, /Version 2 · 근거 4 · 설정 settings-2/); assert.match(detail.textContent, /정식 새 본문/);
+            assert.match(detail.textContent, /Version 2 · 근거 5 · 설정 settings-2/); assert.match(detail.textContent, /정식 새 본문/);
             assert.doesNotMatch(detail.textContent, /다른 요청 본문/);
             const history = findElements(detail, (node) => node.getAttribute?.("aria-label") === "Version 이력")[0];
             for (const number of [3, 2, 1]) assert.match(history.textContent, new RegExp(`Version ${number}`));
-            for (const locator of ["10,20,30,40,100,200", "2쪽", "핵심 요약", "납품 계획 · B2:C3"]) assert.ok(detail.textContent.includes(locator));
+            for (const locator of ["10,20,30,40,100,200", "2쪽", "핵심 요약", "납품 계획 · B2:C3", "문단·표 p:2 · 1–2"]) assert.ok(detail.textContent.includes(locator));
+            assert.deepEqual(calls[1].method,"GET");assert.equal(posts[0].body.previous_version_id,"version-1");
           } else {
             assert.match(detail.textContent, /새 Version이 저장되었습니다. \(version-2\)/);
-            assert.match(detail.textContent, /Version version-2 · 근거 4 · 설정 settings-2/);
+            assert.match(detail.textContent, /Version version-2 · 근거 5 · 설정 settings-2/);
             assert.equal(findElements(detail, (node) => node.getAttribute?.("aria-label") === "Version 이력").length, 0);
             if (scenario !== "no-getter") assert.match(container.textContent, /저장된 산출물을 불러오지 못했습니다/);
             assert.doesNotMatch(container.textContent, /새 버전을 저장하지 못했습니다/);

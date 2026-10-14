@@ -21,7 +21,7 @@ async function loadContract() {
 test("XLSX original-cell content declares exact nullable cell contract and preserves old media", async () => {
   const doc = await loadContract();
   const response = doc.paths["/api/v1/workspaces/{id}/citations/{citation_id}/content"].get.responses["200"];
-  assert.equal(response.content["application/json"]?.schema.$ref, "#/components/schemas/SheetCellContent");
+  assert.deepEqual(response.content["application/json"].schema.oneOf, [{ $ref: "#/components/schemas/SheetCellContent" }, { $ref: "#/components/schemas/DocxBlockContent" }]);
   for (const name of ["CitationLocator", "StudioCitationLocator"]) {
     assert.ok(doc.components.schemas[name].properties.kind.enum.includes("sheet_cell"));
     assert.ok(doc.components.schemas[name].allOf.some(rule => rule.if?.properties?.kind?.const === 'sheet_cell' && rule.then?.properties?.value?.$ref === '#/components/schemas/SheetCellLocatorValue'));
@@ -216,7 +216,7 @@ test("Product Studio Version 상세는 Citation과 lifecycle 재진입 계약을
     "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format",
   ]);
   assert.deepEqual(document.components.schemas.StudioCitationProjection.properties.origin.enum, ["raw_source", "daon_knowledge"]);
-  assert.deepEqual(document.components.schemas.StudioCitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell"]);
+  assert.deepEqual(document.components.schemas.StudioCitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell", "docx_block"]);
 });
 
 test("Provider 연결 확인은 비밀·Endpoint 없는 안전 상태 계약이다", async () => {
@@ -499,11 +499,12 @@ test("Question Citation 계약은 원본 페이지와 Daon 지식 구간을 같�
   assert.ok(citation.required.includes("locator"));
   assert.equal(citation.properties.locator.$ref, "#/components/schemas/CitationLocator");
   assert.deepEqual(document.components.schemas.CitationLocator.required, ["kind", "value"]);
-  assert.deepEqual(document.components.schemas.CitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell"]);
+  assert.deepEqual(document.components.schemas.CitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell", "docx_block"]);
   const response = document.paths["/api/v1/workspaces/{id}/citations/{citation_id}/content"].get.responses["200"];
   assert.ok(response.content["application/pdf"]);
   assert.ok(response.content["text/plain"]);
-  assert.equal(response.headers["X-Citation-Locator-Kind"].schema.enum.join(","), "page,section,image_region,sheet_cell");
+  assert.equal(response.headers["X-Citation-Locator-Kind"].schema.enum.join(","), "page,section,image_region,sheet_cell,docx_block");
+  assert.ok(response.content['application/json'].schema.oneOf.some(item=>item.$ref.endsWith('/DocxBlockContent')));
   assert.ok(response.content["image/png"]);
   assert.ok(response.content["image/jpeg"]);
   assert.ok(response.headers["X-Citation-Region"].schema.pattern);

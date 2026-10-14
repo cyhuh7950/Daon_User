@@ -102,6 +102,20 @@ class SourceUploadRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.processing.submissions), 1)
         self.assertEqual(self.processing.submissions[0][1:], ('source-version-001', 'notebook-001'))
 
+    async def test_registered_docx_original_keeps_existing_auth_storage_queue_boundary(self) -> None:
+        from test_docx_source import docx_bytes, paragraph
+        raw = docx_bytes(paragraph('한😀글'))
+        mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        with self._authenticated():
+            response = await self.client.post('/api/v1/workspaces/workspace-001/sources', content=raw,
+                cookies={WEB_SESSION_COOKIE: 'opaque-session'}, headers={'Content-Type': mime,
+                'X-Source-Filename': 'qa.docx', 'X-Notebook-Id': 'notebook-001', 'Idempotency-Key': 'docx-upload-001'})
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(len(self.uploads.calls), 1)
+        self.assertEqual(self.uploads.calls[0]['content'], raw)
+        self.assertEqual(self.uploads.calls[0]['content_type'], mime)
+        self.assertEqual(self.processing.submissions[0][1:], ('source-version-001', 'notebook-001'))
+
     async def test_ooxml_security_rejection_precedes_storage_and_processing_submission(self) -> None:
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:

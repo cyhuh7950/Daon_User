@@ -46,6 +46,21 @@ test("Web saved sheet_cell context preserves exact Notebook SourceVersion and re
   await assert.rejects(getNotebookContext('workspace-1', 'notebook-1', { fetchImpl: async () => json({ data, meta: META }, { headers: { ETag: '"notebook:4"' } }) }), /NOTEBOOK_CONTEXT_INVALID/);
 });
 
+test("DOCX 저장 답변 재진입은 exact raw SourceVersion binding과 compact locator만 복원한다", async () => {
+  const citation={citation_id:'citation-docx',source_id:'source-1',source_version_id:'sv-1',evidence_span_id:'span-1',page:1,origin:'raw_source',context_item_id:'source-1',locator:{kind:'docx_block',value:'{"block":"p:2","start":1,"end":2}'}};
+  const data={notebook_id:'notebook-1',sources:[{source_id:'source-1',source_version_id:'sv-1'}],knowledge_context_ids:[],conversation_thread_ids:['thread-1'],studio_output_ids:[],output_version_ids:[],generation_settings_ids:[],source_deletion_requests:[],conversation:{conversation_thread_id:'thread-1',answer:{run_id:'run-1',run_result_id:'result-1',answer:'한😀글',insufficient:false,citations:[citation]}}};
+  const get=value=>getNotebookContext('workspace-1','notebook-1',{fetchImpl:async()=>json({data:value,meta:META},{headers:{ETag:'"notebook-binding:1"'}})});
+  const result=await get(data);
+  const {createNotebookContextWorkspaceAdapter}=await import('../../packages/ui/src/notebook-context-adapter.js');
+  const {citationContentUrl}=await import('../../apps/web/lib/question-answering-api.js');
+  const answer=await createNotebookContextWorkspaceAdapter({citationUrl:(value,opts)=>citationContentUrl('workspace-1',value,opts)},result.data).loadNotebookConversation();
+  assert.equal(answer.citations[0].content_url,'/bff/api/workspaces/workspace-1/citations/citation-docx/content?notebook_id=notebook-1');
+  assert.deepEqual(answer.citations[0].locator,citation.locator);
+  for(const mutate of [v=>v.sources=[],v=>v.sources[0].source_version_id='old',v=>v.conversation.answer.citations[0].context_item_id='other',v=>v.conversation.answer.citations[0].locator.value='{"block":"p:2","start":false,"end":2}']){
+    const invalid=structuredClone(data);mutate(invalid);await assert.rejects(get(invalid),/NOTEBOOK_CONTEXT_INVALID/);
+  }
+});
+
 test("Notebook client는 same-origin 경로와 exact write headers만 사용한다", async () => {
   const captured = [];
   const fetchImpl = async (url, init) => {

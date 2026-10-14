@@ -98,6 +98,14 @@ test("Question authorization은 same-origin exact body와 동일 Idempotency-Key
   assert.deepEqual(Object.keys(calls[0].body).sort(), ["notebook_id", "password", "question", "source_id", "source_version_id"]);
 });
 
+test("DOCX Question client validates exact compact codepoint locator without invented page anchors", async()=>{
+  const docx={...citation,page:1,locator:{kind:"docx_block",value:'{"block":"p:2","start":0,"end":1}'}};
+  assert.deepEqual((await request(envelope({...answerData,citations:[docx]}))).citations[0],docx);
+  assert.doesNotMatch(citationContentUrl("workspace-1",docx,{notebookId:"notebook-1"}),/#page/);
+  for(const value of ['{"block":"p:2","start":true,"end":1}','{"block":"p:65","start":0,"end":1}','{"block":"p:2","start":0,"end":1,"extra":1}'])
+    await assert.rejects(request(envelope({...answerData,citations:[{...docx,locator:{kind:"docx_block",value}}]})),/QUESTION_RESPONSE_INVALID/);
+});
+
 test("Question API는 승인 지식과 Raw Source를 하나의 exact Knowledge Context로 전송한다", async () => {
   const calls = [];
   const knowledgeContext = {

@@ -49,6 +49,16 @@ const canonSourceStates = Object.freeze([
   "partial_understanding", "needs_review", "failed", "expired", "disabled", "deleting", "deleted",
 ]);
 
+test("DOCX upload consumer forwards original bytes/MIME/Notebook and never preclaims ready",async()=>{
+  const file=new File([new Uint8Array([80,75,3,4])],"qa.docx",{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+  let call;const result=await sourceApi.uploadSource("workspace-1",file,{notebookId:"notebook-1",idempotencyKey:"docx-upload",fetchImpl:async(url,init)=>{
+    call={url,init};return Response.json({data:{source_id:"source-1",source_version_id:"version-1",object_id:"a".repeat(32),digest_sha256:"b".repeat(64),byte_size:4,status:"accepted",replayed:false,processing_run_id:"run-1",processing_state:"vision_llm_understanding",job_state:"pending"},meta:{trace_id:"trace-1",workspace_id:"workspace-1"}},{status:202});
+  }});
+  assert.equal(call.url,"/bff/api/workspaces/workspace-1/sources");assert.equal(call.init.body,file);
+  assert.equal(call.init.headers["Content-Type"],file.type);assert.equal(call.init.headers["X-Notebook-Id"],"notebook-1");
+  assert.equal(result.status,"accepted");assert.equal(result.processing_state,"vision_llm_understanding");
+});
+
 test("Source 목록은 same-origin GET과 exact Safe DTO만 허용한다", async () => {
   const calls = [];
   const result = await listWorkspaceSources("workspace-1", {
