@@ -395,6 +395,59 @@ class QuestionAnsweringContractTests(unittest.TestCase):
                         transport=MessagesTransport(), api_key="fixture-secret",
                     ).generate(GroundedQuestionRequest("내용은?", evidence, "trace-cp3"), selection)
 
+    def test_ollama_rejects_malformed_grounded_response_without_coercion(self) -> None:
+        selection = TextModelSelection(
+            "OLLAMA", "http://models.example.com", "fixture", "fixture:revision",
+            "revision", 1,
+        )
+        evidence = (IndexedEvidenceChunk(
+            "1", "source-strict", "version-strict", 1,
+            "검증된 내용입니다.", "span-strict", 1.0,
+        ),)
+        valid = {"answer": "검증된 내용입니다.", "cited_chunk_ids": ["1"], "insufficient": False}
+        malformed = [
+            {**valid, "answer": {"text": "검증된 내용입니다."}},
+            {**valid, "cited_chunk_ids": [1]},
+            {**valid, "cited_chunk_ids": "1"},
+            {**valid, "cited_chunk_ids": {"1": "value"}},
+            {**valid, "insufficient": 0},
+            {**valid, "insufficient": None},
+            {**valid, "extra": "unexpected"},
+            {"answer": "검증된 내용입니다.", "cited_chunk_ids": ["1"]},
+            [valid],
+        ]
+        for flag in ("false", "true", 1):
+            malformed.append({"answer": "자료가 없습니다.", "cited_chunk_ids": [], "insufficient": flag})
+        contents = [json.dumps(item, ensure_ascii=False) for item in malformed] + ["", "{invalid JSON"]
+        for index, content in enumerate(contents):
+            with self.subTest(case=index):
+                class Transport:
+                    def post_json_no_auth(self, **_kwargs):
+                        return {"message": {"content": content}}
+
+                with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+                    OllamaTextGenerationAdapter(transport=Transport()).generate(
+                        GroundedQuestionRequest("내용은?", evidence, "trace-strict"), selection,
+                    )
+
+    def test_ollama_duplicate_citations_remain_grounding_invalid(self) -> None:
+        request = self.cell_request()
+        selection = TextModelSelection(
+            "OLLAMA", "http://models.example.com", "fixture", "fixture:revision",
+            "revision", 1,
+        )
+
+        class Transport:
+            def post_json_no_auth(self, **_kwargs):
+                return {"message": {"content": json.dumps({
+                    "answer": request.evidence[0].text,
+                    "cited_chunk_ids": [request.evidence[0].chunk_id] * 2,
+                    "insufficient": False,
+                })}}
+
+        with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_GROUNDING_INVALID$"):
+            OllamaTextGenerationAdapter(transport=Transport()).generate(request, selection)
+
     def test_work_support_and_source_modes_are_classified_without_refusal(self) -> None:
         self.assertEqual(classify_question_intent("다음 작업을 어떻게 진행할까?"), "work_support")
         self.assertEqual(classify_question_intent("선택한 문서에서 보존 기간을 찾아줘"), "explicit_source_lookup")

@@ -489,6 +489,15 @@ class OllamaTextGenerationAdapter:
             message = cast(dict[str, object], response["message"])
             raw = message["content"]
             parsed = cast(dict[str, object], json.loads(raw) if isinstance(raw, str) else raw)
+            if (
+                not isinstance(parsed, dict)
+                or set(parsed) != {"answer", "cited_chunk_ids", "insufficient"}
+                or not isinstance(parsed.get("answer"), str)
+                or not isinstance(parsed.get("cited_chunk_ids"), list)
+                or not all(isinstance(item, str) for item in parsed["cited_chunk_ids"])
+                or type(parsed.get("insufficient")) is not bool
+            ):
+                raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
             answer = str(parsed["answer"]).strip()
             cited = tuple(str(item) for item in cast(list[object], parsed["cited_chunk_ids"]))
             insufficient = bool(parsed["insufficient"])
