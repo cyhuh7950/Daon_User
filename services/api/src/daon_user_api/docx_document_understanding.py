@@ -64,12 +64,17 @@ class OllamaDocxDocumentAdapter:
             digest, capabilities = adapter.verified_internal_metadata(selection)
         except ValueError:
             raise DocumentUnderstandingError('DOCUMENT_PROVIDER_ADAPTER_UNAVAILABLE', status=503) from None
+        # Literal structure choices only; importance/summary remain Native decisions.
+        # The independent response validator still accepts valid original substrings.
+        choices = [{'type': 'object', 'properties': {
+            'text': {'type': 'string', 'const': block['text']},
+            'block_id': {'type': 'string', 'const': block['block_id']},
+            'start': {'type': 'integer', 'const': 0},
+            'end': {'type': 'integer', 'const': len(block['text'])}},
+            'required': ['text', 'block_id', 'start', 'end'], 'additionalProperties': False}
+            for block in original.blocks if block['text']]
         schema = {'type': 'object', 'properties': {
-            'key_facts': {'type': 'array', 'minItems': 1, 'maxItems': 5, 'items': {'type': 'object',
-                'properties': {'text': {'type': 'string', 'minLength': 1},
-                    'block_id': {'type': 'string', 'enum': sorted(expected)},
-                    'start': {'type': 'integer', 'minimum': 0}, 'end': {'type': 'integer', 'minimum': 1}},
-                'required': ['text', 'block_id', 'start', 'end'], 'additionalProperties': False}},
+            'key_facts': {'type': 'array', 'minItems': 1, 'maxItems': 5, 'items': {'anyOf': choices}},
             'block_coverage': {'type': 'array', 'items': {'type': 'string', 'enum': sorted(expected)}},
             'title': {'type': 'string', 'minLength': 1}, 'summary': {'type': 'string', 'minLength': 1}},
             'required': ['key_facts', 'block_coverage', 'title', 'summary'], 'additionalProperties': False}

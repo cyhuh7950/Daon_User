@@ -133,6 +133,55 @@ class DocxUnderstandingTests(unittest.TestCase):
                 self.assertEqual(result.parser.block_evidence, ())
                 self.assertEqual(result.semantic.key_facts, (text,), 'rejected Native response must not be repaired')
 
+    def test_docx_generation_candidates_bind_all_original_blocks_to_literal_codepoint_ranges(self):
+        text = '가😀"나\n끝'
+        document = replace(self.document, content=docx_bytes(paragraph('') + paragraph(text) + table([
+            [paragraph('Label'), paragraph('64')], [paragraph('Currency'), paragraph('EUR')]])))
+        facts = [
+            {'text': text, 'block_id': 'p:2', 'start': 0, 'end': 6},
+            {'text': '64', 'block_id': 't:3:r:1:c:2:p:1', 'start': 0, 'end': 2},
+            {'text': 'EUR', 'block_id': 't:3:r:2:c:2:p:1', 'start': 0, 'end': 3}]
+        coverage = ['p:2', 't:3:r:1:c:1:p:1', 't:3:r:1:c:2:p:1', 't:3:r:2:c:1:p:1', 't:3:r:2:c:2:p:1']
+        self.transport.value = {'title': 'Table', 'summary': '64 EUR', 'key_facts': facts, 'block_coverage': coverage}
+        result = OllamaDocxDocumentAdapter(self.transport).understand(document, self.model, self.context)
+        payload = self.transport.requests[3]['payload']
+        items = payload['format']['properties']['key_facts']
+        self.assertEqual((items['minItems'], items['maxItems']), (1, 5))
+        choices = items['items']['anyOf']
+        triples = [tuple(choice['properties'][key]['const'] for key in ('text','block_id','start','end')) for choice in choices]
+        self.assertEqual(triples, [
+            (text, 'p:2', 0, 6), ('Label', coverage[1], 0, 5), ('64', coverage[2], 0, 2),
+            ('Currency', coverage[3], 0, 8), ('EUR', coverage[4], 0, 3)])
+        for choice in choices:
+            self.assertEqual(choice['type'], 'object')
+            self.assertEqual(choice['required'], ['text','block_id','start','end'])
+            self.assertIs(choice['additionalProperties'], False)
+            self.assertEqual([choice['properties'][key]['type'] for key in choice['required']], ['string','string','integer','integer'])
+        self.assertEqual(json.loads(json.dumps(choices, ensure_ascii=False)), choices)
+        self.assertEqual(payload['messages'][1]['content'], read_docx(document.content).native_json)
+        self.assertEqual((self.transport.requests[3]['timeout_seconds'], payload['options']['num_predict']), (90,512))
+        self.assertEqual(result.status, 'ready')
+        self.assertEqual(result.semantic.key_facts, (text,'64','EUR'))
+        self.assertEqual(self.transport.events[:4], ['tags','show','tags','native'])
+
+    def test_docx_generation_candidates_refresh_with_source_and_never_repair_stale_response(self):
+        for text, version in [('OLD 😀', 'sv-old'), ('NEW', 'sv-new')]:
+            with self.subTest(version=version):
+                transport = Transport()
+                document = replace(self.document, source_version_id=version, content=docx_bytes(paragraph(text)))
+                transport.value = {'title': 'Memo', 'summary': 'OLD 😀', 'key_facts': [
+                    {'text': 'OLD 😀', 'block_id': 'p:1', 'start': 0, 'end': 5}], 'block_coverage': ['p:1']}
+                result = OllamaDocxDocumentAdapter(transport).understand(document, self.model, self.context)
+                choices = transport.requests[3]['payload']['format']['properties']['key_facts']['items']['anyOf']
+                self.assertEqual(len(choices), 1)
+                self.assertEqual(choices[0]['properties']['text']['const'], text)
+                self.assertEqual(choices[0]['properties']['end']['const'], 5 if version=='sv-old' else 3)
+                if version=='sv-old': self.assertEqual(result.status, 'ready')
+                else:
+                    self.assertEqual(result.status, 'needs_review')
+                    self.assertEqual(result.parser.block_evidence, ())
+                    self.assertEqual(result.semantic.key_facts, ('OLD 😀',))
+
     def test_docx_invalid_facts_never_become_ready(self):
         for field, value in (('text', '000'), ('text', 'USD'), ('block_id', 'p:1'), ('start', 7), ('end', 19), ('start', True)):
             with self.subTest(field=field, value=value):
