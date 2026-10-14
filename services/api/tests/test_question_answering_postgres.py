@@ -102,6 +102,99 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_docx_citation_storage_replay_and_original_view_keep_exact_block_and_scope(self):
+        from dataclasses import replace
+        from test_docx_document_understanding import original, MIME
+        from daon_user_api.docx_source import encode_docx_block
+        raw = original(); row = list(self.cloud.connection.ready_row)
+        row[3], row[6], row[7], row[8] = 'qa.docx', hashlib.sha256(raw).hexdigest(), len(raw), MIME
+        self.cloud.connection.ready_row = tuple(row); self.repository._object_storage.content = raw
+        locator = {'kind': 'docx_block', 'value': encode_docx_block('p:2', 6, 18)}
+        chunk = IndexedEvidenceChunk('chunk-docx', 'source-cp3', 'source-version-cp3', 1,
+            'REF-DELTA-17', 'span-docx', 1.0, 'docx_block', locator['value'])
+        stored = self.repository.persist_completed(self.context, run_id='run-docx', source_id='source-cp3',
+            source_version_id='source-version-cp3', question='What code?',
+            selection=TextModelSelection('OLLAMA', 'https://models.example.com', 'profile', 'deployment', 'fixture-model', 1),
+            evidence=(chunk,), result=GroundedTextResult('REF-DELTA-17', ('chunk-docx',), False, {}))
+        self.assertEqual(stored.citations[0].locator, locator)
+        self.cloud.connection.completed_rows = [('rr-docx', {'answer': 'REF-DELTA-17', 'insufficient': False}, stored.citations[0].citation_id,
+            {'source_id': 'source-cp3', 'source_version_id': 'source-version-cp3', 'evidence_span_id': 'span-docx', 'page': 1, 'locator': locator}, 'server_internal', None)]
+        self.assertEqual(self.repository.load_completed(self.context, 'run-docx').citations[0].locator, locator)
+        context = replace(self.context, notebook_id='notebook-cp3')
+        evidence = {'kind': 'docx_block_fact', 'source_id': 'source-cp3', 'source_version_id': 'source-version-cp3', 'locator': locator, 'text': 'REF-DELTA-17'}
+        citation = ('source-cp3', 'source-version-cp3', '1', '1', evidence, 'uploaded', 'qa.docx', 'ready', 'span-docx', locator)
+        self.cloud.connection.citation_row = citation
+        content, actual = self.repository.read_citation_content(context, 'citation-docx')
+        view = json.loads(content.content)
+        self.assertEqual(content.media_type, 'application/json'); self.assertEqual(actual, locator)
+        self.assertEqual(view['source_sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(view['source_version_id'], 'source-version-cp3')
+        self.assertEqual(view['selected_block_id'], 'p:2')
+        selected = next(b for b in view['blocks'] if b['block_id'] == 'p:2')
+        self.assertEqual(selected['text'][view['selected_start']:view['selected_end']], 'REF-DELTA-17')
+        for invalid in ('digest', 'size', 'mime', 'manifest', 'binding', 'locator', 'text', 'source-version', 'other-notebook'):
+            with self.subTest(invalid=invalid):
+                current = row.copy(); ev = dict(evidence); stored_locator = locator
+                self.cloud.connection.source_binding_active = True
+                if invalid == 'digest': current[6] = '0' * 64
+                if invalid == 'size': current[7] += 1
+                if invalid == 'mime': current[8] = 'text/plain'
+                if invalid == 'manifest': current[9] = 'pending'
+                if invalid == 'binding': self.cloud.connection.source_binding_active = False
+                if invalid == 'locator': stored_locator = {'kind': 'docx_block', 'value': encode_docx_block('p:3', 6, 16)}
+                if invalid == 'text': ev['text'] = 'forged'
+                if invalid == 'source-version': ev['source_version_id'] = 'wrong-version'
+                if invalid == 'other-notebook': self.cloud.connection.citation_row = None
+                else: self.cloud.connection.citation_row = (*citation[:4], ev, *citation[5:9], stored_locator)
+                self.cloud.connection.ready_row = tuple(current)
+                with self.assertRaises(QuestionRepositoryError): self.repository.read_citation_content(context, 'citation-docx')
+
+    def test_docx_ready_source_uses_real_seven_column_select_and_existing_scope(self):
+        from dataclasses import replace
+        connection = self.cloud.connection
+        row = list(connection.ready_row)
+        row[3] = 'qa.docx'; row[8] = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        context = replace(self.context, notebook_id='notebook-cp3')
+        connection.ready_row = tuple(row)
+        ready = self.repository.load_ready_source(context, 'source-cp3', 'source-version-cp3')
+        self.assertEqual(ready.filename, 'qa.docx')
+        sql = connection.queries[-1]
+        self.assertIn('o.content_type,o.status', sql.split(' FROM sources', 1)[0])
+        self.assertIn("nb.binding_kind='source'", sql)
+        self.assertIn('newer.version>sv.version', sql)
+        self.assertIn('dr.source_active=false', sql)
+        for field, invalid in ((8, 'application/pdf'), (9, 'pending'), (2, 'processing')):
+            with self.subTest(field=field):
+                bad = row.copy(); bad[field] = invalid; connection.ready_row = tuple(bad)
+                with self.assertRaisesRegex(QuestionRepositoryError, 'QUESTION_SOURCE_UNAVAILABLE'):
+                    self.repository.load_ready_source(context, 'source-cp3', 'source-version-cp3')
+        connection.ready_row = tuple(row); connection.source_binding_active = False
+        with self.assertRaisesRegex(QuestionRepositoryError, 'QUESTION_SOURCE_UNAVAILABLE'):
+            self.repository.load_ready_source(context, 'source-cp3', 'source-version-cp3')
+
+    def test_docx_original_json_limit_includes_added_source_version_field(self):
+        from dataclasses import replace
+        from test_docx_source import docx_bytes, paragraph
+        from test_docx_document_understanding import MIME
+        from daon_user_api.docx_source import read_docx, read_docx_block_view, encode_docx_block
+        from daon_user_api.data_canon import canonical_json_bytes
+
+        def raw_with_style(name):
+            return docx_bytes(paragraph('REF', properties=f'<w:pPr><w:pStyle w:val="{name}"/></w:pPr>'),
+                styles=f'<w:style w:type="paragraph" w:styleId="{name}"/>')
+
+        locator = {'kind': 'docx_block', 'value': encode_docx_block('p:1', 0, 3)}
+        initial = read_docx_block_view(read_docx(raw_with_style('s')), locator['value'])
+        raw = raw_with_style('s' * (32768 - len(canonical_json_bytes(initial)) + 1))
+        self.assertEqual(len(canonical_json_bytes(read_docx_block_view(read_docx(raw), locator['value']))), 32768)
+        row = list(self.cloud.connection.ready_row)
+        row[3], row[6], row[7], row[8] = 'qa.docx', hashlib.sha256(raw).hexdigest(), len(raw), MIME
+        self.cloud.connection.ready_row = tuple(row); self.repository._object_storage.content = raw
+        evidence = {'kind': 'docx_block_fact', 'source_id': 'source-cp3', 'source_version_id': 'source-version-cp3', 'text': 'REF', 'locator': locator}
+        self.cloud.connection.citation_row = ('source-cp3', 'source-version-cp3', '1', '1', evidence, 'uploaded', 'qa.docx', 'ready', 'span-docx', locator)
+        with self.assertRaisesRegex(QuestionRepositoryError, '^CITATION_CONTENT_UNAVAILABLE$'):
+            self.repository.read_citation_content(replace(self.context, notebook_id='notebook-cp3'), 'citation-docx')
+
     def test_xlsx_citation_content_is_bound_original_cell_json(self):
         from dataclasses import replace
         from test_xlsx_source import parts, zipped
@@ -166,10 +259,16 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
                 row = cursor.fetchone(); self.rows.append(row)
                 return Cursor(row)
         context = replace(self.context, notebook_id='notebook-cp3')
-        for scenario in ('ready', 'wrong-mime', 'incomplete', 'missing-manifest', 'other-object-scope', 'unbound', 'old-version', 'deleted', 'other-notebook'):
+        scenarios = ('ready', 'wrong-mime', 'incomplete', 'missing-manifest', 'other-object-scope', 'unbound', 'old-version', 'deleted', 'other-notebook')
+        for scenario in (*scenarios, *('docx-' + s for s in scenarios)):
             with self.subTest(scenario=scenario):
                 connection = SqlConnection(); self.cloud.connection = connection
                 try:
+                    docx = scenario.startswith('docx-')
+                    if docx:
+                        scenario = scenario.removeprefix('docx-')
+                        connection.db.execute('UPDATE source_versions SET canonical_json=?', (json.dumps({'filename': 'qa.docx'}),))
+                        connection.db.execute('UPDATE object_records SET content_type=?', ('application/vnd.openxmlformats-officedocument.wordprocessingml.document',))
                     if scenario == 'wrong-mime': connection.db.execute("UPDATE object_records SET content_type='text/plain'")
                     if scenario == 'incomplete': connection.db.execute("UPDATE object_records SET status='pending'")
                     if scenario == 'missing-manifest': connection.db.execute('DELETE FROM object_records')
@@ -180,8 +279,10 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
                     selected_context = replace(context, notebook_id='notebook-other') if scenario == 'other-notebook' else context
                     if scenario == 'ready':
                         source = self.repository.load_ready_source(selected_context, 'source-cp3', 'source-version-cp3')
-                        self.assertEqual((source.source_id, source.source_version_id, source.filename), ('source-cp3', 'source-version-cp3', 'qa.xlsx'))
-                        self.assertEqual(connection.rows[-1], ('source-cp3', 'source-version-cp3', 'ready', 'qa.xlsx', 'uploaded', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'completed'))
+                        filename = 'qa.docx' if docx else 'qa.xlsx'
+                        mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' if docx else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                        self.assertEqual((source.source_id, source.source_version_id, source.filename), ('source-cp3', 'source-version-cp3', filename))
+                        self.assertEqual(connection.rows[-1], ('source-cp3', 'source-version-cp3', 'ready', filename, 'uploaded', mime, 'completed'))
                         self.assertEqual(connection.columns[-2:], ('content_type', 'status'))
                     else:
                         with self.assertRaisesRegex(QuestionRepositoryError, '^QUESTION_SOURCE_UNAVAILABLE$'):

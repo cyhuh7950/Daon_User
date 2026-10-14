@@ -160,7 +160,7 @@ def test_retry_rejects_completed_or_still_leased_previous_run_and_unsupported_fo
             retry(store)
         assert store.writes == []
     store = Store()
-    store.source = ("source-1", "failed", 4, "version-1", "office.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    store.source = ("source-1", "failed", 4, "version-1", "office.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
     with pytest.raises(DocumentUnderstandingError, match="SOURCE_OBJECT_NOT_READY"):
         retry(store)
     assert store.writes == []
@@ -190,6 +190,36 @@ def test_xlsx_manual_retry_preserves_six_column_source_failed_run_and_exact_repl
     store.replay = ("different-request", result)
     with pytest.raises(DocumentUnderstandingError, match="IDEMPOTENCY_KEY_REUSED"):
         retry(store)
+    assert store.writes == []
+
+
+def test_docx_manual_retry_preserves_six_columns_failed_run_lineage_and_replay():
+    store = Store()
+    store.source = ('source-1', 'failed', 4, 'version-1', 'qa.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    result = retry(store)
+    assert result['source_version_id'] == 'version-1'
+    assert result['processing_run_id'] != 'run-failed-1'
+    assert result['retry_of_processing_run_id'] == 'run-failed-1'
+    assert store.old_run == ('run-failed-1', 'failed', 'dead_letter')
+    _, run_params = next(item for item in store.writes if item[0].startswith('INSERT INTO processing_runs'))
+    payload = next(value.obj for value in run_params if hasattr(value, 'obj'))
+    assert payload['trigger_type'] == 'manual_request'
+    assert payload['retry_of_processing_run_id'] == 'run-failed-1'
+    assert len([sql for sql, _ in store.writes if sql.startswith('INSERT INTO document_processing_jobs')]) == 1
+    assert not any(sql.startswith('UPDATE') or 'INSERT INTO source_versions' in sql for sql, _ in store.writes)
+    _, receipt = next(item for item in store.writes if item[0].startswith('INSERT INTO idempotency_records'))
+    store.replay = (receipt[5], result); store.writes.clear()
+    assert retry(store)['replayed'] is True
+    assert store.writes == []
+    store.replay = ('wrong-request', result)
+    with pytest.raises(DocumentUnderstandingError, match='IDEMPOTENCY_KEY_REUSED'): retry(store)
+    assert store.writes == []
+
+
+@pytest.mark.parametrize('filename,mime', [('qa.docx', 'text/plain'), ('qa.xlsx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')])
+def test_docx_retry_cross_format_and_mime_have_zero_writes(filename, mime):
+    store = Store(); store.source = ('source-1', 'failed', 4, 'version-1', filename, mime)
+    with pytest.raises(DocumentUnderstandingError, match='SOURCE_OBJECT_NOT_READY'): retry(store)
     assert store.writes == []
 
 

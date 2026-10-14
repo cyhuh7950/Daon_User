@@ -144,6 +144,57 @@ class BoundConnection(FakeConnection):
 
 
 class PostgresDocumentProcessingRepositoryTests(unittest.TestCase):
+    def test_docx_completion_binds_canonical_extraction_without_fake_pages(self):
+        from test_docx_document_understanding import ready_docx_result
+        result = ready_docx_result()
+        self.cloud.connection.states['ProcessingRun'] = 'vision_llm_understanding'
+        self.cloud.connection.versions['ProcessingRun'] = 2
+        self.cloud.connection.states['Source'] = 'processing'
+        self.repository.complete(self.context, 'run-cp3', result)
+        statements = self.cloud.connection.statements
+        payload = next(params[4].obj for sql, params in statements if sql.startswith('INSERT INTO understanding_results'))
+        extraction = [params[4].obj for sql, params in statements if sql.startswith('INSERT INTO extraction_evidence')]
+        self.assertEqual(payload['parser_validation']['block_evidence'], list(result.parser.block_evidence))
+        self.assertEqual(payload['parser_validation']['pages'], [])
+        self.assertEqual(payload['parser_validation']['page_texts'], [])
+        self.assertEqual(extraction, [{'source_version_id': result.source_version_id,
+            'understanding_result_id': payload.get('understanding_result_id', self.repository._opaque_id('ur', 'run-cp3', result.source_version_id)),
+            'parser_role': 'validation_only', 'block_evidence': list(result.parser.block_evidence)}])
+        self.assertEqual(self.cloud.connection.states['Source'], 'processing')
+
+    def test_docx_completion_wrong_bound_version_and_invalid_evidence_have_zero_writes(self):
+        from dataclasses import replace
+        from test_docx_document_understanding import ready_docx_result
+        for invalid in ('version', 'locator', 'page'):
+            with self.subTest(invalid=invalid):
+                self.setUp(); result = ready_docx_result()
+                self.cloud.connection.states['ProcessingRun'] = 'vision_llm_understanding'
+                self.cloud.connection.versions['ProcessingRun'] = 2
+                if invalid == 'version': result = replace(result, source_version_id='other-version')
+                elif invalid == 'locator': result.parser.block_evidence[0]['locator_value'] = '{"block":"p:1","start":6,"end":18}'
+                else: result = replace(result, parser=replace(result.parser, pages=(1,)))
+                with self.assertRaises(DocumentUnderstandingError): self.repository.complete(self.context, 'run-cp3', result)
+                self.assertEqual(self.cloud.connection.inserts, [])
+                self.assertEqual(self.cloud.connection.states['ProcessingRun'], 'vision_llm_understanding')
+
+    def test_docx_bound_original_accepts_exact_mime_and_preserves_hash_checks(self):
+        from test_docx_source import docx_bytes, paragraph
+        raw = docx_bytes(paragraph('REF-DELTA-17'))
+        connection = self._bound_fixture()
+        connection.db.execute('UPDATE source_versions SET canonical_json=?', (json.dumps({'filename': 'qa.docx'}),))
+        connection.db.execute('UPDATE object_records SET digest_sha256=?,byte_size=?,content_type=?',
+            (hashlib.sha256(raw).hexdigest(), len(raw), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'))
+        self.repository._object_storage.content = raw
+        document = self.repository.load_source_document(self.context, 'source-cp3', processing_run_id='run-cp3')
+        self.assertEqual(document.content, raw)
+        self.assertEqual(document.source_version_id, 'source-version-cp3')
+        connection.db.execute('UPDATE object_records SET digest_sha256=?', ('sha256:' + hashlib.sha256(raw).hexdigest(),))
+        self.assertEqual(self.repository.load_source_document(self.context, 'source-cp3', processing_run_id='run-cp3').content, raw)
+        for source, run in (('other-source', 'run-cp3'), ('source-cp3', 'other-run')):
+            with self.subTest(source=source, run=run), self.assertRaisesRegex(DocumentUnderstandingError, 'SOURCE_NOT_FOUND'):
+                self.repository.load_source_document(self.context, source, processing_run_id=run)
+        self.assertFalse(any('transition_canon_state' in sql for sql, _ in connection.statements))
+
     def test_xlsx_original_and_completion_preserve_exact_cells_without_fake_pages(self):
         from test_xlsx_source import parts, zipped
         connection = self.cloud.connection

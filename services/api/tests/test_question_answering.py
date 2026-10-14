@@ -76,6 +76,28 @@ class RecordingTransport:
 
 
 class QuestionAnsweringContractTests(unittest.TestCase):
+    def test_docx_question_payload_has_original_block_offsets_not_fake_page(self):
+        request = GroundedQuestionRequest('Read document values', (
+            IndexedEvidenceChunk('doc-1', 'source-doc', 'version-doc', 1, 'REF-17', 'span-doc', 0.0,
+                'docx_block', '{"block":"p:2","start":6,"end":12}'),
+        ), 'trace-doc')
+        selection = TextModelSelection('OLLAMA', 'http://models.example.com', 'local', 'local:fixture', 'fixture', 1, 'server_internal')
+        payload = OllamaTextGenerationAdapter.provider_payload(request, selection)
+        supplied = json.loads(payload['messages'][1]['content'])['evidence']
+        self.assertEqual(supplied, [{'chunk_id': 'doc-1', 'text': 'REF-17', 'locator': {'block': 'p:2', 'start': 6, 'end': 12}}])
+        self.assertEqual(payload['format']['properties']['cited_chunk_ids'], {'anyOf': [{'const': ['doc-1']}, {'const': []}]})
+        for insufficient, answer, cited in ((False, 'REF-17', ['doc-1']), (True, 'Insufficient evidence.', [])):
+            with self.subTest(insufficient=insufficient):
+                class Transport:
+                    def post_json_no_auth(self, **kwargs):
+                        return {'message': {'content': json.dumps({'answer': answer, 'cited_chunk_ids': cited, 'insufficient': insufficient})}}
+                result = OllamaTextGenerationAdapter(transport=Transport()).generate(request, selection)
+                self.assertEqual(result.insufficient, insufficient)
+        bad = GroundedQuestionRequest('Read document values', (IndexedEvidenceChunk('doc-1', 'source-doc', 'version-doc', 1,
+            'REF-17', 'span-doc', 0.0, 'docx_block', '{"block":"p:2","start":true,"end":12}'),), 'trace-doc')
+        with self.assertRaisesRegex(ValueError, '^TEXT_GENERATION_GROUNDING_INVALID$'):
+            OllamaTextGenerationAdapter.provider_payload(bad, selection)
+
     def test_qa_structured_ollama_checks_installed_metadata_before_payload(self) -> None:
         request = self.cell_request()
         selection = TextModelSelection("OLLAMA", "http://models.example.com", "local", "local:fixture", "fixture", 1, "server_internal")

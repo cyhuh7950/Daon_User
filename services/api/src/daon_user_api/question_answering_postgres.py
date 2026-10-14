@@ -418,9 +418,12 @@ class PostgresQuestionAnsweringRepository:
         xlsx_ready = (filename.lower().endswith('.xlsx') and len(row) == 7
             and str(row[5]) == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             and str(row[6]) == 'completed')
+        docx_ready = (filename.lower().endswith('.docx') and len(row) == 7
+            and str(row[5]) == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            and str(row[6]) == 'completed')
         if str(row[2]) != "ready" or (
             str(row[4]) != "studio_output"
-            and not (filename.lower().endswith((".pdf", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg")) or xlsx_ready)
+            and not (filename.lower().endswith((".pdf", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg")) or xlsx_ready or docx_ready)
         ):
             raise QuestionRepositoryError("QUESTION_SOURCE_UNAVAILABLE", status=404)
         return ReadyQuestionSource(str(row[0]), str(row[1]), filename)
@@ -557,6 +560,38 @@ class PostgresQuestionAnsweringRepository:
         if page < 1 or page != evidence_page or source_state != "ready":
             raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=404)
         stored_locator = row[9] if len(row) > 9 else None
+        if evidence.get('kind') == 'docx_block_fact' or isinstance(stored_locator, dict) and stored_locator.get('kind') == 'docx_block':
+            from .source_ingest import SourceRejected
+            from .docx_source import read_docx, read_docx_block_view
+            locator = evidence.get('locator')
+            if (context.notebook_id is None or evidence.get('kind') != 'docx_block_fact'
+                or evidence.get('source_id') != source_id or evidence.get('source_version_id') != source_version_id
+                or not isinstance(locator, dict) or set(locator) != {'kind', 'value'}
+                or locator.get('kind') != 'docx_block' or locator != stored_locator or page != 1):
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=404)
+            original = self._row(context, source_id, source_version_id, 'citation.read', require_notebook_binding=True)
+            if (str(original[3]) != filename or not filename.lower().endswith('.docx')
+                or str(original[8]) != 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                or str(original[9]) != 'completed'):
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=404)
+            try:
+                ObjectKeyPolicy().validate_final(self._cloud_context(context, 'object.read'), 'source', str(original[5]))
+                content = self._object_storage.get(str(original[5]))
+                if len(content) != int(original[7]) or hashlib.sha256(content).hexdigest() != str(original[6]).removeprefix('sha256:'):
+                    raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)
+                view = read_docx_block_view(read_docx(content), locator['value'])
+                selected = next(b for b in view['blocks'] if b['block_id'] == view['selected_block_id'])
+                if selected['text'][view['selected_start']:view['selected_end']] != evidence.get('text'):
+                    raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)
+                view['source_version_id'] = source_version_id
+            except SourceRejected:
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409) from None
+            except (ObjectQueueError, ObjectStorageError):
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=503) from None
+            body = canonical_json_bytes(view)
+            if len(body) > 32 * 1024:
+                raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409)
+            return CitationContent(source_id, source_version_id, filename, body, 'application/json'), locator
         if evidence.get("kind") == "xlsx_cell_fact" or isinstance(stored_locator, dict) and stored_locator.get("kind") == "sheet_cell":
             from .source_ingest import SourceRejected
             from .xlsx_source import read_xlsx, read_sheet_cell_view
@@ -743,11 +778,11 @@ class PostgresQuestionAnsweringRepository:
                     evidence_by_id[chunk_id].source_version_id,
                 )].context_item_id),
                 {
-                    "kind": evidence_by_id[chunk_id].locator_kind if evidence_by_id[chunk_id].locator_kind in {'image_region', 'sheet_cell'} else "section" if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
+                    "kind": evidence_by_id[chunk_id].locator_kind if evidence_by_id[chunk_id].locator_kind in {'image_region', 'sheet_cell', 'docx_block'} else "section" if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
                         evidence_by_id[chunk_id].source_id,
                         evidence_by_id[chunk_id].source_version_id,
                     )].origin) == "daon_knowledge" else "page",
-                    "value": evidence_by_id[chunk_id].locator_value if evidence_by_id[chunk_id].locator_kind in {'image_region', 'sheet_cell'} else evidence_by_id[chunk_id].evidence_span_id
+                    "value": evidence_by_id[chunk_id].locator_value if evidence_by_id[chunk_id].locator_kind in {'image_region', 'sheet_cell', 'docx_block'} else evidence_by_id[chunk_id].evidence_span_id
                     if evidence_by_id[chunk_id].locator_kind == "section" or str(source_context[(
                         evidence_by_id[chunk_id].source_id,
                         evidence_by_id[chunk_id].source_version_id,

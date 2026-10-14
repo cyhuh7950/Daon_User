@@ -193,6 +193,9 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             f"cell-{i}", "source-cp3", "source-version-cp3", 1, text, f"span-{i}", 0.0,
             "sheet_cell", json.dumps({"sheet": "Plan", "range": address}, separators=(",", ":")),
         ) for i, (text, address) in enumerate((("REF-17", "B2"), ("57000", "B3"))))
+        docx = tuple(replace(c, locator_kind='docx_block', locator_value=json.dumps(
+            {'block': f'p:{i + 1}', 'start': 0, 'end': len(c.text)}, separators=(',', ':')))
+            for i, c in enumerate(cells))
         selection = ResolvedModel(
             connection_id="local", provider_code="OLLAMA", model_id="fixture",
             capability="text_generation", base_url="http://models.example.com",
@@ -209,6 +212,9 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
         for workspace, target, evidence, general, insufficient, metadata_calls in (
             ("workspace-qa", "workspace-qa", cells, False, False, 6),
             ("workspace-qa", "workspace-qa", cells, False, True, 6),
+            ("workspace-qa", "workspace-qa", docx, False, False, 6),
+            ("workspace-qa", "workspace-qa", docx, False, True, 6),
+            ("workspace-other", "workspace-qa", docx, False, False, 0),
             ("workspace-other", "workspace-qa", cells, False, False, 0),
             ("workspace-qa-suffix", "workspace-qa", cells, False, False, 0),
             ("workspace-qa", "", cells, False, False, 0),

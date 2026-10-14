@@ -163,6 +163,7 @@ class ParserValidation:
     role: str = "validation_only"
     regions: tuple[dict[str, str], ...] = ()
     cell_evidence: tuple[dict[str, str], ...] = ()
+    block_evidence: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
