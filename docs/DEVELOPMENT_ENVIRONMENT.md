@@ -1,5 +1,11 @@
 # Daon_User 개발·정식 WSL 검증 환경
 
+## 현재 실행 확인 — 2026-10-14 승인 DOCX 적용·실여정 확인 중
+
+- 실제 제품/WSL Git `6465d5c25fcf4def9a6b0d23860199255a9712dd`. API/document-worker/studio-worker image `sha256:1c42864015c95415e2c4d3199a41de98db2b166bdfeeb65f6b7b15a42fd333b5`, Web은 제품소스 불변인 `23c3e58c4a25ecf45d5d4f859b709ebf9405a4a9` image `sha256:389508939cde4dcb69cc43eac2b936c39fcf641d4d533552545136197f8636e3` 유지. 기존 Compose·환경·readonly Secret·PG/MinIO/runtime 영속을 재사용했고 API ready200 확인, DB의 마지막 직접 revision은0060이다. 아래 4f7bd5b0/c9dbf71e는 직전 실행 이력이다.
+- 승인 설계 §41/계획 §37의 제한형 DOCX 문단·병합 없는 단순 표 이해/검증·docx_block 원문/질문/Studio 연결 코드가 적용됐다. 실제 QA 화면 첫 업로드는 GATEWAY_TIMEOUT/API stream ClientDisconnect·신규 저장0, 재시험은 Source `src-8a7ea80c15435a3bd89d1a7dedbc522d`/SV `sv-8a7ea80c15435a3bd89d1a7dedbc522d`, Run `pr-5cfc1de237469fbb68e3de02abcec3cc`로 등록됐다. 실제 qwen3.5:latest의 서로 다른 표 셀 결합 응답이 엄격한 원문 검증에서 거부돼 completed/needs_review·extraction1/index0/docx_span0, 초기 결과는 보존한다. 모델 요청의 원문 문단 전체 복사·표셀 분리 지시만 국소 보완해 직접16PASS/36subtests·diffcheck0 및 새API image 적용을 확인했다. 기존 재처리 API/화면은 failed/waiting_model만 허용하여 completed/needs_review DOCX의 새 Run 재처리 확장에 사용자 결정을 요청했다. 상태 강제수정·과거 Run 재작성·중복자료로 우회0. 아직 ready·질문·원문·Studio 실여정 성공으로 판정하지 않는다. 첫 timeout의 정확 원인은 미확정이며 BFF 전달 길이/hash 정상과10초 취소는 격리 real HTTP에서 재현했다.
+- 합성 QA DOCX37,243bytes/SHA256 `0293283266538d3f500c060ea689bdee5d9f43321e7420c7c3318463c0e442fe` 및 기존 QA 자료/결과/이전 Run은 검토용 보존한다. metadata/fixture를 실제 모델 증거로 바꾸지 않는다. Word 앱 열기·모든 사용자 여정·전체 Gate·새 서버 일관 복구는 NOT RUN. 설정값/비밀 노출·DB migration·권한 변경·Oracle/ysna 이전·PR·병합0. 이전 준비의 변수 이름/영속 위치/백업·기동 방법은 아래 기존 인계를 재사용하되 현재 SHA·이미지는 이 절을 따른다.
+
 ## 현재 실행 확인 — 2026-10-14 QA 한정 XLSX 질문 적용
 
 - 실제 제품/WSL Git `4f7bd5b0738bbc49874db2935d5860088699ce55`, API/document/studio image `sha256:7e61875b764a30c1897b32fab96cc5cbe35049c0b7e0ad0dfe960be59f8be079`, Web은 c9dbf71e image `sha256:7c08abcae722bec0fc3237123555974a2de4e12f73a6119c3f2a70f7ac9a6a79` 유지. DB0060·runtime production·기존 영속/Secret/권한 불변, 준비 API200 확인. 아래 11d086fb는 직전 이력이다.
