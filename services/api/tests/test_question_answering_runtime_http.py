@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +18,29 @@ from test_identity_support import POLICY_VERSION, TRACE_ID, create_service, iden
 
 
 PDF = b"%PDF-1.4\npage one\fpage two\n%%EOF\n"
+
+
+class QaStructuredOllamaSettingsTests(unittest.TestCase):
+    def test_qa_target_environment_preserves_production_auth_and_empty_disables(self) -> None:
+        base = {
+            "DAON_RUNTIME_PROFILE": "production", "DAON_CLOUD_DATABASE_DSN": "postgresql://fixture",
+            "DAON_PUBLIC_GATEWAY_URL": "https://app.example.com", "DAON_TRUSTED_PROXY_IPS": "127.0.0.1",
+            "DAON_STEP_UP_TOKEN_KEY_FILE": "fixture-key-reference",
+        }
+        for target in ("", "workspace-qa"):
+            with self.subTest(target=target), patch.dict(os.environ, {
+                **base, "DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID": target,
+            }, clear=True):
+                settings = RuntimeSettings.from_env()
+                self.assertEqual(settings.qa_structured_ollama_workspace_id, target)
+                self.assertEqual(settings.profile, "production")
+                self.assertFalse(settings.dev_auth_bypass)
+        for invalid in (" workspace-qa", "workspace-qa ", "qa,other", "*", "x" * 129):
+            with self.subTest(invalid=invalid), patch.dict(os.environ, {
+                **base, "DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID": invalid,
+            }, clear=True):
+                with self.assertRaisesRegex(ValueError, "^RUNTIME_QA_STRUCTURED_OLLAMA_TARGET_INVALID$"):
+                    RuntimeSettings.from_env()
 
 
 class FakeQuestionService:
@@ -99,6 +124,22 @@ class FakeCitationContent:
 
 
 class QuestionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_passes_exact_qa_target_to_existing_question_service(self) -> None:
+        from daon_user_api.question_answering_service import QuestionAnsweringService
+
+        settings = replace(self.dependencies.settings,
+            qa_structured_ollama_workspace_id="workspace-qa",
+            provider_credential_key_file=Path("fixture-provider-key"))
+        dependencies = replace(self.dependencies, settings=settings,
+            cloud_store=object(), object_storage=object(), question_answering_service=None)
+        with patch.object(Path, "read_bytes", return_value=b"0" * 32), patch(
+            "daon_user_api.runtime.QuestionAnsweringService", wraps=QuestionAnsweringService,
+        ) as construct:
+            create_app(dependencies)
+        self.assertEqual(construct.call_count, 1)
+        self.assertEqual(construct.call_args.kwargs["qa_structured_ollama_workspace_id"], "workspace-qa")
+        self.assertFalse(settings.dev_auth_bypass)
+
     async def test_arbitrary_question_without_context_reaches_general_provider_answer(self) -> None:
         with self._authenticated():
             response = await self.client.post(

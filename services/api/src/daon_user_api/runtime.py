@@ -294,6 +294,7 @@ class RuntimeSettings:
     policy_version: str = "runtime-policy-v1"
     public_gateway_url: str | None = None
     android_auth_clients: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    qa_structured_ollama_workspace_id: str = ""
     allow_private_http_gateway: bool = False
     trusted_proxy_ips: tuple[str, ...] = ()
     max_body_bytes: int = 65_536
@@ -306,6 +307,13 @@ class RuntimeSettings:
     system_admin_user_ids: frozenset[str] = frozenset({"admin"})
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.qa_structured_ollama_workspace_id, str)
+            or (self.qa_structured_ollama_workspace_id and not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", self.qa_structured_ollama_workspace_id,
+            ))
+        ):
+            raise ValueError("RUNTIME_QA_STRUCTURED_OLLAMA_TARGET_INVALID")
         if self.profile not in {"test", "development", "production"}:
             raise ValueError("RUNTIME_PROFILE_INVALID")
         if not isinstance(self.port, int) or isinstance(self.port, bool) or not 1 <= self.port <= 65_535:
@@ -444,6 +452,7 @@ class RuntimeSettings:
             policy_version=os.environ.get("DAON_POLICY_VERSION", "runtime-policy-v1"),
             public_gateway_url=os.environ.get("DAON_PUBLIC_GATEWAY_URL"),
             android_auth_clients=android_clients,
+            qa_structured_ollama_workspace_id=os.environ.get("DAON_QA_STRUCTURED_OLLAMA_WORKSPACE_ID", ""),
             allow_private_http_gateway=(
                 os.environ.get("DAON_ALLOW_PRIVATE_HTTP_GATEWAY", "false").lower() == "true"
             ),
@@ -1843,6 +1852,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 ),
             ),
             adapter_registry=QuestionAdapterRegistry(),
+            qa_structured_ollama_workspace_id=dependencies.settings.qa_structured_ollama_workspace_id,
         )
     studio_report_repository = dependencies.studio_report_repository
     studio_report_service = dependencies.studio_report_service

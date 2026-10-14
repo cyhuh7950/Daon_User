@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass
@@ -417,6 +418,68 @@ class OllamaTextGenerationAdapter:
         ):
             raise ValueError("OLLAMA_ENDPOINT_INVALID")
         return selection.base_url.rstrip("/")
+
+    def prepare_qa_structured_payload(
+        self, request: GroundedQuestionRequest, selection: TextModelSelection,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """QA-only installed-model check; caller owns the exact Workspace gate."""
+        if not (
+            selection.provider_code == "OLLAMA"
+            and selection.provider_kind in {"local", "server_internal", "local_runtime"}
+            and 1 <= len(request.evidence) <= 5
+            and all(item.locator_kind == "sheet_cell" for item in request.evidence)
+            and len({(item.source_id, item.source_version_id) for item in request.evidence}) == 1
+        ):
+            return payload
+        from .document_understanding_adapter import DocumentUnderstandingError
+        from .provider_catalog import _contains_sensitive_key, _ollama_catalog_projection
+
+        def remote(value: object) -> bool:
+            if isinstance(value, dict):
+                return any(value.get(key) for key in ("remote_host", "remote_model", "remote", "cloud")) or any(remote(v) for v in value.values())
+            return isinstance(value, list) and any(remote(v) for v in value)
+
+        deadline = time.monotonic() + 5.0
+
+        def remaining() -> float:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise ValueError
+            return min(5.0, budget)
+
+        try:
+            base = self._base_url(selection)
+
+            def installed():
+                tags = self._transport.get_json_no_auth(url=base + "/api/tags", timeout_seconds=remaining())
+                rows = tags.get("models") if isinstance(tags, dict) else None
+                matches = [row for row in rows if isinstance(row, dict) and row.get("name", row.get("model")) == selection.model_id] if isinstance(rows, list) else []
+                if len(matches) != 1 or remote(matches[0]) or _contains_sensitive_key(matches[0]):
+                    raise ValueError
+                digest = matches[0].get("digest")
+                if not isinstance(digest, str) or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", digest):
+                    raise ValueError
+                return matches[0], digest.removeprefix("sha256:")
+
+            row, digest = installed()
+            info = self._transport.post_json_no_auth(
+                url=base + "/api/show", payload={"model": selection.model_id}, timeout_seconds=remaining(),
+            )
+            capabilities = info.get("capabilities") if isinstance(info, dict) else None
+            if (
+                not isinstance(capabilities, list) or not all(isinstance(c, str) for c in capabilities)
+                or "completion" not in capabilities or not isinstance(info.get("model_info"), dict)
+                or not info["model_info"] or remote(info)
+                or _contains_sensitive_key(_ollama_catalog_projection({"models": [{**row, "native_metadata": info}]}))
+            ):
+                raise ValueError
+            if installed()[1] != digest:
+                raise ValueError
+            remaining()
+        except (ValueError, TypeError, AttributeError, OSError, DocumentUnderstandingError):
+            raise ValueError("TEXT_GENERATION_RESPONSE_INVALID") from None
+        return {**payload, "think": False} if "thinking" in capabilities else payload
 
     @staticmethod
     def provider_payload(request: GroundedQuestionRequest, selection: TextModelSelection) -> dict[str, object]:

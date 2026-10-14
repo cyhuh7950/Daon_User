@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import io
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 from daon_user_api.document_index_postgres import IndexedEvidenceChunk
@@ -75,6 +76,132 @@ class RecordingTransport:
 
 
 class QuestionAnsweringContractTests(unittest.TestCase):
+    def test_qa_structured_ollama_checks_installed_metadata_before_payload(self) -> None:
+        request = self.cell_request()
+        selection = TextModelSelection("OLLAMA", "http://models.example.com", "local", "local:fixture", "fixture", 1, "server_internal")
+        for capabilities in (["completion", "thinking"], ["completion"]):
+            with self.subTest(capabilities=capabilities):
+                calls = []
+
+                class Transport:
+                    def get_json_no_auth(self, **kwargs):
+                        calls.append(kwargs)
+                        return {"models": [{"name": "fixture", "digest": "a" * 64}]}
+
+                    def post_json_no_auth(self, **kwargs):
+                        calls.append(kwargs)
+                        return {"capabilities": capabilities, "model_info": {
+                            "general.architecture": "fixture",
+                            "tokenizer.ggml.add_eos_token": True,
+                            "tokenizer.ggml.add_bos_token": False,
+                            "tokenizer.ggml.add_padding_token": True,
+                            "tokenizer.ggml.add_unknown_token": False,
+                        }}
+
+                adapter = OllamaTextGenerationAdapter(transport=Transport())
+                original = adapter.provider_payload(request, selection)
+                snapshot = deepcopy(original)
+                prepared = adapter.prepare_qa_structured_payload(request, selection, original)
+                expected = deepcopy(snapshot)
+                if "thinking" in capabilities:
+                    expected["think"] = False
+                self.assertEqual(prepared, expected)
+                self.assertEqual(original, snapshot)
+                self.assertEqual([call["url"] for call in calls], [
+                    "http://models.example.com/api/tags", "http://models.example.com/api/show",
+                    "http://models.example.com/api/tags",
+                ])
+                self.assertEqual(calls[1]["payload"], {"model": "fixture"})
+                self.assertTrue(all(0 < call["timeout_seconds"] <= 5 for call in calls))
+
+    def test_qa_structured_ollama_invalid_metadata_prevents_chat(self) -> None:
+        request = self.cell_request()
+        selection = TextModelSelection("OLLAMA", "http://models.example.com", "local", "local:fixture", "fixture", 1, "server_internal")
+        valid_tags = {"models": [{"name": "fixture", "digest": "a" * 64}]}
+        valid_show = {"capabilities": ["completion", "thinking"], "model_info": {"general.architecture": "fixture"}}
+        cases = [
+            ({"models": []}, valid_show, valid_tags),
+            ({"models": [{"name": "fixture", "digest": "bad"}]}, valid_show, valid_tags),
+            ({"models": [{"name": "fixture", "digest": "a" * 64, "remote_host": "cloud.example"}]}, valid_show, valid_tags),
+            (valid_tags, {"capabilities": None, "model_info": {}}, valid_tags),
+            (valid_tags, {"capabilities": "completion", "model_info": {"a": 1}}, valid_tags),
+            (valid_tags, {"capabilities": ["vision"], "model_info": {"a": 1}}, valid_tags),
+            (valid_tags, {"capabilities": ["completion"], "model_info": {}}, valid_tags),
+            (valid_tags, {**valid_show, "remote_model": "remote"}, valid_tags),
+            (valid_tags, {**valid_show, "model_info": {"cloud": True}}, valid_tags),
+            (valid_tags, {**valid_show, "model_info": {"tokenizer.ggml.add_eos_token": "credential"}}, valid_tags),
+            (valid_tags, {**valid_show, "model_info": {"access_token": "credential"}}, valid_tags),
+            (valid_tags, valid_show, {"models": [{"name": "fixture", "digest": "b" * 64}]}),
+            (valid_tags, valid_show, {"models": [{"name": "other", "digest": "a" * 64}]}),
+        ]
+        for index, (before, show, after) in enumerate(cases):
+            with self.subTest(case=index):
+                calls = []
+
+                class Transport:
+                    def get_json_no_auth(self, **kwargs):
+                        calls.append(kwargs)
+                        return before if len(calls) == 1 else after
+
+                    def post_json_no_auth(self, **kwargs):
+                        calls.append(kwargs)
+                        if kwargs["url"].endswith("/api/chat"):
+                            raise AssertionError("invalid metadata must not generate")
+                        return show
+
+                adapter = OllamaTextGenerationAdapter(transport=Transport())
+                with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+                    adapter.prepare_qa_structured_payload(request, selection, adapter.provider_payload(request, selection))
+                self.assertFalse(any(call["url"].endswith("/api/chat") for call in calls))
+
+    def test_qa_structured_ollama_metadata_has_one_total_five_second_budget(self) -> None:
+        request = self.cell_request()
+        selection = TextModelSelection("OLLAMA", "http://models.example.com", "local", "local:fixture", "fixture", 1, "server_internal")
+        calls = []
+
+        class Transport:
+            def get_json_no_auth(self, **kwargs):
+                calls.append(kwargs)
+                return {"models": [{"name": "fixture", "digest": "a" * 64}]}
+
+            def post_json_no_auth(self, **kwargs):
+                calls.append(kwargs)
+                return {"capabilities": ["completion", "thinking"], "model_info": {"architecture": "fixture"}}
+
+        adapter = OllamaTextGenerationAdapter(transport=Transport())
+        with patch("daon_user_api.question_answering.time.monotonic", side_effect=[100, 100, 103, 105]):
+            with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+                adapter.prepare_qa_structured_payload(request, selection, adapter.provider_payload(request, selection))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([call["timeout_seconds"] for call in calls], [5, 2])
+
+        calls.clear()
+        with patch("daon_user_api.question_answering.time.monotonic", side_effect=[100, 100, 102, 104, 105]):
+            with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+                adapter.prepare_qa_structured_payload(request, selection, adapter.provider_payload(request, selection))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([call["timeout_seconds"] for call in calls], [5, 3, 1])
+
+    def test_qa_ollama_never_uses_thinking_as_grounded_answer(self) -> None:
+        request = self.cell_request()
+        selection = TextModelSelection("OLLAMA", "http://models.example.com", "local", "local:fixture", "fixture", 1, "server_internal")
+
+        class Transport:
+            def get_json_no_auth(self, **kwargs):
+                return {"models": [{"name": "fixture", "digest": "a" * 64}]}
+
+            def post_json_no_auth(self, **kwargs):
+                if kwargs["url"].endswith("/api/show"):
+                    return {"capabilities": ["completion", "thinking"], "model_info": {"architecture": "fixture"}}
+                return {"message": {"content": "", "thinking": json.dumps({
+                    "answer": "Insufficient evidence.", "cited_chunk_ids": [], "insufficient": True,
+                })}}
+
+        adapter = OllamaTextGenerationAdapter(transport=Transport())
+        payload = adapter.prepare_qa_structured_payload(request, selection, adapter.provider_payload(request, selection))
+        with self.assertRaisesRegex(ValueError, "^TEXT_GENERATION_RESPONSE_INVALID$"):
+            adapter.generate(request, selection, provider_payload=payload)
+
     def cell_request(self):
         return GroundedQuestionRequest('What are the code, date, amount and currency?', tuple(
             IndexedEvidenceChunk(f'cell-{index}', 'source-unit', 'version-unit', 1, text, f'span-{index}', 0.0, 'sheet_cell', json.dumps({'sheet': sheet, 'range': address}, ensure_ascii=False, separators=(',', ':')))

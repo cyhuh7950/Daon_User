@@ -285,6 +285,7 @@ class QuestionAnsweringService:
         *, adapter_registry: QuestionAdapterRegistry | None = None,
         concurrent_wait_seconds: float = 2.0,
         concurrent_poll_seconds: float = 0.02,
+        qa_structured_ollama_workspace_id: str = "",
     ) -> None:
         self._model_resolver = model_resolver
         self._repository = repository
@@ -297,6 +298,24 @@ class QuestionAnsweringService:
         self._adapter_registry = adapter_registry or QuestionAdapterRegistry()
         self._concurrent_wait_seconds = max(0.0, concurrent_wait_seconds)
         self._concurrent_poll_seconds = max(0.001, concurrent_poll_seconds)
+        self._qa_structured_ollama_workspace_id = qa_structured_ollama_workspace_id
+
+    def _prepare_qa_structured_payload(
+        self, context: QuestionContext, prepared: QuestionAdapterRegistry.Prepared,
+    ) -> QuestionAdapterRegistry.Prepared:
+        if (
+            self._qa_structured_ollama_workspace_id
+            and context.workspace_id == self._qa_structured_ollama_workspace_id
+            and isinstance(prepared.adapter, OllamaTextGenerationAdapter)
+            and isinstance(prepared.request, GroundedQuestionRequest)
+        ):
+            try:
+                return replace(prepared, provider_payload=prepared.adapter.prepare_qa_structured_payload(
+                    prepared.request, prepared.selection, prepared.provider_payload,
+                ))
+            except ValueError:
+                raise QuestionAnsweringError("TEXT_GENERATION_RESPONSE_INVALID", status=502) from None
+        return prepared
 
     def _wait_for_provider_owner(
         self, context: QuestionContext, run_id: str, request_fingerprint: str,
@@ -411,6 +430,7 @@ class QuestionAnsweringService:
                         selection, evidence, question, context.trace_id, self._transport,
                     )
                 )
+                prepared = self._prepare_qa_structured_payload(context, prepared)
                 wire = canonical_json_bytes(prepared.provider_payload)
                 transformer = getattr(self._egress, "prepare_payload", None)
                 if callable(transformer):
@@ -600,6 +620,7 @@ class QuestionAnsweringService:
                 raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED",
                 status=503 if raw_code.startswith("TEXT_PROVIDER_") else 502,
             ) from None
+        prepared = self._prepare_qa_structured_payload(context, prepared)
         frozen_bytes = canonical_json_bytes(prepared.provider_payload)
         transformer = getattr(self._egress, "prepare_payload", None)
         if callable(transformer):

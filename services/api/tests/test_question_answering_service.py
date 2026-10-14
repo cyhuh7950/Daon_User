@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from contextlib import contextmanager
 
 from daon_user_api.document_index_postgres import IndexedEvidenceChunk
@@ -17,6 +18,8 @@ from daon_user_api.question_answering_service import (
     is_general_conversation_intent,
 )
 from daon_user_api.workspace_model_defaults import ResolvedModel
+from daon_user_api.question_answering import GeneralConversationRequest, GroundedQuestionRequest, OllamaTextGenerationAdapter
+from daon_user_api.data_canon import canonical_json_bytes
 
 
 class FakeProviderSettings:
@@ -185,6 +188,153 @@ class OmniRouteTransport(CapturingGatewayTransport):
 
 
 class QuestionAnsweringServiceTests(unittest.TestCase):
+    def test_qa_workspace_xlsx_metadata_and_frozen_wire_are_scoped(self) -> None:
+        cells = tuple(IndexedEvidenceChunk(
+            f"cell-{i}", "source-cp3", "source-version-cp3", 1, text, f"span-{i}", 0.0,
+            "sheet_cell", json.dumps({"sheet": "Plan", "range": address}, separators=(",", ":")),
+        ) for i, (text, address) in enumerate((("REF-17", "B2"), ("57000", "B3"))))
+        selection = ResolvedModel(
+            connection_id="local", provider_code="OLLAMA", model_id="fixture",
+            capability="text_generation", base_url="http://models.example.com",
+            credential_version=0, default_version=1, catalog_version=1,
+            provider_kind="server_internal", routing_owner="provider", daon_fallback_allowed=True,
+            _credential=None,
+        )
+
+        class Resolver:
+            @contextmanager
+            def resolve(self, context, capability):
+                yield selection
+
+        for workspace, target, evidence, general, insufficient, metadata_calls in (
+            ("workspace-qa", "workspace-qa", cells, False, False, 6),
+            ("workspace-qa", "workspace-qa", cells, False, True, 6),
+            ("workspace-other", "workspace-qa", cells, False, False, 0),
+            ("workspace-qa-suffix", "workspace-qa", cells, False, False, 0),
+            ("workspace-qa", "", cells, False, False, 0),
+            ("workspace-qa", "workspace-qa", tuple(replace(c, locator_kind="page", locator_value="1") for c in cells), False, False, 0),
+            ("workspace-qa", "workspace-qa", (cells[0], replace(cells[1], locator_kind="image_region", locator_value="0,0,1,1,1,1")), False, False, 0),
+            ("workspace-qa", "workspace-qa", (cells[0], replace(cells[1], source_version_id="other-version")), False, False, 0),
+            ("workspace-qa", "workspace-qa", (), True, False, 0),
+        ):
+            with self.subTest(workspace=workspace, target=target, general=general, insufficient=insufficient, evidence=evidence):
+                calls = []
+
+                class Transport:
+                    def get_json_no_auth(self, **kwargs):
+                        calls.append(kwargs)
+                        return {"models": [{"name": "fixture", "digest": "a" * 64}]}
+
+                    def post_json_no_auth(self, **kwargs):
+                        calls.append(kwargs)
+                        if kwargs["url"].endswith("/api/show"):
+                            return {"capabilities": ["completion", "thinking"], "model_info": {"architecture": "fixture"}}
+                        result = {"answer": "Hello"} if general else {
+                            "answer": "Insufficient evidence." if insufficient else "REF-17; 57000",
+                            "cited_chunk_ids": [] if insufficient else [c.chunk_id for c in evidence],
+                            "insufficient": insufficient,
+                        }
+                        return {"message": {"content": json.dumps(result)}}
+
+                class Egress(FakeEgress):
+                    def prepare_payload(self, context, wire):
+                        payload = json.loads(wire)
+                        for message in payload["messages"]:
+                            if message["role"] == "user" and not general:
+                                message["content"] = canonical_json_bytes(json.loads(message["content"])).decode()
+                        return canonical_json_bytes(payload)
+
+                    def authorize(self, context, **kwargs):
+                        self.wire = kwargs["provider_payload"]
+                        self.asserted_metadata_count = len(calls)
+                        return super().authorize(context, **kwargs)
+
+                repository, transport, egress = FakeRepository(), Transport(), Egress()
+                service = QuestionAnsweringService(
+                    Resolver(), repository, FakeIndex(evidence), FakeCredential(), transport, egress,
+                    qa_structured_ollama_workspace_id=target,
+                )
+                context = QuestionContext("tenant-cp3", workspace, "actor-cp3", "trace-cp3", "policy-v1")
+                args = {"source_id": None if general else "source-cp3", "source_version_id": None if general else "source-version-cp3", "question": "Hello" if general else "Read the workbook values"}
+                authorization = service.prepare_authorization(context, **args)
+                answer = service.ask(context, run_id="run-qa", **args)
+                chat = calls[-1]
+                self.assertEqual(len(calls) - 1, metadata_calls)
+                self.assertEqual(egress.asserted_metadata_count, metadata_calls)
+                self.assertEqual(authorization.provider_payload, egress.wire)
+                self.assertEqual(egress.wire, canonical_json_bytes(chat["payload"]))
+                if metadata_calls:
+                    self.assertIs(chat["payload"]["think"], False)
+                else:
+                    self.assertNotIn("think", chat["payload"])
+                    original = (OllamaTextGenerationAdapter.general_provider_payload(
+                        GeneralConversationRequest("Hello", "trace-cp3"), selection,
+                    ) if general else OllamaTextGenerationAdapter.provider_payload(
+                        GroundedQuestionRequest(args["question"], evidence, "trace-cp3"), selection,
+                    ))
+                    self.assertEqual(egress.wire, egress.prepare_payload(context, canonical_json_bytes(original)))
+                self.assertEqual(chat["timeout_seconds"], 90)
+                self.assertEqual(chat["payload"]["options"]["num_predict"], 64 if general else 512)
+                self.assertEqual(answer.insufficient, insufficient)
+                self.assertIsNotNone(repository.persisted)
+
+    def test_qa_target_does_not_modify_other_provider_wire(self) -> None:
+        evidence = (IndexedEvidenceChunk("chunk-page-2", "source-cp3", "source-version-cp3", 2,
+            "ORANGE-COMPASS-42", "span-page-2", 1.0),)
+        for target in ("", "workspace-cp3"):
+            with self.subTest(target=target):
+                class Transport(FakeTransport):
+                    def post_json(self, **kwargs):
+                        self.wire = canonical_json_bytes(kwargs["payload"])
+                        return super().post_json(**kwargs)
+
+                    def get_json_no_auth(self, **kwargs):
+                        raise AssertionError("non-Ollama must not call metadata")
+
+                repository, transport = FakeRepository(), Transport()
+                service = QuestionAnsweringService(FakeProviderSettings(), repository, FakeIndex(evidence),
+                    FakeCredential(), transport, FakeEgress(), qa_structured_ollama_workspace_id=target)
+                service.ask(QuestionContext("tenant-cp3", "workspace-cp3", "actor-cp3", "trace-cp3", "policy-v1"),
+                    source_id="source-cp3", source_version_id="source-version-cp3", question="What code?", run_id="run-qa")
+                if not target:
+                    baseline = transport.wire
+                else:
+                    self.assertEqual(transport.wire, baseline)
+
+    def test_qa_metadata_failure_never_authorizes_generates_or_persists(self) -> None:
+        cells = (IndexedEvidenceChunk("cell-0", "source-cp3", "source-version-cp3", 1,
+            "REF-17", "span-0", 0.0, "sheet_cell", '{"sheet":"Plan","range":"B2"}'),)
+
+        class Resolver:
+            @contextmanager
+            def resolve(self, context, capability):
+                yield ResolvedModel(
+                    connection_id="local", provider_code="OLLAMA", model_id="fixture", capability=capability,
+                    base_url="http://models.example.com", credential_version=0, default_version=1,
+                    catalog_version=1, provider_kind="server_internal", routing_owner="provider",
+                    daon_fallback_allowed=True, _credential=None,
+                )
+
+        class Transport:
+            def get_json_no_auth(self, **kwargs):
+                raise TimeoutError("upstream detail must not be exposed")
+
+            def post_json_no_auth(self, **kwargs):
+                raise AssertionError("metadata failure must not call show or chat")
+
+        class Egress:
+            def authorize(self, context, **kwargs):
+                raise AssertionError("metadata failure must not authorize")
+
+        repository = FakeRepository()
+        service = QuestionAnsweringService(Resolver(), repository, FakeIndex(cells), FakeCredential(),
+            Transport(), Egress(), qa_structured_ollama_workspace_id="workspace-qa")
+        with self.assertRaises(QuestionAnsweringError) as caught:
+            service.ask(QuestionContext("tenant-cp3", "workspace-qa", "actor-cp3", "trace-cp3", "policy-v1"),
+                source_id="source-cp3", source_version_id="source-version-cp3", question="Read workbook", run_id="run-qa")
+        self.assertEqual(caught.exception.code, "TEXT_GENERATION_RESPONSE_INVALID")
+        self.assertIsNone(repository.persisted)
+
     def test_custom_keyless_compatible_routes_without_authentication(self) -> None:
         class KeylessTransport:
             def __init__(self):
