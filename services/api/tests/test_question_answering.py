@@ -114,6 +114,7 @@ class QuestionAnsweringContractTests(unittest.TestCase):
         self.assertEqual(canonical_json_bytes(baseline),snapshot)  # QA outside path is unchanged.
         self.assertEqual(UpstageTextGenerationAdapter._SCHEMA,original_schema)
         self.assertIn('Never return insufficient=true while answering with supplied material facts.',prepared['messages'][0]['content'])
+        self.assertIn('When insufficient=true, give ONLY a lack-of-evidence explanation; never enumerate or recap numbers, dates, identifiers or quotes from either the source evidence or the question.',prepared['messages'][0]['content'])
         self.assertIn('Internal chunk_id strings, block locators and offsets are metadata, never answer text.',prepared['messages'][0]['content'])
         self.assertIn('Preserve real identifiers that occur in the original source text.',prepared['messages'][0]['content'])
         self.assertIs(prepared['think'],False)
@@ -122,6 +123,7 @@ class QuestionAnsweringContractTests(unittest.TestCase):
             ({'answer':'REF-17; 64 EUR','cited_chunk_ids':['doc-ref','doc-amount'],'insufficient':False},True),
             ({'answer':'Insufficient evidence.','cited_chunk_ids':[],'insufficient':True},True),
             ({'answer':'REF-17; 64 EUR','cited_chunk_ids':[],'insufficient':True},False),
+            ({'answer':'Insufficient evidence. The text includes REF-17 and 64 EUR.','cited_chunk_ids':[],'insufficient':True},False),
             ({'answer':'Unsupported 999 USD','cited_chunk_ids':['doc-ref','doc-amount'],'insufficient':False},False),
             ({'answer':'REF-17; 64 EUR','cited_chunk_ids':['made-up'],'insufficient':False},False),
         ]:

@@ -456,6 +456,8 @@ class OllamaTextGenerationAdapter:
                 "If the question is outside the evidence or cannot be answered, choose insufficient=true, "
                 "cited_chunk_ids=[], and a nonempty lack-of-evidence explanation. Do not repeat unsupported "
                 "numbers or identifiers from the question and do not invent facts. "
+                "When insufficient=true, give ONLY a lack-of-evidence explanation; never enumerate or recap "
+                "numbers, dates, identifiers or quotes from either the source evidence or the question. "
                 "Each locator identifies an original block and Unicode code-point start/end, not a Word page. "
                 "Internal chunk_id strings, block locators and offsets are metadata, never answer text. "
                 "Return internal chunk_id strings only in cited_chunk_ids; do not append them or locator "
