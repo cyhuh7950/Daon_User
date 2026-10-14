@@ -114,6 +114,8 @@ class QuestionAnsweringContractTests(unittest.TestCase):
         self.assertEqual(canonical_json_bytes(baseline),snapshot)  # QA outside path is unchanged.
         self.assertEqual(UpstageTextGenerationAdapter._SCHEMA,original_schema)
         self.assertIn('Never return insufficient=true while answering with supplied material facts.',prepared['messages'][0]['content'])
+        self.assertIn('Internal chunk_id strings, block locators and offsets are metadata, never answer text.',prepared['messages'][0]['content'])
+        self.assertIn('Preserve real identifiers that occur in the original source text.',prepared['messages'][0]['content'])
         self.assertIs(prepared['think'],False)
         self.assertEqual(prepared['options'],{'num_predict':512,'temperature':0})
         for response, valid in [
@@ -129,6 +131,31 @@ class QuestionAnsweringContractTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError,'TEXT_GENERATION_GROUNDING_INVALID'):
                         adapter.generate(request,selection,provider_payload=prepared)
         self.assertEqual(calls[3]['timeout_seconds'],90)
+
+    def test_docx_internal_chunk_id_echo_is_still_rejected_while_original_identifier_is_valid(self):
+        chunk_id = 'chunk-a72cd9210f48b63e'
+        request = GroundedQuestionRequest('Read reference', (
+            IndexedEvidenceChunk(chunk_id,'source-doc','version-doc',1,'REF-17','span-ref',0.0,
+                'docx_block','{"block":"p:2","start":0,"end":6}'),
+        ),'trace-doc')
+        selection = TextModelSelection('OLLAMA','http://models.example.com','local','local:fixture','fixture',1,'server_internal')
+        class Transport:
+            def post_json_no_auth(self, **kwargs):
+                return {'message':{'content':json.dumps(response)}}
+        adapter = OllamaTextGenerationAdapter(transport=Transport())
+        for response, valid in [
+            ({'answer':f'REF-17 (from {chunk_id})','cited_chunk_ids':[chunk_id],'insufficient':False},False),
+            ({'answer':'REF-17','cited_chunk_ids':[chunk_id],'insufficient':False},True),
+            ({'answer':'Insufficient evidence.','cited_chunk_ids':[],'insufficient':True},True),
+        ]:
+            with self.subTest(response=response):
+                if valid:
+                    result=adapter.generate(request,selection)
+                    self.assertEqual(result.answer,response['answer'])
+                    self.assertEqual(result.cited_chunk_ids,tuple(response['cited_chunk_ids']))
+                else:
+                    with self.assertRaisesRegex(ValueError,'TEXT_GENERATION_GROUNDING_INVALID'):
+                        adapter.generate(request,selection)
 
     def test_docx_question_payload_has_original_block_offsets_not_fake_page(self):
         request = GroundedQuestionRequest('Read document values', (
