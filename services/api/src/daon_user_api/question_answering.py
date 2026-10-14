@@ -442,7 +442,9 @@ class OllamaTextGenerationAdapter:
                 {"type": "object", "properties": {
                     "insufficient": {"type": "boolean", "const": insufficient},
                     "cited_chunk_ids": {"type": "array", "const": ids},
-                    "answer": {"type": "string", "minLength": 1}},
+                    "answer": (
+                        {"type": "string", "const": "선택한 원문 근거에 질문에 답할 정보가 없습니다."}
+                        if insufficient else {"type": "string", "minLength": 1})},
                  "required": ["insufficient", "cited_chunk_ids", "answer"],
                  "additionalProperties": False}
                 for insufficient, ids in (
@@ -458,6 +460,7 @@ class OllamaTextGenerationAdapter:
                 "numbers or identifiers from the question and do not invent facts. "
                 "When insufficient=true, give ONLY a lack-of-evidence explanation; never enumerate or recap "
                 "numbers, dates, identifiers or quotes from either the source evidence or the question. "
+                "For insufficient=true, answer must be exactly: 선택한 원문 근거에 질문에 답할 정보가 없습니다. "
                 "Each locator identifies an original block and Unicode code-point start/end, not a Word page. "
                 "Internal chunk_id strings, block locators and offsets are metadata, never answer text. "
                 "Return internal chunk_id strings only in cited_chunk_ids; do not append them or locator "

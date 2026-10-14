@@ -105,7 +105,9 @@ class QuestionAnsweringContractTests(unittest.TestCase):
             self.assertEqual(branch['required'],['insufficient','cited_chunk_ids','answer'])
             self.assertEqual(branch['properties']['insufficient'],{'type':'boolean','const':insufficient})
             self.assertEqual(branch['properties']['cited_chunk_ids'],{'type':'array','const':ids})
-            self.assertEqual(branch['properties']['answer'],{'type':'string','minLength':1})
+            self.assertEqual(branch['properties']['answer'],
+                {'type':'string','const':'선택한 원문 근거에 질문에 답할 정보가 없습니다.'}
+                if insufficient else {'type':'string','minLength':1})
         self.assertEqual(list(prepared['format']['anyOf'][0]['properties']),['insufficient','cited_chunk_ids','answer'])
         # Literal branch predicates: both legitimate states, neither contradictory pairing.
         for insufficient, ids, permitted in [(False,['doc-ref','doc-amount'],True),(True,[],True),(True,['doc-ref','doc-amount'],False),(False,[],False),(False,['doc-ref'],False)]:
@@ -115,6 +117,7 @@ class QuestionAnsweringContractTests(unittest.TestCase):
         self.assertEqual(UpstageTextGenerationAdapter._SCHEMA,original_schema)
         self.assertIn('Never return insufficient=true while answering with supplied material facts.',prepared['messages'][0]['content'])
         self.assertIn('When insufficient=true, give ONLY a lack-of-evidence explanation; never enumerate or recap numbers, dates, identifiers or quotes from either the source evidence or the question.',prepared['messages'][0]['content'])
+        self.assertIn('For insufficient=true, answer must be exactly: 선택한 원문 근거에 질문에 답할 정보가 없습니다.',prepared['messages'][0]['content'])
         self.assertIn('Internal chunk_id strings, block locators and offsets are metadata, never answer text.',prepared['messages'][0]['content'])
         self.assertIn('Preserve real identifiers that occur in the original source text.',prepared['messages'][0]['content'])
         self.assertIs(prepared['think'],False)
@@ -122,7 +125,9 @@ class QuestionAnsweringContractTests(unittest.TestCase):
         for response, valid in [
             ({'answer':'REF-17; 64 EUR','cited_chunk_ids':['doc-ref','doc-amount'],'insufficient':False},True),
             ({'answer':'Insufficient evidence.','cited_chunk_ids':[],'insufficient':True},True),
+            ({'answer':'선택한 원문 근거에 질문에 답할 정보가 없습니다.','cited_chunk_ids':[],'insufficient':True},True),
             ({'answer':'REF-17; 64 EUR','cited_chunk_ids':[],'insufficient':True},False),
+            ({'answer':'선택한 원문 근거에 질문에 답할 정보가 없습니다.','cited_chunk_ids':[],'insufficient':False},False),
             ({'answer':'Insufficient evidence. The text includes REF-17 and 64 EUR.','cited_chunk_ids':[],'insufficient':True},False),
             ({'answer':'Unsupported 999 USD','cited_chunk_ids':['doc-ref','doc-amount'],'insufficient':False},False),
             ({'answer':'REF-17; 64 EUR','cited_chunk_ids':['made-up'],'insufficient':False},False),
