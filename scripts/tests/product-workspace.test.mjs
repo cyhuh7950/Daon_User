@@ -56,6 +56,34 @@ test("실패 Source 실제 React 재처리 클릭은 새 Run POST 후 상태를 
   }
 });
 
+test("DOCX 검토 필요 completed 자료만 실제 재처리 클릭으로 새 Run을 요청한다",async(t)=>{
+  for(const scenario of ['docx','xlsx','pdf','text','image','active-job','active-run','ready'])await t.test(scenario,async()=>{
+    let workspace;const calls=[];let finished=false;
+    const filenames={docx:'qa.docx',xlsx:'qa.xlsx',pdf:'qa.pdf',text:'qa.txt',image:'qa.png'};
+    try{
+      workspace=await mountSourceRetryWorkspace({...adapter,
+        listSources:async()=>[{source_id:'source-review',source_version_id:'version-review',filename:filenames[scenario]??'qa.docx',
+          source_state:finished||scenario==='ready'?'ready':'needs_review',
+          processing_state:scenario==='active-run'?'vision_llm_understanding':'completed',job_state:scenario==='active-job'?'leased':'completed'}],
+        listStudioOutputs:async()=>[],
+        reprocessSource:async(source,options)=>sourceRetryApi.reprocessSource('workspace-1',source,{...options,notebookId:'notebook-1',fetchImpl:async(url,init)=>{
+          calls.push({url,body:JSON.parse(init.body)});return Response.json({data:{id:'run-review-new',kind:'processing_run',version:'2',attributes:{
+            processing_run_id:'run-review-new',source_id:'source-review',source_version_id:'version-review',retry_of_processing_run_id:'run-review-old',
+            processing_state:'vision_llm_understanding',source_state:'processing',job_state:'pending',replayed:false}},trace_id:'trace-1'},{status:201});
+        }}),
+        getProcessingStatus:async id=>{finished=true;calls.push({runId:id});return {processing_run_id:id,source_id:'source-review',source_version_id:'version-review',source_state:'ready',processing_state:'completed',job_state:'completed',safe_error_code:null};}
+      },`docx-review-retry-${scenario}`);
+      const retry=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='재처리')[0];
+      if(scenario==='docx'){
+        assert.ok(retry);await workspace.act(async()=>retry.dispatchEvent(new MinimalEvent('click')));
+        assert.equal(calls[0].url,'/bff/api/sources/source-review/processing-runs');
+        assert.equal(calls[0].body.attributes.source_version_id,'version-review');
+        assert.equal(calls[1].runId,'run-review-new');assert.match(workspace.container.textContent,/사용 가능/);
+      }else{assert.equal(retry,undefined);assert.equal(calls.length,0);}
+    }finally{if(workspace)await workspace.cleanup();}
+  });
+});
+
 test("재처리 응답 유실 뒤 다시 클릭하면 같은 멱등 키를 보존한다", async () => {
   let workspace;
   const keys = [];

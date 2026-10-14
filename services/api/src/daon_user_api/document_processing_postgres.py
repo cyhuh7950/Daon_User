@@ -256,8 +256,29 @@ class PostgresDocumentProcessingRepository:
                     "AND job.processing_run_id=pr.record_id WHERE pr.source_version_id=%s "
                     "ORDER BY pr.created_at DESC,pr.record_id DESC LIMIT 1", (source_version_id,),
                 ).fetchone()
-                if (str(source[1]) not in {"failed", "waiting_model"} or previous is None
-                        or str(previous[1]) != "failed" or str(previous[2]) != "dead_letter"):
+                failed_retry = (str(source[1]) in {"failed", "waiting_model"} and previous is not None
+                                and str(previous[1]) == "failed" and str(previous[2]) == "dead_letter")
+                review_retry = False
+                if (docx_source_format(filename, mime) and str(source[1]) == "needs_review"
+                        and previous is not None and str(previous[1]) == "completed"
+                        and str(previous[2]) == "completed"):
+                    review = connection.execute(
+                        "SELECT ur.canonical_json FROM understanding_results ur "
+                        "JOIN source_versions sv ON sv.tenant_id=ur.tenant_id "
+                        "AND sv.workspace_id=ur.workspace_id AND sv.record_id=ur.source_version_id "
+                        "WHERE ur.tenant_id=%s AND ur.workspace_id=%s AND ur.processing_run_id=%s "
+                        "AND ur.source_version_id=%s AND sv.source_id=%s",
+                        (context.tenant_id, context.workspace_id, str(previous[0]), source_version_id, source_id),
+                    ).fetchone()
+                    value = review[0] if review is not None else None
+                    lineage = value.get("lineage") if isinstance(value, dict) else None
+                    review_retry = (isinstance(value, dict) and value.get("source_id") == source_id
+                                    and value.get("source_version_id") == source_version_id
+                                    and value.get("status") == "needs_review"
+                                    and value.get("conflict") == "UNDERSTANDING_PARSER_CONFLICT"
+                                    and isinstance(lineage, dict) and lineage.get("source_format") == "docx"
+                                    and lineage.get("reconciliation") == "mismatch")
+                if not (failed_retry or review_retry):
                     raise DocumentUnderstandingError("SOURCE_REPROCESSING_STATE_INVALID", status=409)
                 policy = connection.execute(
                     "SELECT data_area,cost_limit_cents,acl_version FROM identity_auth_workspaces WHERE tenant_id=%s AND workspace_id=%s",

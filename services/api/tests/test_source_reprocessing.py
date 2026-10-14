@@ -28,6 +28,9 @@ class Store:
         self.writes = []
         self.contexts = []
         self.fail_job = False
+        self.review_result = {'source_id': 'source-1', 'source_version_id': 'version-1',
+            'status': 'needs_review', 'conflict': 'UNDERSTANDING_PARSER_CONFLICT',
+            'lineage': {'source_format': 'docx', 'reconciliation': 'mismatch'}}
 
     @contextmanager
     def _transaction(self, context):
@@ -51,6 +54,8 @@ class Store:
             return Cursor(self.old_run)
         if sql.startswith("SELECT 1 FROM processing_runs"):
             return Cursor(self.active)
+        if sql.startswith("SELECT ur.canonical_json"):
+            return Cursor((self.review_result,)) if self.review_result is not None else Cursor()
         if sql.startswith("SELECT data_area,cost_limit_cents,acl_version"):
             return Cursor(("cloud_sync", 1000, 7))
         if sql.startswith("SELECT state,version,outcome,error_code"):
@@ -213,6 +218,78 @@ def test_docx_manual_retry_preserves_six_columns_failed_run_lineage_and_replay()
     assert store.writes == []
     store.replay = ('wrong-request', result)
     with pytest.raises(DocumentUnderstandingError, match='IDEMPOTENCY_KEY_REUSED'): retry(store)
+    assert store.writes == []
+
+
+def review_store():
+    store = Store()
+    store.source = ('source-1', 'needs_review', 4, 'version-1', 'qa.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    store.old_run = ('run-review-1', 'completed', 'completed')
+    return store
+
+
+def test_docx_completed_review_retry_creates_new_lineage_and_exact_replay_without_reset():
+    store = review_store()
+    original = deepcopy((store.source, store.old_run, store.review_result))
+    result = retry(store)
+    assert result['retry_of_processing_run_id'] == 'run-review-1'
+    assert result['processing_run_id'] != 'run-review-1'
+    assert (store.source, store.old_run, store.review_result) == original
+    assert len([sql for sql, _ in store.writes if sql.startswith('INSERT INTO processing_runs')]) == 1
+    assert len([sql for sql, _ in store.writes if sql.startswith('INSERT INTO document_processing_jobs')]) == 1
+    assert not any(sql.startswith('UPDATE') or 'INSERT INTO source_versions' in sql or 'INSERT INTO understanding_results' in sql for sql, _ in store.writes)
+    _, receipt = next(item for item in store.writes if item[0].startswith('INSERT INTO idempotency_records'))
+    store.replay = (receipt[5], result); store.writes.clear(); store.active = (1,)
+    assert retry(store)['replayed'] is True
+    assert store.writes == []
+    store.replay = None
+    with pytest.raises(DocumentUnderstandingError, match='SOURCE_PROCESSING_ACTIVE'): retry(store, key='different')
+    assert store.writes == []
+
+
+def test_docx_review_result_query_executes_exact_scoped_run_version_source_join():
+    import json
+    import sqlite3
+    store = review_store()
+    retry(store)
+    sql, params = next(item for item in store.calls if item[0].startswith('SELECT ur.canonical_json'))
+    assert params == ('tenant-1', 'workspace-1', 'run-review-1', 'version-1', 'source-1')
+    with sqlite3.connect(':memory:') as connection:
+        connection.execute('CREATE TABLE source_versions (tenant_id TEXT, workspace_id TEXT, record_id TEXT, source_id TEXT)')
+        connection.execute('CREATE TABLE understanding_results (tenant_id TEXT, workspace_id TEXT, processing_run_id TEXT, source_version_id TEXT, canonical_json TEXT)')
+        connection.execute('INSERT INTO source_versions VALUES (?,?,?,?)', ('tenant-1','workspace-1','version-1','source-1'))
+        connection.execute('INSERT INTO understanding_results VALUES (?,?,?,?,?)',
+                           ('tenant-1','workspace-1','run-review-1','version-1',json.dumps(store.review_result)))
+        assert json.loads(connection.execute(sql.replace('%s','?'), params).fetchone()[0]) == store.review_result
+        for index, wrong in enumerate(('other-tenant','other-workspace','other-run','old-version','other-source')):
+            changed = list(params); changed[index] = wrong
+            assert connection.execute(sql.replace('%s','?'), changed).fetchone() is None
+
+
+@pytest.mark.parametrize('scenario', ['no-result','wrong-result-source','wrong-result-version','not-conflict',
+    'not-mismatch','not-docx-lineage','ready-result','ready-source','failed-run','leased-job',
+    'active','old-version','denied','xlsx','pdf','text','image','wrong-mime'])
+def test_docx_review_retry_rejects_unbound_or_nonapproved_state_without_writes(scenario):
+    store = review_store()
+    version = 'version-1'
+    if scenario == 'no-result': store.review_result = None
+    if scenario == 'wrong-result-source': store.review_result['source_id'] = 'other'
+    if scenario == 'wrong-result-version': store.review_result['source_version_id'] = 'old'
+    if scenario == 'not-conflict': store.review_result['conflict'] = None
+    if scenario == 'not-mismatch': store.review_result['lineage']['reconciliation'] = 'matched'
+    if scenario == 'not-docx-lineage': store.review_result['lineage']['source_format'] = 'xlsx'
+    if scenario == 'ready-result': store.review_result['status'] = 'ready'
+    if scenario == 'ready-source': store.source = (store.source[0], 'ready', *store.source[2:])
+    if scenario == 'failed-run': store.old_run = ('run-review-1', 'failed', 'completed')
+    if scenario == 'leased-job': store.old_run = ('run-review-1', 'completed', 'leased')
+    if scenario == 'active': store.active = (1,)
+    if scenario == 'old-version': version = 'old'
+    if scenario == 'denied': store.source = None
+    formats = {'xlsx': ('qa.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+        'pdf': ('qa.pdf','application/pdf'), 'text': ('qa.txt','text/plain'), 'image': ('qa.png','image/png'),
+        'wrong-mime': ('qa.docx','text/plain')}
+    if scenario in formats: store.source = (*store.source[:4], *formats[scenario])
+    with pytest.raises(DocumentUnderstandingError): retry(store, version=version)
     assert store.writes == []
 
 

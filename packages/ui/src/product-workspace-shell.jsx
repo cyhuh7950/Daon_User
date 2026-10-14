@@ -1414,7 +1414,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                   <span className="source-file-icon" aria-hidden="true">FILE</span><span className="source-row-copy"><strong>{source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {SOURCE_STATE_LABELS[source.sourceState] ?? "상태 확인 필요"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
                 </button>
                 <button type="button" className="source-action-trigger" title="Source 작업" aria-label={`${source.filename ?? source.sourceId} 작업`} onClick={() => { setSourceAction(source); setSourceActionKind("unbind"); setSourceActionSafeError(null); }}>⋮</button>
-                {new Set(["failed", "waiting_model"]).has(source.sourceState) && typeof adapter?.reprocessSource === "function"
+                {(new Set(["failed", "waiting_model"]).has(source.sourceState)
+                  || (typeof source.filename === "string" && source.filename.toLowerCase().endsWith(".docx")
+                    && source.sourceState === "needs_review" && source.processingState === "completed" && source.jobState === "completed")) && typeof adapter?.reprocessSource === "function"
                   ? <button type="button" disabled={sourceAddPending} onClick={() => void retrySource(source)}>재처리</button> : null}
               </li>
             ))}
