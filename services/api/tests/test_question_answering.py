@@ -76,6 +76,60 @@ class RecordingTransport:
 
 
 class QuestionAnsweringContractTests(unittest.TestCase):
+    def test_qa_docx_schema_correlates_sufficient_and_insufficient_without_changing_other_wire(self):
+        from daon_user_api.data_canon import canonical_json_bytes
+        request = GroundedQuestionRequest('Read reference and amount', (
+            IndexedEvidenceChunk('doc-ref','source-doc','version-doc',1,'REF-17','span-ref',0.0,'docx_block','{"block":"p:2","start":0,"end":6}'),
+            IndexedEvidenceChunk('doc-amount','source-doc','version-doc',1,'64 EUR','span-amount',0.0,'docx_block','{"block":"p:3","start":0,"end":6}'),
+        ),'trace-doc')
+        selection = TextModelSelection('OLLAMA','http://models.example.com','local','local:fixture','fixture',1,'server_internal')
+        calls = []
+        class Transport:
+            def get_json_no_auth(self, **kwargs):
+                calls.append(kwargs); return {'models':[{'name':'fixture','digest':'a'*64}]}
+            def post_json_no_auth(self, **kwargs):
+                calls.append(kwargs)
+                if kwargs['url'].endswith('/api/show'): return {'capabilities':['completion','thinking'],'model_info':{'architecture':'fixture'}}
+                return {'message':{'content':json.dumps(response)}}
+        adapter=OllamaTextGenerationAdapter(transport=Transport())
+        baseline=adapter.provider_payload(request,selection)
+        snapshot=canonical_json_bytes(baseline)
+        original_schema=deepcopy(UpstageTextGenerationAdapter._SCHEMA)
+        prepared=adapter.prepare_qa_structured_payload(request,selection,baseline)
+        schema=json.loads(canonical_json_bytes(prepared))['format']
+        self.assertEqual(set(schema), {'anyOf'})
+        self.assertEqual(len(schema['anyOf']), 2)
+        for branch, insufficient, ids in zip(schema['anyOf'], (False,True), (['doc-ref','doc-amount'],[]), strict=True):
+            self.assertEqual(branch['type'],'object')
+            self.assertIs(branch['additionalProperties'],False)
+            self.assertEqual(branch['required'],['insufficient','cited_chunk_ids','answer'])
+            self.assertEqual(branch['properties']['insufficient'],{'type':'boolean','const':insufficient})
+            self.assertEqual(branch['properties']['cited_chunk_ids'],{'type':'array','const':ids})
+            self.assertEqual(branch['properties']['answer'],{'type':'string','minLength':1})
+        self.assertEqual(list(prepared['format']['anyOf'][0]['properties']),['insufficient','cited_chunk_ids','answer'])
+        # Literal branch predicates: both legitimate states, neither contradictory pairing.
+        for insufficient, ids, permitted in [(False,['doc-ref','doc-amount'],True),(True,[],True),(True,['doc-ref','doc-amount'],False),(False,[],False),(False,['doc-ref'],False)]:
+            matches=[b for b in schema['anyOf'] if b['properties']['insufficient']['const'] is insufficient and b['properties']['cited_chunk_ids']['const']==ids]
+            self.assertEqual(bool(matches),permitted)
+        self.assertEqual(canonical_json_bytes(baseline),snapshot)  # QA outside path is unchanged.
+        self.assertEqual(UpstageTextGenerationAdapter._SCHEMA,original_schema)
+        self.assertIn('Never return insufficient=true while answering with supplied material facts.',prepared['messages'][0]['content'])
+        self.assertIs(prepared['think'],False)
+        self.assertEqual(prepared['options'],{'num_predict':512,'temperature':0})
+        for response, valid in [
+            ({'answer':'REF-17; 64 EUR','cited_chunk_ids':['doc-ref','doc-amount'],'insufficient':False},True),
+            ({'answer':'Insufficient evidence.','cited_chunk_ids':[],'insufficient':True},True),
+            ({'answer':'REF-17; 64 EUR','cited_chunk_ids':[],'insufficient':True},False),
+            ({'answer':'Unsupported 999 USD','cited_chunk_ids':['doc-ref','doc-amount'],'insufficient':False},False),
+            ({'answer':'REF-17; 64 EUR','cited_chunk_ids':['made-up'],'insufficient':False},False),
+        ]:
+            with self.subTest(response=response):
+                if valid: self.assertEqual(adapter.generate(request,selection,provider_payload=prepared).insufficient,response['insufficient'])
+                else:
+                    with self.assertRaisesRegex(ValueError,'TEXT_GENERATION_GROUNDING_INVALID'):
+                        adapter.generate(request,selection,provider_payload=prepared)
+        self.assertEqual(calls[3]['timeout_seconds'],90)
+
     def test_docx_question_payload_has_original_block_offsets_not_fake_page(self):
         request = GroundedQuestionRequest('Read document values', (
             IndexedEvidenceChunk('doc-1', 'source-doc', 'version-doc', 1, 'REF-17', 'span-doc', 0.0,
