@@ -158,6 +158,9 @@ class SourceIngestor:
             raise SourceRejected("COMPRESSION_BOMB")
         if malware_signature:
             raise SourceRejected("MALWARE_DETECTED")
+        if extension == ".docx":
+            from .docx_source import read_docx
+            read_docx(content)
         if extension in {".docx", ".pptx", ".xlsx"}:
             self._validate_ooxml(content)
         if extension in {".png", ".jpg", ".jpeg"}:

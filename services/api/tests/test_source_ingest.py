@@ -26,6 +26,15 @@ def encrypted_zip() -> bytes:
 
 
 class SourceIngestTests(unittest.TestCase):
+    def test_docx_preflight_member_limit_precedes_generic_crc_scan(self) -> None:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for index in range(129):
+                archive.writestr(f"part{index}.xml", "<document/>")
+        with patch.object(SourceIngestor, "_validate_ooxml", side_effect=AssertionError("DOCX preflight must reject first")):
+            with self.assertRaises(SourceRejected):
+                self.ingestor.register_file("source.docx", SourceIngestor._MIME_BY_EXTENSION[".docx"], buffer.getvalue())
+
     def setUp(self) -> None:
         self.ingestor = SourceIngestor()
 
@@ -70,7 +79,12 @@ class SourceIngestTests(unittest.TestCase):
             ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         ):
             with self.subTest(extension=extension):
-                result = self.ingestor.register_file(f"source.{extension}", mime, ooxml_zip())
+                if extension == "docx":
+                    from test_docx_source import docx_bytes
+                    content = docx_bytes()
+                else:
+                    content = ooxml_zip()
+                result = self.ingestor.register_file(f"source.{extension}", mime, content)
                 self.assertEqual(result.status, "accepted")
 
     def test_ooxml_rejects_truncated_zip_without_caller_corruption_flag(self) -> None:
@@ -110,7 +124,9 @@ class SourceIngestTests(unittest.TestCase):
             return result
 
         with patch.object(zipfile.ZipExtFile, "read", recording_read):
-            result = self.ingestor.register_file("source.docx", SourceIngestor._MIME_BY_EXTENSION[".docx"], content)
+            # Keep the generic CRC contract on unchanged OOXML registration;
+            # this payload is ZIP test data, not a Transitional DOCX document.
+            result = self.ingestor.register_file("source.pptx", SourceIngestor._MIME_BY_EXTENSION[".pptx"], content)
         self.assertEqual(result.status, "accepted")
         self.assertEqual(sum(reads), 200000)
         self.assertEqual(reads[-1], 0)
