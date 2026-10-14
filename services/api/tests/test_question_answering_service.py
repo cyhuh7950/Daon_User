@@ -244,11 +244,12 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
 
                 class Egress(FakeEgress):
                     def prepare_payload(self, context, wire):
-                        payload = json.loads(wire)
-                        for message in payload["messages"]:
-                            if message["role"] == "user" and not general:
-                                message["content"] = canonical_json_bytes(json.loads(message["content"])).decode()
-                        return canonical_json_bytes(payload)
+                        from types import SimpleNamespace
+                        from daon_user_api.question_egress import PostgresQuestionEgressAuthorizer
+                        policy = SimpleNamespace(get_effective=lambda _context: SimpleNamespace(
+                            masking_required=True, redaction_required=True))
+                        return PostgresQuestionEgressAuthorizer.prepare_payload(
+                            SimpleNamespace(_policy_service=policy), context, wire)
 
                     def authorize(self, context, **kwargs):
                         self.wire = kwargs["provider_payload"]
@@ -269,6 +270,19 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 self.assertEqual(egress.asserted_metadata_count, metadata_calls)
                 self.assertEqual(authorization.provider_payload, egress.wire)
                 self.assertEqual(egress.wire, canonical_json_bytes(chat["payload"]))
+                if evidence == docx and workspace == target:
+                    # Real service canonical roundtrip must not choose answer-first grammar.
+                    frozen = json.loads(egress.wire)
+                    for branch, wire_branch in zip(chat["payload"]["format"]["anyOf"], frozen["format"]["anyOf"], strict=True):
+                        self.assertEqual(list(wire_branch["properties"]), ["answer", "cited_chunk_ids", "insufficient"])
+                        self.assertEqual(list(branch["properties"]), ["insufficient", "cited_chunk_ids", "answer"])
+                        self.assertEqual(branch, wire_branch)
+                    import hashlib
+                    self.assertEqual(hashlib.sha256(egress.wire).hexdigest(),
+                                     hashlib.sha256(canonical_json_bytes(chat["payload"])).hexdigest())
+                    self.assertEqual(json.loads(chat["payload"]["messages"][1]["content"])["evidence"][0]["text"], "REF-17")
+                    self.assertEqual(chat["payload"]["messages"][1]["content"],
+                                     canonical_json_bytes(json.loads(chat["payload"]["messages"][1]["content"])).decode())
                 if metadata_calls:
                     self.assertIs(chat["payload"]["think"], False)
                 else:

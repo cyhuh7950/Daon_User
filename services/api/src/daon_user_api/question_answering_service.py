@@ -638,6 +638,28 @@ class QuestionAnsweringService:
             return self._wait_for_provider_owner(
                 context, run_id, request_fingerprint,
             )
+        if (
+            self._qa_structured_ollama_workspace_id
+            and context.workspace_id == self._qa_structured_ollama_workspace_id
+            and isinstance(prepared.adapter, OllamaTextGenerationAdapter)
+            and isinstance(prepared.request, GroundedQuestionRequest)
+            and 1 <= len(prepared.request.evidence) <= 5
+            and all(item.locator_kind == "docx_block" for item in prepared.request.evidence)
+            and len({(item.source_id, item.source_version_id) for item in prepared.request.evidence}) == 1
+        ):
+            # Canonical authorization remains sorted and immutable. Restore only
+            # grammar property order after transformations, immediately before HTTP.
+            schema = prepared.provider_payload.get("format")
+            branches = schema.get("anyOf") if isinstance(schema, dict) else None
+            order = ("insufficient", "cited_chunk_ids", "answer")
+            if (isinstance(branches, list) and len(branches) == 2
+                    and all(isinstance(branch, dict) and isinstance(branch.get("properties"), dict)
+                            and set(branch["properties"]) == set(order) for branch in branches)):
+                ordered_schema = {**schema, "anyOf": [
+                    {**branch, "properties": {key: branch["properties"][key] for key in order}}
+                    for branch in branches]}
+                prepared = replace(prepared, provider_payload={
+                    **prepared.provider_payload, "format": ordered_schema})
         try:
             generated = self._adapter_registry.generate_prepared(prepared)
         except (ValueError, DocumentUnderstandingError) as error:
