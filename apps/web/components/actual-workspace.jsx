@@ -33,7 +33,7 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     importWebsite: ({url,publicPageConfirmed}, options = {}) => importWebsiteSource(workspaceId,
       {notebook_id:notebookId ?? options.notebookId,url,public_page_confirmed:publicPageConfirmed},options),
     getWebsiteSnapshot: (sourceVersionId, options) => getWebsiteSnapshot(workspaceId,sourceVersionId,notebookOptions(options)),
-    unbindSource: (source, options = {}) => unbindWorkspaceSource(workspaceId, source, { ...notebookOptions(options), etag: options.etag ?? options.bindingEtag }),
+    unbindSource: (source, options = {}) => unbindWorkspaceSource(workspaceId, { sourceId: source?.sourceId, sourceVersionId: source?.sourceVersionId }, { ...notebookOptions(options), etag: options.etag ?? options.bindingEtag }),
     requestSourceDeletion: (source, options) => requestSourceDeletion(source.sourceId, options),
     getSourceDeletionRequest,
     cancelSourceDeletionRequest,

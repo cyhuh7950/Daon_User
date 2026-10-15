@@ -15,6 +15,86 @@ import { classifyConversationIntent, buildSourceScopeMismatch } from "../../pack
 import { uploadSource } from "../../apps/web/lib/source-upload-api.js";
 import * as sourceRetryApi from "../../apps/web/lib/source-upload-api.js";
 import { citationContentUrl } from "../../apps/web/lib/question-answering-api.js";
+import { unbindWorkspaceSource } from "../../apps/web/lib/product-workspace-api.js";
+
+test("actual Web adapter는 UI Source를 exact 두 ID로 투영해 Notebook 제거를 요청한다", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-source-unbind-adapter-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    await import("react");
+    await import("react-dom/client");
+    const { build } = await import("vite");
+    await build({ configFile: false, logLevel: "silent", root, build: {
+      outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "apps/web/components/actual-workspace.jsx"), formats: ["es"], fileName: "source-unbind-adapter" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    } });
+    const entry = (await readdir(output)).find((name) => name.startsWith("source-unbind-adapter") && /\.m?js$/u.test(name));
+    assert.ok(entry);
+    const { createWebProductWorkspaceAdapter } = await import(pathToFileURL(path.join(output, entry)).href);
+    const actual = createWebProductWorkspaceAdapter("workspace-1", "notebook-current");
+    const source = Object.freeze({
+      sourceId: "source-1", sourceVersionId: "version-1", filename: "ready.pdf",
+      sourceState: "ready", processingState: "completed", jobState: "completed",
+      websiteSnapshot: null, lawSnapshot: null, lawCandidate: false, ready: true,
+    });
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init });
+      return Response.json({
+        data: { notebook_id: "notebook-current", source_id: "source-1", source_version_id: "version-1", status: "unbound" },
+        meta: { trace_id: "trace-1", workspace_id: "workspace-1", replayed: false },
+      }, { headers: { ETag: '"notebook-binding:2"' } });
+    };
+    const controller = new AbortController();
+    const result = await actual.unbindSource(source, {
+      notebookId: "notebook-other", bindingEtag: '"notebook-binding:1"',
+      idempotencyKey: "idempotency-unbind-0001", signal: controller.signal,
+    });
+    assert.deepEqual(result, {
+      notebook_id: "notebook-current", source_id: "source-1", source_version_id: "version-1",
+      status: "unbound", etag: '"notebook-binding:2"',
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "/bff/api/workspaces/workspace-1/notebooks/notebook-current/source-unbindings");
+    assert.equal(calls[0].init.method, "POST");
+    assert.equal(calls[0].init.credentials, "same-origin");
+    assert.equal(calls[0].init.cache, "no-store");
+    assert.equal(calls[0].init.signal, controller.signal);
+    assert.deepEqual(calls[0].init.headers, {
+      "Content-Type": "application/json", "Idempotency-Key": "idempotency-unbind-0001", "If-Match": '"notebook-binding:1"',
+    });
+    assert.deepEqual(JSON.parse(calls[0].init.body), { source_id: "source-1", source_version_id: "version-1" });
+    await actual.unbindSource(source, {
+      etag: '"notebook-binding:3"', bindingEtag: '"notebook-binding:1"',
+      idempotencyKey: "idempotency-unbind-0002", signal: controller.signal,
+    });
+    assert.equal(calls[1].init.headers["If-Match"], '"notebook-binding:3"');
+    assert.equal(calls[1].init.signal, controller.signal);
+    assert.equal(source.filename, "ready.pdf");
+    assert.equal(source.ready, true);
+    for (const invalid of [
+      { ...source, sourceId: "../source" }, { ...source, sourceVersionId: "../version" },
+      { ...source, sourceId: undefined }, { ...source, sourceVersionId: null },
+    ]) {
+      await assert.rejects(actual.unbindSource(invalid, {
+        bindingEtag: '"notebook-binding:1"', idempotencyKey: "idempotency-unbind-invalid", signal: controller.signal,
+      }), /SOURCE_UNBIND_INPUT_INVALID/u);
+    }
+    // UI projection must not loosen the existing lower-level exact-input contract.
+    await assert.rejects(unbindWorkspaceSource("workspace-1", source, {
+      notebookId: "notebook-current", etag: '"notebook-binding:1"', idempotencyKey: "idempotency-unbind-invalid",
+    }), /SOURCE_UNBIND_INPUT_INVALID/u);
+    await assert.rejects(actual.unbindSource(source, {
+      bindingEtag: "*", idempotencyKey: "idempotency-unbind-invalid",
+    }), /SOURCE_UNBIND_INPUT_INVALID/u);
+    assert.equal(calls.length, 2, "invalid ID/ETag and unprojected direct input must never reach fetch");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(output, { recursive: true, force: true });
+  }
+});
 
 test("실패 Source 실제 React 재처리 클릭은 새 Run POST 후 상태를 조회한다", async () => {
   for (const failsAgain of [false, true]) {
