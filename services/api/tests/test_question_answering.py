@@ -59,6 +59,127 @@ def external_text_snapshot(provider_code: str, base_url: str) -> ProviderSetting
     )
 
 
+class WebsiteQaThinkingTests(unittest.TestCase):
+    @staticmethod
+    def request(count=1):
+        return GroundedQuestionRequest('What is the domain title?',tuple(
+            IndexedEvidenceChunk('web-chunk-'+f'{index:032x}','web-source-'+'a'*32,'web-version-'+'a'*32,
+                1,'Example Domain','web-span-'+f'{index:032x}',0.0,'section',None)
+            for index in range(count)), 'trace-web')
+
+    @staticmethod
+    def selection():
+        return TextModelSelection('OLLAMA','http://models.example.com','profile','deployment','fixture-installed',4,'server_internal')
+
+    class Transport:
+        def __init__(self,thinking=True,invalid=None):self.calls=[];self.thinking=thinking;self.invalid=invalid
+        def get_json_no_auth(self,**kwargs):
+            self.calls.append(kwargs)
+            row={'name':'fixture-installed','digest':'a'*64}
+            if self.invalid=='digest' and len(self.calls)>1:row['digest']='b'*64
+            if self.invalid=='remote':row['remote_host']='cloud.example'
+            if self.invalid=='model':row['name']='other'
+            return {'models':[row]}
+        def post_json_no_auth(self,**kwargs):
+            self.calls.append(kwargs)
+            if kwargs['url'].endswith('/api/show'):
+                return {'capabilities':['completion']+(['thinking'] if self.thinking else []),
+                    'model_info':{} if self.invalid=='metadata' else {'architecture':'fixture'}}
+            if kwargs['payload'].get('think') is not False:
+                return {'message':{'content':'','thinking':'not an answer'},'done_reason':'length','eval_count':512}
+            chunk=json.loads(kwargs['payload']['messages'][1]['content'])['evidence'][0]['chunk_id']
+            return {'message':{'content':json.dumps({'answer':'Example Domain','cited_chunk_ids':[chunk],'insufficient':False})},'eval_count':8}
+
+    def test_web_sections_verified_thinking_only_changes_think_and_yields_grounded_content(self):
+        for count in (1,5):
+            with self.subTest(count=count):
+                request=self.request(count);selection=self.selection();transport=self.Transport()
+                adapter=OllamaTextGenerationAdapter(transport=transport)
+                baseline=adapter.provider_payload(request,selection);saved=deepcopy(baseline)
+                prepared=adapter.prepare_qa_structured_payload(request,selection,baseline)
+                self.assertIs(prepared.get('think'),False)
+                self.assertEqual(prepared,{**saved,'think':False});self.assertEqual(baseline,saved)
+                self.assertEqual(adapter.generate(request,selection,provider_payload=prepared).answer,'Example Domain')
+                self.assertEqual([call['url'].rsplit('/',1)[-1] for call in transport.calls],['tags','show','tags','chat'])
+                self.assertEqual(transport.calls[-1]['timeout_seconds'],90)
+                self.assertEqual(prepared['options']['num_predict'],512)
+
+    def test_nonweb_mixed_version_external_and_six_sections_keep_original_without_metadata(self):
+        from dataclasses import replace
+        item=self.request().evidence[0]
+        cases=[(replace(item,source_id='source-txt',source_version_id='version-txt'),),
+            (replace(item,source_id='web-source-lookalike'),),
+            (replace(item,source_version_id='web-version-'+'b'*32),),
+            (replace(item,chunk_id='ordinary-chunk'),),
+            (replace(item,evidence_span_id='ordinary-span'),),
+            (replace(item,locator_kind='page'),),
+            (item,replace(item,source_version_id='web-version-'+'b'*32)),self.request(6).evidence]
+        for evidence in cases:
+            with self.subTest(evidence=evidence):
+                transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport)
+                request=GroundedQuestionRequest('title?',evidence,'trace-web')
+                payload=adapter.provider_payload(request,self.selection())
+                self.assertIs(adapter.prepare_qa_structured_payload(request,self.selection(),payload),payload)
+                self.assertEqual(transport.calls,[])
+        external=replace(self.selection(),provider_kind='external_api')
+        transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport)
+        payload=adapter.provider_payload(self.request(),external)
+        self.assertIs(adapter.prepare_qa_structured_payload(self.request(),external,payload),payload)
+        self.assertEqual(transport.calls,[])
+
+    def test_web_nonthinking_payload_unchanged_and_bad_metadata_or_thinking_content_not_used(self):
+        request=self.request();selection=self.selection()
+        transport=self.Transport(thinking=False);adapter=OllamaTextGenerationAdapter(transport=transport)
+        payload=adapter.provider_payload(request,selection)
+        self.assertIs(adapter.prepare_qa_structured_payload(request,selection,payload),payload)
+        for invalid in ('digest','remote','model','metadata'):
+            with self.subTest(invalid=invalid):
+                transport=self.Transport(invalid=invalid);adapter=OllamaTextGenerationAdapter(transport=transport)
+                with self.assertRaisesRegex(ValueError,'^TEXT_GENERATION_RESPONSE_INVALID$'):
+                    adapter.prepare_qa_structured_payload(request,selection,payload)
+                self.assertFalse(any(call['url'].endswith('/api/chat') for call in transport.calls))
+        with self.assertRaisesRegex(ValueError,'^TEXT_GENERATION_RESPONSE_INVALID$'):
+            OllamaTextGenerationAdapter(transport=self.Transport()).generate(request,selection,provider_payload=payload)
+
+    def test_existing_service_exact_workspace_gate_is_preserved(self):
+        from daon_user_api.question_answering_service import QuestionAnsweringService,QuestionAdapterRegistry
+        from daon_user_api.question_answering_postgres import QuestionContext
+        for target,workspace in (('workspace-qa','workspace-other'),('','workspace-qa'),('workspace-qa','workspace-qa')):
+            with self.subTest(target=target,workspace=workspace):
+                transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport)
+                request=self.request();selection=self.selection();payload=adapter.provider_payload(request,selection)
+                prepared=QuestionAdapterRegistry.Prepared(request,selection,adapter,payload)
+                service=object.__new__(QuestionAnsweringService);service._qa_structured_ollama_workspace_id=target
+                context=QuestionContext('tenant',workspace,'actor','trace','policy','notebook')
+                result=service._prepare_qa_structured_payload(context,prepared)
+                if target and target==workspace:self.assertIs(result.provider_payload.get('think'),False)
+                else:self.assertIs(result,prepared);self.assertEqual(transport.calls,[])
+
+    def test_web_metadata_keeps_one_total_five_second_budget(self):
+        transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport)
+        request=self.request();selection=self.selection();payload=adapter.provider_payload(request,selection)
+        with patch('daon_user_api.question_answering.time.monotonic',side_effect=[100,100,103,105]):
+            with self.assertRaisesRegex(ValueError,'^TEXT_GENERATION_RESPONSE_INVALID$'):
+                adapter.prepare_qa_structured_payload(request,selection,payload)
+        self.assertEqual([call['timeout_seconds'] for call in transport.calls],[5,2])
+        self.assertFalse(any(call['url'].endswith('/api/chat') for call in transport.calls))
+
+    def test_web_response_keeps_strict_grounding_rejection(self):
+        request=self.request();selection=self.selection()
+        for answer,cited in (('Invented SKU-777',[request.evidence[0].chunk_id]),('Example Domain',['invented-chunk'])):
+            with self.subTest(answer=answer,cited=cited):
+                transport=self.Transport();original=transport.post_json_no_auth
+                def response(**kwargs):
+                    if kwargs['url'].endswith('/api/show'):return original(**kwargs)
+                    transport.calls.append(kwargs)
+                    return {'message':{'content':json.dumps({'answer':answer,'cited_chunk_ids':cited,'insufficient':False})}}
+                transport.post_json_no_auth=response
+                adapter=OllamaTextGenerationAdapter(transport=transport)
+                payload=adapter.prepare_qa_structured_payload(request,selection,adapter.provider_payload(request,selection))
+                with self.assertRaisesRegex(ValueError,'^TEXT_GENERATION_GROUNDING_INVALID$'):
+                    adapter.generate(request,selection,provider_payload=payload)
+
+
 class AudioQuestionGroundingTests(unittest.TestCase):
     def test_audio_prompt_uses_time_locator_and_not_fake_page(self):
         chunk = IndexedEvidenceChunk('audio', 'source', 'version', 1, 'ABC', 'span', 0.0,

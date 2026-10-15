@@ -424,6 +424,19 @@ class OllamaTextGenerationAdapter:
         payload: dict[str, object],
     ) -> dict[str, object]:
         """QA-only installed-model check; caller owns the exact Workspace gate."""
+        # 웹 근거는 기존 stored index/RLS 소비 경계에서 온 section만 허용한다.
+        # 일반 TXT/임의 section을 웹으로 추정하지 않고 W2의 request 기반
+        # Source/Version namespace와 chunk/span 결속을 함께 확인한다.
+        website = all(
+            item.locator_kind == "section" and item.locator_value is None
+            and isinstance(item.source_id, str)
+            and re.fullmatch(r"web-source-[0-9a-f]{32}", item.source_id) is not None
+            and item.source_version_id == "web-version-" + item.source_id.removeprefix("web-source-")
+            and isinstance(item.chunk_id, str)
+            and re.fullmatch(r"web-chunk-[0-9a-f]{32}", item.chunk_id) is not None
+            and item.evidence_span_id == "web-span-" + item.chunk_id.removeprefix("web-chunk-")
+            for item in request.evidence
+        )
         if not (
             selection.provider_code == "OLLAMA"
             and selection.provider_kind in {"local", "server_internal", "local_runtime"}
@@ -431,7 +444,8 @@ class OllamaTextGenerationAdapter:
             and (all(item.locator_kind == "sheet_cell" for item in request.evidence)
                  or all(item.locator_kind == "docx_block" for item in request.evidence)
                  or all(item.locator_kind == "pptx_block" for item in request.evidence)
-                 or all(item.locator_kind == "audio_segment" for item in request.evidence))
+                 or all(item.locator_kind == "audio_segment" for item in request.evidence)
+                 or website)
             and len({(item.source_id, item.source_version_id) for item in request.evidence}) == 1
         ):
             return payload
