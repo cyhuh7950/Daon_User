@@ -274,6 +274,10 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
         pptx = tuple(replace(c, locator_kind='pptx_block', locator_value=json.dumps(
             {'block': f's:1:sp:2:p:{i + 1}', 'start': 0, 'end': len(c.text)}, separators=(',', ':')))
             for i, c in enumerate(cells))
+        from daon_user_api.open_law_source_postgres import law_chunks
+        law = tuple(IndexedEvidenceChunk(row['chunk_id'], row['source_id'], row['source_version_id'],
+            row['page'], row['text'], row['evidence_span_id'], 0.0, 'section', None)
+            for row in law_chunks('law-source-' + 'a' * 32, 'law-version-' + 'a' * 32, 'REF-17; 57000'))
         selection = ResolvedModel(
             connection_id="local", provider_code="OLLAMA", model_id="fixture",
             capability="text_generation", base_url="http://models.example.com",
@@ -294,6 +298,10 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
             ("workspace-qa", "workspace-qa", docx, False, True, 6),
             ("workspace-qa", "workspace-qa", pptx, False, False, 6),
             ("workspace-qa", "workspace-qa", pptx, False, True, 6),
+            ("workspace-qa", "workspace-qa", law, False, False, 6),
+            ("workspace-qa", "workspace-qa", law, False, True, 6),
+            ("workspace-other", "workspace-qa", law, False, False, 0),
+            ("workspace-qa", "", law, False, False, 0),
             ("workspace-other", "workspace-qa", pptx, False, False, 0),
             ("workspace-qa", "workspace-qa", (pptx[0], docx[1]), False, False, 0),
             ("workspace-other", "workspace-qa", docx, False, False, 0),
@@ -318,7 +326,8 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                         if kwargs["url"].endswith("/api/show"):
                             return {"capabilities": ["completion", "thinking"], "model_info": {"architecture": "fixture"}}
                         result = {"answer": "Hello"} if general else {
-                            "answer": "Insufficient evidence." if insufficient else "REF-17; 57000",
+                            "answer": ("선택한 원문 근거에 질문에 답할 정보가 없습니다." if evidence == law
+                                       else "Insufficient evidence.") if insufficient else "REF-17; 57000",
                             "cited_chunk_ids": [] if insufficient else [c.chunk_id for c in evidence],
                             "insufficient": insufficient,
                         }
@@ -345,6 +354,8 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 )
                 context = QuestionContext("tenant-cp3", workspace, "actor-cp3", "trace-cp3", "policy-v1")
                 args = {"source_id": None if general else "source-cp3", "source_version_id": None if general else "source-version-cp3", "question": "Hello" if general else "Read the workbook values"}
+                if evidence == law:
+                    args.update(source_id=law[0].source_id, source_version_id=law[0].source_version_id)
                 authorization = service.prepare_authorization(context, **args)
                 answer = service.ask(context, run_id="run-qa", **args)
                 chat = calls[-1]
@@ -352,7 +363,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                 self.assertEqual(egress.asserted_metadata_count, metadata_calls)
                 self.assertEqual(authorization.provider_payload, egress.wire)
                 self.assertEqual(egress.wire, canonical_json_bytes(chat["payload"]))
-                if evidence in (docx, pptx) and workspace == target:
+                if evidence in (docx, pptx, law) and workspace == target:
                     # Real service canonical roundtrip must not choose answer-first grammar.
                     frozen = json.loads(egress.wire)
                     for branch, wire_branch in zip(chat["payload"]["format"]["anyOf"], frozen["format"]["anyOf"], strict=True):
@@ -362,7 +373,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                     import hashlib
                     self.assertEqual(hashlib.sha256(egress.wire).hexdigest(),
                                      hashlib.sha256(canonical_json_bytes(chat["payload"])).hexdigest())
-                    self.assertEqual(json.loads(chat["payload"]["messages"][1]["content"])["evidence"][0]["text"], "REF-17")
+                    self.assertEqual(json.loads(chat["payload"]["messages"][1]["content"])["evidence"][0]["text"], evidence[0].text)
                     self.assertEqual(chat["payload"]["messages"][1]["content"],
                                      canonical_json_bytes(json.loads(chat["payload"]["messages"][1]["content"])).decode())
                 if metadata_calls:

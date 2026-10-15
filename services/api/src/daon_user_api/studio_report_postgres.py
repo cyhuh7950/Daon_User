@@ -349,16 +349,19 @@ class PostgresStudioReportRepository:
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.read")) as connection:
                 rows = connection.execute(
-                    "SELECT ov.canonical_json,ov.state,so.record_id,ov.record_id,er.canonical_json FROM output_versions ov "
-                    "JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id "
-                    "AND so.record_id=ov.studio_output_id LEFT JOIN evidence_references er ON "
-                    "er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id "
+                    "SELECT ov.canonical_json,ov.state,so.record_id,ov.record_id,er.canonical_json,so.canonical_json "
+                    "FROM studio_outputs so JOIN LATERAL (SELECT v.canonical_json,v.state,v.record_id "
+                    "FROM output_versions v WHERE v.tenant_id=so.tenant_id AND v.workspace_id=so.workspace_id "
+                    "AND v.studio_output_id=so.record_id ORDER BY v.content_version DESC,v.record_id DESC LIMIT 1) ov ON true "
+                    "LEFT JOIN evidence_references er ON "
+                    "er.tenant_id=so.tenant_id AND er.workspace_id=so.workspace_id "
                     "AND er.output_version_id=ov.record_id WHERE so.canonical_json->>'output_type'='evidence_report' "
                     "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=so.tenant_id "
                     "AND nb.workspace_id=so.workspace_id AND nb.notebook_id=%s "
                     "AND nb.binding_kind='studio_output' AND nb.record_id=so.record_id) "
+                    "AND so.tenant_id=%s AND so.workspace_id=%s "
                     "ORDER BY so.created_at,so.record_id,er.record_id"
-                    , (context.notebook_id,),
+                    , (context.notebook_id, context.tenant_id, context.workspace_id),
                 ).fetchall()
                 blocked=set()
                 for row in rows:
@@ -369,15 +372,33 @@ class PostgresStudioReportRepository:
                 rows=[row for row in rows if str(row[3]) not in blocked]
         except CloudDatabaseError as error:
             raise StudioReportError("STUDIO_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable) from None
-        grouped: dict[str, dict[str, object]] = {}
-        for row in rows:
-            payload = dict(cast(Mapping[str, object], row[0]))
-            item = grouped.setdefault(str(row[2]), {
-                "studio_output_id": str(row[2]), "output_version_id": str(row[3]),
-                "output_type": payload["output_type"], "title": payload["title"], "purpose": payload["purpose"],
-                "status": str(row[1]), "content": payload["content"], "run_id": payload["run_id"],
-                "run_result_id": payload["run_result_id"], "citations": [],
-            })
-            if row[4] is not None:
-                cast(list, item["citations"]).append(dict(cast(Mapping[str, object], row[4])))
-        return tuple(self._projection(value) for value in grouped.values())
+        try:
+            grouped: dict[str, dict[str, object]] = {}
+            for row in rows:
+                output_id = str(row[2])
+                if output_id not in grouped:
+                    payload = dict(cast(Mapping[str, object], row[0]))
+                    parent = dict(cast(Mapping[str, object], row[5]))
+                    content = payload["content"]
+                    if isinstance(content, Mapping):
+                        # The legacy DTO is text. Preserve every structured
+                        # value as JSON, never a regenerated/abridged report.
+                        content = json.dumps(dict(content), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                    elif not isinstance(content, str):
+                        raise ValueError("STUDIO_RESULT_INVALID")
+                    grouped[output_id] = {
+                        "studio_output_id": output_id, "output_version_id": str(row[3]),
+                        "output_type": parent["output_type"], "title": parent["title"], "purpose": parent["purpose"],
+                        "status": str(row[1]), "content": content, "run_id": payload["run_id"],
+                        "run_result_id": payload["run_result_id"], "citations": [],
+                    }
+                if row[4] is not None:
+                    citation = cast(Mapping[str, object], row[4])
+                    cast(list, grouped[output_id]["citations"]).append({
+                        key: citation[key] for key in (
+                            "citation_id", "source_id", "source_version_id", "evidence_span_id", "page",
+                        )
+                    })
+            return tuple(self._projection(value) for value in grouped.values())
+        except (KeyError, TypeError, ValueError):
+            raise StudioReportError("STUDIO_RESULT_INVALID", status=500) from None

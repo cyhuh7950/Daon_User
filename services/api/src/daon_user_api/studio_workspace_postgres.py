@@ -557,12 +557,17 @@ class PostgresStudioWorkspaceRepository:
                     raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
                 rows = connection.execute(
                     "SELECT ov.record_id,ov.content_version,ov.previous_version_id,ov.state,ov.canonical_json,ov.generation_settings_snapshot_id,"
-                    "COALESCE((SELECT jsonb_agg(er.canonical_json || jsonb_build_object('citation_id',er.canonical_json->>'citation_id','source_version_id',er.source_version_id,'evidence_span_id',er.evidence_span_id) ORDER BY er.record_id) FROM evidence_references er WHERE er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id),'[]'::jsonb),"
+                    "COALESCE((SELECT jsonb_agg(er.canonical_json || jsonb_build_object('citation_id',er.canonical_json->>'citation_id','source_version_id',er.source_version_id,'evidence_span_id',er.evidence_span_id,'_persisted_citation',c.canonical_json) ORDER BY er.record_id) "
+                    "FROM evidence_references er LEFT JOIN citations c ON c.tenant_id=er.tenant_id AND c.workspace_id=er.workspace_id "
+                    "AND c.record_id=er.canonical_json->>'citation_id' AND c.source_version_id=er.source_version_id "
+                    "AND c.evidence_span_id=er.evidence_span_id WHERE er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id),'[]'::jsonb),"
                     "(SELECT record_id FROM review_requests WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
                     "(SELECT record_id FROM approval_requests WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
                     "(SELECT record_id FROM approvals WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id AND decision='approved' ORDER BY created_at DESC,record_id DESC LIMIT 1),"
                     "(SELECT record_id FROM deliveries WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
-                    "(SELECT record_id FROM knowledge_registrations WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id AND state='registered' ORDER BY created_at DESC,record_id DESC LIMIT 1) "
+                    "(SELECT record_id FROM knowledge_registrations WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id AND state='registered' ORDER BY created_at DESC,record_id DESC LIMIT 1),"
+                    "(SELECT gs.canonical_json FROM generation_settings_snapshots gs WHERE gs.tenant_id=ov.tenant_id "
+                    "AND gs.workspace_id=ov.workspace_id AND gs.record_id=ov.generation_settings_snapshot_id) "
                     "FROM output_versions ov JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id AND so.record_id=ov.studio_output_id "
                     "WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s "
                     "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=ov.tenant_id "
@@ -588,17 +593,51 @@ class PostgresStudioWorkspaceRepository:
         result = []
         for row in rows:
             payload = dict(cast(Mapping[str, object], row[4]))
+            settings = row[12] if len(row) > 12 and isinstance(row[12], Mapping) else {}
+            legacy_fields = {'output_type', 'title', 'purpose', 'content', 'run_id', 'run_result_id'}
+            legacy = (
+                legacy_fields.issubset(payload)
+                and set(payload).issubset(legacy_fields | {
+                    'previous_version_id', 'revision_type', 'change_reason', 'approval_required', 'settings',
+                })
+                and payload['output_type'] == 'evidence_report'
+                and all(isinstance(payload[key], str) and payload[key].strip()
+                        for key in ('title', 'purpose', 'content', 'run_id', 'run_result_id'))
+                and payload.get('settings') is None
+                and set(settings) == {'provider_code', 'model_id', 'output_type', 'source_version_id', 'run_result_id'}
+                and all(isinstance(settings.get(key), str) and settings[key] for key in settings)
+                and settings.get('output_type') == 'evidence_report'
+                and settings.get('run_result_id') == payload['run_result_id']
+                and {citation.get('source_version_id') for citation in row[6]} == {settings.get('source_version_id')}
+            )
+            # Compatibility with the existing legacy UI's PDF download choice;
+            # this is not a stored/generated PDF or a modern-format default.
+            output_format = 'pdf' if legacy else payload.get('output_format')
+            if not isinstance(output_format, str) or output_format not in set().union(*FORMATS.values()):
+                raise StudioError('STUDIO_RESULT_INVALID', 500)
             citations = []
             for raw_citation in cast(list[Mapping[str, object]], row[6]):
                 citation = dict(raw_citation)
                 locator = citation.get("locator")
+                persisted = citation.get('_persisted_citation')
+                if isinstance(persisted, Mapping):
+                    stored_locator = persisted.get('locator')
+                    if (persisted.get('source_version_id') != citation.get('source_version_id')
+                            or persisted.get('evidence_span_id') != citation.get('evidence_span_id')
+                            or not isinstance(stored_locator, Mapping)
+                            or set(stored_locator) != {'kind', 'value'}
+                            or (locator is not None and locator != stored_locator)):
+                        raise StudioError('STUDIO_RESULT_INVALID', 500)
+                    locator = stored_locator
+                elif legacy:
+                    raise StudioError('STUDIO_RESULT_INVALID', 500)
                 if not isinstance(locator, Mapping):
                     locator = {"kind": "page", "value": str(citation.get("page", 1))}
                 citations.append({
                     "citation_id": str(citation.get("citation_id", "")),
                     "source_version_id": str(citation.get("source_version_id", "")),
                     "evidence_span_id": str(citation.get("evidence_span_id", "")),
-                    "origin": str(citation.get("origin", "raw_source")),
+                    "origin": str(citation.get("origin", persisted.get('origin', 'raw_source') if isinstance(persisted, Mapping) else "raw_source")),
                     "locator": dict(locator),
                 })
             result.append({
@@ -614,7 +653,7 @@ class PostgresStudioWorkspaceRepository:
                 "approval_id": str(row[9]) if row[9] is not None else None,
                 "delivery_id": str(row[10]) if row[10] is not None else None,
                 "knowledge_registration_id": str(row[11]) if row[11] is not None else None,
-                "output_format": str(payload.get("output_format", "")),
+                "output_format": output_format,
             })
         return tuple(result)
 
@@ -655,11 +694,22 @@ class PostgresStudioWorkspaceRepository:
                         (context.tenant_id, context.workspace_id, revision["previous_version_id"]),
                     ).fetchall())
                 if revision["revision_type"] in {"ai_regeneration", "settings_change"}:
+                    if not isinstance(previous[3], Mapping):
+                        raise StudioError("STUDIO_INPUT_INVALID", 400)
                     previous_payload = dict(cast(Mapping[str, object], previous[3]))
                     supplied = revision.get("settings") if revision["revision_type"] == "settings_change" else None
                     effective = dict(cast(Mapping[str, object], supplied)) if isinstance(supplied, Mapping) else {
                         key: previous_payload.get(key) for key in ("purpose", "audience", "language", "source_version_ids", "ruleset_version_id", "length", "structure", "output_format", "review_condition")
                     }
+                    # Legacy reports do not persist the full generation input.
+                    # Reject unsupported regeneration before any new canon write;
+                    # never infer missing source scope or generation settings.
+                    if (not all(isinstance(previous_payload.get(key), str) and previous_payload[key].strip()
+                                for key in ("output_type", "source_id", "run_id", "run_result_id"))
+                            or not all(isinstance(effective.get(key), str) and effective[key].strip()
+                                       for key in ("purpose", "audience", "length", "structure", "output_format", "review_condition"))
+                            or not isinstance(effective.get("source_version_ids"), (list, tuple))):
+                        raise StudioError("STUDIO_INPUT_INVALID", 400)
                     generation_request = StudioGenerationRequest(
                         str(previous_payload["output_type"]), str(previous_payload["source_id"]), tuple(cast(list[str], effective["source_version_ids"])),
                         str(previous_payload["run_id"]), str(previous_payload["run_result_id"]), str(effective["purpose"]), str(effective["audience"]),

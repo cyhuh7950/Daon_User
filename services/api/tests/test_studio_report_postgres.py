@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 import json
+import re
+from unittest.mock import patch
 
 from daon_user_api.cloud_storage import CloudDatabaseError
 from daon_user_api.studio_report import (
@@ -9,6 +11,7 @@ from daon_user_api.studio_report import (
 )
 from daon_user_api.studio_report_postgres import PostgresStudioReportRepository
 from daon_user_api.license import LicenseError
+from daon_user_api.open_law_source_access import OpenLawAccessError
 
 
 class FakeResult:
@@ -112,6 +115,38 @@ class FakeCloud:
         return FakeTransaction(self)
 
 
+class OutputListConnection:
+    """SQL-shaped read seam; this is not a PostgreSQL execution claim."""
+
+    def __init__(self, outputs, *, law_versions=()):
+        self.outputs = outputs
+        self.law_versions = law_versions
+        self.statements = []
+
+    def execute(self, sql, params=()):
+        self.statements.append((sql, params))
+        if sql.startswith('SELECT canonical_json FROM source_versions'):
+            payload = ({'origin_kind': 'mcp_open_law', 'connector_id': 'mcp-open-law-go-kr',
+                        'snapshot_id': 'snapshot-law'} if params[-1] in self.law_versions else {})
+            return FakeResult((payload,))
+        if 'FROM output_versions ov' in sql or 'FROM studio_outputs so' in sql:
+            # Without a bounded latest-version selection, expose all historical
+            # references so the real repository's grouping cannot hide the bug.
+            latest_only = 'JOIN LATERAL' in sql and re.search(
+                r'ORDER BY \w+\.content_version DESC,\w+\.record_id DESC LIMIT 1', sql,
+            )
+            rows = []
+            for output_id, parent, versions in self.outputs:
+                chosen = sorted(versions, key=lambda item: (item[0], item[1]), reverse=True)
+                if latest_only:
+                    chosen = chosen[:1]
+                for _number, version_id, payload, references in chosen:
+                    for reference in references or (None,):
+                        rows.append((payload, 'draft', output_id, version_id, reference, parent))
+            return FakeResult(rows=rows)
+        raise AssertionError(f'Unexpected read: {sql}')
+
+
 class StudioReportPostgresTests(unittest.TestCase):
     def test_transactional_license_capability_requires_postgres_enforcer(self) -> None:
         cloud = FakeCloud(FakeConnection())
@@ -128,6 +163,89 @@ class StudioReportPostgresTests(unittest.TestCase):
         self.request = StudioReportCreateRequest(
             "source-1", "source-version-1", "run-1", "result-1", "승인 검토 보고서", "근거 기반 요약",
         )
+
+    @staticmethod
+    def output_version(number=1, *, modern=False, extra_reference_fields=False):
+        reference = {'citation_id': f'citation-{number}', 'source_id': 'source-1',
+                     'source_version_id': f'sv-{number}', 'evidence_span_id': f'span-{number}', 'page': 1}
+        if extra_reference_fields:
+            reference.update(origin='raw_source', context_item_id='source-1',
+                             locator={'kind': 'section', 'value': f'span-{number}'})
+        payload = {'output_type': 'evidence_report', 'purpose': '버전별 목적',
+                   'content': '원문 그대로\n"근거"', 'run_id': 'run-1', 'run_result_id': 'result-1'}
+        if modern:
+            payload['content'] = {'title': '구조화 원문', 'sections': [
+                {'heading': '본문', 'text': '한글 "인용"\n둘째 줄', 'amount': 57000,
+                 'confirmed': False, 'optional': None}], 'references': [reference.copy()]}
+        else:
+            payload['title'] = '과거 버전 제목'
+        return number, f'version-{number}', payload, [reference]
+
+    def test_list_outputs_reads_parent_metadata_for_mixed_legacy_and_modern(self):
+        legacy = self.output_version()
+        modern = self.output_version(2, modern=True, extra_reference_fields=True)
+        connection = OutputListConnection([
+            ('output-legacy', {'output_type': 'evidence_report', 'title': '부모 제목 1', 'purpose': '부모 목적 1'}, [legacy]),
+            ('output-modern', {'output_type': 'evidence_report', 'title': '부모 제목 2', 'purpose': '부모 목적 2'}, [modern]),
+        ])
+        outputs = PostgresStudioReportRepository(FakeCloud(connection)).list_outputs(self.context)
+        self.assertEqual([(item.studio_output_id, item.output_type, item.title, item.purpose) for item in outputs], [
+            ('output-legacy', 'evidence_report', '부모 제목 1', '부모 목적 1'),
+            ('output-modern', 'evidence_report', '부모 제목 2', '부모 목적 2'),
+        ])
+        self.assertEqual(outputs[0].content, '원문 그대로\n"근거"')
+        self.assertEqual(json.loads(outputs[1].content), modern[2]['content'])
+        self.assertEqual([(item.citation_id, item.source_id, item.source_version_id,
+                           item.evidence_span_id, item.page) for item in outputs[1].citations],
+                         [('citation-2', 'source-1', 'sv-2', 'span-2', 1)])
+
+    def test_list_outputs_returns_latest_version_and_only_its_references(self):
+        connection = OutputListConnection([
+            ('output-1', {'output_type': 'evidence_report', 'title': '현재 제목', 'purpose': '현재 목적'},
+             [self.output_version(1), self.output_version(2)]),
+        ])
+        outputs = PostgresStudioReportRepository(FakeCloud(connection)).list_outputs(self.context)
+        self.assertEqual(len(outputs), 1)
+        self.assertEqual(outputs[0].output_version_id, 'version-2')
+        self.assertEqual([item.citation_id for item in outputs[0].citations], ['citation-2'])
+        self.assertEqual([params[-1] for sql, params in connection.statements
+                          if sql.startswith('SELECT canonical_json FROM source_versions')], ['sv-2'])
+
+    def test_list_outputs_keeps_scope_and_denies_whole_version_on_law_access_failure(self):
+        for enabled in ('false', 'true'):
+            with self.subTest(enabled=enabled), patch.dict('os.environ', {
+                'DAON_OPEN_LAW_ENABLED': enabled,
+                'DAON_OPEN_LAW_QA_WORKSPACE_ID': self.context.workspace_id,
+            }), patch('daon_user_api.open_law_source_access.current_open_law_policy',
+                      side_effect=OpenLawAccessError('OPEN_LAW_ACCESS_DENIED')):
+                version = self.output_version(2)
+                version[3].append(self.output_version(3)[3][0])
+                parent = {'output_type': 'evidence_report', 'title': '허용 제목', 'purpose': '허용 목적'}
+                connection = OutputListConnection([
+                    ('output-visible', parent, [self.output_version(1)]),
+                    ('output-blocked', parent, [self.output_version(1), version]),
+                ], law_versions=('sv-2',))
+                outputs = PostgresStudioReportRepository(FakeCloud(connection)).list_outputs(self.context)
+                self.assertEqual([item.studio_output_id for item in outputs], ['output-visible'])
+                sql, params = connection.statements[0]
+                self.assertIn('nb.notebook_id=%s', sql)
+                self.assertIn("nb.binding_kind='studio_output'", sql)
+                self.assertIn('so.tenant_id=%s', sql)
+                self.assertIn('so.workspace_id=%s', sql)
+                self.assertEqual(params, ('notebook-1', 'tenant-1', 'workspace-1'))
+                self.assertTrue(all(statement.lstrip().startswith('SELECT') for statement, _ in connection.statements))
+
+    def test_list_outputs_requires_notebook_and_does_not_skip_malformed_parent(self):
+        from dataclasses import replace
+        connection = OutputListConnection([])
+        with self.assertRaisesRegex(StudioReportError, '^NOTEBOOK_SCOPE_REQUIRED$'):
+            PostgresStudioReportRepository(FakeCloud(connection)).list_outputs(replace(self.context, notebook_id=None))
+        self.assertEqual(connection.statements, [])
+        connection = OutputListConnection([
+            ('output-bad', {'output_type': 'evidence_report', 'purpose': 'missing title'}, [self.output_version()]),
+        ])
+        with self.assertRaisesRegex(StudioReportError, '^STUDIO_RESULT_INVALID$'):
+            PostgresStudioReportRepository(FakeCloud(connection)).list_outputs(self.context)
 
     def test_create_uses_one_canon_transaction_and_records_complete_lineage(self) -> None:
         connection = FakeConnection()

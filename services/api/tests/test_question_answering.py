@@ -344,7 +344,59 @@ class OpenLawQaThinkingTests(unittest.TestCase):
             IndexedEvidenceChunk(row['chunk_id'],row['source_id'],row['source_version_id'],row['page'],
                 row['text'],row['evidence_span_id'],0.0,'section',None) for row in chunks),'trace-law')
 
-    def test_law_verified_thinking_only_changes_think_for_real_canonical_chunks(self):
+    def test_law_qa_choice_schema_binds_both_model_selected_branches(self):
+        for count in (1, 5):
+            for thinking in (True, False):
+                with self.subTest(count=count, thinking=thinking):
+                    request = self.request(count); selection = self.selection()
+                    adapter = OllamaTextGenerationAdapter(transport=self.Transport(thinking=thinking))
+                    baseline = adapter.provider_payload(request, selection)
+                    prepared = adapter.prepare_qa_structured_payload(request, selection, baseline)
+                    expected = {'anyOf': [
+                        {'type': 'object', 'properties': {
+                            'insufficient': {'type': 'boolean', 'const': insufficient},
+                            'cited_chunk_ids': {'type': 'array', 'const': ids},
+                            'answer': {'type': 'string', **({'const': '선택한 원문 근거에 질문에 답할 정보가 없습니다.'}
+                                                          if insufficient else {'minLength': 1})}},
+                         'required': ['insufficient', 'cited_chunk_ids', 'answer'], 'additionalProperties': False}
+                        for insufficient, ids in ((False, [item.chunk_id for item in request.evidence]), (True, []))
+                    ]}
+                    self.assertEqual(prepared['format'], expected)
+                    self.assertEqual({key: value for key, value in prepared.items() if key not in ('format', 'messages', 'think')},
+                                     {key: value for key, value in baseline.items() if key not in ('format', 'messages', 'think')})
+                    self.assertEqual(prepared['messages'][1:], baseline['messages'][1:])
+                    self.assertIn('law', prepared['messages'][0]['content'])
+                    self.assertNotIn('DOCX', prepared['messages'][0]['content'])
+                    self.assertNotIn('Word page', prepared['messages'][0]['content'])
+                    if thinking: self.assertIs(prepared['think'], False)
+                    else: self.assertNotIn('think', prepared)
+
+    def test_law_choice_keeps_strict_rejection_and_returns_model_insufficient_answer_verbatim(self):
+        request = self.request(); selection = self.selection(); chunk = request.evidence[0].chunk_id
+        answers = [
+            ({'answer': 'Example Domain', 'insufficient': False, 'cited_chunk_ids': [chunk]}, True),
+            ({'answer': '선택한 원문 근거에 질문에 답할 정보가 없습니다.', 'insufficient': True, 'cited_chunk_ids': []}, True),
+            ({'answer': 'Example Domain', 'insufficient': True, 'cited_chunk_ids': [chunk]}, False),
+            ({'answer': '없습니다.', 'insufficient': False, 'cited_chunk_ids': []}, False),
+            ({'answer': '2035 budget 999', 'insufficient': False, 'cited_chunk_ids': [chunk]}, False),
+        ]
+        for response, valid in answers:
+            with self.subTest(response=response):
+                transport = self.Transport(); original = transport.post_json_no_auth
+                def post(**kwargs):
+                    if kwargs['url'].endswith('/api/chat'): return {'message': {'content': json.dumps(response)}}
+                    return original(**kwargs)
+                transport.post_json_no_auth = post
+                adapter = OllamaTextGenerationAdapter(transport=transport)
+                payload = adapter.prepare_qa_structured_payload(request, selection, adapter.provider_payload(request, selection))
+                if valid:
+                    result = adapter.generate(request, selection, provider_payload=payload)
+                    self.assertEqual((result.answer, result.insufficient), (response['answer'], response['insufficient']))
+                else:
+                    with self.assertRaisesRegex(ValueError, '^TEXT_GENERATION_GROUNDING_INVALID$'):
+                        adapter.generate(request, selection, provider_payload=payload)
+
+    def test_law_verified_choice_schema_keeps_other_wire_for_real_canonical_chunks(self):
         from dataclasses import replace
         for count,start,kind in ((1,0,'server_internal'),(5,0,'local'),(1,1024,'local_runtime'),(1,523264,'server_internal')):
             with self.subTest(count=count,start=start,kind=kind):
@@ -352,7 +404,10 @@ class OpenLawQaThinkingTests(unittest.TestCase):
                 transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport)
                 baseline=adapter.provider_payload(request,selection);saved=deepcopy(baseline)
                 prepared=adapter.prepare_qa_structured_payload(request,selection,baseline)
-                self.assertEqual(prepared,{**saved,'think':False});self.assertEqual(baseline,saved)
+                self.assertEqual({key:value for key,value in prepared.items() if key not in ('format','messages','think')},
+                                 {key:value for key,value in saved.items() if key not in ('format','messages','think')})
+                self.assertEqual(prepared['messages'][1:],saved['messages'][1:]);self.assertEqual(baseline,saved)
+                self.assertIs(prepared['think'],False)
                 self.assertEqual(adapter.generate(request,selection,provider_payload=prepared).answer,'Example Domain')
                 self.assertEqual([call['url'].rsplit('/',1)[-1] for call in transport.calls],['tags','show','tags','chat'])
                 self.assertIsNone(transport.calls[-1]['timeout_seconds']);self.assertEqual(prepared['options']['num_predict'],512)
@@ -387,7 +442,8 @@ class OpenLawQaThinkingTests(unittest.TestCase):
             self.assertIs(adapter.prepare_qa_structured_payload(request,other,payload),payload);self.assertEqual(transport.calls,[])
         transport=self.Transport(thinking=False);adapter=OllamaTextGenerationAdapter(transport=transport)
         payload=adapter.provider_payload(request,selection)
-        self.assertIs(adapter.prepare_qa_structured_payload(request,selection,payload),payload)
+        prepared=adapter.prepare_qa_structured_payload(request,selection,payload)
+        self.assertNotIn('think',prepared);self.assertIn('anyOf',prepared['format'])
         for invalid in ('digest','remote','model','metadata','completion'):
             with self.subTest(invalid=invalid):
                 transport=self.Transport(invalid=invalid);adapter=OllamaTextGenerationAdapter(transport=transport)

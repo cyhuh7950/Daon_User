@@ -642,7 +642,15 @@ class QuestionAnsweringService:
                 raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED",
                 status=503 if raw_code.startswith("TEXT_PROVIDER_") else 502,
             ) from None
+        original_format = prepared.provider_payload.get("format")
         prepared = self._prepare_qa_structured_payload(context, prepared)
+        # Only the existing verified QA adapter changes section evidence to
+        # this choice schema (law); do not repeat its canonical ID/metadata checks.
+        qa_law_schema = prepared.provider_payload.get("format") if (
+            isinstance(prepared.request, GroundedQuestionRequest)
+            and all(item.locator_kind == "section" for item in prepared.request.evidence)
+            and prepared.provider_payload.get("format") != original_format
+        ) else None
         frozen_bytes = canonical_json_bytes(prepared.provider_payload)
         transformer = getattr(self._egress, "prepare_payload", None)
         if callable(transformer):
@@ -668,7 +676,8 @@ class QuestionAnsweringService:
             and 1 <= len(prepared.request.evidence) <= 5
             and (all(item.locator_kind == "docx_block" for item in prepared.request.evidence)
                  or all(item.locator_kind == "pptx_block" for item in prepared.request.evidence)
-                 or all(item.locator_kind == "audio_segment" for item in prepared.request.evidence))
+                 or all(item.locator_kind == "audio_segment" for item in prepared.request.evidence)
+                 or (qa_law_schema is not None and prepared.provider_payload.get("format") == qa_law_schema))
             and len({(item.source_id, item.source_version_id) for item in prepared.request.evidence}) == 1
         ):
             # Canonical authorization remains sorted and immutable. Restore only

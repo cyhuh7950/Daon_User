@@ -503,7 +503,7 @@ class OllamaTextGenerationAdapter:
         pptx = all(item.locator_kind == 'pptx_block' for item in request.evidence)
         audio = all(item.locator_kind == 'audio_segment' for item in request.evidence)
         _digest, capabilities = self.verified_internal_metadata(selection)
-        if all(item.locator_kind == "docx_block" for item in request.evidence) or pptx or audio:
+        if all(item.locator_kind == "docx_block" for item in request.evidence) or pptx or audio or law_source:
             # Caller has already matched the exact QA Workspace. Keep ordinary
             # DOCX/general/other-format payloads and the global schema untouched.
             payload = deepcopy(payload)
@@ -544,6 +544,11 @@ class OllamaTextGenerationAdapter:
                 payload['messages'][0]['content'] = payload['messages'][0]['content'].replace(
                     'DOCX evidence', 'ASR transcript evidence').replace('an original block and Unicode code-point start/end, not a Word page',
                     'a transcript segment, millisecond start/end and Unicode code-point start/end, not an audio page')
+            if law_source:
+                payload['messages'][0]['content'] = payload['messages'][0]['content'].replace(
+                    'DOCX evidence', 'law section evidence').replace(
+                    'Each locator identifies an original block and Unicode code-point start/end, not a Word page.',
+                    'Each text is an exact stored law section excerpt. Page is a compatibility field, not a rendered law page.')
         return {**payload, "think": False} if "thinking" in capabilities else payload
 
     def verified_internal_metadata(self, selection: TextModelSelection) -> tuple[str, tuple[str, ...]]:

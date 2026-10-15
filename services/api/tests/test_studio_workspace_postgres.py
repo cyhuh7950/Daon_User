@@ -163,6 +163,49 @@ class ApprovalTransitionConnection(Connection):
         return Result()
 
 
+class LegacyReportHistoryConnection(Connection):
+    """Read/copy seam with the legacy payload produced by create_report."""
+    def __init__(self):
+        super().__init__()
+        self.payload = {'output_type': 'evidence_report', 'title': '법령 근거 보고', 'purpose': '근거 확인',
+                        'content': '# 원문\n한글 "인용"', 'run_id': 'run-1', 'run_result_id': 'result-1'}
+        self.settings = {'provider_code': 'upstage', 'model_id': 'solar-pro4', 'output_type': 'evidence_report',
+                         'source_version_id': 'source-version-1', 'run_result_id': 'result-1'}
+        self.reference = {'citation_id': 'citation-1', 'source_id': 'source-1', 'source_version_id': 'source-version-1',
+                          'evidence_span_id': 'span-1', 'page': 1}
+        self.persisted = {'source_id': 'source-1', 'source_version_id': 'source-version-1', 'evidence_span_id': 'span-1',
+                          'origin': 'raw_source', 'locator': {'kind': 'section', 'value': 'span-1'}}
+        self.versions = [('version-1', 1, None, self.payload)]
+        self.references = {'version-1': [self.reference]}
+
+    def execute(self, sql, params=()):
+        self.statements.append((sql, params))
+        if 'FROM output_versions ov' in sql and 'ORDER BY ov.content_version DESC' in sql:
+            if params != ('tenant-1', 'workspace-1', 'output-1', 'notebook-1'):
+                return Result(rows=())
+            refs = lambda version: [{**ref, **({'_persisted_citation': self.persisted} if '_persisted_citation' in sql else {})}
+                                    for ref in self.references[version]]
+            return Result(rows=[(version, number, previous, 'draft', payload, 'settings-old', refs(version),
+                                 None, None, None, None, None, self.settings)
+                                for version, number, previous, payload in reversed(self.versions)])
+        if sql.startswith('SELECT DISTINCT er.source_version_id FROM evidence_references er'):
+            return Result(rows=(('source-version-1',),))
+        if 'FROM output_versions WHERE' in sql:
+            version = next(item for item in self.versions if item[0] == params[3])
+            return Result(('aggregate-1', version[1], 'settings-old', version[3], 'draft'))
+        if sql.startswith('SELECT record_id,source_version_id,evidence_span_id,canonical_json FROM evidence_references'):
+            return Result(rows=[('evidence-old', ref['source_version_id'], ref['evidence_span_id'], ref)
+                                for ref in self.references[params[2]]])
+        if sql.startswith('INSERT INTO output_versions'):
+            self.versions.append((params[2], params[4], params[5], params[6].obj))
+            self.references[params[2]] = []
+            return Result()
+        if sql.startswith('INSERT INTO evidence_references'):
+            self.references[params[-3]].append(params[6].obj)
+            return Result()
+        return super().execute(sql, params)
+
+
 class ExportConnection(Connection):
     def execute(self, sql, params=()):
         self.statements.append((sql, params))
@@ -384,6 +427,97 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
         self.assertEqual(versions[0]["review_request_id"], "review-1")
         self.assertEqual(versions[0]["approval_request_id"], "approval-request-1")
         self.assertEqual(versions[0]["approval_id"], "approval-1")
+
+    def test_legacy_report_version_read_restores_exact_citation_and_ui_pdf_default(self):
+        cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+        context = StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1')
+        versions = PostgresStudioWorkspaceRepository(cloud).list_versions(context, 'output-1')
+        self.assertEqual(versions[0]['output_format'], 'pdf')
+        self.assertEqual(versions[0]['content'], '# 원문\n한글 "인용"')
+        self.assertEqual(versions[0]['citations'], [{'citation_id': 'citation-1', 'source_version_id': 'source-version-1',
+                         'evidence_span_id': 'span-1', 'origin': 'raw_source', 'locator': {'kind': 'section', 'value': 'span-1'}}])
+        query = cloud.connection.statements[0][0]
+        for predicate in ('c.tenant_id=er.tenant_id', 'c.workspace_id=er.workspace_id',
+                          "c.record_id=er.canonical_json->>'citation_id'", 'c.source_version_id=er.source_version_id',
+                          'c.evidence_span_id=er.evidence_span_id'):
+            self.assertIn(predicate, query)
+
+    def test_legacy_read_never_defaults_modern_unknown_or_unverified_format(self):
+        from copy import deepcopy
+        cases = [('source_lineage', {}), ('metadata', {}), ('output_format', 'mystery'),
+                 ('content', {'body': 'modern'}), ('settings_mismatch', None)]
+        for field, value in cases:
+            with self.subTest(field=field):
+                cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+                if field == 'settings_mismatch': cloud.connection.settings['run_result_id'] = 'other-result'
+                else: cloud.connection.payload[field] = value
+                before = deepcopy(cloud.connection.payload)
+                with self.assertRaises(StudioError):
+                    PostgresStudioWorkspaceRepository(cloud).list_versions(
+                        StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1'), 'output-1')
+                self.assertEqual(cloud.connection.payload, before)
+
+    def test_legacy_missing_or_conflicting_persisted_locator_fails_closed_and_scope_is_preserved(self):
+        from dataclasses import replace
+        context = StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1')
+        for fault in ('missing', 'source_version', 'span', 'locator'):
+            with self.subTest(fault=fault):
+                cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+                if fault == 'missing': cloud.connection.persisted = None
+                elif fault == 'source_version': cloud.connection.persisted['source_version_id'] = 'other-version'
+                elif fault == 'span': cloud.connection.persisted['evidence_span_id'] = 'other-span'
+                else: cloud.connection.reference['locator'] = {'kind': 'page', 'value': '1'}
+                with self.assertRaises(StudioError):
+                    PostgresStudioWorkspaceRepository(cloud).list_versions(context, 'output-1')
+        for changed in ({'tenant_id': 'other-tenant'}, {'workspace_id': 'other-workspace'}, {'notebook_id': 'other-notebook'}):
+            with self.subTest(changed=changed):
+                cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+                with self.assertRaisesRegex(StudioError, '^RESOURCE_UNAVAILABLE$'):
+                    PostgresStudioWorkspaceRepository(cloud).list_versions(replace(context, **changed), 'output-1')
+
+    def test_legacy_user_edit_v2_keeps_previous_reference_scope_and_original_content(self):
+        cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+        repository = PostgresStudioWorkspaceRepository(cloud)
+        context = StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1')
+        original_hash = hashlib.sha256(cloud.connection.payload['content'].encode()).hexdigest()
+        result, replayed = repository.create_version(context, 'output-1', {
+            'previous_version_id': 'version-1', 'revision_type': 'user_edit', 'change_reason': '사용자 문구 편집',
+            'content': '편집한 본문', 'settings': None,
+        }, 'legacy-edit-key-0001')
+        versions = repository.list_versions(context, 'output-1')
+        self.assertFalse(replayed)
+        self.assertEqual([(version['content_version'], version['previous_version_id'], version['output_format'])
+                          for version in versions], [(2, 'version-1', 'pdf'), (1, None, 'pdf')])
+        self.assertEqual(versions[0]['output_version_id'], result['output_version_id'])
+        self.assertEqual(versions[0]['citations'], versions[1]['citations'])
+        self.assertEqual(versions[0]['content'], '편집한 본문')
+        self.assertEqual(hashlib.sha256(versions[1]['content'].encode()).hexdigest(), original_hash)
+        self.assertFalse(any('UPDATE output_versions' in sql or 'INSERT INTO generation_requests' in sql
+                             for sql, _ in cloud.connection.statements))
+
+    def test_legacy_ai_and_settings_missing_generation_inputs_fail_safely_without_writes(self):
+        from copy import deepcopy
+        from dataclasses import asdict
+        for revision_type in ('ai_regeneration', 'settings_change'):
+            with self.subTest(revision_type=revision_type):
+                cloud = Cloud(); cloud.connection = LegacyReportHistoryConnection()
+                before_versions = deepcopy(cloud.connection.versions)
+                before_references = deepcopy(cloud.connection.references)
+                revision = {'previous_version_id': 'version-1', 'revision_type': revision_type,
+                            'change_reason': '지원되지 않는 재생성', 'content': '미저장 요청 본문'}
+                if revision_type == 'settings_change':
+                    revision['settings'] = asdict(self.request())
+                with mock_patch('daon_user_api.studio_workspace_postgres.build_structured_output') as generate:
+                    with self.assertRaises(StudioError) as denied:
+                        PostgresStudioWorkspaceRepository(cloud).create_version(
+                            StudioContext('tenant-1', 'workspace-1', 'actor-1', 'trace-1', 'policy-1', 'notebook-1'),
+                            'output-1', revision, 'legacy-safe-reject-0001')
+                    self.assertEqual((denied.exception.code, denied.exception.status), ('STUDIO_INPUT_INVALID', 400))
+                    generate.assert_not_called()
+                self.assertEqual(cloud.connection.versions, before_versions)
+                self.assertEqual(cloud.connection.references, before_references)
+                self.assertFalse(any(sql.lstrip().startswith(('INSERT', 'UPDATE', 'DELETE'))
+                                     for sql, _ in cloud.connection.statements))
 
     def test_approval_uses_distinct_transition_ids_for_request_and_output(self) -> None:
         cloud = Cloud(); cloud.connection = ApprovalTransitionConnection()
