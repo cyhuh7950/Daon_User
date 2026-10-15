@@ -219,6 +219,16 @@ class OpenLawClient:
         self._max_raw_bytes=checked_raw_limit(max_raw_bytes)
         self._key=api_key;self._transport=transport;self._resolver=resolver or resolve_public_ips
 
+    def _reject_credential_echo(self,value):
+        def echo(item):
+            if isinstance(item,str):return self._key in item
+            if isinstance(item,dict):return any(self._key in key or echo(value) for key,value in item.items())
+            if isinstance(item,list):return any(echo(value) for value in item)
+            # JSON의 true/false/null과 숫자 표현을 검사한다. Python str()은
+            # bool/None 표현이 다르므로 인증값 반사 검사에 사용하지 않는다.
+            return self._key in json.dumps(item,ensure_ascii=False,allow_nan=False,separators=(',',':'))
+        if echo(value):raise OpenLawError('OPEN_LAW_UPSTREAM_FAILED')
+
     def _get(self,path,params,deadline):
         if not isinstance(self._key,str) or not self._key or len(self._key)>4096 or any(ord(c)<33 for c in self._key):
             raise OpenLawError('OPEN_LAW_CREDENTIAL_REQUIRED')
@@ -228,14 +238,17 @@ class OpenLawClient:
             arguments=(path,{'OC':self._key,'target':'eflaw','type':'JSON',**params},ips,deadline)
             raw=self._transport(*arguments) if self._transport is not None else https_get(*arguments,max_raw_bytes=self._max_raw_bytes)
             remaining(deadline)
-            if not isinstance(raw,bytes) or self._key.encode() in raw: raise OpenLawError('OPEN_LAW_UPSTREAM_FAILED')
+            search=path=='/DRF/lawSearch.do'
+            if not isinstance(raw,bytes) or not search and self._key.encode() in raw: raise OpenLawError('OPEN_LAW_UPSTREAM_FAILED')
             parsed=parse_json(raw,maximum=self._max_raw_bytes)
-            def echo(value):
-                if isinstance(value,str):return self._key in value
-                if isinstance(value,dict):return any(self._key in k or echo(v) for k,v in value.items())
-                if isinstance(value,list):return any(echo(v) for v in value)
-                return False
-            if echo(parsed): raise OpenLawError('OPEN_LAW_UPSTREAM_FAILED')
+            if search:
+                # 검색 raw는 반환하지 않는다. 승인된 직계 링크만 폐기하며
+                # 본문 원본 bytes/해시와 나머지 모든 키·값 검사는 유지한다.
+                raw=None
+                root=parsed.get('LawSearch') if isinstance(parsed,dict) else None
+                if isinstance(root,dict):
+                    for row in _list(root.get('law')):row.pop('법령상세링크',None)
+            self._reject_credential_echo(parsed)
             return raw,parsed
         except OpenLawError:raise
         except WebsiteFetchError as error:
@@ -255,8 +268,10 @@ class OpenLawClient:
                 items.append({'mst':str(row['법령일련번호']),'law_id':str(row['법령ID']),
                     'title':row['법령명한글'],'effective_date':str(row['시행일자']),
                     'promulgation_date':str(row['공포일자']) if row.get('공포일자') else None,'ministry':row.get('소관부처명') or None})
-            return validate_search_result({'items':items,'page':actual,'total_count':total},page)
+            result=validate_search_result({'items':items,'page':actual,'total_count':total},page)
         except (ValueError,KeyError,TypeError):raise OpenLawError('OPEN_LAW_PROTOCOL_INVALID') from None
+        self._reject_credential_echo(result)
+        return result
 
     def read(self,selection,deadline):
         if not isinstance(selection,OpenLawSelection):raise OpenLawError('OPEN_LAW_INPUT_INVALID')

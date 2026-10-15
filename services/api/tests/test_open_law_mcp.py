@@ -48,12 +48,17 @@ class OpenLawMcpTests(unittest.TestCase):
     def test_real_stdio_initialize_tools_and_read(self):
         from test_open_law_client import body_bytes,search_bytes
         from daon_user_api.open_law_client import OpenLawSelection
+        from daon_user_api.open_law_mcp_client import wire_json
         real_popen=subprocess.Popen;children=[]
+        listing=json.loads(search_bytes())
+        listing['LawSearch']['law'][0]['법령상세링크']='https://www.law.go.kr/?OC=fixture-oc&MST=123'
+        frames=[]
+        def parsed_frame(raw):frames.append(raw);return wire_json(raw)
         # Only official HTTP is replaced in the child; actual production
         # client and server exchange initialize/tools/call over real OS pipes.
         program=('from daon_user_api.open_law_client import OpenLawClient;'
             'from daon_user_api.open_law_mcp_server import serve;'
-            f'raw={body_bytes()!r};listing={search_bytes()!r};'
+            f'raw={body_bytes()!r};listing={json.dumps(listing,ensure_ascii=False).encode()!r};'
             'serve(OpenLawClient(api_key="fixture-oc",resolver=lambda *_:("8.8.8.8",),'
             'transport=lambda path,*_:listing if path.endswith("lawSearch.do") else raw))')
         def spawn(argv,**kwargs):
@@ -62,10 +67,17 @@ class OpenLawMcpTests(unittest.TestCase):
             self.assertNotIn('fixture-oc',' '.join(argv))
             self.assertNotIn('DAON_SECRET_UNRELATED',kwargs['env'])
             child=real_popen([sys.executable,'-B','-c',program],**kwargs);children.append(child);return child
-        with patch.dict(os.environ,{'DAON_SECRET_UNRELATED':'must-not-cross'}),patch('daon_user_api.open_law_mcp_client.subprocess.Popen',side_effect=spawn):
+        with patch.dict(os.environ,{'DAON_SECRET_UNRELATED':'must-not-cross'}),patch('daon_user_api.open_law_mcp_client.subprocess.Popen',side_effect=spawn),patch('daon_user_api.open_law_mcp_client.wire_json',side_effect=parsed_frame):
             client=self.client();self.assertEqual(client.probe(self.context)['protocol_version'],'2025-11-25')
+            result=client.search(self.context,'민법',1)
+            self.assertEqual(result,{'items':[{'mst':'123','law_id':'456','title':'시험법','effective_date':'20260101',
+                'promulgation_date':'20251201','ministry':'시험부'}],'page':1,'total_count':1})
             document=client.read(self.context,OpenLawSelection('123','20260101',None))
             self.assertEqual(document.raw_content,body_bytes())
+        self.assertTrue(frames)
+        for frame in frames:
+            self.assertNotIn(b'fixture-oc',frame)
+            self.assertNotIn('법령상세링크'.encode(),frame)
         self.assertTrue(children);self.assertTrue(all(c.poll() is not None for c in children))
         if sys.platform=='win32':
             import ctypes
@@ -90,6 +102,27 @@ class OpenLawMcpTests(unittest.TestCase):
             {'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'wrong'}},
             {'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'execute','arguments':{}}}]:
             self.assertIn('error',dispatch(message,OpenLawClient(api_key=None),{}))
+
+    def test_real_stdio_numeric_credential_echo_never_becomes_public_mst(self):
+        from test_open_law_client import search_bytes
+        from daon_user_api.open_law_mcp_client import OpenLawMcpClient,wire_json
+        listing=json.loads(search_bytes());row=listing['LawSearch']['law'][0]
+        row['법령일련번호']=987654321;row['법령상세링크']='https://www.law.go.kr/?OC=987654321'
+        program=('from daon_user_api.open_law_client import OpenLawClient;'
+            'from daon_user_api.open_law_mcp_server import serve;'
+            'serve(OpenLawClient(api_key="987654321",resolver=lambda *_:("8.8.8.8",),'
+            f'transport=lambda *_:{json.dumps(listing,ensure_ascii=False).encode()!r}))')
+        popen=subprocess.Popen;children=[];frames=[]
+        def spawn(_argv,**kwargs):
+            child=popen([sys.executable,'-B','-c',program],**kwargs);children.append(child);return child
+        def parsed_frame(raw):frames.append(raw);return wire_json(raw)
+        client=OpenLawMcpClient(api_key='987654321',enabled=True,qa_workspace_id='workspace-qa',
+            authorize_context=lambda _:'frozen-policy',resolver=lambda *_:('8.8.8.8',))
+        with patch('daon_user_api.open_law_mcp_client.subprocess.Popen',side_effect=spawn),patch('daon_user_api.open_law_mcp_client.wire_json',side_effect=parsed_frame):
+            with self.assertRaisesRegex(ValueError,'^OPEN_LAW_UPSTREAM_FAILED$'):client.search(self.context,'민법',1)
+        self.assertTrue(frames)
+        for frame in frames:self.assertNotIn(b'987654321',frame)
+        self.assertEqual(len(children),1);self.assertIsNotNone(children[0].poll())
 
     def test_real_pipe_tools_list_rejects_bool_float_aliases_and_extra_wrapper(self):
         from daon_user_api.open_law_mcp_server import TOOLS

@@ -21,6 +21,108 @@ def body_bytes():
 
 
 class OpenLawClientTests(unittest.TestCase):
+    def test_search_discards_only_direct_detail_links_and_never_returns_search_raw(self):
+        expected={'items':[{'mst':'123','law_id':'456','title':'시험법','effective_date':'20260101',
+            'promulgation_date':'20251201','ministry':'시험부'}],'page':1,'total_count':1}
+        for single in (False,True):
+            with self.subTest(single=single):
+                data=json.loads(search_bytes());row=data['LawSearch']['law'][0]
+                row['법령상세링크']='https://www.law.go.kr/DRF/lawService.do?OC=fixture-oc&MST=123'
+                if single:data['LawSearch']['law']=row
+                raw=json.dumps(data,ensure_ascii=False).encode()
+                api=self.api(raw)
+                self.assertEqual(api.search('민법',1,time.monotonic()+8),expected)
+                returned,parsed=api._get('/DRF/lawSearch.do',{},time.monotonic()+8)
+                self.assertIsNone(returned)
+                rows=parsed['LawSearch']['law']
+                for item in rows if isinstance(rows,list) else [rows]:
+                    self.assertNotIn('법령상세링크',item)
+                self.assertNotIn('fixture-oc',json.dumps(parsed,ensure_ascii=False))
+                self.assertEqual(parsed['LawSearch']['page'],'1')
+
+    def test_search_credential_in_any_other_key_value_or_nested_metadata_still_rejected(self):
+        for location in ('title','ministry','row-key','row-value','row-nested','root-link','root-key','top-link','unexpected-law'):
+            with self.subTest(location=location):
+                data=json.loads(search_bytes());root=data['LawSearch'];row=root['law'][0]
+                row['법령상세링크']='https://www.law.go.kr/?OC=fixture-oc'
+                if location=='title':row['법령명한글']='시험법 fixture-oc'
+                elif location=='ministry':row['소관부처명']='fixture-oc'
+                elif location=='row-key':row['fixture-oc']='metadata'
+                elif location=='row-value':row['추가정보']='fixture-oc'
+                elif location=='row-nested':row['metadata']={'법령상세링크':['fixture-oc']}
+                elif location=='root-link':root['법령상세링크']='fixture-oc'
+                elif location=='root-key':root['fixture-oc']='metadata'
+                elif location=='top-link':data['법령상세링크']='fixture-oc'
+                else:data['metadata']={'LawSearch':{'law':[{'법령상세링크':'fixture-oc'}]}}
+                # Decoded recursive checks must also catch escaped credentials, not only raw bytes.
+                raw=json.dumps(data,ensure_ascii=True).replace('fixture-oc','fixture-\\u006fc').encode()
+                with self.assertRaisesRegex(ValueError,'^OPEN_LAW_UPSTREAM_FAILED$'):
+                    self.api(raw).search('민법',1,time.monotonic()+8)
+
+    def test_search_scalar_credential_echo_rejected_before_public_normalization(self):
+        from daon_user_api.open_law_client import OpenLawClient
+        for key,value,location in [('987654321',987654321,'mst'),('987654321',987654321,'law_id'),
+            ('987654321',987654321,'metadata'),('true',True,'metadata'),('false',False,'metadata'),
+            ('null',None,'metadata'),('1e+20',1e20,'metadata'),('-0.0',-0.0,'metadata'),
+            ('987654321.0',987654321.0,'exponent-wire')]:
+            with self.subTest(location=location,key=key):
+                data=json.loads(search_bytes());row=data['LawSearch']['law'][0]
+                row['법령상세링크']='https://www.law.go.kr/?OC='+key
+                if location=='mst':row['법령일련번호']=value
+                elif location=='law_id':row['법령ID']=value
+                else:row['metadata']={'scalar':[value]}
+                raw=json.dumps(data,ensure_ascii=False)
+                if location=='exponent-wire':raw=raw.replace('987654321.0','9.87654321e8')
+                client=OpenLawClient(api_key=key,transport=lambda *_:raw.encode(),resolver=lambda *_:('8.8.8.8',))
+                with self.assertRaisesRegex(ValueError,'^OPEN_LAW_UPSTREAM_FAILED$'):
+                    client.search('민법',1,time.monotonic()+8)
+
+    def test_search_unrelated_scalars_keep_public_schema_and_discarded_links(self):
+        data=json.loads(search_bytes());row=data['LawSearch']['law'][0]
+        row['법령상세링크']='https://www.law.go.kr/?OC=fixture-oc'
+        row['metadata']=[987654321,1e20,-0.0,True,False,None]
+        result=self.api(json.dumps(data,ensure_ascii=False).encode()).search('민법',1,time.monotonic()+8)
+        self.assertEqual(result,{'items':[{'mst':'123','law_id':'456','title':'시험법','effective_date':'20260101',
+            'promulgation_date':'20251201','ministry':'시험부'}],'page':1,'total_count':1})
+        self.assertNotIn('fixture-oc',json.dumps(result))
+
+    def test_search_final_result_rechecks_empty_ministry_normalized_to_json_null(self):
+        from daon_user_api.open_law_client import OpenLawClient
+        data=json.loads(search_bytes());row=data['LawSearch']['law'][0]
+        row['소관부처명']='';row['법령상세링크']='https://www.law.go.kr/?OC=null'
+        raw=json.dumps(data,ensure_ascii=False).encode()
+        client=OpenLawClient(api_key='null',transport=lambda *_:raw,resolver=lambda *_:('8.8.8.8',))
+        with self.assertRaisesRegex(ValueError,'^OPEN_LAW_UPSTREAM_FAILED$'):
+            client.search('민법',1,time.monotonic()+8)
+
+    def test_search_link_exception_keeps_json_structure_limits_and_law_validation(self):
+        cases=[(b'{"LawSearch":{"law":[],"law":[]}}','OPEN_LAW_PROTOCOL_INVALID'),
+            (b'['*41+b']'*41,'OPEN_LAW_PROTOCOL_INVALID'),
+            (b' '*2097153,'OPEN_LAW_CONTENT_TOO_LARGE')]
+        for value in ('invalid',7,True,[None],['invalid']):
+            cases.append((json.dumps({'LawSearch':{'page':'1','totalCnt':'1','law':value}}).encode(),'OPEN_LAW_PROTOCOL_INVALID'))
+        for field,value in [('시행일자','20260230'),('법령ID','not-numeric'),('현행연혁코드','연혁법령')]:
+            data=json.loads(search_bytes());data['LawSearch']['law'][0].update({field:value,'법령상세링크':'fixture-oc'})
+            cases.append((json.dumps(data,ensure_ascii=False).encode(),'OPEN_LAW_PROTOCOL_INVALID'))
+        for index,(raw,code) in enumerate(cases):
+            with self.subTest(case=index),self.assertRaisesRegex(ValueError,'^'+code+'$'):
+                self.api(raw).search('민법',1,time.monotonic()+8)
+
+    def test_body_detail_link_credential_echo_still_rejected_and_raw_hash_unchanged(self):
+        from daon_user_api.open_law_client import OpenLawSelection
+        for escaped in (False,True):
+            with self.subTest(escaped=escaped):
+                data=json.loads(body_bytes());data['법령']['법령상세링크']='https://www.law.go.kr/?OC=fixture-oc'
+                raw=json.dumps(data,ensure_ascii=False)
+                if escaped:raw=raw.replace('fixture-oc','fixture-\\u006fc')
+                with self.assertRaisesRegex(ValueError,'^OPEN_LAW_UPSTREAM_FAILED$'):
+                    self.api(raw.encode()).read(OpenLawSelection('123','20260101',None),time.monotonic()+8)
+        raw=body_bytes();document=self.api(raw).read(OpenLawSelection('123','20260101',None),time.monotonic()+8)
+        self.assertEqual(document.raw_content,raw)
+        self.assertEqual(document.raw_sha256,hashlib.sha256(raw).hexdigest())
+        self.assertEqual(document.text_content,'제1조 원문\n① 내용\n1. 순서\n가. 끝'.encode())
+        self.assertEqual(document.text_sha256,hashlib.sha256(document.text_content).hexdigest())
+
     def test_small_raw_policy_bounds_real_wire_before_body_read_in_all_framings(self):
         from daon_user_api.open_law_client import https_get
         class Wire:
