@@ -44,6 +44,12 @@ from .internet_connector import InternetConnector, WebsiteImportContext, Website
 from .safe_http_fetch import SafeHttpTransport, normalize_public_url, WebsiteFetchError
 from .website_source_import import WebsiteImportError, WebsiteSourceImportService, WebsiteObjectPromoter, WebsiteProcessStorage
 from .website_source_postgres import PostgresWebsiteSourceRepository
+from .open_law_client import OpenLawError,OpenLawSelection,validate_search,validate_search_result
+from .open_law_mcp_client import OpenLawMcpClient
+from .open_law_mcp_server import PROTOCOL as LAW_PROTOCOL,SCHEMA_DIGEST as LAW_SCHEMA_DIGEST
+from .open_law_source_import import OpenLawImportError,OpenLawSourceImportService,OpenLawObjectPromoter
+from .open_law_source_postgres import PostgresOpenLawSourceRepository
+from .open_law_source_access import open_law_enabled,require_open_law_source_access
 from .data_canon import PostgresDataCanonStore
 from .data_canon import canonical_json_bytes
 from .authorization import (
@@ -276,6 +282,8 @@ def _is_private_http_gateway(parsed: object) -> bool:
 
 
 def request_timeout_for_path(settings: "RuntimeSettings", path: str) -> float:
+    if re.fullmatch(r'/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/(?:connectors/mcp-open-law-go-kr/law-(?:search|preview|imports)|source-versions/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/law-snapshot)',path):
+        return 25.0
     if re.fullmatch(r"/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/website-imports", path):
         return 20.0
     if re.fullmatch(r"/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/questions", path):
@@ -326,10 +334,34 @@ class _WebsiteRequestRepository(PostgresWebsiteSourceRepository):
                 raise WebsiteImportError('WEBSITE_FETCH_TIMEOUT',504)
 
 
+class _OpenLawRequestRepository(PostgresOpenLawSourceRepository):
+    def __init__(self,*args,request_deadline,cancelled=lambda:False,**kwargs):
+        super().__init__(*args,**kwargs);self._request_deadline=request_deadline;self._cancelled=cancelled
+
+    @contextmanager
+    def _transaction(self,ctx,*,enforce_deadline=True):
+        if enforce_deadline and (self._cancelled() or time.monotonic()>=self._request_deadline):raise OpenLawImportError('OPEN_LAW_TIMEOUT')
+        with super()._transaction(ctx,enforce_deadline=enforce_deadline) as conn:
+            if enforce_deadline:
+                remaining=self._request_deadline-time.monotonic()
+                if remaining<=0:raise OpenLawImportError('OPEN_LAW_TIMEOUT')
+                conn.execute("SELECT set_config('statement_timeout',%s,true)",(str(max(1,min(2000,int(remaining*1000)))),))
+            yield conn
+            if enforce_deadline and (self._cancelled() or time.monotonic()>=self._request_deadline):raise OpenLawImportError('OPEN_LAW_TIMEOUT')
+
+
 class _WebsiteRequestPromoter(WebsiteObjectPromoter):
     def __init__(self,*args,request_deadline):
         super().__init__(*args)
         self._request_deadline=request_deadline
+
+    def promote(self,context,claim,kind,content,deadline):
+        return super().promote(context,claim,kind,content,min(deadline,self._request_deadline))
+
+
+class _OpenLawRequestPromoter(OpenLawObjectPromoter):
+    def __init__(self,*args,request_deadline):
+        super().__init__(*args);self._request_deadline=request_deadline
 
     def promote(self,context,claim,kind,content,deadline):
         return super().promote(context,claim,kind,content,min(deadline,self._request_deadline))
@@ -435,7 +467,7 @@ def _website_text_child():
         raise SystemExit(1) from None
 
 
-def _read_open_law_original(context,key,digest,size,storage):
+def _read_open_law_original(context,key,digest,size,storage,*,request_deadline=None):
     """법령 text 전용 읽기: 고정 child/5초/512KiB, 자격은 stdin만."""
     from .open_law_source_import import OpenLawImportError
     try:
@@ -444,7 +476,8 @@ def _read_open_law_original(context,key,digest,size,storage):
                 or not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest)):
             raise ValueError
         ObjectKeyPolicy().validate_final(CloudAccessContext(context.tenant_id,context.workspace_id,context.actor_id,'object.read'),'source',key)
-        deadline=time.monotonic()+5.0
+        deadline=min(time.monotonic()+5.0,request_deadline) if request_deadline is not None else time.monotonic()+5.0
+        if time.monotonic()>=deadline:raise OpenLawImportError('OPEN_LAW_TIMEOUT')
         payload=json.dumps({'config':storage._config,'key':key,'digest':digest,'size':size,'deadline':deadline},separators=(',',':')).encode()
         if len(payload)>32768:raise ValueError
         with subprocess.Popen([sys.executable,'-B','-c','from daon_user_api.runtime import _website_text_child; _website_text_child()'],
@@ -453,6 +486,7 @@ def _read_open_law_original(context,key,digest,size,storage):
             raw=_website_read_exchange(child,payload,deadline)
         _checked_website_text(raw,digest,size)
         return raw
+    except OpenLawImportError:raise
     except WebsiteImportError as error:
         code='OPEN_LAW_TIMEOUT' if error.code=='WEBSITE_FETCH_TIMEOUT' else 'OPEN_LAW_STORAGE_UNAVAILABLE'
         raise OpenLawImportError(code,504 if code=='OPEN_LAW_TIMEOUT' else 503) from None
@@ -777,6 +811,9 @@ class RuntimeDependencies:
     website_import_service: Any | None = None
     website_repository: Any | None = None
     website_storage: WebsiteProcessStorage | None = None
+    open_law_client: Any | None = None
+    open_law_import_service: Any | None = None
+    open_law_repository: Any | None = None
     document_processing_service: DocumentProcessingSubmissionService | None = None
     question_answering_service: Any | None = None
     citation_content_repository: Any | None = None
@@ -812,6 +849,9 @@ class RuntimeDependencies:
             close = getattr(self.website_repository, "close", None)
             if callable(close):
                 close()
+        if self.open_law_repository is not None:
+            close=getattr(self.open_law_repository,'close',None)
+            if callable(close):close()
         recovery_close = (
             None if self.recovery_service is None else getattr(self.recovery_service, "close", None)
         )
@@ -1926,6 +1966,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     # Reference (non-Postgres) runtime still isolates local law registrations.
     # None is a local unregister tombstone, never a global Registry deletion.
     open_law_registrations = {}
+    open_law_receipts = {}
 
     def scoped_open_law(principal, workspace_id):
         if connector_repository is not None:
@@ -2209,9 +2250,11 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
             async def timed_handler(request: Request) -> Response:
                 website=request.url.path.endswith('/website-imports')
+                law=request.url.path.endswith(('/law-search','/law-preview','/law-imports','/law-snapshot'))
                 budget=request_timeout_for_path(dependencies.settings, request.url.path)
                 if website:
                     request.state.website_deadline=time.monotonic()+budget
+                if law:request.state.law_deadline=time.monotonic()+budget
                 try:
                     async with asyncio.timeout(budget):
                         response=cast(Response, await original(request))
@@ -2219,11 +2262,16 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     # 절대deadline 이후 ready 응답을 내보내지 않는다.
                     if website and time.monotonic()>=request.state.website_deadline:
                         raise TimeoutError
+                    if law and time.monotonic()>=request.state.law_deadline:raise TimeoutError
                     return response
                 except TimeoutError:
+                    if law:request.state.law_cancelled=True
                     return _error_response(
-                        504, "WEBSITE_FETCH_TIMEOUT" if website else "REQUEST_TIMEOUT", request.state.trace_id, retryable=True
+                        504, "OPEN_LAW_TIMEOUT" if law else "WEBSITE_FETCH_TIMEOUT" if website else "REQUEST_TIMEOUT", request.state.trace_id, retryable=True
                     )
+                except asyncio.CancelledError:
+                    if law:request.state.law_cancelled=True
+                    raise
 
             return timed_handler
 
@@ -3285,6 +3333,227 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         response=_error_response(error.status,error.code,request.state.trace_id,retryable=error.status>=500)
         response.headers['X-Content-Type-Options']='nosniff'
         return response
+
+    @app.exception_handler(OpenLawImportError)
+    async def law_error(request,error):
+        response=_error_response(error.status,error.code,request.state.trace_id,retryable=error.status>=500)
+        response.headers['X-Content-Type-Options']='nosniff'
+        return response
+
+    def law_json(content,*,status=200):
+        try:
+            response=_website_json_response(content,maximum=4*1024*1024,status=status)
+            response.headers['ETag']='"law:'+hashlib.sha256(response.body).hexdigest()+'"'
+            return response
+        except WebsiteImportError:raise OpenLawImportError('OPEN_LAW_CONTENT_TOO_LARGE') from None
+
+    def law_access(ctx,request,action):
+        if getattr(request.state,'law_cancelled',False) or time.monotonic()>=request.state.law_deadline:raise OpenLawImportError('OPEN_LAW_TIMEOUT')
+        principal=_principal(request,dependencies)
+        if principal.tenant_id!=ctx.tenant_id or principal.user_id!=ctx.actor_id or not open_law_enabled(ctx):
+            raise OpenLawImportError('OPEN_LAW_ACCESS_DENIED')
+        grant=dependencies.authorization_service.authorize_action(principal=principal,workspace_id=ctx.workspace_id,action=action,
+            trace_id=ctx.trace_id,policy_version=ctx.policy_version)
+        notebook_service.get(notebook_context(principal,ctx.workspace_id,request),ctx.notebook_id)
+        try:view=scoped_open_law(principal,ctx.workspace_id)
+        except ConnectorError:raise OpenLawImportError('OPEN_LAW_NOT_FOUND') from None
+        if view.status=='disconnected':raise OpenLawImportError('OPEN_LAW_UNAVAILABLE')
+        return principal,grant
+
+    def law_policy(ctx,request,frozen,action=Action.EDIT):
+        principal,grant=law_access(ctx,request,action)
+        if egress_policy_service is None:raise OpenLawImportError('OPEN_LAW_EGRESS_BLOCKED')
+        effective=egress_policy_service.get_effective(_egress_policy_context(principal,ctx.workspace_id,request,dependencies))
+        approvers={'workspace_manager':{Role.PERSONAL_OWNER,Role.ORGANIZATION_ADMIN,Role.WORKSPACE_ADMIN},
+            'organization_admin':{Role.PERSONAL_OWNER,Role.ORGANIZATION_ADMIN}}
+        if (effective.mode!='allow_approved_external' or effective.classification!='public'
+            or 'external_api' not in effective.allowed_provider_kinds or 'www.law.go.kr' not in effective.allowed_destinations
+            or effective.max_bytes<=0 or grant.role not in approvers.get(effective.required_approver,set())
+            or frozen and frozen[0]!=effective.fingerprint):raise OpenLawImportError('OPEN_LAW_EGRESS_BLOCKED')
+        # Source-free public law parameters and fixed headers only; privacy
+        # flags remain unchanged, no Source/question/session content is sent.
+        if not frozen:frozen.append(effective.fingerprint)
+        return effective
+
+    def law_client(ctx,request,frozen):
+        effective=law_policy(ctx,request,frozen)
+        def delegate():
+            return dependencies.open_law_client or OpenLawMcpClient(api_key=os.environ.get('DAON_OPEN_LAW_API_KEY'),enabled=True,qa_workspace_id=ctx.workspace_id,
+                authorize_context=lambda current:law_policy(current,request,frozen).fingerprint,
+                max_raw_bytes=min(2097152,effective.max_bytes),
+                timeout_seconds=min(10,max(.001,request.state.law_deadline-time.monotonic())))
+        def invoke(current,tool,inputs,function,*args):
+            law_policy(current,request,frozen);started=time.monotonic();code='OPEN_LAW_TOOL_SUCCEEDED'
+            principal=_principal(request,dependencies)
+            observed=connector_repository.law_verification(current.tenant_id,current.workspace_id,current.actor_id)[2] if connector_repository is not None else scoped_open_law(principal,current.workspace_id)
+            outcome=AuditOutcome.SUCCEEDED
+            try:
+                value=function(current,*args);law_policy(current,request,frozen)
+                return value
+            except (OpenLawError,OpenLawImportError) as error:
+                code=OpenLawImportError(str(error)).code;outcome=AuditOutcome.FAILED
+                if code in {'OPEN_LAW_CREDENTIAL_REQUIRED','OPEN_LAW_UPSTREAM_FAILED'}:
+                    if connector_repository is not None:
+                        connector_repository.mark_law_unavailable(current.tenant_id,current.workspace_id,current.actor_id,code,observed)
+                    elif open_law_registrations.get((current.tenant_id,current.workspace_id)) is observed and observed.status=='connected':
+                        open_law_registrations[(current.tenant_id,current.workspace_id)]=replace(observed,status='unavailable',error_code=code,
+                            last_checked_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'))
+                        open_law_receipts.pop((current.tenant_id,current.workspace_id),None)
+                raise
+            except Exception:
+                code='OPEN_LAW_UPSTREAM_FAILED';outcome=AuditOutcome.FAILED
+                raise OpenLawImportError(code) from None
+            finally:
+                dependencies.audit_store.append(AuditEventDraft(event_id='law-tool-'+secrets.token_hex(16),occurred_at=datetime.now(timezone.utc),
+                    actor_id=current.actor_id,actor_type=ActorType.USER,tenant_id=current.tenant_id,workspace_id=current.workspace_id,
+                    action='open_law.tool',target_type='connector',target_id='mcp-open-law-go-kr',outcome=outcome,
+                    trace_id=current.trace_id,policy_version=current.policy_version,metadata={'notebook_id':current.notebook_id,
+                        'destination_id':'www.law.go.kr','tool_id':tool,'input_fingerprint':hashlib.sha256(canonical_json_bytes(inputs)).hexdigest(),
+                        'policy_fingerprint':frozen[0],'reason_code':code,'elapsed_ms':max(0,int((time.monotonic()-started)*1000))}))
+        class ScopedClient:
+            def search(self,current,query,page):return invoke(current,'search_law',{'query':query,'page':page},delegate().search,query,page)
+            def read(self,current,selection):return invoke(current,'get_law_text',_dataclass_json(selection),delegate().read,selection)
+            def probe(self,current):return invoke(current,'search_law',{'query':'민법','page':1},delegate().probe)
+        return ScopedClient()
+
+    def law_verified(ctx,principal):
+        if connector_repository is not None:
+            view,receipt,_=connector_repository.law_verification(ctx.tenant_id,ctx.workspace_id,ctx.actor_id)
+        else:
+            view=scoped_open_law(principal,ctx.workspace_id);receipt=open_law_receipts.get((ctx.tenant_id,ctx.workspace_id))
+        if (view.status!='connected' or not isinstance(receipt,dict) or set(receipt)!={'protocol_version','tool_schema_digest','checked_at'}
+            or receipt['protocol_version']!=LAW_PROTOCOL or receipt['tool_schema_digest']!=LAW_SCHEMA_DIGEST):raise OpenLawImportError('OPEN_LAW_UNAVAILABLE')
+
+    def law_repository(ctx,request,frozen):
+        if dependencies.open_law_repository is not None:return dependencies.open_law_repository,False
+        dsn=dependencies.settings.cloud_database_dsn
+        if dsn is None:raise OpenLawImportError('OPEN_LAW_STORAGE_UNAVAILABLE')
+        return _OpenLawRequestRepository(dsn,request_deadline=request.state.law_deadline,
+            cancelled=lambda:getattr(request.state,'law_cancelled',False),
+            canon_store=PostgresDataCanonStore(dsn,creation_enforcer=enforce_license_creation if license_enforcement_enabled else None),
+            policy_fingerprint=lambda current:law_policy(current,request,frozen).fingerprint),True
+
+    def law_service(ctx,request,frozen):
+        principal,_=law_access(ctx,request,Action.EDIT);law_verified(ctx,principal)
+        client=law_client(ctx,request,frozen)
+        if dependencies.open_law_import_service is not None:return dependencies.open_law_import_service,None
+        if dependencies.object_queue_store is None or dependencies.website_storage is None:raise OpenLawImportError('OPEN_LAW_STORAGE_UNAVAILABLE')
+        repo,owned=law_repository(ctx,request,frozen)
+        def authorize(current):law_policy(current,request,frozen)
+        return OpenLawSourceImportService(repo,_OpenLawRequestPromoter(dependencies.object_queue_store,dependencies.website_storage,request_deadline=request.state.law_deadline),
+            client=client,authorize_context=authorize),repo if owned else None
+
+    async def law_body(request,keys):
+        if request.query_params:raise OpenLawImportError('OPEN_LAW_INPUT_INVALID')
+        try:
+            if request.headers.get('content-type','').split(';',1)[0].strip().lower()!='application/json':raise ValueError
+            raw=bytearray()
+            async for chunk in request.stream():
+                if len(raw)+len(chunk)>32768:raise ValueError
+                raw.extend(chunk)
+            body=json.loads(raw.decode('utf-8',errors='strict'),object_pairs_hook=_website_json_pairs)
+            if not isinstance(body,dict) or set(body)!=set(keys) or not isinstance(body.get('notebook_id'),str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',body['notebook_id']):raise ValueError
+            return body
+        except (ValueError,TypeError,UnicodeError):raise OpenLawImportError('OPEN_LAW_INPUT_INVALID') from None
+
+    async def law_call(function,*args):
+        try:return await asyncio.to_thread(function,*args)
+        except OpenLawError as error:raise OpenLawImportError(str(error)) from None
+
+    async def law_request_context(id,body,request):
+        principal=_principal(request,dependencies)
+        ctx=website_context(principal,id,body['notebook_id'],request)
+        await asyncio.to_thread(law_access,ctx,request,Action.EDIT)
+        return ctx,principal
+
+    @app.post('/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-search',operation_id='searchOpenLaw')
+    async def search_open_law(id:str,request:Request):
+        body=await law_body(request,{'notebook_id','query','page','public_query_confirmed'})
+        try:
+            validate_search(body['query'],body['page'])
+            if body['public_query_confirmed'] is not True:raise ValueError
+        except (OpenLawError,ValueError):raise OpenLawImportError('OPEN_LAW_INPUT_INVALID') from None
+        ctx,principal=await law_request_context(id,body,request);frozen=[]
+        client=law_client(ctx,request,frozen)
+        if connector_repository is not None:
+            view,receipt,registration=await asyncio.to_thread(connector_repository.law_verification,ctx.tenant_id,id,ctx.actor_id)
+        else:
+            view=scoped_open_law(principal,id);registration=view
+            receipt=open_law_receipts.get((ctx.tenant_id,id))
+        if view.status!='connected' or not isinstance(receipt,dict) or receipt.get('protocol_version')!=LAW_PROTOCOL or receipt.get('tool_schema_digest')!=LAW_SCHEMA_DIGEST:
+            if view.status=='disconnected':raise OpenLawImportError('OPEN_LAW_UNAVAILABLE')
+            receipt=await law_call(client.probe,ctx)
+            if (not isinstance(receipt,dict) or set(receipt)!={'protocol_version','tool_schema_digest','checked_at'}
+                or receipt.get('protocol_version')!=LAW_PROTOCOL or receipt.get('tool_schema_digest')!=LAW_SCHEMA_DIGEST
+                or not isinstance(receipt.get('checked_at'),str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T.{1,48}',receipt['checked_at'])):raise OpenLawImportError('OPEN_LAW_PROTOCOL_INVALID')
+            law_policy(ctx,request,frozen)
+            if connector_repository is not None:
+                await asyncio.to_thread(connector_repository.verify_law,ctx.tenant_id,id,ctx.actor_id,receipt,registration)
+            else:
+                if scoped_open_law(principal,id) is not registration:raise OpenLawImportError('OPEN_LAW_UNAVAILABLE')
+                open_law_receipts[(ctx.tenant_id,id)]=receipt
+                set_scoped_open_law(principal,id,'connected',None)
+        law_policy(ctx,request,frozen)
+        result=await law_call(client.search,ctx,body['query'],body['page'])
+        law_policy(ctx,request,frozen)
+        try:validate_search_result(result,body['page'])
+        except OpenLawError:raise OpenLawImportError('OPEN_LAW_PROTOCOL_INVALID') from None
+        return law_json({'data':result,'meta':{'trace_id':ctx.trace_id}})
+
+    @app.post('/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-preview',operation_id='previewOpenLaw')
+    async def preview_open_law(id:str,request:Request):
+        body=await law_body(request,{'notebook_id','mst','effective_date','article_code'})
+        try:selection=OpenLawSelection(body['mst'],body['effective_date'],body['article_code'])
+        except OpenLawError:raise OpenLawImportError('OPEN_LAW_INPUT_INVALID') from None
+        ctx,_=await law_request_context(id,body,request);frozen=[];service,owned=law_service(ctx,request,frozen)
+        try:
+            document=await law_call(service.preview,ctx,selection);law_policy(ctx,request,frozen)
+            return law_json({'data':{'law':document.law,'text':document.text_content.decode('utf-8'),'raw_sha256':document.raw_sha256,
+                'text_sha256':document.text_sha256,'fetched_at':document.fetched_at,'extraction_version':document.extraction_version},'meta':{'trace_id':ctx.trace_id}})
+        finally:
+            if owned is not None:owned.close()
+
+    @app.post('/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-imports',operation_id='importOpenLaw')
+    async def import_open_law(id:str,request:Request):
+        body=await law_body(request,{'notebook_id','mst','effective_date','article_code','expected_raw_sha256','expected_text_sha256'})
+        key=request.headers.get('idempotency-key','')
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',key) or any(not isinstance(body[k],str) or not re.fullmatch('[0-9a-f]{64}',body[k]) for k in ('expected_raw_sha256','expected_text_sha256')):raise OpenLawImportError('OPEN_LAW_INPUT_INVALID')
+        try:selection=OpenLawSelection(body['mst'],body['effective_date'],body['article_code'])
+        except OpenLawError:raise OpenLawImportError('OPEN_LAW_INPUT_INVALID') from None
+        ctx,_=await law_request_context(id,body,request);frozen=[];service,owned=law_service(ctx,request,frozen)
+        try:
+            result=await law_call(service.import_selection,ctx,selection,body['expected_raw_sha256'],body['expected_text_sha256'],key)
+            law_policy(ctx,request,frozen)
+            return law_json({'data':{'kind':'open_law_import','id':result.snapshot_id,'version':'1','attributes':_dataclass_json(result)},'meta':{'trace_id':ctx.trace_id}},status=200 if result.replayed else 201)
+        finally:
+            if owned is not None:owned.close()
+
+    @app.get('/api/v1/workspaces/{id}/source-versions/{version_id}/law-snapshot',operation_id='getOpenLawSnapshot')
+    async def get_open_law_snapshot(id:str,version_id:str,request:Request):
+        if set(request.query_params)!={'notebook_id'} or len(request.query_params.getlist('notebook_id'))!=1 or not re.fullmatch(r'law-version-[0-9a-f]{32}',version_id):raise OpenLawImportError('OPEN_LAW_INPUT_INVALID')
+        nb=request.query_params['notebook_id']
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',nb):raise OpenLawImportError('OPEN_LAW_INPUT_INVALID')
+        principal=_principal(request,dependencies);ctx=website_context(principal,id,nb,request);frozen=[]
+        law_policy(ctx,request,frozen,Action.VIEW);law_verified(ctx,principal);repo,owned=law_repository(ctx,request,frozen)
+        try:
+            def read():
+                snapshot=repo.get_snapshot(ctx,version_id)
+                with repo._transaction(ctx) as conn:
+                    require_open_law_source_access(ctx,version_id,conn)
+                    row=conn.execute('SELECT o.object_key,o.digest_sha256,o.byte_size FROM open_law_source_snapshots w '
+                        'JOIN object_records o ON o.tenant_id=w.tenant_id AND o.workspace_id=w.workspace_id AND o.object_id=w.text_object_id '
+                        "WHERE w.tenant_id=%s AND w.workspace_id=%s AND w.created_by=%s AND w.notebook_id=%s AND w.source_version_id=%s "
+                        "AND o.created_by=w.created_by AND o.status='completed' AND o.content_type='text/plain' AND o.digest_sha256=w.text_sha256",
+                        (*repo._scope(ctx),version_id)).fetchone()
+                if row is None or row[1]!=snapshot.text_sha256:raise OpenLawImportError('OPEN_LAW_STORAGE_UNAVAILABLE')
+                raw=_read_open_law_original(ctx,*row,dependencies.website_storage,request_deadline=request.state.law_deadline)
+                if repo.get_snapshot(ctx,version_id)!=snapshot:raise OpenLawImportError('OPEN_LAW_ACCESS_DENIED')
+                return snapshot,raw.decode('utf-8',errors='strict')
+            snapshot,text=await asyncio.to_thread(read)
+            law_policy(ctx,request,frozen,Action.VIEW)
+            return law_json({'data':{'snapshot':_dataclass_json(snapshot),'text':text},'meta':{'trace_id':ctx.trace_id}})
+        finally:
+            if owned:repo.close()
 
     @app.post("/api/v1/workspaces/{id}/website-imports",operation_id="importWebsiteSource",openapi_extra={
         'requestBody':{'required':True,'content':{'application/json':{'schema':{

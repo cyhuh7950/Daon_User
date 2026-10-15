@@ -11,6 +11,26 @@ from daon_user_api.internet_connector import WebsiteImportContext
 class OpenLawMcpTests(unittest.TestCase):
     context=WebsiteImportContext('tenant','workspace-qa','notebook','actor','trace','policy')
 
+    def test_strict_internal_raw_cap_and_actual_child_env_enforces_short_policy(self):
+        from test_open_law_client import search_bytes
+        from daon_user_api.open_law_mcp_client import OpenLawMcpClient
+        for invalid in (True,False,1.0,0,-1,2097153,'1024'):
+            with self.subTest(invalid=invalid),self.assertRaisesRegex(ValueError,'^OPEN_LAW_INPUT_INVALID$'):
+                self.client(max_raw_bytes=invalid)
+        raw=search_bytes();popen=subprocess.Popen;children=[]
+        program=('import daon_user_api.open_law_client as c;import daon_user_api.open_law_mcp_server as s;'
+            f'c.https_get=lambda *a,**kw:{raw!r};s.serve()')
+        for cap,success in [(len(raw)-1,False),(len(raw),True)]:
+            def spawn(argv,**kwargs):
+                self.assertEqual(kwargs['env']['DAON_OPEN_LAW_MAX_RAW_BYTES'],str(cap))
+                self.assertNotIn('DAON_SECRET_UNRELATED',kwargs['env'])
+                child=popen([sys.executable,'-B','-c',program],**kwargs);children.append(child);return child
+            with patch.dict(os.environ,{'DAON_SECRET_UNRELATED':'not-forwarded'}),patch('daon_user_api.open_law_mcp_client.subprocess.Popen',side_effect=spawn):
+                if success:self.assertEqual(self.client(max_raw_bytes=cap).search(self.context,'민법',1)['total_count'],1)
+                else:
+                    with self.assertRaisesRegex(ValueError,'^OPEN_LAW_CONTENT_TOO_LARGE$'):self.client(max_raw_bytes=cap).search(self.context,'민법',1)
+        self.assertTrue(all(child.poll() is not None for child in children))
+
     def client(self, **options):
         from daon_user_api.open_law_mcp_client import OpenLawMcpClient
         return OpenLawMcpClient(api_key='fixture-oc',enabled=True,qa_workspace_id='workspace-qa',

@@ -77,6 +77,55 @@ def promoted(dsn,ctx,claim):
 def claim(repo,ctx,key='request-1'):return repo.claim(ctx,selection(),document().raw_sha256,document().text_sha256,key)
 
 
+def test_law_connector_projection_counts_owned_active_snapshot_bindings_not_metadata(pg,monkeypatch):
+    from daon_user_api.connector_postgres import PostgresConnectorRepository
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    import psycopg
+    ctx=seed(pg);monkeypatch.setenv('DAON_OPEN_LAW_ENABLED','true');monkeypatch.setenv('DAON_OPEN_LAW_QA_WORKSPACE_ID',ctx.workspace_id)
+    repo=repository(pg);attempt=claim(repo,ctx);result=repo.complete(ctx,attempt,document(),*promoted(pg,ctx,attempt))
+    cloud=PostgresCloudStore(pg);connectors=PostgresConnectorRepository(cloud)
+    try:
+        # Persisted counters and JSON are deliberately still zero/empty.
+        with psycopg.connect(pg) as conn:
+            assert conn.execute('SELECT source_count,sources_json FROM workspace_connectors WHERE workspace_id=%s',(ctx.workspace_id,)).fetchone()==(0,[])
+        assert connectors.get(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'mcp-open-law-go-kr').source_count==1
+        items=connectors.sources(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'mcp-open-law-go-kr')
+        assert len(items)==1 and items[0].source_id==result.source_id and items[0].usable
+        # Another actor never sees this Notebook's snapshot/count.
+        assert connectors.sources(ctx.tenant_id,ctx.workspace_id,'unrelated-actor','mcp-open-law-go-kr')==()
+        connectors.unregister(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'mcp-open-law-go-kr')
+        with psycopg.connect(pg) as conn:
+            assert conn.execute('SELECT count(*) FROM notebook_source_unbindings WHERE source_id=%s',(result.source_id,)).fetchone()[0]==1
+            assert conn.execute('SELECT count(*) FROM open_law_source_snapshots WHERE source_id=%s',(result.source_id,)).fetchone()[0]==1
+    finally:cloud.close();repo.close()
+
+
+def test_confirmed_failure_cas_blocks_saved_copy_and_preserves_new_verification(pg,monkeypatch):
+    from daon_user_api.connector_postgres import PostgresConnectorRepository
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    from daon_user_api.open_law_source_import import OpenLawImportError
+    from daon_user_api.open_law_mcp_server import PROTOCOL,SCHEMA_DIGEST
+    ctx=seed(pg);monkeypatch.setenv('DAON_OPEN_LAW_ENABLED','true');monkeypatch.setenv('DAON_OPEN_LAW_QA_WORKSPACE_ID',ctx.workspace_id)
+    repo=repository(pg);attempt=claim(repo,ctx);stored=repo.complete(ctx,attempt,document(),*promoted(pg,ctx,attempt))
+    cloud=PostgresCloudStore(pg);connectors=PostgresConnectorRepository(cloud)
+    try:
+        assert repo.get_snapshot(ctx,stored.source_version_id).source_id==stored.source_id
+        _,_,observed=connectors.law_verification(ctx.tenant_id,ctx.workspace_id,ctx.actor_id)
+        assert connectors.mark_law_unavailable(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'OPEN_LAW_CREDENTIAL_REQUIRED',observed)
+        with pytest.raises(OpenLawImportError,match='OPEN_LAW_ACCESS_DENIED'):repo.get_snapshot(ctx,stored.source_version_id)
+        # Existing reconnect remains local/unverified, and explicit successful
+        # probe produces a new revision. Old failure must not replace it.
+        connectors.set_status(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'mcp-open-law-go-kr',status='unavailable',error_code='CONNECTOR_NOT_VERIFIED')
+        _,_,fresh=connectors.law_verification(ctx.tenant_id,ctx.workspace_id,ctx.actor_id)
+        receipt={'protocol_version':PROTOCOL,'tool_schema_digest':SCHEMA_DIGEST,'checked_at':'2026-10-16T00:00:00Z'}
+        connectors.verify_law(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,receipt,fresh)
+        assert not connectors.mark_law_unavailable(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'OPEN_LAW_CREDENTIAL_REQUIRED',observed)
+        assert not connectors.mark_law_unavailable(ctx.tenant_id,'other-workspace',ctx.actor_id,'OPEN_LAW_UPSTREAM_FAILED',fresh)
+        assert connectors.get(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'mcp-open-law-go-kr').status=='connected'
+        assert repo.get_snapshot(ctx,stored.source_version_id).source_id==stored.source_id
+    finally:cloud.close();repo.close()
+
+
 def run_target_queued_job(dsn,queue,studio,job_id):
     """과거 RED의 합성 작업은 잠금만 유지. 실제 global claim/worker를 실행한다."""
     import psycopg

@@ -12,6 +12,7 @@ import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "
 import { downloadManualAsset, getManualManifest, readManualDocument } from "../lib/manual-api.js";
 import { cancelSourceDeletionRequest, getSourceDeletionRequest, requestSourceDeletion } from "../lib/source-retention-api.js";
 import { importWebsiteSource, getWebsiteSnapshot, validWebsiteUrl } from '../lib/website-source-api.js';
+import { searchOpenLaw,previewOpenLaw,importOpenLaw,getOpenLawSnapshot,getOpenLawCitation,listWorkspaceConnectorSources } from '../lib/product-workspace-api.js';
 
 export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
   const notebookOptions = (options = {}) => (notebookId
@@ -22,6 +23,12 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     : input);
   return Object.freeze({
     listSources: (options) => listWorkspaceSources(workspaceId, notebookOptions(options)),
+    searchOpenLaw: (input,options={}) => searchOpenLaw(workspaceId,{...input,notebook_id:notebookId ?? options.notebookId},options),
+    previewOpenLaw: (input,options={}) => previewOpenLaw(workspaceId,{...input,notebook_id:notebookId ?? options.notebookId},options),
+    importOpenLaw: (input,options={}) => importOpenLaw(workspaceId,{...input,notebook_id:notebookId ?? options.notebookId},options),
+    getOpenLawSnapshot: (version,options) => getOpenLawSnapshot(workspaceId,version,notebookOptions(options)),
+    getOpenLawCitation: (citation,options) => getOpenLawCitation(workspaceId,citation,notebookOptions(options)),
+    listConnectorSources: (connectorId,options) => listWorkspaceConnectorSources(workspaceId,connectorId,options),
     validWebsiteUrl,
     importWebsite: ({url,publicPageConfirmed}, options = {}) => importWebsiteSource(workspaceId,
       {notebook_id:notebookId ?? options.notebookId,url,public_page_confirmed:publicPageConfirmed},options),

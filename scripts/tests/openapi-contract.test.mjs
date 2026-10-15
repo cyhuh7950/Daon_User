@@ -18,10 +18,25 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test('open law exact four methods body snapshot17 and selection query reject mutations',async()=>{
+  const document=await loadContract(),prefix='/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/';
+  for(const suffix of ['law-search','law-preview','law-imports'])assert.ok(document.paths[prefix+suffix]);
+  assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const mutate of [
+    d=>{delete d.paths[prefix+'law-search'];},
+    d=>{d.paths[prefix+'law-search'].get=d.paths[prefix+'law-search'].post;},
+    d=>{d.components.schemas.OpenLawSearchRequest.properties.public_query_confirmed.const=false;},
+    d=>{d.components.schemas.OpenLawSnapshotView.properties.text={type:'string'};},
+    d=>{d.components.schemas.OpenLawSnapshotView.properties.title.maxLength=301;},
+    d=>{d.components.schemas.OpenLawPreviewRequest.properties.article_code.pattern='.*';},
+    d=>{d.paths['/api/v1/workspaces/{id}/source-versions/{version_id}/law-snapshot'].get.parameters.push({name:'actor_id',in:'query',schema:{type:'string'}});},
+  ]){const invalid=structuredClone(document);mutate(invalid);assert.throws(()=>validateOpenApiDocument(invalid));}
+});
+
 test("XLSX original-cell content declares exact nullable cell contract and preserves old media", async () => {
   const doc = await loadContract();
   const response = doc.paths["/api/v1/workspaces/{id}/citations/{citation_id}/content"].get.responses["200"];
-  assert.deepEqual(response.content["application/json"].schema.oneOf, [{ $ref: "#/components/schemas/SheetCellContent" }, { $ref: "#/components/schemas/DocxBlockContent" }]);
+  assert.deepEqual(response.content["application/json"].schema.oneOf, [{ $ref: "#/components/schemas/SheetCellContent" }, { $ref: "#/components/schemas/DocxBlockContent" }, { $ref: "#/components/schemas/PptxBlockContent" }, { $ref: "#/components/schemas/AudioSegmentContent" }]);
   for (const name of ["CitationLocator", "StudioCitationLocator"]) {
     assert.ok(doc.components.schemas[name].properties.kind.enum.includes("sheet_cell"));
     assert.ok(doc.components.schemas[name].allOf.some(rule => rule.if?.properties?.kind?.const === 'sheet_cell' && rule.then?.properties?.value?.$ref === '#/components/schemas/SheetCellLocatorValue'));
@@ -269,7 +284,7 @@ test("Product Studio Version 상세는 Citation과 lifecycle 재진입 계약을
     "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format",
   ]);
   assert.deepEqual(document.components.schemas.StudioCitationProjection.properties.origin.enum, ["raw_source", "daon_knowledge"]);
-  assert.deepEqual(document.components.schemas.StudioCitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell", "docx_block"]);
+  assert.deepEqual(document.components.schemas.StudioCitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"]);
 });
 
 test("Provider 연결 확인은 비밀·Endpoint 없는 안전 상태 계약이다", async () => {
@@ -552,11 +567,11 @@ test("Question Citation 계약은 원본 페이지와 Daon 지식 구간을 같�
   assert.ok(citation.required.includes("locator"));
   assert.equal(citation.properties.locator.$ref, "#/components/schemas/CitationLocator");
   assert.deepEqual(document.components.schemas.CitationLocator.required, ["kind", "value"]);
-  assert.deepEqual(document.components.schemas.CitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell", "docx_block"]);
+  assert.deepEqual(document.components.schemas.CitationLocator.properties.kind.enum, ["page", "section", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"]);
   const response = document.paths["/api/v1/workspaces/{id}/citations/{citation_id}/content"].get.responses["200"];
   assert.ok(response.content["application/pdf"]);
   assert.ok(response.content["text/plain"]);
-  assert.equal(response.headers["X-Citation-Locator-Kind"].schema.enum.join(","), "page,section,image_region,sheet_cell,docx_block");
+  assert.equal(response.headers["X-Citation-Locator-Kind"].schema.enum.join(","), "page,section,image_region,sheet_cell,docx_block,pptx_block,audio_segment");
   assert.ok(response.content['application/json'].schema.oneOf.some(item=>item.$ref.endsWith('/DocxBlockContent')));
   assert.ok(response.content["image/png"]);
   assert.ok(response.content["image/jpeg"]);

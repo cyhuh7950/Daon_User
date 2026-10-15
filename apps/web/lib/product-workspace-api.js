@@ -7,6 +7,157 @@ import { parseDocxBlock } from "./docx-block-locator.js";
 import { parsePptxBlock } from "./pptx-block-locator.js";
 import { parseAudioSegment } from "./audio-segment-locator.js";
 import { validWebsiteSnapshot, readWebsiteJson } from "./website-source-api.js";
+import { citationContentUrl } from './question-answering-api.js';
+
+const LAW_FIELDS = ["mst","law_id","title","effective_date","promulgation_date","ministry"];
+const LAW_SNAPSHOT_FIELDS = ["snapshot_id","connector_id","source_id","source_version_id",...LAW_FIELDS,"article_code",
+  "origin_uri","fetched_at","raw_sha256","text_sha256","extraction_version","license_status"];
+const LAW_HASH = /^[a-f0-9]{64}$/u;
+const LAW_ERRORS=new Set(['OPEN_LAW_INPUT_INVALID','OPEN_LAW_ACCESS_DENIED','OPEN_LAW_EGRESS_BLOCKED','OPEN_LAW_NOT_FOUND',
+  'OPEN_LAW_PREVIEW_CHANGED','OPEN_LAW_IMPORT_CONFLICT','OPEN_LAW_IMPORT_IN_PROGRESS','OPEN_LAW_BINDING_CONFLICT',
+  'OPEN_LAW_CONTENT_TOO_LARGE','OPEN_LAW_TEXT_UNAVAILABLE','OPEN_LAW_PROTOCOL_INVALID','OPEN_LAW_UPSTREAM_FAILED',
+  'OPEN_LAW_CREDENTIAL_REQUIRED','OPEN_LAW_UNAVAILABLE','OPEN_LAW_BUSY','OPEN_LAW_STORAGE_UNAVAILABLE','OPEN_LAW_TIMEOUT']);
+const lawDate = value => typeof value === 'string' && /^[0-9]{8}$/u.test(value)
+  && Number.isFinite(Date.parse(`${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6,8)}T00:00:00Z`))
+  && new Date(`${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6,8)}T00:00:00Z`).toISOString().slice(0,10).replaceAll('-','') === value;
+const lawId = value => typeof value === 'string' && /^[0-9]{1,20}$/u.test(value);
+const lawBoundId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+const lawString = (value,max) => typeof value === 'string' && value.trim().length>0 && Array.from(value).length<=max && !/[\u0000-\u001f\u007f]/u.test(value);
+const lawSelection = value => lawId(value.mst) && lawDate(value.effective_date)
+  && (value.article_code === null || typeof value.article_code === 'string' && /^[0-9]{6}$/u.test(value.article_code));
+function validLaw(value, article=true) {
+  return exact(value,article?[...LAW_FIELDS,'article_code']:LAW_FIELDS) && lawId(value.mst) && lawId(value.law_id)
+    && lawString(value.title,300) && lawDate(value.effective_date)
+    && (value.promulgation_date===null || lawDate(value.promulgation_date))
+    && (value.ministry===null || lawString(value.ministry,200)) && (!article || lawSelection(value));
+}
+const lawPair = (source,version) => /^law-source-[0-9a-f]{32}$/u.test(source)
+  && version===`law-version-${source.slice('law-source-'.length)}`;
+const lawStamp = value => typeof value === 'string' && value.length<=64 && /^\d{4}-\d{2}-\d{2}T/u.test(value) && Number.isFinite(Date.parse(value));
+function lawSha256(bytes) {
+  // SHA-256 on the already bounded UTF-8 bytes, including HTTP development
+  // origins where SubtleCrypto is unavailable. No server hash is trusted alone.
+  const constants=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  const state=new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const padded=new Uint8Array(Math.ceil((bytes.length+9)/64)*64);padded.set(bytes);padded[bytes.length]=0x80;
+  const view=new DataView(padded.buffer);view.setUint32(padded.length-4,bytes.length*8);
+  const words=new Uint32Array(64),rotate=(value,count)=>(value>>>count)|(value<<(32-count));
+  for(let offset=0;offset<padded.length;offset+=64){
+    for(let i=0;i<16;i++)words[i]=view.getUint32(offset+i*4);
+    for(let i=16;i<64;i++){const x=words[i-15],y=words[i-2];words[i]=(words[i-16]+(rotate(x,7)^rotate(x,18)^(x>>>3))+words[i-7]+(rotate(y,17)^rotate(y,19)^(y>>>10)))>>>0;}
+    let [a,b,c,d,e,f,g,h]=state;
+    for(let i=0;i<64;i++){const t1=(h+(rotate(e,6)^rotate(e,11)^rotate(e,25))+((e&f)^(~e&g))+constants[i]+words[i])>>>0;
+      const t2=((rotate(a,2)^rotate(a,13)^rotate(a,22))+((a&b)^(a&c)^(b&c)))>>>0;
+      h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}
+    [a,b,c,d,e,f,g,h].forEach((value,i)=>{state[i]=(state[i]+value)>>>0;});
+  }
+  return Array.from(state,value=>value.toString(16).padStart(8,'0')).join('');
+}
+async function lawText(text,digest) {
+  if(typeof text!=='string' || !text.trim() || !LAW_HASH.test(digest))return false;
+  const bytes=new TextEncoder().encode(text);if(bytes.length>524288)return false;
+  return lawSha256(bytes)===digest;
+}
+async function lawResponse(response,signal) {
+  const payload=await readWebsiteJson(response,4*1024*1024,'OPEN_LAW_RESPONSE_INVALID',signal);
+  if(!response.ok){
+    const code=payload?.error?.code;
+    throw Error(LAW_ERRORS.has(code) ? code : 'OPEN_LAW_REQUEST_FAILED');
+  }
+  if(!exact(payload,['data','meta']) || !exact(payload.meta,['trace_id']) || !lawBoundId(payload.meta.trace_id))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return payload.data;
+}
+async function lawPost(workspaceId,route,input,{fetchImpl=fetch,signal,idempotencyKey}={}) {
+  if(!lawBoundId(workspaceId))throw Error('OPEN_LAW_INPUT_INVALID');
+  const headers={'Content-Type':'application/json'};if(idempotencyKey)headers['Idempotency-Key']=idempotencyKey;
+  const response=await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/connectors/mcp-open-law-go-kr/${route}`,
+    {method:'POST',credentials:'same-origin',cache:'no-store',headers,body:JSON.stringify(input),signal});
+  return {data:await lawResponse(response,signal),status:response.status};
+}
+export async function searchOpenLaw(workspaceId,input,options={}) {
+  if(!exact(input,['notebook_id','query','page','public_query_confirmed']) || !lawBoundId(input.notebook_id)
+    || !lawString(input.query,100) || !Number.isSafeInteger(input.page) || input.page<1 || input.page>100 || input.public_query_confirmed!==true)throw Error('OPEN_LAW_INPUT_INVALID');
+  const {data,status}=await lawPost(workspaceId,'law-search',input,options);
+  if(status!==200 || !exact(data,['items','page','total_count']) || !Array.isArray(data.items) || data.items.length>20
+    || !data.items.every(item=>validLaw(item,false)) || data.page!==input.page || !Number.isSafeInteger(data.total_count) || data.total_count<0)throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return data;
+}
+export async function previewOpenLaw(workspaceId,input,options={}) {
+  if(!exact(input,['notebook_id','mst','effective_date','article_code']) || !lawBoundId(input.notebook_id) || !lawSelection(input))throw Error('OPEN_LAW_INPUT_INVALID');
+  const {data,status}=await lawPost(workspaceId,'law-preview',input,options);
+  if(status!==200 || !exact(data,['law','text','raw_sha256','text_sha256','fetched_at','extraction_version']) || !validLaw(data.law)
+    || ['mst','effective_date','article_code'].some(key=>data.law[key]!==input[key]) || !LAW_HASH.test(data.raw_sha256)
+    || !lawStamp(data.fetched_at) || data.extraction_version!=='open-law-text-v1' || !await lawText(data.text,data.text_sha256))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return data;
+}
+export async function importOpenLaw(workspaceId,input,options={}) {
+  if(!exact(input,['notebook_id','mst','effective_date','article_code','expected_raw_sha256','expected_text_sha256']) || !lawBoundId(input.notebook_id)
+    || !lawSelection(input) || !LAW_HASH.test(input.expected_raw_sha256) || !LAW_HASH.test(input.expected_text_sha256)
+    || !safeIdempotencyKey(options.idempotencyKey))throw Error('OPEN_LAW_INPUT_INVALID');
+  const {data,status}=await lawPost(workspaceId,'law-imports',input,options),result=data?.attributes;
+  if(!exact(data,['kind','id','version','attributes']) || data.kind!=='open_law_import' || data.version!=='1'
+    || !exact(result,['snapshot_id','source_id','source_version_id','source_state','replayed']) || !/^law-snapshot-[0-9a-f]{32}$/u.test(result.snapshot_id)
+    || data.id!==result.snapshot_id || !lawPair(result.source_id,result.source_version_id) || result.source_state!=='ready'
+    || typeof result.replayed!=='boolean' || status!==(result.replayed?200:201))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return result;
+}
+export async function getOpenLawSnapshot(workspaceId,sourceVersionId,{notebookId,fetchImpl=fetch,signal}={}) {
+  if(!lawBoundId(workspaceId) || !lawBoundId(notebookId) || !/^law-version-[0-9a-f]{32}$/u.test(sourceVersionId))throw Error('OPEN_LAW_INPUT_INVALID');
+  const response=await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspaceId)}/source-versions/${encodeURIComponent(sourceVersionId)}/law-snapshot?notebook_id=${encodeURIComponent(notebookId)}`,
+    {method:'GET',credentials:'same-origin',cache:'no-store',signal});
+  const data=await lawResponse(response,signal),s=data?.snapshot;
+  if(response.status!==200 || !exact(data,['snapshot','text']) || !exact(s,LAW_SNAPSHOT_FIELDS) || !validLaw(Object.fromEntries([...LAW_FIELDS,'article_code'].map(key=>[key,s[key]])))
+    || !/^law-snapshot-[0-9a-f]{32}$/u.test(s.snapshot_id) || s.connector_id!=='mcp-open-law-go-kr' || !lawPair(s.source_id,s.source_version_id)
+    || s.source_version_id!==sourceVersionId || s.origin_uri!==`https${URL_SEPARATOR}www.law.go.kr/LSW/lsInfoP.do?lsiSeq=${s.mst}&efYd=${s.effective_date}`
+    || !lawStamp(s.fetched_at) || !LAW_HASH.test(s.raw_sha256) || s.extraction_version!=='open-law-text-v1' || s.license_status!=='unknown'
+    || !await lawText(data.text,s.text_sha256))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return data;
+}
+
+export async function getOpenLawCitation(workspaceId,citation,{notebookId,fetchImpl=fetch,signal}={}) {
+  const keys=['citation_id','source_id','source_version_id','evidence_span_id','page','origin','context_item_id','locator'];
+  if(!(exact(citation,keys) || exact(citation,[...keys,'content_url'])) || !lawBoundId(workspaceId) || !lawBoundId(notebookId)
+    || !lawBoundId(citation.citation_id) || !lawPair(citation.source_id,citation.source_version_id)
+    || citation.origin!=='raw_source' || citation.context_item_id!==citation.source_id || citation.page!==1
+    || !/^law-span-[0-9a-f]{32}$/u.test(citation.evidence_span_id) || !exact(citation.locator,['kind','value'])
+    || citation.locator.kind!=='section' || citation.locator.value!==citation.evidence_span_id)throw Error('OPEN_LAW_INPUT_INVALID');
+  const url=citationContentUrl(workspaceId,citation,{notebookId});
+  if(citation.content_url!==undefined && citation.content_url!==url)throw Error('OPEN_LAW_INPUT_INVALID');
+  const response=await fetchImpl(url,{method:'GET',credentials:'same-origin',cache:'no-store',signal});
+  if(!response.ok)await lawResponse(response,signal);
+  const declared=response.headers.get('content-length');
+  if(response.headers.get('content-type')?.split(';',1)[0].trim().toLowerCase()!=='text/plain'
+    || response.headers.get('x-citation-locator-kind')!=='section' || !response.body
+    || declared!==null && (!/^[0-9]+$/u.test(declared) || Number(declared)>524288)){
+    await response.body?.cancel();throw Error('OPEN_LAW_RESPONSE_INVALID');
+  }
+  const reader=response.body.getReader(),chunks=[];let size=0,original;
+  const abort=()=>{void reader.cancel().catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});
+  try{
+    while(true){if(signal?.aborted)throw Error();const {done,value}=await reader.read();if(done)break;
+      if(value.byteLength>524288-size)throw Error();chunks.push(value);size+=value.byteLength;}
+    if(signal?.aborted)throw Error();const raw=new Uint8Array(size);let offset=0;
+    for(const chunk of chunks){raw.set(chunk,offset);offset+=chunk.byteLength;}
+    original=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(raw);
+  }catch{throw Error('OPEN_LAW_RESPONSE_INVALID');}
+  finally{signal?.removeEventListener('abort',abort);await reader.cancel().catch(()=>{});reader.releaseLock();}
+  const data=await getOpenLawSnapshot(workspaceId,citation.source_version_id,{notebookId,fetchImpl,signal});
+  if(data.snapshot.source_id!==citation.source_id || data.text!==original || !await lawText(original,data.snapshot.text_sha256))throw Error('OPEN_LAW_RESPONSE_INVALID');
+  const points=Array.from(original),matches=[];
+  for(let start=0;start<points.length;start+=1024){
+    const suffix=lawSha256(new TextEncoder().encode(`${citation.source_version_id}|${start}`)).slice(0,32);
+    if(`law-span-${suffix}`===citation.evidence_span_id && points.slice(start,start+1024).join('').trim())matches.push(start);
+  }
+  if(signal?.aborted || matches.length!==1)throw Error('OPEN_LAW_RESPONSE_INVALID');
+  return {source_version_id:citation.source_version_id,text:original,start:matches[0],end:Math.min(points.length,matches[0]+1024)};
+}
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const SAFE_FILENAME = /^[^/\\\u0000-\u001f]{1,255}$/u;
@@ -178,6 +329,18 @@ async function connectorRequest(workspaceId, path, options = {}) {
   if (!response.ok) throw safeResponseError(payload, "CONNECTOR_REQUEST_FAILED");
   if (!exact(payload, ["data", "meta"]) || !validMeta(payload.meta, workspace)) throw new Error("CONNECTOR_RESPONSE_INVALID");
   return payload.data;
+}
+
+export async function listWorkspaceConnectorSources(workspaceId,connectorId,{fetchImpl=fetch,signal}={}) {
+  const workspace=requiredWorkspace(workspaceId,'CONNECTOR_INPUT_INVALID');
+  if(!safeId(connectorId))throw Error('CONNECTOR_INPUT_INVALID');
+  const data=await connectorRequest(workspace,`/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}/sources`,{
+    fetchImpl,init:{method:'GET',credentials:'same-origin',cache:'no-store',signal}});
+  if(!exact(data,['sources']) || !Array.isArray(data.sources)
+    || data.sources.length>1000 || !data.sources.every(item=>exact(item,['source_id','connector_id','title','source_state','usable','content_digest'])
+      && safeId(item.source_id) && item.connector_id===connectorId && typeof item.title==='string' && item.title.length<=300
+      && typeof item.source_state==='string' && typeof item.usable==='boolean' && (item.content_digest===null || LAW_HASH.test(item.content_digest))))throw Error('CONNECTOR_RESPONSE_INVALID');
+  return data.sources;
 }
 
 export async function listWorkspaceConnectors(workspaceId, { fetchImpl = fetch, signal } = {}) {

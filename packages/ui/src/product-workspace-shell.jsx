@@ -14,6 +14,61 @@ import { parseAudioSegment, isAudioSegmentContent } from "./shared-audio-segment
 
 const audioTime = ms => `${String(Math.floor(ms/60000)).padStart(2,'0')}:${String(Math.floor(ms/1000)%60).padStart(2,'0')}.${String(ms%1000).padStart(3,'0')}`;
 
+export function OpenLawSourceForm({adapter,connector,onImported,onConnected}) {
+  const [query,setQuery]=useState(''),[confirmed,setConfirmed]=useState(false),[result,setResult]=useState(null);
+  const [selection,setSelection]=useState(null),[article,setArticle]=useState(''),[preview,setPreview]=useState(null);
+  const [pending,setPending]=useState(false),[error,setError]=useState(null);
+  const request=useRef(null),identity=useRef(null);
+  useEffect(()=>{setResult(null);setSelection(null);setPreview(null);setPending(false);identity.current=null;
+    return()=>{request.current?.abort();request.current=null;};},[adapter]);
+  const run=async operation=>{
+    if(request.current)return;
+    const controller=new AbortController();request.current=controller;setPending(true);setError(null);
+    const current=()=>request.current===controller && !controller.signal.aborted;
+    try{await operation(controller.signal,current);}catch(cause){if(current())setError(safeErrorCode(cause,'OPEN_LAW_REQUEST_FAILED'));}
+    finally{if(current()){request.current=null;setPending(false);}}
+  };
+  const search=page=>run(async(signal,current)=>{
+    if(!confirmed || !query.trim())return;
+    setPreview(null);setSelection(null);identity.current=null;
+    const value=await adapter.searchOpenLaw({query,page,public_query_confirmed:true},{signal});if(current()){setResult(value);onConnected?.();}
+  });
+  const selected=selection?{mst:selection.mst,effective_date:selection.effective_date,article_code:article || null}:null;
+  return <div className="open-law-source-form">
+    <strong>국가법령정보센터 MCP · {result?'공개 조회 확인됨':connector?.status==='connected'?'연결 확인됨':'공개 검색으로 연결 확인 필요'}</strong>
+    <label>공개 법령명<input aria-label="공개 법령명" value={query} maxLength={100} disabled={pending} onChange={event=>{setQuery(event.target.value);setResult(null);setSelection(null);setPreview(null);identity.current=null;}} /></label>
+    <label><input type="checkbox" aria-label="공개 법령명 전송 확인" checked={confirmed} disabled={pending} onChange={event=>{setConfirmed(event.target.checked);setPreview(null);}} />공개 법령명만 외부 전송하는 데 동의합니다. Source·질문·로그인 정보는 보내지 않습니다.</label>
+    <button type="button" disabled={pending || !confirmed || !query.trim() || typeof adapter?.searchOpenLaw!=='function'} onClick={()=>void search(1)}>법령 검색</button>
+    {result?<><ul>{result.items.map(item=><li key={`${item.mst}:${item.effective_date}`}><button type="button" disabled={pending} aria-pressed={selection?.mst===item.mst && selection?.effective_date===item.effective_date} onClick={()=>{setSelection(item);setArticle('');setPreview(null);identity.current=null;}}>{item.title} · 시행 {item.effective_date}</button></li>)}</ul>
+      <span>페이지 {result.page} · 총 {result.total_count}건</span><button type="button" disabled={pending || result.page<=1} onClick={()=>void search(result.page-1)}>이전 페이지</button><button type="button" disabled={pending || result.page>=100 || result.page*20>=result.total_count} onClick={()=>void search(result.page+1)}>다음 페이지</button></>:null}
+    {selected?<><label>조문 6자리 (비우면 본문)<input aria-label="조문 6자리" value={article} maxLength={6} disabled={pending} onChange={event=>{setArticle(event.target.value);setPreview(null);identity.current=null;}} /></label>
+      <button type="button" disabled={pending || !confirmed || (article!=='' && !/^[0-9]{6}$/u.test(article))} onClick={()=>void run(async(signal,current)=>{const value=await adapter.previewOpenLaw(selected,{signal});if(current())setPreview(value);})}>본문 미리보기</button></>:null}
+    {preview?<><p>시행 {preview.law.effective_date} · 라이선스 미상</p><pre>{preview.text}</pre>
+      <button type="button" disabled={pending || !confirmed} onClick={()=>void run(async(signal,current)=>{
+        const input={...selected,expected_raw_sha256:preview.raw_sha256,expected_text_sha256:preview.text_sha256};
+        const fingerprint=JSON.stringify(input);if(identity.current?.fingerprint!==fingerprint)identity.current={fingerprint,key:secureUuid()};
+        const value=await adapter.importOpenLaw(input,{idempotencyKey:identity.current.key,signal});if(current()){setPreview(null);identity.current=null;onImported?.(value);}
+      })}>Notebook에 가져오기</button></>:null}
+    {pending?<p role="status">법령 요청 처리 중입니다.</p>:null}
+    {error?<p role="alert">법령 요청을 완료하지 못했습니다. ({error}) 미리보기가 바뀌면 다시 확인하세요.</p>:null}
+  </div>;
+}
+
+export function OpenLawOriginal({adapter,source}) {
+  const [open,setOpen]=useState(true),[value,setValue]=useState(null),[error,setError]=useState(null);
+  useEffect(()=>{const controller=new AbortController();setValue(null);setError(null);
+    if(open){(async()=>{try{
+      const data=await adapter.getOpenLawSnapshot(source.sourceVersionId,{signal:controller.signal});
+      if(data.snapshot.source_id!==source.sourceId || data.snapshot.source_version_id!==source.sourceVersionId)throw Error('OPEN_LAW_RESPONSE_INVALID');
+      if(!controller.signal.aborted)setValue(data);
+    }catch(cause){if(!controller.signal.aborted)setError(safeErrorCode(cause,'OPEN_LAW_ACCESS_DENIED'));}})();}
+    return()=>controller.abort();
+  },[adapter,source.sourceId,source.sourceVersionId,open]);
+  return <section className="website-original" aria-label="법령 Source 원문"><button type="button" onClick={()=>setOpen(current=>!current)}>{open?'법령 원문 닫기':'법령 원문 보기'}</button>
+    {open && value?<><h4>{value.snapshot.title}</h4><p>시행 {value.snapshot.effective_date} · 수집 {value.snapshot.fetched_at} · 라이선스 미상</p><pre>{value.text}</pre></>:null}
+    {open && error?<p role="alert">법령 원문 사용 불가 ({error})</p>:null}</section>;
+}
+
 export function WebsiteSourceForm({ adapter, onRegistered }) {
   const [url,setUrl]=useState(''), [confirmed,setConfirmed]=useState(false);
   const [pending,setPending]=useState(false), [error,setError]=useState(null);
@@ -683,7 +738,14 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [loadRevision, setLoadRevision] = useState(0);
   const [knowledgePackages, setKnowledgePackages] = useState([]);
   const [connectors, setConnectors] = useState([]);
+  const [lawSourcesOnly,setLawSourcesOnly]=useState(false);
   const [connectorSafeError, setConnectorSafeError] = useState(null);
+  const [connectorPending,setConnectorPending]=useState(false);
+  const reconnectRequestRef=useRef(null);
+  useEffect(()=>{
+    reconnectRequestRef.current?.controller.abort();reconnectRequestRef.current=null;setConnectorPending(false);
+    return()=>{reconnectRequestRef.current?.controller.abort();reconnectRequestRef.current=null;};
+  },[workspaceId,adapter]);
   const [selectedKnowledgeId, setSelectedKnowledgeId] = useState(null);
   const [knowledgeSafeError, setKnowledgeSafeError] = useState(null);
   const [operationsStatus, setOperationsStatus] = useState(null);
@@ -730,6 +792,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [sheetCitation, setSheetCitation] = useState(null);
   const sheetRequestRef = useRef(null);
   const [docxCitation, setDocxCitation] = useState(null);
+  const [lawCitation,setLawCitation]=useState(null);
+  const lawCitationRequest=useRef(null);
+  useEffect(()=>{setLawCitation(null);return()=>{lawCitationRequest.current?.abort();lawCitationRequest.current=null;};},[adapter,workspaceId]);
   const docxRequestRef = useRef(null);
   const sourceRetryKeysRef = useRef(new Map());
   const pollControllerRef = useRef(null);
@@ -760,6 +825,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     workspaceLoadEpochRef.current = loadEpoch;
     const controller = new AbortController();
     const isCurrent = () => !controller.signal.aborted && workspaceLoadEpochRef.current === loadEpoch;
+    setLawSourcesOnly(false);
     const sourceContextEmpty = Array.isArray(adapter.notebookContext?.sources)
       && adapter.notebookContext.sources.length === 0;
     if (sourceContextEmpty) {
@@ -818,7 +884,13 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           projected = await Promise.all(sourceResult.value.map(async (source) => {
             // Namespace는 후보 구분만 한다. 실제 sealed snapshot/currentVersion
             // 접근 GET 성공으로만 웹 availability를 확정한다.
-            let websiteSnapshot=null;
+            let websiteSnapshot=null,lawSnapshot=null;
+            const lawCandidate=source.source_id.startsWith('law-source-') || source.source_version_id.startsWith('law-version-');
+            if(lawCandidate && source.source_state==='ready' && typeof adapter.getOpenLawSnapshot==='function'){
+              try{const data=await adapter.getOpenLawSnapshot(source.source_version_id,{signal:controller.signal});
+                if(data.snapshot.source_id===source.source_id && data.snapshot.source_version_id===source.source_version_id)lawSnapshot=data.snapshot;
+              }catch{/* 현재 서버 접근·snapshot 검증 성공 전에는 사용 불가. */}
+            }
             if(source.source_state==='ready' && source.source_id.startsWith('web-source-') && source.source_version_id.startsWith('web-version-') && typeof adapter.getWebsiteSnapshot==='function'){
               try{
                 const snapshot=await adapter.getWebsiteSnapshot(source.source_version_id,{signal:controller.signal});
@@ -833,8 +905,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             processingState: source.processing_state,
             jobState: source.job_state,
             websiteSnapshot,
+            lawSnapshot,lawCandidate,
             ready: source.source_state === "ready"
-              && (websiteSnapshot!==null || (source.processing_state === "completed"
+              && (lawCandidate ? lawSnapshot!==null : websiteSnapshot!==null || (source.processing_state === "completed"
               && source.job_state === "completed"))
           }; }));
         } catch (error) {
@@ -1140,13 +1213,43 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
 
   const unregisterMcpConnector = async (connector) => {
     if (connector?.kind !== "mcp" || typeof adapter?.unregisterConnector !== "function") return;
-    if (!globalThis.confirm?.(`${connector.name} 연결을 즉시 삭제할까요? 외부 서버의 원본 데이터는 삭제되지 않습니다.`)) return;
     try {
+      let scope='';
+      if(connector.connector_id==='mcp-open-law-go-kr'){
+        if(typeof adapter.listConnectorSources!=='function')throw Error('OPEN_LAW_ACCESS_DENIED');
+        const sources=await adapter.listConnectorSources(connector.connector_id,{signal:lifetimeControllerRef.current?.signal});
+        scope=`본인 접근 가능 Notebook의 활성 binding ${sources.length}개를 해제합니다. `;
+      }
+      if (!globalThis.confirm?.(`${connector.name} 연결을 즉시 삭제할까요? ${scope}외부 서버의 원본 데이터는 삭제되지 않습니다.`)) return;
       await adapter.unregisterConnector(connector.connector_id, { signal: lifetimeControllerRef.current?.signal });
       setLoadRevision((current) => current + 1);
     } catch (error) {
       setConnectorSafeError(safeErrorCode(error, "CONNECTOR_DELETE_FAILED"));
     }
+  };
+
+  const refreshLawConnector=async()=>{
+    if(typeof adapter?.listConnectors!=='function')return;
+    const epoch=workspaceLoadEpochRef.current,signal=lifetimeControllerRef.current?.signal;
+    try{const values=await adapter.listConnectors({signal});
+      if(!signal?.aborted && epoch===workspaceLoadEpochRef.current){
+        setConnectors(values);
+        setLoadRevision(current=>current+1);
+      }
+    }catch(error){if(!signal?.aborted && epoch===workspaceLoadEpochRef.current)setConnectorSafeError(safeErrorCode(error,'CONNECTOR_LIST_FAILED'));}
+  };
+  const reconnectLawConnector=async connector=>{
+    if(reconnectRequestRef.current || typeof adapter?.reconnectConnector!=='function')return;
+    const token={controller:new AbortController()},epoch=workspaceLoadEpochRef.current,signal=token.controller.signal;
+    reconnectRequestRef.current=token;setConnectorPending(true);setConnectorSafeError(null);
+    const current=()=>!signal?.aborted && epoch===workspaceLoadEpochRef.current && reconnectRequestRef.current===token;
+    try{const value=await adapter.reconnectConnector(connector.connector_id,{signal});
+      if(current()){
+        setConnectors(items=>items.map(item=>item.connector_id===value.connector_id?value:item));
+        setSourceAddMode('mcp');setSourceAddOpen(true);
+      }
+    }catch(error){if(current())setConnectorSafeError(safeErrorCode(error,'CONNECTOR_RECONNECT_FAILED'));}
+    finally{if(reconnectRequestRef.current===token){reconnectRequestRef.current=null;setConnectorPending(false);}}
   };
 
   const confirmSourceUnbind = async () => {
@@ -1561,7 +1664,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             </nav>
             {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV, XLSX(내부 모델·셀 검증 필요), DOCX(제한형 문단·병합 없는 단순 표, 내부 모델·구간 검증 필요), PNG/JPG/JPEG(내부 Vision 모델·OCR 필요). PPTX(제한형 텍스트·병합 없는 단순 표, 내부 모델·원문 검증 필요). WAV(PCM16·1~120초·25MiB, QA 내부 ASR와 의미 모델 필요). MP3/M4A는 미지원</small><input type="file" accept=".pdf,.xlsx,.docx,.pptx,.csv,.txt,.md,.png,.jpg,.jpeg,.wav" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
             {sourceAddMode === "text" ? <><textarea value={sourceAddText} onChange={(event) => setSourceAddText(event.target.value)} placeholder="복사한 텍스트를 붙여 넣으세요" disabled={sourceAddPending} /><button type="button" className="primary-button" onClick={() => void submitPastedText()} disabled={sourceAddPending || !sourceAddText.trim()}>{sourceAddPending ? "등록 중" : "텍스트 등록"}</button></> : null}
-            {sourceAddMode === "mcp" ? <div className="source-add-unavailable"><strong>국가법령정보센터 MCP</strong><small>연결을 등록하면 연결형 Source에서 상태를 확인하고 선택할 수 있습니다.</small><button type="button" className="primary-button" onClick={() => void registerMcpConnector()} disabled={sourceAddPending}>{sourceAddPending ? "등록 중" : "MCP 연결 등록"}</button></div> : null}
+            {sourceAddMode === "mcp" ? (connectors.some(item=>item.connector_id==='mcp-open-law-go-kr')
+              ? <OpenLawSourceForm adapter={adapter} connector={connectors.find(item=>item.connector_id==='mcp-open-law-go-kr')} onConnected={()=>void refreshLawConnector()} onImported={()=>{setSourceAddOpen(false);setLoadRevision(current=>current+1);}} />
+              : <div className="source-add-unavailable"><strong>국가법령정보센터 MCP</strong><small>명시 등록 후 공개 법령 검색으로 연결을 확인합니다.</small><button type="button" className="primary-button" onClick={() => void registerMcpConnector()} disabled={sourceAddPending}>{sourceAddPending ? "등록 중" : "MCP 연결 등록"}</button></div>) : null}
             {sourceAddMode === "website" ? <WebsiteSourceForm key={workspaceId} adapter={adapter} onRegistered={()=>{setSourceAddOpen(false);setLoadRevision(current=>current+1);}} /> : null}
             {sourceAddMode === "drive" ? <div>
               <label className="source-add-dropzone"><strong>로컬·Google Drive 파일 선택</strong><small>PC에 연결된 Google Drive 또는 로컬 위치에서 파일 사본을 선택하세요. Google 웹 연결·자동 동기화는 지원하지 않습니다.</small>
@@ -1594,12 +1699,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <ul className="source-list connector-list" aria-label="MCP 및 Daon 승인 지식 Connector 목록">
               {connectors.map((connector) => (
                 <li className="source-list-row connector-list-row" key={connector.connector_id}>
-                  <button type="button" disabled={connector.status !== "connected"} title={connector.status === "connected" ? "연결형 Source 선택" : "사용 불가"}>
+                  <button type="button" disabled={connector.status !== "connected"} title={connector.status === "connected" ? "연결형 Source 선택" : "사용 불가"} onClick={()=>{if(connector.connector_id==='mcp-open-law-go-kr'){setLawSourcesOnly(true);const source=viewState.sources.find(item=>item.lawSnapshot && item.ready);if(source)selectSource(source);}}}>
                     <span className="source-file-icon knowledge-icon" aria-hidden="true">{connector.kind === "mcp" ? "M" : "K"}</span>
                     <span className="source-row-copy"><strong>{connector.name}</strong><small>{connector.status === "connected" ? `Source ${connector.source_count}개 · ${connector.endpoint_label}` : "사용 불가"}</small></span>
                     <span className={`source-ready-dot ${connector.status === "connected" ? "is-ready" : ""}`} aria-hidden="true" />
                   </button>
-                  {connector.status !== "connected" && typeof adapter?.reconnectConnector === "function" ? <button type="button" className="source-action-trigger" title="Connector 재연결" aria-label={`${connector.name} 재연결`} onClick={() => void adapter.reconnectConnector(connector.connector_id).then(() => setLoadRevision((current) => current + 1))}>↻</button> : null}
+                  {connector.status !== "connected" && typeof adapter?.reconnectConnector === "function" ? <button type="button" disabled={connector.connector_id==='mcp-open-law-go-kr' && connectorPending} className="source-action-trigger" title="Connector 재연결" aria-label={`${connector.name} 재연결`} onClick={() => {if(connector.connector_id==='mcp-open-law-go-kr')void reconnectLawConnector(connector);else void adapter.reconnectConnector(connector.connector_id).then(() => setLoadRevision((current) => current + 1));}}>↻</button> : null}
                   {connector.kind === "mcp" && typeof adapter?.unregisterConnector === "function" ? <button type="button" className="source-action-trigger" title="MCP 연결 삭제" aria-label={`${connector.name} 연결 삭제`} onClick={() => void unregisterMcpConnector(connector)}>×</button> : null}
                 </li>
               ))}
@@ -1607,12 +1712,13 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             {connectorSafeError ? <div className="inline-alert compact" role="alert">연결형 Source를 불러오지 못했습니다.</div> : null}
           </section>
           <section className="source-group" aria-labelledby="raw-source-title">
-          <div className="source-group-heading"><h3 id="raw-source-title">Raw Source</h3><span>{viewState.sources.length}</span></div>
+          <div className="source-group-heading"><h3 id="raw-source-title">Raw Source</h3><span>{viewState.sources.filter(source=>!lawSourcesOnly || source.lawSnapshot).length}</span></div>
+          {lawSourcesOnly?<button type="button" onClick={()=>setLawSourcesOnly(false)}>모든 Source 보기</button>:null}
           <ul className="source-list" aria-label="Raw Source 목록">
-            {viewState.sources.map((source) => (
+            {viewState.sources.filter(source=>!lawSourcesOnly || source.lawSnapshot).map((source) => (
               <li className="source-list-row" key={`${source.sourceId}:${source.sourceVersionId}`}>
                 <button type="button" aria-pressed={viewState.selectedSource?.sourceVersionId === source.sourceVersionId} onClick={() => selectSource(source)} disabled={!source.ready}>
-                  <span className="source-file-icon" aria-hidden="true">{source.websiteSnapshot?'WEB':'FILE'}</span><span className="source-row-copy"><strong>{source.websiteSnapshot?.title ?? source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {source.websiteSnapshot?`웹 수집·저장 완료 · ${source.websiteSnapshot.fetched_at}`:SOURCE_STATE_LABELS[source.sourceState] ?? "상태 확인 필요"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
+                  <span className="source-file-icon" aria-hidden="true">{source.lawSnapshot?'LAW':source.websiteSnapshot?'WEB':'FILE'}</span><span className="source-row-copy"><strong>{source.lawSnapshot?.title ?? source.websiteSnapshot?.title ?? source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {source.lawCandidate?(source.lawSnapshot?'법령 수집·저장 완료':'법령 사용 불가'):source.websiteSnapshot?`웹 수집·저장 완료 · ${source.websiteSnapshot.fetched_at}`:SOURCE_STATE_LABELS[source.sourceState] ?? "상태 확인 필요"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
                 </button>
                 <button type="button" className="source-action-trigger" title="Source 작업" aria-label={`${source.filename ?? source.sourceId} 작업`} onClick={() => { setSourceAction(source); setSourceActionKind("unbind"); setSourceActionSafeError(null); }}>⋮</button>
                 {(new Set(["failed", "waiting_model"]).has(source.sourceState)
@@ -1623,6 +1729,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             ))}
           </ul>
           {viewState.selectedSource?.websiteSnapshot ? <WebsiteOriginal key={`${workspaceId}:${viewState.selectedSource.sourceVersionId}`} adapter={adapter} source={viewState.selectedSource} /> : null}
+          {viewState.selectedSource?.lawSnapshot ? <OpenLawOriginal key={`${workspaceId}:${viewState.selectedSource.sourceVersionId}`} adapter={adapter} source={viewState.selectedSource} /> : null}
           {sourceRetryError ? <div className="inline-alert compact" role="alert">재처리를 요청하지 못했습니다. 연결과 처리 상태를 확인한 뒤 다시 시도하세요. ({sourceRetryError})</div> : null}
           <ul className="source-list" aria-label="삭제 요청 Source 목록">
             {sourceDeletionRequests.map((request) => (
@@ -1675,6 +1782,21 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">대화를 불러오지 못했습니다. ({viewState.conversationSafeError}) 다시 시도해 주세요.</div> : null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
+              if(citation.origin==='raw_source' && citation.locator.kind==='section' && /^law-source-[0-9a-f]{32}$/u.test(citation.source_id)){
+                event.preventDefault();lawCitationRequest.current?.abort();const controller=new AbortController();lawCitationRequest.current=controller;
+                const epoch=questionEpochRef.current;setLawCitation({citation,epoch,content:null,error:null});
+                const current=()=>lawCitationRequest.current===controller && !controller.signal.aborted && epoch===questionEpochRef.current && workspaceMountedRef.current;
+                void(async()=>{try{
+                  if(typeof adapter?.getOpenLawCitation!=='function' || !viewState.sources.some(source=>source.ready && source.lawSnapshot && source.sourceId===citation.source_id && source.sourceVersionId===citation.source_version_id))throw Error('CITATION_CONTENT_UNAVAILABLE');
+                  const content=await adapter.getOpenLawCitation(citation,{signal:controller.signal});
+                  if(!hasExactKeys(content,['source_version_id','text','start','end']) || content.source_version_id!==citation.source_version_id
+                    || typeof content.text!=='string' || new TextEncoder().encode(content.text).length>524288
+                    || !Number.isSafeInteger(content.start) || !Number.isSafeInteger(content.end) || content.start<0 || content.end<=content.start
+                    || content.end-content.start>1024 || content.end>Array.from(content.text).length)throw Error('CITATION_CONTENT_UNAVAILABLE');
+                  if(current())setLawCitation({citation,epoch,content,error:null});
+                }catch(error){if(current())setLawCitation({citation,epoch,content:null,error:safeErrorCode(error,'CITATION_CONTENT_UNAVAILABLE')});}})();
+                return;
+              }
               if (["docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind)) {
                 event.preventDefault();
                 sheetRequestRef.current=null;setSheetCitation(null);setImageCitation(null);
@@ -1748,6 +1870,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               });
             }}>Citation · {citation.locator.kind === "audio_segment" ? `음성 ${audioTime(parseAudioSegment(citation.locator.value).start_ms)}–${audioTime(parseAudioSegment(citation.locator.value).end_ms)}` : citation.locator.kind === "pptx_block" ? pptxBlockLabel(citation.locator.value) : citation.locator.kind === "docx_block" ? `${parseDocxBlock(citation.locator.value)?.block} · ${parseDocxBlock(citation.locator.value)?.start}–${parseDocxBlock(citation.locator.value)?.end}` : citation.locator.kind === "sheet_cell" ? `${parseSheetCell(citation.locator.value)?.sheet} · ${parseSheetCell(citation.locator.value)?.range}` : citation.locator.kind === "page" ? `${citation.page}쪽` : citation.locator.kind === "image_region" ? "이미지 영역" : "지식 구간"}</a>
           ))}</div>
+          {lawCitation && lawCitation.epoch===questionEpochRef.current && viewState.answer?.citations?.some(citation=>citation.citation_id===lawCitation.citation.citation_id && citation.source_version_id===lawCitation.citation.source_version_id && citation.evidence_span_id===lawCitation.citation.evidence_span_id)?<section className="website-original" aria-label="법령 인용 원문">
+            <button type="button" onClick={()=>{lawCitationRequest.current?.abort();lawCitationRequest.current=null;setLawCitation(null);}}>법령 인용 원문 닫기</button>
+            {lawCitation.error?<p role="alert">법령 인용 원문 사용 불가 ({lawCitation.error})</p>:lawCitation.content?<pre>{Array.from(lawCitation.content.text).slice(0,lawCitation.content.start).join('')}<mark>{Array.from(lawCitation.content.text).slice(lawCitation.content.start,lawCitation.content.end).join('')}</mark>{Array.from(lawCitation.content.text).slice(lawCitation.content.end).join('')}</pre>:<p role="status">현재 인용 권한과 법령 원문을 확인 중입니다.</p>}
+          </section>:null}
           {docxCitation && docxCitation.requestEpoch===questionEpochRef.current && viewState.answer?.citations?.some(current=>current.citation_id===docxCitation.citation.citation_id&&current.source_id===docxCitation.citation.source_id&&current.source_version_id===docxCitation.citation.source_version_id&&["docx_block","pptx_block","audio_segment"].includes(current.locator.kind)&&current.locator.value===docxCitation.citation.locator.value)?<section className="citation-docx-view" aria-label={docxCitation.citation.locator.kind==="audio_segment"?"음성 전사 원문":docxCitation.citation.locator.kind==="pptx_block"?"PPTX 원문":"DOCX 원문"}>
             <button type="button" onClick={()=>{docxRequestRef.current=null;setDocxCitation(null);}}>원문 닫기</button>
             {docxCitation.error?<p role="alert">{docxCitation.citation.locator.kind==="audio_segment"?"음성":docxCitation.citation.locator.kind==="pptx_block"?"PPTX":"DOCX"} 원문을 확인할 수 없습니다. ({docxCitation.error})</p>:docxCitation.content?(docxCitation.citation.locator.kind==="audio_segment"?<AudioOriginalSegments key={`${docxCitation.citation.citation_id}:${docxCitation.requestEpoch}`} content={docxCitation.content} citation={docxCitation.citation}/>:docxCitation.citation.locator.kind==="pptx_block"?<PptxOriginalBlocks content={docxCitation.content}/>:<DocxOriginalBlocks content={docxCitation.content}/>):<p role="status">{docxCitation.citation.locator.kind==="audio_segment"?"음성":docxCitation.citation.locator.kind==="pptx_block"?"PPTX":"DOCX"} 원문을 불러오는 중입니다.</p>}

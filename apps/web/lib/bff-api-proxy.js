@@ -146,6 +146,16 @@ export function browserSessionCookieName(profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if(segments.length===5 && segments[0]==='workspaces' && SAFE_SEGMENT.test(segments[1])
+    && segments[2]==='connectors' && segments[3]==='mcp-open-law-go-kr' && new Set(['law-search','law-preview','law-imports']).has(segments[4])){
+    return method==='POST'?{path:`/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors/mcp-open-law-go-kr/${segments[4]}`,
+      query:null,requiredQuery:new Set(),law:true,lawPost:true,csrfProvenanceRequired:true,maxRequestBytes:32768}:{methodRejected:true};
+  }
+  if(segments.length===5 && segments[0]==='workspaces' && SAFE_SEGMENT.test(segments[1]) && segments[2]==='source-versions'
+    && SAFE_SEGMENT.test(segments[3]) && segments[4]==='law-snapshot'){
+    return method==='GET'?{path:`/api/v1/workspaces/${encodeURIComponent(segments[1])}/source-versions/${encodeURIComponent(segments[3])}/law-snapshot`,
+      query:new Set(['notebook_id']),requiredQuery:new Set(['notebook_id']),law:true}:{methodRejected:true};
+  }
   if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "website-imports") {
     return method === "POST" ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/website-imports`,
       query: null, requiredQuery: new Set(), website: true, websiteImport: true, csrfProvenanceRequired: true }
@@ -1106,7 +1116,7 @@ export function createBffProxy({
         return createBffSafeError(400, "INVALID_REQUEST", trace);
       }
     }
-    if (route.websiteImport && exactMediaType(request.headers.get("content-type")) !== "application/json") {
+    if ((route.websiteImport || route.lawPost) && exactMediaType(request.headers.get("content-type")) !== "application/json") {
       return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
     }
     const destination = new URL(route.path, baseUrl);
@@ -1150,14 +1160,14 @@ export function createBffProxy({
     const init = { method: request.method, headers, redirect: "manual" };
     const abortScope = createAbortScope(
       request.signal,
-      route.websiteImport || websiteQuery ? 25_000 : route.groundedQuestion ? questionTimeoutMs : timeoutMs,
+      route.law ? 30_000 : route.websiteImport || websiteQuery ? 25_000 : route.groundedQuestion ? questionTimeoutMs : timeoutMs,
     );
     try {
       if (abortScope.signal.aborted) return cancellationError(abortScope, trace);
       if (request.method !== "GET" && request.method !== "HEAD") {
         let body;
         try {
-          body = await waitWithAbort(request.arrayBuffer(), abortScope.signal);
+          body = await waitWithAbort(route.law ? boundedWebsiteResponse(request,32768,abortScope.signal) : request.arrayBuffer(), abortScope.signal);
         } catch {
           return cancellationError(abortScope, trace)
             ?? createBffSafeError(400, "INVALID_REQUEST_BODY", trace);
@@ -1245,7 +1255,7 @@ export function createBffProxy({
       if (upstream.status !== 204) {
         try {
           body = await waitWithAbort(
-            route.website || websiteQuery ? boundedWebsiteResponse(upstream, websiteQuery ? 8_388_608 : 32_768, abortScope.signal) : upstream.arrayBuffer(),
+            route.law || route.website || websiteQuery ? boundedWebsiteResponse(upstream, route.law ? 4_194_304 : websiteQuery ? 8_388_608 : 32_768, abortScope.signal) : upstream.arrayBuffer(),
             abortScope.signal,
             () => upstream.body?.cancel(),
           );

@@ -63,6 +63,11 @@ function isWebsiteSectionCitation(citation) {
     && /^web-version-[0-9a-f]{32}$/u.test(citation.source_version_id);
 }
 
+function isLawSectionCitation(citation) {
+  return citation.origin === 'raw_source' && citation.locator.kind === 'section'
+    && /^law-source-[0-9a-f]{32}$/u.test(citation.source_id);
+}
+
 function isCanonicalTextSectionCitation(citation) {
   // The DTO has no chunk/text. Validate its canonical shape and binding here;
   // the existing content endpoint remains the authority for RLS and originals.
@@ -96,9 +101,11 @@ export function projectNotebookSelectedContext(value) {
       && typeof item.legal_hold_active === "boolean")
     && conversationValid
     && (value.conversation === null || value.conversation.answer.citations.every(citation =>
-      !(["docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation)) || citation.origin !== "raw_source"
+      !(["docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation) || isLawSectionCitation(citation)) || citation.origin !== "raw_source"
       || (citation.context_item_id === citation.source_id
         && (!isWebsiteSectionCitation(citation) || citation.source_version_id === `web-version-${citation.source_id.slice("web-source-".length)}`)
+        && (!isLawSectionCitation(citation) || (citation.source_version_id === `law-version-${citation.source_id.slice('law-source-'.length)}`
+          && citation.page === 1 && /^law-span-[0-9a-f]{32}$/u.test(citation.evidence_span_id) && citation.locator.value === citation.evidence_span_id))
         && value.sources.some(source =>
         source.source_id === citation.source_id && source.source_version_id === citation.source_version_id))))
     && (value.conversation === null || value.conversation_thread_ids.length > 0);
@@ -176,7 +183,7 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     if (context.conversation === null || context.conversation_thread_ids.length !== 1) return null;
     const answer = context.conversation.answer;
     const withContentUrls = (citation) => ["image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind)
-      || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation);
+      || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation) || isLawSectionCitation(citation);
     if (!answer.citations.some(withContentUrls)) return answer;
     return { ...answer, citations: answer.citations.map((citation) => withContentUrls(citation)
       ? { ...citation, content_url: baseAdapter.citationUrl(citation, { notebookId: context.notebook_id }) }
@@ -213,6 +220,16 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
   const adapter = {
     ...baseAdapter,
     notebookContext: context,
+    searchOpenLaw: typeof baseAdapter.searchOpenLaw === 'function'
+      ? (input,options) => baseAdapter.searchOpenLaw(input,{...options,notebookId:context.notebook_id}) : undefined,
+    previewOpenLaw: typeof baseAdapter.previewOpenLaw === 'function'
+      ? (input,options) => baseAdapter.previewOpenLaw(input,{...options,notebookId:context.notebook_id}) : undefined,
+    importOpenLaw: typeof baseAdapter.importOpenLaw === 'function'
+      ? (input,options) => baseAdapter.importOpenLaw(input,{...options,notebookId:context.notebook_id}) : undefined,
+    getOpenLawSnapshot: typeof baseAdapter.getOpenLawSnapshot === 'function'
+      ? (version,options) => baseAdapter.getOpenLawSnapshot(version,{...options,notebookId:context.notebook_id}) : undefined,
+    getOpenLawCitation: typeof baseAdapter.getOpenLawCitation === 'function'
+      ? (citation,options) => baseAdapter.getOpenLawCitation(citation,{...options,notebookId:context.notebook_id}) : undefined,
     generationSettingsIds: [...context.generation_settings_ids],
     listSources,
     importWebsite: typeof baseAdapter.importWebsite === 'function'

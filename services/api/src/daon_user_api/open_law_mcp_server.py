@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 
@@ -89,7 +90,10 @@ def serve(client=None):
                 if not isinstance(values,list) or len(values)>256:raise ValueError
                 return validate_public_ips(tuple(values))
             except Exception:raise OpenLawError('OPEN_LAW_EGRESS_BLOCKED') from None
-        client=OpenLawClient(api_key=os.environ.get('DAON_OPEN_LAW_API_KEY'),resolver=approved_ips)
+        raw_limit=os.environ.get('DAON_OPEN_LAW_MAX_RAW_BYTES','2097152')
+        if not re.fullmatch('[1-9][0-9]{0,6}',raw_limit):return
+        try:client=OpenLawClient(api_key=os.environ.get('DAON_OPEN_LAW_API_KEY'),resolver=approved_ips,max_raw_bytes=int(raw_limit))
+        except OpenLawError:return
     state={}
     try:
         for _ in range(8):

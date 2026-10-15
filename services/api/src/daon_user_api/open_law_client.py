@@ -39,6 +39,11 @@ def valid_id(value):
     return isinstance(value,str) and re.fullmatch(r'[0-9]{1,20}',value) is not None
 
 
+def checked_raw_limit(value):
+    if type(value) is not int or not 1<=value<=MAX_BODY:raise OpenLawError('OPEN_LAW_INPUT_INVALID')
+    return value
+
+
 def valid_string(value, maximum):
     return isinstance(value,str) and 0 < len(value) <= maximum and bool(value.strip()) and not any(ord(c)<32 for c in value)
 
@@ -128,14 +133,15 @@ def encode_document(document):
         'text_sha256':document.text_sha256,'fetched_at':document.fetched_at,'extraction_version':document.extraction_version}
 
 
-def decode_document(value):
+def decode_document(value,*,max_raw_bytes=MAX_BODY):
+    checked_raw_limit(max_raw_bytes)
     try:
         if not exact(value,{'law','raw_base64','text','raw_sha256','text_sha256','fetched_at','extraction_version'}): raise ValueError
         validate_law(value['law'])
         encoded=value['raw_base64'];text=value['text']
-        if not isinstance(encoded,str) or len(encoded)>((MAX_BODY+2)//3)*4 or not isinstance(text,str) or not text.strip() or len(text)>MAX_TEXT: raise ValueError
+        if not isinstance(encoded,str) or len(encoded)>((max_raw_bytes+2)//3)*4 or not isinstance(text,str) or not text.strip() or len(text)>MAX_TEXT: raise ValueError
         raw=base64.b64decode(encoded,validate=True); content=text.encode('utf-8')
-        if (not raw or len(raw)>MAX_BODY or base64.b64encode(raw).decode('ascii')!=encoded
+        if (not raw or len(raw)>max_raw_bytes or base64.b64encode(raw).decode('ascii')!=encoded
                 or len(content)>MAX_TEXT or hashlib.sha256(raw).hexdigest()!=value['raw_sha256']
                 or hashlib.sha256(content).hexdigest()!=value['text_sha256'] or value['extraction_version']!=VERSION): raise ValueError
         stamp=value['fetched_at']
@@ -145,9 +151,9 @@ def decode_document(value):
         raise OpenLawError('OPEN_LAW_PROTOCOL_INVALID') from None
 
 
-def https_get(path,params,ips,deadline):
+def https_get(path,params,ips,deadline,*,max_raw_bytes=MAX_BODY):
     """S13과 분리된 고정 query. DNS 재조회/proxy/redirect/fallback 없음."""
-    raw=sock=None
+    checked_raw_limit(max_raw_bytes);raw=sock=None
     try:
         if path not in {'/DRF/lawSearch.do','/DRF/lawService.do'}: raise ValueError
         addresses=validate_public_ips(ips); address=ipaddress.ip_address(addresses[0])
@@ -163,7 +169,7 @@ def https_get(path,params,ips,deadline):
         target=path+'?'+urlencode(params)
         request=(f'GET {target} HTTP/1.1\r\nHost: {HOST}\r\nUser-Agent: Daon-User-Open-Law/1.0\r\n'
             'Accept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n')
-        sock.sendall(request.encode('ascii')); reader=_WireReader(sock,deadline,MAX_BODY)
+        sock.sendall(request.encode('ascii')); reader=_WireReader(sock,deadline,max_raw_bytes)
         if not re.fullmatch(rb'HTTP/1\.[01] 200(?: [\x20-\x7e]*)?\r\n',reader.line()): raise ValueError
         headers={}
         while True:
@@ -209,8 +215,9 @@ def _integer(value):
 
 
 class OpenLawClient:
-    def __init__(self,*,api_key,transport=None,resolver=None):
-        self._key=api_key;self._transport=transport or https_get;self._resolver=resolver or resolve_public_ips
+    def __init__(self,*,api_key,transport=None,resolver=None,max_raw_bytes=MAX_BODY):
+        self._max_raw_bytes=checked_raw_limit(max_raw_bytes)
+        self._key=api_key;self._transport=transport;self._resolver=resolver or resolve_public_ips
 
     def _get(self,path,params,deadline):
         if not isinstance(self._key,str) or not self._key or len(self._key)>4096 or any(ord(c)<33 for c in self._key):
@@ -218,10 +225,11 @@ class OpenLawClient:
         try:
             deadline=min(deadline,time.monotonic()+8)
             ips=validate_public_ips(self._resolver(HOST,deadline))
-            raw=self._transport(path,{'OC':self._key,'target':'eflaw','type':'JSON',**params},ips,deadline)
+            arguments=(path,{'OC':self._key,'target':'eflaw','type':'JSON',**params},ips,deadline)
+            raw=self._transport(*arguments) if self._transport is not None else https_get(*arguments,max_raw_bytes=self._max_raw_bytes)
             remaining(deadline)
             if not isinstance(raw,bytes) or self._key.encode() in raw: raise OpenLawError('OPEN_LAW_UPSTREAM_FAILED')
-            parsed=parse_json(raw)
+            parsed=parse_json(raw,maximum=self._max_raw_bytes)
             def echo(value):
                 if isinstance(value,str):return self._key in value
                 if isinstance(value,dict):return any(self._key in k or echo(v) for k,v in value.items())

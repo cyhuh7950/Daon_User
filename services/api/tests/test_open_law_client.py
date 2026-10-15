@@ -21,6 +21,42 @@ def body_bytes():
 
 
 class OpenLawClientTests(unittest.TestCase):
+    def test_small_raw_policy_bounds_real_wire_before_body_read_in_all_framings(self):
+        from daon_user_api.open_law_client import https_get
+        class Wire:
+            def __init__(self,data):self.data=data;self.body_bytes=0;self.headers_done=False;self.seen=b''
+            def settimeout(self,value):pass
+            def connect(self,address):pass
+            def getpeername(self):return ('8.8.8.8',443)
+            def sendall(self,data):pass
+            def recv(self,size):
+                part=self.data[:size];self.data=self.data[size:]
+                if self.headers_done:self.body_bytes+=len(part)
+                else:
+                    self.seen+=part
+                    if self.seen.endswith(b'\r\n\r\n'):self.headers_done=True
+                return part
+            def close(self):pass
+        class TLS:
+            check_hostname=True;verify_mode=__import__('ssl').CERT_REQUIRED
+            def wrap_socket(self,raw,**kwargs):return raw
+        for framing,allowed_read in [(b'Content-Length: 5\r\n',0),(b'Transfer-Encoding: chunked\r\n',3),(b'',5)]:
+            with self.subTest(framing=framing):
+                body=b'5\r\nabcde\r\n0\r\n\r\n' if framing.startswith(b'Transfer') else b'abcde'
+                wire=Wire(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'+framing+b'\r\n'+body)
+                with patch('daon_user_api.open_law_client.socket.socket',return_value=wire),patch('daon_user_api.open_law_client.ssl.create_default_context',return_value=TLS()):
+                    with self.assertRaisesRegex(ValueError,'^OPEN_LAW_CONTENT_TOO_LARGE$'):
+                        https_get('/DRF/lawSearch.do',{'OC':'fixture-oc'},('8.8.8.8',),time.monotonic()+8,max_raw_bytes=4)
+                self.assertEqual(wire.body_bytes,allowed_read)
+
+    def test_raw_limit_strict_integer_and_custom_transport_bound(self):
+        from daon_user_api.open_law_client import OpenLawClient
+        for invalid in (True,False,1.0,0,-1,2097153,'1024'):
+            with self.subTest(invalid=invalid),self.assertRaisesRegex(ValueError,'^OPEN_LAW_INPUT_INVALID$'):
+                OpenLawClient(api_key='fixture-oc',max_raw_bytes=invalid)
+        raw=search_bytes()
+        client=OpenLawClient(api_key='fixture-oc',max_raw_bytes=len(raw)-1,transport=lambda *_:raw,resolver=lambda *_:('8.8.8.8',))
+        with self.assertRaisesRegex(ValueError,'^OPEN_LAW_CONTENT_TOO_LARGE$'):client.search('민법',1,time.monotonic()+8)
     def test_official_example_opaque_key_keeps_requested_mst_date_article_and_original_hashes(self):
         from daon_user_api.open_law_client import OpenLawSelection
         # 공식 정적 예시의 식별자 관계만 재현. 본문은 합성 fixture이며 실 API 결과가 아니다.

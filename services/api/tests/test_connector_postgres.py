@@ -7,6 +7,33 @@ from daon_user_api.connector_postgres import PostgresConnectorRepository
 from daon_user_api.mcp_connector import ConnectorView
 
 
+class LawProjectionTests(unittest.TestCase):
+    def test_law_count_and_delete_scope_use_real_own_active_bindings_not_stored_zero(self):
+        from unittest.mock import patch
+        from dataclasses import replace
+        from types import SimpleNamespace
+        store=_Store();repo=PostgresConnectorRepository(store)
+        item=ConnectorView('mcp-open-law-go-kr','mcp','국가법령정보센터','connected',0,'www.law.go.kr',None,None)
+        repo.register('tenant','workspace','actor',item)
+        # Projection itself is real. The external DB returns an actor-owned
+        # Notebook and matching immutable snapshot, never sources_json metadata.
+        original=store.connection.execute
+        def execute(sql,params=()):
+            if sql.startswith('SELECT b.notebook_id,b.record_id,b.version_id'):
+                return _Result([('notebook-own','law-source-real','law-version-real')])
+            if sql.startswith('SELECT set_config'):return _Result()
+            if sql.startswith('SELECT w.title,w.text_sha256'):return _Result([('실제 저장 법령','a'*64)])
+            if sql.startswith('SELECT allowed FROM identity_auth_source_access'):return _Result()
+            return original(sql,params)
+        store.connection.execute=execute
+        with patch('daon_user_api.open_law_source_access._current_auth_grant'),patch('daon_user_api.open_law_source_access.require_open_law_source_access'):
+            self.assertEqual(repo.get('tenant','workspace','actor',item.connector_id).source_count,1)
+            listed=repo.sources('tenant','workspace','actor',item.connector_id)
+            self.assertEqual(len(listed),1)
+            self.assertEqual(listed[0].source_id,'law-source-real')
+            self.assertEqual(listed[0].title,'실제 저장 법령')
+
+
 class _Result:
     def __init__(self, rows=(), rowcount=0):
         self._rows = list(rows)
@@ -24,6 +51,7 @@ class _Connection:
         self.rows = []
 
     def execute(self, sql, params=()):
+        if sql.startswith('SELECT b.notebook_id,b.record_id,b.version_id'):return _Result()
         if sql.startswith("SELECT 1 FROM workspace_connectors"):
             return _Result([(1,)] if any(row[:2]==params[:2] for row in self.rows) else [])
         if sql.startswith("INSERT INTO workspace_connectors"):

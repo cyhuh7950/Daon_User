@@ -9,6 +9,37 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test('open law BFF admits exactly four same-origin Notebook routes and rejects extra query/method',async()=>{
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),init});return Response.json({data:{},meta:{trace_id:'trace-law'}});
+  }});
+  const root=['workspaces','workspace-law','connectors','mcp-open-law-go-kr'];
+  for(const tail of ['law-search','law-preview','law-imports']){
+    const segments=[...root,tail],url='https://app.example.com/bff/api/'+segments.join('/');
+    const response=await proxy(new Request(url,{method:'POST',headers:{'content-type':'application/json','origin':'https://app.example.com','referer':'https://app.example.com/notebooks/qa'},body:'{}'}),segments);
+    assert.equal(response.status,200);
+    assert.equal((await proxy(new Request(url),segments)).status,405);
+    assert.equal((await proxy(new Request(url+'?actor_id=other',{method:'POST',headers:{'content-type':'application/json','origin':'https://app.example.com','referer':'https://app.example.com/notebooks/qa'},body:'{}'}),segments)).status,400);
+  }
+  const segments=['workspaces','workspace-law','source-versions','law-version-1','law-snapshot'];
+  const url='https://app.example.com/bff/api/'+segments.join('/');
+  assert.equal((await proxy(new Request(url+'?notebook_id=notebook-law'),segments)).status,200);
+  assert.equal((await proxy(new Request(url+'?notebook_id=notebook-law&notebook_id=other'),segments)).status,400);
+  assert.equal((await proxy(new Request(url),segments)).status,400);
+  assert.equal(calls.length,4);
+  assert.ok(calls.every(call=>call.init.signal instanceof AbortSignal));
+});
+
+test('open law BFF reads the bounded stream instead of allocating an unbounded request body',async()=>{
+  let calls=0;
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async()=>{calls++;return Response.json({});}});
+  const segments=['workspaces','workspace-law','connectors','mcp-open-law-go-kr','law-search'];
+  const request=new Request('https://app.example.com/bff/api/'+segments.join('/'),{method:'POST',headers:{'content-type':'application/json','origin':'https://app.example.com','referer':'https://app.example.com/notebooks/qa'},body:'{}'});
+  request.arrayBuffer=()=>{throw Error('unbounded allocation forbidden');};
+  const result=await proxy(request,segments);assert.equal(result.status,200);assert.equal(calls,1);
+});
+
 test('audio BFF keeps same-origin Notebook scope and fixed binary MIME',async()=>{
   const calls=[];
   const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{

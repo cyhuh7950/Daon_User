@@ -13,7 +13,7 @@ import time
 from datetime import datetime,timezone
 
 from .open_law_client import (OpenLawError,OpenLawSelection,decode_document,exact,
-                              validate_search,validate_search_result)
+                              validate_search,validate_search_result,checked_raw_limit)
 from .open_law_mcp_server import DESCRIPTION,MAX_FRAME,PROTOCOL,SAFE_CODES,SCHEMA_DIGEST,TOOLS,wire_json
 from .safe_http_fetch import resolve_public_ips, validate_public_ips, WebsiteFetchError
 
@@ -21,7 +21,8 @@ _SLOTS=threading.BoundedSemaphore(2)
 
 
 class OpenLawMcpClient:
-    def __init__(self,*,api_key=None,enabled=False,qa_workspace_id='',authorize_context=None,timeout_seconds=10,resolver=None):
+    def __init__(self,*,api_key=None,enabled=False,qa_workspace_id='',authorize_context=None,timeout_seconds=10,resolver=None,max_raw_bytes=2097152):
+        self._max_raw_bytes=checked_raw_limit(max_raw_bytes)
         if not isinstance(timeout_seconds,(int,float)) or isinstance(timeout_seconds,bool) or not 0<timeout_seconds<=10:
             raise OpenLawError('OPEN_LAW_INPUT_INVALID')
         self._key=api_key;self._enabled=enabled;self._qa=qa_workspace_id
@@ -72,6 +73,7 @@ class OpenLawMcpClient:
             env.update({'PYTHONPATH':str(Path(__file__).resolve().parent.parent),
                 'PYTHONDONTWRITEBYTECODE':'1','PYTHONIOENCODING':'utf-8',
                 'DAON_OPEN_LAW_API_KEY':self._key,'DAON_OPEN_LAW_DEADLINE':str(deadline)})
+            env['DAON_OPEN_LAW_MAX_RAW_BYTES']=str(self._max_raw_bytes)
             env['DAON_OPEN_LAW_APPROVED_IPS']=json.dumps(ips)
             child=subprocess.Popen([sys.executable,'-B','-m','daon_user_api.open_law_mcp_server'],shell=False,
                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=env,
@@ -143,7 +145,7 @@ class OpenLawMcpClient:
     def read(self,context,selection):
         if not isinstance(selection,OpenLawSelection):raise OpenLawError('OPEN_LAW_INPUT_INVALID')
         document=decode_document(self._call(context,'get_law_text',{'mst':selection.mst,
-            'effective_date':selection.effective_date,'article_code':selection.article_code}))
+            'effective_date':selection.effective_date,'article_code':selection.article_code}),max_raw_bytes=self._max_raw_bytes)
         if any(document.law[k]!=getattr(selection,k) for k in ('mst','effective_date','article_code')):
             raise OpenLawError('OPEN_LAW_PROTOCOL_INVALID')
         return document

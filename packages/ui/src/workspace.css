@@ -422,6 +422,11 @@ select { width: 100%; min-height: var(--daon-target-desktop-control); margin-top
 .citation-docx-scroll p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .citation-docx-scroll mark { background: #fff0a5; color: inherit; }
 .website-source-form { display: grid; gap: 8px; min-width: 0; }
+.open-law-source-form { display: grid; gap: 8px; min-width: 0; font-size: 12px; }
+.open-law-source-form label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.open-law-source-form input:not([type="checkbox"]) { width: 100%; min-width: 0; }
+.open-law-source-form ul { padding-inline-start: 16px; max-height: 200px; overflow-y: auto; overflow-x: hidden; }
+.open-law-source-form pre { max-height: 300px; overflow-y: auto; overflow-x: hidden; overscroll-behavior-y: contain; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .website-source-form label { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .website-source-form input[type="url"] { width: 100%; min-width: 0; }
 .website-original { min-width: 0; font-size: 12px; }

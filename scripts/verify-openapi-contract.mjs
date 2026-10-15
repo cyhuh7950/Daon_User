@@ -33,6 +33,10 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/workspaces/{id}/members",
   "/api/v1/workspaces/{id}/sources",
   "/api/v1/workspaces/{id}/website-imports",
+  "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-search",
+  "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-preview",
+  "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-imports",
+  "/api/v1/workspaces/{id}/source-versions/{version_id}/law-snapshot",
   "/api/v1/workspaces/{id}/source-versions/{version_id}/website-snapshot",
   "/api/v1/workspaces/{id}/knowledge-scope",
   "/api/v1/workspaces/{id}/weight-profile",
@@ -191,6 +195,51 @@ function validateResponse(document, response, operationId, status) {
   if (!isObject(resolved)) fail(`${operationId} response ${status} is invalid`);
   if (!isObject(resolved.headers) || !("X-Trace-Id" in resolved.headers)) {
     fail(`${operationId} response ${status} missing X-Trace-Id`);
+  }
+}
+
+function validateOpenLawContract(document) {
+  const schemas=document.components.schemas,prefix='/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/';
+  const check=(valid,label)=>{if(!valid)fail(`Open law contract ${label}`);};
+  const same=(a,b)=>JSON.stringify(canonicalizeDocument(a))===JSON.stringify(canonicalizeDocument(b));
+  const ref=name=>({$ref:`#/components/schemas/${name}`}),id=ref('OpaqueId');
+  const object=properties=>({type:'object',additionalProperties:false,required:Object.keys(properties),properties});
+  const digest={type:'string',pattern:'^[0-9a-f]{64}$'},date={type:'string',pattern:'^[0-9]{8}$'};
+  const numeric={type:'string',pattern:'^[0-9]{1,20}$'},article={type:['string','null'],pattern:'^[0-9]{6}$'};
+  const text={type:'string',minLength:1,maxLength:524288},stamp={type:'string',format:'date-time'};
+  const law={mst:numeric,law_id:numeric,title:{type:'string',minLength:1,maxLength:300},effective_date:date,
+    promulgation_date:{...date,type:['string','null']},ministry:{type:['string','null'],maxLength:200}};
+  const selection={notebook_id:id,mst:numeric,effective_date:date,article_code:article};
+  const envelope=data=>object({data,meta:object({trace_id:id})});
+  const expected={
+    OpenLawSearchRequest:object({notebook_id:id,query:{type:'string',minLength:1,maxLength:100},page:{type:'integer',minimum:1,maximum:100},public_query_confirmed:{type:'boolean',const:true}}),
+    OpenLawPreviewRequest:object(selection),OpenLawImportRequest:object({...selection,expected_raw_sha256:digest,expected_text_sha256:digest}),
+    OpenLawSearchItem:object(law),OpenLaw:object({...law,article_code:article}),
+    OpenLawSearchEnvelope:envelope(object({items:{type:'array',maxItems:20,items:ref('OpenLawSearchItem')},page:{type:'integer',minimum:1,maximum:100},total_count:{type:'integer',minimum:0}})),
+    OpenLawPreviewEnvelope:envelope(object({law:ref('OpenLaw'),text,raw_sha256:digest,text_sha256:digest,fetched_at:stamp,extraction_version:{type:'string',const:'open-law-text-v1'}})),
+    OpenLawImportResult:object({source_id:id,source_version_id:id,snapshot_id:id,source_state:{type:'string',const:'ready'},replayed:{type:'boolean'}}),
+    OpenLawImportEnvelope:envelope(object({kind:{type:'string',const:'open_law_import'},id,version:{type:'string',const:'1'},attributes:ref('OpenLawImportResult')})),
+    OpenLawSnapshotView:object({snapshot_id:id,connector_id:{type:'string',const:'mcp-open-law-go-kr'},source_id:id,source_version_id:id,...law,article_code:article,
+      origin_uri:{type:'string',format:'uri',maxLength:2048,pattern:'^https:\\/\\/www\\.law\\.go\\.kr/LSW/lsInfoP\\.do\\?lsiSeq=[0-9]{1,20}&efYd=[0-9]{8}$'},fetched_at:stamp,
+      raw_sha256:digest,text_sha256:digest,extraction_version:{type:'string',const:'open-law-text-v1'},license_status:{type:'string',const:'unknown'}}),
+    OpenLawSnapshotEnvelope:envelope(object({snapshot:ref('OpenLawSnapshotView'),text})),
+  };
+  for(const [name,value] of Object.entries(expected))check(same(schemas[name],value),`${name} exact schema mismatch`);
+  for(const [tail,operationId,requestName,envelopeName] of [
+    ['law-search','searchOpenLaw','OpenLawSearchRequest','OpenLawSearchEnvelope'],
+    ['law-preview','previewOpenLaw','OpenLawPreviewRequest','OpenLawPreviewEnvelope'],
+    ['law-imports','importOpenLaw','OpenLawImportRequest','OpenLawImportEnvelope'],
+    ['law-snapshot','getOpenLawSnapshot',null,'OpenLawSnapshotEnvelope'],
+  ]){
+    const get=requestName===null,pathItem=document.paths[get?'/api/v1/workspaces/{id}/source-versions/{version_id}/law-snapshot':prefix+tail];
+    check(same(Object.keys(pathItem??{}),[get?'get':'post']),`${tail} exact method mismatch`);
+    const op=pathItem[get?'get':'post'];check(op.operationId===operationId,`${tail} operation mismatch`);
+    const parameters=[{$ref:'#/components/parameters/ResourceId'},...(get?
+      [{name:'version_id',in:'path',required:true,schema:id},{name:'notebook_id',in:'query',required:true,schema:id}]:
+      tail==='law-imports'?[{$ref:'#/components/parameters/IdempotencyKey'}]:[])];
+    check(same(op.parameters,parameters),`${tail} parameters mismatch`);
+    check(get?!op.requestBody:same(op.requestBody,{required:true,content:{'application/json':{schema:ref(requestName)}}}),`${tail} body mismatch`);
+    for(const status of tail==='law-imports'?['200','201']:['200'])check(same(responseObject(document,op.responses[status])?.content?.['application/json']?.schema,ref(envelopeName)),`${tail} response mismatch`);
   }
 }
 
@@ -613,6 +662,7 @@ export function validateOpenApiDocument(document) {
   for (const requiredPath of REQUIRED_PATHS) if (!(requiredPath in document.paths)) fail(`required path missing ${requiredPath}`);
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
   validateWebsiteContract(document);
+  validateOpenLawContract(document);
   for (const apiPath of ANDROID_BROWSER_AUTH_POST_PATHS) {
     const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method));
     if (JSON.stringify(actualMethods) !== JSON.stringify(["post"])) fail(`Android method mismatch ${apiPath}`);
@@ -723,6 +773,8 @@ export function validateOpenApiDocument(document) {
       const refs = parameterRefs(operation);
       if (apiPath.includes("{id}") && !refs.has("#/components/parameters/ResourceId")) fail(`${operationId} missing opaque ResourceId`);
       const idempotencyExemptPosts = new Set([
+        "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-search",
+        "/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/law-preview",
         "/api/v1/auth/native/login",
         "/api/v1/session/refresh",
         "/api/v1/session/logout",
