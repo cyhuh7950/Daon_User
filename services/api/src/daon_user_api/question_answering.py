@@ -464,6 +464,25 @@ class OllamaTextGenerationAdapter:
             )
 
         text_source = all(canonical_text(item) for item in request.evidence)
+        def canonical_law(item: IndexedEvidenceChunk) -> bool:
+            if not (
+                item.locator_kind == 'section' and item.locator_value is None
+                and isinstance(item.source_id,str) and re.fullmatch(r'law-source-[0-9a-f]{32}',item.source_id)
+                and item.source_version_id == 'law-version-'+item.source_id.removeprefix('law-source-')
+                and type(item.page) is int and item.page == 1
+                and isinstance(item.text,str) and 1 <= len(item.text) <= 1024 and item.text.strip()
+                and isinstance(item.chunk_id,str) and re.fullmatch(r'law-chunk-[0-9a-f]{32}',item.chunk_id)
+                and item.evidence_span_id == 'law-span-'+item.chunk_id.removeprefix('law-chunk-')
+            ):
+                return False
+            # law_chunks uses version|start at 1024 code-point intervals. The
+            # stored text cap is 512KiB, so no valid start reaches 512*1024.
+            # This is payload tuning only; repository/current-policy guards own access.
+            return any(item.chunk_id == 'law-chunk-'+hashlib.sha256(
+                f'{item.source_version_id}|{start}'.encode('utf-8')).hexdigest()[:32]
+                for start in range(0,512*1024,1024))
+
+        law_source = 1 <= len(request.evidence) <= 5 and all(canonical_law(item) for item in request.evidence)
         if not (
             selection.provider_code == "OLLAMA"
             and selection.provider_kind in {"local", "server_internal", "local_runtime"}
@@ -472,7 +491,7 @@ class OllamaTextGenerationAdapter:
                  or all(item.locator_kind == "docx_block" for item in request.evidence)
                  or all(item.locator_kind == "pptx_block" for item in request.evidence)
                  or all(item.locator_kind == "audio_segment" for item in request.evidence)
-                 or website or text_source)
+                 or website or text_source or law_source)
             and len({(item.source_id, item.source_version_id) for item in request.evidence}) == 1
         ):
             return payload

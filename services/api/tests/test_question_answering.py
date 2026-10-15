@@ -301,6 +301,98 @@ class WebsiteQaThinkingTests(unittest.TestCase):
                     adapter.generate(request,selection,provider_payload=payload)
 
 
+class OpenLawQaThinkingTests(unittest.TestCase):
+    Transport=WebsiteQaThinkingTests.Transport
+    selection=staticmethod(WebsiteQaThinkingTests.selection)
+
+    @staticmethod
+    def request(count=1,start=0):
+        from daon_user_api.open_law_source_postgres import law_chunks
+        chunks=law_chunks('law-source-'+'a'*32,'law-version-'+'a'*32,
+            ' '*start+'Example Domain'.ljust(1024)*count)
+        # Same projection as PostgresDocumentIndex.search for stored verbatim facts.
+        return GroundedQuestionRequest('What is the domain title?',tuple(
+            IndexedEvidenceChunk(row['chunk_id'],row['source_id'],row['source_version_id'],row['page'],
+                row['text'],row['evidence_span_id'],0.0,'section',None) for row in chunks),'trace-law')
+
+    def test_law_verified_thinking_only_changes_think_for_real_canonical_chunks(self):
+        from dataclasses import replace
+        for count,start,kind in ((1,0,'server_internal'),(5,0,'local'),(1,1024,'local_runtime'),(1,523264,'server_internal')):
+            with self.subTest(count=count,start=start,kind=kind):
+                request=self.request(count,start);selection=replace(self.selection(),provider_kind=kind)
+                transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport)
+                baseline=adapter.provider_payload(request,selection);saved=deepcopy(baseline)
+                prepared=adapter.prepare_qa_structured_payload(request,selection,baseline)
+                self.assertEqual(prepared,{**saved,'think':False});self.assertEqual(baseline,saved)
+                self.assertEqual(adapter.generate(request,selection,provider_payload=prepared).answer,'Example Domain')
+                self.assertEqual([call['url'].rsplit('/',1)[-1] for call in transport.calls],['tags','show','tags','chat'])
+                self.assertEqual(transport.calls[-1]['timeout_seconds'],90);self.assertEqual(prepared['options']['num_predict'],512)
+
+    def test_law_contaminated_ids_spans_offsets_or_mixed_sources_never_read_metadata(self):
+        import hashlib
+        from dataclasses import replace
+        item=self.request().evidence[0]
+        with self.assertRaisesRegex(ValueError,'^QUESTION_REQUEST_INVALID$'):
+            GroundedQuestionRequest('title?',(),'trace-law')
+        cases=[self.request(6).evidence,
+            (replace(item,source_id='law-source-lookalike'),),(replace(item,source_version_id='law-version-'+'b'*32),),
+            (replace(item,chunk_id='law-chunk-'+'b'*32),),(replace(item,evidence_span_id='law-span-'+'b'*32),),
+            (replace(item,page=2),),(replace(item,page=True),),(replace(item,locator_value='section'),),
+            (replace(item,locator_kind='page'),),(replace(item,text=' '*1024),),(replace(item,text='x'*1025),),
+            (item,replace(item,source_id='source-other',source_version_id='version-other'))]
+        for start in (1,524288):
+            suffix=hashlib.sha256(f'{item.source_version_id}|{start}'.encode()).hexdigest()[:32]
+            cases.append((replace(item,chunk_id='law-chunk-'+suffix,evidence_span_id='law-span-'+suffix),))
+        for index,evidence in enumerate(cases):
+            with self.subTest(case=index):
+                transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport)
+                request=GroundedQuestionRequest('title?',evidence,'trace-law');payload=adapter.provider_payload(request,self.selection())
+                self.assertIs(adapter.prepare_qa_structured_payload(request,self.selection(),payload),payload)
+                self.assertEqual(transport.calls,[])
+
+    def test_law_nonthinking_and_other_provider_unchanged_bad_metadata_never_chats(self):
+        from dataclasses import replace
+        request=self.request();selection=self.selection()
+        for other in (replace(selection,provider_kind='external_api'),replace(selection,provider_code='CUSTOM')):
+            transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport);payload={}
+            self.assertIs(adapter.prepare_qa_structured_payload(request,other,payload),payload);self.assertEqual(transport.calls,[])
+        transport=self.Transport(thinking=False);adapter=OllamaTextGenerationAdapter(transport=transport)
+        payload=adapter.provider_payload(request,selection)
+        self.assertIs(adapter.prepare_qa_structured_payload(request,selection,payload),payload)
+        for invalid in ('digest','remote','model','metadata','completion'):
+            with self.subTest(invalid=invalid):
+                transport=self.Transport(invalid=invalid);adapter=OllamaTextGenerationAdapter(transport=transport)
+                if invalid=='completion':
+                    original=transport.post_json_no_auth
+                    transport.post_json_no_auth=lambda **kw:{'capabilities':['thinking'],'model_info':{'architecture':'fixture'}} if kw['url'].endswith('/api/show') else original(**kw)
+                with self.assertRaisesRegex(ValueError,'^TEXT_GENERATION_RESPONSE_INVALID$'):
+                    adapter.prepare_qa_structured_payload(request,selection,payload)
+                self.assertFalse(any(call['url'].endswith('/api/chat') for call in transport.calls))
+
+    def test_law_existing_exact_workspace_gate_and_total_metadata_budget(self):
+        from daon_user_api.question_answering_service import QuestionAnsweringService,QuestionAdapterRegistry
+        from daon_user_api.question_answering_postgres import QuestionContext
+        for target,workspace in (('workspace-qa','workspace-other'),('','workspace-qa'),('workspace-qa','workspace-qa')):
+            with self.subTest(target=target,workspace=workspace):
+                transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport);request=self.request();selection=self.selection()
+                payload=adapter.provider_payload(request,selection);prepared=QuestionAdapterRegistry.Prepared(request,selection,adapter,payload)
+                service=object.__new__(QuestionAnsweringService);service._qa_structured_ollama_workspace_id=target
+                result=service._prepare_qa_structured_payload(QuestionContext('tenant',workspace,'actor','trace','policy','notebook'),prepared)
+                if target and target==workspace:self.assertIs(result.provider_payload.get('think'),False)
+                else:self.assertIs(result,prepared);self.assertEqual(transport.calls,[])
+        transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport);selection=self.selection()
+        request=GeneralConversationRequest('일반 업무 상담','trace-law')
+        prepared=QuestionAdapterRegistry.Prepared(request,selection,adapter,adapter.general_provider_payload(request,selection))
+        service=object.__new__(QuestionAnsweringService);service._qa_structured_ollama_workspace_id='workspace-qa'
+        self.assertIs(service._prepare_qa_structured_payload(QuestionContext('tenant','workspace-qa','actor','trace','policy','notebook'),prepared),prepared)
+        self.assertEqual(transport.calls,[])
+        transport=self.Transport();adapter=OllamaTextGenerationAdapter(transport=transport);request=self.request()
+        with patch('daon_user_api.question_answering.time.monotonic',side_effect=[100,100,103,105]):
+            with self.assertRaisesRegex(ValueError,'^TEXT_GENERATION_RESPONSE_INVALID$'):
+                adapter.prepare_qa_structured_payload(request,self.selection(),adapter.provider_payload(request,self.selection()))
+        self.assertEqual([call['timeout_seconds'] for call in transport.calls],[5,2])
+
+
 class AudioQuestionGroundingTests(unittest.TestCase):
     def test_audio_prompt_uses_time_locator_and_not_fake_page(self):
         chunk = IndexedEvidenceChunk('audio', 'source', 'version', 1, 'ABC', 'span', 0.0,
