@@ -63,6 +63,7 @@ class Result:
 class Connection:
     def __init__(self): self.statements = []
     def execute(self, sql, params=()):
+        if sql.startswith('SELECT canonical_json FROM source_versions'):return Result(({},))
         self.statements.append((sql, params))
         if "FROM workspace_policies" in sql:
             common = {"active": True, "current": True, "workspace_id": "workspace-1", "version": 3}
@@ -199,6 +200,10 @@ class KnowledgeRegistrationConnection(Connection):
 
 class RevisionConnection(Connection):
     def execute(self, sql, params=()):
+        if sql.startswith('SELECT DISTINCT er.source_version_id FROM evidence_references er'):
+            return Result(rows=(('source-version-1',),))
+        if sql.startswith('SELECT canonical_json FROM source_versions'):
+            return Result(({},))
         self.statements.append((sql, params))
         if "FROM workspace_policies" in sql:
             return super().execute(sql, params)
@@ -485,6 +490,33 @@ class StudioWorkspacePostgresContractTests(unittest.TestCase):
             self.assertTrue(result["resubmission_of_rejected_version"])
             self.assertEqual(result["content"]["body"], "새 생성 답변")
             if revision_type == "settings_change": self.assertIn("새 목적", repr(cloud.connection.statements))
+
+    def test_settings_change_cannot_add_revoked_law_from_saved_mixed_run(self) -> None:
+        class MixedRevision(RevisionConnection):
+            def execute(self,sql,params=()):
+                if sql.startswith('SELECT canonical_json FROM source_versions'):
+                    self.statements.append((sql,params))
+                    return Result(({'origin_kind':'mcp_open_law','connector_id':'mcp-open-law-go-kr',
+                        'snapshot_id':'law-snapshot-B'} if params[-1]=='law-version-B' else {},))
+                if 'FROM runs r JOIN run_results' in sql:
+                    self.statements.append((sql,params))
+                    return Result(({'answer':'A와 B의 저장된 답변','insufficient':False},2,True,True))
+                if 'FROM citations' in sql:
+                    self.statements.append((sql,params))
+                    return Result(rows=(('citation-1','source-version-1','span-1',{'page':1}),
+                        ('citation-B','law-version-B','law-span-B',{'page':1})))
+                return super().execute(sql,params)
+        cloud=Cloud();cloud.connection=MixedRevision()
+        revision={'previous_version_id':'version-1','revision_type':'settings_change',
+            'change_reason':'새 선택 B 추가','content':'','settings':{'purpose':'새 목적','audience':'검토자',
+                'source_version_ids':['source-version-1','law-version-B'],'ruleset_version_id':'ruleset-v3',
+                'length':'short','structure':'summary','output_format':'pdf','review_condition':'review_required'}}
+        with mock_patch.dict(os.environ,{'DAON_OPEN_LAW_ENABLED':'false'}):
+            with self.assertRaisesRegex(StudioError,'^RESOURCE_UNAVAILABLE$'):
+                PostgresStudioWorkspaceRepository(cloud).create_version(
+                    StudioContext('tenant-1','workspace-1','actor-1','trace-1','policy-1','notebook-1'),
+                    'output-1',revision,'settings-add-revoked-law')
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql,_ in cloud.connection.statements))
 
     def test_user_edit_version_copies_previous_evidence_references(self) -> None:
         cloud = Cloud(); cloud.connection = RevisionConnection()

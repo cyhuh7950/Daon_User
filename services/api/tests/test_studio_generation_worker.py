@@ -45,6 +45,18 @@ def job(output_type: str) -> StudioGenerationJob:
 
 
 class StudioGenerationWorkerTests(unittest.TestCase):
+    def test_queued_open_law_revoked_before_generation_never_calls_create(self):
+        from daon_user_api.studio_workspace import StudioError
+        class RevokedRepository(FakeRepository):
+            def __init__(self):super().__init__();self.created=False
+            def require_source_access(self,context,versions):
+                raise StudioError('RESOURCE_UNAVAILABLE',404)
+            def create_generation(self,*args):self.created=True;return super().create_generation(*args)
+        repo=RevokedRepository();queue=FakeQueue(job('evidence_report'))
+        StudioGenerationWorker(queue,repo,worker_id='worker-law').run_once()
+        self.assertFalse(repo.created)
+        self.assertEqual(queue.finished,[{'state':'failed','error_code':'RESOURCE_UNAVAILABLE'}])
+
     def test_supported_output_finishes_completed(self):
         queue = FakeQueue(job("evidence_report"))
         worker = StudioGenerationWorker(queue, FakeRepository(), worker_id="worker-1")

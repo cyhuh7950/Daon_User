@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from .open_law_source_access import OpenLawAccessError,require_open_law_source_access
+from .authorization import Action
+
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
@@ -17,6 +20,22 @@ from .studio_generation_queue import PostgresStudioGenerationQueue, StudioGenera
 
 
 class PostgresStudioWorkspaceRepository:
+    @staticmethod
+    def _require_sources(connection,context,versions,*,action=Action.GENERATE):
+        try:
+            for version in versions:require_open_law_source_access(context,version,connection,action=action)
+        except OpenLawAccessError:raise StudioError('RESOURCE_UNAVAILABLE',404) from None
+
+    def require_source_access(self,context,versions):
+        with self._cloud_store._transaction(self._cloud(context,'studio.read')) as connection:
+            self._require_sources(connection,context,versions)
+
+    def _require_output_sources(self,connection,context,version_id,*,action=Action.VIEW):
+        rows=connection.execute('SELECT DISTINCT er.source_version_id FROM evidence_references er '
+            'WHERE er.tenant_id=%s AND er.workspace_id=%s AND er.output_version_id=%s',
+            (context.tenant_id,context.workspace_id,version_id)).fetchall()
+        self._require_sources(connection,context,tuple(str(row[0]) for row in rows),action=action)
+
     def __init__(self, cloud_store, object_storage=None, creation_enforcer=None) -> None:  # type: ignore[no-untyped-def]
         self._cloud_store = cloud_store
         self._object_storage = object_storage
@@ -278,6 +297,7 @@ class PostgresStudioWorkspaceRepository:
         scope = (context.tenant_id, context.workspace_id, context.actor_id, operation, idempotency_key)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.create")) as connection:
+                self._require_sources(connection,context,request.source_version_ids)
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("|".join(scope),))
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None:
@@ -454,6 +474,7 @@ class PostgresStudioWorkspaceRepository:
         job_id = self._opaque("studio-job", context.tenant_id, context.workspace_id, context.actor_id, idempotency_key)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.create")) as connection:
+                self._require_sources(connection,context,request.source_version_ids)
                 row = connection.execute(
                     "SELECT job_id,state,studio_output_id,output_version_id,safe_error_code,created_at,completed_at "
                     "FROM studio_generation_jobs WHERE tenant_id=%s AND workspace_id=%s AND actor_id=%s AND idempotency_key=%s",
@@ -515,6 +536,14 @@ class PostgresStudioWorkspaceRepository:
                     "ORDER BY so.created_at DESC",
                     (context.notebook_id, context.tenant_id, context.workspace_id),
                 ).fetchall()
+                accessible=[]
+                for row in rows:
+                    try:self._require_output_sources(connection,context,str(row[2]))
+                    except StudioError as error:
+                        if error.code=='RESOURCE_UNAVAILABLE':continue
+                        raise
+                    accessible.append(row)
+                rows=accessible
         except CloudDatabaseError as error:
             raise StudioError("STUDIO_DATABASE_UNAVAILABLE", 503) from error
         return {"outputs": tuple({"studio_output_id": str(row[0]), "output_version_id": str(row[2]), "status": str(row[3]), **dict(cast(Mapping[str, object], row[1])), "version": dict(cast(Mapping[str, object], row[4]))} for row in rows), "studio_locks": projection["locks"]}
@@ -547,6 +576,11 @@ class PostgresStudioWorkspaceRepository:
                 ).fetchall()
                 if not rows:
                     raise StudioError("RESOURCE_UNAVAILABLE", 404)
+                for row in rows:
+                    self._require_sources(connection,context,tuple(dict.fromkeys(
+                        str(citation['source_version_id']) for citation in row[6]
+                        if isinstance(citation,Mapping) and citation.get('source_version_id')
+                    )),action=Action.VIEW)
         except StudioError:
             raise
         except CloudDatabaseError as error:
@@ -591,6 +625,7 @@ class PostgresStudioWorkspaceRepository:
         scope = (context.tenant_id, context.workspace_id, context.actor_id, operation, idempotency_key)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.edit")) as connection:
+                self._require_output_sources(connection,context,revision['previous_version_id'],action=Action.EDIT)
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("|".join(scope),))
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None: return replay, True
@@ -631,6 +666,7 @@ class PostgresStudioWorkspaceRepository:
                         cast(str | None, effective.get("ruleset_version_id")), str(effective["length"]), str(effective["structure"]),
                         str(effective["output_format"]), str(effective["review_condition"]), str(effective.get("language") or "ko"),
                     )
+                    self._require_sources(connection,context,generation_request.source_version_ids,action=Action.GENERATE)
                     projection = self._policy_projection(connection, context, run_id=generation_request.run_id)
                     if projection["review_condition"] != generation_request.review_condition or projection["ruleset_version_id"] != generation_request.ruleset_version_id:
                         raise StudioError("POLICY_PROJECTION_MISMATCH", 409)
@@ -695,6 +731,9 @@ class PostgresStudioWorkspaceRepository:
         table = {"review": "review_requests", "approval_request": "approval_requests", "approval": "approvals", "delivery": "deliveries", "knowledge_registration": "knowledge_registrations"}[action]
         try:
             with self._cloud_store._transaction(self._cloud(context, operation)) as connection:
+                permission_action={'review':Action.REVIEW,'approval_request':Action.EDIT,'approval':Action.APPROVE,
+                    'delivery':Action.DELIVER,'knowledge_registration':Action.KNOWLEDGE_REGISTER}[action]
+                self._require_output_sources(connection,context,clean['output_version_id'],action=permission_action)
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("|".join(scope),))
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None: return replay, True
@@ -850,6 +889,7 @@ class PostgresStudioWorkspaceRepository:
         if context.notebook_id is None: raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.export")) as connection:
+                self._require_output_sources(connection,context,version_id,action=Action.DELIVER)
                 row = connection.execute(
                     "SELECT ov.canonical_json,ov.created_at,count(er.record_id),ov.state FROM output_versions ov JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id AND so.record_id=ov.studio_output_id LEFT JOIN evidence_references er ON er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s AND ov.record_id=%s AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=ov.tenant_id AND nb.workspace_id=ov.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='output_version' AND nb.record_id=ov.record_id) AND NOT EXISTS (SELECT 1 FROM evidence_references blocked_er JOIN source_versions blocked_sv ON blocked_sv.tenant_id=blocked_er.tenant_id AND blocked_sv.workspace_id=blocked_er.workspace_id AND blocked_sv.record_id=blocked_er.source_version_id JOIN deletion_requests blocked_dr ON blocked_dr.tenant_id=blocked_sv.tenant_id AND blocked_dr.workspace_id=blocked_sv.workspace_id AND blocked_dr.source_id=blocked_sv.source_id WHERE blocked_er.tenant_id=ov.tenant_id AND blocked_er.workspace_id=ov.workspace_id AND blocked_er.output_version_id=ov.record_id AND blocked_dr.source_active=false) GROUP BY ov.canonical_json,ov.created_at,ov.state",
                     (context.tenant_id, context.workspace_id, output_id, version_id, context.notebook_id),

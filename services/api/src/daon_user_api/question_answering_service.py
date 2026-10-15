@@ -23,7 +23,7 @@ from .question_answering import (
 )
 from .question_answering_postgres import (
     PostgresQuestionAnsweringRepository, QuestionContext, QuestionRepositoryError,
-    StoredQuestionAnswer,
+    StoredQuestionAnswer, OpenLawQuestionAccessError,
 )
 from .workspace_model_defaults import (
     ResolvedModel, WorkspaceModelContext, WorkspaceModelUnavailable,
@@ -387,6 +387,8 @@ class QuestionAnsweringService:
                     context, item.source_id, item.source_version_id,
                 )
             except QuestionRepositoryError as error:
+                if isinstance(error, OpenLawQuestionAccessError):
+                    raise QuestionAnsweringError(error.code, status=error.status) from None
                 if error.code == "QUESTION_SOURCE_UNAVAILABLE":
                     continue
                 raise
@@ -521,6 +523,19 @@ class QuestionAnsweringService:
         approved_authorization: Mapping[str, str] | None,
         context_mode: str, request_fingerprint: str,
     ) -> StoredQuestionAnswer:
+        versions = tuple(dict.fromkeys(
+            item.source_version_id for item in sources if item.origin == 'raw_source'
+        ))
+        revalidate = getattr(self._repository, 'revalidate_open_law_sources', None)
+        def recheck():
+            try:
+                if callable(revalidate):
+                    revalidate(context, versions)
+            except QuestionRepositoryError as error:
+                raise QuestionAnsweringError(error.code, status=error.status) from None
+        # General fallback deliberately stores no evidence, but the selected
+        # sources still need an access lock in its result-commit transaction.
+        access_options = {'access_source_version_ids': versions} if versions else {}
         if general:
             try:
                 prepare_general = getattr(self._adapter_registry, "prepare_general", None)
@@ -556,18 +571,21 @@ class QuestionAnsweringService:
                     context, run_id, request_fingerprint,
                 )
             try:
+                recheck()
                 generated = self._adapter_registry.generate_general(prepared)
             except (ValueError, DocumentUnderstandingError) as error:
                 raw_code = error.code if isinstance(error, DocumentUnderstandingError) else str(error)
                 raise QuestionAnsweringError(
                     raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED", status=502,
                 ) from None
+            recheck()
             return self._repository.persist_completed(
                 context, run_id=run_id, source_id=None, source_version_id=None,
                 question=question, selection=selection, evidence=(), result=generated,
                 provider_called=True, egress_authorization=egress_authorization,
                 context_mode="general_ungrounded", context_sources=(),
                 request_fingerprint=request_fingerprint,
+                **access_options,
             )
         evidence = self._search_context(context, sources, question)
         if not evidence:
@@ -575,6 +593,7 @@ class QuestionAnsweringService:
             # Legacy/custom evidence adapters do not advertise an ungrounded
             # route; freeze an empty decision without sending the question.
             if not callable(prepare_general):
+                recheck()
                 egress_authorization = self._egress.authorize(
                     context, run_id=run_id, source_id=source_id,
                     source_version_id=source_version_id, selection=selection,
@@ -602,13 +621,16 @@ class QuestionAnsweringService:
             prepared = prepare_general(
                 selection, question, context.trace_id, self._transport,
             )
+            recheck()
             generated = self._adapter_registry.generate_general(prepared)
+            recheck()
             return self._repository.persist_completed(
                 context, run_id=run_id, source_id=None, source_version_id=None,
                 question=question, selection=selection, evidence=(), result=generated,
                 provider_called=True, egress_authorization=egress_authorization,
                 context_mode="general_ungrounded", context_sources=(),
                 request_fingerprint=request_fingerprint,
+                **access_options,
             )
         try:
             prepared = self._adapter_registry.prepare(
@@ -662,6 +684,7 @@ class QuestionAnsweringService:
                     for branch in branches]}
                 prepared = replace(prepared, provider_payload={
                     **prepared.provider_payload, "format": ordered_schema})
+        recheck()
         try:
             generated = self._adapter_registry.generate_prepared(prepared)
         except (ValueError, DocumentUnderstandingError) as error:
@@ -679,6 +702,7 @@ class QuestionAnsweringService:
                 code if code.startswith("TEXT_") else "TEXT_GENERATION_FAILED",
                 status=503 if retryable else 502, retryable=retryable,
             ) from None
+        recheck()
         return self._repository.persist_completed(
             context, run_id=run_id, source_id=source_id,
             source_version_id=source_version_id, question=question,

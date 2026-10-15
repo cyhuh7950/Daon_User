@@ -71,6 +71,43 @@ class OpenLawMcpTests(unittest.TestCase):
             {'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'execute','arguments':{}}}]:
             self.assertIn('error',dispatch(message,OpenLawClient(api_key=None),{}))
 
+    def test_real_pipe_tools_list_rejects_bool_float_aliases_and_extra_wrapper(self):
+        from daon_user_api.open_law_mcp_server import TOOLS
+        from test_open_law_client import search_bytes
+        variants=[]
+        for value in (True,1.0):
+            tools=json.loads(json.dumps(TOOLS))
+            tools[0]['inputSchema']['properties']['query']['minLength']=value
+            variants.append(('minLength-'+repr(value),{'tools':tools}))
+        for value in (0,0.0):
+            tools=json.loads(json.dumps(TOOLS));tools[0]['inputSchema']['additionalProperties']=value
+            variants.append(('additionalProperties-'+repr(value),{'tools':tools}))
+        variants.append(('extra-wrapper',{'tools':TOOLS,'unexpected':True}))
+        real_popen=subprocess.Popen
+        for label,listing in variants:
+            with self.subTest(variant=label):
+                program=('import json\nimport daon_user_api.open_law_mcp_server as s\n'
+                    'from daon_user_api.open_law_client import OpenLawClient\n'
+                    f'listing=json.loads({json.dumps(listing)!r})\noriginal=s.dispatch\n'
+                    'def dispatch(message,*args):\n'
+                    ' result=original(message,*args)\n'
+                    ' if message.get("method")=="tools/list":result["result"]=listing\n'
+                    ' return result\n'
+                    's.dispatch=dispatch\n'
+                    f's.serve(OpenLawClient(api_key="fixture-oc",transport=lambda *_:{search_bytes()!r},resolver=lambda *_:("8.8.8.8",)))')
+                children=[]
+                def spawn(argv,**kwargs):
+                    self.assertEqual(argv,[sys.executable,'-B','-m','daon_user_api.open_law_mcp_server'])
+                    self.assertIs(kwargs['shell'],False)
+                    child=real_popen([sys.executable,'-B','-c',program],**kwargs);children.append(child);return child
+                try:
+                    with patch('daon_user_api.open_law_mcp_client.subprocess.Popen',side_effect=spawn):
+                        with self.assertRaisesRegex(ValueError,'^OPEN_LAW_PROTOCOL_INVALID$'):
+                            self.client().search(self.context,'민법',1)
+                finally:
+                    self.assertEqual(len(children),1)
+                    self.assertIsNotNone(children[0].poll())
+
     def test_timeout_oversize_and_child_reaped(self):
         real_popen=subprocess.Popen
         for program in ['import time;time.sleep(10)','import sys;sys.stdout.buffer.write(b"x"*8388609);sys.stdout.flush()']:

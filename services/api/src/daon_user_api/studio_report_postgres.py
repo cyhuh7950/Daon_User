@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from .open_law_source_access import OpenLawAccessError,require_open_law_source_access
+from .authorization import Action
+
 import hashlib
 import json
 from dataclasses import asdict
@@ -153,6 +156,12 @@ class PostgresStudioReportRepository:
                     "AND newer.source_id=sv.source_id AND newer.version>sv.version) ORDER BY s.created_at, s.record_id",
                     (context.notebook_id,),
                 ).fetchall()
+                accessible=[]
+                for row in rows:
+                    try:require_open_law_source_access(context,str(row[1]),connection)
+                    except OpenLawAccessError:continue
+                    accessible.append(row)
+                rows=accessible
         except CloudDatabaseError as error:
             raise StudioReportError("STUDIO_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable) from None
         # Approved knowledge is a directly registered/indexed OutputVersion
@@ -177,6 +186,8 @@ class PostgresStudioReportRepository:
         id_scope = self._id_scope(context, operation, idempotency_key)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.create")) as connection:
+                try:require_open_law_source_access(context,request.source_version_id,connection,action=Action.GENERATE)
+                except OpenLawAccessError:raise StudioReportError('RESOURCE_UNAVAILABLE',status=404) from None
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (
                     f"{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{operation}|{idempotency_key}",
                 ))
@@ -349,6 +360,13 @@ class PostgresStudioReportRepository:
                     "ORDER BY so.created_at,so.record_id,er.record_id"
                     , (context.notebook_id,),
                 ).fetchall()
+                blocked=set()
+                for row in rows:
+                    citation=row[4]
+                    if isinstance(citation,Mapping) and citation.get('source_version_id'):
+                        try:require_open_law_source_access(context,str(citation['source_version_id']),connection)
+                        except OpenLawAccessError:blocked.add(str(row[3]))
+                rows=[row for row in rows if str(row[3]) not in blocked]
         except CloudDatabaseError as error:
             raise StudioReportError("STUDIO_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable) from None
         grouped: dict[str, dict[str, object]] = {}

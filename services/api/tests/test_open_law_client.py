@@ -21,6 +21,55 @@ def body_bytes():
 
 
 class OpenLawClientTests(unittest.TestCase):
+    def test_official_example_opaque_key_keeps_requested_mst_date_article_and_original_hashes(self):
+        from daon_user_api.open_law_client import OpenLawSelection
+        # 공식 정적 예시의 식별자 관계만 재현. 본문은 합성 fixture이며 실 API 결과가 아니다.
+        data=json.loads(body_bytes());root=data['법령']
+        root['법령키']='0112682010083000277'
+        root['기본정보'].update({'법령ID':'011268','시행일자':'20100830'})
+        raw=json.dumps(data,ensure_ascii=False,indent=2).encode()
+        api=self.api(raw)
+        result=api.read(OpenLawSelection('107433','20100830','000100'),time.monotonic()+8)
+        self.assertEqual(self.calls[0][0],'/DRF/lawService.do')
+        self.assertEqual(self.calls[0][1],{'OC':'fixture-oc','target':'eflaw','type':'JSON',
+            'MST':'107433','efYd':'20100830','JO':'000100'})
+        self.assertEqual(result.law['mst'],'107433')
+        self.assertEqual(result.law['law_id'],'011268')
+        self.assertEqual(result.raw_content,raw)
+        self.assertEqual(result.raw_sha256,hashlib.sha256(raw).hexdigest())
+        self.assertEqual(result.text_content,'제1조 원문\n① 내용\n1. 순서\n가. 끝'.encode())
+        self.assertEqual(result.text_sha256,hashlib.sha256(result.text_content).hexdigest())
+
+    def test_opaque_key_does_not_relax_response_date_law_id_or_article_binding(self):
+        from daon_user_api.open_law_client import OpenLawSelection
+        for field,value in [('시행일자','20260102'),('법령ID','not-numeric'),('법령ID',True),('법령ID',456.0)]:
+            with self.subTest(field=field,value=value):
+                data=json.loads(body_bytes());data['법령']['기본정보'][field]=value
+                with self.assertRaisesRegex(ValueError,'^OPEN_LAW_PROTOCOL_INVALID$'):
+                    self.api(json.dumps(data,ensure_ascii=False).encode()).read(
+                        OpenLawSelection('123','20260101','000100'),time.monotonic()+8)
+        with self.assertRaisesRegex(ValueError,'^OPEN_LAW_TEXT_UNAVAILABLE$'):
+            self.api(body_bytes()).read(OpenLawSelection('123','20260101','000200'),time.monotonic()+8)
+        for mst in ('107433&ID=011268',True,107433.0):
+            with self.subTest(mst=mst):
+                with self.assertRaisesRegex(ValueError,'^OPEN_LAW_INPUT_INVALID$'):
+                    OpenLawSelection(mst,'20100830',None)
+
+    def test_upstream_numeric_bool_and_float_aliases_are_protocol_errors(self):
+        from daon_user_api.open_law_client import OpenLawSelection
+        for field in ('page','totalCnt'):
+            for value in (True,1.0,1.5):
+                with self.subTest(field=field,value=value):
+                    data=json.loads(search_bytes());data['LawSearch'][field]=value
+                    with self.assertRaisesRegex(ValueError,'^OPEN_LAW_PROTOCOL_INVALID$'):
+                        self.api(json.dumps(data).encode()).search('민법',1,time.monotonic()+8)
+        for field,value in [('조문번호',True),('조문번호',1.0),('조문번호',1.5),('조문가지번호',False),('조문가지번호',0.0),('조문가지번호',0.5)]:
+            with self.subTest(field=field,value=value):
+                data=json.loads(body_bytes());data['법령']['조문']['조문단위'][0][field]=value
+                with self.assertRaisesRegex(ValueError,'^OPEN_LAW_PROTOCOL_INVALID$'):
+                    self.api(json.dumps(data,ensure_ascii=False).encode()).read(
+                        OpenLawSelection('123','20260101','000100'),time.monotonic()+8)
+
     def test_malformed_article_children_and_law_arrays_never_silently_drop(self):
         from daon_user_api.open_law_client import OpenLawSelection
         for key in ('항','호','목'):

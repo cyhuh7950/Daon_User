@@ -87,6 +87,7 @@ class FakeRepository:
     def load_completed(self, context, run_id):  # type: ignore[no-untyped-def]
         return self.completed
 
+
     def load_completed_for_replay(self, context, run_id, request_fingerprint):  # type: ignore[no-untyped-def]
         return self.completed
 
@@ -104,6 +105,80 @@ class FakeRepository:
             kwargs["run_id"], "result-cp3", result.answer, result.insufficient, citations,
         )
         return self.completed
+
+
+class OpenLawExecutionRecheckTests(unittest.TestCase):
+    def test_disabled_law_selection_never_becomes_general_fallback(self):
+        from test_question_answering_postgres import FakeCloudStore, FakeObjectStorage, Cursor
+        from daon_user_api.question_answering_postgres import PostgresQuestionAnsweringRepository
+        from unittest.mock import patch
+        cloud = FakeCloudStore()
+        execute = cloud.connection.execute
+        def law(sql, params=()):
+            if sql.startswith('SELECT canonical_json FROM source_versions'):
+                return Cursor(({'origin_kind':'mcp_open_law','connector_id':'mcp-open-law-go-kr','snapshot_id':'law-snapshot'},))
+            return execute(sql,params)
+        cloud.connection.execute = law
+        actual = PostgresQuestionAnsweringRepository(cloud,FakeObjectStorage())
+        repo = FakeRepository()
+        repo.load_ready_source = actual.load_ready_source
+        transport = GeneralAnswerTransport()
+        service = QuestionAnsweringService(FakeProviderSettings(),repo,FakeIndex(()),
+            FakeCredential(),transport,FakeEgress())
+        with patch.dict('os.environ',{'DAON_OPEN_LAW_ENABLED':'false'}):
+            with self.assertRaises((QuestionAnsweringError,QuestionRepositoryError)):
+                service.ask(QuestionContext('tenant-cp3','workspace-cp3','actor-cp3','trace','policy','notebook'),
+                    source_id='source-cp3',source_version_id='source-version-cp3',question='선택 문서 내용은?',run_id='run-disabled-law')
+        self.assertEqual(transport.calls,0)
+        self.assertIsNone(repo.persisted)
+
+    def test_no_evidence_fallback_rechecks_selected_version_before_provider(self):
+        repo = FakeRepository()
+        transport = GeneralAnswerTransport()
+        class RevokingIndex(FakeIndex):
+            def search(self, context, **kwargs):
+                repo.revoked = True
+                return ()
+        def check(context, versions):
+            if versions and getattr(repo, 'revoked', False):
+                raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE', status=404)
+        repo.revalidate_open_law_sources = check
+        service = QuestionAnsweringService(FakeProviderSettings(), repo,
+            RevokingIndex(()), FakeCredential(), transport, FakeEgress())
+        with self.assertRaisesRegex(QuestionAnsweringError, 'QUESTION_SOURCE_UNAVAILABLE'):
+            service.ask(QuestionContext('tenant','workspace','actor','trace','policy','notebook'),
+                source_id='source-cp3', source_version_id='source-version-cp3',
+                question='선택 문서에 없는 내용은?', run_id='run-law-empty')
+        self.assertEqual(transport.calls, 0)
+        self.assertIsNone(repo.persisted)
+
+    def test_no_evidence_fallback_retains_selected_version_for_commit_guard(self):
+        repo = FakeRepository()
+        service = QuestionAnsweringService(FakeProviderSettings(), repo,
+            FakeIndex(()), FakeCredential(), GeneralAnswerTransport(), FakeEgress())
+        service.ask(QuestionContext('tenant','workspace','actor','trace','policy','notebook'),
+            source_id='source-cp3', source_version_id='source-version-cp3',
+            question='선택 문서에 없는 내용은?', run_id='run-law-empty')
+        self.assertEqual(repo.persisted.get('access_source_version_ids'), ('source-version-cp3',))
+        self.assertEqual(repo.persisted['context_sources'], ())
+
+    def test_question_source_revoked_by_provider_response_never_persists(self):
+        repo=FakeRepository();original=repo.load_ready_source;revoked=[]
+        def load(*args):
+            if revoked:raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404)
+            return original(*args)
+        repo.load_ready_source=load
+        repo.revalidate_open_law_sources=lambda ctx,versions:[load(ctx,'source-cp3',version) for version in versions]
+        class Transport(FakeTransport):
+            def post_json(self,**kwargs):
+                response=super().post_json(**kwargs);revoked.append(True);return response
+        service=QuestionAnsweringService(FakeProviderSettings(),repo,
+            FakeIndex((IndexedEvidenceChunk('chunk-page-2','source-cp3','source-version-cp3',2,'ORANGE-COMPASS-42','span-page-2'),)),
+            FakeCredential(),Transport(),FakeEgress())
+        with self.assertRaises(QuestionAnsweringError):
+            service.ask(QuestionContext('tenant','workspace','actor','trace','policy','notebook'),
+                source_id='source-cp3',source_version_id='source-version-cp3',question='선택한 원문 내용은?',run_id='run-law')
+        self.assertIsNone(repo.persisted)
 
 
 class FakeIndex:

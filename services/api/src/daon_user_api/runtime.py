@@ -435,6 +435,30 @@ def _website_text_child():
         raise SystemExit(1) from None
 
 
+def _read_open_law_original(context,key,digest,size,storage):
+    """법령 text 전용 읽기: 고정 child/5초/512KiB, 자격은 stdin만."""
+    from .open_law_source_import import OpenLawImportError
+    try:
+        if (not isinstance(storage,WebsiteProcessStorage) or type(size) is not int
+                or not 0<size<=524288 or not isinstance(key,str) or len(key)>4096
+                or not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest)):
+            raise ValueError
+        ObjectKeyPolicy().validate_final(CloudAccessContext(context.tenant_id,context.workspace_id,context.actor_id,'object.read'),'source',key)
+        deadline=time.monotonic()+5.0
+        payload=json.dumps({'config':storage._config,'key':key,'digest':digest,'size':size,'deadline':deadline},separators=(',',':')).encode()
+        if len(payload)>32768:raise ValueError
+        with subprocess.Popen([sys.executable,'-B','-c','from daon_user_api.runtime import _website_text_child; _website_text_child()'],
+                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0) as child:
+            raw=_website_read_exchange(child,payload,deadline)
+        _checked_website_text(raw,digest,size)
+        return raw
+    except WebsiteImportError as error:
+        code='OPEN_LAW_TIMEOUT' if error.code=='WEBSITE_FETCH_TIMEOUT' else 'OPEN_LAW_STORAGE_UNAVAILABLE'
+        raise OpenLawImportError(code,504 if code=='OPEN_LAW_TIMEOUT' else 503) from None
+    except Exception:raise OpenLawImportError('OPEN_LAW_STORAGE_UNAVAILABLE',503) from None
+
+
 def _read_website_original(repo,context,version_id,storage):
     snapshot=repo.get_snapshot(context,version_id)
     if not isinstance(storage,WebsiteProcessStorage):
@@ -2060,6 +2084,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     ):
         citation_content_repository = PostgresQuestionAnsweringRepository(
             dependencies.cloud_store, dependencies.object_storage,
+            open_law_text_reader=lambda context,key,digest,size: _read_open_law_original(
+                context,key,digest,size,dependencies.website_storage),
         )
         question_answering_service = QuestionAnsweringService(
             PostgresWorkspaceModelResolver(
@@ -2376,6 +2402,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         safe_codes = {
             "CONNECTOR_NOT_FOUND", "CONNECTOR_KIND_UNSUPPORTED", "CONNECTOR_STATUS_INVALID",
             "CONNECTOR_INPUT_INVALID", "CONNECTOR_SOURCE_ID_INVALID", "CONNECTOR_UNAVAILABLE", "CONNECTOR_FIXED",
+            "OPEN_LAW_BINDING_CONFLICT",
         }
         return _error_response(404 if str(error) == "CONNECTOR_NOT_FOUND" else 409,
                                str(error) if str(error) in safe_codes else "CONNECTOR_UNAVAILABLE",

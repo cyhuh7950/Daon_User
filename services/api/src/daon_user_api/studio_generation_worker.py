@@ -53,6 +53,8 @@ class StudioGenerationWorker:
             request_payload["source_version_ids"] = tuple(request_payload.get("source_version_ids", ()))
             request = StudioGenerationRequest(**request_payload)
             context = StudioContext(job.tenant_id, job.workspace_id, job.actor_id, job.trace_id, job.policy_version, notebook_id)
+            revalidate=getattr(self._repository,'require_source_access',None)
+            if callable(revalidate):revalidate(context,request.source_version_ids)
             result, _ = self._repository.create_generation(context, request, job.idempotency_key)
             self._queue.finish(job, state="completed", studio_output_id=result.get("studio_output_id"), output_version_id=result.get("output_version_id"))
         except StudioError as error:

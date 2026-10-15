@@ -33,6 +33,7 @@ class FakeConnection:
         self.audit_failure = audit_failure
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
+        if sql.startswith('SELECT canonical_json FROM source_versions'):return FakeResult(({},))
         self.statements.append((sql, params))
         if "FROM idempotency_records" in sql:
             return FakeResult(self.replay)
@@ -60,6 +61,7 @@ class SourceLineageConnection:
         self.statement = ""
 
     def execute(self, sql, _params=()):  # type: ignore[no-untyped-def]
+        if sql.startswith('SELECT canonical_json FROM source_versions'):return FakeResult(({},))
         self.statement = sql
         deterministic_run = "ORDER BY created_at DESC,record_id DESC" in sql
         same_run_job = "processing_run_id=pr.record_id" in sql
@@ -194,6 +196,7 @@ class StudioReportPostgresTests(unittest.TestCase):
     def test_registered_knowledge_projection_requires_verified_catalog_flag_and_ready_source(self) -> None:
         class ProjectionConnection(FakeConnection):
             def execute(self, sql, params=()):
+                if sql.startswith('SELECT canonical_json FROM source_versions'):return FakeResult(({},))
                 self.statements.append((sql, params))
                 rows = self.source_rows if "AS approved_knowledge" in sql else [row[:6] for row in self.source_rows]
                 return FakeResult(rows=rows)

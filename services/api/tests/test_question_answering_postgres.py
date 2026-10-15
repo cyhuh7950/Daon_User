@@ -52,6 +52,8 @@ class FakeConnection:
         self.source_access_allowed = True
 
     def execute(self, sql, params=()):  # type: ignore[no-untyped-def]
+        if sql.startswith('SELECT canonical_json FROM source_versions'):
+            return Cursor(({},))
         if sql.startswith('SELECT NOT EXISTS (SELECT 1 FROM identity_auth_source_access'):
             with sqlite3.connect(':memory:') as connection:
                 connection.execute('CREATE TABLE identity_auth_source_access(tenant_id TEXT,workspace_id TEXT,user_id TEXT,source_version_id TEXT,allowed INTEGER)')
@@ -112,6 +114,23 @@ class FakeObjectStorage:
 
 
 class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
+    def test_commit_rechecks_selected_source_before_any_result_write(self):
+        # Revocation occurs after the service recheck but before this transaction.
+        execute = self.cloud.connection.execute
+        def revoked(sql, params=()):
+            if sql.startswith('SELECT canonical_json FROM source_versions'):
+                return Cursor(({'origin_kind': 'mcp_open_law',
+                    'connector_id': 'mcp-open-law-go-kr', 'snapshot_id': 'law-snapshot'},))
+            return execute(sql, params)
+        self.cloud.connection.execute = revoked
+        with self.assertRaisesRegex(QuestionRepositoryError, 'QUESTION_SOURCE_UNAVAILABLE'):
+            self.repository.persist_completed(self.context, run_id='run-law-commit',
+                source_id='source-cp3', source_version_id='source-version-cp3',
+                question='원문은?', selection=TextModelSelection('OLLAMA', 'https://models.example.com',
+                    'profile', 'deployment', 'fixture-model', 1), evidence=(),
+                result=GroundedTextResult('', (), False, {}))
+        self.assertFalse(any(sql.startswith('INSERT INTO') for sql in self.cloud.connection.queries))
+
     def test_audio_citation_keeps_time_locator_and_reads_bound_transcript(self):
         from dataclasses import replace
         from test_audio_document_understanding import ready_audio_result
@@ -396,6 +415,9 @@ class PostgresQuestionAnsweringRepositoryTests(unittest.TestCase):
                 self.db.execute('INSERT INTO notebook_bindings VALUES(?,?,?,?,?,?)', (*scope, 'notebook-cp3', 'source', 'source-cp3', 'source-version-cp3'))
             def execute(self, sql, params=()):
                 cursor = self.db.execute(sql.replace('%s', '?'), params)
+                if sql.startswith('SELECT canonical_json FROM source_versions'):
+                    row=cursor.fetchone()
+                    return Cursor((json.loads(row[0]),) if row else None)
                 self.columns = tuple(column[0] for column in cursor.description)
                 row = cursor.fetchone(); self.rows.append(row)
                 return Cursor(row)

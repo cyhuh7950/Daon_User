@@ -67,6 +67,9 @@ class ConnectorPersistenceTests(unittest.TestCase):
         approved = ConnectorView("daon-approved-knowledge", "daon_approved_knowledge", "Daon 승인 지식", "unavailable", 0, "Daon", None, "CONNECTOR_CREDENTIAL_REQUIRED")
 
         first = repository.list("tenant", "workspace", "user", (mcp, approved))
+        self.assertEqual([item.connector_id for item in first], [approved.connector_id])
+        repository.register("tenant", "workspace", "user", mcp)
+        first = repository.list("tenant", "workspace", "user", (mcp, approved))
         self.assertEqual({item.connector_id for item in first}, {mcp.connector_id, approved.connector_id})
         store.connection.rows = [row for row in store.connection.rows if row[2] != mcp.connector_id]
 
@@ -118,7 +121,10 @@ class OpenLawRuntimeScopeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(registry.list(),before)
                     listed=await client.get('/api/v1/workspaces/workspace-second/connectors',headers=auth)
                     self.assertEqual(listed.status_code,200)
-                    self.assertTrue(listed.json()['data']['connectors'])
+                    if persisted:
+                        self.assertEqual(listed.json()['data']['connectors'],[])
+                    else:
+                        self.assertTrue(listed.json()['data']['connectors'])
                     self.assertTrue(all(item['status']!='disconnected' for item in listed.json()['data']['connectors']))
                     self.assertEqual(registry.list(),before)
                     own_sources=await client.get('/api/v1/workspaces/workspace-001/connectors/mcp-open-law-go-kr/sources',headers=auth)

@@ -202,6 +202,12 @@ def _text(value):
     raise OpenLawError('OPEN_LAW_PROTOCOL_INVALID')
 
 
+def _integer(value):
+    if type(value) is not int and (not isinstance(value,str) or re.fullmatch(r'[0-9]+',value) is None):
+        raise OpenLawError('OPEN_LAW_PROTOCOL_INVALID')
+    return int(value)
+
+
 class OpenLawClient:
     def __init__(self,*,api_key,transport=None,resolver=None):
         self._key=api_key;self._transport=transport or https_get;self._resolver=resolver or resolve_public_ips
@@ -232,7 +238,7 @@ class OpenLawClient:
         validate_search(query,page)
         _,data=self._get('/DRF/lawSearch.do',{'search':'1','nw':'3','display':'20','page':str(page),'query':query},deadline)
         try:
-            root=data['LawSearch']; total=int(root['totalCnt']); actual=int(root['page'])
+            root=data['LawSearch']; total=_integer(root['totalCnt']); actual=_integer(root['page'])
             rows=_list(root.get('law',[]))
             if total and not rows:raise ValueError
             items=[]
@@ -251,9 +257,7 @@ class OpenLawClient:
         raw,data=self._get('/DRF/lawService.do',params,deadline)
         try:
             root=data['법령']; info=root['기본정보']
-            # 보수적인 임시 결속 검사. 공식 guide는 법령키 구성을 보증하지
-            # 않으므로 L4 실제 MST/법령ID/시행일 응답 대조 전 호환성 미확인.
-            if str(root['법령키']) not in {selection.mst,selection.mst+selection.effective_date}:raise ValueError
+            # 법령키는 opaque upstream 값. 고정 요청 MST와 응답 법령ID/시행일은 별도다.
             if str(info['시행일자'])!=selection.effective_date:raise ValueError
             ministry=info.get('소관부처')
             if isinstance(ministry,dict):ministry=ministry.get('content')
@@ -276,7 +280,7 @@ class OpenLawClient:
                         children(child)
             for article in _list(root.get('조문',{}).get('조문단위')):
                 if selection.article_code is not None:
-                    code=f"{int(article['조문번호']):04}{int(article.get('조문가지번호',0)):02}"
+                    code=f"{_integer(article['조문번호']):04}{_integer(article.get('조문가지번호',0)):02}"
                     if code!=selection.article_code:continue
                 selected+=1
                 if '조문내용' in article:append(article['조문내용'])

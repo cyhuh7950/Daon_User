@@ -1,6 +1,7 @@
 """호출별 고정 child·정확 wire·현재 권한 callback·종료 회수."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -113,7 +114,11 @@ class OpenLawMcpClient:
             if initialized!={'protocolVersion':PROTOCOL,'capabilities':{'tools':{}},'serverInfo':{'name':'daon-open-law','version':'1'}}:
                 raise OpenLawError('OPEN_LAW_PROTOCOL_INVALID')
             send({'jsonrpc':'2.0','method':'notifications/initialized'})
-            if exchange(2,'tools/list',{})!={'tools':TOOLS}:raise OpenLawError('OPEN_LAW_PROTOCOL_INVALID')
+            listed=exchange(2,'tools/list',{})
+            if not exact(listed,{'tools'}) or listed['tools']!=TOOLS:raise OpenLawError('OPEN_LAW_PROTOCOL_INVALID')
+            # dict equality aliases True/1 and 1.0/1; canonical wire types must also match.
+            digest=hashlib.sha256(json.dumps(listed['tools'],sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+            if digest!=SCHEMA_DIGEST:raise OpenLawError('OPEN_LAW_PROTOCOL_INVALID')
             self._check(context,frozen)
             result=exchange(3,'tools/call',{'name':tool,'arguments':arguments})
             if exact(result,{'content','isError'}) and result['isError'] is True:

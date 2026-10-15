@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from .open_law_source_access import OpenLawAccessError,require_open_law_source_access
+from .open_law_source_import import OpenLawImportError
+from .authorization import Action
+
 import hashlib
 import json
 import re
@@ -29,6 +33,10 @@ class QuestionRepositoryError(RuntimeError):
         self.status = status
         self.retryable = retryable
         super().__init__(code)
+
+
+class OpenLawQuestionAccessError(QuestionRepositoryError):
+    """현재 연결이 철회된 법령은 일반 응답 fallback으로 소비하지 않는다."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,9 +105,46 @@ class StoredQuestionAnswer:
 
 
 class PostgresQuestionAnsweringRepository:
-    def __init__(self, cloud_store: PostgresCloudStore, object_storage: ObjectStoragePort) -> None:
+    def revalidate_open_law_sources(self, context, versions):
+        try:
+            with self._cloud_store._transaction(self._cloud_context(context,'question.read')) as connection:
+                for version in versions:require_open_law_source_access(context,version,connection,action=Action.QUERY)
+        except OpenLawAccessError:raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE',status=404) from None
+
+    def __init__(self, cloud_store: PostgresCloudStore, object_storage: ObjectStoragePort, *, open_law_text_reader=None) -> None:
         self._cloud_store = cloud_store
         self._object_storage = object_storage
+        self._open_law_text_reader = open_law_text_reader
+
+    def _read_open_law_text(self, context, version_id, original, evidence):
+        try:
+            with self._cloud_store._transaction(self._cloud_context(context, 'citation.read')) as connection:
+                row = connection.execute('SELECT canonical_json FROM source_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                    (context.tenant_id, context.workspace_id, version_id)).fetchone()
+                if row is None or not isinstance(row[0], dict):
+                    raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=404)
+                if row[0].get('origin_kind') != 'mcp_open_law':
+                    return None
+                require_open_law_source_access(context, version_id, connection)
+                if not callable(self._open_law_text_reader):
+                    raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=503)
+                raw = self._open_law_text_reader(context, str(original[5]), str(original[6]), int(original[7]))
+                if (not isinstance(raw, bytes) or not 0 < len(raw) <= 524288
+                        or len(raw) != int(original[7]) or hashlib.sha256(raw).hexdigest() != str(original[6])):
+                    raise ValueError
+                text = raw.decode('utf-8', errors='strict')
+                start, end = evidence.get('start'), evidence.get('end')
+                if (type(start) is not int or type(end) is not int or not 0 <= start < end <= len(text)
+                        or text[start:end] != evidence.get('text') or evidence.get('page') != 1):
+                    raise ValueError
+                require_open_law_source_access(context, version_id, connection)
+                return raw
+        except OpenLawAccessError:
+            raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=404) from None
+        except OpenLawImportError:
+            raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=503) from None
+        except (ValueError, UnicodeError):
+            raise QuestionRepositoryError('CITATION_CONTENT_UNAVAILABLE', status=409) from None
 
     @staticmethod
     def _cloud_context(context: QuestionContext, capability: str) -> CloudAccessContext:
@@ -245,6 +290,9 @@ class PostgresQuestionAnsweringRepository:
                     (source_id, source_version_id, context.notebook_id)
                     if notebook_clause else (source_id, source_version_id),
                 ).fetchone()
+                if row is not None:require_open_law_source_access(context,source_version_id,connection,action=Action.QUERY if capability=='question.read' else Action.VIEW)
+        except OpenLawAccessError:
+            raise OpenLawQuestionAccessError('QUESTION_SOURCE_UNAVAILABLE',status=404) from None
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
                 "QUESTION_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable,
@@ -408,6 +456,9 @@ class PostgresQuestionAnsweringRepository:
                     (source_id, source_version_id, context.notebook_id)
                     if notebook_clause else (source_id, source_version_id),
                 ).fetchone()
+                if row is not None:require_open_law_source_access(context,source_version_id,connection,action=Action.QUERY)
+        except OpenLawAccessError:
+            raise OpenLawQuestionAccessError('QUESTION_SOURCE_UNAVAILABLE',status=404) from None
         except CloudDatabaseError as error:
             raise QuestionRepositoryError(
                 "QUESTION_DATABASE_UNAVAILABLE", status=503, retryable=error.retryable,
@@ -782,7 +833,9 @@ class PostgresQuestionAnsweringRepository:
                 ObjectKeyPolicy().validate_final(
                     self._cloud_context(context, "object.read"), "source", str(original[5]),
                 )
-                content = self._object_storage.get(str(original[5]))
+                content = self._read_open_law_text(context, source_version_id, original, evidence)
+                if content is None:
+                    content = self._object_storage.get(str(original[5]))
             except (ObjectQueueError, ObjectStorageError):
                 raise QuestionRepositoryError("CITATION_CONTENT_UNAVAILABLE", status=503) from None
             if (
@@ -814,6 +867,7 @@ class PostgresQuestionAnsweringRepository:
         context_mode: str = "raw_only",
         context_sources: tuple[object, ...] | None = None,
         request_fingerprint: str | None = None,
+        access_source_version_ids: tuple[str, ...] = (),
     ) -> StoredQuestionAnswer:
         if (
             not _SAFE_ID.fullmatch(run_id) or not question.strip()
@@ -905,6 +959,14 @@ class PostgresQuestionAnsweringRepository:
             with self._cloud_store._transaction(
                 self._cloud_context(context, "question.execute"),
             ) as connection:
+                # Hold the connector SHARE lock until this result transaction
+                # commits. A separate preflight cannot close the revocation gap.
+                for version_id in dict.fromkeys((
+                    *(str(item.source_version_id) for item in context_items
+                      if str(item.origin) == 'raw_source'),
+                    *access_source_version_ids,
+                )):
+                    require_open_law_source_access(context, version_id, connection, action=Action.QUERY)
                 if context.notebook_id is not None:
                     for item in context_items:
                         binding_kind = (
@@ -1088,6 +1150,8 @@ class PostgresQuestionAnsweringRepository:
                         }),
                     ),
                 )
+        except OpenLawAccessError:
+            raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE', status=404) from None
         except QuestionRepositoryError:
             raise
         except CloudDatabaseError as error:
