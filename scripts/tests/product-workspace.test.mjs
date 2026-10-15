@@ -914,7 +914,8 @@ test("Source 작업은 Notebook 연결 해제와 즉시 삭제를 분리한다",
       async listSources() { return [{ source_id: "source-1", source_version_id: "version-1", filename: "ready.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }]; },
       async listStudioOutputs() { return []; },
       async unbindSource(source, options) { calls.push(["unbind", source.sourceId, options.bindingEtag]); },
-      async requestSourceDeletion(source, options) { calls.push(["request", source.sourceId, options.idempotencyKey]); return { data: { request_id: "request-1", source_id: source.sourceId, state: "purged" }, etag: '"deletion:request-1:1"' }; },
+      async issueSourceDeletionStepUp(sourceId, password) { calls.push(["step-up", sourceId, password]); return "source-delete-grant"; },
+      async requestSourceDeletion(source, options) { calls.push(["request", source.sourceId, options.idempotencyKey, options.stepUpAuthorization]); return { data: { request_id: "request-1", source_id: source.sourceId, state: "purged" }, etag: '"deletion:request-1:1"' }; },
     };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
     reactRoot = createRoot(container);
@@ -925,13 +926,15 @@ test("Source 작업은 Notebook 연결 해제와 즉시 삭제를 분리한다",
     const deletion = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "Source 삭제 요청")[0];
     await act(async () => deletion.dispatchEvent(new MinimalEvent("click")));
     const confirm = findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 확인")[0];
+    assert.equal(calls.length, 0, "삭제 확인 전 추가 인증과 삭제 요청 모두 실행하지 않는다");
+    const password = findElements(container, (node) => node.tagName === "INPUT" && node.getAttribute("aria-label") === "Source 삭제 추가 인증 비밀번호")[0];
+    assert.ok(password); password.value = "fixture-source-delete-confirmation";
     await act(async () => { confirm.dispatchEvent(new MinimalEvent("click")); await Promise.resolve(); });
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].slice(0, 2), ["request", "source-1"]);
-    assert.match(calls[0][2], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
-    assert.match(container.textContent, /Source가 즉시 삭제되었습니다/u);
+    assert.deepEqual(calls, [["step-up", "source-1", "fixture-source-delete-confirmation"],
+      ["request", "source-1", "source-1", "source-delete-grant"]]);
+    assert.match(container.textContent, /Source 원문과 파생 자료의 실제 정리가 완료되었습니다/u);
     assert.equal(findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소").length, 0);
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
   } finally {
     if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
     if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
@@ -960,7 +963,7 @@ test("새로고침 뒤 완료된 즉시 삭제 상태를 복원하고 취소 동
     await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: effectAdapter })); await Promise.resolve(); await Promise.resolve(); });
     const action = findElements(container, (node) => node.tagName === "BUTTON" && /source-1 삭제 요청 상태/u.test(node.getAttribute?.("aria-label") ?? ""))[0];
     assert.ok(action); await act(async () => action.dispatchEvent(new MinimalEvent("click")));
-    assert.match(container.textContent, /Source가 즉시 삭제되었습니다/u);
+    assert.match(container.textContent, /Source 원문과 파생 자료의 실제 정리가 완료되었습니다/u);
     assert.equal(findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 취소").length, 0);
     assert.deepEqual(calls, []);
   } finally { if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount())); dom.restore(); await rm(output, { recursive: true, force: true }); }
@@ -980,6 +983,7 @@ test("Source lifecycle pending 응답은 Adapter·Notebook 전환 즉시 폐기�
     const pending = deferred(); const calls = [];
     const oldAdapter = { ...adapter, notebookContext: { notebook_id: "notebook-old" },
       async listSources() { return [{ source_id: "source-old", source_version_id: "version-old", filename: "old.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" }]; },
+      async issueSourceDeletionStepUp(sourceId, password) { assert.equal(sourceId, "source-old"); assert.equal(password, "fixture-old-source-confirmation"); return "old-source-grant"; },
       async listStudioOutputs() { return []; }, async requestSourceDeletion() { calls.push("old-request"); return pending.promise; } };
     const newAdapter = { ...adapter, notebookContext: { notebook_id: "notebook-new" }, async listSources() { return []; }, async listStudioOutputs() { return []; },
       async listSourceDeletionRequests() { return [{ request_id: "request-new", source_id: "source-new", state: "grace_period", version: 1, grace_until: "2026-09-20T00:00:00Z", legal_hold_active: false }]; },
@@ -988,6 +992,8 @@ test("Source lifecycle pending 응답은 Adapter·Notebook 전환 즉시 폐기�
     await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-old", adapter: oldAdapter })); await Promise.resolve(); await Promise.resolve(); });
     await act(async () => findElements(container, (node) => node.tagName === "BUTTON" && /old\.pdf 작업/u.test(node.getAttribute?.("aria-label") ?? ""))[0].dispatchEvent(new MinimalEvent("click")));
     await act(async () => findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "Source 삭제 요청")[0].dispatchEvent(new MinimalEvent("click")));
+    const password = findElements(container, (node) => node.tagName === "INPUT" && node.getAttribute("aria-label") === "Source 삭제 추가 인증 비밀번호")[0];
+    assert.ok(password); password.value = "fixture-old-source-confirmation";
     await act(async () => findElements(container, (node) => node.tagName === "BUTTON" && node.textContent === "삭제 요청 확인")[0].dispatchEvent(new MinimalEvent("click")));
     await act(async () => { reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-new", adapter: newAdapter })); await Promise.resolve(); await Promise.resolve(); });
     assert.doesNotMatch(container.textContent, /old\.pdf|요청을 처리하지 못/u);

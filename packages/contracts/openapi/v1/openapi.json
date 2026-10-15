@@ -4076,7 +4076,7 @@
     "/api/v1/sources/{id}/deletion-requests": {
       "post": {
         "operationId": "createDeletionRequest", "tags": ["Retention"],
-        "summary": "Source를 즉시 비활성화하고 유예 삭제 요청 생성", "x-implementation-owner": "R1-M5-06",
+        "summary": "현재 Notebook과 추가 인증에 결속해 Source 영구 정리 요청·재시도", "x-implementation-owner": "R1-M5-06",
         "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IfMatch" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletionCreateRequest" } } } },
         "responses": { "201": { "$ref": "#/components/responses/RetentionResponse" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" } }
@@ -7573,8 +7573,12 @@
       },
       "DeletionCreateRequest": {
         "type": "object", "additionalProperties": false,
-        "description": "Derivative inventory는 서버가 current Source 정본에서 산출합니다.",
-        "properties": {}
+        "description": "같은 요청 키로 정리를 재개합니다. Inventory와 Object 키는 서버에서만 산출하며 실제 정리 완료 전 purged가 아닙니다.",
+        "required": ["notebook_id", "step_up_authorization_id"],
+        "properties": {
+          "notebook_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "step_up_authorization_id": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true }
+        }
       },
       "SensitiveRetentionRequest": {
         "type": "object", "additionalProperties": false, "required": ["step_up_authorization_id"],
@@ -7832,7 +7836,7 @@
           "studio_output_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "output_version_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
           "generation_settings_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/components/schemas/OpaqueId" } },
-          "source_deletion_requests": { "type": "array", "maxItems": 1000, "items": { "type": "object", "additionalProperties": false, "required": ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"], "properties": { "request_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "state": { "type": "string", "enum": ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"] }, "version": { "type": "integer", "minimum": 1 }, "grace_until": { "type": "string", "format": "date-time" }, "legal_hold_active": { "type": "boolean" } } } },
+          "source_deletion_requests": { "type": "array", "maxItems": 1000, "items": { "type": "object", "additionalProperties": false, "required": ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"], "properties": { "request_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "state": { "type": "string", "enum": ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "failed", "purged"] }, "version": { "type": "integer", "minimum": 1 }, "grace_until": { "type": "string", "format": "date-time" }, "legal_hold_active": { "type": "boolean" } } } },
           "conversation": {
             "oneOf": [
               { "type": "null" },

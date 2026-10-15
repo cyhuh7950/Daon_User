@@ -1201,6 +1201,8 @@ class RetentionDerivativeBody(BaseModel):
 
 class DeletionCreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    notebook_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    step_up_authorization_id: str = Field(min_length=1, max_length=4096)
 
 
 class SensitiveRetentionBody(BaseModel):
@@ -2392,6 +2394,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _error: RequestValidationError) -> JSONResponse:
+        if (request.method == "POST"
+                and re.fullmatch(r"/api/v1/sources/[^/]+/deletion-requests", request.url.path)
+                and any(error.get("loc") == ("body", "step_up_authorization_id")
+                        and (error.get("type") in {"missing", "string_too_short"} or error.get("input") is None)
+                        for error in _error.errors())):
+            return _error_response(403, "STEP_UP_REQUIRED", request.state.trace_id)
         return _error_response(400, "INVALID_REQUEST", request.state.trace_id)
 
     @app.exception_handler(StarletteHTTPException)
@@ -5783,9 +5791,28 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             trace_id=request.state.trace_id,
             policy_version=dependencies.settings.policy_version,
         )
-        view = retention_request_service.create_request(
+        await asyncio.to_thread(
+            notebook_service.get, notebook_context(principal, workspace_id, request), body.notebook_id,
+        )
+        access_token, _ = _credential(request)
+        # A fresh confirmation may resume the same durable business request.
+        # Bind the one-use authorization separately; never persist the token.
+        authorization_key = hashlib.sha256(json.dumps([
+            idempotency_key, workspace_id, body.notebook_id, id,
+            hashlib.sha256(body.step_up_authorization_id.encode()).hexdigest(),
+        ], separators=(",", ":")).encode()).hexdigest()
+        dependencies.identity_service.consume_step_up(
+            access_token=access_token,
+            step_up_authorization=body.step_up_authorization_id,
+            action_group="permanent_delete_or_restore_rollback", target_id=id,
+            policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id,
+            operation="retention.source.delete", idempotency_key=authorization_key,
+        )
+        view = await asyncio.to_thread(
+            retention_request_service.create_request,
             _retention_context(principal, workspace_id, request, dependencies),
-            source_id=id,
+            source_id=id, notebook_id=body.notebook_id, step_up_verified=True, authorization_key=authorization_key,
             inventory=None,
             idempotency_key=idempotency_key, if_match=if_match,
         )

@@ -17,7 +17,8 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 
 _SAFE_SCOPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_EXPECTED_SCHEMA_REVISION = "0062"
+_EXPECTED_SCHEMA_REVISION = "0063"
+_COMPATIBLE_SCHEMA_REVISIONS = frozenset({"0062", "0063"})
 _DEFAULT_DENY_CANONICAL_TEXT = '{"allowed_destinations":[],"allowed_provider_kinds":[],"classification":"restricted","masking_required":true,"max_bytes":0,"mode":"deny_external","redaction_required":true,"required_approver":"organization_admin"}'
 _DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25b819d7f"
 
@@ -137,7 +138,7 @@ class PostgresCloudStore:
                     ).fetchone()
                 revision = None if revision_row is None else str(revision_row[0])
                 vector_version = None if vector_row is None else str(vector_row[0])
-                ready = revision == _EXPECTED_SCHEMA_REVISION and vector_version is not None
+                ready = revision in _COMPATIBLE_SCHEMA_REVISIONS and vector_version is not None
                 if ready:
                     self._ensure_pool_open()
                 return CloudReadiness(ready, revision, vector_version)
@@ -149,7 +150,7 @@ class PostgresCloudStore:
             revision = None if revision_row is None else str(revision_row[0])
             vector_version = None if vector_row is None else str(vector_row[0])
             return CloudReadiness(
-                revision == _EXPECTED_SCHEMA_REVISION and vector_version is not None,
+                revision in _COMPATIBLE_SCHEMA_REVISIONS and vector_version is not None,
                 revision,
                 vector_version,
             )

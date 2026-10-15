@@ -198,6 +198,26 @@ function validateResponse(document, response, operationId, status) {
   }
 }
 
+function validateSourceDeletionContract(document) {
+  const schemas = document.components?.schemas;
+  const schema = schemas?.DeletionCreateRequest;
+  const { description: _description, ...body } = schema ?? {};
+  const expected = { type: "object", additionalProperties: false, required: ["notebook_id", "step_up_authorization_id"], properties: {
+    notebook_id: { $ref: "#/components/schemas/OpaqueId" },
+    step_up_authorization_id: { type: "string", minLength: 1, maxLength: 4096, writeOnly: true },
+  } };
+  if (canonicalizeDocument(body) !== canonicalizeDocument(expected)) fail("S16 Source deletion exact confirmation body");
+  const operation = document.paths["/api/v1/sources/{id}/deletion-requests"];
+  if (JSON.stringify(Object.keys(operation ?? {}).filter(key => HTTP_METHODS.has(key))) !== '["post"]'
+      || operation.post?.requestBody?.required !== true
+      || operation.post?.requestBody?.content?.["application/json"]?.schema?.$ref !== "#/components/schemas/DeletionCreateRequest"
+      || operation.post?.responses?.["403"]?.$ref !== "#/components/responses/Forbidden") fail("S16 Source deletion guarded POST");
+  const states = schemas?.NotebookSelectedContext?.properties?.source_deletion_requests?.items?.properties?.state?.enum;
+  if (JSON.stringify(states) !== JSON.stringify(["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "failed", "purged"])) {
+    fail("S16 Source deletion exact durable projection states");
+  }
+}
+
 function validateOpenLawContract(document) {
   const schemas=document.components.schemas,prefix='/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/';
   const check=(valid,label)=>{if(!valid)fail(`Open law contract ${label}`);};
@@ -663,6 +683,7 @@ export function validateOpenApiDocument(document) {
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
   validateWebsiteContract(document);
   validateOpenLawContract(document);
+  validateSourceDeletionContract(document);
   for (const apiPath of ANDROID_BROWSER_AUTH_POST_PATHS) {
     const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method));
     if (JSON.stringify(actualMethods) !== JSON.stringify(["post"])) fail(`Android method mismatch ${apiPath}`);

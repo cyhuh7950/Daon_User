@@ -151,6 +151,80 @@ class RetentionRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             policy_version=POLICY_VERSION, trace_id=TRACE_ID,
         ).authorization
 
+    async def _s16_notebook(self) -> str:
+        response = await self.client.post(
+            "/api/v1/workspaces/workspace-retention-http/notebooks",
+            headers={"Idempotency-Key": "s16-notebook-fixture"},
+            json={"title": "S16 deletion scope"},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["data"]["notebook_id"]
+
+    async def test_s16_empty_deletion_body_cannot_create_request(self) -> None:
+        response = await self.client.post(
+            f"/api/v1/sources/{self.source_id}/deletion-requests",
+            headers={"Idempotency-Key": "s16-empty-delete", "If-Match": "*"}, json={},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "STEP_UP_REQUIRED")
+        self.assertFalse(self.retention._repository.requests)
+
+    async def test_s16_wrong_source_step_up_and_missing_notebook_never_write(self) -> None:
+        notebook_id = await self._s16_notebook()
+        for notebook, target, expected in (
+            (notebook_id, "another-source", 403),
+            ("notebook-not-owned", self.source_id, 404),
+        ):
+            with self.subTest(notebook=notebook, target=target):
+                response = await self.client.post(
+                    f"/api/v1/sources/{self.source_id}/deletion-requests",
+                    headers={"Idempotency-Key": "s16-denied-delete", "If-Match": "*"},
+                    json={"notebook_id": notebook, "step_up_authorization_id": self._step_up(target)},
+                )
+                self.assertEqual(response.status_code, expected, response.text)
+                self.assertFalse(self.retention._repository.requests)
+
+    async def test_s16_retry_same_business_key_can_use_fresh_step_up(self) -> None:
+        # The persistence boundary is external to this HTTP/identity test. Keep
+        # real identity, current authorization and Notebook lookup in the route.
+        class PersistencePort:
+            def __init__(self, reference):
+                self.reference, self.scopes = reference, []
+
+            def __getattr__(self, name):
+                return getattr(self.reference, name)
+
+            def create_request(self, context, *, notebook_id, step_up_verified, authorization_key, **kwargs):
+                if not step_up_verified:
+                    raise AssertionError("unverified deletion reached persistence")
+                if len(authorization_key) != 64:
+                    raise AssertionError("missing bound authorization receipt")
+                self.scopes.append((context.actor_id, notebook_id))
+                return self.reference.create_request(context, **kwargs)
+
+        port = PersistencePort(self.retention)
+        self.dependencies.retention_service = port
+        await self.client.aclose()
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(self.dependencies)),
+            base_url="https://app.example.com",
+            cookies={WEB_SESSION_COOKIE: self.credentials.access_token},
+        )
+        notebook_id = await self._s16_notebook()
+        grants = [self._step_up(self.source_id), self._step_up(self.source_id)]
+        ids = []
+        for grant in (grants[0], grants[0], grants[1]):
+            response = await self.client.post(
+                f"/api/v1/sources/{self.source_id}/deletion-requests",
+                headers={"Idempotency-Key": "s16-retry-delete", "If-Match": "*"},
+                json={"notebook_id": notebook_id, "step_up_authorization_id": grant},
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+            ids.append(response.json()["data"]["request_id"])
+            self.assertNotIn(grant, response.text)
+        self.assertEqual(len(set(ids)), 1)
+        self.assertEqual(port.scopes, [(self.credentials.user_id, notebook_id)] * 3)
+
     async def test_six_route_http_semantics_guards_and_safe_payloads(self) -> None:
         create_headers = {"Idempotency-Key": "idem-http-create", "If-Match": "*"}
         created = await self.client.post(

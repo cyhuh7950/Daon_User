@@ -6,6 +6,7 @@ import hashlib
 import logging
 from typing import Mapping, cast
 
+from psycopg import Error as PostgresError
 from psycopg.types.json import Jsonb
 
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
@@ -114,7 +115,12 @@ class PostgresNotebookRepository:
                 active = connection.execute("SELECT 1 FROM notebook_deletion_requests WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s AND state IN ('accepted','deleting')", (context.tenant_id, context.workspace_id, notebook_id)).fetchone()
                 if active is not None: raise NotebookError("NOTEBOOK_DELETION_IN_PROGRESS", 409)
                 request_id = "notebook-deletion-" + hashlib.sha256(f"{context.tenant_id}|{context.workspace_id}|{notebook_id}|{idempotency_key}".encode()).hexdigest()[:32]
-                inserted = connection.execute("INSERT INTO notebook_deletion_requests (request_id,tenant_id,workspace_id,notebook_id,actor_id,title_fingerprint,state,current_step,attempts,safe_error_code,requested_at,idempotency_key,expected_version,request_fingerprint) VALUES (%s,%s,%s,%s,%s,%s,'accepted','accepted',0,NULL,%s,%s,%s,%s) RETURNING request_id,notebook_id,state,current_step,attempts,safe_error_code,requested_at,completed_at", (request_id, context.tenant_id, context.workspace_id, notebook_id, context.actor_id, hashlib.sha256(title_confirmation.encode()).hexdigest(), now, idempotency_key, int(row[0]), request_fingerprint)).fetchone()
+                try:
+                    inserted = connection.execute("INSERT INTO notebook_deletion_requests (request_id,tenant_id,workspace_id,notebook_id,actor_id,title_fingerprint,state,current_step,attempts,safe_error_code,requested_at,idempotency_key,expected_version,request_fingerprint) VALUES (%s,%s,%s,%s,%s,%s,'accepted','accepted',0,NULL,%s,%s,%s,%s) RETURNING request_id,notebook_id,state,current_step,attempts,safe_error_code,requested_at,completed_at", (request_id, context.tenant_id, context.workspace_id, notebook_id, context.actor_id, hashlib.sha256(title_confirmation.encode()).hexdigest(), now, idempotency_key, int(row[0]), request_fingerprint)).fetchone()
+                except PostgresError as error:
+                    if error.sqlstate == "55000" and error.diag.message_primary == "NOTEBOOK_DELETION_IN_PROGRESS":
+                        raise NotebookError("NOTEBOOK_DELETION_IN_PROGRESS", 409) from None
+                    raise
                 connection.execute("INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,after_value,metadata) VALUES (%s,%s,%s,%s,'notebook.deletion_requested','notebook',%s,'succeeded',%s,%s,%s,%s)", ("notebook-audit-" + hashlib.sha256(request_id.encode()).hexdigest()[:24], context.tenant_id, context.workspace_id, context.actor_id, notebook_id, context.trace_id, context.policy_version, Jsonb({"request_id": request_id}), Jsonb({"reason_code": "NOTEBOOK_DELETION_REQUESTED"})))
                 return self._deletion_view(inserted), False
         except NotebookError: raise
@@ -312,18 +318,29 @@ class PostgresNotebookRepository:
                     "SELECT count(*) FROM notebook_source_unbindings WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s",
                     (context.tenant_id, context.workspace_id, notebook_id),
                 ).fetchone()[0])
+                cleanup_scope = ""
+                deletion_params = (context.tenant_id, context.workspace_id, notebook_id)
+                if connection.execute("SELECT to_regclass('public.source_cleanup_requests')").fetchone()[0] is not None:
+                    cleanup_scope = (
+                        " OR EXISTS(SELECT 1 FROM source_cleanup_requests c WHERE c.tenant_id=dr.tenant_id "
+                        "AND c.workspace_id=dr.workspace_id AND c.request_id=dr.request_id AND c.actor_id=%s AND c.notebook_id=%s "
+                        "AND NOT EXISTS(SELECT 1 FROM identity_auth_source_access a WHERE a.tenant_id=c.tenant_id "
+                        "AND a.workspace_id=c.workspace_id AND a.user_id=c.actor_id AND a.allowed=0 "
+                        "AND a.source_version_id=ANY(c.source_version_ids)))"
+                    )
+                    deletion_params += (context.actor_id, notebook_id)
                 deletion_rows = connection.execute(
                     "SELECT dr.request_id,dr.source_id,dr.state,dr.version,dr.grace_until,"
                     "EXISTS (SELECT 1 FROM legal_holds h WHERE h.tenant_id=dr.tenant_id "
                     "AND h.workspace_id=dr.workspace_id AND h.source_id=dr.source_id AND h.state='active') "
                     "FROM deletion_requests dr WHERE dr.tenant_id=%s AND dr.workspace_id=%s "
-                    "AND dr.source_active=false AND EXISTS (SELECT 1 FROM notebook_bindings b "
+                    "AND dr.source_active=false AND (EXISTS (SELECT 1 FROM notebook_bindings b "
                     "WHERE b.tenant_id=dr.tenant_id AND b.workspace_id=dr.workspace_id "
                     "AND b.notebook_id=%s AND b.binding_kind='source' AND b.record_id=dr.source_id "
                     "AND NOT EXISTS (SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=b.tenant_id "
                     "AND u.workspace_id=b.workspace_id AND u.notebook_id=b.notebook_id "
-                    "AND u.source_id=b.record_id AND u.source_version_id=b.version_id)) ORDER BY dr.request_id",
-                    (context.tenant_id, context.workspace_id, notebook_id),
+                    "AND u.source_id=b.record_id AND u.source_version_id=b.version_id))" + cleanup_scope + ") ORDER BY dr.request_id",
+                    deletion_params,
                 ).fetchall()
             bindings = tuple(NotebookBinding(
                 context.tenant_id, context.workspace_id, notebook_id,

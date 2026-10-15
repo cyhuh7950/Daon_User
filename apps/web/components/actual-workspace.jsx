@@ -10,7 +10,7 @@ import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../l
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
 import { downloadManualAsset, getManualManifest, readManualDocument } from "../lib/manual-api.js";
-import { cancelSourceDeletionRequest, getSourceDeletionRequest, requestSourceDeletion } from "../lib/source-retention-api.js";
+import { cancelSourceDeletionRequest, getSourceDeletionRequest, issueSourceDeletionStepUp, requestSourceDeletion } from "../lib/source-retention-api.js";
 import { importWebsiteSource, getWebsiteSnapshot, validWebsiteUrl } from '../lib/website-source-api.js';
 import { searchOpenLaw,previewOpenLaw,importOpenLaw,getOpenLawSnapshot,getOpenLawCitation,listWorkspaceConnectorSources } from '../lib/product-workspace-api.js';
 
@@ -34,7 +34,8 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
       {notebook_id:notebookId ?? options.notebookId,url,public_page_confirmed:publicPageConfirmed},options),
     getWebsiteSnapshot: (sourceVersionId, options) => getWebsiteSnapshot(workspaceId,sourceVersionId,notebookOptions(options)),
     unbindSource: (source, options = {}) => unbindWorkspaceSource(workspaceId, { sourceId: source?.sourceId, sourceVersionId: source?.sourceVersionId }, { ...notebookOptions(options), etag: options.etag ?? options.bindingEtag }),
-    requestSourceDeletion: (source, options) => requestSourceDeletion(source.sourceId, options),
+    requestSourceDeletion: (source, options) => requestSourceDeletion(source.sourceId, notebookOptions(options)),
+    issueSourceDeletionStepUp,
     getSourceDeletionRequest,
     cancelSourceDeletionRequest,
     listKnowledgePackages: (options) => listWorkspaceKnowledgePackages(workspaceId, options),

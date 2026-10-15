@@ -2,8 +2,8 @@
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const DELETION_ETAG = /^"deletion:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}:[1-9][0-9]*"$/u;
-const DELETION_STATES = new Set(["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "cancelled", "purged"]);
-const ITEM_STATES = new Set(["pending", "awaiting_ack", "completed"]);
+const DELETION_STATES = new Set(["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "failed", "cancelled", "purged"]);
+const ITEM_STATES = new Set(["pending", "awaiting_ack", "completed", "failed"]);
 const DATA_KEYS = Object.freeze(["request_id", "tenant_id", "workspace_id", "source_id", "state", "version", "requested_at", "grace_until", "source_active", "cleanup_items", "completed_references", "source_version_mutations"]);
 const safe = (value) => typeof value === "string" && SAFE_ID.test(value);
 const exact = (value, keys) => value && typeof value === "object" && !Array.isArray(value)
@@ -37,13 +37,31 @@ async function decode(response, expected = {}) {
   return { data: { ...data, cleanup_items: data.cleanup_items.map((item) => ({ ...item })), completed_references: [...data.completed_references] }, etag };
 }
 
-export async function requestSourceDeletion(sourceId, { fetchImpl = fetch, signal, idempotencyKey } = {}) {
-  if (!safe(sourceId) || !safe(idempotencyKey) || idempotencyKey.length < 16) throw new Error("DELETION_INPUT_INVALID");
+export async function requestSourceDeletion(sourceId, { fetchImpl = fetch, signal, idempotencyKey, notebookId, stepUpAuthorization } = {}) {
+  if (!safe(sourceId) || !safe(notebookId) || !safe(idempotencyKey) || idempotencyKey.length < 16
+      || typeof stepUpAuthorization !== "string" || !stepUpAuthorization || stepUpAuthorization.length > 4096) throw new Error("DELETION_INPUT_INVALID");
   const response = await fetchImpl(`/bff/api/sources/${encodeURIComponent(sourceId)}/deletion-requests`, {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
-    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey, "If-Match": "*" }, body: "{}",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey, "If-Match": "*" },
+    body: JSON.stringify({ notebook_id: notebookId, step_up_authorization_id: stepUpAuthorization }),
   });
   return decode(response, { sourceId });
+}
+
+export async function issueSourceDeletionStepUp(sourceId, password, { fetchImpl = fetch, signal, idempotencyKey } = {}) {
+  if (!safe(sourceId) || !safe(idempotencyKey) || idempotencyKey.length < 16
+      || typeof password !== "string" || password.length < 12 || password.length > 1024) throw new Error("DELETION_INPUT_INVALID");
+  const response = await fetchImpl("/bff/api/session/step-up", {
+    method: "POST", credentials: "same-origin", cache: "no-store", signal,
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ action_group: "permanent_delete_or_restore_rollback", target_id: sourceId, password, ttl_seconds: 300 }),
+  });
+  let payload;
+  try { payload = await response.json(); } catch { throw new Error("STEP_UP_RESPONSE_INVALID"); }
+  if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "STEP_UP_REQUIRED");
+  const value = payload?.data?.step_up_authorization;
+  if (typeof value !== "string" || !value || value.length > 4096) throw new Error("STEP_UP_RESPONSE_INVALID");
+  return value;
 }
 
 export async function getSourceDeletionRequest(requestId, { fetchImpl = fetch, signal } = {}) {

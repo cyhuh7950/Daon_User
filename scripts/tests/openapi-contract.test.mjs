@@ -18,6 +18,27 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test("S16 삭제 확인은 exact Notebook·추가 인증 body와 durable 복원 상태를 요구한다", async () => {
+  const document = await loadContract();
+  const schema = document.components.schemas.DeletionCreateRequest;
+  assert.deepEqual(schema.required, ["notebook_id", "step_up_authorization_id"]);
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(Object.keys(schema.properties), ["notebook_id", "step_up_authorization_id"]);
+  assert.deepEqual(document.components.schemas.NotebookSelectedContext.properties.source_deletion_requests.items.properties.state.enum,
+    ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "failed", "purged"]);
+  assert.doesNotThrow(() => validateOpenApiDocument(document));
+  for (const mutate of [
+    d => { d.components.schemas.DeletionCreateRequest.required.pop(); },
+    d => { d.components.schemas.DeletionCreateRequest.properties.inventory = { type: "array" }; },
+    d => { d.components.schemas.DeletionCreateRequest.properties.step_up_authorization_id.writeOnly = false; },
+    d => { d.components.schemas.NotebookSelectedContext.properties.source_deletion_requests.items.properties.state.enum.push("unknown_success"); },
+    d => { delete d.paths["/api/v1/sources/{id}/deletion-requests"].post.responses["403"]; },
+  ]) {
+    const invalid = structuredClone(document); mutate(invalid);
+    assert.throws(() => validateOpenApiDocument(invalid));
+  }
+});
+
 test('open law exact four methods body snapshot17 and selection query reject mutations',async()=>{
   const document=await loadContract(),prefix='/api/v1/workspaces/{id}/connectors/mcp-open-law-go-kr/';
   for(const suffix of ['law-search','law-preview','law-imports'])assert.ok(document.paths[prefix+suffix]);

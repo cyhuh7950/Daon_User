@@ -95,7 +95,7 @@ export function projectNotebookSelectedContext(value) {
     && Array.isArray(value.source_deletion_requests) && value.source_deletion_requests.length <= 1_000
     && value.source_deletion_requests.every((item) => exact(item, ["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"])
       && safeId(item.request_id) && safeId(item.source_id)
-      && ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending"].includes(item.state)
+      && ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "failed", "purged"].includes(item.state)
       && Number.isSafeInteger(item.version) && item.version >= 1
       && typeof item.grace_until === "string" && Number.isFinite(Date.parse(item.grace_until))
       && typeof item.legal_hold_active === "boolean")
@@ -247,7 +247,7 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
       })
       : undefined,
     requestSourceDeletion: typeof baseAdapter.requestSourceDeletion === "function"
-      ? (source, options) => baseAdapter.requestSourceDeletion(source, options)
+      ? (source, options) => baseAdapter.requestSourceDeletion(source, { ...options, notebookId: context.notebook_id })
       : undefined,
     getSourceDeletionRequest: typeof baseAdapter.getSourceDeletionRequest === "function"
       ? (requestId, options) => baseAdapter.getSourceDeletionRequest(requestId, options)

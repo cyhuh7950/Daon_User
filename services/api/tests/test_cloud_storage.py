@@ -30,10 +30,10 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 class CloudStorageContractTests(unittest.TestCase):
-    def test_readiness_tracks_question_studio_fk_owner_migration_head(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0062")
+    def test_s16_readiness_tracks_source_cleanup_migration_head(self) -> None:
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0063")
 
-    def test_readiness_accepts_question_studio_fk_owner_head_and_rejects_prior_head(self) -> None:
+    def test_s16_readiness_accepts_only_0062_and_0063_with_vector(self) -> None:
         class Result:
             def __init__(self, row):
                 self.row = row
@@ -42,36 +42,38 @@ class CloudStorageContractTests(unittest.TestCase):
                 return self.row
 
         class Connection:
-            def __init__(self, revision):
-                self.revision = revision
+            def __init__(self, revision, vector):
+                self.revision, self.vector = revision, vector
 
             def execute(self, query, _params=()):
                 if query == "SELECT version_num FROM alembic_version":
                     return Result((self.revision,))
                 if "FROM pg_extension" in query:
-                    return Result(("0.8.2",))
+                    return Result(None if self.vector is None else (self.vector,))
                 raise AssertionError(f"unexpected readiness query: {query}")
 
         class Pool:
             closed = False
 
-            def __init__(self, revision):
-                self.revision = revision
+            def __init__(self, revision, vector="0.8.2"):
+                self.revision, self.vector = revision, vector
 
             @contextmanager
             def connection(self, *, timeout):
                 self.timeout = timeout
-                yield Connection(self.revision)
+                yield Connection(self.revision, self.vector)
 
         store = object.__new__(PostgresCloudStore)
-        for revision, expected_ready in (("0062", True), ("0061", False), ("0060", False), ("0059", False), ("0058", False), ("0057", False), ("0056", False)):
+        for revision, expected_ready in (("0063", True), ("0062", True), ("0064", False), ("0061", False), ("0060", False), ("0059", False), ("0058", False), ("0057", False), ("0056", False)):
             store._pool = Pool(revision)
             status = store.readiness()
             self.assertEqual(status.ready, expected_ready)
             self.assertEqual(status.schema_revision, revision)
             self.assertEqual(status.vector_version, "0.8.2")
+        store._pool = Pool("0063", None)
+        self.assertFalse(store.readiness().ready)
 
-    def test_closed_pool_opens_only_after_question_studio_fk_owner_head_is_ready(self) -> None:
+    def test_s16_closed_pool_opens_only_after_compatible_head_is_ready(self) -> None:
         class Result:
             def __init__(self, row):
                 self.row = row
@@ -98,7 +100,8 @@ class CloudStorageContractTests(unittest.TestCase):
         opened = []
         store._ensure_pool_open = lambda: opened.append(True)
 
-        for revision, expected_ready in (("0059", False), ("0060", False), ("0061", False), ("0062", True)):
+        for revision, expected_ready in (("0059", False), ("0060", False), ("0061", False), ("0062", True), ("0063", True), ("0064", False)):
+            opened.clear()
             @contextmanager
             def connect_stub(_dsn, *, connect_timeout):
                 self.assertEqual(connect_timeout, 1)
@@ -215,7 +218,7 @@ class PostgresCloudIntegrationTests(unittest.TestCase):
     def test_readiness_requires_migration_and_vector(self) -> None:
         status = self.store.readiness()
         self.assertTrue(status.ready)
-        self.assertEqual(status.schema_revision, "0062")
+        self.assertEqual(status.schema_revision, "0063")
         self.assertEqual(status.vector_version, "0.8.2")
 
     def test_rls_blocks_cross_tenant_and_context_does_not_leak(self) -> None:

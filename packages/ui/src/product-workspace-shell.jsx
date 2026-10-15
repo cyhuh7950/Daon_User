@@ -777,6 +777,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [sourceActionPending, setSourceActionPending] = useState(false);
   const [sourceActionSafeError, setSourceActionSafeError] = useState(null);
   const [sourceDeletionRequests, setSourceDeletionRequests] = useState([]);
+  const sourceDeletionPasswordRef = useRef(null);
+  const sourceDeletionRequestRef = useRef(null);
   const [sourceAddOpen, setSourceAddOpen] = useState(false);
   const [sourceAddMode, setSourceAddMode] = useState("file");
   const [sourceAddText, setSourceAddText] = useState("");
@@ -1272,17 +1274,32 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   };
 
   const confirmSourceDeletionRequest = async () => {
-    if (!sourceAction || typeof adapter?.requestSourceDeletion !== "function" || sourceActionPending) return;
+    if (!sourceAction || typeof adapter?.requestSourceDeletion !== "function"
+        || typeof adapter?.issueSourceDeletionStepUp !== "function" || sourceDeletionRequestRef.current || sourceActionPending) return;
+    const token = {}, epoch = workspaceLoadEpochRef.current, signal = lifetimeControllerRef.current?.signal;
+    const password = sourceDeletionPasswordRef.current?.value ?? "";
+    if (sourceDeletionPasswordRef.current) sourceDeletionPasswordRef.current.value = "";
+    sourceDeletionRequestRef.current = token;
+    const current = () => !signal?.aborted && workspaceMountedRef.current
+      && epoch === workspaceLoadEpochRef.current && sourceDeletionRequestRef.current === token;
     setSourceActionPending(true);
     setSourceActionSafeError(null);
     try {
-      const result = await adapter.requestSourceDeletion(sourceAction, { idempotencyKey: secureUuid(), signal: lifetimeControllerRef.current?.signal });
-      setSourceAction({ ...sourceAction, deletionRequest: result });
-      setLoadRevision((current) => current + 1);
+      const stepUpAuthorization = await adapter.issueSourceDeletionStepUp(sourceAction.sourceId, password,
+        { idempotencyKey: secureUuid(), signal });
+      if (!current()) return;
+      // Canonical Source IDs are stable across reloads; no password or grant is
+      // retained in UI state. The server also binds this key to actor/Notebook.
+      const result = await adapter.requestSourceDeletion(sourceAction,
+        { idempotencyKey: sourceAction.sourceId, stepUpAuthorization, signal });
+      if (current()) {
+        setSourceAction({ ...sourceAction, deletionRequest: result });
+        setLoadRevision((value) => value + 1);
+      }
     } catch (error) {
-      setSourceActionSafeError(safeErrorCode(error, "DELETION_REQUEST_FAILED"));
+      if (current()) setSourceActionSafeError(safeErrorCode(error, "DELETION_REQUEST_FAILED"));
     } finally {
-      setSourceActionPending(false);
+      if (sourceDeletionRequestRef.current === token) { sourceDeletionRequestRef.current = null; setSourceActionPending(false); }
     }
   };
 
@@ -1754,21 +1771,33 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {sourceAction ? <section className="source-action-dialog" role="dialog" aria-modal="true" aria-label="Source 작업 확인">
             <strong>{sourceAction.filename ?? sourceAction.sourceId}</strong>
             {sourceAction.deletionRequest ? <p role="status">{sourceAction.deletionRequest.data.state === "purged"
-              ? "Source가 즉시 삭제되었습니다."
+              ? "Source 원문과 파생 자료의 실제 정리가 완료되었습니다."
               : sourceAction.deletionRequest.data.state === "cancelled"
                 ? "삭제 요청이 취소되었습니다. 원본 Source는 보존됩니다."
-                : "Source 삭제가 처리되었습니다."}</p>
+                : "Source 사용은 차단되었으며 정리가 완료되지 않았습니다. 추가 인증 후 같은 요청을 재시도할 수 있습니다."}</p>
               : sourceActionKind === "unbind" ? <p>Notebook에서 제거하면 원본 Source는 보존되고 이 Notebook의 질문과 Studio에서만 제외됩니다.</p>
                 : <p>Source 삭제는 원본과 이 Notebook의 연결을 즉시 제거합니다. 삭제 후 복구할 수 없습니다.</p>}
-            {sourceActionSafeError ? <div role="alert">요청을 처리하지 못했습니다. 다시 확인해 주세요.</div> : null}
+            {sourceActionSafeError ? <div role="alert">{sourceActionSafeError === "SOURCE_SHARED_BINDING"
+              ? "다른 Notebook에서도 사용하는 자료입니다. Notebook에서 제거를 사용하세요."
+              : sourceActionSafeError === "SOURCE_RETAINED_REFERENCE"
+                ? "보존 중인 근거·동기화 참조가 있어 삭제할 수 없습니다."
+                : "요청을 처리하지 못했습니다. 다시 확인해 주세요."}</div> : null}
+            {(sourceActionKind === "deletion" || ["cleanup_pending", "failed"].includes(sourceAction.deletionRequest?.data.state))
+              && !["purged", "cancelled"].includes(sourceAction.deletionRequest?.data.state)
+              ? <label>추가 인증 비밀번호<input type="password" autoComplete="off" aria-label="Source 삭제 추가 인증 비밀번호" ref={sourceDeletionPasswordRef} disabled={sourceActionPending} /></label> : null}
             <div>{sourceAction.deletionRequest?.data.state !== "cancelled" && sourceAction.deletionRequest?.data.state !== "purged"
               ? sourceAction.deletionRequest
-                ? <button type="button" disabled={sourceActionPending} onClick={() => void confirmSourceDeletionCancel()}>삭제 요청 취소</button>
+                ? ["cleanup_pending", "failed"].includes(sourceAction.deletionRequest.data.state)
+                  ? <button type="button" disabled={sourceActionPending} onClick={() => void confirmSourceDeletionRequest()}>삭제 정리 재시도</button>
+                  : <button type="button" disabled={sourceActionPending} onClick={() => void confirmSourceDeletionCancel()}>삭제 요청 취소</button>
                 : sourceActionKind === "unbind"
               ? <><button type="button" disabled={sourceActionPending} onClick={() => void confirmSourceUnbind()}>Notebook에서 제거</button><button type="button" className="danger" disabled={sourceActionPending} onClick={() => setSourceActionKind("deletion")}>Source 삭제 요청</button></>
               : <button type="button" className="danger" disabled={sourceActionPending} onClick={() => void confirmSourceDeletionRequest()}>삭제 요청 확인</button>
               : null}
-              <button type="button" disabled={sourceActionPending} onClick={() => setSourceAction(null)}>{sourceAction.deletionRequest ? "닫기" : "취소"}</button></div>
+              <button type="button" disabled={sourceActionPending} onClick={() => {
+                if (sourceDeletionPasswordRef.current) sourceDeletionPasswordRef.current.value = "";
+                setSourceAction(null);
+              }}>{sourceAction.deletionRequest ? "닫기" : "취소"}</button></div>
           </section> : null}
         </SafePane>
         <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">

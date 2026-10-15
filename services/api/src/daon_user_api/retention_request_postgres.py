@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 from .cloud_storage import CloudAccessContext, CloudDatabaseError, PostgresCloudStore
 from .object_queue import ObjectStorageError, ObjectStoragePort
 from .retention import CleanupItemView, DeletionRequestView, LegalHoldView, RetentionContext, RetentionError, _fingerprint
+from .source_deletion_cleanup import PostgresSourceCleanupRepository, SourceDeletionCleanup
 
 
 class PostgresRetentionRequestService:
@@ -56,8 +57,9 @@ class PostgresRetentionRequestService:
             access = CloudAccessContext(tenant_id, tenant_id, tenant_id, "retention.locate")
             with self._store._transaction(access) as connection:
                 rows = connection.execute(
-                    "SELECT workspace_id FROM source_retention_locator WHERE tenant_id=%s AND source_id=%s ORDER BY workspace_id LIMIT 2",
-                    (tenant_id, source_id),
+                    "SELECT workspace_id FROM source_retention_locator WHERE tenant_id=%s AND source_id=%s "
+                    "UNION SELECT workspace_id FROM deletion_request_locator WHERE tenant_id=%s AND source_id=%s ORDER BY workspace_id LIMIT 2",
+                    (tenant_id, source_id, tenant_id, source_id),
                 ).fetchall()
             if len(rows) != 1:
                 raise RetentionError("SOURCE_UNAVAILABLE", 404)
@@ -163,85 +165,20 @@ class PostgresRetentionRequestService:
             tuple(item.reference_id for item in cleanup if item.state == "completed"),
         )
 
-    def create_request(self, context: RetentionContext, *, source_id: str, inventory, idempotency_key: str, if_match: str):  # type: ignore[no-untyped-def]
-        if inventory is not None or if_match != "*":
+    def create_request(self, context: RetentionContext, *, source_id: str, inventory, idempotency_key: str, if_match: str,
+                       notebook_id: str | None = None, step_up_verified: bool = False, authorization_key: str | None = None):  # type: ignore[no-untyped-def]
+        if step_up_verified is not True or not authorization_key:
+            raise RetentionError("STEP_UP_REQUIRED", 403)
+        if inventory is not None or if_match != "*" or not notebook_id:
             raise RetentionError("DELETION_REQUEST_INVALID", 400)
-        now = self._clock()
-        request_id = "deletion-" + hashlib.sha256(f"{context.tenant_id}|{context.actor_id}|{idempotency_key}".encode()).hexdigest()[:28]
-        object_keys: list[str] = []
-        try:
-            with self._store._transaction(self._access(context)) as connection:
-                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (f"retention-create|{context.tenant_id}|{context.workspace_id}|{context.actor_id}|{idempotency_key}",))
-                self._lock_source(connection, context, source_id)
-                derived = self._inventory_provider.read_in_transaction(connection, context, source_id)
-                if len(derived) != 6 or len({item.kind for item in derived}) != 6:
-                    raise RetentionError("DELETION_INVENTORY_INVALID", 400)
-                fingerprint = _fingerprint((source_id, derived))
-                replay = connection.execute(
-                    "SELECT request_fingerprint,request_id FROM retention_request_idempotency WHERE tenant_id=%s AND workspace_id=%s AND actor_id=%s AND action='create' AND idempotency_key=%s",
-                    (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key),
-                ).fetchone()
-                if replay is not None:
-                    if str(replay[0]) != fingerprint:
-                        raise RetentionError("RETENTION_IDEMPOTENCY_CONFLICT")
-                    return self._view(connection, context, str(replay[1]))
-                active_request = connection.execute(
-                    "SELECT 1 FROM deletion_requests WHERE tenant_id=%s AND workspace_id=%s AND source_id=%s "
-                    "AND state NOT IN ('cancelled','purged') LIMIT 1",
-                    (context.tenant_id, context.workspace_id, source_id),
-                ).fetchone()
-                if active_request is not None:
-                    raise RetentionError("DELETION_REQUEST_ACTIVE")
-                # User-confirmed Source deletion is immediate. Legal-hold/grace
-                # transitions belong to the retired retention workflow and are
-                # intentionally not part of this Notebook Source contract.
-                object_keys = [str(row[0]) for row in connection.execute(
-                    "SELECT object_key FROM delete_source_scope(%s,%s,%s) WHERE object_key IS NOT NULL",
-                    (context.tenant_id, context.workspace_id, source_id),
-                ).fetchall()]
-                connection.execute(
-                    "INSERT INTO deletion_request_locator (tenant_id,request_id,workspace_id,source_id,created_at) VALUES (%s,%s,%s,%s,%s)",
-                    (context.tenant_id, request_id, context.workspace_id, source_id, now),
-                )
-                connection.execute(
-                    "INSERT INTO deletion_requests (tenant_id,workspace_id,request_id,source_id,actor_id,state,version,source_active,purge_started,grace_until,policy_version,idempotency_key,request_fingerprint,trace_id,created_at,updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,'purged',1,false,true,%s,%s,%s,%s,%s,%s,%s)",
-                    (context.tenant_id, context.workspace_id, request_id, source_id, context.actor_id, now, context.policy_version, idempotency_key, fingerprint, context.trace_id, now, now),
-                )
-                for item in derived:
-                    state = "completed"
-                    connection.execute(
-                        "INSERT INTO deletion_cleanup_items (tenant_id,workspace_id,request_id,reference_id,derivative_kind,state,acknowledgement_required,attempt_count,inventory_disposition,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,0,%s,%s)",
-                        (context.tenant_id, context.workspace_id, request_id, item.reference_id, item.kind, state, item.acknowledgement_required, item.disposition, now),
-                    )
-                connection.execute(
-                    "INSERT INTO retention_request_idempotency (tenant_id,workspace_id,actor_id,action,idempotency_key,request_fingerprint,request_id,result_version,created_at) VALUES (%s,%s,%s,'create',%s,%s,%s,1,%s)",
-                    (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key, fingerprint, request_id, now),
-                )
-                connection.execute(
-                    "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,after_value,metadata) VALUES (%s,%s,%s,%s,'deletion.requested','source',%s,'succeeded',%s,%s,%s,%s)",
-                    ("retention-audit-" + hashlib.sha256(f"delete|{context.tenant_id}|{context.actor_id}|{idempotency_key}".encode()).hexdigest()[:24], context.tenant_id, context.workspace_id, context.actor_id, source_id, context.trace_id, context.policy_version, Jsonb({"request_id": request_id, "state": "purged"}), Jsonb({"inventory_count": 6, "immediate": True})),
-                )
-                view = self._view(connection, context, request_id)
-            if self._object_storage is not None:
-                for key in object_keys:
-                    self._object_storage.delete(key)
-            return view
-        except ObjectStorageError as error:
-            raise RetentionError(error.code, 503 if error.retryable else 409) from error
-        except RetentionError:
-            raise
-        except CloudDatabaseError as error:
-            raise RetentionError("RETENTION_UNAVAILABLE", 503, retryable=error.retryable) from error
+        repository = PostgresSourceCleanupRepository(self, authorization_key)
+        return SourceDeletionCleanup(repository, self._object_storage).execute(
+            context, source_id=source_id, notebook_id=notebook_id, idempotency_key=idempotency_key,
+        )
 
     def get_request(self, context: RetentionContext, request_id: str) -> DeletionRequestView:
-        try:
-            with self._store._transaction(self._access(context)) as connection:
-                return self._view(connection, context, request_id)
-        except RetentionError:
-            raise
-        except CloudDatabaseError as error:
-            raise RetentionError("RETENTION_UNAVAILABLE", 503, retryable=error.retryable) from error
+        repository = PostgresSourceCleanupRepository(self, None)
+        return repository.get_request(context, request_id)
 
     def cancel(self, context: RetentionContext, request_id: str, *, expected_version: int, idempotency_key: str) -> DeletionRequestView:
         fingerprint = _fingerprint((request_id, expected_version))
