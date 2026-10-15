@@ -1080,7 +1080,7 @@ async function boundedWebsiteResponse(upstream, maximum, signal) {
 // Only the browser question POST uses this transport. Node's fetch otherwise
 // imposes its own headers/body deadlines even when our abort timer is absent.
 async function requestQuestionWithoutFetchTimeout(destination, init) {
-  const { request } = await import(destination.protocol === 'https:' ? 'node:https' : 'node:http');
+  const { request } = destination.protocol === 'https:' ? await import('node:https') : await import('node:http');
   const { Readable, pipeline } = await import('node:stream');
   return new Promise((resolve, reject) => {
     const headers = new Headers(init.headers);
