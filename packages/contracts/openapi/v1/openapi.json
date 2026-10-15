@@ -579,6 +579,38 @@
         }
       }
     },
+    "/api/v1/workspaces/{id}/website-imports": {
+      "post": {
+        "operationId": "importWebsiteSource", "tags": ["Source"], "x-implementation-owner": "S13-W3",
+        "summary": "확인된 공개 HTTPS 본문 수집·원자 등록(LLM 이해 아님)",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteImportRequest" } } } },
+        "responses": {
+          "201": { "description": "원문·텍스트·SourceVersion·snapshot·Notebook 원자 확정", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteImportEnvelope" } } } },
+          "200": { "description": "동일 요청 완료 replay", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteImportEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "$ref": "#/components/responses/Conflict" },
+          "404": { "$ref": "#/components/responses/NotFound" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" },
+          "413": { "$ref": "#/components/responses/SafeFailure" }, "415": { "$ref": "#/components/responses/SafeFailure" }, "422": { "$ref": "#/components/responses/SafeFailure" }, "502": { "$ref": "#/components/responses/SafeFailure" },
+          "503": { "$ref": "#/components/responses/SafeFailure" }, "504": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
+    "/api/v1/workspaces/{id}/source-versions/{version_id}/website-snapshot": {
+      "get": {
+        "operationId": "getWebsiteSnapshot", "tags": ["Source"], "x-implementation-owner": "S13-W3",
+        "summary": "현재 사용자·Notebook·웹 Version snapshot 정확13필드 조회",
+        "parameters": [{ "$ref": "#/components/parameters/ResourceId" },
+          { "name": "version_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }],
+        "responses": {
+          "200": { "description": "본문 없는 불변 snapshot", "headers": { "X-Trace-Id": { "$ref": "#/components/headers/XTraceId" }, "ETag": { "$ref": "#/components/headers/ETag" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteSnapshotEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }, "503": { "$ref": "#/components/responses/SafeFailure" }
+          ,"404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "412": { "$ref": "#/components/responses/PreconditionFailed" }, "500": { "$ref": "#/components/responses/SafeFailure" }
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/sources": {
       "get": {
         "operationId": "listWorkspaceSources",
@@ -586,6 +618,7 @@
           "Source"
         ],
         "summary": "Workspace Source 목록 조회",
+        "description": "기본·nonweb 항목은 정확6필드. website_source_version_id 지정 시 해당 접근 가능한 현재 웹 Version 한 항목만 website 원문(UTF8 512KiB·전체hash검증)을 추가. 전체 응답8MiB 이하.",
         "x-implementation-owner": "R1-M6-05",
         "responses": {
           "200": {
@@ -615,7 +648,8 @@
         },
         "parameters": [
           { "$ref": "#/components/parameters/ResourceId" },
-          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
+          { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
+          { "name": "website_source_version_id", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
         ]
       },
       "post": {
@@ -5733,6 +5767,47 @@
           }
         }
       },
+      "WebsiteImportRequest": {
+        "type": "object", "additionalProperties": false, "required": ["notebook_id", "url", "public_page_confirmed"],
+        "properties": { "notebook_id": { "$ref": "#/components/schemas/OpaqueId" }, "url": { "type": "string", "minLength": 1, "maxLength": 2048, "format": "uri", "description": "HTTPS FQDN만, userinfo/IP/query/fragment 금지" }, "public_page_confirmed": { "type": "boolean", "const": true } }
+      },
+      "WebsiteImportResult": {
+        "type": "object", "additionalProperties": false, "required": ["snapshot_id", "source_id", "source_version_id", "source_state", "replayed"],
+        "properties": { "snapshot_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_state": { "type": "string", "const": "ready" }, "replayed": { "type": "boolean" } }
+      },
+      "WebsiteImportEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "object", "additionalProperties": false, "required": ["kind", "id", "version", "attributes"], "properties": { "kind": { "type": "string", "const": "website_import" }, "id": { "$ref": "#/components/schemas/OpaqueId" }, "version": { "type": "string", "const": "1" }, "attributes": { "$ref": "#/components/schemas/WebsiteImportResult" } } },
+          "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } }
+        }
+      },
+      "WebsiteSnapshotView": {
+        "type": "object", "additionalProperties": false,
+        "required": ["snapshot_id", "source_id", "source_version_id", "requested_url", "final_url", "title", "published_at", "fetched_at", "license_status", "license_url", "raw_sha256", "text_sha256", "extraction_version"],
+        "properties": {
+          "snapshot_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_id": { "$ref": "#/components/schemas/OpaqueId" }, "source_version_id": { "$ref": "#/components/schemas/OpaqueId" },
+          "requested_url": { "type": "string", "format": "uri", "maxLength": 2048 }, "final_url": { "type": "string", "format": "uri", "maxLength": 2048 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 255 }, "published_at": { "type": ["string", "null"], "format": "date-time" }, "fetched_at": { "type": "string", "format": "date-time" },
+          "license_status": { "type": "string", "enum": ["unknown", "publisher_declared"] }, "license_url": { "type": ["string", "null"], "format": "uri", "maxLength": 2048 },
+          "raw_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "text_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "extraction_version": { "type": "string", "const": "website-text-v1" }
+        }
+      },
+      "WebsiteSnapshotEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": { "data": { "$ref": "#/components/schemas/WebsiteSnapshotView" }, "meta": { "type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": { "trace_id": { "$ref": "#/components/schemas/OpaqueId" } } } }
+      },
+      "WebsiteSourceOriginal": {
+        "type": "object", "additionalProperties": false,
+        "required": ["snapshot_id", "source_id", "source_version_id", "requested_url", "final_url", "title", "published_at", "fetched_at", "license_status", "license_url", "raw_sha256", "text_sha256", "extraction_version", "text"],
+        "properties": {
+          "snapshot_id": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/snapshot_id" }, "source_id": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/source_id" }, "source_version_id": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/source_version_id" },
+          "requested_url": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/requested_url" }, "final_url": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/final_url" }, "title": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/title" },
+          "published_at": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/published_at" }, "fetched_at": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/fetched_at" }, "license_status": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/license_status" }, "license_url": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/license_url" },
+          "raw_sha256": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/raw_sha256" }, "text_sha256": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/text_sha256" }, "extraction_version": { "$ref": "#/components/schemas/WebsiteSnapshotView/properties/extraction_version" },
+          "text": { "type": "string", "minLength": 1, "maxLength": 524288, "description": "저장 text Object의 전체UTF8 bytes<=512KiB/hash검증; 공백보존" }
+        }
+      },
       "WorkspaceSourceProjection": {
         "type": "object", "additionalProperties": false,
         "required": ["source_id", "source_version_id", "filename", "source_state", "processing_state", "job_state"],
@@ -5742,7 +5817,8 @@
           "filename": { "type": "string", "minLength": 1, "maxLength": 255 },
           "source_state": { "type": "string", "enum": ["registered", "security_check", "processing", "indexing", "ready"] },
           "processing_state": { "type": "string" },
-          "job_state": { "type": "string" }
+          "job_state": { "type": "string" },
+          "website": { "$ref": "#/components/schemas/WebsiteSourceOriginal" }
         }
       },
       "WorkspaceSourceListEnvelope": {
@@ -6401,7 +6477,10 @@
           "DELETION_CLEANUP_PENDING",
           "IMPORTANT_KNOWLEDGE_CONFLICT",
           "NO_AVAILABLE_UNDERSTANDING_MODEL",
-          "NO_AVAILABLE_DEPLOYMENT"
+          "NO_AVAILABLE_DEPLOYMENT",
+          "WEBSITE_URL_INVALID", "WEBSITE_ACCESS_DENIED", "WEBSITE_FETCH_BLOCKED",
+          "WEBSITE_IDEMPOTENCY_KEY_REUSED", "WEBSITE_IMPORT_IN_PROGRESS", "WEBSITE_CONTENT_TOO_LARGE",
+          "WEBSITE_MEDIA_UNSUPPORTED", "WEBSITE_TEXT_UNAVAILABLE", "WEBSITE_FETCH_FAILED", "WEBSITE_STORAGE_UNAVAILABLE", "WEBSITE_FETCH_TIMEOUT"
         ]
       },
       "CostLimitExceededDetails": {

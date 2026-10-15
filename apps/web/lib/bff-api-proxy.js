@@ -146,6 +146,16 @@ export function browserSessionCookieName(profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (segments.length === 3 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "website-imports") {
+    return method === "POST" ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/website-imports`,
+      query: null, requiredQuery: new Set(), website: true, websiteImport: true, csrfProvenanceRequired: true }
+      : { methodRejected: true };
+  }
+  if (segments.length === 5 && segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1])
+      && segments[2] === "source-versions" && SAFE_SEGMENT.test(segments[3]) && segments[4] === "website-snapshot") {
+    return method === "GET" ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/source-versions/${encodeURIComponent(segments[3])}/website-snapshot`,
+      query: new Set(["notebook_id"]), requiredQuery: new Set(["notebook_id"]), website: true } : { methodRejected: true };
+  }
   if (segments.length === 3 && segments[0] === "auth" && segments[1] === "password" && segments[2] === "change") {
     return method === "POST"
       ? { path: "/api/v1/auth/password/change", query: null, csrfProvenanceRequired: true }
@@ -625,7 +635,7 @@ function routeFor(method, segments) {
     && segments[2] === "sources"
   ) {
     if (method === "GET") {
-      return { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, query: new Set(["notebook_id"]) };
+      return { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`, query: new Set(["notebook_id", "website_source_version_id"]), websiteSourceQuery: true };
     }
     return method === "POST" ? {
           path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/sources`,
@@ -1037,6 +1047,26 @@ function cancellationError(scope, trace) {
   return null;
 }
 
+async function boundedWebsiteResponse(upstream, maximum, signal) {
+  const declared = upstream.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maximum)) {
+    await upstream.body?.cancel(); throw new Error("UPSTREAM_RESPONSE_INVALID");
+  }
+  if (!upstream.body) return new Uint8Array();
+  const reader = upstream.body.getReader(); const chunks = []; let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await waitWithAbort(reader.read(), signal, () => reader.cancel());
+      if (done) break;
+      if (value.byteLength > maximum - size) throw new Error("UPSTREAM_RESPONSE_INVALID");
+      chunks.push(value); size += value.byteLength;
+    }
+    const body = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    return body;
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
 export function createBffProxy({
   baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000,
   questionTimeoutMs = GROUNDED_QUESTION_TIMEOUT_MS,
@@ -1068,6 +1098,16 @@ export function createBffProxy({
         || [...route.requiredQuery].some((key) => query.getAll(key).length !== 1 || !SAFE_SEGMENT.test(query.get(key)))) {
         return createBffSafeError(400, "INVALID_REQUEST", trace);
       }
+    }
+    const websiteQuery = route.websiteSourceQuery && new URL(request.url).searchParams.has("website_source_version_id");
+    if (websiteQuery) {
+      const query = new URL(request.url).searchParams;
+      if ([...query.keys()].some(key => !route.query.has(key)) || ["notebook_id", "website_source_version_id"].some(key => query.getAll(key).length !== 1 || !SAFE_SEGMENT.test(query.get(key)))) {
+        return createBffSafeError(400, "INVALID_REQUEST", trace);
+      }
+    }
+    if (route.websiteImport && exactMediaType(request.headers.get("content-type")) !== "application/json") {
+      return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
     }
     const destination = new URL(route.path, baseUrl);
     if (new Set(["/api/v1/session/tenants", "/api/v1/session/tenant"]).has(route.path)) {
@@ -1110,7 +1150,7 @@ export function createBffProxy({
     const init = { method: request.method, headers, redirect: "manual" };
     const abortScope = createAbortScope(
       request.signal,
-      route.groundedQuestion ? questionTimeoutMs : timeoutMs,
+      route.websiteImport || websiteQuery ? 25_000 : route.groundedQuestion ? questionTimeoutMs : timeoutMs,
     );
     try {
       if (abortScope.signal.aborted) return cancellationError(abortScope, trace);
@@ -1205,7 +1245,7 @@ export function createBffProxy({
       if (upstream.status !== 204) {
         try {
           body = await waitWithAbort(
-            upstream.arrayBuffer(),
+            route.website || websiteQuery ? boundedWebsiteResponse(upstream, websiteQuery ? 8_388_608 : 32_768, abortScope.signal) : upstream.arrayBuffer(),
             abortScope.signal,
             () => upstream.body?.cancel(),
           );

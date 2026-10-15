@@ -193,6 +193,10 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     notebookContext: context,
     generationSettingsIds: [...context.generation_settings_ids],
     listSources,
+    importWebsite: typeof baseAdapter.importWebsite === 'function'
+      ? (input,options) => baseAdapter.importWebsite(input,{...options,notebookId:context.notebook_id}) : undefined,
+    getWebsiteSnapshot: typeof baseAdapter.getWebsiteSnapshot === 'function'
+      ? (version,options) => baseAdapter.getWebsiteSnapshot(version,{...options,notebookId:context.notebook_id}) : undefined,
     listSourceDeletionRequests: typeof baseAdapter.listSourceDeletionRequests === "function"
       ? (options) => baseAdapter.listSourceDeletionRequests({ ...options, notebookId: context.notebook_id })
       : async () => context.source_deletion_requests.map((item) => ({ ...item })),

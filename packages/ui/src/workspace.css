@@ -421,3 +421,10 @@ select { width: 100%; min-height: var(--daon-target-desktop-control); margin-top
 .citation-docx-scroll article { display: block; }
 .citation-docx-scroll p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .citation-docx-scroll mark { background: #fff0a5; color: inherit; }
+.website-source-form { display: grid; gap: 8px; min-width: 0; }
+.website-source-form label { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.website-source-form input[type="url"] { width: 100%; min-width: 0; }
+.website-original { min-width: 0; font-size: 12px; }
+.website-original dl { margin: 8px 0; }
+.website-original dd { margin: 0 0 6px; overflow-wrap: anywhere; }
+.website-original pre { max-height: 360px; overflow-y: auto; overflow-x: hidden; overscroll-behavior-y: contain; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }

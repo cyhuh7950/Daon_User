@@ -11,6 +11,7 @@ import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
 import { downloadManualAsset, getManualManifest, readManualDocument } from "../lib/manual-api.js";
 import { cancelSourceDeletionRequest, getSourceDeletionRequest, requestSourceDeletion } from "../lib/source-retention-api.js";
+import { importWebsiteSource, getWebsiteSnapshot, validWebsiteUrl } from '../lib/website-source-api.js';
 
 export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
   const notebookOptions = (options = {}) => (notebookId
@@ -21,6 +22,10 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     : input);
   return Object.freeze({
     listSources: (options) => listWorkspaceSources(workspaceId, notebookOptions(options)),
+    validWebsiteUrl,
+    importWebsite: ({url,publicPageConfirmed}, options = {}) => importWebsiteSource(workspaceId,
+      {notebook_id:notebookId ?? options.notebookId,url,public_page_confirmed:publicPageConfirmed},options),
+    getWebsiteSnapshot: (sourceVersionId, options) => getWebsiteSnapshot(workspaceId,sourceVersionId,notebookOptions(options)),
     unbindSource: (source, options = {}) => unbindWorkspaceSource(workspaceId, source, { ...notebookOptions(options), etag: options.etag ?? options.bindingEtag }),
     requestSourceDeletion: (source, options) => requestSourceDeletion(source.sourceId, options),
     getSourceDeletionRequest,

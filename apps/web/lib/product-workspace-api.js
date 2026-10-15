@@ -6,6 +6,7 @@ import { parseSheetCell } from "./sheet-cell-locator.js";
 import { parseDocxBlock } from "./docx-block-locator.js";
 import { parsePptxBlock } from "./pptx-block-locator.js";
 import { parseAudioSegment } from "./audio-segment-locator.js";
+import { validWebsiteSnapshot, readWebsiteJson } from "./website-source-api.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const SAFE_FILENAME = /^[^/\\\u0000-\u001f]{1,255}$/u;
@@ -128,25 +129,34 @@ function safeResponseError(payload, fallback) {
   return error;
 }
 
-export async function listWorkspaceSources(workspaceId, { notebookId, fetchImpl = fetch, signal } = {}) {
+export async function listWorkspaceSources(workspaceId, { notebookId, websiteSourceVersionId, fetchImpl = fetch, signal } = {}) {
   const workspace = requiredWorkspace(workspaceId, "SOURCE_LIST_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "SOURCE_LIST_INPUT_INVALID");
-  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/sources?notebook_id=${encodeURIComponent(notebook)}`, {
+  if (websiteSourceVersionId !== undefined && !safeId(websiteSourceVersionId)) throw new Error("SOURCE_LIST_INPUT_INVALID");
+  const selectedQuery = websiteSourceVersionId === undefined ? "" : `&website_source_version_id=${encodeURIComponent(websiteSourceVersionId)}`;
+  const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/sources?notebook_id=${encodeURIComponent(notebook)}${selectedQuery}`, {
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
-  const payload = await json(response, "SOURCE_LIST_RESPONSE_INVALID");
+  const payload = websiteSourceVersionId === undefined ? await json(response, "SOURCE_LIST_RESPONSE_INVALID")
+    : await readWebsiteJson(response,8388608,'SOURCE_LIST_RESPONSE_INVALID',signal);
   if (!response.ok) throw safeResponseError(payload, "SOURCE_LIST_FAILED");
   const valid = exact(payload, ["data", "meta"])
     && exact(payload.data, ["sources"])
     && Array.isArray(payload.data.sources)
     && payload.data.sources.length <= 1_000
     && validMeta(payload.meta, workspace)
-    && payload.data.sources.every((source) => exact(source, SOURCE_KEYS)
+    && payload.data.sources.every((source) => (exact(source, SOURCE_KEYS)
+      || (websiteSourceVersionId !== undefined && source.source_version_id === websiteSourceVersionId
+        && exact(source, [...SOURCE_KEYS, "website"]) && source.source_state === "ready"
+        && typeof source.website?.text === "string" && new TextEncoder().encode(source.website.text).length <= 524288
+        && source.website.text.length > 0 && source.website.source_id === source.source_id
+        && validWebsiteSnapshot(Object.fromEntries(Object.entries(source.website).filter(([key]) => key !== "text")), websiteSourceVersionId)))
       && safeId(source.source_id) && safeId(source.source_version_id)
       && typeof source.filename === "string" && SAFE_FILENAME.test(source.filename)
       && SOURCE_STATES.includes(source.source_state)
       && typeof source.processing_state === "string" && typeof source.job_state === "string");
-  if (!valid) throw new Error("SOURCE_LIST_RESPONSE_INVALID");
+  if (!valid || (websiteSourceVersionId !== undefined && (new TextEncoder().encode(JSON.stringify(payload)).length > 8388608
+      || payload.data.sources.filter(source => Object.hasOwn(source,"website")).length !== 1))) throw new Error("SOURCE_LIST_RESPONSE_INVALID");
   return payload.data.sources;
 }
 

@@ -14,6 +14,69 @@ import { parseAudioSegment, isAudioSegmentContent } from "./shared-audio-segment
 
 const audioTime = ms => `${String(Math.floor(ms/60000)).padStart(2,'0')}:${String(Math.floor(ms/1000)%60).padStart(2,'0')}.${String(ms%1000).padStart(3,'0')}`;
 
+export function WebsiteSourceForm({ adapter, onRegistered }) {
+  const [url,setUrl]=useState(''), [confirmed,setConfirmed]=useState(false);
+  const [pending,setPending]=useState(false), [error,setError]=useState(null);
+  const request=useRef(null), identity=useRef(null);
+  useEffect(()=>()=>{request.current?.abort();request.current=null;},[adapter]);
+  const submit=async()=>{
+    if(request.current || !confirmed || !adapter?.validWebsiteUrl?.(url) || typeof adapter.importWebsite!=='function')return;
+    const fingerprint=JSON.stringify([url,confirmed]);
+    if(identity.current?.fingerprint!==fingerprint)identity.current={fingerprint,key:secureUuid()};
+    const controller=new AbortController();request.current=controller;setPending(true);setError(null);
+    try{
+      const result=await adapter.importWebsite({url,publicPageConfirmed:confirmed},{idempotencyKey:identity.current.key,signal:controller.signal});
+      if(request.current===controller && !controller.signal.aborted)onRegistered?.(result);
+    }catch(cause){
+      if(request.current===controller && !controller.signal.aborted)setError(safeErrorCode(cause,'WEBSITE_FETCH_FAILED'));
+    }finally{
+      if(request.current===controller){request.current=null;setPending(false);}
+    }
+  };
+  return <div className="website-source-form">
+    <label>공개 HTTPS URL<input type="url" aria-label="공개 HTTPS URL" value={url} onChange={event=>setUrl(event.target.value)} disabled={pending} maxLength={2048} /></label>
+    <small>입력한 공개 주소만 외부 사이트로 전송합니다. Source·질문·로그인 정보는 보내지 않습니다.</small>
+    <label><input type="checkbox" checked={confirmed} onChange={event=>setConfirmed(event.target.checked)} disabled={pending} />로그인 없이 공개된 페이지이며 수집 권한을 확인했습니다.</label>
+    <button type="button" className="primary-button" disabled={pending || !confirmed || !adapter?.validWebsiteUrl?.(url)} onClick={()=>void submit()}>{pending?'웹사이트 수집 중':'웹사이트 가져오기'}</button>
+    {error?<p role="alert">웹사이트를 가져오지 못했습니다. ({error})</p>:null}
+  </div>;
+}
+
+export function WebsiteOriginal({ adapter, source }) {
+  const [open,setOpen]=useState(true), [value,setValue]=useState(null), [error,setError]=useState(null);
+  const [pending,setPending]=useState(false);const epoch=useRef(0);
+  useEffect(()=>{
+    const current=++epoch.current;const controller=new AbortController();
+    setValue(null);setError(null);setPending(open);
+    if(open && typeof adapter?.getWebsiteSnapshot==='function' && typeof adapter?.listSources==='function'){
+      (async()=>{
+        try{
+          const metadata=await adapter.getWebsiteSnapshot(source.sourceVersionId,{signal:controller.signal});
+          const sources=await adapter.listSources({websiteSourceVersionId:source.sourceVersionId,signal:controller.signal});
+          const matches=sources.filter(item=>item.source_id===source.sourceId && item.source_version_id===source.sourceVersionId);
+          const website=matches.length===1?matches[0].website:null;
+          if(!website || metadata.source_id!==source.sourceId || metadata.source_version_id!==source.sourceVersionId
+              || Object.keys(metadata).some(key=>website[key]!==metadata[key]) || typeof website.text!=='string'
+              || !website.text.trim() || new TextEncoder().encode(website.text).length>524288)throw Error('WEBSITE_RESPONSE_INVALID');
+          if(current===epoch.current && !controller.signal.aborted)setValue(website);
+        }catch(cause){if(current===epoch.current && !controller.signal.aborted)setError(safeErrorCode(cause,'WEBSITE_FETCH_FAILED'));}
+        finally{if(current===epoch.current && !controller.signal.aborted)setPending(false);}
+      })();
+    }else if(open){setError('WEBSITE_STORAGE_UNAVAILABLE');setPending(false);}
+    return()=>{++epoch.current;controller.abort();};
+  },[adapter,source.sourceId,source.sourceVersionId,open]);
+  return <section className="website-original" aria-label="웹 Source 원문">
+    <button type="button" onClick={()=>setOpen(current=>!current)}>{open?'원문 닫기':'원문 보기'}</button>
+    {pending?<p role="status">현재 접근 권한과 원문을 확인 중입니다.</p>:null}
+    {open && error?<p role="alert">웹 원문을 불러오지 못했습니다. ({error})</p>:null}
+    {open && value?<><h4>{value.title}</h4><dl>
+      <dt>요청 URL</dt><dd>{value.requested_url}</dd><dt>최종 URL</dt><dd>{value.final_url}</dd>
+      <dt>수집 시각</dt><dd>{value.fetched_at}</dd><dt>발행 시각</dt><dd>{value.published_at??'미상'}</dd>
+      <dt>라이선스</dt><dd>{value.license_status==='unknown'?'라이선스 미상':value.license_url??'게시자 표시'}</dd>
+    </dl><pre>{value.text}</pre></>:null}
+  </section>;
+}
+
 function AudioOriginalSegments({ content, citation }) {
   const playerRef=useRef(null), resourceRef=useRef(null), requestRef=useRef(null);
   const stopTimerRef=useRef(null);
@@ -741,7 +804,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       (typeof adapter.listSourceDeletionRequests === "function"
         ? adapter.listSourceDeletionRequests({ signal: controller.signal })
         : Promise.resolve([])),
-    ]).then(([sourceResult, knowledgeResult, connectorResult, studioResult, conversationResult, deletionResult]) => {
+    ]).then(async ([sourceResult, knowledgeResult, connectorResult, studioResult, conversationResult, deletionResult]) => {
       if (!isCurrent()) return;
 
       let projected = [];
@@ -749,23 +812,35 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       if (sourceResult.status === "fulfilled") {
         try {
           if (!Array.isArray(sourceResult.value)) throw new Error("SOURCE_LIST_RESPONSE_INVALID");
-          projected = sourceResult.value.map((source) => ({
+          projected = await Promise.all(sourceResult.value.map(async (source) => {
+            // Namespace는 후보 구분만 한다. 실제 sealed snapshot/currentVersion
+            // 접근 GET 성공으로만 웹 availability를 확정한다.
+            let websiteSnapshot=null;
+            if(source.source_state==='ready' && source.source_id.startsWith('web-source-') && source.source_version_id.startsWith('web-version-') && typeof adapter.getWebsiteSnapshot==='function'){
+              try{
+                const snapshot=await adapter.getWebsiteSnapshot(source.source_version_id,{signal:controller.signal});
+                if(snapshot.source_id===source.source_id && snapshot.source_version_id===source.source_version_id)websiteSnapshot=snapshot;
+              }catch{/* fail closed. Native 처리 상태는 바꾸지 않는다. */}
+            }
+            return {
             sourceId: source.source_id,
             sourceVersionId: source.source_version_id,
             filename: source.filename,
             sourceState: source.source_state,
             processingState: source.processing_state,
             jobState: source.job_state,
+            websiteSnapshot,
             ready: source.source_state === "ready"
-              && source.processing_state === "completed"
-              && source.job_state === "completed"
-          }));
+              && (websiteSnapshot!==null || (source.processing_state === "completed"
+              && source.job_state === "completed"))
+          }; }));
         } catch (error) {
           sourceSafeError = safeErrorCode(error, "SOURCE_LIST_FAILED");
         }
       } else {
         sourceSafeError = safeErrorCode(sourceResult.reason, "SOURCE_LIST_FAILED");
       }
+      if (!isCurrent()) return;
       setViewState((current) => ({
         ...current,
         status: sourceSafeError ? "error" : projected.length ? "ready" : "empty",
@@ -1453,7 +1528,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV, XLSX(내부 모델·셀 검증 필요), DOCX(제한형 문단·병합 없는 단순 표, 내부 모델·구간 검증 필요), PNG/JPG/JPEG(내부 Vision 모델·OCR 필요). PPTX(제한형 텍스트·병합 없는 단순 표, 내부 모델·원문 검증 필요). WAV(PCM16·1~120초·25MiB, QA 내부 ASR와 의미 모델 필요). MP3/M4A는 미지원</small><input type="file" accept=".pdf,.xlsx,.docx,.pptx,.csv,.txt,.md,.png,.jpg,.jpeg,.wav" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
             {sourceAddMode === "text" ? <><textarea value={sourceAddText} onChange={(event) => setSourceAddText(event.target.value)} placeholder="복사한 텍스트를 붙여 넣으세요" disabled={sourceAddPending} /><button type="button" className="primary-button" onClick={() => void submitPastedText()} disabled={sourceAddPending || !sourceAddText.trim()}>{sourceAddPending ? "등록 중" : "텍스트 등록"}</button></> : null}
             {sourceAddMode === "mcp" ? <div className="source-add-unavailable"><strong>국가법령정보센터 MCP</strong><small>연결을 등록하면 연결형 Source에서 상태를 확인하고 선택할 수 있습니다.</small><button type="button" className="primary-button" onClick={() => void registerMcpConnector()} disabled={sourceAddPending}>{sourceAddPending ? "등록 중" : "MCP 연결 등록"}</button></div> : null}
-            {sourceAddMode === "website" || sourceAddMode === "drive" ? <div className="source-add-unavailable" role="status"><strong>{sourceAddMode === "website" ? "웹사이트" : "Drive"} 연결 준비 필요</strong><small>외부 원본을 가져오는 Connector가 연결되면 이 흐름에서 등록할 수 있습니다.</small></div> : null}
+            {sourceAddMode === "website" ? <WebsiteSourceForm key={workspaceId} adapter={adapter} onRegistered={()=>{setSourceAddOpen(false);setLoadRevision(current=>current+1);}} /> : null}
+            {sourceAddMode === "drive" ? <div className="source-add-unavailable" role="status"><strong>Drive 연결 준비 필요</strong><small>외부 원본을 가져오는 Connector가 연결되면 이 흐름에서 등록할 수 있습니다.</small></div> : null}
             {sourceAddPending ? <p className="source-inline-state" role="status">Source 등록·처리 중입니다.</p> : null}
             {sourceAddError ? <div className="inline-alert compact" role="alert">Source를 등록하지 못했습니다. ({sourceAddError})</div> : null}
           </section> : null}
@@ -1494,7 +1570,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             {viewState.sources.map((source) => (
               <li className="source-list-row" key={`${source.sourceId}:${source.sourceVersionId}`}>
                 <button type="button" aria-pressed={viewState.selectedSource?.sourceVersionId === source.sourceVersionId} onClick={() => selectSource(source)} disabled={!source.ready}>
-                  <span className="source-file-icon" aria-hidden="true">FILE</span><span className="source-row-copy"><strong>{source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {SOURCE_STATE_LABELS[source.sourceState] ?? "상태 확인 필요"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
+                  <span className="source-file-icon" aria-hidden="true">{source.websiteSnapshot?'WEB':'FILE'}</span><span className="source-row-copy"><strong>{source.websiteSnapshot?.title ?? source.filename ?? source.sourceId}</strong><small>Version {source.sourceVersionId} · {source.websiteSnapshot?`웹 수집·저장 완료 · ${source.websiteSnapshot.fetched_at}`:SOURCE_STATE_LABELS[source.sourceState] ?? "상태 확인 필요"}</small></span><span className={`source-ready-dot ${source.ready ? "is-ready" : ""}`} aria-hidden="true" />
                 </button>
                 <button type="button" className="source-action-trigger" title="Source 작업" aria-label={`${source.filename ?? source.sourceId} 작업`} onClick={() => { setSourceAction(source); setSourceActionKind("unbind"); setSourceActionSafeError(null); }}>⋮</button>
                 {(new Set(["failed", "waiting_model"]).has(source.sourceState)
@@ -1504,6 +1580,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               </li>
             ))}
           </ul>
+          {viewState.selectedSource?.websiteSnapshot ? <WebsiteOriginal key={`${workspaceId}:${viewState.selectedSource.sourceVersionId}`} adapter={adapter} source={viewState.selectedSource} /> : null}
           {sourceRetryError ? <div className="inline-alert compact" role="alert">재처리를 요청하지 못했습니다. 연결과 처리 상태를 확인한 뒤 다시 시도하세요. ({sourceRetryError})</div> : null}
           <ul className="source-list" aria-label="삭제 요청 Source 목록">
             {sourceDeletionRequests.map((request) => (

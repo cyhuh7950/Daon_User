@@ -32,6 +32,8 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/workspaces",
   "/api/v1/workspaces/{id}/members",
   "/api/v1/workspaces/{id}/sources",
+  "/api/v1/workspaces/{id}/website-imports",
+  "/api/v1/workspaces/{id}/source-versions/{version_id}/website-snapshot",
   "/api/v1/workspaces/{id}/knowledge-scope",
   "/api/v1/workspaces/{id}/weight-profile",
   "/api/v1/workspaces/{id}/model-policy",
@@ -190,6 +192,82 @@ function validateResponse(document, response, operationId, status) {
   if (!isObject(resolved.headers) || !("X-Trace-Id" in resolved.headers)) {
     fail(`${operationId} response ${status} missing X-Trace-Id`);
   }
+}
+
+function validateWebsiteContract(document) {
+  const imports = document.paths["/api/v1/workspaces/{id}/website-imports"];
+  const snapshot = document.paths["/api/v1/workspaces/{id}/source-versions/{version_id}/website-snapshot"];
+  const sources = document.paths["/api/v1/workspaces/{id}/sources"].get;
+  const schemas = document.components.schemas;
+  const check = (valid, label) => { if (!valid) fail(`Website contract ${label}`); };
+  const keys = (value, expected) => isObject(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort());
+  const exactObject = (schema, required, optional = []) => isObject(schema)
+    && schema.type === "object" && schema.additionalProperties === false
+    && Array.isArray(schema.required)
+    && JSON.stringify([...schema.required].sort()) === JSON.stringify([...required].sort())
+    && keys(schema.properties, [...required, ...optional]);
+  const opaque = (value) => value?.$ref === "#/components/schemas/OpaqueId";
+  const parameters = (operation, expected) => Array.isArray(operation?.parameters)
+    && operation.parameters.length === expected.length && expected.every(([name, location, required]) => {
+      const matches = operation.parameters.map(p => p.$ref ? resolveRef(document, p.$ref) : p)
+        .filter(p => p.name === name && p.in === location);
+      return matches.length === 1 && matches[0].required === required && opaque(matches[0].schema);
+    });
+  const responseSchema = (operation, status) => responseObject(document, operation?.responses?.[status])
+    ?.content?.["application/json"]?.schema?.$ref;
+  check(keys(imports, ["post"]) && keys(snapshot, ["get"]), "method mismatch");
+  check(imports.post.operationId === "importWebsiteSource" && snapshot.get.operationId === "getWebsiteSnapshot", "operation mismatch");
+  check(imports.post.requestBody?.required === true
+    && imports.post.requestBody.content?.["application/json"]?.schema?.$ref === "#/components/schemas/WebsiteImportRequest", "import body mismatch");
+  check(imports.post.parameters?.length === 2
+    && parameterRefs(imports.post).has("#/components/parameters/ResourceId")
+    && parameterRefs(imports.post).has("#/components/parameters/IdempotencyKey"), "import parameters mismatch");
+  const input = schemas.WebsiteImportRequest;
+  check(exactObject(input, ["notebook_id", "url", "public_page_confirmed"])
+    && opaque(input.properties.notebook_id) && input.properties.url.type === "string"
+    && input.properties.url.minLength === 1 && input.properties.url.maxLength === 2048 && input.properties.url.format === "uri"
+    && input.properties.public_page_confirmed.type === "boolean" && input.properties.public_page_confirmed.const === true, "import input mismatch");
+  check(["200", "201"].every(status => responseSchema(imports.post, status) === "#/components/schemas/WebsiteImportEnvelope"), "import response mismatch");
+  const result = schemas.WebsiteImportResult;
+  check(exactObject(result, ["snapshot_id", "source_id", "source_version_id", "source_state", "replayed"])
+    && ["snapshot_id", "source_id", "source_version_id"].every(key => opaque(result.properties[key]))
+    && result.properties.source_state.type === "string" && result.properties.source_state.const === "ready"
+    && result.properties.replayed.type === "boolean", "import result mismatch");
+  const envelope = schemas.WebsiteImportEnvelope;
+  const traceMeta = (meta) => exactObject(meta, ["trace_id"]) && opaque(meta.properties.trace_id);
+  check(exactObject(envelope, ["data", "meta"]) && traceMeta(envelope.properties.meta)
+    && exactObject(envelope.properties.data, ["kind", "id", "version", "attributes"])
+    && envelope.properties.data.properties.kind.const === "website_import"
+    && envelope.properties.data.properties.version.const === "1" && opaque(envelope.properties.data.properties.id)
+    && envelope.properties.data.properties.attributes.$ref === "#/components/schemas/WebsiteImportResult", "import envelope mismatch");
+  check(parameters(snapshot.get, [["id", "path", true], ["version_id", "path", true], ["notebook_id", "query", true]])
+    && responseSchema(snapshot.get, "200") === "#/components/schemas/WebsiteSnapshotEnvelope", "snapshot query/response mismatch");
+  const fields = ["snapshot_id", "source_id", "source_version_id", "requested_url", "final_url", "title", "published_at", "fetched_at", "license_status", "license_url", "raw_sha256", "text_sha256", "extraction_version"];
+  const view = schemas.WebsiteSnapshotView;
+  check(exactObject(view, fields), "snapshot exact13 mismatch");
+  const p = view.properties;
+  check(["snapshot_id", "source_id", "source_version_id"].every(key => opaque(p[key]))
+    && ["requested_url", "final_url"].every(key => p[key].type === "string" && p[key].format === "uri" && p[key].maxLength === 2048)
+    && p.title.type === "string" && p.title.minLength === 1 && p.title.maxLength === 255
+    && JSON.stringify(p.published_at.type) === JSON.stringify(["string", "null"]) && p.published_at.format === "date-time"
+    && p.fetched_at.type === "string" && p.fetched_at.format === "date-time"
+    && p.license_status.type === "string" && JSON.stringify(p.license_status.enum) === JSON.stringify(["unknown", "publisher_declared"])
+    && JSON.stringify(p.license_url.type) === JSON.stringify(["string", "null"]) && p.license_url.format === "uri" && p.license_url.maxLength === 2048
+    && ["raw_sha256", "text_sha256"].every(key => p[key].type === "string" && p[key].pattern === "^[0-9a-f]{64}$")
+    && p.extraction_version.type === "string" && p.extraction_version.const === "website-text-v1", "snapshot fields mismatch");
+  const snapshotEnvelope = schemas.WebsiteSnapshotEnvelope;
+  check(exactObject(snapshotEnvelope, ["data", "meta"]) && traceMeta(snapshotEnvelope.properties.meta)
+    && snapshotEnvelope.properties.data.$ref === "#/components/schemas/WebsiteSnapshotView", "snapshot envelope mismatch");
+  check(parameters(sources, [["id", "path", true], ["notebook_id", "query", true], ["website_source_version_id", "query", false]]), "Source query mismatch");
+  const projection = schemas.WorkspaceSourceProjection;
+  check(exactObject(projection, ["source_id", "source_version_id", "filename", "source_state", "processing_state", "job_state"], ["website"])
+    && projection.properties.website.$ref === "#/components/schemas/WebsiteSourceOriginal", "Source default6/optional mismatch");
+  const original = schemas.WebsiteSourceOriginal;
+  check(exactObject(original, [...fields, "text"])
+    && fields.every(key => original.properties[key].$ref === `#/components/schemas/WebsiteSnapshotView/properties/${key}`)
+    && original.properties.text.type === "string" && original.properties.text.minLength === 1
+    && original.properties.text.maxLength === 524288, "Source original mismatch");
 }
 
 function validateTypedErrorDetails(document) {
@@ -534,6 +612,7 @@ export function validateOpenApiDocument(document) {
   const actualPaths = Object.keys(document.paths);
   for (const requiredPath of REQUIRED_PATHS) if (!(requiredPath in document.paths)) fail(`required path missing ${requiredPath}`);
   for (const actualPath of actualPaths) if (!REQUIRED_PATHS.includes(actualPath)) fail(`unapproved path ${actualPath}`);
+  validateWebsiteContract(document);
   for (const apiPath of ANDROID_BROWSER_AUTH_POST_PATHS) {
     const actualMethods = Object.keys(document.paths[apiPath]).filter((method) => HTTP_METHODS.has(method));
     if (JSON.stringify(actualMethods) !== JSON.stringify(["post"])) fail(`Android method mismatch ${apiPath}`);

@@ -12,10 +12,12 @@ import logging
 import os
 import re
 import secrets
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import Future
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -38,6 +40,11 @@ from .audit import (
 from .admin_users import AdminUserService
 from .admin_membership_roles import AdminMembershipRoleService, REASON_CODES
 from .cloud_storage import CloudAccessContext, PostgresCloudStore
+from .internet_connector import InternetConnector, WebsiteImportContext, WebsiteFetchPolicy
+from .safe_http_fetch import SafeHttpTransport, normalize_public_url, WebsiteFetchError
+from .website_source_import import WebsiteImportError, WebsiteSourceImportService, WebsiteObjectPromoter, WebsiteProcessStorage
+from .website_source_postgres import PostgresWebsiteSourceRepository
+from .data_canon import PostgresDataCanonStore
 from .data_canon import canonical_json_bytes
 from .authorization import (
     AccessAction,
@@ -75,6 +82,7 @@ from .notification import (
 )
 from .object_queue import (
     MinioObjectStorageAdapter,
+    ObjectKeyPolicy,
     ObjectQueueCoordinator,
     ObjectStoragePort,
     PostgresObjectQueueStore,
@@ -268,9 +276,198 @@ def _is_private_http_gateway(parsed: object) -> bool:
 
 
 def request_timeout_for_path(settings: "RuntimeSettings", path: str) -> float:
+    if re.fullmatch(r"/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/website-imports", path):
+        return 20.0
     if re.fullmatch(r"/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/questions", path):
         return _QUESTION_REQUEST_TIMEOUT_SECONDS
     return settings.request_timeout_seconds
+
+
+def _website_outbound(url):
+    """Public-confirmed 웹 요청에 private Source/질문/세션을 결속하지 않는다.
+
+    privacy flags는 유지한다. 제거 대상이 없는 고정 GET만 검증하며 URL의
+    userinfo/query/fragment와 임의 header/body는 이 경계에서 표현할 수 없다.
+    실제 전송은 W1 SafeHttpTransport의 동일 고정 헤더만 사용한다.
+    """
+    try:
+        target=normalize_public_url(url)
+    except (ValueError, TypeError, WebsiteFetchError):
+        raise WebsiteImportError('WEBSITE_FETCH_BLOCKED',403) from None
+    return {'url':target,'method':'GET','headers':{'Host':urlsplit(target).hostname,
+        'User-Agent':'Daon-User-Safe-Fetch/1.0','Accept':'text/html, text/plain','Accept-Encoding':'identity'}}
+
+
+def _website_public_page(page):
+    # W1의 빈 HTML 제목/plain text fallback은 final URL이다. 긴 URL을
+    # 제목으로 절단하거나 W2에 저장한 뒤 consumer가 거부하게 하지 않는다.
+    if not isinstance(page.title,str) or not page.title.strip() or len(page.title)>255:
+        raise WebsiteImportError('WEBSITE_FETCH_FAILED',502)
+    return page
+
+
+class _WebsiteRequestRepository(PostgresWebsiteSourceRepository):
+    """요청 소유 repository만 API 절대deadline에 참여. W2/global store 불변."""
+    def __init__(self,*args,request_deadline,**kwargs):
+        super().__init__(*args,**kwargs)
+        self._request_deadline=request_deadline
+
+    @contextmanager
+    def _transaction(self,context,*,enforce_deadline=True):
+        if enforce_deadline and time.monotonic()>=self._request_deadline:
+            raise WebsiteImportError('WEBSITE_FETCH_TIMEOUT',504)
+        with super()._transaction(context,enforce_deadline=enforce_deadline) as conn:
+            if enforce_deadline:
+                remaining=self._request_deadline-time.monotonic()
+                if remaining<=0:raise WebsiteImportError('WEBSITE_FETCH_TIMEOUT',504)
+                conn.execute("SELECT set_config('statement_timeout',%s,true)",(str(max(1,min(2000,int(remaining*1000)))),))
+            yield conn
+            if enforce_deadline and time.monotonic()>=self._request_deadline:
+                raise WebsiteImportError('WEBSITE_FETCH_TIMEOUT',504)
+
+
+class _WebsiteRequestPromoter(WebsiteObjectPromoter):
+    def __init__(self,*args,request_deadline):
+        super().__init__(*args)
+        self._request_deadline=request_deadline
+
+    def promote(self,context,claim,kind,content,deadline):
+        return super().promote(context,claim,kind,content,min(deadline,self._request_deadline))
+
+
+def _checked_website_text(raw,digest,size):
+    try:
+        if (type(raw) is not bytes or type(size) is not int or not 0<size<=524288
+                or len(raw)!=size or hashlib.sha256(raw).hexdigest()!=digest):
+            raise ValueError
+        text=raw.decode('utf-8',errors='strict')
+        if not text.strip():
+            raise ValueError
+        return text
+    except (ValueError, UnicodeError):
+        raise WebsiteImportError('WEBSITE_STORAGE_UNAVAILABLE') from None
+
+
+def _website_json_response(content,*,maximum=32768,status=200,headers=None):
+    body=bytearray()
+    for part in json.JSONEncoder(ensure_ascii=False,allow_nan=False,separators=(',',':')).iterencode(content):
+        encoded=part.encode('utf-8')
+        if len(encoded)>maximum-len(body):
+            raise WebsiteImportError('WEBSITE_CONTENT_TOO_LARGE',413)
+        body.extend(encoded)
+    return Response(bytes(body),status_code=status,media_type='application/json',headers={
+        'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff',**(headers or {})})
+
+
+def _website_json_pairs(pairs):
+    value={}
+    for key,item in pairs:
+        if key in value:raise ValueError
+        value[key]=item
+    return value
+
+
+def _website_query(request,allowed):
+    _require_query_keys(request,frozenset(allowed))
+    if any(len(request.query_params.getlist(key))!=1 for key in request.query_params):
+        raise HTTPException(status_code=400)
+
+
+def _website_read_exchange(child,payload,deadline):
+    output=bytearray(); failed=threading.Event()
+    def write():
+        try:
+            child.stdin.write(payload); child.stdin.flush()
+        except (OSError,ValueError): failed.set()
+        finally: child.stdin.close()
+    def read():
+        try:
+            while True:
+                chunk=child.stdout.read(min(1024,524289-len(output)))
+                if not chunk: break
+                if len(chunk)>524288-len(output):
+                    failed.set(); child.kill(); break
+                output.extend(chunk)
+        except (OSError,ValueError): failed.set()
+    writer=threading.Thread(target=write); reader=threading.Thread(target=read)
+    writer.start(); reader.start()
+    try:
+        try: child.wait(timeout=max(.001,deadline-time.monotonic()))
+        except subprocess.TimeoutExpired:
+            child.kill(); child.wait()
+            raise WebsiteImportError('WEBSITE_FETCH_TIMEOUT',504) from None
+    finally:
+        if child.poll() is None: child.kill(); child.wait()
+        writer.join(); reader.join()
+    if failed.is_set() or child.returncode!=0 or time.monotonic()>=deadline:
+        raise WebsiteImportError('WEBSITE_STORAGE_UNAVAILABLE')
+    return bytes(output)
+
+
+def _website_text_child():
+    """자격은 bounded stdin/memory에만. DB 확정/쓰기와 raw 오류 출력 없음."""
+    try:
+        payload=sys.stdin.buffer.read(32769)
+        if len(payload)>32768: raise ValueError
+        request=json.loads(payload); remaining=request['deadline']-time.monotonic()
+        if remaining<=0: raise ValueError
+        adapter=MinioObjectStorageAdapter(**request['config'])
+        import urllib3
+        import certifi
+        adapter._client._http.clear()
+        adapter._client._http=urllib3.PoolManager(timeout=urllib3.Timeout(connect=min(2,remaining),read=remaining),
+            retries=False,cert_reqs='CERT_REQUIRED',ca_certs=os.environ.get('SSL_CERT_FILE') or certifi.where())
+        adapter._stat_verified(request['key'],expected_digest=request['digest'],expected_size=request['size'],content_type='text/plain')
+        response=adapter._client.get_object(adapter._bucket,request['key'])
+        try:
+            body=bytearray()
+            while True:
+                chunk=response.read(min(4096,524289-len(body)))
+                if not chunk: break
+                if len(chunk)>524288-len(body): raise ValueError
+                body.extend(chunk)
+            raw=bytes(body)
+        finally:
+            response.close(); response.release_conn()
+        _checked_website_text(raw,request['digest'],request['size'])
+        sys.stdout.buffer.write(raw); sys.stdout.buffer.flush()
+    except Exception:
+        raise SystemExit(1) from None
+
+
+def _read_website_original(repo,context,version_id,storage):
+    snapshot=repo.get_snapshot(context,version_id)
+    if not isinstance(storage,WebsiteProcessStorage):
+        raise WebsiteImportError('WEBSITE_STORAGE_UNAVAILABLE')
+    with repo._transaction(context) as conn:
+        repo._notebook(conn,context)
+        row=conn.execute('SELECT o.object_key,o.digest_sha256,o.byte_size FROM website_source_snapshots w '
+            'JOIN object_records o ON o.tenant_id=w.tenant_id AND o.workspace_id=w.workspace_id AND o.object_id=w.text_object_id '
+            'WHERE w.tenant_id=%s AND w.workspace_id=%s AND w.created_by=%s AND w.notebook_id=%s '
+            "AND w.source_version_id=%s AND o.created_by=w.created_by AND o.status='completed' "
+            "AND o.content_type='text/plain' AND o.digest_sha256=w.text_sha256",
+            (*repo._scope(context),version_id)).fetchone()
+    if (row is None or row[1]!=snapshot.text_sha256 or type(row[2]) is not int or not 0<row[2]<=524288
+            or not isinstance(row[0],str) or len(row[0])>4096):
+        raise WebsiteImportError('WEBSITE_STORAGE_UNAVAILABLE')
+    try:
+        ObjectKeyPolicy().validate_final(CloudAccessContext(context.tenant_id,context.workspace_id,context.actor_id,'object.read'),'source',row[0])
+    except Exception:
+        raise WebsiteImportError('WEBSITE_STORAGE_UNAVAILABLE') from None
+    deadline=time.monotonic()+5.0
+    payload=json.dumps({'config':storage._config,'key':row[0],'digest':row[1],'size':row[2],'deadline':deadline},separators=(',',':')).encode()
+    if len(payload)>32768: raise WebsiteImportError('WEBSITE_STORAGE_UNAVAILABLE')
+    try:
+        with subprocess.Popen([sys.executable,'-B','-c','from daon_user_api.runtime import _website_text_child; _website_text_child()'],
+                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0) as child:
+            raw=_website_read_exchange(child,payload,deadline)
+    except WebsiteImportError: raise
+    except Exception: raise WebsiteImportError('WEBSITE_STORAGE_UNAVAILABLE') from None
+    text=_checked_website_text(raw,row[1],row[2])
+    if repo.get_snapshot(context,version_id)!=snapshot:
+        raise WebsiteImportError('WEBSITE_ACCESS_DENIED',403)
+    return text
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,6 +750,9 @@ class RuntimeDependencies:
     notebook_deletion_store: NotebookDeletionStore | None = None
     notebook_deletion_worker: NotebookDeletionWorker | None = None
     source_upload_service: SourceUploadPort | None = None
+    website_import_service: Any | None = None
+    website_repository: Any | None = None
+    website_storage: WebsiteProcessStorage | None = None
     document_processing_service: DocumentProcessingSubmissionService | None = None
     question_answering_service: Any | None = None
     citation_content_repository: Any | None = None
@@ -584,6 +784,10 @@ class RuntimeDependencies:
         )
         if callable(source_upload_close):
             source_upload_close()
+        if self.website_repository is not None:
+            close = getattr(self.website_repository, "close", None)
+            if callable(close):
+                close()
         recovery_close = (
             None if self.recovery_service is None else getattr(self.recovery_service, "close", None)
         )
@@ -1957,12 +2161,21 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             original = super().get_route_handler()
 
             async def timed_handler(request: Request) -> Response:
+                website=request.url.path.endswith('/website-imports')
+                budget=request_timeout_for_path(dependencies.settings, request.url.path)
+                if website:
+                    request.state.website_deadline=time.monotonic()+budget
                 try:
-                    async with asyncio.timeout(request_timeout_for_path(dependencies.settings, request.url.path)):
-                        return cast(Response, await original(request))
+                    async with asyncio.timeout(budget):
+                        response=cast(Response, await original(request))
+                    # 이벤트 루프의 늦은 timer/cancellation delivery에도 웹 작업의
+                    # 절대deadline 이후 ready 응답을 내보내지 않는다.
+                    if website and time.monotonic()>=request.state.website_deadline:
+                        raise TimeoutError
+                    return response
                 except TimeoutError:
                     return _error_response(
-                        504, "REQUEST_TIMEOUT", request.state.trace_id, retryable=True
+                        504, "WEBSITE_FETCH_TIMEOUT" if website else "REQUEST_TIMEOUT", request.state.trace_id, retryable=True
                     )
 
             return timed_handler
@@ -2963,11 +3176,135 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "meta": {"trace_id": request.state.trace_id},
         }
 
+    def website_context(principal, workspace_id, notebook_id, request):
+        return WebsiteImportContext(principal.tenant_id, workspace_id, notebook_id,
+            principal.user_id, request.state.trace_id, dependencies.settings.policy_version)
+
+    def website_access(context, request, action):
+        if hasattr(request.state,'website_deadline') and time.monotonic()>=request.state.website_deadline:
+            raise WebsiteImportError('WEBSITE_FETCH_TIMEOUT',504)
+        principal = _principal(request, dependencies)
+        if principal.tenant_id != context.tenant_id or principal.user_id != context.actor_id:
+            raise WebsiteImportError("WEBSITE_ACCESS_DENIED", 403)
+        grant = dependencies.authorization_service.authorize_action(
+            principal=principal, workspace_id=context.workspace_id, action=action,
+            trace_id=context.trace_id, policy_version=context.policy_version)
+        notebook_service.get(notebook_context(principal, context.workspace_id, request), context.notebook_id)
+        return principal, grant
+
+    def website_service(context, request):
+        if (dependencies.settings.cloud_database_dsn is None or dependencies.object_queue_store is None
+                or dependencies.website_storage is None or egress_policy_service is None):
+            raise WebsiteImportError("WEBSITE_STORAGE_UNAVAILABLE")
+        frozen = []
+        def current_policy(ctx):
+            principal, grant = website_access(ctx, request, Action.EDIT)
+            effective = egress_policy_service.get_effective(
+                _egress_policy_context(principal, ctx.workspace_id, request, dependencies))
+            approvers = {"workspace_manager": {Role.PERSONAL_OWNER, Role.WORKSPACE_ADMIN, Role.ORGANIZATION_ADMIN},
+                "organization_admin": {Role.PERSONAL_OWNER, Role.ORGANIZATION_ADMIN}}
+            if (effective.mode != "allow_approved_external" or effective.classification != "public"
+                    or "external_api" not in effective.allowed_provider_kinds or effective.max_bytes <= 0
+                    or grant.role not in approvers.get(effective.required_approver, set())):
+                raise WebsiteImportError("WEBSITE_FETCH_BLOCKED", 403)
+            if frozen and frozen[0] != effective.fingerprint:
+                raise WebsiteImportError("WEBSITE_FETCH_BLOCKED", 403)
+            if not frozen:
+                frozen.append(effective.fingerprint)
+            return effective
+        repo = _WebsiteRequestRepository(dependencies.settings.cloud_database_dsn,request_deadline=request.state.website_deadline,
+            canon_store=PostgresDataCanonStore(dependencies.settings.cloud_database_dsn,
+                creation_enforcer=enforce_license_creation if license_enforcement_enabled else None),
+            policy_fingerprint=lambda ctx: current_policy(ctx).fingerprint)
+        def fetch_page(ctx, url):
+            effective = current_policy(ctx)
+            policy = WebsiteFetchPolicy(effective.fingerprint, effective.allowed_destinations, min(2097152, effective.max_bytes))
+            def authorize_hop(hop, captured):
+                now = current_policy(ctx)
+                outbound = _website_outbound(hop)
+                host = urlsplit(hop).hostname
+                if (now.fingerprint != captured.fingerprint or host not in now.allowed_destinations
+                        or len(outbound['url'].encode("utf-8")) > now.max_bytes):
+                    raise WebsiteImportError("WEBSITE_FETCH_BLOCKED", 403)
+            return _website_public_page(InternetConnector().fetch_public_page(ctx, url, policy, SafeHttpTransport(), authorize_hop))
+        def authorize(ctx):
+            current_policy(ctx)
+        return WebsiteSourceImportService(repo, _WebsiteRequestPromoter(dependencies.object_queue_store, dependencies.website_storage,request_deadline=request.state.website_deadline),
+            fetch_page=fetch_page, authorize_context=authorize), repo
+
+    @app.exception_handler(WebsiteImportError)
+    async def website_error(request, error):
+        response=_error_response(error.status,error.code,request.state.trace_id,retryable=error.status>=500)
+        response.headers['X-Content-Type-Options']='nosniff'
+        return response
+
+    @app.post("/api/v1/workspaces/{id}/website-imports",operation_id="importWebsiteSource",openapi_extra={
+        'requestBody':{'required':True,'content':{'application/json':{'schema':{
+            'type':'object','additionalProperties':False,'required':['notebook_id','url','public_page_confirmed'],
+            'properties':{'notebook_id':{'type':'string','minLength':1,'maxLength':128},
+                'url':{'type':'string','minLength':1,'maxLength':2048},
+                'public_page_confirmed':{'type':'boolean','const':True}}}}}}})
+    async def import_website(id: str, request: Request, idempotency_key: str = Header(alias="Idempotency-Key")):
+        _require_query_keys(request, frozenset())
+        _idempotency_key(idempotency_key)
+        principal = _principal(request, dependencies)
+        try:
+            if request.headers.get('content-type','').split(';',1)[0].strip().lower()!='application/json':
+                raise ValueError
+            raw=await request.body()
+            if len(raw)>32768:raise ValueError
+            body = json.loads(raw.decode('utf-8',errors='strict'),object_pairs_hook=_website_json_pairs)
+            if (not isinstance(body, dict) or set(body) != {"notebook_id", "url", "public_page_confirmed"}
+                    or body["public_page_confirmed"] is not True or not isinstance(body["notebook_id"], str)
+                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", body["notebook_id"]) is None):
+                raise ValueError
+            url = normalize_public_url(body["url"])
+        except (ValueError, TypeError, WebsiteFetchError):
+            raise WebsiteImportError("WEBSITE_URL_INVALID", 400) from None
+        ctx = website_context(principal, id, body["notebook_id"], request)
+        await asyncio.to_thread(website_access, ctx, request, Action.EDIT)
+        service = dependencies.website_import_service
+        owned = None
+        if service is None:
+            service, owned = website_service(ctx, request)
+        try:
+            result = await asyncio.to_thread(service.import_url, ctx, url, True, idempotency_key)
+        finally:
+            if owned is not None:
+                owned.close()
+        return _website_json_response({"data": {"kind": "website_import", "id": result.snapshot_id, "version": "1",
+            "attributes": _dataclass_json(result)}, "meta": {"trace_id": request.state.trace_id}},
+            status=200 if result.replayed else 201,headers={'ETag':f'"website:{result.snapshot_id}"'})
+
+    @app.get("/api/v1/workspaces/{id}/source-versions/{version_id}/website-snapshot",operation_id="getWebsiteSnapshot")
+    async def get_website_snapshot(id: str, version_id: str, request: Request, notebook_id: str = Query()):
+        _website_query(request, {'notebook_id'})
+        principal = _principal(request, dependencies)
+        ctx = website_context(principal, id, notebook_id, request)
+        await asyncio.to_thread(website_access, ctx, request, Action.VIEW)
+        repo = dependencies.website_repository
+        owned = False
+        if repo is None:
+            if dependencies.settings.cloud_database_dsn is None:
+                raise WebsiteImportError("WEBSITE_STORAGE_UNAVAILABLE")
+            repo = PostgresWebsiteSourceRepository(dependencies.settings.cloud_database_dsn)
+            owned = True
+        try:
+            snapshot = await asyncio.to_thread(repo.get_snapshot, ctx, version_id)
+            await asyncio.to_thread(website_access,ctx,request,Action.VIEW)
+        finally:
+            if owned:
+                repo.close()
+        return _website_json_response({"data": _dataclass_json(snapshot), "meta": {"trace_id": request.state.trace_id}},
+            headers={'ETag':f'"website:{snapshot.snapshot_id}:{snapshot.text_sha256}"'})
+
     @app.get("/api/v1/workspaces/{id}/sources")
     async def list_workspace_sources(
-        id: str, request: Request, notebook_id: str = Query(),
+        id: str, request: Request, notebook_id: str = Query(), website_source_version_id: str | None = Query(default=None),
     ) -> JSONResponse:
-        _require_query_keys(request, frozenset({"notebook_id"}))
+        _require_query_keys(request, frozenset({"notebook_id", "website_source_version_id"}))
+        if website_source_version_id is not None:
+            _website_query(request,{'notebook_id','website_source_version_id'})
         principal = _principal(request, dependencies)
         dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=id, action=Action.VIEW,
@@ -2993,7 +3330,33 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "data": {"sources": [_dataclass_json(source) for source in sources]},
             "meta": {"trace_id": request.state.trace_id, "workspace_id": id},
         }
-        response = JSONResponse(content)
+        if website_source_version_id is not None:
+            if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',website_source_version_id) is None:
+                raise WebsiteImportError('WEBSITE_ACCESS_DENIED',403)
+            matches=[item for item in content['data']['sources'] if item['source_version_id']==website_source_version_id and item['source_state']=='ready']
+            if len(matches)!=1:
+                raise WebsiteImportError('WEBSITE_ACCESS_DENIED',403)
+            ctx=website_context(principal,id,notebook_id,request)
+            await asyncio.to_thread(website_access,ctx,request,Action.VIEW)
+            repo=dependencies.website_repository
+            owned=repo is None
+            if owned:
+                if dependencies.settings.cloud_database_dsn is None:
+                    raise WebsiteImportError('WEBSITE_STORAGE_UNAVAILABLE')
+                repo=PostgresWebsiteSourceRepository(dependencies.settings.cloud_database_dsn)
+            try:
+                snapshot=await asyncio.to_thread(repo.get_snapshot,ctx,website_source_version_id)
+                if snapshot.source_id!=matches[0]['source_id']:
+                    raise WebsiteImportError('WEBSITE_ACCESS_DENIED',403)
+                text=await asyncio.to_thread(_read_website_original,repo,ctx,website_source_version_id,dependencies.website_storage)
+                await asyncio.to_thread(website_access,ctx,request,Action.VIEW)
+                current=await asyncio.to_thread(notebook_service.read_selected_context,notebook_context(_principal(request,dependencies),id,request),notebook_id)
+                if (snapshot.source_id,website_source_version_id) not in set(current.sources) or await asyncio.to_thread(repo.get_snapshot,ctx,website_source_version_id)!=snapshot:
+                    raise WebsiteImportError('WEBSITE_ACCESS_DENIED',403)
+                matches[0]['website']={**_dataclass_json(snapshot),'text':text}
+            finally:
+                if owned: repo.close()
+        response = _website_json_response(content,maximum=8388608) if website_source_version_id is not None else JSONResponse(content)
         response.headers["ETag"] = selected.etag
         return response
 
@@ -6332,6 +6695,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         )
         workspace_model_defaults_service = PostgresWorkspaceModelDefaultsService(cloud_store)
     object_storage: ObjectStoragePort | None = None
+    website_storage: WebsiteProcessStorage | None = None
     if settings.object_storage_endpoint is not None:
         assert settings.object_storage_bucket is not None
         assert settings.object_access_key_file is not None
@@ -6351,6 +6715,9 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         if settings.object_storage_provision_bucket:
             adapter.ensure_bucket()
         object_storage = adapter
+        website_storage = WebsiteProcessStorage(endpoint=settings.object_storage_endpoint,
+            bucket=settings.object_storage_bucket, access_key=access_key, secret_key=secret_key,
+            secure=settings.object_storage_secure)
     sync_service: SyncService | PostgresSyncService
     recovery_service: PostgresRecoveryService | UnavailableRecoveryService
     object_queue_store: PostgresObjectQueueStore | None = None
@@ -6437,6 +6804,7 @@ def build_dependencies(settings: RuntimeSettings) -> RuntimeDependencies:
         provider_health_settings_service=provider_health_settings_service,
         workspace_model_defaults_service=workspace_model_defaults_service,
         source_upload_service=source_upload_service,
+        website_storage=website_storage,
         document_processing_service=document_processing_service,
         organization_repository=organization_repository,
         notebook_deletion_store=(

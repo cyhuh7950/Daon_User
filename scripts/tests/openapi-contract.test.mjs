@@ -42,6 +42,59 @@ function clone(value) {
   return structuredClone(value);
 }
 
+test('웹사이트 승인 두 경로를 정본으로 수용하고 누락·추가 경로는 거부한다',async()=>{
+  const document=await loadContract();
+  assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  for(const apiPath of ['/api/v1/workspaces/{id}/website-imports','/api/v1/workspaces/{id}/source-versions/{version_id}/website-snapshot']){
+    const missing=clone(document);delete missing.paths[apiPath];
+    assert.throws(()=>validateOpenApiDocument(missing),/required path missing/);
+  }
+  const extra=clone(document);
+  extra.paths['/api/v1/workspaces/{id}/website-original']=clone(document.paths['/api/v1/workspaces/{id}/website-imports']);
+  assert.throws(()=>validateOpenApiDocument(extra),/unapproved path/);
+});
+
+test('웹사이트 검증기는 method/body/snapshot13/선택 원문query 변조를 fail-close 거부한다',async(t)=>{
+  const document=await loadContract();
+  const imports='/api/v1/workspaces/{id}/website-imports';
+  const snapshot='/api/v1/workspaces/{id}/source-versions/{version_id}/website-snapshot';
+  const sources='/api/v1/workspaces/{id}/sources';
+  const mutations=[
+    ['import GET 변경',d=>{d.paths[imports].get=d.paths[imports].post;delete d.paths[imports].post;}],
+    ['import HEAD 추가',d=>d.paths[imports].head=clone(d.paths[imports].post)],
+    ['snapshot POST 추가',d=>{d.paths[snapshot].post=clone(d.paths[imports].post);d.paths[snapshot].post.operationId='unexpectedSnapshotPost';}],
+    ['body generic 교체',d=>d.paths[imports].post.requestBody.content['application/json'].schema.$ref='#/components/schemas/ResourceMutation'],
+    ['body 선택적 변경',d=>d.paths[imports].post.requestBody.required=false],
+    ['body actor 추가',d=>d.components.schemas.WebsiteImportRequest.properties.actor_id={type:'string'}],
+    ['body 추가키 허용',d=>d.components.schemas.WebsiteImportRequest.additionalProperties=true],
+    ['body 확인 false',d=>d.components.schemas.WebsiteImportRequest.properties.public_page_confirmed.const=false],
+    ['body URL 한도 변경',d=>d.components.schemas.WebsiteImportRequest.properties.url.maxLength=4096],
+    ['import response generic',d=>d.paths[imports].post.responses['201'].content['application/json'].schema.$ref='#/components/schemas/WebsiteSnapshotEnvelope'],
+    ['import ready processing',d=>d.components.schemas.WebsiteImportResult.properties.source_state.const='processing'],
+    ['import attributes 누락',d=>d.components.schemas.WebsiteImportEnvelope.properties.data.required.pop()],
+    ['snapshot response generic',d=>d.paths[snapshot].get.responses['200'].content['application/json'].schema.$ref='#/components/schemas/WebsiteImportEnvelope'],
+    ['snapshot text 추가',d=>d.components.schemas.WebsiteSnapshotView.properties.text={type:'string'}],
+    ['snapshot required 누락',d=>d.components.schemas.WebsiteSnapshotView.required.pop()],
+    ['snapshot 추가키 허용',d=>d.components.schemas.WebsiteSnapshotView.additionalProperties=true],
+    ['snapshot title256',d=>d.components.schemas.WebsiteSnapshotView.properties.title.maxLength=256],
+    ['snapshot text hash 약화',d=>delete d.components.schemas.WebsiteSnapshotView.properties.text_sha256.pattern],
+    ['snapshot notebook query 선택적',d=>d.paths[snapshot].get.parameters.find(p=>p.name==='notebook_id').required=false],
+    ['Source 선택query 누락',d=>d.paths[sources].get.parameters=d.paths[sources].get.parameters.filter(p=>p.name!=='website_source_version_id')],
+    ['Source 선택query 필수 변경',d=>d.paths[sources].get.parameters.find(p=>p.name==='website_source_version_id').required=true],
+    ['Source actor query 추가',d=>d.paths[sources].get.parameters.push({name:'actor_id',in:'query',required:false,schema:{$ref:'#/components/schemas/OpaqueId'}})],
+    ['Source 기본 필드 누락',d=>d.components.schemas.WorkspaceSourceProjection.required.pop()],
+    ['Source 원문 기본필수 변경',d=>d.components.schemas.WorkspaceSourceProjection.required.push('website')],
+    ['Source 원문 snapshot 교체',d=>d.components.schemas.WorkspaceSourceProjection.properties.website.$ref='#/components/schemas/WebsiteSnapshotView'],
+    ['Source 원문 1MiB 허용',d=>d.components.schemas.WebsiteSourceOriginal.properties.text.maxLength=1048576],
+    ['Source 원문 추가키 허용',d=>d.components.schemas.WebsiteSourceOriginal.additionalProperties=true],
+    ['Source 원문 hash 다른field',d=>d.components.schemas.WebsiteSourceOriginal.properties.text_sha256.$ref='#/components/schemas/WebsiteSnapshotView/properties/raw_sha256'],
+  ];
+  for(const [name,mutate] of mutations)await t.test(name,()=>{
+    const invalid=clone(document);mutate(invalid);
+    assert.throws(()=>validateOpenApiDocument(invalid),/Website contract/);
+  });
+});
+
 test("OpenAPI v1 정본은 설계 §17.1 전체 Path와 공통 안전 계약을 통과한다", async () => {
   const document = await loadContract();
   assert.doesNotThrow(() => validateOpenApiDocument(document));
