@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { MinimalEvent, findElements, installMinimalDom, buttonByText } from './product-studio-dom.mjs';
 import { createNotebookContextWorkspaceAdapter } from '../../packages/ui/src/notebook-context-adapter.js';
 import { uploadSource } from '../../apps/web/lib/source-upload-api.js';
+import { citationContentUrl } from '../../apps/web/lib/question-answering-api.js';
 
 let Shell, output;
 const repo = path.resolve(import.meta.dirname, '../..');
@@ -44,6 +45,59 @@ async function mount(adapter={}) {
   await click(w,'＋Source 추가');await click(w,'Drive');return w;
 }
 const submit = {source_id:'source-1',source_version_id:'version-1',processing_run_id:'run-1'};
+
+function textReentryContext() {
+  const sourceId='src-'+'a'.repeat(32), versionId='sv-'+'a'.repeat(32), span='span-'+'b'.repeat(32);
+  return {notebook_id:'notebook-current',sources:[{source_id:sourceId,source_version_id:versionId}],
+    knowledge_context_ids:[],conversation_thread_ids:['thread-text'],studio_output_ids:[],output_version_ids:[],generation_settings_ids:[],source_deletion_requests:[],
+    conversation:{conversation_thread_id:'thread-text',answer:{run_id:'run-text',run_result_id:'result-text',answer:'저장된 텍스트 근거 답변',insufficient:false,
+      citations:[{citation_id:'citation-text',source_id:sourceId,source_version_id:versionId,evidence_span_id:span,page:1,origin:'raw_source',context_item_id:sourceId,locator:{kind:'section',value:span}}]}}};
+}
+
+test('canonical text saved answer reentry restores actual React anchor using current Notebook citation URL',async()=>{
+  const context=textReentryContext(), calls=[];
+  const adapter=createNotebookContextWorkspaceAdapter({citationUrl:(citation,options)=>{
+    calls.push(options);return citationContentUrl('workspace-1',citation,options);
+  }},context);
+  const w=await mount(adapter);
+  try {
+    assert.match(w.container.textContent,/저장된 텍스트 근거 답변/);
+    const anchor=findElements(w.container,n=>n.tagName==='A')[0];assert.ok(anchor,'재진입 Citation anchor 필요');
+    assert.equal(anchor.getAttribute('href'),'/bff/api/workspaces/workspace-1/citations/citation-text/content?notebook_id=notebook-current');
+    assert.deepEqual(calls,[{notebookId:'notebook-current'}]);
+  }finally{await w.cleanup();}
+});
+
+test('canonical text reentry rejects forged Version/span/page/context/binding before URL restoration',async()=>{
+  let calls=0;const base={citationUrl:()=>{calls++;return '/must-not-call';}};
+  const changes=[
+    c=>c.conversation.answer.citations[0].source_version_id='sv-'+'c'.repeat(32),
+    c=>c.conversation.answer.citations[0].evidence_span_id='span-invalid',
+    c=>c.conversation.answer.citations[0].locator.value='span-'+'c'.repeat(32),
+    c=>c.conversation.answer.citations[0].page=2,
+    c=>c.conversation.answer.citations[0].context_item_id='other-source',
+    c=>c.sources=[],
+    c=>c.sources[0].source_version_id='sv-'+'c'.repeat(32),
+  ];
+  for(const change of changes){const context=textReentryContext();change(context);
+    assert.throws(()=>createNotebookContextWorkspaceAdapter(base,context),/NOTEBOOK_CONTEXT_INVALID/);
+  }
+  assert.equal(calls,0);
+  const other=textReentryContext();other.notebook_id='notebook-other';
+  const adapter=createNotebookContextWorkspaceAdapter({citationUrl:(_citation,options)=>{
+    assert.equal(options.notebookId,'notebook-other');throw Error('NOTEBOOK_ACCESS_DENIED');
+  }},other);
+  await assert.rejects(adapter.loadNotebookConversation(),/NOTEBOOK_ACCESS_DENIED/);
+});
+
+test('other origin and legacy section keep generic restoration behavior',async()=>{
+  for(const change of [c=>c.conversation.answer.citations[0].origin='daon_knowledge',
+    c=>{const citation=c.conversation.answer.citations[0];citation.source_id='legacy-source';citation.source_version_id='legacy-version';citation.context_item_id='legacy-source';}]){
+    const context=textReentryContext();change(context);let calls=0;
+    const adapter=createNotebookContextWorkspaceAdapter({citationUrl:()=>{calls++;}},context);
+    assert.equal((await adapter.loadNotebookConversation()).citations[0].content_url,undefined);assert.equal(calls,0);
+  }
+});
 
 test('drive_selection_does_not_upload',async()=>{
   let calls=0;const w=await mount({uploadSource:async()=>{calls++;throw Error('SOURCE_UPLOAD_FAILED');}});

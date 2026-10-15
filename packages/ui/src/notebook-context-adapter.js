@@ -40,7 +40,12 @@ function validCitation(value) {
     && (value.locator.kind !== "sheet_cell" || parseSheetCell(value.locator.value) !== null)
     && (value.locator.kind !== "docx_block" || parseDocxBlock(value.locator.value) !== null)
     && (value.locator.kind !== "pptx_block" || parsePptxBlock(value.locator.value) !== null)
-    && (value.locator.kind !== "audio_segment" || parseAudioSegment(value.locator.value) !== null);
+    && (value.locator.kind !== "audio_segment" || parseAudioSegment(value.locator.value) !== null)
+    && (!isCanonicalTextSectionCitation(value) || (
+      value.source_version_id === `sv-${value.source_id.slice("src-".length)}`
+      && value.page === 1 && /^span-[0-9a-f]{32}$/u.test(value.evidence_span_id)
+      && value.locator.value === value.evidence_span_id
+    ));
 }
 
 function projectCitation(value) {
@@ -56,6 +61,13 @@ function isWebsiteSectionCitation(citation) {
   return citation.origin === "raw_source" && citation.locator.kind === "section"
     && /^web-source-[0-9a-f]{32}$/u.test(citation.source_id)
     && /^web-version-[0-9a-f]{32}$/u.test(citation.source_version_id);
+}
+
+function isCanonicalTextSectionCitation(citation) {
+  // The DTO has no chunk/text. Validate its canonical shape and binding here;
+  // the existing content endpoint remains the authority for RLS and originals.
+  return citation.origin === "raw_source" && citation.locator.kind === "section"
+    && /^src-[0-9a-f]{32}$/u.test(citation.source_id);
 }
 
 export function projectNotebookSelectedContext(value) {
@@ -84,7 +96,7 @@ export function projectNotebookSelectedContext(value) {
       && typeof item.legal_hold_active === "boolean")
     && conversationValid
     && (value.conversation === null || value.conversation.answer.citations.every(citation =>
-      !(["docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || isWebsiteSectionCitation(citation)) || citation.origin !== "raw_source"
+      !(["docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation)) || citation.origin !== "raw_source"
       || (citation.context_item_id === citation.source_id
         && (!isWebsiteSectionCitation(citation) || citation.source_version_id === `web-version-${citation.source_id.slice("web-source-".length)}`)
         && value.sources.some(source =>
@@ -164,7 +176,7 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     if (context.conversation === null || context.conversation_thread_ids.length !== 1) return null;
     const answer = context.conversation.answer;
     const withContentUrls = (citation) => ["image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind)
-      || isWebsiteSectionCitation(citation);
+      || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation);
     if (!answer.citations.some(withContentUrls)) return answer;
     return { ...answer, citations: answer.citations.map((citation) => withContentUrls(citation)
       ? { ...citation, content_url: baseAdapter.citationUrl(citation, { notebookId: context.notebook_id }) }
