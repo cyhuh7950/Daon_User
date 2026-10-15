@@ -720,6 +720,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [sourceAddText, setSourceAddText] = useState("");
   const [sourceAddError, setSourceAddError] = useState(null);
   const [sourceAddPending, setSourceAddPending] = useState(false);
+  const [driveFile, setDriveFile] = useState(null);
+  const driveInputRef = useRef(null);
+  const driveSubmitRef = useRef(false);
   const [sourceRetryError, setSourceRetryError] = useState(null);
   const [imageCitation, setImageCitation] = useState(null);
   const [imageCitationLoaded, setImageCitationLoaded] = useState(false);
@@ -947,6 +950,37 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       citationUrlsRef.current.clear();
     };
   }, []);
+
+  const resetDriveSource = () => {
+    setDriveFile(null);
+    if (driveInputRef.current) driveInputRef.current.value = "";
+  };
+  useEffect(() => { resetDriveSource(); }, [workspaceId, adapter]);
+
+  const driveFileError = (file) => {
+    if (!file) return null;
+    const types = {
+      pdf: "application/pdf", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      csv: "text/csv", txt: "text/plain", md: "text/markdown", png: "image/png",
+      jpg: "image/jpeg", jpeg: "image/jpeg", wav: "audio/wav",
+    };
+    const name = file.name;
+    const extension = typeof name === "string" ? name.split(".").pop().toLowerCase() : "";
+    if (!name || name.length > 255 || /[/\\\u0000-\u001f]/u.test(name)
+        || !Object.hasOwn(types, extension)) return "지원하지 않는 파일입니다. Google 바로가기는 지원 형식으로 내보낸 뒤 선택하세요.";
+    if (file.type !== types[extension]) return "지원하지 않는 MIME 형식입니다. 파일의 실제 형식을 확인하세요.";
+    if (!Number.isSafeInteger(file.size) || file.size < 1) return "빈 파일은 가져올 수 없습니다.";
+    if (file.size > 25 * 1024 * 1024) return "25MiB 이하 파일만 가져올 수 있습니다.";
+    return null;
+  };
+  const submitDriveSource = async () => {
+    if (driveSubmitRef.current || sourceAddPending || !driveFile || driveFileError(driveFile)) return;
+    driveSubmitRef.current = true;
+    try { await uploadSource(driveFile); }
+    finally { driveSubmitRef.current = false; }
+  };
 
   const uploadSource = async (eventOrFile) => {
     const fileInput = eventOrFile?.currentTarget;
@@ -1521,15 +1555,23 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           <button className="source-add-button" type="button" onClick={() => { setSourceAddOpen(true); setSourceAddError(null); }} disabled={!adapter}><span aria-hidden="true">＋</span>Source 추가</button>
           <input className="source-legacy-input" type="file" accept="application/pdf" onChange={uploadSource} aria-hidden="true" tabIndex="-1" />
           {sourceAddOpen ? <section className="source-action-dialog source-add-dialog" role="dialog" aria-modal="true" aria-label="Source 추가">
-            <header><strong>Source 추가</strong><button type="button" onClick={() => setSourceAddOpen(false)} disabled={sourceAddPending} aria-label="Source 추가 닫기">×</button></header>
+            <header><strong>Source 추가</strong><button type="button" onClick={() => { resetDriveSource(); setSourceAddOpen(false); }} disabled={sourceAddPending} aria-label="Source 추가 닫기">×</button></header>
             <nav className="source-add-tabs" aria-label="Source 유형">
-              {[['file', '파일 업로드'], ['website', '웹사이트'], ['drive', 'Drive'], ['text', '복사한 텍스트'], ['mcp', 'MCP 연결']].map(([mode, label]) => <button key={mode} type="button" aria-pressed={sourceAddMode === mode} onClick={() => { setSourceAddMode(mode); setSourceAddError(null); }} disabled={sourceAddPending}>{label}</button>)}
+              {[['file', '파일 업로드'], ['website', '웹사이트'], ['drive', 'Drive'], ['text', '복사한 텍스트'], ['mcp', 'MCP 연결']].map(([mode, label]) => <button key={mode} type="button" aria-pressed={sourceAddMode === mode} onClick={() => { resetDriveSource(); setSourceAddMode(mode); setSourceAddError(null); }} disabled={sourceAddPending}>{label}</button>)}
             </nav>
             {sourceAddMode === "file" ? <label className="source-add-dropzone"><strong>파일을 선택하세요</strong><small>질문·Studio 처리 지원: PDF(문서 모델 필요), TXT/MD/CSV, XLSX(내부 모델·셀 검증 필요), DOCX(제한형 문단·병합 없는 단순 표, 내부 모델·구간 검증 필요), PNG/JPG/JPEG(내부 Vision 모델·OCR 필요). PPTX(제한형 텍스트·병합 없는 단순 표, 내부 모델·원문 검증 필요). WAV(PCM16·1~120초·25MiB, QA 내부 ASR와 의미 모델 필요). MP3/M4A는 미지원</small><input type="file" accept=".pdf,.xlsx,.docx,.pptx,.csv,.txt,.md,.png,.jpg,.jpeg,.wav" onChange={uploadSource} disabled={sourceAddPending} /></label> : null}
             {sourceAddMode === "text" ? <><textarea value={sourceAddText} onChange={(event) => setSourceAddText(event.target.value)} placeholder="복사한 텍스트를 붙여 넣으세요" disabled={sourceAddPending} /><button type="button" className="primary-button" onClick={() => void submitPastedText()} disabled={sourceAddPending || !sourceAddText.trim()}>{sourceAddPending ? "등록 중" : "텍스트 등록"}</button></> : null}
             {sourceAddMode === "mcp" ? <div className="source-add-unavailable"><strong>국가법령정보센터 MCP</strong><small>연결을 등록하면 연결형 Source에서 상태를 확인하고 선택할 수 있습니다.</small><button type="button" className="primary-button" onClick={() => void registerMcpConnector()} disabled={sourceAddPending}>{sourceAddPending ? "등록 중" : "MCP 연결 등록"}</button></div> : null}
             {sourceAddMode === "website" ? <WebsiteSourceForm key={workspaceId} adapter={adapter} onRegistered={()=>{setSourceAddOpen(false);setLoadRevision(current=>current+1);}} /> : null}
-            {sourceAddMode === "drive" ? <div className="source-add-unavailable" role="status"><strong>Drive 연결 준비 필요</strong><small>외부 원본을 가져오는 Connector가 연결되면 이 흐름에서 등록할 수 있습니다.</small></div> : null}
+            {sourceAddMode === "drive" ? <div>
+              <label className="source-add-dropzone"><strong>로컬·Google Drive 파일 선택</strong><small>PC에 연결된 Google Drive 또는 로컬 위치에서 파일 사본을 선택하세요. Google 웹 연결·자동 동기화는 지원하지 않습니다.</small>
+                <input ref={driveInputRef} type="file" aria-label="로컬·Google Drive 파일 선택" accept=".pdf,.xlsx,.docx,.pptx,.csv,.txt,.md,.png,.jpg,.jpeg,.wav" disabled={sourceAddPending}
+                  onClick={resetDriveSource} onCancel={resetDriveSource}
+                  onChange={(event) => { setDriveFile(event.currentTarget.files?.[0] ?? null); setSourceAddError(null); }} />
+              </label>
+              {driveFile ? <p role="status">{driveFile.name.replace(/.*[/\\]/u, "")} · {driveFile.size} bytes · {driveFileError(driveFile) ?? "지원 형식 · 가져오기 전"}</p> : null}
+              <button type="button" className="primary-button" onClick={() => void submitDriveSource()} disabled={sourceAddPending || !driveFile || Boolean(driveFileError(driveFile))}>Drive 파일 가져오기</button>
+            </div> : null}
             {sourceAddPending ? <p className="source-inline-state" role="status">Source 등록·처리 중입니다.</p> : null}
             {sourceAddError ? <div className="inline-alert compact" role="alert">Source를 등록하지 못했습니다. ({sourceAddError})</div> : null}
           </section> : null}
