@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { channel } from "node:diagnostics_channel";
+import { gzipSync, deflateSync, brotliCompressSync } from "node:zlib";
 
 import {
   BffConfigurationError,
@@ -952,7 +956,207 @@ test("BFF exposes only approved Notification and Inbox paths with same-origin CS
   assert.equal(crossOriginCalls, 0);
 });
 
-test("BFF는 grounded question만 model 상한 100초를 사용하고 일반 route 10초는 유지한다", async () => {
+async function localQuestionServer(t, handler) {
+  const server = createServer(handler);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
+  return new URL(`http://127.0.0.1:${server.address().port}`);
+}
+
+function localQuestionRequest(body = '{}', signal) {
+  return new Request('https://app.example.com/bff/api/workspaces/workspace-a/questions', {
+    method: 'POST', signal, body,
+    headers: { Origin: 'https://app.example.com', 'Content-Type': 'application/json',
+      Cookie: '__Host-daon_session=opaque; unrelated=not-forwarded' },
+  });
+}
+
+test('BFF native 질문은 실제 지연 headers/body와 압축을 읽고 일반 fetch는 유지한다', { timeout: 4000 }, async t => {
+  const seen = [], timeouts = [];
+  const baseUrl = await localQuestionServer(t, async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const mode = JSON.parse(Buffer.concat(chunks).toString()).mode;
+    seen.push({ method: request.method, path: request.url, cookie: request.headers.cookie });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    if (mode === 'empty') { response.writeHead(204); response.end(); return; }
+    const payload = Buffer.from(JSON.stringify({ data: { answer: '지연된 응답' }, meta: {} }));
+    const bytes = mode === 'gzip' ? gzipSync(payload) : mode === 'deflate' ? deflateSync(payload)
+      : mode === 'br' ? brotliCompressSync(payload) : payload;
+    response.writeHead(200, { 'Content-Type': 'application/json',
+      ...(mode === 'identity' ? {} : { 'Content-Encoding': mode }),
+      'Set-Cookie': '__Host-daon_session=rotated; Path=/; Secure; HttpOnly', 'X-Trace-Id': 'trace-native' });
+    response.flushHeaders();
+    response.write(bytes.subarray(0, 2));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    response.end(bytes.subarray(2));
+  });
+  const observe = ({ request }) => {
+    if (request.getHeader('host') === baseUrl.host) request.once('response', () => timeouts.push(request.socket.timeout));
+  };
+  channel('http.client.request.start').subscribe(observe);
+  t.after(() => channel('http.client.request.start').unsubscribe(observe));
+  const priorFetch = globalThis.fetch, fetchCalls = [];
+  globalThis.fetch = async url => { fetchCalls.push(String(url)); return Response.json({ ordinary: true }, { status: 202 }); };
+  t.after(() => { globalThis.fetch = priorFetch; });
+  const proxy = createBffProxy({ baseUrl, timeoutMs: 5 });
+  for (const mode of ['identity', 'gzip', 'deflate', 'br', 'empty']) {
+    const result = await proxy(localQuestionRequest(JSON.stringify({ mode })), ['workspaces', 'workspace-a', 'questions']);
+    assert.equal(result.status, mode === 'empty' ? 204 : 200);
+    if (mode === 'empty') assert.equal(await result.text(), '');
+    else {
+      assert.equal((await result.json()).data.answer, '지연된 응답');
+      assert.equal(result.headers.get('set-cookie'), '__Host-daon_session=rotated; Path=/; Secure; HttpOnly');
+      assert.equal(result.headers.has('content-encoding'), false);
+      assert.equal(result.headers.has('content-length'), false);
+      assert.equal(result.headers.get('x-trace-id'), 'trace-native');
+    }
+  }
+  assert.deepEqual(timeouts, [0, 0, 0, 0, 0]);
+  assert.equal(seen.length, 5);
+  assert.ok(seen.every(value => value.method === 'POST'
+    && value.path === '/api/v1/workspaces/workspace-a/questions' && value.cookie === '__Host-daon_session=opaque'));
+  assert.equal((await proxy(new Request('https://app.example.com/bff/api/session'), ['session'])).status, 202);
+  assert.equal((await proxy(localQuestionRequest(), ['workspaces', 'workspace-a', 'questions', 'authorization'])).status, 202);
+  assert.equal(fetchCalls.length, 2);
+  const injected = createBffProxy({ baseUrl, fetchImpl: async () => Response.json({ injected: true }, { status: 201 }) });
+  assert.equal((await injected(localQuestionRequest(), ['workspaces', 'workspace-a', 'questions'])).status, 201);
+});
+
+test('BFF native 질문 client abort는 headers/body 대기 socket을 닫고 499로 정리한다', { timeout: 4000 }, async t => {
+  for (const phase of ['headers', 'body']) {
+    let received, closed;
+    const ready = new Promise(resolve => { received = resolve; });
+    const socketClosed = new Promise(resolve => { closed = resolve; });
+    const baseUrl = await localQuestionServer(t, (request, response) => {
+      request.socket.once('close', closed);
+      if (phase === 'body') { response.writeHead(200, { 'Content-Type': 'application/json' }); response.write('{'); }
+      received();
+    });
+    const proxy = createBffProxy({ baseUrl });
+    const controller = new AbortController();
+    const pending = proxy(localQuestionRequest('{}', controller.signal), ['workspaces', 'workspace-a', 'questions']);
+    await ready;
+    // Let the response stream reach the BFF for the body-phase cancellation.
+    if (phase === 'body') await new Promise(resolve => setTimeout(resolve, 20));
+    controller.abort();
+    const result = await pending;
+    assert.equal(result.status, 499);
+    assert.equal((await result.json()).error.code, 'CLIENT_REQUEST_ABORTED');
+    await socketClosed;
+  }
+});
+
+test('BFF native 질문은 실제 socket 종료를 안전오류로 반환하고 redirect를 추적하지 않는다', { timeout: 4000 }, async t => {
+  let redirectsFollowed = 0;
+  const baseUrl = await localQuestionServer(t, async (request, response) => {
+    if (request.url === '/redirect-target') { redirectsFollowed++; response.end('not allowed'); return; }
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    const mode = JSON.parse(Buffer.concat(chunks).toString()).mode;
+    if (mode === 'redirect') { response.writeHead(302, { Location: '/redirect-target' }); response.end(); }
+    else if (mode === 'broken-body') {
+      response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '100' });
+      response.write('{'); setTimeout(() => response.destroy(), 10);
+    } else request.socket.destroy();
+  });
+  const proxy = createBffProxy({ baseUrl });
+  for (const [mode, status, code] of [
+    ['closed', 503, 'GATEWAY_UNAVAILABLE'], ['broken-body', 502, 'UPSTREAM_RESPONSE_INVALID'],
+    ['redirect', 502, 'UPSTREAM_REDIRECT_REJECTED'],
+  ]) {
+    const result = await proxy(localQuestionRequest(JSON.stringify({ mode })), ['workspaces', 'workspace-a', 'questions']);
+    assert.equal(result.status, status); assert.equal((await result.json()).error.code, code);
+    assert.equal(result.headers.has('location'), false);
+  }
+  assert.equal(redirectsFollowed, 0);
+});
+
+test('BFF native 질문은 HTTP 101 upgrade를 503으로 종료하고 upgraded socket을 닫는다', { timeout: 2000 }, async t => {
+  const controller = new AbortController();
+  let abortTimer, closed;
+  const socketClosed = new Promise(resolve => { closed = resolve; });
+  const baseUrl = await localQuestionServer(t, (request, response) => {
+    request.resume();
+    request.socket.once('close', closed);
+    response.writeHead(101, { Connection: 'Upgrade', Upgrade: 'fixture-private-protocol' });
+    response.flushHeaders();
+    // Observation bound only: a stranded helper returns 499 when this fires.
+    abortTimer = setTimeout(() => controller.abort(), 100);
+  });
+  try {
+    const proxy = createBffProxy({ baseUrl });
+    const result = await proxy(localQuestionRequest('{}', controller.signal), ['workspaces', 'workspace-a', 'questions']);
+    assert.equal(result.status, 503);
+    assert.equal((await result.json()).error.code, 'GATEWAY_UNAVAILABLE');
+    assert.equal(controller.signal.aborted, false);
+    assert.equal(result.headers.has('upgrade'), false);
+    await socketClosed;
+  } finally {
+    clearTimeout(abortTimer);
+    controller.abort();
+  }
+});
+
+test('BFF 질문 기본 대기는 timer 미등록이며 지연 응답 뒤 abort listener를 정리한다',async()=>{
+  const priorSet=globalThis.setTimeout,priorClear=globalThis.clearTimeout;
+  const timers=[],cleared=[];let finish,started;
+  const ready=new Promise(resolve=>{started=resolve;});const controller=new AbortController();
+  let adds=0,removes=0;
+  const signal=controller.signal,add=signal.addEventListener.bind(signal),remove=signal.removeEventListener.bind(signal);
+  signal.addEventListener=(...args)=>{if(args[0]==='abort')adds++;return add(...args);};
+  signal.removeEventListener=(...args)=>{if(args[0]==='abort')removes++;return remove(...args);};
+  globalThis.setTimeout=(fn,ms)=>{const id={fn,ms};timers.push(id);return id;};
+  globalThis.clearTimeout=id=>cleared.push(id);
+  let pending;
+  try{
+    const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async()=>{started();return new Promise(resolve=>{finish=resolve;});}});
+    const request=new Request('https://app.example.com/bff/api/workspaces/workspace-a/questions',{method:'POST',headers:{Origin:'https://app.example.com'},body:'{}'});
+    Object.defineProperty(request,'signal',{value:signal});
+    pending=proxy(request,['workspaces','workspace-a','questions']);await ready;
+    assert.equal(timers.length,0);
+    finish(Response.json({data:{answer:'late fixture'},meta:{}}));
+    assert.equal((await pending).status,200);assert.equal(adds,removes);assert.deepEqual(cleared,[]);
+  }finally{finish?.(Response.json({}));await pending?.catch(()=>{});globalThis.setTimeout=priorSet;globalThis.clearTimeout=priorClear;}
+});
+
+test('BFF 무제한 질문도 client abort는 499이고 upstream과 listener를 정리한다',async()=>{
+  let upstream;const controller=new AbortController();let started;
+  const ready=new Promise(resolve=>{started=resolve;});
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),questionTimeoutMs:null,fetchImpl:async(_url,init)=>{upstream=init.signal;started();return new Promise(()=>{});}});
+  let adds=0,removes=0;const add=controller.signal.addEventListener.bind(controller.signal),remove=controller.signal.removeEventListener.bind(controller.signal);
+  controller.signal.addEventListener=(...args)=>{if(args[0]==='abort')adds++;return add(...args);};
+  controller.signal.removeEventListener=(...args)=>{if(args[0]==='abort')removes++;return remove(...args);};
+  const request=new Request('https://app.example.com/bff/api/workspaces/workspace-a/questions',{method:'POST',headers:{Origin:'https://app.example.com'},body:'{}'});
+  Object.defineProperty(request,'signal',{value:controller.signal});
+  const result=proxy(request,['workspaces','workspace-a','questions']);
+  await ready;controller.abort();const response=await result;
+  assert.equal(response.status,499);assert.equal((await response.json()).error.code,'CLIENT_REQUEST_ABORTED');assert.equal(upstream.aborted,true);assert.equal(adds,removes);
+});
+
+test('BFF 질문 authorization과 법령 조회는 기존 유한 timer를 유지한다',async()=>{
+  const priorSet=globalThis.setTimeout,priorClear=globalThis.clearTimeout;const timers=[];
+  globalThis.setTimeout=(fn,ms)=>{timers.push(ms);return{};};globalThis.clearTimeout=()=>{};
+  try{
+    const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async()=>Response.json({})});
+    for(const tail of ['questions/authorization','connectors/mcp-open-law-go-kr/law-search']){
+      const path=['workspaces','workspace-a',...tail.split('/')];
+      const result=await proxy(new Request('https://app.example.com/bff/api/'+path.join('/'),{method:'POST',headers:{Origin:'https://app.example.com','Content-Type':'application/json',Referer:'https://app.example.com/notebooks/test'},body:'{}'}),path);
+      assert.equal(result.status,200);
+    }
+    assert.deepEqual(timers,[100000,30000]);
+  }finally{globalThis.setTimeout=priorSet;globalThis.clearTimeout=priorClear;}
+});
+
+test('BFF 질문 timeout은 null 또는 유효한 유한값만 허용한다',()=>{
+  for(const value of [undefined,null,10])assert.doesNotThrow(()=>createBffProxy({baseUrl:new URL('https://api.example.com'),questionTimeoutMs:value}));
+  for(const value of [0,-1,true,false,'100',Infinity,NaN,2147483648])assert.throws(()=>createBffProxy({baseUrl:new URL('https://api.example.com'),questionTimeoutMs:value}),BffConfigurationError);
+});
+
+test("BFF는 질문의 명시 유한 예산과 일반 route의 기존 상한을 유지한다", async () => {
   const calls = [];
   const proxy = createBffProxy({
     baseUrl: new URL("https://api.example.com"),

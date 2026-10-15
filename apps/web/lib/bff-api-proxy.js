@@ -67,7 +67,7 @@ const PROVIDER_CODES = new Set([
 ]);
 const STUDIO_QUERY = new Set(["workspace_id", "notebook_id"]);
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
-const GROUNDED_QUESTION_TIMEOUT_MS = 100_000;
+const GROUNDED_QUESTION_TIMEOUT_MS = null;
 
 export class BffConfigurationError extends Error {
   constructor(code) {
@@ -1012,7 +1012,7 @@ function createAbortScope(clientSignal, timeoutMs) {
   if (clientSignal?.aborted) abortForClient();
   else clientSignal?.addEventListener("abort", abortForClient, { once: true });
 
-  const timer = setTimeout(() => {
+  const timer = timeoutMs === null ? null : setTimeout(() => {
     if (controller.signal.aborted) return;
     cause = "timeout";
     controller.abort(new DOMException("Gateway timeout", "TimeoutError"));
@@ -1021,7 +1021,7 @@ function createAbortScope(clientSignal, timeoutMs) {
     signal: controller.signal,
     get cause() { return cause; },
     cleanup() {
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       clientSignal?.removeEventListener("abort", abortForClient);
     },
   };
@@ -1077,13 +1077,68 @@ async function boundedWebsiteResponse(upstream, maximum, signal) {
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
+// Only the browser question POST uses this transport. Node's fetch otherwise
+// imposes its own headers/body deadlines even when our abort timer is absent.
+async function requestQuestionWithoutFetchTimeout(destination, init) {
+  const { request } = await import(destination.protocol === 'https:' ? 'node:https' : 'node:http');
+  const { Readable, pipeline } = await import('node:stream');
+  return new Promise((resolve, reject) => {
+    const headers = new Headers(init.headers);
+    headers.set('accept-encoding', 'identity');
+    const outgoing = request(destination, {
+      method: init.method, headers: Object.fromEntries(headers), signal: init.signal,
+      agent: false, timeout: 0,
+    }, incoming => {
+      // Response errors can arrive while the optional decoder is being loaded.
+      incoming.on('error', reject);
+      const respond = async () => {
+        const responseHeaders = new Headers();
+        for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
+          responseHeaders.append(incoming.rawHeaders[index], incoming.rawHeaders[index + 1]);
+        }
+        const status = incoming.statusCode;
+        if (new Set([204, 205, 304]).has(status) || (status >= 300 && status < 400)) {
+          incoming.destroy();
+          return new Response(null, { status, headers: responseHeaders });
+        }
+        let stream = incoming;
+        const encoding = responseHeaders.get('content-encoding')?.toLowerCase().trim();
+        if (encoding && encoding !== 'identity') {
+          const { createGunzip, createInflate, createBrotliDecompress } = await import('node:zlib');
+          const decoder = encoding === 'gzip' ? createGunzip() : encoding === 'deflate' ? createInflate()
+            : encoding === 'br' ? createBrotliDecompress() : null;
+          if (!decoder) throw new Error('UPSTREAM_RESPONSE_INVALID');
+          // pipeline propagates socket errors and stream cancellation in both directions.
+          pipeline(incoming, decoder, () => {});
+          stream = decoder;
+          responseHeaders.delete('content-encoding');
+          responseHeaders.delete('content-length');
+        }
+        return new Response(Readable.toWeb(stream), { status, headers: responseHeaders });
+      };
+      respond().then(resolve, error => { incoming.destroy(); reject(error); });
+    });
+    outgoing.on('socket', socket => socket.setTimeout(0));
+    outgoing.on('upgrade', (_incoming, socket) => {
+      socket.destroy();
+      reject(new Error('UPSTREAM_UPGRADE_REJECTED'));
+    });
+    outgoing.on('error', reject);
+    outgoing.end(init.body === undefined ? undefined : Buffer.from(init.body));
+  });
+}
+
 export function createBffProxy({
-  baseUrl, publicOrigin, fetchImpl = fetch, timeoutMs = 10_000,
+  baseUrl, publicOrigin, fetchImpl, timeoutMs = 10_000,
   questionTimeoutMs = GROUNDED_QUESTION_TIMEOUT_MS,
   browserCookieName = SESSION_COOKIE_NAME,
 }) {
   if (!(baseUrl instanceof URL)) {
     throw new BffConfigurationError("BFF_INTERNAL_API_URL_REQUIRED");
+  }
+  if (questionTimeoutMs !== null && (typeof questionTimeoutMs !== 'number' || !Number.isFinite(questionTimeoutMs)
+      || questionTimeoutMs <= 0 || questionTimeoutMs > 2_147_483_647)) {
+    throw new BffConfigurationError('BFF_QUESTION_TIMEOUT_INVALID');
   }
   if (publicOrigin !== undefined && !(publicOrigin instanceof URL)) {
     throw new BffConfigurationError("BFF_PUBLIC_GATEWAY_URL_REQUIRED");
@@ -1091,6 +1146,8 @@ export function createBffProxy({
   if (!new Set([SESSION_COOKIE_NAME, WSL_HTTP_SESSION_COOKIE_NAME]).has(browserCookieName)) {
     throw new BffConfigurationError("BFF_SESSION_COOKIE_NAME_INVALID");
   }
+  const defaultFetch = fetchImpl === undefined;
+  const forwardFetch = defaultFetch ? fetch : fetchImpl;
   return async function proxy(request, pathSegments, providedTrace) {
     const trace = providedTrace ?? createBffTraceId(request);
     const route = routeFor(request.method, pathSegments);
@@ -1134,6 +1191,9 @@ export function createBffProxy({
       if (REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
     }
     let credential;
+    const nativeQuestion = defaultFetch && request.method === 'POST'
+      && route.groundedQuestion && route.path.endsWith('/questions');
+    let upstream;
     try {
       credential = sessionCookie(request, browserCookieName);
     } catch {
@@ -1160,7 +1220,8 @@ export function createBffProxy({
     const init = { method: request.method, headers, redirect: "manual" };
     const abortScope = createAbortScope(
       request.signal,
-      route.law ? 30_000 : route.websiteImport || websiteQuery ? 25_000 : route.groundedQuestion ? questionTimeoutMs : timeoutMs,
+      route.law ? 30_000 : route.websiteImport || websiteQuery ? 25_000 : route.groundedQuestion
+        ? (route.path.endsWith('/questions') ? questionTimeoutMs : questionTimeoutMs ?? 100_000) : timeoutMs,
     );
     try {
       if (abortScope.signal.aborted) return cancellationError(abortScope, trace);
@@ -1193,10 +1254,9 @@ export function createBffProxy({
         } else init.body = body;
       }
 
-      let upstream;
       try {
         upstream = await waitWithAbort(
-          fetchImpl(destination, { ...init, signal: abortScope.signal }),
+          (nativeQuestion ? requestQuestionWithoutFetchTimeout : forwardFetch)(destination, { ...init, signal: abortScope.signal }),
           abortScope.signal,
         );
       } catch {
@@ -1266,6 +1326,9 @@ export function createBffProxy({
       }
       return new Response(body, { status: upstream.status, headers: responseHeaders });
     } finally {
+      if (nativeQuestion && upstream?.body && !upstream.body.locked) {
+        await upstream.body.cancel().catch(() => {});
+      }
       abortScope.cleanup();
     }
   };

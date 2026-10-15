@@ -259,7 +259,7 @@ def _source_boundary_event(
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 _SOURCE_UPLOAD_PATH = re.compile(r"^/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/sources$")
 _SOURCE_FILENAME = re.compile(r"^[^/\\\x00-\x1f]{1,251}$")
-_QUESTION_REQUEST_TIMEOUT_SECONDS = 95.0
+_QUESTION_REQUEST_TIMEOUT_SECONDS = None
 _RFC1918_NETWORKS = tuple(
     ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 )
@@ -281,12 +281,12 @@ def _is_private_http_gateway(parsed: object) -> bool:
     )
 
 
-def request_timeout_for_path(settings: "RuntimeSettings", path: str) -> float:
+def request_timeout_for_path(settings: "RuntimeSettings", path: str, *, method: str = 'POST') -> float | None:
     if re.fullmatch(r'/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/(?:connectors/mcp-open-law-go-kr/law-(?:search|preview|imports)|source-versions/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/law-snapshot)',path):
         return 25.0
     if re.fullmatch(r"/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/website-imports", path):
         return 20.0
-    if re.fullmatch(r"/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/questions", path):
+    if method == 'POST' and re.fullmatch(r"/api/v1/workspaces/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}/questions", path):
         return _QUESTION_REQUEST_TIMEOUT_SECONDS
     return settings.request_timeout_seconds
 
@@ -2251,7 +2251,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             async def timed_handler(request: Request) -> Response:
                 website=request.url.path.endswith('/website-imports')
                 law=request.url.path.endswith(('/law-search','/law-preview','/law-imports','/law-snapshot'))
-                budget=request_timeout_for_path(dependencies.settings, request.url.path)
+                budget=request_timeout_for_path(dependencies.settings, request.url.path, method=request.method)
                 if website:
                     request.state.website_deadline=time.monotonic()+budget
                 if law:request.state.law_deadline=time.monotonic()+budget

@@ -103,7 +103,7 @@ class TextGenerationTransport(Protocol):
         timeout_seconds: float,
     ) -> dict[str, object]: ...
     def post_json_no_auth(
-        self, *, url: str, payload: dict[str, object], timeout_seconds: float,
+        self, *, url: str, payload: dict[str, object], timeout_seconds: float | None,
     ) -> dict[str, object]: ...
     def post_json_headers(
         self, *, url: str, headers: Mapping[str, str], payload: dict[str, object],
@@ -403,11 +403,16 @@ class UpstageTextGenerationAdapter(OpenAICompatibleTextGenerationAdapter):
 class OllamaTextGenerationAdapter:
     """Server-only Ollama chat adapter using the selected model and grounded JSON."""
 
-    def __init__(self, *, transport: TextGenerationTransport, timeout_seconds: float = 90.0) -> None:
-        if not 1 <= timeout_seconds <= 120:
+    def __init__(self, *, transport: TextGenerationTransport, timeout_seconds: float | None = None) -> None:
+        if timeout_seconds is not None and (type(timeout_seconds) not in (int,float) or not 1 <= timeout_seconds <= 120):
             raise ValueError("TEXT_ADAPTER_CONFIG_INVALID")
         self._transport = transport
         self._timeout_seconds = timeout_seconds
+
+    def _generation_timeout(self, selection: TextModelSelection) -> float | None:
+        if self._timeout_seconds is None and selection.provider_kind not in {'local','server_internal','local_runtime'}:
+            return 90.0
+        return self._timeout_seconds
 
     @staticmethod
     def _base_url(selection: TextModelSelection) -> str:
@@ -710,7 +715,7 @@ class OllamaTextGenerationAdapter:
         response = self._transport.post_json_no_auth(
             url=f"{self._base_url(selection)}/api/chat",
             payload=provider_payload or self.provider_payload(request, selection),
-            timeout_seconds=self._timeout_seconds,
+            timeout_seconds=self._generation_timeout(selection),
         )
         try:
             message = cast(dict[str, object], response["message"])
@@ -781,7 +786,7 @@ class OllamaTextGenerationAdapter:
         response = self._transport.post_json_no_auth(
             url=f"{self._base_url(selection)}/api/chat",
             payload=provider_payload or self.general_provider_payload(request, selection),
-            timeout_seconds=self._timeout_seconds,
+            timeout_seconds=self._generation_timeout(selection),
         )
         try:
             message = cast(dict[str, object], response["message"])

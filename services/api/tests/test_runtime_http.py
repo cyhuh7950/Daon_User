@@ -854,6 +854,34 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["error"]["code"], "REQUEST_TIMEOUT")
         self.assertTrue(cancelled)
 
+    async def test_question_route_waits_past_normal_budget_and_preserves_task_cancellation(self) -> None:
+        dependencies=RuntimeDependencies(settings=replace(self.settings,request_timeout_seconds=0.005),
+            identity_service=self.identity,authorization_service=self.authorization,audit_store=self.audit,
+            identity_repository=self.identity_repository,authorization_repository=self.authorization_repository)
+        app=create_app(dependencies);started=asyncio.Event();finished=asyncio.Event();cancel=False
+        @app.post('/api/v1/workspaces/test/questions')
+        async def fixture_question():
+            started.set()
+            try:
+                if cancel:await asyncio.Event().wait()
+                else:await asyncio.sleep(0.02)
+                return {'completed':True}
+            finally:finished.set()
+        # A test-only handler exercises the real timed route, not auth/model success.
+        app.router.routes.insert(0,app.router.routes.pop())
+        budgets=[];original_timeout=asyncio.timeout
+        def timeout_scope(value):budgets.append(value);return original_timeout(value)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            with patch('daon_user_api.runtime.asyncio.timeout',side_effect=timeout_scope):
+                result=await client.post('/api/v1/workspaces/test/questions',json={})
+                self.assertEqual(result.status_code,200);self.assertEqual(result.json(),{'completed':True})
+                cancel=True;started.clear();finished.clear()
+                task=asyncio.create_task(client.post('/api/v1/workspaces/test/questions',json={}))
+                await started.wait();task.cancel()
+                with self.assertRaises(asyncio.CancelledError):await task
+                self.assertTrue(finished.is_set())
+        self.assertEqual(budgets,[None,None])
+
     async def test_shutdown_drops_ready_and_rejects_new_business_requests(self) -> None:
         self.dependencies.state.begin_shutdown()
         ready = await self.client.get("/health/ready")
@@ -866,9 +894,12 @@ class RuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeSettingsTests(unittest.TestCase):
-    def test_grounded_question_only_gets_bounded_model_timeout(self) -> None:
+    def test_only_exact_question_post_has_no_wait_limit(self) -> None:
         settings = RuntimeSettings.for_test(database_path=Path("runtime.sqlite3"), policy_version="policy-v1")
-        self.assertEqual(request_timeout_for_path(settings, "/api/v1/workspaces/workspace-a/questions"), 95.0)
+        self.assertIsNone(request_timeout_for_path(settings, "/api/v1/workspaces/workspace-a/questions",method='POST'))
+        self.assertEqual(request_timeout_for_path(settings, "/api/v1/workspaces/workspace-a/questions",method='GET'),30.0)
+        self.assertEqual(request_timeout_for_path(settings, "/api/v1/workspaces/workspace-a/questions/authorization",method='POST'),30.0)
+        self.assertEqual(request_timeout_for_path(settings, "/api/v1/workspaces/workspace-a/connectors/mcp-open-law-go-kr/law-search",method='POST'),25.0)
         self.assertEqual(request_timeout_for_path(settings, "/api/v1/session"), 30.0)
 
     def test_object_storage_requires_complete_secret_references_and_build_is_lazy(self) -> None:

@@ -93,7 +93,7 @@ class CanonicalTextQaThinkingTests(unittest.TestCase):
                 self.assertEqual(baseline, saved)
                 self.assertEqual(adapter.generate(request, selection, provider_payload=prepared).answer, 'Example Domain')
                 self.assertEqual(prepared['options']['num_predict'], 512)
-                self.assertEqual(transport.calls[-1]['timeout_seconds'], 90)
+                self.assertIsNone(transport.calls[-1]['timeout_seconds'])
 
     def test_arbitrary_forged_mixed_and_empty_sections_never_request_metadata(self):
         from dataclasses import replace
@@ -180,6 +180,35 @@ class CanonicalTextQaThinkingTests(unittest.TestCase):
                         adapter.generate(request,self.selection(),provider_payload=payload)
 
 
+class OllamaQuestionWaitTests(unittest.TestCase):
+    def test_internal_ollama_default_and_explicit_none_wait_without_changing_grounding(self):
+        request=GroundedQuestionRequest('title?',(IndexedEvidenceChunk('chunk','source','version',1,'Example Domain','span'),),'trace')
+        for options,want in (({},None),({'timeout_seconds':None},None),({'timeout_seconds':7.5},7.5)):
+            with self.subTest(options=options):
+                calls=[]
+                class Transport:
+                    def post_json_no_auth(self,**kwargs):
+                        calls.append(kwargs)
+                        return {'message':{'content':json.dumps({'answer':'Example Domain','cited_chunk_ids':['chunk'],'insufficient':False})}}
+                adapter=OllamaTextGenerationAdapter(transport=Transport(),**options)
+                selection=TextModelSelection('OLLAMA','http://models.example.com','profile','deployment','fixture',1,'server_internal')
+                self.assertEqual(adapter.generate(request,selection).answer,'Example Domain')
+                self.assertEqual(calls[0]['timeout_seconds'],want)
+                self.assertEqual(calls[0]['payload']['options']['num_predict'],512)
+
+    def test_ollama_invalid_waits_rejected_and_external_ollama_keeps_finite_default(self):
+        for value in (True,False,0,-1,'90',float('inf'),float('nan'),121):
+            with self.subTest(value=value),self.assertRaises(ValueError):
+                OllamaTextGenerationAdapter(transport=object(),timeout_seconds=value)
+        calls=[]
+        class Transport:
+            def post_json_no_auth(self,**kwargs):
+                calls.append(kwargs);return {'message':{'content':'{"answer":"hello"}'}}
+        selection=TextModelSelection('OLLAMA','https://models.example.com','profile','deployment','fixture',1,'external_api')
+        OllamaTextGenerationAdapter(transport=Transport()).generate_general(GeneralConversationRequest('hello','trace'),selection)
+        self.assertEqual(calls[0]['timeout_seconds'],90.0)
+
+
 class WebsiteQaThinkingTests(unittest.TestCase):
     @staticmethod
     def request(count=1):
@@ -222,7 +251,7 @@ class WebsiteQaThinkingTests(unittest.TestCase):
                 self.assertEqual(prepared,{**saved,'think':False});self.assertEqual(baseline,saved)
                 self.assertEqual(adapter.generate(request,selection,provider_payload=prepared).answer,'Example Domain')
                 self.assertEqual([call['url'].rsplit('/',1)[-1] for call in transport.calls],['tags','show','tags','chat'])
-                self.assertEqual(transport.calls[-1]['timeout_seconds'],90)
+                self.assertIsNone(transport.calls[-1]['timeout_seconds'])
                 self.assertEqual(prepared['options']['num_predict'],512)
 
     def test_nonweb_mixed_version_external_and_six_sections_keep_original_without_metadata(self):
@@ -326,7 +355,7 @@ class OpenLawQaThinkingTests(unittest.TestCase):
                 self.assertEqual(prepared,{**saved,'think':False});self.assertEqual(baseline,saved)
                 self.assertEqual(adapter.generate(request,selection,provider_payload=prepared).answer,'Example Domain')
                 self.assertEqual([call['url'].rsplit('/',1)[-1] for call in transport.calls],['tags','show','tags','chat'])
-                self.assertEqual(transport.calls[-1]['timeout_seconds'],90);self.assertEqual(prepared['options']['num_predict'],512)
+                self.assertIsNone(transport.calls[-1]['timeout_seconds']);self.assertEqual(prepared['options']['num_predict'],512)
 
     def test_law_contaminated_ids_spans_offsets_or_mixed_sources_never_read_metadata(self):
         import hashlib
@@ -543,7 +572,7 @@ class QuestionAnsweringContractTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError,'TEXT_GENERATION_GROUNDING_INVALID'):
                         adapter.generate(request,selection,provider_payload=prepared)
-        self.assertEqual(calls[3]['timeout_seconds'],90)
+        self.assertIsNone(calls[3]['timeout_seconds'])
 
     def test_docx_internal_chunk_id_echo_is_still_rejected_while_original_identifier_is_valid(self):
         chunk_id = 'chunk-a72cd9210f48b63e'

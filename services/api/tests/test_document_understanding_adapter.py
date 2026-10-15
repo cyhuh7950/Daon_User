@@ -88,6 +88,19 @@ class RecordingTransport:
         }
 
 
+class OptionalQuestionTransportWaitTests(unittest.TestCase):
+    def test_json_question_transport_passes_none_or_finite_wait_to_opener(self):
+        waits=[]
+        class Opener:
+            def open(self,request,timeout):
+                waits.append(timeout);return io.BytesIO(b'{"message":{"content":"ok"}}')
+        with patch('daon_user_api.document_understanding_adapter.urllib.request.build_opener',return_value=Opener()):
+            for wait in (None,5.0):
+                result=UrlLibDocumentUnderstandingTransport().post_json_no_auth(url='http://models.example.com/api/chat',payload={},timeout_seconds=wait)
+                self.assertEqual(result['message']['content'],'ok')
+        self.assertEqual(waits,[None,5.0])
+
+
 class DocumentModelSelectionTests(unittest.TestCase):
     def test_selected_vision_and_parser_deployments_are_frozen_from_snapshot(self) -> None:
         selection = resolve_document_model_selection(provider_snapshot())

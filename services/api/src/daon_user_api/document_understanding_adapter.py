@@ -240,7 +240,7 @@ class UrlLibDocumentUnderstandingTransport:
     def __init__(self, *, disable_environment_proxy: bool = False) -> None:
         self._disable_environment_proxy = disable_environment_proxy
 
-    def _request(self, request: urllib.request.Request, timeout_seconds: float) -> dict[str, object]:
+    def _request(self, request: urllib.request.Request, timeout_seconds: float | None) -> dict[str, object]:
         try:
             handlers = (urllib.request.ProxyHandler({}), _NoRedirectHandler()) if self._disable_environment_proxy else (_NoRedirectHandler(),)
             opener = urllib.request.build_opener(*handlers)
@@ -275,7 +275,7 @@ class UrlLibDocumentUnderstandingTransport:
         return self._request(request, timeout_seconds)
 
     def post_json_no_auth(
-        self, *, url: str, payload: dict[str, object], timeout_seconds: float,
+        self, *, url: str, payload: dict[str, object], timeout_seconds: float | None,
     ) -> dict[str, object]:
         request = urllib.request.Request(
             url, data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),

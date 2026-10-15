@@ -375,7 +375,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
                         GroundedQuestionRequest(args["question"], evidence, "trace-cp3"), selection,
                     ))
                     self.assertEqual(egress.wire, egress.prepare_payload(context, canonical_json_bytes(original)))
-                self.assertEqual(chat["timeout_seconds"], 90)
+                self.assertIsNone(chat["timeout_seconds"])
                 self.assertEqual(chat["payload"]["options"]["num_predict"], 64 if general else 512)
                 self.assertEqual(answer.insufficient, insufficient)
                 self.assertIsNotNone(repository.persisted)
@@ -1009,7 +1009,7 @@ class QuestionAnsweringServiceTests(unittest.TestCase):
         self.assertEqual(transport.calls[0]["payload"]["model"], "llama3.2:3b")
         self.assertEqual(transport.calls[0]["payload"]["options"], {"num_predict": 512, "temperature": 0})
         self.assertEqual(transport.calls[0]["payload"]["keep_alive"], "5m")
-        self.assertEqual(transport.calls[0]["timeout_seconds"], 90.0)
+        self.assertIsNone(transport.calls[0]["timeout_seconds"])
         self.assertNotIn("api_key", transport.calls[0])
 
     def test_snapshot_is_resolved_once_and_grounded_result_is_persisted(self) -> None:
