@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -437,6 +438,32 @@ class OllamaTextGenerationAdapter:
             and item.evidence_span_id == "web-span-" + item.chunk_id.removeprefix("web-chunk-")
             for item in request.evidence
         )
+        # Stored text_source_verbatim_fact projects TXT/MD/CSV to section/None.
+        # Match the existing canonical index IDs, not arbitrary section labels.
+        # Search may reorder/filter the original 1..5 semantic fact ordinals.
+        # Authorization and original validation remain at the repository/index
+        # boundary; these hashes are identity checks, not access credentials.
+        def canonical_text(item: IndexedEvidenceChunk) -> bool:
+            if not (
+                item.locator_kind == "section" and item.locator_value is None
+                and isinstance(item.source_id, str)
+                and re.fullmatch(r"src-[0-9a-f]{32}", item.source_id) is not None
+                and item.source_version_id == "sv-" + item.source_id.removeprefix("src-")
+                and type(item.page) is int and item.page == 1
+                and isinstance(item.text, str) and bool(item.text)
+            ):
+                return False
+            chunks = {
+                "chunk-" + hashlib.sha256(
+                    f"{item.source_version_id}|{ordinal}|{item.text}".encode("utf-8")
+                ).hexdigest()[:32]
+                for ordinal in range(1, 6)
+            }
+            return item.chunk_id in chunks and item.evidence_span_id == (
+                "span-" + hashlib.sha256(f"{item.chunk_id}|1".encode("utf-8")).hexdigest()[:32]
+            )
+
+        text_source = all(canonical_text(item) for item in request.evidence)
         if not (
             selection.provider_code == "OLLAMA"
             and selection.provider_kind in {"local", "server_internal", "local_runtime"}
@@ -445,7 +472,7 @@ class OllamaTextGenerationAdapter:
                  or all(item.locator_kind == "docx_block" for item in request.evidence)
                  or all(item.locator_kind == "pptx_block" for item in request.evidence)
                  or all(item.locator_kind == "audio_segment" for item in request.evidence)
-                 or website)
+                 or website or text_source)
             and len({(item.source_id, item.source_version_id) for item in request.evidence}) == 1
         ):
             return payload

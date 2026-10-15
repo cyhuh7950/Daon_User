@@ -59,6 +59,127 @@ def external_text_snapshot(provider_code: str, base_url: str) -> ProviderSetting
     )
 
 
+class CanonicalTextQaThinkingTests(unittest.TestCase):
+    selection = staticmethod(lambda: WebsiteQaThinkingTests.selection())
+
+    @staticmethod
+    def request(count=1):
+        # Canonical index IDs for SV a*32, fact 'Example Domain', page 1,
+        # original semantic ordinals 1..5 (retrieval order need not match).
+        ids = (
+            ('chunk-7b20a832eeab13734ede71bae272be21', 'span-4aa4328bad428e9ae69e0b653a2be282'),
+            ('chunk-5f10733dfd9c5d9c0d4c89958b2a2339', 'span-535339958514b5964be84174e59ab6ef'),
+            ('chunk-fc7c124f4deab85a92b4b501dad1909f', 'span-3182090e49d8de2c3fbe0755e7fa7992'),
+            ('chunk-482bdc89bd8095ae434817af299df6da', 'span-96450aad80daa61397ad4d863d0b494b'),
+            ('chunk-8fe8d3ed387d50b604daa65f50171142', 'span-04ef6aceaa24adfc17ad2e1150698e3a'),
+        )
+        return GroundedQuestionRequest('What is the domain title?', tuple(
+            IndexedEvidenceChunk(chunk, 'src-'+'a'*32, 'sv-'+'a'*32,
+                1, 'Example Domain', span, 0.0, 'section', None)
+            for chunk, span in ids[:count]), 'trace-text')
+
+    def test_canonical_text_thinking_budget_only_changes_think_and_retains_grounding(self):
+        for count in (1, 5):
+            with self.subTest(count=count):
+                transport = WebsiteQaThinkingTests.Transport()
+                adapter = OllamaTextGenerationAdapter(transport=transport)
+                request, selection = self.request(count), self.selection()
+                baseline = adapter.provider_payload(request, selection)
+                saved = deepcopy(baseline)
+                with self.assertRaisesRegex(ValueError, '^TEXT_GENERATION_RESPONSE_INVALID$'):
+                    adapter.generate(request, selection, provider_payload=baseline)
+                prepared = adapter.prepare_qa_structured_payload(request, selection, baseline)
+                self.assertEqual(prepared, {**saved, 'think': False})
+                self.assertEqual(baseline, saved)
+                self.assertEqual(adapter.generate(request, selection, provider_payload=prepared).answer, 'Example Domain')
+                self.assertEqual(prepared['options']['num_predict'], 512)
+                self.assertEqual(transport.calls[-1]['timeout_seconds'], 90)
+
+    def test_arbitrary_forged_mixed_and_empty_sections_never_request_metadata(self):
+        from dataclasses import replace
+        item = self.request().evidence[0]
+        cases = [(), (replace(item, source_id='source-text'),),
+            (replace(item, source_version_id='sv-'+'b'*32),),
+            (replace(item, chunk_id='chunk-'+'b'*32),),
+            (replace(item, evidence_span_id='span-'+'b'*32),),
+            (replace(item, text='changed'),), (replace(item, page=2),),
+            (replace(item, locator_value='arbitrary'),), (replace(item, locator_kind='page'),),
+            (item, replace(item, source_id='src-'+'b'*32)),
+            self.request(5).evidence + (item,),
+        ]
+        for evidence in cases:
+            with self.subTest(evidence=evidence):
+                transport = WebsiteQaThinkingTests.Transport()
+                adapter = OllamaTextGenerationAdapter(transport=transport)
+                if not evidence:
+                    with self.assertRaisesRegex(ValueError, '^QUESTION_REQUEST_INVALID$'):
+                        GroundedQuestionRequest('title?', evidence, 'trace-text')
+                    self.assertEqual(transport.calls, [])
+                    continue
+                request = GroundedQuestionRequest('title?', evidence, 'trace-text')
+                payload = adapter.provider_payload(request, self.selection())
+                self.assertIs(adapter.prepare_qa_structured_payload(request, self.selection(), payload), payload)
+                self.assertEqual(transport.calls, [])
+
+    def test_text_metadata_fail_closed_and_nonthinking_or_other_provider_unchanged(self):
+        from dataclasses import replace
+        request, selection = self.request(), self.selection()
+        for invalid in ('digest', 'remote', 'model', 'metadata'):
+            with self.subTest(invalid=invalid):
+                transport = WebsiteQaThinkingTests.Transport(invalid=invalid)
+                adapter = OllamaTextGenerationAdapter(transport=transport)
+                with self.assertRaisesRegex(ValueError, '^TEXT_GENERATION_RESPONSE_INVALID$'):
+                    adapter.prepare_qa_structured_payload(request, selection, adapter.provider_payload(request, selection))
+                self.assertFalse(any(c['url'].endswith('/api/chat') for c in transport.calls))
+        for target in (selection, replace(selection, provider_kind='external_api'), replace(selection, provider_code='CUSTOM')):
+            transport = WebsiteQaThinkingTests.Transport(thinking=False)
+            adapter = OllamaTextGenerationAdapter(transport=transport)
+            payload = adapter.provider_payload(request, target)
+            self.assertIs(adapter.prepare_qa_structured_payload(request, target, payload), payload)
+            if target != selection: self.assertEqual(transport.calls, [])
+
+    def test_text_service_exact_workspace_and_general_gate(self):
+        from daon_user_api.question_answering_service import QuestionAnsweringService, QuestionAdapterRegistry
+        from daon_user_api.question_answering_postgres import QuestionContext
+        for target, workspace in (('workspace-qa','workspace-other'), ('','workspace-qa'), ('workspace-qa','workspace-qa')):
+            for general in (False, True):
+                with self.subTest(target=target, workspace=workspace, general=general):
+                    transport = WebsiteQaThinkingTests.Transport()
+                    adapter = OllamaTextGenerationAdapter(transport=transport)
+                    request = GeneralConversationRequest('hello', 'trace-text') if general else self.request()
+                    payload = adapter.general_provider_payload(request,self.selection()) if general else adapter.provider_payload(request,self.selection())
+                    prepared = QuestionAdapterRegistry.Prepared(request,self.selection(),adapter,payload)
+                    service = object.__new__(QuestionAnsweringService)
+                    service._qa_structured_ollama_workspace_id = target
+                    result = service._prepare_qa_structured_payload(QuestionContext('tenant',workspace,'actor','trace','policy','notebook'), prepared)
+                    if target and target == workspace and not general:
+                        self.assertEqual(result.provider_payload, {**payload, 'think':False})
+                    else:
+                        self.assertIs(result, prepared); self.assertEqual(transport.calls, [])
+
+    def test_filtered_last_ordinal_keeps_canonical_identity_and_strict_response_checks(self):
+        from dataclasses import replace
+        request = replace(self.request(5), evidence=(self.request(5).evidence[-1],))
+        for answer, cited in (('Example Domain', [request.evidence[0].chunk_id]),
+                              ('Invented SKU-777', [request.evidence[0].chunk_id]),
+                              ('Example Domain', ['invented-chunk'])):
+            with self.subTest(answer=answer, cited=cited):
+                transport = WebsiteQaThinkingTests.Transport()
+                original = transport.post_json_no_auth
+                def response(**kwargs):
+                    if kwargs['url'].endswith('/api/show'): return original(**kwargs)
+                    return {'message': {'content': json.dumps({'answer':answer, 'cited_chunk_ids':cited, 'insufficient':False})}}
+                transport.post_json_no_auth = response
+                adapter = OllamaTextGenerationAdapter(transport=transport)
+                payload = adapter.prepare_qa_structured_payload(request, self.selection(), adapter.provider_payload(request,self.selection()))
+                self.assertIs(payload.get('think'), False)
+                if answer == 'Example Domain' and cited == [request.evidence[0].chunk_id]:
+                    self.assertEqual(adapter.generate(request,self.selection(),provider_payload=payload).answer, answer)
+                else:
+                    with self.assertRaisesRegex(ValueError, '^TEXT_GENERATION_GROUNDING_INVALID$'):
+                        adapter.generate(request,self.selection(),provider_payload=payload)
+
+
 class WebsiteQaThinkingTests(unittest.TestCase):
     @staticmethod
     def request(count=1):
