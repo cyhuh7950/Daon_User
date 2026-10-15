@@ -374,7 +374,8 @@ export async function reconnectWorkspaceConnector(workspaceId, connectorId, { fe
   if (!safeId(connectorId)) throw new Error("CONNECTOR_INPUT_INVALID");
   const data = await connectorRequest(workspace, `/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}/reconnect`, {
     fetchImpl,
-    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal },
+    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal,
+      ...(connectorId === "mcp-open-law-go-kr" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}) },
   });
   if (!validConnector(data)) throw new Error("CONNECTOR_RESPONSE_INVALID");
   return data;
@@ -385,7 +386,8 @@ export async function disconnectWorkspaceConnector(workspaceId, connectorId, { f
   if (!safeId(connectorId)) throw new Error("CONNECTOR_INPUT_INVALID");
   const data = await connectorRequest(workspace, `/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}/disconnect`, {
     fetchImpl,
-    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal },
+    init: { method: "POST", credentials: "same-origin", cache: "no-store", signal,
+      ...(connectorId === "mcp-open-law-go-kr" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}) },
   });
   if (!validConnector(data)) throw new Error("CONNECTOR_RESPONSE_INVALID");
   return data;
@@ -396,6 +398,7 @@ export async function unregisterWorkspaceConnector(workspaceId, connectorId, { f
   if (!safeId(connectorId)) throw new Error("CONNECTOR_INPUT_INVALID");
   const response = await fetchImpl(`/bff/api/workspaces/${encodeURIComponent(workspace)}/connectors/${encodeURIComponent(connectorId)}`, {
     method: "DELETE", credentials: "same-origin", cache: "no-store", signal,
+    ...(connectorId === "mcp-open-law-go-kr" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}),
   });
   if (!response.ok) {
     const payload = await json(response, "CONNECTOR_DELETE_FAILED");

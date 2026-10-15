@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
 import * as api from '../../apps/web/lib/product-workspace-api.js';
+import { createBffProxy } from '../../apps/web/lib/bff-api-proxy.js';
 
 const source='law-source-'+ 'a'.repeat(32), version='law-version-'+ 'a'.repeat(32), snapshotId='law-snapshot-'+ 'a'.repeat(32);
 const text='제1조 합성 원문\n<script>실행 금지</script>';
@@ -12,6 +13,67 @@ const snapshot={snapshot_id:snapshotId,connector_id:'mcp-open-law-go-kr',source_
   raw_sha256:preview.raw_sha256,text_sha256:preview.text_sha256,extraction_version:preview.extraction_version,license_status:'unknown'};
 const meta={trace_id:'trace-law'};
 const response=data=>Response.json({data,meta});
+
+const lawConnector={connector_id:'mcp-open-law-go-kr',kind:'mcp',name:'국가법령정보센터',status:'unavailable',source_count:0,endpoint_label:'www.law.go.kr',last_checked_at:null,error_code:'CONNECTOR_NOT_VERIFIED'};
+const connectorActions=[
+  ['reconnect',api.reconnectWorkspaceConnector,'POST','/reconnect'],
+  ['disconnect',api.disconnectWorkspaceConnector,'POST','/disconnect'],
+  ['unregister',api.unregisterWorkspaceConnector,'DELETE',''],
+];
+
+function connectorBffWire(mutate=()=>{}){
+  const upstream=[],statuses=[];
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),publicOrigin:new URL('https://app.example.com'),fetchImpl:async(url,init)=>{
+    const request=new Request(url,init);upstream.push(request);
+    // API runtime의 기존 write MIME 계약을 고정한다. 실제 API/DB 호출이 아니다.
+    if(request.headers.get('content-type')?.split(';',1)[0]!=='application/json')
+      return Response.json({error:{code:'UNSUPPORTED_MEDIA_TYPE'}},{status:415});
+    assert.equal(request.headers.get('cookie'),'__Host-daon_session=fixture-session');
+    assert.equal(request.headers.get('authorization'),null);
+    assert.equal(await request.text(),'{}');
+    return init.method==='DELETE'?new Response(null,{status:204}):Response.json({data:lawConnector,meta:{...meta,workspace_id:'workspace-law'}});
+  }});
+  const fetchImpl=async(url,init)=>{
+    assert.equal(init.credentials,'same-origin');assert.equal(init.cache,'no-store');
+    const request=new Request(new URL(url,'https://app.example.com'),init);
+    // 브라우저가 제공하는 same-origin 세션과 Origin만 연결한다. MIME/body는 실제 helper 값이다.
+    request.headers.set('Origin','https://app.example.com');
+    request.headers.set('Cookie','__Host-daon_session=fixture-session');
+    mutate(request);
+    const result=await proxy(request,new URL(request.url).pathname.slice('/bff/api/'.length).split('/'));
+    statuses.push(result.status);return result;
+  };
+  return{fetchImpl,upstream,statuses};
+}
+
+test('법령 Connector 세 동작은 실제 helper → Request → BFF에 JSON 빈 객체를 전달한다',async t=>{
+  for(const [name,action,method,tail] of connectorActions)await t.test(name,async()=>{
+    const wire=connectorBffWire();
+    await action('workspace-law','mcp-open-law-go-kr',{fetchImpl:wire.fetchImpl});
+    assert.deepEqual(wire.statuses,[method==='DELETE'?204:200]);
+    assert.equal(wire.upstream.length,1);assert.equal(wire.upstream[0].method,method);
+    assert.equal(wire.upstream[0].url,`https://api.example.com/api/v1/workspaces/workspace-law/connectors/mcp-open-law-go-kr${tail}`);
+  });
+});
+
+test('법령 Connector 잘못된 MIME은 세 동작 모두 기존 BFF → API 계약에서 415로 거부한다',async()=>{
+  for(const [,action] of connectorActions){
+    const wire=connectorBffWire(request=>request.headers.set('Content-Type','text/plain'));
+    await assert.rejects(action('workspace-law','mcp-open-law-go-kr',{fetchImpl:wire.fetchImpl}),/UNSUPPORTED_MEDIA_TYPE/);
+    assert.deepEqual(wire.statuses,[415]);assert.equal(wire.upstream.length,1);
+  }
+});
+
+test('다른 Connector 세 동작은 기존 empty wire를 변경하지 않는다',async()=>{
+  for(const [,action,method] of connectorActions){
+    const calls=[];
+    await action('workspace-law','connector-other',{fetchImpl:async(url,init)=>{
+      calls.push({url,init});return method==='DELETE'?new Response(null,{status:204}):Response.json({data:{...lawConnector,connector_id:'connector-other'},meta:{...meta,workspace_id:'workspace-law'}});
+    }});
+    assert.equal(calls.length,1);assert.equal(calls[0].init.method,method);
+    assert.equal(calls[0].init.headers,undefined);assert.equal(calls[0].init.body,undefined);
+  }
+});
 
 test('mcp_registration_not_query_success',async()=>{
   assert.equal(typeof api.searchOpenLaw,'function','법령 runtime consumer가 필요하다');

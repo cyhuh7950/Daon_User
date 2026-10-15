@@ -67,6 +67,25 @@ test('law_search_preview_explicit_import_react',async()=>{
   try{await searchAndSelect(w);assert.equal(imported,0);await click(w,'본문 미리보기');assert.equal(imported,0);assert.ok(w.container.textContent.includes(text));await click(w,'Notebook에 가져오기');assert.equal(imported,1);assert.deepEqual(calls.map(call=>call[0]),['search','preview','import']);assert.equal(calls[2][1].expected_text_sha256,preview.text_sha256);}finally{await w.cleanup();}
 });
 
+test('법령 검색·미리보기는 공포일과 소관부처 응답값 또는 미제공을 표시한다',async t=>{
+  for(const [name,fields,want] of [
+    ['provided',{promulgation_date:'20100101',ministry:'법무부'},'공포일 20100101 · 소관부처 법무부'],
+    ['not-provided',{promulgation_date:null,ministry:null},'공포일 미제공 · 소관부처 미제공'],
+  ])await t.test(name,async()=>{
+    const selected={...law,...fields};
+    const adapter={searchOpenLaw:async()=>({items:[selected],page:1,total_count:1}),previewOpenLaw:async()=>({...preview,law:selected})};
+    const w=await mount(module.OpenLawSourceForm,{adapter,connector});
+    try{
+      await searchAndSelect(w);
+      const row=findElements(w.container,n=>n.tagName==='LI')[0];
+      assert.equal(findElements(row,n=>n.tagName==='BUTTON')[0].textContent,'합성 시험법 · 시행 20100830');
+      assert.equal(findElements(row,n=>n.tagName==='SMALL')[0]?.textContent,want);
+      await click(w,'본문 미리보기');
+      assert.ok(findElements(w.container,n=>n.tagName==='P' && n.textContent.includes(want)).length===1);
+    }finally{await w.cleanup();}
+  });
+});
+
 test('law_no_duplicate_or_stale_notebook_submit',async()=>{
   const wait=deferred();let calls=0,options;
   const adapter={searchOpenLaw:async(_,o)=>{calls++;options=o;return wait.promise;}};
