@@ -138,16 +138,17 @@ class ConnectorRegistry:
         return tuple(connector.sources)
 
 
-def create_open_law_connector(*, api_key: str | None = None) -> Connector:
-    """Create the National Law Information Center sample Connector.
-
-    The upstream endpoint is intentionally server-side metadata only.  A
-    missing key remains ``unavailable`` rather than pretending the connector
-    is connected or deleting it.
-    """
+def create_open_law_connector(*, api_key: str | None = None, verify: Callable[[], dict] | None = None) -> Connector:
+    """Registration is not verification. Only a scoped real MCP probe verifies."""
 
     def probe() -> bool:
-        return bool(api_key)
+        if not api_key or verify is None:
+            return False
+        from .open_law_mcp_server import PROTOCOL, SCHEMA_DIGEST
+        receipt = verify()
+        return (isinstance(receipt, dict) and set(receipt) == {'protocol_version','tool_schema_digest','checked_at'}
+            and receipt['protocol_version'] == PROTOCOL and receipt['tool_schema_digest'] == SCHEMA_DIGEST
+            and isinstance(receipt['checked_at'], str) and bool(receipt['checked_at']))
 
     return Connector(
         connector_id="mcp-open-law-go-kr",
@@ -155,8 +156,8 @@ def create_open_law_connector(*, api_key: str | None = None) -> Connector:
         name="국가법령정보센터",
         endpoint_label="open.law.go.kr",
         reconnect=probe,
-        status="connected" if api_key else "unavailable",
-        error_code=None if api_key else "CONNECTOR_CREDENTIAL_REQUIRED",
+        status="unavailable",
+        error_code="CONNECTOR_NOT_VERIFIED" if api_key else "CONNECTOR_CREDENTIAL_REQUIRED",
     )
 
 

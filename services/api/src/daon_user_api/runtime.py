@@ -18,7 +18,7 @@ import threading
 import time
 from concurrent.futures import Future
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -1899,6 +1899,27 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     connector_repository = dependencies.connector_repository or (
         PostgresConnectorRepository(dependencies.cloud_store) if dependencies.cloud_store is not None else None
     )
+    # Reference (non-Postgres) runtime still isolates local law registrations.
+    # None is a local unregister tombstone, never a global Registry deletion.
+    open_law_registrations = {}
+
+    def scoped_open_law(principal, workspace_id):
+        if connector_repository is not None:
+            return connector_repository.get(principal.tenant_id, workspace_id, principal.user_id, "mcp-open-law-go-kr")
+        view = open_law_registrations.get((principal.tenant_id, workspace_id))
+        if view is None:
+            raise ConnectorError("CONNECTOR_NOT_FOUND")
+        return view
+
+    def set_scoped_open_law(principal, workspace_id, status, error_code):
+        previous = scoped_open_law(principal, workspace_id)
+        if connector_repository is not None:
+            return connector_repository.set_status(principal.tenant_id, workspace_id, principal.user_id,
+                previous.connector_id, status=status, error_code=error_code)
+        view = replace(previous, status=status, error_code=error_code,
+            last_checked_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+        open_law_registrations[(principal.tenant_id, workspace_id)] = view
+        return view
     retention_service = (
         PostgresRetentionRequestService(
             dependencies.cloud_store,
@@ -3372,6 +3393,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             connector_repository.list(principal.tenant_id, id, principal.user_id, connector_registry.list())
             if connector_repository is not None else connector_registry.list()
         )
+        if connector_repository is None:
+            scope = (principal.tenant_id, id)
+            if scope in open_law_registrations:
+                connectors = tuple(item for item in connectors if item.connector_id != "mcp-open-law-go-kr")
+                if open_law_registrations[scope] is not None:
+                    connectors += (open_law_registrations[scope],)
         return JSONResponse({"data": {"connectors": [_dataclass_json(item) for item in connectors]},
                              "meta": {"trace_id": request.state.trace_id, "workspace_id": id}})
 
@@ -3391,9 +3418,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             ).as_connector()
         else:
             raise ConnectorError("CONNECTOR_KIND_UNSUPPORTED")
-        view = connector_registry.register(connector)
+        # Law registration has no Notebook/public consent input. Do not probe
+        # here: L3's approved Notebook-bound law-search verifies the connection.
+        view = connector.view() if connector.connector_id == "mcp-open-law-go-kr" else connector_registry.register(connector)
         if connector_repository is not None:
             connector_repository.register(principal.tenant_id, id, principal.user_id, view)
+        elif connector.connector_id == "mcp-open-law-go-kr":
+            open_law_registrations[(principal.tenant_id, id)] = view
         return JSONResponse({"data": _dataclass_json(view), "meta": {
             "trace_id": request.state.trace_id, "workspace_id": id,
         }}, status_code=201)
@@ -3406,9 +3437,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             principal=principal, workspace_id=id, action=Action.EDIT,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        view = connector_registry.reconnect(connector_id)
-        if connector_repository is not None:
-            view = connector_repository.set_status(principal.tenant_id, id, principal.user_id, connector_id, status=view.status, error_code=view.error_code)
+        if connector_id == "mcp-open-law-go-kr":
+            view = set_scoped_open_law(principal, id, "unavailable", "CONNECTOR_NOT_VERIFIED")
+        else:
+            view = connector_registry.reconnect(connector_id)
+            if connector_repository is not None:
+                view = connector_repository.set_status(principal.tenant_id, id, principal.user_id, connector_id, status=view.status, error_code=view.error_code)
         return JSONResponse({"data": _dataclass_json(view), "meta": {
             "trace_id": request.state.trace_id, "workspace_id": id,
         }})
@@ -3421,9 +3455,12 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             principal=principal, workspace_id=id, action=Action.EDIT,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
-        view = connector_registry.disconnect(connector_id)
-        if connector_repository is not None:
-            view = connector_repository.set_status(principal.tenant_id, id, principal.user_id, connector_id, status=view.status, error_code=view.error_code)
+        if connector_id == "mcp-open-law-go-kr":
+            view = set_scoped_open_law(principal, id, "disconnected", "CONNECTOR_DISCONNECTED")
+        else:
+            view = connector_registry.disconnect(connector_id)
+            if connector_repository is not None:
+                view = connector_repository.set_status(principal.tenant_id, id, principal.user_id, connector_id, status=view.status, error_code=view.error_code)
         return JSONResponse({"data": _dataclass_json(view), "meta": {
             "trace_id": request.state.trace_id, "workspace_id": id,
         }})
@@ -3436,6 +3473,13 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             principal=principal, workspace_id=id, action=Action.EDIT,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
+        if connector_id == "mcp-open-law-go-kr":
+            scoped_open_law(principal, id)
+            if connector_repository is not None:
+                connector_repository.unregister(principal.tenant_id, id, principal.user_id, connector_id)
+            else:
+                open_law_registrations[(principal.tenant_id, id)] = None
+            return Response(status_code=204)
         connector = connector_registry.get(connector_id)
         if connector_repository is not None:
             if connector.kind == "daon_approved_knowledge":
@@ -3453,6 +3497,10 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             principal=principal, workspace_id=id, action=Action.VIEW,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
+        if connector_id == "mcp-open-law-go-kr" and connector_repository is None:
+            scoped_open_law(principal, id)
+            return JSONResponse({"data": {"sources": []}, "meta": {
+                "trace_id": request.state.trace_id, "workspace_id": id}})
         sources = (
             connector_repository.sources(principal.tenant_id, id, principal.user_id, connector_id)
             if connector_repository is not None else connector_registry.sources(connector_id)

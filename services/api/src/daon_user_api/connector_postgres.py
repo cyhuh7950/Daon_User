@@ -24,6 +24,17 @@ class PostgresConnectorRepository:
                              None if row[6] is None else row[6].isoformat().replace("+00:00", "Z"),
                              None if row[7] is None else str(row[7]))
 
+    def get(self, tenant_id: str, workspace_id: str, actor_id: str, connector_id: str) -> ConnectorView:
+        """Reconnect must resolve a real scoped registration, never Registry state."""
+        with self._store._transaction(self._context(tenant_id, workspace_id, actor_id)) as connection:
+            row = connection.execute(
+                "SELECT connector_id,kind,name,status,source_count,endpoint_label,last_checked_at,error_code FROM workspace_connectors WHERE tenant_id=%s AND workspace_id=%s AND connector_id=%s",
+                (tenant_id, workspace_id, connector_id),
+            ).fetchone()
+        if row is None:
+            raise ConnectorError("CONNECTOR_NOT_FOUND")
+        return self._view(row)
+
     def list(self, tenant_id: str, workspace_id: str, actor_id: str, defaults: Iterable[ConnectorView] = ()) -> tuple[ConnectorView, ...]:
         now = datetime.now(timezone.utc)
         context = self._context(tenant_id, workspace_id, actor_id)
