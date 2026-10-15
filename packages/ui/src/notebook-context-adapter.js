@@ -52,6 +52,12 @@ function projectCitation(value) {
   });
 }
 
+function isWebsiteSectionCitation(citation) {
+  return citation.origin === "raw_source" && citation.locator.kind === "section"
+    && /^web-source-[0-9a-f]{32}$/u.test(citation.source_id)
+    && /^web-version-[0-9a-f]{32}$/u.test(citation.source_version_id);
+}
+
 export function projectNotebookSelectedContext(value) {
   const conversationValid = value?.conversation === null || (
     Array.isArray(value?.conversation_thread_ids)
@@ -78,8 +84,10 @@ export function projectNotebookSelectedContext(value) {
       && typeof item.legal_hold_active === "boolean")
     && conversationValid
     && (value.conversation === null || value.conversation.answer.citations.every(citation =>
-      !["docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || citation.origin !== "raw_source"
-      || (citation.context_item_id === citation.source_id && value.sources.some(source =>
+      !(["docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || isWebsiteSectionCitation(citation)) || citation.origin !== "raw_source"
+      || (citation.context_item_id === citation.source_id
+        && (!isWebsiteSectionCitation(citation) || citation.source_version_id === `web-version-${citation.source_id.slice("web-source-".length)}`)
+        && value.sources.some(source =>
         source.source_id === citation.source_id && source.source_version_id === citation.source_version_id))))
     && (value.conversation === null || value.conversation_thread_ids.length > 0);
   if (!valid) throw new Error("NOTEBOOK_CONTEXT_INVALID");
@@ -155,8 +163,10 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
   const loadNotebookConversation = async (options) => {
     if (context.conversation === null || context.conversation_thread_ids.length !== 1) return null;
     const answer = context.conversation.answer;
-    if (!answer.citations.some((citation) => ["image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind))) return answer;
-    return { ...answer, citations: answer.citations.map((citation) => ["image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind)
+    const withContentUrls = (citation) => ["image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind)
+      || isWebsiteSectionCitation(citation);
+    if (!answer.citations.some(withContentUrls)) return answer;
+    return { ...answer, citations: answer.citations.map((citation) => withContentUrls(citation)
       ? { ...citation, content_url: baseAdapter.citationUrl(citation, { notebookId: context.notebook_id }) }
       : citation) };
   };

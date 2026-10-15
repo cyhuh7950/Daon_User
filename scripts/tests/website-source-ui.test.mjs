@@ -5,6 +5,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MinimalEvent, findElements, installMinimalDom, buttonByText } from './product-studio-dom.mjs';
 import { validWebsiteUrl } from '../../apps/web/lib/website-source-api.js';
+import { createNotebookContextWorkspaceAdapter } from '../../packages/ui/src/notebook-context-adapter.js';
+import { citationContentUrl } from '../../apps/web/lib/question-answering-api.js';
 
 let module, webModule, output;
 test.before(async()=>{
@@ -43,6 +45,56 @@ const source={source_id:'web-source-1',source_version_id:'web-version-1',filenam
 const snapshot={snapshot_id:'snapshot-1',source_id:source.source_id,source_version_id:source.source_version_id,
   requested_url:'https://example.com/',final_url:'https://example.com/',title:'웹 제목',published_at:null,
   fetched_at:'2026-10-15T10:00:00Z',license_status:'unknown',license_url:null,raw_sha256:'a'.repeat(64),text_sha256:'b'.repeat(64),extraction_version:'website-text-v1'};
+
+function webConversation(){
+  const sourceId='web-source-'+'a'.repeat(32),versionId='web-version-'+'a'.repeat(32);
+  return {notebook_id:'notebook-bound',sources:[{source_id:sourceId,source_version_id:versionId}],
+    knowledge_context_ids:[],conversation_thread_ids:['thread-bound'],studio_output_ids:[],output_version_ids:[],generation_settings_ids:[],source_deletion_requests:[],
+    conversation:{conversation_thread_id:'thread-bound',answer:{run_id:'run-bound',run_result_id:'result-bound',answer:'복원된 웹 근거 답변',insufficient:false,
+      citations:[{citation_id:'citation-web',source_id:sourceId,source_version_id:versionId,evidence_span_id:'web-span-'+'b'.repeat(32),page:1,origin:'raw_source',context_item_id:sourceId,locator:{kind:'section',value:'web-span-'+'b'.repeat(32)}}]}}};
+}
+
+test('웹 section 저장답변은 실제 Notebook adapter→shell 재진입에서 같은 Notebook anchor href를 복원한다',async()=>{
+  const context=webConversation(),calls=[];
+  const base={listSources:async options=>{
+    assert.equal(options.notebookId,'notebook-bound');return[{source_id:context.sources[0].source_id,source_version_id:context.sources[0].source_version_id,filename:'web.txt',source_state:'ready',processing_state:'accepted',job_state:'pending'}];},
+    citationUrl:(citation,options)=>{calls.push(options);return citationContentUrl('workspace-bound',citation,options);}};
+  const adapter=createNotebookContextWorkspaceAdapter(base,context);
+  const w=await mount(module.ProductWorkspaceShell,{workspaceId:'workspace-bound',adapter});
+  try{
+    assert.match(w.container.textContent,/복원된 웹 근거 답변/);
+    const anchor=findElements(w.container,n=>n.tagName==='A')[0];assert.ok(anchor);
+    assert.equal(anchor.getAttribute('href'),'/bff/api/workspaces/workspace-bound/citations/citation-web/content?notebook_id=notebook-bound');
+    assert.deepEqual(calls,[{notebookId:'notebook-bound'}]);
+  }finally{await w.cleanup();}
+});
+
+test('웹 section 복원은 wrong Version/Notebook binding을 거부하고 일반 section과 다른 origin은 불변이다',async()=>{
+  const context=webConversation();let calls=0;
+  const base={citationUrl:(citation,options)=>{calls++;if(options.notebookId!=='notebook-bound')throw Error('NOTEBOOK_ACCESS_DENIED');return citationContentUrl('workspace-bound',citation,options);}};
+  for(const mutate of [
+    c=>c.sources[0].source_version_id='web-version-'+'c'.repeat(32),
+    c=>c.sources=[],
+    c=>c.conversation.answer.citations[0].context_item_id='other-source',
+    c=>c.workspace_id='workspace-other',
+    c=>{c.sources[0].source_version_id='web-version-'+'c'.repeat(32);c.conversation.answer.citations[0].source_version_id=c.sources[0].source_version_id;},
+  ]){
+    const invalid=structuredClone(context);mutate(invalid);
+    assert.throws(()=>createNotebookContextWorkspaceAdapter(base,invalid),/NOTEBOOK_CONTEXT_INVALID/);
+  }
+  assert.equal(calls,0);
+  const other=structuredClone(context);other.notebook_id='notebook-other';
+  await assert.rejects(createNotebookContextWorkspaceAdapter(base,other).loadNotebookConversation(),/NOTEBOOK_ACCESS_DENIED/);
+  for(const mutate of [
+    c=>{const citation=c.conversation.answer.citations[0];citation.source_id='source-text';citation.source_version_id='version-text';citation.context_item_id='source-text';c.sources=[{source_id:'source-text',source_version_id:'version-text'}];},
+    c=>{const citation=c.conversation.answer.citations[0];citation.source_id='web-source-short';citation.source_version_id='web-version-short';citation.context_item_id=citation.source_id;c.sources=[{source_id:citation.source_id,source_version_id:citation.source_version_id}];},
+    c=>c.conversation.answer.citations[0].origin='daon_knowledge',
+  ]){
+    const ordinary=structuredClone(context);mutate(ordinary);const before=calls;
+    const answer=await createNotebookContextWorkspaceAdapter(base,ordinary).loadNotebookConversation();
+    assert.equal(answer.citations[0].content_url,undefined);assert.equal(calls,before);
+  }
+});
 
 test('actual web adapter는 current Notebook의 real consumer POST/GET/query를 연결한다',async()=>{
   const original=globalThis.fetch;const calls=[];
