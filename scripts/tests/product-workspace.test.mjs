@@ -195,6 +195,384 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
+const s17Connector = Object.freeze({ connector_id: "daon-approved", kind: "daon_approved_knowledge",
+  name: "Daon 승인 지식", status: "unavailable", source_count: 0, endpoint_label: "Daon",
+  last_checked_at: null, error_code: "CONNECTOR_UNAVAILABLE" });
+function s17Adapter(overrides = {}) {
+  return { ...adapter, notebookContext: { notebook_id: "notebook-s17", sources: [] },
+    listSources: async () => [], listKnowledgePackages: async () => [], listStudioOutputs: async () => [],
+    listConnectors: async () => [{ ...s17Connector }], ...overrides };
+}
+async function mountS17ReconnectWorkspace(initialAdapter) {
+  const root = path.resolve(import.meta.dirname, "../..");
+  const output = await mkdtemp(path.join(root, ".workspace-s17-reconnect-"));
+  const dom = installMinimalDom();
+  let reactRoot;
+  try {
+    const { build } = await import("vite");
+    const { createElement, act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await build({ configFile: false, logLevel: "silent", root, build: {
+      outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(root, "packages/ui/src/product-workspace-shell.jsx"), formats: ["es"], fileName: "s17-reconnect" },
+      rollupOptions: { external: ["react", "react-dom", "react-dom/client"] },
+    } });
+    const entry = (await readdir(output)).find(name => name.startsWith("s17-reconnect") && /\.m?js$/u.test(name));
+    const { ProductWorkspaceShell } = await import(pathToFileURL(path.join(output, entry)).href);
+    const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
+    reactRoot = createRoot(container);
+    const render = async nextAdapter => act(async () => {
+      reactRoot.render(createElement(ProductWorkspaceShell, { workspaceId: "workspace-1", adapter: nextAdapter }));
+      await Promise.resolve(); await Promise.resolve();
+    });
+    await render(initialAdapter);
+    return { container, act, render,
+      button: () => findElements(container, node => node.tagName === "BUTTON"
+        && node.getAttribute("aria-label") === "Daon 승인 지식 재연결")[0],
+      cleanup: async () => { await act(async () => reactRoot.unmount()); dom.restore(); await rm(output, { recursive: true, force: true }); },
+    };
+  } catch (error) {
+    if (reactRoot) await import("react").then(({ act }) => act(async () => reactRoot.unmount()));
+    dom.restore(); await rm(output, { recursive: true, force: true }); throw error;
+  }
+}
+
+test("S17 재연결 동기 중복 클릭은 한 요청만 보내고 성공 후 현재 목록을 갱신한다", async () => {
+  const pending = deferred(); let calls = 0, lists = 0, connected = false;
+  const workspace = await mountS17ReconnectWorkspace(s17Adapter({
+    listConnectors: async () => { lists += 1; return [{ ...s17Connector, status: connected ? "connected" : "unavailable" }]; },
+    reconnectConnector: async id => { assert.equal(id, "daon-approved"); calls += 1; await pending.promise; connected = true; },
+  }));
+  try {
+    await workspace.act(async () => {
+      workspace.button().dispatchEvent(new MinimalEvent("click"));
+      workspace.button().dispatchEvent(new MinimalEvent("click"));
+    });
+    assert.equal(calls, 1, "React 재렌더 전에도 중복 요청이 없어야 한다");
+    assert.equal(workspace.button().disabled, true);
+    assert.equal(lists, 1);
+    await workspace.act(async () => { pending.resolve(); await Promise.resolve(); });
+    assert.equal(lists, 2);
+    assert.equal(workspace.button(), undefined);
+    assert.doesNotMatch(workspace.container.textContent, /연결형 Source를 불러오지 못했습니다/u);
+  } finally {
+    await workspace.act(async () => { pending.resolve(); await new Promise(resolve => setImmediate(resolve)); });
+    await workspace.cleanup();
+  }
+});
+
+test("S17 재연결 실패는 안전 경고로 처리하고 pending을 풀어 명시 재시도를 허용한다", async () => {
+  const pending = deferred(); let calls = 0, lists = 0;
+  const workspace = await mountS17ReconnectWorkspace(s17Adapter({
+    listConnectors: async () => { lists += 1; return [{ ...s17Connector }]; },
+    reconnectConnector: async () => { calls += 1; if (calls === 1) await pending.promise; },
+  }));
+  try {
+    await workspace.act(async () => workspace.button().dispatchEvent(new MinimalEvent("click")));
+    let escapedError;
+    try {
+      await workspace.act(async () => {
+        pending.reject(new Error("PRIVATE_ERROR http://internal.invalid secret-content"));
+        await new Promise(resolve => setImmediate(resolve));
+      });
+    } catch (error) { escapedError = error; }
+    assert.equal(escapedError, undefined, "재연결 rejection은 event handler 밖으로 유출하지 않는다");
+    assert.match(workspace.container.textContent, /연결형 Source를 불러오지 못했습니다/u);
+    assert.doesNotMatch(workspace.container.textContent, /PRIVATE_ERROR|internal\.invalid|secret-content/u);
+    assert.equal(workspace.button().disabled, false);
+    assert.equal(lists, 1, "실패 시 목록 갱신이나 자동 재전송을 하지 않는다");
+    await workspace.act(async () => workspace.button().dispatchEvent(new MinimalEvent("click")));
+    assert.equal(calls, 2); assert.equal(lists, 2);
+    assert.doesNotMatch(workspace.container.textContent, /연결형 Source를 불러오지 못했습니다/u);
+  } finally { await workspace.cleanup(); }
+});
+
+for (const outcome of ["resolve", "reject"]) test(`S17 재연결 Notebook 전환 후 늦은 ${outcome}는 새 요청과 화면을 변경하지 않는다`, async () => {
+  const oldRequest = deferred(), newRequest = deferred(); let oldSignal, newSignal, newLists = 0;
+  const workspace = await mountS17ReconnectWorkspace(s17Adapter({ reconnectConnector: async (_id, options) => {
+    oldSignal = options?.signal; await oldRequest.promise;
+  } }));
+  try {
+    await workspace.act(async () => workspace.button().dispatchEvent(new MinimalEvent("click")));
+    await workspace.render(s17Adapter({ notebookContext: { notebook_id: "notebook-new", sources: [] },
+      listConnectors: async () => { newLists += 1; return [{ ...s17Connector }]; },
+      reconnectConnector: async (_id, options) => { newSignal = options?.signal; await newRequest.promise; },
+    }));
+    await workspace.act(async () => workspace.button().dispatchEvent(new MinimalEvent("click")));
+    let escapedError;
+    try {
+      await workspace.act(async () => {
+        if (outcome === "resolve") oldRequest.resolve(); else oldRequest.reject(new Error("PRIVATE_OLD_ERROR"));
+        await new Promise(resolve => setImmediate(resolve));
+      });
+    } catch (error) { escapedError = error; }
+    assert.equal(escapedError, undefined, "이전 Notebook의 rejection도 밖으로 유출하지 않는다");
+    assert.equal(oldSignal?.aborted, true, "이전 Notebook 재연결 요청은 취소돼야 한다");
+    assert.equal(newSignal?.aborted, false);
+    assert.equal(workspace.button().disabled, true, "이전 finally는 새 요청의 pending을 풀지 않는다");
+    assert.equal(newLists, 1, "이전 응답으로 새 Notebook 목록을 갱신하지 않는다");
+    assert.doesNotMatch(workspace.container.textContent, /연결형 Source를 불러오지 못했습니다|PRIVATE_OLD_ERROR/u);
+    await workspace.act(async () => { newRequest.resolve(); await Promise.resolve(); });
+    assert.equal(workspace.button().disabled, false); assert.equal(newLists, 2);
+  } finally {
+    await workspace.act(async () => { oldRequest.resolve(); newRequest.resolve(); await new Promise(resolve => setImmediate(resolve)); });
+    await workspace.cleanup();
+  }
+});
+
+const s18Answer = (answer = "새 답변") => ({ run_id: "run-s18", run_result_id: "result-s18", answer, insufficient: false, citations: [] });
+const s18Sources = [
+  { source_id: "source-1", source_version_id: "version-1", filename: "first.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" },
+  { source_id: "source-2", source_version_id: "version-2", filename: "other.pdf", source_state: "ready", processing_state: "completed", job_state: "completed" },
+];
+function s18Adapter(overrides = {}) {
+  return { ...adapter, notebookContext: { notebook_id: "notebook-s18", sources: [] },
+    listSources: async () => s18Sources, listConnectors: async () => [], listStudioOutputs: async () => [],
+    listKnowledgePackages: async () => [{ package_id: "package-s18", producer: "daon3", producer_version: "3.0", authority: "approved", registration_state: "registered" }],
+    ...overrides };
+}
+const s18Composer = workspace => findElements(workspace.container, node => node.tagName === "FORM" && node.getAttribute("class") === "conversation-composer")[0];
+const s18Props = node => node[Object.keys(node).find(key => key.startsWith("__reactProps$"))];
+const s18Submit = workspace => s18Props(s18Composer(workspace)).onSubmit({ preventDefault() {} });
+async function s18Type(workspace, text = "선택 자료를 설명해 주세요") {
+  const textarea = findElements(workspace.container, node => node.tagName === "TEXTAREA")[0];
+  textarea.value = text;
+  await workspace.act(async () => s18Props(textarea).onChange({ currentTarget: textarea, target: textarea }));
+  return textarea;
+}
+
+test("S18 질문 즉시 중복 제출은 한 요청이고 대기 중 이전 답변을 숨기며 입력을 잠근다", async () => {
+  const pending = deferred(), calls = []; let first, second;
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({ loadNotebookConversation: async () => s18Answer("이전 답변"),
+    askQuestion: async (input, options) => { calls.push({ input, options }); return pending.promise; },
+  }));
+  try {
+    assert.match(workspace.container.textContent, /이전 답변/u);
+    const textarea = await s18Type(workspace);
+    await workspace.act(async () => { first = s18Submit(workspace); second = s18Submit(workspace); });
+    assert.equal(calls.length, 1);
+    assert.equal(textarea.disabled, true);
+    assert.equal(findElements(workspace.container, node => node.getAttribute?.("aria-label") === "질문 실행")[0].disabled, true);
+    assert.ok(findElements(workspace.container, node => node.getAttribute?.("role") === "status" && /답변.*기다/u.test(node.textContent)).length);
+    assert.doesNotMatch(workspace.container.textContent, /이전 답변/u);
+    await workspace.act(async () => { pending.resolve(s18Answer()); await Promise.all([first, second]); });
+    assert.match(workspace.container.textContent, /새 답변/u); assert.equal(textarea.disabled, false);
+    assert.doesNotMatch(workspace.container.textContent, /답변을 기다/u);
+  } finally {
+    await workspace.act(async () => { pending.resolve(s18Answer()); await Promise.all([first, second]); });
+    await workspace.cleanup();
+  }
+});
+
+test("S18 질문 실패는 안전 경고와 입력을 유지하고 명시 재제출만 새 key로 실행한다", async () => {
+  const pending = deferred(), calls = []; let submission;
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({ askQuestion: async (input, options) => {
+    calls.push({ input, options }); return calls.length === 1 ? pending.promise : s18Answer();
+  } }));
+  try {
+    const textarea = await s18Type(workspace, "재제출 질문");
+    await workspace.act(async () => { submission = s18Submit(workspace); });
+    await workspace.act(async () => { pending.reject(new Error("PRIVATE_ERROR http://internal.invalid credential")); await submission; });
+    assert.match(workspace.container.textContent, /질문.*실패/u);
+    assert.doesNotMatch(workspace.container.textContent, /PRIVATE_ERROR|internal\.invalid|credential/u);
+    assert.equal(textarea.value, "재제출 질문"); assert.equal(textarea.disabled, false); assert.equal(calls.length, 1);
+    await workspace.act(async () => s18Submit(workspace));
+    assert.equal(calls.length, 2); assert.notEqual(calls[0].options.idempotencyKey, calls[1].options.idempotencyKey);
+    assert.match(workspace.container.textContent, /새 답변/u);
+  } finally { pending.resolve(s18Answer()); if (submission) await submission; await workspace.cleanup(); }
+});
+
+test("S18 질문 대기 중 늦은 저장 답변 조회는 현재 질문을 이전 답변으로 덮지 않는다", async () => {
+  const history = deferred(), pending = deferred(); let submission;
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({ loadNotebookConversation: async () => history.promise,
+    askQuestion: async () => pending.promise,
+  }));
+  try {
+    await s18Type(workspace); await workspace.act(async () => { submission = s18Submit(workspace); });
+    await workspace.act(async () => { history.resolve(s18Answer("늦게 조회된 이전 답변")); await Promise.resolve(); });
+    assert.doesNotMatch(workspace.container.textContent, /늦게 조회된 이전 답변/u);
+    assert.ok(findElements(workspace.container, node => node.getAttribute?.("role") === "status" && /답변.*기다/u.test(node.textContent)).length);
+    await workspace.act(async () => { pending.resolve(s18Answer()); await submission; });
+    assert.match(workspace.container.textContent, /새 답변/u);
+  } finally {
+    await workspace.act(async () => { history.resolve(s18Answer()); pending.resolve(s18Answer()); if (submission) await submission; });
+    await workspace.cleanup();
+  }
+});
+
+test("S18 질문 부족 답변은 서버 원문과 기존 다음 행동을 그대로 표시한다", async () => {
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({ askQuestion: async () => ({
+    ...s18Answer("서버가 반환한 부족 안내 <원문>"), insufficient: true,
+    mode: "explicit_source_lookup", grounding: "source_evidence_unavailable", source_scope_summary: "선택한 자료 범위",
+    mismatch: { code: "SOURCE_SCOPE_MISMATCH", detail: "질문에 필요한 근거가 없습니다." }, next_actions: ["다른 Source 선택", "Source 추가"],
+  }) }));
+  try {
+    await s18Type(workspace); await workspace.act(async () => s18Submit(workspace));
+    assert.match(workspace.container.textContent, /서버가 반환한 부족 안내 <원문>/u);
+    assert.match(workspace.container.textContent, /근거 부족/u);
+    assert.match(workspace.container.textContent, /다른 Source 선택/u);
+    assert.equal(findElements(workspace.container, node => node.tagName === "A" && node.parentNode?.getAttribute?.("class") === "citation-row").length, 0);
+  } finally { await workspace.cleanup(); }
+});
+
+for (const scope of ["Source", "Knowledge", "Notebook"]) for (const outcome of ["resolve", "reject"]) {
+  test(`S18 질문 ${scope} 전환은 이전 요청을 취소하고 늦은 ${outcome}와 finally가 새 대기를 변경하지 않는다`, async () => {
+    const oldRequest = deferred(), newRequest = deferred(), calls = []; let oldSubmission, newSubmission;
+    const askQuestion = async (input, options) => { calls.push({ input, options }); return calls.length === 1 ? oldRequest.promise : newRequest.promise; };
+    const workspace = await mountS17ReconnectWorkspace(s18Adapter({ askQuestion }));
+    try {
+      await s18Type(workspace); await workspace.act(async () => { oldSubmission = s18Submit(workspace); });
+      if (scope === "Notebook") {
+        await workspace.render(s18Adapter({ notebookContext: { notebook_id: "notebook-new", sources: [] }, askQuestion }));
+        await s18Type(workspace);
+      } else {
+        const button = findElements(workspace.container, node => node.tagName === "BUTTON" && node.textContent.includes(scope === "Source" ? "other.pdf" : "Daon 3 · 3.0"))[0];
+        assert.ok(button); await workspace.act(async () => button.dispatchEvent(new MinimalEvent("click")));
+      }
+      await workspace.act(async () => { newSubmission = s18Submit(workspace); });
+      assert.equal(calls.length, 2); assert.equal(calls[0].options.signal.aborted, true);
+      assert.equal(calls[1].options.signal.aborted, false);
+      await workspace.act(async () => {
+        if (outcome === "resolve") oldRequest.resolve(s18Answer("OLD_ANSWER")); else oldRequest.reject(new Error("PRIVATE_OLD_ERROR"));
+        await oldSubmission;
+      });
+      assert.equal(findElements(workspace.container, node => node.tagName === "TEXTAREA")[0].disabled, true);
+      assert.doesNotMatch(workspace.container.textContent, /OLD_ANSWER|PRIVATE_OLD_ERROR|질문.*실패/u);
+      await workspace.act(async () => { newRequest.resolve(s18Answer("NEW_ANSWER")); await newSubmission; });
+      assert.match(workspace.container.textContent, /NEW_ANSWER/u);
+      assert.equal(findElements(workspace.container, node => node.tagName === "TEXTAREA")[0].disabled, false);
+    } finally {
+      await workspace.act(async () => { oldRequest.resolve(s18Answer()); newRequest.resolve(s18Answer()); await Promise.all([oldSubmission, newSubmission]); });
+      await workspace.cleanup();
+    }
+  });
+}
+
+test("S18 질문 unmount는 요청을 취소하고 늦은 실패를 처리한다", async () => {
+  const pending = deferred(); let signal, submission;
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({ askQuestion: async (_input, options) => { signal = options.signal; return pending.promise; } }));
+  try { await s18Type(workspace); await workspace.act(async () => { submission = s18Submit(workspace); }); }
+  finally { await workspace.cleanup(); }
+  pending.reject(new Error("PRIVATE_UNMOUNT_ERROR")); await submission;
+  assert.equal(signal.aborted, true);
+});
+
+const s18AuthPassword = workspace => findElements(workspace.container, node => node.tagName === "INPUT" && node.getAttribute("aria-label") === "외부 질문 추가 인증 비밀번호")[0];
+const s18AuthConfirm = workspace => findElements(workspace.container, node => node.tagName === "BUTTON" && node.textContent === "인증 후 질문 제출")[0];
+const s18AuthCancel = workspace => findElements(workspace.container, node => node.tagName === "BUTTON" && node.textContent === "질문 인증 취소")[0];
+
+test("S18 질문 STEP_UP_REQUIRED에서만 재인증하고 같은 입력/key로 한 번 제출하며 비밀번호를 즉시 비운다", async () => {
+  const calls = [], grants = [], pending = deferred(); let submission, confirmation;
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({
+    askQuestion: async (input, options) => { calls.push({ input, options }); if (calls.length === 1) throw new Error("STEP_UP_REQUIRED"); return s18Answer("인증된 답변"); },
+    authorizeQuestion: async (input, options) => { grants.push({ input, options }); return pending.promise; },
+  }));
+  try {
+    await s18Type(workspace);
+    await workspace.act(async () => { submission = s18Submit(workspace); await new Promise(resolve => setImmediate(resolve)); });
+    assert.equal(calls.length, 1); assert.equal(grants.length, 0);
+    const password = s18AuthPassword(workspace);
+    assert.ok(password, "추가 인증을 위한 실제 password 입력을 표시한다");
+    password.value = "synthetic-password";
+    await workspace.act(async () => {
+      const onClick = s18Props(s18AuthConfirm(workspace)).onClick;
+      confirmation = onClick(); onClick();
+      await Promise.resolve();
+    });
+    assert.equal(grants.length, 1); assert.equal(password.value, "");
+    assert.deepEqual(grants[0].input, { ...calls[0].input, password: "synthetic-password" });
+    assert.equal(grants[0].options.idempotencyKey, calls[0].options.idempotencyKey);
+    assert.equal(grants[0].options.signal, calls[0].options.signal);
+    await workspace.act(async () => { pending.resolve({ step_up_authorization_id: "grant-s18" }); await confirmation; await submission; });
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].input, calls[0].input);
+    assert.equal(calls[1].options.idempotencyKey, calls[0].options.idempotencyKey);
+    assert.equal(calls[1].options.stepUpAuthorizationId, "grant-s18");
+    assert.match(workspace.container.textContent, /인증된 답변/u);
+    assert.equal(s18AuthPassword(workspace), undefined);
+  } finally {
+    pending.resolve({ step_up_authorization_id: "grant-s18" });
+    await workspace.cleanup(); await submission; await confirmation;
+  }
+});
+
+test("S18 질문 재인증 실패는 안전 안내와 질문을 유지하고 취소는 추가 제출 없이 닫는다", async () => {
+  let calls = 0, submission;
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({
+    askQuestion: async () => { calls++; throw new Error("STEP_UP_REQUIRED"); },
+    authorizeQuestion: async () => { throw new Error("PRIVATE_AUTH_CREDENTIAL_FAILURE"); },
+  }));
+  try {
+    await s18Type(workspace, "보존할 질문");
+    await workspace.act(async () => { submission = s18Submit(workspace); await new Promise(resolve => setImmediate(resolve)); });
+    assert.ok(s18AuthPassword(workspace));
+    s18AuthPassword(workspace).value = "synthetic-password";
+    await workspace.act(async () => { await s18Props(s18AuthConfirm(workspace)).onClick(); });
+    assert.equal(s18AuthPassword(workspace).value, "");
+    assert.doesNotMatch(workspace.container.textContent, /PRIVATE_AUTH_CREDENTIAL_FAILURE|synthetic-password/u);
+    assert.ok(findElements(workspace.container, node => node.getAttribute("role") === "alert").length);
+    await workspace.act(async () => { s18Props(s18AuthCancel(workspace)).onClick(); await submission; });
+    assert.equal(calls, 1); assert.equal(s18AuthPassword(workspace), undefined);
+    assert.equal(findElements(workspace.container, node => node.tagName === "TEXTAREA")[0].value, "보존할 질문");
+  } finally { await workspace.cleanup(); await submission; }
+});
+
+for (const scope of ["Notebook", "Source"]) for (const outcome of ["resolve", "reject"]) {
+  test(`S18 질문 ${scope} 전환은 재인증을 취소하고 늦은 ${outcome}의 제출을 차단한다`, async () => {
+    const pending = deferred(); let calls = 0, submission, confirmation, signal;
+    const workspace = await mountS17ReconnectWorkspace(s18Adapter({
+      askQuestion: async () => { calls++; throw new Error("STEP_UP_REQUIRED"); },
+      authorizeQuestion: async (_input, options) => { signal = options.signal; return pending.promise; },
+    }));
+    try {
+      await s18Type(workspace);
+      await workspace.act(async () => { submission = s18Submit(workspace); await new Promise(resolve => setImmediate(resolve)); });
+      assert.ok(s18AuthPassword(workspace)); s18AuthPassword(workspace).value = "synthetic-password";
+      await workspace.act(async () => { confirmation = s18Props(s18AuthConfirm(workspace)).onClick(); await Promise.resolve(); });
+      if (scope === "Notebook") await workspace.render(s18Adapter({ notebookContext: { notebook_id: "notebook-other", sources: [] } }));
+      else await workspace.act(async () => {
+        findElements(workspace.container, node => node.tagName === "BUTTON" && node.textContent.includes("other.pdf"))[0].dispatchEvent(new MinimalEvent("click"));
+      });
+      assert.equal(signal.aborted, true); assert.equal(s18AuthPassword(workspace), undefined);
+      await workspace.act(async () => {
+        if (outcome === "resolve") pending.resolve({ step_up_authorization_id: "grant-stale" });
+        else pending.reject(new Error("PRIVATE_STALE_AUTH"));
+        await confirmation; await submission;
+      });
+      assert.equal(calls, 1); assert.doesNotMatch(workspace.container.textContent, /PRIVATE_STALE_AUTH/u);
+    } finally { pending.resolve({ step_up_authorization_id: "grant-stale" }); await workspace.cleanup(); await submission; await confirmation; }
+  });
+}
+
+test("S18 질문 재인증 중 unmount는 비밀번호를 비우고 늦은 인증 실패를 처리한다", async () => {
+  const pending = deferred(); let submission, confirmation, signal, password;
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({
+    askQuestion: async () => { throw new Error("STEP_UP_REQUIRED"); },
+    authorizeQuestion: async (_input, options) => { signal = options.signal; return pending.promise; },
+  }));
+  try {
+    await s18Type(workspace);
+    await workspace.act(async () => { submission = s18Submit(workspace); await new Promise(resolve => setImmediate(resolve)); });
+    password = s18AuthPassword(workspace); assert.ok(password); password.value = "synthetic-password";
+    await workspace.act(async () => { confirmation = s18Props(s18AuthConfirm(workspace)).onClick(); await Promise.resolve(); });
+  } finally { await workspace.cleanup(); }
+  pending.reject(new Error("PRIVATE_AUTH_AFTER_UNMOUNT")); await confirmation; await submission;
+  assert.equal(signal.aborted, true); assert.equal(password.value, "");
+});
+
+test("S18 질문 정책/권한의 다른 안전 오류는 재인증을 자동 요청하지 않는다", async () => {
+  let authCalls = 0;
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({
+    askQuestion: async () => { throw new Error("EGRESS_POLICY_DENIED"); },
+    authorizeQuestion: async () => { authCalls++; },
+  }));
+  try {
+    await s18Type(workspace); await workspace.act(async () => { await s18Submit(workspace); });
+    assert.equal(authCalls, 0); assert.equal(s18AuthPassword(workspace), undefined);
+    assert.ok(findElements(workspace.container, node => node.getAttribute("role") === "alert").length);
+  } finally { await workspace.cleanup(); }
+});
+
 test("작업 상담과 명시 Source 확인은 서로 다른 conversation mode로 분류한다", () => {
   assert.equal(classifyConversationIntent("다음 작업을 어떻게 진행할까?"), "work_support");
   assert.equal(classifyConversationIntent("선택한 문서에서 보존 기간을 찾아줘"), "explicit_source_lookup");
@@ -202,9 +580,17 @@ test("작업 상담과 명시 Source 확인은 서로 다른 conversation mode�
   assert.equal(classifyConversationIntent("최신 정책을 웹에서 찾아줘"), "approved_web_research");
 });
 
-test("질문 실행 UI는 세션 인증 외 Source 질문 승인 modal을 노출하지 않는다", async () => {
-  const source = await readFile(new URL("../../packages/ui/src/product-workspace-shell.jsx", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /Source 질문 승인|question-authorization|authorizeQuestion/u);
+test("S18 질문 내부 모델의 정상 답변은 추가 인증을 요구하지 않는다", async () => {
+  let authCalls = 0;
+  const workspace = await mountS17ReconnectWorkspace(s18Adapter({
+    askQuestion: async () => s18Answer("내부 모델 답변"),
+    authorizeQuestion: async () => { authCalls++; throw new Error("UNEXPECTED_AUTHORIZATION"); },
+  }));
+  try {
+    await s18Type(workspace); await workspace.act(async () => { await s18Submit(workspace); });
+    assert.equal(authCalls, 0); assert.equal(s18AuthPassword(workspace), undefined);
+    assert.match(workspace.container.textContent, /내부 모델 답변/u);
+  } finally { await workspace.cleanup(); }
 });
 
 test("Source 범위 불일치는 단독 refusal이 아니라 구조화된 다음 행동을 반환한다", () => {

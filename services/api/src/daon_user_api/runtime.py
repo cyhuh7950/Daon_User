@@ -4388,6 +4388,18 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                     prepared=prepared, policy_fingerprint=effective.fingerprint,
                     idempotency_key=idempotency_key,
                 )
+                if not (
+                    dependencies.settings.dev_auth_bypass
+                    and dependencies.settings.profile in {"test", "development"}
+                ):
+                    access_token, _ = _credential(request)
+                    dependencies.identity_service.consume_step_up(
+                        step_up_authorization=body.step_up_authorization_id,
+                        access_token=access_token, action_group="external_transfer",
+                        target_id=run_id, policy_version=request_fingerprint,
+                        trace_id=request.state.trace_id, operation="question.external_transfer",
+                        idempotency_key=idempotency_key,
+                    )
                 approved_authorization = {
                     "request_fingerprint": request_fingerprint,
                     "policy_fingerprint": effective.fingerprint,

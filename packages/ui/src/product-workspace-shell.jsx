@@ -730,6 +730,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [viewState, setViewState] = useState(() => normalizeProductWorkspaceState(state));
   const [processing, setProcessing] = useState(null);
   const [question, setQuestion] = useState("");
+  const [questionPending, setQuestionPending] = useState(false);
+  const [questionAuthPending, setQuestionAuthPending] = useState(false);
+  const [questionAuthError, setQuestionAuthError] = useState(null);
   const [reportTitle, setReportTitle] = useState("");
   const [reportPurpose, setReportPurpose] = useState("");
   const [reportPending, setReportPending] = useState(false);
@@ -805,6 +808,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const workspaceMountedRef = useRef(false);
   const citationUrlsRef = useRef(new Set());
   const questionEpochRef = useRef(0);
+  const questionRequestRef = useRef(null);
+  const questionPasswordRef = useRef(null);
   const workspaceLoadEpochRef = useRef(0);
   const modalRef = useRef(null);
   const modalOpenerRef = useRef(null);
@@ -812,6 +817,19 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const syncPasswordRef = useRef(null);
   const licenseFileRef = useRef(null);
   const licensePasswordRef = useRef(null);
+
+  const cancelQuestionRequest = () => {
+    questionEpochRef.current += 1;
+    const request = questionRequestRef.current;
+    questionRequestRef.current = null;
+    request?.controller.abort();
+    request?.resolveAuthorization?.(null);
+    if (questionPasswordRef.current) questionPasswordRef.current.value = "";
+    setModalView(current => current === "question-step-up" ? null : current);
+    setQuestionAuthPending(false);
+    setQuestionAuthError(null);
+    setQuestionPending(false);
+  };
 
   useEffect(() => {
     if (!modalView) return undefined;
@@ -822,7 +840,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
 
   useEffect(() => {
     if (!adapter || typeof adapter.listSources !== "function" || !workspaceId) return undefined;
-    questionEpochRef.current += 1;
+    cancelQuestionRequest();
+    const loadQuestionEpoch = questionEpochRef.current;
     const loadEpoch = workspaceLoadEpochRef.current + 1;
     workspaceLoadEpochRef.current = loadEpoch;
     const controller = new AbortController();
@@ -999,8 +1018,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         // history record must never block a new question in the selected
         // Notebook/Source context; the current question will create its own
         // grounded run.  Keep the failure out of the blocking alert path.
-        answer: conversationResult.status === "fulfilled" ? conversationResult.value : null,
-        conversationSafeError: null,
+        answer: questionEpochRef.current === loadQuestionEpoch
+          ? (conversationResult.status === "fulfilled" ? conversationResult.value : null) : current.answer,
+        conversationSafeError: questionEpochRef.current === loadQuestionEpoch ? null : current.conversationSafeError,
       }));
     });
     return () => {
@@ -1015,6 +1035,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     lifetimeControllerRef.current = controller;
     return () => {
       questionEpochRef.current += 1;
+      questionRequestRef.current?.controller.abort();
+      questionRequestRef.current?.resolveAuthorization?.(null);
+      if (questionPasswordRef.current) questionPasswordRef.current.value = "";
+      questionRequestRef.current = null;
       pollControllerRef.current?.abort();
       controller.abort();
       if (lifetimeControllerRef.current === controller) {
@@ -1254,6 +1278,28 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     finally{if(reconnectRequestRef.current===token){reconnectRequestRef.current=null;setConnectorPending(false);}}
   };
 
+  const reconnectNonLawConnector = async (connector) => {
+    if (reconnectRequestRef.current || typeof adapter?.reconnectConnector !== "function") return;
+    const token = { controller: new AbortController() }, epoch = workspaceLoadEpochRef.current;
+    const signal = token.controller.signal;
+    reconnectRequestRef.current = token;
+    setConnectorPending(true);
+    setConnectorSafeError(null);
+    const current = () => !signal.aborted && epoch === workspaceLoadEpochRef.current
+      && reconnectRequestRef.current === token;
+    try {
+      await adapter.reconnectConnector(connector.connector_id, { signal });
+      if (current()) setLoadRevision(revision => revision + 1);
+    } catch (error) {
+      if (current()) setConnectorSafeError(safeErrorCode(error, "CONNECTOR_RECONNECT_FAILED"));
+    } finally {
+      if (reconnectRequestRef.current === token) {
+        reconnectRequestRef.current = null;
+        setConnectorPending(false);
+      }
+    }
+  };
+
   const confirmSourceUnbind = async () => {
     if (!sourceAction || typeof adapter?.unbindSource !== "function" || sourceActionPending) return;
     setSourceActionPending(true);
@@ -1325,26 +1371,42 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
 
   const askQuestion = async (event) => {
     event.preventDefault();
+    if (!adapter || !question.trim() || questionRequestRef.current || !workspaceMountedRef.current) return;
     const conversationMode = classifyConversationIntent(question);
-    if (!adapter || !question.trim()) return;
     const questionEpoch = ++questionEpochRef.current;
+    const token = { controller: new AbortController() };
+    const signal = token.controller.signal;
+    questionRequestRef.current = token;
+    setQuestionPending(true);
+    setViewState(current => ({ ...current, answer: null, answerIntent: null, conversationSafeError: null }));
+    const current = () => !signal.aborted && workspaceMountedRef.current
+      && questionEpoch === questionEpochRef.current && questionRequestRef.current === token;
+    token.isCurrent = current;
     try {
-      if (!workspaceMountedRef.current) return;
-      if (!lifetimeControllerRef.current || lifetimeControllerRef.current.signal.aborted) {
-        lifetimeControllerRef.current = new AbortController();
-      }
-      const signal = lifetimeControllerRef.current.signal;
-      if (!signal || signal.aborted) return;
       const idempotencyKey = secureUuid();
       const knowledgeContext = viewState.selectedSource || selectedKnowledgeId
         ? buildQuestionKnowledgeContext(viewState.selectedSource, selectedKnowledgeId)
         : null;
-      if (questionEpoch !== questionEpochRef.current || signal.aborted) return;
-      const answer = await adapter.askQuestion(
-        { knowledgeContext, question: question.trim() },
-        { signal, idempotencyKey },
-      );
-      if (signal.aborted || questionEpoch !== questionEpochRef.current) return;
+      if (!current()) return;
+      const input = { knowledgeContext, question: question.trim() };
+      token.input = input;
+      token.options = { signal, idempotencyKey };
+      let answer;
+      try {
+        answer = await adapter.askQuestion(input, token.options);
+      } catch (error) {
+        if (!current() || error?.message !== "STEP_UP_REQUIRED" || typeof adapter.authorizeQuestion !== "function") throw error;
+        const authorization = await new Promise(resolve => {
+          token.resolveAuthorization = resolve;
+          setQuestionAuthError(null);
+          modalOpenerRef.current = document.activeElement;
+          setModalView("question-step-up");
+        });
+        token.resolveAuthorization = null;
+        if (!current() || !authorization) return;
+        answer = await adapter.askQuestion(input, { ...token.options, stepUpAuthorizationId: authorization });
+      }
+      if (!current()) return;
       const safeAnswer = projectSafeQuestionAnswer(
         answer, workspaceId, adapter.citationUrl, viewState.selectedSource, selectedKnowledgeId,
       );
@@ -1357,17 +1419,47 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       }));
       reportIdempotencyRef.current = null;
     } catch (error) {
-      if (questionEpoch !== questionEpochRef.current) return;
+      if (!current()) return;
       setViewState((current) => projectQuestionFailureState(
         current,
         new Error(safeErrorCode(error, "QUESTION_FAILED")),
       ));
+    } finally {
+      if (questionRequestRef.current === token) {
+        questionRequestRef.current = null;
+        setQuestionPending(false);
+      }
+    }
+  };
+
+  const authenticateQuestion = async () => {
+    const token = questionRequestRef.current;
+    if (!token?.isCurrent() || !token.resolveAuthorization || token.authPending) return;
+    const password = questionPasswordRef.current?.value ?? "";
+    if (questionPasswordRef.current) questionPasswordRef.current.value = "";
+    if (!password) { setQuestionAuthError("추가 인증 비밀번호를 입력해 주세요."); return; }
+    token.authPending = true;
+    setQuestionAuthPending(true);
+    setQuestionAuthError(null);
+    try {
+      const grant = await adapter.authorizeQuestion({ ...token.input, password }, token.options);
+      if (!token.isCurrent()) return;
+      if (typeof grant?.step_up_authorization_id !== "string" || !grant.step_up_authorization_id) {
+        throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID");
+      }
+      setModalView(current => current === "question-step-up" ? null : current);
+      token.resolveAuthorization(grant.step_up_authorization_id);
+    } catch {
+      if (token.isCurrent()) setQuestionAuthError("추가 인증을 완료하지 못했습니다. 입력과 현재 권한을 확인해 주세요.");
+    } finally {
+      token.authPending = false;
+      if (token.isCurrent()) setQuestionAuthPending(false);
     }
   };
 
   const selectSource = (source) => {
     if (!source.ready) return;
-    questionEpochRef.current += 1;
+    cancelQuestionRequest();
     reportIdempotencyRef.current = null;
     setViewState((current) => ({
       ...current,
@@ -1630,6 +1722,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     if (view === "manual") void loadManualHub();
   };
   const closeModal = (force = false) => {
+    if (modalView === "question-step-up") cancelQuestionRequest();
     if (!force && modalView === "output-version" && outputSettingsDirty) {
       setOutputCloseGuard(true);
       return;
@@ -1703,7 +1796,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <ul className="source-list knowledge-list" aria-label="Daon 승인 지식 목록">
               {knowledgePackages.map((item) => (
                 <li className="source-list-row knowledge-list-row" key={item.packageId}>
-                  <button type="button" aria-pressed={selectedKnowledgeId === item.packageId} onClick={() => { questionEpochRef.current += 1; reportIdempotencyRef.current = null; setViewState((current) => ({ ...current, answer: null, answerIntent: null })); setSelectedKnowledgeId((current) => current === item.packageId ? null : item.packageId); }}>
+                  <button type="button" aria-pressed={selectedKnowledgeId === item.packageId} onClick={() => { cancelQuestionRequest(); reportIdempotencyRef.current = null; setViewState((current) => ({ ...current, answer: null, answerIntent: null })); setSelectedKnowledgeId((current) => current === item.packageId ? null : item.packageId); }}>
                     <span className="source-file-icon knowledge-icon" aria-hidden="true">K</span><span className="source-row-copy"><strong>{item.producerLabel} · {item.producerVersion}</strong><small>{item.authorityLabel} · {item.registrationLabel}</small></span><span className={`source-ready-dot ${selectedKnowledgeId === item.packageId ? "is-ready" : ""}`} aria-hidden="true" />
                   </button>
                 </li>
@@ -1721,7 +1814,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
                     <span className="source-row-copy"><strong>{connector.name}</strong><small>{connector.status === "connected" ? `Source ${connector.source_count}개 · ${connector.endpoint_label}` : "사용 불가"}</small></span>
                     <span className={`source-ready-dot ${connector.status === "connected" ? "is-ready" : ""}`} aria-hidden="true" />
                   </button>
-                  {connector.status !== "connected" && typeof adapter?.reconnectConnector === "function" ? <button type="button" disabled={connector.connector_id==='mcp-open-law-go-kr' && connectorPending} className="source-action-trigger" title="Connector 재연결" aria-label={`${connector.name} 재연결`} onClick={() => {if(connector.connector_id==='mcp-open-law-go-kr')void reconnectLawConnector(connector);else void adapter.reconnectConnector(connector.connector_id).then(() => setLoadRevision((current) => current + 1));}}>↻</button> : null}
+                  {connector.status !== "connected" && typeof adapter?.reconnectConnector === "function" ? <button type="button" disabled={connectorPending} className="source-action-trigger" title="Connector 재연결" aria-label={`${connector.name} 재연결`} onClick={() => {if(connector.connector_id==='mcp-open-law-go-kr')void reconnectLawConnector(connector);else void reconnectNonLawConnector(connector);}}>↻</button> : null}
                   {connector.kind === "mcp" && typeof adapter?.unregisterConnector === "function" ? <button type="button" className="source-action-trigger" title="MCP 연결 삭제" aria-label={`${connector.name} 연결 삭제`} onClick={() => void unregisterMcpConnector(connector)}>×</button> : null}
                 </li>
               ))}
@@ -1803,12 +1896,14 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         <SafePane id="product-pane-conversation" title="대화·실행" description="ready Source 선택 후 실제 질문과 Citation을 사용합니다.">
           {desktopEditor ? desktopEditor : <div className="conversation-workspace"><div className="conversation-transcript" aria-live="polite">
           <div className="context-selection-status" role="status">질문 컨텍스트 · {selectedKnowledgeId ? "Daon 승인 지식" : ""}{selectedKnowledgeId && viewState.selectedSource ? " + " : ""}{viewState.selectedSource ? "Raw Source" : !selectedKnowledgeId ? "일반 상담" : ""}</div>
+          {questionPending ? <div className="context-selection-status" role="status">답변을 기다리고 있습니다.</div> : null}
           {viewState.answer ? <article className="assistant-message"><div className="assistant-avatar" aria-hidden="true">D</div><div><span className="message-author">Daon</span><p>{viewState.answer.answer}</p></div></article> : <div className="conversation-empty"><span className="conversation-orbit" aria-hidden="true">✦</span><h3>{viewState.selectedSource || selectedKnowledgeId ? "Source에 대해 무엇이든 물어보세요." : "무엇이든 물어보세요."}</h3><p>{viewState.selectedSource || selectedKnowledgeId ? "선택한 Source의 근거와 Citation을 사용해 답합니다." : "작업 상담, 구현 방법 등 일반 질문에 답합니다."}</p></div>}
           {viewState.answerIntent === "general_ungrounded" || viewState.answerIntent === "work_support_ungrounded"
             ? <div className="context-selection-status" role="status">작업 상담 · 근거 미사용</div> : null}
           {viewState.answerIntent === "work_support_source_backed"
             ? <div className="context-selection-status" role="status">작업 상담 · Source 사용</div> : null}
-          {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">대화를 불러오지 못했습니다. ({viewState.conversationSafeError}) 다시 시도해 주세요.</div> : null}
+          {viewState.answer?.insufficient ? <div className="context-selection-status" role="status"><strong>근거 부족</strong>{viewState.answer.next_actions?.length ? <ul>{viewState.answer.next_actions.map((action, index) => <li key={index}>{action}</li>)}</ul> : null}</div> : null}
+          {viewState.conversationSafeError ? <div className="inline-alert compact" role="alert">질문 실행에 실패했습니다. ({viewState.conversationSafeError}) 입력을 확인한 뒤 다시 제출해 주세요.</div> : null}
           <div className="citation-row">{viewState.answer?.citations?.map((citation) => (
             <a key={citation.citation_id} href={citation.content_url} onClick={(event) => {
               if(citation.origin==='raw_source' && citation.locator.kind==='section' && /^law-source-[0-9a-f]{32}$/u.test(citation.source_id)){
@@ -1922,8 +2017,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
               {imageCitationLoaded ? <span className="citation-image-region" aria-label="근거 영역" style={{ left: `${imageCitation.region.x / imageCitation.region.imageWidth * 100}%`, top: `${imageCitation.region.y / imageCitation.region.imageHeight * 100}%`, width: `${imageCitation.region.width / imageCitation.region.imageWidth * 100}%`, height: `${imageCitation.region.height / imageCitation.region.imageHeight * 100}%` }} /> : null}
             </div>}
           </section> : null}</div><form className="conversation-composer" onSubmit={askQuestion}>
-            <label><span className="sr-only">질문</span><textarea rows="2" placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "작업 내용이나 궁금한 점을 질문하세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
-            <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={!question.trim()}>↑</button>
+            <label><span className="sr-only">질문</span><textarea rows="2" disabled={questionPending} placeholder={viewState.selectedSource || selectedKnowledgeId ? "선택한 지식과 작업에 대해 질문하세요" : "작업 내용이나 궁금한 점을 질문하세요"} value={question} onChange={(event) => setQuestion(event.currentTarget.value)} /></label>
+            <button className="composer-submit" type="submit" aria-label="질문 실행" disabled={questionPending || !question.trim()}>↑</button>
           </form></div>}
         </SafePane>
         <SafePane id="product-pane-studio" title="업무 Studio" description="근거가 확인된 답변으로 보고서를 생성하고 저장 결과를 확인합니다.">
@@ -1975,8 +2070,15 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       </div>
       {modalView ? <div className="workspace-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
         <section ref={modalRef} className={`workspace-modal workspace-modal-${modalView}`} role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title" onKeyDown={(event) => trapDialogFocus(event, closeModal)}>
-          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" onClick={() => closeModal()} aria-label="닫기">×</button></header>
-          {modalView === "llm" ? <div className="workspace-modal-content">{providerSettings ?? <div className="modal-unavailable" role="status"><strong>Provider 설정 연결이 필요합니다.</strong><p>현재 Workspace에서는 설정 상태를 불러올 수 없습니다.</p><button type="button" disabled>연결 기능 준비 중</button></div>}</div> : modalView === "output-version" ? <div className="workspace-modal-content output-version-settings">
+          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-step-up" ? "외부 질문 추가 인증" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" onClick={() => closeModal()} aria-label="닫기">×</button></header>
+          {modalView === "question-step-up" ? <div className="workspace-modal-content">
+            <p>현재 선택한 자료와 질문의 외부 전송에 추가 인증이 필요합니다.</p>
+            <label>현재 비밀번호<input ref={questionPasswordRef} type="password" autoComplete="off" aria-label="외부 질문 추가 인증 비밀번호" disabled={questionAuthPending} /></label>
+            {questionAuthError ? <div role="alert">{questionAuthError}</div> : null}
+            {questionAuthPending ? <div role="status">추가 인증을 확인하고 있습니다.</div> : null}
+            <button type="button" disabled={questionAuthPending} onClick={authenticateQuestion}>인증 후 질문 제출</button>
+            <button type="button" onClick={() => closeModal()}>질문 인증 취소</button>
+          </div> : modalView === "llm" ? <div className="workspace-modal-content">{providerSettings ?? <div className="modal-unavailable" role="status"><strong>Provider 설정 연결이 필요합니다.</strong><p>현재 Workspace에서는 설정 상태를 불러올 수 없습니다.</p><button type="button" disabled>연결 기능 준비 중</button></div>}</div> : modalView === "output-version" ? <div className="workspace-modal-content output-version-settings">
             {outputSettingsPending && !outputSettings ? <div className="modal-unavailable" role="status">출력 설정을 불러오고 있습니다.</div> : null}
             {outputSettingsSafeError ? <div className="modal-unavailable" role="alert"><strong>출력 설정을 처리하지 못했습니다.</strong><p>변경 내용은 저장되지 않았습니다.</p><button type="button" onClick={() => void loadOutputVersionSettings()}>다시 불러오기</button></div> : null}
             {outputSettings && outputDraft ? <form onSubmit={(event) => { event.preventDefault(); void saveOutputVersionSettings(); }}>

@@ -29,6 +29,11 @@ function isSafeId(value) {
   return typeof value === "string" && SAFE_ID.test(value);
 }
 
+function isStepUpToken(value) {
+  return typeof value === "string" && value.length >= 1 && value.length <= 4096
+    && !/[\s\u0000-\u001f\u007f]/u.test(value);
+}
+
 function isCitationLocator(value) {
   return hasExactKeys(value, ["kind", "value"])
     && typeof value.kind === "string"
@@ -138,7 +143,8 @@ function isGroundedAnswer(value) {
     && value.citations.every(isGroundedCitation);
 }
 
-async function responseData(response) {
+async function responseData(response, signal) {
+  signal?.throwIfAborted();
   const contentType = response.headers?.get?.("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
     if (response.status === 504) throw new Error("GATEWAY_TIMEOUT");
@@ -149,8 +155,10 @@ async function responseData(response) {
   try {
     payload = await response.json();
   } catch {
+    signal?.throwIfAborted();
     throw new Error("QUESTION_RESPONSE_INVALID");
   }
+  signal?.throwIfAborted();
   if (!response.ok) {
     const code = payload?.error?.code;
     throw new Error(typeof code === "string" ? code : "QUESTION_FAILED");
@@ -170,7 +178,7 @@ async function responseData(response) {
 export async function askGroundedQuestion(
   workspaceId,
   { notebookId, sourceId, sourceVersionId, knowledgeContext, question },
-  { fetchImpl = fetch, idempotencyKey = secureUuid(), stepUpAuthorizationId } = {},
+  { fetchImpl = fetch, idempotencyKey = secureUuid(), stepUpAuthorizationId, signal } = {},
 ) {
   const workspace = requiredId(workspaceId);
   const notebook = requiredId(notebookId);
@@ -178,38 +186,43 @@ export async function askGroundedQuestion(
   if (
     typeof question !== "string" || !question.trim()
     || question.length > 2_000 || !SAFE_ID.test(idempotencyKey)
+    || stepUpAuthorizationId !== undefined && !isStepUpToken(stepUpAuthorizationId)
   ) {
     throw new Error("QUESTION_INPUT_INVALID");
   }
+  signal?.throwIfAborted();
   const response = await fetchImpl(
     `/bff/api/workspaces/${encodeURIComponent(workspace)}/questions`,
     {
       method: "POST",
+      credentials: "same-origin", cache: "no-store", signal,
       headers: {
         "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify({
         notebook_id: notebook, ...sourceBody, question: question.trim(),
-        ...(stepUpAuthorizationId ? { step_up_authorization_id: requiredId(stepUpAuthorizationId) } : {}),
+        ...(stepUpAuthorizationId ? { step_up_authorization_id: stepUpAuthorizationId } : {}),
       }),
     },
   );
-  return responseData(response);
+  return responseData(response, signal);
 }
 
 export async function authorizeGroundedQuestion(
   workspaceId, { notebookId, sourceId, sourceVersionId, knowledgeContext, question, password },
-  { fetchImpl = fetch, idempotencyKey } = {},
+  { fetchImpl = fetch, idempotencyKey, signal } = {},
 ) {
   const workspace = requiredId(workspaceId);
   const notebook = requiredId(notebookId);
-  if (!SAFE_ID.test(idempotencyKey || "") || typeof password !== "string" || !password) {
+  if (!SAFE_ID.test(idempotencyKey || "") || typeof password !== "string" || !password
+    || typeof question !== "string" || !question.trim() || question.length > 2_000) {
     throw new Error("QUESTION_AUTHORIZATION_INPUT_INVALID");
   }
+  signal?.throwIfAborted();
   const response = await fetchImpl(
     `/bff/api/workspaces/${encodeURIComponent(workspace)}/questions/authorization`,
-    { method: "POST", credentials: "same-origin", headers: {
+    { method: "POST", credentials: "same-origin", cache: "no-store", signal, headers: {
       "Content-Type": "application/json", "Idempotency-Key": idempotencyKey,
     }, body: JSON.stringify({
       notebook_id: notebook,
@@ -217,9 +230,13 @@ export async function authorizeGroundedQuestion(
       question: question.trim(), password,
     }) },
   );
-  const payload = await response.json();
+  signal?.throwIfAborted();
+  let payload;
+  try { payload = await response.json(); }
+  catch { signal?.throwIfAborted(); throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID"); }
+  signal?.throwIfAborted();
   if (!response.ok) throw new Error(payload?.error?.code || "QUESTION_AUTHORIZATION_FAILED");
-  if (!isSafeId(payload?.data?.step_up_authorization_id)) throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID");
+  if (!isStepUpToken(payload?.data?.step_up_authorization_id)) throw new Error("QUESTION_AUTHORIZATION_RESPONSE_INVALID");
   return payload.data;
 }
 

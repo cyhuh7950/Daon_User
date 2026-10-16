@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { MinimalEvent, findElements, installMinimalDom } from "./product-studio-dom.mjs";
 import { createNotebookContextWorkspaceAdapter, projectNotebookSelectedContext } from "../../packages/ui/src/notebook-context-adapter.js";
 import { createProductWorkspaceState } from "../../packages/ui/src/product-workspace-model.js";
+import { citationContentUrl } from "../../apps/web/lib/question-answering-api.js";
 
 const EXISTING_CONTEXT = Object.freeze({
   notebook_id: "notebook-existing",
@@ -21,6 +22,38 @@ const EXISTING_CONTEXT = Object.freeze({
   output_version_ids: Object.freeze(["output-version-bound"]),
   generation_settings_ids: Object.freeze(["generation-settings-bound"]),
   source_deletion_requests: Object.freeze([]),
+});
+
+test("S18 질문 추가 인증 adapter는 발급과 제출을 동일 현재 Notebook에 결속한다", async () => {
+  const calls = [];
+  const base = { authorizeQuestion: async (input, options) => { calls.push([input, options]); return { step_up_authorization_id: "grant-s18" }; },
+    askQuestion: async (input, options) => { calls.push([input, options]); return { answer: "응답" }; } };
+  const adapter = createNotebookContextWorkspaceAdapter(base, EXISTING_CONTEXT);
+  const controller = new AbortController();
+  const options = { idempotencyKey: "question-s18", signal: controller.signal };
+  const input = { notebookId: "notebook-wrong", question: "근거는?" };
+  const grant = await adapter.authorizeQuestion({ ...input, password: "synthetic-password" }, options);
+  await adapter.askQuestion(input, { ...options, stepUpAuthorizationId: grant.step_up_authorization_id });
+  assert.equal(calls[0][0].notebookId, "notebook-existing"); assert.equal(calls[1][0].notebookId, "notebook-existing");
+  assert.equal(calls[0][1].signal, controller.signal); assert.equal(calls[0][1].idempotencyKey, calls[1][1].idempotencyKey);
+});
+
+test("S18 질문 저장 PDF Citation은 현재 Notebook URL과 정확한 page fragment를 복원한다", async () => {
+  const citation = { citation_id: "citation-pdf", source_id: "source-bound", source_version_id: "source-version-bound",
+    evidence_span_id: "span-pdf", page: 3, origin: "raw_source", context_item_id: "source-bound", locator: { kind: "page", value: "3" } };
+  const context = { ...EXISTING_CONTEXT, knowledge_context_ids: [], conversation: {
+    conversation_thread_id: "conversation-bound", answer: { ...EXISTING_CONTEXT.conversation.answer, citations: [citation] },
+  } };
+  const adapter = createNotebookContextWorkspaceAdapter({ citationUrl: (item, options) => citationContentUrl("workspace-1", item, options) }, context);
+  const answer = await adapter.loadNotebookConversation();
+  assert.equal(answer.citations[0].content_url, "/bff/api/workspaces/workspace-1/citations/citation-pdf/content?notebook_id=notebook-existing#page=3");
+  assert.deepEqual(answer.citations[0].locator, { kind: "page", value: "3" });
+  for (const altered of [{ source_version_id: "other-version" }, { source_id: "other-source" },
+    { locator: { kind: "unknown", value: "3" } }, { locator: { kind: "page", value: "2" } }]) {
+    assert.throws(() => createNotebookContextWorkspaceAdapter({}, { ...context, conversation: { ...context.conversation,
+      answer: { ...context.conversation.answer, citations: [{ ...citation, ...altered }] },
+    } }), /NOTEBOOK_CONTEXT_INVALID/u);
+  }
 });
 
 test('PPTX saved answer reentry restores same Notebook URL and rejects wrong Version',async()=>{

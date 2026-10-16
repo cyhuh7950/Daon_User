@@ -101,7 +101,7 @@ export function projectNotebookSelectedContext(value) {
       && typeof item.legal_hold_active === "boolean")
     && conversationValid
     && (value.conversation === null || value.conversation.answer.citations.every(citation =>
-      !(["docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation) || isLawSectionCitation(citation)) || citation.origin !== "raw_source"
+      !(["page", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind) || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation) || isLawSectionCitation(citation)) || citation.origin !== "raw_source"
       || (citation.context_item_id === citation.source_id
         && (!isWebsiteSectionCitation(citation) || citation.source_version_id === `web-version-${citation.source_id.slice("web-source-".length)}`)
         && (!isLawSectionCitation(citation) || (citation.source_version_id === `law-version-${citation.source_id.slice('law-source-'.length)}`
@@ -182,7 +182,7 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
   const loadNotebookConversation = async (options) => {
     if (context.conversation === null || context.conversation_thread_ids.length !== 1) return null;
     const answer = context.conversation.answer;
-    const withContentUrls = (citation) => ["image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind)
+    const withContentUrls = (citation) => ["page", "image_region", "sheet_cell", "docx_block", "pptx_block", "audio_segment"].includes(citation.locator.kind)
       || isWebsiteSectionCitation(citation) || isCanonicalTextSectionCitation(citation) || isLawSectionCitation(citation);
     if (!answer.citations.some(withContentUrls)) return answer;
     return { ...answer, citations: answer.citations.map((citation) => withContentUrls(citation)
@@ -282,6 +282,9 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
       : undefined,
     askQuestion: typeof baseAdapter.askQuestion === "function"
       ? (input, options) => baseAdapter.askQuestion({ ...input, notebookId: context.notebook_id }, options)
+      : undefined,
+    authorizeQuestion: typeof baseAdapter.authorizeQuestion === "function"
+      ? (input, options) => baseAdapter.authorizeQuestion({ ...input, notebookId: context.notebook_id }, options)
       : undefined,
     createGeneration: typeof baseAdapter.createGeneration === "function"
       ? (input, options) => baseAdapter.createGeneration(input, { ...options, notebookId: context.notebook_id })

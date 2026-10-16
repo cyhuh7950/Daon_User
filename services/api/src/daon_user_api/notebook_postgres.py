@@ -367,6 +367,14 @@ class PostgresNotebookRepository:
                     str(conversation_rows[0][2]), str(result_payload["answer"]),
                     bool(result_payload["insufficient"]), citations,
                 )
+                active_sources = {
+                    (binding.record_id, binding.version_id)
+                    for binding in bindings if binding.binding_kind == "source"
+                }
+                if any(citation.origin == "raw_source" and
+                       (citation.source_id, citation.source_version_id) not in active_sources
+                       for citation in citations):
+                    conversation = None
             selected = _selected_context(notebook_id, bindings, conversation, binding_version)
             return NotebookSelectedContext(
                 notebook_id=selected.notebook_id, sources=selected.sources,

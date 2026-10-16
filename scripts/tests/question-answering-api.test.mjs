@@ -42,6 +42,78 @@ const request = (payload) => askGroundedQuestion(
   { idempotencyKey: "question-1", fetchImpl: async () => Response.json(payload) }
 );
 
+test("S18 질문 추가 인증 helper는 동일 입력/key와 signal을 전달하고 취소 후 응답을 사용하지 않는다", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const input = { notebookId: "notebook-1", sourceId: "source-1", sourceVersionId: "version-1", question: "근거는?", password: "synthetic-password" };
+  const options = { signal: controller.signal, idempotencyKey: "question-s18", fetchImpl: async (url, init) => {
+    calls++;
+    assert.equal(url, "/bff/api/workspaces/workspace-1/questions/authorization");
+    assert.equal(init.signal, controller.signal); assert.equal(init.cache, "no-store"); assert.equal(init.credentials, "same-origin");
+    assert.equal(init.headers["Idempotency-Key"], "question-s18");
+    assert.deepEqual(JSON.parse(init.body), { notebook_id: "notebook-1", source_id: "source-1", source_version_id: "version-1", question: "근거는?", password: "synthetic-password" });
+    return { ok: true, json: async () => { controller.abort(); return { data: { step_up_authorization_id: "grant-s18" } }; } };
+  } };
+  await assert.rejects(authorizeGroundedQuestion("workspace-1", input, options), { name: "AbortError" });
+  assert.equal(calls, 1);
+  await assert.rejects(authorizeGroundedQuestion("workspace-1", input, options), { name: "AbortError" });
+  assert.equal(calls, 1, "이미 취소된 인증 요청은 전송하지 않는다");
+});
+
+test("S18 질문 추가 인증의 실제 opaque URL-safe token은 ID 접두어를 요구하지 않는다", async () => {
+  const token = "_" + "a".repeat(63);
+  const input = { notebookId: "notebook-1", question: "근거는?", password: "synthetic-password" };
+  const grant = await authorizeGroundedQuestion("workspace-1", input, { idempotencyKey: "question-s18", fetchImpl: async () => Response.json({ data: { step_up_authorization_id: token } }) });
+  await askGroundedQuestion("workspace-1", input, { idempotencyKey: "question-s18", stepUpAuthorizationId: grant.step_up_authorization_id,
+    fetchImpl: async (_url, init) => { assert.equal(JSON.parse(init.body).step_up_authorization_id, token); return Response.json(envelope()); } });
+});
+
+test("S18 질문 helper는 현재 Notebook과 signal을 same-origin no-store fetch에 전달한다", async () => {
+  const controller = new AbortController();
+  const result = await askGroundedQuestion("workspace-1", {
+    notebookId: "notebook-1", sourceId: "source-1", sourceVersionId: "version-1", question: "근거는?",
+  }, { signal: controller.signal, idempotencyKey: "question-s18", fetchImpl: async (url, init) => {
+    assert.equal(url, "/bff/api/workspaces/workspace-1/questions");
+    assert.equal(init.method, "POST"); assert.equal(init.signal, controller.signal);
+    assert.equal(init.credentials, "same-origin"); assert.equal(init.cache, "no-store");
+    assert.equal(init.headers["Idempotency-Key"], "question-s18");
+    assert.deepEqual(JSON.parse(init.body), { notebook_id: "notebook-1", source_id: "source-1", source_version_id: "version-1", question: "근거는?" });
+    return Response.json(envelope());
+  } });
+  assert.deepEqual(result, answerData);
+});
+
+test("S18 질문 helper는 이미 취소된 요청을 전송하지 않는다", async () => {
+  const controller = new AbortController(); controller.abort(); let calls = 0;
+  await assert.rejects(askGroundedQuestion("workspace-1", { notebookId: "notebook-1", question: "안녕" }, {
+    signal: controller.signal, idempotencyKey: "question-s18", fetchImpl: async () => { calls += 1; return Response.json(envelope()); },
+  }), { name: "AbortError" });
+  assert.equal(calls, 0);
+});
+
+test("S18 질문 helper는 fetch 직후 취소되면 JSON 파싱을 시작하지 않는다", async () => {
+  const controller = new AbortController(); let parses = 0;
+  await assert.rejects(askGroundedQuestion("workspace-1", { notebookId: "notebook-1", question: "안녕" }, {
+    signal: controller.signal, idempotencyKey: "question-s18", fetchImpl: async () => {
+      controller.abort(); const response = Response.json(envelope());
+      response.json = async () => { parses += 1; return envelope(); }; return response;
+    },
+  }), { name: "AbortError" });
+  assert.equal(parses, 0);
+});
+
+test("S18 질문 helper는 JSON 파싱 중 취소된 결과를 반환하지 않는다", async () => {
+  const controller = new AbortController(); let resolveJson, started;
+  const parsing = new Promise(resolve => { started = resolve; });
+  const result = askGroundedQuestion("workspace-1", { notebookId: "notebook-1", question: "안녕" }, {
+    signal: controller.signal, idempotencyKey: "question-s18", fetchImpl: async () => {
+      const response = Response.json(envelope()); response.json = () => { started(); return new Promise(resolve => { resolveJson = resolve; }); }; return response;
+    },
+  });
+  await parsing; controller.abort(); resolveJson(envelope());
+  await assert.rejects(result, { name: "AbortError" });
+});
+
 test('PPTX question locator preserves scoped URL and rejects noncanonical ranges',async()=>{
  const locator={kind:'pptx_block',value:'{"block":"s:2:tb:3:r:1:c:2:p:1","start":0,"end":5}'};
  const item={...citation,page:1,locator};
