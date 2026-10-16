@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import hashlib
 import re
 import time
@@ -261,6 +262,84 @@ class PreparedQuestionAuthorization:
     evidence_count: int
 
 
+class _QaMediaBridgeDiagnosticAdapter(OpenAICompatibleTextGenerationAdapter):
+    """Transient, exact-QA response structure only; never retain response values."""
+
+    @staticmethod
+    def _shape(value: object) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, dict):
+            return "object"
+        if isinstance(value, list):
+            return "array"
+        if isinstance(value, (int, float)):
+            return "number"
+        return "other"
+
+    @staticmethod
+    def _count(value: object) -> int:
+        return value if type(value) is int and 0 <= value <= 2_147_483_647 else -1
+
+    def _post(self, selection, payload):  # type: ignore[no-untyped-def]
+        request_bytes = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        if request_bytes > 65536:
+            logging.getLogger(__name__).warning(
+                "s18_media_bridge_structure cap=%d request_bytes=%d response_type=not_sent",
+                self._count(payload.get("max_tokens")), request_bytes,
+            )
+            raise ValueError("TEXT_GENERATION_FAILED")
+        try:
+            response = super()._post(selection, payload)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "s18_media_bridge_structure cap=%d request_bytes=%d response_type=unavailable",
+                self._count(payload.get("max_tokens")), request_bytes,
+            )
+            raise
+        choices = response.get("choices") if isinstance(response, dict) else None
+        first = choices[0] if isinstance(choices, list) and choices else None
+        message = first.get("message") if isinstance(first, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        reason = first.get("finish_reason") if isinstance(first, dict) else None
+        finish = (reason if isinstance(reason, str) and reason in {
+            "stop", "length", "tool_calls", "content_filter", "function_call",
+        } else "none" if reason is None else "other")
+        parsed = content
+        json_ok = False
+        if isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+                json_ok = True
+            except (ValueError, RecursionError):
+                parsed = None
+        usage = response.get("usage") if isinstance(response, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        parsed_object = parsed if isinstance(parsed, dict) else {}
+        answer = parsed_object.get("answer")
+        cited = parsed_object.get("cited_chunk_ids")
+        # Every interpolated value is a fixed enum, bool, or bounded count.
+        # No trace/input/model/credential/URL, arbitrary key, or exception text.
+        logging.getLogger(__name__).warning(
+            "s18_media_bridge_structure cap=%d request_bytes=%d response_type=%s choices_type=%s choices_count=%d "
+            "finish_reason=%s message_type=%s content_type=%s content_chars=%d json_ok=%s json_type=%s "
+            "answer_type=%s answer_chars=%d cited_count=%d insufficient_type=%s "
+            "prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+            self._count(payload.get("max_tokens")), request_bytes, self._shape(response), self._shape(choices),
+            len(choices) if isinstance(choices, list) else -1, finish,
+            self._shape(message), self._shape(content), len(content) if isinstance(content, str) else -1,
+            json_ok, self._shape(parsed), self._shape(answer), len(answer) if isinstance(answer, str) else -1,
+            len(cited) if isinstance(cited, list) else -1, self._shape(parsed_object.get("insufficient")),
+            self._count(usage.get("prompt_tokens")), self._count(usage.get("completion_tokens")),
+            self._count(usage.get("total_tokens")),
+        )
+        return response
+
+
 @dataclass(frozen=True, slots=True)
 class QuestionInputSource:
     origin: str
@@ -300,9 +379,37 @@ class QuestionAnsweringService:
         self._concurrent_poll_seconds = max(0.001, concurrent_poll_seconds)
         self._qa_structured_ollama_workspace_id = qa_structured_ollama_workspace_id
 
+    def _qa_media_selection(self, context: QuestionContext, selection: object) -> bool:
+        return bool(
+            self._qa_structured_ollama_workspace_id == context.workspace_id
+            and (context.tenant_id, context.workspace_id, context.actor_id) == (
+                "tenant-PvH_pofxPyDtfk3wWBrn3ru3", "workspace-2edb96cb84a252046e67307d",
+                "usr-fwYlLlWlcP_GvvpPoZIkadvr",
+            )
+            and getattr(selection, "provider_code", None) == "CUSTOM"
+            and getattr(selection, "provider_kind", None) == "external_api"
+            and getattr(selection, "capability", None) == "text_generation"
+            and getattr(selection, "connection_id", None) == "provider-90efb3fd4ea99fd3ff24edc767ca2800"
+            and getattr(selection, "adapter_type", None) == "openai_compatible"
+            and getattr(selection, "base_url", None) == "https://media-bridge-gateway.sinsan.kr/v1"
+            and getattr(selection, "model_id", None) == "uss/solar-pro4"
+        )
+
     def _prepare_qa_structured_payload(
         self, context: QuestionContext, prepared: QuestionAdapterRegistry.Prepared,
     ) -> QuestionAdapterRegistry.Prepared:
+        if (
+            self._qa_media_selection(context, getattr(prepared, "selection", None))
+            and isinstance(prepared.request, (GroundedQuestionRequest, GeneralConversationRequest))
+            and type(prepared.adapter) is OpenAICompatibleTextGenerationAdapter
+        ):
+            payload = {**prepared.provider_payload, "max_tokens": 512}
+            payload.pop("max_completion_tokens", None)
+            adapter = _QaMediaBridgeDiagnosticAdapter(
+                transport=prepared.adapter._transport, api_key=prepared.adapter._api_key,
+                timeout_seconds=prepared.adapter._timeout_seconds,
+            )
+            return replace(prepared, provider_payload=payload, adapter=adapter)
         if (
             self._qa_structured_ollama_workspace_id
             and context.workspace_id == self._qa_structured_ollama_workspace_id
@@ -554,6 +661,7 @@ class QuestionAnsweringService:
                     raw_code if raw_code.startswith("TEXT_") else "TEXT_GENERATION_FAILED",
                     status=503 if raw_code.startswith("TEXT_PROVIDER_") else 502,
                 ) from None
+            prepared = self._prepare_qa_structured_payload(context, prepared)
             frozen_bytes = canonical_json_bytes(prepared.provider_payload)
             transformer = getattr(self._egress, "prepare_payload", None)
             if callable(transformer):
@@ -611,16 +719,32 @@ class QuestionAnsweringService:
                     context_mode=context_mode, context_sources=sources,
                     request_fingerprint=request_fingerprint,
                 )
+            prepared = None
+            fallback_wire = b""
+            if self._qa_media_selection(context, selection):
+                prepared = self._prepare_qa_structured_payload(context, prepare_general(
+                    selection, question, context.trace_id, self._transport,
+                ))
+                if isinstance(prepared.adapter, _QaMediaBridgeDiagnosticAdapter):
+                    fallback_wire = canonical_json_bytes(prepared.provider_payload)
+                    transformer = getattr(self._egress, "prepare_payload", None)
+                    if callable(transformer):
+                        fallback_wire = transformer(context, fallback_wire)
+                        prepared = replace(prepared, provider_payload=json.loads(fallback_wire))
             egress_authorization = self._egress.authorize(
                 context, run_id=run_id, source_id=None, source_version_id=None,
-                selection=selection, provider_payload=b"",
+                selection=selection, provider_payload=fallback_wire,
                 approved_authorization=approved_authorization,
                 question=question, context_mode="general_ungrounded",
                 request_fingerprint=request_fingerprint,
             )
-            prepared = prepare_general(
-                selection, question, context.trace_id, self._transport,
-            )
+            if (prepared is not None and isinstance(prepared.adapter, _QaMediaBridgeDiagnosticAdapter)
+                    and egress_authorization.get("provider_owner") is False):
+                return self._wait_for_provider_owner(context, run_id, request_fingerprint)
+            if prepared is None:
+                prepared = prepare_general(
+                    selection, question, context.trace_id, self._transport,
+                )
             recheck()
             generated = self._adapter_registry.generate_general(prepared)
             recheck()

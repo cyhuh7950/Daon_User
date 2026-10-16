@@ -22,6 +22,294 @@ from daon_user_api.question_answering import GeneralConversationRequest, Grounde
 from daon_user_api.data_canon import canonical_json_bytes
 
 
+class S18MediaCapDiagnosticTests(unittest.TestCase):
+    def test_s18_media_non_qa_legacy_adapter_without_selection_is_unchanged(self):
+        from test_question_egress_binding import build
+        for target in ("", self.context.workspace_id):
+            with self.subTest(qa_target_enabled=bool(target)):
+                events = []
+                service, repository = build(events)
+                service._qa_structured_ollama_workspace_id = target
+                result = service.ask(
+                    QuestionContext("tenant", "workspace", "actor", "trace", "policy"),
+                    source_id="source", source_version_id="version", question="질문", run_id="run-legacy-s18",
+                )
+                self.assertEqual(events, ["decision_commit", "transport", "result_commit"])
+                self.assertEqual(result["result"].answer, "근거 문장")
+                self.assertIsNotNone(repository.persisted)
+
+    context = QuestionContext(
+        "tenant-PvH_pofxPyDtfk3wWBrn3ru3", "workspace-2edb96cb84a252046e67307d",
+        "usr-fwYlLlWlcP_GvvpPoZIkadvr", "trace-s18-media", "policy-v1", "notebook-s18-media",
+    )
+    selection = ResolvedModel(
+        connection_id="provider-90efb3fd4ea99fd3ff24edc767ca2800", provider_code="CUSTOM",
+        model_id="uss/solar-pro4", capability="text_generation",
+        base_url="https://media-bridge-gateway.sinsan.kr/v1", credential_version=1,
+        default_version=7, catalog_version=1, provider_kind="external_api", routing_owner="provider",
+        daon_fallback_allowed=False, _credential=bytearray(b"CREDENTIAL_CANARY_S18"),
+        adapter_type="openai_compatible",
+    )
+
+    def setup_flow(self, *, context=None, selection=None, response=None, target=None):
+        from types import SimpleNamespace
+        from daon_user_api.question_egress import PostgresQuestionEgressAuthorizer
+        selected = replace(selection or self.selection, _credential=bytearray(b"CREDENTIAL_CANARY_S18"))
+
+        class Resolver:
+            @contextmanager
+            def resolve(self, _context, _capability):
+                yield selected
+
+        class Transport:
+            calls = []
+            def post_json(self, **kwargs):
+                self.calls.append(kwargs)
+                return response if response is not None else {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+                    "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
+                })}}], "usage": {"prompt_tokens": 41, "completion_tokens": 29, "total_tokens": 70}}
+
+        class Egress(FakeEgress):
+            def prepare_payload(self, current, wire):
+                policy = SimpleNamespace(get_effective=lambda _context: SimpleNamespace(masking_required=True, redaction_required=True))
+                return PostgresQuestionEgressAuthorizer.prepare_payload(SimpleNamespace(_policy_service=policy), current, wire)
+            def authorize(self, current, **kwargs):
+                self.wire = kwargs["provider_payload"]
+                return super().authorize(current, **kwargs)
+
+        evidence = (IndexedEvidenceChunk("chunk-page-2", "source-cp3", "source-version-cp3", 2,
+                    "ORANGE-COMPASS-42", "span-page-2", 1.0),)
+        transport, repository, egress = Transport(), FakeRepository(), Egress()
+        service = QuestionAnsweringService(Resolver(), repository, FakeIndex(evidence), FakeCredential(), transport, egress,
+            qa_structured_ollama_workspace_id=self.context.workspace_id if target is None else target)
+        return service, context or self.context, transport, repository, egress, selected, evidence
+
+    def test_s18_media_cap_is_identical_in_authorization_masked_egress_and_wire(self):
+        import hashlib
+        service, context, transport, repository, egress, _, _ = self.setup_flow()
+        args = dict(source_id="source-cp3", source_version_id="source-version-cp3", question="질문의 원문 CANARY_QUESTION")
+        authorization = service.prepare_authorization(context, **args)
+        self.assertEqual(json.loads(authorization.provider_payload).get("max_tokens"), 512)
+        self.assertEqual(transport.calls, [], "인증 준비는 모델을 호출하지 않는다")
+        with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as captured:
+            result = service.ask(context, run_id="run-s18-media", **args)
+        self.assertEqual(result.answer, "ORANGE-COMPASS-42")
+        self.assertEqual(len(transport.calls), 1)
+        wire = canonical_json_bytes(transport.calls[0]["payload"])
+        self.assertEqual(egress.wire, authorization.provider_payload)
+        self.assertEqual(wire, authorization.provider_payload)
+        self.assertEqual(hashlib.sha256(wire).digest(), hashlib.sha256(authorization.provider_payload).digest())
+        self.assertEqual(transport.calls[0]["payload"]["max_tokens"], 512)
+        self.assertEqual(transport.calls[0]["timeout_seconds"], 60.0)
+        self.assertIsNotNone(repository.persisted)
+        logs = " ".join(captured.output)
+        self.assertIn("cap=512", logs)
+        for canary in ("CANARY_QUESTION", "ORANGE-COMPASS-42", "CREDENTIAL_CANARY_S18"):
+            self.assertNotIn(canary, logs)
+
+    def test_s18_media_existing_larger_caps_are_replaced_without_changing_schema_or_prompt(self):
+        service, context, _, _, _, selection, evidence = self.setup_flow()
+        prepared = service._adapter_registry.prepare(selection, evidence, "질문", context.trace_id, service._transport)
+        original = canonical_json_bytes(prepared.provider_payload)
+        changed = replace(prepared, provider_payload={**prepared.provider_payload, "max_tokens": 9000, "max_completion_tokens": 8000})
+        result = service._prepare_qa_structured_payload(context, changed)
+        self.assertEqual(result.provider_payload.get("max_tokens"), 512)
+        self.assertNotIn("max_completion_tokens", result.provider_payload)
+        self.assertEqual(canonical_json_bytes({k: v for k, v in result.provider_payload.items() if k != "max_tokens"}), original)
+        self.assertEqual(changed.provider_payload["max_tokens"], 9000, "원래 준비 객체는 변경하지 않는다")
+
+    def test_s18_media_diagnostic_invalid_shapes_and_unknown_reasons_never_log_values(self):
+        responses = [
+            {"choices": []},
+            {"choices": [{"finish_reason": "FINISH_SECRET_CANARY", "message": {"content": "RESPONSE_SECRET_CANARY"}}], "metadata": "METADATA_SECRET_CANARY"},
+            {"choices": [{"message": {"content": []}}]},
+            {"choices": [{"message": {"content": json.dumps({"cited_chunk_ids": [], "insufficient": False, "metadata": "JSON_VALUE_CANARY"})}}]},
+        ]
+        for response in responses:
+            with self.subTest(response_index=responses.index(response)):
+                service, context, transport, repository, _, _, _ = self.setup_flow(response=response)
+                with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as captured:
+                    with self.assertRaises(QuestionAnsweringError) as error:
+                        service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="QUESTION_CANARY", run_id="run-s18-invalid")
+                self.assertEqual(error.exception.code, "TEXT_GENERATION_RESPONSE_INVALID")
+                self.assertIsNone(repository.persisted)
+                self.assertEqual(len(transport.calls), 1)
+                self.assertNotIn("CANARY", " ".join(captured.output))
+                if response is responses[1]: self.assertIn("finish_reason=other", " ".join(captured.output))
+
+    def test_s18_media_other_identity_selection_requests_are_unchanged(self):
+        import logging
+        from unittest.mock import patch
+        service, context, _, _, _, selection, evidence = self.setup_flow()
+        prepared = service._adapter_registry.prepare(selection, evidence, "질문", context.trace_id, service._transport)
+        negatives = [
+            (replace(context, tenant_id="tenant-other"), selection),
+            (replace(context, actor_id="actor-other"), selection),
+            (replace(context, workspace_id="workspace-other"), selection),
+            (context, replace(selection, connection_id="connection-other")),
+            (context, replace(selection, model_id="uss/solar-pro4-other")),
+            (context, replace(selection, provider_code="UPSTAGE")),
+            (context, replace(selection, provider_kind="server_internal")),
+            (context, replace(selection, adapter_type="anthropic_compatible")),
+            (context, replace(selection, base_url=selection.base_url + "/")),
+            (context, replace(selection, base_url=selection.base_url + "?private=URL_CANARY")),
+        ]
+        for other_context, other_selection in negatives:
+            with self.subTest(context=other_context, connection=other_selection.connection_id), patch.object(logging.getLogger("daon_user_api.question_answering_service"), "warning") as log:
+                other = replace(prepared, selection=other_selection)
+                self.assertIs(service._prepare_qa_structured_payload(other_context, other), other)
+                other.adapter.generate(other.request, selection, provider_payload=other.provider_payload)
+                log.assert_not_called()
+        general = service._adapter_registry.prepare_general(selection, "Hello", context.trace_id, service._transport)
+        self.assertIs(service._prepare_qa_structured_payload(replace(context, actor_id="actor-other"), general), general)
+        off, *_ = self.setup_flow(target="")
+        self.assertIs(off._prepare_qa_structured_payload(context, prepared), prepared)
+
+    def test_s18_media_general_and_zero_retrieval_fallback_have_same_authorized_wire_cap(self):
+        for source_selected in (False, True):
+            with self.subTest(source_selected=source_selected):
+                service, context, transport, _, egress, _, _ = self.setup_flow(response={"choices": [{
+                    "finish_reason": "stop", "message": {"content": json.dumps({"answer": "일반 구조 응답"})},
+                }]})
+                service._document_index.evidence = ()
+                args = dict(source_id="source-cp3" if source_selected else None,
+                            source_version_id="source-version-cp3" if source_selected else None, question="자료 밖 질문")
+                authorization = service.prepare_authorization(context, **args)
+                self.assertEqual(json.loads(authorization.provider_payload).get("max_tokens"), 512)
+                self.assertEqual(transport.calls, [])
+                with self.assertLogs("daon_user_api.question_answering_service", level="INFO"):
+                    result = service.ask(context, run_id="run-s18-fallback", **args)
+                self.assertEqual(result.answer, "일반 구조 응답")
+                self.assertEqual(len(transport.calls), 1)
+                self.assertEqual(authorization.provider_payload, egress.wire)
+                self.assertEqual(authorization.provider_payload, canonical_json_bytes(transport.calls[0]["payload"]))
+                self.assertEqual(transport.calls[0]["payload"]["max_tokens"], 512)
+
+    def test_s18_media_valid_json_with_invented_citation_still_fails_grounding(self):
+        service, context, _, repository, _, _, _ = self.setup_flow(response={"choices": [{"message": {"content": json.dumps({
+            "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["invented-chunk"], "insufficient": False,
+        })}}]})
+        with self.assertRaises(QuestionAnsweringError) as error:
+            service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="질문", run_id="run-s18-grounding")
+        self.assertEqual(error.exception.code, "TEXT_GENERATION_GROUNDING_INVALID")
+        self.assertIsNone(repository.persisted)
+
+    def test_s18_media_valid_insufficient_is_not_rewritten_and_diagnostic_counts_are_typed(self):
+        service, context, transport, _, _, _, _ = self.setup_flow(response={"choices": [{
+            "finish_reason": "length", "message": {"content": json.dumps({
+                "answer": "선택한 근거에 정보가 없습니다.", "cited_chunk_ids": [], "insufficient": True,
+            })}}], "usage": {"prompt_tokens": True, "completion_tokens": "USAGE_SECRET_CANARY", "total_tokens": 900000000000}})
+        with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as captured:
+            result = service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="질문", run_id="run-s18-insufficient")
+        self.assertTrue(result.insufficient)
+        self.assertEqual(result.answer, "선택한 근거에 정보가 없습니다.")
+        self.assertEqual(result.citations, ())
+        logs = " ".join(captured.output)
+        self.assertIn("finish_reason=length", logs)
+        self.assertIn("json_ok=True", logs)
+        self.assertIn("prompt_tokens=-1 completion_tokens=-1 total_tokens=-1", logs)
+        self.assertNotIn("USAGE_SECRET_CANARY", logs)
+        self.assertEqual(len(transport.calls), 1)
+
+    def test_s18_media_transport_failure_logs_fixed_structure_only_and_keeps_public_error(self):
+        service, context, _, repository, _, _, _ = self.setup_flow()
+        def fail(**_kwargs):
+            raise ValueError("TRANSPORT_SECRET_CANARY")
+        service._transport.post_json = fail
+        with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as captured:
+            with self.assertRaises(QuestionAnsweringError) as error:
+                service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="질문", run_id="run-s18-transport")
+        self.assertEqual(error.exception.code, "TEXT_GENERATION_FAILED")
+        self.assertIsNone(repository.persisted)
+        self.assertIn("response_type=unavailable", " ".join(captured.output))
+        self.assertNotIn("CANARY", " ".join(captured.output))
+
+    def test_s18_media_production_transport_decoded_request_matches_authorization_with_unicode(self):
+        import hashlib
+        import urllib.request
+        from unittest.mock import patch
+        from daon_user_api.document_understanding_adapter import UrlLibDocumentUnderstandingTransport
+        service, context, _, _, egress, _, evidence = self.setup_flow()
+        service._transport = UrlLibDocumentUnderstandingTransport()
+        service._document_index.evidence = (replace(evidence[0], text="ORANGE-COMPASS-42 · 한글 [마스킹] ███"),)
+        args = dict(source_id="source-cp3", source_version_id="source-version-cp3", question="선택한 시험 문서를 설명해 주세요.")
+        authorization = service.prepare_authorization(context, **args)
+        captured = []
+        response_bytes = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+            "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
+        })}}]}).encode()
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, limit): return response_bytes[:limit]
+
+        def open_boundary(_opener, request, *, timeout):
+            captured.append(request.data)
+            self.assertEqual(timeout, 60.0)
+            return Response()
+
+        with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as diagnostics:
+            with patch.object(urllib.request.OpenerDirector, "open", autospec=True, side_effect=open_boundary):
+                service.ask(context, run_id="run-s18-production-transport", **args)
+        self.assertEqual(len(captured), 1)
+        actual = json.loads(captured[0])
+        self.assertEqual(actual, json.loads(authorization.provider_payload))
+        self.assertEqual(actual["max_tokens"], 512)
+        self.assertNotIn("max_completion_tokens", actual)
+        self.assertEqual(hashlib.sha256(canonical_json_bytes(actual)).digest(), hashlib.sha256(authorization.provider_payload).digest())
+        self.assertEqual(egress.wire, authorization.provider_payload)
+        self.assertIn("한글 [마스킹] ███", json.loads(actual["messages"][1]["content"])["evidence"][0]["text"])
+        self.assertNotEqual(captured[0], authorization.provider_payload, "raw HTTP encoding과 canonical JSON bytes는 구별한다")
+        self.assertIn(f"request_bytes={len(captured[0])}", " ".join(diagnostics.output))
+
+    def test_s18_media_unicode_escaped_body_over_64k_is_rejected_before_transport(self):
+        import urllib.request
+        from unittest.mock import patch
+        from daon_user_api.document_understanding_adapter import UrlLibDocumentUnderstandingTransport
+        service, context, _, repository, _, _, evidence = self.setup_flow()
+        service._transport = UrlLibDocumentUnderstandingTransport()
+        service._document_index.evidence = (replace(evidence[0], text="ORANGE-COMPASS-42 " + "한" * 12000),)
+        args = dict(source_id="source-cp3", source_version_id="source-version-cp3", question="선택한 시험 문서의 코드")
+        authorization = service.prepare_authorization(context, **args)
+        request_bytes = len(json.dumps(json.loads(authorization.provider_payload), separators=(",", ":")).encode("utf-8"))
+        self.assertLessEqual(len(authorization.provider_payload), 65536)
+        self.assertGreater(request_bytes, 65536)
+        response_bytes = json.dumps({"choices": [{"message": {"content": json.dumps({
+            "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
+        })}}]}).encode()
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, limit): return response_bytes[:limit]
+        with patch.object(urllib.request.OpenerDirector, "open", return_value=Response()) as open_boundary:
+            with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as diagnostics:
+                with self.assertRaises(QuestionAnsweringError) as error:
+                    service.ask(context, run_id="run-s18-oversize", **args)
+        self.assertEqual(error.exception.code, "TEXT_GENERATION_FAILED")
+        open_boundary.assert_not_called()
+        self.assertIsNone(repository.persisted)
+        self.assertIn(f"request_bytes={request_bytes}", " ".join(diagnostics.output))
+        self.assertIn("response_type=not_sent", " ".join(diagnostics.output))
+        self.assertNotIn("ORANGE-COMPASS-42", " ".join(diagnostics.output))
+
+    def test_s18_media_other_adapter_fallback_keeps_original_egress_behavior(self):
+        from daon_user_api.question_answering import OpenAICompatibleTextGenerationAdapter
+        class OtherAdapter(OpenAICompatibleTextGenerationAdapter):
+            pass
+        class OtherRegistry(QuestionAdapterRegistry):
+            def prepare_general(self, selection, question, trace_id, transport):
+                prepared = super().prepare_general(selection, question, trace_id, transport)
+                return replace(prepared, adapter=OtherAdapter(transport=transport, api_key=selection.credential_text()))
+        service, context, transport, _, egress, _, _ = self.setup_flow(response={"choices": [{"message": {"content": '{"answer":"일반 응답"}'}}]})
+        service._document_index.evidence = ()
+        service._adapter_registry = OtherRegistry()
+        with self.assertNoLogs("daon_user_api.question_answering_service", level="INFO"):
+            service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="자료 밖 질문", run_id="run-other-adapter")
+        self.assertEqual(egress.wire, b"")
+        self.assertNotIn("max_tokens", transport.calls[0]["payload"])
+
+
 class FakeProviderSettings:
     def __init__(self) -> None:
         self.calls = 0
