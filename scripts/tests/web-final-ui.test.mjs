@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { createProductStudioState, selectOutputType } from "../../packages/ui/src/product-studio-model.js";
 import { createProductWorkspaceState } from "../../packages/ui/src/product-workspace-model.js";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
+import { getWorkspaceOutputVersionSettings, saveWorkspaceOutputVersionSettings } from '../../apps/web/lib/product-workspace-api.js';
 
 const PROVIDERS = ["CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI", "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY"];
 
@@ -173,6 +174,171 @@ test("운영상태 Popup은 Provider·API·Storage·Sync·Queue와 안전 복구
     dom.restore();
     await rm(output, { recursive: true, force: true });
   }
+});
+
+const s28Defaults={evidence_report:'pdf',compliance_checklist:'xlsx',comparison_table:'xlsx',knowledge_map:'json',business_draft:'docx'};
+function s28Settings(version=0,formats=s28Defaults,workspace='workspace-1') {
+  return {workspace_id:workspace,default_formats:{...formats},version_save_mode:'append_only',version,etag:`"output-version-settings:${workspace}:${version}"`};
+}
+function s28Deferred() {let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
+function s28Props(node) {return node[Object.keys(node).find(key=>key.startsWith('__reactProps'))];}
+async function withS28Output(adapter,run) {
+  const root=path.resolve(import.meta.dirname,'../..'),output=await mkdtemp(path.join(root,'.web-S28-output-'));
+  const dom=installMinimalDom();let reactRoot,unmounted=false;
+  try {
+    const {createElement,act}=await import('react'),{createRoot}=await import('react-dom/client');
+    const {ProductWorkspaceShell}=await bundle('packages/ui/src/product-workspace-shell.jsx','web-S28-output',output);
+    const container=dom.document.createElement('div');dom.document.body.appendChild(container);reactRoot=createRoot(container);
+    const render=(next=adapter,workspaceId='workspace-1')=>act(async()=>reactRoot.render(createElement(ProductWorkspaceShell,{workspaceId,state:createProductWorkspaceState({status:'ready'}),adapter:next})));
+    await render();
+    const dialog=()=>findElements(container,node=>node.getAttribute?.('role')==='dialog')[0];
+    const click=(label,scope=container)=>act(async()=>{const button=buttonByText(scope,label);assert.ok(button,label);button.dispatchEvent(new MinimalEvent('click'));});
+    const open=async()=>{await click('설정');const item=findElements(container,node=>node.tagName==='BUTTON'&&node.getAttribute?.('role')==='menuitem'&&node.textContent.includes('출력·버전'))[0];assert.ok(item);await act(async()=>item.dispatchEvent(new MinimalEvent('click')));};
+    const close=()=>act(async()=>{const button=findElements(dialog(),node=>node.tagName==='BUTTON'&&node.getAttribute?.('aria-label')==='닫기')[0];assert.ok(button);button.dispatchEvent(new MinimalEvent('click'));});
+    const field=(index=0)=>findElements(dialog(),node=>node.tagName==='SELECT')[index];
+    const edit=(value,index=0)=>act(async()=>{const select=field(index);select.value=value;select.dispatchEvent(new MinimalEvent('change'));});
+    const unmount=async()=>{await act(async()=>reactRoot.unmount());unmounted=true;};
+    await run({container,act,render,dialog,click,open,close,field,edit,unmount});
+  } finally {if(reactRoot&&!unmounted){const {act}=await import('react');await act(async()=>reactRoot.unmount());}dom.restore();await rm(output,{recursive:true,force:true});}
+}
+
+test('S28 old load success or failure cannot replace edited reentry draft dirty state or current status',async t=>{
+  for(const outcome of ['success','failure'])await t.test(outcome,async()=>{
+    const first=s28Deferred();let reads=0;
+    await withS28Output({getOutputVersionSettings:()=>++reads===1?first.promise:Promise.resolve(s28Settings(2)),saveOutputVersionSettings:async()=>s28Settings(3)},async view=>{
+      await view.open();await view.close();await view.open();assert.equal(reads,2);
+      await view.edit('docx');assert.equal(buttonByText(view.dialog(),'저장').disabled,false);
+      try {await view.act(async()=>outcome==='success'?first.resolve(s28Settings()):first.reject(new Error('private old read canary')));
+        assert.equal(view.field().value,'docx');assert.equal(buttonByText(view.dialog(),'저장').disabled,false);
+        assert.equal(findElements(view.dialog(),node=>node.getAttribute?.('role')==='alert').length,0);
+      } finally {first.resolve(s28Settings());}
+    });
+  });
+});
+
+test('S28 close guard saving is single flight and pending buttons cannot discard or close the active write',async()=>{
+  const save=s28Deferred();let writes=0;
+  await withS28Output({getOutputVersionSettings:async()=>s28Settings(),saveOutputVersionSettings:async()=>{writes++;return save.promise;}},async view=>{
+    await view.open();await view.edit('docx');await view.close();
+    const guard=findElements(view.dialog(),node=>node.getAttribute?.('role')==='alertdialog')[0];assert.ok(guard);
+    const handler=s28Props(buttonByText(guard,'저장')).onClick;
+    try {await view.act(async()=>{handler();handler();});assert.equal(writes,1);
+      for(const node of findElements(guard,node=>node.tagName==='BUTTON'))assert.equal(node.disabled,true);
+      assert.equal(findElements(view.dialog(),node=>node.getAttribute?.('aria-label')==='닫기')[0].disabled,true);
+      await view.click('버리기',guard);
+      assert.ok(view.dialog());assert.equal(view.field().value,'docx');
+    } finally {await view.act(async()=>save.resolve(s28Settings(1,{...s28Defaults,evidence_report:'docx'})));}
+    assert.equal(view.dialog(),undefined);assert.equal(writes,1);
+  });
+});
+
+test('S28 an old closeAfter write cannot close or overwrite a newly opened edited output dialog',async()=>{
+  const save=s28Deferred();let reads=0,writes=0;
+  await withS28Output({getOutputVersionSettings:async()=>s28Settings(reads++),saveOutputVersionSettings:async()=>{writes++;return save.promise;}},async view=>{
+    await view.open();await view.edit('docx');await view.close();
+    const guard=findElements(view.dialog(),node=>node.getAttribute?.('role')==='alertdialog')[0];
+    await view.click('저장',guard);assert.equal(writes,1);
+    // Re-entry through the existing menu creates a new dialog generation.
+    await view.open();await view.edit('pdf');
+    try {await view.act(async()=>save.resolve(s28Settings(1,{...s28Defaults,evidence_report:'docx'})));
+      assert.ok(view.dialog(),'old closeAfter may not close the new dialog');
+      assert.equal(view.field().value,'pdf');assert.equal(buttonByText(view.dialog(),'저장').disabled,false);
+    } finally {save.resolve(s28Settings(1));}
+  });
+});
+
+test('S28 response loss or invalid save response preserves edits and never claims the write did not happen',async t=>{
+  for(const code of ['OUTPUT_VERSION_SETTINGS_UNAVAILABLE','OUTPUT_VERSION_SETTINGS_RESPONSE_INVALID'])await t.test(code,async()=>{
+    let writes=0;
+    await withS28Output({getOutputVersionSettings:async()=>s28Settings(),saveOutputVersionSettings:async()=>{writes++;throw new Error(code);}},async view=>{
+      await view.open();await view.edit('docx');await view.click('저장',view.dialog());
+      assert.equal(writes,1);assert.equal(view.field().value,'docx');assert.equal(buttonByText(view.dialog(),'저장').disabled,false);
+      assert.doesNotMatch(view.dialog().textContent,/저장되지 않았습니다/);
+      assert.match(view.dialog().textContent,/저장 여부|저장 상태/);
+    });
+  });
+});
+
+test('S28 deferred load loses ownership on adapter Workspace replacement or unmount without clearing a newer pending dialog',async t=>{
+  for(const boundary of ['adapter','workspace','unmount'])await t.test(boundary,async()=>{
+    const old=s28Deferred(),next=s28Deferred();const signals=[];let reads=0;
+    const adapter={getOutputVersionSettings:options=>{signals.push(options.signal);return ++reads===1?old.promise:next.promise;}};
+    await withS28Output(adapter,async view=>{
+      try {
+        await view.open();assert.equal(reads,1);
+        if(boundary==='unmount') {
+          await view.unmount();assert.equal(signals[0].aborted,true);
+          await view.act(async()=>old.reject(new Error('private old load')));
+          assert.equal(view.container.textContent,'');return;
+        }
+        const replacement=boundary==='adapter'?{getOutputVersionSettings:options=>{signals.push(options.signal);return next.promise;}}:adapter;
+        await view.render(replacement,boundary==='workspace'?'workspace-2':'workspace-1');await view.open();
+        assert.equal(signals[0].aborted,true);
+        await view.act(async()=>old.resolve(s28Settings()));
+        assert.match(view.dialog().textContent,/출력 설정을 불러오고 있습니다/);
+        assert.equal(findElements(view.dialog(),node=>node.tagName==='SELECT').length,0);
+        assert.equal(signals[1].aborted,false);
+        await view.act(async()=>next.resolve(s28Settings(2,{...s28Defaults,evidence_report:'docx'},boundary==='workspace'?'workspace-2':'workspace-1')));
+        assert.deepEqual(view.field().options.filter(option=>option.selected).map(option=>option.value),['docx']);assert.equal(buttonByText(view.dialog(),'저장').disabled,true);
+      } finally {old.resolve(s28Settings());next.resolve(s28Settings(2));}
+    });
+  });
+});
+
+test('S28 scope replacement without reopening removes the old draft and cannot send its save to the previous adapter',async t=>{
+  for(const boundary of ['adapter','workspace'])await t.test(boundary,async()=>{
+    let oldWrites=0,newWrites=0;
+    const adapter={getOutputVersionSettings:async()=>s28Settings(),saveOutputVersionSettings:async()=>{oldWrites++;return s28Settings(1);}};
+    const replacement={getOutputVersionSettings:async()=>s28Settings(),saveOutputVersionSettings:async()=>{newWrites++;return s28Settings(1);}};
+    await withS28Output(adapter,async view=>{
+      await view.open();await view.edit('docx');
+      const oldForm=findElements(view.dialog(),node=>node.tagName==='FORM')[0];
+      await view.render(boundary==='adapter'?replacement:adapter,boundary==='workspace'?'workspace-2':'workspace-1');
+      assert.equal(view.dialog(),undefined,'scope change must invalidate the open output window before any reopen');
+      assert.equal(findElements(view.container,node=>node.tagName==='SELECT').length,0);
+      await view.act(async()=>oldForm.dispatchEvent(new MinimalEvent('submit')));
+      assert.equal(oldWrites,0);assert.equal(newWrites,0);
+    });
+  });
+});
+
+test('S28 pending save scope replacement aborts old ownership and never leaves the next window close blocked',async t=>{
+  for(const boundary of ['adapter','workspace'])await t.test(boundary,async()=>{
+    const saved=s28Deferred();let oldSignal,writes=0;
+    const adapter={getOutputVersionSettings:async()=>s28Settings(),saveOutputVersionSettings:async(_input,options)=>{writes++;oldSignal=options.signal;return saved.promise;}};
+    const replacement={getOutputVersionSettings:async()=>s28Settings()};
+    await withS28Output(adapter,async view=>{
+      try {
+        await view.open();await view.edit('docx');await view.click('저장',view.dialog());assert.equal(writes,1);
+        await view.render(boundary==='adapter'?replacement:adapter,boundary==='workspace'?'workspace-2':'workspace-1');
+        assert.equal(view.dialog(),undefined,'scope change must remove the old pending window without reopening');
+        assert.equal(oldSignal.aborted,true);
+        await view.act(async()=>saved.resolve(s28Settings(1,{...s28Defaults,evidence_report:'docx'})));
+        assert.equal(view.dialog(),undefined);
+        await view.open();await view.close();assert.equal(view.dialog(),undefined,'new window is not locked by the previous write');
+        assert.equal(writes,1);
+      } finally {saved.resolve(s28Settings(1));}
+    });
+  });
+});
+
+test('S28 current knowledge_map SVG and PDF travel through the real exact Web helper without a knowledge_graph field',async()=>{
+  const requests=[];
+  const fetchImpl=async(url,init)=>{
+    requests.push({url,init});const body=init.body?JSON.parse(init.body):null;
+    const data={workspace_id:'workspace-1',default_formats:body?.default_formats??s28Defaults,version_save_mode:'append_only',version:body?requests.filter(row=>row.init.method==='PATCH').length:0};
+    return Response.json({data,meta:{trace_id:'trace-s28',workspace_id:'workspace-1'}},{headers:{ETag:`"output-version-settings:workspace-1:${data.version}"`}});
+  };
+  const adapter={getOutputVersionSettings:options=>getWorkspaceOutputVersionSettings('workspace-1',{...options,fetchImpl}),saveOutputVersionSettings:(input,options)=>saveWorkspaceOutputVersionSettings('workspace-1',input,{...options,fetchImpl})};
+  await withS28Output(adapter,async view=>{
+    await view.open();await view.edit('svg',3);await view.click('저장',view.dialog());
+    const writes=requests.filter(row=>row.init.method==='PATCH');assert.equal(writes.length,1,'exact helper must accept the five canonical keys');
+    const body=JSON.parse(writes[0].init.body);assert.deepEqual(Object.keys(body.default_formats),['evidence_report','compliance_checklist','comparison_table','knowledge_map','business_draft']);
+    assert.equal(body.default_formats.knowledge_map,'svg');assert.equal(Object.hasOwn(body.default_formats,'knowledge_graph'),false);
+    assert.deepEqual(findElements(view.field(3),node=>node.tagName==='OPTION').map(node=>node.value),['json','svg','png','pdf']);
+    await view.edit('pdf',3);await view.click('저장',view.dialog());assert.equal(requests.filter(row=>row.init.method==='PATCH').length,2);
+    assert.equal(view.field(3).value,'pdf');assert.ok(requests.every(row=>row.url.startsWith('/bff/api/')));
+  });
 });
 
 test("출력·버전 Popup은 유형별 형식과 append-only 정책을 저장하고 미저장 닫기를 보호한다", async () => {

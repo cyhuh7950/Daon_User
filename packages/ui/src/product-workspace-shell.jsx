@@ -295,14 +295,14 @@ const OUTPUT_SETTING_LABELS = Object.freeze({
   evidence_report: "근거 기반 보고서",
   compliance_checklist: "제약·준수 점검표",
   comparison_table: "비교·데이터 표",
-  knowledge_graph: "지식 구조도",
+  knowledge_map: "지식 구조도",
   business_draft: "업무 문서 초안",
 });
 const OUTPUT_SETTING_FORMATS = Object.freeze({
   evidence_report: Object.freeze(["pdf", "docx"]),
   compliance_checklist: Object.freeze(["xlsx", "csv", "pdf"]),
   comparison_table: Object.freeze(["xlsx", "csv", "pdf"]),
-  knowledge_graph: Object.freeze(["json", "svg", "png"]),
+  knowledge_map: Object.freeze(["json", "svg", "png", "pdf"]),
   business_draft: Object.freeze(["docx", "pdf"]),
 });
 const EGRESS_MODE_LABELS = Object.freeze({ deny_external: "외부 전송 차단", allow_approved_external: "승인된 외부 전송" });
@@ -759,6 +759,10 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [outputSettingsSafeError, setOutputSettingsSafeError] = useState(null);
   const [outputSettingsDirty, setOutputSettingsDirty] = useState(false);
   const [outputCloseGuard, setOutputCloseGuard] = useState(false);
+  const outputSessionRef = useRef(null);
+  const outputRequestRef = useRef(null);
+  const outputScopeRef = useRef(null);
+  outputScopeRef.current = { adapter, workspaceId };
   const [syncOperations, setSyncOperations] = useState([]);
   const [syncPending, setSyncPending] = useState(false);
   const [syncSafeError, setSyncSafeError] = useState(null);
@@ -1038,6 +1042,9 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       questionRequestRef.current?.resolveAuthorization?.(null);
       if (questionPasswordRef.current) questionPasswordRef.current.value = "";
       questionRequestRef.current = null;
+      outputRequestRef.current?.controller.abort();
+      outputRequestRef.current = null;
+      outputSessionRef.current = null;
       pollControllerRef.current?.abort();
       controller.abort();
       if (lifetimeControllerRef.current === controller) {
@@ -1515,45 +1522,69 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       setOperationsPending(false);
     }
   };
+  const invalidateOutputSession = () => {
+    outputRequestRef.current?.controller.abort();
+    outputRequestRef.current = null;
+    outputSessionRef.current = null;
+  };
+  const ownsOutputRequest = (request) => outputRequestRef.current === request
+    && outputSessionRef.current === request.session && !request.controller.signal.aborted
+    && workspaceMountedRef.current && outputScopeRef.current.adapter === request.session.adapter
+    && outputScopeRef.current.workspaceId === request.session.workspaceId;
   const loadOutputVersionSettings = async () => {
-    if (typeof adapter?.getOutputVersionSettings !== "function") {
-      setOutputSettingsSafeError("OUTPUT_VERSION_SETTINGS_UNAVAILABLE");
-      return;
-    }
+    const session = outputSessionRef.current;
+    if (!session || outputRequestRef.current?.kind === "save") return;
+    outputRequestRef.current?.controller.abort();
+    const request = { session, kind: "load", controller: new AbortController() };
+    outputRequestRef.current = request;
     setOutputSettingsPending(true);
     setOutputSettingsSafeError(null);
     try {
-      const result = await adapter.getOutputVersionSettings({ signal: lifetimeControllerRef.current?.signal });
+      if (typeof session.adapter?.getOutputVersionSettings !== "function") throw new Error("OUTPUT_VERSION_SETTINGS_UNAVAILABLE");
+      const result = await session.adapter.getOutputVersionSettings({ signal: request.controller.signal });
+      if (!ownsOutputRequest(request)) return;
       setOutputSettings(result);
       setOutputDraft({ ...result.default_formats });
       setOutputSettingsDirty(false);
       setOutputCloseGuard(false);
     } catch (error) {
-      setOutputSettingsSafeError(safeErrorCode(error, "OUTPUT_VERSION_SETTINGS_UNAVAILABLE"));
+      if (ownsOutputRequest(request)) setOutputSettingsSafeError(safeErrorCode(error, "OUTPUT_VERSION_SETTINGS_UNAVAILABLE"));
     } finally {
-      setOutputSettingsPending(false);
+      if (ownsOutputRequest(request)) {
+        outputRequestRef.current = null;
+        setOutputSettingsPending(false);
+      }
     }
   };
   const saveOutputVersionSettings = async ({ closeAfter = false } = {}) => {
-    if (!outputSettings || !outputDraft || typeof adapter?.saveOutputVersionSettings !== "function") return;
+    const session = outputSessionRef.current;
+    if (!session || outputRequestRef.current || !outputSettings || !outputDraft || !outputSettingsDirty || typeof session.adapter?.saveOutputVersionSettings !== "function") return;
+    const request = { session, kind: "save", controller: new AbortController() };
+    outputRequestRef.current = request;
     setOutputSettingsPending(true);
     setOutputSettingsSafeError(null);
     try {
-      const saved = await adapter.saveOutputVersionSettings({
-        default_formats: outputDraft, version: outputSettings.version, etag: outputSettings.etag,
-      }, { signal: lifetimeControllerRef.current?.signal });
+      const saved = await session.adapter.saveOutputVersionSettings({
+        default_formats: { ...outputDraft }, version: outputSettings.version, etag: outputSettings.etag,
+      }, { signal: request.controller.signal });
+      if (!ownsOutputRequest(request)) return;
       setOutputSettings(saved);
       setOutputDraft({ ...saved.default_formats });
       setOutputSettingsDirty(false);
       setOutputCloseGuard(false);
       if (closeAfter) {
+        invalidateOutputSession();
+        setOutputSettingsPending(false);
         setModalView(null);
         queueMicrotask(() => modalOpenerRef.current?.focus?.());
       }
     } catch (error) {
-      setOutputSettingsSafeError(safeErrorCode(error, "OUTPUT_VERSION_SETTINGS_UNAVAILABLE"));
+      if (ownsOutputRequest(request)) setOutputSettingsSafeError(safeErrorCode(error, "OUTPUT_VERSION_SETTINGS_UNAVAILABLE"));
     } finally {
-      setOutputSettingsPending(false);
+      if (ownsOutputRequest(request)) {
+        outputRequestRef.current = null;
+        setOutputSettingsPending(false);
+      }
     }
   };
   const loadSyncOperations = async () => {
@@ -1710,6 +1741,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     }
   };
   const openModal = (view, opener) => {
+    invalidateOutputSession();
+    if (view === "output-version") {
+      outputSessionRef.current = { adapter, workspaceId };
+      setOutputSettings(null); setOutputDraft(null); setOutputSettingsDirty(false);
+      setOutputCloseGuard(false); setOutputSettingsSafeError(null); setOutputSettingsPending(false);
+    }
     modalOpenerRef.current = opener ?? document.activeElement;
     setSettingsMenuOpen(false);
     setModalView(view);
@@ -1721,11 +1758,14 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
     if (view === "manual") void loadManualHub();
   };
   const closeModal = (force = false) => {
+    if (modalView === "output-version" && outputRequestRef.current?.kind === "save") return;
     if (modalView === "question-step-up") cancelQuestionRequest();
     if (!force && modalView === "output-version" && outputSettingsDirty) {
       setOutputCloseGuard(true);
       return;
     }
+    invalidateOutputSession();
+    setOutputSettingsPending(false);
     setModalView(null);
     setOutputCloseGuard(false);
     queueMicrotask(() => modalOpenerRef.current?.focus?.());
@@ -2069,7 +2109,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       </div>
       {modalView ? <div className="workspace-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
         <section ref={modalRef} className={`workspace-modal workspace-modal-${modalView}`} role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title" onKeyDown={(event) => trapDialogFocus(event, closeModal)}>
-          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-step-up" ? "외부 질문 추가 인증" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" onClick={() => closeModal()} aria-label="닫기">×</button></header>
+          <header className="workspace-modal-header"><div><span className="section-kicker">WORKSPACE SETTINGS</span><h2 id="workspace-modal-title">{modalView === "question-step-up" ? "외부 질문 추가 인증" : modalView === "llm" ? "LLM 설정" : modalView === "output-version" ? "출력·버전" : modalView === "sync" ? "동기화·승인" : modalView === "organization-policy" ? "조직 정책" : modalView === "license" ? "라이선스" : modalView === "manual" ? "사용자 설명서" : "운영상태"}</h2></div><button className="modal-close" type="button" disabled={modalView === "output-version" && outputRequestRef.current?.kind === "save"} onClick={() => closeModal()} aria-label="닫기">×</button></header>
           {modalView === "question-step-up" ? <div className="workspace-modal-content">
             <p>현재 선택한 자료와 질문의 외부 전송에 추가 인증이 필요합니다.</p>
             <label>현재 비밀번호<input ref={questionPasswordRef} type="password" autoComplete="off" aria-label="외부 질문 추가 인증 비밀번호" disabled={questionAuthPending} /></label>
@@ -2079,17 +2119,17 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
             <button type="button" onClick={() => closeModal()}>질문 인증 취소</button>
           </div> : modalView === "llm" ? <div className="workspace-modal-content">{providerSettings ?? <div className="modal-unavailable" role="status"><strong>Provider 설정 연결이 필요합니다.</strong><p>현재 Workspace에서는 설정 상태를 불러올 수 없습니다.</p><button type="button" disabled>연결 기능 준비 중</button></div>}</div> : modalView === "output-version" ? <div className="workspace-modal-content output-version-settings">
             {outputSettingsPending && !outputSettings ? <div className="modal-unavailable" role="status">출력 설정을 불러오고 있습니다.</div> : null}
-            {outputSettingsSafeError ? <div className="modal-unavailable" role="alert"><strong>출력 설정을 처리하지 못했습니다.</strong><p>변경 내용은 저장되지 않았습니다.</p><button type="button" onClick={() => void loadOutputVersionSettings()}>다시 불러오기</button></div> : null}
+            {outputSettingsSafeError ? <div className="modal-unavailable" role="alert"><strong>출력 설정을 처리하지 못했습니다.</strong><p>현재 저장 상태를 확인할 수 없습니다. 다시 불러와 확인해 주세요.</p><button type="button" disabled={outputSettingsPending} onClick={() => void loadOutputVersionSettings()}>다시 불러오기</button></div> : null}
             {outputSettings && outputDraft ? <form onSubmit={(event) => { event.preventDefault(); void saveOutputVersionSettings(); }}>
               <div className="output-format-grid">
-                {Object.entries(OUTPUT_SETTING_LABELS).map(([type, label]) => <label key={type}><span>{label}</span><select value={outputDraft[type]} disabled={outputSettingsPending} onChange={(event) => { setOutputDraft((current) => ({ ...current, [type]: event.target.value })); setOutputSettingsDirty(true); }}>
+                {Object.entries(OUTPUT_SETTING_LABELS).map(([type, label]) => <label key={type}><span>{label}</span><select value={outputDraft[type]} disabled={outputSettingsPending} onChange={(event) => { if (outputRequestRef.current) return; setOutputDraft((current) => ({ ...current, [type]: event.target.value })); setOutputSettingsDirty(true); }}>
                   {OUTPUT_SETTING_FORMATS[type].map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}
                 </select></label>)}
               </div>
               <div className="version-policy-row"><div><strong>Version 저장 방식</strong><small>기존 Version은 보존하고 새 Version을 추가합니다.</small></div><span>Append-only</span></div>
-              <div className="modal-form-actions"><button type="button" disabled={!outputSettingsDirty || outputSettingsPending} onClick={() => { setOutputDraft({ ...outputSettings.default_formats }); setOutputSettingsDirty(false); }}>변경 취소</button><button type="submit" disabled={!outputSettingsDirty || outputSettingsPending} onClick={(event) => { event.preventDefault(); void saveOutputVersionSettings(); }}>{outputSettingsPending ? "저장 중" : "저장"}</button></div>
+              <div className="modal-form-actions"><button type="button" disabled={!outputSettingsDirty || outputSettingsPending} onClick={() => { if (outputRequestRef.current) return; setOutputDraft({ ...outputSettings.default_formats }); setOutputSettingsDirty(false); }}>변경 취소</button><button type="submit" disabled={!outputSettingsDirty || outputSettingsPending} onClick={(event) => { event.preventDefault(); void saveOutputVersionSettings(); }}>{outputSettingsPending ? "저장 중" : "저장"}</button></div>
             </form> : null}
-            {outputCloseGuard ? <div className="unsaved-settings-guard" role="alertdialog" aria-label="저장하지 않은 변경"><strong>저장하지 않은 변경이 있습니다.</strong><p>저장하거나 변경을 버린 뒤 닫아 주세요.</p><div><button type="button" onClick={() => void saveOutputVersionSettings({ closeAfter: true })}>저장</button><button type="button" onClick={() => { setOutputSettingsDirty(false); closeModal(true); }}>버리기</button><button type="button" onClick={() => setOutputCloseGuard(false)}>계속 편집</button></div></div> : null}
+            {outputCloseGuard ? <div className="unsaved-settings-guard" role="alertdialog" aria-label="저장하지 않은 변경"><strong>저장하지 않은 변경이 있습니다.</strong><p>저장하거나 변경을 버린 뒤 닫아 주세요.</p><div><button type="button" disabled={outputSettingsPending} onClick={() => void saveOutputVersionSettings({ closeAfter: true })}>저장</button><button type="button" disabled={outputSettingsPending} onClick={() => { if (outputRequestRef.current?.kind === "save") return; setOutputSettingsDirty(false); closeModal(true); }}>버리기</button><button type="button" disabled={outputSettingsPending} onClick={() => { if (outputRequestRef.current?.kind !== "save") setOutputCloseGuard(false); }}>계속 편집</button></div></div> : null}
           </div> : modalView === "sync" ? <div className="workspace-modal-content sync-approval-settings" aria-live="polite">
             <div className="sync-settings-toolbar"><div><strong>동기화 Preview</strong><small>자동 전송하지 않습니다. 승인할 항목을 확인해 명시적으로 선택하세요.</small></div><button type="button" disabled={syncPending} onClick={() => void loadSyncOperations()}>새로고침</button></div>
             {syncPending && !syncOperations.length ? <div className="modal-unavailable" role="status">동기화 상태를 불러오고 있습니다.</div> : null}
