@@ -298,6 +298,18 @@ export function createNotebookContextWorkspaceAdapter(baseAdapter, inputContext)
     createStudioAction: typeof baseAdapter.createStudioAction === "function"
       ? (action, input, options) => baseAdapter.createStudioAction(action, input, { ...options, notebookId: context.notebook_id })
       : undefined,
+    getStudioApprovalPolicy: typeof baseAdapter.getStudioApprovalPolicy === "function"
+      ? options => baseAdapter.getStudioApprovalPolicy({ ...options, notebookId: context.notebook_id }) : undefined,
+    saveStudioApprovalPolicy: typeof baseAdapter.saveStudioApprovalPolicy === "function"
+      ? (input, options) => baseAdapter.saveStudioApprovalPolicy(input, { ...options, notebookId: context.notebook_id }) : undefined,
+    issueStudioApprovalPolicyStepUp: typeof baseAdapter.issueStudioApprovalPolicyStepUp === "function"
+      ? (target, password, options) => baseAdapter.issueStudioApprovalPolicyStepUp(target, password, { ...options, notebookId: context.notebook_id }) : undefined,
+    withdrawStudioApprovalRequest: typeof baseAdapter.withdrawStudioApprovalRequest === "function"
+      ? (requestId, versionId, options) => baseAdapter.withdrawStudioApprovalRequest(requestId, versionId, { ...options, notebookId: context.notebook_id }) : undefined,
+    listStudioApprovalNotices: typeof baseAdapter.listStudioApprovalNotices === "function"
+      ? options => baseAdapter.listStudioApprovalNotices({ ...options, notebookId: context.notebook_id }) : undefined,
+    markStudioApprovalNoticeRead: typeof baseAdapter.markStudioApprovalNoticeRead === "function"
+      ? (noticeId, version, options) => baseAdapter.markStudioApprovalNoticeRead(noticeId, version, { ...options, notebookId: context.notebook_id }) : undefined,
     downloadStudioExport: typeof baseAdapter.downloadStudioExport === "function"
       ? (outputId, versionId, format, options) => baseAdapter.downloadStudioExport(outputId, versionId, format, { ...options, notebookId: context.notebook_id })
       : undefined,

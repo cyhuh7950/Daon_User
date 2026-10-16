@@ -6,13 +6,138 @@ import { pathToFileURL } from "node:url";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
 import { createStudioAction, createStudioGeneration, createStudioVersion, issueStudioStepUp, issueStudioExportStepUp, downloadStudioExport, listStudioVersions } from "../../apps/web/lib/product-workspace-api.js";
 import { createProductStudioState } from '../../packages/ui/src/product-studio-model.js';
+import { getStudioApprovalPolicy, saveStudioApprovalPolicy, issueStudioApprovalPolicyStepUp, withdrawStudioApprovalRequest, listStudioApprovalNotices, markStudioApprovalNoticeRead } from '../../apps/web/lib/product-workspace-api.js';
 
 function s24Action(action = 'review', version = 'version-target-3') {
   return Response.json({ data: { record_id: `record-${action}`, action, status: 'accepted', output_version_id: version },
     meta: { trace_id: 'trace-1', workspace_id: 'workspace-1', replayed: false } }, { status: 201 });
 }
 function s24Version(patch = {}) { return { ...s23Version(3), ...patch }; }
-async function withS24Studio(fetchImpl, run, version = s24Version()) {
+function lifecycleReply(data,method='GET',workspace='workspace-1') {
+  return Response.json({data,meta:{trace_id:'trace-1',workspace_id:workspace,...(method==='GET'?{}:{replayed:false})}});
+}
+function lifecyclePolicy(days=7,version=0) {return {ttl_days:days,policy_version:version,can_manage:true,step_up_target_id:'studio-approval-policy-'+'a'.repeat(64)};}
+
+test('S24 lifecycle withdrawal is synchronous single-flight and canonical withdrawn permits a new request not approval',async()=>{
+  let writes=0; const waiting=s22Deferred();
+  const initial=s24Version({status:'in_review',review_request_id:'review-1',approval_request_id:'request-1',approval_request_state:'pending',approval_expires_at:'2099-01-01T00:00:00Z'});
+  await withS24Studio(async(url,init)=>{
+    if(url.includes('approval-policy')) return lifecycleReply(lifecyclePolicy());
+    if(url.includes('approval-notices')) return lifecycleReply({items:[],unread_count:0});
+    if(url.endsWith('/withdraw')) {writes++; await waiting.promise;return lifecycleReply({record_id:'request-1',action:'withdraw',status:'withdrawn',output_version_id:initial.output_version_id},'POST');}
+    return s23Read([{...initial,approval_request_state:'withdrawn'}]);
+  },async({container,act,detail})=>{
+    const button=buttonByText(container,'승인 요청 회수'); assert.ok(button,'withdraw control');
+    const handler=s22Props(button).onClick;
+    await act(async()=>{handler();handler();});
+    try {assert.equal(writes,1); assert.equal(buttonByText(container,'승인').disabled,true);}
+    finally {await act(async()=>waiting.resolve());}
+    assert.match(detail().textContent,/회수됨/);
+    assert.equal(buttonByText(container,'승인').disabled,true);
+    assert.equal(buttonByText(container,'승인 요청').disabled,false);
+    assert.equal(writes,1);
+  },initial,true);
+});
+
+test('S24 lifecycle policy reauthentication binds server target wipes password and blocks a late grant after scope change',async()=>{
+  const auth=s22Deferred(); let issues=0,saves=0;
+  await withS24Studio(async(url,init)=>{
+    const workspace=url.includes('workspace-2')?'workspace-2':'workspace-1';
+    if(url.includes('approval-policy')) {if(init.method==='PATCH')saves++;return lifecycleReply(lifecyclePolicy(workspace==='workspace-2'?30:7),init.method,workspace);}
+    if(url.includes('approval-notices'))return lifecycleReply({items:[],unread_count:0},'GET',workspace);
+    if(url.endsWith('/session/step-up')) {issues++;const body=JSON.parse(init.body);assert.equal(body.action_group,'organization_security_or_connector_policy_change');assert.equal(body.target_id,lifecyclePolicy().step_up_target_id);return auth.promise;}
+    return s23Read([s24Version()]);
+  },async({container,click,fillPassword,act,render,stateFor,adapterFor})=>{
+    await click('승인 기한 변경'); await fillPassword();
+    const handler=s22Props(buttonByText(container,'추가 인증 확인')).onClick;
+    await act(async()=>{handler();handler();});
+    assert.equal(issues,1);
+    const input=s22Field(container,'추가 인증 비밀번호','INPUT');
+    assert.equal(input.value,'');
+    await render(stateFor('workspace-2'),adapterFor('workspace-2'));
+    await act(async()=>auth.resolve(Response.json({data:{step_up_authorization:'opaque-late'}})));
+    assert.equal(saves,0);assert.doesNotMatch(container.textContent,/opaque-late/);
+    assert.match(container.textContent,/30일/);
+  },s24Version(),true);
+});
+test('S24 lifecycle policy save uses bound challenge and canonical receipt without changing an existing request deadline',async()=>{
+  let writes=0;
+  const initial=s24Version({status:'in_review',review_request_id:'review-1',approval_request_id:'request-1',approval_request_state:'pending',approval_expires_at:'2099-01-01T00:00:00Z'});
+  await withS24Studio(async(url,init)=>{
+    if(url.endsWith('/session/step-up'))return Response.json({data:{step_up_authorization:'opaque-policy-only'}});
+    if(url.includes('approval-policy')) {
+      if(init.method==='PATCH') {writes++;assert.deepEqual(JSON.parse(init.body),{ttl_days:1,expected_policy_version:0,step_up_authorization:'opaque-policy-only'});return lifecycleReply(lifecyclePolicy(1,1),'PATCH');}
+      return lifecycleReply(lifecyclePolicy());
+    }
+    if(url.includes('approval-notices'))return lifecycleReply({items:[],unread_count:0});
+    return s23Read([initial]);
+  },async({container,act,click,fillPassword,detail})=>{
+    const input=s22Field(container,'승인 기한 일수','INPUT');
+    await act(async()=>s22Props(input).onChange({currentTarget:{value:'1'}}));
+    await click('승인 기한 변경');await fillPassword();await click('추가 인증 확인');
+    assert.equal(writes,1);assert.match(container.textContent,/조직 승인 기한 1일/);
+    assert.match(detail().textContent,/2099-01-01/);assert.doesNotMatch(container.textContent,/opaque-policy-only/);
+    assert.equal(findElements(container,node=>node.getAttribute?.('role')==='dialog').length,0);
+  },initial,true);
+});
+
+test('S24 lifecycle notice read is synchronous single-flight preserves receipt and ignores late responses from a previous adapter',async()=>{
+  const notice={notification_id:'notice-1',approval_request_id:'request-1',output_version_id:'version-target-3',event_kind:'withdrawn',scheduled_at:'2026-10-16T00:00:00Z',created_at:'2026-10-16T00:00:00Z',read_at:null,version:1};
+  const waiting=s22Deferred();let writes=0;
+  await withS24Studio(async(url,init)=>{
+    const workspace=url.includes('workspace-2')?'workspace-2':'workspace-1';
+    if(url.includes('approval-policy'))return lifecycleReply(lifecyclePolicy(), 'GET',workspace);
+    if(url.includes('approval-notices/notice-1')){writes++;assert.equal(init.headers['If-Match'],'"studio-approval-notice:notice-1:1"');await waiting.promise;return lifecycleReply({notification_id:'notice-1',version:2,read_at:'2026-10-16T00:00:01Z'},'PATCH');}
+    if(url.includes('approval-notices'))return lifecycleReply({items:workspace==='workspace-1'?[notice]:[],unread_count:workspace==='workspace-1'?1:0},'GET',workspace);
+    return s23Read([s24Version()]);
+  },async({container,act,render,stateFor,adapterFor})=>{
+    const handler=s22Props(buttonByText(container,'읽음 표시')).onClick;
+    await act(async()=>{handler();handler();});assert.equal(writes,1);
+    await render(stateFor('workspace-2'),adapterFor('workspace-2'));
+    await act(async()=>waiting.resolve());
+    assert.match(container.textContent,/안 읽음 0/);assert.doesNotMatch(container.textContent,/notice-1/);
+    assert.equal(findElements(container,node=>node.tagName==='BUTTON'&&node.textContent==='읽음 표시').length,0);
+  },s24Version(),true);
+});
+
+test('S24 lifecycle read receipt remains read when its canonical refresh fails without exposing an upstream error',async()=>{
+  const notice={notification_id:'notice-1',approval_request_id:'request-1',output_version_id:'version-target-3',event_kind:'expired',scheduled_at:'2026-10-16T00:00:00Z',created_at:'2026-10-16T00:00:00Z',read_at:null,version:1};
+  let writes=0,reads=0;
+  await withS24Studio(async(url,init)=>{
+    if(url.includes('approval-policy'))return lifecycleReply(lifecyclePolicy());
+    if(init.method==='PATCH'){writes++;return lifecycleReply({notification_id:'notice-1',version:2,read_at:'2026-10-16T00:00:01Z'},'PATCH');}
+    if(url.includes('approval-notices')){
+      if(reads++)return Response.json({error:{code:'STUDIO_DATABASE_UNAVAILABLE',message:'secret canary upstream'}},{status:503});
+      return lifecycleReply({items:[notice],unread_count:1});
+    }
+    return s23Read([s24Version()]);
+  },async({container,click})=>{
+    await click('읽음 표시');assert.equal(writes,1);
+    assert.match(container.textContent,/안 읽음 0/);assert.equal(buttonByText(container,'읽음').disabled,true);
+    assert.match(container.textContent,/불러오지 못했습니다/);assert.doesNotMatch(container.textContent,/secret canary/);
+  },s24Version(),true);
+});
+
+test('S24 lifecycle expired request forbids approval allows explicit new request and policy permission disables changes',async()=>{
+  const initial=s24Version({status:'in_review',review_request_id:'review-1',approval_request_id:'request-1',approval_request_state:'expired',approval_expires_at:'2020-01-01T00:00:00Z'});
+  let writes=0;
+  await withS24Studio(async(url,init)=>{
+    if(init.method!=='GET')writes++;
+    if(url.includes('approval-policy'))return lifecycleReply({...lifecyclePolicy(),can_manage:false});
+    if(url.includes('approval-notices'))return lifecycleReply({items:[],unread_count:0});
+    return s23Read([initial]);
+  },async({container,act,detail})=>{
+    assert.match(detail().textContent,/만료됨/);
+    assert.equal(buttonByText(container,'승인').disabled,true);
+    assert.equal(buttonByText(container,'승인 요청').disabled,false);
+    assert.equal(buttonByText(container,'승인 요청 회수').disabled,true);
+    const change=buttonByText(container,'승인 기한 변경');assert.equal(change.disabled,true);
+    await act(async()=>s22Props(change).onClick());assert.equal(writes,0);
+    assert.match(container.textContent,/조직 정책으로 잠김/);
+  },initial,true);
+});
+
+async function withS24Studio(fetchImpl, run, version = s24Version(), lifecycle = false) {
   const rootPath = path.resolve(import.meta.dirname, '../..');
   const output = await mkdtemp(path.join(rootPath, '.product-studio-s24-'));
   const dom = installMinimalDom(); let reactRoot;
@@ -25,6 +150,14 @@ async function withS24Studio(fetchImpl, run, version = s24Version()) {
     const { ProductStudioPane } = await import(pathToFileURL(path.join(output, entry)).href);
     const container = dom.document.createElement('div'); dom.document.body.appendChild(container); reactRoot = createRoot(container);
     const adapterFor = (workspace = 'workspace-1', extra = {}) => ({
+      ...(lifecycle ? {
+        getStudioApprovalPolicy: options=>getStudioApprovalPolicy(workspace,{...options,fetchImpl}),
+        saveStudioApprovalPolicy: (input,options)=>saveStudioApprovalPolicy(workspace,input,{...options,fetchImpl}),
+        issueStudioApprovalPolicyStepUp: (target,password,options)=>issueStudioApprovalPolicyStepUp(target,password,{...options,fetchImpl}),
+        withdrawStudioApprovalRequest: (request,version,options)=>withdrawStudioApprovalRequest(workspace,request,version,{...options,notebookId:'notebook-1',fetchImpl}),
+        listStudioApprovalNotices: options=>listStudioApprovalNotices(workspace,{...options,notebookId:'notebook-1',fetchImpl}),
+        markStudioApprovalNoticeRead: (notice,version,options)=>markStudioApprovalNoticeRead(workspace,notice,version,{...options,notebookId:'notebook-1',fetchImpl}),
+      } : {}),
       createStudioAction: (action, input, options) => createStudioAction(workspace, action, input, { ...options, notebookId: 'notebook-1', fetchImpl }),
       listStudioVersions: (id, options) => listStudioVersions(workspace, id, { ...options, notebookId: 'notebook-1', fetchImpl }),
       issueStudioStepUp: (group, target, password, options) => issueStudioStepUp(group, target, password, { ...options, fetchImpl }), ...extra,
@@ -290,7 +423,8 @@ function s23Version(number, target = 'target', content = `정본 ${target} V${nu
     settings_snapshot_id: `settings-${target}`, output_format: 'csv',
     citations: [{ citation_id: 'citation-1', source_version_id: 'source-version-1', evidence_span_id: 'span-1',
       origin: 'raw_source', locator: { kind: 'section', value: '시험 근거' } }],
-    review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null };
+    review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null,
+    approval_request_state:null,approval_expires_at:null };
 }
 function s23Read(versions, target = 'target', workspace = 'workspace-1') {
   return Response.json({ data: { output_id: `output-${target}`, versions }, meta: { trace_id: 'trace-1', workspace_id: workspace } });

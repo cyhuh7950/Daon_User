@@ -17,6 +17,7 @@ from .studio_export import export_studio_output
 from .studio_workspace import StudioContext, StudioError, StudioGenerationRequest, build_structured_output, FORMATS
 from .object_queue import ObjectKeyPolicy, ObjectQueueError, ObjectStorageError
 from .studio_generation_queue import PostgresStudioGenerationQueue, StudioGenerationQueueError
+from .studio_approval_lifecycle import approval_transaction, lock_approval_version, new_request_deadline, require_pending, request_deadline
 
 
 class PostgresStudioWorkspaceRepository:
@@ -67,6 +68,14 @@ class PostgresStudioWorkspaceRepository:
             self._require_generation_scope(connection,context,versions)
 
     def _require_output_sources(self,connection,context,version_id,*,action=Action.VIEW):
+        denied=connection.execute('SELECT 1 FROM evidence_references er '
+            'JOIN source_versions sv ON sv.tenant_id=er.tenant_id AND sv.workspace_id=er.workspace_id AND sv.record_id=er.source_version_id '
+            'JOIN identity_auth_source_access a ON a.tenant_id=sv.tenant_id AND a.workspace_id=sv.workspace_id '
+            'AND a.source_version_id=sv.record_id AND a.user_id=%s AND a.allowed=0 '
+            'WHERE er.tenant_id=%s AND er.workspace_id=%s AND er.output_version_id=%s LIMIT 1',
+            (context.actor_id,context.tenant_id,context.workspace_id,version_id)).fetchone()
+        if denied is not None:
+            raise StudioError('RESOURCE_UNAVAILABLE',404)
         rows=connection.execute('SELECT DISTINCT er.source_version_id FROM evidence_references er '
             'WHERE er.tenant_id=%s AND er.workspace_id=%s AND er.output_version_id=%s',
             (context.tenant_id,context.workspace_id,version_id)).fetchall()
@@ -591,13 +600,16 @@ class PostgresStudioWorkspaceRepository:
                     "AND c.record_id=er.canonical_json->>'citation_id' AND c.source_version_id=er.source_version_id "
                     "AND c.evidence_span_id=er.evidence_span_id WHERE er.tenant_id=ov.tenant_id AND er.workspace_id=ov.workspace_id AND er.output_version_id=ov.record_id),'[]'::jsonb),"
                     "(SELECT record_id FROM review_requests WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
-                    "(SELECT record_id FROM approval_requests WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
+                    "ar.record_id,"
                     "(SELECT record_id FROM approvals WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id AND decision='approved' ORDER BY created_at DESC,record_id DESC LIMIT 1),"
                     "(SELECT record_id FROM deliveries WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id ORDER BY created_at DESC,record_id DESC LIMIT 1),"
                     "(SELECT record_id FROM knowledge_registrations WHERE tenant_id=ov.tenant_id AND workspace_id=ov.workspace_id AND output_version_id=ov.record_id AND state='registered' ORDER BY created_at DESC,record_id DESC LIMIT 1),"
                     "(SELECT gs.canonical_json FROM generation_settings_snapshots gs WHERE gs.tenant_id=ov.tenant_id "
-                    "AND gs.workspace_id=ov.workspace_id AND gs.record_id=ov.generation_settings_snapshot_id) "
+                    "AND gs.workspace_id=ov.workspace_id AND gs.record_id=ov.generation_settings_snapshot_id),ar.state,ar.canonical_json,ar.created_at "
                     "FROM output_versions ov JOIN studio_outputs so ON so.tenant_id=ov.tenant_id AND so.workspace_id=ov.workspace_id AND so.record_id=ov.studio_output_id "
+                    "LEFT JOIN LATERAL (SELECT r.record_id,r.state,r.canonical_json,r.created_at FROM approval_requests r "
+                    "WHERE r.tenant_id=ov.tenant_id AND r.workspace_id=ov.workspace_id AND r.output_version_id=ov.record_id "
+                    "ORDER BY r.created_at DESC,r.record_id DESC LIMIT 1) ar ON true "
                     "WHERE ov.tenant_id=%s AND ov.workspace_id=%s AND ov.studio_output_id=%s "
                     "AND EXISTS (SELECT 1 FROM notebook_bindings nb WHERE nb.tenant_id=ov.tenant_id "
                     "AND nb.workspace_id=ov.workspace_id AND nb.notebook_id=%s AND nb.binding_kind='studio_output' "
@@ -611,10 +623,7 @@ class PostgresStudioWorkspaceRepository:
                 if not rows:
                     raise StudioError("RESOURCE_UNAVAILABLE", 404)
                 for row in rows:
-                    self._require_sources(connection,context,tuple(dict.fromkeys(
-                        str(citation['source_version_id']) for citation in row[6]
-                        if isinstance(citation,Mapping) and citation.get('source_version_id')
-                    )),action=Action.VIEW)
+                    self._require_output_sources(connection,context,str(row[0]),action=Action.VIEW)
         except StudioError:
             raise
         except CloudDatabaseError as error:
@@ -679,6 +688,8 @@ class PostgresStudioWorkspaceRepository:
                 "citations": citations,
                 "review_request_id": str(row[7]) if row[7] is not None else None,
                 "approval_request_id": str(row[8]) if row[8] is not None else None,
+                "approval_request_state": str(row[13]) if len(row)>15 and row[13] is not None else None,
+                "approval_expires_at": request_deadline(row[14],row[15])[0].isoformat().replace("+00:00","Z") if len(row)>15 and row[13] is not None else None,
                 "approval_id": str(row[9]) if row[9] is not None else None,
                 "delivery_id": str(row[10]) if row[10] is not None else None,
                 "knowledge_registration_id": str(row[11]) if row[11] is not None else None,
@@ -809,10 +820,13 @@ class PostgresStudioWorkspaceRepository:
         scope = (context.tenant_id, context.workspace_id, context.actor_id, operation, idempotency_key)
         table = {"review": "review_requests", "approval_request": "approval_requests", "approval": "approvals", "delivery": "deliveries", "knowledge_registration": "knowledge_registrations"}[action]
         try:
-            with self._cloud_store._transaction(self._cloud(context, operation)) as connection:
+            with approval_transaction(self._cloud_store, self._cloud(context, operation),
+                                      expiry_request_id=clean.get("approval_request_id") if action == "approval" else None) as connection:
                 permission_action={'review':Action.REVIEW,'approval_request':Action.EDIT,'approval':Action.APPROVE,
                     'delivery':Action.DELIVER,'knowledge_registration':Action.KNOWLEDGE_REGISTER}[action]
                 self._require_output_sources(connection,context,clean['output_version_id'],action=permission_action)
+                if action in {"approval_request", "approval"}:
+                    lock_approval_version(connection, context, str(clean["output_version_id"]))
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("|".join(scope),))
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None: return replay, True
@@ -831,6 +845,9 @@ class PostgresStudioWorkspaceRepository:
                     (context.tenant_id, context.workspace_id, clean["output_version_id"], context.notebook_id),
                 ).fetchone()
                 if version is None: raise StudioError("RESOURCE_UNAVAILABLE", 404)
+                approval_request_version = None
+                if action == "approval":
+                    approval_request_version = require_pending(connection, context, str(clean["approval_request_id"]), str(clean["output_version_id"]))
                 if action in {"delivery", "knowledge_registration"} and str(version[0]) != "approved": raise StudioError("APPROVAL_REQUIRED", 409)
                 record_id = self._opaque(action.replace("_", "-"), *scope)
                 registered_source_version_id = self._opaque("source-version", *scope) if action == "knowledge_registration" else None
@@ -846,6 +863,7 @@ class PostgresStudioWorkspaceRepository:
                         (context.tenant_id, context.workspace_id, clean["review_request_id"], clean["output_version_id"]),
                     ).fetchone()
                     if review is None: raise StudioError("REVIEW_REQUEST_REQUIRED", 409)
+                    clean = {**clean, **new_request_deadline(connection, context, str(clean["output_version_id"]))}
                 if action == "knowledge_registration":
                     output_payload = connection.execute(
                         "SELECT canonical_json FROM output_versions WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s",
@@ -916,13 +934,8 @@ class PostgresStudioWorkspaceRepository:
                     output_version = self._transition(connection, context, "OutputVersion", clean["output_version_id"], output_version, "review_requested", self._opaque("transition", *scope, "review-requested"))
                     self._transition(connection, context, "OutputVersion", clean["output_version_id"], output_version, "in_review", self._opaque("transition", *scope, "in-review"))
                 elif action == "approval":
-                    approval_request = connection.execute(
-                        "SELECT state,version FROM approval_requests WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s AND output_version_id=%s",
-                        (context.tenant_id, context.workspace_id, clean["approval_request_id"], clean["output_version_id"]),
-                    ).fetchone()
-                    if approval_request is None or str(approval_request[0]) != "pending": raise StudioError("APPROVAL_REQUEST_REQUIRED", 409)
                     decision = str(clean["decision"])
-                    self._transition(connection, context, "ApprovalRequest", clean["approval_request_id"], int(approval_request[1]), decision, self._opaque("transition", *scope, "approval-request", decision))
+                    self._transition(connection, context, "ApprovalRequest", clean["approval_request_id"], approval_request_version, decision, self._opaque("transition", *scope, "approval-request", decision))
                     target_state = "approved" if decision == "approved" else "revision_requested"
                     self._transition(connection, context, "OutputVersion", clean["output_version_id"], output_version, target_state, self._opaque("transition", *scope, "output-version", target_state))
                 elif action == "delivery":

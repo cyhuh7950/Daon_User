@@ -18,6 +18,36 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test('S24 lifecycle exact routes bodies nullable Version fields and notice security reject contract drift',async()=>{
+  const document=await loadContract();
+  const paths={
+    '/api/v1/workspaces/{id}/studio/approval-policy':['get','patch'],
+    '/api/v1/approval-requests/{id}/withdraw':['post'],
+    '/api/v1/workspaces/{id}/studio/approval-notices':['get'],
+    '/api/v1/workspaces/{id}/studio/approval-notices/{notification_id}':['patch'],
+  };
+  for(const [p,methods] of Object.entries(paths)) {
+    assert.deepEqual(Object.keys(document.paths[p]??{}),methods);
+    assert.ok(REQUIRED_PATHS.includes(p));
+  }
+  const fields=document.components.schemas.StudioVersionProjection;
+  assert.deepEqual(fields.properties.approval_request_state,{type:['string','null'],enum:['pending','approved','rejected','expired','withdrawn',null]});
+  assert.deepEqual(fields.properties.approval_expires_at,{type:['string','null'],format:'date-time'});
+  assert.equal(fields.required.length,17);
+  assert.doesNotThrow(()=>validateOpenApiDocument(document));
+  const corruptions=[
+    d=>{delete d.paths[Object.keys(paths)[0]].patch;},
+    d=>{d.paths[Object.keys(paths)[1]].get=d.paths[Object.keys(paths)[1]].post;},
+    d=>{d.components.schemas.StudioApprovalPolicyRequest.additionalProperties=true;},
+    d=>{d.components.schemas.StudioApprovalPolicyRequest.properties.ttl_days.maximum=31;},
+    d=>{d.components.schemas.StudioApprovalWithdrawRequest.required.pop();},
+    d=>{d.paths[Object.keys(paths)[3]].patch.parameters=d.paths[Object.keys(paths)[3]].patch.parameters.filter(p=>p.$ref!=='#/components/parameters/IfMatch');},
+    d=>{d.components.schemas.StudioApprovalNotice.properties.recipient_id={type:'string'};},
+    d=>{d.components.schemas.StudioVersionProjection.required.pop();},
+  ];
+  for(const change of corruptions){const broken=structuredClone(document);change(broken);assert.throws(()=>validateOpenApiDocument(broken));}
+});
+
 test('S24 Studio export requires both exact proof headers and rejects missing or optional definitions', async () => {
   const document=await loadContract();
   const route=document.paths['/api/v1/studio-outputs/{id}/versions/{version_id}/exports/{format_name}'].get;

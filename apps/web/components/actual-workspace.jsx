@@ -7,6 +7,7 @@ import { getDocumentProcessingStatus, reprocessSource, uploadSource } from "../l
 import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
 import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, registerWorkspaceConnector, unregisterWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
 import { issueStudioExportStepUp } from "../lib/product-workspace-api.js";
+import { getStudioApprovalPolicy, saveStudioApprovalPolicy, issueStudioApprovalPolicyStepUp, withdrawStudioApprovalRequest, listStudioApprovalNotices, markStudioApprovalNoticeRead } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
@@ -71,6 +72,12 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     listStudioVersions: (outputId, options) => listStudioVersions(workspaceId, outputId, notebookOptions(options)),
     createStudioAction: (action, input, options) => createStudioAction(workspaceId, action, input, notebookOptions(options)),
     issueStudioStepUp,
+    getStudioApprovalPolicy: (options) => getStudioApprovalPolicy(workspaceId, notebookOptions(options)),
+    saveStudioApprovalPolicy: (input, options) => saveStudioApprovalPolicy(workspaceId, input, notebookOptions(options)),
+    issueStudioApprovalPolicyStepUp,
+    withdrawStudioApprovalRequest: (requestId, versionId, options) => withdrawStudioApprovalRequest(workspaceId, requestId, versionId, notebookOptions(options)),
+    listStudioApprovalNotices: (options) => listStudioApprovalNotices(workspaceId, notebookOptions(options)),
+    markStudioApprovalNoticeRead: (noticeId, version, options) => markStudioApprovalNoticeRead(workspaceId, noticeId, version, notebookOptions(options)),
     issueStudioExportStepUp: (outputId, versionId, format, password, options) => issueStudioExportStepUp(workspaceId, outputId, versionId, format, password, notebookOptions(options)),
     downloadStudioExport: (outputId, versionId, format, options) => downloadStudioExport(workspaceId, outputId, versionId, format, notebookOptions(options)),
   });

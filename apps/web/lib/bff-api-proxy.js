@@ -66,6 +66,8 @@ const PROVIDER_CODES = new Set([
   "OPENAI", "OPENROUTER", "UPSTAGE", "OMNIROUTE", "EOUL_GATEWAY",
 ]);
 const STUDIO_QUERY = new Set(["workspace_id", "notebook_id"]);
+const STUDIO_NOTICE_QUERY = new Set(["notebook_id"]);
+const STUDIO_LIFECYCLE_EMPTY_QUERY = new Set();
 const RESTORE_ACTIONS = new Set(["execute", "cancel"]);
 const GROUNDED_QUESTION_TIMEOUT_MS = null;
 
@@ -512,6 +514,21 @@ function routeFor(method, segments) {
     return method === "GET"
       ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions/${encodeURIComponent(segments[3])}/exports/${segments[5]}`, query: STUDIO_QUERY, studioExport: true }
       : { methodRejected: true };
+  }
+  if (segments.length === 3 && segments[0] === "approval-requests" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "withdraw") {
+    return method === "POST" ? { path: `/api/v1/approval-requests/${encodeURIComponent(segments[1])}/withdraw`, query: STUDIO_LIFECYCLE_EMPTY_QUERY, requiredQuery: STUDIO_LIFECYCLE_EMPTY_QUERY } : { methodRejected: true };
+  }
+  if (segments[0] === "workspaces" && SAFE_SEGMENT.test(segments[1] ?? "") && segments[2] === "studio") {
+    const prefix = `/api/v1/workspaces/${encodeURIComponent(segments[1])}/studio`;
+    if (segments.length === 4 && segments[3] === "approval-policy") {
+      return ["GET", "PATCH"].includes(method) ? { path: `${prefix}/approval-policy`, query: STUDIO_LIFECYCLE_EMPTY_QUERY, requiredQuery: STUDIO_LIFECYCLE_EMPTY_QUERY } : { methodRejected: true };
+    }
+    if (segments.length === 4 && segments[3] === "approval-notices") {
+      return method === "GET" ? { path: `${prefix}/approval-notices`, query: STUDIO_NOTICE_QUERY, requiredQuery: STUDIO_NOTICE_QUERY } : { methodRejected: true };
+    }
+    if (segments.length === 5 && segments[3] === "approval-notices" && SAFE_SEGMENT.test(segments[4])) {
+      return method === "PATCH" ? { path: `${prefix}/approval-notices/${encodeURIComponent(segments[4])}`, query: STUDIO_LIFECYCLE_EMPTY_QUERY, requiredQuery: STUDIO_LIFECYCLE_EMPTY_QUERY } : { methodRejected: true };
+    }
   }
   if (segments.length === 3 && segments[0] === "sources" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs") {
     return method === "POST" ? { path: `/api/v1/sources/${encodeURIComponent(segments[1])}/processing-runs`, query: null }

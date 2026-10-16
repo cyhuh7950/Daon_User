@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch as mock_patch
 
 import psycopg
@@ -165,15 +165,70 @@ class VersionHistoryConnection(Connection):
         return super().execute(sql, params)
 
 
+class S24LifecycleProjectionTests(unittest.TestCase):
+    def test_s24_lifecycle_output_source_explicit_deny_is_scoped_for_view_edit_delivery(self):
+        import sqlite3
+        from daon_user_api.authorization import Action
+        database=sqlite3.connect(':memory:')
+        database.executescript('CREATE TABLE evidence_references(tenant_id,workspace_id,output_version_id,source_version_id);'
+            'CREATE TABLE source_versions(tenant_id,workspace_id,record_id,source_id);'
+            'CREATE TABLE identity_auth_source_access(tenant_id,workspace_id,source_version_id,user_id,allowed);')
+        database.execute('INSERT INTO evidence_references VALUES(?,?,?,?)',('tenant-1','workspace-1','version-1','sv-1'))
+        database.execute('INSERT INTO source_versions VALUES(?,?,?,?)',('tenant-1','workspace-1','sv-1','source-1'))
+        class SqlBoundary:
+            def execute(self,sql,params=()):
+                if sql.startswith('SELECT canonical_json FROM source_versions'): return Result(({},))
+                return database.execute(sql.replace('%s','?'),params)
+        repo=PostgresStudioWorkspaceRepository(None); connection=SqlBoundary()
+        context=StudioContext('tenant-1','workspace-1','actor-1','trace-1','policy-1','notebook-1')
+        try:
+            for row in (('tenant-1','workspace-1','sv-1','actor-2',0),('tenant-2','workspace-1','sv-1','actor-1',0),
+                        ('tenant-1','workspace-2','sv-1','actor-1',0),('tenant-1','workspace-1','sv-2','actor-1',0),
+                        ('tenant-1','workspace-1','sv-1','actor-1',1)):
+                database.execute('INSERT INTO identity_auth_source_access VALUES(?,?,?,?,?)',row)
+            for action in (Action.VIEW,Action.EDIT,Action.DELIVER):
+                repo._require_output_sources(connection,context,'version-1',action=action)
+            database.execute('INSERT INTO identity_auth_source_access VALUES(?,?,?,?,?)',('tenant-1','workspace-1','sv-1','actor-1',0))
+            for action in (Action.VIEW,Action.EDIT,Action.DELIVER):
+                with self.subTest(action=action):
+                    with self.assertRaises(StudioError) as denied:
+                        repo._require_output_sources(connection,context,'version-1',action=action)
+                    self.assertEqual((denied.exception.code,denied.exception.status),('RESOURCE_UNAVAILABLE',404))
+        finally:
+            database.close()
+
+    def test_s24_lifecycle_version_projection_preserves_request_deadline_without_new_db_function(self):
+        now=datetime(2026,10,16,tzinfo=timezone.utc)
+        class History(VersionHistoryConnection):
+            def execute(self,sql,params=()):
+                result=super().execute(sql,params)
+                if "FROM output_versions ov" in sql and "ORDER BY ov.content_version DESC" in sql:
+                    result.rows=tuple((*row,None,"pending" if index==0 else None,{} if index==0 else None,now if index==0 else None)
+                        for index,row in enumerate(result.rows))
+                return result
+        cloud=Cloud(); cloud.connection=History()
+        result=PostgresStudioWorkspaceRepository(cloud).list_versions(StudioContext("tenant-1","workspace-1","actor-1","trace-1","policy-1","notebook-1"),"output-1")
+        self.assertEqual(result[0]["approval_request_state"],"pending")
+        self.assertEqual(result[0]["approval_expires_at"],"2026-10-23T00:00:00Z")
+        self.assertIsNone(result[1]["approval_request_state"])
+        self.assertIsNone(result[1]["approval_expires_at"])
+
+
 class ApprovalTransitionConnection(Connection):
     def __init__(self):
         super().__init__(); self.transition_ids = set()
 
+    def transaction(self): return Transaction(self)
+
     def execute(self, sql, params=()):
         self.statements.append((sql, params))
+        if "lock_studio_approval_version" in sql: return Result((True,))
         if "FROM idempotency_records" in sql: return Result()
         if "SELECT state,version FROM output_versions" in sql: return Result(("in_review", 4))
         if "SELECT state,version FROM approval_requests" in sql: return Result(("pending", 1))
+        if "SELECT state,version,studio_approval_deadline" in sql:
+            now = datetime.now(timezone.utc)
+            return Result(("pending", 1, now + timedelta(days=7), now))
         if "transition_canon_state" in sql:
             if params[4] in self.transition_ids: return Result((params[3], params[2], "failed", "TRANSITION_ID_CONFLICT"))
             self.transition_ids.add(params[4])

@@ -622,7 +622,7 @@ const STUDIO_OUTPUT_TYPES = new Set([
 const STUDIO_ACTIONS = new Set(["reviews", "approval-requests", "approvals", "deliveries", "knowledge-registrations"]);
 
 export async function issueStudioStepUp(actionGroup, targetId, password, { fetchImpl = fetch, idempotencyKey = secureUuid(), signal } = {}) {
-  if (!new Set(["final_approval_or_knowledge_registration", "external_transfer", "data_area_move"]).has(actionGroup) || !safeId(targetId) || typeof password !== "string" || password.length < 12 || password.length > 1024) throw new Error("STUDIO_INPUT_INVALID");
+  if (!new Set(["final_approval_or_knowledge_registration", "external_transfer", "data_area_move", "organization_security_or_connector_policy_change"]).has(actionGroup) || !safeId(targetId) || typeof password !== "string" || password.length < 12 || password.length > 1024) throw new Error("STUDIO_INPUT_INVALID");
   const response = await fetchImpl("/bff/api/session/step-up", {
     method: "POST", credentials: "same-origin", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
@@ -644,6 +644,69 @@ function studioExportTarget(workspaceId, outputId, versionId, format, notebookId
 export async function issueStudioExportStepUp(workspaceId, outputId, versionId, format, password, { notebookId, ...options } = {}) {
   const target = studioExportTarget(workspaceId, outputId, versionId, format, notebookId);
   return issueStudioStepUp("final_approval_or_knowledge_registration", target, password, options);
+}
+
+const approvalTime = value => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|\+00:00)$/u.test(value) && Number.isFinite(Date.parse(value));
+const validApprovalPolicy = value => exact(value,["ttl_days","policy_version","can_manage","step_up_target_id"])
+  && Number.isSafeInteger(value.ttl_days) && value.ttl_days>=1 && value.ttl_days<=30
+  && Number.isSafeInteger(value.policy_version) && value.policy_version>=0 && typeof value.can_manage==="boolean"
+  && typeof value.step_up_target_id==="string" && /^studio-approval-policy-[0-9a-f]{64}$/u.test(value.step_up_target_id);
+async function studioLifecycleExchange(workspaceId,path,method,body,options,valid) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID");
+  const {fetchImpl=fetch,signal,idempotencyKey=secureUuid(),ifMatch}=options;
+  const headers={};
+  if(method!=="GET") {
+    if(!safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
+    headers["Content-Type"]="application/json"; headers["Idempotency-Key"]=idempotencyKey;
+    if(ifMatch) headers["If-Match"]=ifMatch;
+  }
+  if(signal?.aborted) throw new Error("STUDIO_REQUEST_ABORTED");
+  const response=await fetchImpl('/bff/api/'+path,{method,headers,signal,credentials:"same-origin",cache:"no-store",...(body?{body:JSON.stringify(body)}:{})});
+  const payload=await json(response,"STUDIO_RESPONSE_INVALID");
+  if(signal?.aborted) throw new Error("STUDIO_REQUEST_ABORTED");
+  if(!response.ok) throw new Error(/^[A-Z][A-Z0-9_]+$/u.test(payload?.error?.code)?payload.error.code:"STUDIO_ACTION_FAILED");
+  if(!exact(payload,["data","meta"]) || !validMeta(payload.meta,workspace,{replay:method!=="GET"}) || !valid(payload.data)) throw new Error("STUDIO_RESPONSE_INVALID");
+  return payload.data;
+}
+export async function getStudioApprovalPolicy(workspaceId,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`workspaces/${encodeURIComponent(workspace)}/studio/approval-policy`,"GET",null,options,validApprovalPolicy);
+}
+export async function saveStudioApprovalPolicy(workspaceId,input,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID");
+  if(!exact(input,["ttl_days","expected_policy_version","step_up_authorization"]) || !Number.isSafeInteger(input.ttl_days) || input.ttl_days<1 || input.ttl_days>30
+    || !Number.isSafeInteger(input.expected_policy_version) || input.expected_policy_version<0
+    || typeof input.step_up_authorization!=="string" || !/^[\x21-\x7e]{1,4096}$/u.test(input.step_up_authorization)) throw new Error("STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`workspaces/${encodeURIComponent(workspace)}/studio/approval-policy`,"PATCH",input,options,validApprovalPolicy);
+}
+export async function issueStudioApprovalPolicyStepUp(target,password,options={}) {
+  if(typeof target!=="string" || !/^studio-approval-policy-[0-9a-f]{64}$/u.test(target)) throw new Error("STUDIO_INPUT_INVALID");
+  return issueStudioStepUp("organization_security_or_connector_policy_change",target,password,options);
+}
+export async function withdrawStudioApprovalRequest(workspaceId,requestId,versionId,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID"),notebook=requiredWorkspace(options.notebookId,"STUDIO_INPUT_INVALID");
+  if(!safeId(requestId)||!safeId(versionId)) throw new Error("STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`approval-requests/${encodeURIComponent(requestId)}/withdraw`,"POST",
+    {workspace_id:workspace,notebook_id:notebook,output_version_id:versionId},options,
+    value=>exact(value,["record_id","action","status","output_version_id"])&&value.record_id===requestId&&value.action==="withdraw"&&value.status==="withdrawn"&&value.output_version_id===versionId);
+}
+export async function listStudioApprovalNotices(workspaceId,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID"),notebook=requiredWorkspace(options.notebookId,"STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`workspaces/${encodeURIComponent(workspace)}/studio/approval-notices?notebook_id=${encodeURIComponent(notebook)}`,"GET",null,options,value=>{
+    if(!exact(value,["items","unread_count"])||!Array.isArray(value.items)||value.items.length>100) return false;
+    const valid=value.items.every(item=>exact(item,["notification_id","approval_request_id","output_version_id","event_kind","scheduled_at","created_at","read_at","version"])
+      && [item.notification_id,item.approval_request_id,item.output_version_id].every(safeId)
+      && ["due_24h","expired","withdrawn"].includes(item.event_kind) && approvalTime(item.scheduled_at)&&approvalTime(item.created_at)
+      && (item.read_at===null||approvalTime(item.read_at)) && Number.isSafeInteger(item.version)&&item.version>=1);
+    return valid&&new Set(value.items.map(item=>item.notification_id)).size===value.items.length&&value.unread_count===value.items.filter(item=>item.read_at===null).length;
+  });
+}
+export async function markStudioApprovalNoticeRead(workspaceId,noticeId,version,options={}) {
+  const workspace=requiredWorkspace(workspaceId,"STUDIO_INPUT_INVALID"),notebook=requiredWorkspace(options.notebookId,"STUDIO_INPUT_INVALID");
+  if(!safeId(noticeId)||!Number.isSafeInteger(version)||version<1||version>=2147483647) throw new Error("STUDIO_INPUT_INVALID");
+  return studioLifecycleExchange(workspace,`workspaces/${encodeURIComponent(workspace)}/studio/approval-notices/${encodeURIComponent(noticeId)}`,"PATCH",
+    {notebook_id:notebook,state:"read"},{...options,ifMatch:`"studio-approval-notice:${noticeId}:${version}"`},
+    value=>exact(value,["notification_id","version","read_at"])&&value.notification_id===noticeId&&value.version===version+1&&approvalTime(value.read_at));
 }
 
 function validGeneration(request, workspaceId) {
@@ -721,6 +784,7 @@ const STUDIO_VERSION_KEYS = Object.freeze([
   "output_version_id", "content_version", "previous_version_id", "status", "content",
   "revision_type", "change_reason", "settings_snapshot_id", "citations", "review_request_id",
   "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "output_format",
+  "approval_request_state", "approval_expires_at",
 ]);
 const STUDIO_CITATION_KEYS = Object.freeze([
   "citation_id", "source_version_id", "evidence_span_id", "origin", "locator",
@@ -747,6 +811,8 @@ function validStudioVersion(value) {
   return exact(value, STUDIO_VERSION_KEYS) && safeId(value.output_version_id)
     && Number.isSafeInteger(value.content_version) && value.content_version >= 1
     && nullableIds.every((field) => value[field] === null || safeId(value[field]))
+    && (value.approval_request_state===null || ["pending","approved","rejected","expired","withdrawn"].includes(value.approval_request_state))
+    && (value.approval_expires_at===null || approvalTime(value.approval_expires_at))
     && new Set(["draft", "review_requested", "in_review", "approved", "revision_requested", "delivered"]).has(value.status)
     && (typeof value.content === "string" || record(value.content))
     && safeText(serialized, 1, 8 * 1024 * 1024)

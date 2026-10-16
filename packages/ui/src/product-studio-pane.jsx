@@ -19,7 +19,7 @@ const TYPE_ICONS = Object.freeze({
 
 function outputStatusLabel(status) {
   return ({
-    draft: "초안", in_review: "검토 중", approved: "승인됨", delivered: "전달됨",
+    draft: "초안", in_review: "검토 중", approved: "승인됨", delivered: "전달 기록됨",
     revision_requested: "수정 필요", generating: "생성 중", failed: "생성 실패", unavailable: "사용 불가",
   })[status] ?? "저장됨";
 }
@@ -30,18 +30,21 @@ function outputTypeLabel(outputType) {
 
 function canRequestStudioAction(action, output) {
   if (!output || output.canonicalPending || output.lifecyclePending) return false;
+  const closed = ["expired", "withdrawn"].includes(output.approval_request_state)
+    || (typeof output.approval_expires_at === "string" && Date.parse(output.approval_expires_at) <= Date.now());
   if (action === "reviews") return output.status === "draft" && !output.review_request_id;
   if (action === "approval-requests") return ["in_review", "review_requested"].includes(output.status)
-    && Boolean(output.review_request_id) && !output.approval_request_id;
+    && Boolean(output.review_request_id) && (!output.approval_request_id || closed);
   if (action === "approvals") return ["in_review", "review_requested"].includes(output.status)
-    && Boolean(output.approval_request_id) && !output.approval_id;
+    && Boolean(output.approval_request_id) && !output.approval_id && !closed;
+  if (action === "withdraw") return Boolean(output.approval_request_id) && output.approval_request_state === "pending" && !closed;
   if (action === "deliveries") return output.status === "approved" && Boolean(output.approval_id) && !output.delivery_id;
   if (action === "knowledge-registrations") return output.status === "approved" && !output.knowledge_registration_id;
   return false;
 }
 
 function validStudioActionReceipt(result, request) {
-  const action = { reviews: "review", "approval-requests": "approval_request", approvals: "approval", deliveries: "delivery", "knowledge-registrations": "knowledge_registration" }[request.action];
+  const action = { reviews: "review", "approval-requests": "approval_request", approvals: "approval", deliveries: "delivery", "knowledge-registrations": "knowledge_registration", withdraw: "withdraw" }[request.action];
   const keys = ["record_id", "action", "status", "output_version_id"];
   if (action === "knowledge_registration") keys.push("registered_source_version_id", "searchable");
   const safeId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(value);
@@ -50,7 +53,7 @@ function validStudioActionReceipt(result, request) {
     && safeId(result.record_id) && result.action === action && result.output_version_id === request.versionId
     && (action === "knowledge_registration"
       ? result.status === "registered" && safeId(result.registered_source_version_id) && result.searchable === true
-      : result.status === "accepted");
+      : action === "withdraw" ? result.status === "withdrawn" && result.record_id === request.payload.approval_request_id : result.status === "accepted");
 }
 
 function safeStudioErrorMessage(code) {
@@ -65,6 +68,9 @@ function safeStudioErrorMessage(code) {
     STUDIO_CREATE_TIMEOUT: "산출물 생성이 지연되고 있습니다. Library에서 상태를 다시 확인해 주세요.",
     STEP_UP_REQUIRED: "추가 인증을 완료하지 못했습니다. 비밀번호를 확인한 뒤 다시 시도해 주세요.",
     STUDIO_STEP_UP_UNAVAILABLE: "추가 인증 연결을 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+    APPROVAL_REQUEST_EXPIRED: "승인 기한이 지났습니다. 현재 상태를 확인하고 새 요청을 만들어 주세요.",
+    APPROVAL_REQUEST_PENDING: "진행 중인 승인 요청이 있습니다. 현재 요청을 확인해 주세요.",
+    PRECONDITION_FAILED: "저장 상태가 변경되었습니다. 현재 값을 새로 확인해 주세요.",
   })[code] ?? "요청을 안전하게 완료하지 못했습니다. 운영상태에서 연결 상태를 확인해 주세요.";
 }
 
@@ -211,6 +217,9 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   const [savedRevision, setSavedRevision] = useState(null);
   const [stepUp, setStepUp] = useState(null);
   const [password, setPassword] = useState("");
+  const [approvalInfo, setApprovalInfo] = useState({ policy: null, items: [], unread_count: 0, error: false });
+  const [approvalDays, setApprovalDays] = useState("7");
+  const [approvalRefresh, setApprovalRefresh] = useState(0);
   const generationRequestRef = useRef(null);
   const generationScopeRef = useRef(null);
   const detailRequestRef = useRef(null);
@@ -218,6 +227,17 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   const actionRequestRef = useRef(null);
   const detailSelectionRef = useRef(null);
   generationScopeRef.current = { adapter, workspaceId: state.workspaceId };
+  useEffect(() => {
+    const controller = new AbortController();
+    const scope = { adapter, workspaceId: state.workspaceId };
+    setApprovalInfo({ policy: null, items: [], unread_count: 0, error: false });
+    if (!adapter?.getStudioApprovalPolicy || !adapter?.listStudioApprovalNotices) return () => controller.abort();
+    const current = () => !controller.signal.aborted && generationScopeRef.current.adapter === scope.adapter && generationScopeRef.current.workspaceId === scope.workspaceId;
+    void Promise.all([adapter.getStudioApprovalPolicy({ signal: controller.signal }), adapter.listStudioApprovalNotices({ signal: controller.signal })])
+      .then(([policy, notices]) => { if (current()) { setApprovalInfo({ policy, ...notices, error: false }); setApprovalDays(String(policy.ttl_days)); } })
+      .catch(() => { if (current()) setApprovalInfo(value => ({ ...value, error: true })); });
+    return () => controller.abort();
+  }, [adapter, state.workspaceId, approvalRefresh]);
   useEffect(() => {
     setView(state);
     setRevisionContent(""); setChangeReason(""); setSavedRevision(null); setKnowledgeNotice(null);
@@ -249,7 +269,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
         setView((current) => ({ ...current, pending: false }));
       }
     };
-  }, [adapter]);
+  }, [adapter, state.workspaceId]);
   const selected = OUTPUT_TYPES.find((item) => item.id === view.selectedOutputType);
   const selectedOutput = view.outputs.find((output) => output.studio_output_id === view.selectedOutputId) ?? null;
   detailSelectionRef.current = { outputId: selectedOutput?.studio_output_id, versionId: selectedOutput?.output_version_id };
@@ -411,7 +431,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   const markActionUnverified = (request, receipt) => setView((current) => ({ ...current, outputs: current.outputs.map((output) => {
     if (output.studio_output_id !== request.outputId || output.output_version_id !== request.versionId) return output;
     const unknown = { ...output, lifecyclePending: true, actionReceipt: receipt };
-    for (const field of ["status", "review_request_id", "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "version", "versions"]) delete unknown[field];
+    for (const field of ["status", "review_request_id", "approval_request_id", "approval_request_state", "approval_expires_at", "approval_id", "delivery_id", "knowledge_registration_id", "version", "versions"]) delete unknown[field];
     return unknown;
   }) }));
   const performAction = async (request, token) => {
@@ -420,7 +440,9 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
     detailRequestRef.current = request;
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
-      const result = await request.adapter.createStudioAction(request.action, {
+      const result = request.action === "withdraw"
+        ? await request.adapter.withdrawStudioApprovalRequest(request.payload.approval_request_id, request.versionId, { signal: request.controller.signal, idempotencyKey: request.idempotencyKey })
+        : await request.adapter.createStudioAction(request.action, {
         output_version_id: request.versionId, ...request.payload,
         ...(token ? { step_up_authorization: token } : {}),
       }, { signal: request.controller.signal });
@@ -446,6 +468,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
           output.studio_output_id === request.outputId && output.output_version_id === request.versionId
             ? { ...output, ...canonical, version: canonical, versions, lifecyclePending: false }
             : output) }));
+        if (actionOwnsSelection(request)) setApprovalRefresh(value => value + 1);
         if (request.action === "knowledge-registrations" && actionOwnsSelection(request)) {
           setKnowledgeNotice("생산 지식이 등록되었습니다. 자료 목록을 새로고침합니다.");
           onKnowledgeRegistered?.();
@@ -464,10 +487,10 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   };
   const act = async (action, payload = {}) => {
     if (actionRequestRef.current || generationRequestRef.current || revisionRequestRef.current || view.pending
-      || !adapter?.createStudioAction || !canRequestStudioAction(action, selectedOutput)) return;
+      || !(action === "withdraw" ? adapter?.withdrawStudioApprovalRequest : adapter?.createStudioAction) || !canRequestStudioAction(action, selectedOutput)) return;
     const request = { kind: "action", action, payload: { ...payload }, target: { ...selectedOutput }, phase: "challenge",
       outputId: selectedOutput.studio_output_id, versionId: selectedOutput.output_version_id,
-      adapter, workspaceId: state.workspaceId, controller: new AbortController() };
+      adapter, workspaceId: state.workspaceId, controller: new AbortController(), idempotencyKey: secureUuid() };
     actionRequestRef.current = request;
     if (["approvals", "deliveries", "knowledge-registrations"].includes(action)) {
       stepUpRef.current = request; setStepUp(request); setPassword("");
@@ -476,6 +499,58 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
     }
     await performAction(request);
   };
+  const currentLifecycle = request => actionRequestRef.current === request && ownsDetail(request)
+    && detailSelectionRef.current.outputId === request.outputId && detailSelectionRef.current.versionId === request.versionId;
+  const lifecycleRequest = kind => ({ kind, phase: "challenge", outputId: selectedOutput?.studio_output_id,
+    versionId: selectedOutput?.output_version_id, adapter, workspaceId: state.workspaceId,
+    controller: new AbortController(), idempotencyKey: secureUuid() });
+  const changeApprovalPolicy = () => {
+    if (configurationBusy || generationRequestRef.current || actionRequestRef.current || !approvalInfo.policy?.can_manage
+      || !adapter?.saveStudioApprovalPolicy || !adapter?.issueStudioApprovalPolicyStepUp || !/^(?:[1-9]|[12][0-9]|30)$/u.test(approvalDays)) return;
+    const request = { ...lifecycleRequest("policy"), ttl: Number(approvalDays), expected: approvalInfo.policy.policy_version,
+      policyTarget: approvalInfo.policy.step_up_target_id };
+    actionRequestRef.current = request; stepUpRef.current = request; setStepUp(request); setPassword("");
+  };
+  const performPolicySave = async (request, token) => {
+    request.phase = "write"; detailRequestRef.current = request;
+    try {
+      const policy = await request.adapter.saveStudioApprovalPolicy({ ttl_days: request.ttl,
+        expected_policy_version: request.expected, step_up_authorization: token },
+      { signal: request.controller.signal, idempotencyKey: request.idempotencyKey });
+      if (currentLifecycle(request)) {
+        setApprovalInfo(current => ({ ...current, policy, error: false })); setApprovalDays(String(policy.ttl_days));
+      }
+    } catch (error) {
+      if (currentLifecycle(request)) setView(current => ({ ...current, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_ACTION_FAILED" }));
+    } finally {
+      const owns = currentLifecycle(request);
+      if (actionRequestRef.current === request) actionRequestRef.current = null;
+      if (owns) setView(current => ({ ...current, pending: false }));
+    }
+  };
+  const readApprovalNotice = async notice => {
+    if (configurationBusy || actionRequestRef.current || generationRequestRef.current || notice.read_at || !adapter?.markStudioApprovalNoticeRead) return;
+    const request = lifecycleRequest("notice"); request.phase = "write";
+    actionRequestRef.current = request; detailRequestRef.current?.controller.abort(); detailRequestRef.current = request;
+    setView(current => ({ ...current, pending: true, safeError: null }));
+    try {
+      const receipt = await request.adapter.markStudioApprovalNoticeRead(notice.notification_id, notice.version,
+        { signal: request.controller.signal, idempotencyKey: request.idempotencyKey });
+      if (!currentLifecycle(request)) return;
+      setApprovalInfo(current => {
+        const items = current.items.map(item => item.notification_id === receipt.notification_id ? { ...item, ...receipt } : item);
+        return { ...current, items, unread_count: items.filter(item => item.read_at === null).length };
+      });
+      const notices = await request.adapter.listStudioApprovalNotices({ signal: request.controller.signal });
+      if (currentLifecycle(request)) setApprovalInfo(current => ({ ...current, ...notices, error: false }));
+    } catch {
+      if (currentLifecycle(request)) setApprovalInfo(current => ({ ...current, error: true }));
+    } finally {
+      const owns = currentLifecycle(request);
+      if (actionRequestRef.current === request) actionRequestRef.current = null;
+      if (owns) setView(current => ({ ...current, pending: false }));
+    }
+  };
   const confirmStepUp = async () => {
     const challenge = stepUpRef.current;
     if (!challenge || challenge.issuing || password.length < 12) return;
@@ -483,16 +558,19 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
     setPassword(""); challenge.issuing = true;
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
-      const issue = challenge.kind === "export" ? challenge.adapter?.issueStudioExportStepUp : challenge.adapter?.issueStudioStepUp;
+      const issue = challenge.kind === "policy" ? challenge.adapter?.issueStudioApprovalPolicyStepUp : challenge.kind === "export" ? challenge.adapter?.issueStudioExportStepUp : challenge.adapter?.issueStudioStepUp;
       if (!issue) throw new Error("STUDIO_STEP_UP_UNAVAILABLE");
-      const token = challenge.kind === "export"
+      const token = challenge.kind === "policy"
+        ? await issue(challenge.policyTarget, currentPassword, { signal: challenge.controller.signal })
+        : challenge.kind === "export"
         ? await issue(challenge.outputId, challenge.versionId, challenge.format, currentPassword, { signal: challenge.controller.signal })
         : await issue("final_approval_or_knowledge_registration", challenge.versionId, currentPassword, { signal: challenge.controller.signal });
       if (stepUpRef.current !== challenge || !sameDetailScope(challenge)
         || detailSelectionRef.current.outputId !== challenge.outputId || detailSelectionRef.current.versionId !== challenge.versionId) return;
       if (typeof token !== "string" || !token) throw new Error("STEP_UP_REQUIRED");
       stepUpRef.current = null; setStepUp(null);
-      if (challenge.kind === "export") await performDownload(challenge, token);
+      if (challenge.kind === "policy") await performPolicySave(challenge, token);
+      else if (challenge.kind === "export") await performDownload(challenge, token);
       else await performAction(challenge, token);
     } catch (error) {
       if (stepUpRef.current !== challenge) return;
@@ -538,6 +616,20 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   return (
     <div className="product-studio" data-studio-state={view.status}>
       {knowledgeNotice ? <p role="status">{knowledgeNotice}</p> : null}
+      {approvalInfo.error ? <p role="alert">승인 기한·알림을 불러오지 못했습니다. 현재 접근과 연결을 확인해 주세요.</p> : null}
+      {approvalInfo.policy ? <section aria-label="승인 기한과 알림">
+        <p>조직 승인 기한 {approvalInfo.policy.ttl_days}일</p>
+        <label>승인 기한 일수<input type="number" min="1" max="30" value={approvalDays}
+          disabled={configurationBusy || !approvalInfo.policy.can_manage}
+          onChange={event => { if (!actionRequestRef.current) setApprovalDays(event.currentTarget.value); }} /></label>
+        <button type="button" disabled={configurationBusy || !approvalInfo.policy.can_manage || !/^(?:[1-9]|[12][0-9]|30)$/u.test(approvalDays)} onClick={changeApprovalPolicy}>승인 기한 변경</button>
+        <small>{approvalInfo.policy.can_manage ? "재인증 후 이후 요청에만 적용됩니다." : "조직 정책으로 잠김 · 현재 정책 변경 권한이 없습니다."}</small>
+        <p>승인 알림 · 안 읽음 {approvalInfo.unread_count}</p>
+        <ul>{approvalInfo.items.map(notice => <li key={notice.notification_id}>
+          {({ due_24h: "승인 기한 임박", expired: "승인 요청 만료", withdrawn: "승인 요청 회수" })[notice.event_kind]} · {notice.scheduled_at}
+          <button type="button" disabled={configurationBusy || notice.read_at !== null} onClick={() => void readApprovalNotice(notice)}>{notice.read_at ? "읽음" : "읽음 표시"}</button>
+        </li>)}</ul>
+      </section> : null}
       {stepUp ? <section role="dialog" aria-label="Studio 추가 인증">
         <p>선택한 Version의 민감 작업을 위해 추가 인증이 필요합니다.</p>
         {view.safeError ? <p role="alert">{safeStudioErrorMessage(view.safeError)}</p> : null}
@@ -606,6 +698,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
         {selectedOutput.canonicalPending ? <p role="status">저장은 완료되었으나 새 Version의 정본 조회가 아직 확인되지 않았습니다.</p> : null}
         <header className="studio-output-detail-header"><div><span className="section-kicker">{outputTypeLabel(selectedOutput.output_type)}</span><h3>{selectedOutput.title}</h3></div><span className={`output-status status-${selectedOutput.status ?? "saved"}`}>{selectedOutput.lifecyclePending ? "상태 미확인" : outputStatusLabel(selectedOutput.status)}</span></header>
         <StudioOutputContent output={selectedOutput} />
+        {selectedOutput.approval_request_id ? <p>승인 요청 {selectedOutput.approval_request_id} · {({ pending: "대기 중", approved: "승인됨", rejected: "반려됨", withdrawn: "회수됨", expired: "만료됨" })[selectedOutput.approval_request_state] ?? "상태 미확인"} · 기한 {selectedOutput.approval_expires_at ?? "미확인"}</p> : null}
         <p>Version {selectedOutput.content_version ?? selectedOutput.output_version_id} · 근거 {Array.isArray(selectedOutput.citations) ? selectedOutput.citations.length : selectedOutput.citations ?? (selectedOutput.canonicalPending ? "미확인" : 0)} · 설정 {selectedOutput.settings_snapshot_id ?? (selectedOutput.canonicalPending ? "미확인" : "-")}</p>
         {selectedOutput.versions?.length ? <section className="studio-version-history" aria-label="Version 이력"><h4>Version 이력</h4><ol>{selectedOutput.versions.map((version) => <li key={version.output_version_id}><strong>Version {version.content_version}</strong><span>{outputStatusLabel(version.status)} · {version.change_reason}</span></li>)}</ol></section> : null}
         {Array.isArray(selectedOutput.citations) && selectedOutput.citations.length ? <section className="studio-citation-list" aria-label="근거 Citation"><h4>근거 Citation</h4><ul>{selectedOutput.citations.map((citation) => {
@@ -623,6 +716,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
         <button type="button" disabled={actionDisabled("approval-requests")} onClick={() => void act("approval-requests", { review_request_id: selectedOutput.review_request_id })}>승인 요청</button>
         <button type="button" disabled={actionDisabled("approvals")} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "approved" })}>승인</button>
         <button type="button" disabled={actionDisabled("approvals")} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "rejected" })}>수정 요청</button>
+        <button type="button" disabled={actionDisabled("withdraw") || !adapter?.withdrawStudioApprovalRequest} onClick={() => void act("withdraw", { approval_request_id: selectedOutput.approval_request_id })}>승인 요청 회수</button>
         <button type="button" disabled={configurationBusy || selectedOutput.status !== "approved" || selectedOutput.canonicalPending || selectedOutput.lifecyclePending} onClick={() => download()}>내보내기</button>
         <button type="button" disabled={actionDisabled("deliveries")} onClick={() => void act("deliveries", { approval_id: selectedOutput.approval_id, recipient: "workspace_recipient" })}>전달 기록 등록</button>
         <small>전달 기록만 등록하며 실제 외부 송신은 없습니다.{selectedOutput.delivery_id ? " 전달 기록이 이미 등록되었습니다." : ""}</small>

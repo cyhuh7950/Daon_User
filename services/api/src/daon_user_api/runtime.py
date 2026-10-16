@@ -129,6 +129,7 @@ from .studio_report import (
 from .studio_report_postgres import PostgresStudioReportRepository
 from .studio_workspace import StudioContext, StudioError, StudioGenerationRequest, StudioWorkspaceService
 from .studio_workspace_postgres import PostgresStudioWorkspaceRepository
+from .studio_approval_lifecycle import StudioApprovalLifecycleRepository
 from .sync import (
     ConflictResolutionChoice,
     ReferenceSyncRepository,
@@ -820,6 +821,7 @@ class RuntimeDependencies:
     studio_report_service: Any | None = None
     studio_report_repository: Any | None = None
     studio_workspace_service: Any | None = None
+    studio_approval_lifecycle_repository: Any | None = None
     organization_repository: SqliteOrganizationRepository | None = None
     egress_policy_service: EgressPolicyService | None = None
     connector_registry: ConnectorRegistry | None = None
@@ -2158,6 +2160,9 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     if studio_report_service is None and studio_report_repository is not None:
         studio_report_service = StudioReportService(studio_report_repository)
     studio_workspace_service = dependencies.studio_workspace_service
+    studio_approval_lifecycle_repository = dependencies.studio_approval_lifecycle_repository
+    if studio_approval_lifecycle_repository is None and dependencies.cloud_store is not None:
+        studio_approval_lifecycle_repository = StudioApprovalLifecycleRepository(dependencies.cloud_store)
     if studio_workspace_service is None and dependencies.cloud_store is not None:
         studio_workspace_service = StudioWorkspaceService(PostgresStudioWorkspaceRepository(
             dependencies.cloud_store, dependencies.object_storage,
@@ -2667,6 +2672,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
             "EXPORT_FORMAT_UNSUPPORTED", "RESOURCE_UNAVAILABLE", "IDEMPOTENCY_CONFLICT",
             "POLICY_PROJECTION_MISMATCH", "EVIDENCE_COVERAGE_INCOMPLETE", "REVIEW_REQUEST_REQUIRED",
             "POLICY_PROJECTION_UNAVAILABLE",
+            "APPROVAL_REQUEST_EXPIRED", "APPROVAL_REQUEST_PENDING", "APPROVAL_REQUEST_REQUIRED", "PRECONDITION_FAILED",
             "KNOWLEDGE_CYCLE_DETECTED", "OBJECT_STORAGE_UNAVAILABLE", "OBJECT_CHECKSUM_MISMATCH",
         }
         return _error_response(
@@ -4611,6 +4617,97 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
         return JSONResponse({"data": {"output_id": output_id, "versions": _enum_json(versions)}, "meta": {
             "trace_id": request.state.trace_id, "workspace_id": workspace_id,
         }})
+
+    def lifecycle_id(value):
+        if not isinstance(value,str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}",value):
+            raise HTTPException(status_code=400)
+        return value
+
+    async def lifecycle_body(request,required,optional=frozenset()):
+        def pairs(values):
+            result={}
+            for key,value in values:
+                if key in result: raise ValueError()
+                result[key]=value
+            return result
+        raw=await request.body()
+        try:
+            if len(raw)>16384 or request.headers.get("content-type","").split(";")[0].strip().lower()!="application/json":
+                raise ValueError()
+            value=json.loads(raw,object_pairs_hook=pairs)
+            if not isinstance(value,dict) or not required<=value.keys() or not value.keys()<=required|optional:
+                raise ValueError()
+            return value
+        except (ValueError,UnicodeError):
+            raise HTTPException(status_code=400) from None
+
+    def lifecycle_access(request,workspace,action,notebook=None):
+        lifecycle_id(workspace)
+        if notebook is not None: lifecycle_id(notebook)
+        principal=_principal(request,dependencies)
+        dependencies.authorization_service.authorize_action(principal=principal,workspace_id=workspace,action=action,
+            trace_id=request.state.trace_id,policy_version=dependencies.settings.policy_version)
+        if studio_approval_lifecycle_repository is None: raise StudioError("STUDIO_SERVICE_UNAVAILABLE",503)
+        return principal,_product_studio_context(principal,workspace,request,dependencies,notebook)
+
+    def lifecycle_response(request,workspace,result,replayed=None,etag=None):
+        meta={"trace_id":request.state.trace_id,"workspace_id":workspace}
+        if replayed is not None: meta["replayed"]=replayed
+        response=JSONResponse({"data":_enum_json(result),"meta":meta})
+        response.headers["ETag"]=etag or '"studio-approval:'+hashlib.sha256(json.dumps(_enum_json(result),sort_keys=True,separators=(",",":")).encode()).hexdigest()+'"'
+        return response
+
+    @app.get("/api/v1/workspaces/{id}/studio/approval-policy")
+    async def get_studio_approval_policy(id:str,request:Request):
+        _require_query_keys(request,frozenset())
+        _,ctx=lifecycle_access(request,id,Action.VIEW)
+        result=await asyncio.to_thread(studio_approval_lifecycle_repository.get_policy,ctx)
+        return lifecycle_response(request,id,result)
+
+    @app.patch("/api/v1/workspaces/{id}/studio/approval-policy")
+    async def save_studio_approval_policy(id:str,request:Request,idempotency_key:str=Header(alias="Idempotency-Key")):
+        _require_query_keys(request,frozenset()); _studio_idempotency_key(idempotency_key)
+        body=await lifecycle_body(request,{"ttl_days","expected_policy_version"},{"step_up_authorization"})
+        if type(body["ttl_days"]) is not int or not 1<=body["ttl_days"]<=30 or type(body["expected_policy_version"]) is not int or body["expected_policy_version"]<0:
+            raise HTTPException(status_code=400)
+        principal,ctx=lifecycle_access(request,id,Action.POLICY_MANAGE)
+        policy=await asyncio.to_thread(studio_approval_lifecycle_repository.get_policy,ctx)
+        if not policy["can_manage"]: raise StudioError("RESOURCE_UNAVAILABLE",404)
+        access_token,_=_credential(request)
+        dependencies.identity_service.consume_step_up(step_up_authorization=body.get("step_up_authorization"),access_token=access_token,
+            action_group="organization_security_or_connector_policy_change",target_id=policy["step_up_target_id"],
+            policy_version=dependencies.settings.policy_version,trace_id=request.state.trace_id,
+            operation="studio.approval.policy.save",idempotency_key=idempotency_key)
+        result,replayed=await asyncio.to_thread(studio_approval_lifecycle_repository.save_policy,ctx,body["ttl_days"],body["expected_policy_version"],idempotency_key)
+        return lifecycle_response(request,id,result,replayed)
+
+    @app.post("/api/v1/approval-requests/{id}/withdraw")
+    async def withdraw_studio_approval(id:str,request:Request,idempotency_key:str=Header(alias="Idempotency-Key")):
+        _require_query_keys(request,frozenset()); _studio_idempotency_key(idempotency_key); lifecycle_id(id)
+        body=await lifecycle_body(request,{"workspace_id","notebook_id","output_version_id"})
+        lifecycle_id(body["output_version_id"])
+        _,ctx=lifecycle_access(request,body["workspace_id"],Action.EDIT,body["notebook_id"])
+        result,replayed=await asyncio.to_thread(studio_approval_lifecycle_repository.withdraw,ctx,id,body["output_version_id"],idempotency_key)
+        return lifecycle_response(request,body["workspace_id"],result,replayed)
+
+    @app.get("/api/v1/workspaces/{id}/studio/approval-notices")
+    async def list_studio_approval_notices(id:str,request:Request,notebook_id:str=Query()):
+        _require_query_keys(request,frozenset({"notebook_id"}))
+        _,ctx=lifecycle_access(request,id,Action.VIEW,notebook_id)
+        result=await asyncio.to_thread(studio_approval_lifecycle_repository.list_notices,ctx)
+        return lifecycle_response(request,id,result)
+
+    @app.patch("/api/v1/workspaces/{id}/studio/approval-notices/{notification_id}")
+    async def read_studio_approval_notice(id:str,notification_id:str,request:Request,
+        if_match:str=Header(alias="If-Match"),idempotency_key:str=Header(alias="Idempotency-Key")):
+        _require_query_keys(request,frozenset()); _studio_idempotency_key(idempotency_key); lifecycle_id(notification_id)
+        body=await lifecycle_body(request,{"notebook_id","state"})
+        if body["state"]!="read": raise HTTPException(status_code=400)
+        matched=re.fullmatch(r'"studio-approval-notice:'+re.escape(notification_id)+r':([1-9][0-9]{0,9})"',if_match)
+        if matched is None or int(matched[1])>2147483647: raise HTTPException(status_code=400)
+        _,ctx=lifecycle_access(request,id,Action.VIEW,body["notebook_id"])
+        result,replayed=await asyncio.to_thread(studio_approval_lifecycle_repository.mark_notice_read,ctx,notification_id,int(matched[1]),idempotency_key)
+        return lifecycle_response(request,id,result,replayed,f'"studio-approval-notice:{notification_id}:{result["version"]}"')
 
     @app.post("/api/v1/reviews", status_code=201)
     @app.post("/api/v1/approval-requests", status_code=201)

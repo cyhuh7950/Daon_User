@@ -30,8 +30,28 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 
 class CloudStorageContractTests(unittest.TestCase):
+    def test_s24_lifecycle_readiness_accepts_exact_rolling_revisions_and_rejects_reserved_future(self):
+        class Result:
+            def __init__(self,row): self.row=row
+            def fetchone(self): return self.row
+        class Pool:
+            closed=False
+            def __init__(self,revision,vector): self.revision,self.vector=revision,vector
+            @contextmanager
+            def connection(self,**_kwargs):
+                current=self
+                class Connection:
+                    def execute(self,sql,_params=()): return Result((current.revision,) if "alembic_version" in sql else ((current.vector,) if current.vector else None))
+                yield Connection()
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION,"0066")
+        store=object.__new__(PostgresCloudStore)
+        for revision in ("0062","0063","0064","0066","0065","0067","unknown"):
+            for vector in (None,"0.8.2"):
+                store._pool=Pool(revision,vector)
+                self.assertEqual(store.readiness().ready,vector is not None and revision in {"0062","0063","0064","0066"})
+
     def test_s16_readiness_tracks_source_cleanup_migration_head(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0064")
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0066")
 
     def test_s16_readiness_accepts_only_0062_0063_and_0064_with_vector(self) -> None:
         class Result:

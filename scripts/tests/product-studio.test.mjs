@@ -6,6 +6,41 @@ import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import * as studioApi from '../../apps/web/lib/product-workspace-api.js';
 
+test('S24 lifecycle helpers bind exact policy withdraw and notice contracts with abort signals',async()=>{
+  assert.equal(typeof studioApi.getStudioApprovalPolicy,'function');
+  const calls=[],signal=new AbortController().signal;
+  const target='studio-approval-policy-'+'a'.repeat(64);
+  const fetchImpl=async(url,init)=>{
+    calls.push({url,init,body:init.body?JSON.parse(init.body):null});
+    let data;
+    if(url.includes('approval-policy')) data={ttl_days:7,policy_version:0,can_manage:true,step_up_target_id:target};
+    else if(url.includes('/withdraw')) data={record_id:'request-1',action:'withdraw',status:'withdrawn',output_version_id:'version-1'};
+    else if(init.method==='PATCH') data={notification_id:'notice-1',version:2,read_at:'2026-10-16T00:00:00Z'};
+    else data={items:[],unread_count:0};
+    return Response.json({data,meta:{trace_id:'trace-1',workspace_id:'workspace-1',...(init.method==='GET'?{}:{replayed:false})}});
+  };
+  const options={notebookId:'notebook-1',fetchImpl,signal,idempotencyKey:'s24-lifecycle-wire-001'};
+  const policy=await studioApi.getStudioApprovalPolicy('workspace-1',options);
+  assert.equal(policy.step_up_target_id,target);
+  await studioApi.saveStudioApprovalPolicy('workspace-1',{ttl_days:7,expected_policy_version:0,step_up_authorization:'opaque-fixture'},options);
+  await studioApi.withdrawStudioApprovalRequest('workspace-1','request-1','version-1',options);
+  await studioApi.listStudioApprovalNotices('workspace-1',options);
+  await studioApi.markStudioApprovalNoticeRead('workspace-1','notice-1',1,options);
+  assert.deepEqual(calls[2].body,{workspace_id:'workspace-1',notebook_id:'notebook-1',output_version_id:'version-1'});
+  assert.deepEqual(calls[4].body,{notebook_id:'notebook-1',state:'read'});
+  assert.equal(calls[4].init.headers['If-Match'],'"studio-approval-notice:notice-1:1"');
+  assert.ok(calls.every(({url,init})=>url.startsWith('/bff/api/')&&init.signal===signal&&init.credentials==='same-origin'&&init.cache==='no-store'));
+  assert.ok(calls.every(({url})=>!url.includes('opaque-fixture')));
+  await assert.rejects(studioApi.saveStudioApprovalPolicy('workspace-1',{ttl_days:true,expected_policy_version:0,step_up_authorization:'opaque-fixture'},options),/STUDIO_INPUT_INVALID/);
+});
+
+test('S24 lifecycle strict policy and notice responses reject extra recipient malformed counts and foreign scope',async()=>{
+  assert.equal(typeof studioApi.listStudioApprovalNotices,'function');
+  for(const data of [{items:[],unread_count:1},{items:[],unread_count:0,recipient_id:'other'}]) {
+    await assert.rejects(studioApi.listStudioApprovalNotices('workspace-1',{notebookId:'notebook-1',fetchImpl:async()=>Response.json({data,meta:{trace_id:'trace-1',workspace_id:'workspace-1'}})}),/STUDIO_RESPONSE_INVALID/);
+  }
+});
+
 import {
   OUTPUT_TYPES, createProductStudioState, selectOutputType, updateGenerationSettings,
   confirmGenerationSettings, canSubmitGeneration, createStudioGenerationInput, mergeStudioVersion,

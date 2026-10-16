@@ -367,5 +367,118 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(issue.call_args.kwargs["password"], "current password value")
 
 
+    async def lifecycle_client(self):
+        class Repository:
+            def __init__(self): self.calls=[]
+            def get_policy(repo,ctx):
+                repo.calls.append(("get",ctx))
+                target="studio-approval-policy-"+hashlib.sha256(json.dumps([ctx.tenant_id,ctx.workspace_id],separators=(",",":")).encode()).hexdigest()
+                return {"ttl_days":7,"policy_version":0,"can_manage":True,"step_up_target_id":target}
+            def save_policy(repo,ctx,ttl,expected,key):
+                repo.calls.append(("save",ctx,ttl,expected,key))
+                if expected: raise StudioError("PRECONDITION_FAILED",412)
+                return {**repo.get_policy(ctx),"ttl_days":ttl,"policy_version":1},False
+            def withdraw(repo,ctx,request,version,key):
+                repo.calls.append(("withdraw",ctx,request,version,key))
+                if request=="foreign": raise StudioError("RESOURCE_UNAVAILABLE",404)
+                return {"record_id":request,"action":"withdraw","status":"withdrawn","output_version_id":version},False
+            def list_notices(repo,ctx):
+                repo.calls.append(("notices",ctx)); return {"items":[],"unread_count":0}
+            def mark_notice_read(repo,ctx,notice,version,key):
+                repo.calls.append(("read",ctx,notice,version,key))
+                return {"notification_id":notice,"version":version+1,"read_at":"2026-10-16T00:00:00Z"},False
+        repo=Repository()
+        if hasattr(self.dependencies,"studio_approval_lifecycle_repository"):
+            self.dependencies.studio_approval_lifecycle_repository=repo
+        await self.client.aclose()
+        self.client=httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(self.dependencies)),base_url="http://127.0.0.1")
+        return repo
+
+    async def test_s24_lifecycle_policy_requires_real_bound_stepup_before_save(self):
+        repo=await self.lifecycle_client(); credentials=self.sensitive_session()
+        path="/api/v1/workspaces/workspace-sensitive/studio/approval-policy"
+        headers={"Authorization":f"Bearer {credentials.access_token}","Idempotency-Key":"s24-policy-http-key"}
+        policy=await self.client.get(path,headers=headers)
+        self.assertEqual(policy.status_code,200)
+        self.assertIsNotNone(policy.headers.get('ETag'))
+        target=policy.json()["data"]["step_up_target_id"]
+        missing=await self.client.patch(path,headers=headers,json={"ttl_days":1,"expected_policy_version":0})
+        self.assertEqual((missing.status_code,missing.json()["error"]["code"]),(403,"STEP_UP_REQUIRED"))
+        self.assertFalse(any(call[0]=="save" for call in repo.calls))
+        token=self.step_up(credentials,action_group="organization_security_or_connector_policy_change",target_id=target)
+        saved=await self.client.patch(path,headers=headers,json={"ttl_days":1,"expected_policy_version":0,"step_up_authorization":token})
+        self.assertEqual(saved.status_code,200)
+        self.assertEqual(saved.json()["data"]["ttl_days"],1)
+        changed=await self.client.patch(path,headers={**headers,"Idempotency-Key":"s24-policy-other-key"},json={"ttl_days":1,"expected_policy_version":0,"step_up_authorization":token})
+        self.assertEqual(changed.status_code,403)
+        self.assertEqual(len([call for call in repo.calls if call[0]=="save"]),1)
+
+    async def test_s24_lifecycle_exact_withdraw_notices_ifmatch_and_body(self):
+        repo=await self.lifecycle_client(); credentials=self.sensitive_session()
+        headers={"Authorization":f"Bearer {credentials.access_token}","Idempotency-Key":"s24-withdraw-http-key"}
+        body={"workspace_id":"workspace-sensitive","notebook_id":"notebook-001","output_version_id":"version-1"}
+        response=await self.client.post("/api/v1/approval-requests/request-1/withdraw",headers=headers,json=body)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json()["data"]["status"],"withdrawn")
+        denied=await self.client.post("/api/v1/approval-requests/foreign/withdraw",headers=headers,json=body)
+        self.assertEqual(denied.status_code,404)
+        extra=await self.client.post("/api/v1/approval-requests/request-1/withdraw",headers=headers,json={**body,"actor_id":"other"})
+        self.assertEqual(extra.status_code,400)
+        path="/api/v1/workspaces/workspace-sensitive/studio/approval-notices"
+        listed=await self.client.get(path+"?notebook_id=notebook-001",headers=headers)
+        self.assertEqual(listed.status_code,200)
+        read=await self.client.patch(path+"/notice-1",headers={**headers,"If-Match":'"studio-approval-notice:notice-1:1"'},json={"notebook_id":"notebook-001","state":"read"})
+        self.assertEqual(read.status_code,200)
+        self.assertEqual(read.json()["data"]["version"],2)
+        bad=await self.client.patch(path+"/notice-1",headers={**headers,"If-Match":'"studio-approval-notice:other:1"'},json={"notebook_id":"notebook-001","state":"read"})
+        self.assertEqual(bad.status_code,400)
+        self.assertEqual(len([call for call in repo.calls if call[0]=="read"]),1)
+
+    async def test_s24_lifecycle_policy_current_identity_target_policy_and_expiry_reject_before_save(self):
+        repo=await self.lifecycle_client(); credentials=self.sensitive_session()
+        path='/api/v1/workspaces/workspace-sensitive/studio/approval-policy'
+        headers={'Authorization':f'Bearer {credentials.access_token}','Idempotency-Key':'s24-policy-bound-key-001'}
+        policy=(await self.client.get(path,headers=headers)).json()['data']
+        other=native_login(self.identity,FakeVerifiedOidcProvider(subject='s24-other-policy-user'))
+        session=native_login(self.identity)
+        group='organization_security_or_connector_policy_change'
+        tokens=[self.step_up(other,action_group=group,target_id=policy['step_up_target_id']),
+            self.step_up(session,action_group=group,target_id=policy['step_up_target_id']),
+            self.step_up(credentials,action_group=group,target_id='other-target'),
+            self.step_up(credentials,action_group=group,target_id=policy['step_up_target_id'],policy_version='other-policy'),
+            self.step_up(credentials,action_group='external_transfer',target_id=policy['step_up_target_id']),
+            'opaque-tampered-token']
+        for token in tokens:
+            with self.subTest(boundary='invalid proof'):
+                response=await self.client.patch(path,headers=headers,json={'ttl_days':1,'expected_policy_version':0,'step_up_authorization':token})
+                self.assertEqual(response.status_code,403)
+                self.assertNotIn(token,response.text)
+        token=self.step_up(credentials,action_group=group,target_id=policy['step_up_target_id'])
+        self.clock.advance(seconds=361)
+        expired=await self.client.patch(path,headers=headers,json={'ttl_days':1,'expected_policy_version':0,'step_up_authorization':token})
+        self.assertEqual(expired.status_code,403)
+        self.assertFalse(any(call[0]=='save' for call in repo.calls))
+
+    async def test_s24_lifecycle_exact_input_and_current_policy_cas_reject_without_widened_permissions(self):
+        repo=await self.lifecycle_client(); credentials=self.sensitive_session()
+        path='/api/v1/workspaces/workspace-sensitive/studio/approval-policy'
+        headers={'Authorization':f'Bearer {credentials.access_token}','Idempotency-Key':'s24-policy-validation-001'}
+        with patch.object(self.identity,'consume_step_up',wraps=self.identity.consume_step_up) as consume:
+            for body in ({'ttl_days':True,'expected_policy_version':0},{'ttl_days':31,'expected_policy_version':0},
+                         {'ttl_days':1,'expected_policy_version':-1},{'ttl_days':1,'expected_policy_version':0,'actor_id':'other'}):
+                response=await self.client.patch(path,headers=headers,json=body)
+                self.assertEqual(response.status_code,400)
+            duplicate=await self.client.patch(path,headers={**headers,'Content-Type':'application/json'},content='{"ttl_days":1,"ttl_days":30,"expected_policy_version":0}')
+            self.assertEqual(duplicate.status_code,400)
+            with patch.object(self.dependencies.authorization_service,'authorize_action',side_effect=StudioError('RESOURCE_UNAVAILABLE',404)):
+                denied=await self.client.patch(path,headers=headers,json={'ttl_days':1,'expected_policy_version':0,'step_up_authorization':'opaque-never-consumed'})
+                self.assertEqual(denied.status_code,404)
+            consume.assert_not_called()
+        policy=(await self.client.get(path,headers=headers)).json()['data']
+        token=self.step_up(credentials,action_group='organization_security_or_connector_policy_change',target_id=policy['step_up_target_id'])
+        stale=await self.client.patch(path,headers=headers,json={'ttl_days':1,'expected_policy_version':1,'step_up_authorization':token})
+        self.assertEqual((stale.status_code,stale.json()['error']['code']),(412,'PRECONDITION_FAILED'))
+
+
 if __name__ == "__main__":
     unittest.main()

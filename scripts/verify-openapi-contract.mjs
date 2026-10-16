@@ -71,6 +71,10 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/studio-outputs/{id}/versions/{version_id}/exports/{format_name}",
   "/api/v1/reviews",
   "/api/v1/approval-requests",
+  "/api/v1/workspaces/{id}/studio/approval-policy",
+  "/api/v1/approval-requests/{id}/withdraw",
+  "/api/v1/workspaces/{id}/studio/approval-notices",
+  "/api/v1/workspaces/{id}/studio/approval-notices/{notification_id}",
   "/api/v1/approvals",
   "/api/v1/deliveries",
   "/api/v1/knowledge-registrations",
@@ -124,6 +128,7 @@ const COMMON_ERROR_STATUSES = ["400", "401", "403", "404", "409", "412", "500"];
 const BODY_VERSIONED_MUTATIONS = new Set([
   "DELETE /api/v1/admin/provider-connections/{connection_id}",
   "PATCH /api/v1/admin/provider-models/{connection_id}/{model_id}/capabilities",
+  "PATCH /api/v1/workspaces/{id}/studio/approval-policy",
 ]);
 const REQUIRED_ERROR_CODES = [
   "COST_LIMIT_EXCEEDED",
@@ -633,7 +638,51 @@ function validateLicenseContract(document) {
   }
 }
 
+function validateStudioApprovalLifecycle(document) {
+  for(const code of ['APPROVAL_REQUEST_EXPIRED','APPROVAL_REQUEST_PENDING','APPROVAL_REQUEST_REQUIRED','PRECONDITION_FAILED']) {
+    if(!document.components?.schemas?.SafeErrorCode?.enum?.includes(code))fail(`Studio approval lifecycle missing safe code ${code}`);
+  }
+  const ref=name=>({$ref:`#/components/schemas/${name}`}), id=ref('OpaqueId');
+  const time={type:'string',format:'date-time'}, nullableTime={type:['string','null'],format:'date-time'};
+  const exact=properties=>({type:'object',additionalProperties:false,required:Object.keys(properties),properties});
+  const expected={
+    StudioApprovalPolicy:exact({ttl_days:{type:'integer',minimum:1,maximum:30},policy_version:{type:'integer',minimum:0},can_manage:{type:'boolean'},step_up_target_id:{type:'string',pattern:'^studio-approval-policy-[a-f0-9]{64}$'}}),
+    StudioApprovalPolicyRequest:exact({ttl_days:{type:'integer',minimum:1,maximum:30},expected_policy_version:{type:'integer',minimum:0},step_up_authorization:{type:'string',minLength:1,maxLength:4096}}),
+    StudioApprovalWithdrawRequest:exact({workspace_id:id,notebook_id:id,output_version_id:id}),
+    StudioApprovalWithdrawReceipt:exact({record_id:id,action:{type:'string',enum:['withdraw']},status:{type:'string',enum:['withdrawn']},output_version_id:id}),
+    StudioApprovalNotice:exact({notification_id:id,approval_request_id:id,output_version_id:id,event_kind:{type:'string',enum:['due_24h','expired','withdrawn']},scheduled_at:time,created_at:time,read_at:nullableTime,version:{type:'integer',minimum:1}}),
+    StudioApprovalNotices:exact({items:{type:'array',maxItems:100,items:ref('StudioApprovalNotice')},unread_count:{type:'integer',minimum:0,maximum:100}}),
+    StudioApprovalNoticeReadRequest:exact({notebook_id:id,state:{type:'string',enum:['read']}}),
+    StudioApprovalNoticeReadReceipt:exact({notification_id:id,version:{type:'integer',minimum:2},read_at:time}),
+  };
+  const equal=(actual,want,label)=>{if(canonicalizeDocument(actual)!==canonicalizeDocument(want))fail(`Studio approval lifecycle ${label} mismatch`);};
+  for(const [name,schema] of Object.entries(expected))equal(document.components?.schemas?.[name],schema,name);
+  const param=name=>({$ref:`#/components/parameters/${name}`});
+  const rows=[
+    ['/api/v1/workspaces/{id}/studio/approval-policy','get','StudioApprovalPolicy',null,[param('ResourceId')]],
+    ['/api/v1/workspaces/{id}/studio/approval-policy','patch','StudioApprovalPolicy','StudioApprovalPolicyRequest',[param('ResourceId'),param('IdempotencyKey')]],
+    ['/api/v1/approval-requests/{id}/withdraw','post','StudioApprovalWithdrawReceipt','StudioApprovalWithdrawRequest',[param('ResourceId'),param('IdempotencyKey')]],
+    ['/api/v1/workspaces/{id}/studio/approval-notices','get','StudioApprovalNotices',null,[param('ResourceId'),{name:'notebook_id',in:'query',required:true,schema:id}]],
+    ['/api/v1/workspaces/{id}/studio/approval-notices/{notification_id}','patch','StudioApprovalNoticeReadReceipt','StudioApprovalNoticeReadRequest',[param('ResourceId'),{name:'notification_id',in:'path',required:true,schema:id},param('IfMatch'),param('IdempotencyKey')]],
+  ];
+  for(const p of new Set(rows.map(row=>row[0])))equal(Object.keys(document.paths[p]??{}),rows.filter(row=>row[0]===p).map(row=>row[1]),p+' methods');
+  for(const [p,method,result,body,parameters] of rows){
+    const operation=document.paths[p][method],mutating=method!=='get';
+    equal(operation.parameters,parameters,p+' parameters');
+    equal(operation.requestBody,body?{required:true,content:{'application/json':{schema:ref(body)}}}:undefined,p+' body');
+    const name=result+(mutating?'MutationEnvelope':'Envelope');
+    equal(operation.responses?.['200']?.content?.['application/json']?.schema,ref(name),p+' response');
+    equal(document.components.schemas[name],exact({data:ref(result),meta:exact({trace_id:{type:'string'},workspace_id:id,...(mutating?{replayed:{type:'boolean'}}:{})})}),name);
+  }
+  const version=document.components.schemas.StudioVersionProjection;
+  equal(version.required,['output_version_id','content_version','previous_version_id','status','content','revision_type','change_reason','settings_snapshot_id','citations','review_request_id','approval_request_id','approval_id','delivery_id','knowledge_registration_id','output_format','approval_request_state','approval_expires_at'],'Version fields');
+  equal(Object.keys(version.properties),version.required,'Version properties');
+  equal(version.properties.approval_request_state,{type:['string','null'],enum:['pending','approved','rejected','expired','withdrawn',null]},'Version request state');
+  equal(version.properties.approval_expires_at,nullableTime,'Version deadline');
+}
+
 export function validateOpenApiDocument(document) {
+  validateStudioApprovalLifecycle(document);
   if (!isObject(document)) fail("document must be an object");
   if (!/^3\.1\.\d+$/.test(document.openapi ?? "")) fail("OpenAPI version must be 3.1.x");
   if (document.info?.version !== "1.0.0") fail("info.version must be 1.0.0");
@@ -813,7 +862,8 @@ export function validateOpenApiDocument(document) {
       if ((method === "patch" || method === "delete") && !refs.has("#/components/parameters/IfMatch")) {
         const mutationKey = `${method.toUpperCase()} ${apiPath}`;
         const schema = requestSchema(document, operation);
-        if (!BODY_VERSIONED_MUTATIONS.has(mutationKey) || !(schema?.required ?? []).includes("expected_version")) {
+        const expectedVersionField = mutationKey === "PATCH /api/v1/workspaces/{id}/studio/approval-policy" ? "expected_policy_version" : "expected_version";
+        if (!BODY_VERSIONED_MUTATIONS.has(mutationKey) || !(schema?.required ?? []).includes(expectedVersionField)) {
           fail(`${operationId} missing If-Match or required expected_version`);
         }
       }
