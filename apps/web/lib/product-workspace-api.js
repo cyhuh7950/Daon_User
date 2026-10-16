@@ -34,7 +34,7 @@ function validLaw(value, article=true) {
 const lawPair = (source,version) => /^law-source-[0-9a-f]{32}$/u.test(source)
   && version===`law-version-${source.slice('law-source-'.length)}`;
 const lawStamp = value => typeof value === 'string' && value.length<=64 && /^\d{4}-\d{2}-\d{2}T/u.test(value) && Number.isFinite(Date.parse(value));
-function lawSha256(bytes) {
+export function lawSha256(bytes) {
   // SHA-256 on the already bounded UTF-8 bytes, including HTTP development
   // origins where SubtleCrypto is unavailable. No server hash is trusted alone.
   const constants=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,

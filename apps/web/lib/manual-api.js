@@ -1,3 +1,5 @@
+import { lawSha256 as sha256 } from "./product-workspace-api.js";
+
 const MANIFEST_PATH = "/manual/manifest.json";
 const APPROVED_RELEASE_VERSION = "1.0.0";
 const APPROVED_DOCUMENT_IDS = new Set([
@@ -66,11 +68,6 @@ function projectManifest(value) {
   });
   if (seen.size !== APPROVED_DOCUMENT_IDS.size) throw new Error("MANUAL_MANIFEST_INVALID");
   return Object.freeze({ ...value, documents: Object.freeze(documents) });
-}
-
-async function sha256(bytes) {
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 function exactContentType(response, expected) {
