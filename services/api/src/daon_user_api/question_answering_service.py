@@ -265,6 +265,22 @@ class PreparedQuestionAuthorization:
 class _QaMediaBridgeDiagnosticAdapter(OpenAICompatibleTextGenerationAdapter):
     """Transient, exact-QA response structure only; never retain response values."""
 
+    _INSUFFICIENT_ANSWER = "선택한 원문 근거에 질문에 답할 정보가 없습니다."
+    _RESULT_SCHEMA = {
+        "type": "object", "properties": {"result": {"anyOf": [
+            {"type": "object", "properties": {
+                "answer": {"type": "string", "enum": [_INSUFFICIENT_ANSWER]},
+                "cited_chunk_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 0},
+                "insufficient": {"type": "boolean", "enum": [True]},
+            }, "required": ["answer", "cited_chunk_ids", "insufficient"], "additionalProperties": False},
+            {"type": "object", "properties": {
+                "answer": {"type": "string"},
+                "cited_chunk_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "insufficient": {"type": "boolean", "enum": [False]},
+            }, "required": ["answer", "cited_chunk_ids", "insufficient"], "additionalProperties": False},
+        ]}}, "required": ["result"], "additionalProperties": False,
+    }
+
     def __init__(
         self, *, transport: TextGenerationTransport, api_key: str | None,
         timeout_seconds: float,
@@ -356,12 +372,28 @@ class _QaMediaBridgeDiagnosticAdapter(OpenAICompatibleTextGenerationAdapter):
                 json_ok = True
             except (ValueError, RecursionError):
                 parsed = None
+        envelope_valid = True
+        if self._diagnostic_evidence is not None:
+            inner = parsed.get("result") if isinstance(parsed, dict) else None
+            envelope_valid = bool(
+                isinstance(parsed, dict) and set(parsed) == {"result"}
+                and isinstance(inner, dict) and set(inner) == {"answer", "cited_chunk_ids", "insufficient"}
+                and isinstance(inner["answer"], str)
+                and isinstance(inner["cited_chunk_ids"], list)
+                and all(isinstance(item, str) for item in inner["cited_chunk_ids"])
+                and type(inner["insufficient"]) is bool
+            )
+            parsed = inner
         usage = response.get("usage") if isinstance(response, dict) else None
         usage = usage if isinstance(usage, dict) else {}
         parsed_object = parsed if isinstance(parsed, dict) else {}
         answer = parsed_object.get("answer")
         cited = parsed_object.get("cited_chunk_ids")
         insufficient = parsed_object.get("insufficient")
+        insufficient_answer_invalid = bool(
+            self._diagnostic_evidence is not None and envelope_valid
+            and insufficient is True and cited == [] and answer != self._INSUFFICIENT_ANSWER
+        )
         # Every interpolated value is a fixed enum, bool, or bounded count.
         # No trace/input/model/credential/URL, arbitrary key, or exception text.
         logging.getLogger(__name__).warning(
@@ -375,10 +407,22 @@ class _QaMediaBridgeDiagnosticAdapter(OpenAICompatibleTextGenerationAdapter):
             self._shape(message), self._shape(content), len(content) if isinstance(content, str) else -1,
             json_ok, self._shape(parsed), self._shape(answer), len(answer) if isinstance(answer, str) else -1,
             len(cited) if isinstance(cited, list) else -1, self._shape(insufficient),
-            insufficient if type(insufficient) is bool else "unknown", self._grounding_failure(parsed),
+            insufficient if type(insufficient) is bool else "unknown",
+            "response_invalid" if not envelope_valid else "insufficient_answer_invalid"
+            if insufficient_answer_invalid else self._grounding_failure(parsed),
             self._count(usage.get("prompt_tokens")), self._count(usage.get("completion_tokens")),
             self._count(usage.get("total_tokens")),
         )
+        if self._diagnostic_evidence is not None:
+            if not envelope_valid or insufficient_answer_invalid:
+                raise ValueError("TEXT_GENERATION_RESPONSE_INVALID")
+            # Unwrap only the transport envelope. Do not repair answers/citations
+            # or mutate the original response. Inherited generate() still applies
+            # all grounding checks against the original request evidence.
+            return {**response, "choices": [
+                {**first, "message": {**message, "content": json.dumps(parsed)}},
+                *choices[1:],
+            ]}
         return response
 
 
@@ -447,6 +491,11 @@ class QuestionAnsweringService:
         ):
             payload = {**prepared.provider_payload, "max_tokens": 512}
             payload.pop("max_completion_tokens", None)
+            if isinstance(prepared.request, GroundedQuestionRequest):
+                response_format = payload["response_format"]
+                payload["response_format"] = {**response_format, "json_schema": {
+                    **response_format["json_schema"], "schema": _QaMediaBridgeDiagnosticAdapter._RESULT_SCHEMA,
+                }}
             schema = payload["response_format"]["json_schema"]["schema"]
             instruction = (
                 "\n\nReturn ONLY JSON object; no markdown, prose, or code fences. "
@@ -455,6 +504,10 @@ class QuestionAnsweringService:
             )
             if isinstance(prepared.request, GroundedQuestionRequest):
                 instruction += (
+                    "\nThe root result envelope takes precedence over all earlier flat output-shape instructions; "
+                    "put exactly answer, cited_chunk_ids, and insufficient inside result. "
+                    "Preserve the supplied evidence and question; decide sufficiency from that evidence. "
+                    "When you choose insufficient=true, use the exact insufficient answer in the schema and no citations. "
                     "\nCite only supplied chunk_id values. If the supplied evidence cannot answer the question, "
                     "return insufficient=true and cited_chunk_ids=[]; explain the evidence limitation "
                     "briefly without inventing facts; do not repeat question or Source numbers or identifiers "

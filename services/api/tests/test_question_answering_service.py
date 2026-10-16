@@ -23,6 +23,104 @@ from daon_user_api.data_canon import canonical_json_bytes
 
 
 class S18MediaCapDiagnosticTests(unittest.TestCase):
+    def test_s18_media_result_insufficient_notice_enum_is_checked_without_repair(self):
+        for answer in ("다른 부족 안내입니다.", " 선택한 원문 근거에 질문에 답할 정보가 없습니다. "):
+            with self.subTest(answer_length=len(answer)):
+                response = {"choices": [{"message": {"content": json.dumps({"result": {
+                    "answer": answer, "cited_chunk_ids": [], "insufficient": True,
+                }})}}]}
+                original = canonical_json_bytes(response)
+                service, context, transport, repo, _, _, _ = self.setup_flow(response=response)
+                with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as logs:
+                    with self.assertRaises(QuestionAnsweringError) as error:
+                        service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="QUESTION_CANARY", run_id="run-s18-enum-invalid")
+                self.assertEqual(error.exception.code, "TEXT_GENERATION_RESPONSE_INVALID")
+                self.assertIn("failure_reason=insufficient_answer_invalid", " ".join(logs.output))
+                self.assertNotIn(answer, " ".join(logs.output))
+                self.assertEqual(canonical_json_bytes(response), original)
+                self.assertIsNone(repo.persisted)
+                self.assertEqual(len(transport.calls), 1)
+
+    def test_s18_media_result_schema_has_exclusive_nested_sufficiency_branches(self):
+        service, context, transport, _, _, selection, evidence = self.setup_flow()
+        prepared = service._adapter_registry.prepare(selection, evidence, "질문", context.trace_id, transport)
+        original = canonical_json_bytes(prepared.provider_payload)
+        actual = service._prepare_qa_structured_payload(context, prepared).provider_payload
+        self.assertEqual(actual["response_format"]["json_schema"]["schema"], {
+            "type": "object", "properties": {"result": {"anyOf": [
+                {"type": "object", "properties": {
+                    "answer": {"type": "string", "enum": ["선택한 원문 근거에 질문에 답할 정보가 없습니다."]},
+                    "cited_chunk_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 0},
+                    "insufficient": {"type": "boolean", "enum": [True]},
+                }, "required": ["answer", "cited_chunk_ids", "insufficient"], "additionalProperties": False},
+                {"type": "object", "properties": {
+                    "answer": {"type": "string"},
+                    "cited_chunk_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "insufficient": {"type": "boolean", "enum": [False]},
+                }, "required": ["answer", "cited_chunk_ids", "insufficient"], "additionalProperties": False},
+            ]}}, "required": ["result"], "additionalProperties": False,
+        })
+        self.assertEqual(actual["messages"][1:], prepared.provider_payload["messages"][1:])
+        self.assertTrue(actual["messages"][0]["content"].startswith(prepared.provider_payload["messages"][0]["content"]))
+        self.assertIn("root result envelope takes precedence", actual["messages"][0]["content"])
+        self.assertEqual(canonical_json_bytes(prepared.provider_payload), original)
+
+    def test_s18_media_result_envelope_preserves_values_and_rejects_contradiction(self):
+        cases = (
+            ({"answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, None),
+            ({"answer": "선택한 원문 근거에 질문에 답할 정보가 없습니다.", "cited_chunk_ids": [], "insufficient": True}, None),
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["chunk-page-2"], "insufficient": True}, "TEXT_GENERATION_GROUNDING_INVALID"),
+        )
+        for inner, error_code in cases:
+            with self.subTest(insufficient=inner["insufficient"], contradiction=bool(error_code)):
+                response = {"choices": [{"message": {"content": json.dumps({"result": inner})}}]}
+                original = canonical_json_bytes(response)
+                service, context, transport, repo, egress, _, _ = self.setup_flow(response=response)
+                args = dict(source_id="source-cp3", source_version_id="source-version-cp3", question="QUESTION_CANARY")
+                authorization = service.prepare_authorization(context, **args)
+                with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as logs:
+                    if error_code:
+                        with self.assertRaises(QuestionAnsweringError) as error:
+                            service.ask(context, run_id="run-s18-result", **args)
+                        self.assertEqual(error.exception.code, error_code)
+                        self.assertIsNone(repo.persisted)
+                        self.assertIn("failure_reason=insufficient_with_citations", " ".join(logs.output))
+                    else:
+                        result = service.ask(context, run_id="run-s18-result", **args)
+                        self.assertEqual(result.answer, inner["answer"])
+                        self.assertIs(result.insufficient, inner["insufficient"])
+                        self.assertEqual(len(result.citations), len(inner["cited_chunk_ids"]))
+                        self.assertIsNotNone(repo.persisted)
+                        self.assertIn("failure_reason=none", " ".join(logs.output))
+                self.assertEqual(canonical_json_bytes(response), original, "원응답 객체는 변경하지 않는다")
+                self.assertEqual(authorization.provider_payload, egress.wire)
+                self.assertEqual(authorization.provider_payload, canonical_json_bytes(transport.calls[0]["payload"]))
+                self.assertEqual(len(transport.calls), 1)
+                for canary in ("CANARY", "ORANGE-COMPASS-42", "chunk-page-2"):
+                    self.assertNotIn(canary, " ".join(logs.output))
+
+    def test_s18_media_result_envelope_rejects_flat_extra_missing_and_coerced_types(self):
+        valid = {"answer": "답변", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}
+        cases = [valid, {"result": valid, "extra": "SECRET_CANARY"}, {"result": {**valid, "extra": "SECRET_CANARY"}},
+                 {"result": []}, {"result": None}, [], {"result": {"answer": "답변", "insufficient": False}}]
+        cases += [{"result": {**valid, key: value}} for key, value in (
+            ("answer", 1), ("answer", []), ("answer", None),
+            ("insufficient", 0), ("insufficient", 1), ("insufficient", "false"),
+            ("cited_chunk_ids", "chunk-page-2"), ("cited_chunk_ids", [1]), ("cited_chunk_ids", [True]),
+        )]
+        for index, body in enumerate(cases):
+            with self.subTest(case=index):
+                service, context, transport, repo, _, _, _ = self.setup_flow(response={
+                    "choices": [{"message": {"content": json.dumps(body)}}],
+                })
+                with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as logs:
+                    with self.assertRaises(QuestionAnsweringError) as error:
+                        service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="QUESTION_CANARY", run_id="run-s18-result-invalid")
+                self.assertEqual(error.exception.code, "TEXT_GENERATION_RESPONSE_INVALID")
+                self.assertIsNone(repo.persisted)
+                self.assertEqual(len(transport.calls), 1)
+                self.assertNotIn("CANARY", " ".join(logs.output))
+
     def test_s18_media_non_qa_legacy_adapter_without_selection_is_unchanged(self):
         from test_question_egress_binding import build
         for target in ("", self.context.workspace_id):
@@ -65,9 +163,9 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
             calls = []
             def post_json(self, **kwargs):
                 self.calls.append(kwargs)
-                return response if response is not None else {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+                return response if response is not None else {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"result": {
                     "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
-                })}}], "usage": {"prompt_tokens": 41, "completion_tokens": 29, "total_tokens": 70}}
+                }})}}], "usage": {"prompt_tokens": 41, "completion_tokens": 29, "total_tokens": 70}}
 
         class Egress(FakeEgress):
             def prepare_payload(self, current, wire):
@@ -116,8 +214,11 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         self.assertEqual(result.provider_payload.get("max_tokens"), 512)
         self.assertNotIn("max_completion_tokens", result.provider_payload)
         before = json.loads(original)
-        after = {k: v for k, v in result.provider_payload.items() if k not in {"max_tokens", "messages"}}
-        self.assertEqual(after, {k: v for k, v in before.items() if k != "messages"})
+        after = {k: v for k, v in result.provider_payload.items() if k not in {"max_tokens", "messages", "response_format"}}
+        self.assertEqual(after, {k: v for k, v in before.items() if k not in {"messages", "response_format"}})
+        self.assertEqual(result.provider_payload["response_format"]["type"], before["response_format"]["type"])
+        self.assertEqual(result.provider_payload["response_format"]["json_schema"]["name"], before["response_format"]["json_schema"]["name"])
+        self.assertIs(result.provider_payload["response_format"]["json_schema"]["strict"], True)
         self.assertTrue(result.provider_payload["messages"][0]["content"].startswith(before["messages"][0]["content"]))
         self.assertEqual(result.provider_payload["messages"][1:], before["messages"][1:])
         self.assertEqual(changed.provider_payload["max_tokens"], 9000, "원래 준비 객체는 변경하지 않는다")
@@ -138,19 +239,22 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
                 self.assertIn("no markdown, prose, or code fences", appended)
                 schema_text = appended.split("JSON Schema:\n", 1)[1].split("\n", 1)[0]
                 schema = json.loads(schema_text)
-                self.assertEqual(schema, prepared.provider_payload["response_format"]["json_schema"]["schema"])
-                self.assertEqual(set(schema["properties"]), {"answer", "cited_chunk_ids", "insufficient"} if grounded else {"answer"})
-                self.assertEqual(schema["properties"]["answer"], {"type": "string"})
+                self.assertEqual(schema, result.provider_payload["response_format"]["json_schema"]["schema"])
+                self.assertEqual(set(schema["properties"]), {"result"} if grounded else {"answer"})
                 if grounded:
                     self.assertIn("supplied chunk_id", appended)
                     self.assertIn("insufficient=true", appended)
                     self.assertIn("cited_chunk_ids=[]", appended)
                     self.assertIn("do not repeat question or Source numbers or identifiers", appended)
-                    self.assertEqual(schema["properties"]["insufficient"], {"type": "boolean"})
+                    self.assertIn("root result envelope takes precedence", appended)
+                    sufficient = schema["properties"]["result"]["anyOf"][1]
+                    self.assertEqual(sufficient["properties"]["answer"], {"type": "string"})
+                    self.assertEqual(sufficient["properties"]["insufficient"], {"type": "boolean", "enum": [False]})
                 else:
                     self.assertNotIn("Only when you choose insufficient=true", appended)
+                    self.assertEqual(schema["properties"]["answer"], {"type": "string"})
+                    self.assertEqual(result.provider_payload["response_format"], prepared.provider_payload["response_format"])
                 self.assertEqual(result.provider_payload["messages"][1:], prepared.provider_payload["messages"][1:])
-                self.assertEqual(result.provider_payload["response_format"], prepared.provider_payload["response_format"])
                 self.assertEqual(canonical_json_bytes(prepared.provider_payload), original)
 
     def test_s18_media_diagnostic_invalid_shapes_and_unknown_reasons_never_log_values(self):
@@ -177,7 +281,9 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
     def test_s18_media_other_identity_selection_requests_are_unchanged(self):
         import logging
         from unittest.mock import patch
-        service, context, _, _, _, selection, evidence = self.setup_flow()
+        service, context, _, _, _, selection, evidence = self.setup_flow(response={"choices": [{"message": {"content": json.dumps({
+            "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
+        })}}]})
         prepared = service._adapter_registry.prepare(selection, evidence, "질문", context.trace_id, service._transport)
         negatives = [
             (replace(context, tenant_id="tenant-other"), selection),
@@ -223,9 +329,9 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
                 self.assertEqual(transport.calls[0]["payload"]["max_tokens"], 512)
 
     def test_s18_media_valid_json_with_invented_citation_still_fails_grounding(self):
-        service, context, _, repository, _, _, _ = self.setup_flow(response={"choices": [{"message": {"content": json.dumps({
+        service, context, _, repository, _, _, _ = self.setup_flow(response={"choices": [{"message": {"content": json.dumps({"result": {
             "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["invented-chunk"], "insufficient": False,
-        })}}]})
+        }})}}]})
         with self.assertRaises(QuestionAnsweringError) as error:
             service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="질문", run_id="run-s18-grounding")
         self.assertEqual(error.exception.code, "TEXT_GENERATION_GROUNDING_INVALID")
@@ -233,13 +339,13 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
 
     def test_s18_media_valid_insufficient_is_not_rewritten_and_diagnostic_counts_are_typed(self):
         service, context, transport, _, _, _, _ = self.setup_flow(response={"choices": [{
-            "finish_reason": "length", "message": {"content": json.dumps({
-                "answer": "선택한 근거에 정보가 없습니다.", "cited_chunk_ids": [], "insufficient": True,
-            })}}], "usage": {"prompt_tokens": True, "completion_tokens": "USAGE_SECRET_CANARY", "total_tokens": 900000000000}})
+            "finish_reason": "length", "message": {"content": json.dumps({"result": {
+                "answer": "선택한 원문 근거에 질문에 답할 정보가 없습니다.", "cited_chunk_ids": [], "insufficient": True,
+            }})}}], "usage": {"prompt_tokens": True, "completion_tokens": "USAGE_SECRET_CANARY", "total_tokens": 900000000000}})
         with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as captured:
             result = service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="질문", run_id="run-s18-insufficient")
         self.assertTrue(result.insufficient)
-        self.assertEqual(result.answer, "선택한 근거에 정보가 없습니다.")
+        self.assertEqual(result.answer, "선택한 원문 근거에 질문에 답할 정보가 없습니다.")
         self.assertEqual(result.citations, ())
         logs = " ".join(captured.output)
         self.assertIn("finish_reason=length", logs)
@@ -250,10 +356,10 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
 
     def test_s18_media_insufficient_rule_is_conditional_and_frozen_before_authorization(self):
         service, context, transport, _, egress, selection, evidence = self.setup_flow(response={
-            "choices": [{"message": {"content": json.dumps({
+            "choices": [{"message": {"content": json.dumps({"result": {
                 "answer": "선택한 원문 근거에 질문에 답할 정보가 없습니다.",
                 "cited_chunk_ids": [], "insufficient": True,
-            })}}],
+            }})}}],
         })
         args = dict(source_id="source-cp3", source_version_id="source-version-cp3", question="자료 밖 QUESTION_CANARY 2035")
         prepared = service._adapter_registry.prepare(selection, evidence, args["question"], context.trace_id, transport)
@@ -271,7 +377,8 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         self.assertIn("takes precedence over the earlier Source scope explanation", system)
         self.assertIn("선택한 원문 근거에 질문에 답할 정보가 없습니다.", system)
         self.assertIn("If evidence supports an answer, answer normally", system)
-        self.assertEqual(payload["response_format"], original["response_format"])
+        self.assertEqual(payload["response_format"], before_egress["response_format"])
+        self.assertEqual(set(payload["response_format"]["json_schema"]["schema"]["properties"]), {"result"})
         self.assertEqual(payload["messages"][1]["role"], original["messages"][1]["role"])
         self.assertEqual(json.loads(payload["messages"][1]["content"]), json.loads(original["messages"][1]["content"]))
         self.assertEqual(transport.calls, [])
@@ -286,13 +393,13 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
     def test_s18_media_normal_and_insufficient_diagnostics_preserve_model_answer_and_replay(self):
         for answer, cited, insufficient in (
             ("ORANGE-COMPASS-42", ["chunk-page-2"], False),
-            ("선택한 근거에 관련 정보가 없습니다.", [], True),
+            ("선택한 원문 근거에 질문에 답할 정보가 없습니다.", [], True),
         ):
             with self.subTest(insufficient=insufficient):
                 service, context, transport, repo, _, _, _ = self.setup_flow(response={
-                    "choices": [{"message": {"content": json.dumps({
+                    "choices": [{"message": {"content": json.dumps({"result": {
                         "answer": answer, "cited_chunk_ids": cited, "insufficient": insufficient,
-                    })}}],
+                    }})}}],
                 })
                 with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as logs:
                     result = service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="QUESTION_CANARY", run_id="run-s18-diagnostic-valid")
@@ -317,13 +424,16 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
             ({"answer": "BODY_CANARY", "cited_chunk_ids": [], "insufficient": False}, "sufficient_without_citations", "TEXT_GENERATION_GROUNDING_INVALID"),
             ({"answer": "", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, "answer_empty", "TEXT_GENERATION_GROUNDING_INVALID"),
             ({"answer": "x" * 8001, "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, "answer_too_long", "TEXT_GENERATION_GROUNDING_INVALID"),
-            ({"answer": "BODY_CANARY 2035", "cited_chunk_ids": [], "insufficient": True}, "unsupported_anchor", "TEXT_GENERATION_GROUNDING_INVALID"),
+            # New exact-QA enum rejects this value before the unchanged base
+            # validator; the sufficient unsupported-anchor case above still
+            # exercises the original grounding rejection.
+            ({"answer": "BODY_CANARY 2035", "cited_chunk_ids": [], "insufficient": True}, "insufficient_answer_invalid", "TEXT_GENERATION_RESPONSE_INVALID"),
             ({"answer": "BODY_CANARY", "insufficient": True}, "response_invalid", "TEXT_GENERATION_RESPONSE_INVALID"),
         )
         for parsed, reason, public_error in cases:
             with self.subTest(reason=reason, insufficient=parsed["insufficient"]):
                 service, context, transport, repo, _, _, _ = self.setup_flow(response={
-                    "choices": [{"finish_reason": "REASON_CANARY", "message": {"content": json.dumps(parsed)}}],
+                    "choices": [{"finish_reason": "REASON_CANARY", "message": {"content": json.dumps({"result": parsed})}}],
                 })
                 with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as logs:
                     with self.assertRaises(QuestionAnsweringError) as error:
@@ -362,9 +472,9 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         args = dict(source_id="source-cp3", source_version_id="source-version-cp3", question="선택한 시험 문서를 설명해 주세요.")
         authorization = service.prepare_authorization(context, **args)
         captured = []
-        response_bytes = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+        response_bytes = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"result": {
             "answer": "ORANGE-COMPASS-42", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False,
-        })}}]}).encode()
+        }})}}]}).encode()
 
         class Response:
             def __enter__(self): return self
