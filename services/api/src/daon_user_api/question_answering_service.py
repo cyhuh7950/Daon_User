@@ -265,6 +265,45 @@ class PreparedQuestionAuthorization:
 class _QaMediaBridgeDiagnosticAdapter(OpenAICompatibleTextGenerationAdapter):
     """Transient, exact-QA response structure only; never retain response values."""
 
+    def __init__(
+        self, *, transport: TextGenerationTransport, api_key: str | None,
+        timeout_seconds: float,
+        evidence: tuple[IndexedEvidenceChunk, ...] | None,
+    ) -> None:
+        super().__init__(transport=transport, api_key=api_key, timeout_seconds=timeout_seconds)
+        self._diagnostic_evidence = evidence
+
+    def _grounding_failure(self, parsed: object) -> str:
+        # Diagnostic only: the inherited generate() still executes its original
+        # parser and validator. Use its actual request evidence, not masked wire text.
+        if self._diagnostic_evidence is None:
+            return "not_grounded"
+        try:
+            value = cast(dict[str, object], parsed)
+            answer = str(value["answer"]).strip()
+            cited = tuple(str(item) for item in cast(list[object], value["cited_chunk_ids"]))
+            insufficient = bool(value["insufficient"])
+        except (KeyError, IndexError, TypeError):
+            return "response_invalid"
+        if not answer:
+            return "answer_empty"
+        if len(answer) > 8_000:
+            return "answer_too_long"
+        if len(cited) != len(set(cited)):
+            return "duplicate_citation"
+        if not set(cited).issubset({item.chunk_id for item in self._diagnostic_evidence}):
+            return "unknown_citation"
+        if insufficient and cited:
+            return "insufficient_with_citations"
+        if not insufficient and not cited:
+            return "sufficient_without_citations"
+        cited_text = "\n".join(
+            item.text for item in self._diagnostic_evidence if item.chunk_id in set(cited)
+        )
+        if not _evidence_anchors(answer).issubset(_evidence_anchors(cited_text)):
+            return "unsupported_anchor"
+        return "none"
+
     @staticmethod
     def _shape(value: object) -> str:
         if value is None:
@@ -322,18 +361,21 @@ class _QaMediaBridgeDiagnosticAdapter(OpenAICompatibleTextGenerationAdapter):
         parsed_object = parsed if isinstance(parsed, dict) else {}
         answer = parsed_object.get("answer")
         cited = parsed_object.get("cited_chunk_ids")
+        insufficient = parsed_object.get("insufficient")
         # Every interpolated value is a fixed enum, bool, or bounded count.
         # No trace/input/model/credential/URL, arbitrary key, or exception text.
         logging.getLogger(__name__).warning(
             "s18_media_bridge_structure cap=%d request_bytes=%d response_type=%s choices_type=%s choices_count=%d "
             "finish_reason=%s message_type=%s content_type=%s content_chars=%d json_ok=%s json_type=%s "
             "answer_type=%s answer_chars=%d cited_count=%d insufficient_type=%s "
+            "insufficient_value=%s failure_reason=%s "
             "prompt_tokens=%d completion_tokens=%d total_tokens=%d",
             self._count(payload.get("max_tokens")), request_bytes, self._shape(response), self._shape(choices),
             len(choices) if isinstance(choices, list) else -1, finish,
             self._shape(message), self._shape(content), len(content) if isinstance(content, str) else -1,
             json_ok, self._shape(parsed), self._shape(answer), len(answer) if isinstance(answer, str) else -1,
-            len(cited) if isinstance(cited, list) else -1, self._shape(parsed_object.get("insufficient")),
+            len(cited) if isinstance(cited, list) else -1, self._shape(insufficient),
+            insufficient if type(insufficient) is bool else "unknown", self._grounding_failure(parsed),
             self._count(usage.get("prompt_tokens")), self._count(usage.get("completion_tokens")),
             self._count(usage.get("total_tokens")),
         )
@@ -417,6 +459,11 @@ class QuestionAnsweringService:
                     "return insufficient=true and cited_chunk_ids=[]; explain the evidence limitation "
                     "briefly without inventing facts; do not repeat question or Source numbers or identifiers "
                     "in that insufficient answer. Decide sufficiency from the supplied evidence."
+                    " Only when you choose insufficient=true, this rule takes precedence over the earlier Source scope explanation: "
+                    "return cited_chunk_ids=[] and a brief information-absence notice only, "
+                    "without restating Source scope, question details, numbers or identifiers. "
+                    "For example: 선택한 원문 근거에 질문에 답할 정보가 없습니다. "
+                    "If evidence supports an answer, answer normally and cite only supplied chunk_id values."
                 )
             payload["messages"] = [
                 {**message, "content": message["content"] + instruction}
@@ -426,6 +473,7 @@ class QuestionAnsweringService:
             adapter = _QaMediaBridgeDiagnosticAdapter(
                 transport=prepared.adapter._transport, api_key=prepared.adapter._api_key,
                 timeout_seconds=prepared.adapter._timeout_seconds,
+                evidence=prepared.request.evidence if isinstance(prepared.request, GroundedQuestionRequest) else None,
             )
             return replace(prepared, provider_payload=payload, adapter=adapter)
         if (

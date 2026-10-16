@@ -147,6 +147,8 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
                     self.assertIn("cited_chunk_ids=[]", appended)
                     self.assertIn("do not repeat question or Source numbers or identifiers", appended)
                     self.assertEqual(schema["properties"]["insufficient"], {"type": "boolean"})
+                else:
+                    self.assertNotIn("Only when you choose insufficient=true", appended)
                 self.assertEqual(result.provider_payload["messages"][1:], prepared.provider_payload["messages"][1:])
                 self.assertEqual(result.provider_payload["response_format"], prepared.provider_payload["response_format"])
                 self.assertEqual(canonical_json_bytes(prepared.provider_payload), original)
@@ -245,6 +247,96 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         self.assertIn("prompt_tokens=-1 completion_tokens=-1 total_tokens=-1", logs)
         self.assertNotIn("USAGE_SECRET_CANARY", logs)
         self.assertEqual(len(transport.calls), 1)
+
+    def test_s18_media_insufficient_rule_is_conditional_and_frozen_before_authorization(self):
+        service, context, transport, _, egress, selection, evidence = self.setup_flow(response={
+            "choices": [{"message": {"content": json.dumps({
+                "answer": "선택한 원문 근거에 질문에 답할 정보가 없습니다.",
+                "cited_chunk_ids": [], "insufficient": True,
+            })}}],
+        })
+        args = dict(source_id="source-cp3", source_version_id="source-version-cp3", question="자료 밖 QUESTION_CANARY 2035")
+        prepared = service._adapter_registry.prepare(selection, evidence, args["question"], context.trace_id, transport)
+        original = prepared.provider_payload
+        qa_prepared = service._prepare_qa_structured_payload(context, prepared)
+        before_egress = qa_prepared.provider_payload
+        self.assertEqual(before_egress["messages"][1:], original["messages"][1:])
+        for canary in (args["question"], "ORANGE-COMPASS-42", "CREDENTIAL_CANARY_S18", "chunk-page-2"):
+            self.assertNotIn(canary, repr(qa_prepared.adapter))
+        authorization = service.prepare_authorization(context, **args)
+        payload = json.loads(authorization.provider_payload)
+        system = payload["messages"][0]["content"]
+        self.assertTrue(system.startswith(original["messages"][0]["content"] + "\n\n"))
+        self.assertIn("Only when you choose insufficient=true", system)
+        self.assertIn("takes precedence over the earlier Source scope explanation", system)
+        self.assertIn("선택한 원문 근거에 질문에 답할 정보가 없습니다.", system)
+        self.assertIn("If evidence supports an answer, answer normally", system)
+        self.assertEqual(payload["response_format"], original["response_format"])
+        self.assertEqual(payload["messages"][1]["role"], original["messages"][1]["role"])
+        self.assertEqual(json.loads(payload["messages"][1]["content"]), json.loads(original["messages"][1]["content"]))
+        self.assertEqual(transport.calls, [])
+        result = service.ask(context, run_id="run-s18-insufficient-rule", **args)
+        self.assertTrue(result.insufficient)
+        self.assertEqual(result.citations, ())
+        self.assertEqual(authorization.provider_payload, egress.wire)
+        self.assertEqual(authorization.provider_payload, canonical_json_bytes(transport.calls[0]["payload"]))
+        self.assertEqual(transport.calls[0]["timeout_seconds"], 60.0)
+        self.assertEqual(transport.calls[0]["payload"]["max_tokens"], 512)
+
+    def test_s18_media_normal_and_insufficient_diagnostics_preserve_model_answer_and_replay(self):
+        for answer, cited, insufficient in (
+            ("ORANGE-COMPASS-42", ["chunk-page-2"], False),
+            ("선택한 근거에 관련 정보가 없습니다.", [], True),
+        ):
+            with self.subTest(insufficient=insufficient):
+                service, context, transport, repo, _, _, _ = self.setup_flow(response={
+                    "choices": [{"message": {"content": json.dumps({
+                        "answer": answer, "cited_chunk_ids": cited, "insufficient": insufficient,
+                    })}}],
+                })
+                with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as logs:
+                    result = service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="QUESTION_CANARY", run_id="run-s18-diagnostic-valid")
+                self.assertEqual(result.answer, answer)
+                self.assertEqual(result.insufficient, insufficient)
+                self.assertEqual(len(result.citations), len(cited))
+                self.assertIsNotNone(repo.persisted)
+                self.assertIs(service.replay(context, run_id=result.run_id, request_fingerprint=repo.persisted["request_fingerprint"]), result)
+                self.assertEqual(len(transport.calls), 1)
+                output = " ".join(logs.output)
+                self.assertIn("failure_reason=none", output)
+                self.assertIn(f"insufficient_value={insufficient}", output)
+                for canary in (answer, "QUESTION_CANARY", "CREDENTIAL_CANARY_S18", "chunk-page-2", "source-version-cp3"):
+                    self.assertNotIn(canary, output)
+
+    def test_s18_media_grounding_failure_enum_matches_unchanged_strict_rejection(self):
+        cases = (
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["UNKNOWN_ID_CANARY"], "insufficient": False}, "unknown_citation", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["chunk-page-2", "chunk-page-2"], "insufficient": False}, "duplicate_citation", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY 2035", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, "unsupported_anchor", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": ["chunk-page-2"], "insufficient": True}, "insufficient_with_citations", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY", "cited_chunk_ids": [], "insufficient": False}, "sufficient_without_citations", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "", "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, "answer_empty", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "x" * 8001, "cited_chunk_ids": ["chunk-page-2"], "insufficient": False}, "answer_too_long", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY 2035", "cited_chunk_ids": [], "insufficient": True}, "unsupported_anchor", "TEXT_GENERATION_GROUNDING_INVALID"),
+            ({"answer": "BODY_CANARY", "insufficient": True}, "response_invalid", "TEXT_GENERATION_RESPONSE_INVALID"),
+        )
+        for parsed, reason, public_error in cases:
+            with self.subTest(reason=reason, insufficient=parsed["insufficient"]):
+                service, context, transport, repo, _, _, _ = self.setup_flow(response={
+                    "choices": [{"finish_reason": "REASON_CANARY", "message": {"content": json.dumps(parsed)}}],
+                })
+                with self.assertLogs("daon_user_api.question_answering_service", level="INFO") as logs:
+                    with self.assertRaises(QuestionAnsweringError) as error:
+                        service.ask(context, source_id="source-cp3", source_version_id="source-version-cp3", question="QUESTION_CANARY", run_id="run-s18-diagnostic-reject")
+                self.assertEqual(error.exception.code, public_error)
+                self.assertIsNone(repo.persisted)
+                self.assertEqual(len(transport.calls), 1)
+                output = " ".join(logs.output)
+                self.assertIn(f"failure_reason={reason}", output)
+                self.assertIn(f"insufficient_value={parsed['insufficient']}", output)
+                self.assertIn("finish_reason=other", output)
+                for canary in ("CANARY", "chunk-page-2", "source-version-cp3", "2035", "x" * 100):
+                    self.assertNotIn(canary, output)
 
     def test_s18_media_transport_failure_logs_fixed_structure_only_and_keeps_public_error(self):
         service, context, _, repository, _, _, _ = self.setup_flow()
