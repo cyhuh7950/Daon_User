@@ -107,7 +107,7 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         for canary in ("CANARY_QUESTION", "ORANGE-COMPASS-42", "CREDENTIAL_CANARY_S18"):
             self.assertNotIn(canary, logs)
 
-    def test_s18_media_existing_larger_caps_are_replaced_without_changing_schema_or_prompt(self):
+    def test_s18_media_existing_larger_caps_are_replaced_preserving_prefix_user_and_schema(self):
         service, context, _, _, _, selection, evidence = self.setup_flow()
         prepared = service._adapter_registry.prepare(selection, evidence, "질문", context.trace_id, service._transport)
         original = canonical_json_bytes(prepared.provider_payload)
@@ -115,8 +115,41 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
         result = service._prepare_qa_structured_payload(context, changed)
         self.assertEqual(result.provider_payload.get("max_tokens"), 512)
         self.assertNotIn("max_completion_tokens", result.provider_payload)
-        self.assertEqual(canonical_json_bytes({k: v for k, v in result.provider_payload.items() if k != "max_tokens"}), original)
+        before = json.loads(original)
+        after = {k: v for k, v in result.provider_payload.items() if k not in {"max_tokens", "messages"}}
+        self.assertEqual(after, {k: v for k, v in before.items() if k != "messages"})
+        self.assertTrue(result.provider_payload["messages"][0]["content"].startswith(before["messages"][0]["content"]))
+        self.assertEqual(result.provider_payload["messages"][1:], before["messages"][1:])
         self.assertEqual(changed.provider_payload["max_tokens"], 9000, "원래 준비 객체는 변경하지 않는다")
+
+    def test_s18_media_json_instruction_matches_existing_schema_and_preserves_prefix_and_user(self):
+        for grounded in (True, False):
+            with self.subTest(grounded=grounded):
+                service, context, _, _, _, selection, evidence = self.setup_flow()
+                prepared = (service._adapter_registry.prepare(selection, evidence, "원래 질문", context.trace_id, service._transport)
+                    if grounded else service._adapter_registry.prepare_general(selection, "원래 질문", context.trace_id, service._transport))
+                original = canonical_json_bytes(prepared.provider_payload)
+                result = service._prepare_qa_structured_payload(context, prepared)
+                original_system = prepared.provider_payload["messages"][0]["content"]
+                system = result.provider_payload["messages"][0]["content"]
+                self.assertTrue(system.startswith(original_system + "\n\n"))
+                appended = system[len(original_system):]
+                self.assertIn("ONLY JSON object", appended)
+                self.assertIn("no markdown, prose, or code fences", appended)
+                schema_text = appended.split("JSON Schema:\n", 1)[1].split("\n", 1)[0]
+                schema = json.loads(schema_text)
+                self.assertEqual(schema, prepared.provider_payload["response_format"]["json_schema"]["schema"])
+                self.assertEqual(set(schema["properties"]), {"answer", "cited_chunk_ids", "insufficient"} if grounded else {"answer"})
+                self.assertEqual(schema["properties"]["answer"], {"type": "string"})
+                if grounded:
+                    self.assertIn("supplied chunk_id", appended)
+                    self.assertIn("insufficient=true", appended)
+                    self.assertIn("cited_chunk_ids=[]", appended)
+                    self.assertIn("do not repeat question or Source numbers or identifiers", appended)
+                    self.assertEqual(schema["properties"]["insufficient"], {"type": "boolean"})
+                self.assertEqual(result.provider_payload["messages"][1:], prepared.provider_payload["messages"][1:])
+                self.assertEqual(result.provider_payload["response_format"], prepared.provider_payload["response_format"])
+                self.assertEqual(canonical_json_bytes(prepared.provider_payload), original)
 
     def test_s18_media_diagnostic_invalid_shapes_and_unknown_reasons_never_log_values(self):
         responses = [
@@ -124,6 +157,8 @@ class S18MediaCapDiagnosticTests(unittest.TestCase):
             {"choices": [{"finish_reason": "FINISH_SECRET_CANARY", "message": {"content": "RESPONSE_SECRET_CANARY"}}], "metadata": "METADATA_SECRET_CANARY"},
             {"choices": [{"message": {"content": []}}]},
             {"choices": [{"message": {"content": json.dumps({"cited_chunk_ids": [], "insufficient": False, "metadata": "JSON_VALUE_CANARY"})}}]},
+            {"choices": [{"message": {"content": '```json\n{"answer":"RESPONSE_SECRET_CANARY","cited_chunk_ids":[],"insufficient":true}\n```'}}]},
+            {"choices": [{"message": {"content": 'prose RESPONSE_SECRET_CANARY {"answer":"답변","cited_chunk_ids":[],"insufficient":true}'}}]},
         ]
         for response in responses:
             with self.subTest(response_index=responses.index(response)):

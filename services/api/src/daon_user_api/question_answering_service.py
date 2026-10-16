@@ -405,6 +405,24 @@ class QuestionAnsweringService:
         ):
             payload = {**prepared.provider_payload, "max_tokens": 512}
             payload.pop("max_completion_tokens", None)
+            schema = payload["response_format"]["json_schema"]["schema"]
+            instruction = (
+                "\n\nReturn ONLY JSON object; no markdown, prose, or code fences. "
+                "Use exactly the keys and value types in this existing JSON Schema; no additional keys. "
+                "JSON Schema:\n" + canonical_json_bytes(schema).decode("utf-8")
+            )
+            if isinstance(prepared.request, GroundedQuestionRequest):
+                instruction += (
+                    "\nCite only supplied chunk_id values. If the supplied evidence cannot answer the question, "
+                    "return insufficient=true and cited_chunk_ids=[]; explain the evidence limitation "
+                    "briefly without inventing facts; do not repeat question or Source numbers or identifiers "
+                    "in that insufficient answer. Decide sufficiency from the supplied evidence."
+                )
+            payload["messages"] = [
+                {**message, "content": message["content"] + instruction}
+                if message["role"] == "system" else message
+                for message in payload["messages"]
+            ]
             adapter = _QaMediaBridgeDiagnosticAdapter(
                 transport=prepared.adapter._transport, api_key=prepared.adapter._api_key,
                 timeout_seconds=prepared.adapter._timeout_seconds,
