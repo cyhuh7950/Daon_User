@@ -15,19 +15,43 @@ test("민감 Studio 클릭은 재인증 확인·취소·실패와 고정 Version
     const entry = (await readdir(output)).find((name) => /\.m?js$/u.test(name));
     const { ProductStudioPane } = await import(pathToFileURL(path.join(output, entry)).href);
     const calls = []; let failure = false; let release;
+    const canonicalVersion = (number, approved = false) => ({
+      output_version_id: `version-${number}`, content_version: 1, previous_version_id: null,
+      status: approved ? "approved" : "in_review", content: { body: `대상 ${number} 정본 본문` },
+      revision_type: "initial", change_reason: "initial_generation", settings_snapshot_id: `settings-${number}`,
+      citations: [{ citation_id: `citation-${number}`, source_version_id: `source-version-${number}`, evidence_span_id: `span-${number}`,
+        origin: "raw_source", locator: { kind: "page", value: "1" } }],
+      review_request_id: `review-${number}`, approval_request_id: `request-${number}`,
+      approval_id: approved ? `approval-${number}` : null, delivery_id: null, knowledge_registration_id: null,
+      output_format: "pdf", approval_request_state: approved ? "approved" : "pending", approval_expires_at: "2099-01-01T00:00:00Z",
+    });
+    const versions = new Map([["output-1", canonicalVersion(1)], ["output-2", canonicalVersion(2)]]);
     const adapter = {
-      listStudioVersions: async (id) => [{ output_version_id: id === "output-1" ? "version-1" : "version-2", status: "approved" }],
+      listStudioVersions: async (id) => [structuredClone(versions.get(id))],
       issueStudioStepUp: async (group, target, password) => {
         calls.push(["stepup", group, target, password]);
         if (failure) throw new Error("STEP_UP_REQUIRED");
         if (release === "defer") return new Promise((resolve) => { release = resolve; });
         return "opaque-grant";
       },
-      createStudioAction: async (action, payload) => { calls.push([action, payload]); return { record_id: "record-1" }; },
+      createStudioAction: async (action, payload) => {
+        calls.push([action, payload]);
+        const current = versions.get("output-1");
+        assert.equal(payload.output_version_id, current.output_version_id);
+        const recordId = `record-${action}`;
+        const canonicalAction = { approvals: "approval", deliveries: "delivery", "knowledge-registrations": "knowledge_registration" }[action];
+        assert.ok(canonicalAction, "only the intended sensitive action may be written");
+        if (action === "approvals") versions.set("output-1", { ...current, status: "approved", approval_id: recordId, approval_request_state: "approved" });
+        else if (action === "deliveries") versions.set("output-1", { ...current, status: "delivered", delivery_id: recordId });
+        else versions.set("output-1", { ...current, knowledge_registration_id: recordId });
+        return { record_id: recordId, action: canonicalAction, status: action === "knowledge-registrations" ? "registered" : "accepted",
+          output_version_id: current.output_version_id,
+          ...(action === "knowledge-registrations" ? { registered_source_version_id: "knowledge-version-1", searchable: true } : {}) };
+      },
     };
-    const state = { status: "ready", locks: [], selectedOutputType: null, settings: {}, outputs: [
-      { studio_output_id: "output-1", output_version_id: "version-1", title: "승인 대상", status: "approved", approval_request_id: "request-1", approval_id: "approval-1" },
-      { studio_output_id: "output-2", output_version_id: "version-2", title: "다른 대상", status: "approved", approval_request_id: "request-2", approval_id: "approval-2" },
+    const state = { workspaceId: "workspace-1", status: "ready", locks: [], selectedOutputType: null, settings: {}, outputs: [
+      { studio_output_id: "output-1", output_type: "evidence_report", title: "승인 대상", ...canonicalVersion(1) },
+      { studio_output_id: "output-2", output_type: "evidence_report", title: "다른 대상", ...canonicalVersion(2) },
     ], selectedOutputId: "output-1", pending: false, safeError: null };
     const container = dom.document.createElement("div"); dom.document.body.appendChild(container); reactRoot = createRoot(container);
     await act(async () => reactRoot.render(createElement(ProductStudioPane, { state, adapter })));
@@ -35,13 +59,28 @@ test("민감 Studio 클릭은 재인증 확인·취소·실패와 고정 Version
     const password = () => findElements(container, (node) => node.tagName === "INPUT" && (node.type === "password" || node.getAttribute("type") === "password"))[0];
     const fill = async () => { assert.ok(password()); const element = password(); const props = element[Object.keys(element).find((key) => key.startsWith("__reactProps"))]; await act(async () => props.onChange({ currentTarget: { value: "fixture password only" } })); };
     await click("승인"); assert.equal(calls.length, 0); assert.ok(password());
+    const emptyConfirm = buttonByText(container, "추가 인증 확인");
+    assert.equal(emptyConfirm.disabled, true);
+    await act(async () => emptyConfirm[Object.keys(emptyConfirm).find(key => key.startsWith("__reactProps"))].onClick());
+    assert.equal(calls.length, 0, "empty password must not issue a token or write");
     await fill(); await click("추가 인증 취소"); assert.equal(password(), undefined); assert.equal(calls.length, 0);
-    for (const [label, action] of [["승인", "approvals"], ["전달", "deliveries"], ["생산 지식 등록", "knowledge-registrations"]]) {
-      await click(label); await fill(); await click("추가 인증 확인");
+    for (const [label, action] of [["승인", "approvals"], ["전달 기록 등록", "deliveries"], ["생산 지식 등록", "knowledge-registrations"]]) {
+      // Independent action fixtures use valid current lifecycle states; the
+      // following canonical GET reflects that action's authoritative outcome.
+      versions.set("output-1", canonicalVersion(1, action !== "approvals"));
+      await click("다른 대상"); await click("승인 대상");
+      await click(label); await fill();
+      const confirm = buttonByText(container, "추가 인증 확인");
+      const submit = confirm[Object.keys(confirm).find(key => key.startsWith("__reactProps"))].onClick;
+      const beforeIssue = calls.filter(item => item[0] === "stepup").length;
+      const beforeWrite = calls.filter(item => item[0] !== "stepup").length;
+      await act(async () => { submit(); submit(); });
+      assert.equal(calls.filter(item => item[0] === "stepup").length, beforeIssue + 1);
+      assert.equal(calls.filter(item => item[0] !== "stepup").length, beforeWrite + 1);
       assert.deepEqual(calls.at(-2), ["stepup", "final_approval_or_knowledge_registration", "version-1", "fixture password only"]);
       assert.equal(calls.at(-1)[0], action); assert.equal(calls.at(-1)[1].output_version_id, "version-1");
       assert.equal(calls.at(-1)[1].step_up_authorization, "opaque-grant"); assert.equal(password(), undefined);
-      // Reopen the authoritative approved version between independent actions.
+      versions.set("output-1", canonicalVersion(1));
       await click("다른 대상"); await click("승인 대상");
     }
     failure = true; const writes = calls.filter((item) => item[0] !== "stepup").length;
