@@ -4,8 +4,334 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
-import { createStudioAction, createStudioVersion, listStudioVersions } from "../../apps/web/lib/product-workspace-api.js";
+import { createStudioAction, createStudioGeneration, createStudioVersion, listStudioVersions } from "../../apps/web/lib/product-workspace-api.js";
 import { createProductStudioState } from '../../packages/ui/src/product-studio-model.js';
+
+function s23Version(number, target = 'target', content = `정본 ${target} V${number}`) {
+  return { output_version_id: `version-${target}-${number}`, content_version: number,
+    previous_version_id: number > 1 ? `version-${target}-${number - 1}` : null, status: 'draft', content,
+    revision_type: number > 1 ? 'user_edit' : 'initial', change_reason: number > 1 ? `수정 사유 ${number}` : '최초 생성',
+    settings_snapshot_id: `settings-${target}`, output_format: 'csv',
+    citations: [{ citation_id: 'citation-1', source_version_id: 'source-version-1', evidence_span_id: 'span-1',
+      origin: 'raw_source', locator: { kind: 'section', value: '시험 근거' } }],
+    review_request_id: null, approval_request_id: null, approval_id: null, delivery_id: null, knowledge_registration_id: null };
+}
+function s23Read(versions, target = 'target', workspace = 'workspace-1') {
+  return Response.json({ data: { output_id: `output-${target}`, versions }, meta: { trace_id: 'trace-1', workspace_id: workspace } });
+}
+function s23Receipt(number = 2) {
+  return Response.json({ data: { output_version_id: `version-target-${number}`, status: 'draft', content: `접수된 편집 ${number}`,
+    settings_snapshot_id: 'settings-target' }, meta: { trace_id: 'trace-1' } }, { status: 201 });
+}
+function s23State(workspaceId = 'workspace-1') {
+  return { ...createProductStudioState({ workspaceId, outputs: ['target', 'other'].map(target => ({ ...s23Version(1, target),
+    studio_output_id: `output-${target}`, output_type: 'comparison_table', title: target === 'target' ? '대상 비교표' : '다른 산출물',
+    source_version_ids: ['source-version-1'], source_count: 1 })) }), selectedOutputId: 'output-target' };
+}
+async function withS23Studio(fetchImpl, run) {
+  const rootPath = path.resolve(import.meta.dirname, '../..');
+  const output = await mkdtemp(path.join(rootPath, '.product-studio-s23-'));
+  const dom = installMinimalDom(); let reactRoot;
+  try {
+    const { createElement, act } = await import('react'); const { createRoot } = await import('react-dom/client');
+    const { build } = await import('vite');
+    await build({ configFile: false, logLevel: 'silent', root: rootPath, build: { outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(rootPath, 'packages/ui/src/product-studio-pane.jsx'), formats: ['es'], fileName: 'product-studio' },
+      rollupOptions: { external: ['react', 'react-dom', 'react-dom/client'] } } });
+    const entry = (await readdir(output)).find(name => name.startsWith('product-studio') && /\.m?js$/u.test(name));
+    const { ProductStudioPane } = await import(pathToFileURL(path.join(output, entry)).href);
+    const container = dom.document.createElement('div'); dom.document.body.appendChild(container); reactRoot = createRoot(container);
+    const adapterFor = (workspace = 'workspace-1') => ({
+      createStudioVersion: (id, input, options) => createStudioVersion(workspace, id, input, { ...options, notebookId: 'notebook-1', fetchImpl }),
+      listStudioVersions: (id, options) => listStudioVersions(workspace, id, { ...options, notebookId: 'notebook-1', fetchImpl }),
+    });
+    const render = (state, adapter) => act(async () => reactRoot.render(createElement(ProductStudioPane, { state, adapter })));
+    await render(s23State(), adapterFor());
+    const edit = async (text = '미저장 편집', reason = '미저장 사유') => act(async () => {
+      s22Props(s22Field(container, '편집 내용', 'TEXTAREA')).onChange({ currentTarget: { value: text } });
+      s22Props(s22Field(container, '변경 사유', 'INPUT')).onChange({ currentTarget: { value: reason } });
+    });
+    const click = label => act(async () => buttonByText(container, label).dispatchEvent(new MinimalEvent('click')));
+    const detail = () => findElements(container, node => node.getAttribute?.('aria-label') === '선택 산출물 상세')[0];
+    await run({ container, act, render, adapterFor, edit, click, detail });
+  } finally {
+    if (reactRoot) { const { act } = await import('react'); await act(async () => reactRoot.unmount()); }
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+}
+
+test('S23 different output selection separates unsaved content and reason', async () => {
+  await withS23Studio(async () => s23Read([s23Version(1, 'other')], 'other'), async ({ container, edit, click, detail }) => {
+    await edit(); await click('다른 산출물');
+    assert.match(detail().textContent, /정본 other V1/);
+    assert.equal(s22Field(container, '편집 내용', 'TEXTAREA').value, '');
+    assert.equal(s22Field(container, '변경 사유', 'INPUT').value, '');
+    assert.equal(buttonByText(container, '편집 새 Version').disabled, true);
+  });
+});
+
+test('S23 same-turn opening handlers share one pending canonical read', async () => {
+  const pending = s22Deferred(); let reads = 0;
+  await withS23Studio(async () => { reads++; await pending.promise; return s23Read([s23Version(1)]); },
+    async ({ container, act }) => {
+      const handler = s22Props(buttonByText(container, '대상 비교표')).onClick;
+      await act(async () => { handler(); handler(); });
+      try { assert.equal(reads, 1); } finally { await act(async () => pending.resolve()); }
+    });
+});
+
+test('S23 adapter and workspace replacement separate drafts and saved receipts', async t => {
+  for (const workspace of ['workspace-1', 'workspace-2']) await t.test(workspace, async () => {
+    await withS23Studio(async (_url, init) => init.method === 'POST' ? s23Receipt() : s23Read([s23Version(2), s23Version(1)]),
+      async ({ container, edit, click, detail, render, adapterFor }) => {
+        await edit(); await click('편집 새 Version'); assert.match(detail().textContent, /새 Version이 저장되었습니다/);
+        await edit('다음 미저장 편집', '다음 미저장 사유');
+        await render(s23State(workspace), adapterFor(workspace));
+        assert.equal(s22Field(container, '편집 내용', 'TEXTAREA').value, '');
+        assert.equal(s22Field(container, '변경 사유', 'INPUT').value, '');
+        assert.doesNotMatch(detail().textContent, /새 Version이 저장되었습니다/);
+        assert.match(detail().textContent, /정본 target V1/);
+      });
+  });
+});
+
+test('S23 same-turn revision handlers write once and resolve the returned V2 rather than V3', async () => {
+  const pending = s22Deferred(); const writes = [];
+  await withS23Studio(async (_url, init) => {
+    if (init.method === 'POST') { writes.push({ ...init, input: JSON.parse(init.body) }); await pending.promise; return s23Receipt(); }
+    return s23Read([s23Version(3), s23Version(2), s23Version(1)]);
+  }, async ({ container, edit, act, detail }) => {
+    await edit('편집한 본문', '검토 반영');
+    const handler = s22Props(buttonByText(container, '편집 새 Version')).onClick;
+    await act(async () => { handler(); handler(); });
+    try {
+      assert.equal(writes.length, 1);
+      assert.deepEqual(writes[0].input, { workspace_id: 'workspace-1', notebook_id: 'notebook-1', previous_version_id: 'version-target-1',
+        revision_type: 'user_edit', change_reason: '검토 반영', content: '편집한 본문' });
+      assert.equal(s22Field(container, '편집 내용', 'TEXTAREA').disabled, true);
+      assert.equal(s22Field(container, '변경 사유', 'INPUT').disabled, true);
+    } finally { await act(async () => pending.resolve()); }
+    assert.match(detail().textContent, /정본 target V2/);
+    assert.doesNotMatch(detail().textContent, /정본 target V3/);
+    assert.match(detail().textContent, /Version 3.*Version 2.*Version 1/);
+    assert.match(detail().textContent, /원본 지식 · 시험 근거/);
+    assert.match(detail().textContent, /새 Version이 저장되었습니다. \(version-target-2\)/);
+  });
+});
+
+test('S23 active revision blocks type entry after a reread and permits generation only after revision completion', async () => {
+  const write = s22Deferred(), generation = s22Deferred(); let committed = false, generationCalls = 0;
+  const fetchImpl = async (url, init) => {
+    if (url === '/bff/api/studio-generation-requests') {
+      generationCalls++; await generation.promise;
+      return Response.json({ data: { job_id: 'job-after-revision', status: 'completed', studio_output_id: 'output-after-revision',
+        output_version_id: 'version-after-revision', title: '편집 종료 후 생성', output_type: 'comparison_table', content: { rows: [] } } }, { status: 201 });
+    }
+    if (init.method === 'POST') { await write.promise; committed = true; return s23Receipt(); }
+    return s23Read(committed ? [s23Version(2), s23Version(1)] : [s23Version(1)]);
+  };
+  await withS23Studio(fetchImpl, async ({ container, render, adapterFor, edit, click, act }) => {
+    const adapter = { ...adapterFor(), createGeneration: (input, options) => createStudioGeneration('workspace-1', input,
+      { ...options, notebookId: 'notebook-1', fetchImpl }) };
+    await render({ ...s23State(), sources: s22Sources, settings: { sourceVersionIds: ['source-version-1'] } }, adapter);
+    try {
+      await edit(); await click('편집 새 Version'); await click('대상 비교표');
+      const tile = buttonByText(container, '비교·데이터 표');
+      assert.equal(tile.disabled, true, 'a completed reread does not release an active revision');
+      await act(async () => s22Props(tile).onClick());
+      assert.equal(findElements(container, node => node.getAttribute?.('data-studio-view') === 'config').length, 0);
+      assert.equal(generationCalls, 0);
+      await act(async () => write.resolve());
+      assert.equal(buttonByText(container, '비교·데이터 표').disabled, false);
+      await click('비교·데이터 표');
+      for (const [label, tag, value] of [
+        ['목적', 'INPUT', '후속 비교'], ['독자', 'INPUT', '담당자'], ['분량', 'SELECT', 'short'],
+        ['구성', 'SELECT', 'summary-body-conclusion'], ['출력 형식', 'SELECT', 'csv'], ['검토 조건', 'SELECT', 'review_required'],
+      ]) await act(async () => s22Props(s22Field(container, label, tag)).onChange({ currentTarget: { value } }));
+      await click('설정 확인');
+      await act(async () => findElements(container, node => node.tagName === 'FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+      assert.equal(generationCalls, 1);
+      assert.match(container.textContent, /산출물을 생성하고 있습니다/);
+      assert.equal(buttonByText(container, '생성').disabled, true);
+      await act(async () => generation.resolve());
+      assert.match(container.textContent, /편집 종료 후 생성/);
+    } finally { await act(async () => { write.resolve(); generation.resolve(); }); }
+  });
+});
+
+test('S23 stale confirmed submit handler cannot start generation while a revision owns the request', async () => {
+  const write = s22Deferred(); let generationCalls = 0;
+  const fetchImpl = async (_url, init) => {
+    if (init.method === 'POST') { await write.promise; return s23Receipt(); }
+    return s23Read([s23Version(2), s23Version(1)]);
+  };
+  await withS23Studio(fetchImpl, async ({ container, render, adapterFor, edit, click, act }) => {
+    const adapter = { ...adapterFor(), createGeneration: async () => { generationCalls++; return {
+      status: 'completed', studio_output_id: 'forbidden-generation', title: '금지된 동시 생성' }; } };
+    await render({ ...s22Confirmed(), outputs: s23State().outputs, selectedOutputId: 'output-target' }, adapter);
+    const submit = s22Props(findElements(container, node => node.tagName === 'FORM')[0]).onSubmit;
+    await edit(); await click('편집 새 Version');
+    try {
+      await act(async () => submit({ preventDefault() {} }));
+      assert.equal(generationCalls, 0);
+      assert.doesNotMatch(container.textContent, /금지된 동시 생성/);
+    } finally { await act(async () => write.resolve()); }
+  });
+});
+
+test('S23 stale opening success or failure cannot overwrite a newly saved canonical version', async t => {
+  for (const outcome of ['resolve', 'reject']) await t.test(outcome, async () => {
+    const stale = s22Deferred(); let targetReads = 0;
+    await withS23Studio(async (url, init) => {
+      if (init.method === 'POST') return s23Receipt();
+      if (url.includes('output-other/')) return s23Read([s23Version(1, 'other')], 'other');
+      targetReads++;
+      if (targetReads === 1) return stale.promise;
+      return s23Read(targetReads === 2 ? [s23Version(1)] : [s23Version(3), s23Version(2), s23Version(1)]);
+    }, async ({ container, edit, click, act, detail }) => {
+      await click('대상 비교표'); await click('다른 산출물'); await click('대상 비교표');
+      await edit(); await click('편집 새 Version');
+      await act(async () => outcome === 'resolve' ? stale.resolve(s23Read([s23Version(1)])) : stale.reject(new Error('old private failure')));
+      assert.match(detail().textContent, /정본 target V2/);
+      assert.match(detail().textContent, /새 Version이 저장되었습니다/);
+      assert.doesNotMatch(container.textContent, /저장된 산출물을 불러오지 못했습니다|old private failure/);
+    });
+  });
+});
+
+test('S23 old opening failure cannot release another pending detail read', async () => {
+  const stale = s22Deferred(), current = s22Deferred();
+  await withS23Studio(async url => url.includes('output-other/') ? current.promise : stale.promise,
+    async ({ container, click, edit, act, detail }) => {
+      await click('대상 비교표'); await click('다른 산출물');
+      await act(async () => stale.reject(new Error('STUDIO_LIST_FAILED')));
+      try {
+        await edit();
+        assert.equal(buttonByText(container, '편집 새 Version').disabled, true);
+        assert.doesNotMatch(container.textContent, /저장된 산출물을 불러오지 못했습니다/);
+      } finally { await act(async () => current.resolve(s23Read([s23Version(1, 'other')], 'other'))); }
+      assert.match(detail().textContent, /정본 other V1/);
+    });
+});
+
+test('S23 successful write keeps its library receipt but later read failure cannot affect another detail', async () => {
+  const write = s22Deferred(); let targetReads = 0;
+  await withS23Studio(async (url, init) => {
+    if (init.method === 'POST') { await write.promise; return s23Receipt(); }
+    if (url.includes('output-other/')) return s23Read([s23Version(1, 'other')], 'other');
+    if (++targetReads === 1) throw new Error('STUDIO_LIST_FAILED');
+    return s23Read([s23Version(2), s23Version(1)]);
+  }, async ({ container, edit, click, act, detail }) => {
+    await edit(); await click('편집 새 Version'); await click('다른 산출물');
+    await act(async () => write.resolve());
+    assert.match(detail().textContent, /정본 other V1/);
+    assert.doesNotMatch(container.textContent, /저장된 산출물을 불러오지 못했습니다/);
+    assert.doesNotMatch(detail().textContent, /새 Version이 저장되었습니다/);
+    assert.equal(s22Field(container, '편집 내용', 'TEXTAREA').value, '');
+    await click('대상 비교표'); assert.match(detail().textContent, /정본 target V2/);
+  });
+});
+
+test('S23 old revision completion cannot release another pending detail read', async t => {
+  for (const outcome of ['read-success', 'write-failure']) await t.test(outcome, async () => {
+    const write = s22Deferred(), other = s22Deferred();
+    await withS23Studio(async (url, init) => {
+      if (init.method === 'POST') { await write.promise; if (outcome === 'write-failure') throw new Error('private write failure'); return s23Receipt(); }
+      if (url.includes('output-other/')) return other.promise;
+      return s23Read([s23Version(2), s23Version(1)]);
+    }, async ({ container, edit, click, act, detail }) => {
+      await edit(); await click('편집 새 Version'); await click('다른 산출물');
+      await act(async () => write.resolve());
+      try {
+        assert.equal(s22Field(container, '편집 내용', 'TEXTAREA').disabled, true);
+        assert.doesNotMatch(container.textContent, /새 버전을 저장하지 못했습니다|private write failure/);
+      } finally { await act(async () => other.resolve(s23Read([s23Version(1, 'other')], 'other'))); }
+      assert.match(detail().textContent, /정본 other V1/);
+    });
+  });
+});
+
+test('S23 consecutive explicit edits use canonical V2 then V3 with previous-version linkage', async () => {
+  const previous = []; let number = 1;
+  await withS23Studio(async (_url, init) => {
+    if (init.method === 'POST') { previous.push(JSON.parse(init.body).previous_version_id); number++; return s23Receipt(number); }
+    return s23Read(number === 2 ? [s23Version(2), s23Version(1)] : [s23Version(3), s23Version(2), s23Version(1)]);
+  }, async ({ edit, click, detail }) => {
+    await edit('V2 편집', '첫 수정'); await click('편집 새 Version');
+    assert.match(detail().textContent, /정본 target V2/);
+    await edit('V3 편집', '두 번째 수정'); await click('편집 새 Version');
+    assert.match(detail().textContent, /정본 target V3/);
+    assert.match(detail().textContent, /Version 3.*수정 사유 3.*Version 2.*수정 사유 2.*Version 1/);
+    assert.deepEqual(previous, ['version-target-1', 'version-target-2']);
+    assert.match(detail().textContent, /원본 지식 · 시험 근거/);
+  });
+});
+
+test('S23 late revision after adapter replacement cannot change the new scope', async t => {
+  for (const outcome of ['resolve', 'reject']) await t.test(outcome, async () => {
+    const write = s22Deferred(); let signal;
+    await withS23Studio(async (_url, init) => {
+      if (init.method === 'POST') { signal = init.signal; return write.promise; }
+      return s23Read([s23Version(1)]);
+    }, async ({ container, edit, click, render, adapterFor, act, detail }) => {
+      await edit(); await click('편집 새 Version');
+      await render(s23State('workspace-2'), adapterFor('workspace-2'));
+      await act(async () => outcome === 'resolve' ? write.resolve(s23Receipt()) : write.reject(new Error('STUDIO_VERSION_FAILED')));
+      assert.equal(signal?.aborted, true);
+      assert.match(detail().textContent, /정본 target V1/);
+      assert.doesNotMatch(container.textContent, /새 Version이 저장되었습니다|새 버전을 저장하지 못했습니다/);
+      assert.equal(s22Field(container, '변경 사유', 'INPUT').value, '');
+    });
+  });
+});
+
+test('S23 committed write with failed canonical read retains receipt and permits explicit reentry', async () => {
+  let reads = 0, writes = 0;
+  await withS23Studio(async (_url, init) => {
+    if (init.method === 'POST') { writes++; return s23Receipt(); }
+    if (++reads === 1) throw new Error('private canonical read failure');
+    return s23Read([s23Version(2), s23Version(1)]);
+  }, async ({ container, edit, click, detail }) => {
+    await edit(); await click('편집 새 Version');
+    assert.equal(writes, 1);
+    assert.match(detail().textContent, /새 Version이 저장되었습니다. \(version-target-2\)/);
+    assert.match(detail().textContent, /정본 조회가 아직 확인되지 않았습니다/);
+    assert.match(container.textContent, /저장된 산출물을 불러오지 못했습니다/);
+    assert.doesNotMatch(container.textContent, /새 버전을 저장하지 못했습니다|private canonical read failure/);
+    await click('대상 비교표');
+    assert.match(detail().textContent, /정본 target V2/); assert.equal(writes, 1);
+    assert.doesNotMatch(detail().textContent, /정본 조회가 아직 확인되지 않았습니다/);
+    assert.match(detail().textContent, /Version 2 · 근거 1 · 설정 settings-target/);
+    assert.match(detail().textContent, /원본 지식 · 시험 근거/);
+  });
+});
+
+test('S23 partial receipt must not present inherited content or citations as the new canonical version', async t => {
+  for (const shape of ['id-only', 'content-only']) await t.test(shape, async () => {
+    await withS23Studio(async (_url, init) => {
+      if (init.method === 'POST') return Response.json({ data: { output_version_id: 'version-target-2',
+        ...(shape === 'content-only' ? { content: 'POST가 반환한 새 본문', status: 'draft', settings_snapshot_id: 'settings-target' } : {}) },
+        meta: { trace_id: 'trace-1' } }, { status: 201 });
+      throw new Error('STUDIO_LIST_FAILED');
+    }, async ({ edit, click, detail }) => {
+      await edit(); await click('편집 새 Version');
+      assert.match(detail().textContent, /새 Version이 저장되었습니다. \(version-target-2\)/);
+      assert.doesNotMatch(detail().textContent, /정본 target V1/);
+      assert.equal(findElements(detail(), node => node.getAttribute?.('aria-label') === '근거 Citation').length, 0,
+        'the previous version citations are not canonical proof for this new receipt');
+      assert.match(detail().textContent, /정본 조회가 아직 확인되지 않았습니다/);
+      assert.match(detail().textContent, /근거 미확인/);
+      assert.doesNotMatch(detail().textContent, /Version 1|Version 이력/);
+      if (shape === 'id-only') {
+        assert.match(detail().textContent, /설정 미확인/);
+        assert.doesNotMatch(detail().textContent, /settings-target|초안/);
+      } else {
+        assert.match(detail().textContent, /POST가 반환한 새 본문/);
+        assert.match(detail().textContent, /설정 settings-target/);
+      }
+    });
+  });
+});
 
 const s22Sources = [{ sourceId: 'source-1', sourceVersionId: 'source-version-1', filename: 'QA 시험 문서.txt', ready: true }];
 const s22Settings = { purpose: '시험 비교', audience: '검토자', language: 'ko', sourceVersionIds: ['source-version-1'],
@@ -342,7 +668,11 @@ test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복�
             assert.deepEqual(calls[1].method,"GET");assert.equal(posts[0].body.previous_version_id,"version-1");
           } else {
             assert.match(detail.textContent, /새 Version이 저장되었습니다. \(version-2\)/);
-            assert.match(detail.textContent, /Version version-2 · 근거 5 · 설정 settings-2/);
+            assert.match(detail.textContent, /Version version-2 · 근거 미확인 · 설정 settings-2/);
+            assert.match(detail.textContent, /정본 조회가 아직 확인되지 않았습니다/);
+            assert.match(detail.textContent, /편집 입력/);
+            assert.doesNotMatch(detail.textContent, /이전 본문|10,20,30,40,100,200|핵심 요약|납품 계획 · B2:C3|문단·표 p:2 · 1–2/);
+            assert.equal(findElements(detail, (node) => node.getAttribute?.("aria-label") === "근거 Citation").length, 0);
             assert.equal(findElements(detail, (node) => node.getAttribute?.("aria-label") === "Version 이력").length, 0);
             if (scenario !== "no-getter") assert.match(container.textContent, /저장된 산출물을 불러오지 못했습니다/);
             assert.doesNotMatch(container.textContent, /새 버전을 저장하지 못했습니다/);
