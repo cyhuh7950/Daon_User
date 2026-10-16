@@ -849,6 +849,20 @@ test('S20 HTTP audio without SubtleCrypto creates AUDIO only after verifying exa
     const link=findElements(workspace.container,node=>node.tagName==='A'&&node.textContent.includes('Citation'))[0];
     await workspace.act(async()=>link.dispatchEvent(new MinimalEvent('click')));
     assert.equal(calls.length,1,'전사 표시만으로 바이너리를 가져오지 않는다');
+    const mark=findElements(workspace.container,node=>node.tagName==='MARK')[0];
+    assert.ok(mark);assert.equal(mark.textContent,'원');
+    const foreground=mark.style.color,background=mark.style.backgroundColor;
+    assert.equal(typeof foreground,'string','음성 강조는 상속된 밝은 글자색에 의존하지 않는다');
+    assert.match(foreground,/^#[0-9a-f]{6}$/iu);
+    assert.equal(background,'#fff0a5','기존 음성 강조 배경은 유지한다');
+    const luminance=color=>{
+      const channels=[1,3,5].map(offset=>parseInt(color.slice(offset,offset+2),16)/255)
+        .map(value=>value<=0.04045?value/12.92:((value+0.055)/1.055)**2.4);
+      return channels[0]*0.2126+channels[1]*0.7152+channels[2]*0.0722;
+    };
+    const light=luminance(background),dark=luminance(foreground);
+    const contrast=(Math.max(light,dark)+0.05)/(Math.min(light,dark)+0.05);
+    assert.ok(contrast>=4.5,`렌더된 음성 mark 색상 대비 ${contrast}:1`);
     const load=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원본 불러오기')[0];
     assert.ok(load);
     await workspace.act(async()=>{load.dispatchEvent(new MinimalEvent('click'));await new Promise(resolve=>setTimeout(resolve,20));});

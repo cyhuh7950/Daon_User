@@ -189,7 +189,7 @@ function AudioOriginalSegments({ content, citation }) {
   return <div>
     <div className="citation-docx-scroll"><p>음성 인식 전사입니다. 사람이 확인한 원문과 구분하여 확인하세요.</p>{content.segments.map(segment=>{
       const points=Array.from(segment.text),selected=segment.segment_id===content.selected_segment_id;
-      return <article key={segment.segment_id}><small>{audioTime(segment.start_ms)}–{audioTime(segment.end_ms)}</small><p>{selected?<>{points.slice(0,content.selected_start).join('')}<mark>{points.slice(content.selected_start,content.selected_end).join('')}</mark>{points.slice(content.selected_end).join('')}</>:segment.text}</p></article>;
+      return <article key={segment.segment_id}><small>{audioTime(segment.start_ms)}–{audioTime(segment.end_ms)}</small><p>{selected?<>{points.slice(0,content.selected_start).join('')}<mark style={{color:'#241c2d',backgroundColor:'#fff0a5'}}>{points.slice(content.selected_start,content.selected_end).join('')}</mark>{points.slice(content.selected_end).join('')}</>:segment.text}</p></article>;
     })}</div>
     <button type="button" onClick={()=>void play()} disabled={pending}>{pending?'원본 확인 중':url?'선택 구간 재생':'원본 불러오기'}</button>
     {url?<audio ref={playerRef} src={url} preload="metadata" onLoadedMetadata={event=>{
