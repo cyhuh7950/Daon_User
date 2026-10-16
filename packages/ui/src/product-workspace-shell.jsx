@@ -767,6 +767,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   const [syncPending, setSyncPending] = useState(false);
   const [syncSafeError, setSyncSafeError] = useState(null);
   const [syncSelections, setSyncSelections] = useState({});
+  const syncSessionRef = useRef(null);
+  const syncRequestRef = useRef(null);
+  const syncScopeRef = useRef(null);
+  syncScopeRef.current = { adapter, workspaceId };
+  const [syncFailurePhase, setSyncFailurePhase] = useState(null);
   const [egressPolicy, setEgressPolicy] = useState(null);
   const [egressPolicyPending, setEgressPolicyPending] = useState(false);
   const [egressPolicySafeError, setEgressPolicySafeError] = useState(null);
@@ -1045,6 +1050,11 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       outputRequestRef.current?.controller.abort();
       outputRequestRef.current = null;
       outputSessionRef.current = null;
+      syncRequestRef.current?.controller.abort();
+      if (syncRequestRef.current?.passwordInput) syncRequestRef.current.passwordInput.value = "";
+      if (syncPasswordRef.current) syncPasswordRef.current.value = "";
+      syncRequestRef.current = null;
+      syncSessionRef.current = null;
       pollControllerRef.current?.abort();
       controller.abort();
       if (lifetimeControllerRef.current === controller) {
@@ -1587,49 +1597,87 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       }
     }
   };
+  const invalidateSyncSession = () => {
+    syncRequestRef.current?.controller.abort();
+    if (syncRequestRef.current?.passwordInput) syncRequestRef.current.passwordInput.value = "";
+    if (syncPasswordRef.current) syncPasswordRef.current.value = "";
+    syncRequestRef.current = null;
+    syncSessionRef.current = null;
+  };
+  const ownsSyncSession = (session) => session && syncSessionRef.current === session
+    && workspaceMountedRef.current && syncScopeRef.current.adapter === session.adapter
+    && syncScopeRef.current.workspaceId === session.workspaceId;
+  const ownsSyncRequest = (request) => syncRequestRef.current === request
+    && !request.controller.signal.aborted && ownsSyncSession(request.session);
   const loadSyncOperations = async () => {
-    if (typeof adapter?.listSyncOperations !== "function") {
-      setSyncOperations([]);
-      setSyncSafeError("SYNC_SETTINGS_UNAVAILABLE");
-      return;
-    }
+    const session = syncSessionRef.current;
+    if (!ownsSyncSession(session) || syncRequestRef.current?.kind === "approve") return;
+    syncRequestRef.current?.controller.abort();
+    const request = { session, kind: "load", controller: new AbortController() };
+    syncRequestRef.current = request;
     setSyncPending(true);
     setSyncSafeError(null);
+    setSyncFailurePhase(null);
     try {
-      const result = await adapter.listSyncOperations({ signal: lifetimeControllerRef.current?.signal });
+      if (typeof session.adapter?.listSyncOperations !== "function") throw new Error("SYNC_SETTINGS_UNAVAILABLE");
+      const result = await session.adapter.listSyncOperations({ signal: request.controller.signal });
+      if (!ownsSyncRequest(request)) return;
       setSyncOperations(result);
       setSyncSelections(Object.fromEntries(result.map((operation) => [
         operation.operation_id, operation.state === "awaiting_approval" ? [...operation.item_ids] : [...operation.approved_item_ids],
       ])));
     } catch (error) {
+      if (!ownsSyncRequest(request)) return;
       setSyncOperations([]);
       setSyncSafeError(safeErrorCode(error, "SYNC_SETTINGS_UNAVAILABLE"));
+      setSyncFailurePhase("load");
     } finally {
-      setSyncPending(false);
+      if (ownsSyncRequest(request)) {
+        syncRequestRef.current = null;
+        setSyncPending(false);
+      }
     }
   };
   const approveSyncOperation = async (operation) => {
-    if (syncPending || typeof adapter?.approveSyncOperation !== "function" || typeof adapter?.issueStudioStepUp !== "function") return;
-    const password = syncPasswordRef.current?.value ?? "";
+    const session = syncSessionRef.current;
+    const approvedItemIds = [...(syncSelections[operation.operation_id] ?? [])];
+    if (!ownsSyncSession(session) || syncRequestRef.current || operation.state !== "awaiting_approval"
+        || !syncOperations.includes(operation) || !approvedItemIds.length
+        || typeof session.adapter?.approveSyncOperation !== "function" || typeof session.adapter?.issueStudioStepUp !== "function") return;
+    const passwordInput = syncPasswordRef.current;
+    const password = passwordInput?.value ?? "";
+    const request = { session, kind: "approve", controller: new AbortController(), passwordInput };
+    syncRequestRef.current = request;
+    if (passwordInput) passwordInput.value = "";
+    let phase = "authorization";
     setSyncPending(true);
     setSyncSafeError(null);
+    setSyncFailurePhase(null);
     try {
       const idempotencyKey = secureUuid();
-      const stepUpAuthorizationId = await adapter.issueStudioStepUp(
+      const stepUpAuthorizationId = await session.adapter.issueStudioStepUp(
         "data_area_move", operation.operation_id, password,
-        { idempotencyKey, signal: lifetimeControllerRef.current?.signal },
+        { idempotencyKey, signal: request.controller.signal },
       );
-      const saved = await adapter.approveSyncOperation(
+      if (!ownsSyncRequest(request)) return;
+      phase = "approval";
+      const saved = await session.adapter.approveSyncOperation(
         operation,
-        { approvedItemIds: syncSelections[operation.operation_id] ?? [], stepUpAuthorizationId },
-        { idempotencyKey, signal: lifetimeControllerRef.current?.signal },
+        { approvedItemIds, stepUpAuthorizationId },
+        { idempotencyKey, signal: request.controller.signal },
       );
+      if (!ownsSyncRequest(request)) return;
       setSyncOperations((current) => current.map((item) => item.operation_id === saved.operation_id ? saved : item));
     } catch (error) {
+      if (!ownsSyncRequest(request)) return;
       setSyncSafeError(safeErrorCode(error, "SYNC_SETTINGS_APPROVAL_FAILED"));
+      setSyncFailurePhase(phase);
     } finally {
-      if (syncPasswordRef.current) syncPasswordRef.current.value = "";
-      setSyncPending(false);
+      if (ownsSyncRequest(request)) {
+        if (passwordInput) passwordInput.value = "";
+        syncRequestRef.current = null;
+        setSyncPending(false);
+      }
     }
   };
   const loadEgressPolicy = async () => {
@@ -1742,6 +1790,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
   };
   const openModal = (view, opener) => {
     invalidateOutputSession();
+    invalidateSyncSession();
+    if (view === "sync") {
+      syncSessionRef.current = { adapter, workspaceId };
+      setSyncOperations([]); setSyncSelections({}); setSyncPending(false);
+      setSyncSafeError(null); setSyncFailurePhase(null);
+    }
     if (view === "output-version") {
       outputSessionRef.current = { adapter, workspaceId };
       setOutputSettings(null); setOutputDraft(null); setOutputSettingsDirty(false);
@@ -1765,6 +1819,8 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       return;
     }
     invalidateOutputSession();
+    invalidateSyncSession();
+    setSyncPending(false);
     setOutputSettingsPending(false);
     setModalView(null);
     setOutputCloseGuard(false);
@@ -2133,12 +2189,12 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           </div> : modalView === "sync" ? <div className="workspace-modal-content sync-approval-settings" aria-live="polite">
             <div className="sync-settings-toolbar"><div><strong>동기화 Preview</strong><small>자동 전송하지 않습니다. 승인할 항목을 확인해 명시적으로 선택하세요.</small></div><button type="button" disabled={syncPending} onClick={() => void loadSyncOperations()}>새로고침</button></div>
             {syncPending && !syncOperations.length ? <div className="modal-unavailable" role="status">동기화 상태를 불러오고 있습니다.</div> : null}
-            {syncSafeError ? <div className="modal-unavailable" role="alert"><strong>동기화 설정을 처리하지 못했습니다.</strong><p>승인 또는 전송은 실행되지 않았습니다.</p><button type="button" onClick={() => void loadSyncOperations()}>다시 불러오기</button></div> : null}
+            {syncSafeError ? <div className="modal-unavailable" role="alert"><strong>동기화 설정을 처리하지 못했습니다.</strong><p>{syncFailurePhase === "approval" ? "승인 결과를 확인할 수 없습니다. 목록을 다시 불러와 확인해 주세요." : syncFailurePhase === "authorization" ? "추가 인증을 완료하지 못했습니다. 인증 정보를 확인해 주세요." : "동기화 상태를 불러오지 못했습니다. 다시 확인해 주세요."}</p><p>실제 전송 상태는 승인 상태와 별도로 확인해 주세요.</p><button type="button" disabled={syncPending} onClick={() => void loadSyncOperations()}>다시 불러오기</button></div> : null}
             {!syncPending && !syncSafeError && !syncOperations.length ? <div className="sync-empty-state"><strong>승인을 기다리는 동기화가 없습니다.</strong><small>Windows 앱에서 Preview를 만들면 이 화면에서 확인할 수 있습니다.</small></div> : null}
             <div className="sync-operation-list">
               {syncOperations.map((operation) => <article key={operation.operation_id} data-sync-state={operation.state}>
                 <header><div><strong>{operation.state === "awaiting_approval" ? "승인 대기" : operation.state === "approved" ? "승인됨" : operation.state === "conflict" ? "충돌 확인 필요" : "처리 상태"}</strong><small>항목 {operation.item_ids.length}개 · Version {operation.version}</small></div><span>{operation.state}</span></header>
-                <fieldset disabled={operation.state !== "awaiting_approval" || syncPending}><legend>승인 항목</legend>{operation.item_ids.map((itemId) => <label key={itemId}><input type="checkbox" checked={(syncSelections[operation.operation_id] ?? []).includes(itemId)} onChange={(event) => setSyncSelections((current) => ({ ...current, [operation.operation_id]: event.target.checked ? [...new Set([...(current[operation.operation_id] ?? []), itemId])] : (current[operation.operation_id] ?? []).filter((id) => id !== itemId) }))} /><span>{itemId}</span></label>)}</fieldset>
+                <fieldset disabled={operation.state !== "awaiting_approval" || syncPending}><legend>승인 항목</legend>{operation.item_ids.map((itemId) => <label key={itemId}><input type="checkbox" checked={(syncSelections[operation.operation_id] ?? []).includes(itemId)} onChange={(event) => { if (syncRequestRef.current) return; const checked = event.target.checked; setSyncSelections((current) => ({ ...current, [operation.operation_id]: checked ? [...new Set([...(current[operation.operation_id] ?? []), itemId])] : (current[operation.operation_id] ?? []).filter((id) => id !== itemId) })); }} /><span>{itemId}</span></label>)}</fieldset>
                 {operation.state === "awaiting_approval" ? <button type="button" disabled={syncPending || !(syncSelections[operation.operation_id] ?? []).length} onClick={() => void approveSyncOperation(operation)}>선택 항목 승인</button> : null}
               </article>)}
             </div>

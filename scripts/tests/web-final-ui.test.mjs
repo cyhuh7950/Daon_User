@@ -8,6 +8,7 @@ import { createProductStudioState, selectOutputType } from "../../packages/ui/sr
 import { createProductWorkspaceState } from "../../packages/ui/src/product-workspace-model.js";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
 import { getWorkspaceOutputVersionSettings, saveWorkspaceOutputVersionSettings } from '../../apps/web/lib/product-workspace-api.js';
+import { listWorkspaceSyncOperations, approveWorkspaceSyncOperation } from '../../apps/web/lib/sync-approval-settings-api.js';
 
 const PROVIDERS = ["CEREBRAS", "GROQ", "MISTRAL", "OPENAI", "UPSTAGE", "GEMINI", "OPENROUTER", "ANTHROPIC", "OLLAMA", "OMNIROUTE", "EOUL_GATEWAY"];
 
@@ -383,6 +384,133 @@ test("출력·버전 Popup은 유형별 형식과 append-only 정책을 저장�
     dom.restore();
     await rm(output, { recursive: true, force: true });
   }
+});
+
+function s29Operation(overrides={}) {
+  return {operation_id:'sync-operation-s29',tenant_id:'tenant-1',workspace_id:'workspace-1',actor_id:'actor-1',target_area:'cloud_sync',state:'awaiting_approval',version:1,manifest_digest:'a'.repeat(64),item_ids:['item-s29-a','item-s29-b'],approved_item_ids:[],completed_item_ids:[],batches:[],conflicts:[],target_versions:[],reindex_state:null,source_mutations:0,overwrite_count:0,...overrides};
+}
+async function withS29Sync(adapter,run) {
+  const output=await mkdtemp(path.join(path.resolve(import.meta.dirname,'../..'),'.web-S29-sync-'));
+  const dom=installMinimalDom();let reactRoot,unmounted=false;
+  try {
+    const {createElement,act}=await import('react'),{createRoot}=await import('react-dom/client');
+    const {ProductWorkspaceShell}=await bundle('packages/ui/src/product-workspace-shell.jsx','web-S29-sync',output);
+    const container=dom.document.createElement('div');dom.document.body.appendChild(container);reactRoot=createRoot(container);
+    const render=(next=adapter,workspaceId='workspace-1')=>act(async()=>reactRoot.render(createElement(ProductWorkspaceShell,{workspaceId,state:createProductWorkspaceState({status:'ready'}),adapter:next})));
+    await render();
+    const dialog=()=>findElements(container,node=>node.getAttribute?.('role')==='dialog')[0];
+    const click=(label,scope=container)=>act(async()=>{const button=buttonByText(scope,label);assert.ok(button,label);button.dispatchEvent(new MinimalEvent('click'));});
+    const open=async()=>{await click('설정');const item=findElements(container,node=>node.getAttribute?.('role')==='menuitem'&&node.textContent.includes('동기화·승인'))[0];assert.ok(item);await act(async()=>item.dispatchEvent(new MinimalEvent('click')));};
+    const close=()=>act(async()=>{const button=findElements(dialog(),node=>node.getAttribute?.('aria-label')==='닫기')[0];assert.ok(button);button.dispatchEvent(new MinimalEvent('click'));});
+    const password=()=>findElements(dialog(),node=>node.tagName==='INPUT'&&node.type==='password')[0];
+    const checkboxes=()=>findElements(dialog(),node=>node.tagName==='INPUT'&&node.type==='checkbox');
+    const deselect=async(index)=>{const checkbox=checkboxes()[index];await act(async()=>{checkbox.checked=false;checkbox.dispatchEvent(new MinimalEvent('click'));});};
+    const unmount=async()=>{await act(async()=>reactRoot.unmount());unmounted=true;};
+    await run({container,act,render,dialog,click,open,close,password,checkboxes,deselect,unmount});
+  } finally {if(reactRoot&&!unmounted){const {act}=await import('react');await act(async()=>reactRoot.unmount());}dom.restore();await rm(output,{recursive:true,force:true});}
+}
+
+test('S29 old list success or failure cannot replace reentry selections or current status',async t=>{
+  for(const outcome of ['success','failure'])await t.test(outcome,async()=>{
+    const old=s28Deferred();let reads=0;const approved=[];
+    const adapter={listSyncOperations:()=>++reads===1?old.promise:Promise.resolve([s29Operation()]),issueStudioStepUp:async()=> 'step-up-s29',approveSyncOperation:async(operation,input)=>{approved.push(input.approvedItemIds);return {...operation,state:'approved',version:2,approved_item_ids:input.approvedItemIds};}};
+    await withS29Sync(adapter,async view=>{
+      try {
+        await view.open();await view.close();await view.open();await view.deselect(1);
+        assert.deepEqual(view.checkboxes().map(node=>node.checked),[true,false]);
+        await view.act(async()=>outcome==='success'?old.resolve([s29Operation()]):old.reject(new Error('private late list')));
+        assert.deepEqual(view.checkboxes().map(node=>node.checked),[true,false]);
+        assert.equal(findElements(view.dialog(),node=>node.getAttribute?.('role')==='alert').length,0);
+        view.password().value='synthetic-password';await view.click('선택 항목 승인',view.dialog());
+        assert.deepEqual(approved,[['item-s29-a']]);
+      } finally {await view.act(async()=>old.resolve([]));}
+    });
+  });
+});
+
+test('S29 synchronous duplicate approval authenticates and submits the selected snapshot exactly once through the real Web helper',async()=>{
+  const auth=s28Deferred();const requests=[];let authorizations=0,authorizationKey;
+  const fetchImpl=async(url,init)=>{requests.push({url,init});const input=init.body?JSON.parse(init.body):null;return Response.json({data:input?s29Operation({state:'approved',version:2,approved_item_ids:input.approved_item_ids}):{operations:[s29Operation()]},meta:{trace_id:'trace-s29'}});};
+  const adapter={listSyncOperations:options=>listWorkspaceSyncOperations('workspace-1',{...options,fetchImpl}),issueStudioStepUp:async(group,target,password,options)=>{authorizations++;authorizationKey=options.idempotencyKey;assert.equal(group,'data_area_move');assert.equal(target,'sync-operation-s29');assert.equal(password,'synthetic-password');assert.ok(options.signal);return auth.promise;},approveSyncOperation:(operation,input,options)=>approveWorkspaceSyncOperation('workspace-1',operation,input,{...options,fetchImpl})};
+  await withS29Sync(adapter,async view=>{
+    try {
+      await view.open();await view.deselect(1);const password=view.password();password.value='synthetic-password';
+      // Captured props are used only to reproduce two handler calls in one React tick.
+      const handler=s28Props(buttonByText(view.dialog(),'선택 항목 승인')).onClick;
+      await view.act(async()=>{handler();handler();});assert.equal(authorizations,1);
+      assert.equal(buttonByText(view.dialog(),'선택 항목 승인').disabled,true);
+      await view.act(async()=>auth.resolve('step-up-s29'));
+      const writes=requests.filter(row=>row.init.method==='POST');assert.equal(writes.length,1);
+      assert.deepEqual(JSON.parse(writes[0].init.body),{approved_item_ids:['item-s29-a'],step_up_authorization_id:'step-up-s29'});
+      assert.equal(writes[0].init.headers['If-Match'],'"sync:sync-operation-s29:1"');
+      assert.match(writes[0].init.headers['Idempotency-Key'],/^[0-9a-f-]{36}$/);
+      assert.equal(writes[0].init.headers['Idempotency-Key'],authorizationKey);
+      assert.equal(password.value,'');assert.match(view.dialog().textContent,/승인됨/);
+      assert.ok(requests.every(row=>row.url.startsWith('/bff/api/')&&!row.url.includes('transfer-batches')));
+    } finally {await view.act(async()=>auth.resolve('step-up-s29'));}
+  });
+});
+
+test('S29 closing during Step-up prevents a later authorization from submitting and preserves the new dialog password',async t=>{
+  for(const outcome of ['success','failure'])await t.test(outcome,async()=>{
+    const auth=s28Deferred();let approvals=0;let signal;
+    const adapter={listSyncOperations:async()=>[s29Operation()],issueStudioStepUp:async(_group,_target,_password,options)=>{signal=options.signal;return auth.promise;},approveSyncOperation:async()=>{approvals++;return s29Operation({state:'approved',version:2});}};
+    await withS29Sync(adapter,async view=>{
+      try {
+        await view.open();const oldPassword=view.password();oldPassword.value='synthetic-old';await view.click('선택 항목 승인',view.dialog());await view.close();
+        assert.equal(oldPassword.value,'');assert.equal(signal.aborted,true);
+        await view.open();view.password().value='synthetic-new';
+        await view.act(async()=>outcome==='success'?auth.resolve('step-up-s29'):auth.reject(new Error('private late authentication')));
+        assert.equal(approvals,0);assert.equal(view.password().value,'synthetic-new');
+        assert.equal(buttonByText(view.dialog(),'선택 항목 승인').disabled,false);
+        assert.equal(findElements(view.dialog(),node=>node.getAttribute?.('role')==='alert').length,0);
+      } finally {await view.act(async()=>auth.resolve('step-up-s29'));}
+    });
+  });
+});
+
+test('S29 late approval response never clears a newer list pending or changes its operations',async t=>{
+  for(const outcome of ['success','failure'])await t.test(outcome,async()=>{
+    const approval=s28Deferred(),next=s28Deferred();let reads=0;
+    const adapter={listSyncOperations:()=>++reads===1?Promise.resolve([s29Operation()]):next.promise,issueStudioStepUp:async()=> 'step-up-s29',approveSyncOperation:()=>approval.promise};
+    await withS29Sync(adapter,async view=>{
+      try {
+        await view.open();view.password().value='synthetic-password';await view.click('선택 항목 승인',view.dialog());await view.close();await view.open();
+        await view.act(async()=>outcome==='success'?approval.resolve(s29Operation({state:'approved',version:2})):approval.reject(new Error('private old approval')));
+        assert.match(view.dialog().textContent,/동기화 상태를 불러오고 있습니다/);
+        assert.equal(buttonByText(view.dialog(),'새로고침').disabled,true);
+        assert.equal(findElements(view.dialog(),node=>node.getAttribute?.('role')==='alert').length,0);
+        await view.act(async()=>next.resolve([s29Operation({operation_id:'sync-operation-new'})]));
+        assert.doesNotMatch(view.dialog().textContent,/승인됨/);assert.equal(buttonByText(view.dialog(),'선택 항목 승인').disabled,false);
+      } finally {await view.act(async()=>{approval.resolve(s29Operation({state:'approved',version:2}));next.resolve([]);});}
+    });
+  });
+});
+
+test('S29 approval response loss reports uncertainty and does not claim approval or transfer never ran',async()=>{
+  let writes=0;
+  await withS29Sync({listSyncOperations:async()=>[s29Operation()],issueStudioStepUp:async()=> 'step-up-s29',approveSyncOperation:async()=>{writes++;throw new Error('SYNC_SETTINGS_RESPONSE_INVALID');}},async view=>{
+    await view.open();const password=view.password();password.value='synthetic-password';await view.click('선택 항목 승인',view.dialog());
+    const alert=findElements(view.dialog(),node=>node.getAttribute?.('role')==='alert')[0];assert.ok(alert);assert.equal(writes,1);
+    assert.doesNotMatch(alert.textContent,/실행되지 않았|저장되지 않았|private/);
+    assert.match(alert.textContent,/승인 결과.*확인할 수 없/);assert.match(alert.textContent,/전송.*별도/);
+    assert.equal(password.value,'');assert.deepEqual(view.checkboxes().map(node=>node.checked),[true,true]);
+  });
+});
+
+test('S29 adapter Workspace or unmount during authentication invalidates approval ownership',async t=>{
+  for(const boundary of ['adapter','workspace','unmount'])await t.test(boundary,async()=>{
+    const auth=s28Deferred();let approvals=0,signal;
+    const adapter={listSyncOperations:async()=>[s29Operation()],issueStudioStepUp:async(_g,_t,_p,options)=>{signal=options.signal;return auth.promise;},approveSyncOperation:async()=>{approvals++;return s29Operation();}};
+    await withS29Sync(adapter,async view=>{
+      try {
+        await view.open();const password=view.password();password.value='synthetic-password';await view.click('선택 항목 승인',view.dialog());
+        if(boundary==='unmount')await view.unmount();else await view.render(boundary==='adapter'?{...adapter}:adapter,boundary==='workspace'?'workspace-2':'workspace-1');
+        assert.equal(password.value,'');assert.equal(signal.aborted,true);
+        await view.act(async()=>auth.resolve('step-up-s29'));assert.equal(approvals,0);assert.equal(view.dialog(),undefined);
+      } finally {await view.act(async()=>auth.resolve('step-up-s29'));}
+    });
+  });
 });
 
 test("동기화·승인 Popup은 Preview 항목을 표시하고 Step-up 뒤 선택 항목만 승인한다", async () => {
