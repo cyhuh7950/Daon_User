@@ -3,10 +3,64 @@ import test from "node:test";
 
 import { createNotebook, getCurrentNotebookSession, getNotebook, getNotebookContext, listNotebooks, updateNotebookTitle } from "../../apps/web/lib/notebook-api.js";
 import { listWorkspaceSources } from "../../apps/web/lib/product-workspace-api.js";
+import { createNotebookContextWorkspaceAdapter, projectNotebookSelectedContext } from "../../packages/ui/src/notebook-context-adapter.js";
 
 const VIEW = Object.freeze({ notebook_id: "notebook-1", title: "Notebook", source_count: 0, output_count: 0, updated_at: "2026-08-16T01:02:03Z", status: "empty", etag: '"notebook:1"' });
 const META = Object.freeze({ trace_id: "trace-1", workspace_id: "workspace-1" });
 const json = (body, init = {}) => Response.json(body, init);
+
+function s16DeletionContext(state) {
+  return { notebook_id: "notebook-1", sources: [], knowledge_context_ids: [], conversation_thread_ids: [],
+    studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null,
+    source_deletion_requests: [{ request_id: "request-s16", source_id: "source-gone", state,
+      version: 3, grace_until: "2026-10-16T12:00:00Z", legal_hold_active: false }] };
+}
+
+for (const state of ["grace_period", "blocked_by_hold", "awaiting_ack", "cleanup_pending", "failed", "purged"]) {
+  test(`S16 삭제 상태 ${state}는 실제 Web context에서 adapter로 원본 binding 없이 복원된다`, async () => {
+    const response = await getNotebookContext("workspace-1", "notebook-1", {
+      fetchImpl: async (url, init) => {
+        assert.equal(url, "/bff/api/workspaces/workspace-1/notebooks/notebook-1/context");
+        assert.equal(init.method, "GET"); assert.equal(init.credentials, "same-origin");
+        return json({ data: s16DeletionContext(state), meta: META }, { headers: { ETag: '"notebook-binding:7"' } });
+      },
+    });
+    const adapter = createNotebookContextWorkspaceAdapter({}, response.data);
+    assert.equal(adapter.bindingEtag, '"notebook-binding:7"');
+    assert.deepEqual(await adapter.listSourceDeletionRequests(), [{ request_id: "request-s16", source_id: "source-gone",
+      state, version: 3, grace_until: "2026-10-16T12:00:00Z", legal_hold_active: false }]);
+    assert.deepEqual(adapter.notebookContext.sources, []);
+  });
+}
+
+test("S16 삭제 상태 unknown 및 잘못된 exact 6필드 DTO는 두 검증기가 계속 거부한다", async () => {
+  const invalids = [
+    ...["completed", "cancelled", "deleted", "unknown", "PURGED", null, 42].map(state => item => { item.state = state; }),
+    ...["request_id", "source_id", "state", "version", "grace_until", "legal_hold_active"].map(key => item => { delete item[key]; }),
+    item => { item.extra = "unapproved"; },
+    item => { item.request_id = "../unsafe"; }, item => { item.source_id = ""; },
+    ...[0, -1, 1.5, "3", true, Number.MAX_SAFE_INTEGER + 1].map(version => item => { item.version = version; }),
+    ...["not-a-date", null].map(time => item => { item.grace_until = time; }),
+    ...["false", null].map(hold => item => { item.legal_hold_active = hold; }),
+  ];
+  for (const mutate of invalids) {
+    const data = s16DeletionContext("cleanup_pending"); mutate(data.source_deletion_requests[0]);
+    await assert.rejects(getNotebookContext("workspace-1", "notebook-1", {
+      fetchImpl: async () => json({ data, meta: META }, { headers: { ETag: '"notebook-binding:7"' } }),
+    }), /NOTEBOOK_CONTEXT_INVALID/u);
+    assert.throws(() => projectNotebookSelectedContext(data), /NOTEBOOK_CONTEXT_INVALID/u);
+  }
+});
+
+test("S16 삭제 상태 복원에서도 다른 Notebook 및 잘못된 binding ETag는 거부한다", async () => {
+  for (const [notebookId, etag] of [["notebook-other", '"notebook-binding:7"'], ["notebook-1", null],
+    ["notebook-1", '"notebook:7"'], ["notebook-1", '"notebook-binding:0"']]) {
+    const data = s16DeletionContext("cleanup_pending"); data.notebook_id = notebookId;
+    await assert.rejects(getNotebookContext("workspace-1", "notebook-1", {
+      fetchImpl: async () => json({ data, meta: META }, { headers: etag === null ? {} : { ETag: etag } }),
+    }), /NOTEBOOK_CONTEXT_INVALID/u);
+  }
+});
 
 test("Web saved sheet_cell context preserves exact Notebook SourceVersion and rejects bad locator/binding", async () => {
   const citations = ['B2','B3','B3','B2','A3'].map((range, index) => ({
