@@ -769,6 +769,14 @@ export function validateOpenApiDocument(document) {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "image/png", "image/svg+xml", "text/csv",
   ].sort();
   if (JSON.stringify(exportMedia) !== JSON.stringify(requiredExportMedia)) fail("Studio export media types mismatch Runtime");
+  const exportProof = document.paths["/api/v1/studio-outputs/{id}/versions/{version_id}/exports/{format_name}"]?.get?.parameters ?? [];
+  const requiredExportProof = [
+    { name: "X-Daon-Step-Up-Authorization", in: "header", required: true, schema: { type: "string", minLength: 1, maxLength: 4096 } },
+    { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string", minLength: 16, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" } },
+  ];
+  if (JSON.stringify(exportProof.filter(parameter => parameter.in === "header")) !== JSON.stringify(requiredExportProof)) {
+    fail("Studio export proof headers mismatch Runtime");
+  }
 
   walk(document, (value) => {
     if (isObject(value) && "$ref" in value) resolveRef(document, value.$ref);

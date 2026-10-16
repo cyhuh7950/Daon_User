@@ -6,6 +6,7 @@ import { ProviderSettingsWorkspace } from "./provider-settings-workspace.jsx";
 import { getDocumentProcessingStatus, reprocessSource, uploadSource } from "../lib/source-upload-api.js";
 import { askGroundedQuestion, authorizeGroundedQuestion, citationContentUrl } from "../lib/question-answering-api.js";
 import { createGroundedReport, createStudioGeneration, getStudioGenerationJob, createStudioVersion, createStudioAction, downloadStudioExport, getWorkspaceOperationsStatus, getWorkspaceOutputVersionSettings, issueStudioStepUp, listProductStudioOutputs, listStudioOutputs, listStudioVersions, listWorkspaceConnectors, listWorkspaceKnowledgePackages, listWorkspaceSources, reconnectWorkspaceConnector, registerWorkspaceConnector, unregisterWorkspaceConnector, saveWorkspaceOutputVersionSettings, unbindWorkspaceSource } from "../lib/product-workspace-api.js";
+import { issueStudioExportStepUp } from "../lib/product-workspace-api.js";
 import { approveWorkspaceSyncOperation, listWorkspaceSyncOperations } from "../lib/sync-approval-settings-api.js";
 import { getEffectiveEgressPolicy } from "../lib/egress-policy-api.js";
 import { applyCurrentOrganizationLicenseWithStepUp, getWorkspaceLicense } from "../lib/license-api.js";
@@ -70,6 +71,7 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
     listStudioVersions: (outputId, options) => listStudioVersions(workspaceId, outputId, notebookOptions(options)),
     createStudioAction: (action, input, options) => createStudioAction(workspaceId, action, input, notebookOptions(options)),
     issueStudioStepUp,
+    issueStudioExportStepUp: (outputId, versionId, format, password, options) => issueStudioExportStepUp(workspaceId, outputId, versionId, format, password, notebookOptions(options)),
     downloadStudioExport: (outputId, versionId, format, options) => downloadStudioExport(workspaceId, outputId, versionId, format, notebookOptions(options)),
   });
 }

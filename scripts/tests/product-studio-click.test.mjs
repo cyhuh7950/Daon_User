@@ -4,8 +4,284 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
-import { createStudioAction, createStudioGeneration, createStudioVersion, listStudioVersions } from "../../apps/web/lib/product-workspace-api.js";
+import { createStudioAction, createStudioGeneration, createStudioVersion, issueStudioStepUp, issueStudioExportStepUp, downloadStudioExport, listStudioVersions } from "../../apps/web/lib/product-workspace-api.js";
 import { createProductStudioState } from '../../packages/ui/src/product-studio-model.js';
+
+function s24Action(action = 'review', version = 'version-target-3') {
+  return Response.json({ data: { record_id: `record-${action}`, action, status: 'accepted', output_version_id: version },
+    meta: { trace_id: 'trace-1', workspace_id: 'workspace-1', replayed: false } }, { status: 201 });
+}
+function s24Version(patch = {}) { return { ...s23Version(3), ...patch }; }
+async function withS24Studio(fetchImpl, run, version = s24Version()) {
+  const rootPath = path.resolve(import.meta.dirname, '../..');
+  const output = await mkdtemp(path.join(rootPath, '.product-studio-s24-'));
+  const dom = installMinimalDom(); let reactRoot;
+  try {
+    const { createElement, act } = await import('react'), { createRoot } = await import('react-dom/client'), { build } = await import('vite');
+    await build({ configFile: false, logLevel: 'silent', root: rootPath, build: { outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(rootPath, 'packages/ui/src/product-studio-pane.jsx'), formats: ['es'], fileName: 'product-studio' },
+      rollupOptions: { external: ['react', 'react-dom', 'react-dom/client'] } } });
+    const entry = (await readdir(output)).find(name => name.startsWith('product-studio') && /\.m?js$/u.test(name));
+    const { ProductStudioPane } = await import(pathToFileURL(path.join(output, entry)).href);
+    const container = dom.document.createElement('div'); dom.document.body.appendChild(container); reactRoot = createRoot(container);
+    const adapterFor = (workspace = 'workspace-1', extra = {}) => ({
+      createStudioAction: (action, input, options) => createStudioAction(workspace, action, input, { ...options, notebookId: 'notebook-1', fetchImpl }),
+      listStudioVersions: (id, options) => listStudioVersions(workspace, id, { ...options, notebookId: 'notebook-1', fetchImpl }),
+      issueStudioStepUp: (group, target, password, options) => issueStudioStepUp(group, target, password, { ...options, fetchImpl }), ...extra,
+      issueStudioExportStepUp: (outputId, versionId, format, password, options) => issueStudioExportStepUp(workspace, outputId, versionId, format, password, { ...options, notebookId: 'notebook-1', fetchImpl }),
+      downloadStudioExport: (outputId, versionId, format, options) => downloadStudioExport(workspace, outputId, versionId, format, { ...options, notebookId: 'notebook-1', fetchImpl }),
+    });
+    const stateFor = (workspace = 'workspace-1', current = version) => ({ ...s23State(workspace), sources: s22Sources,
+      settings: { sourceVersionIds: ['source-version-1'] }, outputs: s23State(workspace).outputs.map(item =>
+        item.studio_output_id === 'output-target' ? { ...item, ...current } : item) });
+    const render = (state, adapter) => act(async () => reactRoot.render(createElement(ProductStudioPane, { state, adapter })));
+    await render(stateFor(), adapterFor());
+    const click = label => act(async () => { const button = buttonByText(container, label); assert.ok(button, label); button.dispatchEvent(new MinimalEvent('click')); });
+    const fillPassword = () => act(async () => s22Props(s22Field(container, '추가 인증 비밀번호', 'INPUT')).onChange({ currentTarget: { value: 'fixture password only' } }));
+    const detail = () => findElements(container, node => node.getAttribute?.('aria-label') === '선택 산출물 상세')[0];
+    await run({ container, act, render, adapterFor, stateFor, click, fillPassword, detail, document: dom.document });
+  } finally {
+    if (reactRoot) { const { act } = await import('react'); await act(async () => reactRoot.unmount()); }
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+}
+
+test('S24 synchronous review handlers send one bound action and canonically reload the exact Version', async () => {
+  const write = s22Deferred(); const posts = []; let reads = 0;
+  await withS24Studio(async (_url, init) => {
+    if (init.method === 'POST') { posts.push(JSON.parse(init.body)); await write.promise; return s24Action(); }
+    reads++; return s23Read([s23Version(4), s24Version({ status: 'in_review', review_request_id: 'record-review' })]);
+  }, async ({ container, act, detail }) => {
+    const handler = s22Props(buttonByText(container, '검토 요청')).onClick;
+    await act(async () => { handler(); handler(); });
+    try { assert.equal(posts.length, 1); assert.deepEqual(posts[0], { output_version_id: 'version-target-3', workspace_id: 'workspace-1', notebook_id: 'notebook-1' }); }
+    finally { await act(async () => write.resolve()); }
+    assert.equal(reads, 1); assert.match(detail().textContent, /정본 target V3/);
+    assert.match(detail().textContent, /Version 3 · 근거 1/); assert.equal(buttonByText(container, '검토 요청').disabled, true);
+    assert.equal(buttonByText(container, '승인 요청').disabled, false);
+  });
+});
+
+test('S24 accepted action is not optimistic approval and failed canonical GET preserves a non-retry receipt', async () => {
+  let writes = 0, reads = 0;
+  await withS24Studio(async (url, init) => {
+    if (url.endsWith('/session/step-up')) return Response.json({ data: { step_up_authorization: 'opaque-fixture-grant' } });
+    if (init.method === 'POST') { writes++; return s24Action('approval'); }
+    if (++reads === 1) throw new Error('private read response');
+    return s23Read([s24Version({ status: 'approved', review_request_id: 'review-1', approval_request_id: 'request-1', approval_id: 'record-approval' })]);
+  }, async ({ container, click, fillPassword, detail }) => {
+    await click('승인'); await fillPassword(); await click('추가 인증 확인');
+    assert.equal(writes, 1); assert.equal(reads, 1);
+    assert.match(container.textContent, /요청이 접수되었습니다.*record-approval/);
+    assert.match(container.textContent, /처리 상태.*확인/);
+    assert.doesNotMatch(detail().textContent, /승인됨|private read response/);
+    assert.equal(buttonByText(container, '승인').disabled, true);
+    await click('승인'); assert.equal(writes, 1);
+    await click('대상 비교표'); assert.match(detail().textContent, /승인됨/);
+    assert.equal(buttonByText(container, '승인').disabled, true); assert.equal(writes, 1);
+  }, s24Version({ status: 'in_review', review_request_id: 'review-1', approval_request_id: 'request-1' }));
+});
+
+test('S24 rejects malformed wrong-action wrong-target or wrong-status action receipts without optimistic approval', async t => {
+  for (const fault of ['missing', 'action', 'target', 'status', 'record']) await t.test(fault, async () => {
+    let reads = 0;
+    await withS24Studio(async (url, init) => {
+      if (url.endsWith('/session/step-up')) return Response.json({ data: { step_up_authorization: 'opaque-fixture-grant' } });
+      if (init.method === 'GET') { reads++; return s23Read([s24Version()]); }
+      const value = { record_id: 'record-approval', action: 'approval', status: 'accepted', output_version_id: 'version-target-3' };
+      if (fault === 'missing') delete value.action;
+      if (fault === 'action') value.action = 'review';
+      if (fault === 'target') value.output_version_id = 'version-target-4';
+      if (fault === 'status') value.status = 'approved';
+      if (fault === 'record') value.record_id = { private: 'receipt-canary' };
+      return Response.json({ data: value }, { status: 201 });
+    }, async ({ container, click, fillPassword, detail }) => {
+      await click('승인'); await fillPassword(); await click('추가 인증 확인');
+      assert.doesNotMatch(detail().textContent, /승인됨|receipt-canary/);
+      assert.equal(reads, 0); assert.equal(buttonByText(container, '승인').disabled, true);
+      assert.equal(findElements(container, node => node.getAttribute?.('role') === 'alert').length, 1);
+    }, s24Version({ status: 'in_review', review_request_id: 'review-1', approval_request_id: 'request-1' }));
+  });
+});
+
+test('S24 only valid lifecycle state transitions are clickable and registered Versions cannot register again', async t => {
+  for (const [name, version, enabled] of [
+    ['draft', s24Version(), ['검토 요청']],
+    ['reviewed', s24Version({ status: 'in_review', review_request_id: 'review-1' }), ['승인 요청']],
+    ['requested', s24Version({ status: 'in_review', review_request_id: 'review-1', approval_request_id: 'request-1' }), ['승인', '수정 요청']],
+    ['approved', s24Version({ status: 'approved', review_request_id: 'review-1', approval_request_id: 'request-1', approval_id: 'approval-1' }), ['생산 지식 등록']],
+    ['registered', s24Version({ status: 'approved', review_request_id: 'review-1', approval_request_id: 'request-1', approval_id: 'approval-1', knowledge_registration_id: 'registered-1' }), []],
+  ]) await t.test(name, async () => {
+    let calls = 0;
+    await withS24Studio(async () => { calls++; throw new Error('MUST_NOT_CALL'); }, async ({ container, act }) => {
+      for (const label of ['검토 요청', '승인 요청', '승인', '수정 요청', '생산 지식 등록']) {
+        const button = buttonByText(container, label); assert.equal(button.disabled, !enabled.includes(label), `${name}: ${label}`);
+        if (!enabled.includes(label)) await act(async () => s22Props(button).onClick());
+      }
+      assert.equal(calls, 0);
+    }, version);
+  });
+});
+
+test('S24 old action does not patch a newer Version of the same output', async () => {
+  const pending = s22Deferred();
+  await withS24Studio(async (_url, init) => {
+    if (init.method === 'POST') { await pending.promise; return s24Action(); }
+    return s23Read([s23Version(4), s24Version({ status: 'in_review', review_request_id: 'record-review' })]);
+  }, async ({ container, click, act, detail }) => {
+    await click('검토 요청'); await click('대상 비교표');
+    await act(async () => pending.resolve());
+    assert.match(detail().textContent, /정본 target V4/);
+    const header = findElements(detail(), node => node.tagName === 'HEADER')[0];
+    assert.doesNotMatch(header.textContent, /검토 중/);
+    assert.doesNotMatch(detail().textContent, /요청이 접수되었습니다/);
+    assert.equal(buttonByText(container, '승인 요청').disabled, true);
+  });
+});
+
+test('S24 stale action success or failure cannot release another pending detail', async t => {
+  for (const outcome of ['resolve', 'reject']) await t.test(outcome, async () => {
+    const action = s22Deferred(), other = s22Deferred();
+    await withS24Studio(async (url, init) => {
+      if (init.method === 'POST') return action.promise;
+      if (url.includes('output-other/')) return other.promise;
+      return s23Read([s24Version({ status: 'in_review', review_request_id: 'record-review' })]);
+    }, async ({ container, click, act, detail }) => {
+      await click('검토 요청'); await click('다른 산출물');
+      await act(async () => outcome === 'resolve' ? action.resolve(s24Action()) : action.reject(new Error('private action error')));
+      try {
+        assert.equal(buttonByText(container, '검토 요청').disabled, true);
+        assert.doesNotMatch(container.textContent, /요청을 처리하지 못했습니다|private action error/);
+      } finally { await act(async () => other.resolve(s23Read([s23Version(1, 'other')], 'other'))); }
+      assert.match(detail().textContent, /정본 other V1/);
+      assert.doesNotMatch(detail().textContent, /검토 중/);
+    });
+  });
+});
+
+test('S24 adapter replacement and late authentication do not submit or mutate a new scope', async t => {
+  for (const phase of ['authentication', 'action']) await t.test(phase, async () => {
+    const pending = s22Deferred(); let writes = 0;
+    await withS24Studio(async (url, init) => {
+      if (url.endsWith('/session/step-up')) return phase === 'authentication' ? pending.promise
+        : Response.json({ data: { step_up_authorization: 'opaque-fixture-grant' } });
+      if (init.method === 'POST') { writes++; return pending.promise; }
+      return s23Read([s24Version()]);
+    }, async ({ container, click, fillPassword, render, stateFor, adapterFor, act, detail }) => {
+      await click('승인'); await fillPassword(); await click('추가 인증 확인');
+      await render(stateFor('workspace-2'), adapterFor('workspace-2'));
+      await act(async () => pending.resolve(phase === 'authentication'
+        ? Response.json({ data: { step_up_authorization: 'late-fixture-grant' } }) : s24Action('approval')));
+      assert.equal(writes, phase === 'authentication' ? 0 : 1);
+      assert.doesNotMatch(detail().textContent, /승인됨|요청이 접수되었습니다/);
+      assert.equal(findElements(container, node => node.getAttribute?.('role') === 'dialog').length, 0);
+      assert.doesNotMatch(container.textContent, /fixture password only|late-fixture-grant/);
+    }, s24Version({ status: 'in_review', review_request_id: 'review-1', approval_request_id: 'request-1' }));
+  });
+});
+
+test('S24 delivery UI honestly describes a record with no external sending and disables an existing record', async () => {
+  await withS24Studio(async () => { throw new Error('MUST_NOT_CALL'); }, async ({ container, act }) => {
+    const button = buttonByText(container, '전달 기록 등록'); assert.ok(button);
+    assert.equal(button.disabled, true); assert.match(container.textContent, /실제 외부 송신.*없/);
+    await act(async () => s22Props(button).onClick());
+    assert.equal(findElements(container, node => node.getAttribute?.('role') === 'dialog').length, 0);
+  }, s24Version({ status: 'approved', approval_id: 'approval-1', delivery_id: 'delivery-1' }));
+});
+
+test('S24 approval request and explicit rejection use authoritative state and keep accepted IDs', async () => {
+  const posts=[];let canonical=s24Version({status:'in_review',review_request_id:'review-1'});
+  await withS24Studio(async(url,init)=>{
+    if(url.endsWith('/session/step-up'))return Response.json({data:{step_up_authorization:'opaque-reject-grant'}});
+    if(init.method==='POST'){
+      posts.push(JSON.parse(init.body));
+      if(url.endsWith('/approval-requests')){
+        canonical={...canonical,approval_request_id:'record-approval_request'};return s24Action('approval_request');
+      }
+      canonical={...canonical,status:'revision_requested',approval_id:'record-approval'};return s24Action('approval');
+    }
+    return s23Read([canonical]);
+  },async({container,click,fillPassword,detail})=>{
+    await click('승인 요청');assert.equal(buttonByText(container,'승인 요청').disabled,true);
+    assert.equal(buttonByText(container,'수정 요청').disabled,false);
+    await click('수정 요청');await fillPassword();await click('추가 인증 확인');
+    assert.equal(posts.length,2);assert.equal(posts[1].approval_request_id,'record-approval_request');
+    assert.equal(posts[1].decision,'rejected');assert.match(detail().textContent,/수정 필요/);
+    assert.equal(buttonByText(container,'승인').disabled,true);
+    assert.equal(buttonByText(container,'검토 요청').disabled,true);
+  },canonical);
+});
+
+test('S24 export requires explicit reauthentication and synchronous duplicate guards before one bound download', async t => {
+  const pending=s22Deferred(), calls=[], blobs=[], revoked=[], anchors=[], timers=[];
+  t.mock.method(URL,'createObjectURL',blob=>{blobs.push(blob);return 'blob:fixture';});
+  t.mock.method(URL,'revokeObjectURL',url=>revoked.push(url));
+  const timeout=setTimeout;
+  t.mock.method(globalThis,'setTimeout',(fn,ms,...args)=>ms===60000?(timers.push(fn),0):timeout(fn,ms,...args));
+  await withS24Studio(async(url,init)=>{
+    calls.push({url,init});
+    if(init.method==='POST')return pending.promise;
+    return new Response('title,value\n원문,123',{headers:{'content-type':'text/csv'}});
+  },async({container,act,click,fillPassword,document})=>{
+    const create=document.createElement.bind(document);
+    document.createElement=tag=>{const element=create(tag);if(tag==='a')element.click=()=>anchors.push({href:element.href,name:element.download});return element;};
+    const handler=s22Props(buttonByText(container,'내보내기')).onClick;
+    await act(async()=>{handler();handler();}); assert.equal(calls.length,0);
+    assert.ok(s22Field(container,'추가 인증 비밀번호','INPUT'));
+    await fillPassword();
+    const confirm=s22Props(buttonByText(container,'추가 인증 확인')).onClick;
+    await act(async()=>{confirm();confirm();});assert.equal(calls.length,1);
+    assert.equal(s22Field(container,'추가 인증 비밀번호','INPUT').value,'');
+    await act(async()=>pending.resolve(Response.json({data:{step_up_authorization:'opaque-export-grant'}})));
+    assert.equal(calls.length,2);
+    assert.match(calls[1].url,/output-target\/versions\/version-target-3\/exports\/csv\?/);
+    assert.equal(new Headers(calls[1].init.headers).get('X-Daon-Step-Up-Authorization'),'opaque-export-grant');
+    assert.match(new Headers(calls[1].init.headers).get('Idempotency-Key'),/^[A-Za-z0-9._:-]{16,128}$/);
+    assert.equal(blobs.length,1);assert.equal(await blobs[0].text(),'title,value\n원문,123');
+    assert.deepEqual(anchors,[{href:'blob:fixture',name:'studio-version-target-3.csv'}]);
+    assert.doesNotMatch(container.textContent,/opaque-export-grant|fixture password only/);
+    timers.forEach(fn=>fn());assert.deepEqual(revoked,['blob:fixture']);
+  },s24Version({status:'approved',approval_id:'approval-1'}));
+});
+
+test('S24 export cancellation or changed scope discards late authentication and download bytes', async t => {
+  for(const phase of ['cancel','selection','adapter','bytes'])await t.test(phase,async()=>{
+    const pending=s22Deferred();let downloads=0,blobs=0;
+    t.mock.method(URL,'createObjectURL',()=>{blobs++;return 'blob:must-not-create';});
+    await withS24Studio(async(url,init)=>{
+      if(url.endsWith('/session/step-up'))return phase==='bytes'?Response.json({data:{step_up_authorization:'opaque-export-grant'}}):pending.promise;
+      if(url.includes('/exports/')){downloads++;return pending.promise;}
+      return s23Read([s23Version(1,'other')],'other');
+    },async({container,click,fillPassword,act,render,stateFor,adapterFor})=>{
+      await click('내보내기'); await fillPassword();await click('추가 인증 확인');
+      if(phase==='cancel')await click('추가 인증 취소');
+      else if(phase==='adapter')await render(stateFor('workspace-2'),adapterFor('workspace-2'));
+      else await click('다른 산출물');
+      await act(async()=>pending.resolve(phase==='bytes'?new Response('csv,bytes'):Response.json({data:{step_up_authorization:'late-secret-grant'}})));
+      assert.equal(downloads,phase==='bytes'?1:0);assert.equal(blobs,0);
+      assert.equal(findElements(container,node=>node.getAttribute?.('role')==='dialog').length,0);
+      assert.doesNotMatch(container.textContent,/late-secret-grant|fixture password only/);
+    },s24Version({status:'approved',approval_id:'approval-1'}));
+  });
+});
+
+test('S24 failed export authentication wipes the password and never creates bytes or a download', async t => {
+  let downloads=0,blobs=0;
+  t.mock.method(URL,'createObjectURL',()=>{blobs++;return 'blob:must-not-create';});
+  await withS24Studio(async(url)=>{
+    if(url.endsWith('/session/step-up'))return Response.json({error:{code:'STEP_UP_REQUIRED',message:'private-response-canary'}},{status:403});
+    downloads++;return new Response('csv,bytes');
+  },async({container,click,fillPassword})=>{
+    await click('내보내기');await fillPassword();await click('추가 인증 확인');
+    assert.equal(downloads,0);assert.equal(blobs,0);
+    assert.equal(s22Field(container,'추가 인증 비밀번호','INPUT').value,'');
+    assert.match(container.textContent,/추가 인증을 완료하지 못했습니다/);
+    assert.doesNotMatch(container.textContent,/private-response-canary|fixture password only/);
+    await click('추가 인증 취소');
+    assert.equal(findElements(container,node=>node.getAttribute?.('role')==='dialog').length,0);
+    assert.equal(buttonByText(container,'내보내기').disabled,false);
+  },s24Version({status:'approved',approval_id:'approval-1'}));
+});
 
 function s23Version(number, target = 'target', content = `정본 ${target} V${number}`) {
   return { output_version_id: `version-${target}-${number}`, content_version: number,

@@ -2870,11 +2870,14 @@
         "operationId": "downloadStudioOutputVersionExport",
         "tags": ["Studio"],
         "summary": "승인된 Studio 산출물 Version의 실제 파일 다운로드",
+        "description": "추가 인증 target은 studio-export- + SHA256(JSON.stringify([workspace_id,notebook_id,output_id,version_id,format_name])) 소문자 64자이다. final_approval_or_knowledge_registration 그룹, 현재 사용자·세션·정책 및 studio.export.{format_name} 작업과 같은 Idempotency-Key에 결속된다. 토큰은 헤더로만 전송한다.",
         "x-implementation-owner": "R1-M8-09",
         "parameters": [
           { "$ref": "#/components/parameters/ResourceId" },
           { "name": "version_id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
           { "name": "format_name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["docx", "pdf", "xlsx", "csv", "json", "svg", "png"] } },
+          { "name": "X-Daon-Step-Up-Authorization", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 4096 } },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" } },
           { "name": "workspace_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } },
           { "name": "notebook_id", "in": "query", "required": true, "schema": { "$ref": "#/components/schemas/OpaqueId" } }
         ],

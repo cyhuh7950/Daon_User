@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import hashlib
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -115,7 +117,8 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             versions = await self.client.get("/api/v1/studio-outputs/output-1/versions?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
             revised = await self.client.post("/api/v1/studio-outputs/output-1/versions", cookies=cookies, headers={"Idempotency-Key": "revision-key-00001"}, json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "previous_version_id": "version-1", "revision_type": "user_edit", "change_reason": "문구 정정", "content": "변경"})
             review = await self.client.post("/api/v1/reviews", cookies=cookies, headers={"Idempotency-Key": "review-key-000001"}, json={"workspace_id": "workspace-001", "notebook_id": "notebook-001", "output_version_id": "version-1"})
-            exported = await self.client.get("/api/v1/studio-outputs/output-1/versions/version-1/exports/pdf?workspace_id=workspace-001&notebook_id=notebook-001", cookies=cookies)
+        export_credentials = self.sensitive_session()
+        exported = await self.export_request(export_credentials, self.step_up(export_credentials, target_id=self.export_target()))
         self.assertEqual([created.status_code, job.status_code, listed.status_code, versions.status_code, revised.status_code, review.status_code, exported.status_code], [201, 200, 200, 200, 201, 201, 200])
         self.assertEqual(created.json()["data"]["status"], "queued")
         self.assertEqual(job.json()["data"]["status"], "completed")
@@ -144,6 +147,78 @@ class StudioWorkspaceRuntimeHttpTests(unittest.IsolatedAsyncioTestCase):
             cost_limit_cents=1000, now=self.clock(),
         )
         return credentials
+
+    def export_target(self, **changes):
+        fields = dict(workspace="workspace-sensitive", notebook="notebook-001", output="output-1", version="version-1", format="pdf")
+        fields.update(changes)
+        return "studio-export-" + hashlib.sha256(json.dumps(list(fields.values()), separators=(",", ":")).encode()).hexdigest()
+
+    async def export_request(self, credentials, token=None, key="s24-export-key-0001", **changes):
+        fields = dict(workspace="workspace-sensitive", notebook="notebook-001", output="output-1", version="version-1", format="pdf")
+        fields.update(changes)
+        headers = {"Authorization": f"Bearer {credentials.access_token}", "Idempotency-Key": key}
+        if token is not None:
+            headers["X-Daon-Step-Up-Authorization"] = token
+        return await self.client.get(f'/api/v1/studio-outputs/{fields["output"]}/versions/{fields["version"]}/exports/{fields["format"]}?workspace_id={fields["workspace"]}&notebook_id={fields["notebook"]}', headers=headers)
+
+    async def test_s24_export_requires_token_before_file_generation(self):
+        credentials = self.sensitive_session()
+        response = await self.export_request(credentials)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual((response.status_code, response.json().get("error", {}).get("code")), (403, "STEP_UP_REQUIRED"))
+        self.assertEqual(self.studio.calls, [])
+
+    async def test_s24_export_rejects_wrong_bindings_expiry_tamper_and_reuse_before_export(self):
+        credentials = self.sensitive_session()
+        other = native_login(self.identity, FakeVerifiedOidcProvider(subject="s24-other-actor"))
+        other_session = native_login(self.identity)
+        cases = [("actor", self.step_up(other, target_id=self.export_target())),
+                 ("session", self.step_up(other_session, target_id=self.export_target())),
+                 ("policy", self.step_up(credentials, target_id=self.export_target(), policy_version="other-policy")),
+                 ("tamper", "unknown-s24-token")]
+        for field in ("workspace", "notebook", "output", "version", "format"):
+            cases.append((field, self.step_up(credentials, target_id=self.export_target(**{field: "csv" if field == "format" else "other-id"}))))
+        expired = self.step_up(credentials, target_id=self.export_target(), ttl_seconds=30)
+        self.clock.advance(seconds=31)
+        cases.append(("expired", expired))
+        for name, token in cases:
+            with self.subTest(name=name):
+                response = await self.export_request(credentials, token)
+                self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.studio.calls, [])
+
+    async def test_s24_export_exact_replay_keeps_current_authorization_and_repository_access(self):
+        credentials = self.sensitive_session()
+        token = self.step_up(credentials, target_id=self.export_target())
+        with patch.object(self.identity, "consume_step_up", wraps=self.identity.consume_step_up) as consume:
+            first = await self.export_request(credentials, token)
+            replay = await self.export_request(credentials, token)
+            changed = await self.export_request(credentials, token, key="s24-different-key-001")
+        self.assertEqual((first.status_code, replay.status_code, changed.status_code), (200, 200, 403))
+        self.assertTrue(first.content.startswith(b"%PDF-"))
+        self.assertNotIn(token.encode(), first.content)
+        self.assertEqual(len(self.studio.calls), 2)
+        self.assertEqual(consume.call_args_list[0].kwargs["target_id"], self.export_target())
+        self.assertEqual(consume.call_args_list[0].kwargs["operation"], "studio.export.pdf")
+        # Replaying the same identity consumption cannot bypass current Source ACL.
+        with patch.object(self.studio, "export", side_effect=StudioError("STUDIO_OUTPUT_NOT_FOUND", 404)) as exporter:
+            denied = await self.export_request(credentials, token)
+        self.assertEqual(denied.status_code, 404)
+        exporter.assert_called_once()
+        with patch.object(self.dependencies.authorization_service, "authorize_action", side_effect=StudioError("STUDIO_ACCESS_DENIED", 403)), patch.object(self.identity, "consume_step_up") as consume:
+            denied = await self.export_request(credentials, token)
+        self.assertEqual(denied.status_code, 403)
+        consume.assert_not_called()
+
+    async def test_s24_export_invalid_format_or_key_does_not_consume(self):
+        credentials = self.sensitive_session()
+        token = self.step_up(credentials, target_id=self.export_target())
+        with patch.object(self.identity, "consume_step_up", wraps=self.identity.consume_step_up) as consume:
+            bad_format = await self.export_request(credentials, token, format="exe")
+            bad_key = await self.export_request(credentials, token, key="short")
+        self.assertEqual((bad_format.status_code, bad_key.status_code), (400, 400))
+        consume.assert_not_called()
+        self.assertEqual(self.studio.calls, [])
 
     def step_up(self, credentials, **changes):
         return self.identity.issue_step_up(**{

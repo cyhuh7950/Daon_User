@@ -634,6 +634,18 @@ export async function issueStudioStepUp(actionGroup, targetId, password, { fetch
   return payload.data.step_up_authorization;
 }
 
+function studioExportTarget(workspaceId, outputId, versionId, format, notebookId) {
+  const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
+  const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
+  if (!safeId(outputId) || !safeId(versionId) || !["docx", "pdf", "xlsx", "csv", "json", "svg", "png"].includes(format)) throw new Error("STUDIO_INPUT_INVALID");
+  return "studio-export-" + lawSha256(new TextEncoder().encode(JSON.stringify([workspace, notebook, outputId, versionId, format])));
+}
+
+export async function issueStudioExportStepUp(workspaceId, outputId, versionId, format, password, { notebookId, ...options } = {}) {
+  const target = studioExportTarget(workspaceId, outputId, versionId, format, notebookId);
+  return issueStudioStepUp("final_approval_or_knowledge_registration", target, password, options);
+}
+
 function validGeneration(request, workspaceId) {
   const sourceOnly = request?.source_only === true;
   const runValid = sourceOnly
@@ -775,13 +787,21 @@ export async function createStudioAction(workspaceId, action, request, { noteboo
   return payload.data;
 }
 
-export async function downloadStudioExport(workspaceId, outputId, versionId, format, { notebookId, fetchImpl = fetch, signal } = {}) {
+export async function downloadStudioExport(workspaceId, outputId, versionId, format, { notebookId, fetchImpl = fetch, signal, stepUpAuthorization, idempotencyKey = secureUuid() } = {}) {
   const workspace = requiredWorkspace(workspaceId, "STUDIO_INPUT_INVALID");
   const notebook = requiredWorkspace(notebookId, "STUDIO_INPUT_INVALID");
-  if (!safeId(outputId) || !safeId(versionId) || !new Set(["docx", "pdf", "xlsx", "csv", "json", "svg", "png"]).has(format)) throw new Error("STUDIO_INPUT_INVALID");
-  const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions/${encodeURIComponent(versionId)}/exports/${format}?workspace_id=${encodeURIComponent(workspace)}&notebook_id=${encodeURIComponent(notebook)}`, { method: "GET", credentials: "same-origin", cache: "no-store", signal });
-  if (!response.ok) throw new Error("STUDIO_EXPORT_FAILED");
+  studioExportTarget(workspace, outputId, versionId, format, notebook);
+  if (typeof stepUpAuthorization !== "string" || !stepUpAuthorization.trim() || stepUpAuthorization.length > 4096
+      || /[^\x21-\x7e]/u.test(stepUpAuthorization) || !safeIdempotencyKey(idempotencyKey)) throw new Error("STUDIO_INPUT_INVALID");
+  if (signal?.aborted) throw new Error("STUDIO_EXPORT_FAILED");
+  const response = await fetchImpl(`/bff/api/studio-outputs/${encodeURIComponent(outputId)}/versions/${encodeURIComponent(versionId)}/exports/${format}?workspace_id=${encodeURIComponent(workspace)}&notebook_id=${encodeURIComponent(notebook)}`, { method: "GET", credentials: "same-origin", cache: "no-store", signal,
+    headers: { "X-Daon-Step-Up-Authorization": stepUpAuthorization, "Idempotency-Key": idempotencyKey } });
+  if (!response.ok) {
+    const payload = await json(response, "STUDIO_EXPORT_FAILED");
+    throw new Error(payload?.error?.code === "STEP_UP_REQUIRED" ? "STEP_UP_REQUIRED" : "STUDIO_EXPORT_FAILED");
+  }
   const buffer = await response.arrayBuffer();
+  if (signal?.aborted) throw new Error("STUDIO_EXPORT_FAILED");
   if (buffer.byteLength < 4 || buffer.byteLength > 8 * 1024 * 1024) throw new Error("STUDIO_EXPORT_INVALID");
   return { bytes: [...new Uint8Array(buffer)], contentType: response.headers.get("content-type"), disposition: response.headers.get("content-disposition") };
 }

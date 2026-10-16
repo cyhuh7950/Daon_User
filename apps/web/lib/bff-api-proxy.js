@@ -510,7 +510,7 @@ function routeFor(method, segments) {
     && new Set(["docx", "pdf", "xlsx", "csv", "json", "svg", "png"]).has(segments[5])
   ) {
     return method === "GET"
-      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions/${encodeURIComponent(segments[3])}/exports/${segments[5]}`, query: STUDIO_QUERY }
+      ? { path: `/api/v1/studio-outputs/${encodeURIComponent(segments[1])}/versions/${encodeURIComponent(segments[3])}/exports/${segments[5]}`, query: STUDIO_QUERY, studioExport: true }
       : { methodRejected: true };
   }
   if (segments.length === 3 && segments[0] === "sources" && SAFE_SEGMENT.test(segments[1]) && segments[2] === "processing-runs") {
@@ -1189,6 +1189,9 @@ export function createBffProxy({
     const headers = new Headers();
     for (const [key, value] of request.headers) {
       if (REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
+    }
+    if (route.studioExport && request.headers.has("x-daon-step-up-authorization")) {
+      headers.set("x-daon-step-up-authorization", request.headers.get("x-daon-step-up-authorization"));
     }
     let credential;
     const nativeQuestion = defaultFetch && request.method === 'POST'

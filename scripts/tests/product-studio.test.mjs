@@ -3,6 +3,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
+import * as studioApi from '../../apps/web/lib/product-workspace-api.js';
 
 import {
   OUTPUT_TYPES, createProductStudioState, selectOutputType, updateGenerationSettings,
@@ -18,6 +20,72 @@ const grounded = {
   sourceVersionIds: ["source-version-1"],
   runId: "run-1", runResultId: "result-1",
 };
+
+test('S24 export step-up hashes the exact scope and sends token and key only as headers without SubtleCrypto', async () => {
+  assert.equal(typeof studioApi.issueStudioExportStepUp, 'function');
+  const crypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  const calls = [], controller = new AbortController();
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return init.method === 'POST' ? Response.json({ data: { step_up_authorization: 'opaque-s24-grant' } })
+      : new Response('%PDF-', { headers: { 'content-type': 'application/pdf' } });
+  };
+  try {
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: undefined });
+    const token = await studioApi.issueStudioExportStepUp('workspace-1','output-1','version-1','pdf','fixture password only',
+      { notebookId: 'notebook-1', fetchImpl, idempotencyKey: 's24-issue-key-0001', signal: controller.signal });
+    const body = JSON.parse(calls[0].init.body);
+    const expected = 'studio-export-' + createHash('sha256').update(JSON.stringify(['workspace-1','notebook-1','output-1','version-1','pdf'])).digest('hex');
+    assert.deepEqual(body, { action_group: 'final_approval_or_knowledge_registration', target_id: expected, ttl_seconds: 300, password: 'fixture password only' });
+    const result = await downloadStudioExport('workspace-1','output-1','version-1','pdf',
+      { notebookId: 'notebook-1', fetchImpl, stepUpAuthorization: token, idempotencyKey: 's24-file-key-00001', signal: controller.signal });
+    assert.equal(new Headers(calls[1].init.headers).get('X-Daon-Step-Up-Authorization'), token);
+    assert.equal(new Headers(calls[1].init.headers).get('Idempotency-Key'), 's24-file-key-00001');
+    assert.equal(calls[1].init.credentials, 'same-origin'); assert.equal(calls[1].init.cache, 'no-store');
+    assert.equal(calls[1].init.signal, controller.signal);
+    assert.doesNotMatch(calls[1].url, /opaque|password|step.up/i);
+    assert.deepEqual(result.bytes, [...new TextEncoder().encode('%PDF-')]);
+  } finally { if (crypto) Object.defineProperty(globalThis, 'crypto', crypto); else delete globalThis.crypto; }
+});
+
+test('S24 export rejects missing tokens invalid scope format and keys before network', async () => {
+  let calls = 0; const fetchImpl = async () => { calls++; return new Response('%PDF-'); };
+  for (const patch of [{stepUpAuthorization:undefined},{idempotencyKey:'short'},{notebookId:'../other'}]) {
+    await assert.rejects(downloadStudioExport('workspace-1','output-1','version-1','pdf',
+      {notebookId:'notebook-1', stepUpAuthorization:'opaque-grant', idempotencyKey:'s24-file-key-0001', fetchImpl, ...patch}));
+  }
+  assert.equal(typeof studioApi.issueStudioExportStepUp, 'function');
+  for (const [out, version, format] of [['../out','v','pdf'],['out','../v','pdf'],['out','v','exe']]) {
+    await assert.rejects(studioApi.issueStudioExportStepUp('workspace-1',out,version,format,'fixture password only',
+      {notebookId:'notebook-1',fetchImpl}));
+  }
+  assert.equal(calls, 0);
+});
+
+test('S24 actual Web adapter binds export authorization and bytes to its current Notebook', async () => {
+  const root=path.resolve(import.meta.dirname,'../..');
+  const output=await mkdtemp(path.join(root,'.product-studio-s24-adapter-'));
+  try {
+    const {build}=await import('vite');
+    await build({configFile:false,logLevel:'silent',root,build:{outDir:output,emptyOutDir:false,
+      lib:{entry:path.join(root,'apps/web/components/actual-workspace.jsx'),formats:['es'],fileName:'s24-adapter'},
+      rollupOptions:{external:['react','react-dom','react-dom/client']}}});
+    const entry=(await readdir(output)).find(name=>name.startsWith('s24-adapter')&&/\.m?js$/u.test(name));
+    const {createWebProductWorkspaceAdapter}=await import(pathToFileURL(path.join(output,entry)).href);
+    const adapter=createWebProductWorkspaceAdapter('workspace-1','notebook-current'),calls=[];
+    const fetchImpl=async(url,init)=>{calls.push({url,init});return init.method==='POST'
+      ?Response.json({data:{step_up_authorization:'s24-current-proof'}}):new Response('%PDF-');};
+    const signal=new AbortController().signal;
+    const options={notebookId:'notebook-wrong',fetchImpl,idempotencyKey:'s24-adapter-key-001',signal};
+    const token=await adapter.issueStudioExportStepUp('output-1','version-1','pdf','fixture password only',options);
+    await adapter.downloadStudioExport('output-1','version-1','pdf',{...options,stepUpAuthorization:token});
+    const expected='studio-export-'+createHash('sha256').update(JSON.stringify(['workspace-1','notebook-current','output-1','version-1','pdf'])).digest('hex');
+    assert.equal(JSON.parse(calls[0].init.body).target_id,expected);
+    assert.match(calls[1].url,/notebook_id=notebook-current$/);
+    assert.equal(new Headers(calls[1].init.headers).get('X-Daon-Step-Up-Authorization'),token);
+    assert.ok(calls.every(call=>call.init.signal===signal));
+  } finally {await rm(output,{recursive:true,force:true});}
+});
 
 test('S22 type selection projects organization locks before the first edit', () => {
   const locks = [
@@ -301,7 +369,7 @@ test("Web Studio Adapter는 same-origin 공통 계약과 파일 bytes만 사용�
     else await assert.rejects(operation, /STUDIO_RESPONSE_INVALID/);
   }
   await createStudioAction("workspace-1", "reviews", { output_version_id: "version-1" }, { notebookId: "notebook-1", fetchImpl, idempotencyKey: "review-key-000001" });
-  const exported = await downloadStudioExport("workspace-1", "output-1", "version-1", "pdf", { notebookId: "notebook-1", fetchImpl });
+  const exported = await downloadStudioExport("workspace-1", "output-1", "version-1", "pdf", { notebookId: "notebook-1", fetchImpl, stepUpAuthorization: "opaque-export-fixture", idempotencyKey: "studio-export-key-001" });
   assert.deepEqual(exported.bytes, [0x25, 0x50, 0x44, 0x46, 0x2d]);
   assert.ok(calls.every((call) => call.url.startsWith("/bff/api/")));
   assert.deepEqual(calls.map((call) => call.url), [

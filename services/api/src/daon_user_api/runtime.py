@@ -4666,15 +4666,34 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def download_product_studio_export(
         output_id: str, version_id: str, format_name: str, request: Request,
         workspace_id: str = Query(), notebook_id: str = Query(),
+        step_up_authorization: str | None = Header(default=None, alias="X-Daon-Step-Up-Authorization"),
+        idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> Response:
         _require_query_keys(request, frozenset({"workspace_id", "notebook_id"}))
+        _studio_idempotency_key(idempotency_key)
+        if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", value)
+               for value in (workspace_id, notebook_id, output_id, version_id)):
+            raise HTTPException(status_code=400)
+        if format_name not in {"docx", "pdf", "xlsx", "csv", "json", "svg", "png"}:
+            raise HTTPException(status_code=400)
         principal = _principal(request, dependencies)
-        dependencies.authorization_service.authorize_action(
+        grant = dependencies.authorization_service.authorize_action(
             principal=principal, workspace_id=workspace_id, action=Action.DELIVER,
             trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version,
         )
         if studio_workspace_service is None:
             raise StudioError("STUDIO_SERVICE_UNAVAILABLE", 503)
+        target = "studio-export-" + hashlib.sha256(json.dumps(
+            [workspace_id, notebook_id, output_id, version_id, format_name], separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        access_token, _ = _credential(request)
+        dependencies.identity_service.consume_step_up(
+            step_up_authorization=step_up_authorization, access_token=access_token,
+            action_group=grant.required_step_up_action or "final_approval_or_knowledge_registration",
+            target_id=target, policy_version=dependencies.settings.policy_version,
+            trace_id=request.state.trace_id, operation=f"studio.export.{format_name}",
+            idempotency_key=idempotency_key,
+        )
         exported = await asyncio.to_thread(
             studio_workspace_service.export,
             _product_studio_context(principal, workspace_id, request, dependencies, notebook_id),

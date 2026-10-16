@@ -18,6 +18,22 @@ async function loadContract() {
   return JSON.parse(await readFile(contractPath, "utf8"));
 }
 
+test('S24 Studio export requires both exact proof headers and rejects missing or optional definitions', async () => {
+  const document=await loadContract();
+  const route=document.paths['/api/v1/studio-outputs/{id}/versions/{version_id}/exports/{format_name}'].get;
+  for(const name of ['X-Daon-Step-Up-Authorization','Idempotency-Key']) {
+    const header=route.parameters.find(p=>p.in==='header'&&p.name===name);
+    assert.equal(header?.required,true,name);
+    for(const fault of ['missing','optional','schema']) {
+      const copy=structuredClone(document), get=copy.paths['/api/v1/studio-outputs/{id}/versions/{version_id}/exports/{format_name}'].get;
+      if(fault==='missing')get.parameters=get.parameters.filter(p=>p.name!==name);
+      else if(fault==='optional')get.parameters.find(p=>p.name===name).required=false;
+      else get.parameters.find(p=>p.name===name).schema={type:'integer'};
+      assert.throws(()=>validateOpenApiDocument(copy),/Studio export proof headers/);
+    }
+  }
+});
+
 test("S16 삭제 확인은 exact Notebook·추가 인증 body와 durable 복원 상태를 요구한다", async () => {
   const document = await loadContract();
   const schema = document.components.schemas.DeletionCreateRequest;

@@ -13,6 +13,31 @@ import {
   parsePublicGatewayOrigin,
 } from "../../apps/web/lib/bff-api-proxy.js";
 
+test('S24 BFF forwards export proof only to the exact Studio export route', async () => {
+  const calls=[];
+  const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{
+    calls.push({url:String(url),init}); return new Response('%PDF-',{headers:{'content-type':'application/pdf'}});
+  }});
+  for(const segments of [
+    ['studio-outputs','output-1','versions','version-1','exports','pdf'],
+    ['studio-outputs','output-1','versions'],
+    ['workspaces','workspace-1','sources'],
+  ]) {
+    const response=await proxy(new Request('https://app.example.com/bff/api/'+segments.join('/')+'?workspace_id=workspace-1&notebook_id=notebook-1',
+      {headers:{'X-Daon-Step-Up-Authorization':'opaque-s24-proof','Idempotency-Key':'s24-download-key-001'}}),segments);
+    assert.equal(response.status,200);
+  }
+  assert.equal(calls[0].init.headers.get('X-Daon-Step-Up-Authorization'),'opaque-s24-proof');
+  assert.equal(calls[0].init.headers.get('Idempotency-Key'),'s24-download-key-001');
+  assert.ok(calls.slice(1).every(call=>!call.init.headers.has('X-Daon-Step-Up-Authorization')));
+  const {createNativeBffProxy}=await import('../../apps/web/lib/bff-api-proxy.js');
+  let nativeHeaders;
+  const native=createNativeBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(_url,init)=>{nativeHeaders=init.headers;return Response.json({data:{}});}});
+  const response=await native(new Request('https://app.example.com/api/v1/workspaces/workspace-1/sources?notebook_id=notebook-1',
+    {headers:{Authorization:'Bearer opaque-native-fixture', 'X-Daon-Step-Up-Authorization':'s24-must-not-forward'}}),['workspaces','workspace-1','sources']);
+  assert.equal(response.status,200);assert.equal(nativeHeaders.has('X-Daon-Step-Up-Authorization'),false);
+});
+
 test('open law BFF admits exactly four same-origin Notebook routes and rejects extra query/method',async()=>{
   const calls=[];
   const proxy=createBffProxy({baseUrl:new URL('https://api.example.com'),fetchImpl:async(url,init)=>{

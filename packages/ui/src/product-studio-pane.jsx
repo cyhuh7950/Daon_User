@@ -5,6 +5,7 @@ import { parseSheetCell } from "./product-workspace-model.js";
 import { parseDocxBlock } from "./shared-docx-block.js";
 import { pptxBlockLabel } from "./shared-pptx-block.js";
 import { parseAudioSegment } from "./shared-audio-segment.js";
+import { secureUuid } from "./secure-uuid.js";
 import {
   OUTPUT_TYPES, canConfirmGenerationSettings, canSubmitGeneration, confirmGenerationSettings, createStudioGenerationInput,
   mergeStudioVersion, selectOutputType, updateGenerationSettings,
@@ -25,6 +26,31 @@ function outputStatusLabel(status) {
 
 function outputTypeLabel(outputType) {
   return OUTPUT_TYPES.find((item) => item.id === outputType)?.label ?? "산출물";
+}
+
+function canRequestStudioAction(action, output) {
+  if (!output || output.canonicalPending || output.lifecyclePending) return false;
+  if (action === "reviews") return output.status === "draft" && !output.review_request_id;
+  if (action === "approval-requests") return ["in_review", "review_requested"].includes(output.status)
+    && Boolean(output.review_request_id) && !output.approval_request_id;
+  if (action === "approvals") return ["in_review", "review_requested"].includes(output.status)
+    && Boolean(output.approval_request_id) && !output.approval_id;
+  if (action === "deliveries") return output.status === "approved" && Boolean(output.approval_id) && !output.delivery_id;
+  if (action === "knowledge-registrations") return output.status === "approved" && !output.knowledge_registration_id;
+  return false;
+}
+
+function validStudioActionReceipt(result, request) {
+  const action = { reviews: "review", "approval-requests": "approval_request", approvals: "approval", deliveries: "delivery", "knowledge-registrations": "knowledge_registration" }[request.action];
+  const keys = ["record_id", "action", "status", "output_version_id"];
+  if (action === "knowledge_registration") keys.push("registered_source_version_id", "searchable");
+  const safeId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(value);
+  return result !== null && typeof result === "object" && !Array.isArray(result)
+    && Object.keys(result).length === keys.length && keys.every((key) => Object.hasOwn(result, key))
+    && safeId(result.record_id) && result.action === action && result.output_version_id === request.versionId
+    && (action === "knowledge_registration"
+      ? result.status === "registered" && safeId(result.registered_source_version_id) && result.searchable === true
+      : result.status === "accepted");
 }
 
 function safeStudioErrorMessage(code) {
@@ -189,21 +215,29 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   const generationScopeRef = useRef(null);
   const detailRequestRef = useRef(null);
   const revisionRequestRef = useRef(null);
+  const actionRequestRef = useRef(null);
+  const detailSelectionRef = useRef(null);
   generationScopeRef.current = { adapter, workspaceId: state.workspaceId };
   useEffect(() => {
     setView(state);
-    setRevisionContent(""); setChangeReason(""); setSavedRevision(null);
+    setRevisionContent(""); setChangeReason(""); setSavedRevision(null); setKnowledgeNotice(null);
     return () => {
       generationRequestRef.current?.controller.abort();
       generationRequestRef.current = null;
       detailRequestRef.current?.controller.abort();
       revisionRequestRef.current?.controller.abort();
+      actionRequestRef.current?.controller.abort();
       detailRequestRef.current = null;
       revisionRequestRef.current = null;
+      actionRequestRef.current = null;
     };
   }, [adapter, state.workspaceId]);
   const stepUpRef = useRef(null);
   const cancelStepUp = () => {
+    if (actionRequestRef.current?.phase === "challenge" || actionRequestRef.current?.kind === "export") {
+      actionRequestRef.current.controller.abort();
+      actionRequestRef.current = null;
+    }
     stepUpRef.current = null; setStepUp(null); setPassword("");
     setView((current) => ({ ...current, pending: false }));
   };
@@ -218,17 +252,19 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   }, [adapter]);
   const selected = OUTPUT_TYPES.find((item) => item.id === view.selectedOutputType);
   const selectedOutput = view.outputs.find((output) => output.studio_output_id === view.selectedOutputId) ?? null;
+  detailSelectionRef.current = { outputId: selectedOutput?.studio_output_id, versionId: selectedOutput?.output_version_id };
   const revisionSaved = savedRevision?.outputId === selectedOutput?.studio_output_id
     && savedRevision?.versionId === selectedOutput?.output_version_id && Boolean(savedRevision);
   const generationState = view.pending ? "pending" : revisionSaved ? "completed" : view.safeError ? "failed" : selectedOutput ? "completed" : "idle";
-  const configurationBusy = view.pending || Boolean(revisionRequestRef.current);
+  const configurationBusy = view.pending || Boolean(revisionRequestRef.current) || Boolean(actionRequestRef.current);
   const fieldDisabled = (field) => configurationBusy || view.locks.some((lock) => lock.field === field);
   const sameDetailScope = (request) => !request.controller.signal.aborted
     && generationScopeRef.current.adapter === request.adapter
     && generationScopeRef.current.workspaceId === request.workspaceId;
   const ownsDetail = (request) => detailRequestRef.current === request && sameDetailScope(request);
+  const actionDisabled = (action) => configurationBusy || Boolean(generationRequestRef.current) || !canRequestStudioAction(action, selectedOutput);
   const setField = (field, value) => {
-    if (generationRequestRef.current || revisionRequestRef.current) return;
+    if (generationRequestRef.current || revisionRequestRef.current || actionRequestRef.current) return;
     setView((current) => current.pending || !current.selectedOutputType || current.locks.some((lock) => lock.field === field)
       ? current : updateGenerationSettings(current, { [field]: value }));
   };
@@ -250,7 +286,8 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
       setView((current) => ({
         ...current, pending: false,
         outputs: current.outputs.map((item) => item.studio_output_id === output.studio_output_id
-          ? { ...item, ...(latest ?? {}), versions, ...(latest ? { canonicalPending: false } : {}) }
+          ? { ...item, ...(latest ?? {}), versions, ...(latest ? { canonicalPending: false, lifecyclePending: false,
+            actionReceipt: item.actionReceipt?.output_version_id === latest.output_version_id ? item.actionReceipt : null } : {}) }
           : item),
       }));
     } catch (error) {
@@ -260,7 +297,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
     }
   };
   const submit = async () => {
-    if (generationRequestRef.current || revisionRequestRef.current || !adapter?.createGeneration || !canSubmitGeneration(view)) return;
+    if (generationRequestRef.current || revisionRequestRef.current || actionRequestRef.current || !adapter?.createGeneration || !canSubmitGeneration(view)) return;
     const request = { adapter, workspaceId: state.workspaceId, controller: new AbortController() };
     generationRequestRef.current = request;
     const currentRequest = () => generationRequestRef.current === request && !request.controller.signal.aborted
@@ -303,12 +340,8 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
       }
     }
   };
-  const updateSelectedOutput = (patch, outputId = selectedOutput?.studio_output_id) => setView((current) => ({
-    ...current,
-    outputs: current.outputs.map((output) => output.studio_output_id === outputId ? { ...output, ...patch } : output),
-  }));
   const revise = async (revisionType = "user_edit") => {
-    if (revisionRequestRef.current || view.pending || !selectedOutput || !adapter?.createStudioVersion || !revisionContent.trim() || !changeReason.trim()) return;
+    if (revisionRequestRef.current || actionRequestRef.current || view.pending || !selectedOutput || !adapter?.createStudioVersion || !revisionContent.trim() || !changeReason.trim()) return;
     const outputId = selectedOutput.studio_output_id;
     if (detailRequestRef.current?.kind === "read") detailRequestRef.current.controller.abort();
     const request = { kind: "write", outputId, adapter, workspaceId: state.workspaceId, controller: new AbortController() };
@@ -373,40 +406,75 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
       }
     }
   };
-  const performAction = async (action, payload, target, token) => {
+  const actionOwnsSelection = (request) => ownsDetail(request)
+    && detailSelectionRef.current.outputId === request.outputId && detailSelectionRef.current.versionId === request.versionId;
+  const markActionUnverified = (request, receipt) => setView((current) => ({ ...current, outputs: current.outputs.map((output) => {
+    if (output.studio_output_id !== request.outputId || output.output_version_id !== request.versionId) return output;
+    const unknown = { ...output, lifecyclePending: true, actionReceipt: receipt };
+    for (const field of ["status", "review_request_id", "approval_request_id", "approval_id", "delivery_id", "knowledge_registration_id", "version", "versions"]) delete unknown[field];
+    return unknown;
+  }) }));
+  const performAction = async (request, token) => {
+    request.phase = "write";
+    if (detailRequestRef.current?.kind === "read") detailRequestRef.current.controller.abort();
+    detailRequestRef.current = request;
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
-      const result = await adapter.createStudioAction(action, {
-        output_version_id: target.output_version_id, ...payload,
+      const result = await request.adapter.createStudioAction(request.action, {
+        output_version_id: request.versionId, ...request.payload,
         ...(token ? { step_up_authorization: token } : {}),
-      });
-      const linkField = { reviews: "review_request_id", "approval-requests": "approval_request_id", approvals: "approval_id", "knowledge-registrations": "knowledge_registration_id" }[action];
-      const lifecycleStatus = {
-        reviews: "in_review", "approval-requests": "in_review",
-        approvals: payload.decision === "rejected" ? "revision_requested" : "approved",
-        deliveries: "delivered",
-      }[action];
-      updateSelectedOutput({ ...(linkField ? { [linkField]: result.record_id } : {}), status: lifecycleStatus ?? target.status }, target.studio_output_id);
-      setView((current) => ({ ...current, pending: false }));
-      if (action === "knowledge-registrations" && result.status === "registered"
-        && typeof result.registered_source_version_id === "string" && result.searchable === true) {
-        setKnowledgeNotice("생산 지식이 등록되었습니다. 자료 목록을 새로고침합니다.");
-        onKnowledgeRegistered?.();
+      }, { signal: request.controller.signal });
+      if (!sameDetailScope(request)) return;
+      if (!validStudioActionReceipt(result, request)) {
+        markActionUnverified(request, null);
+        throw new Error("STUDIO_RESPONSE_INVALID");
+      }
+      if (detailRequestRef.current?.kind === "read" && detailRequestRef.current.outputId === request.outputId
+        && detailSelectionRef.current.versionId === request.versionId) {
+        detailRequestRef.current.controller.abort();
+        detailRequestRef.current = request;
+      }
+      // A committed receipt is not the authoritative lifecycle state.
+      markActionUnverified(request, result);
+      try {
+        if (!request.adapter.listStudioVersions) throw new Error("STUDIO_LIST_FAILED");
+        const versions = await request.adapter.listStudioVersions(request.outputId, { signal: request.controller.signal });
+        if (!sameDetailScope(request)) return;
+        const canonical = versions.find((version) => version.output_version_id === request.versionId);
+        if (!canonical) throw new Error("STUDIO_LIST_FAILED");
+        setView((current) => ({ ...current, outputs: current.outputs.map((output) =>
+          output.studio_output_id === request.outputId && output.output_version_id === request.versionId
+            ? { ...output, ...canonical, version: canonical, versions, lifecyclePending: false }
+            : output) }));
+        if (request.action === "knowledge-registrations" && actionOwnsSelection(request)) {
+          setKnowledgeNotice("생산 지식이 등록되었습니다. 자료 목록을 새로고침합니다.");
+          onKnowledgeRegistered?.();
+        }
+      } catch {
+        if (actionOwnsSelection(request)) setView((current) => ({ ...current, safeError: "STUDIO_LIST_FAILED" }));
       }
     } catch (error) {
-      setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_ACTION_FAILED" }));
+      if (actionOwnsSelection(request)) setView((current) => ({ ...current, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_ACTION_FAILED" }));
+    } finally {
+      if (actionRequestRef.current === request) {
+        actionRequestRef.current = null;
+        if (sameDetailScope(request)) setView((current) => ({ ...current, pending: actionOwnsSelection(request) ? false : current.pending }));
+      }
     }
   };
   const act = async (action, payload = {}) => {
-    if (!selectedOutput || !adapter?.createStudioAction || view.pending) return;
+    if (actionRequestRef.current || generationRequestRef.current || revisionRequestRef.current || view.pending
+      || !adapter?.createStudioAction || !canRequestStudioAction(action, selectedOutput)) return;
+    const request = { kind: "action", action, payload: { ...payload }, target: { ...selectedOutput }, phase: "challenge",
+      outputId: selectedOutput.studio_output_id, versionId: selectedOutput.output_version_id,
+      adapter, workspaceId: state.workspaceId, controller: new AbortController() };
+    actionRequestRef.current = request;
     if (["approvals", "deliveries", "knowledge-registrations"].includes(action)) {
-      const challenge = { action, payload: { ...payload }, target: { ...selectedOutput }, issuing: false };
-      stepUpRef.current = challenge; setStepUp(challenge); setPassword("");
+      stepUpRef.current = request; setStepUp(request); setPassword("");
       setView((current) => ({ ...current, safeError: null }));
       return;
     }
-    cancelStepUp();
-    await performAction(action, payload, selectedOutput);
+    await performAction(request);
   };
   const confirmStepUp = async () => {
     const challenge = stepUpRef.current;
@@ -415,28 +483,56 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
     setPassword(""); challenge.issuing = true;
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
-      if (!adapter?.issueStudioStepUp) throw new Error("STUDIO_STEP_UP_UNAVAILABLE");
-      const token = await adapter.issueStudioStepUp("final_approval_or_knowledge_registration", challenge.target.output_version_id, currentPassword);
-      if (stepUpRef.current !== challenge) return;
+      const issue = challenge.kind === "export" ? challenge.adapter?.issueStudioExportStepUp : challenge.adapter?.issueStudioStepUp;
+      if (!issue) throw new Error("STUDIO_STEP_UP_UNAVAILABLE");
+      const token = challenge.kind === "export"
+        ? await issue(challenge.outputId, challenge.versionId, challenge.format, currentPassword, { signal: challenge.controller.signal })
+        : await issue("final_approval_or_knowledge_registration", challenge.versionId, currentPassword, { signal: challenge.controller.signal });
+      if (stepUpRef.current !== challenge || !sameDetailScope(challenge)
+        || detailSelectionRef.current.outputId !== challenge.outputId || detailSelectionRef.current.versionId !== challenge.versionId) return;
       if (typeof token !== "string" || !token) throw new Error("STEP_UP_REQUIRED");
       stepUpRef.current = null; setStepUp(null);
-      await performAction(challenge.action, challenge.payload, challenge.target, token);
+      if (challenge.kind === "export") await performDownload(challenge, token);
+      else await performAction(challenge, token);
     } catch (error) {
       if (stepUpRef.current !== challenge) return;
       challenge.issuing = false;
       setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STEP_UP_REQUIRED" }));
     }
   };
-  const download = async () => {
-    if (!selectedOutput || !adapter?.downloadStudioExport) return;
+  const performDownload = async (request, token) => {
+    request.phase = "write";
+    if (detailRequestRef.current?.kind === "read") detailRequestRef.current.controller.abort();
+    detailRequestRef.current = request;
     try {
-      const format = selectedOutput.version?.output_format ?? selectedOutput.output_format ?? "pdf";
-      const result = await adapter.downloadStudioExport(selectedOutput.studio_output_id, selectedOutput.output_version_id, format);
+      const result = await request.adapter.downloadStudioExport(request.outputId, request.versionId, request.format,
+        { stepUpAuthorization: token, idempotencyKey: request.idempotencyKey, signal: request.controller.signal });
+      if (!actionOwnsSelection(request) || actionRequestRef.current !== request) return;
       const url = URL.createObjectURL(new Blob([Uint8Array.from(result.bytes)], { type: result.contentType ?? "application/octet-stream" }));
-      const anchor = document.createElement("a"); anchor.href = url; anchor.download = `studio-${selectedOutput.output_version_id}.${format}`; anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      try {
+        const anchor = document.createElement("a"); anchor.href = url; anchor.download = `studio-${request.versionId}.${request.format}`; anchor.click();
+      } finally { setTimeout(() => URL.revokeObjectURL(url), 60_000); }
     } catch (error) {
-      setView((current) => ({ ...current, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_EXPORT_FAILED" }));
+      if (actionOwnsSelection(request)) setView((current) => ({ ...current, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_EXPORT_FAILED" }));
+    } finally {
+      if (actionRequestRef.current === request) {
+        actionRequestRef.current = null;
+        if (actionOwnsSelection(request)) setView((current) => ({ ...current, pending: false }));
+      }
+    }
+  };
+  const download = () => {
+    if (actionRequestRef.current || generationRequestRef.current || revisionRequestRef.current || view.pending
+      || !selectedOutput || selectedOutput.status !== "approved" || selectedOutput.canonicalPending
+      || selectedOutput.lifecyclePending || !adapter?.downloadStudioExport) return;
+    try {
+      const request = { kind: "export", phase: "challenge", outputId: selectedOutput.studio_output_id,
+        versionId: selectedOutput.output_version_id, format: selectedOutput.version?.output_format ?? selectedOutput.output_format ?? "pdf",
+        adapter, workspaceId: state.workspaceId, controller: new AbortController(), idempotencyKey: secureUuid() };
+      actionRequestRef.current = request; stepUpRef.current = request;
+      setStepUp(request); setPassword(""); setView(current => ({ ...current, safeError: null }));
+    } catch {
+      setView(current => ({ ...current, safeError: "STUDIO_EXPORT_FAILED" }));
     }
   };
   return (
@@ -454,7 +550,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
         <div className="studio-type-tiles" data-columns="3" aria-label="산출물 유형">
           {OUTPUT_TYPES.map((type) => <button className={`studio-type-tile tile-${TYPE_ICONS[type.id]}${type.generationUnavailable ? " studio-type-future" : ""}`} key={type.id} type="button"
             disabled={type.generationUnavailable === true || configurationBusy}
-            onClick={() => { if (!type.generationUnavailable && !generationRequestRef.current && !revisionRequestRef.current) setView((current) => current.pending ? current : selectOutputType(current, type.id)); }}>
+            onClick={() => { if (!type.generationUnavailable && !generationRequestRef.current && !revisionRequestRef.current && !actionRequestRef.current) setView((current) => current.pending ? current : selectOutputType(current, type.id)); }}>
             {type.label}{type.generationUnavailable ? <small>현재 파일 생성 미지원</small> : null}
           </button>)}
         </div>
@@ -462,7 +558,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
           {view.outputs.length ? <ul>{view.outputs.map((output) => <li className="studio-library-row" key={output.studio_output_id}><span className={`library-type-icon tile-${TYPE_ICONS[output.output_type] ?? "document"}`} aria-hidden="true" /><span className="library-row-copy"><small className="library-output-type">{outputTypeLabel(output.output_type)}</small><button type="button" onClick={() => void openOutput(output)}>{output.title}</button><small>Source {output.source_count ?? output.source_version_ids?.length ?? 1} · Version {output.content_version ?? output.output_version_id ?? "-"}</small></span><span className={`output-status status-${output.status ?? "saved"}`}>{outputStatusLabel(output.status)}</span></li>)}</ul> : <div className="studio-empty"><span className="empty-icon" aria-hidden="true">◇</span><strong>아직 저장된 산출물이 없습니다.</strong><small>위 유형을 선택하면 근거가 결속된 산출물을 만들 수 있습니다.</small></div>}
         </section>
       </div> : <section className="studio-config-view" data-studio-view="config" aria-labelledby="studio-config-title">
-        <header className="studio-config-header"><button className="studio-back" type="button" disabled={configurationBusy} onClick={() => { if (!generationRequestRef.current && !revisionRequestRef.current) setView((current) => current.pending ? current : ({ ...current, selectedOutputType: null, settingsConfirmed: false, settingsSnapshot: null })); }}>뒤로</button><div><span className="section-kicker">CREATE</span><h3 id="studio-config-title">{selected?.label} 설정</h3></div></header>
+        <header className="studio-config-header"><button className="studio-back" type="button" disabled={configurationBusy} onClick={() => { if (!generationRequestRef.current && !revisionRequestRef.current && !actionRequestRef.current) setView((current) => current.pending ? current : ({ ...current, selectedOutputType: null, settingsConfirmed: false, settingsSnapshot: null })); }}>뒤로</button><div><span className="section-kicker">CREATE</span><h3 id="studio-config-title">{selected?.label} 설정</h3></div></header>
         <div className={`generation-state generation-${generationState}`} data-generation-state={generationState} role={generationState === "failed" ? "alert" : "status"}>
           {generationState === "pending" ? <><span className="state-spinner" aria-hidden="true" /><span><strong>산출물을 생성하고 있습니다.</strong><small>현재 설정과 근거 Snapshot을 안전하게 결속하는 중입니다.</small></span></> : null}
           {generationState === "failed" ? <span><strong>생성을 완료하지 못했습니다.</strong><small>{safeStudioErrorMessage(view.safeError)}</small></span> : null}
@@ -499,14 +595,16 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
           <div className="studio-setting-summary"><div><span>생성 방식</span><strong>{view.grounded ? "저장된 답변·근거 구조화" : "선택 Source 구조화"}</strong><small>추가 LLM 호출 없음</small></div><div><span>정책 요약</span><strong>{view.locks.length ? `조직 정책 ${view.locks.length}개 적용` : "Workspace 정책 적용"}</strong><small>정책은 생성 시점에 다시 확인되며 이 화면에서 해제할 수 없습니다.</small>
             {view.locks.length ? <ul>{view.locks.map((lock) => <li key={lock.field}>{({ reviewCondition: "검토 조건", rulesetVersionId: "RuleSet", dataArea: "데이터 영역", authorityPolicy: "권위 정책", weightProfile: "가중치", egressPolicy: "외부 전송 정책" })[lock.field] ?? lock.field}: {lock.value == null ? "미결속" : String(lock.value)} · {lock.reason}</li>)}</ul> : null}
           </div></div>
-          <div className="studio-config-actions"><button className="secondary-button" type="button" onClick={() => { if (!generationRequestRef.current && !revisionRequestRef.current) setView((current) => canConfirmGenerationSettings(current) ? confirmGenerationSettings(current) : current); }} disabled={configurationBusy || !canConfirmGenerationSettings(view)}>설정 확인</button><button className="primary-button" type="submit" disabled={configurationBusy || !canSubmitGeneration(view)}>생성</button></div>
+          <div className="studio-config-actions"><button className="secondary-button" type="button" onClick={() => { if (!generationRequestRef.current && !revisionRequestRef.current && !actionRequestRef.current) setView((current) => canConfirmGenerationSettings(current) ? confirmGenerationSettings(current) : current); }} disabled={configurationBusy || !canConfirmGenerationSettings(view)}>설정 확인</button><button className="primary-button" type="submit" disabled={configurationBusy || !canSubmitGeneration(view)}>생성</button></div>
         </form>
         <div className="studio-config-library"><span className="section-kicker">LIBRARY</span><h3>저장된 산출물</h3><small>{view.outputs.length ? `${view.outputs.length}개의 산출물이 저장되어 있습니다.` : "생성 완료 후 여기에 저장됩니다."}</small></div>
       </section>}
       {selectedOutput ? <section className="studio-output-detail" aria-label="선택 산출물 상세">
         {revisionSaved ? <p role="status">새 Version이 저장되었습니다. ({savedRevision.versionId})</p> : null}
+        {selectedOutput.actionReceipt?.output_version_id === selectedOutput.output_version_id ? <p role="status">요청이 접수되었습니다. ({selectedOutput.actionReceipt.record_id})</p> : null}
+        {selectedOutput.lifecyclePending ? <p role="status">현재 Version의 처리 상태를 확인하지 못했습니다. 상세를 다시 열어 확인해 주세요.</p> : null}
         {selectedOutput.canonicalPending ? <p role="status">저장은 완료되었으나 새 Version의 정본 조회가 아직 확인되지 않았습니다.</p> : null}
-        <header className="studio-output-detail-header"><div><span className="section-kicker">{outputTypeLabel(selectedOutput.output_type)}</span><h3>{selectedOutput.title}</h3></div><span className={`output-status status-${selectedOutput.status ?? "saved"}`}>{outputStatusLabel(selectedOutput.status)}</span></header>
+        <header className="studio-output-detail-header"><div><span className="section-kicker">{outputTypeLabel(selectedOutput.output_type)}</span><h3>{selectedOutput.title}</h3></div><span className={`output-status status-${selectedOutput.status ?? "saved"}`}>{selectedOutput.lifecyclePending ? "상태 미확인" : outputStatusLabel(selectedOutput.status)}</span></header>
         <StudioOutputContent output={selectedOutput} />
         <p>Version {selectedOutput.content_version ?? selectedOutput.output_version_id} · 근거 {Array.isArray(selectedOutput.citations) ? selectedOutput.citations.length : selectedOutput.citations ?? (selectedOutput.canonicalPending ? "미확인" : 0)} · 설정 {selectedOutput.settings_snapshot_id ?? (selectedOutput.canonicalPending ? "미확인" : "-")}</p>
         {selectedOutput.versions?.length ? <section className="studio-version-history" aria-label="Version 이력"><h4>Version 이력</h4><ol>{selectedOutput.versions.map((version) => <li key={version.output_version_id}><strong>Version {version.content_version}</strong><span>{outputStatusLabel(version.status)} · {version.change_reason}</span></li>)}</ol></section> : null}
@@ -516,18 +614,19 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
           const audio=citation.locator?.kind === "audio_segment" ? parseAudioSegment(citation.locator.value) : null;
           return <li key={citation.citation_id}>{citation.origin === "daon_knowledge" ? "Daon 생성 지식" : "원본 지식"} · {audio?`음성 ${audio.start_ms}–${audio.end_ms}ms`:citation.locator?.kind === "pptx_block" ? pptxBlockLabel(citation.locator.value) : block ? `문단·표 ${block.block} · ${block.start}–${block.end}` : cell ? `${cell.sheet} · ${cell.range}` : citation.locator?.kind === "page" ? `${citation.locator.value}쪽` : citation.locator?.value}</li>;
         })}</ul></section> : null}
-        <label>변경 사유<input disabled={view.pending || Boolean(revisionRequestRef.current)} value={changeReason} onChange={(event) => { if (!view.pending && !revisionRequestRef.current) setChangeReason(event.currentTarget.value); }} /></label>
-        <label>편집 내용<textarea disabled={view.pending || Boolean(revisionRequestRef.current)} value={revisionContent} onChange={(event) => { if (!view.pending && !revisionRequestRef.current) setRevisionContent(event.currentTarget.value); }} /></label>
-        <button type="button" disabled={view.pending || Boolean(revisionRequestRef.current) || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("user_edit")}>편집 새 Version</button>
-        <button type="button" disabled={view.pending || Boolean(revisionRequestRef.current) || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("ai_regeneration")}>AI 재생성 새 Version</button>
-        <button type="button" disabled={view.pending || Boolean(revisionRequestRef.current) || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("settings_change")}>설정 변경 새 Version</button>
-        <button type="button" disabled={view.pending} onClick={() => void act("reviews")}>검토 요청</button>
-        <button type="button" disabled={view.pending || !selectedOutput.review_request_id} onClick={() => void act("approval-requests", { review_request_id: selectedOutput.review_request_id })}>승인 요청</button>
-        <button type="button" disabled={view.pending || !selectedOutput.approval_request_id} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "approved" })}>승인</button>
-        <button type="button" disabled={view.pending || !selectedOutput.approval_request_id} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "rejected" })}>수정 요청</button>
-        <button type="button" disabled={view.pending || selectedOutput.status !== "approved"} onClick={() => void download()}>내보내기</button>
-        <button type="button" disabled={view.pending || selectedOutput.status !== "approved" || !selectedOutput.approval_id} onClick={() => void act("deliveries", { approval_id: selectedOutput.approval_id, recipient: "workspace_recipient" })}>전달</button>
-        <button type="button" disabled={view.pending || selectedOutput.status !== "approved"} onClick={() => void act("knowledge-registrations", { explicit: true })}>생산 지식 등록</button>
+        <label>변경 사유<input disabled={configurationBusy} value={changeReason} onChange={(event) => { if (!view.pending && !revisionRequestRef.current && !actionRequestRef.current) setChangeReason(event.currentTarget.value); }} /></label>
+        <label>편집 내용<textarea disabled={configurationBusy} value={revisionContent} onChange={(event) => { if (!view.pending && !revisionRequestRef.current && !actionRequestRef.current) setRevisionContent(event.currentTarget.value); }} /></label>
+        <button type="button" disabled={configurationBusy || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("user_edit")}>편집 새 Version</button>
+        <button type="button" disabled={configurationBusy || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("ai_regeneration")}>AI 재생성 새 Version</button>
+        <button type="button" disabled={configurationBusy || !changeReason.trim() || !revisionContent.trim()} onClick={() => void revise("settings_change")}>설정 변경 새 Version</button>
+        <button type="button" disabled={actionDisabled("reviews")} onClick={() => void act("reviews")}>검토 요청</button>
+        <button type="button" disabled={actionDisabled("approval-requests")} onClick={() => void act("approval-requests", { review_request_id: selectedOutput.review_request_id })}>승인 요청</button>
+        <button type="button" disabled={actionDisabled("approvals")} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "approved" })}>승인</button>
+        <button type="button" disabled={actionDisabled("approvals")} onClick={() => void act("approvals", { approval_request_id: selectedOutput.approval_request_id, decision: "rejected" })}>수정 요청</button>
+        <button type="button" disabled={configurationBusy || selectedOutput.status !== "approved" || selectedOutput.canonicalPending || selectedOutput.lifecyclePending} onClick={() => download()}>내보내기</button>
+        <button type="button" disabled={actionDisabled("deliveries")} onClick={() => void act("deliveries", { approval_id: selectedOutput.approval_id, recipient: "workspace_recipient" })}>전달 기록 등록</button>
+        <small>전달 기록만 등록하며 실제 외부 송신은 없습니다.{selectedOutput.delivery_id ? " 전달 기록이 이미 등록되었습니다." : ""}</small>
+        <button type="button" disabled={actionDisabled("knowledge-registrations")} onClick={() => void act("knowledge-registrations", { explicit: true })}>생산 지식 등록</button>
       </section> : null}
     </div>
   );
