@@ -10,7 +10,7 @@ import { classifyConversationIntent } from "./conversation-intent.js";
 import { secureUuid } from "./secure-uuid.js";
 import "./workspace.css";
 import { parseDocxBlock, isDocxBlockContent } from "./shared-docx-block.js";
-import { parseAudioSegment, isAudioSegmentContent } from "./shared-audio-segment.js";
+import { parseAudioSegment, isAudioSegmentContent, audioSourceSha256 } from "./shared-audio-segment.js";
 
 const audioTime = ms => `${String(Math.floor(ms/60000)).padStart(2,'0')}:${String(Math.floor(ms/1000)%60).padStart(2,'0')}.${String(ms%1000).padStart(3,'0')}`;
 
@@ -179,8 +179,7 @@ function AudioOriginalSegments({ content, citation }) {
       finally{reader.releaseLock();}
       if(!total)throw new Error();
       const blob=new Blob(chunks,{type:'audio/wav'});
-      const digest=await globalThis.crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
-      const hash=Array.from(new Uint8Array(digest),value=>value.toString(16).padStart(2,'0')).join('');
+      const hash=audioSourceSha256(new Uint8Array(await blob.arrayBuffer()));
       if(hash!==content.source_sha256)throw new Error();
       if(controller.signal.aborted || requestRef.current!==controller)return;
       const objectUrl=URL.createObjectURL(blob);resourceRef.current=objectUrl;setUrl(objectUrl);

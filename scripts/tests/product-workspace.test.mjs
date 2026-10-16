@@ -816,6 +816,97 @@ test('audio React binary verifies SHA, seeks only after metadata, ends at bound 
   }finally{if(workspace)await workspace.cleanup();globalThis.fetch=oldFetch;URL.createObjectURL=oldCreate;URL.revokeObjectURL=oldRevoke;globalThis.setTimeout=oldTimer;}
 });
 
+test('S20 HTTP audio without SubtleCrypto creates AUDIO only after verifying exact original SHA',async()=>{
+  const {createHash}=await import('node:crypto');
+  // Valid one-second mono PCM16 WAV; no ASR/model/browser decoding is simulated.
+  const raw=Buffer.alloc(32044);
+  raw.write('RIFF',0);raw.writeUInt32LE(32036,4);raw.write('WAVE',8);
+  raw.write('fmt ',12);raw.writeUInt32LE(16,16);raw.writeUInt16LE(1,20);
+  raw.writeUInt16LE(1,22);raw.writeUInt32LE(16000,24);raw.writeUInt32LE(32000,28);
+  raw.writeUInt16LE(2,32);raw.writeUInt16LE(16,34);raw.write('data',36);raw.writeUInt32LE(32000,40);
+  const hash=createHash('sha256').update(raw).digest('hex');
+  const oldFetch=globalThis.fetch,originalCrypto=Object.getOwnPropertyDescriptor(globalThis,'crypto');
+  const originalCryptoValue=globalThis.crypto,oldCreate=URL.createObjectURL,oldRevoke=URL.revokeObjectURL;
+  const calls=[],revoked=[];let workspace;
+  const locator={kind:'audio_segment',value:'{"segment":"s:1","start_ms":200,"end_ms":800,"start":0,"end":1}'};
+  const citation={citation_id:'citation-audio',source_id:'source-1',source_version_id:'version-1',evidence_span_id:'span-audio',page:1,origin:'raw_source',context_item_id:'source-1',locator};
+  const content={source_version_id:'version-1',source_sha256:hash,transcript_sha256:'b'.repeat(64),duration_ms:1000,
+    selected_segment_id:'s:1',selected_start:0,selected_end:1,segments:[{segment_id:'s:1',start_ms:200,end_ms:800,text:'원문'}]};
+  URL.createObjectURL=()=> 'blob:s20-http-audio';URL.revokeObjectURL=url=>revoked.push(url);
+  globalThis.fetch=async(url,init)=>{calls.push({url,init});return url.endsWith('&representation=audio')?
+    new Response(raw,{headers:{'Content-Type':'audio/wav'}}):Response.json(content);};
+  try{
+    Object.defineProperty(globalThis,'crypto',{configurable:true,value:{
+      getRandomValues:originalCryptoValue.getRandomValues.bind(originalCryptoValue),
+    }});
+    assert.equal(globalThis.crypto.subtle,undefined,'HTTP capability double, not a live browser assertion');
+    workspace=await mountSourceRetryWorkspace({...adapter,
+      listSources:async()=>[{...sourceRetryPayload,filename:'qa.wav'}],listStudioOutputs:async()=>[],
+      citationUrl:value=>citationContentUrl('workspace-1',value,{notebookId:'notebook-1'}),
+      loadNotebookConversation:async()=>({run_id:'run-audio',run_result_id:'result-audio',answer:'저장된 음성 답변',insufficient:false,
+        citations:[{...citation,content_url:citationContentUrl('workspace-1',citation,{notebookId:'notebook-1'})}]})
+    },'s20-http-audio');
+    const link=findElements(workspace.container,node=>node.tagName==='A'&&node.textContent.includes('Citation'))[0];
+    await workspace.act(async()=>link.dispatchEvent(new MinimalEvent('click')));
+    assert.equal(calls.length,1,'전사 표시만으로 바이너리를 가져오지 않는다');
+    const load=findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원본 불러오기')[0];
+    assert.ok(load);
+    await workspace.act(async()=>{load.dispatchEvent(new MinimalEvent('click'));await new Promise(resolve=>setTimeout(resolve,20));});
+    assert.equal(calls.length,2);assert.equal(calls[1].url,'/bff/api/workspaces/workspace-1/citations/citation-audio/content?notebook_id=notebook-1&representation=audio');
+    assert.equal(calls[1].init.credentials,'same-origin');assert.equal(calls[1].init.cache,'no-store');
+    const player=findElements(workspace.container,node=>node.tagName==='AUDIO')[0];
+    assert.ok(player,`검증된 WAV는 SubtleCrypto 없이도 AUDIO를 생성해야 한다: ${workspace.container.textContent}`);
+    player.pause=()=>{}; // MinimalDom has no browser media methods; cleanup still runs in React.
+    assert.equal(player.getAttribute('src'),'blob:s20-http-audio');
+    assert.doesNotMatch(workspace.container.textContent,/AUDIO_CONTENT_UNAVAILABLE/);
+    await workspace.act(async()=>findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원문 닫기')[0].dispatchEvent(new MinimalEvent('click')));
+    assert.deepEqual(revoked,['blob:s20-http-audio']);
+  }finally{
+    if(workspace)await workspace.cleanup();
+    globalThis.fetch=oldFetch;URL.createObjectURL=oldCreate;URL.revokeObjectURL=oldRevoke;
+    if(originalCrypto)Object.defineProperty(globalThis,'crypto',originalCrypto);else delete globalThis.crypto;
+  }
+});
+
+test('S20 audio wrong SHA creates no AUDIO or Blob URL in HTTP and secure capabilities',async(t)=>{
+  for(const secure of [false,true])await t.test(secure?'secure':'HTTP',async()=>{
+    const raw=Buffer.alloc(32044);
+    raw.write('RIFF',0);raw.writeUInt32LE(32036,4);raw.write('WAVE',8);
+    raw.write('fmt ',12);raw.writeUInt32LE(16,16);raw.writeUInt16LE(1,20);
+    raw.writeUInt16LE(1,22);raw.writeUInt32LE(16000,24);raw.writeUInt32LE(32000,28);
+    raw.writeUInt16LE(2,32);raw.writeUInt16LE(16,34);raw.write('data',36);raw.writeUInt32LE(32000,40);
+    const originalCrypto=Object.getOwnPropertyDescriptor(globalThis,'crypto'),originalCryptoValue=globalThis.crypto;
+    const oldFetch=globalThis.fetch,oldCreate=URL.createObjectURL;let workspace,created=0;
+    const calls=[];
+    const citation={citation_id:'citation-audio',source_id:'source-1',source_version_id:'version-1',evidence_span_id:'span-audio',page:1,
+      origin:'raw_source',context_item_id:'source-1',locator:{kind:'audio_segment',value:'{"segment":"s:1","start_ms":200,"end_ms":800,"start":0,"end":1}'}};
+    const content={source_version_id:'version-1',source_sha256:'0'.repeat(64),transcript_sha256:'b'.repeat(64),duration_ms:1000,
+      selected_segment_id:'s:1',selected_start:0,selected_end:1,segments:[{segment_id:'s:1',start_ms:200,end_ms:800,text:'원문'}]};
+    URL.createObjectURL=()=>{created++;return 'blob:must-not-exist';};
+    globalThis.fetch=async(url,init)=>{calls.push({url,init});return url.endsWith('&representation=audio')?
+      new Response(raw,{headers:{'Content-Type':'audio/wav'}}):Response.json(content);};
+    try{
+      if(!secure)Object.defineProperty(globalThis,'crypto',{configurable:true,value:{getRandomValues:originalCryptoValue.getRandomValues.bind(originalCryptoValue)}});
+      workspace=await mountSourceRetryWorkspace({...adapter,
+        listSources:async()=>[{...sourceRetryPayload,filename:'qa.wav'}],listStudioOutputs:async()=>[],
+        citationUrl:value=>citationContentUrl('workspace-1',value,{notebookId:'notebook-1'}),
+        loadNotebookConversation:async()=>({run_id:'run-audio',run_result_id:'result-audio',answer:'저장된 음성 답변',insufficient:false,
+          citations:[{...citation,content_url:citationContentUrl('workspace-1',citation,{notebookId:'notebook-1'})}]})
+      },'s20-wrong-sha');
+      await workspace.act(async()=>findElements(workspace.container,node=>node.tagName==='A'&&node.textContent.includes('Citation'))[0].dispatchEvent(new MinimalEvent('click')));
+      assert.equal(calls.length,1);
+      await workspace.act(async()=>{findElements(workspace.container,node=>node.tagName==='BUTTON'&&node.textContent==='원본 불러오기')[0].dispatchEvent(new MinimalEvent('click'));await new Promise(resolve=>setTimeout(resolve,20));});
+      assert.equal(calls.length,2);
+      assert.match(workspace.container.textContent,/AUDIO_CONTENT_UNAVAILABLE/);
+      assert.equal(findElements(workspace.container,node=>node.tagName==='AUDIO').length,0);
+      assert.equal(created,0,'해시 불일치 원본의 Blob URL 생성 금지');
+    }finally{
+      if(workspace)await workspace.cleanup();globalThis.fetch=oldFetch;URL.createObjectURL=oldCreate;
+      if(originalCrypto)Object.defineProperty(globalThis,'crypto',originalCrypto);else delete globalThis.crypto;
+    }
+  });
+});
+
 test("DOCX 실제 React 원문은 emoji codepoint 강조·표 위치·safe text·늦은 응답을 결속한다", async(t)=>{
   for(const scenario of ['success','invalid','late-selection','late-other-source','late-close']) await t.test(scenario,async()=>{
     const oldFetch=globalThis.fetch;const pending=deferred();const calls=[];let workspace;
