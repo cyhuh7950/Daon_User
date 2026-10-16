@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { providerSettingsApi } from "../lib/provider-settings-api.js";
 import { summarizeConnectionUsage } from "./provider-settings-usage.js";
@@ -209,15 +209,30 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const [asrModelChoice, setAsrModelChoice] = useState("");
   const [defaultStatus, setDefaultStatus] = useState("");
   const [savingDefault, setSavingDefault] = useState(false);
+  const previewRequestRef = useRef(null);
+  const previewScope = JSON.stringify([workspaceId ?? null, resolvedWorkspaceId, selectedId,
+    draft.connection_id, draft.provider_code, draft.base_url, draft.adapter_type, draft.credential_requirement]);
+  const previewScopeRef = useRef(previewScope);
+  previewScopeRef.current = previewScope;
+  const discardPreview = useCallback(() => {
+    if (previewRequestRef.current === null) return;
+    previewRequestRef.current = null;
+    setPreviewModelIds([]);
+    setStatus((current) => current.kind === "saving"
+      ? { kind: "ready", message: "조회 대상이 변경되었습니다. 현재 연결에서 다시 조회할 수 있습니다." }
+      : current);
+  }, []);
+  useEffect(() => () => { previewRequestRef.current = null; }, []);
 
   const selectConnection = useCallback((connection) => {
+    discardPreview();
     setSelectedId(connection.connection_id);
     setDraft(draftFromConnection(connection));
     setCredential("");
     setOwnPersonalCredential("");
     setPreviewModelIds([]);
     setConfirmDelete(false);
-  }, []);
+  }, [discardPreview]);
 
   const applyConnections = useCallback((items, preferredId = null) => {
     const projectedItems = withDefaultProviders(items);
@@ -237,6 +252,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   }, []);
 
   const load = useCallback(async () => {
+    discardPreview();
     setStatus({ kind: "loading", message: "Provider 설정을 불러오는 중입니다." });
     try {
       const session = await providerSettingsApi.getSession();
@@ -276,7 +292,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
     } catch {
       setStatus({ kind: "error", message: "Provider 설정을 불러오지 못했습니다. 다시 시도해 주세요." });
     }
-  }, [applyConnections, applyUserCredentials, workspaceId]);
+  }, [applyConnections, applyUserCredentials, workspaceId, discardPreview]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -442,7 +458,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   }
 
   async function previewModels() {
-    if (!isSystemAdmin || draft.provider_code !== "CUSTOM" || !Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type) || (draft.credential_requirement === "required" && !credential.trim())) return;
+    if (previewRequestRef.current || !isSystemAdmin || draft.provider_code !== "CUSTOM" || !Object.hasOwn(COMPATIBLE_APIS, draft.adapter_type) || (draft.credential_requirement === "required" && !credential.trim())) return;
+    const request = { scope: previewScope };
+    previewRequestRef.current = request;
+    const ownsPreview = () => previewRequestRef.current === request && previewScopeRef.current === request.scope;
     setStatus({ kind: "saving", message: "모델 목록을 조회하는 중입니다." });
     try {
       const result = await providerSettingsApi.previewModels({
@@ -450,6 +469,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
         adapter_type: draft.adapter_type, base_url: draft.base_url.trim(),
         ...(credential.trim() ? { credential } : {}),
       });
+      if (!ownsPreview()) return;
       const ids = Array.isArray(result.payload?.data?.model_ids)
         ? result.payload.data.model_ids.filter((item) => typeof item === "string" && item.trim())
         : [];
@@ -458,8 +478,11 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
         ? `${ids.length}개 모델을 조회했습니다. 사용할 모델을 선택하거나 모델 ID를 직접 입력하세요.`
         : "조회된 모델이 없습니다. 모델 ID를 직접 입력해 시험할 수 있습니다." });
     } catch {
+      if (!ownsPreview()) return;
       setPreviewModelIds([]);
       setStatus({ kind: "error", message: "모델 목록을 조회하지 못했습니다. 모델 ID를 직접 입력해 시험할 수 있습니다." });
+    } finally {
+      if (previewRequestRef.current === request) previewRequestRef.current = null;
     }
   }
 
@@ -573,7 +596,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
   const adminSystemKeyAllowed = draft.credential_requirement === "required"
     && !(draft.provider_code === "OMNIROUTE" && draft.access_mode === "personal");
   const credentialField = (isSystemAdmin ? adminSystemKeyAllowed : selectedConnection?.access_mode === "personal")
-    ? <label>API Key 또는 Client Key{!isSystemAdmin && projectProviderConnection(selectedConnection, userCredentials[selectedConnection?.connection_id]).needsReentry ? <small>기존 Key는 사용할 수 없습니다. 새 Key를 다시 입력해 주세요.</small> : null}{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}{isSystemAdmin && compatible && draft.access_mode === "personal" ? <small>개인 연결의 시험 Key는 저장하지 않습니다.</small> : null}{personalCustomWithoutModels ? <small>관리자가 사용할 모델을 허용한 뒤 Key를 시험할 수 있습니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} onChange={(event) => setCredential(event.target.value)} /></label>
+    ? <label>API Key 또는 Client Key{!isSystemAdmin && projectProviderConnection(selectedConnection, userCredentials[selectedConnection?.connection_id]).needsReentry ? <small>기존 Key는 사용할 수 없습니다. 새 Key를 다시 입력해 주세요.</small> : null}{isSystemAdmin && selectedConnection?.configured ? <small className="provider-field-status is-saved">저장됨 · 새 키를 입력하면 교체됩니다.</small> : null}{isSystemAdmin && compatible && draft.access_mode === "personal" ? <small>개인 연결의 시험 Key는 저장하지 않습니다.</small> : null}{personalCustomWithoutModels ? <small>관리자가 사용할 모델을 허용한 뒤 Key를 시험할 수 있습니다.</small> : null}<input type="password" value={credential} autoComplete="new-password" disabled={!canUsePersonalCredential} onChange={(event) => { discardPreview(); setCredential(event.target.value); }} /></label>
     : null;
   const Root = embedded ? "div" : "main";
 
@@ -586,7 +609,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
       <div className={`provider-status ${status.kind}`} role="status"><span className="status-dot" aria-hidden="true" />{status.message}</div>
 
       {isSystemAdmin !== null ? <section className="provider-admin-panel" aria-labelledby="provider-admin-title">
-        <div className="studio-section-heading"><div><span className="section-kicker">{isSystemAdmin ? "SYSTEM ADMIN" : "SHARED CONNECTIONS"}</span><h2 id="provider-admin-title">시스템 Provider 연결</h2><small>{connectionUsage.label} · {connectionUsage.description}</small></div>{isSystemAdmin ? <div className="provider-heading-actions"><label>상태 확인 주기<select aria-label="상태 확인 주기" value={healthIntervalDraft} onChange={(event) => setHealthIntervalDraft(Number(event.target.value))}><option value={0}>사용 안 함 (0분)</option><option value={60}>60분</option><option value={120}>120분</option><option value={360}>360분</option><option value={720}>720분</option><option value={1440}>1440분</option></select></label><button className="secondary-button" type="button" onClick={saveHealthSettings} disabled={busy || Number(healthIntervalDraft) === Number(healthSettings.interval_minutes)}>주기 저장</button><button className="secondary-button" type="button" onClick={() => { setSelectedId(null); setDraft(emptyConnectionDraft()); setCredential(""); setPreviewModelIds([]); }}>연결 추가</button></div> : <small>Endpoint·모델 설정은 시스템 관리자만 변경할 수 있습니다.</small>}</div>
+        <div className="studio-section-heading"><div><span className="section-kicker">{isSystemAdmin ? "SYSTEM ADMIN" : "SHARED CONNECTIONS"}</span><h2 id="provider-admin-title">시스템 Provider 연결</h2><small>{connectionUsage.label} · {connectionUsage.description}</small></div>{isSystemAdmin ? <div className="provider-heading-actions"><label>상태 확인 주기<select aria-label="상태 확인 주기" value={healthIntervalDraft} onChange={(event) => setHealthIntervalDraft(Number(event.target.value))}><option value={0}>사용 안 함 (0분)</option><option value={60}>60분</option><option value={120}>120분</option><option value={360}>360분</option><option value={720}>720분</option><option value={1440}>1440분</option></select></label><button className="secondary-button" type="button" onClick={saveHealthSettings} disabled={busy || Number(healthIntervalDraft) === Number(healthSettings.interval_minutes)}>주기 저장</button><button className="secondary-button" type="button" onClick={() => { discardPreview(); setSelectedId(null); setDraft(emptyConnectionDraft()); setCredential(""); setPreviewModelIds([]); }}>연결 추가</button></div> : <small>Endpoint·모델 설정은 시스템 관리자만 변경할 수 있습니다.</small>}</div>
         <div className="provider-settings-layout">
           <div className="provider-connection-list" aria-label="Provider 연결 목록">
             {connections.map((connection) => { const projected = projectProviderConnection(connection, userCredentials[connection.connection_id]); return <button className="provider-card" type="button" aria-pressed={selectedId === connection.connection_id} onClick={() => selectConnection(connection)} key={connection.connection_id}><span className="provider-monogram" aria-hidden="true">{connection.short_code ?? "??"}</span><span><strong>{connection.display_name}</strong><small>{connection.provider_name ?? connection.provider_code} · {projected.label}</small></span><span className={`provider-state-dot ${projected.verified ? "is-ready" : ""}`} aria-hidden="true" /></button>; })}
@@ -600,6 +623,7 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                 {draft.version > 0
                   ? <label>호환 방식<input readOnly value={nativeAsr ? "QA Native CPU base ASR" : compatible ? COMPATIBLE_APIS[draft.adapter_type].label : draft.provider_code === "CUSTOM" ? "기존 CUSTOM (OpenAI 호환)" : "기존 Provider 방식"} /></label>
                   : <label>호환 방식<select value={draft.adapter_type} onChange={(event) => {
+                    discardPreview();
                     const protocol = event.target.value;
                     setCredential(""); setPreviewModelIds([]);
                     if(protocol==='asr_base_native'){
@@ -621,10 +645,10 @@ export function ProviderSettingsWorkspace({ workspaceId, embedded = false, showN
                 <label>Provider 표시 이름<input value={draft.provider_name} maxLength={256} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, provider_name: event.target.value }))} /></label>
                 <label>연결 이름<input value={draft.display_name} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} /></label>
                 <label>두 글자 약어<input aria-label="두 글자 약어" value={draft.short_code} maxLength={2} pattern="[A-Z]{2}" autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, short_code: event.target.value.toUpperCase() }))} /></label>
-                <label>Endpoint<input readOnly={nativeAsr} value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
+                <label>Endpoint<input readOnly={nativeAsr} value={draft.base_url} autoComplete="off" placeholder={draft.version ? "보안을 위해 저장된 주소는 표시하지 않습니다" : "서버에서 검증할 Endpoint"} onChange={(event) => { discardPreview(); setDraft((current) => ({ ...current, base_url: event.target.value })); }} /></label>
                 <div className="provider-field-wide provider-configuration-columns">
                   <div className="provider-configuration-settings">
-                    <label>인증 유형{nativeAsr || draft.version > 0 && compatible ? <input readOnly value={draft.credential_requirement === "none" ? "Key 불필요" : "Key 필요"} /> : <select value={draft.credential_requirement} onChange={(event) => { if (event.target.value === "none") setCredential(""); setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode })); }}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>
+                    <label>인증 유형{nativeAsr || draft.version > 0 && compatible ? <input readOnly value={draft.credential_requirement === "none" ? "Key 불필요" : "Key 필요"} /> : <select value={draft.credential_requirement} onChange={(event) => { discardPreview(); if (event.target.value === "none") setCredential(""); setDraft((current) => ({ ...current, credential_requirement: event.target.value, access_mode: event.target.value === "none" ? "public" : current.access_mode })); }}><option value="required">Key 필요</option><option value="none">Key 불필요</option></select>}</label>
                     {Object.hasOwn(FIXED_AUTO_MODELS, draft.provider_code) ? <label>Auto 모델 ID<input readOnly value={draft.auto_model_id} /></label> : null}
                     {compatible && draft.adapter_type === "openai_compatible" ? <label className="styled-check"><input type="checkbox" checked={Boolean(draft.auto_model_id)} onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.checked ? "auto" : "" }))} /><span>라우터 Auto 사용</span></label> : null}
                     {compatible && draft.adapter_type === "openai_compatible" && draft.auto_model_id ? <label>Auto 모델 ID<input value={draft.auto_model_id} maxLength={256} autoComplete="off" onChange={(event) => setDraft((current) => ({ ...current, auto_model_id: event.target.value }))} /></label> : null}

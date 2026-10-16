@@ -124,8 +124,87 @@ async function mountAdminFixture(fixture, fileName) {
   const container = dom.document.createElement("div"); dom.document.body.appendChild(container);
   const reactRoot = createRoot(container);
   await act(async () => { reactRoot.render(createElement(ProviderSettingsWorkspace, { workspaceId: "workspace-001", embedded: true })); await Promise.resolve(); await Promise.resolve(); });
-  return { container, act, async cleanup() { await act(async () => reactRoot.unmount()); globalThis.fetch = originalFetch; dom.restore(); await rm(output, { recursive: true, force: true }); } };
+  let unmounted=false;
+  const unmount=async()=>{if(!unmounted){await act(async()=>reactRoot.unmount());unmounted=true;}};
+  return { container, act, unmount,
+    async render(props={}) { await act(async()=>reactRoot.render(createElement(ProviderSettingsWorkspace,{workspaceId:'workspace-001',embedded:true,...props}))); },
+    async cleanup() { await unmount(); globalThis.fetch = originalFetch; dom.restore(); await rm(output, { recursive: true, force: true }); } };
 }
+
+function s26Connection(id) {
+  return { connection_id:`s26-${id}`,provider_code:'CUSTOM',adapter_type:'openai_compatible',provider_name:`S26 ${id}`,display_name:`S26 connection ${id}`,
+    base_url:`https://${id}.example/v1`,short_code:id==='a'?'SA':'SB',access_mode:'public',credential_requirement:'none',
+    allowed_model_ids:[],enabled:true,configured:false,verification_status:'unverified',version:1,catalog_status:'unverified',catalog_version:0,models:[] };
+}
+function s26DelayedFixture(existingConnections=[]) {
+  const fixture=adminFixture({existingConnections}),base=fixture.fetch,pending=[];
+  fixture.fetch=async(url,options={})=>{
+    if(String(url).endsWith('/model-preview')) {
+      fixture.requests.push({path:String(url),method:options.method,body:JSON.parse(options.body)});
+      return new Promise((resolve,reject)=>pending.push({resolve,reject}));
+    }
+    return base(url,options);
+  };
+  return {fixture,pending};
+}
+
+test('S26 delayed preview success and failure cannot mutate a different connection endpoint protocol or Workspace',async t=>{
+  for(const boundary of ['connection','new_connection','endpoint','protocol','workspace'])for(const outcome of ['success','failure']) {
+    await t.test(`${boundary}-${outcome}`,async()=>{
+      const fresh=boundary==='endpoint'||boundary==='protocol';
+      const {fixture,pending}=s26DelayedFixture(fresh?[]:[s26Connection('a'),s26Connection('b')]);
+      const view=await mountAdminFixture(fixture,`S26-${boundary}-${outcome}`);
+      try {
+        if(fresh) {await fill(view.act,controlFor(view.container,'Endpoint'),'https://a.example/v1');await fill(view.act,controlFor(view.container,'인증 유형'),'none');}
+        await click(view.act,buttonByText(view.container,'모델 목록 조회'));
+        assert.equal(pending.length,1);
+        assert.equal(fixture.requests.find(row=>row.path.endsWith('/model-preview')).body.base_url,'https://a.example/v1');
+        if(boundary==='connection')await click(view.act,findElements(view.container,node=>node.tagName==='BUTTON'&&node.textContent.includes('S26 connection b'))[0]);
+        else if(boundary==='new_connection') {await click(view.act,buttonByText(view.container,'연결 추가'));await fill(view.act,controlFor(view.container,'Endpoint'),'https://new.example/v1');await fill(view.act,controlFor(view.container,'인증 유형'),'none');}
+        else if(boundary==='endpoint') {assert.notEqual(reactProps(controlFor(view.container,'Endpoint')).disabled,true);await fill(view.act,controlFor(view.container,'Endpoint'),'https://b.example/v1');}
+        else if(boundary==='protocol') {assert.notEqual(reactProps(controlFor(view.container,'호환 방식')).disabled,true);await fill(view.act,controlFor(view.container,'호환 방식'),'anthropic_compatible');await fill(view.act,controlFor(view.container,'Endpoint'),'https://b.example/v1');await fill(view.act,controlFor(view.container,'인증 유형'),'none');}
+        else await view.render({workspaceId:'workspace-002'});
+        const before=view.container.textContent;
+        await view.act(async()=>outcome==='success'?pending[0].resolve(Response.json({data:{model_ids:['stale-a-model']}})):pending[0].reject(new Error('private stale provider response')));
+        assert.equal(view.container.textContent,before,'old response must not alter current models or status');
+        assert.doesNotMatch(view.container.textContent,/stale-a-model|private stale provider response/);
+        assert.equal(buttonByText(view.container,'모델 목록 조회').disabled,false,'new scope must not remain busy for the discarded preview');
+        assert.equal(fixture.requests.filter(row=>row.method!=='GET'&&!row.path.endsWith('/model-preview')).length,0);
+      } finally { for(const item of pending)item.resolve(Response.json({data:{model_ids:[]}}));await view.cleanup(); }
+    });
+  }
+});
+
+test('S26 preview synchronous duplicate handlers issue one request and old failure cannot release a newer preview',async()=>{
+  const {fixture,pending}=s26DelayedFixture([s26Connection('a'),s26Connection('b')]);
+  const view=await mountAdminFixture(fixture,'S26-singleflight');
+  try {
+    const handler=reactProps(buttonByText(view.container,'모델 목록 조회')).onClick;
+    await view.act(async()=>{handler();handler();});assert.equal(pending.length,1);
+    await click(view.act,findElements(view.container,node=>node.tagName==='BUTTON'&&node.textContent.includes('S26 connection b'))[0]);
+    assert.equal(buttonByText(view.container,'모델 목록 조회').disabled,false);
+    await click(view.act,buttonByText(view.container,'모델 목록 조회'));assert.equal(pending.length,2);
+    await view.act(async()=>pending[0].reject(new Error('private old response')));
+    assert.equal(buttonByText(view.container,'모델 목록 조회').disabled,true);
+    assert.match(view.container.textContent,/모델 목록을 조회하는 중/);
+    await view.act(async()=>pending[1].resolve(Response.json({data:{model_ids:['current-b-model']}})));
+    assert.match(view.container.textContent,/current-b-model/);assert.doesNotMatch(view.container.textContent,/private old response/);
+    assert.equal(buttonByText(view.container,'모델 목록 조회').disabled,false);
+    assert.equal(controlFor(view.container,'모델 ID 직접 입력').value,'','preview may not expand the allowlist');
+  } finally {for(const item of pending)item.resolve(Response.json({data:{model_ids:[]}}));await view.cleanup();}
+});
+
+test('S26 unmounted preview late resolution and rejection produce no UI or unhandled rejection',async t=>{
+  for(const outcome of ['success','failure'])await t.test(outcome,async()=>{
+    const {fixture,pending}=s26DelayedFixture([s26Connection('a')]);const view=await mountAdminFixture(fixture,`S26-unmount-${outcome}`);
+    try {
+      await click(view.act,buttonByText(view.container,'모델 목록 조회'));assert.equal(pending.length,1);
+      await view.unmount();
+      await view.act(async()=>outcome==='success'?pending[0].resolve(Response.json({data:{model_ids:['stale-a-model']}})):pending[0].reject(new Error('private unmounted response')));
+      assert.equal(view.container.textContent,'');
+    } finally {for(const item of pending)item.resolve(Response.json({data:{model_ids:[]}}));await view.cleanup();}
+  });
+});
 
 test("admin can save zero minutes to disable periodic provider checks", async () => {
   const fixture = adminFixture();
