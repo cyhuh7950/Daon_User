@@ -7,6 +7,204 @@ import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./p
 import { createStudioAction, createStudioVersion, listStudioVersions } from "../../apps/web/lib/product-workspace-api.js";
 import { createProductStudioState } from '../../packages/ui/src/product-studio-model.js';
 
+const s22Sources = [{ sourceId: 'source-1', sourceVersionId: 'source-version-1', filename: 'QA 시험 문서.txt', ready: true }];
+const s22Settings = { purpose: '시험 비교', audience: '검토자', language: 'ko', sourceVersionIds: ['source-version-1'],
+  length: 'short', structure: 'summary-body-conclusion', outputFormat: 'csv', reviewCondition: 'review_required' };
+function s22Confirmed(workspaceId = 'workspace-1') {
+  return { ...createProductStudioState({ workspaceId, sources: s22Sources, selectedSourceVersionIds: ['source-version-1'] }),
+    selectedOutputType: 'comparison_table', settings: { ...s22Settings }, settingsSnapshot: { ...s22Settings }, settingsConfirmed: true };
+}
+function s22Deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function s22Props(element) { return element[Object.keys(element).find(key => key.startsWith('__reactProps'))]; }
+function s22Field(container, text, tag) {
+  const label = findElements(container, node => node.tagName === 'LABEL' && node.textContent.startsWith(text))[0];
+  assert.ok(label, text);
+  return findElements(label, node => node.tagName === tag)[0];
+}
+async function withS22Studio(state, adapter, run) {
+  const rootPath = path.resolve(import.meta.dirname, '../..');
+  const output = await mkdtemp(path.join(rootPath, '.product-studio-s22-'));
+  const dom = installMinimalDom(); let reactRoot;
+  try {
+    const { createElement, act } = await import('react');
+    const { createRoot } = await import('react-dom/client'); const { build } = await import('vite');
+    await build({ configFile: false, logLevel: 'silent', root: rootPath, build: { outDir: output, emptyOutDir: false,
+      lib: { entry: path.join(rootPath, 'packages/ui/src/product-studio-pane.jsx'), formats: ['es'], fileName: 'product-studio' },
+      rollupOptions: { external: ['react', 'react-dom', 'react-dom/client'] } } });
+    const entry = (await readdir(output)).find(name => name.startsWith('product-studio') && /\.m?js$/u.test(name));
+    const { ProductStudioPane } = await import(pathToFileURL(path.join(output, entry)).href);
+    const container = dom.document.createElement('div'); dom.document.body.appendChild(container); reactRoot = createRoot(container);
+    const render = (nextState, nextAdapter) => act(async () => reactRoot.render(createElement(ProductStudioPane, { state: nextState, adapter: nextAdapter })));
+    await render(state, adapter);
+    await run({ container, act, render });
+  } finally {
+    if (reactRoot) { const { act } = await import('react'); await act(async () => reactRoot.unmount()); }
+    dom.restore(); await rm(output, { recursive: true, force: true });
+  }
+}
+
+test('S22 React incomplete settings cannot confirm or submit', async () => {
+  let calls = 0;
+  await withS22Studio(createProductStudioState({ workspaceId: 'workspace-1', sources: s22Sources }),
+    { createGeneration: async () => { calls++; } }, async ({ container, act }) => {
+      await act(async () => buttonByText(container, '비교·데이터 표').dispatchEvent(new MinimalEvent('click')));
+      assert.equal(buttonByText(container, '설정 확인').disabled, true);
+      await act(async () => buttonByText(container, '설정 확인').dispatchEvent(new MinimalEvent('click')));
+      assert.equal(buttonByText(container, '생성').disabled, true);
+      assert.match(container.textContent, /설정을 확인해 주세요/);
+      assert.equal(calls, 0);
+    });
+});
+
+test('S22 React initial locked review is disabled with RuleSet value and reason', async () => {
+  const state = createProductStudioState({ workspaceId: 'workspace-1', sources: s22Sources, locks: [
+    { field: 'reviewCondition', value: 'review_required', reason: 'WORKSPACE_POLICY' },
+    { field: 'rulesetVersionId', value: 'ruleset-v3', reason: 'RULESET_BINDING' },
+  ] });
+  await withS22Studio(state, {}, async ({ container, act }) => {
+    await act(async () => buttonByText(container, '비교·데이터 표').dispatchEvent(new MinimalEvent('click')));
+    const review = s22Field(container, '검토 조건', 'SELECT');
+    assert.equal(s22Props(review).value, 'review_required'); assert.equal(review.disabled, true);
+    assert.equal(s22Field(container, '목적', 'INPUT').disabled, false);
+    assert.match(container.textContent, /RuleSet.*ruleset-v3/);
+    assert.match(container.textContent, /검토 조건.*review_required.*WORKSPACE_POLICY/);
+    assert.match(container.textContent, /RULESET_BINDING/);
+    await act(async () => s22Props(review).onChange({ currentTarget: { value: 'approval_required' } }));
+    assert.equal(s22Props(s22Field(container, '검토 조건', 'SELECT')).value, 'review_required');
+  });
+});
+
+test('S22 React editing confirmed settings requires confirmation again and submits the frozen selection', async () => {
+  const inputs = [];
+  const state = createProductStudioState({ workspaceId: 'workspace-1', sources: s22Sources,
+    selectedSourceVersionIds: ['source-version-1'], locks: [
+      { field: 'reviewCondition', value: 'review_required', reason: 'WORKSPACE_POLICY' },
+      { field: 'rulesetVersionId', value: 'ruleset-v3', reason: 'RULESET_BINDING' },
+    ] });
+  const adapter = { createGeneration: async input => { inputs.push(input); return {
+    status: 'completed', studio_output_id: 'configured-output', output_version_id: 'configured-version',
+    title: '설정된 비교표', output_type: 'comparison_table', content: { rows: [] },
+  }; } };
+  await withS22Studio(state, adapter, async ({ container, act }) => {
+    await act(async () => buttonByText(container, '비교·데이터 표').dispatchEvent(new MinimalEvent('click')));
+    for (const [label, tag, value] of [
+      ['목적', 'INPUT', '시험 비교'], ['독자', 'INPUT', '검토자'], ['분량', 'SELECT', 'short'],
+      ['구성', 'SELECT', 'summary-body-conclusion'], ['출력 형식', 'SELECT', 'csv'],
+    ]) await act(async () => s22Props(s22Field(container, label, tag)).onChange({ currentTarget: { value } }));
+    assert.equal(buttonByText(container, '설정 확인').disabled, false);
+    assert.equal(buttonByText(container, '생성').disabled, true);
+    await act(async () => buttonByText(container, '설정 확인').dispatchEvent(new MinimalEvent('click')));
+    assert.equal(buttonByText(container, '생성').disabled, false);
+    await act(async () => s22Props(s22Field(container, '독자', 'INPUT')).onChange({ currentTarget: { value: '업무 담당자' } }));
+    assert.equal(buttonByText(container, '생성').disabled, true);
+    await act(async () => buttonByText(container, '설정 확인').dispatchEvent(new MinimalEvent('click')));
+    await act(async () => findElements(container, node => node.tagName === 'FORM')[0].dispatchEvent(new MinimalEvent('submit')));
+    assert.deepEqual(inputs, [{ workspace_id: 'workspace-1', output_type: 'comparison_table', source_only: true,
+      source_id: 'source-1', source_version_ids: ['source-version-1'], run_id: null, run_result_id: null,
+      settings: { purpose: '시험 비교', audience: '업무 담당자', language: 'ko', source_version_ids: ['source-version-1'],
+        ruleset_version_id: 'ruleset-v3', length: 'short', structure: 'summary-body-conclusion', output_format: 'csv', review_condition: 'review_required' } }]);
+    assert.match(container.textContent, /설정된 비교표/);
+  });
+});
+
+test('S22 React new config does not announce the previous library output as saved', async () => {
+  const output = { studio_output_id: 'saved-output', title: '이전 비교표', output_type: 'comparison_table', status: 'approved', content: { rows: [] } };
+  await withS22Studio({ ...createProductStudioState({ sources: s22Sources, outputs: [output] }), selectedOutputId: 'saved-output' }, {},
+    async ({ container, act }) => {
+      await act(async () => buttonByText(container, '비교·데이터 표').dispatchEvent(new MinimalEvent('click')));
+      assert.equal(findElements(container, node => node.getAttribute?.('data-generation-state') === 'idle').length, 1);
+      assert.doesNotMatch(container.textContent, /산출물이 저장되었습니다/);
+      assert.equal(findElements(container, node => node.getAttribute?.('aria-label') === '선택 산출물 상세').length, 0);
+      await act(async () => buttonByText(container, '뒤로').dispatchEvent(new MinimalEvent('click')));
+      assert.ok(buttonByText(container, '이전 비교표'));
+    });
+});
+
+test('S22 React summary describes actual structuring without claiming a model call', async t => {
+  for (const [kind, grounded, expected] of [
+    ['source-only', null, /선택 Source 구조화.*추가 LLM 호출 없음/],
+    ['grounded', { sourceId: 'source-1', sourceVersionIds: ['source-version-1'], runId: 'run-1', runResultId: 'result-1' }, /저장된 답변·근거 구조화.*추가 LLM 호출 없음/],
+  ]) await t.test(kind, async () => {
+    await withS22Studio({ ...s22Confirmed(), grounded }, {}, async ({ container }) => {
+      assert.match(container.textContent, expected);
+      assert.doesNotMatch(container.textContent, /Workspace 기본 모델|생성 시 현재 선택을 검증합니다/);
+    });
+  });
+});
+
+test('S22 React same-turn submits enqueue only once and freeze pending settings', async () => {
+  const pending = s22Deferred(); const calls = [];
+  const adapter = { createGeneration: (input, options) => { calls.push({ input, options }); return pending.promise; } };
+  await withS22Studio(s22Confirmed(), adapter, async ({ container, act }) => {
+    const form = findElements(container, node => node.tagName === 'FORM')[0];
+    await act(async () => { form.dispatchEvent(new MinimalEvent('submit')); form.dispatchEvent(new MinimalEvent('submit')); });
+    try {
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].input.output_type, 'comparison_table');
+      assert.deepEqual(calls[0].input.source_version_ids, ['source-version-1']);
+      assert.equal(calls[0].input.source_only, true);
+      assert.ok(calls[0].options.signal instanceof AbortSignal);
+      assert.equal(buttonByText(container, '생성').disabled, true);
+      assert.equal(buttonByText(container, '설정 확인').disabled, true);
+      assert.equal(buttonByText(container, '뒤로').disabled, true);
+      for (const field of findElements(form, node => ['INPUT', 'SELECT'].includes(node.tagName))) assert.equal(field.disabled, true);
+      assert.match(container.textContent, /산출물을 생성하고 있습니다/);
+    } finally {
+      await act(async () => pending.resolve({ status: 'completed', studio_output_id: 'new-output', output_version_id: 'new-version',
+        output_type: 'comparison_table', title: '새 비교표', content: { rows: [] }, source_version_ids: ['source-version-1'] }));
+    }
+    assert.match(container.textContent, /산출물이 저장되었습니다/);
+    await act(async () => buttonByText(container, '뒤로').dispatchEvent(new MinimalEvent('click')));
+    assert.equal(findElements(container, node => node.tagName === 'BUTTON' && node.textContent === '새 비교표').length, 1);
+  });
+});
+
+test('S22 React safe failure releases only its request and permits explicit submission', async () => {
+  let calls = 0;
+  const adapter = { createGeneration: async () => { calls++; if (calls === 1) throw new Error('private response text');
+    return { status: 'completed', studio_output_id: 'retry-output', output_version_id: 'retry-version', title: '명시 재제출 결과', content: '저장 내용' }; } };
+  await withS22Studio(s22Confirmed(), adapter, async ({ container, act }) => {
+    const submit = () => findElements(container, node => node.tagName === 'FORM')[0].dispatchEvent(new MinimalEvent('submit'));
+    await act(async () => submit());
+    assert.equal(calls, 1); assert.match(container.textContent, /생성을 완료하지 못했습니다/);
+    assert.doesNotMatch(container.textContent, /private response text/);
+    assert.equal(buttonByText(container, '생성').disabled, false);
+    await act(async () => submit());
+    assert.equal(calls, 2); assert.match(container.textContent, /명시 재제출 결과/);
+  });
+});
+
+test('S22 React adapter change ignores late success and failure without releasing a new request', async t => {
+  for (const outcome of ['resolve', 'reject']) await t.test(outcome, async () => {
+    const old = s22Deferred(), next = s22Deferred(); let oldSignal;
+    const first = { createGeneration: (_input, options) => { oldSignal = options?.signal; return old.promise; } };
+    const second = { createGeneration: () => next.promise };
+    await withS22Studio(s22Confirmed(), first, async ({ container, act, render }) => {
+      const submit = () => findElements(container, node => node.tagName === 'FORM')[0].dispatchEvent(new MinimalEvent('submit'));
+      await act(async () => submit());
+      await render(s22Confirmed('workspace-2'), second);
+      try {
+        assert.equal(oldSignal?.aborted, true);
+        assert.equal(buttonByText(container, '생성').disabled, false);
+        await act(async () => submit());
+        await act(async () => outcome === 'resolve'
+          ? old.resolve({ status: 'completed', studio_output_id: 'old-output', title: '이전 Notebook 응답', content: '이전 본문' })
+          : old.reject(new Error('STUDIO_CREATE_FAILED')));
+        assert.match(container.textContent, /산출물을 생성하고 있습니다/);
+        assert.doesNotMatch(container.textContent, /이전 Notebook 응답|생성을 완료하지 못했습니다/);
+      } finally {
+        await act(async () => { old.resolve({ status: 'completed', studio_output_id: 'old-output', title: '이전 Notebook 응답' });
+          next.resolve({ status: 'completed', studio_output_id: 'current-output', title: '현재 Notebook 결과', content: '현재 본문' }); });
+      }
+      assert.match(container.textContent, /현재 Notebook 결과/);
+    });
+  });
+});
+
 test('S21 React marks only audio/video file generation unavailable while saved media remains readable',async()=>{
   const rootPath=path.resolve(import.meta.dirname,'../..');
   const output=await mkdtemp(path.join(rootPath,'.product-studio-s21-'));

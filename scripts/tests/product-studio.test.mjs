@@ -19,6 +19,31 @@ const grounded = {
   runId: "run-1", runResultId: "result-1",
 };
 
+test('S22 type selection projects organization locks before the first edit', () => {
+  const locks = [
+    { field: 'reviewCondition', value: 'review_required', reason: 'WORKSPACE_POLICY' },
+    { field: 'rulesetVersionId', value: 'ruleset-v3', reason: 'RULESET_BINDING' },
+  ];
+  const initial = createProductStudioState({ grounded, locks });
+  const selected = selectOutputType(initial, 'comparison_table');
+  assert.equal(selected.settings.reviewCondition, 'review_required');
+  assert.equal(selected.settings.rulesetVersionId, 'ruleset-v3');
+  assert.deepEqual(initial.settings, { sourceVersionIds: ['source-version-1'] });
+  assert.throws(() => updateGenerationSettings(selected, { reviewCondition: 'approval_required' }), /STUDIO_SETTING_LOCKED/);
+});
+
+test('S22 new type separates previous output completion without losing the library', () => {
+  const output = { studio_output_id: 'saved-output', title: '이전 비교표', status: 'approved' };
+  const state = { ...createProductStudioState({ grounded, outputs: [output] }), selectedOutputId: 'saved-output', safeError: 'STUDIO_CREATE_FAILED' };
+  const selected = selectOutputType(state, 'comparison_table');
+  assert.equal(selected.selectedOutputId, null);
+  assert.equal(selected.safeError, null);
+  assert.deepEqual(selected.outputs, [output]);
+  assert.equal(selected.settingsConfirmed, false);
+  assert.equal(selected.settingsSnapshot, null);
+  assert.equal(canSubmitGeneration(selected), false);
+});
+
 test('S21 audio/video new output selection is rejected without changing saved types',()=>{
   const state=createProductStudioState({grounded});
   for(const type of ['audio','video']){

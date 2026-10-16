@@ -39,12 +39,13 @@ export function selectOutputType(state, outputType) {
   if (!OUTPUT_TYPE_IDS.has(outputType)) throw new Error("STUDIO_OUTPUT_TYPE_INVALID");
   if (OUTPUT_TYPES.find((item) => item.id === outputType).generationUnavailable) throw new Error("STUDIO_OUTPUT_UNAVAILABLE");
   return {
-    ...state, selectedOutputType: outputType,
-    settings: state.settings?.sourceVersionIds?.length
+    ...state, selectedOutputType: outputType, selectedOutputId: null, safeError: null,
+    settings: { ...(state.settings?.sourceVersionIds?.length
       ? { language: "ko", sourceVersionIds: [...state.settings.sourceVersionIds] }
       : state.grounded?.sourceVersionIds?.length
       ? { language: "ko", sourceVersionIds: [...state.grounded.sourceVersionIds] }
-      : state.grounded?.sourceVersionId ? { language: "ko", sourceVersionIds: [state.grounded.sourceVersionId] } : { language: "ko" },
+      : state.grounded?.sourceVersionId ? { language: "ko", sourceVersionIds: [state.grounded.sourceVersionId] } : { language: "ko" }),
+      ...Object.fromEntries(state.locks.map((lock) => [lock.field, lock.value])) },
     settingsConfirmed: false, settingsSnapshot: null,
   };
 }
@@ -76,8 +77,12 @@ function completeSettings(state) {
     && state.settings.sourceVersionIds.length > 0;
 }
 
+export function canConfirmGenerationSettings(state) {
+  return state?.pending !== true && completeSettings(state);
+}
+
 export function confirmGenerationSettings(state) {
-  if (!completeSettings(state)) throw new Error("STUDIO_SETTINGS_INCOMPLETE");
+  if (!canConfirmGenerationSettings(state)) throw new Error("STUDIO_SETTINGS_INCOMPLETE");
   return { ...state, settingsConfirmed: true, settingsSnapshot: Object.freeze({ ...state.settings }) };
 }
 

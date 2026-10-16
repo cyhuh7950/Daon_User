@@ -6,7 +6,7 @@ import { parseDocxBlock } from "./shared-docx-block.js";
 import { pptxBlockLabel } from "./shared-pptx-block.js";
 import { parseAudioSegment } from "./shared-audio-segment.js";
 import {
-  OUTPUT_TYPES, canSubmitGeneration, confirmGenerationSettings, createStudioGenerationInput,
+  OUTPUT_TYPES, canConfirmGenerationSettings, canSubmitGeneration, confirmGenerationSettings, createStudioGenerationInput,
   mergeStudioVersion, selectOutputType, updateGenerationSettings,
 } from "./product-studio-model.js";
 
@@ -185,6 +185,16 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   const [savedRevision, setSavedRevision] = useState(null);
   const [stepUp, setStepUp] = useState(null);
   const [password, setPassword] = useState("");
+  const generationRequestRef = useRef(null);
+  const generationScopeRef = useRef(null);
+  generationScopeRef.current = { adapter, workspaceId: state.workspaceId };
+  useEffect(() => {
+    setView(state);
+    return () => {
+      generationRequestRef.current?.controller.abort();
+      generationRequestRef.current = null;
+    };
+  }, [adapter, state.workspaceId]);
   const stepUpRef = useRef(null);
   const cancelStepUp = () => {
     stepUpRef.current = null; setStepUp(null); setPassword("");
@@ -204,7 +214,12 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
   const revisionSaved = savedRevision?.outputId === selectedOutput?.studio_output_id
     && savedRevision?.versionId === selectedOutput?.output_version_id && Boolean(savedRevision);
   const generationState = view.pending ? "pending" : revisionSaved ? "completed" : view.safeError ? "failed" : selectedOutput ? "completed" : "idle";
-  const setField = (field, value) => setView((current) => updateGenerationSettings(current, { [field]: value }));
+  const fieldDisabled = (field) => view.pending || view.locks.some((lock) => lock.field === field);
+  const setField = (field, value) => {
+    if (generationRequestRef.current) return;
+    setView((current) => current.pending || !current.selectedOutputType || current.locks.some((lock) => lock.field === field)
+      ? current : updateGenerationSettings(current, { [field]: value }));
+  };
   const openOutput = async (output) => {
     cancelStepUp();
     setView((current) => ({ ...current, selectedOutputId: output.studio_output_id, pending: Boolean(adapter?.listStudioVersions), safeError: null }));
@@ -223,16 +238,23 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
     }
   };
   const submit = async () => {
-    if (!adapter?.createGeneration || !canSubmitGeneration(view)) return;
+    if (generationRequestRef.current || !adapter?.createGeneration || !canSubmitGeneration(view)) return;
+    const request = { adapter, workspaceId: state.workspaceId, controller: new AbortController() };
+    generationRequestRef.current = request;
+    const currentRequest = () => generationRequestRef.current === request && !request.controller.signal.aborted
+      && generationScopeRef.current.adapter === request.adapter && generationScopeRef.current.workspaceId === request.workspaceId;
     setView((current) => ({ ...current, pending: true, safeError: null }));
     try {
-      const job = await adapter.createGeneration(createStudioGenerationInput(view));
+      const job = await adapter.createGeneration(createStudioGenerationInput(view), { signal: request.controller.signal });
+      if (!currentRequest()) return;
       let output = job;
       if (job?.status !== "completed") {
         if (typeof adapter.getGenerationJob !== "function") throw new Error("STUDIO_ASYNC_UNAVAILABLE");
         for (let attempt = 0; attempt < 120; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 500));
-          const currentJob = await adapter.getGenerationJob(job.job_id);
+          if (!currentRequest()) return;
+          const currentJob = await adapter.getGenerationJob(job.job_id, { signal: request.controller.signal });
+          if (!currentRequest()) return;
           if (["queued", "leased", "generating"].includes(currentJob.status)) continue;
           if (currentJob.status === "unavailable") throw new Error(currentJob.error_code ?? "STUDIO_OUTPUT_UNAVAILABLE");
           if (currentJob.status !== "completed" || !currentJob.output) throw new Error(currentJob.error_code ?? "STUDIO_CREATE_FAILED");
@@ -249,9 +271,14 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
         }
         if (output === job) throw new Error("STUDIO_CREATE_TIMEOUT");
       }
-      setView((current) => ({ ...current, pending: false, outputs: [output, ...current.outputs], selectedOutputId: output.studio_output_id }));
+      if (currentRequest()) setView((current) => ({ ...current, outputs: [output, ...current.outputs], selectedOutputId: output.studio_output_id }));
     } catch (error) {
-      setView((current) => ({ ...current, pending: false, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_CREATE_FAILED" }));
+      if (currentRequest()) setView((current) => ({ ...current, safeError: /^[A-Z][A-Z0-9_]+$/u.test(error?.message) ? error.message : "STUDIO_CREATE_FAILED" }));
+    } finally {
+      if (currentRequest()) {
+        generationRequestRef.current = null;
+        setView((current) => ({ ...current, pending: false }));
+      }
     }
   };
   const updateSelectedOutput = (patch, outputId = selectedOutput?.studio_output_id) => setView((current) => ({
@@ -386,8 +413,8 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
       {!view.selectedOutputType ? <div className="studio-home" data-studio-view="home">
         <div className="studio-type-tiles" data-columns="3" aria-label="산출물 유형">
           {OUTPUT_TYPES.map((type) => <button className={`studio-type-tile tile-${TYPE_ICONS[type.id]}${type.generationUnavailable ? " studio-type-future" : ""}`} key={type.id} type="button"
-            disabled={type.generationUnavailable === true}
-            onClick={() => { if (!type.generationUnavailable) setView((current) => selectOutputType(current, type.id)); }}>
+            disabled={type.generationUnavailable === true || view.pending}
+            onClick={() => { if (!type.generationUnavailable && !generationRequestRef.current) setView((current) => current.pending ? current : selectOutputType(current, type.id)); }}>
             {type.label}{type.generationUnavailable ? <small>현재 파일 생성 미지원</small> : null}
           </button>)}
         </div>
@@ -395,7 +422,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
           {view.outputs.length ? <ul>{view.outputs.map((output) => <li className="studio-library-row" key={output.studio_output_id}><span className={`library-type-icon tile-${TYPE_ICONS[output.output_type] ?? "document"}`} aria-hidden="true" /><span className="library-row-copy"><small className="library-output-type">{outputTypeLabel(output.output_type)}</small><button type="button" onClick={() => void openOutput(output)}>{output.title}</button><small>Source {output.source_count ?? output.source_version_ids?.length ?? 1} · Version {output.content_version ?? output.output_version_id ?? "-"}</small></span><span className={`output-status status-${output.status ?? "saved"}`}>{outputStatusLabel(output.status)}</span></li>)}</ul> : <div className="studio-empty"><span className="empty-icon" aria-hidden="true">◇</span><strong>아직 저장된 산출물이 없습니다.</strong><small>위 유형을 선택하면 근거가 결속된 산출물을 만들 수 있습니다.</small></div>}
         </section>
       </div> : <section className="studio-config-view" data-studio-view="config" aria-labelledby="studio-config-title">
-        <header className="studio-config-header"><button className="studio-back" type="button" onClick={() => setView((current) => ({ ...current, selectedOutputType: null, settingsConfirmed: false, settingsSnapshot: null }))}>뒤로</button><div><span className="section-kicker">CREATE</span><h3 id="studio-config-title">{selected?.label} 설정</h3></div></header>
+        <header className="studio-config-header"><button className="studio-back" type="button" disabled={view.pending} onClick={() => { if (!generationRequestRef.current) setView((current) => current.pending ? current : ({ ...current, selectedOutputType: null, settingsConfirmed: false, settingsSnapshot: null })); }}>뒤로</button><div><span className="section-kicker">CREATE</span><h3 id="studio-config-title">{selected?.label} 설정</h3></div></header>
         <div className={`generation-state generation-${generationState}`} data-generation-state={generationState} role={generationState === "failed" ? "alert" : "status"}>
           {generationState === "pending" ? <><span className="state-spinner" aria-hidden="true" /><span><strong>산출물을 생성하고 있습니다.</strong><small>현재 설정과 근거 Snapshot을 안전하게 결속하는 중입니다.</small></span></> : null}
           {generationState === "failed" ? <span><strong>생성을 완료하지 못했습니다.</strong><small>{safeStudioErrorMessage(view.safeError)}</small></span> : null}
@@ -409,7 +436,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
               <input
                 type="checkbox"
                 checked={view.settings.sourceVersionIds?.includes(source.sourceVersionId) ?? false}
-                disabled={!source.ready || view.pending}
+                disabled={!source.ready || fieldDisabled("sourceVersionIds")}
                 onChange={(event) => {
                   const current = new Set(view.settings.sourceVersionIds ?? []);
                   if (event.currentTarget.checked) current.add(source.sourceVersionId);
@@ -421,16 +448,18 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
             </label>) : <p className="inline-alert compact">사용 가능한 Source가 없습니다.</p>}
           </fieldset>
           <div className="studio-form-grid">
-            <label>목적<input placeholder="이 산출물로 해결할 업무" value={view.settings.purpose ?? ""} onChange={(event) => setField("purpose", event.currentTarget.value)} /></label>
-            <label>독자<input placeholder="결과를 검토하거나 사용할 사람" value={view.settings.audience ?? ""} onChange={(event) => setField("audience", event.currentTarget.value)} /></label>
-            <label>출력 언어<select value={view.settings.language ?? "ko"} onChange={(event) => setField("language", event.currentTarget.value)}><option value="ko">한국어</option><option value="en">English</option></select></label>
-            <label>분량<select value={view.settings.length ?? ""} onChange={(event) => setField("length", event.currentTarget.value)}><option value="">선택</option><option value="short">짧게</option><option value="standard">표준</option><option value="long">상세</option></select></label>
-            <label>구성<select value={view.settings.structure ?? ""} onChange={(event) => setField("structure", event.currentTarget.value)}><option value="">선택</option><option value="summary-body-conclusion">요약 · 본문 · 결론</option><option value="executive-summary">핵심 요약 중심</option><option value="letter">업무 문서형</option></select></label>
-            <label>출력 형식<select value={view.settings.outputFormat ?? ""} onChange={(event) => setField("outputFormat", event.currentTarget.value)}><option value="">선택</option>{selected?.formats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label>
-            <label>검토 조건<select value={view.settings.reviewCondition ?? ""} onChange={(event) => setField("reviewCondition", event.currentTarget.value)}><option value="">선택</option><option value="review_required">검토 필수</option><option value="approval_required">승인 필수</option></select></label>
+            <label>목적<input disabled={fieldDisabled("purpose")} placeholder="이 산출물로 해결할 업무" value={view.settings.purpose ?? ""} onChange={(event) => setField("purpose", event.currentTarget.value)} /></label>
+            <label>독자<input disabled={fieldDisabled("audience")} placeholder="결과를 검토하거나 사용할 사람" value={view.settings.audience ?? ""} onChange={(event) => setField("audience", event.currentTarget.value)} /></label>
+            <label>출력 언어<select disabled={fieldDisabled("language")} value={view.settings.language ?? "ko"} onChange={(event) => setField("language", event.currentTarget.value)}><option value="ko">한국어</option><option value="en">English</option></select></label>
+            <label>분량<select disabled={fieldDisabled("length")} value={view.settings.length ?? ""} onChange={(event) => setField("length", event.currentTarget.value)}><option value="">선택</option><option value="short">짧게</option><option value="standard">표준</option><option value="long">상세</option></select></label>
+            <label>구성<select disabled={fieldDisabled("structure")} value={view.settings.structure ?? ""} onChange={(event) => setField("structure", event.currentTarget.value)}><option value="">선택</option><option value="summary-body-conclusion">요약 · 본문 · 결론</option><option value="executive-summary">핵심 요약 중심</option><option value="letter">업무 문서형</option></select></label>
+            <label>출력 형식<select disabled={fieldDisabled("outputFormat")} value={view.settings.outputFormat ?? ""} onChange={(event) => setField("outputFormat", event.currentTarget.value)}><option value="">선택</option>{selected?.formats.map((format) => <option key={format} value={format}>{format.toUpperCase()}</option>)}</select></label>
+            <label>검토 조건<select disabled={fieldDisabled("reviewCondition")} value={view.settings.reviewCondition ?? ""} onChange={(event) => setField("reviewCondition", event.currentTarget.value)}><option value="">선택</option><option value="review_required">검토 필수</option><option value="approval_required">승인 필수</option></select></label>
           </div>
-          <div className="studio-setting-summary"><div><span>현재 모델</span><strong>{view.modelLabel ?? "Workspace 기본 모델"}</strong><small>{adapter?.createGeneration ? "생성 시 현재 선택을 검증합니다." : "모델 연결 상태를 확인해 주세요."}</small></div><div><span>정책 요약</span><strong>{view.locks.length ? `조직 정책 ${view.locks.length}개 적용` : "Workspace 정책 적용"}</strong><small>정책은 생성 시점에 다시 확인되며 이 화면에서 해제할 수 없습니다.</small></div></div>
-          <div className="studio-config-actions"><button className="secondary-button" type="button" onClick={() => setView(confirmGenerationSettings(view))} disabled={!view.selectedOutputType}>설정 확인</button><button className="primary-button" type="submit" disabled={!canSubmitGeneration(view)}>생성</button></div>
+          <div className="studio-setting-summary"><div><span>생성 방식</span><strong>{view.grounded ? "저장된 답변·근거 구조화" : "선택 Source 구조화"}</strong><small>추가 LLM 호출 없음</small></div><div><span>정책 요약</span><strong>{view.locks.length ? `조직 정책 ${view.locks.length}개 적용` : "Workspace 정책 적용"}</strong><small>정책은 생성 시점에 다시 확인되며 이 화면에서 해제할 수 없습니다.</small>
+            {view.locks.length ? <ul>{view.locks.map((lock) => <li key={lock.field}>{({ reviewCondition: "검토 조건", rulesetVersionId: "RuleSet", dataArea: "데이터 영역", authorityPolicy: "권위 정책", weightProfile: "가중치", egressPolicy: "외부 전송 정책" })[lock.field] ?? lock.field}: {lock.value == null ? "미결속" : String(lock.value)} · {lock.reason}</li>)}</ul> : null}
+          </div></div>
+          <div className="studio-config-actions"><button className="secondary-button" type="button" onClick={() => { if (!generationRequestRef.current) setView((current) => canConfirmGenerationSettings(current) ? confirmGenerationSettings(current) : current); }} disabled={!canConfirmGenerationSettings(view)}>설정 확인</button><button className="primary-button" type="submit" disabled={!canSubmitGeneration(view)}>생성</button></div>
         </form>
         <div className="studio-config-library"><span className="section-kicker">LIBRARY</span><h3>저장된 산출물</h3><small>{view.outputs.length ? `${view.outputs.length}개의 산출물이 저장되어 있습니다.` : "생성 완료 후 여기에 저장됩니다."}</small></div>
       </section>}
