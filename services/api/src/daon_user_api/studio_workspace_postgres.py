@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .open_law_source_access import OpenLawAccessError,require_open_law_source_access
+from .open_law_source_access import OpenLawAccessError,require_open_law_source_access,_current_auth_grant
 from .authorization import Action
 
 import hashlib
@@ -26,9 +26,45 @@ class PostgresStudioWorkspaceRepository:
             for version in versions:require_open_law_source_access(context,version,connection,action=action)
         except OpenLawAccessError:raise StudioError('RESOURCE_UNAVAILABLE',404) from None
 
+    def _require_generation_scope(self, connection, context, versions, *, action=Action.GENERATE):
+        """Current generation inputs only; historical output readers stay intact."""
+        if context.notebook_id is None:
+            raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
+        versions = tuple(dict.fromkeys(versions))
+        if not versions:
+            raise StudioError("NOTEBOOK_SCOPE_MISMATCH", 409)
+        for prefix in ("notebook-delete", "unbind-notebook"):
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                (f"{prefix}|{context.tenant_id}|{context.workspace_id}|{context.notebook_id}",))
+        try:
+            # Reuse current normal Auth rules, not MCP flags or Egress policy.
+            _current_auth_grant(context, connection, action)
+        except OpenLawAccessError:
+            raise StudioError("RESOURCE_UNAVAILABLE", 404) from None
+        bound = connection.execute(
+            "SELECT count(*) FROM notebook_bindings nb JOIN source_versions sv "
+            "ON sv.tenant_id=nb.tenant_id AND sv.workspace_id=nb.workspace_id "
+            "AND sv.record_id=nb.version_id AND sv.source_id=nb.record_id "
+            "JOIN notebooks n ON n.tenant_id=nb.tenant_id AND n.workspace_id=nb.workspace_id AND n.notebook_id=nb.notebook_id "
+            "WHERE nb.tenant_id=%s AND nb.workspace_id=%s AND nb.notebook_id=%s "
+            "AND nb.binding_kind='source' AND nb.version_id=ANY(%s) "
+            "AND NOT EXISTS(SELECT 1 FROM notebook_source_unbindings u WHERE u.tenant_id=nb.tenant_id "
+            "AND u.workspace_id=nb.workspace_id AND u.notebook_id=nb.notebook_id AND u.source_id=nb.record_id AND u.source_version_id=nb.version_id) "
+            "AND NOT EXISTS(SELECT 1 FROM deletion_requests d WHERE d.tenant_id=sv.tenant_id AND d.workspace_id=sv.workspace_id "
+            "AND d.source_id=sv.source_id AND d.source_active=false) "
+            "AND NOT EXISTS(SELECT 1 FROM notebook_deletion_requests d WHERE d.tenant_id=n.tenant_id AND d.workspace_id=n.workspace_id "
+            "AND d.notebook_id=n.notebook_id AND d.state IN ('accepted','deleting','completed')) "
+            "AND NOT EXISTS(SELECT 1 FROM identity_auth_source_access a WHERE a.tenant_id=sv.tenant_id AND a.workspace_id=sv.workspace_id "
+            "AND a.source_version_id=sv.record_id AND a.user_id=%s AND a.allowed=0)",
+            (context.tenant_id, context.workspace_id, context.notebook_id, list(versions), context.actor_id),
+        ).fetchone()
+        if bound is None or int(bound[0]) != len(versions):
+            raise StudioError("NOTEBOOK_SCOPE_MISMATCH", 409)
+        self._require_sources(connection, context, versions, action=action)
+
     def require_source_access(self,context,versions):
         with self._cloud_store._transaction(self._cloud(context,'studio.read')) as connection:
-            self._require_sources(connection,context,versions)
+            self._require_generation_scope(connection,context,versions)
 
     def _require_output_sources(self,connection,context,version_id,*,action=Action.VIEW):
         rows=connection.execute('SELECT DISTINCT er.source_version_id FROM evidence_references er '
@@ -297,25 +333,13 @@ class PostgresStudioWorkspaceRepository:
         scope = (context.tenant_id, context.workspace_id, context.actor_id, operation, idempotency_key)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.create")) as connection:
-                self._require_sources(connection,context,request.source_version_ids)
+                self._require_generation_scope(connection,context,request.source_version_ids)
                 connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("|".join(scope),))
                 replay = self._replay(connection, context, operation, idempotency_key, fingerprint)
                 if replay is not None:
                     return replay, True
                 if context.notebook_id is None:
                     raise StudioError("NOTEBOOK_SCOPE_REQUIRED", 400)
-                source_count = connection.execute(
-                    "SELECT count(*) FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s "
-                    "AND notebook_id=%s AND binding_kind='source' AND version_id=ANY(%s) "
-                    "AND NOT EXISTS (SELECT 1 FROM source_versions sv JOIN deletion_requests dr "
-                    "ON dr.tenant_id=sv.tenant_id AND dr.workspace_id=sv.workspace_id AND dr.source_id=sv.source_id "
-                    "WHERE sv.tenant_id=notebook_bindings.tenant_id AND sv.workspace_id=notebook_bindings.workspace_id "
-                    "AND sv.record_id=notebook_bindings.version_id AND dr.source_active=false)",
-                    (
-                        context.tenant_id, context.workspace_id, context.notebook_id,
-                        list(request.source_version_ids),
-                    ),
-                ).fetchone()
                 run_bound = True if request.source_only else connection.execute(
                     "SELECT 1 FROM runs r JOIN notebook_bindings nb ON nb.tenant_id=r.tenant_id "
                     "AND nb.workspace_id=r.workspace_id AND nb.binding_kind='conversation_thread' "
@@ -323,7 +347,7 @@ class PostgresStudioWorkspaceRepository:
                     "AND r.record_id=%s AND nb.notebook_id=%s",
                     (context.tenant_id, context.workspace_id, request.run_id, context.notebook_id),
                 ).fetchone()
-                if source_count is None or int(source_count[0]) != len(set(request.source_version_ids)) or not run_bound:
+                if not run_bound:
                     raise StudioError("NOTEBOOK_SCOPE_MISMATCH", 409)
                 if self._creation_enforcer is not None:
                     self._creation_enforcer(
@@ -474,13 +498,15 @@ class PostgresStudioWorkspaceRepository:
         job_id = self._opaque("studio-job", context.tenant_id, context.workspace_id, context.actor_id, idempotency_key)
         try:
             with self._cloud_store._transaction(self._cloud(context, "studio.create")) as connection:
-                self._require_sources(connection,context,request.source_version_ids)
+                self._require_generation_scope(connection,context,request.source_version_ids)
                 row = connection.execute(
-                    "SELECT job_id,state,studio_output_id,output_version_id,safe_error_code,created_at,completed_at "
+                    "SELECT job_id,state,studio_output_id,output_version_id,safe_error_code,created_at,completed_at,request_json "
                     "FROM studio_generation_jobs WHERE tenant_id=%s AND workspace_id=%s AND actor_id=%s AND idempotency_key=%s",
                     (context.tenant_id, context.workspace_id, context.actor_id, idempotency_key),
                 ).fetchone()
                 if row is not None:
+                    if row[7] != payload:
+                        raise StudioError("IDEMPOTENCY_CONFLICT", 409)
                     return {"job_id": str(row[0]), "status": str(row[1]), "output_type": request.output_type,
                             "studio_output_id": row[2], "output_version_id": row[3], "error_code": row[4],
                             "created_at": row[5], "completed_at": row[6]}, True
@@ -504,6 +530,9 @@ class PostgresStudioWorkspaceRepository:
             raise StudioError(error.code, 404 if error.code == "STUDIO_JOB_NOT_FOUND" else 503) from error
         if context.notebook_id is None or job.request_json.get("notebook_id") != context.notebook_id:
             raise StudioError("RESOURCE_UNAVAILABLE", 404)
+        with self._cloud_store._transaction(self._cloud(context, "studio.read")) as connection:
+            self._require_generation_scope(connection, context,
+                tuple(job.request_json.get("source_version_ids", ())), action=Action.VIEW)
         result = {
             "job_id": job.job_id, "status": job.state, "output_type": job.request_json.get("output_type"),
             "title": job.request_json.get("purpose"), "studio_output_id": job.studio_output_id,

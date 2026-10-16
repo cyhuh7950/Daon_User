@@ -25,13 +25,17 @@ class StudioJobNotebookBoundaryTests(unittest.TestCase):
         store = MagicMock()
         row = (
             "tenant-1", "workspace-1", "studio-job-1", "actor-1", "trace-1", "policy-1",
-            "key-1", {"notebook_id": notebook_id, "output_type": "evidence_report", "purpose": "QA"},
+            "key-1", {"notebook_id": notebook_id, "output_type": "evidence_report", "purpose": "QA", "source_version_ids": ["source-version-1"]},
             "failed", 1, 3, "POLICY_PROJECTION_MISMATCH", None, None, None, None,
         )
-        store._transaction.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = row
+        current = Connection()
+        store._transaction.return_value.__enter__.return_value.execute.side_effect = (
+            lambda sql, params=(): Result(row) if "FROM studio_generation_jobs" in sql else current.execute(sql, params)
+        )
         queue = object.__new__(PostgresStudioGenerationQueue)
         queue._cloud_store = store
         repository = PostgresStudioWorkspaceRepository(None)
+        repository._cloud_store = store
         repository._generation_queue = queue
         return repository, store
 
@@ -40,7 +44,10 @@ class StudioJobNotebookBoundaryTests(unittest.TestCase):
         context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
         result = repository.get_generation_job(context, "studio-job-1")
         self.assertEqual((result["status"], result["error_code"]), ("failed", "POLICY_PROJECTION_MISMATCH"))
-        query, params = store._transaction.return_value.__enter__.return_value.execute.call_args.args
+        calls = [call.args for call in store._transaction.return_value.__enter__.return_value.execute.call_args_list
+            if "FROM studio_generation_jobs" in call.args[0]]
+        self.assertEqual(len(calls), 1)
+        query, params = calls[0]
         self.assertIn("tenant_id=%s AND workspace_id=%s AND job_id=%s", query)
         self.assertEqual(params, ("tenant-1", "workspace-1", "studio-job-1"))
 
@@ -53,6 +60,12 @@ class StudioJobNotebookBoundaryTests(unittest.TestCase):
                     repository.get_generation_job(context, "studio-job-1")
                 self.assertEqual((denied.exception.status, denied.exception.code), (404, "RESOURCE_UNAVAILABLE"))
 
+    def test_s16_shared_view_actor_keeps_existing_job_read_access(self):
+        repository, _ = self.repository()
+        context = StudioContext("tenant-1", "workspace-1", "actor-2", "trace-1", "policy-1", "notebook-1")
+        result = repository.get_generation_job(context, "studio-job-1")
+        self.assertEqual((result["status"], result["error_code"]), ("failed", "POLICY_PROJECTION_MISMATCH"))
+
 
 class Result:
     def __init__(self, row=None, rows=()): self.row, self.rows = row, rows
@@ -63,6 +76,11 @@ class Result:
 class Connection:
     def __init__(self): self.statements = []
     def execute(self, sql, params=()):
+        if sql.startswith("SELECT state FROM identity_users"): return Result(("active",))
+        if "FROM identity_auth_workspaces" in sql:
+            return Result({"tenant_id": "tenant-1", "workspace_id": "workspace-1", "workspace_kind": "personal", "acl_version": 3})
+        if "FROM identity_auth_tenant_roles" in sql:
+            return Result({"role": "personal_owner", "version": 1, "state": "active"})
         if sql.startswith('SELECT canonical_json FROM source_versions'):return Result(({},))
         self.statements.append((sql, params))
         if "FROM workspace_policies" in sql:
@@ -291,6 +309,31 @@ class ObjectStorage:
 
 
 class StudioWorkspacePostgresContractTests(unittest.TestCase):
+    def test_s16_enqueue_replay_cannot_retarget_notebook_or_versions(self):
+        from dataclasses import asdict, replace
+        request = self.request()
+        payload = asdict(request)
+        payload["source_version_ids"] = list(request.source_version_ids)
+        payload["notebook_id"] = "notebook-1"
+        class ExistingJobConnection(Connection):
+            def execute(self, sql, params=()):
+                if "FROM studio_generation_jobs" in sql:
+                    return Result(("job-original", "queued", None, None, None, None, None, payload))
+                return super().execute(sql, params)
+        cloud = Cloud()
+        cloud.connection = ExistingJobConnection()
+        repository = PostgresStudioWorkspaceRepository(cloud)
+        context = StudioContext("tenant-1", "workspace-1", "actor-1", "trace-1", "policy-1", "notebook-1")
+        for ctx, changed in ((replace(context, notebook_id="notebook-2"), request),
+            (context, replace(request, source_version_ids=("source-version-2",)))):
+            with self.subTest(notebook=ctx.notebook_id, versions=changed.source_version_ids):
+                with self.assertRaisesRegex(StudioError, "IDEMPOTENCY_CONFLICT") as denied:
+                    repository.enqueue_generation(ctx, changed, "s16-original-job-key")
+                self.assertEqual(denied.exception.status, 409)
+        result, replayed = repository.enqueue_generation(context, request, "s16-original-job-key")
+        self.assertTrue(replayed)
+        self.assertEqual((result["job_id"], result["status"]), ("job-original", "queued"))
+
     def test_app_role_fixture_seeds_with_admin_and_runs_with_app_dsn(self) -> None:
         case = StudioWorkspaceAppRolePostgresIntegrationTests("test_app_role_review_approval_export_and_scope_denial")
         case.admin_dsn = "admin-only"

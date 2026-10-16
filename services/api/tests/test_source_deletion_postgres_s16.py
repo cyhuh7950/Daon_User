@@ -38,7 +38,7 @@ def pg():
         pytest.skip("NOT RUN: explicit DAON_S16_ISOLATED_POSTGRES_DSN required; not PostgreSQL PASS")
     with psycopg.connect(dsn) as c:
         assert c.execute("SELECT current_database()").fetchone()[0] == "daon_user_s16_qa_20261016"
-        assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0063"
+        assert c.execute("SELECT version_num FROM alembic_version").fetchone()[0] in ("0063", "0064")
     app_dsn = make_conninfo(dsn, options="-c role=daon_app")
     with psycopg.connect(app_dsn) as c:
         assert c.execute("SELECT current_user").fetchone()[0] == "daon_app"
@@ -97,7 +97,7 @@ def seed(pg, *, origin=None):
         c.execute("INSERT INTO memberships(tenant_id,workspace_id,user_id,role) VALUES(%s,%s,%s,'personal_owner')", (ctx.tenant_id, ctx.workspace_id, ctx.actor_id))
         c.execute("INSERT INTO identity_users(user_id,issuer,subject,state) VALUES(%s,'s16-fixture',%s,'active')", (ctx.actor_id, ctx.actor_id))
         c.execute("INSERT INTO identity_tenants(tenant_id) VALUES(%s)", (ctx.tenant_id,))
-        c.execute("INSERT INTO identity_devices(device_id,tenant_id,user_id,platform,state,last_seen_at,created_at,updated_at) VALUES(%s,%s,%s,'web','active',now(),now(),now())", (device, ctx.tenant_id, ctx.actor_id))
+        c.execute("INSERT INTO identity_devices(device_id,tenant_id,user_id,platform,state,last_seen_at,created_at,updated_at) VALUES(%s,%s,%s,'web','registered',now(),now(),now())", (device, ctx.tenant_id, ctx.actor_id))
         c.execute("INSERT INTO identity_sessions(session_id,tenant_id,user_id,device_id,client_kind,access_digest,access_expires_at,state,created_at,updated_at) VALUES(%s,%s,%s,%s,'web',%s,now()+interval '1 hour','active',now(),now())", (session, ctx.tenant_id, ctx.actor_id, device, suffix))
         c.execute("INSERT INTO identity_auth_workspaces(workspace_id,tenant_id,workspace_kind,data_area,cost_limit_cents,acl_version,version,updated_at) VALUES(%s,%s,'personal','workspace',0,1,1,now())", (ctx.workspace_id, ctx.tenant_id))
         c.execute("INSERT INTO identity_auth_tenant_roles(tenant_id,user_id,role,state,version,updated_at) VALUES(%s,%s,'personal_owner','active',1,now())", (ctx.tenant_id, ctx.actor_id))

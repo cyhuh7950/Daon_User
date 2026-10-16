@@ -31,9 +31,9 @@ DEFAULT_DENY_DIGEST = "caf695f3de7e3e05feb024b3ff4b8b14cbfad5318b885ac15d8e4da25
 
 class CloudStorageContractTests(unittest.TestCase):
     def test_s16_readiness_tracks_source_cleanup_migration_head(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0063")
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0064")
 
-    def test_s16_readiness_accepts_only_0062_and_0063_with_vector(self) -> None:
+    def test_s16_readiness_accepts_only_0062_0063_and_0064_with_vector(self) -> None:
         class Result:
             def __init__(self, row):
                 self.row = row
@@ -64,14 +64,15 @@ class CloudStorageContractTests(unittest.TestCase):
                 yield Connection(self.revision, self.vector)
 
         store = object.__new__(PostgresCloudStore)
-        for revision, expected_ready in (("0063", True), ("0062", True), ("0064", False), ("0061", False), ("0060", False), ("0059", False), ("0058", False), ("0057", False), ("0056", False)):
+        for revision, expected_ready in (("0064", True), ("0063", True), ("0062", True), ("0065", False), ("0061", False), ("0060", False), ("0059", False), ("0058", False), ("0057", False), ("0056", False)):
             store._pool = Pool(revision)
             status = store.readiness()
             self.assertEqual(status.ready, expected_ready)
             self.assertEqual(status.schema_revision, revision)
             self.assertEqual(status.vector_version, "0.8.2")
-        store._pool = Pool("0063", None)
-        self.assertFalse(store.readiness().ready)
+        for revision in ("0062", "0063", "0064"):
+            store._pool = Pool(revision, None)
+            self.assertFalse(store.readiness().ready)
 
     def test_s16_closed_pool_opens_only_after_compatible_head_is_ready(self) -> None:
         class Result:
@@ -100,7 +101,7 @@ class CloudStorageContractTests(unittest.TestCase):
         opened = []
         store._ensure_pool_open = lambda: opened.append(True)
 
-        for revision, expected_ready in (("0059", False), ("0060", False), ("0061", False), ("0062", True), ("0063", True), ("0064", False)):
+        for revision, expected_ready in (("0059", False), ("0060", False), ("0061", False), ("0062", True), ("0063", True), ("0064", True), ("0065", False)):
             opened.clear()
             @contextmanager
             def connect_stub(_dsn, *, connect_timeout):
@@ -218,7 +219,7 @@ class PostgresCloudIntegrationTests(unittest.TestCase):
     def test_readiness_requires_migration_and_vector(self) -> None:
         status = self.store.readiness()
         self.assertTrue(status.ready)
-        self.assertEqual(status.schema_revision, "0063")
+        self.assertEqual(status.schema_revision, "0064")
         self.assertEqual(status.vector_version, "0.8.2")
 
     def test_rls_blocks_cross_tenant_and_context_does_not_leak(self) -> None:
