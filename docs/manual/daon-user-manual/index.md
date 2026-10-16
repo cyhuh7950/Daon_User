@@ -1,7 +1,7 @@
 # Daon 사용자 설명서
 
 - Release: 1.0.0
-- 문서 업데이트: 2026-09-15
+- 문서 업데이트: 2026-10-17
 - 언어: 한국어(ko-KR)
 - 대상: 일반 사용자, 검토자, 승인자, Workspace 관리자, 시스템 관리자, 운영 담당자
 - 범위: Web 중심의 현재 기능과 Windows·Mobile·Evidence Hub의 지원 경계를 설명합니다.
@@ -56,7 +56,7 @@ Evidence Hub는 Web·Windows·Android·iOS의 검증 증거와 상태를 추적�
 - 승인자: 보기, 질문, 분석, 검토, 승인, 전달과 생산 지식 등록을 수행합니다.
 - 열람자: 보기만 수행합니다.
 
-Workspace 역할은 시스템 관리자 여부와 별개입니다. 이 Release에는 공동 작업자를 초대하거나 Workspace 권한을 변경하거나 정책을 편집하는 사용자 화면이 없습니다. 따라서 Workspace 관리자 역할만으로는 `사용자 관리` 메뉴나 `/admin`을 사용할 수 없습니다. 서버는 Notebook, Source, Citation, Studio 산출물마다 현재 Workspace와 활성 권한을 다시 검사하며, 역할 이름만으로 다른 Workspace에 접근할 수 없습니다.
+Workspace 역할은 시스템 관리자 여부와 별개입니다. 이 Release에는 공동 작업자를 초대하거나 Workspace 권한을 변경하는 사용자 화면이 없습니다. 정책 변경은 16절의 별도 권한과 절차를 따릅니다. 따라서 Workspace 관리자 역할만으로는 `사용자 관리` 메뉴나 `/admin`을 사용할 수 없습니다. 서버는 Notebook, Source, Citation, Studio 산출물마다 현재 Workspace와 활성 권한을 다시 검사하며, 역할 이름만으로 다른 Workspace에 접근할 수 없습니다.
 
 시스템 관리자는 Workspace 내부 역할이 아니라 전체 계정 운영을 위한 별도 보호 권한입니다. 시스템 관리자만 `사용자 관리`와 `/admin`에서 전체 계정을 검색하고 일반 사용자를 중지하거나 재활성화할 수 있습니다. 이 동작은 Workspace 멤버 초대나 역할 변경이 아닙니다.
 
@@ -363,17 +363,79 @@ Citation은 답변이 참조한 근거 위치입니다.
 
 ## 13. LLM 설정
 
-로그인 후 Notebook 홈의 `설정 → LLM 설정`에서 공유 시스템 Provider 연결과 Workspace 기본 모델을 확인합니다. 화면 상단에는 현재 접속한 사용자 ID와 시스템 관리자 여부가 표시됩니다.
+로그인 후 Notebook 홈의 `설정 → LLM 설정`에서 시스템 Provider 연결과 현재 Workspace 기본 모델을 확인합니다. 화면 상단에는 현재 접속한 사용자 ID와 시스템 관리자 여부가 표시됩니다.
 
-- 시스템 관리자는 Provider 연결을 추가·수정·활성화하고 Endpoint, 모델 목록, 모델 기능과 Workspace 기본 모델을 관리합니다.
-- 일반 사용자와 조직 관리자는 등록된 공유 연결을 조회하고 API Key 또는 Client Key만 교체할 수 있습니다. Endpoint, Provider 종류, 모델 목록과 기능은 변경할 수 없습니다.
-- Credential과 저장된 Endpoint 원문은 다시 표시되지 않습니다. 키를 교체할 때는 현재 비밀번호를 입력하고 연결 확인을 완료합니다.
-- 지원 Provider 코드는 Cerebras, Groq, Mistral, OpenAI, Upstage, Gemini, OpenRouter, Anthropic, Ollama, OmniRoute, Eoul-Gateway, Media Bridge입니다. 실제 사용 가능 여부는 해당 연결의 Adapter와 Provider 상태에 따라 달라집니다.
-- Ollama는 `LAN Ollama`, `공용 Ollama`처럼 연결 이름을 다르게 지정해 여러 Endpoint를 동시에 등록할 수 있습니다. 각 연결의 모델과 Workspace 기본값은 연결별로 선택합니다. 예를 들어 `http://192.168.220.180:11434`와 `https://ollama-api.sinsan.kr`를 별도 연결로 등록할 수 있습니다.
-- OmniRoute와 Eoul-Gateway는 설치형·배포형의 실제 접근 가능한 API Endpoint를 사용합니다. Console 화면 주소(`/home`)와 API Endpoint를 혼동하지 않습니다. Media Bridge는 Eoul-Gateway 또는 별도 설치형의 실제 API Endpoint를 사용하며, localhost 주소는 Daon User 서버와 같은 호스트에서 실행되는 경우에만 등록합니다.
-- 라우터의 `Auto`는 모델 목록에서 다른 모델과 함께 선택할 수 있는 하나의 모델입니다. OmniRoute는 `auto`, OpenRouter는 `openrouter/auto`를 사용합니다. OpenAI 호환 연결은 시스템 관리자가 `라우터 Auto 사용`을 켜고 실제 Auto 모델 ID를 지정할 수 있습니다. 조회 결과에 없는 Auto에는 `논리 모델` 표시가 붙습니다. Auto를 선택하는 것과 모델을 지정하지 않아 Provider의 기준 모델을 사용하는 것은 서로 다릅니다. 이번 설정에 Combo 자동 선택은 없습니다.
+- 시스템 관리자는 연결의 Endpoint, 호환 방식, 이름·약어, 허용 모델과 공용 사용 여부를 관리합니다.
+- 일반 사용자는 등록된 연결을 조회하고, 비공용 연결에는 본인 계정의 개인 Key를 등록합니다. Endpoint와 허용 모델을 임의로 변경하지 않습니다.
+- 공용 연결은 관리자 Key를 사용하고 비공용 연결은 본인 계정의 개인 Key를 사용합니다. 비공용 연결에 개인 Key가 없을 때 시스템 Key로 fallback하는 경로는 없습니다.
+- Credential 원문은 다시 표시되지 않습니다. 연결 확인, 모델 카탈로그 조회, 질문 실행과 Studio 저장은 서로 다른 검증 단계입니다. `준비 중` 표시는 실제 실행 준비 완료를 뜻하지 않습니다.
 
-Credential 원문은 다시 표시되지 않습니다. Provider 연결 시험 성공은 Source 기반 질문, 조직 Egress 승인 또는 Studio 생성 성공을 의미하지 않습니다.
+### 13.1 시스템 Provider 연결 추가
+
+시스템 관리자로 로그인한 뒤 다음 순서로 진행합니다.
+
+1. `설정 → LLM 설정`의 `시스템 Provider 연결`에서 `연결 추가`를 선택합니다.
+2. OpenAI 호환은 Chat Completions, Anthropic 호환은 Messages 규격에 맞는 연결을 선택합니다. 이 호환 연결은 내부적으로 `CUSTOM`으로 구분됩니다.
+3. Provider 표시 이름, 연결 이름, 두 글자 약어와 서버에서 접근 가능한 검증된 Endpoint를 입력합니다. 저장된 연결 ID는 연결을 구분하는 고정 식별자입니다.
+4. 인증 유형과 공용 사용 여부를 확인하고 필요한 Key를 입력합니다. 비공용 연결의 관리자 시험용 Key가 모든 사용자용 Key로 저장된다고 가정하지 않습니다.
+5. `모델 목록 조회` 결과를 확인합니다. 자동 조회가 지원되지 않으면 실제 Provider의 모델 ID를 직접 입력합니다. 조회된 모델 전체가 자동으로 허용되는 것은 아닙니다.
+6. 허용할 모델을 최대 4개 선택합니다. 모델 목록이 비어 있으면 질문 실행 준비가 끝난 것으로 판단하지 않습니다.
+7. 사용 후보 포함 여부를 확인하고 `연결 시험 및 저장`을 선택합니다. 연결 시험에도 실제 짧은 Provider 요청과 비용이 발생할 수 있습니다.
+8. 저장 후 연결 상태와 모델 목록을 다시 확인합니다. `사용 대기 연결 등록`은 확인되지 않은 연결을 등록하는 동작이지 실행 성공이 아닙니다.
+
+현재 질문·일반 대화 경로에는 Ollama, Groq, Mistral, Upstage, OpenRouter, OmniRoute, Eoul Gateway와 지원되는 CUSTOM Adapter가 연결되어 있습니다. Media Bridge는 CUSTOM의 OpenAI 호환 연결로 등록합니다. OpenAI·Anthropic 서비스의 호환 연결 지원과 과거 같은 이름의 Provider 코드가 실행 가능한지는 구분해야 합니다. 다른 코드나 미지원 Adapter를 카드에 표시할 수 있다는 이유만으로 실행 가능하다고 판단하지 않습니다.
+
+Provider 설정 화면의 현재 키 저장 절차에 없는 비밀번호 입력을 임의로 추가하지 않습니다. 외부 전송·승인 등 다른 민감 작업에서 요구하는 정식 추가 인증은 별도로 수행합니다. 키나 Provider 응답 원문을 화면 캡처·로그·문의 글에 붙여 넣지 않습니다.
+
+### 13.2 Ollama Endpoint 여러 개 등록
+
+Ollama는 Endpoint마다 별도 연결 이름을 부여해 동시에 등록합니다. 사내 연결과 승인된 Gateway 연결 등 실제 운영자가 확인한 주소를 사용합니다.
+
+1. 첫 번째 연결을 `사내 Ollama`처럼 구분 가능한 이름으로 등록합니다.
+2. 두 번째 연결은 다른 이름과 Endpoint로 등록합니다.
+3. 각 연결에서 실제 설치된 모델이 따로 조회되는지 확인합니다.
+4. Workspace 기본 모델에서 필요한 연결과 모델 조합을 선택합니다.
+
+Daon은 Ollama 모델을 자동 설치하거나 삭제하지 않습니다. 사용자 브라우저 주소를 서버 Endpoint로 오인하거나 내부 주소를 임의로 입력해 접근 제한을 우회하지 않습니다.
+
+### 13.3 OpenRouter·OmniRoute·Eoul Gateway·Media Bridge
+
+- OpenRouter는 실제 API Endpoint와 Key를 사용합니다.
+- OmniRoute와 Eoul Gateway는 Gateway의 API Endpoint, Client Key와 실제 모델 ID를 사용합니다.
+- Media Bridge는 CUSTOM의 OpenAI 호환 방식으로 실제 API Endpoint와 모델 ID를 등록합니다.
+- 설치형·별도 배포형 모두 Daon User 서버에서 실제 접근 가능한 API Endpoint를 사용합니다. Console 화면 주소와 API Endpoint를 혼동하지 않습니다.
+
+라우터의 `Auto`는 모델 목록에서 선택하는 하나의 모델입니다. OmniRoute는 `auto`, OpenRouter는 `openrouter/auto`를 사용합니다. OpenAI 호환 연결은 시스템 관리자가 `라우터 Auto 사용`을 켜고 실제 Auto 모델 ID를 지정할 수 있습니다. 조회 목록에 없는 Auto에는 `논리 모델` 표시가 붙습니다. Auto 선택과 모델을 지정하지 않아 Provider의 기준 모델을 사용하는 것은 다릅니다. Combo 자동 선택 기능으로 설명하지 않습니다.
+
+하위 Provider 선택·우선순위·Fallback은 Gateway가 책임집니다. Daon User는 선택한 하나의 논리 모델을 호출하며 Gateway 내부 라우팅을 중복 구현하지 않습니다.
+
+### 13.4 Workspace 기본 모델 선택
+
+1. 현재 화면의 `Workspace 기본 모델`에서 `텍스트 생성` 항목을 확인합니다.
+2. `연결 이름 · 모델 ID` 형식의 항목을 선택합니다.
+3. `기본 모델 저장`을 선택합니다.
+4. 저장 완료 후 선택이 유지되는지 확인합니다. 실제 질문 성공은 별도의 허용된 새 Run으로 확인합니다.
+
+모델 카탈로그의 이미지·문서·오디오 등 기능 표시는 이 화면에 모든 기능의 기본값 선택기나 실행 Adapter가 있다는 뜻이 아닙니다. 실행 코드가 없는 기능은 `준비 중`이며 모델 기능 보정만으로 실행 가능해지지 않습니다. 모델 이름만 보고 실제 지원·품질을 보장하지 않습니다.
+
+### 13.5 키 교체·삭제·카탈로그 새로고침
+
+- 키 교체: 공용 연결은 권한 있는 관리자가 관리자 Key를, 비공용 연결은 본인이 개인 Key를 교체합니다. 키 교체만 필요한 경우 저장된 Endpoint 재입력이나 worker 재생성은 필요하지 않습니다.
+- 개인 Key: `내 계정 키 시험 및 저장`과 `내 계정 키 삭제`는 본인 계정 범위입니다. 공용 설정이나 다른 사용자의 Key를 변경하지 않습니다.
+- 키 삭제: 연결·카탈로그 삭제와 다른 작업입니다. 필요한 Key가 없으면 해당 사용자의 실행이 차단될 수 있으므로 영향을 확인합니다.
+- 카탈로그 새로고침: 모델 목록 조회 후 허용 모델과 현재 Workspace 기본값을 다시 대조합니다. 조회만으로 기본 모델을 임의 교체하지 않습니다.
+- 연결 삭제: 현재 기본값 등에서 참조 중이면 거부될 수 있습니다. 참조를 우회해 삭제하지 않습니다.
+
+### 13.6 기존 환경변수 키 1회 이관(운영자)
+
+이 절차는 이전 배포에서 Provider 키를 환경변수로 사용하던 경우에만 수행합니다. 일반 사용자는 실행하지 않습니다.
+
+1. 비공개 master key 파일이 준비되어 API와 실제 Provider 호출 worker에 read-only Secret으로 제공되는지 확인합니다.
+2. DB migration 0040 이후의 기존 Provider 연결과 Credential 저장 구조가 적용되어 있는지 확인합니다.
+3. 기존 키가 서버 환경에 있는 동안 운영용 `scripts/import-provider-credentials.py`를 실행합니다. 명령에 키 값을 직접 적지 않고 기존 환경변수 이름을 전달합니다.
+4. 완료 결과의 imported·skipped·unused_provider_types 개수만 기록합니다. 키 원문은 출력하거나 보관하지 않습니다.
+5. 이미 Credential이 있는 연결은 이관으로 덮어쓰지 않습니다. 대응 연결이 없으면 Endpoint를 추측해 새로 만들지 않습니다.
+6. 연결 상태와 실제 사용을 확인한 뒤 이전 키 환경변수와 `OLLAMA_BASE_URL` 의존을 제거합니다. 런타임의 환경변수 키 fallback으로 사용하지 않습니다.
 
 ## 14. 출력·버전 설정
 
@@ -393,7 +455,7 @@ Daon은 Preview 전체를 자동 승인하거나 자동 전송하지 않습니�
 
 ## 16. 조직 정책
 
-시스템 관리자는 Notebook 홈의 `설정 → 조직 정책` 또는 `/settings/organization`에서 현재 tenant의 조직 외부 전송 정책을 확인·변경합니다. 일반 사용자와 Workspace 사용자는 같은 화면에서 유효 정책을 읽기 전용으로 확인합니다.
+Notebook Workspace에서는 조직의 외부 전송 정책을 읽기 전용으로 확인합니다. 별도 설정 경로 `/settings/organization`에서는 현재 서버가 정책 변경 권한을 확인한 사용자만 조직 또는 Workspace 범위의 허용된 변경을 저장할 수 있습니다. 시스템 관리자 여부와 Workspace 역할은 같은 권한이 아니며 다른 범위의 정책을 임의로 바꾸지 않습니다.
 
 - 정책 모드: 외부 전송 차단 또는 승인된 외부 전송
 - 허용 Provider 종류
@@ -405,7 +467,7 @@ Daon은 Preview 전체를 자동 승인하거나 자동 전송하지 않습니�
 - 필수 승인자
 - Workspace 적용 결과
 
-조직 차단 정책은 Workspace에서 완화할 수 없습니다. 사용자가 Endpoint를 변경하거나 다른 Provider로 우회해서는 안 됩니다. 조직 정책을 변경한 뒤 Workspace 적용 결과와 ETag 충돌 여부를 확인합니다.
+조직 차단 정책은 Workspace에서 완화할 수 없습니다. 변경에는 현재 권한·추가 인증·ETag 충돌 검사가 적용됩니다. 저장 후 유효 정책과 Workspace 적용 결과를 다시 확인하며 Endpoint 변경이나 다른 Provider로 우회하지 않습니다.
 
 ## 17. 라이선스
 
@@ -419,16 +481,16 @@ Daon User의 라이선스 적용 대상은 `사용자 수`와 `Notebook 수`입�
 
 상태는 `미적용`, `정상`, `30일 이내 만료`, `만료`, `한도 도달`로 표시될 수 있습니다.
 
-### 17.2 시스템 관리자
+### 17.2 적용 권한이 확인된 관리자
 
-라이선스 등록·교체·적용은 시스템 관리자만 수행합니다. 일반 사용자와 Workspace 관리자는 제품·Edition·상태·만료일·기능·사용량만 조회합니다.
+서버가 `can_apply=true`로 판정한 경우에만 라이선스 등록·교체·적용 입력을 사용할 수 있습니다. 시스템 관리자 또는 현재 조직의 관리 권한이 검증된 사용자가 대상이며, Workspace 역할만으로 적용 권한이 생기지는 않습니다. 적용 권한이 없는 사용자는 제품·Edition·상태·만료일·기능·사용량을 조회합니다.
 
 1. 승인된 JSON License document를 준비합니다.
 2. 현재 비밀번호를 입력합니다.
 3. `Step-up 후 검증·적용`을 선택합니다.
 4. 제품, 조직, 기간, Schema와 서명 검증 결과를 확인합니다.
 
-License 원문과 비밀번호를 로그나 문의 글에 첨부하지 않습니다. 일반 사용자에게는 적용 입력란이 보이지 않아야 합니다.
+License 원문과 비밀번호를 로그나 문의 글에 첨부하지 않습니다. 적용 권한이 없는 사용자에게는 적용 입력란이 보이지 않아야 합니다.
 
 ## 18. 운영상태
 
@@ -505,7 +567,11 @@ Mobile 계약상 허용되는 작업에는 제목·텍스트 블록·간단한 �
 
 ### 선택 모델이 없음
 
-`LLM 설정`에서 text 역할의 활성 Deployment가 선택되었는지 확인합니다. 일반 사용자가 변경할 수 없으면 Workspace 관리자에게 요청합니다.
+`LLM 설정`의 `Workspace 기본 모델`에서 텍스트 생성에 사용할 연결과 모델을 선택했는지 확인합니다. 항목이 없으면 연결 활성 상태, 연결 확인 결과, 허용 모델과 현재 사용자의 Credential 범위를 확인합니다.
+
+### Provider 연결 확인이 실패함
+
+Endpoint의 오타, 서버에서의 접근 가능 여부, Key의 유효성, 실제 Gateway 모델 ID를 확인합니다. Key 원문이나 Provider 응답 본문을 오류 보고에 포함하지 않습니다. 키 교체만 필요한 경우 Endpoint를 다시 입력하거나 worker를 재생성하지 않습니다.
 
 ### 외부 전송이 거부됨
 
