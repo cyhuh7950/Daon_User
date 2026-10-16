@@ -385,7 +385,11 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
       {view.safeError && (!view.selectedOutputType || selectedOutput) ? <p className="inline-alert" role="alert">{safeStudioErrorMessage(view.safeError)}</p> : null}
       {!view.selectedOutputType ? <div className="studio-home" data-studio-view="home">
         <div className="studio-type-tiles" data-columns="3" aria-label="산출물 유형">
-          {OUTPUT_TYPES.map((type) => <button className={`studio-type-tile tile-${TYPE_ICONS[type.id]}`} key={type.id} type="button" onClick={() => setView(selectOutputType(view, type.id))}>{type.label}</button>)}
+          {OUTPUT_TYPES.map((type) => <button className={`studio-type-tile tile-${TYPE_ICONS[type.id]}${type.generationUnavailable ? " studio-type-future" : ""}`} key={type.id} type="button"
+            disabled={type.generationUnavailable === true}
+            onClick={() => { if (!type.generationUnavailable) setView((current) => selectOutputType(current, type.id)); }}>
+            {type.label}{type.generationUnavailable ? <small>현재 파일 생성 미지원</small> : null}
+          </button>)}
         </div>
         <section className="studio-library" aria-labelledby="stored-studio-outputs"><div className="studio-section-heading"><div><span className="section-kicker">LIBRARY</span><h3 id="stored-studio-outputs">저장된 산출물</h3></div><span className="library-count">{view.outputs.length}</span></div>
           {view.outputs.length ? <ul>{view.outputs.map((output) => <li className="studio-library-row" key={output.studio_output_id}><span className={`library-type-icon tile-${TYPE_ICONS[output.output_type] ?? "document"}`} aria-hidden="true" /><span className="library-row-copy"><small className="library-output-type">{outputTypeLabel(output.output_type)}</small><button type="button" onClick={() => void openOutput(output)}>{output.title}</button><small>Source {output.source_count ?? output.source_version_ids?.length ?? 1} · Version {output.content_version ?? output.output_version_id ?? "-"}</small></span><span className={`output-status status-${output.status ?? "saved"}`}>{outputStatusLabel(output.status)}</span></li>)}</ul> : <div className="studio-empty"><span className="empty-icon" aria-hidden="true">◇</span><strong>아직 저장된 산출물이 없습니다.</strong><small>위 유형을 선택하면 근거가 결속된 산출물을 만들 수 있습니다.</small></div>}

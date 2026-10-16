@@ -19,6 +19,44 @@ const grounded = {
   runId: "run-1", runResultId: "result-1",
 };
 
+test('S21 audio/video new output selection is rejected without changing saved types',()=>{
+  const state=createProductStudioState({grounded});
+  for(const type of ['audio','video']){
+    assert.throws(()=>selectOutputType(state,type),/^Error: STUDIO_OUTPUT_UNAVAILABLE$/);
+  }
+  assert.equal(state.selectedOutputType,null);
+  assert.throws(()=>selectOutputType(state,'unknown'),/^Error: STUDIO_OUTPUT_TYPE_INVALID$/);
+});
+
+test('S21 audio/video forged confirmed settings cannot bypass generation guard',()=>{
+  for(const type of ['audio','video']){
+    const settings={purpose:'기존 자료',audience:'담당자',language:'ko',sourceVersionIds:['source-version-1'],
+      length:'standard',structure:'summary-body-conclusion',outputFormat:'json',reviewCondition:'review_required'};
+    const state={...createProductStudioState({grounded}),selectedOutputType:type,settings,settingsSnapshot:{...settings},settingsConfirmed:true};
+    assert.equal(canSubmitGeneration(state),false,`${type} submit 우회 금지`);
+    assert.throws(()=>confirmGenerationSettings(state),/^Error: STUDIO_SETTINGS_INCOMPLETE$/);
+    assert.throws(()=>createStudioGenerationInput(state),/^Error: STUDIO_SETTINGS_NOT_CONFIRMED$/);
+  }
+});
+
+test('S21 existing nine structured output choices preserve settings and input contracts',()=>{
+  for(const [type,format] of [
+    ['evidence_report','docx'],['compliance_checklist','xlsx'],['comparison_table','csv'],
+    ['knowledge_map','json'],['business_draft','pdf'],['slides','json'],['infographic','svg'],
+    ['flashcards','csv'],['quiz','json'],
+  ]){
+    let state=selectOutputType(createProductStudioState({grounded}),type);
+    state=updateGenerationSettings(state,{purpose:'기존 자료',audience:'담당자',sourceVersionIds:['source-version-1'],
+      length:'standard',structure:'summary-body-conclusion',outputFormat:format,reviewCondition:'review_required'});
+    state=confirmGenerationSettings(state);
+    assert.equal(canSubmitGeneration(state),true,type);
+    const input=createStudioGenerationInput(state);
+    assert.equal(input.output_type,type);assert.equal(input.settings.output_format,format);
+    assert.deepEqual(input.source_version_ids,['source-version-1']);
+    assert.equal(input.run_id,'run-1');assert.equal(input.run_result_id,'result-1');
+  }
+});
+
 test("Product Studio는 혼합 Context의 모든 Citation Source Version을 생성 Snapshot에 결속한다", () => {
   const mixed = { ...grounded, sourceVersionIds: ["source-version-daon", "source-version-1"] };
   let state = selectOutputType(createProductStudioState({ grounded: mixed }), "evidence_report");

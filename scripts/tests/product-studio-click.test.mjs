@@ -5,6 +5,56 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { MinimalEvent, buttonByText, findElements, installMinimalDom } from "./product-studio-dom.mjs";
 import { createStudioAction, createStudioVersion, listStudioVersions } from "../../apps/web/lib/product-workspace-api.js";
+import { createProductStudioState } from '../../packages/ui/src/product-studio-model.js';
+
+test('S21 React marks only audio/video file generation unavailable while saved media remains readable',async()=>{
+  const rootPath=path.resolve(import.meta.dirname,'../..');
+  const output=await mkdtemp(path.join(rootPath,'.product-studio-s21-'));
+  const dom=installMinimalDom();let reactRoot;
+  try{
+    const {createElement,act}=await import('react'),{createRoot}=await import('react-dom/client'),{build}=await import('vite');
+    await build({configFile:false,logLevel:'silent',root:rootPath,build:{outDir:output,emptyOutDir:false,
+      lib:{entry:path.join(rootPath,'packages/ui/src/product-studio-pane.jsx'),formats:['es'],fileName:'product-studio'},
+      rollupOptions:{external:['react','react-dom','react-dom/client']}}});
+    const entry=(await readdir(output)).find(name=>name.startsWith('product-studio')&&/\.m?js$/u.test(name));
+    const {ProductStudioPane}=await import(pathToFileURL(path.join(output,entry)).href);
+    const outputs=['audio','video'].map(type=>({studio_output_id:`output-${type}`,output_version_id:`version-${type}`,
+      output_type:type,title:`저장된 ${type}`,status:'draft',content:`기존 ${type} JSON 내용`,content_version:1,
+      source_version_ids:['source-version-1'],source_count:1,settings_snapshot_id:`settings-${type}`,citations:[],output_format:'json'}));
+    const reads=[];let creates=0;
+    const adapter={createGeneration:async()=>{creates++;throw Error('MUST_NOT_GENERATE');},
+      listStudioVersions:async id=>{reads.push(id);const saved=outputs.find(value=>value.studio_output_id===id);
+        return [{output_version_id:saved.output_version_id,content_version:1,previous_version_id:null,status:'draft',
+          content:saved.content,revision_type:'initial',change_reason:'기존 자료',settings_snapshot_id:saved.settings_snapshot_id,
+          citations:[],review_request_id:null,approval_request_id:null,approval_id:null,delivery_id:null,knowledge_registration_id:null,output_format:'json'}];}};
+    const container=dom.document.createElement('div');dom.document.body.appendChild(container);reactRoot=createRoot(container);
+    await act(async()=>reactRoot.render(createElement(ProductStudioPane,{state:createProductStudioState({workspaceId:'workspace-1',outputs}),adapter})));
+    const tiles=()=>findElements(container,node=>node.tagName==='BUTTON'&&node.getAttribute?.('class')?.split(' ').includes('studio-type-tile'));
+    assert.equal(tiles().length,11);
+    for(const label of ['AI 오디오','동영상']){
+      const tile=tiles().find(node=>node.textContent.includes(label));assert.ok(tile);
+      assert.equal(tile.disabled,true,label);
+      assert.match(tile.textContent,/현재 파일 생성 미지원/);
+      await act(async()=>tile.dispatchEvent(new MinimalEvent('click')));
+      assert.equal(findElements(container,node=>node.getAttribute?.('data-studio-view')==='config').length,0);
+    }
+    for(const label of ['근거 기반 보고서','제약·준수 점검표','비교·데이터 표','지식 구조도','업무 문서 초안','슬라이드','인포그래픽','플래시카드','퀴즈']){
+      const tile=tiles().find(node=>node.textContent===label);assert.ok(tile,label);assert.equal(tile.disabled,false);
+      await act(async()=>tile.dispatchEvent(new MinimalEvent('click')));
+      assert.match(container.textContent,new RegExp(`${label} 설정`));
+      await act(async()=>buttonByText(container,'뒤로').dispatchEvent(new MinimalEvent('click')));
+    }
+    for(const type of ['audio','video']){
+      await act(async()=>buttonByText(container,`저장된 ${type}`).dispatchEvent(new MinimalEvent('click')));
+      const detail=findElements(container,node=>node.getAttribute?.('aria-label')==='선택 산출물 상세')[0];
+      assert.ok(detail);assert.match(detail.textContent,new RegExp(`기존 ${type} JSON 내용`));
+    }
+    assert.deepEqual(reads,['output-audio','output-video']);assert.equal(creates,0);
+  }finally{
+    if(reactRoot){const {act}=await import('react');await act(async()=>reactRoot.unmount());}
+    dom.restore();await rm(output,{recursive:true,force:true});
+  }
+});
 
 test("새 Version 저장 후 정식 조회는 생성 ID·이력·Region을 복원하고 저장/조회 실패를 분리한다", async (t) => {
   const rootPath = path.resolve(import.meta.dirname, "../..");
