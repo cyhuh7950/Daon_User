@@ -218,6 +218,51 @@ class NotificationContractTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(NotificationError):
                 self.service.publish(NotificationEvent(**values), candidates=(self.principal,))
 
+    async def test_approved_notification_target_links_survive_publish_list_and_detail(self) -> None:
+        """승인된 원업무 경로를 홈 이동으로 바꾸거나 숨기지 않고 그대로 반환한다."""
+        from dataclasses import replace
+        links = (
+            "/notebooks/notebook-001?output_version_id=version-001",
+            "/notebooks/notebook-001?source_version_id=source-version-001",
+            "/notebooks/notebook-001?run_id=run-001",
+            "/settings/account",
+        )
+        for index, link in enumerate(links):
+            with self.subTest(link=link):
+                item, = self.service.publish(replace(self.event,
+                    event_id=f"event-s42-target-{index}", deep_link=link), candidates=(self.principal,))
+                listed = self.service.list_notifications(principal=self.principal, limit=20, cursor=None,
+                    filters={}, search=None, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+                self.assertEqual(next(value.deep_link for value in listed.items
+                    if value.notification_id == item.notification_id), link)
+                detail = self.service.get_notification(principal=self.principal,
+                    notification_id=item.notification_id, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+                self.assertEqual(detail.deep_link, link)
+
+    async def test_notification_target_links_reject_ambiguous_or_unapproved_selection(self) -> None:
+        """새 복귀 경로는 정확한 단일 대상만 허용하고 임의 redirect/오염을 거부한다."""
+        from dataclasses import replace
+        links = (
+            "/notebooks/notebook-001",
+            "/notebooks/notebook-001?run_id=run-001&run_id=run-002",
+            "/notebooks/notebook-001?run_id=run-001&source_version_id=version-001",
+            "/notebooks/notebook-001?run_id=run-001&redirect=https://evil.example",
+            "/notebooks/notebook-001?unknown=run-001",
+            "/notebooks/notebook-001?run_id=",
+            "/notebooks/notebook-001?run_id=run-001#other",
+            "/notebooks/notebook-001?run_id=run%0A001",
+            "/notebooks/notebook-001%2Fother?run_id=run-001",
+            "/notebooks/../settings?run_id=run-001",
+            "/settings/account?redirect=https://evil.example",
+            "/settings/account#other",
+            "/settings/account/other",
+        )
+        for link in links:
+            with self.subTest(link=link):
+                with self.assertRaises(NotificationError) as rejected:
+                    self.service.publish(replace(self.event, deep_link=link), candidates=(self.principal,))
+                self.assertEqual(rejected.exception.code, "UNSAFE_DEEP_LINK")
+
     async def test_inbox_is_current_read_projection_without_write_route(self) -> None:
         self.service.project_request(InboxRequest(
             request_id="approval-request-001",

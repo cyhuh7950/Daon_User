@@ -57,6 +57,47 @@ test("S42 같은 flush의 읽음 두 번 클릭은 실제 adapter 호출을 한 
   finally { await view.act(async () => { pending.resolve({ ok: true }); }); await view.cleanup(); }
 });
 
+test("S42 승인된 원업무 링크는 실제 React에서 정확한 상대경로로 열린다", async () => {
+  const links = [
+    "/notebooks/notebook-001?output_version_id=version-001",
+    "/notebooks/notebook-001?source_version_id=source-version-001",
+    "/notebooks/notebook-001?run_id=run-001",
+    "/settings/account",
+  ];
+  const rows = links.map((deep_link, index) => ({ ...item(`target-${index}`), deep_link }));
+  const view = await render({ list: async () => listed(rows), markRead: async () => { throw new Error("읽음 시험 아님"); } });
+  try {
+    const anchors = findElements(view.container, node => node.tagName === "A" && node.textContent === "원 요청 열기");
+    assert.deepEqual(anchors.map(node => node.getAttribute("href")), links);
+    assert.doesNotMatch(view.container.textContent, /CURRENT_ACCESS_DENIED/u);
+  } finally { await view.cleanup(); }
+});
+
+test("S42 새 원업무 링크의 중복·오염 대상은 React에서 클릭 링크로 만들지 않는다", async () => {
+  const links = [
+    "/notebooks/notebook-001",
+    "/notebooks/notebook-001?run_id=run-001&run_id=run-002",
+    "/notebooks/notebook-001?run_id=run-001&source_version_id=version-001",
+    "/notebooks/notebook-001?run_id=run-001&redirect=https://evil.example",
+    "/notebooks/notebook-001?unknown=run-001",
+    "/notebooks/notebook-001?run_id=",
+    "/notebooks/notebook-001?run_id=run-001#other",
+    "/notebooks/notebook-001?run_id=run%0A001",
+    "/notebooks/notebook-001%2Fother?run_id=run-001",
+    "/notebooks/../settings?run_id=run-001",
+    "/settings/account?redirect=https://evil.example",
+    "/settings/account#other",
+    "/settings/account/other",
+  ];
+  const rows = links.map((deep_link, index) => ({ ...item(`unsafe-${index}`), deep_link }));
+  const view = await render({ list: async () => listed(rows), markRead: async () => { throw new Error("읽음 시험 아님"); } });
+  try {
+    assert.equal(findElements(view.container, node => node.tagName === "A" && node.textContent === "원 요청 열기").length, 0);
+    for (const row of rows) assert.ok(view.container.textContent.includes(row.title));
+    assert.match(view.container.textContent, /CURRENT_ACCESS_DENIED/u);
+  } finally { await view.cleanup(); }
+});
+
 for (const status of [401, 403, 412, 503, "network"]) {
   test(`S42 읽음 실패 ${status}는 이전 본문·링크·미읽음 수를 폐기한다`, async () => {
     const view = await render({ list: async () => listed(), markRead: async () => { if (status === "network") throw new Error("민감한 내부 실패 원문"); return { ok: false, status }; } });

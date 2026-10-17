@@ -313,6 +313,11 @@ def _plain_text(value: object, *, maximum: int) -> str:
 def _safe_deep_link(value: object, native_routes: frozenset[str]) -> str:
     if not isinstance(value, str) or len(value) > 512 or value != value.strip():
         raise NotificationError("UNSAFE_DEEP_LINK")
+    if value == "/settings/account" or re.fullmatch(
+        r"/notebooks/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\?(?:output_version_id|source_version_id|run_id)=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}",
+        value,
+    ):
+        return value
     if value.startswith("/") and not value.startswith("//"):
         parsed = urlsplit(value)
         first = parsed.path.strip("/").split("/", 1)[0]

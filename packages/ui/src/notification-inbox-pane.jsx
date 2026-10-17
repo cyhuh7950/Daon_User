@@ -42,6 +42,9 @@ function safeStatus(status) {
 
 function safeDeepLink(value) {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return null;
+  const notebook = /^\/notebooks\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\?(?:output_version_id|source_version_id|run_id)=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.exec(value);
+  // $가 마지막 개행 앞에서 일치해도 전체 입력과 다르면 허용하지 않는다. URL 정규화도 하지 않는다.
+  if (value === "/settings/account" || (notebook && notebook[0] === value)) return value;
   const first = value.split(/[/?#]/).filter(Boolean)[0];
   return new Set(["operations", "inbox", "notifications", "workspaces"]).has(first) ? value : null;
 }
