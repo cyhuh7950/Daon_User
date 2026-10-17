@@ -1,3 +1,5 @@
+import { secureUuid } from "@daon-user/ui/secure-uuid";
+
 const JSON_HEADERS = Object.freeze({ "Content-Type": "application/json" });
 
 async function asResult(response) {
@@ -9,21 +11,22 @@ async function asResult(response) {
 }
 
 export const notificationInboxApi = Object.freeze({
-  async list(mode) {
+  async list(mode, { signal } = {}) {
     const path = mode === "notifications"
       ? "/bff/api/notifications?limit=50"
       : "/bff/api/inbox?limit=50";
-    return asResult(await fetch(path, { credentials: "same-origin", cache: "no-store" }));
+    return asResult(await fetch(path, { credentials: "same-origin", cache: "no-store", signal }));
   },
 
-  async markRead(item) {
+  async markRead(item, { signal } = {}) {
     const response = await fetch(`/bff/api/notifications/${encodeURIComponent(item.id)}`, {
       method: "PATCH",
       credentials: "same-origin",
+      signal,
       headers: {
         ...JSON_HEADERS,
         "If-Match": `"notification-${item.version}"`,
-        "Idempotency-Key": `notification-read-${crypto.randomUUID()}`,
+        "Idempotency-Key": `notification-read-${secureUuid()}`,
       },
       body: JSON.stringify({ state: "read" }),
     });
