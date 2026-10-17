@@ -20,6 +20,8 @@ from .identity import IdentityError, SqliteIdentityRepository
 
 
 _TABLES = (
+    "account_profiles",
+    "account_requests",
     "tenants",
     "users",
     "bootstrap_state",

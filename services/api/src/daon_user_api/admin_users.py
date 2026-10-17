@@ -385,6 +385,8 @@ class AdminUserService:
             connection.execute("DELETE FROM email_verification_tokens WHERE user_id=?", (target,))
             connection.execute("DELETE FROM password_reset_tokens WHERE user_id=?", (target,))
             connection.execute("DELETE FROM memberships WHERE user_id=?", (target,))
+            from .account_settings import delete_account_profile
+            delete_account_profile(connection, target)
             connection.execute("DELETE FROM users WHERE user_id=?", (target,))
             reservation = connection.execute(
                 "INSERT INTO admin_audit_outbox(event_id,operation,idempotency_scope,"

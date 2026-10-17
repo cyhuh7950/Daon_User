@@ -317,7 +317,7 @@ test("Web production build는 Next 산출 직후 Web 제품 경계 Gate를 실�
   assert.equal(manifest.scripts.build, "next build && node ../../scripts/verify-product-ui-boundary.mjs --target web");
 });
 
-test("account·organization 실제 React Route는 Safe 화면을 렌더하고 Network·Adapter·Tauri 호출이 0이다", async () => {
+test("account·organization React Route의 서버 렌더는 조회 대기만 표시하고 Network·Adapter·Tauri 호출이 0이다", async () => {
   const output = await mkdtemp(path.join(root, ".task8-c01-react-"));
   const originalFetch = globalThis.fetch;
   const originalRequire = globalThis.require;
@@ -371,7 +371,9 @@ test("account·organization 실제 React Route는 Safe 화면을 렌더하고 Ne
 
     assert.match(accountHtml, /계정 설정/);
     assert.match(organizationHtml, /조직 설정/);
-    assert.match(accountHtml, /RESOURCE_UNAVAILABLE/);
+    assert.match(accountHtml, /계정 정보를 불러오는 중입니다/);
+    assert.match(accountHtml, /aria-busy="true"/);
+    assert.doesNotMatch(accountHtml, /<input|<form|RESOURCE_UNAVAILABLE/);
     assert.match(organizationHtml, /조직 설정을 불러오는 중입니다/);
     for (const html of [accountHtml, organizationHtml]) {
       assert.doesNotMatch(html, /Evidence|Prototype|Mock|prototype_fixture|deferred_actual/);

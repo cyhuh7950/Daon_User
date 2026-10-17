@@ -606,6 +606,8 @@ class SqliteIdentityRepository:
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_login_id_unique ON users(login_id) WHERE login_id IS NOT NULL")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL")
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        from .account_settings import install_sqlite_account_schema
+        install_sqlite_account_schema(connection)
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -2009,6 +2011,7 @@ class IdentityService:
         now: datetime,
         operation: str | None = None,
         idempotency_key: str | None = None,
+        success_audit=None,
     ) -> None:
         tenant_id, actor_id = str(principal["tenant_id"]), str(principal["user_id"])
         if (operation is None) != (idempotency_key is None):
@@ -2088,7 +2091,7 @@ class IdentityService:
                     _iso(now),
                 ),
             )
-        self._audit(action="identity.step_up.used", outcome=AuditOutcome.SUCCEEDED,
+        (success_audit or self._audit)(action="identity.step_up.used", outcome=AuditOutcome.SUCCEEDED,
                     trace_id=trace_id, policy_version=policy_version, tenant_id=tenant_id,
                     actor_id=actor_id, target_type="step_up", target_id=str(row["step_up_id"]),
                     metadata={"action_group": action_group})
@@ -2120,6 +2123,9 @@ class IdentityService:
         now = self._now()
         with self._repository.transaction() as connection:
             principal = self._principal(connection, access_token, now)
+            self._trust_device_in_transaction(connection, principal, device_id, now, trace_id, policy_version)
+
+    def _trust_device_in_transaction(self, connection, principal, device_id, now, trace_id, policy_version, success_audit=None):
             if str(principal["device_id"]) != device_id:
                 self._audit(
                     action="identity.device.trust_denied", outcome=AuditOutcome.DENIED,
@@ -2129,13 +2135,33 @@ class IdentityService:
                     metadata={"reason_code": "DEVICE_BINDING_DENIED"},
                 )
                 raise IdentityError("DEVICE_BINDING_DENIED", 403)
+            try:
+                self._owned_account_target(connection, principal, "devices", "device_id", device_id)
+            except IdentityError:
+                self._audit(action="identity.device.trust_denied", outcome=AuditOutcome.DENIED,
+                    trace_id=trace_id, policy_version=policy_version, tenant_id=str(principal["tenant_id"]),
+                    actor_id=str(principal["user_id"]), target_type="device", target_id="unavailable-device",
+                    metadata={"reason_code": "DEVICE_BINDING_DENIED"})
+                raise
             connection.execute("UPDATE devices SET state='trusted',updated_at=? WHERE device_id=?", (_iso(now), device_id))
-            self._audit(
+            (success_audit or self._audit)(
                 action="identity.device.trusted", outcome=AuditOutcome.SUCCEEDED,
                 trace_id=trace_id, policy_version=policy_version,
                 tenant_id=str(principal["tenant_id"]), actor_id=str(principal["user_id"]),
                 target_type="device", target_id=device_id,
             )
+
+    @staticmethod
+    def _owned_account_target(connection, principal, table, key, target_id):
+        # Identifiers are internal constants, never request strings. Lock before consuming Step-up.
+        assert (table, key) in {("devices", "device_id"), ("sessions", "session_id")}
+        suffix = " FOR UPDATE" if hasattr(connection, "_connection") else ""
+        row = connection.execute(
+            f"SELECT {key} FROM {table} WHERE {key}=? AND tenant_id=? AND user_id=? AND state<>'revoked'" + suffix,
+            (target_id, str(principal["tenant_id"]), str(principal["user_id"])),
+        ).fetchone()
+        if row is None: raise IdentityError("DEVICE_TARGET_UNAVAILABLE" if table == "devices" else "SESSION_TARGET_UNAVAILABLE", 404)
+        return row
 
     def revoke_session(self, *, access_token: str, session_id: str,
                        step_up_authorization: str | None, policy_version: str,
@@ -2144,6 +2170,18 @@ class IdentityService:
         now = self._now()
         with self._lock, self._repository.transaction() as connection:
             principal = self._principal(connection, access_token, now)
+            self._revoke_session_in_transaction(connection, principal, session_id, step_up_authorization, now, trace_id, policy_version)
+        return SessionRevocationEvent(session_id)
+
+    def _revoke_session_in_transaction(self, connection, principal, session_id, step_up_authorization, now, trace_id, policy_version, success_audit=None):
+            try:
+                self._owned_account_target(connection, principal, "sessions", "session_id", session_id)
+            except IdentityError:
+                self._audit(action="identity.session.revoke_denied", outcome=AuditOutcome.DENIED,
+                    trace_id=trace_id, policy_version=policy_version, tenant_id=str(principal["tenant_id"]),
+                    actor_id=str(principal["user_id"]), target_type="session", target_id="unavailable-session",
+                    metadata={"reason_code": "SESSION_TARGET_UNAVAILABLE"})
+                raise
             target = connection.execute(
                 """SELECT session_id FROM sessions
                 WHERE session_id=? AND tenant_id=? AND user_id=? AND state='active'""",
@@ -2161,7 +2199,7 @@ class IdentityService:
             self._consume_step_up(
                 connection, raw=step_up_authorization, principal=principal,
                 action_group="device_session_or_sync_key_revoke", target_id=session_id,
-                policy_version=policy_version, trace_id=trace_id, now=now,
+                policy_version=policy_version, trace_id=trace_id, now=now, success_audit=success_audit,
             )
             connection.execute(
                 "UPDATE sessions SET state='revoked',updated_at=? WHERE session_id=? AND state='active'",
@@ -2171,14 +2209,13 @@ class IdentityService:
                 "UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id=?",
                 (_iso(now), session_id),
             )
-            self._audit(
+            (success_audit or self._audit)(
                 action="identity.session.revoked", outcome=AuditOutcome.SUCCEEDED,
                 trace_id=trace_id, policy_version=policy_version,
                 tenant_id=str(principal["tenant_id"]), actor_id=str(principal["user_id"]),
                 target_type="session", target_id=session_id,
                 metadata={"reason_code": "USER_REQUESTED"},
             )
-        return SessionRevocationEvent(session_id)
 
     def revoke_current_web_session(
         self, *, access_token: str, policy_version: str, trace_id: str,
@@ -2265,23 +2302,30 @@ class IdentityService:
         now = self._now()
         with self._lock, self._repository.transaction() as connection:
             principal = self._principal(connection, access_token, now)
+            self._revoke_device_in_transaction(connection, principal, device_id, step_up_authorization, now, trace_id, policy_version)
+        return DeviceRevocationEvent(device_id, True)
+
+    def _revoke_device_in_transaction(self, connection, principal, device_id, step_up_authorization, now, trace_id, policy_version, success_audit=None):
+            self._owned_account_target(connection, principal, "devices", "device_id", device_id)
+            targets = connection.execute("SELECT session_id FROM sessions WHERE device_id=? AND tenant_id=? AND user_id=? AND state='active' ORDER BY session_id" + (" FOR UPDATE" if hasattr(connection, "_connection") else ""),
+                (device_id, str(principal["tenant_id"]), str(principal["user_id"]))).fetchall()
             self._consume_step_up(connection, raw=step_up_authorization, principal=principal,
                                   action_group="device_session_or_sync_key_revoke", target_id=device_id,
-                                  policy_version=policy_version, trace_id=trace_id, now=now)
-            connection.execute("UPDATE devices SET state='revoked',updated_at=? WHERE device_id=? AND tenant_id=?", (_iso(now), device_id, str(principal["tenant_id"])))
-            connection.execute("UPDATE sessions SET state='revoked',updated_at=? WHERE device_id=?", (_iso(now), device_id))
-            connection.execute("UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id IN (SELECT session_id FROM sessions WHERE device_id=?)", (_iso(now), device_id))
-            self._audit(action="identity.session.revoked", outcome=AuditOutcome.SUCCEEDED,
+                                  policy_version=policy_version, trace_id=trace_id, now=now, success_audit=success_audit)
+            connection.execute("UPDATE devices SET state='revoked',updated_at=? WHERE device_id=? AND tenant_id=? AND user_id=?", (_iso(now), device_id, str(principal["tenant_id"]), str(principal["user_id"])))
+            connection.execute("UPDATE sessions SET state='revoked',updated_at=? WHERE device_id=? AND tenant_id=? AND user_id=?", (_iso(now), device_id, str(principal["tenant_id"]), str(principal["user_id"])))
+            connection.execute("UPDATE refresh_families SET state='revoked',updated_at=? WHERE session_id IN (SELECT session_id FROM sessions WHERE device_id=? AND tenant_id=? AND user_id=?)", (_iso(now), device_id, str(principal["tenant_id"]), str(principal["user_id"])))
+            for target in targets:
+                (success_audit or self._audit)(action="identity.session.revoked", outcome=AuditOutcome.SUCCEEDED,
                         trace_id=trace_id, policy_version=policy_version,
                         tenant_id=str(principal["tenant_id"]), actor_id=str(principal["user_id"]),
-                        target_type="session", target_id=str(principal["session_id"]),
+                        target_type="session", target_id=str(target["session_id"]),
                         metadata={"reason_code": "DEVICE_REVOKED"})
-            self._audit(action="identity.device.revoked", outcome=AuditOutcome.SUCCEEDED,
+            (success_audit or self._audit)(action="identity.device.revoked", outcome=AuditOutcome.SUCCEEDED,
                         trace_id=trace_id, policy_version=policy_version,
                         tenant_id=str(principal["tenant_id"]), actor_id=str(principal["user_id"]),
                         target_type="device", target_id=device_id,
                         metadata={"sync_key_revoke_required": True})
-        return DeviceRevocationEvent(device_id, True)
 
 
 def identity_contract_summary() -> dict[str, object]:

@@ -1005,6 +1005,25 @@ class StepUpBody(BaseModel):
     ttl_seconds: int = 300
 
 
+class AccountProfileBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str = Field(strict=True, min_length=1)
+    expected_version: int = Field(strict=True, ge=0, le=9007199254740990)
+
+
+class AccountTrustBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AccountDeviceRevokeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    step_up_authorization: str = Field(min_length=40, max_length=512)
+
+
+class AccountSessionRevokeBody(AccountDeviceRevokeBody):
+    session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
 class NotificationReadBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     state: str
@@ -1458,6 +1477,7 @@ def _domain_error(error: IdentityError | AuthorizationError) -> tuple[int, str, 
         "PASSWORD_CHANGE_REQUIRED", "FORBIDDEN", "PROTECTED_ADMIN_ACCOUNT",
         "IDEMPOTENCY_KEY_REUSED", "IDEMPOTENCY_KEY_INVALID", "INVALID_USER_STATE",
         "USER_EMAIL_REQUIRED", "EMAIL_VERIFICATION_REQUIRED",
+        "ACCOUNT_VERSION_CONFLICT", "ACCOUNT_INPUT_INVALID", "ACCOUNT_CURSOR_INVALID", "ACCOUNT_STORAGE_UNAVAILABLE", "ACCOUNT_SESSION_CHANGED",
     }
     return status, error.code if error.code in safe_special else "INVALID_REQUEST", status >= 500
 
@@ -1909,6 +1929,8 @@ def _organization_provisioner(dependencies: RuntimeDependencies) -> Any:
 
 
 def create_app(dependencies: RuntimeDependencies) -> FastAPI:
+    from .account_settings import AccountSettingsService
+    account_settings_service = AccountSettingsService(dependencies.identity_service)
     android_origin = dependencies.settings.public_gateway_url
     if android_origin is not None and urlsplit(android_origin).scheme != "https":
         android_origin = None
@@ -2206,6 +2228,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                         pass
                 try:
                     dependencies.identity_service.dispatch_pending_tenant_switch_audits()
+                    account_settings_service.dispatch_pending_audits()
                 except Exception:
                     # A committed switch remains pending until the next bounded batch.
                     pass
@@ -2399,6 +2422,8 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _error: RequestValidationError) -> JSONResponse:
+        if request.url.path in {"/api/v1/account/profile", "/api/v1/account/devices", "/api/v1/account/sessions"}:
+            return _error_response(422, "ACCOUNT_INPUT_INVALID", request.state.trace_id)
         if (request.method == "POST"
                 and re.fullmatch(r"/api/v1/sources/[^/]+/deletion-requests", request.url.path)
                 and any(error.get("loc") == ("body", "step_up_authorization_id")
@@ -2797,6 +2822,81 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
     async def password_reset_confirm(body: PasswordResetConfirmBody, request: Request) -> dict[str, object]:
         dependencies.identity_service.confirm_password_reset(token=body.token, new_password=body.new_password, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
         return {"data": {"status": "reset"}, "meta": {"trace_id": request.state.trace_id}}
+
+    def account_access(request, *, write=False):
+        _principal(request, dependencies)
+        token, kind = _credential(request)
+        if write and kind is ClientKind.WEB: _require_validated_web_csrf(request, dependencies.settings)
+        return dict(access_token=token, trace_id=request.state.trace_id, policy_version=dependencies.settings.policy_version)
+
+    def account_response(request, result):
+        response = JSONResponse({"data": result, "meta": {"trace_id": request.state.trace_id}})
+        response.headers["ETag"] = '"account:' + hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest() + '"'
+        return response
+
+    @app.get("/api/v1/account/profile")
+    async def get_account_profile(request: Request):
+        _require_query_keys(request, frozenset())
+        result = await asyncio.to_thread(account_settings_service.get_profile, **account_access(request))
+        return account_response(request, result)
+
+    @app.patch("/api/v1/account/profile")
+    async def save_account_profile(body: AccountProfileBody, request: Request, idempotency_key: str = Header(alias="Idempotency-Key"),
+        expected_session_id: str = Header(alias="X-Daon-Expected-Session-Id", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")):
+        _require_query_keys(request, frozenset())
+        if len(request.headers.getlist("x-daon-expected-session-id")) != 1: raise IdentityError("ACCOUNT_INPUT_INVALID", 422)
+        result = await asyncio.to_thread(account_settings_service.save_profile, **account_access(request, write=True),
+            display_name=body.display_name, expected_version=body.expected_version, idempotency_key=idempotency_key, expected_session_id=expected_session_id)
+        return account_response(request, result)
+
+    @app.get("/api/v1/account/devices")
+    async def list_account_devices(request: Request, limit: int = Query(default=20, ge=1, le=100), cursor: str | None = Query(default=None, max_length=2048)):
+        _require_query_keys(request, frozenset({"limit", "cursor"}))
+        result = await asyncio.to_thread(account_settings_service.list_devices, **account_access(request), limit=limit, cursor=cursor)
+        return account_response(request, result)
+
+    @app.get("/api/v1/account/sessions")
+    async def list_account_sessions(request: Request, limit: int = Query(default=20, ge=1, le=100), cursor: str | None = Query(default=None, max_length=2048)):
+        _require_query_keys(request, frozenset({"limit", "cursor"}))
+        result = await asyncio.to_thread(account_settings_service.list_sessions, **account_access(request), limit=limit, cursor=cursor)
+        return account_response(request, result)
+
+    @app.post("/api/v1/devices/{id}/trust")
+    async def trust_account_device(id: str, body: AccountTrustBody, request: Request, idempotency_key: str = Header(alias="Idempotency-Key")):
+        _require_query_keys(request, frozenset())
+        result = await asyncio.to_thread(account_settings_service.trust_device, **account_access(request, write=True), device_id=id, idempotency_key=idempotency_key)
+        # Preserve the existing public Versioned Resource success envelope.
+        response = JSONResponse({"data": {"id": result["device_id"], "kind": "device", "version": result["version"],
+            "attributes": {"state": "trusted", "replayed": result["replayed"]}}, "trace_id": request.state.trace_id})
+        response.headers["ETag"] = '"device:' + result["version"] + '"'
+        return response
+
+    def account_revocation_response(request, result, current):
+        replayed = result.pop("replayed")
+        result["state"] = "revoked"
+        response = JSONResponse({"data": result, "meta": {"trace_id": request.state.trace_id, "replayed": replayed}})
+        response.headers["ETag"] = '"account:' + hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest() + '"'
+        if current:
+            response.delete_cookie(WEB_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax")
+        return response
+
+    @app.post("/api/v1/devices/{id}/revoke")
+    async def revoke_account_device(id: str, body: AccountDeviceRevokeBody, request: Request, idempotency_key: str = Header(alias="Idempotency-Key")):
+        _require_query_keys(request, frozenset())
+        options = account_access(request, write=True)
+        principal = _principal(request, dependencies)
+        result = await asyncio.to_thread(account_settings_service.revoke_device, **options, device_id=id,
+            step_up_authorization=body.step_up_authorization, idempotency_key=idempotency_key)
+        return account_revocation_response(request, result, id == principal.device_id)
+
+    @app.post("/api/v1/session/revoke")
+    async def revoke_account_session(body: AccountSessionRevokeBody, request: Request, idempotency_key: str = Header(alias="Idempotency-Key")):
+        _require_query_keys(request, frozenset())
+        options = account_access(request, write=True)
+        principal = _principal(request, dependencies)
+        result = await asyncio.to_thread(account_settings_service.revoke_session, **options, session_id=body.session_id,
+            step_up_authorization=body.step_up_authorization, idempotency_key=idempotency_key)
+        return account_revocation_response(request, result, body.session_id == principal.session_id)
 
     @app.post("/api/v1/auth/password/change")
     async def change_current_password(body: PasswordChangeBody, request: Request) -> JSONResponse:

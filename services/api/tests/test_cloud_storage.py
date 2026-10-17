@@ -43,15 +43,15 @@ class CloudStorageContractTests(unittest.TestCase):
                 class Connection:
                     def execute(self,sql,_params=()): return Result((current.revision,) if "alembic_version" in sql else ((current.vector,) if current.vector else None))
                 yield Connection()
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION,"0066")
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION,"0067")
         store=object.__new__(PostgresCloudStore)
-        for revision in ("0062","0063","0064","0066","0065","0067","unknown"):
+        for revision in ("0062","0063","0064","0066","0067","0065","0068","unknown"):
             for vector in (None,"0.8.2"):
                 store._pool=Pool(revision,vector)
-                self.assertEqual(store.readiness().ready,vector is not None and revision in {"0062","0063","0064","0066"})
+                self.assertEqual(store.readiness().ready,vector is not None and revision in {"0062","0063","0064","0066","0067"})
 
     def test_s16_readiness_tracks_source_cleanup_migration_head(self) -> None:
-        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0066")
+        self.assertEqual(_EXPECTED_SCHEMA_REVISION, "0067")
 
     def test_s16_readiness_accepts_only_0062_0063_and_0064_with_vector(self) -> None:
         class Result:

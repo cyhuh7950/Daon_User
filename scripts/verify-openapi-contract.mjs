@@ -26,6 +26,9 @@ export const REQUIRED_PATHS = Object.freeze([
   "/api/v1/session/oidc/callback",
   "/api/v1/session/refresh",
   "/api/v1/session/revoke",
+  "/api/v1/account/profile",
+  "/api/v1/account/devices",
+  "/api/v1/account/sessions",
   "/api/v1/devices/{id}/trust",
   "/api/v1/devices/{id}/revoke",
   "/api/v1/tenants",
@@ -126,6 +129,7 @@ const ANDROID_BROWSER_AUTH_POST_PATHS = new Set([
 ]);
 const COMMON_ERROR_STATUSES = ["400", "401", "403", "404", "409", "412", "500"];
 const BODY_VERSIONED_MUTATIONS = new Set([
+  "PATCH /api/v1/account/profile",
   "DELETE /api/v1/admin/provider-connections/{connection_id}",
   "PATCH /api/v1/admin/provider-models/{connection_id}/{model_id}/capabilities",
   "PATCH /api/v1/workspaces/{id}/studio/approval-policy",
@@ -681,7 +685,60 @@ function validateStudioApprovalLifecycle(document) {
   equal(version.properties.approval_expires_at,nullableTime,'Version deadline');
 }
 
+function validateAccountSettings(document) {
+  const schemas = document.components?.schemas ?? {};
+  const exactSchema = (name, fields) => {
+    const schema = schemas[name];
+    if (schema?.type !== "object" || schema.additionalProperties !== false
+        || JSON.stringify(Object.keys(schema.properties ?? {}).sort()) !== JSON.stringify([...fields].sort())
+        || JSON.stringify([...(schema.required ?? [])].sort()) !== JSON.stringify([...fields].sort())) fail(`S36 exact schema ${name}`);
+    return schema;
+  };
+  exactSchema("AccountMeta", ["trace_id"]);
+  exactSchema("AccountProfile", ["display_name", "version"]);
+  exactSchema("AccountProfileMutation", ["display_name", "version", "replayed"]);
+  exactSchema("AccountProfilePatch", ["display_name", "expected_version"]);
+  exactSchema("AccountDevice", ["device_id", "platform", "state", "last_seen_at", "is_current"]);
+  exactSchema("AccountSession", ["session_id", "device_id", "client_kind", "state", "expires_at", "is_current"]);
+  for (const [path, methods, envelopeName] of [["profile", ["get", "patch"], "AccountProfileEnvelope"], ["devices", ["get"], "AccountDevicesEnvelope"], ["sessions", ["get"], "AccountSessionsEnvelope"]]) {
+    const route = document.paths?.[`/api/v1/account/${path}`];
+    if (JSON.stringify(Object.keys(route ?? {}).sort()) !== JSON.stringify(methods)) fail(`S36 methods ${path}`);
+    if (route.get.responses?.["200"]?.content?.["application/json"]?.schema?.$ref !== `#/components/schemas/${envelopeName}`) fail(`S36 response ${path}`);
+    const parameters = route.get.parameters ?? [];
+    if (path === "profile" ? parameters.length !== 0 : JSON.stringify(parameters.map((p) => [p.name, p.in]).sort()) !== JSON.stringify([["cursor", "query"], ["limit", "query"]])) fail(`S36 own scope ${path}`);
+    if (path !== "profile") {
+      const limit = parameters.find((p) => p.name === "limit")?.schema;
+      if (limit?.type !== "integer" || limit.minimum !== 1 || limit.maximum !== 100 || limit.default !== 20) fail(`S36 pagination ${path}`);
+    }
+  }
+  if (schemas.AccountDevice.properties.last_seen_at.format !== "date-time" || schemas.AccountSession.properties.expires_at.format !== "date-time") fail("S36 RFC3339 projections");
+  if (schemas.AccountProfilePatch.properties.display_name.maxLength !== 80 || schemas.AccountProfilePatch.properties.display_name.minLength !== 1
+      || schemas.AccountProfilePatch.properties.expected_version.minimum !== 0 || schemas.AccountProfileMutation.properties.replayed.type !== "boolean") fail("S36 profile bounds");
+  const patch = document.paths["/api/v1/account/profile"].patch;
+  if (!parameterRefs(patch).has("#/components/parameters/IdempotencyKey") || requestSchema(document, patch) !== schemas.AccountProfilePatch
+      || patch.responses?.["200"]?.content?.["application/json"]?.schema?.$ref !== "#/components/schemas/AccountProfileMutationEnvelope") fail("S36 profile mutation");
+  const expectedSession = document.components?.parameters?.AccountExpectedSessionId;
+  if (!parameterRefs(patch).has("#/components/parameters/AccountExpectedSessionId")
+      || expectedSession?.name !== "X-Daon-Expected-Session-Id" || expectedSession.in !== "header" || expectedSession.required !== true
+      || expectedSession.schema?.$ref !== "#/components/schemas/OpaqueId" || !patch.responses?.["422"] || !patch.responses?.["409"]) fail("S36 required profile session binding");
+  for (const [path, route] of Object.entries(document.paths ?? {})) for (const [method, operation] of Object.entries(route)) {
+    if (path === "/api/v1/account/profile" && method === "patch") continue;
+    if ((operation?.parameters ?? []).some((parameter) => parameter.$ref === "#/components/parameters/AccountExpectedSessionId"
+      || parameter.name?.toLowerCase() === "x-daon-expected-session-id")) fail("S36 session binding must be profile PATCH only");
+  }
+  for (const [name, dataRef] of [["AccountProfileEnvelope", "AccountProfile"], ["AccountProfileMutationEnvelope", "AccountProfileMutation"], ["AccountDevicesEnvelope", "AccountDevicesPage"], ["AccountSessionsEnvelope", "AccountSessionsPage"]]) {
+    const schema = exactSchema(name, ["data", "meta"]);
+    if (schema.properties.data.$ref !== `#/components/schemas/${dataRef}` || schema.properties.meta.$ref !== "#/components/schemas/AccountMeta") fail(`S36 envelope ${name}`);
+  }
+  for (const [name, item] of [["AccountDevicesPage", "AccountDevice"], ["AccountSessionsPage", "AccountSession"]]) {
+    const page = exactSchema(name, ["items", "next_cursor"]);
+    if (page.properties.items.items?.$ref !== `#/components/schemas/${item}` || page.properties.items.maxItems !== 100
+        || JSON.stringify(page.properties.next_cursor.type) !== JSON.stringify(["string", "null"])) fail(`S36 page ${name}`);
+  }
+}
+
 export function validateOpenApiDocument(document) {
+  validateAccountSettings(document);
   validateStudioApprovalLifecycle(document);
   if (!isObject(document)) fail("document must be an object");
   if (!/^3\.1\.\d+$/.test(document.openapi ?? "")) fail("OpenAPI version must be 3.1.x");

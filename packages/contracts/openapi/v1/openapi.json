@@ -60,6 +60,45 @@
     }
   ],
   "paths": {
+    "/api/v1/account/profile": {
+      "get": {
+        "operationId": "getOwnAccountProfile", "tags": ["Session"], "summary": "본인 표시 이름과 저장 version 조회", "x-implementation-owner": "S36-C3",
+        "responses": {
+          "200": {"description": "본인 프로필", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfileEnvelope"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+        }
+      },
+      "patch": {
+        "operationId": "saveOwnAccountProfile", "tags": ["Session"], "summary": "본인 표시 이름만 원자적 저장", "x-implementation-owner": "S36-C3",
+        "description": "표시한 세션 ID를 원 요청에 고정한다. 인증된 실제 세션과 저장·replay 전에 대조하여 불일치는 409 ACCOUNT_SESSION_CHANGED, 헤더 누락/형식 오류는 422로 거부하며 프로필·요청·감사 변경을 남기지 않는다.",
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}, {"$ref": "#/components/parameters/AccountExpectedSessionId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfilePatch"}}}},
+        "responses": {
+          "200": {"description": "표시 이름 저장 영수증", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountProfileMutationEnvelope"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+        }
+      }
+    },
+    "/api/v1/account/devices": {
+      "get": {
+        "operationId": "listOwnAccountDevices", "tags": ["Device"], "summary": "현재 tenant 본인 등록 장치의 안전 projection", "x-implementation-owner": "S36-C3",
+        "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, {"name": "cursor", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 2048}}],
+        "responses": {
+          "200": {"description": "본인 장치 페이지", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountDevicesEnvelope"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+        }
+      }
+    },
+    "/api/v1/account/sessions": {
+      "get": {
+        "operationId": "listOwnAccountSessions", "tags": ["Session"], "summary": "현재 tenant 본인 세션의 안전 projection", "x-implementation-owner": "S36-C3",
+        "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, {"name": "cursor", "in": "query", "schema": {"type": "string", "minLength": 1, "maxLength": 2048}}],
+        "responses": {
+          "200": {"description": "본인 세션 페이지", "headers": {"X-Trace-Id": {"$ref": "#/components/headers/XTraceId"}, "ETag": {"$ref": "#/components/headers/ETag"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountSessionsEnvelope"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "412": {"$ref": "#/components/responses/PreconditionFailed"}, "422": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/SafeFailure"}, "503": {"$ref": "#/components/responses/SafeFailure"}
+        }
+      }
+    },
     "/api/v1/workspaces/{id}/studio/approval-policy": {
       "get": {
         "operationId": "getStudioApprovalPolicy",
@@ -4637,6 +4676,11 @@
   },
   "components": {
     "parameters": {
+      "AccountExpectedSessionId": {
+        "name": "X-Daon-Expected-Session-Id", "in": "header", "required": true,
+        "description": "프로필 PATCH에만 필수. 표시 시 읽은 원래 세션 ID를 본문·멱등 키와 함께 고정하며 현재 인증 세션과 저장·replay 전에 비교한다.",
+        "schema": {"$ref": "#/components/schemas/OpaqueId"}
+      },
       "ResourceId": {
         "name": "id",
         "in": "path",
@@ -5377,6 +5421,23 @@
       }
     },
     "schemas": {
+      "AccountMeta": {"type": "object", "additionalProperties": false, "required": ["trace_id"], "properties": {"trace_id": {"$ref": "#/components/schemas/OpaqueId"}}},
+      "AccountProfile": {"type": "object", "additionalProperties": false, "required": ["display_name", "version"], "properties": {
+        "display_name": {"type": ["string", "null"], "minLength": 1, "maxLength": 80}, "version": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}}},
+      "AccountProfilePatch": {"type": "object", "additionalProperties": false, "required": ["display_name", "expected_version"], "properties": {
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 80, "description": "앞뒤 공백 제거 후 1~80자, Unicode 제어문자 거부"}, "expected_version": {"type": "integer", "minimum": 0, "maximum": 9007199254740990}}},
+      "AccountProfileMutation": {"type": "object", "additionalProperties": false, "required": ["display_name", "version", "replayed"], "properties": {
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 80}, "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "replayed": {"type": "boolean"}}},
+      "AccountProfileEnvelope": {"type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {"data": {"$ref": "#/components/schemas/AccountProfile"}, "meta": {"$ref": "#/components/schemas/AccountMeta"}}},
+      "AccountProfileMutationEnvelope": {"type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {"data": {"$ref": "#/components/schemas/AccountProfileMutation"}, "meta": {"$ref": "#/components/schemas/AccountMeta"}}},
+      "AccountDevice": {"type": "object", "additionalProperties": false, "required": ["device_id", "platform", "state", "last_seen_at", "is_current"], "properties": {
+        "device_id": {"$ref": "#/components/schemas/OpaqueId"}, "platform": {"type": "string", "enum": ["web", "windows", "android", "ios"]}, "state": {"type": "string", "enum": ["registered", "trusted", "revoked"]}, "last_seen_at": {"type": "string", "format": "date-time"}, "is_current": {"type": "boolean"}}},
+      "AccountSession": {"type": "object", "additionalProperties": false, "required": ["session_id", "device_id", "client_kind", "state", "expires_at", "is_current"], "properties": {
+        "session_id": {"$ref": "#/components/schemas/OpaqueId"}, "device_id": {"$ref": "#/components/schemas/OpaqueId"}, "client_kind": {"type": "string", "enum": ["web", "native"]}, "state": {"type": "string", "enum": ["active", "revoked"]}, "expires_at": {"type": "string", "format": "date-time"}, "is_current": {"type": "boolean"}}},
+      "AccountDevicesPage": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/AccountDevice"}}, "next_cursor": {"type": ["string", "null"], "maxLength": 2048}}},
+      "AccountSessionsPage": {"type": "object", "additionalProperties": false, "required": ["items", "next_cursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/AccountSession"}}, "next_cursor": {"type": ["string", "null"], "maxLength": 2048}}},
+      "AccountDevicesEnvelope": {"type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {"data": {"$ref": "#/components/schemas/AccountDevicesPage"}, "meta": {"$ref": "#/components/schemas/AccountMeta"}}},
+      "AccountSessionsEnvelope": {"type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": {"data": {"$ref": "#/components/schemas/AccountSessionsPage"}, "meta": {"$ref": "#/components/schemas/AccountMeta"}}},
       "StudioApprovalPolicy": {
         "type": "object",
         "additionalProperties": false,
@@ -7224,6 +7285,7 @@
           "IMPORTANT_KNOWLEDGE_CONFLICT",
           "NO_AVAILABLE_UNDERSTANDING_MODEL",
           "NO_AVAILABLE_DEPLOYMENT",
+          "ACCOUNT_SESSION_CHANGED",
           "WEBSITE_URL_INVALID", "WEBSITE_ACCESS_DENIED", "WEBSITE_FETCH_BLOCKED",
           "WEBSITE_IDEMPOTENCY_KEY_REUSED", "WEBSITE_IMPORT_IN_PROGRESS", "WEBSITE_CONTENT_TOO_LARGE",
           "WEBSITE_MEDIA_UNSUPPORTED", "WEBSITE_TEXT_UNAVAILABLE", "WEBSITE_FETCH_FAILED", "WEBSITE_STORAGE_UNAVAILABLE", "WEBSITE_FETCH_TIMEOUT",

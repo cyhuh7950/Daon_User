@@ -148,6 +148,19 @@ export function browserSessionCookieName(profile = "production") {
 }
 
 function routeFor(method, segments) {
+  if (segments.length === 2 && segments[0] === "account" && new Set(["profile", "devices", "sessions"]).has(segments[1])) {
+    const profile = segments[1] === "profile";
+    return (method === "GET" || profile && method === "PATCH")
+      ? { path: `/api/v1/account/${segments[1]}`, query: profile ? new Set() : new Set(["limit", "cursor"]),
+        csrfProvenanceRequired: method === "PATCH", strictQuery: true, profileSessionBinding: profile && method === "PATCH" } : { methodRejected: true };
+  }
+  if (segments.length === 3 && segments[0] === "devices" && SAFE_SEGMENT.test(segments[1]) && new Set(["trust", "revoke"]).has(segments[2])) {
+    return method === "POST" ? { path: `/api/v1/devices/${encodeURIComponent(segments[1])}/${segments[2]}`,
+      query: new Set(), csrfProvenanceRequired: true, strictQuery: true } : { methodRejected: true };
+  }
+  if (segments.length === 2 && segments[0] === "session" && segments[1] === "revoke") {
+    return method === "POST" ? { path: "/api/v1/session/revoke", query: new Set(), csrfProvenanceRequired: true, strictQuery: true } : { methodRejected: true };
+  }
   if(segments.length===5 && segments[0]==='workspaces' && SAFE_SEGMENT.test(segments[1])
     && segments[2]==='connectors' && segments[3]==='mcp-open-law-go-kr' && new Set(['law-search','law-preview','law-imports']).has(segments[4])){
     return method==='POST'?{path:`/api/v1/workspaces/${encodeURIComponent(segments[1])}/connectors/mcp-open-law-go-kr/${segments[4]}`,
@@ -1193,6 +1206,16 @@ export function createBffProxy({
     if ((route.websiteImport || route.lawPost) && exactMediaType(request.headers.get("content-type")) !== "application/json") {
       return createBffSafeError(415, "UNSUPPORTED_MEDIA_TYPE", trace);
     }
+    if (route.strictQuery) {
+      const query = new URL(request.url).searchParams;
+      if ([...query.keys()].some((key) => !route.query.has(key) || query.getAll(key).length !== 1)) {
+        return createBffSafeError(400, "INVALID_REQUEST", trace);
+      }
+    }
+    const expectedProfileSession = route.profileSessionBinding ? request.headers.get("x-daon-expected-session-id") : null;
+    if (route.profileSessionBinding && (typeof expectedProfileSession !== "string" || !SAFE_SEGMENT.test(expectedProfileSession))) {
+      return createBffSafeError(422, "ACCOUNT_INPUT_INVALID", trace);
+    }
     const destination = new URL(route.path, baseUrl);
     if (new Set(["/api/v1/session/tenants", "/api/v1/session/tenant"]).has(route.path)) {
       destination.search = new URL(request.url).search;
@@ -1207,6 +1230,7 @@ export function createBffProxy({
     for (const [key, value] of request.headers) {
       if (REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
     }
+    if (route.profileSessionBinding) headers.set("X-Daon-Expected-Session-Id", expectedProfileSession);
     if (route.studioExport && request.headers.has("x-daon-step-up-authorization")) {
       headers.set("x-daon-step-up-authorization", request.headers.get("x-daon-step-up-authorization"));
     }
