@@ -355,6 +355,85 @@ test("admin console은 사용자 계정 관리 표와 일괄 작업 도구를 �
   } finally { await view.cleanup(); }
 });
 
+for (const kind of ["create", "edit"]) {
+  test(`admin console ${kind} 폼은 올바른 제출 문구와 기존 저장 경로를 사용한다`, async () => {
+    const user = { user_id: "user-1", login_id: "qa-label", email: "before@example.test", has_email: true, state: "active", protected: false };
+    const calls = [];
+    const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+      getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+      getUsers: async () => kind === "create" ? [] : [user],
+      registerUser: async (payload, options) => { calls.push({ kind: "create", payload, options }); return { ...user, login_id: payload.login_id, email: payload.email, state: "pending_approval" }; },
+      editUser: async (userId, payload, options) => { calls.push({ kind: "edit", userId, payload, options }); return { ...user, ...payload }; },
+      setUserState: async () => { assert.fail("이메일 수정은 상태 변경을 호출하지 않는다"); },
+    }, `.admin-submit-label-${kind}-`);
+    try {
+      await view.act(async () => { buttonByText(view.container, kind === "create" ? "사용자 등록" : "수정").dispatchEvent(new MinimalEvent("click")); });
+      const form = findElements(view.container, (node) => node.tagName === "FORM")[0];
+      assert.equal(findElements(form, (node) => node.tagName === "H2")[0].textContent, kind === "create" ? "사용자 등록" : "사용자 수정");
+      const submit = findElements(form, (node) => node.tagName === "BUTTON" && node.getAttribute("type") === "submit")[0];
+      assert.equal(submit.textContent, kind === "create" ? "등록" : "수정");
+      const values = kind === "create" ? ["qa-label", "after@example.test", "fixture-password-only"] : ["after@example.test"];
+      const inputs = findElements(form, (node) => node.tagName === "INPUT");
+      for (let index = 0; index < inputs.length; index += 1) {
+        await view.act(async () => { reactProps(inputs[index]).onChange({ target: { value: values[index] } }); });
+      }
+      await view.act(async () => { form.dispatchEvent(new MinimalEvent("submit")); await Promise.resolve(); });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].kind, kind);
+      assert.match(calls[0].options.idempotencyKey, new RegExp(`^admin-${kind === "create" ? "create" : "update"}-`, "u"));
+      if (kind === "create") {
+        assert.deepEqual(calls[0].payload, { login_id: values[0], email: values[1], initial_password: values[2] });
+      } else {
+        assert.equal(calls[0].userId, user.user_id);
+        assert.deepEqual(calls[0].payload, { email: values[0] });
+      }
+      assert.equal(findElements(view.container, (node) => node.tagName === "FORM").length, 0);
+      assert.match(view.container.textContent, /after@example\.test/u);
+    } finally { await view.cleanup(); }
+  });
+}
+
+test("admin console 등록은 실제 client helper로 서버의 세 필드만 POST하고 승인 대기 응답을 표시한다", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  let view;
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, options, body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({
+      data: { user: { user_id: "qa-created", login_id: "qa-create-contract", email: "create@example.test", has_email: true, state: "pending_approval", protected: false }, replayed: false },
+      meta: { trace_id: "qa-create-contract" },
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+      getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
+      getUsers: async () => [],
+    }, ".admin-create-payload-");
+    await view.act(async () => { buttonByText(view.container, "사용자 등록").dispatchEvent(new MinimalEvent("click")); });
+    const form = findElements(view.container, (node) => node.tagName === "FORM")[0];
+    assert.equal(findElements(form, (node) => node.tagName === "BUTTON" && node.getAttribute("type") === "submit")[0].textContent, "등록");
+    const inputs = findElements(form, (node) => node.tagName === "INPUT");
+    const values = ["qa-create-contract", "create@example.test", "synthetic-password-only"];
+    for (let index = 0; index < inputs.length; index += 1) {
+      await view.act(async () => { reactProps(inputs[index]).onChange({ target: { value: values[index] } }); });
+    }
+    await view.act(async () => { form.dispatchEvent(new MinimalEvent("submit")); await Promise.resolve(); });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "/bff/api/admin/users");
+    assert.equal(requests[0].options.method, "POST");
+    assert.equal(requests[0].options.credentials, "same-origin");
+    assert.match(requests[0].options.headers["Idempotency-Key"], /^admin-create-/u);
+    assert.deepEqual(Object.keys(requests[0].body).sort(), ["email", "initial_password", "login_id"]);
+    assert.deepEqual(requests[0].body, { login_id: values[0], email: values[1], initial_password: values[2] });
+    assert.equal(findElements(view.container, (node) => node.tagName === "FORM").length, 0);
+    assert.match(view.container.textContent, /create@example\.test/u);
+    assert.match(view.container.textContent, /승인 대기/u);
+    assert.doesNotMatch(view.container.textContent, /synthetic-password-only/u);
+  } finally {
+    try { if (view) await view.cleanup(); } finally { globalThis.fetch = originalFetch; }
+  }
+});
+
 test("admin console은 일반 사용자에게 비밀번호 초기화 메일 action과 성공 상태를 표시한다", async () => {
   let resets = 0;
   const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
