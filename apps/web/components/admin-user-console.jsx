@@ -353,7 +353,9 @@ export function AdminUserConsole({
     setForm({ login_id: user.login_id ?? "", email: user.email ?? "", initial_password: "", state: user.state });
     const unconfirmed = unconfirmedUsers.current.get(user.user_id);
     setModal({ kind: "edit", user, completed: unconfirmed?.save?.completed ?? [], uncertain: Boolean(unconfirmed?.save), resetUncertain: Boolean(unconfirmed?.reset) }); setError(null); setNotice(null);
-    void openRole(user);
+    if (user.protected === true) {
+      roleRequestId.current += 1; setRolePanel(null); setRoleSummary(null);
+    } else void openRole(user);
   };
   const openCreate = (event) => {
     if (editInFlight.current || deleteInFlight.current) return;
@@ -465,7 +467,7 @@ export function AdminUserConsole({
         <td><input type="checkbox" aria-label={`${displayNameFor(user)} 선택`} disabled={user.protected} checked={selected.has(user.user_id)} onChange={(event) => toggleSelected(user.user_id, event.target.checked)} /></td>
         <td><strong>{displayNameFor(user)}</strong>{user.protected && <small>보호된 시스템 관리자</small>}</td>
         <td>{user.email ?? "이메일 없음"}</td><td><span className={`admin-user-status status-${user.state}`}>{stateLabel[user.state] ?? user.state}</span></td>
-        <td><div className="admin-user-role-list">{roleSummary?.userId === user.user_id
+        <td><div className="admin-user-role-list">{user.protected === true ? <span>시스템 관리자</span> : roleSummary?.userId === user.user_id
           ? <span>마지막 조회 · 조직 {roleSummary.tenantName} ({roleSummary.tenantId}) · Workspace {roleSummary.workspaceId} · {workspaceRoleLabels[roleSummary.role]} · version {roleSummary.version}</span>
           : <span>{rolePanel?.user.user_id === user.user_id
             ? modal?.uncertain ? "저장 결과 미확정 · 역할 재확인 필요"
@@ -483,10 +485,10 @@ export function AdminUserConsole({
         {modalPending && <p role="status">처리 중…</p>}
         {modal.uncertain && <p role="alert">저장 결과 미확정 — 실제 서버 상태를 다시 조회하기 전에는 수정·승인·초기화를 요청할 수 없습니다.</p>}
         {modal.resetUncertain && <p role="alert">초기화 메일 송신 결과 미확정 — 중복 발송을 막기 위해 이 세션에서는 새 초기화 요청을 차단합니다. 사용자 목록 조회로 메일 송신 여부를 확인할 수는 없습니다.</p>}
-        {modal.user?.protected && <p>보호된 시스템 관리자 — 정보는 읽기 전용이며 권한 조회만 가능합니다.</p>}
+        {modal.user?.protected && <p>보호된 시스템 관리자 — 이 폼은 읽기 전용입니다. 시스템 관리자 권한은 조직·Workspace 멤버십 역할과 별도입니다.</p>}
         {modal.completed?.length > 0 && <p role="status">완료 항목: {modal.completed.join(", ")}</p>}
         {modal.kind === "edit" && <p>사용자 ID: {form.login_id} · 저장된 이메일: {modal.user.email ?? "없음"}</p>}
-        {modal.kind === "edit" && <p>변경 항목은 이메일 → 역할 → 상태 순으로 각각 저장하며, 일부 항목만 저장될 수 있습니다.</p>}
+        {modal.kind === "edit" && !modal.user.protected && <p>변경 항목은 이메일 → 역할 → 상태 순으로 각각 저장하며, 일부 항목만 저장될 수 있습니다.</p>}
         {modal.kind === "create" && <label>사용자 ID<input required disabled={modalPending} value={form.login_id} onChange={(event) => setForm({ ...form, login_id: event.target.value })} /></label>}
         <label>이메일<input required={modal.kind === "create" || form.email !== (modal.user.email ?? "")} type="email" disabled={modalPending || Boolean(modal.user?.protected)} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
         {modal.kind === "edit" && <label>상태<select aria-label="계정 상태" disabled={modalPending || !canChangeState(modal.user) || modal.user.user_id === sessionUserId} value={form.state} onChange={(event) => setForm({ ...form, state: event.target.value })}>

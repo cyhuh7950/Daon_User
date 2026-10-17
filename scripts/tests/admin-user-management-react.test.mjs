@@ -50,6 +50,68 @@ async function selectAllUsers(view) {
   await view.act(async () => { reactProps(checkbox).onChange({ target: { checked: true } }); });
 }
 
+test("S38 initial admin 표시는 서버 protected만 따르고 조직 조회 없이 읽기 전용 보호를 유지한다", async () => {
+  const protectedUser = { user_id: "initial-user", login_id: "root-account", email: null, has_email: false, state: "active", protected: true };
+  const calls = [];
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ user_id: "operator", is_system_admin: true }), getUsers: async () => [protectedUser],
+    getTenants: async () => { calls.push("tenants"); return []; }, getMemberships: async () => { calls.push("membership"); },
+    editUser: async () => { calls.push("edit"); }, setUserState: async () => { calls.push("state"); },
+    setMembershipRole: async () => { calls.push("role"); }, resetPassword: async () => { calls.push("reset"); }, removeUser: async () => { calls.push("delete"); },
+  }, ".s38-initial-admin-display-");
+  const confirm = window.confirm; window.confirm = () => true;
+  try {
+    const row = userRows(view.container)[0];
+    assert.equal(findElements(row, (node) => node.getAttribute?.("class") === "admin-user-role-list")[0].textContent, "시스템 관리자");
+    const checkbox = findElements(row, (node) => node.tagName === "INPUT")[0];
+    assert.equal(checkbox.disabled, true);
+    await view.act(async () => { reactProps(checkbox).onChange({ target: { checked: true } }); });
+    assert.match(view.container.textContent, /선택 0건/u);
+    await openUser(view);
+    assert.deepEqual(calls, [], "보호 초기 관리자 열기는 조직/멤버십 API를 호출하지 않는다");
+    assert.match(view.container.textContent, /시스템 관리자 권한은 조직·Workspace 멤버십 역할과 별도입니다/u);
+    assert.match(view.container.textContent, /읽기 전용/u);
+    assert.doesNotMatch(view.container.textContent, /조직·Workspace 선택 필요|조직을 선택하세요|Workspace를 선택하세요|전체 관리|전역 접근/u);
+    assert.equal(selectByLabel(view, "조직 선택"), undefined); assert.equal(selectByLabel(view, "작업공간 선택"), undefined);
+    assert.equal(buttonByText(view.container, "수정").disabled, true);
+    assert.equal(buttonByText(view.container, "비밀번호 초기화").disabled, true);
+    assert.equal(selectByLabel(view, "계정 상태").disabled, true);
+    await submitUser(view);
+    await view.act(async () => { reactProps(buttonByText(view.container, "비밀번호 초기화")).onClick(); });
+    assert.deepEqual(calls, []);
+  } finally { window.confirm = confirm; await view.cleanup(); }
+});
+
+test("S38 initial admin 전환은 늦은 일반 사용자 역할을 폐기하고 admin 이름만으로 권한 표시를 부여하지 않는다", async () => {
+  let tenants = 0, memberships = 0, finishOld;
+  const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
+    getSession: async () => ({ user_id: "operator", is_system_admin: true }),
+    getUsers: async () => [
+      { user_id: "initial-user", login_id: "root-account", email: null, has_email: false, state: "active", protected: true },
+      { user_id: "ordinary-user", login_id: "admin", email: "ordinary@example.test", has_email: true, state: "active", protected: false },
+    ],
+    getTenants: async () => { tenants++; return [{ tenant_id: "ta", name: "QA 조직" }, { tenant_id: "tb", name: "다른 조직" }]; },
+    getMemberships: async (tenant) => { memberships++; return tenant === "tb" ? new Promise((resolve) => { finishOld = resolve; })
+      : { tenant: null, target_is_system_admin: false, workspaces: [{ workspace_id: "wa", role: "viewer", state: "active", version: 21 }] }; },
+  }, ".s38-initial-admin-transition-");
+  try {
+    const ordinary = userRows(view.container)[1];
+    assert.match(ordinary.textContent, /조직·Workspace 선택 필요/u);
+    assert.doesNotMatch(ordinary.textContent, /시스템 관리자/u);
+    await openUser(view, 1); await selectValue(view, "조직 선택", "ta"); await selectValue(view, "작업공간 선택", "wa");
+    assert.match(userRows(view.container)[1].textContent, /마지막 조회.*열람자.*21/u);
+    assert.equal(buttonByText(view.container, "수정").disabled, false);
+    await selectValue(view, "조직 선택", "tb");
+    await view.act(async () => { buttonByText(view.container, "취소").dispatchEvent(new MinimalEvent("click")); });
+    await openUser(view, 0);
+    assert.equal(tenants, 1, "초기 관리자 전환 때 조직 API를 추가 호출하지 않는다"); assert.equal(memberships, 2);
+    await view.act(async () => { finishOld({ tenant: null, target_is_system_admin: false, workspaces: [{ workspace_id: "stale-wa", role: "editor", state: "active", version: 99 }] }); await Promise.resolve(); });
+    assert.equal(selectByLabel(view, "조직 선택"), undefined);
+    assert.doesNotMatch(view.container.textContent, /stale-wa|version 99/u);
+    assert.equal(findElements(userRows(view.container)[0], (node) => node.getAttribute?.("class") === "admin-user-role-list")[0].textContent, "시스템 관리자");
+  } finally { finishOld?.({ tenant: null, workspaces: [] }); await view.cleanup(); }
+});
+
 for (const operation of ["save", "reset"]) {
   test(`S38 review2 ${operation} 진행 중 동일 세션 재검증·목록 조회 뒤 늦은 응답 유실도 새 요청을 차단한다`, async () => {
     for (const eventType of ["popstate", "pageshow"]) for (const listTiming of ["before", "after"]) {
@@ -471,13 +533,15 @@ test("S38 저장 첫 요청 전에 활성 membership·사유·본인 상태·보
     }, `.s38-validation-${kind}-`);
     const confirm = window.confirm; window.confirm = () => true;
     try {
-      await openUser(view); await selectValue(view, "조직 선택", "ta"); await selectValue(view, "작업공간 선택", "wa");
+      await openUser(view);
+      if (kind !== "protected") { await selectValue(view, "조직 선택", "ta"); await selectValue(view, "작업공간 선택", "wa"); }
       const email = findElements(view.container, (node) => node.tagName === "INPUT" && reactProps(node)?.type === "email")[0];
       await view.act(async () => { reactProps(email).onChange({ target: { value: "new@example.test" } }); });
-      await selectValue(view, "변경할 역할", "editor"); await selectValue(view, "변경 사유", kind === "reason" ? "NOT_APPROVED" : "ACCESS_REVIEW");
+      if (kind !== "protected") { await selectValue(view, "변경할 역할", "editor"); await selectValue(view, "변경 사유", kind === "reason" ? "NOT_APPROVED" : "ACCESS_REVIEW"); }
       if (kind === "self") { assert.equal(selectByLabel(view, "계정 상태").disabled, true); await selectValue(view, "계정 상태", "suspended"); }
       if (kind === "protected") {
-        assert.equal(email.disabled, true); assert.equal(selectByLabel(view, "변경할 역할").disabled, true);
+        assert.equal(email.disabled, true); assert.equal(selectByLabel(view, "변경할 역할"), undefined);
+        assert.equal(selectByLabel(view, "계정 상태").disabled, true);
         assert.equal(buttonByText(view.container, "수정").disabled, true); assert.match(view.container.textContent, /읽기 전용/u);
       }
       await submitUser(view); assert.deepEqual(calls, [], kind);
@@ -1148,12 +1212,13 @@ test("admin console은 membership 역할을 추정하거나 편집 가능한 역
   const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
     getSession: async () => ({ password_change_required: false, is_system_admin: true }),
     getUsers: async () => users,
+    getTenants: async () => [],
   }, ".admin-membership-role-");
   try {
     await view.act(async () => { await Promise.resolve(); });
     const roleCells = findElements(view.container, (node) => node.getAttribute?.("class") === "admin-user-role-list");
     assert.deepEqual(roleCells.map((node) => node.textContent), [
-      "조직·Workspace 선택 필요",
+      "시스템 관리자",
       "조직·Workspace 선택 필요",
     ]);
     await openUser(view, 1);
@@ -1288,6 +1353,7 @@ test("대상 시스템 관리자 여부는 선택 조직의 성공 조회값만 
   const users = [
     { user_id: "one", login_id: "one", email: null, has_email: false, state: "active", protected: false },
     { user_id: "two", login_id: "two", email: null, has_email: false, state: "active", protected: true },
+    { user_id: "three", login_id: "three", email: null, has_email: false, state: "active", protected: false },
   ];
   const view = await render("apps/web/components/admin-user-console.jsx", "AdminUserConsole", {
     getSession: async () => ({ user_id: "admin", password_change_required: false, is_system_admin: true }),
@@ -1314,7 +1380,13 @@ test("대상 시스템 관리자 여부는 선택 조직의 성공 조회값만 
     assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 예");
     await selectTenant("tenant-b");
     assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 미조회");
+    await view.act(async () => { buttonByText(view.container, "취소").dispatchEvent(new MinimalEvent("click")); });
     await view.act(async () => { buttons[1].dispatchEvent(new MinimalEvent("dblclick")); await Promise.resolve(); });
+    assert.equal(adminStatus(), undefined);
+    assert.equal(selectByLabel(view, "조직 선택"), undefined);
+    assert.match(view.container.textContent, /시스템 관리자 권한은 조직·Workspace 멤버십 역할과 별도입니다/u);
+    await view.act(async () => { buttonByText(view.container, "취소").dispatchEvent(new MinimalEvent("click")); });
+    await view.act(async () => { buttons[2].dispatchEvent(new MinimalEvent("dblclick")); await Promise.resolve(); });
     assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 미조회");
     await selectTenant("tenant-a");
     assert.equal(adminStatus(), "시스템 관리자 여부 (별도 권한): 아니요");
@@ -1396,10 +1468,11 @@ test("admin console은 412 후 입력을 보존하고 최신 역할을 비교하
     assert.match(view.container.textContent, /최신.*reviewer.*version 3/su);
     await view.act(async () => { buttonByText(view.container, "취소").dispatchEvent(new MinimalEvent("click")); });
     await view.act(async () => { roleButtons[0].dispatchEvent(new MinimalEvent("dblclick")); await Promise.resolve(); });
-    await view.act(async () => { reactProps(select("조직 선택")).onChange({ target: { value: "tenant-a" } }); await Promise.resolve(); });
-    await view.act(async () => { reactProps(select("작업공간 선택")).onChange({ target: { value: "workspace-a" } }); });
+    assert.equal(select("조직 선택"), undefined);
+    assert.equal(select("작업공간 선택"), undefined);
     assert.equal(buttonByText(view.container, "수정").disabled, true);
-    assert.equal(writes, 1);
+    await submitUser(view);
+    assert.equal(writes, 1); assert.equal(reads, 2);
   } finally { globalThis.window.confirm = previousConfirm; await view.cleanup(); }
 });
 
