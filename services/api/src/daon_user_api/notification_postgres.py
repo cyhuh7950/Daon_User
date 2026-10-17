@@ -166,11 +166,11 @@ _FUNCTIONS = {
     'pending_notification_audits(integer)': ('8d2c769634b2404fe529a2b9f3dbcf8f', True),
     'ack_notification_audit(text,text)': ('f6d1ec7ab371ffd75a42c8502aac2dbd', True),
     'enqueue_studio_notification(text,text,text)': ('3bc0696eea9259160aaffab394a8cf4d', True),
-    'enqueue_completed_notification(text,text)': ('15c3fe4cb914b0bfffefdb5972b97459', True),
+    'enqueue_completed_notification(text,text)': ('6a2d101595decb776a35357ba6e7dd1c', True),
     'pending_studio_notification_sources(integer)': ('74b6119e2e33fc321fb1cca3ff66d928', True),
     'current_studio_notification_version(text)': ('a7134c5d8d15b5fb318f004a0ccadc71', True),
     'materialize_studio_notification(text,boolean)': ('bf371f25e55f88e0d853bd56f879a90f', True),
-    'current_completed_notification_target(text)': ('c64cdb1c4b7f09234b128970287fcc47', True),
+    'current_completed_notification_target(text)': ('84343502194b1cf8433b45cd2e9db255', True),
     'pending_completed_notification_sources(integer)': ('d58f0bd06ae9325c8f68278740930d0d', True),
     'materialize_completed_notification(text,boolean)': ('64b55897b38b012be495378f5fa42b2e', True),
 }

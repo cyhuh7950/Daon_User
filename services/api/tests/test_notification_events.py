@@ -1153,6 +1153,209 @@ def test_l2b_existing_0069_document_completed_records_source_on_original_transac
         pytest.fail('DOCUMENT_COMPLETED_SOURCE_INTENT_MISSING; actual_business_and_origin_saved; results='+','.join(missing),pytrace=False)
 
 
+def test_l2b_existing_0069_document_failed_records_source_once_on_original_transaction():
+    """실제 fail의 전이 성공 감사와 업무 실패를 구분하고, 같은 실패의 late 재호출은 불변이다."""
+    import hashlib
+    import json
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    from daon_user_api.document_processing import DocumentProcessingContext
+    from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    try:
+        source,version=_l2b_bound_pdf(scope,store)
+        context=DocumentProcessingContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version)
+        repository=PostgresDocumentProcessingRepository(store,_L2bNoObjectRead())
+        run=repository.start(context,version,notebook_id=ctx.notebook_id)
+        with psycopg.connect(scope.admin) as connection:
+            previous=connection.execute('SELECT pr.state,pr.version,s.state,s.version FROM processing_runs pr '
+                'JOIN source_versions sv ON sv.tenant_id=pr.tenant_id AND sv.workspace_id=pr.workspace_id AND sv.record_id=pr.source_version_id '
+                'JOIN sources s ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id '
+                'WHERE pr.tenant_id=%s AND pr.workspace_id=%s AND pr.record_id=%s',
+                (ctx.tenant_id,ctx.workspace_id,run)).fetchone()
+            assert previous is not None and previous[0]=='vision_llm_understanding' and previous[2]=='processing'
+            assert connection.execute('SELECT count(*) FROM notification_source_outbox WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(0,)
+        failure_code='S42_SYNTHETIC_DOCUMENT_FAILURE'
+        expected_origin='tr-'+hashlib.sha256('|'.join(('ProcessingRun',run,'failed',str(previous[1]))).encode()).hexdigest()[:32]
+        repository.fail(context,run,failure_code,retryable=False)
+        with psycopg.connect(scope.admin) as connection:
+            failed=connection.execute('SELECT state,version,created_by,source_version_id,canonical_json->>\'notebook_id\' '
+                'FROM processing_runs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                (ctx.tenant_id,ctx.workspace_id,run)).fetchone()
+            assert failed==('failed',previous[1]+1,ctx.actor_id,version,ctx.notebook_id)
+            assert connection.execute('SELECT state,version FROM sources WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                (ctx.tenant_id,ctx.workspace_id,source)).fetchone()==('failed',previous[3]+1)
+            originals=connection.execute('SELECT a.event_id,a.actor_id,a.action,a.target_type,a.target_id,a.outcome,'
+                "a.after_value->>'state',t.target_state,t.transition_version,a.occurred_at FROM canon_state_transitions t "
+                'JOIN audit_events a ON a.tenant_id=t.tenant_id AND a.workspace_id=t.workspace_id AND a.event_id=t.transition_id '
+                "WHERE t.tenant_id=%s AND t.workspace_id=%s AND t.entity_type='ProcessingRun' AND t.record_id=%s "
+                "AND t.target_state='failed'",(ctx.tenant_id,ctx.workspace_id,run)).fetchall()
+            assert len(originals)==1 and originals[0][:9]==(expected_origin,ctx.actor_id,'canon.transition',
+                'ProcessingRun',run,'succeeded','failed','failed',previous[1]+1)
+            assert connection.execute('SELECT 1 FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s '
+                "AND notebook_id=%s AND binding_kind='source' AND record_id=%s AND version_id=%s",
+                (ctx.tenant_id,ctx.workspace_id,ctx.notebook_id,source,version)).fetchone()==(1,)
+        after_first_failure=_l2b_completion_snapshot(scope)
+        # terminal failed 상태는 추가 전이/감사/source/알림을 만들거나 기존 상태를 바꾸지 않는다.
+        repository.fail(context,run,failure_code,retryable=False)
+        assert _l2b_completion_snapshot(scope)==after_first_failure
+        with psycopg.connect(scope.admin) as connection:
+            sources=connection.execute('SELECT s.source_event_id,s.recipient_id,s.source_store,s.origin_event_id,s.action,'
+                's.target_type,s.target_id,s.kind,s.severity,s.notebook_id,s.trace_id,s.policy_version,s.state,s.version,s.delivered_at,'
+                's.occurred_at=a.occurred_at,s.xmin=a.xmin FROM notification_source_outbox s JOIN audit_events a '
+                'ON a.tenant_id=s.tenant_id AND a.workspace_id=s.workspace_id AND a.event_id=s.origin_event_id '
+                'WHERE s.tenant_id=%s AND s.workspace_id=%s',(ctx.tenant_id,ctx.workspace_id)).fetchall()
+            for table in ('notifications','notification_details','notification_audit_outbox'):
+                assert connection.execute(f'SELECT count(*) FROM {table} WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(0,)
+        if not sources:
+            pytest.fail('DOCUMENT_FAILED_SOURCE_INTENT_MISSING; actual_failed_run_and_successful_transition_audit_saved; late_fail_unchanged',pytrace=False)
+        event='document-event-'+hashlib.sha256((expected_origin+'|'+ctx.workspace_id).encode()).hexdigest()[:32]
+        assert sources==[(event,ctx.actor_id,'document',expected_origin,'canon.transition','ProcessingRun',run,
+            'run_failed','warning',ctx.notebook_id,ctx.trace_id,ctx.policy_version,'pending',1,None,True,True)]
+        assert failure_code not in json.dumps(sources,ensure_ascii=False,default=str)
+    finally:
+        store.close()
+
+
+def test_l2b_existing_0069_document_failed_materializes_and_reopens_without_duplicate():
+    """실제 failed Run 의도를 소비하여 실패 알림을 저장하고 새 연결 조회·재소비 중복0을 확인한다."""
+    import hashlib
+    import psycopg
+    import daon_user_api.notification_events as events
+    from daon_user_api.cloud_storage import PostgresCloudStore,CloudAccessContext
+    from daon_user_api.document_processing import DocumentProcessingContext
+    from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
+    from daon_user_api.notification_postgres import PostgresNotificationRepository
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    failure_code='S42_SYNTHETIC_DOCUMENT_FAILURE'
+    try:
+        _,source_version=_l2b_bound_pdf(scope,store)
+        context=DocumentProcessingContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version)
+        repository=PostgresDocumentProcessingRepository(store,_L2bNoObjectRead())
+        run=repository.start(context,source_version,notebook_id=ctx.notebook_id)
+        with psycopg.connect(scope.admin) as connection:
+            previous=connection.execute('SELECT state,version FROM processing_runs WHERE tenant_id=%s '
+                'AND workspace_id=%s AND record_id=%s',(ctx.tenant_id,ctx.workspace_id,run)).fetchone()
+            assert previous is not None and previous[0]=='vision_llm_understanding'
+        origin='tr-'+hashlib.sha256('|'.join(('ProcessingRun',run,'failed',str(previous[1]))).encode()).hexdigest()[:32]
+        repository.fail(context,run,failure_code,retryable=False)
+    finally:
+        store.close()
+    with psycopg.connect(scope.admin) as connection:
+        sources=connection.execute('SELECT s.source_event_id,s.origin_event_id,s.recipient_id,s.target_type,s.target_id,'
+            's.kind,s.severity,s.state,s.version,s.delivered_at,s.occurred_at,a.occurred_at '
+            'FROM notification_source_outbox s JOIN audit_events a ON a.tenant_id=s.tenant_id '
+            'AND a.workspace_id=s.workspace_id AND a.event_id=s.origin_event_id '
+            'WHERE s.tenant_id=%s AND s.workspace_id=%s',(ctx.tenant_id,ctx.workspace_id)).fetchall()
+        assert len(sources)==1
+        source=sources[0]
+        assert source[1:10]==(origin,ctx.actor_id,'ProcessingRun',run,'run_failed','warning','pending',1,None)
+        assert source[10]==source[11]
+        for table in ('notifications','notification_details','notification_audit_outbox','security_audit_events'):
+            assert connection.execute(f'SELECT count(*) FROM {table} WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(0,)
+    assert events.materialize_pending_completed(scope.app,context=ctx,limit=100)==1
+    title='문서 처리 실패'
+    summary='문서 처리 Run이 실패했습니다. 현재 처리 상태를 확인하세요.'
+    link=f'/notebooks/{ctx.notebook_id}?source_version_id={source_version}'
+    with psycopg.connect(scope.admin) as connection:
+        rows=connection.execute('SELECT n.notification_id,n.recipient_id,n.source_event_id,n.version,n.read_at,'
+            'd.source_store,d.origin_event_id,d.resource_type,d.resource_id,d.notebook_id,d.deep_link,d.title,d.summary,'
+            'd.kind,d.severity,d.trace_id,d.policy_version,d.delivery_state '
+            'FROM notifications n JOIN notification_details d ON d.tenant_id=n.tenant_id AND d.notification_id=n.notification_id '
+            'WHERE n.tenant_id=%s AND n.workspace_id=%s',(ctx.tenant_id,ctx.workspace_id)).fetchall()
+        assert len(rows)==1
+        item=rows[0]
+        assert item[1:]==(ctx.actor_id,source[0],1,None,'document',origin,'ProcessingRun',run,ctx.notebook_id,link,
+            title,summary,'run_failed','warning',ctx.trace_id,ctx.policy_version,'delivered')
+        audits=connection.execute('SELECT event_id,action,state,version,draft FROM notification_audit_outbox '
+            'WHERE tenant_id=%s AND workspace_id=%s',(ctx.tenant_id,ctx.workspace_id)).fetchall()
+        assert len(audits)==1 and audits[0][1:4]==('notification.created','pending',1)
+        draft=audits[0][4]
+        assert (draft['tenant_id'],draft['workspace_id'],draft['target_type'],draft['target_id'],draft['trace_id'],
+            draft['policy_version'],draft['metadata'])==(
+                ctx.tenant_id,ctx.workspace_id,'notification',item[0],ctx.trace_id,ctx.policy_version,{'source_event_id':source[0]})
+        lineage=connection.execute('SELECT s.state,s.version,n.created_at,s.delivered_at,'
+            "(a.draft->>'occurred_at')::timestamptz,s.occurred_at,o.occurred_at,"
+            'n.xmin=d.xmin AND d.xmin=s.xmin AND s.xmin=a.xmin '
+            'FROM notifications n JOIN notification_details d ON d.tenant_id=n.tenant_id AND d.notification_id=n.notification_id '
+            'JOIN notification_source_outbox s ON s.tenant_id=n.tenant_id AND s.workspace_id=n.workspace_id '
+            'AND s.source_event_id=n.source_event_id AND s.recipient_id=n.recipient_id '
+            'JOIN notification_audit_outbox a ON a.tenant_id=n.tenant_id AND a.notification_id=n.notification_id '
+            'JOIN audit_events o ON o.tenant_id=s.tenant_id AND o.workspace_id=s.workspace_id AND o.event_id=s.origin_event_id '
+            'WHERE n.tenant_id=%s AND n.notification_id=%s',(ctx.tenant_id,item[0])).fetchall()
+        assert len(lineage)==1
+        state,version,created,delivered,audit_time,source_time,origin_time,same_tx=lineage[0]
+        assert (state,version,same_tx)==('delivered',2,True)
+        assert created>=delivered and audit_time==created and source_time==origin_time==source[10]
+        assert connection.execute('SELECT count(*) FROM security_audit_events WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(0,)
+        assert failure_code not in str((item,draft))
+    before_replay=_l2b_completion_snapshot(scope)
+    reopened_repository=PostgresNotificationRepository(scope.app,
+        context=CloudAccessContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'view'))
+    reopened=reopened_repository.notifications_for(tenant_id=ctx.tenant_id,recipient_id=ctx.actor_id)
+    assert len(reopened)==1
+    notification=reopened[0]
+    assert (notification.notification_id,notification.recipient_id,notification.source_event_id,notification.resource_type,
+        notification.resource_id,notification.deep_link,notification.title,notification.summary,notification.kind,
+        notification.severity,notification.audit_event_id,notification.created_at,notification.version,notification.read_at)==(
+            item[0],ctx.actor_id,source[0],'ProcessingRun',run,link,title,summary,'run_failed','warning',audits[0][0],created,1,None)
+    assert reopened_repository.notification_for(tenant_id=ctx.tenant_id,recipient_id=ctx.actor_id,notification_id=item[0])==notification
+    assert events.materialize_pending_completed(scope.app,context=ctx,limit=100)==0
+    assert _l2b_completion_snapshot(scope)==before_replay
+
+
+def test_l2b_existing_0069_document_failed_source_insert_failure_rolls_back_failure():
+    """실제 fail의 source INSERT 뒤 SQL 오류는 Run·Source 전이·원감사·의도를 전부 되돌린다."""
+    from unittest.mock import patch
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    from daon_user_api.document_processing import DocumentProcessingContext
+    from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
+    from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+    from daon_user_api.notification_events import enqueue_completed_event
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    faults=[]
+    phases=[]
+    try:
+        source,source_version=_l2b_bound_pdf(scope,store)
+        context=DocumentProcessingContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version)
+        repository=PostgresDocumentProcessingRepository(store,_L2bNoObjectRead())
+        run=repository.start(context,source_version,notebook_id=ctx.notebook_id)
+        before=_l2b_completion_snapshot(scope)
+        assert before['notification_source_outbox']==[]
+        def actual_enqueue_then_sql_failure(connection,event_context,**kwargs):
+            assert connection.execute('SELECT state FROM processing_runs WHERE tenant_id=%s AND workspace_id=%s '
+                'AND record_id=%s',(ctx.tenant_id,ctx.workspace_id,run)).fetchone()==('failed',)
+            assert connection.execute('SELECT state FROM sources WHERE tenant_id=%s AND workspace_id=%s '
+                'AND record_id=%s',(ctx.tenant_id,ctx.workspace_id,source)).fetchone()==('failed',)
+            assert connection.execute("SELECT actor_id,action,target_type,target_id,outcome,after_value->>'state' "
+                'FROM audit_events WHERE tenant_id=%s AND workspace_id=%s AND event_id=%s',
+                (ctx.tenant_id,ctx.workspace_id,kwargs['origin_event_id'])).fetchone()==(
+                    ctx.actor_id,'canon.transition','ProcessingRun',run,'succeeded','failed')
+            # 실제 제한 함수의 INSERT 반환값을 확인한다. outbox SELECT 권한을 추가하지 않는다.
+            assert enqueue_completed_event(connection,event_context,**kwargs)==1
+            phases.append('ACTUAL_FAILED_RUN_AUDIT_AND_SOURCE_INSERT')
+            try:
+                connection.execute('SELECT 1/0')
+            except psycopg.Error as error:
+                faults.append(error.sqlstate)
+                raise
+        with patch('daon_user_api.notification_events.enqueue_completed_event',side_effect=actual_enqueue_then_sql_failure):
+            with pytest.raises(DocumentUnderstandingError) as caught:
+                repository.fail(context,run,'S42_SYNTHETIC_DOCUMENT_FAILURE',retryable=False)
+        assert (caught.value.code,caught.value.status)==('DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE',503)
+        assert phases==['ACTUAL_FAILED_RUN_AUDIT_AND_SOURCE_INSERT'] and faults==['22012']
+        assert _l2b_completion_snapshot(scope)==before
+    finally:
+        store.close()
+
+
 def test_l2b_existing_0069_question_completed_records_source_on_original_transaction():
     """실제 persist_completed의 일반·insufficient 완료 및 Notebook/원감사 후 source 의도를 요구한다."""
     import psycopg

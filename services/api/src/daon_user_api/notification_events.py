@@ -227,25 +227,27 @@ class _CompletedRecipientScope:
 
 
 def _completed_event_access(connection, context, *, origin_event_id, notebook_id=None, origin_actor_id=None):
-    """완료 원장에 저장된 본인/자료의 현재 접근만 읽는다. 현재 Tx의 발행 검사는 별도 SQL에서 한다."""
+    """문서 최종/질문 완료 원장의 현재 본인·자료 접근을 읽는다. 발행 Tx 검사는 별도 SQL에서 한다."""
     from .authorization import Action
     from .open_law_source_access import _current_auth_grant, OpenLawAccessError, require_open_law_source_access
     _checked_id(origin_event_id)
-    original=connection.execute('SELECT action,target_type,target_id FROM public.audit_events '
+    original=connection.execute('SELECT action,target_type,target_id,after_value->>\'state\' FROM public.audit_events '
         "WHERE tenant_id=%s AND workspace_id=%s AND event_id=%s AND actor_id=%s AND outcome='succeeded'",
         (context.tenant_id,context.workspace_id,origin_event_id,
          context.actor_id if origin_actor_id is None else _checked_id(origin_actor_id))).fetchone()
     if original is None:
         raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
-    action,target_type,target=original
+    action,target_type,target,origin_state=original
     if (action,target_type)==('canon.transition','ProcessingRun'):
+        if origin_state not in {'completed','failed'}:
+            raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
         row=connection.execute("SELECT r.created_by,r.canonical_json->>'notebook_id',ARRAY[r.source_version_id],"
             "jsonb_build_array(jsonb_build_object('origin','raw_source','context_item_id',sv.source_id,"
             "'source_id',sv.source_id,'source_version_id',sv.record_id,'digest_sha256',NULL)) "
             'FROM public.processing_runs r JOIN public.source_versions sv ON sv.tenant_id=r.tenant_id '
             'AND sv.workspace_id=r.workspace_id AND sv.record_id=r.source_version_id '
-            "WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s AND r.state='completed'",
-            (context.tenant_id,context.workspace_id,target)).fetchone()
+            "WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s AND r.state=%s",
+            (context.tenant_id,context.workspace_id,target,origin_state)).fetchone()
         if row is not None:
             notebook_id=row[1]
     elif (action,target_type)==('question.answer','Run'):
@@ -438,16 +440,18 @@ def materialize_pending_completed(dsn, *, context, limit=100):
                 for source in sources:
                     scope=_CompletedRecipientScope(context.tenant_id,context.workspace_id,context.actor_id,
                         source['trace_id'],source['policy_version'],source['notebook_id'])
-                    original=connection.execute('SELECT actor_id,action,target_type,target_id,trace_id,policy_version,occurred_at '
+                    original=connection.execute('SELECT actor_id,action,target_type,target_id,trace_id,policy_version,occurred_at,after_value->>\'state\' '
                         "FROM public.audit_events WHERE tenant_id=%s AND workspace_id=%s AND event_id=%s AND outcome='succeeded'",
                         (context.tenant_id,context.workspace_id,source['origin_event_id'])).fetchone()
                     expected_action,expected_type=('canon.transition','ProcessingRun') if source['source_store']=='document' else ('question.answer','Run')
+                    failed=source['source_store']=='document' and original is not None and original[7]=='failed'
+                    expected_kind,expected_severity=('run_failed','warning') if failed else ('run_state','info')
                     event_id=source['source_store']+'-event-'+hashlib.sha256(
                         f"{source['origin_event_id']}|{context.workspace_id}".encode()).hexdigest()[:32]
                     if ((source['action'],source['target_type'],source['kind'],source['severity'],source['source_event_id'])!=
-                        (expected_action,expected_type,'run_state','info',event_id)):
+                        (expected_action,expected_type,expected_kind,expected_severity,event_id)):
                         raise NotificationError('NOTIFICATION_SOURCE_INVALID',503)
-                    if original is not None and original[1:]!=(source['action'],source['target_type'],source['target_id'],
+                    if original is not None and original[1:7]!=(source['action'],source['target_type'],source['target_id'],
                             source['trace_id'],source['policy_version'],source['occurred_at']):
                         raise NotificationError('NOTIFICATION_SOURCE_INVALID',503)
                     allowed=False

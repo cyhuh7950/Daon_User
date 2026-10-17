@@ -535,6 +535,7 @@ DECLARE v_tenant text:=nullif(current_setting('app.tenant_id',true),'');
   v_origin public.audit_events; v_run record; v_source record; v_role text;
   v_versions text[]; v_store text; v_recipient text; v_event text; v_inserted integer;
   v_items jsonb; v_item jsonb;
+  v_kind text:='run_state'; v_severity text:='info';
   v_org_policy jsonb; v_workspace_policy jsonb;
   v_top_xid numeric:=pg_current_xact_id()::text::numeric;
 BEGIN
@@ -548,19 +549,25 @@ BEGIN
         CASE WHEN a.xmin::text::numeric-mod(v_top_xid,4294967296)< -2147483648 THEN 4294967296
           WHEN a.xmin::text::numeric-mod(v_top_xid,4294967296)>2147483647 THEN -4294967296 ELSE 0 END)::text::xid8)='in progress';
   IF v_origin.action='canon.transition' AND v_origin.target_type='ProcessingRun' THEN
-    SELECT r.created_by,r.canonical_json->>'notebook_id' AS notebook_id,r.source_version_id INTO v_run
-      FROM public.processing_runs r JOIN public.understanding_results u ON u.tenant_id=r.tenant_id
+    SELECT r.created_by,r.canonical_json->>'notebook_id' AS notebook_id,r.source_version_id,r.state AS result_state INTO v_run
+      FROM public.processing_runs r LEFT JOIN public.understanding_results u ON u.tenant_id=r.tenant_id
         AND u.workspace_id=r.workspace_id AND u.processing_run_id=r.record_id AND u.source_version_id=r.source_version_id
       JOIN public.canon_state_transitions t ON t.tenant_id=r.tenant_id AND t.workspace_id=r.workspace_id
         AND t.entity_type='ProcessingRun' AND t.record_id=r.record_id AND t.transition_id=p_origin
-        AND t.target_state='completed' AND t.transition_version=r.version AND t.actor_id=v_actor
+        AND t.target_state=r.state AND t.transition_version=r.version AND t.actor_id=v_actor
       WHERE r.tenant_id=v_tenant AND r.workspace_id=v_workspace AND r.record_id=v_origin.target_id
-        AND r.state='completed' AND u.canonical_json->>'status' IN ('ready','needs_review')
-        AND v_origin.after_value->>'state'='completed';
+        AND ((r.state='completed' AND u.canonical_json->>'status' IN ('ready','needs_review'))
+          OR (r.state='failed'
+            AND p_origin='tr-'||substr(encode(sha256(convert_to('ProcessingRun|'||r.record_id||'|failed|'||(r.version-1)::text,'UTF8')),'hex'),1,32)
+            AND pg_xact_status((v_top_xid-mod(v_top_xid,4294967296)+r.xmin::text::numeric+
+              CASE WHEN r.xmin::text::numeric-mod(v_top_xid,4294967296)< -2147483648 THEN 4294967296
+                WHEN r.xmin::text::numeric-mod(v_top_xid,4294967296)>2147483647 THEN -4294967296 ELSE 0 END)::text::xid8)='in progress'))
+        AND v_origin.after_value->>'state'=r.state;
     IF NOT FOUND OR v_run.notebook_id IS DISTINCT FROM p_notebook THEN
       RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
     END IF;
     v_store:='document'; v_recipient:=v_run.created_by; v_versions:=ARRAY[v_run.source_version_id];
+    IF v_run.result_state='failed' THEN v_kind:='run_failed'; v_severity:='warning'; END IF;
     SELECT jsonb_build_array(jsonb_build_object('origin','raw_source','context_item_id',sv.source_id,
       'source_id',sv.source_id,'source_version_id',sv.record_id,'digest_sha256',NULL)) INTO v_items
       FROM public.source_versions sv WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=v_run.source_version_id;
@@ -724,13 +731,13 @@ BEGIN
   INSERT INTO public.notification_source_outbox(tenant_id,workspace_id,source_event_id,recipient_id,source_store,
     origin_event_id,action,target_type,target_id,kind,severity,notebook_id,trace_id,policy_version,occurred_at)
     VALUES(v_tenant,v_workspace,v_event,v_recipient,v_store,p_origin,v_origin.action,v_origin.target_type,v_origin.target_id,
-      'run_state','info',p_notebook,v_origin.trace_id,v_origin.policy_version,v_origin.occurred_at)
+      v_kind,v_severity,p_notebook,v_origin.trace_id,v_origin.policy_version,v_origin.occurred_at)
     ON CONFLICT(tenant_id,workspace_id,source_event_id,recipient_id) DO NOTHING;
   GET DIAGNOSTICS v_inserted=ROW_COUNT;
   IF NOT EXISTS(SELECT 1 FROM public.notification_source_outbox s WHERE s.tenant_id=v_tenant AND s.workspace_id=v_workspace
       AND s.source_event_id=v_event AND s.recipient_id=v_recipient AND s.source_store=v_store AND s.origin_event_id=p_origin
       AND s.action=v_origin.action AND s.target_type=v_origin.target_type AND s.target_id=v_origin.target_id
-      AND s.kind='run_state' AND s.severity='info' AND s.notebook_id=p_notebook
+      AND s.kind=v_kind AND s.severity=v_severity AND s.notebook_id=p_notebook
       AND s.trace_id=v_origin.trace_id AND s.policy_version=v_origin.policy_version AND s.occurred_at=v_origin.occurred_at) THEN
     RAISE EXCEPTION 'NOTIFICATION_SOURCE_CONFLICT' USING ERRCODE='23505';
   END IF;
@@ -753,6 +760,7 @@ DECLARE v_tenant text:=nullif(current_setting('app.tenant_id',true),'');
   v_origin public.audit_events; v_run record; v_source record; v_role text;
   v_versions text[]; v_store text; v_recipient text; v_event text; v_inserted integer;
   v_items jsonb; v_item jsonb;
+  v_kind text:='run_state'; v_severity text:='info';
   v_org_policy jsonb; v_workspace_policy jsonb;
 BEGIN
   IF v_tenant IS NULL OR v_workspace IS NULL OR v_actor IS NULL THEN
@@ -773,17 +781,21 @@ BEGIN
   -- 원처리자는 원감사, 현재 수신자는 원업무 requester다. 둘을 현재 세션으로 대체하지 않는다.
   v_actor:=v_origin.actor_id;
   IF v_origin.action='canon.transition' AND v_origin.target_type='ProcessingRun' THEN
-    SELECT r.created_by,r.canonical_json->>'notebook_id' AS notebook_id,r.source_version_id,u.canonical_json->>'status' AS result_status INTO v_run
-      FROM public.processing_runs r JOIN public.understanding_results u ON u.tenant_id=r.tenant_id
+    SELECT r.created_by,r.canonical_json->>'notebook_id' AS notebook_id,r.source_version_id,
+      CASE WHEN r.state='failed' THEN 'failed' ELSE u.canonical_json->>'status' END AS result_status INTO v_run
+      FROM public.processing_runs r LEFT JOIN public.understanding_results u ON u.tenant_id=r.tenant_id
         AND u.workspace_id=r.workspace_id AND u.processing_run_id=r.record_id AND u.source_version_id=r.source_version_id
       JOIN public.canon_state_transitions t ON t.tenant_id=r.tenant_id AND t.workspace_id=r.workspace_id
         AND t.entity_type='ProcessingRun' AND t.record_id=r.record_id AND t.transition_id=p_origin
-        AND t.target_state='completed' AND t.transition_version=r.version AND t.actor_id=v_actor
+        AND t.target_state=r.state AND t.transition_version=r.version AND t.actor_id=v_actor
       WHERE r.tenant_id=v_tenant AND r.workspace_id=v_workspace AND r.record_id=v_origin.target_id
-        AND r.state='completed' AND u.canonical_json->>'status' IN ('ready','needs_review')
-        AND v_origin.after_value->>'state'='completed';
+        AND ((r.state='completed' AND u.canonical_json->>'status' IN ('ready','needs_review'))
+          OR (r.state='failed' AND p_origin='tr-'||substr(encode(sha256(convert_to(
+            'ProcessingRun|'||r.record_id||'|failed|'||(r.version-1)::text,'UTF8')),'hex'),1,32)))
+        AND v_origin.after_value->>'state'=r.state;
     IF NOT FOUND OR v_run.notebook_id IS DISTINCT FROM p_notebook THEN RETURN NULL; END IF;
     v_store:='document'; v_recipient:=v_run.created_by; v_versions:=ARRAY[v_run.source_version_id];
+    IF v_run.result_status='failed' THEN v_kind:='run_failed'; v_severity:='warning'; END IF;
     SELECT jsonb_build_array(jsonb_build_object('origin','raw_source','context_item_id',sv.source_id,
       'source_id',sv.source_id,'source_version_id',sv.record_id,'digest_sha256',NULL)) INTO v_items
       FROM public.source_versions sv WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=v_run.source_version_id;
@@ -943,14 +955,16 @@ BEGIN
   END LOOP;
   v_event:=v_store||'-event-'||substr(encode(sha256(convert_to(p_origin||'|'||v_workspace,'UTF8')),'hex'),1,32);
   IF v_pending.recipient_id IS DISTINCT FROM v_recipient OR v_pending.source_store IS DISTINCT FROM v_store
-    OR v_pending.source_event_id IS DISTINCT FROM v_event OR v_pending.kind IS DISTINCT FROM 'run_state'
-    OR v_pending.severity IS DISTINCT FROM 'info' THEN
+    OR v_pending.source_event_id IS DISTINCT FROM v_event OR v_pending.kind IS DISTINCT FROM v_kind
+    OR v_pending.severity IS DISTINCT FROM v_severity THEN
     RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
   END IF;
   IF v_store='document' THEN
     v_result:=jsonb_build_object('deep_link','/notebooks/'||p_notebook||'?source_version_id='||v_versions[1],
-      'title',CASE WHEN v_run.result_status='needs_review' THEN '문서 처리 검토 필요' ELSE '문서 처리 완료' END,
-      'summary',CASE WHEN v_run.result_status='needs_review' THEN '문서 처리 Run이 완료되었으며 검토가 필요합니다.' ELSE '문서 처리 Run이 완료되었습니다.' END);
+      'title',CASE WHEN v_run.result_status='failed' THEN '문서 처리 실패'
+        WHEN v_run.result_status='needs_review' THEN '문서 처리 검토 필요' ELSE '문서 처리 완료' END,
+      'summary',CASE WHEN v_run.result_status='failed' THEN '문서 처리 Run이 실패했습니다. 현재 처리 상태를 확인하세요.'
+        WHEN v_run.result_status='needs_review' THEN '문서 처리 Run이 완료되었으며 검토가 필요합니다.' ELSE '문서 처리 Run이 완료되었습니다.' END);
   ELSE
     v_result:=jsonb_build_object('deep_link','/notebooks/'||p_notebook||'?run_id='||v_origin.target_id,'title','질문 처리 완료',
       'summary',CASE WHEN v_run.insufficient='true'::jsonb THEN '질문 처리 Run이 완료되었으며 근거가 부족합니다.' ELSE '질문 처리 Run이 완료되었습니다.' END);

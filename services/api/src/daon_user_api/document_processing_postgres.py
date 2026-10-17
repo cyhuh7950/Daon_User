@@ -782,5 +782,9 @@ class PostgresDocumentProcessingRepository:
                         aggregate_id=str(row[2]), expected_version=int(row[4]),
                         target_state=source_target, reason_code=reason,
                     )
+                if getattr(self._cloud_store, '_notification_inbox_enabled', False):
+                    from .notification_events import enqueue_completed_event
+                    enqueue_completed_event(connection, context, origin_event_id=self._opaque_id(
+                        'tr', 'ProcessingRun', processing_run_id, 'failed', str(row[1])))
         except Exception as error:
             raise self._database_error(error) from None
