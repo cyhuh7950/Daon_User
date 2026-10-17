@@ -54,13 +54,14 @@ class CloudStorageContractTests(unittest.TestCase):
                         store._organization_admin_v2_enabled = enabled
                         checked, opened = [], []
                         store._organization_storage_is_protected = lambda conn: checked.append(conn) or protected
+                        store._notification_storage_is_protected = lambda conn: False
                         store._ensure_pool_open = lambda: opened.append(True)
                         @contextmanager
                         def fake_connect(*_args, **_kwargs): yield connection
                         with patch("daon_user_api.cloud_storage.connect", fake_connect): status = store.readiness()
                         expected = (revision == "0068" and protected) or (not enabled and revision in {"0062", "0063", "0064", "0066", "0067"})
                         self.assertEqual(status.ready, expected, (closed, revision, enabled, protected))
-                        self.assertEqual(bool(checked), revision == "0068")
+                        self.assertEqual(bool(checked), revision in {"0068", "0069"})
                         self.assertEqual(bool(opened), closed and expected)
             connection = Connection("0068", None)
             store._pool = Pool(closed, connection)

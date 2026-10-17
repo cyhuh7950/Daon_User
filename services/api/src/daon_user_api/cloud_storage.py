@@ -85,13 +85,18 @@ class CloudNotification:
 class PostgresCloudStore:
     """A bounded pool and explicit repository port; callers supply verified scope."""
 
-    def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 4, organization_admin_v2_enabled: bool = False) -> None:
+    def __init__(self, dsn: str, *, min_size: int = 1, max_size: int = 4, organization_admin_v2_enabled: bool = False,
+                 notification_inbox_enabled: bool = False) -> None:
         if not isinstance(dsn, str) or not dsn:
             raise ValueError("CLOUD_DATABASE_DSN_REQUIRED")
         self._dsn = dsn
         if type(organization_admin_v2_enabled) is not bool:
             raise ValueError("ORGANIZATION_ADMIN_V2_FLAG_INVALID")
         self._organization_admin_v2_enabled = organization_admin_v2_enabled
+        if type(notification_inbox_enabled) is not bool:
+            raise ValueError("NOTIFICATION_INBOX_FLAG_INVALID")
+        # L1 내부 준비 상태 경계다. 공개 환경변수나 운영 발행 경로를 신설하지 않는다.
+        self._notification_inbox_enabled = notification_inbox_enabled
         self._open_lock = threading.Lock()
         self._pool = ConnectionPool[tuple[Any, ...]](
             conninfo=dsn,
@@ -135,6 +140,10 @@ class PostgresCloudStore:
         def compatible(connection, revision, vector):
             if vector is None:
                 return False
+            if revision == "0069":
+                return self._organization_storage_is_protected(connection) and self._notification_storage_is_protected(connection)
+            if getattr(self, "_notification_inbox_enabled", False):
+                return False
             if revision == "0068":
                 return self._organization_storage_is_protected(connection)
             return not getattr(self, "_organization_admin_v2_enabled", False) and revision in _COMPATIBLE_SCHEMA_REVISIONS
@@ -166,6 +175,11 @@ class PostgresCloudStore:
             )
         except (Error, PoolTimeout, OSError):
             return CloudReadiness(False, None, None)
+
+    @staticmethod
+    def _notification_storage_is_protected(connection) -> bool:
+        from .notification_postgres import notification_storage_is_protected
+        return notification_storage_is_protected(connection)
 
     @staticmethod
     def _organization_storage_is_protected(connection) -> bool:
