@@ -7,7 +7,8 @@ gate_db="daon_real_conversation_${suffix}"
 gate_role="daon_real_conversation_${suffix}"
 container=local-postgres
 owner=$(docker exec "$container" printenv POSTGRES_USER)
-owner_password=$(docker exec "$container" printenv POSTGRES_PASSWORD)
+source "$repo_root/scripts/postgres-owner-credential.sh"
+daon_load_primary_postgres_password owner_password
 
 if [[ $(docker exec "$container" psql -U "$owner" -d postgres -Atqc "SELECT count(*) FROM pg_database WHERE datname='$gate_db'") != 0 ]]; then
   echo REAL_CONVERSATION_GATE_TARGET_ALREADY_EXISTS

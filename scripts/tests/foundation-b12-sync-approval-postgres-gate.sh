@@ -3,11 +3,12 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
 db="daon_foundation_b12_20260815"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/postgres-owner-credential.sh"
+daon_load_primary_postgres_password password
 cleanup() { docker exec local-postgres dropdb -U postgres --if-exists "$db" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 cleanup
 docker exec local-postgres createdb -U postgres "$db"
-password="$(docker exec local-postgres printenv POSTGRES_PASSWORD)"
 dsn="postgresql://postgres:${password}@127.0.0.1:5432/${db}"
 
 cd services/api

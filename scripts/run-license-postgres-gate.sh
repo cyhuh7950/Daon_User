@@ -7,7 +7,8 @@ gate_db="daon_license_gate_${gate_suffix}"
 gate_role="daon_license_gate_${gate_suffix}"
 container=local-postgres
 owner=$(docker exec "$container" printenv POSTGRES_USER)
-owner_password=$(docker exec "$container" printenv POSTGRES_PASSWORD)
+source "$repo_root/scripts/postgres-owner-credential.sh"
+daon_load_primary_postgres_password owner_password
 
 existing_db=$(docker exec "$container" psql -U "$owner" -d postgres -Atqc \
   "SELECT count(*) FROM pg_database WHERE datname='$gate_db'")
