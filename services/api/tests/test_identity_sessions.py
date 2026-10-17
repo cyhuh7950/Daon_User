@@ -26,6 +26,80 @@ from daon_user_api.postgres_adapters import PostgresAuthorizationRepository
 
 
 class IdentitySessionTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('DAON_TEST_POSTGRES_DSN'), 'isolated PostgreSQL DSN required')
+    def test_s42_notification_workspaces_are_all_current_scopes_in_exact_tenant(self):
+        """실제 PG identity/auth 교집합 조회. 인증 Provider·원사건 발행·정식 UI 증거는 아니다."""
+        from daon_user_api.cloud_storage import PostgresCloudStore, CloudAccessContext
+        from test_notification_events import _existing_0069_studio_case, _studio_case_member
+        scope = _existing_0069_studio_case(workspace_kind='organization')
+        context = scope.context
+        second = 's42-extra-workspace-'+scope.suffix
+        cloud = PostgresCloudStore(scope.app, min_size=0, max_size=2)
+        try:
+            cloud.seed_scope(CloudAccessContext(context.tenant_id, second, context.actor_id, 'source.create'))
+        finally:
+            cloud.close()
+        with psycopg.connect(scope.admin) as connection:
+            connection.execute("INSERT INTO identity_auth_workspaces VALUES(%s,%s,'organization','cloud_sync',1000,1,1,now())",
+                (second, context.tenant_id))
+        repository = PostgresIdentityRepository(scope.app)
+        service = IdentityService(repository=repository, audit_store=AuditEventStore(), oidc_policies=(),
+            clock=lambda:datetime.now(timezone.utc))
+        tables = ('identity_memberships','identity_auth_memberships','identity_auth_tenant_roles',
+            'identity_auth_workspaces','identity_org_tenant_memberships','notification_source_outbox',
+            'notifications','notification_details','notification_audit_outbox')
+        def snapshot(tenant):
+            with psycopg.connect(scope.admin) as connection:
+                return {table:connection.execute(f'SELECT to_jsonb(t) FROM public.{table} t '
+                    'WHERE tenant_id=%s ORDER BY to_jsonb(t)::text',(tenant,)).fetchall() for table in tables}
+        def check(user, tenant, expected):
+            before = snapshot(tenant)
+            self.assertEqual(service.notification_workspace_ids(user_id=user, tenant_id=tenant), expected)
+            with repository.transaction() as connection:
+                self.assertEqual(service._notification_workspace_ids(connection, user_id=user, tenant_id=tenant), expected)
+                self.assertEqual(connection.execute('SELECT 1').fetchone()[0], 1, 'caller의 연결 수명을 유지한다')
+            self.assertEqual(snapshot(tenant), before, '조회가 소속·알림·감사를 생성하면 안 된다')
+        try:
+            both = tuple(sorted((context.workspace_id, second)))
+            check(context.actor_id, context.tenant_id, both)
+            # 기존 작업 범위 선택은 tenant당 한 곳이라는 기존 의미를 보존한다.
+            self.assertEqual(len(service.selectable_tenant_workspaces(user_id=context.actor_id)), 1)
+            check(context.actor_id, 's42-foreign-tenant', ())
+            check('admin', context.tenant_id, ())
+            peer = _studio_case_member(scope, role='viewer')
+            check(peer, context.tenant_id, (context.workspace_id,))
+            with psycopg.connect(scope.admin) as connection:
+                connection.execute('INSERT INTO identity_auth_memberships '
+                    '(tenant_id,workspace_id,user_id,role,state,version,updated_at) '
+                    "VALUES(%s,%s,%s,'viewer','revoked',1,now())",(context.tenant_id,second,peer))
+            check(peer, context.tenant_id, (context.workspace_id,))
+            with psycopg.connect(scope.admin) as connection:
+                connection.execute("UPDATE identity_auth_memberships SET state='active',version=version+1,updated_at=now() "
+                    'WHERE tenant_id=%s AND workspace_id=%s AND user_id=%s',(context.tenant_id,second,peer))
+            check(peer, context.tenant_id, both)
+            with psycopg.connect(scope.admin) as connection:
+                connection.execute('INSERT INTO identity_org_tenant_memberships '
+                    '(tenant_id,user_id,role,state,version,updated_at,join_workspace_id) '
+                    "VALUES(%s,%s,'member','suspended',1,now(),%s)",(context.tenant_id,peer,context.workspace_id))
+            check(peer, context.tenant_id, ())
+            with psycopg.connect(scope.admin) as connection:
+                connection.execute("UPDATE identity_users SET state='disabled' WHERE user_id=%s",(context.actor_id,))
+            check(context.actor_id, context.tenant_id, ())
+            # identity의 소속 role은 Workspace 권한 role이 아니다. 실제 auth의
+            # personal_owner/편집자 권한을 identity.member라는 이유로 숨기면 안 된다.
+            personal = _existing_0069_studio_case(workspace_kind='personal')
+            with psycopg.connect(personal.admin) as connection:
+                connection.execute("UPDATE identity_memberships SET role='member' "
+                    'WHERE tenant_id=%s AND user_id=%s',
+                    (personal.context.tenant_id, personal.context.actor_id))
+            check(personal.context.actor_id, personal.context.tenant_id,
+                (personal.context.workspace_id,))
+            personal_editor = _studio_case_member(personal, role='editor')
+            check(personal_editor, personal.context.tenant_id,
+                (personal.context.workspace_id,))
+        finally:
+            repository.close()
+
     @unittest.skipUnless(os.environ.get("DAON_TEST_POSTGRES_DSN"), "isolated PostgreSQL DSN required")
     def test_postgres_audit_insert_failure_preserves_old_native_session(self) -> None:
         dsn = os.environ["DAON_TEST_POSTGRES_DSN"]

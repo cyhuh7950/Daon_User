@@ -1655,6 +1655,43 @@ class IdentityService:
         with self._repository.transaction() as connection:
             return self._selectable_tenant_workspaces(connection, user_id)
 
+    def notification_workspace_ids(self, *, user_id: str, tenant_id: str) -> tuple[str, ...]:
+        """알림의 서버 내부 수신 범위. 정확 tenant의 현재 identity/auth 교집합만 읽는다.
+
+        작업 범위 메뉴의 tenant당 첫 Workspace 선택과 분리한다. 소속 없는 admin에
+        가상 Workspace를 만들지 않으며 조회·접속 장애를 빈 목록 성공으로 바꾸지 않는다.
+        """
+        with self._repository.transaction() as connection:
+            return self._notification_workspace_ids(connection, user_id=user_id, tenant_id=tenant_id)
+
+    def _notification_workspace_ids(self, connection, *, user_id: str, tenant_id: str) -> tuple[str, ...]:
+        """원업무가 전달한 identity 연결에서도 같은 조회를 한다. 연결을 commit/close하지 않는다."""
+        from .organization_access import OrganizationAccessBridge
+        from .organization_membership import OrganizationWorkflowError
+        user, tenant = _checked_text(user_id), _checked_text(tenant_id)
+        rows = connection.execute(
+            "SELECT DISTINCT w.workspace_id,w.workspace_kind FROM memberships m "
+            "JOIN users u ON u.user_id=m.user_id JOIN auth_workspaces w ON w.tenant_id=m.tenant_id "
+            "WHERE m.user_id=? AND m.tenant_id=? AND u.state='active' "
+            "AND (EXISTS(SELECT 1 FROM auth_tenant_roles r WHERE r.tenant_id=w.tenant_id "
+            "AND r.user_id=m.user_id AND r.state='active' AND ((w.workspace_kind='personal' AND r.role='personal_owner') "
+            "OR (w.workspace_kind='organization' AND r.role='organization_admin'))) "
+            "OR EXISTS(SELECT 1 FROM auth_memberships a WHERE a.tenant_id=w.tenant_id "
+            "AND a.workspace_id=w.workspace_id AND a.user_id=m.user_id AND a.state='active')) "
+            "ORDER BY w.workspace_id", (user, tenant),
+        ).fetchall()
+        organization_active = True
+        if any(row['workspace_kind'] == 'organization' for row in rows):
+            try:
+                OrganizationAccessBridge(postgres=hasattr(self._repository, '_dsn')).assert_organization_active(
+                    connection=connection, tenant_id=tenant, user_id=user)
+            except OrganizationWorkflowError as error:
+                if error.code != 'ORGANIZATION_MEMBERSHIP_SUSPENDED':
+                    raise
+                organization_active = False
+        return tuple(str(row['workspace_id']) for row in rows
+            if row['workspace_kind'] != 'organization' or organization_active)
+
     def audit_tenant_switch_denied(
         self, *, principal: IdentityPrincipal, target_tenant_id: str | None,
         reason_code: str, trace_id: str, policy_version: str,
