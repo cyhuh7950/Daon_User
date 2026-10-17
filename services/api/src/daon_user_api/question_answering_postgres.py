@@ -1150,6 +1150,10 @@ class PostgresQuestionAnsweringRepository:
                         }),
                     ),
                 )
+                if getattr(self._cloud_store, '_notification_inbox_enabled', False):
+                    from .notification_events import enqueue_completed_event
+                    enqueue_completed_event(connection, context, origin_event_id=self._opaque_id('audit', run_id),
+                        notebook_id=context.notebook_id)
         except OpenLawAccessError:
             raise QuestionRepositoryError('QUESTION_SOURCE_UNAVAILABLE', status=404) from None
         except QuestionRepositoryError:

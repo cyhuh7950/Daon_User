@@ -278,7 +278,8 @@ def test_l2a_existing_0069_approval_and_nested_savepoint_preserve_source_intent(
             with store._transaction(repo._cloud(ctx,'studio.review')) as connection:
                 connection.execute('SELECT pg_current_xact_id()')
                 with connection.transaction(force_rollback=True):
-                    record='s42l2a-savepoint-'+scope.suffix
+                    # 실제 record_action과 같은 key/scope ID를 사용한다. 임의 ID로 보호 검사를 우회하지 않는다.
+                    record=Canon._opaque('review',ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'studio.review','s42-l2a-nested-key')
                     Canon._insert(connection,ctx,'review_requests',record,{'output_version_id':scope.version},
                         extra_columns=('output_version_id',),extra_values=(scope.version,))
                     inserted=[]
@@ -1039,6 +1040,960 @@ def test_l2a_existing_0069_different_central_content_keeps_intent_pending():
         assert connection.execute('SELECT count(*) FROM notifications WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(1,)
         assert connection.execute('SELECT state,version FROM notification_source_outbox WHERE tenant_id=%s',
             (ctx.tenant_id,)).fetchall()==[('delivered',2)]
+
+
+class _L2bNoObjectRead:
+    def get(self,*_args,**_kwargs):
+        raise AssertionError('L2b 저장 경계 시험은 Object/모델 외부 호출을 하지 않는다')
+
+
+def _l2b_bound_pdf(scope,store):
+    """기존 PG Notebook/Source 준비 방식으로 비민감 메타데이터만 만든다. 원업무 메서드는 대체하지 않는다."""
+    import hashlib
+    from datetime import datetime,timezone
+    from daon_user_api.cloud_storage import CloudAccessContext
+    from daon_user_api.notebook import NotebookContext
+    from daon_user_api.notebook_postgres import PostgresNotebookRepository
+    from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository as Canon
+    ctx=scope.context
+    source='s42l2b-source-'+scope.suffix
+    version='s42l2b-version-'+scope.suffix
+    object_id='s42l2b-object-'+scope.suffix
+    content=b'%PDF-1.4\nS42 synthetic stored-result fixture\n%%EOF\n'
+    digest=hashlib.sha256(content).hexdigest()
+    with store._transaction(CloudAccessContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'source.create')) as connection:
+        # 기존 실제 PG import fixture와 같은 completed Object 메타데이터 형식이며 Object 송수신은 없다.
+        connection.execute('INSERT INTO object_records(tenant_id,workspace_id,object_id,area,staging_key,object_key,'
+            'digest_sha256,byte_size,content_type,status,created_by,trace_id,idempotency_key,request_fingerprint,created_at) '
+            "VALUES(%s,%s,%s,'source',%s,%s,%s,%s,'application/pdf','completed',%s,%s,%s,%s,now())",
+            (ctx.tenant_id,ctx.workspace_id,object_id,'staging/'+object_id,'source/'+object_id,digest,len(content),
+             ctx.actor_id,ctx.trace_id,object_id,digest))
+        Canon._insert(connection,ctx,'sources',source,{'filename':'S42 synthetic.pdf'},state='registered')
+        Canon._insert(connection,ctx,'source_versions',version,{'filename':'S42 synthetic.pdf','origin_kind':'native_pdf'},
+            extra_columns=('source_id','object_id'),extra_values=(source,object_id))
+    notebook_context=NotebookContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version)
+    replayed=PostgresNotebookRepository(store).bind_verified(notebook_context,ctx.notebook_id,
+        binding_kind='source',record_id=source,version_id=version,now=datetime.now(timezone.utc))
+    # 기존 반환값은 성공 여부가 아니라 replay 여부다. 새 결속은 False이며 실제 저장행도 검사한다.
+    assert replayed is False
+    with store._transaction(CloudAccessContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'view')) as connection:
+        bound=connection.execute('SELECT b.record_id,b.version_id,b.created_by FROM notebook_bindings b '
+            'JOIN source_versions sv ON sv.tenant_id=b.tenant_id AND sv.workspace_id=b.workspace_id '
+            'AND sv.record_id=b.version_id AND sv.source_id=b.record_id '
+            'WHERE b.tenant_id=%s AND b.workspace_id=%s AND b.notebook_id=%s '
+            "AND b.binding_kind='source' AND b.record_id=%s AND b.version_id=%s",
+            (ctx.tenant_id,ctx.workspace_id,ctx.notebook_id,source,version)).fetchall()
+        assert bound==[(source,version,ctx.actor_id)]
+        activities=connection.execute('SELECT activity_kind,actor_id FROM notebook_activities '
+            'WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s',
+            (ctx.tenant_id,ctx.workspace_id,ctx.notebook_id)).fetchall()
+        assert activities==[('context_bound',ctx.actor_id)]
+    return source,version
+
+
+def _l2b_assert_completed_source(connection,scope,*,origin,store_name,action,target_type,target_id):
+    """실제 원감사/원장 결속과 동일 저장 Tx를 검사한다. source 미구현이면 빈 목록만 반환한다."""
+    ctx=scope.context
+    rows=connection.execute('SELECT s.recipient_id,s.source_store,s.action,s.target_type,s.target_id,s.kind,s.notebook_id,'
+        's.trace_id,s.policy_version,s.state,s.version,s.occurred_at=a.occurred_at,s.xmin=a.xmin '
+        'FROM notification_source_outbox s JOIN audit_events a ON a.tenant_id=s.tenant_id '
+        'AND a.workspace_id=s.workspace_id AND a.event_id=s.origin_event_id '
+        'WHERE s.tenant_id=%s AND s.workspace_id=%s AND s.origin_event_id=%s',
+        (ctx.tenant_id,ctx.workspace_id,origin)).fetchall()
+    if rows:
+        assert rows==[(ctx.actor_id,store_name,action,target_type,target_id,'run_state',ctx.notebook_id,
+            ctx.trace_id,ctx.policy_version,'pending',1,True,True)]
+    return rows
+
+
+def test_l2b_existing_0069_document_completed_records_source_on_original_transaction():
+    """실제 start/complete의 ready·needs_review 완료와 원감사까지 저장한 뒤 source 의도를 요구한다."""
+    from dataclasses import replace
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    from daon_user_api.document_processing import DocumentProcessingContext
+    from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
+    from test_document_index_postgres import ready_result
+    missing=[]
+    for result_status in ('ready','needs_review'):
+        scope=_existing_0069_studio_case()
+        ctx=scope.context
+        store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+        try:
+            source,version=_l2b_bound_pdf(scope,store)
+            context=DocumentProcessingContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version)
+            repository=PostgresDocumentProcessingRepository(store,_L2bNoObjectRead())
+            run=repository.start(context,version,notebook_id=ctx.notebook_id)
+            result=replace(ready_result(),source_id=source,source_version_id=version,status=result_status,
+                conflict='UNDERSTANDING_PARSER_CONFLICT' if result_status=='needs_review' else None)
+            repository.complete(context,run,result)
+            with psycopg.connect(scope.admin) as connection:
+                assert connection.execute('SELECT state,created_by,source_version_id,canonical_json->>\'notebook_id\' '
+                    'FROM processing_runs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                    (ctx.tenant_id,ctx.workspace_id,run)).fetchone()==('completed',ctx.actor_id,version,ctx.notebook_id)
+                assert connection.execute('SELECT canonical_json->>\'status\' FROM understanding_results '
+                    'WHERE tenant_id=%s AND workspace_id=%s AND processing_run_id=%s',
+                    (ctx.tenant_id,ctx.workspace_id,run)).fetchall()==[(result_status,)]
+                original=connection.execute("SELECT a.event_id,a.actor_id FROM canon_state_transitions t JOIN audit_events a "
+                    'ON a.tenant_id=t.tenant_id AND a.workspace_id=t.workspace_id AND a.event_id=t.transition_id '
+                    "WHERE t.tenant_id=%s AND t.workspace_id=%s AND t.entity_type='ProcessingRun' AND t.record_id=%s "
+                    "AND t.target_state='completed' AND a.action='canon.transition' AND a.outcome='succeeded' "
+                    "AND a.target_type='ProcessingRun' AND a.target_id=t.record_id",
+                    (ctx.tenant_id,ctx.workspace_id,run)).fetchall()
+                assert len(original)==1 and original[0][1]==ctx.actor_id
+                assert connection.execute('SELECT 1 FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s '
+                    "AND notebook_id=%s AND binding_kind='source' AND record_id=%s AND version_id=%s",
+                    (ctx.tenant_id,ctx.workspace_id,ctx.notebook_id,source,version)).fetchone()==(1,)
+                if not _l2b_assert_completed_source(connection,scope,origin=original[0][0],store_name='document',
+                        action='canon.transition',target_type='ProcessingRun',target_id=run):
+                    missing.append(result_status)
+        finally:
+            store.close()
+    if missing:
+        pytest.fail('DOCUMENT_COMPLETED_SOURCE_INTENT_MISSING; actual_business_and_origin_saved; results='+','.join(missing),pytrace=False)
+
+
+def test_l2b_existing_0069_question_completed_records_source_on_original_transaction():
+    """실제 persist_completed의 일반·insufficient 완료 및 Notebook/원감사 후 source 의도를 요구한다."""
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore,CloudAccessContext
+    from daon_user_api.question_answering import TextModelSelection,GroundedTextResult
+    from daon_user_api.question_answering_postgres import PostgresQuestionAnsweringRepository,QuestionContext
+    from daon_user_api.document_index_postgres import IndexedEvidenceChunk
+    from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository as Canon
+    missing=[]
+    for insufficient in (False,True):
+        scope=_existing_0069_studio_case()
+        ctx=scope.context
+        store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+        try:
+            source,version=_l2b_bound_pdf(scope,store)
+            span='s42l2b-span-'+scope.suffix
+            with store._transaction(CloudAccessContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'source.create')) as connection:
+                source_state_version=1
+                for state in ('security_check','processing','indexing','ready'):
+                    source_state_version=Canon._transition(connection,ctx,'Source',source,source_state_version,
+                        state,'s42l2b-source-'+state+'-'+scope.suffix)
+                Canon._insert(connection,ctx,'evidence_spans',span,{'page':1,'text':'S42 synthetic evidence'},
+                    extra_columns=('source_version_id',),extra_values=(version,))
+            context=QuestionContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version,
+                notebook_id=ctx.notebook_id)
+            run='s42l2b-run-'+scope.suffix
+            evidence=() if insufficient else (IndexedEvidenceChunk('s42l2b-chunk-'+scope.suffix,
+                source,version,1,'S42 synthetic evidence',span,1.0),)
+            repository=PostgresQuestionAnsweringRepository(store,_L2bNoObjectRead())
+            stored=repository.persist_completed(context,run_id=run,source_id=source,source_version_id=version,
+                question='S42 synthetic stored question',selection=TextModelSelection('OLLAMA','https://s42-model.invalid',
+                    's42l2b-profile-'+scope.suffix,'s42l2b-deployment-'+scope.suffix,'s42-synthetic-model',1,
+                    provider_kind='server_internal'),evidence=evidence,
+                result=GroundedTextResult('' if insufficient else 'S42 synthetic evidence',
+                    () if insufficient else (evidence[0].chunk_id,),insufficient,{}),provider_called=not insufficient)
+            assert stored.run_id==run and stored.insufficient is insufficient
+            with psycopg.connect(scope.admin) as connection:
+                row=connection.execute('SELECT r.state,r.created_by,r.conversation_id,rr.canonical_json->\'insufficient\' '
+                    'FROM runs r JOIN run_results rr ON rr.tenant_id=r.tenant_id AND rr.workspace_id=r.workspace_id '
+                    'AND rr.run_id=r.record_id WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s',
+                    (ctx.tenant_id,ctx.workspace_id,run)).fetchone()
+                assert row is not None and (row[0],row[1],row[3])==('completed',ctx.actor_id,insufficient)
+                assert connection.execute('SELECT 1 FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s '
+                    "AND notebook_id=%s AND binding_kind='conversation_thread' AND record_id=%s",
+                    (ctx.tenant_id,ctx.workspace_id,ctx.notebook_id,row[2])).fetchone()==(1,)
+                original=connection.execute('SELECT event_id,actor_id FROM audit_events WHERE tenant_id=%s AND workspace_id=%s '
+                    "AND action='question.answer' AND target_type='Run' AND target_id=%s AND outcome='succeeded'",
+                    (ctx.tenant_id,ctx.workspace_id,run)).fetchall()
+                assert len(original)==1 and original[0][1]==ctx.actor_id
+                if not _l2b_assert_completed_source(connection,scope,origin=original[0][0],store_name='question',
+                        action='question.answer',target_type='Run',target_id=run):
+                    missing.append('insufficient' if insufficient else 'sufficient')
+        finally:
+            store.close()
+    if missing:
+        pytest.fail('QUESTION_COMPLETED_SOURCE_INTENT_MISSING; actual_business_and_origin_saved; results='+','.join(missing),pytrace=False)
+
+
+def _l2b_prepared_completion(scope,store,domain):
+    """실제 원장 메서드 실행 직전까지만 준비한다. 완료/감사/알림 저장은 대체하지 않는다."""
+    from dataclasses import replace
+    ctx=scope.context
+    source,version=_l2b_bound_pdf(scope,store)
+    if domain=='document':
+        from daon_user_api.document_processing import DocumentProcessingContext
+        from daon_user_api.document_processing_postgres import PostgresDocumentProcessingRepository
+        from test_document_index_postgres import ready_result
+        context=DocumentProcessingContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version)
+        repository=PostgresDocumentProcessingRepository(store,_L2bNoObjectRead())
+        run=repository.start(context,version,notebook_id=ctx.notebook_id)
+        # 검토 필요 Source 전이도 완료 transaction과 함께 rollback되어야 한다.
+        result=replace(ready_result(),source_id=source,source_version_id=version,status='needs_review',
+            conflict='UNDERSTANDING_PARSER_CONFLICT')
+        return run,lambda:repository.complete(context,run,result)
+    assert domain=='question'
+    from daon_user_api.cloud_storage import CloudAccessContext
+    from daon_user_api.question_answering import TextModelSelection,GroundedTextResult
+    from daon_user_api.question_answering_postgres import PostgresQuestionAnsweringRepository,QuestionContext
+    from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository as Canon
+    with store._transaction(CloudAccessContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'source.create')) as connection:
+        state_version=1
+        for state in ('security_check','processing','indexing','ready'):
+            state_version=Canon._transition(connection,ctx,'Source',source,state_version,state,
+                's42l2b-fault-source-'+state+'-'+scope.suffix)
+    context=QuestionContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version,
+        notebook_id=ctx.notebook_id)
+    run='s42l2b-fault-run-'+scope.suffix
+    repository=PostgresQuestionAnsweringRepository(store,_L2bNoObjectRead())
+    return run,lambda:repository.persist_completed(context,run_id=run,source_id=source,source_version_id=version,
+        question='S42 synthetic stored question',selection=TextModelSelection('OLLAMA','https://s42-model.invalid',
+            's42l2b-profile-'+scope.suffix,'s42l2b-deployment-'+scope.suffix,'s42-synthetic-model',1,
+            provider_kind='server_internal'),evidence=(),result=GroundedTextResult('',(),True,{}),provider_called=False)
+
+
+def _l2b_completion_snapshot(scope):
+    """해당 합성 scope의 저장행 전체를 비교하여 건수가 같은 부분 변경도 놓치지 않는다."""
+    import psycopg
+    tables=('processing_runs','sources','source_versions','understanding_results','extraction_evidence',
+        'runs','run_results','run_snapshots','knowledge_scopes','scope_snapshots','conversations',
+        'provider_profiles','model_artifacts','model_deployments','routing_policy_versions','routing_decisions',
+        'model_attempts','citations','deliveries','output_versions','notebook_bindings','notebook_activities','canon_state_transitions',
+        'canon_transition_attempts','audit_events','idempotency_records','notification_source_outbox',
+        'notifications','notification_details','notification_audit_outbox')
+    with psycopg.connect(scope.admin) as connection:
+        return {table:connection.execute(f'SELECT to_jsonb(t) FROM public.{table} t '
+            'WHERE tenant_id=%s ORDER BY to_jsonb(t)::text',(scope.context.tenant_id,)).fetchall() for table in tables}
+
+
+def _l2b_repository_error(domain):
+    from daon_user_api.document_understanding_adapter import DocumentUnderstandingError
+    from daon_user_api.question_answering_postgres import QuestionRepositoryError
+    return (DocumentUnderstandingError,'DOCUMENT_PROCESSING_DATABASE_UNAVAILABLE') if domain=='document' else (
+        QuestionRepositoryError,'QUESTION_DATABASE_UNAVAILABLE')
+
+
+def _l2b_assert_uncommitted_completion(connection,scope,domain,run,origin):
+    table='processing_runs' if domain=='document' else 'runs'
+    action,target=('canon.transition','ProcessingRun') if domain=='document' else ('question.answer','Run')
+    assert connection.execute(f'SELECT state FROM public.{table} WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+        (scope.context.tenant_id,scope.context.workspace_id,run)).fetchone()==('completed',)
+    assert connection.execute('SELECT actor_id,action,target_type,target_id,outcome FROM public.audit_events '
+        'WHERE tenant_id=%s AND workspace_id=%s AND event_id=%s',
+        (scope.context.tenant_id,scope.context.workspace_id,origin)).fetchone()==(
+            scope.context.actor_id,action,target,run,'succeeded')
+
+
+def _l2b_run_enqueue_rollback(domain):
+    from unittest.mock import patch
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    from daon_user_api.notification_events import enqueue_completed_event
+    scope=_existing_0069_studio_case()
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    injected=[]
+    try:
+        run,complete=_l2b_prepared_completion(scope,store,domain)
+        before=_l2b_completion_snapshot(scope)
+        assert before['notification_source_outbox']==[]
+        def actual_enqueue_then_fail(connection,context,**kwargs):
+            _l2b_assert_uncommitted_completion(connection,scope,domain,run,kwargs['origin_event_id'])
+            # 앱의 outbox SELECT 권한을 넓히지 않는다. 실제 제한 INSERT 함수의 삽입 반환값 1을 확인한다.
+            assert enqueue_completed_event(connection,context,**kwargs)==1
+            try:
+                connection.execute('SELECT 1/0')
+            except psycopg.Error as error:
+                injected.append(error.sqlstate)
+                raise
+        error_type,code=_l2b_repository_error(domain)
+        with patch('daon_user_api.notification_events.enqueue_completed_event',side_effect=actual_enqueue_then_fail):
+            with pytest.raises(error_type) as caught:
+                complete()
+        assert (caught.value.code,caught.value.status)==(code,503)
+        assert injected==['22012']
+        assert _l2b_completion_snapshot(scope)==before
+    finally:
+        store.close()
+
+
+def test_l2b_existing_0069_document_source_insert_failure_rolls_back_completion():
+    """실제 source INSERT 직후 오류가 Run/Source 상태·이해결과·전이·원감사를 전부 되돌린다."""
+    _l2b_run_enqueue_rollback('document')
+
+
+def test_l2b_existing_0069_question_source_insert_failure_rolls_back_completion():
+    """실제 source INSERT 직후 오류가 Run/결과/대화 binding/감사 일부 저장을 남기지 않는다."""
+    _l2b_run_enqueue_rollback('question')
+
+
+@pytest.mark.parametrize('domain',('document','question'))
+@pytest.mark.parametrize('case',('other_actor','wrong_notebook','committed_origin'))
+def test_l2b_existing_0069_direct_completed_enqueue_rejects_unbound_origin(domain,case):
+    """직접 함수도 실제 caller·정확 Notebook·현재 transaction의 원감사를 우회할 수 없다."""
+    from unittest.mock import patch
+    from datetime import datetime,timezone
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore,CloudAccessContext,CloudDatabaseError
+    from daon_user_api.notebook import NotebookContext
+    from daon_user_api.notebook_postgres import PostgresNotebookRepository
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    # 이미 commit된 실제 원장을 준비할 때만 기존 기본 OFF 동작을 사용한다. 원업무 메서드는 그대로다.
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=case!='committed_origin')
+    denied=[]
+    try:
+        run,complete=_l2b_prepared_completion(scope,store,domain)
+        peer=_studio_case_member(scope,role='viewer') if case=='other_actor' else None
+        notebook=ctx.notebook_id
+        if case=='wrong_notebook':
+            other,replayed=PostgresNotebookRepository(store).create(
+                NotebookContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version),
+                title='S42 synthetic unbound Notebook',description=None,idempotency_key='s42l2b-unbound-'+scope.suffix,
+                request_fingerprint='b'*64,now=datetime.now(timezone.utc))
+            assert replayed is False and other.notebook_id!=ctx.notebook_id
+            notebook=other.notebook_id
+        def direct_probe(connection,context,**kwargs):
+            _l2b_assert_uncommitted_completion(connection,scope,domain,run,kwargs['origin_event_id'])
+            with connection.transaction(force_rollback=True):
+                if peer is not None:
+                    connection.execute("SELECT set_config('app.actor_id',%s,true)",(peer,))
+                try:
+                    connection.execute('SELECT public.enqueue_completed_notification(%s,%s)',
+                        (kwargs['origin_event_id'],notebook))
+                except psycopg.Error as error:
+                    assert error.sqlstate in {'42501','23514'}
+                    denied.append(error.sqlstate)
+            # 허용되는 결함이 있어도 업무/source를 commit하지 않는다. 최종 denied 단언은 별도로 남긴다.
+            raise CloudDatabaseError('DATABASE_UNAVAILABLE',retryable=True)
+        if case=='committed_origin':
+            complete()
+            with psycopg.connect(scope.admin) as connection:
+                action,target=('canon.transition','ProcessingRun') if domain=='document' else ('question.answer','Run')
+                originals=connection.execute('SELECT event_id FROM audit_events WHERE tenant_id=%s AND workspace_id=%s '
+                    "AND target_id=%s AND action=%s AND target_type=%s AND outcome='succeeded' "
+                    "AND (action<>'canon.transition' OR after_value->>'state'='completed')",
+                    (ctx.tenant_id,ctx.workspace_id,run,action,target)).fetchall()
+                assert len(originals)==1
+            before=_l2b_completion_snapshot(scope)
+            with store._transaction(CloudAccessContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'view')) as connection:
+                with connection.transaction(force_rollback=True):
+                    try:
+                        connection.execute('SELECT public.enqueue_completed_notification(%s,%s)',
+                            (originals[0][0],ctx.notebook_id))
+                    except psycopg.Error as error:
+                        assert error.sqlstate in {'42501','23514'}
+                        denied.append(error.sqlstate)
+        else:
+            before=_l2b_completion_snapshot(scope)
+            error_type,code=_l2b_repository_error(domain)
+            with patch('daon_user_api.notification_events.enqueue_completed_event',side_effect=direct_probe):
+                with pytest.raises(error_type) as caught:
+                    complete()
+            assert (caught.value.code,caught.value.status)==(code,503)
+        assert before['notification_source_outbox']==[]
+        assert len(denied)==1
+        assert _l2b_completion_snapshot(scope)==before
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize('mode',('daon_priority','mixed','general_ungrounded'))
+def test_l2b_existing_0069_question_context_modes_preserve_completed_source(mode):
+    """typed knowledge/general 입력 fixture와 실제 완료 저장을 구분한다. 외부 Daon/모델 호출은 없다."""
+    from dataclasses import replace
+    from datetime import datetime,timezone
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    from daon_user_api.notebook import NotebookContext
+    from daon_user_api.notebook_postgres import PostgresNotebookRepository
+    from daon_user_api.question_answering import TextModelSelection,GroundedTextResult
+    from daon_user_api.question_answering_service import QuestionInputSource
+    from daon_user_api.question_answering_postgres import PostgresQuestionAnsweringRepository,QuestionContext
+    from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository as Canon
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    try:
+        raw_pair=_l2b_bound_pdf(scope,store) if mode=='mixed' else None
+        notebook_repository=PostgresNotebookRepository(store)
+        notebook_context=NotebookContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version)
+        notebook,replayed=notebook_repository.create(notebook_context,title='S42 synthetic question context',
+            description=None,idempotency_key='s42l2b-context-notebook-'+scope.suffix,request_fingerprint='c'*64,
+            now=datetime.now(timezone.utc))
+        assert replayed is False
+        scope.context=ctx=replace(ctx,notebook_id=notebook.notebook_id)
+        items=[]
+        if raw_pair is not None:
+            raw_source,raw_version=raw_pair
+            assert notebook_repository.bind_verified(notebook_context,ctx.notebook_id,binding_kind='source',
+                record_id=raw_source,version_id=raw_version,now=datetime.now(timezone.utc)) is False
+            items.append(QuestionInputSource('raw_source',raw_source,raw_source,raw_version))
+        knowledge_snapshot=None
+        knowledge_item=None
+        if mode!='general_ungrounded':
+            knowledge_scope='s42l2b-knowledge-scope-'+scope.suffix
+            knowledge_snapshot='s42l2b-knowledge-snapshot-'+scope.suffix
+            # 기존 QA SourceVersion을 참조만 한다. knowledge를 통과시키기 위한 Source/가짜 raw binding은 생성하지 않는다.
+            with psycopg.connect(scope.admin) as connection:
+                for name,value in (('tenant_id',ctx.tenant_id),('workspace_id',ctx.workspace_id),('actor_id',ctx.actor_id)):
+                    connection.execute('SELECT set_config(%s,%s,true)',('app.'+name,value))
+                knowledge_rows=connection.execute('SELECT source_id,record_id,digest_sha256 FROM source_versions '
+                    'WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                    (ctx.tenant_id,ctx.workspace_id,'s24-source-version-'+scope.suffix)).fetchall()
+                assert len(knowledge_rows)==1
+                knowledge_source,knowledge_version,knowledge_digest=knowledge_rows[0]
+                knowledge_item={'origin':'daon_knowledge','context_item_id':knowledge_snapshot,
+                    'source_id':knowledge_source,'source_version_id':knowledge_version,'digest_sha256':knowledge_digest}
+                payload={'mode':'daon_priority','source_version_ids':[knowledge_version],'items':[knowledge_item]}
+                Canon._insert(connection,ctx,'knowledge_scopes',knowledge_scope,payload)
+                Canon._insert(connection,ctx,'scope_snapshots',knowledge_snapshot,
+                    {**payload,'knowledge_scope_id':knowledge_scope},extra_columns=('knowledge_scope_id',),extra_values=(knowledge_scope,))
+            assert notebook_repository.bind_verified(notebook_context,ctx.notebook_id,binding_kind='knowledge_context',
+                record_id=knowledge_snapshot,version_id=None,now=datetime.now(timezone.utc)) is False
+            items.append(QuestionInputSource(**knowledge_item))
+        context=QuestionContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version,
+            notebook_id=ctx.notebook_id)
+        run='s42l2b-context-run-'+scope.suffix
+        selected=tuple(items)
+        source=selected[0].source_id if selected else None
+        version=selected[0].source_version_id if selected else None
+        stored=PostgresQuestionAnsweringRepository(store,_L2bNoObjectRead()).persist_completed(context,
+            run_id=run,source_id=source,source_version_id=version,question='S42 synthetic context question',
+            selection=TextModelSelection('OLLAMA','https://s42-model.invalid','s42l2b-profile-'+scope.suffix,
+                's42l2b-deployment-'+scope.suffix,'s42-synthetic-model',1,provider_kind='server_internal'),
+            evidence=(),result=GroundedTextResult('',(),True,{}),provider_called=False,context_mode=mode,context_sources=selected)
+        assert stored.run_id==run and stored.insufficient is True
+        with psycopg.connect(scope.admin) as connection:
+            rows=connection.execute('SELECT r.state,r.created_by,r.canonical_json->>\'context_mode\',s.canonical_json '
+                'FROM runs r JOIN run_snapshots rs ON rs.tenant_id=r.tenant_id AND rs.workspace_id=r.workspace_id AND rs.run_id=r.record_id '
+                'JOIN scope_snapshots s ON s.tenant_id=rs.tenant_id AND s.workspace_id=rs.workspace_id AND s.record_id=rs.scope_snapshot_id '
+                'WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s',(ctx.tenant_id,ctx.workspace_id,run)).fetchall()
+            assert len(rows)==1 and rows[0][:3]==('completed',ctx.actor_id,mode)
+            frozen=rows[0][3]
+            expected_items=[{'origin':item.origin,'context_item_id':item.context_item_id,'source_id':item.source_id,
+                'source_version_id':item.source_version_id,'digest_sha256':item.digest_sha256} for item in selected]
+            assert frozen['items']==expected_items
+            assert frozen['source_version_ids']==[item.source_version_id for item in selected]
+            bindings=connection.execute('SELECT binding_kind,record_id,version_id FROM notebook_bindings '
+                'WHERE tenant_id=%s AND workspace_id=%s AND notebook_id=%s',
+                (ctx.tenant_id,ctx.workspace_id,ctx.notebook_id)).fetchall()
+            if knowledge_snapshot is not None:
+                assert ('knowledge_context',knowledge_snapshot,None) in bindings
+                assert ('source',knowledge_item['source_id'],knowledge_item['source_version_id']) not in bindings
+            assert sum(item[0]=='source' for item in bindings)==(1 if mode=='mixed' else 0)
+            originals=connection.execute('SELECT event_id,actor_id FROM audit_events WHERE tenant_id=%s AND workspace_id=%s '
+                "AND action='question.answer' AND target_type='Run' AND target_id=%s AND outcome='succeeded'",
+                (ctx.tenant_id,ctx.workspace_id,run)).fetchall()
+            assert len(originals)==1 and originals[0][1]==ctx.actor_id
+            if not _l2b_assert_completed_source(connection,scope,origin=originals[0][0],store_name='question',
+                    action='question.answer',target_type='Run',target_id=run):
+                pytest.fail('QUESTION_CONTEXT_MODE_SOURCE_INTENT_MISSING; actual_business_and_origin_saved; mode='+mode,pytrace=False)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize('case',('source_acl_deny','wrong_notebook','snapshot_item_mismatch'))
+def test_l2b_existing_0069_knowledge_notification_boundary_rejects_current_mismatch(case):
+    """실제 Q 완료 뒤 알림 경계의 knowledge/raw deny·Notebook·불변 snapshot 항목을 따로 검사한다."""
+    from dataclasses import replace
+    from datetime import datetime,timezone
+    from unittest.mock import patch
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    from daon_user_api.notebook import NotebookContext
+    from daon_user_api.notebook_postgres import PostgresNotebookRepository
+    from daon_user_api.question_answering import TextModelSelection,GroundedTextResult
+    from daon_user_api.question_answering_service import QuestionInputSource
+    from daon_user_api.question_answering_postgres import PostgresQuestionAnsweringRepository,QuestionContext
+    from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository as Canon
+    from daon_user_api.notification_events import enqueue_completed_event
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    checked=[]
+    accepted=[]
+    try:
+        raw_source,raw_version=_l2b_bound_pdf(scope,store)
+        notebooks=PostgresNotebookRepository(store)
+        notebook_context=NotebookContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version)
+        notebook,replayed=notebooks.create(notebook_context,title='S42 synthetic knowledge boundary',description=None,
+            idempotency_key='s42l2b-knowledge-boundary-'+scope.suffix,request_fingerprint='d'*64,now=datetime.now(timezone.utc))
+        assert replayed is False
+        scope.context=ctx=replace(ctx,notebook_id=notebook.notebook_id)
+        assert notebooks.bind_verified(notebook_context,ctx.notebook_id,binding_kind='source',record_id=raw_source,
+            version_id=raw_version,now=datetime.now(timezone.utc)) is False
+        knowledge_scope='s42l2b-negative-scope-'+scope.suffix
+        knowledge_snapshot='s42l2b-negative-snapshot-'+scope.suffix
+        with psycopg.connect(scope.admin) as connection:
+            for name,value in (('tenant_id',ctx.tenant_id),('workspace_id',ctx.workspace_id),('actor_id',ctx.actor_id)):
+                connection.execute('SELECT set_config(%s,%s,true)',('app.'+name,value))
+            knowledge_rows=connection.execute('SELECT source_id,record_id,digest_sha256 FROM source_versions '
+                'WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                (ctx.tenant_id,ctx.workspace_id,'s24-source-version-'+scope.suffix)).fetchall()
+            assert len(knowledge_rows)==1
+            knowledge_source,knowledge_version,digest=knowledge_rows[0]
+            item={'origin':'daon_knowledge','context_item_id':knowledge_snapshot,'source_id':knowledge_source,
+                'source_version_id':knowledge_version,'digest_sha256':digest}
+            reference_item=dict(item)
+            if case=='snapshot_item_mismatch':
+                # 원행을 UPDATE하지 않는다. 처음부터 다른 불변 항목을 가진 실제 snapshot을 준비한다.
+                reference_item['digest_sha256']=('0' if digest[0]!='0' else '1')+digest[1:]
+            payload={'mode':'daon_priority','source_version_ids':[knowledge_version],'items':[reference_item]}
+            Canon._insert(connection,ctx,'knowledge_scopes',knowledge_scope,payload)
+            Canon._insert(connection,ctx,'scope_snapshots',knowledge_snapshot,{**payload,'knowledge_scope_id':knowledge_scope},
+                extra_columns=('knowledge_scope_id',),extra_values=(knowledge_scope,))
+        assert notebooks.bind_verified(notebook_context,ctx.notebook_id,binding_kind='knowledge_context',
+            record_id=knowledge_snapshot,version_id=None,now=datetime.now(timezone.utc)) is False
+        target_notebook=ctx.notebook_id
+        if case=='wrong_notebook':
+            other,replayed=notebooks.create(notebook_context,title='S42 synthetic other Notebook',description=None,
+                idempotency_key='s42l2b-other-knowledge-'+scope.suffix,request_fingerprint='e'*64,now=datetime.now(timezone.utc))
+            assert replayed is False and other.notebook_id!=ctx.notebook_id
+            target_notebook=other.notebook_id
+        run='s42l2b-knowledge-negative-run-'+scope.suffix
+        def inspect_after_real_completion(connection,context,**kwargs):
+            _l2b_assert_uncommitted_completion(connection,scope,'question',run,kwargs['origin_event_id'])
+            # 실제 완료·정식 원감사·원 Notebook 결속이 먼저 성공한 상태에서만 알림 접근을 검사한다.
+            targets=(knowledge_version,raw_version) if case=='source_acl_deny' else (None,)
+            for denied_version in targets:
+                with connection.transaction(force_rollback=True):
+                    if denied_version is not None:
+                        connection.execute('INSERT INTO identity_auth_source_access '
+                            '(tenant_id,workspace_id,user_id,source_version_id,allowed,version,updated_at) '
+                            'VALUES(%s,%s,%s,%s,0,1,now())',(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,denied_version))
+                    result=enqueue_completed_event(connection,context,origin_event_id=kwargs['origin_event_id'],notebook_id=target_notebook)
+                    assert result==0
+                    with connection.transaction(force_rollback=True):
+                        try:
+                            connection.execute('SELECT public.enqueue_completed_notification(%s,%s)',
+                                (kwargs['origin_event_id'],target_notebook))
+                        except psycopg.Error as error:
+                            assert error.sqlstate in {'42501','23514'}
+                            checked.append(denied_version or case)
+                        else:
+                            accepted.append(denied_version or case)
+            # 시험용 정책 주입은 savepoint로 복구한다. 업무/원감사 저장은 대체하지 않는다.
+            return 0
+        with patch('daon_user_api.notification_events.enqueue_completed_event',side_effect=inspect_after_real_completion):
+            stored=PostgresQuestionAnsweringRepository(store,_L2bNoObjectRead()).persist_completed(
+                QuestionContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,ctx.trace_id,ctx.policy_version,notebook_id=ctx.notebook_id),
+                run_id=run,source_id=raw_source,source_version_id=raw_version,question='S42 synthetic knowledge boundary',
+                selection=TextModelSelection('OLLAMA','https://s42-model.invalid','s42l2b-profile-'+scope.suffix,
+                    's42l2b-deployment-'+scope.suffix,'s42-synthetic-model',1,provider_kind='server_internal'),
+                evidence=(),result=GroundedTextResult('',(),True,{}),provider_called=False,context_mode='mixed',
+                context_sources=(QuestionInputSource('raw_source',raw_source,raw_source,raw_version),QuestionInputSource(**item)))
+        assert stored.run_id==run
+        assert len(checked)==(2 if case=='source_acl_deny' else 1) and accepted==[]
+        with psycopg.connect(scope.admin) as connection:
+            assert connection.execute('SELECT r.state FROM runs r JOIN run_results rr ON rr.tenant_id=r.tenant_id '
+                'AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s',
+                (ctx.tenant_id,ctx.workspace_id,run)).fetchall()==[('completed',)]
+            assert connection.execute('SELECT count(*) FROM audit_events WHERE tenant_id=%s AND workspace_id=%s '
+                "AND target_id=%s AND action='question.answer' AND outcome='succeeded'",
+                (ctx.tenant_id,ctx.workspace_id,run)).fetchone()==(1,)
+            assert connection.execute('SELECT 1 FROM notebook_bindings WHERE tenant_id=%s AND workspace_id=%s '
+                "AND notebook_id=%s AND binding_kind='knowledge_context' AND record_id=%s",
+                (ctx.tenant_id,ctx.workspace_id,ctx.notebook_id,knowledge_snapshot)).fetchone()==(1,)
+            assert connection.execute('SELECT canonical_json->\'items\' FROM scope_snapshots WHERE tenant_id=%s '
+                'AND workspace_id=%s AND record_id=%s',(ctx.tenant_id,ctx.workspace_id,knowledge_snapshot)).fetchone()==([reference_item],)
+            for table in ('notification_source_outbox','notifications','notification_details','notification_audit_outbox'):
+                assert connection.execute(f'SELECT count(*) FROM public.{table} WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(0,)
+    finally:
+        store.close()
+
+
+def test_l2b_existing_0069_new_audit_cannot_republish_committed_question_run():
+    """commit된 실제 완료 Run에 새 감사 ID만 붙여 현재 사건으로 재발행할 수 없다."""
+    import hashlib
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore,CloudAccessContext
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    try:
+        run,complete=_l2b_prepared_completion(scope,store,'question')
+        complete()
+        with psycopg.connect(scope.admin) as connection:
+            originals=connection.execute('SELECT event_id FROM audit_events WHERE tenant_id=%s AND workspace_id=%s '
+                "AND action='question.answer' AND target_type='Run' AND target_id=%s AND outcome='succeeded'",
+                (ctx.tenant_id,ctx.workspace_id,run)).fetchall()
+            assert len(originals)==1
+            origin=originals[0][0]
+            assert origin=='audit-'+hashlib.sha256(run.encode('utf-8')).hexdigest()[:32]
+            assert connection.execute('SELECT origin_event_id,source_store,recipient_id,state FROM notification_source_outbox '
+                'WHERE tenant_id=%s AND workspace_id=%s',(ctx.tenant_id,ctx.workspace_id)).fetchall()==[
+                    (origin,'question',ctx.actor_id,'pending')]
+            assert connection.execute('SELECT state FROM runs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s',
+                (ctx.tenant_id,ctx.workspace_id,run)).fetchone()==('completed',)
+        before=_l2b_completion_snapshot(scope)
+        copied='s42l2b-copied-audit-'+scope.suffix
+        assert copied!=origin
+        denied=[]
+        accepted=[]
+        try:
+            with store._transaction(CloudAccessContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'view')) as connection:
+                with connection.transaction(force_rollback=True):
+                    assert connection.execute('SELECT current_user').fetchone()==('daon_app',)
+                    inserted=connection.execute('INSERT INTO audit_events(event_id,tenant_id,workspace_id,actor_id,action,'
+                        'target_type,target_id,outcome,trace_id,policy_version,before_value,after_value,metadata,occurred_at) '
+                        'SELECT %s,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,'
+                        'before_value,after_value,metadata,occurred_at FROM audit_events '
+                        'WHERE tenant_id=%s AND workspace_id=%s AND event_id=%s RETURNING event_id',
+                        (copied,ctx.tenant_id,ctx.workspace_id,origin)).fetchall()
+                    assert inserted==[(copied,)]
+                    # 원업무는 이미 commit됐다. 새 감사행의 xmin만 현재 transaction에 속한다.
+                    assert connection.execute('SELECT r.xmin<>a.xmin FROM runs r JOIN audit_events a '
+                        'ON a.tenant_id=r.tenant_id AND a.workspace_id=r.workspace_id AND a.target_id=r.record_id '
+                        'WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s AND a.event_id=%s',
+                        (ctx.tenant_id,ctx.workspace_id,run,copied)).fetchone()==(True,)
+                    try:
+                        result=connection.execute('SELECT public.enqueue_completed_notification(%s,%s)',
+                            (copied,ctx.notebook_id)).fetchone()[0]
+                    except psycopg.Error as error:
+                        assert error.sqlstate in {'42501','23514'}
+                        denied.append(error.sqlstate)
+                    else:
+                        accepted.append(result)
+        finally:
+            # 반례가 허용되는 RED여도 복사 감사와 추가 source는 전부 rollback해야 한다.
+            assert _l2b_completion_snapshot(scope)==before
+        if not denied or accepted:
+            pytest.fail('COMMITTED_QUESTION_RUN_REPUBLISHED_WITH_NEW_AUDIT_ID; direct_app_function_not_rejected',pytrace=False)
+    finally:
+        store.close()
+
+
+def test_l2a_existing_0069_new_audit_cannot_republish_committed_studio_record():
+    """commit된 실제 Studio 전달 기록도 새 감사 ID만 붙여 다시 발행할 수 없다."""
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore,CloudAccessContext
+    scope=_pending_l2a_delivery()
+    ctx=scope.context
+    with psycopg.connect(scope.admin) as connection:
+        assert connection.execute('SELECT a.actor_id,a.action,a.target_type,a.target_id FROM audit_events a '
+            'JOIN deliveries d ON d.tenant_id=a.tenant_id AND d.workspace_id=a.workspace_id AND d.record_id=a.target_id '
+            "WHERE a.tenant_id=%s AND a.workspace_id=%s AND a.event_id=%s AND a.outcome='succeeded'",
+            (ctx.tenant_id,ctx.workspace_id,scope.origin_event_id)).fetchall()==[
+                (ctx.actor_id,'studio.delivery','deliveries',scope.delivery_id)]
+        assert connection.execute('SELECT origin_event_id,source_store,recipient_id,state FROM notification_source_outbox '
+            'WHERE tenant_id=%s AND workspace_id=%s',(ctx.tenant_id,ctx.workspace_id)).fetchall()==[
+                (scope.origin_event_id,'studio',ctx.actor_id,'pending')]
+    before=_l2b_completion_snapshot(scope)
+    copied='s42l2a-copied-audit-'+scope.suffix
+    assert copied!=scope.origin_event_id
+    denied=[]
+    accepted=[]
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    try:
+        try:
+            with store._transaction(CloudAccessContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'view')) as connection:
+                with connection.transaction(force_rollback=True):
+                    assert connection.execute('SELECT current_user').fetchone()==('daon_app',)
+                    inserted=connection.execute('INSERT INTO audit_events(event_id,tenant_id,workspace_id,actor_id,action,'
+                        'target_type,target_id,outcome,trace_id,policy_version,before_value,after_value,metadata,occurred_at) '
+                        'SELECT %s,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,'
+                        'before_value,after_value,metadata,occurred_at FROM audit_events '
+                        'WHERE tenant_id=%s AND workspace_id=%s AND event_id=%s RETURNING event_id',
+                        (copied,ctx.tenant_id,ctx.workspace_id,scope.origin_event_id)).fetchall()
+                    assert inserted==[(copied,)]
+                    assert connection.execute('SELECT d.xmin<>a.xmin FROM deliveries d JOIN audit_events a '
+                        'ON a.tenant_id=d.tenant_id AND a.workspace_id=d.workspace_id AND a.target_id=d.record_id '
+                        'WHERE d.tenant_id=%s AND d.workspace_id=%s AND d.record_id=%s AND a.event_id=%s',
+                        (ctx.tenant_id,ctx.workspace_id,scope.delivery_id,copied)).fetchone()==(True,)
+                    try:
+                        result=connection.execute('SELECT public.enqueue_studio_notification(%s,%s,%s)',
+                            (copied,ctx.notebook_id,ctx.actor_id)).fetchone()[0]
+                    except psycopg.Error as error:
+                        assert error.sqlstate in {'42501','23514'}
+                        denied.append(error.sqlstate)
+                    else:
+                        accepted.append(result)
+        finally:
+            assert _l2b_completion_snapshot(scope)==before
+        if not denied or accepted:
+            pytest.fail('COMMITTED_STUDIO_RECORD_REPUBLISHED_WITH_NEW_AUDIT_ID; direct_app_function_not_rejected',pytrace=False)
+    finally:
+        store.close()
+
+
+def test_l2a_existing_0069_copied_receipt_key_cannot_republish_current_studio_record():
+    """현재 Tx의 진짜 기록도 다른 receipt key와 정식 감사 hash를 복사해 중복 발행할 수 없다."""
+    import hashlib
+    from unittest.mock import patch
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    from daon_user_api.studio_workspace_postgres import PostgresStudioWorkspaceRepository
+    from daon_user_api.notification_events import enqueue_studio_event
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    key='s42l2a-real-record-key'
+    copied_key='s42l2a-copied-receipt-key'
+    operation='studio.delivery'
+    copied_hash=hashlib.sha256('|'.join((ctx.tenant_id,ctx.workspace_id,ctx.actor_id,operation,copied_key)).encode()).hexdigest()[:32]
+    copied_audit='audit-'+copied_hash
+    denied=[]
+    accepted=[]
+    reached=[]
+    before=_l2b_completion_snapshot(scope)
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    def actual_enqueue_then_probe(connection,context,**kwargs):
+        assert enqueue_studio_event(connection,context,**kwargs)==1
+        reached.append('real_source_inserted')
+        origin=kwargs['origin_event_id']
+        target=kwargs['target_id']
+        assert target!='delivery-'+copied_hash and origin!=copied_audit
+        with connection.transaction(force_rollback=True):
+            receipts=connection.execute('INSERT INTO idempotency_records(tenant_id,workspace_id,actor_id,operation,'
+                'idempotency_key,request_fingerprint,result,status,expires_at) '
+                'SELECT tenant_id,workspace_id,actor_id,operation,%s,request_fingerprint,result,status,expires_at '
+                'FROM idempotency_records WHERE tenant_id=%s AND workspace_id=%s AND actor_id=%s '
+                "AND operation='studio.delivery' AND idempotency_key=%s RETURNING result->>'record_id'",
+                (copied_key,ctx.tenant_id,ctx.workspace_id,ctx.actor_id,key)).fetchall()
+            assert receipts==[(target,)]
+            audits=connection.execute('INSERT INTO audit_events(event_id,tenant_id,workspace_id,actor_id,action,'
+                'target_type,target_id,outcome,trace_id,policy_version,before_value,after_value,metadata,occurred_at) '
+                'SELECT %s,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,'
+                'before_value,after_value,metadata,occurred_at FROM audit_events '
+                'WHERE tenant_id=%s AND workspace_id=%s AND event_id=%s RETURNING event_id',
+                (copied_audit,ctx.tenant_id,ctx.workspace_id,origin)).fetchall()
+            assert audits==[(copied_audit,)]
+            assert connection.execute('SELECT current_user').fetchone()==('daon_app',)
+            try:
+                result=connection.execute('SELECT public.enqueue_studio_notification(%s,%s,%s)',
+                    (copied_audit,ctx.notebook_id,ctx.actor_id)).fetchone()[0]
+            except psycopg.Error as error:
+                assert error.sqlstate in {'42501','23514'}
+                denied.append(error.sqlstate)
+            else:
+                accepted.append(result)
+        # 직접 호출이 허용되는 결함이어도 정상 업무/source를 포함하여 이 시험 scope의 쓰기를 되돌린다.
+        raise RuntimeError('S42 복사 receipt 반례 종료')
+    try:
+        with patch('daon_user_api.notification_events.enqueue_studio_event',side_effect=actual_enqueue_then_probe):
+            with pytest.raises(RuntimeError,match='S42 복사 receipt 반례 종료'):
+                PostgresStudioWorkspaceRepository(store).record_action(ctx,'delivery',
+                    {'output_version_id':scope.version,'approval_id':scope.approval,'recipient':'workspace_recipient'},key)
+        assert _l2b_completion_snapshot(scope)==before
+        assert reached==['real_source_inserted']
+        if not denied or accepted:
+            pytest.fail('CURRENT_STUDIO_RECORD_REPUBLISHED_WITH_COPIED_RECEIPT_KEY; target_scope_hash_not_bound',pytrace=False)
+    finally:
+        store.close()
+
+
+def _l2b_assert_materialized_completion(domain):
+    """실제 완료 의도를 실제 소비한 후 새 저장소에서 읽는다. Studio 사건으로 치환하지 않는다."""
+    import psycopg
+    import daon_user_api.notification_events as events
+    from daon_user_api.cloud_storage import PostgresCloudStore,CloudAccessContext
+    from daon_user_api.notification_postgres import PostgresNotificationRepository
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    try:
+        run,complete=_l2b_prepared_completion(scope,store,domain)
+        complete()
+    finally:
+        store.close()
+    with psycopg.connect(scope.admin) as connection:
+        sources=connection.execute('SELECT s.source_event_id,s.origin_event_id,s.source_store,s.recipient_id,'
+            's.action,s.target_type,s.target_id,s.kind,s.notebook_id,s.state,s.version,s.delivered_at,s.occurred_at '
+            'FROM notification_source_outbox s JOIN audit_events a ON a.tenant_id=s.tenant_id '
+            'AND a.workspace_id=s.workspace_id AND a.event_id=s.origin_event_id '
+            "WHERE s.tenant_id=%s AND s.workspace_id=%s AND a.outcome='succeeded'",
+            (ctx.tenant_id,ctx.workspace_id)).fetchall()
+        assert len(sources)==1
+        source=sources[0]
+        action,target_type=('canon.transition','ProcessingRun') if domain=='document' else ('question.answer','Run')
+        assert source[2:12]==(domain,ctx.actor_id,action,target_type,run,'run_state',ctx.notebook_id,'pending',1,None)
+        for table in ('notifications','notification_details','notification_audit_outbox','security_audit_events'):
+            assert connection.execute(f'SELECT count(*) FROM public.{table} WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(0,)
+        if domain=='document':
+            version=connection.execute('SELECT source_version_id FROM processing_runs WHERE tenant_id=%s '
+                'AND workspace_id=%s AND record_id=%s',(ctx.tenant_id,ctx.workspace_id,run)).fetchone()[0]
+            link=f'/notebooks/{ctx.notebook_id}?source_version_id={version}'
+            title,summary='문서 처리 검토 필요','문서 처리 Run이 완료되었으며 검토가 필요합니다.'
+        else:
+            link=f'/notebooks/{ctx.notebook_id}?run_id={run}'
+            title,summary='질문 처리 완료','질문 처리 Run이 완료되었으며 근거가 부족합니다.'
+    # 부재/미구현이면 이 실제 source 준비 뒤에만 실패한다. 대역 publish나 Studio 소비를 사용하지 않는다.
+    assert events.materialize_pending_completed(scope.app,context=ctx,limit=100)==1
+    with psycopg.connect(scope.admin) as connection:
+        rows=connection.execute('SELECT n.notification_id,n.recipient_id,n.source_event_id,n.version,n.read_at,'
+            'd.source_store,d.origin_event_id,d.resource_type,d.resource_id,d.notebook_id,d.deep_link,d.title,d.summary,'
+            'd.kind,d.severity,d.trace_id,d.policy_version,d.delivery_state '
+            'FROM notifications n JOIN notification_details d ON d.tenant_id=n.tenant_id AND d.notification_id=n.notification_id '
+            'WHERE n.tenant_id=%s AND n.workspace_id=%s',(ctx.tenant_id,ctx.workspace_id)).fetchall()
+        assert len(rows)==1
+        item=rows[0]
+        assert item[1:]==(ctx.actor_id,source[0],1,None,domain,source[1],target_type,run,ctx.notebook_id,link,
+            title,summary,'run_state','info',ctx.trace_id,ctx.policy_version,'delivered')
+        audits=connection.execute('SELECT event_id,action,state,version,draft FROM notification_audit_outbox '
+            'WHERE tenant_id=%s AND workspace_id=%s',(ctx.tenant_id,ctx.workspace_id)).fetchall()
+        assert len(audits)==1 and audits[0][1:4]==('notification.created','pending',1)
+        draft=audits[0][4]
+        assert (draft['tenant_id'],draft['workspace_id'],draft['target_type'],draft['target_id'],draft['trace_id'],
+            draft['policy_version'],draft['metadata'])==(
+                ctx.tenant_id,ctx.workspace_id,'notification',item[0],ctx.trace_id,ctx.policy_version,{'source_event_id':source[0]})
+        lineage=connection.execute('SELECT s.state,s.version,n.created_at,s.delivered_at,'
+            "(a.draft->>'occurred_at')::timestamptz,s.occurred_at,o.occurred_at,"
+            'n.xmin=d.xmin AND d.xmin=s.xmin AND s.xmin=a.xmin '
+            'FROM notifications n JOIN notification_details d ON d.tenant_id=n.tenant_id AND d.notification_id=n.notification_id '
+            'JOIN notification_source_outbox s ON s.tenant_id=n.tenant_id AND s.workspace_id=n.workspace_id '
+            'AND s.source_event_id=n.source_event_id AND s.recipient_id=n.recipient_id '
+            'JOIN notification_audit_outbox a ON a.tenant_id=n.tenant_id AND a.notification_id=n.notification_id '
+            'JOIN audit_events o ON o.tenant_id=s.tenant_id AND o.workspace_id=s.workspace_id AND o.event_id=s.origin_event_id '
+            'WHERE n.tenant_id=%s AND n.notification_id=%s',(ctx.tenant_id,item[0])).fetchall()
+        assert len(lineage)==1
+        state,version,created,delivered,audit_time,source_time,origin_time,same_tx=lineage[0]
+        assert (state,version,same_tx)==('delivered',2,True)
+        assert created>=delivered and audit_time==created
+        assert source_time==origin_time==source[12]
+        # 알림 감사의도는 소비 transaction 안에, 실제 중앙 전달은 commit 후 별도 경계다.
+        assert connection.execute('SELECT count(*) FROM security_audit_events WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(0,)
+    before_replay=_l2b_completion_snapshot(scope)
+    # 새 저장소 객체가 여는 실제 새 connection에서 같은 지속 알림/상세를 읽는다. 새 process 증거는 아니다.
+    repository=PostgresNotificationRepository(scope.app,context=CloudAccessContext(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,'view'))
+    reopened=repository.notifications_for(tenant_id=ctx.tenant_id,recipient_id=ctx.actor_id)
+    assert len(reopened)==1
+    notification=reopened[0]
+    assert (notification.notification_id,notification.recipient_id,notification.resource_type,notification.resource_id,
+        notification.deep_link,notification.title,notification.summary,notification.audit_event_id,notification.version,
+        notification.read_at)==(item[0],ctx.actor_id,target_type,run,link,title,summary,audits[0][0],1,None)
+    assert repository.notification_for(tenant_id=ctx.tenant_id,recipient_id=ctx.actor_id,notification_id=item[0])==notification
+    assert events.materialize_pending_completed(scope.app,context=ctx,limit=100)==0
+    assert _l2b_completion_snapshot(scope)==before_replay
+
+
+def test_l2b_existing_0069_document_completed_materializes_and_reopens_without_duplicate():
+    """문서 검토 필요 완료의 실제 pending 의도→자료 결속 알림→새 연결 재조회·중복0을 요구한다."""
+    _l2b_assert_materialized_completion('document')
+
+
+def test_l2b_existing_0069_question_completed_materializes_and_reopens_without_duplicate():
+    """질문 insufficient 완료의 실제 pending 의도→Run 결속 알림→새 연결 재조회·중복0을 요구한다."""
+    _l2b_assert_materialized_completion('question')
+
+
+def _pending_l2b_completed(domain):
+    """실제 완료 원장/정식 감사/source를 먼저 commit한다. 소비나 알림 발행을 대체하지 않는다."""
+    import psycopg
+    from daon_user_api.cloud_storage import PostgresCloudStore
+    scope=_existing_0069_studio_case()
+    ctx=scope.context
+    store=PostgresCloudStore(scope.app,min_size=0,max_size=2,notification_inbox_enabled=True)
+    try:
+        scope.completed_run,complete=_l2b_prepared_completion(scope,store,domain)
+        complete()
+    finally:
+        store.close()
+    with psycopg.connect(scope.admin) as connection:
+        rows=connection.execute('SELECT source_event_id,origin_event_id,source_store,recipient_id,state,version,delivered_at '
+            'FROM notification_source_outbox WHERE tenant_id=%s AND workspace_id=%s',
+            (ctx.tenant_id,ctx.workspace_id)).fetchall()
+        assert len(rows)==1 and rows[0][2:]==(domain,ctx.actor_id,'pending',1,None)
+        scope.source_event_id,scope.origin_event_id=rows[0][:2]
+        if domain=='document':
+            query='SELECT source_version_id FROM processing_runs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s'
+        else:
+            query="SELECT canonical_json->>'source_version_id' FROM runs WHERE tenant_id=%s AND workspace_id=%s AND record_id=%s"
+        scope.completed_source_version=connection.execute(query,(ctx.tenant_id,ctx.workspace_id,scope.completed_run)).fetchone()[0]
+        assert scope.completed_source_version is not None
+        for table in ('notifications','notification_details','notification_audit_outbox'):
+            assert connection.execute(f'SELECT count(*) FROM {table} WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(0,)
+    return scope
+
+
+def test_l2b_existing_0069_completed_consumer_sql_failure_after_detail_keeps_pending():
+    """실제 detail/created 의도가 생긴 뒤 같은 소비 connection의 SQL 오류는 모두 rollback한다."""
+    from unittest.mock import patch
+    import psycopg
+    import daon_user_api.notification_events as events
+    from daon_user_api.notification import NotificationError
+    scope=_pending_l2b_completed('document')
+    ctx=scope.context
+    before=_l2b_completion_snapshot(scope)
+    real_connect=psycopg.connect
+    phases=[]
+    faults=[]
+    @contextmanager
+    def observed_connect(*args,**kwargs):
+        with real_connect(*args,**kwargs) as actual:
+            class ObservedConnection:
+                def __getattr__(self,name):
+                    return getattr(actual,name)
+                def execute(self,query,params=None):
+                    cursor=actual.execute(query,params)
+                    if query=='SELECT public.materialize_completed_notification(%s,%s)':
+                        parents=actual.execute('SELECT n.notification_id,d.resource_id FROM notifications n JOIN notification_details d '
+                            'ON d.tenant_id=n.tenant_id AND d.notification_id=n.notification_id '
+                            'WHERE n.tenant_id=%s AND n.workspace_id=%s AND n.recipient_id=%s',
+                            (ctx.tenant_id,ctx.workspace_id,ctx.actor_id)).fetchall()
+                        assert len(parents)==1 and parents[0][1]==scope.completed_run
+                        audits=actual.execute("SELECT draft->>'action',draft->>'target_id' FROM public.pending_notification_audits(100)").fetchall()
+                        assert audits==[('notification.created',parents[0][0])]
+                        phases.append('ACTUAL_DETAIL_AND_CREATED_INTENT')
+                        try:
+                            actual.execute('SELECT 1/0')
+                        except psycopg.Error as error:
+                            faults.append(error.sqlstate)
+                            raise
+                    return cursor
+            yield ObservedConnection()
+    with patch('psycopg.connect',new=observed_connect):
+        with pytest.raises(NotificationError) as caught:
+            events.materialize_pending_completed(scope.app,context=ctx,limit=100)
+    assert (caught.value.code,caught.value.http_status)==('DATABASE_UNAVAILABLE',503)
+    assert phases==['ACTUAL_DETAIL_AND_CREATED_INTENT'] and faults==['22012']
+    assert _l2b_completion_snapshot(scope)==before
+
+
+def test_l2b_existing_0069_completed_consumer_current_source_deny_suppresses():
+    """원업무 확정 후 실제 Source ACL 철회는 현재 소비에서 suppressed이며 알림 본문을 만들지 않는다."""
+    import psycopg
+    import daon_user_api.notification_events as events
+    scope=_pending_l2b_completed('question')
+    ctx=scope.context
+    with psycopg.connect(scope.admin) as connection:
+        connection.execute('INSERT INTO identity_auth_source_access '
+            '(tenant_id,workspace_id,user_id,source_version_id,allowed,version,updated_at) '
+            'VALUES(%s,%s,%s,%s,0,1,now())',(ctx.tenant_id,ctx.workspace_id,ctx.actor_id,scope.completed_source_version))
+        source_before=connection.execute('SELECT to_jsonb(s) FROM notification_source_outbox s WHERE tenant_id=%s '
+            'AND workspace_id=%s AND source_event_id=%s',(ctx.tenant_id,ctx.workspace_id,scope.source_event_id)).fetchone()[0]
+    before=_l2b_completion_snapshot(scope)
+    assert events.materialize_pending_completed(scope.app,context=ctx,limit=100)==0
+    after=_l2b_completion_snapshot(scope)
+    assert {key:value for key,value in after.items() if key!='notification_source_outbox'}=={
+        key:value for key,value in before.items() if key!='notification_source_outbox'}
+    with psycopg.connect(scope.admin) as connection:
+        source_after=connection.execute('SELECT to_jsonb(s) FROM notification_source_outbox s WHERE tenant_id=%s '
+            'AND workspace_id=%s AND source_event_id=%s',(ctx.tenant_id,ctx.workspace_id,scope.source_event_id)).fetchone()[0]
+        assert (source_after['state'],source_after['version'])==('suppressed',2) and source_after['delivered_at'] is not None
+        assert {key:value for key,value in source_before.items() if key not in {'state','version','delivered_at'}}=={
+            key:value for key,value in source_after.items() if key not in {'state','version','delivered_at'}}
+        for table in ('notifications','notification_details','notification_audit_outbox'):
+            assert connection.execute(f'SELECT count(*) FROM {table} WHERE tenant_id=%s',(ctx.tenant_id,)).fetchone()==(0,)
+    assert events.materialize_pending_completed(scope.app,context=ctx,limit=100)==0
+    assert _l2b_completion_snapshot(scope)==after
+
+
+def test_l2b_existing_0069_completed_direct_false_preserves_pending_and_private_acl():
+    """현재 허용 source의 False 호출은 억제/ack하지 않고 private resolver는 app이 직접 실행할 수 없다."""
+    import psycopg
+    import daon_user_api.notification_events as events
+    scope=_pending_l2b_completed('document')
+    ctx=scope.context
+    before=_l2b_completion_snapshot(scope)
+    with psycopg.connect(scope.app,connect_timeout=3) as connection:
+        for name,value in (('tenant_id',ctx.tenant_id),('workspace_id',ctx.workspace_id),('actor_id',ctx.actor_id),('capability','view')):
+            connection.execute('SELECT set_config(%s,%s,true)',('app.'+name,value))
+        assert connection.execute('SELECT current_user').fetchone()==('daon_app',)
+        for _ in range(2):
+            assert connection.execute('SELECT public.materialize_completed_notification(%s,false)',
+                (scope.source_event_id,)).fetchone()==(None,)
+        with connection.transaction(force_rollback=True):
+            with pytest.raises(psycopg.Error) as denied:
+                connection.execute('SELECT public.current_completed_notification_target(%s)',(scope.source_event_id,))
+            assert denied.value.sqlstate=='42501'
+        assert connection.execute('SELECT current_user').fetchone()==('daon_app',)
+    assert _l2b_completion_snapshot(scope)==before
+    # False가 정상 source를 영구 억제하지 않아 이후 실제 소비가 가능해야 한다.
+    assert events.materialize_pending_completed(scope.app,context=ctx,limit=100)==1
 
 
 def test_l2a_existing_0069_last_recipient_policy_sql_failure_cannot_report_success():

@@ -216,6 +216,137 @@ def enqueue_studio_event(connection, context, *, operation, target_type, target_
     return inserted
 
 
+@dataclass(frozen=True)
+class _CompletedRecipientScope:
+    tenant_id: str
+    workspace_id: str
+    actor_id: str
+    trace_id: str
+    policy_version: str
+    notebook_id: str
+
+
+def _completed_event_access(connection, context, *, origin_event_id, notebook_id=None, origin_actor_id=None):
+    """완료 원장에 저장된 본인/자료의 현재 접근만 읽는다. 현재 Tx의 발행 검사는 별도 SQL에서 한다."""
+    from .authorization import Action
+    from .open_law_source_access import _current_auth_grant, OpenLawAccessError, require_open_law_source_access
+    _checked_id(origin_event_id)
+    original=connection.execute('SELECT action,target_type,target_id FROM public.audit_events '
+        "WHERE tenant_id=%s AND workspace_id=%s AND event_id=%s AND actor_id=%s AND outcome='succeeded'",
+        (context.tenant_id,context.workspace_id,origin_event_id,
+         context.actor_id if origin_actor_id is None else _checked_id(origin_actor_id))).fetchone()
+    if original is None:
+        raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
+    action,target_type,target=original
+    if (action,target_type)==('canon.transition','ProcessingRun'):
+        row=connection.execute("SELECT r.created_by,r.canonical_json->>'notebook_id',ARRAY[r.source_version_id],"
+            "jsonb_build_array(jsonb_build_object('origin','raw_source','context_item_id',sv.source_id,"
+            "'source_id',sv.source_id,'source_version_id',sv.record_id,'digest_sha256',NULL)) "
+            'FROM public.processing_runs r JOIN public.source_versions sv ON sv.tenant_id=r.tenant_id '
+            'AND sv.workspace_id=r.workspace_id AND sv.record_id=r.source_version_id '
+            "WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s AND r.state='completed'",
+            (context.tenant_id,context.workspace_id,target)).fetchone()
+        if row is not None:
+            notebook_id=row[1]
+    elif (action,target_type)==('question.answer','Run'):
+        row=connection.execute('SELECT r.created_by,%s,s.canonical_json->\'source_version_ids\',s.canonical_json->\'items\' '
+            'FROM public.runs r JOIN public.run_snapshots rs ON rs.tenant_id=r.tenant_id AND rs.workspace_id=r.workspace_id '
+            'AND rs.run_id=r.record_id JOIN public.scope_snapshots s ON s.tenant_id=rs.tenant_id AND s.workspace_id=rs.workspace_id '
+            "AND s.record_id=rs.scope_snapshot_id WHERE r.tenant_id=%s AND r.workspace_id=%s AND r.record_id=%s AND r.state='completed'",
+            (notebook_id,context.tenant_id,context.workspace_id,target)).fetchone()
+    else:
+        raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
+    if row is None:
+        raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
+    if notebook_id is None:
+        # 과거 Notebook 미연결 작업에 가상 binding/수신 범위를 만들지 않는다.
+        return None
+    recipient=_CompletedRecipientScope(context.tenant_id,context.workspace_id,_checked_id(row[0]),
+        context.trace_id,context.policy_version,_checked_id(notebook_id))
+    if not isinstance(row[2],list) or not isinstance(row[3],list):
+        raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
+    items=row[3]
+    for item in items:
+        if (not isinstance(item,dict) or set(item)!={'origin','context_item_id','source_id','source_version_id','digest_sha256'}
+            or item['origin'] not in {'raw_source','daon_knowledge'}):
+            raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
+        for field in ('context_item_id','source_id','source_version_id'):
+            _checked_id(item[field])
+        if item['origin']=='daon_knowledge':
+            import re
+            if not isinstance(item['digest_sha256'],str) or re.fullmatch('[0-9a-f]{64}',item['digest_sha256']) is None:
+                raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
+        elif item['context_item_id']!=item['source_id']:
+            raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
+    if [item['source_version_id'] for item in items]!=row[2]:
+        raise NotificationError('NOTIFICATION_SOURCE_INVALID',400)
+    current=connection.execute("SELECT 1 FROM public.identity_memberships m JOIN public.identity_users u ON u.user_id=m.user_id "
+        'JOIN public.user_accounts a ON a.tenant_id=m.tenant_id AND a.user_id=m.user_id '
+        "WHERE m.tenant_id=%s AND m.user_id=%s AND u.state='active' "
+        "AND NOT EXISTS(SELECT 1 FROM public.identity_org_tenant_memberships o WHERE o.tenant_id=m.tenant_id "
+        "AND o.user_id=m.user_id AND o.state<>'active')",(recipient.tenant_id,recipient.actor_id)).fetchone()
+    if current is None:
+        return None
+    try:
+        _current_auth_grant(recipient,connection,Action.VIEW)
+        for item in items:
+            from psycopg.types.json import Jsonb
+            version=item['source_version_id']
+            _checked_id(version)
+            allowed=connection.execute('SELECT 1 FROM public.source_versions sv JOIN public.sources s '
+                'ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id '
+                'JOIN public.notebooks n ON n.tenant_id=sv.tenant_id AND n.workspace_id=sv.workspace_id '
+                'WHERE sv.tenant_id=%s AND sv.workspace_id=%s AND sv.record_id=%s AND sv.source_id=%s AND n.notebook_id=%s '
+                'AND ((%s=\'raw_source\' AND EXISTS(SELECT 1 FROM public.notebook_bindings b '
+                "WHERE b.tenant_id=n.tenant_id AND b.workspace_id=n.workspace_id AND b.notebook_id=n.notebook_id AND b.binding_kind='source' "
+                'AND b.record_id=sv.source_id AND b.version_id=sv.record_id)) '
+                "OR (%s='daon_knowledge' AND EXISTS(SELECT 1 FROM public.notebook_bindings b JOIN public.scope_snapshots k "
+                'ON k.tenant_id=b.tenant_id AND k.workspace_id=b.workspace_id AND k.record_id=b.record_id '
+                'JOIN public.knowledge_scopes ks ON ks.tenant_id=k.tenant_id AND ks.workspace_id=k.workspace_id AND ks.record_id=k.knowledge_scope_id '
+                'WHERE b.tenant_id=n.tenant_id AND b.workspace_id=n.workspace_id AND b.notebook_id=n.notebook_id '
+                "AND b.binding_kind='knowledge_context' AND b.version_id IS NULL AND b.record_id=%s "
+                "AND EXISTS(SELECT 1 FROM jsonb_array_elements(k.canonical_json->'items') x WHERE x=%s)))) "
+                'AND NOT EXISTS(SELECT 1 FROM public.notebook_source_unbindings u WHERE u.tenant_id=n.tenant_id '
+                'AND u.workspace_id=n.workspace_id AND u.notebook_id=n.notebook_id AND u.source_id=sv.source_id AND u.source_version_id=sv.record_id) '
+                'AND NOT EXISTS(SELECT 1 FROM public.deletion_requests d WHERE d.tenant_id=sv.tenant_id AND d.workspace_id=sv.workspace_id '
+                'AND d.source_id=sv.source_id AND d.source_active=false) '
+                'AND NOT EXISTS(SELECT 1 FROM public.identity_auth_source_access a WHERE a.tenant_id=sv.tenant_id AND a.workspace_id=sv.workspace_id '
+                'AND a.source_version_id=sv.record_id AND a.user_id=%s AND a.allowed=0) '
+                'AND NOT EXISTS(SELECT 1 FROM public.notebook_deletion_requests d WHERE d.tenant_id=n.tenant_id AND d.workspace_id=n.workspace_id '
+                "AND d.notebook_id=n.notebook_id AND d.state IN ('accepted','deleting','completed'))",
+                (recipient.tenant_id,recipient.workspace_id,version,item['source_id'],recipient.notebook_id,
+                 item['origin'],item['origin'],item['context_item_id'],Jsonb(item),recipient.actor_id)).fetchone()
+            if allowed is None:
+                return None
+            with _snapshot_read_scope(connection,recipient):
+                require_open_law_source_access(recipient,version,connection,action=Action.VIEW)
+            if not _website_snapshot_current(connection,recipient,version):
+                return None
+    except OpenLawAccessError as error:
+        from psycopg import Error
+        from psycopg.pq import TransactionStatus
+        cause=error
+        seen=set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if isinstance(cause,Error):
+                raise cause from None
+            cause=cause.__cause__ or cause.__context__
+        if connection.info.transaction_status==TransactionStatus.INERROR:
+            raise NotificationError('DATABASE_UNAVAILABLE',503) from None
+        return None
+    return recipient
+
+
+def enqueue_completed_event(connection, context, *, origin_event_id, notebook_id=None):
+    """현재 접근과 실제 원업무 Tx 검증 뒤에만 의도를 저장한다. 전달된 connection을 commit/close하지 않는다."""
+    recipient=_completed_event_access(connection,context,origin_event_id=origin_event_id,notebook_id=notebook_id)
+    if recipient is None:
+        return 0
+    return int(connection.execute('SELECT public.enqueue_completed_notification(%s,%s)',
+        (origin_event_id,recipient.notebook_id)).fetchone()[0])
+
+
 def materialize_pending_studio(dsn, *, context, limit=100):
     """현재 수신자의 등록 의도만 소비한다. DTO/감사의도 검증까지 실패하면 모두 rollback한다."""
     from psycopg import Error, connect
@@ -272,6 +403,88 @@ def materialize_pending_studio(dsn, *, context, limit=100):
                     if item.deep_link!=notebook_notification_link(source['notebook_id'],version):
                         raise NotificationError('DATABASE_RESPONSE_INVALID',503)
                     # 실제 INSERT trigger가 만든 draft를 같은 transaction에서 중앙 검증한다.
+                    draft=dict(result['draft'])
+                    draft['occurred_at']=_time(draft['occurred_at'])
+                    draft['actor_type']=ActorType(draft['actor_type'])
+                    draft['outcome']=AuditOutcome(draft['outcome'])
+                    serialize_notification_audit(AuditEventDraft(**draft))
+                    delivered+=1
+    except Error:
+        raise NotificationError('DATABASE_UNAVAILABLE',503) from None
+    return delivered
+
+
+def materialize_pending_completed(dsn, *, context, limit=100):
+    """실제 문서/질문 완료 의도만 현재 본인 범위로 소비한다. DB/DTO 실패는 소비 Tx 전체 rollback이다."""
+    from psycopg import Error,connect
+    from .audit import ActorType,AuditEventDraft,AuditOutcome
+    from .notification_postgres import _SELECT,_time,notification_from_row,serialize_notification_audit
+    if type(limit) is not int or not 1<=limit<=100:
+        raise NotificationError('INVALID_INPUT',400)
+    for value in (context.tenant_id,context.workspace_id,context.actor_id):
+        _checked_id(value)
+    delivered=0
+    try:
+        with connect(dsn,connect_timeout=3) as connection:
+            with connection.transaction():
+                for name,value in (('tenant_id',context.tenant_id),('workspace_id',context.workspace_id),
+                                   ('actor_id',context.actor_id),('capability','view')):
+                    connection.execute('SELECT set_config(%s,%s,true)',('app.'+name,value))
+                connection.execute("SET LOCAL statement_timeout='5s'")
+                connection.execute("SET LOCAL lock_timeout='2s'")
+                cursor=connection.execute('SELECT * FROM public.pending_completed_notification_sources(%s)',(limit,))
+                columns=[column.name for column in cursor.description]
+                sources=[dict(zip(columns,row)) for row in cursor.fetchall()]
+                for source in sources:
+                    scope=_CompletedRecipientScope(context.tenant_id,context.workspace_id,context.actor_id,
+                        source['trace_id'],source['policy_version'],source['notebook_id'])
+                    original=connection.execute('SELECT actor_id,action,target_type,target_id,trace_id,policy_version,occurred_at '
+                        "FROM public.audit_events WHERE tenant_id=%s AND workspace_id=%s AND event_id=%s AND outcome='succeeded'",
+                        (context.tenant_id,context.workspace_id,source['origin_event_id'])).fetchone()
+                    expected_action,expected_type=('canon.transition','ProcessingRun') if source['source_store']=='document' else ('question.answer','Run')
+                    event_id=source['source_store']+'-event-'+hashlib.sha256(
+                        f"{source['origin_event_id']}|{context.workspace_id}".encode()).hexdigest()[:32]
+                    if ((source['action'],source['target_type'],source['kind'],source['severity'],source['source_event_id'])!=
+                        (expected_action,expected_type,'run_state','info',event_id)):
+                        raise NotificationError('NOTIFICATION_SOURCE_INVALID',503)
+                    if original is not None and original[1:]!=(source['action'],source['target_type'],source['target_id'],
+                            source['trace_id'],source['policy_version'],source['occurred_at']):
+                        raise NotificationError('NOTIFICATION_SOURCE_INVALID',503)
+                    allowed=False
+                    if original is not None:
+                        try:
+                            recipient=_completed_event_access(connection,scope,origin_event_id=source['origin_event_id'],
+                                notebook_id=source['notebook_id'],origin_actor_id=original[0])
+                        except NotificationError as error:
+                            if error.code!='NOTIFICATION_SOURCE_INVALID':
+                                raise
+                        else:
+                            allowed=recipient is not None and (recipient.actor_id,recipient.notebook_id)==(
+                                context.actor_id,source['notebook_id'])
+                    result=connection.execute('SELECT public.materialize_completed_notification(%s,%s)',
+                        (source['source_event_id'],allowed)).fetchone()[0]
+                    if result is None or result['state']=='suppressed':
+                        continue
+                    if result['state']!='delivered':
+                        raise NotificationError('DATABASE_RESPONSE_INVALID',503)
+                    cursor=connection.execute(_SELECT+' AND n.notification_id=%s',
+                        (context.tenant_id,context.workspace_id,context.actor_id,result['notification_id']))
+                    row=cursor.fetchone()
+                    if row is None:
+                        raise NotificationError('DATABASE_RESPONSE_INVALID',503)
+                    item=notification_from_row(dict(zip((column.name for column in cursor.description),row)))
+                    if source['source_store']=='document':
+                        target=connection.execute('SELECT source_version_id FROM public.processing_runs WHERE tenant_id=%s '
+                            'AND workspace_id=%s AND record_id=%s',
+                            (context.tenant_id,context.workspace_id,source['target_id'])).fetchone()
+                        if target is None:
+                            raise NotificationError('DATABASE_RESPONSE_INVALID',503)
+                        query='source_version_id='+quote(_checked_id(target[0]),safe='._-:')
+                    else:
+                        query='run_id='+quote(_checked_id(source['target_id']),safe='._-:')
+                    link='/notebooks/'+quote(_checked_id(source['notebook_id']),safe='._-:')+'?'+query
+                    if (item.deep_link,item.resource_type,item.resource_id)!=(link,source['target_type'],source['target_id']):
+                        raise NotificationError('DATABASE_RESPONSE_INVALID',503)
                     draft=dict(result['draft'])
                     draft['occurred_at']=_time(draft['occurred_at'])
                     draft['actor_type']=ActorType(draft['actor_type'])

@@ -714,6 +714,7 @@ class PostgresDocumentProcessingRepository:
                             context.trace_id, understanding_id, result.source_version_id,
                         ),
                     )
+                completed_from_version = version
                 self._transition(
                     connection, context, entity_type="ProcessingRun",
                     aggregate_id=processing_run_id,
@@ -736,6 +737,10 @@ class PostgresDocumentProcessingRepository:
                         target_state="needs_review",
                         reason_code="UNDERSTANDING_PARSER_CONFLICT",
                     )
+                if getattr(self._cloud_store, '_notification_inbox_enabled', False):
+                    from .notification_events import enqueue_completed_event
+                    enqueue_completed_event(connection, context, origin_event_id=self._opaque_id(
+                        'tr', 'ProcessingRun', processing_run_id, 'completed', str(completed_from_version)))
         except Exception as error:
             raise self._database_error(error) from None
 

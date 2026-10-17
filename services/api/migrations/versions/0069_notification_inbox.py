@@ -31,6 +31,10 @@ def downgrade() -> None:
     END $$;
     DROP FUNCTION public.read_notification_inbox(text,integer,text,text,jsonb);
     DROP FUNCTION public.enqueue_studio_notification(text,text,text);
+    DROP FUNCTION public.enqueue_completed_notification(text,text);
+    DROP FUNCTION public.materialize_completed_notification(text,boolean);
+    DROP FUNCTION public.current_completed_notification_target(text);
+    DROP FUNCTION public.pending_completed_notification_sources(integer);
     DROP FUNCTION public.materialize_studio_notification(text,boolean);
     DROP FUNCTION public.current_studio_notification_version(text);
     DROP FUNCTION public.pending_studio_notification_sources(integer);

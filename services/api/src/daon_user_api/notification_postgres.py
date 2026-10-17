@@ -165,12 +165,16 @@ _FUNCTIONS = {
     'read_notification_inbox(text,integer,text,text,jsonb)': ('efb5fc74a837a6ac60a03313ca9b4bea', True),
     'pending_notification_audits(integer)': ('8d2c769634b2404fe529a2b9f3dbcf8f', True),
     'ack_notification_audit(text,text)': ('f6d1ec7ab371ffd75a42c8502aac2dbd', True),
-    'enqueue_studio_notification(text,text,text)': ('394384cdad8df8f0cdfac66532e1fe2f', True),
+    'enqueue_studio_notification(text,text,text)': ('3bc0696eea9259160aaffab394a8cf4d', True),
+    'enqueue_completed_notification(text,text)': ('15c3fe4cb914b0bfffefdb5972b97459', True),
     'pending_studio_notification_sources(integer)': ('74b6119e2e33fc321fb1cca3ff66d928', True),
     'current_studio_notification_version(text)': ('a7134c5d8d15b5fb318f004a0ccadc71', True),
     'materialize_studio_notification(text,boolean)': ('bf371f25e55f88e0d853bd56f879a90f', True),
+    'current_completed_notification_target(text)': ('c64cdb1c4b7f09234b128970287fcc47', True),
+    'pending_completed_notification_sources(integer)': ('d58f0bd06ae9325c8f68278740930d0d', True),
+    'materialize_completed_notification(text,boolean)': ('64b55897b38b012be495378f5fa42b2e', True),
 }
-_PRIVATE_FUNCTIONS = frozenset({'current_studio_notification_version(text)'})
+_PRIVATE_FUNCTIONS = frozenset({'current_studio_notification_version(text)','current_completed_notification_target(text)'})
 _ID = " ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'"
 _STORE = "source_store IN ('identity','authorization','organization','document','question','studio','recovery')"
 _KIND = "kind IN ('authentication','device','membership','policy','run_state','run_failed','review','approval','delivery','warning','recovery')"
@@ -182,7 +186,7 @@ _CHECKS = {
     'notification_details': [field + _ID for field in ('notification_id','origin_event_id','source_event_id','resource_type','resource_id','notebook_id','trace_id','policy_version')]
         + [_STORE,_KIND,_SEVERITY,r"length(title) BETWEEN 1 AND 160 AND title=btrim(title) AND title !~ '[<>\x01-\x1f]'",
             r"length(summary) BETWEEN 1 AND 500 AND summary=btrim(summary) AND summary !~ '[<>\x01-\x1f]'",
-            r"length(deep_link) BETWEEN 1 AND 512 AND deep_link !~ '[\x01-\x20]' AND (deep_link ~ '^/(operations|inbox|notifications|workspaces)([/?:#]|$)' OR deep_link ~ '^/notebooks/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}[?]output_version_id=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') AND deep_link !~ '^//'",
+            r"length(deep_link) BETWEEN 1 AND 512 AND deep_link !~ '[\x01-\x20]' AND (deep_link ~ '^/(operations|inbox|notifications|workspaces)([/?:#]|$)' OR deep_link ~ '^/notebooks/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}[?](output_version_id|source_version_id|run_id)=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') AND deep_link !~ '^//'",
             "delivery_state IN ('pending','delivered','failed','suppressed')","(delivery_state='delivered')=(delivered_at IS NOT NULL)"],
     'notification_audit_outbox': ['event_id'+_ID,"action IN ('notification.created','notification.read')",
         "jsonb_typeof(draft)='object'","fingerprint ~ '^[0-9a-f]{64}$'","state IN ('pending','delivered')",'version>0',

@@ -58,7 +58,7 @@ CREATE TABLE public.notification_details (
   notebook_id text CHECK(notebook_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
   deep_link text NOT NULL CHECK(length(deep_link) BETWEEN 1 AND 512 AND deep_link !~ '[\x01-\x20]'
     AND (deep_link ~ '^/(operations|inbox|notifications|workspaces)([/?:#]|$)'
-      OR deep_link ~ '^/notebooks/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}[?]output_version_id=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+      OR deep_link ~ '^/notebooks/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}[?](output_version_id|source_version_id|run_id)=[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
     AND deep_link !~ '^//'),
   trace_id text NOT NULL CHECK(trace_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
   policy_version text NOT NULL CHECK(policy_version ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
@@ -312,6 +312,7 @@ DECLARE tenant text:=nullif(current_setting('app.tenant_id',true),'');
   v_notification_source record; v_notification_organization_policy jsonb; v_notification_workspace_policy jsonb;
   v_notification_previous_notebook text:=current_setting('app.notebook_id',true);
   v_notification_top_xid numeric:=pg_current_xact_id()::text::numeric;
+  v_notification_record_xid numeric;
 BEGIN
   IF tenant IS NULL OR workspace IS NULL OR actor IS NULL THEN
     RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='42501';
@@ -332,8 +333,28 @@ BEGIN
     WHEN 'studio.approval' THEN 'approvals' WHEN 'studio.delivery' THEN 'deliveries' END) THEN
     RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
   END IF;
-  EXECUTE format('SELECT output_version_id,created_by FROM public.%I WHERE tenant_id=$1 AND workspace_id=$2 AND record_id=$3',original.target_type)
-    INTO v_notification_output_version_id,record_actor USING tenant,workspace,original.target_id;
+  EXECUTE format('SELECT output_version_id,created_by,xmin::text::numeric FROM public.%I WHERE tenant_id=$1 AND workspace_id=$2 AND record_id=$3',original.target_type)
+    INTO v_notification_output_version_id,record_actor,v_notification_record_xid USING tenant,workspace,original.target_id;
+  -- 새 감사행만으로 이전 업무를 발행하지 않는다. 실제 기록과 정식 receipt도 같은 Tx여야 한다.
+  -- 하위 savepoint의 xid는 원감사와 동일한 epoch 복원 규칙으로 검사한다.
+  IF pg_xact_status((v_notification_top_xid-mod(v_notification_top_xid,4294967296)+v_notification_record_xid+
+      CASE WHEN v_notification_record_xid-mod(v_notification_top_xid,4294967296)< -2147483648 THEN 4294967296
+        WHEN v_notification_record_xid-mod(v_notification_top_xid,4294967296)>2147483647 THEN -4294967296 ELSE 0 END)::text::xid8)
+      IS DISTINCT FROM 'in progress'
+    OR original.metadata->>'result_id' IS DISTINCT FROM original.target_id
+    OR NOT EXISTS(SELECT 1 FROM public.idempotency_records r WHERE r.tenant_id=tenant AND r.workspace_id=workspace
+      AND r.actor_id=actor AND r.operation=original.action AND r.status='completed'
+      AND r.result->>'record_id'=original.target_id
+      AND p_origin='audit-'||substr(encode(sha256(convert_to(tenant||'|'||workspace||'|'||actor||'|'||original.action||'|'||r.idempotency_key,'UTF8')),'hex'),1,32)
+      AND original.target_id=(CASE original.action WHEN 'studio.review' THEN 'review'
+        WHEN 'studio.approval_request' THEN 'approval-request' WHEN 'studio.approval' THEN 'approval'
+        WHEN 'studio.delivery' THEN 'delivery' END)||'-'||substr(encode(sha256(convert_to(
+          tenant||'|'||workspace||'|'||actor||'|'||original.action||'|'||r.idempotency_key,'UTF8')),'hex'),1,32)
+      AND pg_xact_status((v_notification_top_xid-mod(v_notification_top_xid,4294967296)+r.xmin::text::numeric+
+        CASE WHEN r.xmin::text::numeric-mod(v_notification_top_xid,4294967296)< -2147483648 THEN 4294967296
+          WHEN r.xmin::text::numeric-mod(v_notification_top_xid,4294967296)>2147483647 THEN -4294967296 ELSE 0 END)::text::xid8)='in progress') THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+  END IF;
   v_notification_requester:=record_actor;
   IF original.action='studio.approval' THEN
     SELECT r.created_by INTO v_notification_requester FROM public.approvals a JOIN public.approval_requests r
@@ -503,6 +524,447 @@ END $$;
 ALTER FUNCTION public.enqueue_studio_notification(text,text,text) OWNER TO daon_notebook_delete;
 REVOKE ALL ON FUNCTION public.enqueue_studio_notification(text,text,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.enqueue_studio_notification(text,text,text) TO daon_app;
+
+-- 문서/질문 완료의 제한 producer다. 원요청자·Notebook·자료는 실제 원장에서만 유도한다.
+CREATE FUNCTION public.enqueue_completed_notification(p_origin text,p_notebook text)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+DECLARE v_tenant text:=nullif(current_setting('app.tenant_id',true),'');
+  v_workspace text:=nullif(current_setting('app.workspace_id',true),'');
+  v_actor text:=nullif(current_setting('app.actor_id',true),'');
+  v_previous_notebook text:=current_setting('app.notebook_id',true);
+  v_origin public.audit_events; v_run record; v_source record; v_role text;
+  v_versions text[]; v_store text; v_recipient text; v_event text; v_inserted integer;
+  v_items jsonb; v_item jsonb;
+  v_org_policy jsonb; v_workspace_policy jsonb;
+  v_top_xid numeric:=pg_current_xact_id()::text::numeric;
+BEGIN
+  IF v_tenant IS NULL OR v_workspace IS NULL OR v_actor IS NULL OR p_notebook IS NULL THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='42501';
+  END IF;
+  SELECT * INTO v_origin FROM public.audit_events a
+    WHERE a.tenant_id=v_tenant AND a.workspace_id=v_workspace AND a.event_id=p_origin
+      AND a.actor_id=v_actor AND a.outcome='succeeded'
+      AND pg_xact_status((v_top_xid-mod(v_top_xid,4294967296)+a.xmin::text::numeric+
+        CASE WHEN a.xmin::text::numeric-mod(v_top_xid,4294967296)< -2147483648 THEN 4294967296
+          WHEN a.xmin::text::numeric-mod(v_top_xid,4294967296)>2147483647 THEN -4294967296 ELSE 0 END)::text::xid8)='in progress';
+  IF v_origin.action='canon.transition' AND v_origin.target_type='ProcessingRun' THEN
+    SELECT r.created_by,r.canonical_json->>'notebook_id' AS notebook_id,r.source_version_id INTO v_run
+      FROM public.processing_runs r JOIN public.understanding_results u ON u.tenant_id=r.tenant_id
+        AND u.workspace_id=r.workspace_id AND u.processing_run_id=r.record_id AND u.source_version_id=r.source_version_id
+      JOIN public.canon_state_transitions t ON t.tenant_id=r.tenant_id AND t.workspace_id=r.workspace_id
+        AND t.entity_type='ProcessingRun' AND t.record_id=r.record_id AND t.transition_id=p_origin
+        AND t.target_state='completed' AND t.transition_version=r.version AND t.actor_id=v_actor
+      WHERE r.tenant_id=v_tenant AND r.workspace_id=v_workspace AND r.record_id=v_origin.target_id
+        AND r.state='completed' AND u.canonical_json->>'status' IN ('ready','needs_review')
+        AND v_origin.after_value->>'state'='completed';
+    IF NOT FOUND OR v_run.notebook_id IS DISTINCT FROM p_notebook THEN
+      RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+    END IF;
+    v_store:='document'; v_recipient:=v_run.created_by; v_versions:=ARRAY[v_run.source_version_id];
+    SELECT jsonb_build_array(jsonb_build_object('origin','raw_source','context_item_id',sv.source_id,
+      'source_id',sv.source_id,'source_version_id',sv.record_id,'digest_sha256',NULL)) INTO v_items
+      FROM public.source_versions sv WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=v_run.source_version_id;
+  ELSIF v_origin.action='question.answer' AND v_origin.target_type='Run' THEN
+    SELECT r.created_by,s.canonical_json->'source_version_ids' AS source_versions,s.canonical_json->'items' AS source_items INTO v_run
+      FROM public.runs r JOIN public.run_results rr ON rr.tenant_id=r.tenant_id AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id
+      JOIN public.run_snapshots rs ON rs.tenant_id=r.tenant_id AND rs.workspace_id=r.workspace_id AND rs.run_id=r.record_id
+      JOIN public.scope_snapshots s ON s.tenant_id=rs.tenant_id AND s.workspace_id=rs.workspace_id AND s.record_id=rs.scope_snapshot_id
+      JOIN public.notebook_bindings b ON b.tenant_id=r.tenant_id AND b.workspace_id=r.workspace_id
+        AND b.binding_kind='conversation_thread' AND b.record_id=r.conversation_id AND b.notebook_id=p_notebook
+        AND b.created_by=r.created_by
+      WHERE r.tenant_id=v_tenant AND r.workspace_id=v_workspace AND r.record_id=v_origin.target_id
+        AND r.state='completed' AND r.created_by=v_actor
+        -- 정식 Run 감사 ID와 실제 완료 업무의 미commit Tx를 모두 검사한다.
+        AND p_origin='audit-'||substr(encode(sha256(convert_to(r.record_id,'UTF8')),'hex'),1,32)
+        AND pg_xact_status((v_top_xid-mod(v_top_xid,4294967296)+r.xmin::text::numeric+
+          CASE WHEN r.xmin::text::numeric-mod(v_top_xid,4294967296)< -2147483648 THEN 4294967296
+            WHEN r.xmin::text::numeric-mod(v_top_xid,4294967296)>2147483647 THEN -4294967296 ELSE 0 END)::text::xid8)='in progress'
+        AND jsonb_typeof(rr.canonical_json->'insufficient')='boolean'
+        AND s.canonical_json->'source_version_ids'=v_origin.metadata->'source_version_ids';
+    IF NOT FOUND OR jsonb_typeof(v_run.source_versions) IS DISTINCT FROM 'array'
+      OR jsonb_typeof(v_run.source_items) IS DISTINCT FROM 'array' THEN
+      RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+    END IF;
+    v_store:='question'; v_recipient:=v_run.created_by;
+    v_items:=v_run.source_items;
+    SELECT coalesce(array_agg(x),ARRAY[]::text[]) INTO v_versions FROM jsonb_array_elements_text(v_run.source_versions) x;
+  ELSE
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+  END IF;
+  IF v_recipient IS NULL OR NOT EXISTS(SELECT 1 FROM public.identity_memberships m
+      JOIN public.identity_users u ON u.user_id=m.user_id JOIN public.user_accounts a ON a.tenant_id=m.tenant_id AND a.user_id=m.user_id
+      WHERE m.tenant_id=v_tenant AND m.user_id=v_recipient AND u.state='active')
+    OR EXISTS(SELECT 1 FROM public.identity_org_tenant_memberships o WHERE o.tenant_id=v_tenant AND o.user_id=v_recipient AND o.state<>'active')
+    OR NOT EXISTS(SELECT 1 FROM public.notebooks n WHERE n.tenant_id=v_tenant AND n.workspace_id=v_workspace AND n.notebook_id=p_notebook)
+    OR EXISTS(SELECT 1 FROM public.notebook_deletion_requests d WHERE d.tenant_id=v_tenant AND d.workspace_id=v_workspace
+      AND d.notebook_id=p_notebook AND d.state IN ('accepted','deleting','completed')) THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+  END IF;
+  -- VIEW의 기존 실제 tenant-role/Workspace-role 교집합. 일반 Notebook은 owner 전용으로 좁히지 않는다.
+  SELECT CASE WHEN tr.user_id IS NOT NULL THEN CASE
+      WHEN (tr.role='personal_owner' AND w.workspace_kind='personal')
+        OR (tr.role='organization_admin' AND w.workspace_kind='organization') THEN tr.role END
+      ELSE m.role END INTO v_role FROM public.identity_auth_workspaces w
+    LEFT JOIN public.identity_auth_tenant_roles tr ON tr.tenant_id=w.tenant_id AND tr.user_id=v_recipient AND tr.state='active'
+    LEFT JOIN public.identity_auth_memberships m ON m.tenant_id=w.tenant_id AND m.workspace_id=w.workspace_id AND m.user_id=v_recipient AND m.state='active'
+    WHERE w.tenant_id=v_tenant AND w.workspace_id=v_workspace;
+  IF v_role IS NULL OR v_role NOT IN ('personal_owner','organization_admin','workspace_admin','editor','reviewer','approver','viewer') THEN
+    RAISE EXCEPTION 'NOTIFICATION_ACTION_DENIED' USING ERRCODE='42501';
+  END IF;
+  IF jsonb_typeof(v_items) IS DISTINCT FROM 'array' OR
+    (SELECT coalesce(jsonb_agg(x.value->'source_version_id' ORDER BY x.ordinality),'[]'::jsonb)
+      FROM jsonb_array_elements(v_items) WITH ORDINALITY x(value,ordinality)) IS DISTINCT FROM to_jsonb(v_versions) THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+  END IF;
+  FOR v_item IN SELECT value FROM jsonb_array_elements(v_items)
+  LOOP
+    IF jsonb_typeof(v_item) IS DISTINCT FROM 'object' THEN
+      RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+    END IF;
+    IF (SELECT count(*) FROM jsonb_object_keys(v_item))<>5
+      OR NOT (v_item ?& ARRAY['origin','context_item_id','source_id','source_version_id','digest_sha256'])
+      OR coalesce(v_item->>'origin' NOT IN ('raw_source','daon_knowledge'),true)
+      OR v_item->>'context_item_id' IS NULL OR v_item->>'context_item_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      OR v_item->>'source_id' IS NULL OR v_item->>'source_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      OR v_item->>'source_version_id' IS NULL OR v_item->>'source_version_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      OR NOT EXISTS(SELECT 1 FROM public.source_versions sv WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace
+        AND sv.record_id=v_item->>'source_version_id' AND sv.source_id=v_item->>'source_id') THEN
+      RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+    END IF;
+    IF v_item->>'origin'='raw_source' THEN
+      IF v_item->>'context_item_id' IS DISTINCT FROM v_item->>'source_id'
+        OR NOT EXISTS(SELECT 1 FROM public.notebook_bindings b WHERE b.tenant_id=v_tenant AND b.workspace_id=v_workspace
+          AND b.notebook_id=p_notebook AND b.binding_kind='source' AND b.record_id=v_item->>'source_id'
+          AND b.version_id=v_item->>'source_version_id') THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+    ELSE
+      -- 실제 knowledge binding과 불변 snapshot 항목을 대조한다. raw Source binding을 합성하지 않는다.
+      IF jsonb_typeof(v_item->'digest_sha256') IS DISTINCT FROM 'string'
+        OR v_item->>'digest_sha256' !~ '^[0-9a-f]{64}$'
+        OR NOT EXISTS(SELECT 1 FROM public.notebook_bindings b JOIN public.scope_snapshots k
+          ON k.tenant_id=b.tenant_id AND k.workspace_id=b.workspace_id AND k.record_id=b.record_id
+          JOIN public.knowledge_scopes ks ON ks.tenant_id=k.tenant_id AND ks.workspace_id=k.workspace_id AND ks.record_id=k.knowledge_scope_id
+          WHERE b.tenant_id=v_tenant AND b.workspace_id=v_workspace AND b.notebook_id=p_notebook
+          AND b.binding_kind='knowledge_context' AND b.version_id IS NULL AND b.record_id=v_item->>'context_item_id'
+          AND EXISTS(SELECT 1 FROM jsonb_array_elements(k.canonical_json->'items') x WHERE x=v_item)) THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+    END IF;
+  END LOOP;
+  IF (SELECT count(*) FROM public.source_versions sv JOIN public.sources s
+        ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id
+      WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=ANY(v_versions))<>cardinality(v_versions)
+    OR EXISTS(SELECT 1 FROM public.source_versions sv WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=ANY(v_versions)
+      AND (EXISTS(SELECT 1 FROM public.notebook_source_unbindings u WHERE u.tenant_id=v_tenant AND u.workspace_id=v_workspace
+          AND u.notebook_id=p_notebook AND u.source_id=sv.source_id AND u.source_version_id=sv.record_id)
+        OR EXISTS(SELECT 1 FROM public.deletion_requests d WHERE d.tenant_id=v_tenant AND d.workspace_id=v_workspace AND d.source_id=sv.source_id AND d.source_active=false)
+        OR EXISTS(SELECT 1 FROM public.identity_auth_source_access a WHERE a.tenant_id=v_tenant AND a.workspace_id=v_workspace
+          AND a.source_version_id=sv.record_id AND a.user_id=v_recipient AND a.allowed=0))) THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+  END IF;
+  PERFORM set_config('app.actor_id',v_recipient,true);
+  PERFORM set_config('app.notebook_id',p_notebook,true);
+  FOR v_source IN SELECT sv.record_id,sv.source_id,sv.version,sv.canonical_json FROM public.source_versions sv
+    WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=ANY(v_versions)
+  LOOP
+    IF v_source.canonical_json->>'origin_kind'='website' THEN
+      IF NOT EXISTS(SELECT 1 FROM public.website_source_snapshots w JOIN public.sources s
+          ON s.tenant_id=w.tenant_id AND s.workspace_id=w.workspace_id AND s.record_id=w.source_id
+          JOIN public.notebooks n ON n.tenant_id=w.tenant_id AND n.workspace_id=w.workspace_id AND n.notebook_id=w.notebook_id
+          WHERE w.tenant_id=v_tenant AND w.workspace_id=v_workspace AND w.notebook_id=p_notebook
+          AND w.source_version_id=v_source.record_id AND w.created_by=v_recipient AND n.created_by=v_recipient AND s.state='ready'
+          AND NOT EXISTS(SELECT 1 FROM public.source_versions newer WHERE newer.tenant_id=w.tenant_id AND newer.workspace_id=w.workspace_id
+            AND newer.source_id=w.source_id AND newer.version>v_source.version)) THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+    ELSIF v_source.canonical_json->>'origin_kind'='mcp_open_law' THEN
+      IF v_source.canonical_json->>'connector_id' IS DISTINCT FROM 'mcp-open-law-go-kr'
+        OR NOT EXISTS(SELECT 1 FROM public.open_law_source_snapshots w JOIN public.sources s
+          ON s.tenant_id=w.tenant_id AND s.workspace_id=w.workspace_id AND s.record_id=w.source_id
+          JOIN public.notebooks n ON n.tenant_id=w.tenant_id AND n.workspace_id=w.workspace_id AND n.notebook_id=w.notebook_id
+          JOIN public.workspace_connectors c ON c.tenant_id=w.tenant_id AND c.workspace_id=w.workspace_id AND c.connector_id=w.connector_id
+          WHERE w.tenant_id=v_tenant AND w.workspace_id=v_workspace AND w.notebook_id=p_notebook
+          AND w.snapshot_id=v_source.canonical_json->>'snapshot_id' AND w.source_id=v_source.source_id AND w.source_version_id=v_source.record_id
+          AND w.created_by=v_recipient AND n.created_by=v_recipient AND s.state='ready'
+          AND w.raw_sha256=v_source.canonical_json->>'raw_sha256' AND w.text_sha256=v_source.canonical_json->>'text_sha256'
+          AND c.status='connected' AND c.verification_json->>'protocol_version'='2025-11-25'
+          AND c.verification_json->>'tool_schema_digest'='df8c707ca4e47b8e22645c409d9bfb6a8fbe3038dabe4eaa44d6ee74457a8d88'
+          AND NOT EXISTS(SELECT 1 FROM public.source_versions newer WHERE newer.tenant_id=w.tenant_id AND newer.workspace_id=w.workspace_id
+            AND newer.source_id=w.source_id AND newer.version>v_source.version) FOR SHARE OF c) THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+      SELECT p.canonical_json INTO v_org_policy FROM public.egress_policy_bindings b JOIN public.egress_policy_versions p
+        ON p.tenant_id=b.tenant_id AND p.policy_version_id=b.policy_version_id
+        WHERE b.tenant_id=v_tenant AND b.organization_id=v_tenant AND b.workspace_id IS NULL AND b.scope_type='organization'
+          AND b.active AND b.current AND p.state='active' AND p.organization_id=v_tenant AND p.workspace_id IS NULL AND p.scope_type='organization';
+      SELECT p.canonical_json INTO v_workspace_policy FROM public.egress_policy_bindings b JOIN public.egress_policy_versions p
+        ON p.tenant_id=b.tenant_id AND p.policy_version_id=b.policy_version_id
+        WHERE b.tenant_id=v_tenant AND b.organization_id=v_tenant AND b.workspace_id=v_workspace AND b.scope_type='workspace'
+          AND b.active AND b.current AND p.state='active' AND p.organization_id=v_tenant AND p.workspace_id=v_workspace AND p.scope_type='workspace';
+      IF v_org_policy IS NULL OR v_workspace_policy IS NULL
+        OR v_org_policy->>'mode' IS DISTINCT FROM 'allow_approved_external' OR v_workspace_policy->>'mode' IS DISTINCT FROM 'allow_approved_external'
+        OR v_org_policy->>'classification' IS DISTINCT FROM 'public' OR v_workspace_policy->>'classification' IS DISTINCT FROM 'public'
+        OR (v_org_policy->'allowed_provider_kinds' @> '["external_api"]'::jsonb) IS DISTINCT FROM true
+        OR (v_workspace_policy->'allowed_provider_kinds' @> '["external_api"]'::jsonb) IS DISTINCT FROM true
+        OR (v_org_policy->'allowed_destinations' @> '["www.law.go.kr"]'::jsonb) IS DISTINCT FROM true
+        OR (v_workspace_policy->'allowed_destinations' @> '["www.law.go.kr"]'::jsonb) IS DISTINCT FROM true
+        OR coalesce((v_org_policy->>'max_bytes')::bigint,0)<=0 OR coalesce((v_workspace_policy->>'max_bytes')::bigint,0)<=0
+        OR v_org_policy->>'required_approver' IS NULL OR v_workspace_policy->>'required_approver' IS NULL
+        OR v_org_policy->>'required_approver' NOT IN ('workspace_manager','organization_admin')
+        OR v_workspace_policy->>'required_approver' NOT IN ('workspace_manager','organization_admin')
+        OR (('organization_admin' IN (v_org_policy->>'required_approver',v_workspace_policy->>'required_approver'))
+          AND v_role NOT IN ('personal_owner','organization_admin'))
+        OR v_role NOT IN ('personal_owner','organization_admin','workspace_admin') THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+    END IF;
+  END LOOP;
+  v_event:=v_store||'-event-'||substr(encode(sha256(convert_to(p_origin||'|'||v_workspace,'UTF8')),'hex'),1,32);
+  INSERT INTO public.notification_source_outbox(tenant_id,workspace_id,source_event_id,recipient_id,source_store,
+    origin_event_id,action,target_type,target_id,kind,severity,notebook_id,trace_id,policy_version,occurred_at)
+    VALUES(v_tenant,v_workspace,v_event,v_recipient,v_store,p_origin,v_origin.action,v_origin.target_type,v_origin.target_id,
+      'run_state','info',p_notebook,v_origin.trace_id,v_origin.policy_version,v_origin.occurred_at)
+    ON CONFLICT(tenant_id,workspace_id,source_event_id,recipient_id) DO NOTHING;
+  GET DIAGNOSTICS v_inserted=ROW_COUNT;
+  IF NOT EXISTS(SELECT 1 FROM public.notification_source_outbox s WHERE s.tenant_id=v_tenant AND s.workspace_id=v_workspace
+      AND s.source_event_id=v_event AND s.recipient_id=v_recipient AND s.source_store=v_store AND s.origin_event_id=p_origin
+      AND s.action=v_origin.action AND s.target_type=v_origin.target_type AND s.target_id=v_origin.target_id
+      AND s.kind='run_state' AND s.severity='info' AND s.notebook_id=p_notebook
+      AND s.trace_id=v_origin.trace_id AND s.policy_version=v_origin.policy_version AND s.occurred_at=v_origin.occurred_at) THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_CONFLICT' USING ERRCODE='23505';
+  END IF;
+  PERFORM set_config('app.actor_id',v_actor,true);
+  PERFORM set_config('app.notebook_id',coalesce(v_previous_notebook,''),true);
+  RETURN v_inserted=1;
+END $$;
+ALTER FUNCTION public.enqueue_completed_notification(text,text) OWNER TO daon_notebook_delete;
+REVOKE ALL ON FUNCTION public.enqueue_completed_notification(text,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.enqueue_completed_notification(text,text) TO daon_app;
+
+CREATE FUNCTION public.current_completed_notification_target(p_source text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+DECLARE v_tenant text:=nullif(current_setting('app.tenant_id',true),'');
+  v_workspace text:=nullif(current_setting('app.workspace_id',true),'');
+  v_actor text:=nullif(current_setting('app.actor_id',true),'');
+  p_origin text; p_notebook text; v_pending public.notification_source_outbox; v_result jsonb;
+  v_previous_actor text:=current_setting('app.actor_id',true);
+  v_previous_notebook text:=current_setting('app.notebook_id',true);
+  v_origin public.audit_events; v_run record; v_source record; v_role text;
+  v_versions text[]; v_store text; v_recipient text; v_event text; v_inserted integer;
+  v_items jsonb; v_item jsonb;
+  v_org_policy jsonb; v_workspace_policy jsonb;
+BEGIN
+  IF v_tenant IS NULL OR v_workspace IS NULL OR v_actor IS NULL THEN
+    RAISE EXCEPTION 'NOTIFICATION_INPUT_INVALID' USING ERRCODE='22023';
+  END IF;
+  SELECT * INTO v_pending FROM public.notification_source_outbox s
+    WHERE s.tenant_id=v_tenant AND s.workspace_id=v_workspace AND s.recipient_id=v_actor
+      AND s.source_event_id=p_source AND s.source_store IN ('document','question') AND s.state='pending';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  p_origin:=v_pending.origin_event_id; p_notebook:=v_pending.notebook_id;
+  SELECT * INTO v_origin FROM public.audit_events a
+    WHERE a.tenant_id=v_tenant AND a.workspace_id=v_workspace AND a.event_id=p_origin AND a.outcome='succeeded';
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  IF (v_origin.action,v_origin.target_type,v_origin.target_id,v_origin.trace_id,v_origin.policy_version,v_origin.occurred_at)
+    IS DISTINCT FROM (v_pending.action,v_pending.target_type,v_pending.target_id,v_pending.trace_id,v_pending.policy_version,v_pending.occurred_at) THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+  END IF;
+  -- 원처리자는 원감사, 현재 수신자는 원업무 requester다. 둘을 현재 세션으로 대체하지 않는다.
+  v_actor:=v_origin.actor_id;
+  IF v_origin.action='canon.transition' AND v_origin.target_type='ProcessingRun' THEN
+    SELECT r.created_by,r.canonical_json->>'notebook_id' AS notebook_id,r.source_version_id,u.canonical_json->>'status' AS result_status INTO v_run
+      FROM public.processing_runs r JOIN public.understanding_results u ON u.tenant_id=r.tenant_id
+        AND u.workspace_id=r.workspace_id AND u.processing_run_id=r.record_id AND u.source_version_id=r.source_version_id
+      JOIN public.canon_state_transitions t ON t.tenant_id=r.tenant_id AND t.workspace_id=r.workspace_id
+        AND t.entity_type='ProcessingRun' AND t.record_id=r.record_id AND t.transition_id=p_origin
+        AND t.target_state='completed' AND t.transition_version=r.version AND t.actor_id=v_actor
+      WHERE r.tenant_id=v_tenant AND r.workspace_id=v_workspace AND r.record_id=v_origin.target_id
+        AND r.state='completed' AND u.canonical_json->>'status' IN ('ready','needs_review')
+        AND v_origin.after_value->>'state'='completed';
+    IF NOT FOUND OR v_run.notebook_id IS DISTINCT FROM p_notebook THEN RETURN NULL; END IF;
+    v_store:='document'; v_recipient:=v_run.created_by; v_versions:=ARRAY[v_run.source_version_id];
+    SELECT jsonb_build_array(jsonb_build_object('origin','raw_source','context_item_id',sv.source_id,
+      'source_id',sv.source_id,'source_version_id',sv.record_id,'digest_sha256',NULL)) INTO v_items
+      FROM public.source_versions sv WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=v_run.source_version_id;
+  ELSIF v_origin.action='question.answer' AND v_origin.target_type='Run' THEN
+    SELECT r.created_by,s.canonical_json->'source_version_ids' AS source_versions,s.canonical_json->'items' AS source_items,rr.canonical_json->'insufficient' AS insufficient INTO v_run
+      FROM public.runs r JOIN public.run_results rr ON rr.tenant_id=r.tenant_id AND rr.workspace_id=r.workspace_id AND rr.run_id=r.record_id
+      JOIN public.run_snapshots rs ON rs.tenant_id=r.tenant_id AND rs.workspace_id=r.workspace_id AND rs.run_id=r.record_id
+      JOIN public.scope_snapshots s ON s.tenant_id=rs.tenant_id AND s.workspace_id=rs.workspace_id AND s.record_id=rs.scope_snapshot_id
+      JOIN public.notebook_bindings b ON b.tenant_id=r.tenant_id AND b.workspace_id=r.workspace_id
+        AND b.binding_kind='conversation_thread' AND b.record_id=r.conversation_id AND b.notebook_id=p_notebook
+        AND b.created_by=r.created_by
+      WHERE r.tenant_id=v_tenant AND r.workspace_id=v_workspace AND r.record_id=v_origin.target_id
+        AND r.state='completed' AND r.created_by=v_actor
+        -- 소비는 이미 commit된 정식 완료 사건을 읽는다. 감사 ID 결속은 유지한다.
+        AND p_origin='audit-'||substr(encode(sha256(convert_to(r.record_id,'UTF8')),'hex'),1,32)
+        AND jsonb_typeof(rr.canonical_json->'insufficient')='boolean'
+        AND s.canonical_json->'source_version_ids'=v_origin.metadata->'source_version_ids';
+    IF NOT FOUND THEN RETURN NULL; END IF;
+    IF jsonb_typeof(v_run.source_versions) IS DISTINCT FROM 'array'
+      OR jsonb_typeof(v_run.source_items) IS DISTINCT FROM 'array' THEN
+      RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+    END IF;
+    v_store:='question'; v_recipient:=v_run.created_by;
+    v_items:=v_run.source_items;
+    SELECT coalesce(array_agg(x),ARRAY[]::text[]) INTO v_versions FROM jsonb_array_elements_text(v_run.source_versions) x;
+  ELSE
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+  END IF;
+  IF v_recipient IS NULL OR NOT EXISTS(SELECT 1 FROM public.identity_memberships m
+      JOIN public.identity_users u ON u.user_id=m.user_id JOIN public.user_accounts a ON a.tenant_id=m.tenant_id AND a.user_id=m.user_id
+      WHERE m.tenant_id=v_tenant AND m.user_id=v_recipient AND u.state='active')
+    OR EXISTS(SELECT 1 FROM public.identity_org_tenant_memberships o WHERE o.tenant_id=v_tenant AND o.user_id=v_recipient AND o.state<>'active')
+    OR NOT EXISTS(SELECT 1 FROM public.notebooks n WHERE n.tenant_id=v_tenant AND n.workspace_id=v_workspace AND n.notebook_id=p_notebook)
+    OR EXISTS(SELECT 1 FROM public.notebook_deletion_requests d WHERE d.tenant_id=v_tenant AND d.workspace_id=v_workspace
+      AND d.notebook_id=p_notebook AND d.state IN ('accepted','deleting','completed')) THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+  END IF;
+  -- VIEW의 기존 실제 tenant-role/Workspace-role 교집합. 일반 Notebook은 owner 전용으로 좁히지 않는다.
+  SELECT CASE WHEN tr.user_id IS NOT NULL THEN CASE
+      WHEN (tr.role='personal_owner' AND w.workspace_kind='personal')
+        OR (tr.role='organization_admin' AND w.workspace_kind='organization') THEN tr.role END
+      ELSE m.role END INTO v_role FROM public.identity_auth_workspaces w
+    LEFT JOIN public.identity_auth_tenant_roles tr ON tr.tenant_id=w.tenant_id AND tr.user_id=v_recipient AND tr.state='active'
+    LEFT JOIN public.identity_auth_memberships m ON m.tenant_id=w.tenant_id AND m.workspace_id=w.workspace_id AND m.user_id=v_recipient AND m.state='active'
+    WHERE w.tenant_id=v_tenant AND w.workspace_id=v_workspace;
+  IF v_role IS NULL OR v_role NOT IN ('personal_owner','organization_admin','workspace_admin','editor','reviewer','approver','viewer') THEN
+    RAISE EXCEPTION 'NOTIFICATION_ACTION_DENIED' USING ERRCODE='42501';
+  END IF;
+  IF jsonb_typeof(v_items) IS DISTINCT FROM 'array' OR
+    (SELECT coalesce(jsonb_agg(x.value->'source_version_id' ORDER BY x.ordinality),'[]'::jsonb)
+      FROM jsonb_array_elements(v_items) WITH ORDINALITY x(value,ordinality)) IS DISTINCT FROM to_jsonb(v_versions) THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+  END IF;
+  FOR v_item IN SELECT value FROM jsonb_array_elements(v_items)
+  LOOP
+    IF jsonb_typeof(v_item) IS DISTINCT FROM 'object' THEN
+      RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+    END IF;
+    IF (SELECT count(*) FROM jsonb_object_keys(v_item))<>5
+      OR NOT (v_item ?& ARRAY['origin','context_item_id','source_id','source_version_id','digest_sha256'])
+      OR coalesce(v_item->>'origin' NOT IN ('raw_source','daon_knowledge'),true)
+      OR v_item->>'context_item_id' IS NULL OR v_item->>'context_item_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      OR v_item->>'source_id' IS NULL OR v_item->>'source_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      OR v_item->>'source_version_id' IS NULL OR v_item->>'source_version_id' !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      OR NOT EXISTS(SELECT 1 FROM public.source_versions sv WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace
+        AND sv.record_id=v_item->>'source_version_id' AND sv.source_id=v_item->>'source_id') THEN
+      RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+    END IF;
+    IF v_item->>'origin'='raw_source' THEN
+      IF v_item->>'context_item_id' IS DISTINCT FROM v_item->>'source_id'
+        OR NOT EXISTS(SELECT 1 FROM public.notebook_bindings b WHERE b.tenant_id=v_tenant AND b.workspace_id=v_workspace
+          AND b.notebook_id=p_notebook AND b.binding_kind='source' AND b.record_id=v_item->>'source_id'
+          AND b.version_id=v_item->>'source_version_id') THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+    ELSE
+      -- 실제 knowledge binding과 불변 snapshot 항목을 대조한다. raw Source binding을 합성하지 않는다.
+      IF jsonb_typeof(v_item->'digest_sha256') IS DISTINCT FROM 'string'
+        OR v_item->>'digest_sha256' !~ '^[0-9a-f]{64}$'
+        OR NOT EXISTS(SELECT 1 FROM public.notebook_bindings b JOIN public.scope_snapshots k
+          ON k.tenant_id=b.tenant_id AND k.workspace_id=b.workspace_id AND k.record_id=b.record_id
+          JOIN public.knowledge_scopes ks ON ks.tenant_id=k.tenant_id AND ks.workspace_id=k.workspace_id AND ks.record_id=k.knowledge_scope_id
+          WHERE b.tenant_id=v_tenant AND b.workspace_id=v_workspace AND b.notebook_id=p_notebook
+          AND b.binding_kind='knowledge_context' AND b.version_id IS NULL AND b.record_id=v_item->>'context_item_id'
+          AND EXISTS(SELECT 1 FROM jsonb_array_elements(k.canonical_json->'items') x WHERE x=v_item)) THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+    END IF;
+  END LOOP;
+  IF (SELECT count(*) FROM public.source_versions sv JOIN public.sources s
+        ON s.tenant_id=sv.tenant_id AND s.workspace_id=sv.workspace_id AND s.record_id=sv.source_id
+      WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=ANY(v_versions))<>cardinality(v_versions)
+    OR EXISTS(SELECT 1 FROM public.source_versions sv WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=ANY(v_versions)
+      AND (EXISTS(SELECT 1 FROM public.notebook_source_unbindings u WHERE u.tenant_id=v_tenant AND u.workspace_id=v_workspace
+          AND u.notebook_id=p_notebook AND u.source_id=sv.source_id AND u.source_version_id=sv.record_id)
+        OR EXISTS(SELECT 1 FROM public.deletion_requests d WHERE d.tenant_id=v_tenant AND d.workspace_id=v_workspace AND d.source_id=sv.source_id AND d.source_active=false)
+        OR EXISTS(SELECT 1 FROM public.identity_auth_source_access a WHERE a.tenant_id=v_tenant AND a.workspace_id=v_workspace
+          AND a.source_version_id=sv.record_id AND a.user_id=v_recipient AND a.allowed=0))) THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+  END IF;
+  PERFORM set_config('app.actor_id',v_recipient,true);
+  PERFORM set_config('app.notebook_id',p_notebook,true);
+  FOR v_source IN SELECT sv.record_id,sv.source_id,sv.version,sv.canonical_json FROM public.source_versions sv
+    WHERE sv.tenant_id=v_tenant AND sv.workspace_id=v_workspace AND sv.record_id=ANY(v_versions)
+  LOOP
+    IF v_source.canonical_json->>'origin_kind'='website' THEN
+      IF NOT EXISTS(SELECT 1 FROM public.website_source_snapshots w JOIN public.sources s
+          ON s.tenant_id=w.tenant_id AND s.workspace_id=w.workspace_id AND s.record_id=w.source_id
+          JOIN public.notebooks n ON n.tenant_id=w.tenant_id AND n.workspace_id=w.workspace_id AND n.notebook_id=w.notebook_id
+          WHERE w.tenant_id=v_tenant AND w.workspace_id=v_workspace AND w.notebook_id=p_notebook
+          AND w.source_version_id=v_source.record_id AND w.created_by=v_recipient AND n.created_by=v_recipient AND s.state='ready'
+          AND NOT EXISTS(SELECT 1 FROM public.source_versions newer WHERE newer.tenant_id=w.tenant_id AND newer.workspace_id=w.workspace_id
+            AND newer.source_id=w.source_id AND newer.version>v_source.version)) THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+    ELSIF v_source.canonical_json->>'origin_kind'='mcp_open_law' THEN
+      IF v_source.canonical_json->>'connector_id' IS DISTINCT FROM 'mcp-open-law-go-kr'
+        OR NOT EXISTS(SELECT 1 FROM public.open_law_source_snapshots w JOIN public.sources s
+          ON s.tenant_id=w.tenant_id AND s.workspace_id=w.workspace_id AND s.record_id=w.source_id
+          JOIN public.notebooks n ON n.tenant_id=w.tenant_id AND n.workspace_id=w.workspace_id AND n.notebook_id=w.notebook_id
+          JOIN public.workspace_connectors c ON c.tenant_id=w.tenant_id AND c.workspace_id=w.workspace_id AND c.connector_id=w.connector_id
+          WHERE w.tenant_id=v_tenant AND w.workspace_id=v_workspace AND w.notebook_id=p_notebook
+          AND w.snapshot_id=v_source.canonical_json->>'snapshot_id' AND w.source_id=v_source.source_id AND w.source_version_id=v_source.record_id
+          AND w.created_by=v_recipient AND n.created_by=v_recipient AND s.state='ready'
+          AND w.raw_sha256=v_source.canonical_json->>'raw_sha256' AND w.text_sha256=v_source.canonical_json->>'text_sha256'
+          AND c.status='connected' AND c.verification_json->>'protocol_version'='2025-11-25'
+          AND c.verification_json->>'tool_schema_digest'='df8c707ca4e47b8e22645c409d9bfb6a8fbe3038dabe4eaa44d6ee74457a8d88'
+          AND NOT EXISTS(SELECT 1 FROM public.source_versions newer WHERE newer.tenant_id=w.tenant_id AND newer.workspace_id=w.workspace_id
+            AND newer.source_id=w.source_id AND newer.version>v_source.version) FOR SHARE OF c) THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+      SELECT p.canonical_json INTO v_org_policy FROM public.egress_policy_bindings b JOIN public.egress_policy_versions p
+        ON p.tenant_id=b.tenant_id AND p.policy_version_id=b.policy_version_id
+        WHERE b.tenant_id=v_tenant AND b.organization_id=v_tenant AND b.workspace_id IS NULL AND b.scope_type='organization'
+          AND b.active AND b.current AND p.state='active' AND p.organization_id=v_tenant AND p.workspace_id IS NULL AND p.scope_type='organization';
+      SELECT p.canonical_json INTO v_workspace_policy FROM public.egress_policy_bindings b JOIN public.egress_policy_versions p
+        ON p.tenant_id=b.tenant_id AND p.policy_version_id=b.policy_version_id
+        WHERE b.tenant_id=v_tenant AND b.organization_id=v_tenant AND b.workspace_id=v_workspace AND b.scope_type='workspace'
+          AND b.active AND b.current AND p.state='active' AND p.organization_id=v_tenant AND p.workspace_id=v_workspace AND p.scope_type='workspace';
+      IF v_org_policy IS NULL OR v_workspace_policy IS NULL
+        OR v_org_policy->>'mode' IS DISTINCT FROM 'allow_approved_external' OR v_workspace_policy->>'mode' IS DISTINCT FROM 'allow_approved_external'
+        OR v_org_policy->>'classification' IS DISTINCT FROM 'public' OR v_workspace_policy->>'classification' IS DISTINCT FROM 'public'
+        OR (v_org_policy->'allowed_provider_kinds' @> '["external_api"]'::jsonb) IS DISTINCT FROM true
+        OR (v_workspace_policy->'allowed_provider_kinds' @> '["external_api"]'::jsonb) IS DISTINCT FROM true
+        OR (v_org_policy->'allowed_destinations' @> '["www.law.go.kr"]'::jsonb) IS DISTINCT FROM true
+        OR (v_workspace_policy->'allowed_destinations' @> '["www.law.go.kr"]'::jsonb) IS DISTINCT FROM true
+        OR coalesce((v_org_policy->>'max_bytes')::bigint,0)<=0 OR coalesce((v_workspace_policy->>'max_bytes')::bigint,0)<=0
+        OR v_org_policy->>'required_approver' IS NULL OR v_workspace_policy->>'required_approver' IS NULL
+        OR v_org_policy->>'required_approver' NOT IN ('workspace_manager','organization_admin')
+        OR v_workspace_policy->>'required_approver' NOT IN ('workspace_manager','organization_admin')
+        OR (('organization_admin' IN (v_org_policy->>'required_approver',v_workspace_policy->>'required_approver'))
+          AND v_role NOT IN ('personal_owner','organization_admin'))
+        OR v_role NOT IN ('personal_owner','organization_admin','workspace_admin') THEN
+        RAISE EXCEPTION 'NOTIFICATION_SOURCE_ACCESS_DENIED' USING ERRCODE='42501';
+      END IF;
+    END IF;
+  END LOOP;
+  v_event:=v_store||'-event-'||substr(encode(sha256(convert_to(p_origin||'|'||v_workspace,'UTF8')),'hex'),1,32);
+  IF v_pending.recipient_id IS DISTINCT FROM v_recipient OR v_pending.source_store IS DISTINCT FROM v_store
+    OR v_pending.source_event_id IS DISTINCT FROM v_event OR v_pending.kind IS DISTINCT FROM 'run_state'
+    OR v_pending.severity IS DISTINCT FROM 'info' THEN
+    RAISE EXCEPTION 'NOTIFICATION_SOURCE_INVALID' USING ERRCODE='23514';
+  END IF;
+  IF v_store='document' THEN
+    v_result:=jsonb_build_object('deep_link','/notebooks/'||p_notebook||'?source_version_id='||v_versions[1],
+      'title',CASE WHEN v_run.result_status='needs_review' THEN '문서 처리 검토 필요' ELSE '문서 처리 완료' END,
+      'summary',CASE WHEN v_run.result_status='needs_review' THEN '문서 처리 Run이 완료되었으며 검토가 필요합니다.' ELSE '문서 처리 Run이 완료되었습니다.' END);
+  ELSE
+    v_result:=jsonb_build_object('deep_link','/notebooks/'||p_notebook||'?run_id='||v_origin.target_id,'title','질문 처리 완료',
+      'summary',CASE WHEN v_run.insufficient='true'::jsonb THEN '질문 처리 Run이 완료되었으며 근거가 부족합니다.' ELSE '질문 처리 Run이 완료되었습니다.' END);
+  END IF;
+  PERFORM set_config('app.actor_id',coalesce(v_previous_actor,''),true);
+  PERFORM set_config('app.notebook_id',coalesce(v_previous_notebook,''),true);
+  RETURN v_result;
+EXCEPTION WHEN insufficient_privilege THEN
+  -- 이 함수가 명시한 현재 자료/권한 거부만 suppressed 후보로 돌린다. 실제 DB 권한/조회 오류는 전파한다.
+  IF SQLERRM IN ('NOTIFICATION_SOURCE_ACCESS_DENIED','NOTIFICATION_ACTION_DENIED') THEN RETURN NULL; END IF;
+  RAISE;
+END $$;
+ALTER FUNCTION public.current_completed_notification_target(text) OWNER TO daon_notebook_delete;
+REVOKE ALL ON FUNCTION public.current_completed_notification_target(text) FROM PUBLIC,daon_app;
 
 -- 소비는 등록된 본인 의도만 잠근다. 다른 수신자·다른 source 원장은 반환하지 않는다.
 CREATE FUNCTION public.pending_studio_notification_sources(p_limit integer)
@@ -773,3 +1235,72 @@ END $$;
 ALTER FUNCTION public.materialize_studio_notification(text,boolean) OWNER TO daon_notebook_delete;
 REVOKE ALL ON FUNCTION public.materialize_studio_notification(text,boolean) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.materialize_studio_notification(text,boolean) TO daon_app;
+
+-- 완료 source만 본인 범위에서 최대 100건 잠근다. Studio의 기존 소비 경로는 변경하지 않는다.
+CREATE FUNCTION public.pending_completed_notification_sources(p_limit integer)
+RETURNS SETOF public.notification_source_outbox
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+BEGIN
+  IF p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 100 THEN
+    RAISE EXCEPTION 'NOTIFICATION_BATCH_INVALID' USING ERRCODE='22023';
+  END IF;
+  RETURN QUERY SELECT s.* FROM public.notification_source_outbox s
+    WHERE s.tenant_id=nullif(current_setting('app.tenant_id',true),'')
+      AND s.workspace_id=nullif(current_setting('app.workspace_id',true),'')
+      AND s.recipient_id=nullif(current_setting('app.actor_id',true),'')
+      AND s.source_store IN ('document','question') AND s.state='pending'
+    ORDER BY s.occurred_at,s.source_event_id LIMIT p_limit FOR UPDATE OF s SKIP LOCKED;
+END $$;
+ALTER FUNCTION public.pending_completed_notification_sources(integer) OWNER TO daon_notebook_delete;
+REVOKE ALL ON FUNCTION public.pending_completed_notification_sources(integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.pending_completed_notification_sources(integer) TO daon_app;
+
+CREATE FUNCTION public.materialize_completed_notification(p_source text,p_deliver boolean)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+DECLARE tenant text:=nullif(current_setting('app.tenant_id',true),'');
+  workspace text:=nullif(current_setting('app.workspace_id',true),'');
+  actor text:=nullif(current_setting('app.actor_id',true),'');
+  source public.notification_source_outbox; v_target jsonb; v_id text; v_draft jsonb;
+  v_previous_notebook text:=current_setting('app.notebook_id',true);
+BEGIN
+  IF p_source IS NULL OR p_deliver IS NULL OR tenant IS NULL OR workspace IS NULL OR actor IS NULL THEN
+    RAISE EXCEPTION 'NOTIFICATION_INPUT_INVALID' USING ERRCODE='22023';
+  END IF;
+  SELECT * INTO source FROM public.notification_source_outbox s
+    WHERE s.tenant_id=tenant AND s.workspace_id=workspace AND s.recipient_id=actor
+      AND s.source_event_id=p_source AND s.source_store IN ('document','question') AND s.state='pending' FOR UPDATE;
+  IF source.source_event_id IS NULL THEN RETURN NULL; END IF;
+  PERFORM set_config('app.notebook_id',source.notebook_id,true);
+  -- bool은 호출 의도일 뿐이다. 현재 DB 권한/원자료는 반드시 독립 재검증한다.
+  v_target:=public.current_completed_notification_target(p_source);
+  IF v_target IS NOT NULL AND NOT p_deliver THEN
+    PERFORM set_config('app.notebook_id',coalesce(v_previous_notebook,''),true);
+    RETURN NULL;
+  END IF;
+  IF v_target IS NULL THEN
+    UPDATE public.notification_source_outbox SET state='suppressed',delivered_at=CURRENT_TIMESTAMP,version=2
+      WHERE tenant_id=tenant AND workspace_id=workspace AND recipient_id=actor AND source_event_id=p_source;
+    PERFORM set_config('app.notebook_id',coalesce(v_previous_notebook,''),true);
+    RETURN jsonb_build_object('state','suppressed');
+  END IF;
+  v_id:='notification-'||substr(encode(sha256(convert_to(tenant||'|'||workspace||'|'||actor||'|'||p_source,'UTF8')),'hex'),1,32);
+  -- 원사건 occurred_at은 보존한다. 알림/created 감사는 이 소비 transaction의 현재 시각이다.
+  INSERT INTO public.notifications(tenant_id,workspace_id,notification_id,recipient_id,source_event_id)
+    VALUES(tenant,workspace,v_id,actor,p_source);
+  INSERT INTO public.notification_details(tenant_id,notification_id,source_store,origin_event_id,source_event_id,
+    kind,severity,title,summary,resource_type,resource_id,notebook_id,deep_link,trace_id,policy_version,delivery_state,delivered_at)
+    VALUES(tenant,v_id,source.source_store,source.origin_event_id,p_source,source.kind,source.severity,
+      v_target->>'title',v_target->>'summary',source.target_type,source.target_id,source.notebook_id,v_target->>'deep_link',
+      source.trace_id,source.policy_version,'delivered',CURRENT_TIMESTAMP);
+  SELECT a.draft INTO v_draft FROM public.notification_audit_outbox a
+    WHERE a.tenant_id=tenant AND a.workspace_id=workspace AND a.recipient_id=actor
+      AND a.notification_id=v_id AND a.action='notification.created';
+  IF v_draft IS NULL THEN RAISE EXCEPTION 'NOTIFICATION_AUDIT_INVALID' USING ERRCODE='23514'; END IF;
+  UPDATE public.notification_source_outbox SET state='delivered',delivered_at=CURRENT_TIMESTAMP,version=2
+    WHERE tenant_id=tenant AND workspace_id=workspace AND recipient_id=actor AND source_event_id=p_source;
+  PERFORM set_config('app.notebook_id',coalesce(v_previous_notebook,''),true);
+  RETURN jsonb_build_object('state','delivered','notification_id',v_id,'draft',v_draft);
+END $$;
+ALTER FUNCTION public.materialize_completed_notification(text,boolean) OWNER TO daon_notebook_delete;
+REVOKE ALL ON FUNCTION public.materialize_completed_notification(text,boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.materialize_completed_notification(text,boolean) TO daon_app;
