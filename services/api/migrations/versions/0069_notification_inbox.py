@@ -30,6 +30,10 @@ def downgrade() -> None:
       END IF;
     END $$;
     DROP FUNCTION public.read_notification_inbox(text,integer,text,text,jsonb);
+    DROP FUNCTION public.enqueue_studio_notification(text,text,text);
+    DROP FUNCTION public.materialize_studio_notification(text,boolean);
+    DROP FUNCTION public.current_studio_notification_version(text);
+    DROP FUNCTION public.pending_studio_notification_sources(integer);
     DROP FUNCTION public.pending_notification_audits(integer);
     DROP FUNCTION public.ack_notification_audit(text,text);
     DROP TRIGGER notification_parent_read_guard ON public.notifications;

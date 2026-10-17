@@ -312,9 +312,10 @@ class PostgresStudioWorkspaceRepository:
 
     def _finish(self, connection, context: StudioContext, operation: str, key: str,
                 fingerprint: str, result: Mapping[str, object], target_type: str, target_id: str) -> None:
+        audit_event_id = self._opaque("audit", context.tenant_id, context.workspace_id, context.actor_id, operation, key)
         connection.execute(
             "INSERT INTO audit_events (event_id,tenant_id,workspace_id,actor_id,action,target_type,target_id,outcome,trace_id,policy_version,metadata) VALUES (%s,%s,%s,%s,%s,%s,%s,'succeeded',%s,%s,%s)",
-            (self._opaque("audit", context.tenant_id, context.workspace_id, context.actor_id, operation, key),
+            (audit_event_id,
              context.tenant_id, context.workspace_id, context.actor_id, operation, target_type, target_id,
              context.trace_id, context.policy_version, json.dumps({"result_id": target_id})),
         )
@@ -323,6 +324,12 @@ class PostgresStudioWorkspaceRepository:
             (context.tenant_id, context.workspace_id, context.actor_id, operation, key, fingerprint,
              json.dumps(dict(result)), datetime.now(timezone.utc) + timedelta(hours=24)),
         )
+        if getattr(self._cloud_store, '_notification_inbox_enabled', False) and operation in {
+            'studio.review','studio.approval_request','studio.approval','studio.delivery'
+        }:
+            from .notification_events import enqueue_studio_event
+            enqueue_studio_event(connection,context,operation=operation,target_type=target_type,
+                target_id=target_id,origin_event_id=audit_event_id)
 
     def create_generation(self, context: StudioContext, request: StudioGenerationRequest, idempotency_key: str):
         if self._cloud_store is None:
