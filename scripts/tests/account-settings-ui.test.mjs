@@ -525,3 +525,64 @@ test("S36 bound profile: captured A preflight arriving after cookie B rejects an
     assert.match(view.container.textContent, /cookie-b-user/u); assert.doesNotMatch(profileField(view).value, /이전 화면 입력/u);
   } finally { await view.cleanup(); }
 });
+
+test("S36 HTTP crypto: randomUUID 없이 CSPRNG 키로 profile replay와 trust/revoke 중복 보호를 유지한다", async () => {
+  const priorCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto"), webCrypto = globalThis.crypto;
+  const draws = [], keys = [], saves = [];
+  let stored = { display_name: "기존 이름", version: 2 }, mutations = 0;
+  const view = await render({ getSettings: async (current) => ({ ...settingsFixture(current), profile: stored }),
+    saveProfile: async (payload, options) => {
+      saves.push([payload, options.idempotencyKey, options.expectedSessionId]);
+      if (saves.length === 1) { keys.push(options.idempotencyKey); throw new Error("ACCOUNT_RESULT_UNKNOWN"); }
+      stored = { display_name: payload.display_name, version: 3 }; return { ...stored, replayed: true };
+    }, trustDevice: async (_id, options) => { keys.push(options.idempotencyKey); return { state: "trusted" }; },
+    stepUp: async (_id, _password, options) => { keys.push(options.idempotencyKey); return { step_up_authorization: "transient-step-up" }; },
+    revokeDevice: async (id, _authorization, options) => { keys.push(options.idempotencyKey); mutations++; return { device_id: id, state: "revoked", sync_key_revoke_required: true }; },
+    revokeSession: async (id, _authorization, options) => { keys.push(options.idempotencyKey); mutations++; return { session_id: id, state: "revoked" }; },
+  });
+  Object.defineProperty(globalThis, "crypto", { configurable: true, value: { getRandomValues(bytes) {
+    webCrypto.getRandomValues(bytes); draws.push(Array.from(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength))); return bytes;
+  } } });
+  try {
+    await typeProfile(view, "HTTP 저장 이름"); await sendNamed(view, "표시 이름 저장", 2);
+    assert.equal(saves.length, 1); await sendNamed(view, "표시 이름 저장");
+    assert.equal(saves.length, 2); assert.deepEqual(saves[0], saves[1]); assert.equal(saves[0][2], session.session_id);
+    assert.equal(profileField(view).value, "HTTP 저장 이름");
+    await view.act(async () => buttonByText(view.container, "현재 장치 신뢰 등록").dispatchEvent(new MinimalEvent("click")));
+    for (const [kind, id] of [["장치", "dev-other"], ["세션", "ses-other"]]) {
+      await view.act(async () => buttonNamed(view, `${kind} 철회 ${id}`).dispatchEvent(new MinimalEvent("click")));
+      await view.act(async () => props(inputs(view).at(-1)).onChange({ target: { value: "transient-reauth" } }));
+      await sendNamed(view, "철회 추가 인증", 2);
+    }
+    assert.equal(mutations, 2); assert.equal(keys.length, 6); assert.equal(new Set(keys).size, 6);
+    assert.equal(draws.length, 6); assert.ok(draws.every((bytes) => bytes.length >= 16));
+    for (const key of keys) assert.match(key, /^account-[A-Za-z0-9._:-]{32,120}$/u);
+    assert.deepEqual(view.redirects, []); assert.doesNotMatch(view.container.textContent, /TypeError|randomUUID|transient-reauth|transient-step-up/u);
+  } finally { await view.cleanup(); Object.defineProperty(globalThis, "crypto", priorCrypto); }
+});
+
+test("S36 HTTP crypto: 두 암호 API 불가/예외는 profile·trust·revoke0과 안전한 UI 실패다", async () => {
+  const priorCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto"), priorRandom = Math.random, priorError = console.error;
+  for (const available of [undefined, {}, { getRandomValues() { throw new Error("private-crypto-value"); } }]) {
+    let requests = 0, weak = 0; const errors = [];
+    const view = await render({ getSettings: async (current) => settingsFixture(current),
+      saveProfile: async () => { requests++; }, trustDevice: async () => { requests++; }, stepUp: async () => { requests++; } });
+    Object.defineProperty(globalThis, "crypto", { configurable: true, value: available });
+    Math.random = () => { weak++; return 0.25; }; console.error = (...args) => errors.push(args);
+    try {
+      await typeProfile(view, "저장 불가"); await sendNamed(view, "표시 이름 저장");
+      assert.match(view.container.textContent, /보안 난수.*사용할 수 없/u);
+      await view.act(async () => buttonByText(view.container, "현재 장치 신뢰 등록").dispatchEvent(new MinimalEvent("click")));
+      await view.act(async () => buttonNamed(view, "장치 철회 dev-other").dispatchEvent(new MinimalEvent("click")));
+      const password = inputs(view).at(-1);
+      await view.act(async () => props(password).onChange({ target: { value: "transient-reauth" } }));
+      await sendNamed(view, "철회 추가 인증");
+      assert.equal(requests, 0); assert.equal(weak, 0); assert.deepEqual(errors, []); assert.equal(password.value, "");
+      assert.match(view.container.textContent, /보안 난수.*사용할 수 없/u);
+      assert.doesNotMatch(view.container.textContent, /private-crypto-value|TypeError|randomUUID|transient-reauth/u);
+    } finally {
+      Math.random = priorRandom; console.error = priorError;
+      await view.cleanup(); Object.defineProperty(globalThis, "crypto", priorCrypto);
+    }
+  }
+});

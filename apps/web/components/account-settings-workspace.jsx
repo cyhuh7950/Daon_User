@@ -10,7 +10,13 @@ import { getAccountProfile, saveAccountProfile, listAccountDevices, listAccountS
 const replaceLocation = (path) => window.location.replace(path);
 const sameSession = (left, right) => ["user_id", "tenant_id", "workspace_id", "session_id", "device_id"]
   .every((key) => left?.[key] === right?.[key]);
-const requestKey = () => `account-${globalThis.crypto.randomUUID()}`;
+const requestKey = () => {
+  const webCrypto = globalThis.crypto;
+  if (typeof webCrypto?.randomUUID === "function") return `account-${webCrypto.randomUUID()}`;
+  if (typeof webCrypto?.getRandomValues !== "function") throw new Error("ACCOUNT_CRYPTO_UNAVAILABLE");
+  const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+  return `account-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+};
 const loadSettings = async (_session, options = {}) => {
   const [profile, devices, sessions] = await Promise.all([getAccountProfile(options),
     listAccountDevices(options.deviceCursor ? { cursor: options.deviceCursor } : {}, options),
@@ -68,14 +74,22 @@ function AccountProfileDevices({ session, getSettings, saveProfile, stepUp, trus
         : caught?.message === "ACCOUNT_FORBIDDEN" ? "추가 인증 또는 작업 권한을 확인하세요. 비밀번호를 다시 입력하세요." : "계정 작업을 완료하지 못했습니다. 입력과 현재 상태를 확인하세요.");
     }
   };
+  const prepareRequest = (create) => {
+    try { return create(); }
+    catch {
+      setNotice("보안 난수 생성 기능을 사용할 수 없어 요청을 보내지 않았습니다. 브라우저 보안 환경을 확인하세요.");
+      return null;
+    }
+  };
   const submitProfile = (event) => {
     event.preventDefault();
     const normalized = name.trim();
     if (!bundle || [...normalized].length < 1 || [...normalized].length > 80 || /\p{Cc}/u.test(normalized)) return;
     const payload = Object.freeze({ display_name: normalized, expected_version: bundle.profile.version });
     const prior = profileRequest.current;
-    if (!prior || JSON.stringify(prior.payload) !== JSON.stringify(payload)) profileRequest.current = Object.freeze({ payload, key: requestKey(), expectedSessionId: session.session_id });
+    if (!prior || JSON.stringify(prior.payload) !== JSON.stringify(payload)) profileRequest.current = prepareRequest(() => Object.freeze({ payload, key: requestKey(), expectedSessionId: session.session_id }));
     const active = profileRequest.current;
+    if (!active) return;
     void runOperation("profile", (signal) => saveProfile(active.payload, { signal, idempotencyKey: active.key, expectedSessionId: active.expectedSessionId }), {
       success: async (result) => {
         if (result?.display_name !== normalized || !Number.isSafeInteger(result.version) || result.version <= 0) throw new Error("ACCOUNT_RESPONSE_INVALID");
@@ -92,8 +106,9 @@ function AccountProfileDevices({ session, getSettings, saveProfile, stepUp, trus
     if (!selected || !password || password.length > 256) return;
     const secret = password, target = selected;
     clearReauthentication();
-    if (!sensitiveRequest.current) sensitiveRequest.current = { stepKey: requestKey(), mutationKey: requestKey() };
+    if (!sensitiveRequest.current) sensitiveRequest.current = prepareRequest(() => ({ stepKey: requestKey(), mutationKey: requestKey() }));
     const keys = sensitiveRequest.current;
+    if (!keys) return;
     void runOperation("revoke", async (signal) => {
       const grant = await stepUp(target.id, secret, { signal, idempotencyKey: keys.stepKey });
       if (signal.aborted) throw new Error("ACCOUNT_REQUEST_ABORTED");
@@ -106,7 +121,8 @@ function AccountProfileDevices({ session, getSettings, saveProfile, stepUp, trus
     }, failure: failed });
   };
   const trust = (row) => {
-    if (!trustRequest.current || trustRequest.current.id !== row.device_id) trustRequest.current = { id: row.device_id, key: requestKey() };
+    if (!trustRequest.current || trustRequest.current.id !== row.device_id) trustRequest.current = prepareRequest(() => ({ id: row.device_id, key: requestKey() }));
+    if (!trustRequest.current) return;
     const key = trustRequest.current.key;
     void runOperation("trust", (signal) => trustDevice(row.device_id, { signal, idempotencyKey: key }), {
       success: async (result) => { if (result?.state !== "trusted") throw new Error("ACCOUNT_RESPONSE_INVALID"); trustRequest.current = null; setUncertain(false); setNotice("현재 장치의 신뢰 등록을 확인했습니다."); await load(); }, failure: failed,
