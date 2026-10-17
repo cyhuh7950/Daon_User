@@ -102,6 +102,7 @@ function NotebookCard({ notebook, viewMode, onOpenNotebook, onRequestDelete }) {
 }
 
 export function NotebookHome({ state = "ready", notebooks = [], errorCode = null, showUserManagement = false, showOrganizationPolicy = false, displayIdentity = null, tenantScope = null, scopeError = null, switchingScope = false, onSwitchTenant, onReload, onCreate, onDelete, onOpenNotebook, onOpenSetting, onLogout }) {
+  const homeRef = useRef(null);
   const surfaceRef = useRef(null);
   const createOpenerRef = useRef(null);
   const [search, setSearch] = useState("");
@@ -109,6 +110,22 @@ export function NotebookHome({ state = "ready", notebooks = [], errorCode = null
   const [viewMode, setViewMode] = useState("grid");
   const [creating, setCreating] = useState(false);
   const [deletingNotebook, setDeletingNotebook] = useState(null);
+  useEffect(() => {
+    const home = homeRef.current;
+    const badge = home?.ownerDocument.querySelector?.(".web-shell-runtime");
+    if (!badge) return;
+    // 고정 배너의 실제 점유 하단만 S41에 예약한다. 배너 상태/동작과 다른 화면은 바꾸지 않는다.
+    const measure = () => home.style.setProperty("--nh-shell-occupied", `${Math.max(0, badge.getBoundingClientRect().bottom)}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(badge);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      home.style.removeProperty("--nh-shell-occupied");
+    };
+  }, []);
   useEffect(() => {
     setBackgroundInert(surfaceRef.current, creating || Boolean(deletingNotebook));
     return () => setBackgroundInert(surfaceRef.current, false);
@@ -128,7 +145,7 @@ export function NotebookHome({ state = "ready", notebooks = [], errorCode = null
     queueMicrotask(() => createOpenerRef.current?.focus?.());
   };
 
-  return <main className="notebook-home" aria-busy={state === "loading"}>
+  return <main ref={homeRef} className="notebook-home" aria-busy={state === "loading"}>
     <div ref={surfaceRef} className="notebook-home-surface">
     <header className="notebook-home-header"><a className="notebook-brand" href="#notebook-home" aria-label="Daon Notebook 홈"><span aria-hidden="true">◒</span>Daon Notebook</a><div className="notebook-session-identity" aria-label="현재 접속자">{displayIdentity || "현재 사용자"}</div><SettingsMenu onOpenSetting={onOpenSetting} onLogout={onLogout} showUserManagement={showUserManagement} showOrganizationPolicy={showOrganizationPolicy} tenantScope={tenantScope} scopeError={scopeError} switchingScope={switchingScope} onSwitchTenant={onSwitchTenant} onReload={onReload} /></header>
     <section id="notebook-home" className="notebook-home-content" aria-labelledby="notebook-home-title">
