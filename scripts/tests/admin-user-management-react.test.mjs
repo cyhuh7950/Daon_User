@@ -854,6 +854,191 @@ test("비밀번호 제한 session은 selected Notebook get/context API를 호출
   } finally { await view.cleanup(); }
 });
 
+function s42SelectedContext() {
+  return { notebook_id:'notebook-s42', sources:[], knowledge_context_ids:[], conversation_thread_ids:['thread-s42'],
+    studio_output_ids:[], output_version_ids:[], generation_settings_ids:[], source_deletion_requests:[],
+    conversation:{ conversation_thread_id:'thread-s42', answer:{ run_id:'run-previous', run_result_id:'result-previous',
+      answer:'S42 이전 정상 답변', insufficient:false, citations:[] } } };
+}
+
+const s42Session = (values = {}) => ({ user_id:'user-s42', session_id:'session-s42', tenant_id:'tenant-s42',
+  workspace_id:'workspace-s42', password_change_required:false, ...values });
+
+test('S42 실패 Run 복귀는 검증된 실패 안내와 기존 정상 대화를 함께 보존한다', async () => {
+  const calls = [];
+  const view = await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42', getLocationSearch:()=>'?run_id=run-failed',
+    getSession:async()=>s42Session(),
+    getSelectedNotebook:async()=>({ data:{ title:'S42 QA Notebook' } }),
+    getSelectedContext:async(workspace,notebook,options)=>{ calls.push(options.runId ?? null);
+      if(options.runId) throw new Error('QUESTION_FAILED'); return { data:s42SelectedContext() }; },
+  },'.s42-run-target-');
+  try {
+    await view.act(async()=>{ await new Promise(resolve=>setTimeout(resolve,0)); });
+    assert.deepEqual(calls,['run-failed',null]);
+    assert.match(view.container.textContent,/선택한 질문 처리가 실패했습니다/u);
+    assert.match(view.container.textContent,/S42 이전 정상 답변/u);
+  } finally { await view.cleanup(); }
+});
+
+test('S42 Job 복귀는 서버 selector 검증 뒤 같은 Notebook의 정확 Job만 표시한다', async () => {
+  const calls=[];
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42', getLocationSearch:()=>'?studio_job_id=job-selected',
+    getSession:async()=>s42Session(),
+    getSelectedNotebook:async()=>({ data:{ title:'S42 QA Notebook' } }),
+    getSelectedContext:async(workspace,notebook,options)=>{ calls.push(['context',options.studioJobId]); return {data:s42SelectedContext()}; },
+    getSelectedJob:async(workspace,job,options)=>{ calls.push(['job',workspace,job,options.notebookId]);
+      return {job_id:job,status:'failed',error_code:'INTERNAL_SECRET_MUST_NOT_RENDER'}; },
+  },'.s42-job-target-');
+  try {
+    await view.act(async()=>{ await new Promise(resolve=>setTimeout(resolve,0)); });
+    assert.deepEqual(calls,[['context','job-selected'],['job','workspace-s42','job-selected','notebook-s42']]);
+    assert.match(view.container.textContent,/선택한 Studio 작업이 실패했습니다/u);
+    assert.doesNotMatch(view.container.textContent,/INTERNAL_SECRET_MUST_NOT_RENDER/u);
+    assert.match(view.container.textContent,/S42 이전 정상 답변/u);
+  } finally { await view.cleanup(); }
+});
+
+test('S42 pagehide 뒤 늦은 selector 응답은 보호 화면을 다시 표시하지 않는다', async()=>{
+  let resolveContext; const held = new Promise(resolve=>{resolveContext=resolve;});
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42', getLocationSearch:()=>'?run_id=run-previous',
+    getSession:async()=>s42Session(),
+    getSelectedNotebook:async()=>({data:{title:'S42 늦은 응답'}}), getSelectedContext:async()=>held,
+  },'.s42-late-target-');
+  try {
+    await view.act(async()=>{ view.dom.document.dispatchEvent(new MinimalEvent('pagehide')); resolveContext({data:s42SelectedContext()}); await held; });
+    assert.doesNotMatch(view.container.textContent,/S42 이전 정상 답변/u);
+    assert.equal(findElements(view.container,node=>node.getAttribute?.('data-session-validated')==='true').length,0);
+  } finally { await view.cleanup(); }
+});
+
+test('S42 지연 selector 응답은 다른 탭에서 바뀐 세션의 화면에 이전 본문을 표시하지 않는다', async()=>{
+  let current=s42Session(), resolveContext;
+  const held=new Promise(resolve=>{resolveContext=resolve;});
+  const calls=[];
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42', getLocationSearch:()=>'?run_id=run-previous',
+    getSession:async()=>{calls.push(current.session_id);return {...current};},
+    getSelectedNotebook:async()=>({data:{title:'S42 세션 결속'}}), getSelectedContext:async()=>held,
+  },'.s42-session-target-');
+  try {
+    current=s42Session({user_id:'other-user',session_id:'other-session'});
+    await view.act(async()=>{resolveContext({data:s42SelectedContext()});await held;});
+    assert.deepEqual(calls,['session-s42','other-session']);
+    assert.doesNotMatch(view.container.textContent,/S42 이전 정상 답변/u);
+    assert.equal(findElements(view.container,node=>node.getAttribute?.('data-session-validated')==='true').length,0);
+  } finally {await view.cleanup();}
+});
+
+for (const event of ['focus', 'visibilitychange']) test(`S42 ${event} 복귀는 이전 본문부터 숨기고 현재 세션을 재검증한다`, async()=>{
+  let revalidate=false, release;
+  const held=new Promise(resolve=>{release=resolve;}); let calls=0;
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42', getLocationSearch:()=>'?run_id=run-previous',
+    getSession:async()=>{calls+=1;return revalidate?held:s42Session();},
+    getSelectedNotebook:async()=>({data:{title:'S42 현재 세션'}}),
+    getSelectedContext:async()=>{if(revalidate)throw Error('NOTEBOOK_NOT_FOUND');return {data:s42SelectedContext()};},
+  },'.s42-focus-target-');
+  try {
+    await view.act(async()=>{await Promise.resolve();});
+    assert.match(view.container.textContent,/S42 이전 정상 답변/u); assert.equal(calls,2);
+    revalidate=true;
+    await view.act(async()=>{view.dom.document.dispatchEvent(new MinimalEvent(event));});
+    assert.doesNotMatch(view.container.textContent,/S42 이전 정상 답변/u); assert.equal(calls,3);
+    await view.act(async()=>{release(s42Session({user_id:'other-user',session_id:'other-session'}));await held;});
+    assert.doesNotMatch(view.container.textContent,/S42 이전 정상 답변/u);
+  } finally {release(s42Session());await view.cleanup();}
+});
+
+function s42TargetAdapter(sources = [], outputs = [], versions = []) {
+  const unused = async()=>{throw Error('UNREQUESTED_WRITE');};
+  return { listSources:async()=>sources, listKnowledgePackages:async()=>[], listConnectors:async()=>[],
+    listStudioOutputs:async()=>outputs, listProductStudioOutputs:async()=>({outputs,studioLocks:[]}),
+    listStudioVersions:async()=>versions, uploadPdf:unused, getProcessingStatus:unused,
+    askQuestion:unused, createReport:unused, citationUrl:()=>'/safe-citation' };
+}
+
+test('S42 Source 알림은 첫 자료 대신 지정한 현재 SourceVersion을 선택한다',async()=>{
+  const sources=['other','wanted'].map(id=>({source_id:`source-${id}`,source_version_id:`version-${id}`,
+    filename:`S42 QA ${id}`,source_state:'ready',processing_state:'completed',job_state:'completed'}));
+  const data={...s42SelectedContext(),conversation:null,conversation_thread_ids:[],
+    sources:sources.map(item=>({source_id:item.source_id,source_version_id:item.source_version_id}))};
+  const calls=[];const base=s42TargetAdapter(sources);
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42',getLocationSearch:()=>'?source_version_id=version-wanted',getSession:async()=>s42Session(),
+    getSelectedNotebook:async()=>({data:{title:'S42 원 자료'}}),getSelectedContext:async()=>({data}),
+    getTargetSources:async(workspace,options)=>{calls.push([workspace,options.notebookId]);return sources;},
+    createWorkspaceAdapter:()=>base,
+  },'.s42-source-target-');
+  try {
+    await view.act(async()=>{await new Promise(resolve=>setTimeout(resolve,0));});
+    assert.deepEqual(calls,[['workspace-s42','notebook-s42']]);
+    const pressed=findElements(view.container,node=>node.tagName==='BUTTON'&&node.getAttribute?.('aria-pressed')==='true');
+    assert(pressed.some(node=>node.textContent.includes('S42 QA wanted')),'정확 Version 행을 선택한다');
+    assert(!pressed.some(node=>node.textContent.includes('S42 QA other')),'다른 자료 fallback 금지');
+  }finally{await view.cleanup();}
+});
+
+test('S42 Studio 알림은 최신 버전 대신 지정한 과거 OutputVersion 상세를 연다',async()=>{
+  const sources=['first','next'].map(id=>({source_id:`source-${id}`,source_version_id:`version-source-${id}`,
+    filename:`S42 자료 ${id}`,source_state:'ready',processing_state:'completed',job_state:'completed'}));
+  const output={studio_output_id:'output-s42',output_type:'comparison_table',title:'S42 QA 비교표',output_version_id:'version-new',status:'draft'};
+  const versions=['new','wanted'].map(id=>({output_version_id:`version-${id}`,status:'draft',output_format:'csv',
+    content_version:id==='wanted'?1:2,content:{rows:[{key:`S42 본문 ${id}`,baseline:'기준',current:'합성 QA',state:'same',evidence:[]}]}}));
+  const data={...s42SelectedContext(),conversation:null,conversation_thread_ids:[],studio_output_ids:['output-s42'],
+    sources:sources.map(item=>({source_id:item.source_id,source_version_id:item.source_version_id})),
+    output_version_ids:['version-new','version-wanted']};
+  const calls=[];const base=s42TargetAdapter(sources, [output], versions);
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42',getLocationSearch:()=>'?output_version_id=version-wanted',getSession:async()=>s42Session(),
+    getSelectedNotebook:async()=>({data:{title:'S42 산출물'}}),getSelectedContext:async()=>({data}),
+    getTargetOutputs:async()=>({outputs:[output],studioLocks:[]}),
+    getTargetVersions:async(workspace,outputId,options)=>{calls.push([workspace,outputId,options.notebookId]);return versions;},
+    createWorkspaceAdapter:()=>base,
+  },'.s42-version-target-');
+  try {
+    await view.act(async()=>{await new Promise(resolve=>setTimeout(resolve,0));});
+    assert.deepEqual(calls,[['workspace-s42','output-s42','notebook-s42']]);
+    assert.match(view.container.textContent,/S42 본문 wanted/u);
+    assert.doesNotMatch(view.container.textContent,/S42 본문 new/u);
+    await view.act(async()=>{findElements(view.container,node=>node.tagName==='BUTTON'&&node.textContent.includes('S42 자료 next'))[0].dispatchEvent(new MinimalEvent('click'));await Promise.resolve();});
+    assert.doesNotMatch(view.container.textContent,/S42 본문 wanted/u,'다른 자료를 명시 선택한 뒤 예전 알림 상세를 다시 강제하지 않는다');
+  }finally{await view.cleanup();}
+});
+
+for (const query of ['run_id=a&run_id=b','run_id=a&studio_job_id=b',
+  'source_version_id=a&output_version_id=b','output_version_id=','source_version_id=a%0A']) {
+  test(`S42 잘못된 목적 query ${query}는 조회 전에 거부한다`,async()=>{
+    let calls=0;
+    const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+      notebookId:'notebook-s42',getLocationSearch:()=>'?'+query,getSession:async()=>{calls+=1;return s42Session();},
+      getSelectedNotebook:async()=>{calls+=1;},getSelectedContext:async()=>{calls+=1;},
+    },'.s42-invalid-target-');
+    try {assert.equal(calls,0);assert.match(view.container.textContent,/NOTEBOOK_CONTEXT_INVALID/u);}
+    finally {await view.cleanup();}
+  });
+}
+
+for (const target of ['source_version_id','output_version_id']) test(`S42 현재 접근에서 사라진 ${target}는 다른 자료나 최신 버전으로 대체하지 않는다`,async()=>{
+  const data={...s42SelectedContext(),sources:[{source_id:'source-wanted',source_version_id:'version-wanted'}],
+    studio_output_ids:['output-s42'],output_version_ids:['version-wanted']};
+  let sourceCalls=0,versionCalls=0;
+  const view=await render('apps/web/components/notebook-product-workspace.jsx','NotebookProductWorkspace',{
+    notebookId:'notebook-s42',getLocationSearch:()=>`?${target}=version-wanted`,getSession:async()=>s42Session(),
+    getSelectedNotebook:async()=>({data:{title:'S42 거부'}}),getSelectedContext:async()=>({data}),
+    getTargetSources:async()=>{sourceCalls+=1;return [];},
+    getTargetOutputs:async()=>({outputs:[{studio_output_id:'output-s42'}],studioLocks:[]}),
+    getTargetVersions:async()=>{versionCalls+=1;return [{output_version_id:'other-version'}];},
+  },'.s42-denied-target-');
+  try {
+    assert.match(view.container.textContent,/NOTEBOOK_NOT_FOUND/u);
+    assert.doesNotMatch(view.container.textContent,/S42 이전 정상 답변/u);
+    assert.equal(sourceCalls,target==='source_version_id'?1:0);assert.equal(versionCalls,target==='output_version_id'?1:0);
+  }finally{await view.cleanup();}
+});
+
 test("admin console은 안전한 loading·empty·error 상태만 표시한다", async () => {
   let releaseSession;
   const heldSession = new Promise((resolve) => { releaseSession = resolve; });

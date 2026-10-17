@@ -178,9 +178,13 @@ export async function getNotebook(workspaceId, notebookId, { fetchImpl = fetch, 
   return decode(response, { requireEtag: true });
 }
 
-export async function getNotebookContext(workspaceId, notebookId, { fetchImpl = fetch, signal } = {}) {
+export async function getNotebookContext(workspaceId, notebookId, { fetchImpl = fetch, signal, runId, studioJobId } = {}) {
   if (!safeId(notebookId)) throw new Error("NOTEBOOK_INPUT_INVALID");
-  const response = await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/context`, {
+  const selected = runId !== undefined ? runId : studioJobId;
+  if ((runId !== undefined && studioJobId !== undefined)
+    || (selected !== undefined && (!safeId(selected) || /\s/u.test(selected)))) throw new Error("NOTEBOOK_INPUT_INVALID");
+  const query = selected === undefined ? "" : `?${runId !== undefined ? "run_id" : "studio_job_id"}=${encodeURIComponent(selected)}`;
+  const response = await fetchImpl(`${basePath(workspaceId)}/${encodeURIComponent(notebookId)}/context${query}`, {
     method: "GET", credentials: "same-origin", cache: "no-store", signal,
   });
   let payload;
@@ -188,6 +192,7 @@ export async function getNotebookContext(workspaceId, notebookId, { fetchImpl = 
   if (!response.ok) throw new Error(typeof payload?.error?.code === "string" ? payload.error.code : "NOTEBOOK_UNAVAILABLE");
   if (!exact(payload, ["data", "meta"]) || !validContext(payload.data, notebookId)
       || !validMeta(payload.meta)) throw new Error("NOTEBOOK_CONTEXT_INVALID");
+  if (runId !== undefined && payload.data.conversation?.answer?.run_id !== runId) throw new Error("NOTEBOOK_CONTEXT_INVALID");
   const bindingEtag = response.headers.get("etag");
   if (typeof bindingEtag !== "string" || !/^"notebook-binding:[1-9][0-9]*"$/u.test(bindingEtag)) throw new Error("NOTEBOOK_CONTEXT_INVALID");
   Object.defineProperty(payload.data, "bindingEtag", { enumerable: false, value: bindingEtag });

@@ -83,13 +83,16 @@ export function createWebProductWorkspaceAdapter(workspaceId, notebookId) {
   });
 }
 
-export function ActualWorkspace({ workspaceId, notebookId, notebookTitle, adapter, processingPollOptions, onLogout }) {
+export function ActualWorkspace({ workspaceId, notebookId, notebookTitle, adapter, processingPollOptions, onLogout,
+  initialSourceVersionId = null, initialStudioOutput = null }) {
   const activeAdapter = workspaceId ? (adapter ?? createWebProductWorkspaceAdapter(workspaceId, notebookId)) : null;
   return (
     <ProductWorkspaceShell
       workspaceId={workspaceId}
       notebookTitle={notebookTitle}
       adapter={activeAdapter}
+      initialSourceVersionId={initialSourceVersionId}
+      initialStudioOutput={initialStudioOutput}
       processingPollOptions={processingPollOptions}
       providerSettings={<ProviderSettingsWorkspace workspaceId={workspaceId} embedded />}
       onLogout={onLogout}

@@ -725,8 +725,18 @@ function SheetOriginalTable({ content }) {
   </>;
 }
 
-function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, onLogout = null }) {
+function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state = createProductWorkspaceState(), adapter = null, processingPollOptions = null, desktopOfflineStudio = null, providerSettings = null, onLogout = null,
+  initialSourceVersionId = null, initialStudioOutput = null }) {
   const [viewState, setViewState] = useState(() => normalizeProductWorkspaceState(state));
+  const notificationOutputScope = useRef({adapter, output:initialStudioOutput, consumed:false});
+  if (notificationOutputScope.current.adapter !== adapter || notificationOutputScope.current.output !== initialStudioOutput) {
+    notificationOutputScope.current = {adapter, output:initialStudioOutput, consumed:false};
+  }
+  const notificationOutput = notificationOutputScope.current.consumed ? null : initialStudioOutput;
+  useEffect(() => {
+    // 최초 자료/산출물 로딩까지만 알림 대상을 유지한다. 이후 명시적인 사용자 선택을 강제 복원하지 않는다.
+    if (viewState.status !== "loading" && viewState.studioStatus !== "loading") notificationOutputScope.current.consumed = true;
+  }, [adapter, initialStudioOutput, viewState.status, viewState.studioStatus]);
   const [processing, setProcessing] = useState(null);
   const [question, setQuestion] = useState("");
   const [questionPending, setQuestionPending] = useState(false);
@@ -946,6 +956,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
         sourceSafeError = safeErrorCode(sourceResult.reason, "SOURCE_LIST_FAILED");
       }
       if (!isCurrent()) return;
+      if (initialSourceVersionId && !projected.some(source=>source.sourceVersionId===initialSourceVersionId)) sourceSafeError = "SOURCE_UNAVAILABLE";
       setViewState((current) => ({
         ...current,
         status: sourceSafeError ? "error" : projected.length ? "ready" : "empty",
@@ -956,6 +967,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           : projected.find((source) => source.ready
             && source.sourceId === current.selectedSource?.sourceId
             && source.sourceVersionId === current.selectedSource?.sourceVersionId)
+            ?? (initialSourceVersionId ? projected.find(source=>source.sourceVersionId===initialSourceVersionId) : null)
             ?? (current.selectedSource == null && conversationResult.status === "fulfilled"
               && Array.isArray(conversationResult.value?.citations)
               ? projected.find((source) => source.ready && conversationResult.value.citations.some((citation) =>
@@ -1035,7 +1047,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
       controller.abort();
       if (workspaceLoadEpochRef.current === loadEpoch) workspaceLoadEpochRef.current += 1;
     };
-  }, [adapter, workspaceId, loadRevision]);
+  }, [adapter, workspaceId, loadRevision, initialSourceVersionId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -2120,6 +2132,7 @@ function ProductWorkspaceShellInner({ workspaceId, notebookTitle = null, state =
           {desktopStudio ? desktopStudio : <><ProductStudioPane
             key={`${viewState.answer?.run_id ?? "no-run"}:${viewState.selectedSource?.sourceVersionId ?? "no-source"}`}
             adapter={adapter}
+            initialOutput={notificationOutput}
             onKnowledgeRegistered={() => setLoadRevision((current) => current + 1)}
             state={createProductStudioState({
               workspaceId,

@@ -209,8 +209,13 @@ function StudioOutputContent({ output }) {
   return <p className="studio-output-content">{studioContentText(content)}</p>;
 }
 
-export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
-  const [view, setView] = useState(state);
+function initialOutputState(state, output) {
+  return output ? {...state, selectedOutputId:output.studio_output_id,
+    outputs:[output,...state.outputs.filter(item=>item.studio_output_id!==output.studio_output_id)]} : state;
+}
+
+export function ProductStudioPane({ state, adapter, onKnowledgeRegistered, initialOutput = null }) {
+  const [view, setView] = useState(()=>initialOutputState(state, initialOutput));
   const [revisionContent, setRevisionContent] = useState("");
   const [changeReason, setChangeReason] = useState("");
   const [knowledgeNotice, setKnowledgeNotice] = useState(null);
@@ -239,7 +244,7 @@ export function ProductStudioPane({ state, adapter, onKnowledgeRegistered }) {
     return () => controller.abort();
   }, [adapter, state.workspaceId, approvalRefresh]);
   useEffect(() => {
-    setView(state);
+    setView(initialOutputState(state, initialOutput));
     setRevisionContent(""); setChangeReason(""); setSavedRevision(null); setKnowledgeNotice(null);
     return () => {
       generationRequestRef.current?.controller.abort();

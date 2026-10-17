@@ -5,20 +5,42 @@ import { createNotebookContextWorkspaceAdapter } from "@daon-user/ui/notebook-co
 import { ActualWorkspace, createWebProductWorkspaceAdapter } from "./actual-workspace.jsx";
 import { getCurrentNotebookSession, getNotebook, getNotebookContext } from "../lib/notebook-api.js";
 import { logoutCurrentSession } from "../lib/auth-api.js";
+import { getStudioGenerationJob, listWorkspaceSources, listProductStudioOutputs, listStudioVersions } from "../lib/product-workspace-api.js";
 import { concealProtectedRoute, revealProtectedRoute } from "../lib/protected-route-guard.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const SAFE_ERRORS = new Set(["NOTEBOOK_NOT_FOUND", "NOTEBOOK_UNAVAILABLE", "NOTEBOOK_CONTEXT_INVALID"]);
 const replaceLocation = (path) => window.location.replace(path);
+const locationSearch = () => window.location.search || "";
+const SESSION_FIELDS = ["session_id", "user_id", "tenant_id", "workspace_id"];
+const sameSession = (first, current) => SESSION_FIELDS.every((key) =>
+  typeof first?.[key] === "string" && SAFE_ID.test(first[key]) && !/\s/u.test(first[key]) && first[key] === current?.[key]);
+
+function notificationSelection(search) {
+  const params = new URLSearchParams(search);
+  const entries = [...params];
+  if (!entries.length) return {};
+  const keys = {run_id:"runId",studio_job_id:"studioJobId",source_version_id:"sourceVersionId",output_version_id:"outputVersionId"};
+  if (entries.length !== 1 || !Object.hasOwn(keys, entries[0][0])
+    || !SAFE_ID.test(entries[0][1]) || /\s/u.test(entries[0][1])) throw new Error("NOTEBOOK_CONTEXT_INVALID");
+  return { [keys[entries[0][0]]]:entries[0][1] };
+}
 
 export function NotebookProductWorkspace({
   notebookId,
   getSession = getCurrentNotebookSession,
   getSelectedNotebook = getNotebook,
   getSelectedContext = getNotebookContext,
+  getSelectedJob = getStudioGenerationJob,
+  getLocationSearch = locationSearch,
+  getTargetSources = listWorkspaceSources,
+  getTargetOutputs = listProductStudioOutputs,
+  getTargetVersions = listStudioVersions,
+  createWorkspaceAdapter = createWebProductWorkspaceAdapter,
   navigate = replaceLocation,
 }) {
   const logoutPending = useRef(false);
+  const requestEpoch = useRef(0);
   const protectedRoot = useRef(null);
   const [sessionValidated, setSessionValidated] = useState(false);
   const [view, setView] = useState({ state: "loading", workspaceId: null, notebook: null, context: null, error: null });
@@ -33,6 +55,8 @@ export function NotebookProductWorkspace({
   }, []);
 
   const load = useCallback(async (signal) => {
+    const epoch = ++requestEpoch.current;
+    const active = () => !signal?.aborted && requestEpoch.current === epoch;
     conceal();
     if (!SAFE_ID.test(notebookId || "")) {
       setView({ state: "error", workspaceId: null, context: null, error: "NOTEBOOK_NOT_FOUND" });
@@ -41,20 +65,76 @@ export function NotebookProductWorkspace({
     }
     setView((current) => ({ ...current, state: "loading", error: null }));
     try {
+      const selection = notificationSelection(getLocationSearch());
       const session = await getSession({ signal });
+      if (!active()) return;
       if (session.password_change_required) {
         navigate("/password-change");
         return;
       }
+      if (!sameSession(session, session)) throw new Error("NOTEBOOK_UNAVAILABLE");
       const notebook = await getSelectedNotebook(session.workspace_id, notebookId, { signal });
-      const selected = await getSelectedContext(session.workspace_id, notebookId, { signal });
-      if (!signal?.aborted) setView({
+      if (!active()) return;
+      let selected, notice = null, initialStudioOutput = null;
+      const contextSelection = selection.runId ? {runId:selection.runId}
+        : selection.studioJobId ? {studioJobId:selection.studioJobId} : {};
+      try {
+        selected = await getSelectedContext(session.workspace_id, notebookId, { signal, ...contextSelection });
+      } catch (error) {
+        if (!active()) return;
+        if (!selection.runId || error?.message !== "QUESTION_FAILED") throw error;
+        // 실패를 검증한 뒤에만 기존 정상 대화를 별도로 불러온다. 대상 선택 성공으로 가장하지 않는다.
+        notice = "선택한 질문 처리가 실패했습니다. 새 질문으로 다시 요청해 주세요.";
+        selected = await getSelectedContext(session.workspace_id, notebookId, { signal });
+      }
+      if (!active()) return;
+      if (!notice && selection.runId && selected.data?.conversation?.answer?.run_id !== selection.runId) throw new Error("NOTEBOOK_CONTEXT_INVALID");
+      if (selection.studioJobId) {
+        // 본인/Notebook/현재 자료 검증이 끝난 context 이후 기존 공유 GET 계약을 그대로 사용한다.
+        const job = await getSelectedJob(session.workspace_id, selection.studioJobId, { notebookId, signal });
+        if (!active()) return;
+        const messages = { failed:"선택한 Studio 작업이 실패했습니다.", unavailable:"선택한 Studio 작업을 현재 처리할 수 없습니다.",
+          queued:"선택한 Studio 작업이 대기 중입니다.", leased:"선택한 Studio 작업을 준비 중입니다.",
+          generating:"선택한 Studio 작업을 생성 중입니다.", completed:"선택한 Studio 작업이 완료됐습니다." };
+        if (job?.job_id !== selection.studioJobId || !Object.hasOwn(messages, job.status)) throw new Error("NOTEBOOK_CONTEXT_INVALID");
+        notice = messages[job.status];
+      }
+      if (selection.sourceVersionId) {
+        const bound = selected.data?.sources?.find(item=>item.source_version_id===selection.sourceVersionId);
+        if (!bound) throw new Error("NOTEBOOK_NOT_FOUND");
+        const sources = await getTargetSources(session.workspace_id, {notebookId,signal});
+        if (!active()) return;
+        const targets = Array.isArray(sources) ? sources.filter(item=>item.source_version_id===selection.sourceVersionId && item.source_id===bound.source_id) : [];
+        if (targets.length!==1) throw new Error("NOTEBOOK_NOT_FOUND");
+      }
+      if (selection.outputVersionId) {
+        if (!selected.data?.output_version_ids?.includes(selection.outputVersionId)) throw new Error("NOTEBOOK_NOT_FOUND");
+        const result = await getTargetOutputs(session.workspace_id, {notebookId,signal});
+        if (!active()) return;
+        if (!Array.isArray(result?.outputs)) throw new Error("NOTEBOOK_CONTEXT_INVALID");
+        for (const output of result.outputs) {
+          if (!selected.data.studio_output_ids.includes(output.studio_output_id)) continue;
+          const versions = await getTargetVersions(session.workspace_id,output.studio_output_id,{notebookId,signal});
+          if (!active()) return;
+          const matches = versions.filter(item=>item.output_version_id===selection.outputVersionId);
+          if (matches.length>1) throw new Error("NOTEBOOK_CONTEXT_INVALID");
+          if (matches.length===1) {
+            initialStudioOutput = {...output,...matches[0],versions};
+            break;
+          }
+        }
+        if (!initialStudioOutput) throw new Error("NOTEBOOK_NOT_FOUND");
+      }
+      const currentSession = await getSession({ signal });
+      if (!active()) return;
+      if (!sameSession(session, currentSession) || currentSession.password_change_required) throw new Error("NOTEBOOK_UNAVAILABLE");
+      if (active()) setView({
         state: "ready", workspaceId: session.workspace_id, notebook: notebook.data, context: selected.data,
-        error: null,
+        error: null, notice, initialSourceVersionId:selection.sourceVersionId ?? null, initialStudioOutput,
       });
-      if (!signal?.aborted) reveal();
+      if (active()) reveal();
     } catch (error) {
-      if (signal?.aborted) return;
+      if (!active()) return;
       if (error?.message === "AUTHENTICATION_REQUIRED") {
         navigate("/");
         return;
@@ -65,12 +145,13 @@ export function NotebookProductWorkspace({
       });
       reveal();
     }
-  }, [conceal, getSelectedContext, getSelectedNotebook, getSession, navigate, notebookId, reveal]);
+  }, [conceal, getSelectedContext, getSelectedNotebook, getSelectedJob, getLocationSearch, getTargetSources,
+    getTargetOutputs, getTargetVersions, getSession, navigate, notebookId, reveal]);
 
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
-    return () => controller.abort();
+    return () => { requestEpoch.current += 1; controller.abort(); };
   }, [load]);
 
   useEffect(() => {
@@ -82,23 +163,30 @@ export function NotebookProductWorkspace({
       void load(controller.signal);
     };
     const onPageShow = (event) => { if (event.persisted) revalidate(); };
-    const onPageHide = () => concealProtectedRoute(protectedRoot.current);
+    const onPageHide = () => { requestEpoch.current += 1; controller?.abort(); conceal(); };
+    const onVisibility = () => { if (document.visibilityState === "hidden") onPageHide(); else revalidate(); };
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("pagehide", onPageHide);
     window.addEventListener("popstate", revalidate);
+    window.addEventListener("blur", onPageHide);
+    window.addEventListener("focus", revalidate);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       controller?.abort();
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("popstate", revalidate);
+      window.removeEventListener("blur", onPageHide);
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [conceal, load]);
 
   const adapter = useMemo(() => view.state === "ready"
     ? createNotebookContextWorkspaceAdapter(
-      createWebProductWorkspaceAdapter(view.workspaceId, view.context.notebook_id), view.context,
+      createWorkspaceAdapter(view.workspaceId, view.context.notebook_id), view.context,
     )
-    : null, [view]);
+    : null, [view, createWorkspaceAdapter]);
 
   const handleLogout = async () => {
     if (logoutPending.current) return;
@@ -119,6 +207,9 @@ export function NotebookProductWorkspace({
   </main>;
   return <div ref={protectedRoot} hidden={!sessionValidated} inert={!sessionValidated}
     aria-hidden={!sessionValidated ? "true" : undefined} data-session-validated={sessionValidated ? "true" : "false"}>
-    <ActualWorkspace workspaceId={view.workspaceId} notebookId={view.context.notebook_id} notebookTitle={view.notebook?.title} adapter={adapter} onLogout={() => void handleLogout()} />
+    {view.notice && <p className="notebook-route-state" role="status">{view.notice}</p>}
+    <ActualWorkspace workspaceId={view.workspaceId} notebookId={view.context.notebook_id} notebookTitle={view.notebook?.title}
+      initialSourceVersionId={view.initialSourceVersionId} initialStudioOutput={view.initialStudioOutput}
+      adapter={adapter} onLogout={() => void handleLogout()} />
   </div>;
 }

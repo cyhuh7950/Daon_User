@@ -386,7 +386,8 @@ function routeFor(method, segments) {
     && SAFE_SEGMENT.test(segments[3]) && segments[4] === "context"
   ) {
     return method === "GET"
-      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/context`, query: null }
+      ? { path: `/api/v1/workspaces/${encodeURIComponent(segments[1])}/notebooks/${encodeURIComponent(segments[3])}/context`,
+          query: new Set(["run_id", "studio_job_id"]), strictQuery: true, notebookContextSelection: true }
       : { methodRejected: true };
   }
   if (
@@ -1195,6 +1196,11 @@ export function createBffProxy({
     }
     if (route.csrfProvenanceRequired && !csrfRefererIsSameOrigin(request, publicOrigin)) {
       return createBffSafeError(403, "CSRF_VALIDATION_FAILED", trace);
+    }
+    if (route.notebookContextSelection) {
+      const values = [...new URL(request.url).searchParams];
+      if (values.length > 1 || values.some(([key, value]) => !route.query.has(key)
+        || !SAFE_SEGMENT.test(value) || /\s/u.test(value))) return createBffSafeError(400, "INVALID_REQUEST", trace);
     }
     if (route.requiredQuery) {
       const query = new URL(request.url).searchParams;

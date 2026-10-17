@@ -9,6 +9,28 @@ const VIEW = Object.freeze({ notebook_id: "notebook-1", title: "Notebook", sourc
 const META = Object.freeze({ trace_id: "trace-1", workspace_id: "workspace-1" });
 const json = (body, init = {}) => Response.json(body, init);
 
+test('S42 정확 Run/Job 선택자는 same-origin context GET에 하나만 전달한다', async () => {
+  const data = { notebook_id:'notebook-1', sources:[], knowledge_context_ids:[],
+    conversation_thread_ids:['thread-1'], studio_output_ids:[], output_version_ids:[], generation_settings_ids:[],
+    source_deletion_requests:[], conversation:{ conversation_thread_id:'thread-1',
+      answer:{ run_id:'run-selected', run_result_id:'result-1', answer:'저장 답변', insufficient:false, citations:[] } } };
+  const calls = [];
+  const fetchImpl = async (url, init) => { calls.push([url, init]);
+    return json({ data, meta:META }, { headers:{ ETag:'"notebook-binding:1"' } }); };
+  await getNotebookContext('workspace-1', 'notebook-1', { fetchImpl, runId:'run-selected' });
+  await getNotebookContext('workspace-1', 'notebook-1', { fetchImpl, studioJobId:'job-selected' });
+  assert.deepEqual(calls.map(([url]) => url), [
+    '/bff/api/workspaces/workspace-1/notebooks/notebook-1/context?run_id=run-selected',
+    '/bff/api/workspaces/workspace-1/notebooks/notebook-1/context?studio_job_id=job-selected']);
+  assert(calls.every(([,init]) => init.credentials === 'same-origin' && init.cache === 'no-store'));
+  for (const options of [{ runId:'' }, { studioJobId:'../escape' },
+    { runId:'run-selected', studioJobId:'job-selected' }, { runId:'run-selected\n' }]) {
+    await assert.rejects(getNotebookContext('workspace-1','notebook-1',{ fetchImpl, ...options }), /NOTEBOOK_INPUT_INVALID/u);
+  }
+  assert.equal(calls.length, 2);
+  await assert.rejects(getNotebookContext('workspace-1','notebook-1',{ fetchImpl, runId:'other-run' }), /NOTEBOOK_CONTEXT_INVALID/u);
+});
+
 function s16DeletionContext(state) {
   return { notebook_id: "notebook-1", sources: [], knowledge_context_ids: [], conversation_thread_ids: [],
     studio_output_ids: [], output_version_ids: [], generation_settings_ids: [], conversation: null,
