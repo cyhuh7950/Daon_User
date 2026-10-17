@@ -1485,6 +1485,7 @@ def _domain_error(error: IdentityError | AuthorizationError) -> tuple[int, str, 
         "IDEMPOTENCY_KEY_REUSED", "IDEMPOTENCY_KEY_INVALID", "INVALID_USER_STATE",
         "USER_EMAIL_REQUIRED", "EMAIL_VERIFICATION_REQUIRED",
         "ACCOUNT_VERSION_CONFLICT", "ACCOUNT_INPUT_INVALID", "ACCOUNT_CURSOR_INVALID", "ACCOUNT_STORAGE_UNAVAILABLE", "ACCOUNT_SESSION_CHANGED",
+        "ORGANIZATION_MEMBERSHIP_SUSPENDED",
     }
     return status, error.code if error.code in safe_special else "INVALID_REQUEST", status >= 500
 
@@ -5250,7 +5251,7 @@ def create_app(dependencies: RuntimeDependencies) -> FastAPI:
                 policy_version=dependencies.settings.policy_version,
             )
         except AuthorizationError as error:
-            if error.code != "ACTION_DENIED":
+            if not (error.http_status == 403 and error.code in {"ACTION_DENIED", "ORGANIZATION_MEMBERSHIP_SUSPENDED"}):
                 raise
         else:
             recovery_operations = [

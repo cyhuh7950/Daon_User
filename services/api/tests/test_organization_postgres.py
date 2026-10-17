@@ -711,3 +711,345 @@ def test_l3_isolated_api_foundation_scope_and_protected_activation(monkeypatch):
             assert "code_digest" not in response+audit and "l3-pg-synthetic-code" not in response+audit
     finally:
         identity.close(); auth.close(); repo.close(); cloud.close()
+
+
+@pytest.mark.skipif(not os.environ.get("DAON_ORGANIZATION_TEST_DSN"), reason="J2 전용 격리 DSN 필요 — 실제 PG 미실행")
+def test_j2_isolated_pending_replay_concurrency_and_zero_access(monkeypatch):
+    """main이 exact 단일 승인 자원을 fresh0067로 복제한 뒤 이 한 건만 실행한다."""
+    import hashlib
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta, timezone
+    from threading import Barrier
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    from alembic import command
+    from alembic.config import Config
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+    from fastapi.testclient import TestClient
+    from daon_user_api.audit import PostgresSecurityAuditStore
+    from daon_user_api.identity import IdentityPrincipal
+    from daon_user_api.organization_api import OrganizationApi
+    from daon_user_api.organization_membership import OrganizationWorkflowError
+    from daon_user_api.postgres_adapters import PostgresAuthorizationRepository, PostgresOrganizationRepository
+
+    dsn = os.environ["DAON_ORGANIZATION_TEST_DSN"]
+    if conninfo_to_dict(dsn).get("dbname") != "daon_user_s39_qa_20261017": pytest.fail("S39_EXACT_ISOLATED_DATABASE_REQUIRED", pytrace=False)
+    with psycopg.connect(dsn) as connection:
+        assert connection.info.dbname == "daon_user_s39_qa_20261017"
+        assert connection.execute("SELECT version_num FROM public.alembic_version").fetchall() == [("0067",)]
+        assert connection.execute("SELECT to_regclass('public.identity_org_operation_outbox')").fetchone() == (None,)
+        old_users = connection.execute("SELECT to_jsonb(r) FROM public.identity_users r ORDER BY user_id").fetchall()
+        old_sessions = connection.execute("SELECT to_jsonb(r) FROM public.identity_sessions r ORDER BY session_id").fetchall()
+        index_oid = connection.execute("SELECT 'public.identity_org_join_pending_unique'::regclass::oid").fetchone()[0]
+    monkeypatch.setenv("DAON_DB_MIGRATION_DSN", dsn)
+    command.upgrade(Config(str(VERSIONS.parents[1] / "alembic.ini")), "0068")
+    app_dsn = make_conninfo(dsn, options="-c role=daon_app")
+    store = PostgresSecurityAuditStore(dsn)
+    repositories = [PostgresOrganizationRepository(app_dsn, audit_store=store) for _ in range(2)]
+    auth = PostgresAuthorizationRepository(app_dsn)
+    now = datetime.now(timezone.utc)
+    tenant, workspace = "s39-j2-tenant", "s39-j2-workspace"
+    users = ["s39-j2-member", "s39-j2-race", "s39-j2-same-key", "s39-j2-rollback"]
+    code = "j2-pg-synthetic-code"
+    try:
+        with psycopg.connect(app_dsn) as connection:
+            assert connection.execute("SELECT current_user").fetchone() == ("daon_app",)
+            connection.execute("INSERT INTO public.identity_tenants(tenant_id) VALUES (%s)", (tenant,))
+            for user in users:
+                connection.execute("INSERT INTO public.identity_users(user_id,issuer,subject,login_id,email,email_verified_at,password_change_required,state) VALUES (%s,'local',%s,%s,%s,%s,false,'active')", (user, user, user+"-login", user+"@example.test", now))
+            connection.execute("INSERT INTO public.identity_auth_workspaces VALUES (%s,%s,'organization','cloud_sync',1000,1,1,%s)", (workspace, tenant, now))
+        invitation = repositories[0].create_invitation(tenant_id=tenant, created_by="j2-admin", code=code, workspace_id=workspace, expires_at=now+timedelta(days=1), max_uses=1, now=now)
+        app = FastAPI()
+        @app.exception_handler(OrganizationWorkflowError)
+        async def workflow_error(_request: Request, failure: OrganizationWorkflowError):
+            return JSONResponse(status_code=failure.status, content={"code": failure.code})
+        current = {"principal": IdentityPrincipal(users[0], "j2-session", "device", "personal")}
+        # 실제 PG 저장 경계다. 세션 principal은 fixture이며 정식 인증/flag 검증을 주장하지 않는다.
+        OrganizationApi(repositories[0], auth, policy_version="j2-pg-policy").mount(app, lambda _request: current["principal"])
+        headers = {"Idempotency-Key": "j2-pg-operation-0001", "X-Daon-Expected-Session-Id": "j2-session"}
+        with TestClient(app) as client:
+            created = client.post("/api/v1/organization/join-requests", json={"invitation_code": code}, headers=headers)
+            assert created.status_code == 202 and created.json()["data"]["state"] == "pending"
+            duplicate = client.post("/api/v1/organization/join-requests", json={"invitation_code": code}, headers=headers | {"Idempotency-Key": "j2-pg-operation-0002"})
+            assert duplicate.status_code == 409 and duplicate.json()["code"] == "JOIN_REQUEST_ALREADY_PENDING"
+            listed = client.get("/api/v1/organization/join-requests")
+            assert listed.status_code == 200 and listed.json()["data"] == [created.json()["data"]]
+            assert all("T" in listed.json()["data"][0][field] and listed.json()["data"][0][field].endswith("+00:00") for field in ("created_at", "updated_at"))
+            current["principal"] = IdentityPrincipal(users[1], "other-session", "other-device", "personal")
+            assert client.get("/api/v1/organization/join-requests").json()["data"] == []
+            current["principal"] = IdentityPrincipal(users[0], "j2-session", "device", "personal")
+
+        def run(index, user, key, invitation_code=code):
+            payload = {"tenant_id": None, "invitation_code": invitation_code}
+            try:
+                return repositories[index].execute_management_operation(operation="organization.join.create", actor_id=user, tenant_id=None, target_id=None,
+                    payload=payload, idempotency_key=key, request_fingerprint=hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), trace_id="j2-pg-trace", policy_version="j2-pg-policy")
+            except OrganizationWorkflowError as error:
+                return error.code
+
+        for user, keys in ((users[1], ["j2-pg-race-new-key-0001", "j2-pg-race-new-key-0002"]), (users[2], ["j2-pg-race-same-key-0001"]*2)):
+            barrier = Barrier(2)
+            def concurrent(index):
+                barrier.wait(timeout=5)
+                return run(index, user, keys[index])
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(concurrent, index) for index in (0, 1)]
+                results = [future.result(timeout=15) for future in futures]
+            if user == users[1]:
+                assert sum(result == "JOIN_REQUEST_ALREADY_PENDING" for result in results) == 1
+                assert len([result for result in results if not isinstance(result, str)]) == 1
+            else:
+                assert sorted(result.replayed for result in results) == [False, True]
+                assert results[0].value == results[1].value
+        original = repositories[0]._record_management_operation
+        def receipt_failure(connection, **values):
+            original(connection, **values)
+            raise OrganizationWorkflowError("PERSISTENCE_UNAVAILABLE", 503)
+        with monkeypatch.context() as patch:
+            patch.setattr(repositories[0], "_record_management_operation", receipt_failure)
+            assert run(0, users[3], "j2-pg-rollback-operation-0001") == "PERSISTENCE_UNAVAILABLE"
+        repositories[0].create_invitation(tenant_id=tenant, created_by="j2-admin", code="j2-pg-synthetic-unbound", expires_at=now+timedelta(days=1), max_uses=1, now=now)
+        assert run(0, users[3], "j2-pg-unbound-operation-0001", "j2-pg-synthetic-unbound") == "INVITATION_INVALID"
+        repositories[0].revoke_invitation(tenant_id=tenant, invitation_id=invitation.invitation_id, actor_id="j2-admin", expected_version=1, now=now)
+        with TestClient(app) as client:
+            replay = client.post("/api/v1/organization/join-requests", json={"invitation_code": code}, headers=headers)
+            assert replay.status_code == 202 and replay.json()["data"] == created.json()["data"]
+        # API/직접 경로 모두 여기까지 전달기를 호출하지 않는다. 선전달 가설을 실제 메타데이터로 구분한다.
+        with psycopg.connect(dsn) as connection:
+            before_delivery = connection.execute("SELECT event_id,actor_id,trace_id,policy_version,delivered_at IS NOT NULL AS delivered FROM public.identity_org_operation_outbox WHERE tenant_id=%s ORDER BY event_id", (tenant,)).fetchall()
+            sink_before = connection.execute("SELECT event_id FROM public.security_audit_events WHERE tenant_id=%s", (tenant,)).fetchall()
+        assert len(before_delivery) == 3 and {row[1] for row in before_delivery} == set(users[:3])
+        assert all(not row[4] for row in before_delivery) and sink_before == []
+        append_errors = []
+        actual_append = store._append_admin_role
+        def observed_append(draft):
+            try:
+                return actual_append(draft)
+            except Exception as error:
+                # 원문 예외/DSN/입력은 출력하지 않고 식별자·예외종류·SQLSTATE만 남긴다.
+                append_errors.append((draft.event_id, draft.actor_id, type(error).__name__, getattr(error, "sqlstate", None)))
+                raise
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "_append_admin_role", observed_append)
+            delivered = repositories[0].dispatch_pending_management_audits()
+        with psycopg.connect(dsn) as connection:
+            after_delivery = connection.execute("SELECT event_id,actor_id,delivered_at IS NOT NULL AS delivered FROM public.identity_org_operation_outbox WHERE tenant_id=%s ORDER BY event_id", (tenant,)).fetchall()
+            sink_after = connection.execute("SELECT event_id,actor_id FROM public.security_audit_events WHERE tenant_id=%s ORDER BY event_id", (tenant,)).fetchall()
+        assert delivered == 3, {"append_errors": append_errors, "receipts": after_delivery, "sink": sink_after}
+        assert append_errors == []
+        event_ids = {row[0] for row in before_delivery}
+        assert len(after_delivery) == 3 and all(row[2] for row in after_delivery)
+        assert len(sink_after) == 3 and {row[0] for row in sink_after} == event_ids
+        for event_id, actor_id, trace_id, policy_version, _ in before_delivery:
+            event = store.read(event_id, tenant_id=tenant)
+            assert event is not None
+            assert (event.actor_id, event.trace_id, event.policy_version) == (actor_id, trace_id, policy_version)
+            assert event.action == "organization.join_request.created"
+            assert dict(event.metadata) == {"reason": None, "version": 1, "auth_version": None}
+        assert repositories[1].dispatch_pending_management_audits() == 0
+        assert {event.event_id for event in store.list(tenant_id=tenant).items} == event_ids
+        with psycopg.connect(dsn) as connection:
+            assert connection.execute("SELECT count(*) FROM public.identity_org_join_requests WHERE user_id=ANY(%s)", (users,)).fetchone() == (3,)
+            assert connection.execute("SELECT count(*) FROM public.identity_org_operation_outbox").fetchone() == (3,)
+            assert connection.execute("SELECT count(*) FROM public.identity_org_join_requests WHERE user_id=%s", (users[3],)).fetchone() == (0,)
+            for table in ("identity_memberships", "identity_auth_memberships", "identity_org_tenant_memberships"):
+                assert connection.execute(f"SELECT count(*) FROM public.{table} WHERE user_id=ANY(%s)", (users,)).fetchone() == (0,)
+            assert connection.execute("SELECT sum(used_count) FROM public.identity_org_invitation_codes WHERE tenant_id=%s", (tenant,)).fetchone() == (0,)
+            assert connection.execute("SELECT acl_version FROM public.identity_auth_workspaces WHERE workspace_id=%s", (workspace,)).fetchone() == (1,)
+            receipts = connection.execute("SELECT response_json,audit_json,delivered_at FROM public.identity_org_operation_outbox").fetchall()
+            assert all(delivered is not None and code not in response+audit and "code_digest" not in response+audit for response, audit, delivered in receipts)
+            assert connection.execute("SELECT to_jsonb(r) FROM public.identity_users r WHERE user_id<>ALL(%s) ORDER BY user_id", (users,)).fetchall() == old_users
+            assert connection.execute("SELECT to_jsonb(r) FROM public.identity_sessions r ORDER BY session_id").fetchall() == old_sessions
+            assert connection.execute("SELECT 'public.identity_org_join_pending_unique'::regclass::oid").fetchone() == (index_oid,)
+    finally:
+        for repository in repositories: repository.close()
+        auth.close(); store.close()
+
+
+@pytest.mark.skipif(not os.environ.get("DAON_ORGANIZATION_TEST_DSN"), reason="J3 전용 격리 DSN 필요 — 실제 PG 미실행")
+def test_j3_isolated_approval_suspension_authorization_and_personal_return(monkeypatch, tmp_path):
+    """fresh0067 exact 단일 자원에서 별도 선택한다. 앞선 J2 node 상태와 혼용하지 않는다."""
+    import hashlib
+    import json
+    from datetime import datetime, timedelta, timezone
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    from alembic import command
+    from alembic.config import Config
+    from fastapi.testclient import TestClient
+    from daon_user_api import runtime
+    from daon_user_api.audit import AuditEventStore
+    from daon_user_api.authorization import Action, AuthorizationError, AuthorizationService, HistoricalResultDescriptor, Role
+    from daon_user_api.identity import IdentityError, IdentityService, MINIMUM_STEP_UP_ACTION_GROUPS
+    from daon_user_api.identity_postgres import PostgresIdentityRepository
+    from daon_user_api.postgres_adapters import PostgresAuthorizationRepository, PostgresOrganizationRepository
+    from test_identity_support import POLICY_VERSION, TRACE_ID, native_login, policy
+
+    dsn = os.environ["DAON_ORGANIZATION_TEST_DSN"]
+    if conninfo_to_dict(dsn).get("dbname") != "daon_user_s39_qa_20261017":
+        pytest.fail("S39_EXACT_ISOLATED_DATABASE_REQUIRED", pytrace=False)
+    with psycopg.connect(dsn) as connection:
+        assert connection.info.dbname == "daon_user_s39_qa_20261017"
+        assert connection.execute("SELECT version_num FROM public.alembic_version").fetchall() == [("0067",)]
+        assert connection.execute("SELECT to_regclass('public.identity_org_operation_outbox')").fetchone() == (None,)
+    monkeypatch.setenv("DAON_DB_MIGRATION_DSN", dsn)
+    command.upgrade(Config(str(VERSIONS.parents[1] / "alembic.ini")), "0068")
+    app_dsn = make_conninfo(dsn, options="-c role=daon_app")
+    identities = PostgresIdentityRepository(app_dsn)
+    auth = PostgresAuthorizationRepository(app_dsn)
+    workflow = PostgresOrganizationRepository(app_dsn)
+    audit = AuditEventStore()
+    identity = IdentityService(repository=identities, audit_store=audit, oidc_policies=(policy(),), clock=lambda: datetime.now(timezone.utc))
+    authorization = AuthorizationService(repository=auth, audit_store=audit, clock=lambda: datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    tenant, workspace = "s39-j3-org", "s39-j3-workspace"
+    try:
+        # 외부 OIDC 교환만 비민감 대역이다. 아래 세션·권한·workflow와 물리표는 실제 PG다.
+        original = native_login(identity)
+        auth.bootstrap_workspace(tenant_id="tenant-001", workspace_id="s39-j3-personal", owner_user_id=original.user_id,
+            owner_role=Role.PERSONAL_OWNER, workspace_kind="personal", data_area="cloud_sync", cost_limit_cents=100, now=now)
+        auth.bootstrap_workspace(tenant_id=tenant, workspace_id=workspace, owner_user_id="s39-j3-admin",
+            owner_role=Role.ORGANIZATION_ADMIN, workspace_kind="organization", data_area="cloud_sync", cost_limit_cents=100, now=now)
+        with psycopg.connect(app_dsn) as connection:
+            assert connection.execute("SELECT current_user").fetchone() == ("daon_app",)
+            connection.execute("UPDATE public.identity_memberships SET role='personal_owner' WHERE tenant_id='tenant-001' AND user_id=%s", (original.user_id,))
+            connection.execute("INSERT INTO public.identity_tenants VALUES (%s)", (tenant,))
+            for action in MINIMUM_STEP_UP_ACTION_GROUPS:
+                connection.execute("INSERT INTO public.identity_tenant_step_up_actions VALUES (%s,%s,1)", (tenant, action))
+            for name, display in (("tenant-001", "격리 개인"), (tenant, "격리 승인 조직")):
+                connection.execute("SELECT set_config('app.tenant_id',%s,true)", (name,))
+                connection.execute("INSERT INTO public.tenants(tenant_id,display_name) VALUES (%s,%s)", (name, display))
+        workflow.create_invitation(tenant_id=tenant, workspace_id=workspace, created_by="s39-j3-admin",
+            code="j3-pg-synthetic-invitation", expires_at=now+timedelta(days=1), max_uses=1, now=now)
+        request = workflow.create_join_request(tenant_id=tenant, user_id=original.user_id, invitation_code="j3-pg-synthetic-invitation", now=now)
+        personal = (("tenant-001", "personal", "s39-j3-personal"),)
+        assert identity.selectable_tenant_workspaces(user_id=original.user_id) == personal
+        def execute(operation, target, payload, key):
+            return workflow.execute_management_operation(operation=operation, actor_id="s39-j3-admin", tenant_id=tenant,
+                target_id=target, payload=payload, idempotency_key=key,
+                request_fingerprint=hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest(),
+                trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        execute("organization.join.decide", request.request_id, {"approved": True, "role": "member", "expected_version": 1}, "j3-pg-approval-0001")
+        assert set(identity.selectable_tenant_workspaces(user_id=original.user_id)) == {personal[0], (tenant, "organization", workspace)}
+        organization, selected = identity.switch_session_tenant(access_token=original.access_token, tenant_id=tenant, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert selected == workspace and organization.session_id != original.session_id
+        principal = identity.validate_access(organization.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert authorization.authorize_action(principal=principal, workspace_id=workspace, action=Action.VIEW, trace_id=TRACE_ID, policy_version=POLICY_VERSION).role is Role.VIEWER
+        with pytest.raises(AuthorizationError) as viewer_write:
+            authorization.authorize_action(principal=principal, workspace_id=workspace, action=Action.EDIT, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert viewer_write.value.http_status == 403
+        with pytest.raises(AuthorizationError) as foreign:
+            authorization.authorize_action(principal=principal, workspace_id="s39-j3-personal", action=Action.VIEW, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert foreign.value.http_status == 404
+        with pytest.raises(IdentityError): identity.validate_access(original.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        with pytest.raises(IdentityError): identity.rotate_refresh(original.refresh_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        auth.insert_historical_result(HistoricalResultDescriptor("j3-pg-result", "answer", tenant, workspace, (), (), (), POLICY_VERSION, 1), now)
+        execute("organization.member.state", original.user_id, {"active": False, "expected_version": 1, "reason": "접근 중지"}, "j3-pg-suspend-0001")
+        assert identity.selectable_tenant_workspaces(user_id=original.user_id) == personal
+        assert identity.describe_access(organization.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION).principal == principal
+        with pytest.raises(IdentityError) as unavailable:
+            identity.switch_session_tenant(access_token=organization.access_token, tenant_id=tenant, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+        assert unavailable.value.code == "TENANT_UNAVAILABLE"
+        dependencies = runtime.RuntimeDependencies(settings=runtime.RuntimeSettings.for_test(database_path=tmp_path / "j3-pg-unused.sqlite", policy_version=POLICY_VERSION),
+            identity_service=identity, identity_repository=identities, authorization_service=authorization,
+            authorization_repository=auth, audit_store=audit)
+        # workflow prefix middleware 없이도 전역 export/access-decisions의 실제 권한 gate가 동작한다.
+        headers = {"Authorization": f"Bearer {organization.access_token}", "Idempotency-Key": "j3-pg-http-operation-0001"}
+        with TestClient(runtime.create_app(dependencies)) as client:
+            session = client.get("/api/v1/session", headers=headers)
+            assert session.status_code == 200 and session.json()["data"]["recovery_operations"] == []
+            listed = client.get("/api/v1/session/tenants", headers=headers)
+            assert listed.status_code == 200
+            assert listed.json()["data"]["current_tenant_id"] == tenant
+            assert [row["tenant_id"] for row in listed.json()["data"]["tenants"]] == ["tenant-001"]
+            for method, url, body in [
+                ("GET", f"/api/v1/studio-outputs/output/versions/version/exports/pdf?workspace_id={workspace}&notebook_id=notebook", None),
+                ("POST", "/api/v1/access-decisions", {"resource_id": "j3-pg-result", "action": "open_source"}),
+            ]:
+                response = client.request(method, url, headers=headers, **({"json": body} if body else {}))
+                assert response.status_code == 403 and response.json()["error"]["code"] == "ORGANIZATION_MEMBERSHIP_SUSPENDED"
+            # runtime lifespan이 저장소를 닫기 전에 같은 실제 세션의 개인 복귀를 검증한다.
+            returned, selected = identity.switch_session_tenant(access_token=organization.access_token, tenant_id="tenant-001", trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            assert returned.session_id != organization.session_id and selected == personal[0][2]
+            with pytest.raises(IdentityError): identity.validate_access(organization.access_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            with pytest.raises(IdentityError): identity.rotate_refresh(organization.refresh_token, trace_id=TRACE_ID, policy_version=POLICY_VERSION)
+            with psycopg.connect(app_dsn) as connection:
+                connection.execute("UPDATE public.identity_auth_memberships SET state='suspended',version=version+1 WHERE tenant_id=%s AND user_id=%s", (tenant, original.user_id))
+            execute("organization.member.state", original.user_id, {"active": True, "expected_version": 2, "reason": "업무 복귀"}, "j3-pg-active-0001")
+            assert identity.selectable_tenant_workspaces(user_id=original.user_id) == personal
+            with psycopg.connect(app_dsn) as connection:
+                assert connection.execute("SELECT role,state,version FROM public.identity_auth_memberships WHERE tenant_id=%s AND user_id=%s", (tenant, original.user_id)).fetchall() == [("viewer", "suspended", 2)]
+                assert connection.execute("SELECT count(*) FROM public.identity_memberships WHERE user_id='s39-j3-admin'").fetchone() == (0,)
+    finally:
+        workflow.close(); auth.close(); identities.close()
+
+
+@pytest.mark.skipif(not os.environ.get("DAON_ORGANIZATION_TEST_DSN"), reason="J3 감사 조회 전용 격리 DSN 필요 — 실제 PG 미실행")
+def test_j3_isolated_suspended_tenant_audit_read(monkeypatch):
+    """fresh0067의 기존 물리표에서 감사 gate만 검사한다. 0068 적용·기존 공동 node 재실행은 없다."""
+    from datetime import datetime, timezone
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    from daon_user_api.audit import AuditEventStore
+    from daon_user_api.authorization import AuthorizationError, AuthorizationService, Role
+    from daon_user_api.identity import IdentityPrincipal
+    from daon_user_api.postgres_adapters import PostgresAuthorizationRepository
+
+    dsn = os.environ["DAON_ORGANIZATION_TEST_DSN"]
+    if conninfo_to_dict(dsn).get("dbname") != "daon_user_s39_qa_20261017":
+        pytest.fail("S39_EXACT_ISOLATED_DATABASE_REQUIRED", pytrace=False)
+    with psycopg.connect(dsn) as connection:
+        assert connection.info.dbname == "daon_user_s39_qa_20261017"
+        assert connection.execute("SELECT version_num FROM public.alembic_version").fetchall() == [("0067",)]
+    app_dsn = make_conninfo(dsn, options="-c role=daon_app")
+    repository = PostgresAuthorizationRepository(app_dsn)
+    service = AuthorizationService(repository=repository, audit_store=AuditEventStore(), clock=lambda: datetime.now(timezone.utc))
+    user, tenant, personal = "s39-j3-audit-manager", "s39-j3-audit-org", "s39-j3-audit-personal"
+    manager = IdentityPrincipal(user, "j3-audit-session", "j3-audit-device", tenant)
+    owner = IdentityPrincipal(user, "j3-personal-session", "j3-personal-device", personal)
+    try:
+        with psycopg.connect(app_dsn) as connection:
+            assert connection.execute("SELECT current_user").fetchone() == ("daon_app",)
+            for target in (tenant, personal):
+                connection.execute("INSERT INTO public.identity_tenants VALUES (%s)", (target,))
+            connection.execute("INSERT INTO public.identity_users(user_id,issuer,subject,login_id,state) VALUES (%s,'local',%s,%s,'active')", (user, user, user+"-login"))
+        for target, workspace, role, kind in ((tenant, "j3-audit-workspace", Role.ORGANIZATION_ADMIN, "organization"), (personal, "j3-audit-personal-workspace", Role.PERSONAL_OWNER, "personal")):
+            repository.bootstrap_workspace(tenant_id=target, workspace_id=workspace, owner_user_id=user, owner_role=role,
+                workspace_kind=kind, data_area="cloud_sync", cost_limit_cents=100, now=datetime.now(timezone.utc))
+        with psycopg.connect(app_dsn) as connection:
+            connection.execute("INSERT INTO public.identity_org_tenant_memberships(tenant_id,user_id,role,state,version,updated_at) VALUES (%s,%s,'member','suspended',1,%s)", (tenant, user, datetime.now(timezone.utc)))
+        def read(principal):
+            return service.authorize_audit_read(principal=principal, workspace_id=None, trace_id="j3-audit-trace", policy_version="j3-audit-policy")
+        with pytest.raises(AuthorizationError) as denied:
+            read(manager)
+        assert (denied.value.code, denied.value.http_status) == ("ORGANIZATION_MEMBERSHIP_SUSPENDED", 403)
+        assert read(owner) is None
+        with psycopg.connect(app_dsn) as connection:
+            connection.execute("UPDATE public.identity_org_tenant_memberships SET state='active' WHERE tenant_id=%s AND user_id=%s", (tenant, user))
+        assert read(manager) is None
+        # 저장소/역할/정책을 바꾸지 않고 해당 workflow 조회에만 실제 PG SQL 오류를 주입한다.
+        actual_connect = repository._connect
+        def failing_connection():
+            connection = actual_connect()
+            actual_execute = connection.execute
+            def execute(statement, parameters=()):
+                if "public.identity_org_tenant_memberships" in statement:
+                    return actual_execute("SELECT 1/0")
+                return actual_execute(statement, parameters)
+            connection.execute = execute
+            return connection
+        with monkeypatch.context() as patch:
+            patch.setattr(repository, "_connect", failing_connection)
+            with pytest.raises(AuthorizationError) as unavailable:
+                read(manager)
+            assert unavailable.value.http_status == 503
+            assert read(owner) is None
+        with psycopg.connect(app_dsn) as connection:
+            connection.execute("DELETE FROM public.identity_org_tenant_memberships WHERE tenant_id=%s AND user_id=%s", (tenant, user))
+        assert read(manager) is None
+        with psycopg.connect(dsn) as connection:
+            assert connection.execute("SELECT version_num FROM public.alembic_version").fetchall() == [("0067",)]
+    finally:
+        repository.close()

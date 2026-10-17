@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { validateOpenApiDocument } from "../verify-openapi-contract.mjs";
 import { createBffProxy, parseInternalApiBase } from "../../apps/web/lib/bff-api-proxy.js";
 import * as organizationApi from "../../apps/web/lib/organization-admin-api.js";
 
@@ -67,4 +69,38 @@ test("L3 실제 client helper는 same-origin과 고정 헤더·현재 version �
     globalThis.fetch = async () => Response.json({ data: [{ ...invitation, code_digest: "must-not-consume" }] });
     await assert.rejects(organizationApi.listInvitations("tenant-a"), /ORGANIZATION_RESPONSE_INVALID/u);
   } finally { globalThis.fetch = original; }
+});
+
+test("J2 실제 client는 본인 목록 query0·신청 code 한 필드와 원 키/세션만 전송한다", async () => {
+  const original = globalThis.fetch, calls = [];
+  const row = { request_id: "join-a", tenant_id: "tenant-a", user_id: "member", invitation_id: "invitation-a", state: "pending", decision_reason: null, decided_by: null, version: 1, created_at: "2026-10-17T00:00:00Z", updated_at: "2026-10-17T00:00:00Z" };
+  globalThis.fetch = async (url, init) => { calls.push([url, init]); return Response.json({ data: init.method === "POST" ? row : [row], meta: {} }); };
+  try {
+    assert.deepEqual(await organizationApi.listOwnJoinRequests({ tenant_id: "foreign", user_id: "other" }), [row]);
+    assert.equal(calls[0][0], "/bff/api/organization/join-requests");
+    const options = { expectedSessionId: "session-a", idempotencyKey: "j2-frozen-operation-0001" };
+    assert.deepEqual(await organizationApi.submitJoinRequest("j2-synthetic-code", options), row);
+    assert.deepEqual(JSON.parse(calls[1][1].body), { invitation_code: "j2-synthetic-code" });
+    assert.equal(calls[1][1].headers.get("X-Daon-Expected-Session-Id"), "session-a");
+    assert.equal(calls[1][1].headers.get("Idempotency-Key"), options.idempotencyKey);
+    globalThis.fetch = async () => Response.json({ data: { ...row, code_digest: "must-not-consume" }, meta: {} });
+    await assert.rejects(organizationApi.submitJoinRequest("j2-synthetic-code", options), /ORGANIZATION_RESPONSE_INVALID/u);
+  } finally { globalThis.fetch = original; }
+});
+
+test("J2 공개 계약은 본인 GET과 code-only POST를 exact 고정하고 BFF 쓰기 query를 거부한다", async () => {
+  const document = JSON.parse(await readFile(new URL("../../packages/contracts/openapi/v1/openapi.json", import.meta.url), "utf8"));
+  assert.deepEqual(Object.keys(document.paths["/api/v1/organization/join-requests"]), ["get", "post"]);
+  assert.deepEqual(document.components.schemas.OrganizationJoinCreate.required, ["invitation_code"]);
+  assert.deepEqual(Object.keys(document.components.schemas.OrganizationJoinCreate.properties), ["invitation_code"]);
+  assert.doesNotThrow(() => validateOpenApiDocument(document));
+  for (const change of [d => { delete d.paths["/api/v1/organization/join-requests"].get; },
+    d => { d.components.schemas.OrganizationJoinCreate.properties.tenant_id = { type: "string" }; },
+    d => { d.components.schemas.OrganizationJoinCreate.required = []; }]) {
+    const changed = structuredClone(document); change(changed); assert.throws(() => validateOpenApiDocument(changed));
+  }
+  let calls = 0;
+  const proxy = createBffProxy({ baseUrl: new URL("https://api.example.com"), publicOrigin: new URL("https://app.example.com"), fetchImpl: async () => { calls++; return Response.json({ data: [] }); } });
+  const result = await proxy(new Request("https://app.example.com/bff/api/organization/join-requests?tenant_id=foreign", { method: "POST", headers: { Origin: "https://app.example.com", "Content-Type": "application/json", "Idempotency-Key": "j2-query-operation-0001", "X-Daon-Expected-Session-Id": "session" }, body: JSON.stringify({ invitation_code: "synthetic" }) }), ["organization", "join-requests"]);
+  assert.equal(result.status, 400); assert.equal(calls, 0);
 });

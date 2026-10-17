@@ -824,7 +824,20 @@ class AuthorizationService:
                 metadata={"reason_code": "RESOURCE_UNAVAILABLE"},
             )
             raise AuthorizationError("RESOURCE_UNAVAILABLE", 404)
+        self._assert_organization_active(connection, principal, row)
         return row
+
+    def _assert_organization_active(self, connection, principal, workspace=None) -> None:
+        if workspace is not None and workspace["workspace_kind"] != "organization":
+            return
+        from .organization_access import OrganizationAccessBridge
+        from .organization_membership import OrganizationWorkflowError
+        try:
+            OrganizationAccessBridge(postgres=hasattr(self._repository, "_dsn")).assert_organization_active(
+                connection=connection, tenant_id=principal.tenant_id, user_id=principal.user_id,
+            )
+        except OrganizationWorkflowError as error:
+            raise AuthorizationError(error.code, error.status) from error
 
     def _membership(
         self, connection: sqlite3.Connection, principal: IdentityPrincipal, workspace_id: str
@@ -934,6 +947,7 @@ class AuthorizationService:
             binding = None if workspace is None else self._role_binding(connection, principal, workspace)
             if workspace is None:
                 raise AuthorizationError("RESOURCE_UNAVAILABLE", 404)
+            self._assert_organization_active(connection, principal, workspace)
             if binding is None:
                 raise AuthorizationError("ACTION_DENIED", 403)
             return self._effective_permission(
@@ -1042,6 +1056,8 @@ class AuthorizationService:
         with self._repository.transaction() as connection:
             tenant_role = self._tenant_role(connection, principal)
             role = None if tenant_role is None else Role(str(tenant_role["role"]))
+            if role is Role.ORGANIZATION_ADMIN:
+                self._assert_organization_active(connection, principal)
             allowed = role in TENANT_ROLES
             self._audit(
                 action=(

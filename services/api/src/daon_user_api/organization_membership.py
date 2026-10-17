@@ -473,6 +473,13 @@ class SqliteOrganizationRepository:
             elif operation == "organization.invitation.revoke":
                 item = self.revoke_invitation(tenant_id=tenant_id, invitation_id=target_id, actor_id=actor_id, expected_version=payload["expected_version"], now=now, connection=connection)
             elif operation == "organization.join.create":
+                # 확정 영수증 replay 뒤, 신규 신청에만 현재 초대의 정확한 조직 Workspace를 요구한다.
+                if original is None or workspace_id is None:
+                    raise OrganizationWorkflowError("INVITATION_INVALID", 400)
+                try:
+                    self._access_bridge._workspace(connection, tenant_id, workspace_id)
+                except OrganizationWorkflowError as error:
+                    raise OrganizationWorkflowError("INVITATION_INVALID", 400) from error
                 pending = connection.execute("SELECT request_id FROM organization_join_requests WHERE tenant_id=? AND user_id=? AND state='pending'", (tenant_id, actor_id)).fetchone()
                 if pending is not None: raise OrganizationWorkflowError("JOIN_REQUEST_ALREADY_PENDING", 409)
                 item = self.create_join_request(tenant_id=tenant_id, user_id=actor_id, invitation_code=payload.get("invitation_code"), now=now, connection=connection)

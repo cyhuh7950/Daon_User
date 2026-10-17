@@ -18,6 +18,21 @@ class OrganizationAccessBridge:
         self._workspaces = "public.identity_auth_workspaces" if postgres else "auth_workspaces"
         self._workflow = "public.identity_org_tenant_memberships" if postgres else "tenant_memberships"
 
+    def assert_organization_active(self, *, connection, tenant_id, user_id) -> None:
+        """대상 조직의 현재 workflow만 검사한다. 소속 생성·auth 복구는 하지 않는다."""
+        _id(tenant_id); _id(user_id)
+        # 조직 workflow를 구성하지 않은 기존 SQLite 소비자는 기존 권한 검사를 유지한다.
+        # PG에는 0037부터 실제 표가 있다. 접속/조회 오류를 허용으로 바꾸지 않는다.
+        if not self._postgres and connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tenant_memberships'"
+        ).fetchone() is None:
+            return
+        row = connection.execute(
+            f"SELECT state FROM {self._workflow} WHERE tenant_id=? AND user_id=?", (tenant_id, user_id),
+        ).fetchone()
+        if row is not None and row["state"] != "active":
+            raise OrganizationWorkflowError("ORGANIZATION_MEMBERSHIP_SUSPENDED", 403)
+
     def _workspace(self, connection, tenant_id, workspace_id):
         _id(tenant_id); _id(workspace_id)
         lock = " FOR UPDATE" if self._postgres else ""

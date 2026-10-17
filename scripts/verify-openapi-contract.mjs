@@ -753,7 +753,7 @@ function validateOrganizationContract(document) {
     "/api/v1/organization/admin/tenants": ["get"], [base+"/workspaces"]: ["get"],
     [base+"/invitations"]: ["get", "post"], [base+"/invitations/{invitation_id}"]: ["delete"],
     [base+"/members/{user_id}/role"]: ["patch"], [base+"/members/{user_id}/state"]: ["patch"],
-    "/api/v1/organization/join-requests": ["post"], "/api/v1/organization/join-requests/{request_id}/decision": ["post"],
+    "/api/v1/organization/join-requests": ["get", "post"], "/api/v1/organization/join-requests/{request_id}/decision": ["post"],
   };
   const same = (actual, expected) => canonicalizeDocument(actual) === canonicalizeDocument(expected);
   const schemas = document.components?.schemas ?? {};
@@ -768,6 +768,8 @@ function validateOrganizationContract(document) {
   fields("OrganizationInvitationCreate", ["workspace_id", "code", "expires_at", "max_uses"]);
   fields("OrganizationRolePatch", ["role", "workspace_id", "expected_version", "expected_auth_version", "reason"], ["role", "workspace_id", "expected_version", "expected_auth_version"]);
   fields("OrganizationStatePatch", ["expected_version", "reason"], ["expected_version"]);
+  fields("OrganizationJoinCreate", ["invitation_code"]);
+  if (!same(schemas.OrganizationJoinCreate.properties.invitation_code, { type: "string", minLength: 1, maxLength: 160, writeOnly: true })) fail("S40 exact invitation-only input");
   for (const name of ["OrganizationManagedTenant", "OrganizationManagedWorkspace"]) fields(name, [name.endsWith("Tenant") ? "tenant_id" : "workspace_id", "display_name"]);
   if (!same(schemas.OrganizationRolePatch.properties.role.enum, ["viewer", "editor", "reviewer", "approver"])) fail("S39 role enum");
   for (const name of ["expected_version", "expected_auth_version"]) {

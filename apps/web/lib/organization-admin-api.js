@@ -63,9 +63,10 @@ export const listManagedWorkspaces = (tenantId, options = {}) => list(`/tenants/
 export const listInvitations = (tenantId, options = {}) => list(`/tenants/${encodeURIComponent(tenantId)}/invitations`, "invitation", options);
 export const decideCreationRequest = (requestId, body, options = {}) => call(`/creation-requests/${encodeURIComponent(requestId)}/decision`, { ...options, method: "POST", body, mutation: true });
 export const listJoinRequests = (tenantId, options = {}) => list(`/join-requests${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ""}`, "join", options);
-export const submitJoinRequest = (invitationCode, options = {}) => call("/join-requests", {
+export const listOwnJoinRequests = (options = {}) => list("/join-requests", "join", options);
+export const submitJoinRequest = async (invitationCode, options = {}) => checked(await call("/join-requests", {
   ...options, method: "POST", body: { invitation_code: invitationCode }, mutation: true, sessionBound: true,
-});
+}), "join");
 export const decideJoinRequest = async (requestId, body, options = {}) => checked(await call(`/join-requests/${encodeURIComponent(requestId)}/decision`, { ...options, method: "POST", body, mutation: true, sessionBound: true }), "join");
 export const createInvitation = async (tenantId, body, options = {}) => checked(await call(`/tenants/${encodeURIComponent(tenantId)}/invitations`, { ...options, method: "POST", body, mutation: true, sessionBound: true }), "invitation");
 export const revokeInvitation = async (tenantId, invitationId, options = {}) => {

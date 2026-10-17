@@ -1630,6 +1630,17 @@ class IdentityService:
         selected: dict[str, tuple[str, str, str]] = {}
         for row in rows:
             tenant_id = str(row["tenant_id"])
+            if row["workspace_kind"] == "organization":
+                from .organization_access import OrganizationAccessBridge
+                from .organization_membership import OrganizationWorkflowError
+                try:
+                    OrganizationAccessBridge(postgres=hasattr(self._repository, "_dsn")).assert_organization_active(
+                        connection=connection, tenant_id=tenant_id, user_id=user_id,
+                    )
+                except OrganizationWorkflowError as error:
+                    if error.code != "ORGANIZATION_MEMBERSHIP_SUSPENDED":
+                        raise
+                    continue
             if tenant_id not in selected:
                 selected[tenant_id] = (
                     tenant_id, "personal" if str(row["role"]) == "personal_owner" else "organization",

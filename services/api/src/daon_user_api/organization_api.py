@@ -42,8 +42,7 @@ class DecisionBody(BaseModel):
 
 class JoinBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    tenant_id: str | None = Field(default=None, min_length=1, max_length=160)
-    invitation_code: str | None = Field(default=None, min_length=1, max_length=160)
+    invitation_code: str = Field(min_length=1, max_length=160)
 
 
 class InvitationBody(BaseModel):
@@ -281,18 +280,23 @@ class OrganizationApi:
 
         @router.post("/api/v1/organization/join-requests", status_code=202)
         async def join(body: JoinBody, request: Request, actor: IdentityPrincipal = Depends(mutation_actor)) -> JSONResponse:
-            if body.tenant_id is None and body.invitation_code is None:
-                raise OrganizationWorkflowError("INVITATION_REQUIRED", 400)
-            return management(request, actor, "organization.join.create", body.tenant_id, None, body.model_dump(), status_code=202)
+            if request.query_params:
+                raise OrganizationWorkflowError("INVALID_INPUT", 400)
+            # 공개 입력은 code뿐이며 기존 code-only 영수증의 지문은 유지한다.
+            payload = {"tenant_id": None, "invitation_code": body.invitation_code}
+            return management(request, actor, "organization.join.create", None, None, payload, status_code=202)
 
         @router.get("/api/v1/organization/join-requests")
         async def list_join(request: Request, tenant_id: str | None = None) -> dict[str, Any]:
             actor = principal(request)
+            if any(name != "tenant_id" for name in request.query_params) or len(request.query_params.getlist("tenant_id")) > 1:
+                raise OrganizationWorkflowError("INVALID_INPUT", 400)
             if tenant_id is not None:
                 self.require_org_admin(actor, tenant_id)
                 items = self.repository.list_join_requests(tenant_id=tenant_id)
             else:
                 items = self.repository.list_join_requests(user_id=actor.user_id)
+                return management_response(request, items)
             return response(request, items)
 
         @router.post("/api/v1/organization/join-requests/{request_id}/decision")

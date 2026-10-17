@@ -88,6 +88,7 @@ class _PostgresCompatConnection:
         statement = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", statement, flags=re.I)
         if statement.lstrip().upper().startswith("BEGIN IMMEDIATE"):
             statement = re.sub(r"BEGIN\s+IMMEDIATE", "BEGIN", statement, flags=re.I)
+        statement = re.sub(r"\btenant_memberships\b", "identity_org_tenant_memberships", statement)
         for table in _TABLES:
             statement = re.sub(rf"\b{table}\b", f"identity_{table}", statement)
         # SQLite accepts AUTHORIZATION as an unquoted table alias, while

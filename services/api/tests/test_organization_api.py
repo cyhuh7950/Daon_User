@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import hashlib
 import re
+import pytest
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -118,6 +119,7 @@ def test_user_can_submit_join_request_with_invitation_code_only(tmp_path: Path) 
     app, repo, auth = _app(tmp_path, principal)
     repo.create_invitation(
         tenant_id="tenant-a", created_by="admin", code="AAAAA-TEST-2026",
+        workspace_id="workspace-a",
         expires_at=datetime.now(timezone.utc) + timedelta(days=1), max_uses=1,
         now=datetime.now(timezone.utc),
     )
@@ -404,5 +406,107 @@ def test_l3_nine_operation_etags_cover_safe_body_trace_status_and_replay(tmp_pat
             digest = connection.execute("SELECT code_digest FROM invitation_codes").fetchone()[0]
             assert connection.execute("SELECT count(*) FROM organization_operation_outbox").fetchone()[0] == 6
         assert all(digest not in result.text + result.headers["ETag"] for result in responses)
+    finally:
+        repo.close(); auth.close()
+
+
+def test_j2_pending_replay_after_revocation_and_own_list_grant_nothing(tmp_path):
+    app, repo, auth = _app(tmp_path, IdentityPrincipal("member", "session", "device", "personal"))
+    now = datetime.now(timezone.utc)
+    code = "j2-synthetic-valid"
+    invitation = repo.create_invitation(tenant_id="tenant-a", created_by="admin", code=code, workspace_id="workspace-a", expires_at=now+timedelta(days=1), max_uses=1, now=now)
+    other = repo.create_join_request(tenant_id="tenant-a", user_id="other-user", invitation_code=code, now=now)
+    headers = {"Idempotency-Key": "j2-pending-operation-0001", "X-Daon-Expected-Session-Id": "session"}
+    try:
+        with TestClient(app) as client:
+            created = client.post("/api/v1/organization/join-requests", json={"invitation_code": code}, headers=headers)
+            assert created.status_code == 202
+            value = created.json()["data"]
+            assert (value["user_id"], value["tenant_id"], value["state"]) == ("member", "tenant-a", "pending")
+            duplicate = client.post("/api/v1/organization/join-requests", json={"invitation_code": code}, headers=headers | {"Idempotency-Key": "j2-pending-operation-0002"})
+            assert duplicate.status_code == 409 and duplicate.json()["code"] == "JOIN_REQUEST_ALREADY_PENDING"
+            repo.revoke_invitation(tenant_id="tenant-a", invitation_id=invitation.invitation_id, actor_id="admin", expected_version=1, now=now)
+            replay = client.post("/api/v1/organization/join-requests", json={"invitation_code": code}, headers=headers)
+            assert replay.status_code == 202 and replay.json()["data"] == value
+            listed = client.get("/api/v1/organization/join-requests")
+            assert listed.status_code == 200 and listed.json()["data"] == [value]
+            assert "ETag" in listed.headers
+            assert other.request_id not in listed.text
+            assert client.get("/api/v1/organization/join-requests?user_id=other-user").status_code == 400
+            assert client.get("/api/v1/organization/join-requests?tenant_id=tenant-a").status_code == 403
+        with repo.transaction() as connection:
+            assert connection.execute("SELECT count(*) FROM organization_operation_outbox").fetchone()[0] == 1
+            for table in ("memberships", "auth_memberships", "tenant_memberships"):
+                assert connection.execute(f"SELECT count(*) FROM {table} WHERE user_id='member'").fetchone()[0] == 0
+            assert connection.execute("SELECT used_count FROM invitation_codes").fetchone()[0] == 0
+            receipt = connection.execute("SELECT response_json,audit_json FROM organization_operation_outbox").fetchone()
+            assert code not in "".join(receipt) and "code_digest" not in "".join(receipt)
+    finally:
+        repo.close(); auth.close()
+
+
+@pytest.mark.parametrize("invalid", ["unknown", "expired", "revoked", "unbound", "missing-workspace"])
+def test_j2_invalid_new_invitation_has_no_request_receipt_or_access(tmp_path, invalid):
+    app, repo, auth = _app(tmp_path, IdentityPrincipal("member", "session", "device", "personal"))
+    now = datetime.now(timezone.utc)
+    code = "j2-synthetic-"+invalid
+    if invalid != "unknown":
+        repo.create_invitation(tenant_id="tenant-a", created_by="admin", code=code,
+            workspace_id=None if invalid == "unbound" else "missing" if invalid == "missing-workspace" else "workspace-a",
+            expires_at=now+timedelta(days=1), max_uses=1, now=now)
+        with repo.transaction() as connection:
+            if invalid == "expired": connection.execute("UPDATE invitation_codes SET expires_at=?", ((now-timedelta(seconds=1)).isoformat(),))
+            if invalid == "revoked": connection.execute("UPDATE invitation_codes SET state='revoked'")
+    try:
+        with TestClient(app) as client:
+            result = client.post("/api/v1/organization/join-requests", json={"invitation_code": code},
+                headers={"Idempotency-Key": "j2-invalid-operation-0001", "X-Daon-Expected-Session-Id": "session"})
+            assert result.status_code == 400 and result.json()["code"] == "INVITATION_INVALID"
+            assert code not in result.text and "code_digest" not in result.text
+        with repo.transaction() as connection:
+            for table in ("organization_join_requests", "organization_operation_outbox", "tenant_memberships"):
+                assert connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
+    finally:
+        repo.close(); auth.close()
+
+
+def test_j2_public_body_cannot_supply_tenant_user_or_actor(tmp_path):
+    app, repo, auth = _app(tmp_path, IdentityPrincipal("member", "session", "device", "personal"))
+    try:
+        with TestClient(app) as client:
+            for body in ({"tenant_id": "tenant-a"}, *({"invitation_code": "synthetic", field: "other"} for field in ("tenant_id", "user_id", "actor_id", "workspace_id"))):
+                assert client.post("/api/v1/organization/join-requests", json=body,
+                    headers={"Idempotency-Key": "j2-body-operation-0001", "X-Daon-Expected-Session-Id": "session"}).status_code == 422
+        with repo.transaction() as connection:
+            assert connection.execute("SELECT count(*) FROM organization_join_requests").fetchone()[0] == 0
+    finally:
+        repo.close(); auth.close()
+
+
+def test_j2_rejection_allows_only_explicit_new_request_and_receipt_failure_rolls_back(tmp_path, monkeypatch):
+    app, repo, auth = _app(tmp_path, IdentityPrincipal("member", "session", "device", "personal"))
+    now = datetime.now(timezone.utc)
+    code = "j2-synthetic-reapply"
+    repo.create_invitation(tenant_id="tenant-a", created_by="admin", code=code, workspace_id="workspace-a", expires_at=now+timedelta(days=1), max_uses=1, now=now)
+    headers = {"Idempotency-Key": "j2-reapply-operation-0001", "X-Daon-Expected-Session-Id": "session"}
+    try:
+        with TestClient(app) as client:
+            first = client.post("/api/v1/organization/join-requests", json={"invitation_code": code}, headers=headers).json()["data"]
+            repo.decide_join_request(request_id=first["request_id"], actor_id="admin", approved=False, expected_version=1, role="member", reason="합성 거부", now=now)
+            assert client.get("/api/v1/organization/join-requests").json()["data"][0]["state"] == "rejected"
+            original = repo._record_management_operation
+            def unavailable(connection, **values):
+                original(connection, **values)
+                raise OrganizationWorkflowError("PERSISTENCE_UNAVAILABLE", 503)
+            with monkeypatch.context() as patch:
+                patch.setattr(repo, "_record_management_operation", unavailable)
+                assert client.post("/api/v1/organization/join-requests", json={"invitation_code": code}, headers=headers | {"Idempotency-Key": "j2-reapply-operation-0002"}).status_code == 503
+            with repo.transaction() as connection:
+                assert connection.execute("SELECT count(*) FROM organization_join_requests").fetchone()[0] == 1
+                assert connection.execute("SELECT count(*) FROM organization_operation_outbox").fetchone()[0] == 1
+            second = client.post("/api/v1/organization/join-requests", json={"invitation_code": code}, headers=headers | {"Idempotency-Key": "j2-reapply-operation-0002"})
+            assert second.status_code == 202 and second.json()["data"]["request_id"] != first["request_id"]
+            states = {item["request_id"]: item["state"] for item in client.get("/api/v1/organization/join-requests").json()["data"]}
+            assert states == {first["request_id"]: "rejected", second.json()["data"]["request_id"]: "pending"}
     finally:
         repo.close(); auth.close()

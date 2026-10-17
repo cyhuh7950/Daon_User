@@ -319,7 +319,7 @@ function routeFor(method, segments) {
     && new Set(["creation-requests", "join-requests"]).has(segments[1])) {
     if (segments[1] === "join-requests") {
       return new Set(["GET", "POST"]).has(method)
-        ? { path: `/api/v1/organization/${segments[1]}`, query: new Set(["tenant_id"]), orgSessionBinding: method === "POST" }
+        ? { path: `/api/v1/organization/${segments[1]}`, query: new Set(method === "GET" ? ["tenant_id"] : []), strictQuery: method === "POST", orgSessionBinding: method === "POST" }
         : { methodRejected: true };
     }
     return new Set(["GET", "POST"]).has(method)
